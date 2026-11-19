@@ -14,6 +14,7 @@ import { t, tf } from "./i18n";
 import { providerPoolSections, reorderProviderSlots } from "./provider-pool-layout";
 import { ProviderBalancePoolBadge, RelayBillingPoolBadge, RelayBillingPoolLabel, RelayBillingRetry, useProviderBalance, useRelayBillingProbe } from "./RelayBillingLine";
 import { relayBillingGatewayCacheKey, type RelayBillingProbe } from "./relay-billing";
+import { providerHeadersSummary } from "./relay-headers";
 import {
   glanceAgents,
   defaultProviderAgents,
@@ -33,6 +34,7 @@ import {
   providerEnabled,
   providerInput,
   skippedAgents,
+  quotaSupported,
   subscriptionBlockReason,
   maskAccountText,
   type GatewayAgentId,
@@ -57,6 +59,7 @@ import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaWindows, Switch, t
 import { ProviderFormDialog, type ProviderFormState } from "./ProviderFormDialog";
 import { ProviderExtrasDialog, ProviderLimitsDialog, ProviderNewApiAccessDialog, keyLimitSummary, priceSummary } from "./ProviderExtrasDialog";
 import { ProviderWindowsDialog, windowSummary, withUnlistedWindows } from "./ProviderWindowsDialog";
+import { withUnlistedAutoCompact } from "./gateway-auto-compact-model";
 import { ProviderReasoningDialog, reasoningSummary } from "./ProviderReasoningDialog";
 import { ProviderModelsDialog } from "./ProviderModelsDialog";
 import { ProviderSyncDialog } from "./ProviderSyncDialog";
@@ -220,10 +223,10 @@ export function ProvidersView({
     if (form?.mode !== "edit") return;
     if (await run(`edit:${form.entry.id}`, "update_gateway_provider", { id: form.entry.id, input: providerInput(draft) }, t("保存供应商"))) closeForm();
   };
-  const saveFormWindows = async (modelWindows: Record<string, number>, fallback: number | null) => {
+  const saveFormWindows = async (modelWindows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }) => {
     if (!editingEntry || !formWindows) return;
     const windows = withUnlistedWindows(editingEntry, formWindows, modelWindows);
-    if (await run(`windows:${editingEntry.id}`, "save_gateway_provider_windows", { id: editingEntry.id, windows, fallback }, t("保存上下文窗口"))) setFormWindows(null);
+    if (await run(`windows:${editingEntry.id}`, "save_gateway_provider_windows", { id: editingEntry.id, windows, fallback, autoCompact: withUnlistedAutoCompact(editingEntry, formWindows, autoCompact) }, t("保存上下文窗口"))) setFormWindows(null);
   };
 
   return (
@@ -300,7 +303,7 @@ export function ProvidersView({
           busy={busy !== null}
           entry={{ ...editingEntry, models: formWindows }}
           onCancel={() => setFormWindows(null)}
-          onSave={(modelWindows, fallback) => void saveFormWindows(modelWindows, fallback)}
+          onSave={(modelWindows, fallback, autoCompact) => void saveFormWindows(modelWindows, fallback, autoCompact)}
         />
       ) : null}
     </>
@@ -647,8 +650,8 @@ function PoolRow({
     if (await run(`reasoning:${entry.id}`, "save_gateway_provider_metadata", { id: entry.id, modelMetadata }, t("保存思考等级"))) setReasoningOpen(false);
   };
   const windows = windowSummary(entry);
-  const saveWindows = async (modelWindows: Record<string, number>, fallback: number | null) => {
-    if (await run(`windows:${entry.id}`, "save_gateway_provider_windows", { id: entry.id, windows: modelWindows, fallback }, t("保存上下文窗口"))) setWindowsOpen(false);
+  const saveWindows = async (modelWindows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }) => {
+    if (await run(`windows:${entry.id}`, "save_gateway_provider_windows", { id: entry.id, windows: modelWindows, fallback, autoCompact }, t("保存上下文窗口"))) setWindowsOpen(false);
   };
   // 从上游同步上下文窗口 / 思考等级（#2807）：先列差异，勾选后才写入。订阅账号的模型接口不带这些资料。
   const [metaSync, setMetaSync] = useState<MetaSyncKind | null>(null);
@@ -668,14 +671,15 @@ function PoolRow({
     if (await run(`models:${entry.id}`, "save_gateway_provider_models", { id: entry.id, models, defaultModel }, t("保存模型列表"))) setModelsOpen(false);
   };
   const price = priceSummary(entry);
-  // ChatGPT 订阅账号、Copilot 和 SuperGrok 能查额度（ChatGPT API 账号按量计费，没有额度窗口）。
-  const quotaSupported = entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok";
+  // 订阅账号和 OpenCode Go、Command Code 等 API Key 套餐能查额度（#3084）；后端给标志，首次查询前就显示这一行。
+  const hasQuota = quotaSupported(entry);
   const testBlocked = subscriptionBlockReason(entry);
   const saveExtras = async (nextPrice: ProviderPrice | null, modelPrices: Record<string, ProviderPrice> | null, proxy: string) => {
     const title = extrasOpen === "proxy" ? t("保存代理") : t("保存价格");
     if (await run(`extras:${entry.id}`, "save_gateway_provider_extras", { id: entry.id, price: nextPrice, modelPrices, proxy }, title)) setExtrasOpen(null);
   };
   const keyLimits = keyLimitSummary(entry);
+  const headersSummary = providerHeadersSummary(entry.customHeaders);
   const saveLimits = async (rpm: number | null, concurrency: number | null) => {
     if (await run(`limits:${entry.id}`, "save_gateway_provider_limits", { id: entry.id, rpm, concurrency }, t("保存限速"))) setLimitsOpen(false);
   };
@@ -706,7 +710,7 @@ function PoolRow({
         <div className="gw-pool-main">
           <strong>{maskAccountName(entry.name)}</strong>
           <small>{sub}</small>
-          {quotaSupported ? entry.quota
+          {hasQuota ? entry.quota
             ? <QuotaWindows compact maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} />
             : <small>{t("额度待刷新")}</small> : null}
         </div>
@@ -828,11 +832,11 @@ function PoolRow({
               </span>
             </div>
           ) : null}
-          {quotaSupported ? (
+          {hasQuota ? (
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("额度")}</span>
               <div className="gw-detail-value gw-chip-row">
-                {entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{t("尚未取得官方用量")}</span>}
+                {entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{entry.account ? t("尚未取得官方用量") : t("尚未取得套餐用量")}</span>}
               </div>
               <span className="gw-detail-actions">
                 <button
@@ -861,7 +865,7 @@ function PoolRow({
             <summary>
               <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
               {t("更多设置")}
-              <span className="gw-pool-more-hint">{t("价格、上下文窗口、思考等级、代理、限速")}</span>
+              <span className="gw-pool-more-hint">{entry.account ? t("价格、上下文窗口、思考等级、代理、限速") : t("价格、上下文窗口、思考等级、代理、限速、请求头")}</span>
             </summary>
           <div className="gw-detail-row">
             <span className="gw-detail-label">{t("价格")}</span>
@@ -937,6 +941,18 @@ function PoolRow({
               <EditIcon disabled={busy !== null} label={t("编辑限速")} onClick={() => setLimitsOpen(true)} />
             </span>
           </div>
+          {/* 自定义请求头（#3075）：只列名称（值可能是凭据），在编辑弹窗里改；订阅账号不开放。 */}
+          {!entry.account ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("请求头")}</span>
+              <div className="gw-detail-value gw-chip-row">
+                {headersSummary ? <code className="gw-chip" title={t("测试连接、获取模型和实际请求都会带上")}>{headersSummary}</code> : <span className="gw-muted">{t("未设置")}</span>}
+              </div>
+              <span className="gw-detail-actions">
+                <EditIcon disabled={busy !== null} label={t("编辑自定义请求头")} onClick={onEdit} />
+              </span>
+            </div>
+          ) : null}
           </details>
           <div className="gw-detail-row gw-detail-foot">
             <span className="gw-detail-label" />
@@ -988,7 +1004,7 @@ function PoolRow({
         <ProviderReasoningDialog busy={busy !== null} entry={entry} onCancel={() => setReasoningOpen(false)} onSave={(modelMetadata) => void saveReasoning(modelMetadata)} />
       ) : null}
       {windowsOpen ? (
-        <ProviderWindowsDialog busy={busy !== null} entry={entry} onCancel={() => setWindowsOpen(false)} onSave={(modelWindows, fallback) => void saveWindows(modelWindows, fallback)} />
+        <ProviderWindowsDialog busy={busy !== null} entry={entry} onCancel={() => setWindowsOpen(false)} onSave={(modelWindows, fallback, autoCompact) => void saveWindows(modelWindows, fallback, autoCompact)} />
       ) : null}
       {accessOpen ? (
         <ProviderNewApiAccessDialog

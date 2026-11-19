@@ -4,10 +4,10 @@ import {test} from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import {normalizeAggregateDefaultRelayId,normalizeAggregateMembers} from "./aggregate-members.ts";
-const text=readFileSync(new URL("./App.tsx",import.meta.url),"utf8");
+const text=readFileSync(new URL("./App.tsx", import.meta.url), "utf8") + "\n" + readFileSync(new URL("./relay-profile-editing.ts", import.meta.url), "utf8");
 const app=ts.createSourceFile("App.tsx",text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
 const names=["RelayProfileList","removeRelayProfile","relayProfileDeleteIssue","duplicateRelayProfile","reorderRelayProfiles","normalizeAggregateConfig"];
-const source=app.statements.filter(n=>ts.isFunctionDeclaration(n)&&names.includes(n.name?.text??"")).map(n=>n.getText(app)).join("\n");
+const source=app.statements.filter(n=>ts.isFunctionDeclaration(n)&&names.includes(n.name?.text??"")).map(n=>n.getText(app).replace(/^export /, "")).join("\n");
 const code=ts.transpileModule(source,{compilerOptions:{jsx:ts.JsxEmit.React,jsxFactory:"jsx",target:ts.ScriptTarget.ES2022}}).outputText;
 const ctx=vm.createContext({
   jsx:(type:any,props:any,...children:any[])=>({type,props,children}),

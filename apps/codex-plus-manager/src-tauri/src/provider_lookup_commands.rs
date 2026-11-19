@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use codex_plus_core::gateway::provider_headers::{self, ProviderHeaderInput};
 use codex_plus_core::gateway::store::GatewayStore;
 use codex_plus_core::model_pricing::{self, PriceMatch};
 use codex_plus_core::settings::RelayProtocol;
@@ -17,12 +18,14 @@ pub struct ProviderModels {
 
 /// 用弹窗里填的地址、协议和第一个 Key 拉 `/v1/models`。
 /// 编辑已有供应商时 Key 不回显：`api_key` 留空、传 `provider_id`，就用网关里存的 Key。
+/// `custom_headers` 是弹窗里正在编辑的自定义请求头（#3075）；不传时用已保存的。
 #[tauri::command]
 pub async fn fetch_provider_models(
     base_url: String,
     protocol: RelayProtocol,
     api_key: String,
     provider_id: Option<String>,
+    custom_headers: Option<Vec<ProviderHeaderInput>>,
 ) -> CommandResult<ProviderModels> {
     // OpenCode Go / Zen 的 /models 会列出 Gemini 和只给 OpenCode 自己用的免费模型：改用目录里网关能用的。
     if let Some(plan) = codex_plus_core::gateway::opencode::plan_of(&base_url) {
@@ -48,13 +51,18 @@ pub async fn fetch_provider_models(
             .find(|line| !line.is_empty())
             .unwrap_or_default()
             .to_string();
-        let mut relay = match (&provider_id, key.is_empty()) {
-            (Some(id), true) => {
-                let gateway = GatewayStore::default().load()?;
-                let provider = gateway
-                    .provider(id)
-                    .ok_or_else(|| anyhow::anyhow!("供应商池里没有 {id}"))?;
-                provider.relay.clone()
+        // 编辑已有供应商时：已保存的请求头（敏感头没改时按名字沿用）。
+        let saved = match &provider_id {
+            Some(id) => GatewayStore::default()
+                .load()?
+                .provider(id)
+                .map(|provider| provider.relay.clone()),
+            None => None,
+        };
+        let mut relay = match (&saved, key.is_empty()) {
+            (Some(saved), true) => saved.clone(),
+            (None, true) if provider_id.is_some() => {
+                anyhow::bail!("供应商池里没有 {}", provider_id.as_deref().unwrap_or_default())
             }
             (_, true) => anyhow::bail!("先填 API Key 再获取模型列表"),
             (_, false) => codex_plus_core::provider_import::pool_relay_profile(
@@ -67,9 +75,25 @@ pub async fn fetch_provider_models(
                 &[],
             )?,
         };
+        let target = if base_url.trim().is_empty() {
+            relay.base_url.clone()
+        } else {
+            base_url.trim().to_string()
+        };
+        if let Some(rows) = &custom_headers {
+            // 订阅账号等不开放编辑的成员仍用自己的头。
+            if saved.as_ref().is_none_or(provider_headers::editable) {
+                let (stored, stored_base) = saved
+                    .as_ref()
+                    .map(|relay| (relay.custom_headers.as_slice(), relay.base_url.as_str()))
+                    .unwrap_or((&[], ""));
+                relay.custom_headers =
+                    provider_headers::resolve(stored, stored_base, &target, rows)?;
+            }
+        }
         // 弹窗里改过的地址和协议优先。
         if !base_url.trim().is_empty() {
-            relay.base_url = base_url.trim().to_string();
+            relay.base_url = target;
             relay.upstream_base_url.clear();
         }
         relay.protocol = protocol;

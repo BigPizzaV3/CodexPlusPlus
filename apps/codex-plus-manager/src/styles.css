@@ -3651,13 +3651,6 @@ details.relay-fold[open] > .relay-fold-body {
   min-width: 0;
 }
 
-.enhance-feature-groups {
-  display: grid;
-  gap: 12px;
-  margin: 14px 0;
-  min-width: 0;
-}
-
 .feature-group {
   min-width: 0;
   border: 1px solid hsl(var(--border));
@@ -4752,6 +4745,79 @@ details.relay-fold[open] > .relay-fold-body {
   height: auto;
 }
 
+/* 远程控制：局域网地址、配对二维码 */
+.remote-control-addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.remote-control-addresses > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remote-control-fingerprint {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.remote-control-pairing {
+  display: grid;
+  gap: 10px;
+  padding: 10px 14px 14px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.remote-control-pairing-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.remote-control-code {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  letter-spacing: 2px;
+}
+
+.remote-control-qrs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.remote-control-qrs figure {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
+.remote-control-qr {
+  width: 180px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px;
+}
+
+.remote-control-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.remote-control-hint {
+  margin: 0;
+  font-size: 12px;
+  color: hsl(var(--muted-foreground));
+}
+
 @media (max-width: 760px) {
   .weixin-connect-head {
     display: grid;
@@ -4801,66 +4867,6 @@ details.relay-fold[open] > .relay-fold-body {
   color: hsl(var(--foreground));
   font-size: 13px;
   font-weight: 700;
-}
-
-.stepwise-settings-block .form-row {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.stepwise-settings-block {
-  --stepwise-control-height: 40px;
-}
-
-.stepwise-settings-block input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="color"]),
-.stepwise-settings-block .app-select-trigger,
-.stepwise-settings-block .field-select,
-.stepwise-settings-block .select-input {
-  height: var(--stepwise-control-height);
-  min-height: var(--stepwise-control-height);
-}
-
-.stepwise-settings-section {
-  margin: -4px 0 12px;
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.stepwise-advanced {
-  margin-top: 2px;
-  border-top: 1px solid hsl(var(--border));
-}
-
-.stepwise-advanced summary {
-  display: flex;
-  align-items: center;
-  min-height: 36px;
-  color: hsl(var(--muted-foreground));
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 700;
-  list-style: none;
-}
-
-.stepwise-advanced summary::-webkit-details-marker {
-  display: none;
-}
-
-.stepwise-advanced summary::after {
-  content: "›";
-  margin-left: 6px;
-  font-size: 15px;
-  transform: rotate(90deg);
-  transition: transform 120ms ease;
-}
-
-.stepwise-advanced[open] summary::after {
-  transform: rotate(270deg);
-}
-
-.stepwise-settings-actions {
-  justify-content: flex-end;
-  margin-top: 2px;
 }
 
 .settings-block .toolbar {
@@ -6522,22 +6528,6 @@ select {
   box-shadow: var(--shadow-sm);
 }
 
-.panel.enhance-panel {
-  justify-self: center;
-  width: min(100%, 1200px);
-  max-width: 100%;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  min-height: max-content;
-}
-
-.panel.enhance-panel:hover {
-  border: 0;
-  box-shadow: none;
-}
-
 .panel:hover {
   border-color: hsl(var(--border));
   box-shadow: var(--shadow-sm);
@@ -7011,8 +7001,7 @@ select {
 }
 
 .divider,
-.settings-block,
-.stepwise-advanced {
+.settings-block {
   border-color: hsl(var(--border) / 0.6);
 }
 
@@ -7032,21 +7021,6 @@ select {
 @media (max-width: 1080px) {
   .shell {
     grid-template-columns: 204px minmax(0, 1fr);
-  }
-
-  .enhance-panel .mode-grid,
-  .enhance-panel .feature-switch-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .enhance-panel .feature-action-row {
-    grid-template-columns: 1fr;
-    align-items: start;
-  }
-
-  .enhance-panel .feature-action-row .inline-flex,
-  .enhance-panel .feature-action-row button {
-    width: fit-content;
   }
 }
 
@@ -8983,14 +8957,6 @@ select {
   box-shadow: var(--shadow-xs);
 }
 
-.enhance-page-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 14px 18px;
-}
-
 .enhance-master-switch.switch-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -9045,152 +9011,6 @@ select {
   color: hsl(var(--status-warning));
 }
 
-.enhance-tabs {
-  display: flex;
-  gap: 20px;
-  padding: 0 18px;
-  border-top: 1px solid hsl(var(--border) / 0.65);
-}
-
-.enhance-tabs-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding-right: 18px;
-  border-top: 1px solid hsl(var(--border) / 0.65);
-}
-
-.enhance-tabs-row .enhance-tabs {
-  flex: 1;
-  min-width: 0;
-  border-top: 0;
-}
-
-.enhance-tabs-row .enhance-save-actions {
-  flex-shrink: 1;
-  min-width: 0;
-}
-
-.enhance-tabs button {
-  position: relative;
-  border: 0;
-  background: transparent;
-  color: hsl(var(--muted-foreground));
-  padding: 11px 2px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 550;
-  cursor: pointer;
-}
-
-.enhance-tabs button:hover,
-.enhance-tabs button[aria-selected="true"] {
-  color: hsl(var(--brand-accent));
-}
-
-.enhance-tabs button[aria-selected="true"]::after {
-  content: "";
-  position: absolute;
-  bottom: -1px;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: hsl(var(--brand-accent));
-}
-
-.enhance-tabs button:focus-visible {
-  outline: 2px solid hsl(var(--brand-accent));
-  outline-offset: 3px;
-  border-radius: 3px;
-}
-
-.enhance-tab-panel {
-  min-width: 0;
-}
-
-.enhance-tab-panel[hidden] {
-  display: none;
-}
-
-.enhance-tab-panel .panel {
-  width: 100%;
-}
-
-.enhance-content {
-  padding: 16px 18px;
-}
-
-.enhance-feature-groups {
-  gap: 0;
-  margin: 0;
-}
-
-.enhance-feature-groups .feature-group {
-  display: grid;
-  gap: 10px;
-  border: 0;
-  border-bottom: 1px solid hsl(var(--border));
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  padding: 16px 0;
-}
-
-.enhance-feature-groups .feature-group-head {
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-}
-
-.enhance-feature-groups .feature-group-head strong {
-  flex-shrink: 0;
-  font-size: 13px;
-}
-
-/* 单列设置行（与代理设置 / Codex 设置的 .setting-row 一致）：左边标题 + 说明，右边开关。
-   原来是双列 / 三列卡片，说明长的一张会把整行撑高，左右高度参差不齐。 */
-.enhance-feature-groups .feature-switch-grid,
-.enhance-feature-groups .feature-group:first-child .feature-switch-grid {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0;
-  margin: 0;
-}
-
-/* 可展开的配置块（如「API 余额（可选）」）独占一整行：展开只往下长，
-   不会拉高或顶开同一行里的功能开关卡。 */
-.enhance-feature-groups .feature-switch-grid > .settings-block {
-  grid-column: 1 / -1;
-}
-
-.enhance-service-panel .feature-toggle {
-  border: 0;
-  border-radius: 6px;
-  background: hsl(var(--surface-raised) / 0.55);
-  padding: 10px 12px;
-  gap: 12px;
-  box-shadow: none;
-}
-
-.enhance-feature-groups .feature-toggle {
-  gap: 24px;
-  border: 0;
-  border-bottom: 1px solid hsl(var(--border) / 0.55);
-  border-radius: 0;
-  background: transparent;
-  padding: 12px 6px;
-  box-shadow: none;
-}
-
-.enhance-feature-groups .feature-switch-grid > .feature-toggle:last-child {
-  border-bottom: 0;
-}
-
-/* 说明铺满一行会太长难读，限宽后长说明一般两行内放下。 */
-.enhance-feature-groups .feature-toggle small {
-  max-width: 860px;
-  line-height: 1.55;
-}
-
 .enhance-page .feature-toggle strong {
   font-size: 13px;
 }
@@ -9201,158 +9021,6 @@ select {
 
 .enhance-page .feature-toggle:hover {
   background: hsl(var(--accent) / 0.4);
-}
-
-.enhance-feature-groups .feature-action-row {
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  border: 0;
-  border-radius: 6px;
-  background: hsl(var(--surface-raised) / 0.55);
-  padding: 10px 12px;
-}
-
-.enhance-feature-groups .feature-action-row strong {
-  font-size: 12px;
-}
-
-.enhance-feature-groups .feature-action-row small {
-  font-size: 11px;
-}
-
-
-
-
-
-.enhance-footer-hint {
-  margin: 4px 0 0;
-  font-size: 11px;
-}
-
-.enhance-service-panel .panel-head {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 4px;
-  padding: 18px 20px 14px;
-}
-
-.enhance-service-panel .settings-content {
-  padding: 0 20px 20px;
-}
-
-.enhance-service-panel .settings-content .settings-block {
-  display: grid;
-  gap: 12px;
-  border-top: 0;
-  padding-top: 14px;
-}
-
-.enhance-service-panel .form-row {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  align-items: start;
-}
-
-.enhance-service-panel .field input,
-.enhance-service-panel .app-select-trigger {
-  height: 36px;
-  min-height: 36px;
-}
-
-.enhance-service-panel .stepwise-settings-block {
-  --stepwise-control-height: 36px;
-}
-
-.enhance-service-panel .field,
-.enhance-service-panel .form-row,
-.enhance-service-panel .field-hint {
-  margin: 0;
-}
-
-.enhance-service-panel .field-hint {
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.enhance-service-toggles {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 4px;
-}
-
-.enhance-service-panel .stepwise-advanced {
-  margin: 0;
-  padding: 10px 12px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 6px;
-  background: hsl(var(--surface-raised) / 0.3);
-}
-
-.enhance-service-panel .stepwise-advanced summary {
-  min-height: 22px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.enhance-service-panel .stepwise-advanced[open] > .field,
-.enhance-service-panel .stepwise-advanced[open] > .form-row {
-  margin-top: 12px;
-}
-
-.enhance-service-note {
-  align-items: flex-start;
-  margin: 0;
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.enhance-service-note svg {
-  flex-shrink: 0;
-  margin-top: 1px;
-}
-
-.enhance-page #enhance-dictation,
-.enhance-page #enhance-stepwise {
-  scroll-margin-top: 16px;
-}
-
-@media (max-width: 1080px) {
-  .enhance-service-toggles {
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-}
-
-@media (max-width: 760px) {
-  .enhance-page-toolbar {
-    flex-wrap: wrap;
-    gap: 12px;
-    padding: 12px;
-  }
-
-  .enhance-tabs {
-    padding-inline: 12px;
-  }
-
-  .enhance-tabs-row {
-    padding-right: 12px;
-  }
-
-  .enhance-feature-groups .feature-group-head {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .enhance-feature-groups .feature-switch-grid,
-  .enhance-feature-groups .feature-group:first-child .feature-switch-grid,
-  .enhance-feature-groups .feature-action-row {
-    grid-template-columns: 1fr;
-  }
-
-  .enhance-feature-groups .feature-action-row button {
-    width: fit-content;
-  }
 }
 
 .agent-cache-content {
@@ -9677,29 +9345,6 @@ select {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
   line-height: 1.45;
-}
-
-.settings-content .stepwise-settings-block {
-  display: grid;
-  gap: 10px;
-}
-
-.settings-content .stepwise-settings-block .section-title {
-  margin: 0;
-  color: hsl(var(--foreground));
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.settings-content .stepwise-settings-section {
-  margin: -4px 0 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-}
-
-.settings-content .stepwise-settings-actions {
-  justify-content: flex-start;
-  margin: 0;
 }
 
 .settings-save-bar {
@@ -13175,17 +12820,12 @@ button.side-item:hover {
   flex-direction: column;
   gap: 10px;
 }
-.shell .page-section-nav-list,
-.shell .page-section-nav .enhance-tabs {
+.shell .page-section-nav-list {
   display: flex;
   flex-direction: column;
   gap: 1px;
   padding: 0;
   border: 0;
-}
-.shell .page-section-nav .enhance-tabs + .page-section-nav-list {
-  padding: 8px 0 0 10px;
-  border-top: 1px solid hsl(var(--border));
 }
 .shell .page-section-nav button {
   position: relative;
@@ -13204,17 +12844,10 @@ button.side-item:hover {
   background: hsl(var(--accent) / 0.5);
   color: hsl(var(--foreground));
 }
-.shell .page-section-nav .enhance-tabs button {
-  color: hsl(var(--foreground));
-  font-weight: 500;
-}
 .shell .page-section-nav :is(button[aria-selected="true"], button[aria-current="true"]) {
   background: hsl(var(--accent));
   color: hsl(var(--foreground));
   font-weight: 550;
-}
-.shell .page-section-nav .enhance-tabs button[aria-selected="true"]::after {
-  display: none;
 }
 .shell .page-section-nav .page-section-nav-list button[aria-current="true"]::before {
   content: "";
@@ -13227,16 +12860,6 @@ button.side-item:hover {
   background: hsl(var(--brand-accent));
 }
 
-/* 增强页总开关：一条细横幅 */
-.shell .enhance-master-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 14px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 10px;
-  background: hsl(var(--card));
-}
 .shell .enhance-master-switch {
   display: flex;
   flex: 1;
@@ -13280,33 +12903,6 @@ button.side-item:hover {
   margin: 0;
 }
 
-/* 增强页分组：去掉卡片底，分组标题 + 一列开关行 */
-.shell .enhance-page .enhance-tab-panel .panel.enhance-panel {
-  border: 0;
-  background: transparent;
-}
-.shell .enhance-page .enhance-content {
-  padding: 0;
-}
-.shell .enhance-page .enhance-feature-groups {
-  gap: 18px;
-}
-.shell .enhance-page .enhance-feature-groups .feature-group {
-  gap: 0;
-  padding: 0;
-  border: 1px solid hsl(var(--border));
-  border-radius: 10px;
-  background: hsl(var(--card));
-  overflow: hidden;
-}
-.shell .enhance-page .enhance-feature-groups .feature-group-head {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 10px 14px;
-  border-bottom: 1px solid hsl(var(--border));
-  background: hsl(var(--muted) / 0.4);
-}
 .shell .enhance-page .feature-switch-grid {
   margin: 0;
   display: flex;
@@ -13358,8 +12954,7 @@ button.side-item:hover {
   .shell .page-section-nav {
     position: static;
   }
-  .shell .page-section-nav-list,
-  .shell .page-section-nav .enhance-tabs {
+  .shell .page-section-nav-list {
     flex-direction: row;
     flex-wrap: wrap;
   }
@@ -13889,26 +13484,6 @@ button.side-item:hover {
 }
 .shell .user-script-row .user-script-state-label[data-state="replaced"] {
   color: hsl(var(--status-warning));
-}
-/* 内置拓展入口：本地拓展列表下面一行，左边个数说明，右边「管理内置拓展」。 */
-.shell .builtin-extensions {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 14px;
-  border-top: 1px solid hsl(var(--border));
-  padding: 10px 4px 0;
-}
-.shell .builtin-extensions-title {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-.shell .builtin-extensions-title small {
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
 }
 
 /* ── 皮肤管理：顶部压成一条细栏；主题页签按内容宽度；主题卡片缩小、一行放更多 ── */

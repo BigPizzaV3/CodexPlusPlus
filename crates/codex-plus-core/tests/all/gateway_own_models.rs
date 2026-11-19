@@ -48,6 +48,7 @@ fn fixture(port: u16) -> Fixture {
             subscription_policy: None,
             strip_responses_image_detail: None,
             disable_tool_search: None,
+            custom_headers: None,
         },
         "preset:deepseek",
         None,

@@ -13,6 +13,114 @@ pub fn has_proxy_environment(env: &HashMap<String, String>) -> bool {
     .any(|name| env.get(name).is_some_and(|value| !value.is_empty()))
 }
 
+/// 回环地址：Codex++ 的网关、协议代理、helper 都只监听在本机。
+const LOOPBACK_NO_PROXY_HOSTS: [&str; 3] = ["localhost", "127.0.0.1", "::1"];
+
+/// Codex++ 启动 Codex 时给它的 `NO_PROXY`（#3131）。
+///
+/// Codex 的 app-server 用 reqwest 的系统代理：先读 `HTTP(S)_PROXY` / `NO_PROXY` 环境变量，
+/// Windows 上再读 WinINET 注册表（`ProxyEnable` / `ProxyServer`，`NO_PROXY` 为空时才用
+/// `ProxyOverride`）——`NO_PROXY` 对注册表代理同样生效（hyper-util `matcher.rs` 的
+/// `Builder::from_system`，`intercept` 先查 `no`）。MSIX 包视图里残留一个失效的
+/// `ProxyServer` 时，发往本地网关 `127.0.0.1:57321` 的请求也被送进代理，客户端一直
+/// Reconnecting。这里让回环地址始终直连。
+///
+/// 不能把用户原有的排除项冲掉：
+/// - 继承的 `NO_PROXY` / `no_proxy` 原样保留，回环地址补在后面；
+/// - 原来没设 `NO_PROXY` 时 reqwest 会用注册表的 `ProxyOverride`，而设了之后就不再读它，
+///   所以把（本进程能看到的）`ProxyOverride` 按 reqwest 的规则折算进来，绕过列表不变。
+pub fn codex_launch_no_proxy() -> String {
+    let inherited = ["NO_PROXY", "no_proxy"]
+        .into_iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .collect::<Vec<_>>()
+        .join(",");
+    codex_launch_no_proxy_from(&inherited, windows_proxy_override().as_deref())
+}
+
+/// 要给启动的 Codex 进程设的环境变量（`command.envs(...)`），值是 [`codex_launch_no_proxy`]。
+/// Windows 环境变量名不分大小写，两个名字是同一个变量；其它平台两个都设，免得只认小写的
+/// 工具拿到旧值。
+pub fn codex_launch_no_proxy_env() -> Vec<(&'static str, String)> {
+    let value = codex_launch_no_proxy();
+    if cfg!(windows) {
+        vec![("NO_PROXY", value)]
+    } else {
+        vec![("NO_PROXY", value.clone()), ("no_proxy", value)]
+    }
+}
+
+/// [`codex_launch_no_proxy`] 的纯函数部分：`inherited` 是继承的 `NO_PROXY`（逗号分隔，
+/// 可为空），`proxy_override` 是启用中的 WinINET `ProxyOverride` 原值。
+pub fn codex_launch_no_proxy_from(inherited: &str, proxy_override: Option<&str>) -> String {
+    let base = if inherited.split(',').any(|entry| !entry.trim().is_empty()) {
+        inherited.to_string()
+    } else {
+        proxy_override
+            .map(normalize_windows_proxy_override)
+            .unwrap_or_default()
+    };
+    let mut entries: Vec<String> = Vec::new();
+    for entry in base
+        .split(',')
+        .map(str::trim)
+        .chain(LOOPBACK_NO_PROXY_HOSTS)
+    {
+        if !entry.is_empty() && !entries.iter().any(|seen| seen.eq_ignore_ascii_case(entry)) {
+            entries.push(entry.to_string());
+        }
+    }
+    entries.join(",")
+}
+
+/// 把 WinINET 的 `ProxyOverride`（分号分隔、`10.*` 这类通配）折算成 `NO_PROXY` 写法，
+/// 规则与 hyper-util 读注册表时一致（`win::normalize_proxy_override`）：
+/// `a.b.*` 这类 IPv4 尾部通配变成 CIDR，其余原样，最后去掉所有 `*.` 前缀。
+pub fn normalize_windows_proxy_override(value: &str) -> String {
+    fn ipv4_wildcard_to_cidr(value: &str) -> Option<String> {
+        let parts = value.split('.').collect::<Vec<_>>();
+        let wildcard = parts.iter().position(|part| *part == "*")?;
+        if wildcard == 0 || wildcard > 3 || parts[wildcard..].iter().any(|part| *part != "*") {
+            return None;
+        }
+        let mut octets = [0u8; 4];
+        for (index, part) in parts[..wildcard].iter().enumerate() {
+            octets[index] = part.parse().ok()?;
+        }
+        Some(format!(
+            "{}.{}.{}.{}/{}",
+            octets[0],
+            octets[1],
+            octets[2],
+            octets[3],
+            wildcard * 8
+        ))
+    }
+    value
+        .split(';')
+        .map(|entry| {
+            let entry = entry.trim();
+            ipv4_wildcard_to_cidr(entry).unwrap_or_else(|| entry.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+        .replace("*.", "")
+}
+
+/// 启用中的 WinINET 系统代理的 `ProxyOverride`；未启用代理或读不到时为 None。
+#[cfg(windows)]
+fn windows_proxy_override() -> Option<String> {
+    if wininet::read_dword(wininet::INTERNET_SETTINGS, "ProxyEnable")? == 0 {
+        return None;
+    }
+    wininet::read_string(wininet::INTERNET_SETTINGS, "ProxyOverride")
+}
+
+#[cfg(not(windows))]
+fn windows_proxy_override() -> Option<String> {
+    None
+}
+
 pub fn detect_system_proxy() -> Option<String> {
     platform_system_proxy()
 }
@@ -218,6 +326,18 @@ fn platform_system_proxy() -> Option<String> {
 
 #[cfg(windows)]
 fn windows_system_proxy() -> Option<String> {
+    use self::wininet::{INTERNET_SETTINGS, read_dword, read_string};
+
+    if read_dword(INTERNET_SETTINGS, "ProxyEnable")? == 0 {
+        return None;
+    }
+
+    parse_windows_proxy_server(&read_string(INTERNET_SETTINGS, "ProxyServer")?)
+}
+
+/// HKCU 下 WinINET 代理设置的读取（系统代理检测与 Codex 启动的 NO_PROXY 共用）。
+#[cfg(windows)]
+mod wininet {
     use std::ffi::{OsStr, OsString};
     use std::iter::once;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -227,13 +347,14 @@ fn windows_system_proxy() -> Option<String> {
     };
     use windows::core::PCWSTR;
 
-    const INTERNET_SETTINGS: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
+    pub(super) const INTERNET_SETTINGS: &str =
+        r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
     fn wide_null(value: impl AsRef<OsStr>) -> Vec<u16> {
         value.as_ref().encode_wide().chain(once(0)).collect()
     }
 
-    fn read_dword(subkey: &str, name: &str) -> Option<u32> {
+    pub(super) fn read_dword(subkey: &str, name: &str) -> Option<u32> {
         let subkey = wide_null(subkey);
         let name = wide_null(name);
         let mut value = 0u32;
@@ -254,7 +375,7 @@ fn windows_system_proxy() -> Option<String> {
         Some(value)
     }
 
-    fn read_string(subkey: &str, name: &str) -> Option<String> {
+    pub(super) fn read_string(subkey: &str, name: &str) -> Option<String> {
         let subkey = wide_null(subkey);
         let name = wide_null(name);
         let flags = REG_ROUTINE_FLAGS(RRF_RT_REG_SZ.0 | RRF_RT_REG_EXPAND_SZ.0);
@@ -297,12 +418,6 @@ fn windows_system_proxy() -> Option<String> {
                 .to_string(),
         )
     }
-
-    if read_dword(INTERNET_SETTINGS, "ProxyEnable")? == 0 {
-        return None;
-    }
-
-    parse_windows_proxy_server(&read_string(INTERNET_SETTINGS, "ProxyServer")?)
 }
 
 #[cfg(test)]
@@ -347,6 +462,43 @@ mod tests {
             parse_windows_proxy_server("proxy.example.test:8080"),
             Some("http://proxy.example.test:8080".to_string())
         );
+    }
+
+    #[test]
+    fn codex_launch_no_proxy_appends_loopback_and_keeps_user_entries() {
+        // #3131：回环地址补在用户原有排除项后面，按出现顺序去重。
+        assert_eq!(
+            codex_launch_no_proxy_from(" 10.0.0.0/8, *.internal ,localhost,10.0.0.0/8", None),
+            "10.0.0.0/8,*.internal,localhost,127.0.0.1,::1"
+        );
+        assert_eq!(codex_launch_no_proxy_from("", None), "localhost,127.0.0.1,::1");
+        assert_eq!(codex_launch_no_proxy_from(" , ", None), "localhost,127.0.0.1,::1");
+        // 已经设了 NO_PROXY 时 reqwest 不再读 ProxyOverride，这里也不掺进来。
+        assert_eq!(
+            codex_launch_no_proxy_from("corp.example", Some("10.*")),
+            "corp.example,localhost,127.0.0.1,::1"
+        );
+    }
+
+    #[test]
+    fn codex_launch_no_proxy_keeps_wininet_bypass_list_when_no_env_value() {
+        // 原来靠 ProxyOverride 绕过的地址，设了 NO_PROXY 之后也要照旧绕过。
+        assert_eq!(
+            codex_launch_no_proxy_from("", Some("localhost;127.*;10.*;192.168.*;*.corp.example;<local>")),
+            "localhost,127.0.0.0/8,10.0.0.0/8,192.168.0.0/16,corp.example,<local>,127.0.0.1,::1"
+        );
+    }
+
+    #[test]
+    fn windows_proxy_override_normalization_matches_reqwest() {
+        // 与 hyper-util `win::normalize_proxy_override` 的测试用例一致。
+        let normalized = normalize_windows_proxy_override("127.*;10.226.*;192.168.40.*;www.example.com;*.example.org");
+        assert_eq!(
+            normalized,
+            "127.0.0.0/8,10.226.0.0/16,192.168.40.0/24,www.example.com,example.org"
+        );
+        // 不是 IPv4 尾部通配的条目不转 CIDR。
+        assert_eq!(normalize_windows_proxy_override(" <local> ; 300.*"), "<local>,300.*");
     }
 
     #[test]

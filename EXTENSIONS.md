@@ -899,7 +899,7 @@ codexPlus.extension((ctx) => {
     container.textContent = `${call.name} 输出 ${String(call.output ?? "").length} 字`;
   } });
   ctx.registerToolView({ kinds: ["plan"], render: ({ container }) => { container.textContent = "计划条目"; } });
-  // Codex 设置页左侧导航末尾加一项，点开是自己画的页面
+  // Codex++ 设置页左栏加一组（排在内置分组之后、「工具与关于」之前），选中时画右边内容；可返回清理函数，切走或关页时调用
   ctx.registerSettingsSection({ title: "我的拓展", icon: "⚙", render: ({ container }) => {
     container.textContent = "设置内容";
   } });

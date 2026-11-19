@@ -6,11 +6,9 @@ import {
   enhancementCatalog,
   enhancementCatalogStrings,
   enhancementGroup,
-  enhancementGroupAnchorId,
   enhancementItem,
+  isEnhancementItemVisible,
   managerBuiltinCards,
-  managerBuiltinGroups,
-  managerGroupItems,
   managerStandaloneGroup,
   type EnhancementPlatform,
 } from "./enhancement-catalog.ts";
@@ -106,10 +104,22 @@ test("retired enhancements have no settings, navigation or command references in
   assert.deepEqual([...new Set(references)], []);
 });
 
-const ENHANCEMENT_COMPONENTS = ["EnhanceScreen", "StandaloneModeGroup", "StepwiseSettingsPanel", "EnhancementSettingControl", "BuiltinExtensionCardView"];
+const ENHANCEMENT_COMPONENTS = ["EnhanceScreen", "EnhancementSettingControl"];
+// 管理器里只留增强总开关、独立模式补丁（应急）和会话维护页的两个开关；其余都在 Codex 的 Codex++ 设置页里。
+const MANAGER_KEYS = ["enhancementsEnabled", "sessionIndexRepairEnabled", "providerSyncEnabled", "codexAppStandaloneQuotaUnlock"];
+
+const servicePage = await readFile(new URL("../../../assets/inject/renderer-inject/46-service-settings.js", import.meta.url), "utf8");
+const catalogPage = await readFile(new URL("../../../assets/inject/renderer-inject/40-backend-settings.js", import.meta.url), "utf8");
 
 function settingControls(node: ts.Node) {
   return elements(node).filter((element) => element.tagName.getText(app) === "EnhancementSettingControl");
+}
+
+function functionBody(source: string, name: string): string {
+  const start = source.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `missing ${name}`);
+  const end = source.indexOf("\n  }\n", start);
+  return source.slice(start, end);
 }
 
 test("unified enhancements use the master switch and Chinese suggestion labels", () => {
@@ -121,24 +131,21 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   for (const element of elements(control).filter((candidate) => ["FeatureToggle", "AppSelect"].includes(candidate.tagName.getText(app)))) {
     assert.equal(attribute(element, "disabled"), "disabled");
   }
-  // 开关卡在 EnhanceScreen（renderSetting），子选项在内置拓展卡片里，都按总开关状态禁用。
-  for (const name of ["EnhanceScreen", "BuiltinExtensionCardView"]) {
-    const placements = settingControls(component(name));
-    assert.ok(placements.length > 0, `${name} renders catalog settings`);
-    for (const placement of placements) assert.equal(attribute(placement, "masterEnabled"), "masterEnabled");
-  }
-  // 下一步建议的开关搬进了内置拓展卡片，面板里只剩连接设置。
-  assert.equal(settingControls(component("StepwiseSettingsPanel")).length, 0);
+  const placements = settingControls(component("EnhanceScreen"));
+  assert.ok(placements.length > 0, "EnhanceScreen renders the standalone catalog settings");
+  for (const placement of placements) assert.equal(attribute(placement, "masterEnabled"), "masterEnabled");
   for (const item of enhancementCatalog.items) {
     const standalone = enhancementGroup(item.group).standalone === true;
-    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled"].includes(item.key);
+    // 启动前的会话维护与拓展权限不是内置拓展，总开关管不着。
+    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled", "usageHistoryEnabled"].includes(item.key);
     assert.equal(item.masterGated !== false, !standalone && !unmanaged, `${item.key} master gating`);
   }
 
   const petGroup = enhancementGroup("pet");
   assert.equal(petGroup.title, "桌宠与活动");
   assert.equal(petGroup.description, "调整 Codex 原生桌宠与活动进度条。可点按的 Agent 桌宠在「工具 → Agent 桌宠」里设置。");
-  const visible = (platform: EnhancementPlatform) => managerGroupItems("pet", platform).map((item) => item.key);
+  const visible = (platform: EnhancementPlatform) => enhancementCatalog.items
+    .filter((item) => item.group === "pet" && isEnhancementItemVisible(item, "codex", platform)).map((item) => item.key);
   for (const platform of ["windows", "macos"] as const) {
     assert.ok(visible(platform).includes("codexAppPetRealMouseLook"), "native pet mouse tracking must be available on Windows and macOS");
   }
@@ -154,10 +161,13 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
     || ts.isNoSubstitutionTemplateLiteral(node) || ts.isJsxText(node)).filter((node) => /Stepwise/.test(node.getText(app)));
   assert.deepEqual(visibleEnglish.map((node) => node.getText(app)), [], "internal Stepwise fields stay compatible but visible names must use Chinese");
   for (const text of enhancementCatalogStrings()) assert.doesNotMatch(text, /Stepwise/);
-  const suggestions = component("StepwiseSettingsPanel");
-  const header = elements(suggestions).find((element) => element.tagName.getText(app) === "CardHead");
-  assert.ok(header);
-  assert.equal(attribute(header, "title"), "t(group.title)");
+  assert.match(servicePage, /<h2 class="codex-plus-settings-section-title">下一步建议服务<\/h2>/);
+  // 页面上看得到的字符串（带空格或中文的字面量）不出现 Stepwise；字段名、函数名不算。
+  const pageSource = ts.createSourceFile("46-service-settings.js", servicePage, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const pageTexts = descendants(pageSource).filter((node) => ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
+    || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)).map((node) => (node as ts.LiteralLikeNode).text);
+  assert.ok(pageTexts.length > 50);
+  assert.deepEqual(pageTexts.filter((text) => /[\s\u4e00-\u9fff]/.test(text) && /Stepwise/.test(text.replace(/data-codex-plus-stepwise-[\w-]+|codexAppStepwise\w+/g, ""))), []);
   assert.equal(enhancementGroup("stepwise").title, "下一步建议");
   assert.equal(enhancementItem("codexAppStepwiseDirectSend").title, "建议直接发送");
 });
@@ -184,10 +194,16 @@ test("enhancement switches come only from the settings catalog", () => {
   assert.match(appSource, /<strong>\{t\(masterItem\.title\)\}<\/strong>/);
 });
 
-test("every manager-visible catalog item has exactly one place in the manager", () => {
-  // 每个开关是一个内置拓展卡片，子选项挂在所属卡片下；总开关与会话修复开关各在原处。
+test("the manager keeps only the master switch, standalone patches and session maintenance; everything else is Codex-only", () => {
+  const managerKeys = enhancementCatalog.items.filter((item) => item.surfaces.includes("manager")).map((item) => item.key);
+  assert.deepEqual([...managerKeys].sort(), [...MANAGER_KEYS].sort());
+  // 管理器留着的项在 Codex 里也能看到（总开关除外的几项都能在两边改）；其余只在 Codex 里。
+  for (const item of enhancementCatalog.items) {
+    assert.ok(item.surfaces.includes("codex"), `${item.key} must be editable in the Codex settings page`);
+    if (!MANAGER_KEYS.includes(item.key)) assert.deepEqual(item.surfaces, ["codex"], `${item.key} is Codex-only`);
+  }
   for (const platform of ["windows", "macos", "linux"] as const) {
-    const cards = [...managerBuiltinGroups(), managerStandaloneGroup()].flatMap((group) => managerBuiltinCards(group.id, platform));
+    const cards = managerBuiltinCards(managerStandaloneGroup().id, platform);
     const placed = [
       ...cards.flatMap((card) => [...(card.item ? [card.item.key] : []), ...card.params.map((param) => param.key)]),
       "enhancementsEnabled",
@@ -195,32 +211,26 @@ test("every manager-visible catalog item has exactly one place in the manager", 
       "sessionIndexRepairEnabled",
     ];
     const expected = enhancementCatalog.items
-      .filter((item) => item.surfaces.includes("manager") && (!item.platforms || item.platforms.includes(platform)))
+      .filter((item) => isEnhancementItemVisible(item, "manager", platform))
       .map((item) => item.key);
     assert.deepEqual([...placed].sort(), [...expected].sort(), `manager switches on ${platform} must match the catalog`);
     assert.equal(new Set(placed).size, placed.length);
-    // 清单顶层的内置拓展（桌宠、听写、梦皮……）也各有一张卡片。
-    const ids = cards.map((card) => card.id);
-    for (const entry of enhancementCatalog.builtins) assert.ok(ids.includes(entry.id), `${entry.id} has a card`);
-    assert.equal(new Set(ids).size, ids.length);
   }
-  assert.equal(enhancementGroup("stepwise").managerTab, "stepwise");
-  // 左侧目录（PageSectionNav）的分组同样按清单生成，锚点 id 由分组 id 生成，深链和滚动定位不受影响。
-  assert.deepEqual(
-    [...managerBuiltinGroups(), managerStandaloneGroup()].map(enhancementGroupAnchorId),
-    ["enhance-group-plugins", "enhance-group-chat", "enhance-group-pet", "enhance-group-stepwise", "enhance-group-appearance", "enhance-group-standalone"],
-  );
-  assert.match(appSource, /const generalSections = \[\.\.\.managerBuiltinGroups\(\), managerStandaloneGroup\(\)\]\s*\.map\(\(group\) => \(\{ id: enhancementGroupAnchorId\(group\), label: t\(group\.title\) \}\)\);/);
-  for (const name of ["EnhanceScreen", "StandaloneModeGroup"]) {
-    const groups = elements(component(name)).filter((element) => element.tagName.getText(app) === "FeatureGroup");
-    assert.ok(groups.length > 0);
-    for (const group of groups) assert.equal(attribute(group, "id"), "enhancementGroupAnchorId(group)", `${name} groups keep their anchor id`);
-    assert.ok(descendants(component(name)).some((node) => ts.isCallExpression(node)
-      && node.expression.getText(app) === "managerBuiltinCards(group.id, enhancementPlatform).map"), `${name} cards come from the catalog`);
-  }
+
+  // 增强页：没有页签、没有内置拓展卡片，只有一处说明指向 Codex 和独立模式那一组。
   const enhance = component("EnhanceScreen");
-  const generalGroups = descendants(enhance).find((node) => ts.isCallExpression(node) && node.expression.getText(app) === "managerBuiltinGroups().map");
-  assert.ok(generalGroups, "general tab groups are generated from the catalog");
+  for (const role of ["tablist", "tab", "tabpanel"]) {
+    assert.ok(!elements(enhance).some((element) => attribute(element, "role") === role), `EnhanceScreen has no ${role}`);
+  }
+  for (const name of ["BuiltinExtensionCardView", "StandaloneModeGroup", "DictationSettingsPanel", "StepwiseSettingsPanel"]) {
+    assert.ok(!app.statements.some((node) => ts.isFunctionDeclaration(node) && node.name?.text === name), `${name} is gone`);
+  }
+  const groups = elements(enhance).filter((element) => element.tagName.getText(app) === "FeatureGroup");
+  assert.deepEqual(groups.map((group) => attribute(group, "id")), ["enhance-group-standalone"]);
+  const moved = elements(enhance).find((element) => attribute(element, "data-enhance-moved") === "codex");
+  assert.ok(moved, "the enhancement page points to the Codex settings page");
+  assert.equal(isConditional(moved, enhance), false);
+  assert.ok(!appSource.includes("enhancementTab"), "the manager no longer remembers an enhancement tab");
 });
 
 test("every catalog string the manager shows has an English translation", () => {
@@ -228,139 +238,94 @@ test("every catalog string the manager shows has an English translation", () => 
   assert.deepEqual(missing, []);
 });
 
-test("complete voice and Stepwise panels share the enhancement form and save action", () => {
-  const enhance = component("EnhanceScreen");
-  for (const name of ["DictationSettingsPanel", "StepwiseSettingsPanel"]) {
-    const panel = elements(enhance).find((element) => element.tagName.getText(app) === name);
-    assert.ok(panel, `${name} belongs in Codex enhancements`);
-    assert.equal(attribute(panel, "form"), "form");
-    assert.equal(attribute(panel, "onFormChange"), "onFormChange");
+test("voice and Stepwise service settings live in the Codex settings page, not the manager", () => {
+  for (const name of ["EnhanceScreen", "GlobalSettingsScreen", "AgentSettingsScreen"]) {
+    const screen = component(name);
+    assert.ok(!descendants(screen).some((node) => ts.isPropertyAccessExpression(node)
+      && (/^form\.dictation(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))), name);
   }
-  // 三个标签共用同一份表单，由同一个自动保存覆盖（语音输入、下一步建议的改动也会自动保存）。
-  const calls = descendants(enhance).filter(ts.isCallExpression);
-  assert.ok(
-    calls.some((node) => node.expression.getText(app) === "useEnhanceAutoSave"
-      && node.arguments.map((arg) => arg.getText(app)).join(", ") === "dirty, form, actions.autoSaveSettings"),
-    "enhancements must save the shared form automatically",
-  );
+  assert.ok(!appSource.includes("testStepwiseSettings"));
+  // Codex 设置页里两节跟在对应清单分组后面。
+  const afterGroup = functionBody(servicePage, "renderCodexPlusServiceSettingsAfterGroup");
+  assert.match(afterGroup, /groupId === "input"[\s\S]*renderCodexPlusDictationServiceSection\(\)/);
+  assert.match(afterGroup, /groupId === "stepwise"\) return renderCodexPlusStepwiseServiceSection\(\)/);
+  assert.match(catalogPage, /typeof renderCodexPlusServiceSettingsAfterGroup === "function" \? renderCodexPlusServiceSettingsAfterGroup\(group\.id\) : ""/);
+});
 
-  for (const name of ["GlobalSettingsScreen", "AgentSettingsScreen"]) {
-    const settings = component(name);
-    assert.ok(!elements(settings).some((element) => ["DictationSettingsPanel", "StepwiseSettingsPanel"].includes(element.tagName.getText(app))));
-    assert.ok(!descendants(settings).some((node) => ts.isPropertyAccessExpression(node)
-      && (/^form\.dictation(?:\.|$)/.test(node.getText(app)) || /^form\.codexApp(?:Stepwise|AnswerOutline)/.test(node.getText(app)))));
+test("local speech download requires a button click and rendering only reads status", () => {
+  assert.match(servicePage, /data-codex-plus-dictation-local-model-download="true"\$\{downloading \? " disabled" : ""\}/);
+  const click = functionBody(servicePage, "handleCodexPlusServiceSettingsClick");
+  assert.match(click, /\[data-codex-plus-dictation-local-model-download\][\s\S]*?startCodexPlusLocalModelDownload\(\)/);
+  assert.equal(servicePage.match(/postJson\("\/dictation\/local-model\/download"/g)?.length, 1);
+  assert.match(functionBody(servicePage, "startCodexPlusLocalModelDownload"), /\/dictation\/local-model\/download/);
+  for (const name of ["codexPlusEnsureServiceSettingsLoaded", "refreshCodexPlusLocalModelStatus", "codexPlusSyncLocalModelPolling", "renderCodexPlusDictationServiceSection"]) {
+    assert.doesNotMatch(functionBody(servicePage, name), /local-model\/download|startCodexPlusLocalModelDownload/, name);
   }
 });
 
-test("local speech download requires a configuration button click and mount only reads status", () => {
-  const panel = component("DictationSettingsPanel");
-  const button = elements(panel).find((element) => attribute(element, "onClick")?.includes("downloadLocalModel()"));
-  assert.ok(button, "the voice settings must expose a manual model download action");
-  assert.equal(attribute(button, "disabled"), "downloading");
-  const calls = eventHandlerNodes(panel, button, "onClick").filter(ts.isCallExpression);
-  assert.ok(calls.some((node) => node.expression.getText(app) === "invoke"
-    && node.arguments[0]?.getText(app) === '"download_dictation_local_model"'));
-  const effects = descendants(panel).filter(ts.isCallExpression)
-    .filter((node) => node.expression.getText(app) === "useEffect");
-  assert.ok(effects.some((effect) => effect.getText(app).includes('"dictation_local_model_status"')));
-  for (const effect of effects) assert.ok(!effect.getText(app).includes("download_dictation_local_model"));
-});
-
-test("enhancement panels retain every service field, private key input and Stepwise connection test", () => {
-  const dictation = component("DictationSettingsPanel");
-  for (const field of ["enabled", "baseUrl", "apiKey", "apiKeyEnv", "model", "language", "timeoutSeconds"]) {
-    fieldControl(dictation, `form.dictation.${field}`);
+test("the Codex service sections keep every service field, private key input and the Stepwise connection test", () => {
+  const dictation = functionBody(servicePage, "renderCodexPlusDictationServiceSection");
+  for (const field of ["baseUrl", "apiKeyEnv", "model", "language", "timeoutSeconds"]) {
+    assert.match(dictation, new RegExp(`renderCodexPlusServiceInput\\("dictation", "${field}"`), field);
   }
-  assert.equal(attribute(fieldControl(dictation, "form.dictation.apiKey"), "type"), "password");
+  assert.match(dictation, /renderCodexPlusServiceSecret\("dictation", "apiKey"/);
+  // Key 不回页面：只看 apiKeyConfigured，输入框是 password 且不带 value。
+  assert.match(functionBody(servicePage, "renderCodexPlusServiceSecret"), /type="password" value=""/);
+  // 页面从不读 Key 本身（删本地副本那一处除外）。
+  assert.doesNotMatch(servicePage, /(?<!delete )dictation\.apiKey(?![CE])/);
+  assert.doesNotMatch(servicePage, /settings\.codexAppStepwiseApiKey(?![CE])|codexPlusBackendSettings\.codexAppStepwiseApiKey(?![CE])/);
 
-  const stepwise = component("StepwiseSettingsPanel");
-  // 「下一步建议」「回答大纲」是两张内置拓展卡片，「建议直接发送」是前者的子选项；连接参数仍是面板里的定制字段。
-  assert.deepEqual(managerGroupItems("stepwise", "macos").map((item) => item.key),
+  // 「下一步建议」「回答大纲」是 Codex 设置页里的两个内置拓展开关，「建议直接发送」是前者的子选项。
+  assert.deepEqual(enhancementCatalog.items.filter((item) => item.group === "stepwise").map((item) => item.key),
     ["codexAppStepwiseEnabled", "codexAppAnswerOutlineEnabled", "codexAppStepwiseDirectSend"]);
-  const stepwiseCards = managerBuiltinCards("stepwise", "macos");
-  assert.deepEqual(stepwiseCards.map((card) => card.id), ["stepwise", "answer-outline"]);
-  assert.deepEqual(stepwiseCards[0].params.map((param) => param.key), ["codexAppStepwiseDirectSend"]);
-  for (const field of [
-    "codexAppStepwiseProtocol", "codexAppStepwiseGenerationMode", "codexAppStepwiseBaseUrl",
-    "codexAppStepwiseApiKey", "codexAppStepwiseApiKeyEnv", "codexAppStepwiseModel",
-    "codexAppStepwiseMaxItems", "codexAppStepwiseMaxInputChars", "codexAppStepwiseMaxOutputTokens", "codexAppStepwiseTimeoutMs",
-  ]) fieldControl(stepwise, `form.${field}`);
-  assert.equal(attribute(fieldControl(stepwise, "form.codexAppStepwiseApiKey"), "type"), "password");
-  const connectionTest = descendants(stepwise).find((node) => ts.isCallExpression(node)
-    && node.expression.getText(app) === "actions.testStepwiseSettings");
-  assert.ok(connectionTest && ts.isCallExpression(connectionTest));
-  assert.equal(connectionTest.arguments[0]?.getText(app), "form", "connection test must use the complete current form");
+  assert.equal(enhancementItem("codexAppStepwiseDirectSend").parent, "stepwise");
+  const stepwise = functionBody(servicePage, "renderCodexPlusStepwiseServiceSection");
+  for (const field of ["codexAppStepwiseBaseUrl", "codexAppStepwiseModel", "codexAppStepwiseApiKeyEnv"]) {
+    assert.match(stepwise, new RegExp(`field\\("${field}"`), field);
+  }
+  for (const field of ["codexAppStepwiseMaxItems", "codexAppStepwiseMaxInputChars", "codexAppStepwiseMaxOutputTokens", "codexAppStepwiseTimeoutMs"]) {
+    assert.match(stepwise, new RegExp(`number\\("${field}"`), field);
+  }
+  for (const field of ["codexAppStepwiseProtocol", "codexAppStepwiseGenerationMode"]) {
+    assert.match(stepwise, new RegExp(`data-codex-plus-stepwise-select="${field}"`), field);
+  }
+  assert.match(stepwise, /renderCodexPlusServiceSecret\("stepwise", "codexAppStepwiseApiKey", settings\.codexAppStepwiseApiKeyConfigured === true/);
+  assert.match(functionBody(servicePage, "testCodexPlusStepwiseConnection"), /postJson\("\/stepwise\/test", \{\}\)/);
 });
 
-test("manager deep links select their enhancement tab before displaying the page", () => {
+test("manager deep links only pick the route", () => {
   const navigation = descendants(app).find((node) => ts.isVariableDeclaration(node)
     && ts.isIdentifier(node.name) && node.name.text === "consumePendingManagerNavigation");
   assert.ok(navigation);
-  const calls = descendants(navigation).filter(ts.isCallExpression);
-  const selection = calls.find((node) => node.expression.getText(app) === "setEnhancementTab");
-  const argument = selection?.arguments[0];
-  assert.ok(argument && ts.isBinaryExpression(argument));
-  assert.equal(argument.operatorToken.kind, ts.SyntaxKind.QuestionQuestionToken);
-  assert.equal(argument.left.getText(app), "destination.section");
-  assert.ok(ts.isStringLiteral(argument.right) && argument.right.text === "general");
-  const route = calls.find((node) => node.expression.getText(app) === "setRoute");
-  assert.ok(selection && route && selection.pos < route.pos);
-});
-
-test("all enhancement panes stay mounted while tab selection only changes visibility", () => {
-  const enhance = component("EnhanceScreen");
-  const panes = elements(enhance).filter((element) => attribute(element, "role") === "tabpanel");
-  assert.equal(panes.length, 3);
-  for (const tab of ["general", "dictation", "stepwise"]) {
-    const pane = panes.find((element) => attribute(element, "hidden") === `activeTab !== "${tab}"`);
-    assert.ok(pane, `missing visibility control for ${tab}`);
-    assert.equal(isConditional(pane, enhance), false, `${tab} must retain local form UI state when hidden`);
-    assert.ok(attribute(pane, "id"));
-  }
-  assert.equal(new Set(panes.map((pane) => attribute(pane, "id"))).size, 3);
-  assert.ok(elements(enhance).some((element) => attribute(element, "role") === "tablist"));
-  const tabs = elements(enhance).filter((element) => attribute(element, "role") === "tab");
-  assert.ok(tabs.length > 0);
-  for (const tab of tabs) {
-    assert.ok(attribute(tab, "aria-selected")?.includes("activeTab"));
-    assert.ok(attribute(tab, "aria-controls"));
-    const click = eventHandlerNodes(enhance, tab, "onClick");
-    const keyboard = eventHandlerNodes(enhance, tab, "onKeyDown");
-    for (const handler of [click, keyboard]) {
-      const calls = handler.filter(ts.isCallExpression).map((node) => node.expression.getText(app));
-      assert.ok(calls.includes("onTabChange"));
-      assert.ok(!calls.some((name) => /^actions\.saveSettings(?:Value)?$/.test(name)), "tab selection must not save business settings");
-    }
-    const keys = keyboard.filter(ts.isStringLiteral).map((node) => node.text);
-    for (const key of ["ArrowLeft", "ArrowRight", "Home", "End"]) assert.ok(keys.includes(key));
-  }
-  const screen = elements(app).find((element) => element.tagName.getText(app) === "EnhanceScreen");
-  assert.ok(screen);
-  assert.equal(attribute(screen, "activeTab"), "enhancementTab");
-  assert.equal(attribute(screen, "onTabChange"), "setEnhancementTab");
+  const calls = descendants(navigation).filter(ts.isCallExpression).map((node) => node.expression.getText(app));
+  assert.ok(calls.includes("setRoute"));
+  assert.ok(!calls.includes("setEnhancementTab"));
 });
 
 test("enhancement settings save automatically and show a permanent status at the top", () => {
   const enhance = component("EnhanceScreen");
   // 不再有手动保存按钮：改动由 useEnhanceAutoSave 防抖后自动保存。
   assert.equal(elements(enhance).filter((element) => attribute(element, "onClick")?.includes("actions.saveSettings(")).length, 0);
+  const calls = descendants(enhance).filter(ts.isCallExpression);
+  assert.ok(calls.some((node) => node.expression.getText(app) === "useEnhanceAutoSave"
+    && node.arguments.map((arg) => arg.getText(app)).join(", ") === "dirty, form, actions.autoSaveSettings"));
   const status = elements(enhance).filter((element) => element.tagName.getText(app) === "AutoSaveStatus");
   assert.equal(status.length, 1);
   assert.equal(attribute(status[0], "state"), "autoSave");
   assert.equal(isConditional(status[0], enhance), false);
-  const firstPane = elements(enhance).find((element) => attribute(element, "role") === "tabpanel");
-  assert.ok(firstPane && status[0].pos < firstPane.pos);
+  const firstGroup = elements(enhance).find((element) => element.tagName.getText(app) === "FeatureGroup");
+  assert.ok(firstGroup && status[0].pos < firstGroup.pos);
 
-  // 校验不过时不保存也不弹窗，交给页面显示；保存期间的改动保留草稿并同步版本号。
+  // 保存不弹窗；保存期间的改动保留草稿并同步版本号。
+  // 语音输入在 Codex 里改，配置不完整也不能挡住管理器里其他设置的保存。
   const autoSave = appSource.slice(appSource.indexOf("const autoSaveSettings = async"), appSource.indexOf("const beginWeixinQrLogin"));
-  assert.match(autoSave, /if \(issue\) return \{ status: "invalid", message: issue \};/);
-  assert.doesNotMatch(autoSave, /showNotice\(/);
+  assert.doesNotMatch(autoSave, /showNotice\(|dictationSettingsIssue/);
+  assert.doesNotMatch(appSource, /dictationSettingsIssue/);
   assert.match(autoSave, /backendSettingsEqual\(current, snapshot\) \? saved : \{ \.\.\.current, revision: saved\.revision \}/);
 });
 
-test("standalone quota unlock lives in its own group inside the general tab and stays editable when enhancements are off", () => {
+test("standalone quota unlock lives in its own group and stays editable when enhancements are off", () => {
   const enhance = component("EnhanceScreen");
-  const group = component("StandaloneModeGroup");
   const standaloneGroup = managerStandaloneGroup();
   assert.equal(standaloneGroup.title, "独立模式");
   assert.equal(standaloneGroup.description, "增强总开关关闭后仍会生效的补丁。");
@@ -376,37 +341,15 @@ test("standalone quota unlock lives in its own group inside the general tab and 
   assert.match(control.getText(app), /masterEnabled && item\.descriptionWhenEnhancementsOn \? item\.descriptionWhenEnhancementsOn : item\.description/);
   assert.match(control.getText(app), /onToggle \?\? \(\(value\) => onFormChange\(\{ \.\.\.form, \[key\]: value \}\)\)/);
 
-  const featureGroup = elements(group).find((element) => element.tagName.getText(app) === "FeatureGroup");
+  const featureGroup = elements(enhance).find((element) => element.tagName.getText(app) === "FeatureGroup");
   assert.ok(featureGroup);
-  assert.equal(attribute(featureGroup, "title"), "t(group.title)");
-  assert.equal(attribute(featureGroup, "detail"), 't(group.description ?? "")');
-  assert.ok(descendants(group).some((node) => ts.isCallExpression(node)
-    && node.expression.getText(app) === "managerBuiltinCards(group.id, enhancementPlatform).map"));
-
-  // EnhanceScreen 只负责按总开关状态换位置：关闭增强时置顶，开启增强时置底。
-  const placements = elements(enhance).filter((element) => element.tagName.getText(app) === "StandaloneModeGroup");
-  assert.equal(placements.length, 2, "独立模式分组要有置顶/置底两个挂载点");
-  const conditions = placements.map((element) => {
-    let parent: ts.Node | undefined = element.parent;
-    while (parent && !ts.isConditionalExpression(parent)) parent = parent.parent;
-    assert.ok(parent && ts.isConditionalExpression(parent));
-    return parent;
-  });
-  for (const condition of conditions) assert.equal(condition.condition.getText(app), "masterEnabled");
-  assert.equal(conditions[0].whenTrue.getText(app), "null", "关闭增强时第一个挂载点生效");
-  assert.equal(conditions[1].whenFalse.getText(app), "null", "开启增强时第二个挂载点生效");
-  const firstFeatureGroup = elements(enhance).find((element) => element.tagName.getText(app) === "FeatureGroup");
-  assert.ok(firstFeatureGroup);
-  assert.ok(placements[0].pos < firstFeatureGroup.pos, "关闭增强时独立模式分组排在最前");
-  const featureGroups = elements(enhance).filter((element) => element.tagName.getText(app) === "FeatureGroup");
-  const lastFeatureGroup = featureGroups[featureGroups.length - 1];
-  assert.ok(lastFeatureGroup && placements[1].pos > lastFeatureGroup.pos, "开启增强时独立模式分组排在最后");
-  const generalPane = elements(enhance).find((element) => attribute(element, "role") === "tabpanel"
-    && attribute(element, "id") === "enhance-pane-general");
-  const dictationPane = elements(enhance).find((element) => attribute(element, "role") === "tabpanel"
-    && attribute(element, "id") === "enhance-pane-dictation");
-  assert.ok(generalPane && dictationPane);
-  for (const placement of placements) assert.ok(placement.pos > generalPane.pos && placement.pos < dictationPane.pos);
+  assert.equal(attribute(featureGroup, "title"), "t(standaloneGroup.title)");
+  assert.equal(attribute(featureGroup, "detail"), 't(standaloneGroup.description ?? "")');
+  // 不管总开关开没开都显示（关掉增强后这里是唯一还能改的地方）。
+  assert.equal(isConditional(featureGroup, enhance), false);
+  assert.ok(descendants(enhance).some((node) => ts.isCallExpression(node)
+    && node.expression.getText(app) === "managerBuiltinCards"
+    && node.arguments[0]?.getText(app) === "managerStandaloneGroup().id"));
 });
 
 test("native Fast unlock is the only Fast enhancement toggle and keeps the provider support notice", () => {
@@ -415,8 +358,8 @@ test("native Fast unlock is the only Fast enhancement toggle and keeps the provi
   assert.equal(nativeFast.title, "原生 Fast 强制解锁");
   assert.notEqual(nativeFast.masterGated, false, "原生 Fast 受增强总开关控制");
   assert.match(nativeFast.description, /纯 API Key.*原生 Fast.*供应商决定/);
-  assert.ok(managerBuiltinGroups().some((group) => group.id === nativeFast.group));
-  assert.ok(nativeFast.surfaces.includes("manager") && nativeFast.surfaces.includes("codex"));
+  assert.notEqual(enhancementGroup(nativeFast.group).standalone, true);
+  assert.deepEqual(nativeFast.surfaces, ["codex"]);
   assert.deepEqual(enhancementCatalog.items.filter((item) => /Fast/.test(item.title)).map((item) => item.key), ["codexAppNativeFastUnlock"]);
   assert.ok(!enhancementCatalog.items.some((item) => item.key === "codexAppServiceTierControls"));
   assert.match(appSource, /codexAppNativeFastUnlock: false,/);
