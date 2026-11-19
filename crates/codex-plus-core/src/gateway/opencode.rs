@@ -83,6 +83,127 @@ fn source_base_url(relay: &RelayProfile) -> &str {
     }
 }
 
+pub(crate) fn is_go_relay(relay: &RelayProfile) -> bool {
+    plan_of(source_base_url(relay)) == Some(Plan::Go)
+}
+
+/// OpenCode Go 上的 HY4 Flash。只匹配已知模型 ID，避免影响其他腾讯模型。
+pub(crate) fn is_hy4_flash_model(model: &str) -> bool {
+    let (slug, _) = crate::model_suffix::parse_model_suffix(model);
+    let slug = slug.trim().to_ascii_lowercase();
+    let upstream = slug.rsplit('/').next().unwrap_or(slug.as_str());
+    slug == "hy4-flash-free"
+        || upstream == "hy4-flash"
+        || slug.starts_with("hy4-flash-")
+        || upstream.starts_with("hy4-flash-")
+}
+
+fn hy4_reasoning_levels() -> Vec<Value> {
+    vec![
+        json!({
+            "effort": "none",
+            "description": "Fast responses without reasoning"
+        }),
+        json!({
+            "effort": "high",
+            "description": "Greater reasoning depth for complex problems"
+        }),
+    ]
+}
+
+fn hy4_level_supported(level: &Value) -> bool {
+    level
+        .get("effort")
+        .and_then(Value::as_str)
+        .is_some_and(|effort| matches!(effort.trim().to_ascii_lowercase().as_str(), "none" | "high"))
+}
+
+fn hy4_default_for_levels(levels: &[Value]) -> &'static str {
+    if levels.iter().any(|level| {
+        level
+            .get("effort")
+            .and_then(Value::as_str)
+            .is_some_and(|effort| effort.eq_ignore_ascii_case("high"))
+    }) {
+        "high"
+    } else {
+        "none"
+    }
+}
+
+fn normalize_hy4_reasoning_fields(entry: &mut Value) -> bool {
+    let Some(object) = entry.as_object_mut() else {
+        return false;
+    };
+    if object
+        .get("codex_plus_reasoning_parameters")
+        .and_then(Value::as_str)
+        == Some("omit")
+    {
+        return false;
+    }
+    let mut changed = false;
+    let needs_levels = object
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .is_none_or(|levels| levels.is_empty() || levels.iter().any(|level| !hy4_level_supported(level)));
+    if needs_levels {
+        object.insert(
+            "supported_reasoning_levels".into(),
+            Value::Array(hy4_reasoning_levels()),
+        );
+        changed = true;
+    }
+    let levels = object
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let current_default = object
+        .get("default_reasoning_level")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let default_is_supported = levels.iter().any(|level| {
+        level
+            .get("effort")
+            .and_then(Value::as_str)
+            .is_some_and(|effort| effort.eq_ignore_ascii_case(current_default))
+    });
+    if !default_is_supported {
+        object.insert(
+            "default_reasoning_level".into(),
+            json!(hy4_default_for_levels(&levels)),
+        );
+        changed = true;
+    }
+    changed
+}
+
+const HY4_FALLBACK_INSTRUCTIONS: &str = "You are Codex, a coding agent.";
+
+fn replace_borrowed_gpt_instructions(entry: &mut Value) {
+    let is_borrowed = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .is_none_or(|text| text.trim().is_empty() || text.contains("based on GPT-5"))
+    };
+    if is_borrowed(entry.get("base_instructions")) {
+        entry["base_instructions"] = json!(HY4_FALLBACK_INSTRUCTIONS);
+    }
+    let Some(messages) = entry.get_mut("model_messages") else {
+        return;
+    };
+    let Some(messages) = messages.as_object_mut() else {
+        return;
+    };
+    if is_borrowed(messages.get("instructions_template")) {
+        messages.insert(
+            "instructions_template".into(),
+            json!(HY4_FALLBACK_INSTRUCTIONS),
+        );
+    }
+}
+
 /// OpenCode Go 的 DeepSeek 旧元数据可能带上游已不支持的 `medium`。
 /// 只有发现不受支持的档位时才换成内置能力表，保留用户自定义的有效子集。
 pub(crate) fn normalize_deepseek_reasoning_metadata(relay: &mut RelayProfile) {
@@ -174,7 +295,7 @@ pub(crate) fn normalize_deepseek_reasoning_metadata(relay: &mut RelayProfile) {
 /// OpenCode Go 的 HY4 目录已经只提供 `none/high`，但用户本地保存的旧目录可能还写着
 /// `low/medium/xhigh`。读取网关状态时纠正这些档位；有效子集保持不变。
 pub(crate) fn normalize_hy4_reasoning_metadata(relay: &mut RelayProfile) {
-    if plan_of(source_base_url(relay)) != Some(Plan::Go) {
+    if !is_go_relay(relay) {
         return;
     }
     let Ok(mut metadata) = serde_json::from_str::<Value>(&relay.model_metadata) else {
@@ -183,48 +304,48 @@ pub(crate) fn normalize_hy4_reasoning_metadata(relay: &mut RelayProfile) {
     let Some(models) = metadata.as_object_mut() else {
         return;
     };
-    let canonical_levels = crate::model_suffix::hy4_reasoning_levels();
-    let supported =
-        |effort: &str| matches!(effort.trim().to_ascii_lowercase().as_str(), "none" | "high");
     let mut changed = false;
     for (model, entry) in models.iter_mut() {
-        if !crate::model_suffix::is_hy4_flash_model(model) {
+        if !is_hy4_flash_model(model) {
             continue;
         }
-        let Some(entry) = entry.as_object_mut() else {
-            continue;
-        };
-        let levels = entry
-            .get("supported_reasoning_levels")
-            .and_then(Value::as_array);
-        let needs_levels = levels.is_none_or(|levels| {
-            levels.is_empty()
-                || levels.iter().any(|level| {
-                    level
-                        .get("effort")
-                        .and_then(Value::as_str)
-                        .is_none_or(|effort| !supported(effort))
-                })
-        });
-        if needs_levels {
-            entry.insert(
-                "supported_reasoning_levels".into(),
-                Value::Array(canonical_levels.to_vec()),
-            );
-            changed = true;
-        }
-        let current_default = entry
-            .get("default_reasoning_level")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !supported(current_default) {
-            entry.insert("default_reasoning_level".into(), json!("high"));
-            changed = true;
-        }
+        changed |= normalize_hy4_reasoning_fields(entry);
     }
     if changed && let Ok(text) = serde_json::to_string(&metadata) {
         relay.model_metadata = text;
     }
+}
+
+/// 目录构建链不掌握供应商上下文，因此由网关成员目录在元数据覆盖后补这一步。
+/// 这里修正 OpenCode Go 的 HY4 身份与推理能力，不把未知模型伪装成精确内置元数据。
+pub(crate) fn apply_hy4_catalog_metadata(relay: &RelayProfile, catalog: &mut Value) {
+    if !is_go_relay(relay) {
+        return;
+    }
+    let Some(models) = catalog.get_mut("models").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for model in models {
+        let Some(slug) = model.get("slug").and_then(Value::as_str) else {
+            continue;
+        };
+        if is_hy4_flash_model(slug) {
+            normalize_hy4_reasoning_fields(model);
+            replace_borrowed_gpt_instructions(model);
+        }
+    }
+}
+
+pub(crate) fn apply_hy4_catalog_json_metadata(
+    relay: &RelayProfile,
+    catalog_json: &str,
+) -> anyhow::Result<String> {
+    if !is_go_relay(relay) {
+        return Ok(catalog_json.to_string());
+    }
+    let mut catalog: Value = serde_json::from_str(catalog_json)?;
+    apply_hy4_catalog_metadata(relay, &mut catalog);
+    Ok(serde_json::to_string_pretty(&catalog)?)
 }
 
 /// 一个模型在 OpenCode 网关上的去处。

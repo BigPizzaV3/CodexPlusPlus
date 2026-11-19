@@ -4704,9 +4704,24 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
             .map(|level| level["effort"].as_str().unwrap())
             .collect()
     }
+    fn entry_reasoning_efforts<'a>(entry: &'a Value) -> Vec<&'a str> {
+        entry["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect()
+    }
 
     let fixture = fixture(57401);
     let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
     let stale = json!({
         "hy4-flash-free": {
             "supported_reasoning_levels": [
@@ -4725,6 +4740,14 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
                 {"effort": "high", "description": "Greater reasoning depth for complex problems"}
             ],
             "default_reasoning_level": "high"
+        }
+    })
+    .to_string();
+    let omitted = json!({
+        "hy4-flash-free": {
+            "codex_plus_reasoning_parameters": "omit",
+            "supported_reasoning_levels": [],
+            "default_reasoning_level": null
         }
     })
     .to_string();
@@ -4751,6 +4774,18 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
     };
     let (_, subset_id) =
         create_provider(&ctx.gateway, &subset, "preset:opencode-go", None).unwrap();
+    let no_metadata = ProviderInput {
+        name: "OpenCode Go No Metadata".into(),
+        ..opencode.clone()
+    };
+    let (_, no_metadata_id) =
+        create_provider(&ctx.gateway, &no_metadata, "preset:opencode-go", None).unwrap();
+    let omitted_provider = ProviderInput {
+        name: "OpenCode Go Omitted Reasoning".into(),
+        ..opencode.clone()
+    };
+    let (_, omitted_id) =
+        create_provider(&ctx.gateway, &omitted_provider, "preset:opencode-go", None).unwrap();
     let zen = ProviderInput {
         name: "OpenCode Zen".into(),
         base_url: "https://opencode.ai/zen/v1".into(),
@@ -4762,6 +4797,7 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
     for (id, metadata) in [
         (go_id.as_str(), &stale),
         (subset_id.as_str(), &valid_subset),
+        (omitted_id.as_str(), &omitted),
         (zen_id.as_str(), &stale),
     ] {
         gateway
@@ -4772,6 +4808,14 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
             .relay
             .model_metadata = metadata.clone();
     }
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == no_metadata_id)
+        .unwrap()
+        .relay
+        .model_metadata
+        .clear();
     ctx.gateway.save(&gateway).unwrap();
 
     let gateway = ctx.gateway.load().unwrap();
@@ -4804,6 +4848,10 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
         "high"
     );
 
+    let omitted_metadata = provider_metadata(&omitted_id);
+    assert!(reasoning_efforts(&omitted_metadata, "hy4-flash-free").is_empty());
+    assert!(omitted_metadata["hy4-flash-free"]["default_reasoning_level"].is_null());
+
     let zen_metadata = provider_metadata(&zen_id);
     assert_eq!(
         reasoning_efforts(&zen_metadata, "hy4-flash-free"),
@@ -4823,6 +4871,63 @@ fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
     let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
     assert_eq!(reasoning_efforts(&metadata, &model), ["none", "high"]);
     assert_eq!(metadata[&model]["default_reasoning_level"], "high");
+    assert_eq!(metadata[&model]["display_name"], "Hy4-Flash-Free");
+
+    // 没有保存任何 HY4 元数据时也不能退化成 GPT-5.5。
+    let model = format!("{no_metadata_id}/hy4-flash-free");
+    let binding = AgentBinding {
+        model: model.clone(),
+        ..AgentBinding::default()
+    };
+    let catalog = codex_plus_core::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+    let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+    assert_eq!(reasoning_efforts(&metadata, &model), ["none", "high"]);
+    assert_eq!(metadata[&model]["default_reasoning_level"], "high");
+    assert_eq!(metadata[&model]["display_name"], "Hy4-Flash-Free");
+
+    // 实际写入 Codex 的原生目录也要有 HY4 身份与档位，不能只修 UI 元数据。
+    enable_binding(ctx, &ToolId::Codex, binding.clone()).unwrap();
+    let native_catalog = codex_catalog(ctx);
+    let native_entry = |id: &str| {
+        let slug = format!("{id}/hy4-flash-free");
+        native_catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["slug"] == slug)
+            .cloned()
+            .unwrap_or_else(|| panic!("目录里没有 {slug}：{native_catalog}"))
+    };
+    let entry = native_entry(&no_metadata_id);
+    assert_eq!(entry_reasoning_efforts(&entry), ["none", "high"]);
+    assert_eq!(entry["default_reasoning_level"], "high");
+    assert!(entry["display_name"].as_str().unwrap().contains("Hy4-Flash-Free"));
+    assert!(!entry["description"].as_str().unwrap().contains("GPT-5.5"));
+    assert!(
+        !entry["base_instructions"]
+            .as_str()
+            .unwrap()
+            .contains("based on GPT-5")
+    );
+    assert!(
+        !entry["model_messages"]["instructions_template"]
+            .as_str()
+            .unwrap()
+            .contains("based on GPT-5")
+    );
+
+    // 有效的用户子集与其它供应商的旧能力都不能被目录补丁扩大或改写。
+    assert_eq!(
+        entry_reasoning_efforts(&native_entry(&subset_id)),
+        ["high"]
+    );
+    let omitted_entry = native_entry(&omitted_id);
+    assert!(entry_reasoning_efforts(&omitted_entry).is_empty());
+    assert!(omitted_entry["default_reasoning_level"].is_null());
+    assert_eq!(
+        entry_reasoning_efforts(&native_entry(&zen_id)),
+        ["low", "medium", "high", "xhigh"]
+    );
 }
 
 /// #228：网关供应商的「移除托管生图工具」随新建写入，编辑时不传沿用原值，传了才改。

@@ -33,19 +33,20 @@ fn priority_only_unknown_metadata_never_fabricates_native_descriptor_defaults() 
 }
 
 #[test]
-fn hy4_metadata_uses_supported_binary_reasoning_levels() {
-    let metadata = model_ui_metadata("hy4-flash-free").unwrap();
-    let levels: Vec<&str> = metadata["supportedReasoningEfforts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|level| level["reasoningEffort"].as_str().unwrap())
-        .collect();
-    assert_eq!(levels, ["none", "high"]);
-    assert_eq!(metadata["defaultReasoningEffort"], "high");
+fn unknown_hy4_does_not_fabricate_gpt_metadata() {
+    assert!(builtin_model_metadata("hy4-flash-free").is_none());
+    assert!(model_ui_metadata("hy4-flash-free").is_none());
 
-    let canonical = builtin_model_metadata("tencent/hy4-flash").unwrap();
-    assert_eq!(canonical.entry["default_reasoning_level"], "high");
+    let entries = collect_catalog_entries(
+        "hy4-flash-free",
+        &HashMap::new(),
+        &HashMap::new(),
+        "hy4-flash-free",
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    assert_eq!(catalog["models"][0]["display_name"], "hy4-flash-free");
+    assert_eq!(catalog["models"][0]["description"], "hy4-flash-free");
 }
 
 #[test]

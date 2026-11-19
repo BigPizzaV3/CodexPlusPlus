@@ -346,29 +346,6 @@ pub fn model_ui_metadata(slug: &str) -> Option<Value> {
     model_ui_metadata_with_override(slug, None)
 }
 
-/// OpenCode Go 上的 HY4 Flash。只匹配已知模型 ID，避免影响其他腾讯模型。
-pub(crate) fn is_hy4_flash_model(model: &str) -> bool {
-    let slug = normalized_model_slug(model).to_ascii_lowercase();
-    let upstream = slug.rsplit('/').next().unwrap_or(slug.as_str());
-    slug == "hy4-flash-free"
-        || upstream == "hy4-flash"
-        || slug.starts_with("hy4-flash-")
-        || upstream.starts_with("hy4-flash-")
-}
-
-pub(crate) fn hy4_reasoning_levels() -> Vec<Value> {
-    vec![
-        json!({
-            "effort": "none",
-            "description": "Fast responses without reasoning"
-        }),
-        json!({
-            "effort": "high",
-            "description": "Greater reasoning depth for complex problems"
-        }),
-    ]
-}
-
 /// UI 与请求拦截读取同一份供应商模型能力；用户明确声明优先于内置默认。
 pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>) -> Option<Value> {
     let resolved = resolve_builtin_metadata(slug);
@@ -608,21 +585,7 @@ fn resolve_builtin_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata> {
     if slug.is_empty() {
         return None;
     }
-    let mut resolved = if is_hy4_flash_model(&slug) {
-        // 目录没有精确条目时也要生成 HY4 条目，否则 catalog 会借用通用模板并展示
-        // 上游并不支持的中档推理。
-        let base = resolve_compatibility_metadata(&slug)
-            .map(|metadata| metadata.entry)
-            .or_else(|| runtime_models_cache_entry(&slug))
-            .or_else(|| bundled_template_entry(&slug))
-            .or_else(first_bundled_template_entry)
-            .unwrap_or_default();
-        Some(ResolvedBuiltinMetadata {
-            slug: slug.clone(),
-            source: "官方内置",
-            entry: base,
-        })
-    } else if let Some(mut metadata) = resolve_compatibility_metadata(&slug) {
+    if let Some(mut metadata) = resolve_compatibility_metadata(&slug) {
         // Compatibility metadata is an overlay. Keep the same runtime/bundled
         // base that the catalog builder uses, then apply its product/vendor
         // fields on top. This keeps UI lookup and generated catalogs identical.
@@ -635,32 +598,20 @@ fn resolve_builtin_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata> {
             }
         }
         metadata.entry = base;
-        Some(metadata)
-    } else if let Some(entry) = runtime_models_cache_entry(&slug) {
-        Some(ResolvedBuiltinMetadata {
-            slug: slug.clone(),
-            source: "官方内置",
-            entry,
-        })
-    } else {
-        bundled_template_entry(&slug).map(|entry| ResolvedBuiltinMetadata {
-            slug: slug.clone(),
-            source: "官方内置",
-            entry,
-        })
-    }?;
-    // HY4 的上游目录仍宣称低/中/高/xhigh，但公开 Chat Completions 接口只接受
-    // none/high。生成 catalog 与 UI 元数据时统一纠正，避免把无效档位展示给用户。
-    if is_hy4_flash_model(&slug)
-        && let Some(entry) = resolved.entry.as_object_mut()
-    {
-        entry.insert(
-            "supported_reasoning_levels".into(),
-            Value::Array(hy4_reasoning_levels()),
-        );
-        entry.insert("default_reasoning_level".into(), json!("high"));
+        return Some(metadata);
     }
-    Some(resolved)
+    if let Some(entry) = runtime_models_cache_entry(&slug) {
+        return Some(ResolvedBuiltinMetadata {
+            slug,
+            source: "官方内置",
+            entry,
+        });
+    }
+    bundled_template_entry(&slug).map(|entry| ResolvedBuiltinMetadata {
+        slug,
+        source: "官方内置",
+        entry,
+    })
 }
 
 /// 按模型名查内置元数据（剥合法 suffix、大小写不敏感）。
