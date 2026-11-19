@@ -204,6 +204,15 @@ fn replace_borrowed_gpt_instructions(entry: &mut Value) {
     }
 }
 
+pub(crate) fn has_opencode_go_hy4_identity(entry: &Value) -> bool {
+    entry
+        .get("slug")
+        .and_then(Value::as_str)
+        .is_some_and(is_hy4_flash_model)
+        && entry.get("base_instructions").and_then(Value::as_str)
+            == Some(HY4_FALLBACK_INSTRUCTIONS)
+}
+
 /// OpenCode Go 的 DeepSeek 旧元数据可能带上游已不支持的 `medium`。
 /// 只有发现不受支持的档位时才换成内置能力表，保留用户自定义的有效子集。
 pub(crate) fn normalize_deepseek_reasoning_metadata(relay: &mut RelayProfile) {

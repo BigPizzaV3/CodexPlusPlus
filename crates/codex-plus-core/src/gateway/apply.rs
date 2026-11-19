@@ -935,6 +935,16 @@ fn catalog_ui_fields(entry: &Value) -> Map<String, Value> {
             fields.insert(key.to_string(), value.clone());
         }
     }
+    // 网关层最终会生成一个指向本机代理的 RelayProfile，那里已经拿不到真实上游。
+    // 把 OpenCode Go HY4 已修正的身份指令一路带进 model_metadata，避免原生目录又
+    // 回退到 GPT 模板；其它模型的 bulky 指令字段仍不写进设置文件。
+    if crate::gateway::opencode::has_opencode_go_hy4_identity(entry) {
+        for key in ["base_instructions", "model_messages"] {
+            if let Some(value) = entry.get(key).filter(|value| !value.is_null()) {
+                fields.insert(key.to_string(), value.clone());
+            }
+        }
+    }
     fields
 }
 
