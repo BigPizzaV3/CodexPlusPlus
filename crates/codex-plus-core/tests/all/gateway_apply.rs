@@ -4524,6 +4524,422 @@ fn reasoning_levels_are_edited_per_model_and_survive_provider_edits() {
     );
 }
 
+#[test]
+fn opencode_go_deepseek_metadata_drops_unsupported_medium_on_load() {
+    fn reasoning_efforts<'a>(metadata: &'a Value, model: &str) -> Vec<&'a str> {
+        metadata[model]["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect()
+    }
+
+    let fixture = fixture(57399);
+    let ctx = &fixture.ctx;
+    let stale = json!({
+        "deepseek-v4.1-flash": {
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                {"effort": "medium", "description": "Balances speed and reasoning depth"},
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"}
+            ],
+            "default_reasoning_level": "medium"
+        }
+    })
+    .to_string();
+    let valid_subset = json!({
+        "deepseek-v4.1-flash": {
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"}
+            ],
+            "default_reasoning_level": "high"
+        }
+    })
+    .to_string();
+    let opencode = ProviderInput {
+        name: "OpenCode Go".into(),
+        base_url: "https://opencode.ai/zen/go/v1".into(),
+        protocol: RelayProtocol::ChatCompletions,
+        keys: vec!["oc_sk_test".into()],
+        model: "deepseek-v4.1-flash".into(),
+        model_list: "deepseek-v4.1-flash".into(),
+        price: None,
+        model_prices: None,
+        proxy: None,
+        strip_image_generation_tool: None,
+        subscription_policy: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
+        custom_headers: None,
+    };
+    let (_, opencode_id) =
+        create_provider(&ctx.gateway, &opencode, "preset:opencode-go", None).unwrap();
+    let opencode_subset = ProviderInput {
+        name: "OpenCode Go Subset".into(),
+        ..opencode.clone()
+    };
+    let (_, opencode_subset_id) =
+        create_provider(&ctx.gateway, &opencode_subset, "preset:opencode-go", None).unwrap();
+    let zen = ProviderInput {
+        name: "OpenCode Zen".into(),
+        base_url: "https://opencode.ai/zen/v1".into(),
+        ..opencode.clone()
+    };
+    let (_, zen_id) = create_provider(&ctx.gateway, &zen, "preset:opencode", None).unwrap();
+    let other = ProviderInput {
+        name: "Generic DeepSeek".into(),
+        base_url: "https://api.deepseek.test/v1".into(),
+        model_list: "deepseek-v4.1-flash".into(),
+        ..opencode.clone()
+    };
+    let (_, other_id) = create_provider(&ctx.gateway, &other, "custom", None).unwrap();
+
+    let mut gateway = ctx.gateway.load().unwrap();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == opencode_id)
+        .unwrap()
+        .relay
+        .model_metadata = stale.clone();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == opencode_subset_id)
+        .unwrap()
+        .relay
+        .model_metadata = valid_subset.clone();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == zen_id)
+        .unwrap()
+        .relay
+        .model_metadata = stale.clone();
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == other_id)
+        .unwrap()
+        .relay
+        .model_metadata = stale.clone();
+    ctx.gateway.save(&gateway).unwrap();
+
+    let gateway = ctx.gateway.load().unwrap();
+    let provider_metadata = |id: &str| {
+        let relay = &gateway
+            .providers
+            .iter()
+            .find(|provider| provider.relay.id == id)
+            .unwrap()
+            .relay;
+        serde_json::from_str::<Value>(&relay.model_metadata).unwrap()
+    };
+    let opencode_metadata = provider_metadata(&opencode_id);
+    assert_eq!(
+        reasoning_efforts(&opencode_metadata, "deepseek-v4.1-flash"),
+        ["low", "high", "max"]
+    );
+    assert_eq!(
+        opencode_metadata["deepseek-v4.1-flash"]["default_reasoning_level"],
+        "high"
+    );
+    let subset_metadata = provider_metadata(&opencode_subset_id);
+    assert_eq!(
+        reasoning_efforts(&subset_metadata, "deepseek-v4.1-flash"),
+        ["low", "high"]
+    );
+    assert_eq!(
+        subset_metadata["deepseek-v4.1-flash"]["default_reasoning_level"],
+        "high"
+    );
+    let zen_metadata = provider_metadata(&zen_id);
+    assert_eq!(
+        reasoning_efforts(&zen_metadata, "deepseek-v4.1-flash"),
+        ["low", "medium", "high"]
+    );
+    assert_eq!(
+        zen_metadata["deepseek-v4.1-flash"]["default_reasoning_level"],
+        "medium"
+    );
+    let other_metadata = provider_metadata(&other_id);
+    assert_eq!(
+        reasoning_efforts(&other_metadata, "deepseek-v4.1-flash"),
+        ["low", "medium", "high"]
+    );
+    assert_eq!(
+        other_metadata["deepseek-v4.1-flash"]["default_reasoning_level"],
+        "medium"
+    );
+
+    let opencode_model = format!("{opencode_id}/deepseek-v4.1-flash");
+    let other_model = format!("{other_id}/deepseek-v4.1-flash");
+    let binding = AgentBinding {
+        model: opencode_model.clone(),
+        ..AgentBinding::default()
+    };
+    let catalog = codex_plus_core::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+    let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+    assert_eq!(
+        reasoning_efforts(&metadata, &opencode_model),
+        ["low", "high", "max"]
+    );
+    assert_eq!(metadata[&opencode_model]["default_reasoning_level"], "high");
+    assert_eq!(
+        reasoning_efforts(&metadata, &other_model),
+        ["low", "medium", "high"]
+    );
+    assert_eq!(metadata[&other_model]["default_reasoning_level"], "medium");
+}
+
+#[test]
+fn opencode_go_hy4_metadata_uses_upstream_none_and_high() {
+    fn reasoning_efforts<'a>(metadata: &'a Value, model: &str) -> Vec<&'a str> {
+        metadata[model]["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect()
+    }
+    fn entry_reasoning_efforts<'a>(entry: &'a Value) -> Vec<&'a str> {
+        entry["supported_reasoning_levels"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|level| level["effort"].as_str().unwrap())
+            .collect()
+    }
+
+    let fixture = fixture(57401);
+    let ctx = &fixture.ctx;
+    std::fs::create_dir_all(&ctx.codex_home).unwrap();
+    ctx.settings
+        .save(&BackendSettings {
+            relay_profiles_enabled: true,
+            ..BackendSettings::default()
+        })
+        .unwrap();
+    let stale = json!({
+        "hy4-flash-free": {
+            "supported_reasoning_levels": [
+                {"effort": "low", "description": "Fast responses with lighter reasoning"},
+                {"effort": "medium", "description": "Balances speed and reasoning depth"},
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"},
+                {"effort": "xhigh", "description": "Extra high reasoning depth"}
+            ],
+            "default_reasoning_level": "medium"
+        }
+    })
+    .to_string();
+    let valid_subset = json!({
+        "hy4-flash-free": {
+            "supported_reasoning_levels": [
+                {"effort": "high", "description": "Greater reasoning depth for complex problems"}
+            ],
+            "default_reasoning_level": "high"
+        }
+    })
+    .to_string();
+    let omitted = json!({
+        "hy4-flash-free": {
+            "codex_plus_reasoning_parameters": "omit",
+            "supported_reasoning_levels": [],
+            "default_reasoning_level": null
+        }
+    })
+    .to_string();
+    let opencode = ProviderInput {
+        name: "OpenCode Go".into(),
+        base_url: "https://opencode.ai/zen/go/v1".into(),
+        protocol: RelayProtocol::ChatCompletions,
+        keys: vec!["oc_sk_test".into()],
+        model: "hy4-flash-free".into(),
+        model_list: "hy4-flash-free".into(),
+        price: None,
+        model_prices: None,
+        proxy: None,
+        strip_image_generation_tool: None,
+        subscription_policy: None,
+        strip_responses_image_detail: None,
+        disable_tool_search: None,
+        custom_headers: None,
+    };
+    let (_, go_id) = create_provider(&ctx.gateway, &opencode, "preset:opencode-go", None).unwrap();
+    let subset = ProviderInput {
+        name: "OpenCode Go Subset".into(),
+        ..opencode.clone()
+    };
+    let (_, subset_id) =
+        create_provider(&ctx.gateway, &subset, "preset:opencode-go", None).unwrap();
+    let no_metadata = ProviderInput {
+        name: "OpenCode Go No Metadata".into(),
+        ..opencode.clone()
+    };
+    let (_, no_metadata_id) =
+        create_provider(&ctx.gateway, &no_metadata, "preset:opencode-go", None).unwrap();
+    let omitted_provider = ProviderInput {
+        name: "OpenCode Go Omitted Reasoning".into(),
+        ..opencode.clone()
+    };
+    let (_, omitted_id) =
+        create_provider(&ctx.gateway, &omitted_provider, "preset:opencode-go", None).unwrap();
+    let zen = ProviderInput {
+        name: "OpenCode Zen".into(),
+        base_url: "https://opencode.ai/zen/v1".into(),
+        ..opencode.clone()
+    };
+    let (_, zen_id) = create_provider(&ctx.gateway, &zen, "preset:opencode", None).unwrap();
+
+    let mut gateway = ctx.gateway.load().unwrap();
+    for (id, metadata) in [
+        (go_id.as_str(), &stale),
+        (subset_id.as_str(), &valid_subset),
+        (omitted_id.as_str(), &omitted),
+        (zen_id.as_str(), &stale),
+    ] {
+        gateway
+            .providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == id)
+            .unwrap()
+            .relay
+            .model_metadata = metadata.clone();
+    }
+    gateway
+        .providers
+        .iter_mut()
+        .find(|provider| provider.relay.id == no_metadata_id)
+        .unwrap()
+        .relay
+        .model_metadata
+        .clear();
+    ctx.gateway.save(&gateway).unwrap();
+
+    let gateway = ctx.gateway.load().unwrap();
+    let provider_metadata = |id: &str| {
+        let relay = &gateway
+            .providers
+            .iter()
+            .find(|provider| provider.relay.id == id)
+            .unwrap()
+            .relay;
+        serde_json::from_str::<Value>(&relay.model_metadata).unwrap()
+    };
+    let go_metadata = provider_metadata(&go_id);
+    assert_eq!(
+        reasoning_efforts(&go_metadata, "hy4-flash-free"),
+        ["none", "high"]
+    );
+    assert_eq!(
+        go_metadata["hy4-flash-free"]["default_reasoning_level"],
+        "high"
+    );
+
+    let subset_metadata = provider_metadata(&subset_id);
+    assert_eq!(
+        reasoning_efforts(&subset_metadata, "hy4-flash-free"),
+        ["high"]
+    );
+    assert_eq!(
+        subset_metadata["hy4-flash-free"]["default_reasoning_level"],
+        "high"
+    );
+
+    let omitted_metadata = provider_metadata(&omitted_id);
+    assert!(reasoning_efforts(&omitted_metadata, "hy4-flash-free").is_empty());
+    assert!(omitted_metadata["hy4-flash-free"]["default_reasoning_level"].is_null());
+
+    let zen_metadata = provider_metadata(&zen_id);
+    assert_eq!(
+        reasoning_efforts(&zen_metadata, "hy4-flash-free"),
+        ["low", "medium", "high", "xhigh"]
+    );
+    assert_eq!(
+        zen_metadata["hy4-flash-free"]["default_reasoning_level"],
+        "medium"
+    );
+
+    let model = format!("{go_id}/hy4-flash-free");
+    let binding = AgentBinding {
+        model: model.clone(),
+        ..AgentBinding::default()
+    };
+    let catalog = codex_plus_core::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+    let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+    assert_eq!(reasoning_efforts(&metadata, &model), ["none", "high"]);
+    assert_eq!(metadata[&model]["default_reasoning_level"], "high");
+    assert!(
+        metadata[&model]["display_name"]
+            .as_str()
+            .unwrap()
+            .starts_with("Hy4-Flash-Free")
+    );
+
+    // 没有保存任何 HY4 元数据时也不能退化成 GPT-5.5。
+    let model = format!("{no_metadata_id}/hy4-flash-free");
+    let binding = AgentBinding {
+        model: model.clone(),
+        ..AgentBinding::default()
+    };
+    let catalog = codex_plus_core::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+    let metadata: Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+    assert_eq!(reasoning_efforts(&metadata, &model), ["none", "high"]);
+    assert_eq!(metadata[&model]["default_reasoning_level"], "high");
+    assert!(
+        metadata[&model]["display_name"]
+            .as_str()
+            .unwrap()
+            .starts_with("Hy4-Flash-Free")
+    );
+
+    // 实际写入 Codex 的原生目录也要有 HY4 身份与档位，不能只修 UI 元数据。
+    enable_binding(ctx, &ToolId::Codex, binding.clone()).unwrap();
+    let native_catalog = codex_catalog(ctx);
+    let native_entry = |id: &str| {
+        let slug = format!("{id}/hy4-flash-free");
+        native_catalog["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["slug"] == slug)
+            .cloned()
+            .unwrap_or_else(|| panic!("目录里没有 {slug}：{native_catalog}"))
+    };
+    let entry = native_entry(&no_metadata_id);
+    assert_eq!(entry_reasoning_efforts(&entry), ["none", "high"]);
+    assert_eq!(entry["default_reasoning_level"], "high");
+    assert!(entry["display_name"].as_str().unwrap().contains("Hy4-Flash-Free"));
+    assert!(!entry["description"].as_str().unwrap().contains("GPT-5.5"));
+    assert!(
+        !entry["base_instructions"]
+            .as_str()
+            .unwrap()
+            .contains("based on GPT-5")
+    );
+    assert!(
+        !entry["model_messages"]["instructions_template"]
+            .as_str()
+            .unwrap()
+            .contains("based on GPT-5")
+    );
+
+    // 有效的用户子集与其它供应商的旧能力都不能被目录补丁扩大或改写。
+    assert_eq!(
+        entry_reasoning_efforts(&native_entry(&subset_id)),
+        ["high"]
+    );
+    let omitted_entry = native_entry(&omitted_id);
+    assert!(entry_reasoning_efforts(&omitted_entry).is_empty());
+    assert!(omitted_entry["default_reasoning_level"].is_null());
+    assert_eq!(
+        entry_reasoning_efforts(&native_entry(&zen_id)),
+        ["low", "medium", "high", "xhigh"]
+    );
+}
+
 /// #228：网关供应商的「移除托管生图工具」随新建写入，编辑时不传沿用原值，传了才改。
 #[test]
 fn gateway_provider_keeps_strip_image_generation_tool_across_edits() {

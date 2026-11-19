@@ -872,6 +872,8 @@ pub(crate) fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Val
     let metadata = crate::relay_config::parse_model_metadata_map(&profile.model_metadata)?;
     let catalog_json =
         crate::relay_config::apply_model_metadata_overrides(&catalog_json, &metadata)?;
+    let catalog_json =
+        crate::gateway::opencode::apply_hy4_catalog_json_metadata(profile, &catalog_json)?;
     // 聚合代理按成员原生协议转发，成员上游不认 tool_search 时同样要在目录里关掉；
     // 放在元数据覆盖之后，已保存的整份元数据不能把它重新打开。
     let catalog_json = if crate::relay_config::upstream_rejects_tool_search(profile) {

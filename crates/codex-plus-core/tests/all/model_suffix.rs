@@ -33,6 +33,23 @@ fn priority_only_unknown_metadata_never_fabricates_native_descriptor_defaults() 
 }
 
 #[test]
+fn unknown_hy4_does_not_fabricate_gpt_metadata() {
+    assert!(builtin_model_metadata("hy4-flash-free").is_none());
+    assert!(model_ui_metadata("hy4-flash-free").is_none());
+
+    let entries = collect_catalog_entries(
+        "hy4-flash-free",
+        &HashMap::new(),
+        &HashMap::new(),
+        "hy4-flash-free",
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    assert_eq!(catalog["models"][0]["display_name"], "hy4-flash-free");
+    assert_eq!(catalog["models"][0]["description"], "hy4-flash-free");
+}
+
+#[test]
 fn custom_priority_declarations_preserve_other_tiers_and_explicitly_override_known_models() {
     let original = serde_json::json!({
         "description":"provider description", "service_tiers":[{"id":"flex", "name":"Flex", "description":"Existing tier"}],

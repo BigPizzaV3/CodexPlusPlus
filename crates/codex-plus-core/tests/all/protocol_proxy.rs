@@ -14,7 +14,8 @@ use codex_plus_core::protocol_proxy::{
     open_responses_proxy_request_with_settings_for_path_and_session_headers,
     annotate_gateway_upstream_error, request_has_compaction_trigger, responses_compact_url,
     responses_error_from_upstream, upstream_error_log_text,
-    responses_to_chat_completions, responses_to_chat_completions_with_options,
+    responses_to_chat_completions, responses_to_chat_completions_for_relay,
+    responses_to_chat_completions_with_options,
     send_upstream_request_with_header_timeout, upstream_header_timeout, upstream_http_client,
     upstream_stream_header_timeout, wrap_non_stream_response_as_compaction,
 };
@@ -2082,6 +2083,81 @@ fn responses_request_applies_ccswitch_reasoning_dialects() {
     .unwrap();
     assert_eq!(kimi["thinking"]["type"], "enabled");
     assert!(kimi.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn responses_request_maps_opencode_go_hy4_reasoning_to_upstream_binary_levels() {
+    let go = RelayProfile {
+        base_url: "https://opencode.ai/zen/go/v1".into(),
+        protocol: RelayProtocol::ChatCompletions,
+        ..RelayProfile::default()
+    };
+    for effort in ["minimal", "low", "medium", "high", "xhigh", "max"] {
+        let converted = responses_to_chat_completions_for_relay(
+            json!({
+                "model": "hy4-flash-free",
+                "reasoning": { "effort": effort },
+                "input": "hi"
+            }),
+            &go,
+        )
+        .unwrap();
+        assert_eq!(converted["reasoning_effort"], "high", "{effort}");
+        assert!(converted.get("reasoning").is_none(), "{effort}");
+    }
+
+    let off = responses_to_chat_completions_for_relay(
+        json!({
+            "model": "hy4-flash-free",
+            "reasoning": { "effort": "none" },
+            "input": "hi"
+        }),
+        &go,
+    )
+    .unwrap();
+    assert!(off.get("reasoning_effort").is_none());
+    assert!(off.get("reasoning").is_none());
+
+    // 标准 OpenAI 协议线也不能丢掉 HY4 唯一支持的推理开关。
+    let standard_go = RelayProfile {
+        standard_openai_protocol: true,
+        ..go.clone()
+    };
+    let standard = responses_to_chat_completions_for_relay(
+        json!({
+            "model": "hy4-flash-free",
+            "reasoning": { "effort": "medium" },
+            "input": "hi"
+        }),
+        &standard_go,
+    )
+    .unwrap();
+    assert_eq!(standard["reasoning_effort"], "high");
+
+    // 同名模型在其它供应商上不能被 OpenCode Go 的模型名规则误伤。
+    for base_url in [
+        "https://opencode.ai/zen/v1",
+        "https://api.example.test/v1",
+    ] {
+        let other = RelayProfile {
+            base_url: base_url.into(),
+            protocol: RelayProtocol::ChatCompletions,
+            ..RelayProfile::default()
+        };
+        let converted = responses_to_chat_completions_for_relay(
+            json!({
+                "model": "hy4-flash-free",
+                "reasoning": { "effort": "medium" },
+                "input": "hi"
+            }),
+            &other,
+        )
+        .unwrap();
+        assert!(
+            converted.get("reasoning_effort").is_none(),
+            "{base_url}: {converted}"
+        );
+    }
 }
 
 #[test]

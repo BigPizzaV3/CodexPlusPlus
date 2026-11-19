@@ -1588,8 +1588,29 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
 }
 
 pub fn responses_to_chat_completions_with_options(
+    body: Value,
+    standard: bool,
+) -> anyhow::Result<Value> {
+    responses_to_chat_completions_with_context(body, standard, false)
+}
+
+/// 按真实供应商上下文转换。HY4 的 `none/high` 上限只在 OpenCode Go 上成立，
+/// 不能仅凭模型名影响其它供应商。
+pub fn responses_to_chat_completions_for_relay(
+    body: Value,
+    relay: &crate::settings::RelayProfile,
+) -> anyhow::Result<Value> {
+    responses_to_chat_completions_with_context(
+        body,
+        relay.standard_openai_protocol,
+        crate::gateway::opencode::is_go_relay(relay),
+    )
+}
+
+fn responses_to_chat_completions_with_context(
     mut body: Value,
     standard: bool,
+    opencode_go_hy4_reasoning: bool,
 ) -> anyhow::Result<Value> {
     remove_unsupported_native_search(&mut body)?;
     validate_chat_attachments(&body)?;
@@ -1658,7 +1679,13 @@ pub fn responses_to_chat_completions_with_options(
         result["stream_options"] = stream_options;
     }
 
-    apply_chat_reasoning_options(&mut result, &body, model, standard);
+    apply_chat_reasoning_options(
+        &mut result,
+        &body,
+        model,
+        standard,
+        opencode_go_hy4_reasoning,
+    );
 
     let ChatToolProjection { context: tool_context, tools: converted } = chat_tool_projection(&body);
     // Codex 客户端把 tool_search 命中的 MCP 命名空间挂在历史里的 tool_search_output
@@ -6510,10 +6537,9 @@ async fn upstream_request_parts(
     let mut body = match relay.protocol {
         _ if !request_conversion => request_json,
         RelayProtocol::Responses => request_json,
-        RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
-            request_json,
-            relay.standard_openai_protocol,
-        )?,
+        RelayProtocol::ChatCompletions => {
+            responses_to_chat_completions_for_relay(request_json, relay)?
+        }
         // Responses → Chat → Anthropic：第一跳复用上面同一份实现，第二跳在桥接模块里。
         RelayProtocol::AnthropicMessages => {
             crate::anthropic_bridge::responses_to_anthropic_messages(
@@ -11676,10 +11702,28 @@ fn canonical_json_string(value: &Value) -> String {
     }
 }
 
-fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str, standard: bool) {
+fn apply_chat_reasoning_options(
+    result: &mut Value,
+    body: &Value,
+    model: &str,
+    standard: bool,
+    opencode_go_hy4_reasoning: bool,
+) {
     let Some(reasoning_enabled) = reasoning_requested(body) else {
         return;
     };
+    // OpenCode Go 的 HY4 上游只接受 none/high 两档。Codex 选中的任何非零 effort
+    // 都映射成 high，避免 medium 等档位被静默丢弃、表现为完全不思考。
+    if opencode_go_hy4_reasoning && crate::gateway::opencode::is_hy4_flash_model(model) {
+        if reasoning_enabled {
+            result["reasoning_effort"] = json!("high");
+        } else {
+            if let Some(object) = result.as_object_mut() {
+                object.remove("reasoning_effort");
+            }
+        }
+        return;
+    }
     let style = if standard {
         ChatReasoningStyle::Default
     } else {
