@@ -486,6 +486,14 @@ impl RelayProfile {
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
     }
 
+    /// 是否在转发前压缩过大的 base64 图片；只对经本地代理转发的第三方上游生效
+    /// （官方登录、聚合模式不在此处理）。压缩在图片处理为 send-as-is 时进行。
+    pub fn compresses_large_images(&self) -> bool {
+        self.image_compress
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
     pub fn has_model_routes(&self) -> bool {
         self.model_routes
             .iter()
@@ -1903,6 +1911,7 @@ impl BackendSettings {
             || self.active_relay_profile().strips_image_generation_tool()
             || self.active_relay_profile().enables_pure_api_image_generation()
             || self.active_relay_profile().strips_responses_image_detail()
+            || self.active_relay_profile().compresses_large_images()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {

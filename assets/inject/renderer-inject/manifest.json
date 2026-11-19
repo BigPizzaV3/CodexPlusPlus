@@ -68,7 +68,7 @@
     {
       "name": "42-provider-editing.generated.js",
       "description": "生成文件：与管理器共用的供应商编辑纯函数（relay-profile-editing.ts，scripts/assemble-provider-editing.mjs 打包）",
-      "lines": 3237
+      "lines": 3240
     },
     {
       "name": "43-provider-page.js",
