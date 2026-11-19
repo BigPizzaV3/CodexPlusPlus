@@ -860,16 +860,17 @@
     renderFloat();
   }
 
+  // 「配置」打开 Codex 里的 Codex++ 设置页并滚到「下一步建议服务」：服务配置已不在管理器里。
+  // 入口由主注入脚本（46-service-settings.js）挂在 window 上；主脚本没加载时提示原因。
   async function openManager() {
     if (!isCurrentRuntime()) return;
-    const generation = state.runtimeGeneration;
-    state.settingsStatus = "正在打开 Codex++...";
-    renderFloat();
-    const payload = await bridgeCall("/manager/open-transient", {
-      page: "enhance",
-      section: "stepwise",
-    });
-    if (!isCurrentRuntime(generation)) return;
-    state.settingsStatus = payload?.status === "ok" ? "已打开 Codex++" : payload?.message || "打开失败";
+    const open = window.__codexPlusOpenServiceSettings;
+    if (typeof open !== "function") {
+      state.settingsStatus = "Codex++ 设置页不可用";
+      renderFloat();
+      return;
+    }
+    open("stepwise");
+    state.settingsStatus = "";
     renderFloat();
   }

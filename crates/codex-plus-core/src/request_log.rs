@@ -137,6 +137,9 @@ pub struct RequestLogEntry {
     /// 未验证的响应改写、转换/压缩链路不发此标记；不证明失败尝试的计费。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_response_evidence: Option<String>,
+    /// 已校验并送达客户端的最终响应 ID，不是本地请求日志的 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_response_id: Option<String>,
     /// 网关模式下发起请求的 Agent（claude / grok）；Codex 直连代理的旧记录为空。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -408,6 +411,8 @@ pub struct RequestLogFilter {
     pub since_ms: Option<u64>,
     pub agent: Option<String>,
     pub relay_id: Option<String>,
+    /// 只要没有供应商归属（`relay_id` 为空）的请求：对应用量统计「按供应商」里的「未知」行，和不筛供应商是两回事。
+    pub relay_unknown: bool,
     /// 按用量统计的模型名（[`RequestLogEntry::usage_model`]）筛，忽略大小写。
     pub model: Option<String>,
 }
@@ -422,6 +427,7 @@ impl RequestLogFilter {
         self.since_ms.is_none_or(|since| started >= since)
             && self.agent.as_deref().is_none_or(|agent| entry.agent_id() == agent)
             && self.relay_id.as_deref().is_none_or(|relay| entry.relay_id == relay)
+            && (!self.relay_unknown || entry.relay_id.trim().is_empty())
             && self
                 .model
                 .as_deref()
@@ -574,7 +580,13 @@ pub fn clear_request_logs_at(path: &Path) -> std::io::Result<()> {
 }
 
 /// 强证据不使用旧解析器的 cached=0 回退，也不把 HTTP 200 当作完成。
-pub(crate) fn final_response_usage(value: &Value) -> Option<RequestUsage> {
+#[derive(Clone, Debug)]
+pub(crate) struct FinalResponseUsage {
+    pub usage: RequestUsage,
+    pub response_id: Option<String>,
+}
+
+pub(crate) fn final_response_usage(value: &Value) -> Option<FinalResponseUsage> {
     let response = value.get("response").unwrap_or(value);
     if response.get("status").and_then(Value::as_str) != Some("completed")
         || response.get("error").is_some_and(|error| !error.is_null())
@@ -586,7 +598,12 @@ pub(crate) fn final_response_usage(value: &Value) -> Option<RequestUsage> {
     let cached = usage.pointer("/input_tokens_details/cached_tokens")?.as_u64()?;
     let parsed = usage_from_responses_usage(usage)?;
     (cached <= parsed.input_tokens && parsed.reasoning_tokens <= parsed.output_tokens)
-        .then_some(parsed)
+        .then(|| FinalResponseUsage {
+            usage: parsed,
+            response_id: response.get("id").and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_graphic()))
+                .map(str::to_owned),
+        })
 }
 
 /// 从非流式 Responses JSON（或 `response.completed` 的 data）里提取 usage。
@@ -699,6 +716,7 @@ mod tests {
             }),
             cache_hit_ratio: None,
             final_response_evidence: None,
+            final_response_id: None,
             agent: None,
         }
     }
@@ -707,12 +725,17 @@ mod tests {
     fn final_response_evidence_round_trip_and_legacy_absence() {
         let legacy = serde_json::to_value(entry("legacy")).unwrap();
         assert!(legacy.get("finalResponseEvidence").is_none());
+        assert!(legacy.get("finalResponseId").is_none());
         let mut row: RequestLogEntry = serde_json::from_value(legacy).unwrap();
         assert!(row.final_response_evidence.is_none());
+        assert!(row.final_response_id.is_none());
         row.final_response_evidence = Some(FINAL_RESPONSE_EVIDENCE_V1.to_string());
+        row.final_response_id = Some("resp_delivered".to_string());
         let raw = serde_json::to_value(row).unwrap();
         assert_eq!(raw["finalResponseEvidence"], "final-response-v1");
+        assert_eq!(raw["finalResponseId"], "resp_delivered");
         let parsed: RequestLogEntry = serde_json::from_value(raw).unwrap();
+        assert_eq!(parsed.final_response_id.as_deref(), Some("resp_delivered"));
         assert_eq!(parsed.final_response_evidence.as_deref(), Some("final-response-v1"));
     }
 
@@ -721,7 +744,12 @@ mod tests {
         let complete = json!({"status":"completed","usage":{
             "input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":0}
         }});
-        assert_eq!(final_response_usage(&complete).unwrap().cached_tokens, 0);
+        assert_eq!(final_response_usage(&complete).unwrap().usage.cached_tokens, 0);
+        for (id, expected) in [("resp_ok", Some("resp_ok")), ("", None), ("two words", None), (&"x".repeat(257), None)] {
+            let mut response = complete.clone();
+            response["id"] = json!(id);
+            assert_eq!(final_response_usage(&response).unwrap().response_id.as_deref(), expected);
+        }
         for pointer in [
             "/status", "/usage/input_tokens", "/usage/output_tokens",
             "/usage/input_tokens_details/cached_tokens",
@@ -811,6 +839,35 @@ mod tests {
         assert_eq!(ids(&limited), vec!["e3", "e2"]);
         assert!(limited.more, "符合条件的不止这些");
         assert_eq!(limited.oldest_ms, Some(1_000), "最早一条按整个文件算");
+    }
+
+    #[test]
+    fn page_unknown_provider_filter_only_keeps_requests_without_relay() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("request-log.jsonl");
+        for (index, relay) in ["relay-a", "", "relay-b", "  ", ""].into_iter().enumerate() {
+            let mut row = entry(&format!("e{index}"));
+            row.started_at_ms = 1_000 * (index as u64 + 1);
+            row.relay_id = relay.to_string();
+            row.relay_name = if relay.is_empty() { String::new() } else { format!("name-{relay}") };
+            append_request_log_at(&path, &row).unwrap();
+        }
+        let ids = |filter: &RequestLogFilter| {
+            read_request_log_page_at(&path, 10, filter)
+                .unwrap()
+                .entries
+                .into_iter()
+                .map(|entry| entry.id)
+                .collect::<Vec<_>>()
+        };
+
+        let unknown = RequestLogFilter { relay_unknown: true, ..Default::default() };
+        assert_eq!(ids(&unknown), vec!["e4", "e3", "e1"], "「未知」只留没有供应商的请求");
+        let ranged = RequestLogFilter { relay_unknown: true, since_ms: Some(3_500), ..Default::default() };
+        assert_eq!(ids(&ranged), vec!["e4", "e3"], "时间段照常生效");
+        assert_eq!(ids(&RequestLogFilter::default()).len(), 5, "不筛供应商仍是全部");
+        let named = RequestLogFilter { relay_id: Some("relay-b".to_string()), ..Default::default() };
+        assert_eq!(ids(&named), vec!["e2"], "普通供应商 id 筛选不变");
     }
 
     #[test]

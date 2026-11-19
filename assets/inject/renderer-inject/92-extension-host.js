@@ -84,7 +84,7 @@
     const rail = document.querySelector(codexPlusRailSelector);
     rail?.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+      if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;
       if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
       if (target?.closest("button, a")) closeCodexPlusPageAfterNativeNavigation();
     }, true);
@@ -150,6 +150,8 @@
     window.__codexPlusPageLayoutObserver?.disconnect();
     window.__codexPlusPageLayoutObserver = null;
     window.__codexPlusPageLayoutTargets = null;
+    // 设置页里画着的拓展分区先收掉，让拓展的清理函数跑（40-backend-settings.js）。
+    if (typeof unmountCodexPlusSettingsSections === "function") unmountCodexPlusSettingsSections();
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     setCodexPlusSidebarNavActive(false);
     restoreCodexPlusPageBackButton();
@@ -187,8 +189,8 @@
     const host = anchor?.parentElement || rail;
     const template = codexPlusRailTemplateButton(rail);
     let cursor = anchor;
-    // 内置三项先占位，第三方从它们之后开始排。
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
+    // 内置几项先占位，第三方从它们之后开始排（按图标栏上的顺序列）。
+    [codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId].forEach((id) => {
       const node = document.getElementById(id);
       if (node) cursor = node;
     });

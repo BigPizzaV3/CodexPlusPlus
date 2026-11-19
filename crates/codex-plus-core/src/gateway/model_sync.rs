@@ -265,6 +265,7 @@ fn apply_model_changes(
     let gone = |name: &str| has_model(&removed, name) && !has_model(&list, name);
     provider.model_prices.retain(|name, _| !gone(name));
     provider.model_windows.retain(|name, _| !gone(name));
+    provider.auto_compact.models.retain(|name, _| !gone(name));
     provider.upstream_meta.retain_models(|name| !gone(name));
     provider.relay.model_metadata = prune_model_metadata(&provider.relay.model_metadata, &gone);
     provider.upstream_new.clear();
@@ -592,6 +593,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             relay: RelayProfile {
                 id: "p".into(),
                 model: "a".into(),
@@ -642,6 +644,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             relay,
             extra: Default::default(),
         }

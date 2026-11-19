@@ -188,6 +188,115 @@ test("拿到真实数据、登录了账号、客户端还没 Ready、增强关�
   }
 });
 
+// #3162：Codex 26.1111 起 Statsig 评估挪到主进程。下面按 26.1111 的原生结构建模：
+// - 渲染进程（nL + Qg7S.z）：只有数据确实属于当前用户才发布数据，否则发布「无数据」；
+//   数据自带 user 时按 user 比对，否则要求适配器里这份数据的 fullUserHash 等于当前 user 的哈希；
+// - 主进程：只有拿到数据才建 Statsig 客户端；分支对话的放置门控读
+//   useAppServerCustomSections = 客户端?.checkGate(...)，没客户端就是 undefined → not-ready。
+// Statsig 的 fullUserHash（_DJB2Object）测试向量，取自真实 Codex 26.1111 页面里的 SDK。
+const sessionOneUser = { customIDs: { stableID: "s", source_surface_stable_id: "s" }, custom: { auth_method: "apikey", codex_app_session_id: "session-1" }, userID: "ua-s", locale: "zh-CN" };
+const sessionTwoUser = { ...sessionOneUser, custom: { auth_method: "apikey", codex_app_session_id: "session-2" } };
+const nativeUserHashes = new Map([
+  [JSON.stringify(sessionOneUser), "3040620868"],
+  [JSON.stringify(sessionTwoUser), "3841156421"],
+]);
+
+type CachedStatsigClient = StatsigClient & { dataAdapter: StatsigClient["dataAdapter"] & { getDataSync(user: unknown): any } };
+
+// 渲染进程有缓存数据（本次启动 Statsig 拉不到）：缓存是上一次会话（session-1）拉到的，当前 user 是 session-2。
+function cachedStatsigClient(cacheUser: Record<string, unknown>, currentUser: Record<string, unknown>, extra: Record<string, unknown> = {}): CachedStatsigClient {
+  const cached = {
+    feature_gates: { "68267662": { name: "68267662", value: true, rule_id: "r", secondary_exposures: [], id_type: "userID" } },
+    dynamic_configs: { "107580212": { value: { available_models: ["gpt-5.5"] } } },
+    layer_configs: {},
+    time: 1700000000000,
+    has_updates: true,
+    hash_used: "djb2",
+    ...extra,
+  };
+  const client = statsigClient(cached, currentUser) as CachedStatsigClient;
+  let entry: any = { source: "Cache", data: JSON.stringify(cached), fullUserHash: nativeUserHashes.get(JSON.stringify(cacheUser)) };
+  client.dataAdapter = {
+    setData(data: string) { client.writes.push(data); entry = { source: "Bootstrap", data, fullUserHash: nativeUserHashes.get(JSON.stringify(currentUser)) }; },
+    getDataSync() { return entry; },
+  };
+  return client;
+}
+
+// 26.1111 渲染进程的「数据属于当前用户」判定（Qg7S.z），哈希按测试向量查。
+function nativeEvaluationsVerified(client: CachedStatsigClient) {
+  const { user, values } = client.getContext();
+  if (values == null) return false;
+  if (values.user != null) {
+    return values.user.userID === user.userID && values.user.custom?.auth_method === (user as any).custom?.auth_method
+      && JSON.stringify(values.user.customIDs) === JSON.stringify((user as any).customIDs);
+  }
+  const entry = client.dataAdapter.getDataSync(user);
+  return entry != null && entry.fullUserHash === nativeUserHashes.get(JSON.stringify(user));
+}
+
+// 26.1111 主进程的放置门控：有发布数据才有客户端，没有客户端就读到 undefined。
+function nativeMainForkPlacement(client: CachedStatsigClient) {
+  const published = client.loadingStatus === "Ready" && nativeEvaluationsVerified(client) ? client.getContext().values : null;
+  const useAppServerCustomSections = published == null ? undefined : published.feature_gates?.["68267662"]?.value === true;
+  return useAppServerCustomSections === undefined
+    ? { status: "not-ready", reason: "execution-config-loading" }
+    : { status: "ready", useAppServerCustomSections };
+}
+
+test("26.1111：Statsig 拉不到、只有原生不认的旧缓存时，沿用缓存补上当前 user，分支对话不再停在 not-ready", () => {
+  const client = cachedStatsigClient(sessionOneUser, sessionTwoUser);
+  assert.deepEqual(nativeMainForkPlacement(client), { status: "not-ready", reason: "execution-config-loading" });
+  const app = installStatsig(client);
+  assert.equal(client.writes.length, 1, "同一个客户端在多个入口里出现也只补一次");
+  const values = JSON.parse(client.writes[0]);
+  assert.deepEqual(values.user, sessionTwoUser, "补上当前 user，原生据此认作当前用户的数据");
+  assert.deepEqual(Object.keys(values.feature_gates), ["68267662"], "闸门一个不加");
+  assert.equal(values.feature_gates["68267662"].value, true, "闸门值原样沿用缓存");
+  assert.deepEqual(values.dynamic_configs, { "107580212": { value: { available_models: ["gpt-5.5"] } } }, "其余数据原样保留");
+  assert.equal(values.hash_used, "djb2");
+  assert.equal(values.time, 1700000000000, "时间戳不动，免得后续增量拉取对错基线");
+  assert.equal(values.has_updates, true);
+  assert.equal(values.codex_plus_offline, true);
+  assert.deepEqual(nativeMainForkPlacement(client), { status: "ready", useAppServerCustomSections: true });
+  // 诊断参数来自 vm 上下文，按 JSON 比较。
+  assert.equal(JSON.stringify(app.diagnostics.filter(([name]: any) => name === "fork_statsig_offline_fallback")), JSON.stringify([["fork_statsig_offline_fallback", { source: "cache" }]]));
+  app.tick();
+  assert.equal(client.writes.length, 1, "补过之后复查是空操作");
+});
+
+test("26.1111：缓存数据原生认（哈希对得上 / 自带 user）、登录了账号、或「替我审批」单独运行时都不沿用缓存", () => {
+  const cases: Array<[string, CachedStatsigClient]> = [
+    ["哈希对得上", cachedStatsigClient(sessionTwoUser, sessionTwoUser)],
+    ["数据自带 user", cachedStatsigClient(sessionOneUser, sessionTwoUser, { user: sessionOneUser })],
+    ["登录账号", cachedStatsigClient(sessionOneUser, { ...sessionTwoUser, customIDs: { ...sessionTwoUser.customIDs, account_id: "acct-1" } })],
+  ];
+  for (const [label, client] of cases) {
+    installStatsig(client);
+    assert.equal(client.writes.length, 0, label);
+  }
+  // 「替我审批」的语义仍是「完全没数据才补」，不因为有缓存而改动（增强关闭 = 分支兜底不参与）。
+  const client = cachedStatsigClient(sessionOneUser, sessionTwoUser);
+  const app = installStatsig(client, { enhancementsEnabled: false, offlineAutoReview: true });
+  app.autoReviewTick();
+  assert.equal(client.writes.length, 0);
+  const empty = statsigClient(null);
+  installStatsig(empty, { enhancementsEnabled: false, offlineAutoReview: true }).autoReviewTick();
+  assert.equal(empty.writes.length, 1, "对照：没数据时「替我审批」照常补");
+});
+
+test("26.1111：沿用 init-v2 格式的缓存时只补 user，之后「替我审批」也不往里写 v1 结构的闸门", () => {
+  const client = cachedStatsigClient(sessionOneUser, sessionTwoUser, { response_format: "init-v2" });
+  const app = installStatsig(client);
+  assert.equal(client.writes.length, 1);
+  const values = JSON.parse(client.writes[0]);
+  assert.equal(values.response_format, "init-v2");
+  assert.deepEqual(values.user, sessionTwoUser);
+  app.settings.offlineAutoReview = true;
+  app.autoReviewTick();
+  assert.equal(client.writes.length, 1);
+});
+
 test("先补了空数据，之后再开「替我审批」时合并闸门，而不是被当成真实数据跳过", () => {
   const client = statsigClient(null);
   const app = installStatsig(client);

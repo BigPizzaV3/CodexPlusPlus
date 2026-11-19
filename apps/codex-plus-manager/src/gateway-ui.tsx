@@ -95,6 +95,9 @@ const AGENT_BRANDS: Record<string, string> = {
   "claude-desktop": "claude-color",
   "gemini-cli": "geminicli-color",
   zed: "zed",
+  // VS Code 蓝、Insiders 绿，两版官方图标（#2970）。
+  vscode: "vscode-color",
+  "vscode-insiders": "vscode-insiders-color",
   vscodium: "vscodium",
   "jetbrains-air": "jetbrains",
   raycast: "raycast",

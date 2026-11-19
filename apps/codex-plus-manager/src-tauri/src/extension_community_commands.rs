@@ -15,6 +15,13 @@ pub async fn extension_community_request(action: String, payload: Option<Value>)
         .map_err(|error| format!("{error:#}"))
 }
 
+/// Codex 拓展页「社区」分栏经桥接调用（`/extension-market/community`，payload 为 `{ action, payload }`），
+/// 与管理器同一套实现。
+pub(crate) async fn bridge_request(request: Value) -> anyhow::Result<Value> {
+    let action = request.get("action").and_then(Value::as_str).unwrap_or_default().to_string();
+    handle(&action, request.get("payload").cloned().unwrap_or(Value::Null)).await
+}
+
 async fn handle(action: &str, payload: Value) -> anyhow::Result<Value> {
     let store = CommunityStore::new(default_user_scripts_config_dir());
     let manager = crate::commands::default_user_script_manager();

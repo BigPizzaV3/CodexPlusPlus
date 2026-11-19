@@ -443,6 +443,44 @@ pub fn model_ui_metadata_with_override(slug: &str, user_override: Option<&Value>
             ui[snake] = window.clone();
         }
     }
+    // 图片输入能力（#3042）：原生描述符的 inputModalities 决定输入框能不能贴图。
+    // 白名单不转发就流不到注入层，注入的描述符只能瞎猜。用户声明优先，其次内置/目录条目；
+    // 两种写法都认，输出也同时带两种，与窗口字段一致。没声明就不写，交给注入层按原生处理。
+    // 先看用户声明（两种写法），再看合并后的条目，避免用户的 camelCase 被内置的 snake_case 压住。
+    let declared = |snake: &str, camel: &str, valid: fn(&Value) -> bool| {
+        [user_override, metadata.as_object()]
+            .into_iter()
+            .flatten()
+            .flat_map(|source| [source.get(snake), source.get(camel)])
+            .flatten()
+            .find(|value| valid(value))
+            .cloned()
+    };
+    if let Some(modalities) = declared("input_modalities", "inputModalities", Value::is_array)
+        .as_ref()
+        .and_then(Value::as_array)
+    {
+        let modalities: Vec<Value> = modalities
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|modality| !modality.is_empty())
+            .map(|modality| json!(modality))
+            .collect();
+        ui["inputModalities"] = json!(modalities);
+        ui["input_modalities"] = json!(modalities);
+    }
+    if let Some(original) = declared(
+        "supports_image_detail_original",
+        "supportsImageDetailOriginal",
+        Value::is_boolean,
+    )
+    .as_ref()
+    .and_then(Value::as_bool)
+    {
+        ui["supportsImageDetailOriginal"] = json!(original);
+        ui["supports_image_detail_original"] = json!(original);
+    }
     if !has_builtin {
         // 单独声明 Fast 不能替原生描述符制造名称、描述或推理默认档。
         for (ui_field, source_field) in [
@@ -553,7 +591,7 @@ fn resolve_builtin_metadata(slug: &str) -> Option<ResolvedBuiltinMetadata> {
         // fields on top. This keeps UI lookup and generated catalogs identical.
         let mut base = runtime_models_cache_entry(&slug)
             .or_else(|| bundled_template_entry(&slug))
-            .unwrap_or_else(|| first_bundled_template_entry().unwrap_or_else(|| json!({})));
+            .unwrap_or_else(|| fallback_template_entry(&slug));
         if let (Some(target), Some(source)) = (base.as_object_mut(), metadata.entry.as_object()) {
             for (key, value) in source {
                 target.insert(key.clone(), value.clone());
@@ -790,10 +828,18 @@ fn model_template_entry(slug: &str) -> (Value, bool) {
     if let Some(metadata) = resolve_builtin_metadata(slug) {
         return (metadata.entry, true);
     }
-    (
-        first_bundled_template_entry().unwrap_or_else(|| json!({})),
-        false,
-    )
+    // 同家族模板只是回退底板：has_model_metadata 仍为 false，展示名/描述/并行工具调用
+    // 等字段继续按未命中处理，只继承家族的身份文案与能力字段。
+    (fallback_template_entry(slug), false)
+}
+
+/// 本机官方缓存（`models_cache.json`）给这个模型的上下文窗口，即登录账号实际拿到的窗口。
+/// 不经过兼容层：兼容层的窗口是给第三方中转的，官方账号以原生资料为准（#3161）。
+pub fn native_cache_context_window(slug: &str) -> Option<u64> {
+    runtime_models_cache_entry(&normalized_model_slug(slug))?
+        .get("context_window")?
+        .as_u64()
+        .filter(|window| *window > 0)
 }
 
 /// 从用户本机 codex 官方缓存读取同 slug 条目。
@@ -871,6 +917,98 @@ fn bundled_template_entry(slug: &str) -> Option<Value> {
 
 fn first_bundled_template_entry() -> Option<Value> {
     bundled_catalog_models().first().cloned()
+}
+
+/// `gpt-<主版本>[.<次版本>][-<系列>]` 形态的 slug 拆解结果，仅用于挑选回退模板。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GptSlug {
+    major: u32,
+    minor: u32,
+    /// 版本号之后的部分（astra / sol / codex-spark 等），无系列时为空串。
+    series: String,
+}
+
+/// 解析 `gpt-6.2-astra` 这类 slug；`gpt-oss-*`、`gpt-reserve`、`gpt-4o` 等
+/// 版本段不是纯数字的形态返回 None，让它们继续走原有的首条模板回退。
+fn parse_gpt_slug(slug: &str) -> Option<GptSlug> {
+    fn digits(text: &str) -> Option<u32> {
+        if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        text.parse().ok()
+    }
+    let lowered = slug.trim().to_ascii_lowercase();
+    let rest = lowered.strip_prefix("gpt-")?;
+    let (version, series) = rest.split_once('-').unwrap_or((rest, ""));
+    let (major, minor) = version.split_once('.').unwrap_or((version, "0"));
+    Some(GptSlug {
+        major: digits(major)?,
+        minor: digits(minor)?,
+        series: series.to_string(),
+    })
+}
+
+/// 没有精确条目时，在运行时缓存 + bundled 里挑同家族的模板 slug。
+///
+/// 只考虑同主版本（gpt-6* 不借 gpt-5*，否则会克隆出 "based on GPT-5" 的身份文案，#3180）。
+/// 同主版本内排序：同系列优先 → 已知的旧版本优先于更新的版本 → 版本距离近的优先；
+/// 仍并列时按「运行时缓存在前、bundled 按目录顺序」取最先出现的。
+fn family_template_slug(slug: &str) -> Option<String> {
+    let target = parse_gpt_slug(slug)?;
+    // 只修跨代的情况（#3180）：通用回退模板（bundled 首条）与目标同主版本时，身份文案本来就对，
+    // 保持原样——否则 gpt-5、gpt-5.1-codex-max 这类未知 gpt-5.x 会改借更新的 gpt-5.2 等模板，
+    // shell_type、截断策略和自我介绍都跟着变。
+    let fallback_major = first_bundled_template_entry()
+        .and_then(|entry| entry.get("slug")?.as_str().and_then(parse_gpt_slug))
+        .map(|parsed| parsed.major);
+    if fallback_major == Some(target.major) {
+        return None;
+    }
+    fn slugs_of(models: &[Value]) -> Vec<String> {
+        let slug_of = |entry: &Value| entry.get("slug")?.as_str().map(str::to_string);
+        models.iter().filter_map(slug_of).collect()
+    }
+    let mut candidates = with_runtime_models(slugs_of).unwrap_or_default();
+    candidates.extend(slugs_of(bundled_catalog_models()));
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let parsed = parse_gpt_slug(&candidate)?;
+            (parsed.major == target.major).then_some((candidate, parsed))
+        })
+        .min_by_key(|(_, parsed)| {
+            (
+                parsed.series != target.series,
+                parsed.minor > target.minor,
+                parsed.minor.abs_diff(target.minor),
+            )
+        })
+        .map(|(candidate, _)| candidate)
+}
+
+/// 同家族回退模板：取家族 slug 的运行时/bundled 条目，并叠加它自己的兼容层字段，
+/// 与精确命中该家族 slug 时看到的能力字段一致。
+/// 这里刻意不走 `resolve_builtin_metadata`，避免它的兼容层回退再回头调用本函数。
+fn family_template_entry(slug: &str) -> Option<Value> {
+    let family_slug = family_template_slug(slug)?;
+    let mut entry = runtime_models_cache_entry(&family_slug)
+        .or_else(|| bundled_template_entry(&family_slug))?;
+    if let Some(compat) = resolve_compatibility_metadata(&family_slug)
+        && let (Some(target), Some(source)) = (entry.as_object_mut(), compat.entry.as_object())
+    {
+        for (key, value) in source {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+    Some(entry)
+}
+
+/// 精确元数据缺失时的 clone 底板：先找同家族模板，找不到再退回 bundled 首条，
+/// 保证未知自定义模型照常能生成条目。
+fn fallback_template_entry(slug: &str) -> Value {
+    family_template_entry(slug)
+        .or_else(first_bundled_template_entry)
+        .unwrap_or_else(|| json!({}))
 }
 
 fn bundled_catalog_models() -> &'static Vec<Value> {

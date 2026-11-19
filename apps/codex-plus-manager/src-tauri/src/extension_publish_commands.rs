@@ -21,12 +21,23 @@ pub async fn extension_publish_request(app: tauri::AppHandle, action: String, pa
         .map_err(|error| format!("{error:#}"))
 }
 
-fn handle(app: &tauri::AppHandle, action: &str, payload: &Value) -> anyhow::Result<Value> {
-    let manager = crate::commands::default_user_script_manager();
+/// Codex 拓展页「我发布的」分栏经桥接调用（`/extension-market/published`，payload 为 `{ action, payload }`）。
+/// 只开放「我发布的」那几个按仓库的操作；发布本身要走管理器的检查与进度界面。
+pub(crate) async fn bridge_request(request: Value) -> anyhow::Result<Value> {
+    let action = request.get("action").and_then(Value::as_str).unwrap_or_default().to_string();
+    let payload = request.get("payload").cloned().unwrap_or(Value::Null);
+    tauri::async_runtime::spawn_blocking(move || {
+        published(&action, &payload)?.with_context(|| format!("Codex 页面不支持操作 {action}"))
+    })
+    .await?
+}
+
+/// 「我发布的」：按仓库操作，不需要拓展 id。只能动当前 gh 账号名下的仓库（core 里校验）。
+/// 不是这几个操作时返回 `None`。
+fn published(action: &str, payload: &Value) -> anyhow::Result<Option<Value>> {
     let config_dir = default_user_scripts_config_dir();
-    // 「我发布的」：按仓库操作，不需要拓展 id。只能动当前 gh 账号名下的仓库（core 里校验）。
     match action {
-        "mine" => return Publisher::new(&config_dir)?.list_published(),
+        "mine" => Publisher::new(&config_dir)?.list_published().map(Some),
         "unlist" | "relist" | "deleteRepo" => {
             let repo = payload.get("repo").and_then(Value::as_str).filter(|repo| !repo.is_empty()).context("缺少仓库")?;
             let publisher = Publisher::new(&config_dir)?;
@@ -39,10 +50,18 @@ fn handle(app: &tauri::AppHandle, action: &str, payload: &Value) -> anyhow::Resu
             if action != "relist" {
                 let _ = CommunityStore::new(&config_dir).forget_repo(repo);
             }
-            return Ok(json!({ "ok": true }));
+            Ok(Some(json!({ "ok": true })))
         }
-        _ => {}
+        _ => Ok(None),
     }
+}
+
+fn handle(app: &tauri::AppHandle, action: &str, payload: &Value) -> anyhow::Result<Value> {
+    if let Some(result) = published(action, payload)? {
+        return Ok(result);
+    }
+    let manager = crate::commands::default_user_script_manager();
+    let config_dir = default_user_scripts_config_dir();
     let id = payload.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).context("缺少拓展 id")?;
     match action {
         "check" => check(&manager, &config_dir, id),

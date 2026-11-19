@@ -76,7 +76,7 @@ fn failed_restore_preserves_the_original_backup() {
     assert_eq!(std::fs::read_to_string(backup.join("SKILL.md")).unwrap(), "original backup");
     assert!(!source.join("alpha").exists());
     assert!(!home.join("skills/alpha").exists());
-    assert_eq!(manager.list_backups().len(), 1);
+    assert_eq!(manager.list_backups().unwrap().len(), 1);
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn disabling_does_not_stage_inside_the_original_skill() {
     let manager = SkillsManager::new(&source, temp.path().join("backups"), temp.path().join("skills.json"), &home);
     manager.set_enabled("alpha", false).unwrap();
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "original");
-    assert!(manager.list_backups().is_empty());
+    assert!(manager.list_backups().unwrap().is_empty());
     assert!(!source.exists());
     assert!(!manager.local_inventory().iter().find(|skill| skill.id == "alpha").unwrap().enabled);
 }
@@ -112,7 +112,7 @@ fn disabling_a_copied_installation_must_preserve_user_edits() {
     manager.set_enabled("alpha", false).unwrap();
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "user edits");
     assert_eq!(std::fs::read_to_string(source.join("alpha/SKILL.md")).unwrap(), "original source");
-    assert!(manager.list_backups().is_empty());
+    assert!(manager.list_backups().unwrap().is_empty());
     assert!(!manager.local_inventory().iter().find(|skill| skill.id == "alpha").unwrap().enabled);
     let installed = &manager.load_state().installed["alpha"];
     assert_eq!(installed.repo_key, "acme/kit@main");
@@ -149,7 +149,7 @@ fn failed_uninstall_must_not_leave_stale_installed_state() {
     assert!(manager.load_state().installed.contains_key("alpha"));
     assert!(local.is_dir(), "failed uninstall removed the installation but retained its installed record; original contents only remain in backup");
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "user original");
-    assert!(manager.list_backups().is_empty());
+    assert!(manager.list_backups().unwrap().is_empty());
 }
 
 #[test]
@@ -180,7 +180,7 @@ fn failed_local_disable_must_not_hide_the_skill() {
     assert!(manager.local_inventory().iter().any(|skill| skill.id == "alpha"), "failed disable moved the only local directory to source without registering it; inventory and backups no longer expose the skill");
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "user original");
     assert!(!source.join("alpha").exists());
-    assert!(manager.list_backups().is_empty());
+    assert!(manager.list_backups().unwrap().is_empty());
 }
 
 #[test]
@@ -213,7 +213,7 @@ fn failed_copy_disable_restores_both_directories_and_metadata() {
     assert_eq!(manager.load_state(), before);
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "user edits");
     assert_eq!(std::fs::read_to_string(source.join("alpha/SKILL.md")).unwrap(), "old source");
-    assert!(manager.list_backups().is_empty());
+    assert!(manager.list_backups().unwrap().is_empty());
 }
 
 #[test]
@@ -242,5 +242,5 @@ fn failed_second_backup_restores_the_first_uninstall_move() {
     assert_eq!(manager.load_state(), before);
     assert_eq!(std::fs::read_to_string(local.join("SKILL.md")).unwrap(), "local edits");
     assert_eq!(std::fs::read_to_string(source.join("alpha/SKILL.md")).unwrap(), "source content");
-    assert!(manager.list_backups().is_empty());
+    assert!(manager.list_backups().unwrap().is_empty());
 }

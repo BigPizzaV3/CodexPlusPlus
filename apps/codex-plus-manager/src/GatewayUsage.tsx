@@ -1,4 +1,4 @@
-/** 本地网关 · 用量：余额、费用 / token / 缓存 / 调用 / 耗时、按天的柱状图与 Agent 占比，以及按供应商 / 模型 / Agent 的明细表。 */
+/** 本地网关 · 用量：额度、余额、费用 / token / 缓存 / 调用 / 耗时、按天的柱状图与 Agent 占比，以及按供应商 / 模型 / Agent 的明细表。 */
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
@@ -16,6 +16,7 @@ import {
   groupDisplayName,
   niceCeiling,
   prettyModelName,
+  quotaEntries,
   shortDate,
   usageDayStats,
   type GatewayPayload,
@@ -25,7 +26,7 @@ import {
   type UsageSummary,
   maskAccountName,
 } from "./gateway-model";
-import { AGENT_ICONS, Avatar, type Notify, type Run } from "./gateway-ui";
+import { AGENT_ICONS, Avatar, QuotaWindows, type Notify, type Run } from "./gateway-ui";
 import { successRate } from "./hub-overview-model";
 import { openRequestLog } from "./UsageTabs";
 import { TopbarActions } from "./TopbarActions";
@@ -105,6 +106,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
   const groups: UsageGroup[] = split === "provider" ? summary?.byProvider ?? [] : split === "model" ? summary?.byModel ?? [] : summary?.byAgent ?? [];
   const tokenTotal = Math.max(1, groups.reduce((sum, group) => sum + group.inputTokens + group.outputTokens, 0));
   const anyCost = groups.some((group) => costText(group.costs));
+  const quotas = quotaEntries(payload?.pool);
 
   // 参照 Cursor 的设置页：时间段在标题行、数字一排、图表一张卡、明细一张表；余额放最后。
   return (
@@ -219,7 +221,9 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
                 onClick={() => openRequestLog(split === "agent"
                   ? { agent: group.key === "claude" || group.key === "grok" ? group.key : "codex", range }
                   : split === "provider"
-                    ? { relayId: group.key, relayLabel: maskAccountName(group.label), range }
+                    ? group.key
+                      ? { relayId: group.key, relayLabel: maskAccountName(group.label), range }
+                      : { relayUnknown: true, relayLabel: t("未知"), range }
                     : { model: group.key, range })}
                 onKeyDown={(event) => { if (event.key === "Enter") (event.currentTarget as HTMLElement).click(); }}
                 role="button"
@@ -249,6 +253,35 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
           {summary && groups.length === 0 ? <CxEmpty title={t("这段时间还没有请求。")} /> : null}
         </div>
       </CxSection>
+
+      {/* 额度（#3084）：订阅账号和 OpenCode Go、Command Code 等套餐的时间窗口，和供应商池卡片同一份缓存。 */}
+      {quotas.length ? (
+        <CxSection count={quotas.length} title={t("额度")}>
+          <CxCard>
+            {quotas.map((entry) => (
+              <CxRow
+                icon={<Avatar baseUrl={entry.baseUrl} name={entry.name} size="sm" />}
+                key={entry.id}
+                title={maskAccountName(entry.name)}
+              >
+                {entry.quota
+                  ? <QuotaWindows compact maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} />
+                  : <small className="gw-usage-balance-missing">{t("额度待刷新")}</small>}
+                <button
+                  aria-label={t("刷新额度")}
+                  className="gw-icon-button"
+                  disabled={busy !== null}
+                  onClick={() => void run(`quota:${entry.id}`, "refresh_gateway_quota", { id: entry.id }, t("刷新额度"), true)}
+                  title={t("刷新额度")}
+                  type="button"
+                >
+                  <RefreshCw className={busy === `quota:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
+                </button>
+              </CxRow>
+            ))}
+          </CxCard>
+        </CxSection>
+      ) : null}
 
       {balances && balances.length ? (
         <CxSection count={balances.length} title={t("余额")}>

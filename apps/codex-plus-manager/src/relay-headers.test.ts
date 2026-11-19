@@ -10,6 +10,10 @@ import { describe, it } from "node:test";
 import {
   hasCustomAuthorization,
   normalizeRelayHeaders,
+  providerHeaderInputs,
+  providerHeaderRows,
+  providerHeadersSummary,
+  providerHeadersValidationMessage,
   relayHeadersValidationMessage,
   serializeRelayHeaders,
 } from "./relay-headers.ts";
@@ -87,6 +91,28 @@ describe("hasCustomAuthorization", () => {
 
   it("空值的 Authorization 不算配置", () => {
     assert.strictEqual(hasCustomAuthorization([{ key: "Authorization", value: "  " }]), false);
+  });
+});
+
+describe("网关供应商池的请求头（#3075）", () => {
+  it("摘要只列名称，不带值", () => {
+    assert.strictEqual(
+      providerHeadersSummary([
+        { key: "X-Tenant", value: "acme" },
+        { key: "Authorization", value: "", masked: "Bear…abcd" },
+      ]),
+      "X-Tenant · Authorization",
+    );
+    assert.strictEqual(providerHeadersSummary(undefined), "");
+  });
+
+  it("改名后的敏感头不能沿用旧值，删掉的行不提交", () => {
+    const rows = providerHeaderRows([{ key: "Authorization", value: "", masked: "Bear…abcd" }]);
+    assert.deepStrictEqual(providerHeaderInputs(rows), [{ key: "Authorization", value: "", keep: true }]);
+    assert.deepStrictEqual(providerHeaderInputs([{ ...rows[0], key: "authorization" }]), [{ key: "authorization", value: "", keep: true }]);
+    assert.match(providerHeadersValidationMessage([{ ...rows[0], key: "X-Token" }]) ?? "", /X-Token/);
+    assert.deepStrictEqual(providerHeaderInputs([]), []);
+    assert.deepStrictEqual(providerHeaderInputs([{ key: " ", value: "" }]), []);
   });
 });
 

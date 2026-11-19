@@ -42,6 +42,7 @@ function fixture(handler, { enabled = true } = {}) {
   const context = vm.createContext({
     window, MessageEvent, Error, console, Date,
     codexPlusIsWindowsPlatform: false, codexAppServerModelRequestPatchVersion: "11", codexPluginMarketplaceUnlockVersion: "17",
+    codexPlusMarkExtensionFailure: (_key, message) => toasts.push(`[failure] ${message}`),
     codexPlusBackendSettingsLoaded: true,
     codexPlusBackendSettings: {},
     codexRemoteSessionActiveProfile: () => null,
@@ -430,4 +431,20 @@ test("装完插件刷新原生插件列表：新版 Codex 没有全局 queryClie
   // 找不到时只报一次诊断，不抛错。
   run(null);
   assert.deepEqual(diagnostics, ["plugin_marketplace_query_client_missing"]);
+});
+
+test("回包处理超时把原始响应原样投回，宿主请求不会永久 pending（issue #3098）", async () => {
+  const f = fixture((_path, payload) => payload.method === "list-plugins" ? new Promise(() => {}) : catalog());
+  f.api.patchBridge();
+  await f.window.electronBridge.sendMessageFromView({ type: "fetch", url: "vscode://codex/list-plugins", requestId: "slow", body: "{}" });
+  const originalResponse = { type: "fetch-response", requestId: "slow", responseType: "success", status: 200, headers: {}, bodyJsonString: JSON.stringify(official()) };
+  f.response(originalResponse);
+  assert.ok(!f.delivered.some((event) => event.data?.type === "fetch-response"), "回包已摘下等待合并");
+  const timer = [...f.timers.entries()].find(([, t]) => t.delay === 15000);
+  assert.ok(timer, "回包处理必须有 15s 兜底定时器");
+  timer[1].callback();
+  await flush();
+  const delivered = f.delivered.find((event) => event.data?.type === "fetch-response");
+  assert.equal(delivered.data, originalResponse, "超时后必须把原始回包原样投回渲染层");
+  assert.ok(f.toasts.some((message) => message.includes("超时")));
 });

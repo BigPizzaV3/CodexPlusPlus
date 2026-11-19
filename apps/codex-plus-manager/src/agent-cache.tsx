@@ -181,7 +181,7 @@ export function AgentCachePanel() {
           </span>}>
           <CxCard>
             {!report ? <CxEmpty title={busy === "scan" ? t("正在扫描…") : t("扫描后查看占用")} /> : null}
-            {report && app.groups.length === 0 ? <CxEmpty title={t("未发现可识别的缓存目录。")} /> : null}
+            {report && app.groups.length === 0 ? <CxEmpty title={t("未发现可统计的缓存目录；如有扫描提示，请查看被跳过的目录。")} /> : null}
             {report ? app.groups.map((group) => {
               const usable = group.cleanable && group.eligibleFiles > 0;
               return <CxRow key={group.id}
@@ -201,7 +201,7 @@ export function AgentCachePanel() {
         </CxSection>;
       })}
 
-      {(report?.warnings.length ?? 0) > 0 ? <details className="tp-details">
+      {(report?.warnings.length ?? 0) > 0 ? <details className="tp-details" open>
         <summary>{t("扫描提示（部分目录可能未统计）")}</summary>
         <ul>{report?.warnings.map((warning, index) => <li key={index}>{t(warning)}</li>)}</ul>
       </details> : null}
