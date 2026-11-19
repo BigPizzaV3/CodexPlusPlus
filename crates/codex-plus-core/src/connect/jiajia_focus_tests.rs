@@ -1,5 +1,7 @@
 //! 微信专注模式：假的远程控制会话（[`MockSessions`]）+ 假的加加 + 假微信网关，不碰真实微信和侧车。
 
+use std::path::Path;
+
 use super::*;
 use crate::connect::jiajia_bridge::focus::{LIST_TTL_MS, SessionPort, ThreadSummary, pick_project, session_line, turn_report};
 use crate::remote_control::uploads::{Attachment, AttachmentKind};
@@ -441,6 +443,72 @@ async fn non_owners_and_remote_control_off_get_an_explanation() {
     assert!(bridge.state().focus.contains_key("me"), "远程控制没开不算会话没了");
     say(&bridge, "me", "/退出").await;
     assert!(fixture.last_text().starts_with("已退出「重构登录」"), "退出不需要远程控制");
+}
+
+#[tokio::test]
+async fn focus_returns_only_authorized_attachments_from_the_matching_weixin_turn() {
+    let mut fixture = Fixture::new().await;
+    let cwd = fixture.add_login_thread();
+    fixture.outbound = crate::connect::outbound::OutboundPolicy::new(true, "me", &cwd);
+    std::fs::write(Path::new(&cwd).join("apple.png"), b"\x89PNG\r\n\x1a\nfixture").unwrap();
+    std::fs::write(Path::new(&cwd).join("result.txt"), b"completed").unwrap();
+    std::fs::write(fixture.dir.path().join("outside.txt"), b"outside").unwrap();
+    let gateway = &fixture.gateway.server;
+    Mock::given(method("POST"))
+        .and(path("/ilink/bot/getuploadurl"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"upload_full_url": format!("{}/cdn/upload", gateway.uri())})))
+        .expect(2)
+        .mount(gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/cdn/upload"))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-encrypted-param", "fixture"))
+        .expect(2)
+        .mount(gateway)
+        .await;
+    let bridge = fixture.bridge_with(Some("me"), PeerMode::Direct, false);
+    say(&bridge, "me", "/进入 11111111").await;
+    bridge.handle_inbound(&message("me", "生成并发送图片和文件", "request-token"), "生成并发送图片和文件").await;
+    let sent = fixture.sessions.sent();
+    let prompt = &sent.last().unwrap().1;
+    let marker = prompt.lines().find_map(|line| line.strip_prefix("[微信专注回传 ").and_then(|s| s.strip_suffix(']'))).unwrap();
+    let final_reply = format!(
+        "成品已生成\n{marker} {}",
+        json!([
+            {"kind": "image", "path": "apple.png"},
+            {"kind": "file", "path": "result.txt"},
+            {"kind": "file", "path": "../outside.txt"}
+        ])
+    );
+    let wrong_thread_turn = turn("t-desktop", "completed", json!([agent(&final_reply)]));
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([wrong_thread_turn.clone()]), json!([])));
+    bridge.poll_focus(true).await;
+    assert!(!gateway.received_requests().await.unwrap().iter().any(|r| r.url.path() == "/ilink/bot/getuploadurl"));
+
+    let focused_turn = turn(
+        "t-weixin",
+        "completed",
+        json!([{"type": "userMessage", "text": prompt}, agent(&final_reply)]),
+    );
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([wrong_thread_turn, focused_turn]), json!([])));
+    bridge.poll_focus(true).await;
+    bridge.poll_focus(true).await;
+    let requests = gateway.received_requests().await.unwrap();
+    let messages: Vec<Value> = requests.iter()
+        .filter(|r| r.url.path() == "/ilink/bot/sendmessage")
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .filter(|m: &Value| matches!(m["msg"]["item_list"][0]["type"].as_i64(), Some(2 | 4)))
+        .collect();
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["msg"]["item_list"][0]["type"], 2);
+    assert_eq!(messages[1]["msg"]["item_list"][0]["type"], 4);
+    for message in messages {
+        assert_eq!(message["msg"]["to_user_id"], "me");
+        assert_eq!(message["msg"]["context_token"], "request-token");
+    }
+    assert!(fixture.last_text().contains("成品已生成"));
+    assert!(fixture.last_text().contains("附件回传失败"));
+    assert!(!fixture.last_text().contains("WEIXIN_ATTACHMENTS"));
 }
 
 #[tokio::test]
