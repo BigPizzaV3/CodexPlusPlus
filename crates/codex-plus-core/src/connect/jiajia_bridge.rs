@@ -20,7 +20,6 @@
 //! 另有「专注模式」（[`focus`]）：本人钉住桌面上的一个会话，消息原样发给它、回复原样转回来，不经过加加。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -36,7 +35,7 @@ use super::weixin::{WeixinClient, WeixinMessage};
 use crate::remote_control::devices::Role;
 use crate::remote_control::jiajia::events;
 use crate::remote_control::jiajia::store::ChatMessage;
-use crate::remote_control::service::RemoteService;
+use crate::remote_control::with_sessions;
 
 /// 微信里发给加加时记的发送方（网页上显示「微信」），转发时也靠它认出「本人在微信里说的话」。
 pub const SENDER_NAME: &str = crate::remote_control::jiajia::WEIXIN_SENDER;
@@ -416,17 +415,6 @@ impl LiveJiajia {
     fn jiajia() -> Option<Arc<crate::remote_control::jiajia::Jiajia>> {
         crate::remote_control::hosted_service().map(|(service, _)| service.jiajia())
     }
-
-    /// 在远程控制自己的运行时上跑：加加会 `tokio::spawn` 后台任务，不能落在微信连接的运行时里。
-    async fn on_service<T, F, Fut>(work: F) -> anyhow::Result<T>
-    where
-        F: FnOnce(Arc<RemoteService>) -> Fut,
-        Fut: Future<Output = anyhow::Result<T>> + Send + 'static,
-        T: Send + 'static,
-    {
-        let (service, runtime) = crate::remote_control::hosted_service().context("远程控制没开")?;
-        runtime.spawn(work(service)).await.context("远程控制服务已停止")?
-    }
 }
 
 #[async_trait]
@@ -465,12 +453,13 @@ impl JiajiaPort for LiveJiajia {
 
     async fn send(&self, text: &str, by: Option<String>, role: Role) -> anyhow::Result<()> {
         let text = text.to_string();
-        Self::on_service(move |service| async move { service.jiajia().send(&text, by, role).await.map(|_| ()) }).await
+        let (service, runtime) = crate::remote_control::hosted_service().context("远程控制没开")?;
+        runtime.spawn(async move { service.jiajia().send(&text, by, role).await.map(|_| ()) }).await.context("远程控制服务已停止")?
     }
 
     async fn live_requests(&self, thread_id: &str) -> anyhow::Result<Vec<String>> {
         let thread_id = thread_id.to_string();
-        Self::on_service(move |service| async move {
+        with_sessions(move |service| async move {
             let view = service.thread_view(&thread_id).await?;
             Ok(events::snapshot(&view).requests.into_iter().map(|(key, _)| key).collect())
         })
@@ -479,7 +468,7 @@ impl JiajiaPort for LiveJiajia {
 
     async fn respond(&self, thread_id: &str, request_id: &Value, body: &Value) -> anyhow::Result<()> {
         let (thread_id, request_id, body) = (thread_id.to_string(), request_id.clone(), body.clone());
-        Self::on_service(move |service| async move { service.respond(&thread_id, &request_id, &body).await.map(|_| ()) }).await
+        with_sessions(move |service| async move { service.respond(&thread_id, &request_id, &body).await.map(|_| ()) }).await
     }
 
     fn resolve_card(&self, message_id: u64) {

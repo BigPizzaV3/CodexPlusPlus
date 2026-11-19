@@ -35,7 +35,7 @@ test("前端调用的命令名与 Tauri 注册一致，动作与后端分发一�
   assert.match(commands, /rc::dispatch\(&action, &args\.unwrap_or\(Value::Null\)\)/, "与 Codex 页面共用 core 的分发");
   assert.match(lib, /remote_control_commands::remote_control_request,/);
   assert.match(lib, /remote_control_commands::start_from_saved_state_in_background\(\);/, "管理器启动时按保存的开关拉起");
-  assert.match(lib, /codex_plus_core::remote_control::stop\(\);/, "管理器退出时停掉服务");
+  assert.match(lib, /codex_plus_core::remote_control::shutdown\(\);/, "管理器退出时关闭共享会话服务");
   for (const action of ["status", "enable", "disable", "resetToken", "enableLan", "disableLan", "startPairing", "cancelPairing", "setDeviceRole", "revokeDevice"]) {
     assert.ok(page.includes(`"${action}"`), `前端缺少动作 ${action}`);
     assert.ok(core.includes(`"${action}" =>`), `后端缺少动作 ${action}`);

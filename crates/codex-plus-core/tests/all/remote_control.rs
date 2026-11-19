@@ -539,6 +539,29 @@ fn server_starts_serves_page_and_stops() {
 }
 
 #[test]
+fn web_listener_can_stop_without_losing_the_shared_session_service() {
+    use codex_plus_core::remote_control as remote;
+    use std::sync::Arc;
+    let _guard = crate::common::global_state_lock();
+    let _state = TempState::new();
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap().local_addr().unwrap().port();
+    remote::update_state(|settings| settings.port = port).unwrap();
+
+    assert!(remote::hosted_service().is_none());
+    let (sessions, _) = remote::session_service().unwrap();
+    assert!(remote::running_port().is_none(), "独立会话服务不打开网页监听");
+    remote::set_enabled(true).unwrap();
+    assert_eq!(remote::running_port(), Some(port));
+    assert!(Arc::ptr_eq(&sessions, &remote::hosted_service().unwrap().0));
+
+    remote::set_enabled(false).unwrap();
+    assert!(remote::hosted_service().is_none());
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    assert!(Arc::ptr_eq(&sessions, &remote::session_service().unwrap().0));
+    remote::shutdown();
+}
+
+#[test]
 fn permission_mode_is_derived_like_the_desktop_presets() {
     use codex_plus_core::remote_control::follower::{PERMISSION_PRESETS, permission_mode_of};
     // 每个预设写出去的设置，读回来要还是同一个预设。
