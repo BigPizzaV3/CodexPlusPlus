@@ -1,7 +1,7 @@
 use codex_plus_data::{
     ProviderSyncProgressPhase, ProviderSyncStatus, ProviderSyncTargetSource,
     apply_session_index_cleanup, is_provider_sync_internal_alias,
-    load_provider_sync_targets, preview_session_index_cleanup,
+    load_provider_sync_targets, prepare_thread_provider, preview_session_index_cleanup,
     remote_control_session_recovery_candidate_exists, run_provider_sync,
     run_provider_sync_with_target, run_provider_sync_with_target_and_progress,
     run_remote_control_session_catalog_recovery_for_thread_with_target,
@@ -17,6 +17,546 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tempfile::tempdir;
 
 static CODEX_HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn thread_provider_prepare_request() -> serde_json::Value {
+    json!({
+        "host_id": "local", "thread_id": "thread-1",
+        "source_provider": "openai", "target_provider": "custom",
+    })
+}
+
+#[test]
+fn thread_provider_prepare_preserves_history_settings_and_supports_metadata_restore() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    write_provider_config(home, "custom");
+    let rollout = home.join("sessions/rollout-thread-1.jsonl.zst");
+    fs::create_dir_all(rollout.parent().unwrap()).unwrap();
+    let compressed = zstd::stream::encode_all(
+        &b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"thread-1\",\"model_provider\":\"custom\"}}\n"[..], 0,
+    ).unwrap();
+    fs::write(&rollout, &compressed).unwrap();
+    let encrypted = home.join("sessions/rollout-thread-2.jsonl.enc");
+    fs::write(&encrypted, b"\0opaque encrypted history\xff").unwrap();
+    let index = home.join("session_index.jsonl");
+    fs::write(&index, b"{\"id\":\"thread-1\",\"thread_name\":\"kept remark\",\"updated_at\":\"old\"}\n").unwrap();
+    let index_before = fs::read(&index).unwrap();
+    let rollout_mtime = fs::metadata(&rollout).unwrap().modified().unwrap();
+    let db_path = home.join("state_5.sqlite");
+    create_remote_control_state_db(&db_path, &[
+        ("thread-1", "openai", 0, &rollout), ("thread-2", "other", 1, &encrypted),
+    ]);
+    create_local_thread_catalog_db(&db_path, &[("thread-1", "openai")]);
+    let db = Connection::open(&db_path).unwrap();
+    db.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         ALTER TABLE threads ADD COLUMN model TEXT DEFAULT 'gpt-5.4';
+         ALTER TABLE threads ADD COLUMN reasoning_effort TEXT DEFAULT 'high';
+         UPDATE local_thread_catalog_hosts SET host_id = 'desktop-local';
+         UPDATE local_thread_catalog SET host_id = 'desktop-local', display_title = 'kept catalog title';
+         INSERT INTO local_thread_catalog_hosts VALUES ('remote', 'ssh');
+         INSERT INTO local_thread_catalog (host_id,thread_id,display_title,source_created_at,source_updated_at,cwd,source_kind,model_provider,observation_sequence)
+           VALUES ('remote','thread-1','remote title',1,2,'/remote','cli','remote-provider',3);",
+    ).unwrap();
+    let settings_before = db.query_row(
+        "SELECT model,reasoning_effort,cwd,title,created_at_ms,updated_at_ms,rollout_path,archived FROM threads WHERE id='thread-1'",
+        [], |row| Ok((
+            row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?, row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?, row.get::<_, i64>(5)?,
+            row.get::<_, String>(6)?, row.get::<_, i64>(7)?,
+        )),
+    ).unwrap();
+    let catalog_before = db.query_row(
+        "SELECT display_title,source_updated_at,cwd,observation_sequence,missing_candidate FROM local_thread_catalog WHERE host_id='desktop-local'",
+        [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?)),
+    ).unwrap();
+
+    let result = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap();
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["changed"], true);
+    assert_eq!(result["sqlite_rows_updated"], 2);
+    assert_eq!(db.query_row(
+        "SELECT model_provider FROM threads WHERE id='thread-1'", [], |row| row.get::<_, String>(0),
+    ).unwrap(), "custom");
+    assert_eq!(db.query_row(
+        "SELECT model_provider FROM local_thread_catalog WHERE host_id='desktop-local'", [], |row| row.get::<_, String>(0),
+    ).unwrap(), "custom");
+    assert_eq!(db.query_row(
+        "SELECT model,reasoning_effort,cwd,title,created_at_ms,updated_at_ms,rollout_path,archived FROM threads WHERE id='thread-1'",
+        [], |row| Ok((
+            row.get::<_, String>(0)?, row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?, row.get::<_, String>(3)?,
+            row.get::<_, i64>(4)?, row.get::<_, i64>(5)?,
+            row.get::<_, String>(6)?, row.get::<_, i64>(7)?,
+        )),
+    ).unwrap(), settings_before);
+    assert_eq!(db.query_row(
+        "SELECT display_title,source_updated_at,cwd,observation_sequence,missing_candidate FROM local_thread_catalog WHERE host_id='desktop-local'",
+        [], |row| Ok((row.get::<_, String>(0)?, row.get::<_, f64>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?)),
+    ).unwrap(), catalog_before);
+    assert_eq!(db.query_row(
+        "SELECT model_provider FROM threads WHERE id='thread-2'", [], |row| row.get::<_, String>(0),
+    ).unwrap(), "other");
+    assert_eq!(db.query_row(
+        "SELECT model_provider FROM local_thread_catalog WHERE host_id='remote'", [], |row| row.get::<_, String>(0),
+    ).unwrap(), "remote-provider");
+    assert_eq!(db.query_row(
+        "SELECT catalog_revision FROM local_thread_catalog_metadata", [], |row| row.get::<_, i64>(0),
+    ).unwrap(), 0);
+    assert_eq!(fs::read(&rollout).unwrap(), compressed);
+    assert_eq!(fs::metadata(&rollout).unwrap().modified().unwrap(), rollout_mtime);
+    assert_eq!(fs::read(&encrypted).unwrap(), b"\0opaque encrypted history\xff");
+    assert_eq!(fs::read(&index).unwrap(), index_before);
+
+    let backup_path = Path::new(result["backup_path"].as_str().unwrap());
+    assert!(backup_path.starts_with(home.join("backups_state/thread-provider-prepare")));
+    let backup: serde_json::Value = serde_json::from_slice(&fs::read(backup_path).unwrap()).unwrap();
+    assert_eq!(Path::new(backup["changes"][0]["database"].as_str().unwrap()), fs::canonicalize(&db_path).unwrap());
+    assert_eq!(backup["changes"].as_array().unwrap().len(), 2);
+    let mut restore_db = Connection::open(&db_path).unwrap();
+    let restore = restore_db.transaction().unwrap();
+    for change in backup["changes"].as_array().unwrap() {
+        let before = change["before"]["model_provider"].as_str().unwrap();
+        let after = change["after"]["model_provider"].as_str().unwrap();
+        assert_eq!(before, "openai");
+        assert_eq!(after, "custom");
+        let count = match change["table"].as_str().unwrap() {
+            "threads" => restore.execute(
+                "UPDATE threads SET model_provider=?1 WHERE id=?2 AND model_provider=?3",
+                (before, change["keys"]["id"].as_str().unwrap(), after),
+            ).unwrap(),
+            "local_thread_catalog" => restore.execute(
+                "UPDATE local_thread_catalog SET model_provider=?1 WHERE host_id=?2 AND thread_id=?3 AND model_provider=?4",
+                (before, change["keys"]["host_id"].as_str().unwrap(), change["keys"]["thread_id"].as_str().unwrap(), after),
+            ).unwrap(),
+            other => panic!("unexpected backup table: {other}"),
+        };
+        assert_eq!(count, 1);
+    }
+    restore.commit().unwrap();
+    assert_eq!(db.query_row(
+        "SELECT model_provider FROM threads WHERE id='thread-1'", [], |row| row.get::<_, String>(0),
+    ).unwrap(), "openai");
+}
+
+#[test]
+fn thread_provider_prepare_prunes_only_old_owned_backups() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    write_provider_config(home, "custom");
+    create_state_db_with_providers(&home.join("state_5.sqlite"), &[("thread-1", "openai", 0)]);
+    let root = home.join("backups_state/thread-provider-prepare");
+    fs::create_dir_all(&root).unwrap();
+
+    let mut previous = Vec::new();
+    for index in 0..101 {
+        let path = root.join(format!("{}.json", uuid::Uuid::new_v4()));
+        fs::write(&path, br#"{"version":1,"operation":"thread-provider-prepare","changes":[]}"#).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(index + 1))).unwrap();
+        previous.push(path);
+    }
+    let unrelated = root.join("notes.json");
+    fs::write(&unrelated, b"keep this file").unwrap();
+    let unrelated_uuid = root.join(format!("{}.json", uuid::Uuid::new_v4()));
+    fs::write(&unrelated_uuid, br#"{"version":1,"operation":"another-operation"}"#).unwrap();
+    let truncated = root.join(format!("{}.json", uuid::Uuid::new_v4()));
+    fs::write(&truncated, br#"{"version":"#).unwrap();
+
+    let result = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap();
+    let current = Path::new(result["backup_path"].as_str().unwrap());
+    assert!(current.is_file());
+    assert!(previous[..2].iter().all(|path| !path.exists()));
+    assert!(previous[2..].iter().all(|path| path.is_file()));
+    assert_eq!(fs::read(&unrelated).unwrap(), b"keep this file");
+    assert!(unrelated_uuid.is_file());
+    assert!(truncated.is_file());
+    assert!(result["backup_retention_warnings"][0].as_str().unwrap()
+        .contains(truncated.to_str().unwrap()));
+}
+
+#[test]
+fn thread_provider_prepare_rollback_does_not_prune_old_backups() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    write_provider_config(home, "custom");
+    let db_path = home.join("state_5.sqlite");
+    create_state_db_with_providers(&db_path, &[("thread-1", "openai", 0)]);
+    create_local_thread_catalog_db(&db_path, &[("thread-1", "openai")]);
+    let db = Connection::open(&db_path).unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER reject_catalog BEFORE UPDATE ON local_thread_catalog BEGIN SELECT RAISE(IGNORE); END;",
+    ).unwrap();
+    let root = home.join("backups_state/thread-provider-prepare");
+    fs::create_dir_all(&root).unwrap();
+    let previous: Vec<_> = (0..100).map(|_| {
+        let path = root.join(format!("{}.json", uuid::Uuid::new_v4()));
+        fs::write(&path, br#"{"version":1,"operation":"thread-provider-prepare","changes":[]}"#).unwrap();
+        path
+    }).collect();
+
+    for _ in 0..2 {
+        let error = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap_err();
+        assert!(error.to_string().contains("CAS conflict"), "{error}");
+    }
+    assert!(previous.iter().all(|path| path.is_file()));
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 102);
+}
+
+#[cfg(windows)]
+#[test]
+fn thread_provider_prepare_reports_retention_failure_after_commit() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    write_provider_config(home, "custom");
+    let db_path = home.join("state_5.sqlite");
+    create_state_db_with_providers(&db_path, &[("thread-1", "openai", 0)]);
+    let root = home.join("backups_state/thread-provider-prepare");
+    fs::create_dir_all(&root).unwrap();
+    let mut oldest = None;
+    for index in 0..100 {
+        let path = root.join(format!("{}.json", uuid::Uuid::new_v4()));
+        fs::write(&path, br#"{"version":1,"operation":"thread-provider-prepare","changes":[]}"#).unwrap();
+        let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(index + 1))).unwrap();
+        if index == 0 {
+            oldest = Some(path);
+        }
+    }
+    let oldest = oldest.unwrap();
+    let held = fs::OpenOptions::new().read(true).share_mode(0x3).open(&oldest).unwrap();
+    let result = prepare_thread_provider(home, true, &thread_provider_prepare_request());
+    drop(held);
+
+    let result = result.unwrap();
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["changed"], true);
+    assert!(result["backup_retention_warnings"][0].as_str().unwrap()
+        .contains(oldest.to_str().unwrap()));
+    assert_eq!(Connection::open(&db_path).unwrap().query_row(
+        "SELECT model_provider FROM threads WHERE id='thread-1'",
+        [], |row| row.get::<_, String>(0),
+    ).unwrap(), "custom");
+}
+
+#[test]
+fn thread_provider_prepare_rejects_identity_and_provider_conflicts_without_backup() {
+    for scenario in ["remote", "missing_host", "conflicting_host", "internal_source", "internal_target", "bad_target", "source_changed", "catalog_changed", "missing_thread"] {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        write_provider_config(home, "custom");
+        let db_path = home.join("state_5.sqlite");
+        create_state_db_with_providers(&db_path, &[("thread-1", "openai", 0)]);
+        create_local_thread_catalog_db(&db_path, &[("thread-1", "openai")]);
+        let mut request = thread_provider_prepare_request();
+        match scenario {
+            "remote" => request["host_id"] = json!("ssh"),
+            "missing_host" => { request.as_object_mut().unwrap().remove("host_id"); },
+            "conflicting_host" => request["hostId"] = json!("remote"),
+            "internal_source" => request["source_provider"] = json!("codex_plus_managed"),
+            "internal_target" => request["target_provider"] = json!("codex_plus_managed"),
+            "bad_target" => request["target_provider"] = json!("another"),
+            "source_changed" => request["source_provider"] = json!("another"),
+            "catalog_changed" => {
+                Connection::open(&db_path).unwrap().execute("UPDATE local_thread_catalog SET model_provider='another'", []).unwrap();
+            }
+            "missing_thread" => request["thread_id"] = json!("missing"),
+            _ => unreachable!(),
+        }
+        let before = fs::read(&db_path).unwrap();
+        let error = prepare_thread_provider(home, true, &request).unwrap_err();
+        if scenario == "bad_target" {
+            assert!(error.to_string().contains("not resolvable"), "{error}");
+        }
+        assert_eq!(fs::read(&db_path).unwrap(), before, "{scenario}");
+        assert!(!home.join("backups_state").exists(), "{scenario}");
+    }
+}
+
+#[test]
+fn thread_provider_prepare_disabled_and_already_aligned_do_not_write() {
+    for enabled in [false, true] {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        write_provider_config(home, "custom");
+        let db_path = home.join("state_5.sqlite");
+        create_state_db_with_providers(&db_path, &[("thread-1", "custom", 0)]);
+        let before = fs::read(&db_path).unwrap();
+        let mut request = thread_provider_prepare_request();
+        request["source_provider"] = json!("custom");
+        let result = prepare_thread_provider(home, enabled, &request).unwrap();
+        assert_eq!(result["status"], if enabled { "ok" } else { "disabled" });
+        assert_eq!(result["changed"], false);
+        if enabled {
+            assert_eq!(result["sqlite_rows_updated"], 0);
+            assert!(result["backup_path"].is_null());
+        }
+        assert_eq!(fs::read(&db_path).unwrap(), before);
+        assert!(!home.join("backups_state").exists());
+    }
+}
+
+#[test]
+fn thread_provider_prepare_canonical_only_updates_exactly_one_thread() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    write_provider_config(home, "custom");
+    let db_path = home.join("state_5.sqlite");
+    create_state_db_with_providers(&db_path, &[("thread-1", "openai", 0), ("other", "openai", 0)]);
+    let result = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap();
+    assert_eq!(result["sqlite_rows_updated"], 1);
+    let db = Connection::open(&db_path).unwrap();
+    let providers: Vec<String> = db.prepare("SELECT model_provider FROM threads ORDER BY id").unwrap()
+        .query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+    assert_eq!(providers, ["openai", "custom"]);
+}
+
+#[test]
+fn thread_provider_prepare_supports_return_to_native_default_provider() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    fs::write(home.join("config.toml"), "model = 'current-default'\n").unwrap();
+    let db_path = home.join("state_5.sqlite");
+    create_state_db_with_providers(&db_path, &[("thread-1", "custom", 0)]);
+    let mut request = thread_provider_prepare_request();
+    request["source_provider"] = json!("custom");
+    request["target_provider"] = json!("openai");
+    let result = prepare_thread_provider(home, true, &request).unwrap();
+    assert_eq!(result["status"], "ok");
+    assert_eq!(Connection::open(&db_path).unwrap().query_row(
+        "SELECT model_provider FROM threads", [], |row| row.get::<_, String>(0),
+    ).unwrap(), "openai");
+}
+
+#[test]
+fn thread_provider_prepare_explicit_target_overrides_root_without_changing_config() {
+    for target in ["openai", "relay-beta"] {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        write_provider_config_with_tables(home, "custom", &["relay-beta"]);
+        let config_before = fs::read(home.join("config.toml")).unwrap();
+        let db_path = home.join("state_5.sqlite");
+        create_state_db_with_providers(&db_path, &[("thread-1", "custom", 0), ("other", "custom", 0)]);
+        create_local_thread_catalog_db(&db_path, &[("thread-1", "custom")]);
+        let mut request = thread_provider_prepare_request();
+        request["source_provider"] = json!("custom");
+        request["target_provider"] = json!(target);
+
+        let result = prepare_thread_provider(home, true, &request).unwrap();
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["target_provider"], target);
+        assert_eq!(result["changed"], true);
+        assert_eq!(result["sqlite_rows_updated"], 2);
+        let db = Connection::open(&db_path).unwrap();
+        for (table, key) in [("threads", "id"), ("local_thread_catalog", "thread_id")] {
+            assert_eq!(db.query_row(
+                &format!("SELECT model_provider FROM {table} WHERE {key}='thread-1'"),
+                [], |row| row.get::<_, String>(0),
+            ).unwrap(), target);
+        }
+        assert_eq!(db.query_row(
+            "SELECT model_provider FROM threads WHERE id='other'", [], |row| row.get::<_, String>(0),
+        ).unwrap(), "custom");
+        let backup: serde_json::Value = serde_json::from_slice(
+            &fs::read(result["backup_path"].as_str().unwrap()).unwrap(),
+        ).unwrap();
+        assert_eq!(backup["changes"].as_array().unwrap().len(), 2);
+        for change in backup["changes"].as_array().unwrap() {
+            assert_eq!(change["before"]["model_provider"], "custom");
+            assert_eq!(change["after"]["model_provider"], target);
+        }
+
+        request["source_provider"] = json!(target);
+        let aligned = prepare_thread_provider(home, true, &request).unwrap();
+        assert_eq!(aligned["changed"], false);
+        assert_eq!(aligned["sqlite_rows_updated"], 0);
+        assert!(aligned["backup_path"].is_null());
+        assert_eq!(fs::read(home.join("config.toml")).unwrap(), config_before);
+        assert_eq!(fs::read_dir(home.join("backups_state/thread-provider-prepare")).unwrap().count(), 1);
+    }
+}
+
+#[test]
+fn thread_provider_prepare_invalid_live_config_never_writes_indexes() {
+    for (target, config) in [
+        ("custom", Some("model_provider = 'custom'\n")),
+        ("custom", Some("model_provider = 'other'\n[model_providers.other]\nname='other'\n")),
+        ("custom", Some("model_provider = 'custom'\n[model_providers]\ncustom='invalid'\n")),
+        ("custom", Some("model_provider = 'openai'\n[profiles.project.model_providers.custom]\nname='custom'\n")),
+        ("custom", Some("model_provider = [\n")),
+        ("openai", Some("model_provider = [\n")),
+        ("openai", Some("model_providers = 'invalid'\n")),
+        ("openai", None),
+    ] {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        if let Some(config) = config {
+            fs::write(home.join("config.toml"), config).unwrap();
+        }
+        let db_path = home.join("state_5.sqlite");
+        create_state_db_with_providers(&db_path, &[("thread-1", "openai", 0)]);
+        let before = fs::read(&db_path).unwrap();
+        let mut request = thread_provider_prepare_request();
+        request["target_provider"] = json!(target);
+        assert!(prepare_thread_provider(home, true, &request).is_err(), "{target}: {config:?}");
+        assert_eq!(fs::read(&db_path).unwrap(), before);
+        assert!(!home.join("backups_state").exists());
+    }
+}
+
+#[test]
+fn thread_provider_prepare_catalog_cas_failure_rolls_back_canonical_in_wal() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    write_provider_config(home, "custom");
+    let db_path = home.join("state_5.sqlite");
+    create_state_db_with_providers(&db_path, &[("thread-1", "openai", 0)]);
+    create_local_thread_catalog_db(&db_path, &[("thread-1", "openai")]);
+    let db = Connection::open(&db_path).unwrap();
+    db.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TRIGGER reject_catalog BEFORE UPDATE ON local_thread_catalog BEGIN SELECT RAISE(IGNORE); END;",
+    ).unwrap();
+    let error = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap_err();
+    assert!(error.to_string().contains("CAS conflict"), "{error}");
+    for table in ["threads", "local_thread_catalog"] {
+        assert_eq!(db.query_row(
+            &format!("SELECT model_provider FROM {table}"), [], |row| row.get::<_, String>(0),
+        ).unwrap(), "openai");
+    }
+    assert_eq!(fs::read_dir(home.join("backups_state/thread-provider-prepare")).unwrap().count(), 1);
+}
+
+#[test]
+fn thread_provider_prepare_aligned_catalog_only_changes_and_backs_up_canonical() {
+    for split_database in [false, true] {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        fs::create_dir_all(home.join("sqlite")).unwrap();
+        write_provider_config(home, "custom");
+        let canonical = home.join("state_5.sqlite");
+        let catalog = if split_database {
+            home.join("sqlite/codex-dev.db")
+        } else {
+            canonical.clone()
+        };
+        create_state_db_with_providers(&canonical, &[("thread-1", "openai", 0)]);
+        create_local_thread_catalog_db(&catalog, &[("thread-1", "custom")]);
+        let catalog_db = Connection::open(&catalog).unwrap();
+        catalog_db.execute_batch(
+            "CREATE TRIGGER reject_catalog_write BEFORE UPDATE ON local_thread_catalog
+             BEGIN SELECT RAISE(ABORT, 'aligned catalog must not be written'); END;",
+        ).unwrap();
+
+        let result = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap();
+        assert_eq!(result["status"], "ok");
+        assert_eq!(result["changed"], true);
+        assert_eq!(result["sqlite_rows_updated"], 1);
+        for (path, table) in [(&canonical, "threads"), (&catalog, "local_thread_catalog")] {
+            assert_eq!(Connection::open(path).unwrap().query_row(
+                &format!("SELECT model_provider FROM {table}"), [], |row| row.get::<_, String>(0),
+            ).unwrap(), "custom");
+        }
+        let backup: serde_json::Value = serde_json::from_slice(
+            &fs::read(result["backup_path"].as_str().unwrap()).unwrap(),
+        ).unwrap();
+        assert_eq!(backup["changes"].as_array().unwrap().len(), 1);
+        assert_eq!(backup["changes"][0]["table"], "threads");
+        assert_eq!(backup["changes"][0]["before"]["model_provider"], "openai");
+        assert_eq!(backup["changes"][0]["after"]["model_provider"], "custom");
+        assert_eq!(Path::new(backup["changes"][0]["database"].as_str().unwrap()), fs::canonicalize(&canonical).unwrap());
+    }
+}
+
+#[test]
+fn thread_provider_prepare_split_indexes_commit_or_roll_back_together_in_wal() {
+    for reject_catalog in [false, true] {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        fs::create_dir_all(home.join("sqlite")).unwrap();
+        write_provider_config(home, "custom");
+        let canonical = home.join("state_5.sqlite");
+        let other = home.join("sqlite/codex-dev.db");
+        create_state_db_with_providers(&canonical, &[("thread-1", "openai", 0)]);
+        create_local_thread_catalog_db(&other, &[("thread-1", "openai")]);
+        let canonical_db = Connection::open(&canonical).unwrap();
+        let catalog_db = Connection::open(&other).unwrap();
+        canonical_db.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        catalog_db.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        if reject_catalog {
+            catalog_db.execute_batch(
+                "CREATE TRIGGER reject_catalog BEFORE UPDATE ON local_thread_catalog BEGIN SELECT RAISE(IGNORE); END;",
+            ).unwrap();
+        }
+        let result = prepare_thread_provider(home, true, &thread_provider_prepare_request());
+        if reject_catalog {
+            assert!(result.unwrap_err().to_string().contains("CAS conflict"));
+        } else {
+            let result = result.unwrap();
+            assert_eq!(result["sqlite_rows_updated"], 2);
+            let backup: serde_json::Value = serde_json::from_slice(
+                &fs::read(result["backup_path"].as_str().unwrap()).unwrap(),
+            ).unwrap();
+            assert_eq!(Path::new(backup["changes"][0]["database"].as_str().unwrap()), fs::canonicalize(&canonical).unwrap());
+            assert_eq!(Path::new(backup["changes"][1]["database"].as_str().unwrap()), fs::canonicalize(&other).unwrap());
+        }
+        for (db, table) in [(&canonical_db, "threads"), (&catalog_db, "local_thread_catalog")] {
+            assert_eq!(db.query_row(
+                &format!("SELECT model_provider FROM {table}"), [], |row| row.get::<_, String>(0),
+            ).unwrap(), if reject_catalog { "openai" } else { "custom" });
+        }
+    }
+}
+
+#[test]
+fn thread_provider_prepare_duplicate_indexes_fail_before_any_write() {
+    for duplicate_canonical in [false, true] {
+        let temp = tempdir().unwrap();
+        let home = temp.path();
+        fs::create_dir_all(home.join("sqlite")).unwrap();
+        write_provider_config(home, "custom");
+        let canonical = home.join("state_5.sqlite");
+        let other = home.join("sqlite/codex-dev.db");
+        create_state_db_with_providers(&canonical, &[("thread-1", "openai", 0)]);
+        if duplicate_canonical {
+            create_state_db_with_providers(&other, &[("thread-1", "openai", 0)]);
+        } else {
+            create_local_thread_catalog_db(&canonical, &[("thread-1", "openai")]);
+            create_local_thread_catalog_db(&other, &[("thread-1", "openai")]);
+        }
+        let before_canonical = fs::read(&canonical).unwrap();
+        let before_other = fs::read(&other).unwrap();
+        let error = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap_err();
+        assert!(error.to_string().contains(if duplicate_canonical { "Ambiguous canonical" } else { "Ambiguous local catalog" }), "{error}");
+        assert_eq!(fs::read(&canonical).unwrap(), before_canonical);
+        assert_eq!(fs::read(&other).unwrap(), before_other);
+        assert!(!home.join("backups_state").exists());
+    }
+}
+
+#[test]
+fn thread_provider_prepare_honors_lifecycle_lock_and_pending_recovery() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    write_provider_config(home, "custom");
+    let db_path = home.join("state_5.sqlite");
+    create_state_db_with_providers(&db_path, &[("thread-1", "openai", 0)]);
+    let before = fs::read(&db_path).unwrap();
+    let guard = codex_plus_data::try_acquire_provider_sync_lifecycle_guard(Some(home)).unwrap();
+    assert!(prepare_thread_provider(home, true, &thread_provider_prepare_request()).is_err());
+    guard.release().unwrap();
+    let pending = home.join("backups_state/provider-sync/unfinished");
+    fs::create_dir_all(&pending).unwrap();
+    fs::write(pending.join("metadata.json"), br#"{"version":2,"managedBy":"Codex++ provider sync","namespace":"provider-sync"}"#).unwrap();
+    fs::write(pending.join("recovery-journal.json"), br#"{"version":1,"state":"prepared","entries":[]}"#).unwrap();
+    let error = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap_err();
+    assert!(error.to_string().contains("recovery is pending"), "{error}");
+    assert_eq!(fs::read(&db_path).unwrap(), before);
+    assert!(!home.join("backups_state/thread-provider-prepare").exists());
+}
 
 #[test]
 fn pending_full_sync_journal_blocks_both_remote_control_writers_without_changes() {

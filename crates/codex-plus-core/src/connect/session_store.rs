@@ -106,6 +106,16 @@ impl ConnectSessionStore {
         }
     }
 
+    /// 同一账号的附属状态文件：`<状态文件名>-<suffix>.json`，和连接状态放在一起（测试里也跟着进临时目录）。
+    pub fn sibling_path(&self, suffix: &str) -> PathBuf {
+        let stem = self
+            .path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_string())
+            .unwrap_or_else(|| "weixin-connect-state".to_string());
+        self.path.with_file_name(format!("{stem}-{suffix}.json"))
+    }
+
     pub fn save(&self, state: &ConnectState) -> anyhow::Result<()> {
         let bytes = serde_json::to_vec_pretty(state)?;
         crate::settings::atomic_write(&self.path, &bytes)

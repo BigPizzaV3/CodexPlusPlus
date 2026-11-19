@@ -354,41 +354,67 @@
     const envelope = codexPlusPluginNativeRequests.get(key);
     if (!envelope) return false;
     codexPlusPluginNativeRequests.delete(key);
+    // 返回 true 意味着这个回包已被我们从原生路径摘下：后续处理必须限时，
+    // 超时或出错都要把原始回包原样投回渲染层，绝不能让宿主请求永久 pending
+    // （issue #3098：首批 vscode 查询全部停在 fetching 就是这条链挂死的表现）。
+    let delivered = false;
+    const deliverOriginal = () => {
+      if (delivered) return;
+      delivered = true;
+      codexPlusPluginNativeDeliver(data);
+    };
     void (async () => {
-      let payload;
-      let nativeError;
-      let wrapped = false;
-      if (fetchResponse) {
-        if (data.responseType === "error" || Number(data.status) >= 400) nativeError = data.error || data.bodyJsonString || "原生插件接口请求失败";
-        try { payload = "body" in data ? data.body : JSON.parse(data.bodyJsonString || "{}"); } catch {
-          codexPlusPluginNativeDeliver(data);
-          return;
-        }
-        if (payload?.error) nativeError = payload.error;
-        wrapped = payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "id");
-      } else {
-        payload = data.message?.result;
-        nativeError = data.message?.error;
+      try {
+        await Promise.race([
+          (async () => {
+            let payload;
+            let nativeError;
+            let wrapped = false;
+            if (fetchResponse) {
+              if (data.responseType === "error" || Number(data.status) >= 400) nativeError = data.error || data.bodyJsonString || "原生插件接口请求失败";
+              try { payload = "body" in data ? data.body : JSON.parse(data.bodyJsonString || "{}"); } catch {
+                deliverOriginal();
+                return;
+              }
+              if (payload?.error) nativeError = payload.error;
+              wrapped = payload && typeof payload === "object" && Object.prototype.hasOwnProperty.call(payload, "id");
+            } else {
+              payload = data.message?.result;
+              nativeError = data.message?.error;
+            }
+            if (nativeError && !pluginMarketplaceRemoteAuthError(nativeError)) {
+              deliverOriginal();
+              return;
+            }
+            const original = nativeError ? {} : wrapped ? payload.result : payload;
+            const merged = await codexPlusPluginNativeExtend(envelope.operation, original);
+            let next;
+            if (fetchResponse) {
+              const response = wrapped ? { ...payload, result: merged } : merged;
+              if (wrapped) delete response.error;
+              next = { ...data, responseType: "success", status: 200, bodyJsonString: JSON.stringify(response) };
+              delete next.body;
+              delete next.error;
+            } else {
+              const message = { ...data.message, result: merged };
+              delete message.error;
+              next = { ...data, message };
+            }
+            if (!delivered) {
+              delivered = true;
+              codexPlusPluginNativeDeliver(next);
+            }
+          })(),
+          new Promise((_resolve, reject) => {
+            setTimeout(() => reject(new Error("插件市场回包处理超时")), 15_000);
+          }),
+        ]);
+      } catch (error) {
+        try { codexPlusMarkExtensionFailure("", `插件市场回包处理失败，已原样转发：${String(error?.message || error)}`); } catch {}
+      } finally {
+        deliverOriginal();
       }
-      if (nativeError && !pluginMarketplaceRemoteAuthError(nativeError)) {
-        codexPlusPluginNativeDeliver(data);
-        return;
-      }
-      const original = nativeError ? {} : wrapped ? payload.result : payload;
-      const merged = await codexPlusPluginNativeExtend(envelope.operation, original);
-      if (fetchResponse) {
-        const response = wrapped ? { ...payload, result: merged } : merged;
-        if (wrapped) delete response.error;
-        const next = { ...data, responseType: "success", status: 200, bodyJsonString: JSON.stringify(response) };
-        delete next.body;
-        delete next.error;
-        codexPlusPluginNativeDeliver(next);
-      } else {
-        const message = { ...data.message, result: merged };
-        delete message.error;
-        codexPlusPluginNativeDeliver({ ...data, message });
-      }
-    })().catch((error) => codexPlusPluginNativeReply(envelope, null, error));
+    })();
     return true;
   }
 

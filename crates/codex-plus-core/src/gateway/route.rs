@@ -162,6 +162,8 @@ fn build_auto_group(
         members,
         hide_members: settings.hide_members,
         pick: settings.pick,
+        // 自动组的成员都是同一个模型，不需要另指图像输入模型。
+        image_input_model: String::new(),
         extra: Default::default(),
     })
 }
@@ -262,7 +264,7 @@ pub fn pool_models(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<Str
 /// 但成员的供应商全被这个 Agent 的『挑选』排除」时才不列（#2969），否则选了也只会报错。
 /// 本来就展开不了的组（成员模型没人提供等）保持原样列出，由默认模型等环节各自处理。
 /// `advance = false`：只看能不能展开，不推进轮换进度。
-fn group_listed_for_binding(gateway: &GatewaySettings, binding: &AgentBinding, group: &GatewayGroup) -> bool {
+pub(crate) fn group_listed_for_binding(gateway: &GatewaySettings, binding: &AgentBinding, group: &GatewayGroup) -> bool {
     if group.disabled || group.members.is_empty() {
         return false;
     }
@@ -340,6 +342,7 @@ pub fn codex_binding_models(gateway: &GatewaySettings, binding: &AgentBinding) -
         if !model.is_empty()
             && !is_disabled_group_model(gateway, &model)
             && !unavailable_registered_model(gateway, binding, &model)
+            && !retired_codex_model(gateway, binding, &model)
             && !models
                 .iter()
                 .any(|known| known.eq_ignore_ascii_case(&model))
@@ -468,6 +471,52 @@ pub fn model_entry_window(
         .min()
 }
 
+/// 这一项只发给官方账号供应商时，本机 Codex 官方缓存给这些模型的窗口（取最小）。
+/// 有一家不是官方账号、或缓存里没有这个模型时返回 None，不替别家猜窗口（#3161）。
+pub fn official_native_window(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<u64> {
+    let members = model_entry_members(gateway, binding, model);
+    if members.is_empty() {
+        return None;
+    }
+    members
+        .iter()
+        .map(|(relay, upstream)| {
+            // 只看是不是官方账号供应商（Responses、没有另配 API 地址），不看此刻是否登录：
+            // 目录不能随登录状态来回变。
+            let official = crate::official_login::is_official_login_profile(relay)
+                && relay.protocol == crate::settings::RelayProtocol::Responses
+                && !(!relay.base_url.trim().is_empty()
+                    && (!relay.api_key.trim().is_empty() || relay.uses_no_auth()));
+            official
+                .then(|| crate::model_suffix::native_cache_context_window(upstream))
+                .flatten()
+        })
+        .collect::<Option<Vec<_>>>()?
+        .into_iter()
+        .min()
+}
+
+/// Agent 模型列表里一项的自动压缩百分比（#3100）：它会发给的各家里单独设过的取最小值
+/// （与窗口取最小一致，宁早勿晚）；都没设返回 None，交给 Agent 默认。
+pub fn model_entry_auto_compact(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<f64> {
+    model_entry_members(gateway, binding, model)
+        .into_iter()
+        .filter_map(|(relay, upstream)| {
+            gateway
+                .provider(&relay.id)
+                .and_then(|provider| provider.auto_compact_for(&upstream))
+        })
+        .reduce(f64::min)
+}
+
 /// 某家某个模型支持的思考档位（由低到高）：用户在模型资料里写的优先，其次内置模型资料。
 /// 没有资料时为空。与 Codex 模型目录、管理器的「思考等级」读同一份资料。
 pub fn model_reasoning_levels(relay: &RelayProfile, model: &str) -> Vec<String> {
@@ -584,6 +633,7 @@ pub fn binding_default_model(gateway: &GatewaySettings, binding: &AgentBinding) 
     if !slug.trim().is_empty() {
         let selection_unavailable = unavailable_registered_model(gateway, binding, &slug);
         if selection_unavailable
+            || retired_codex_model(gateway, binding, &slug)
             || is_disabled_group_model(gateway, &slug)
             && !binding.default_model_selection.as_ref().is_some_and(|selection| {
                 slug.eq_ignore_ascii_case(&selection.model_name())
@@ -592,7 +642,8 @@ pub fn binding_default_model(gateway: &GatewaySettings, binding: &AgentBinding) 
             let models = pool_models(gateway, binding);
             if let Some(model) = models
                 .iter()
-                .find(|model| !model_entry_members(gateway, binding, model).is_empty())
+                .find(|model| !retired_codex_model(gateway, binding, model)
+                    && !model_entry_members(gateway, binding, model).is_empty())
             {
                 return model.clone();
             }
@@ -637,6 +688,27 @@ pub fn model_is_routable(gateway: &GatewaySettings, binding: &AgentBinding, mode
         .iter()
         .any(|known| known.eq_ignore_ascii_case(model))
         || qualified_provider(gateway, binding, model).is_some()
+}
+
+/// #2897 的跨供应商回退不能证明历史选择仍有效。
+pub(super) fn codex_model_available(gateway: &GatewaySettings, binding: &AgentBinding, model: &str) -> bool {
+    match selected_provider(gateway, binding, model) {
+        Ok(Some(_)) => true,
+        Err(_) => false,
+        Ok(None) => {
+            if let Some(group) = group_by_model(gateway, model) {
+                return !group.disabled && !expand_group(gateway, binding, group, 0, &mut Vec::new(), false).is_empty();
+            }
+            let relays = binding_pool_relays(gateway, binding);
+            declared_by_any(&relays, model)
+                || qualified_in(&relays, model).is_some()
+        }
+    }
+}
+
+pub(super) fn retired_codex_model(gateway: &GatewaySettings, binding: &AgentBinding, model: &str) -> bool {
+    binding.known_models.contains(&model.to_ascii_lowercase())
+        && !codex_model_available(gateway, binding, model)
 }
 
 /// 暴露给 Agent 的模型：默认模型在前，然后是池里所有能用的模型和路由组，以及绑定里声明的模型。
@@ -748,12 +820,37 @@ pub fn claude_desktop_alias(model: &str, has_effort: bool) -> String {
     format!("{CLAUDE_EFFORT_ALIAS_PREFIX}{}", alias_number(model))
 }
 
+/// Claude Desktop 把网关模型标成 1M 上下文的门槛（#3107）。
+///
+/// Desktop 网关模式的 `/v1/models` 发现逻辑（app.asar `[custom-3p] Gateway /v1/models`）只认一个布尔：
+/// 行里 `supports_1m` 是布尔就用它，否则看 `max_input_tokens >= 1e6`；数值本身不保留，
+/// 没有别的档位（256K / 400K 这类窗口无法告诉它）。所以不到 1M 的模型绝不能标 1M，
+/// 否则 Desktop 会把自动压缩推迟到超出上游真实窗口。
+pub const CLAUDE_DESKTOP_1M_WINDOW: u64 = 1_000_000;
+
+/// Claude Desktop `/v1/models` 一行里声明窗口的字段 `(max_input_tokens, supports_1m)`：
+/// 窗口取 [`model_entry_window`]（模型组按最短的那家），达到 [`CLAUDE_DESKTOP_1M_WINDOW`] 才算 1M。
+/// 池里没写窗口时 None，什么都不声明，Desktop 按它自带的 200k。
+///
+/// 标了 1M 的模型 Desktop 会多给一个 `<id>[1m]` 的 1M 选项，id 本身不用加后缀；
+/// 选中后发回来的 `<id>[1m]` 由 [`claude_alias_target`] 剥掉后缀再还原。
+pub fn claude_desktop_window(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<(u64, bool)> {
+    let window = model_entry_window(gateway, binding, model)?;
+    Some((window, window >= CLAUDE_DESKTOP_1M_WINDOW))
+}
+
 /// 把 Claude Desktop 发来的别名还原成真实模型名；不是别名、或别名对不上这个绑定的任何模型时 None。
 fn claude_alias_target(
     gateway: &GatewaySettings,
     binding: &AgentBinding,
     requested: &str,
 ) -> Option<String> {
+    // Desktop 的 1M 选项 id 是 `<别名>[1m]`（见 [`claude_desktop_window`]）：先剥掉窗口后缀再对别名。
+    let (requested, _) = crate::model_suffix::parse_model_suffix(requested);
     let digits = [CLAUDE_ALIAS_PREFIX, CLAUDE_EFFORT_ALIAS_PREFIX]
         .iter()
         .find_map(|prefix| {
@@ -888,6 +985,15 @@ fn effective_model_detailed(
     {
         return (requested_slug, false);
     }
+    // `<供应商 id>/<模型>` 的供应商不在这个 Agent 的池里（删了 / 关了 / 被排除）时，不按「未知模型」
+    // 改写成默认模型（#3179：`<直连供应商>/gpt-6.1-sol` 被静默换成默认的 gpt-6-astra）。
+    // 池里有别家提供同名模型的，原样交给 expand_model 去掉前缀路由（#2897）；前缀是网关里
+    // 还在的供应商、池里又没人提供同名模型的，原样留着，由 resolve_plan 明确报错。
+    if unpooled_qualified_bare(gateway, binding, &requested_slug).is_some()
+        || unpooled_provider_prefix(gateway, binding, &requested_slug).is_some()
+    {
+        return (requested_slug, false);
+    }
     match binding.unknown_model {
         UnknownModelPolicy::MapToDefault if !default_model.is_empty() => {
             let mapped = !default_model.eq_ignore_ascii_case(&requested_slug);
@@ -993,6 +1099,52 @@ fn qualified_in<'a>(
         .copied()
         .find(|relay| relay.id.eq_ignore_ascii_case(prefix))
         .map(|relay| (relay, rest.trim().to_string()))
+}
+
+/// `<前缀>/<模型>` 形式、前缀不是池内供应商、整串也没人当模型名声明时，拆出 (前缀, 模型)。
+fn unpooled_qualified<'m>(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &'m str,
+) -> Option<(&'m str, &'m str)> {
+    if model.starts_with(GROUP_MODEL_PREFIX) || is_pattern(model) {
+        return None;
+    }
+    let (prefix, rest) = model.split_once('/')?;
+    let rest = rest.trim();
+    if rest.is_empty()
+        || qualified_provider(gateway, binding, model).is_some()
+        || declared_by_any(&binding_pool_relays(gateway, binding), model)
+    {
+        return None;
+    }
+    Some((prefix, rest))
+}
+
+/// 池外供应商的限定名，池里有别家提供去掉前缀的同名模型时，返回那个模型名（expand_model 的 #2897 规则）。
+fn unpooled_qualified_bare<'m>(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    model: &'m str,
+) -> Option<&'m str> {
+    let (_, rest) = unpooled_qualified(gateway, binding, model)?;
+    binding_pool_relays(gateway, binding)
+        .iter()
+        .any(|relay| serves(relay, rest))
+        .then_some(rest)
+}
+
+/// 限定名的前缀是网关里还在、但这个 Agent 用不了（关了 / 被排除）的供应商时返回它。
+fn unpooled_provider_prefix<'a>(
+    gateway: &'a GatewaySettings,
+    binding: &AgentBinding,
+    model: &str,
+) -> Option<&'a GatewayProvider> {
+    let (prefix, _) = unpooled_qualified(gateway, binding, model)?;
+    gateway
+        .providers
+        .iter()
+        .find(|provider| provider.relay.id.eq_ignore_ascii_case(prefix))
 }
 
 /// 列表里有没有供应商把这个完整名字当模型名声明。
@@ -1252,6 +1404,66 @@ fn expand_group(
     relays
 }
 
+/// 模型组的图像输入模型展开成 (供应商, 模型)（#3150）；没设图像输入模型时为空。
+/// 按组成员的口径展开（depth 1）：`<供应商 id>/<模型>` 钉在那一家，那家关了就是不可用，
+/// 不换成别家的同名模型；指向自己的组时视为环，展开为空。
+fn expand_image_input_model(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    group: &GatewayGroup,
+    advance: bool,
+) -> Vec<(RelayProfile, String)> {
+    let image = group.image_input_model.trim();
+    if image.is_empty() {
+        return Vec::new();
+    }
+    expand_model(gateway, binding, image, 1, &mut vec![group.id.clone()], advance)
+}
+
+/// 目录用：模型组的图像输入模型实际会发给哪些（供应商, 上游模型），不推进轮换位置。
+pub fn group_image_input_members(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    group: &GatewayGroup,
+) -> Vec<(RelayProfile, String)> {
+    expand_image_input_model(gateway, binding, group, false)
+}
+
+/// 请求上下文里有没有图片（#3150）。认 Responses（`input_image`）、Chat Completions（`image_url`）、
+/// Anthropic（`image`）与 Gemini（`inlineData` / `fileData` 的 `image/*`）几种写法，
+/// 历史消息、工具输出里的图片也算。只看消息字段（`input` / `messages` / `contents`），
+/// 不看工具定义等别处，免得 JSON Schema 里的同名字段误判。
+pub fn request_has_images(request: &serde_json::Value) -> bool {
+    ["input", "messages", "contents"]
+        .iter()
+        .filter_map(|key| request.get(*key))
+        .any(value_has_image)
+}
+
+fn value_has_image(value: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    match value {
+        Value::Array(items) => items.iter().any(value_has_image),
+        Value::Object(map) => {
+            if map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| matches!(kind, "input_image" | "image_url" | "image"))
+            {
+                return true;
+            }
+            let gemini_image = ["inlineData", "inline_data", "fileData", "file_data"]
+                .iter()
+                .filter_map(|key| map.get(*key))
+                .filter_map(|data| data.get("mimeType").or_else(|| data.get("mime_type")))
+                .filter_map(Value::as_str)
+                .any(|mime| mime.trim().to_ascii_lowercase().starts_with("image/"));
+            gemini_image || map.values().any(value_has_image)
+        }
+        _ => false,
+    }
+}
+
 /// 额度优先：有余量的按剩余比例从多到少，其次是没有额度数据的（保持原顺序），用完的排最后。
 fn sort_by_quota(relays: &mut [(RelayProfile, String)]) {
     relays.sort_by(|(left, _), (right, _)| {
@@ -1459,7 +1671,20 @@ pub fn resolve_plan(
     requested_model: &str,
     conversation: Option<&str>,
 ) -> anyhow::Result<RoutePlan> {
-    resolve_plan_with(gateway, agent, requested_model, conversation, true)
+    resolve_plan_with(gateway, agent, requested_model, conversation, true, false)
+}
+
+/// 同 [`resolve_plan`]，再看请求体里有没有图片：模型组设了图像输入模型、请求上下文又带图片时，
+/// 这次只发给图像输入模型（#3150）。
+pub fn resolve_plan_for_request(
+    gateway: &GatewaySettings,
+    agent: &ToolId,
+    requested_model: &str,
+    conversation: Option<&str>,
+    request: &serde_json::Value,
+) -> anyhow::Result<RoutePlan> {
+    let images = request_has_images(request);
+    resolve_plan_with(gateway, agent, requested_model, conversation, true, images)
 }
 
 /// 只预览：和 [`resolve_plan`] 选出同样的第一个候选，但不推进模型组轮换 / 权重和 Key 轮询的进度。
@@ -1470,7 +1695,19 @@ pub fn preview_plan(
     requested_model: &str,
     conversation: Option<&str>,
 ) -> anyhow::Result<RoutePlan> {
-    resolve_plan_with(gateway, agent, requested_model, conversation, false)
+    resolve_plan_with(gateway, agent, requested_model, conversation, false, false)
+}
+
+/// 同 [`preview_plan`]，带图片的请求按图像输入模型预览（与 [`resolve_plan_for_request`] 一致）。
+pub fn preview_plan_for_request(
+    gateway: &GatewaySettings,
+    agent: &ToolId,
+    requested_model: &str,
+    conversation: Option<&str>,
+    request: &serde_json::Value,
+) -> anyhow::Result<RoutePlan> {
+    let images = request_has_images(request);
+    resolve_plan_with(gateway, agent, requested_model, conversation, false, images)
 }
 
 fn resolve_plan_with(
@@ -1479,6 +1716,7 @@ fn resolve_plan_with(
     requested_model: &str,
     conversation: Option<&str>,
     advance: bool,
+    images: bool,
 ) -> anyhow::Result<RoutePlan> {
     let binding = gateway
         .active_binding(agent)
@@ -1500,25 +1738,67 @@ fn resolve_plan_with(
 
     let group = selected.is_none().then(|| group_for(gateway, &model)).flatten();
     let group_id = group.as_ref().map(|group| group.id.clone());
-    let sticky_ttl = group.as_ref().and_then(|group| sticky_ttl(group.sticky));
-    let mut relays = match selected {
-        Some((relay, upstream)) => vec![(relay.clone(), upstream)],
-        None => expand_model(gateway, binding, &model, 0, &mut Vec::new(), advance),
+    // 图像输入模型（#3150）：组设了图像输入模型、请求上下文里又有图片时，这次只发给图像输入模型。
+    // 看的是整段上下文而不只是本轮新消息：历史里的图片每轮都会随上下文重发，交给不收图的成员
+    // 照样会被拒（或被上游悄悄丢掉），所以只要上下文里还带着图，就一直走图像输入模型，
+    // 直到压缩 / 新会话把图片移出上下文。
+    let image_group = group
+        .as_ref()
+        .filter(|group| images && !group.image_input_model.trim().is_empty());
+    // 改发图像输入模型的请求不参与会话固定：不记、不读，免得没图片的请求被拉去固定在图像输入模型上。
+    let sticky_ttl = group
+        .as_ref()
+        .filter(|_| image_group.is_none())
+        .and_then(|group| sticky_ttl(group.sticky));
+    let mut relays = match (selected, image_group) {
+        (Some((relay, upstream)), _) => vec![(relay.clone(), upstream)],
+        (None, Some(group)) => {
+            let relays = expand_image_input_model(gateway, binding, group, advance);
+            if relays.is_empty() {
+                // 不退回组里其它成员：它们多半不收图，转过去只会报错或把图片丢掉。
+                bail!(
+                    "模型组「{}」的图像输入模型 {} 不可用（池里没有打开的供应商提供它）：请求里带图片，没有改发给组里其它成员。请在网关「路由」里改选图像输入模型",
+                    group.name,
+                    group.image_input_model.trim()
+                );
+            }
+            relays
+        }
+        (None, None) => expand_model(gateway, binding, &model, 0, &mut Vec::new(), advance),
     };
     // 依次：排序本身就是优先级，记下本来该先试的成员（会话固定挪动顺序之前）。
     let preferred = group
         .as_ref()
-        .filter(|group| group.mode == GroupMode::InOrder)
+        .filter(|group| image_group.is_none() && group.mode == GroupMode::InOrder)
         .and_then(|_| relays.first())
         .map(|(relay, model)| (relay.id.clone(), model.clone()));
-    let hold_on_switch = group
-        .as_ref()
-        .is_some_and(|group| group.mode == GroupMode::Usage);
+    let hold_on_switch = image_group.is_none()
+        && group
+            .as_ref()
+            .is_some_and(|group| group.mode == GroupMode::Usage);
     if let (Some(group), Some(conversation)) = (group.as_ref(), conversation.as_deref())
+        && image_group.is_none()
         && group.mode != GroupMode::Manual
         && let Some(remembered) = recall_answer(group, conversation, Instant::now())
     {
         prefer_remembered(&mut relays, &remembered);
+    }
+    if relays.is_empty()
+        && group_id.is_none()
+        && let Some(provider) = unpooled_provider_prefix(gateway, binding, &model)
+    {
+        // 显式指定了某家供应商的模型：那家用不了、池里也没人提供同名模型时明确报错，
+        // 不改发到默认模型，也不把带前缀的名字原样发给别家（#3179）。
+        let reason = if !provider.enabled {
+            "已关闭".to_string()
+        } else {
+            format!("不在 {} 的网关供应商池里", agent.as_str())
+        };
+        let rest = model.split_once('/').map(|(_, rest)| rest.trim()).unwrap_or_default();
+        bail!(
+            "模型 {model} 指定的供应商「{}」{reason}，池里也没有其它供应商提供 {rest}；为避免换成别的模型，这次请求没有发出。请在网关里打开该供应商或把它加回供应商池，或改选其它模型",
+            provider.relay.name
+        );
     }
     if relays.is_empty() && group_id.is_none() {
         // 原样转发的未知模型：交给默认模型所在的供应商。
@@ -1593,6 +1873,7 @@ fn resolve_plan_with(
     let cooldown_off = crate::extension_gateway::builtin_replaced("builtin:key-cooldown");
     let breaker_off = crate::extension_gateway::builtin_replaced("builtin:key-breaker");
     let rate_limit_off = crate::extension_gateway::builtin_replaced("builtin:local-rate-limit");
+    let pinned_key = crate::responses_websocket::pinned_key();
     for (relay, upstream_model) in permitted {
         let provider = gateway.provider(&relay.id);
         let window = provider.and_then(|provider| provider.window_for(&upstream_model));
@@ -1619,9 +1900,15 @@ fn resolve_plan_with(
             limits,
         };
         for key in order.available {
+            if pinned_key.as_ref().is_some_and(|pinned| pinned != &key.key) {
+                continue;
+            }
             candidates.push(candidate(key));
         }
         for key in order.waiting {
+            if pinned_key.as_ref().is_some_and(|pinned| pinned != &key.candidate.key) {
+                continue;
+            }
             let bypass = match key.reason {
                 // 自己在冷却的 Key 可能同时赶上供应商熔断：熔断没关掉时仍按熔断拦着。
                 key_pool::WaitReason::Cooling => {
@@ -1698,6 +1985,7 @@ mod tests {
             models_checked_at_ms: 0,
             newapi_access: None,
             upstream_meta: Default::default(),
+            auto_compact: Default::default(),
             subscription_policy: None,
             relay: RelayProfile {
                 id: id.to_string(),
@@ -2122,6 +2410,65 @@ mod tests {
         );
     }
 
+    /// #3107：Desktop 只认「是不是 1M」，所以窗口到 1M 才标 1M；256K / 400K 这类只报真实窗口、
+    /// 明确不标 1M。模型组按最短的那家算。
+    #[test]
+    fn desktop_window_marks_1m_only_from_one_million() {
+        let mut gateway = gateway("kimi-k3");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        assert_eq!(claude_desktop_window(&gateway, &binding, "kimi-k3"), None);
+
+        for (window, expected) in [
+            (200_000, false),
+            (400_000, false),
+            (999_999, false),
+            (1_000_000, true),
+            (2_000_000, true),
+        ] {
+            gateway.providers[1]
+                .model_windows
+                .insert("kimi-k3".into(), window);
+            assert_eq!(
+                claude_desktop_window(&gateway, &binding, "kimi-k3"),
+                Some((window, expected)),
+                "{window}"
+            );
+        }
+
+        // 组里一家 1M、一家 400K：按 400K 报，不标 1M。
+        gateway.providers[1]
+            .model_windows
+            .insert("kimi-k3".into(), 1_000_000);
+        gateway.providers[0]
+            .model_windows
+            .insert("deepseek-v4-flash".into(), 400_000);
+        assert_eq!(
+            claude_desktop_window(&gateway, &binding, "group/fast"),
+            Some((400_000, false))
+        );
+    }
+
+    /// #3107：Desktop 给 1M 模型出的 1M 选项 id 是 `<别名>[1m]`，两种别名带后缀都能还原成原模型。
+    #[test]
+    fn desktop_1m_variant_ids_route_back_to_original_model() {
+        let gateway = gateway("deepseek-v4-pro");
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        for has_effort in [false, true] {
+            let alias = claude_desktop_alias("kimi-k3", has_effort);
+            for id in [
+                alias.clone(),
+                format!("{alias}[1m]"),
+                format!("{alias}[1M]"),
+            ] {
+                assert_eq!(
+                    effective_model(&gateway, &binding, "deepseek-v4-pro", &id),
+                    "kimi-k3",
+                    "{id}"
+                );
+            }
+        }
+    }
+
     /// 有思考档位的模型用 mythos-gw- 别名（Desktop 才出思考等级菜单），旧的 claude-gw- 别名仍能还原。
     #[test]
     fn effort_aliases_use_mythos_prefix_and_route_back() {
@@ -2252,8 +2599,11 @@ mod tests {
             routed(&gateway, "kimi/kimi-k3-preview"),
             vec![pair("kimi", "kimi-k3-preview")]
         );
-        // 关掉的供应商不能用前缀绕过。
-        assert_eq!(routed(&gateway, "off/off-model")[0].1, "deepseek-v4-pro");
+        // 关掉的供应商不能用前缀绕过；也不静默换成默认模型，明确报错（#3179）。
+        let error = resolve_plan(&gateway, &ToolId::Claude, "off/off-model", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("已关闭"), "{error}");
     }
 
     #[test]
@@ -2281,6 +2631,143 @@ mod tests {
         );
         // 空组不出现在模型列表里，请求它按未知模型处理。
         assert_eq!(routed(&gateway, "group/empty")[0].1, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn request_images_are_detected_in_every_shape() {
+        use serde_json::json;
+        let cases = [
+            // Responses：本轮输入里的图片。
+            json!({ "input": [{ "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "看图" },
+                { "type": "input_image", "image_url": "data:image/png;base64,AAAA" }
+            ]}]}),
+            // Responses：工具输出里的图片。
+            json!({ "input": [{ "type": "function_call_output", "call_id": "c", "output": [
+                { "type": "input_image", "image_url": "data:image/png;base64,AAAA" }
+            ]}]}),
+            // Chat Completions。
+            json!({ "messages": [{ "role": "user", "content": [
+                { "type": "image_url", "image_url": { "url": "https://x.test/a.png" } }
+            ]}]}),
+            // Anthropic：工具结果里的图片块。
+            json!({ "messages": [{ "role": "user", "content": [{ "type": "tool_result", "content": [
+                { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" } }
+            ]}]}]}),
+            // Gemini。
+            json!({ "contents": [{ "role": "user", "parts": [
+                { "inlineData": { "mimeType": "image/jpeg", "data": "AAAA" } }
+            ]}]}),
+            json!({ "contents": [{ "parts": [{ "file_data": { "mime_type": "IMAGE/PNG", "file_uri": "gs://a" } }] }]}),
+        ];
+        for request in &cases {
+            assert!(request_has_images(request), "{request}");
+        }
+        let text_only = [
+            json!({ "input": "纯文本" }),
+            json!({ "input": [{ "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "input_image image_url" }
+            ]}]}),
+            json!({ "messages": [{ "role": "user", "content": "hi" }] }),
+            json!({ "contents": [{ "parts": [{ "inlineData": { "mimeType": "application/pdf", "data": "AAAA" } }] }]}),
+            // 工具定义不算：只看消息字段。
+            json!({ "input": [], "tools": [{ "type": "image" }] }),
+        ];
+        for request in &text_only {
+            assert!(!request_has_images(request), "{request}");
+        }
+    }
+
+    #[test]
+    fn group_image_model_takes_requests_with_images() {
+        use serde_json::json;
+        let mut gateway = gateway("deepseek-v4-pro");
+        gateway.providers.push(provider("vision", "gpt-6-vision"));
+        let mut text = group(
+            "text",
+            GroupMode::InOrder,
+            vec![member("ds/deepseek-v4-flash"), member("kimi-k3")],
+        );
+        text.image_input_model = "vision/gpt-6-vision".into();
+        gateway.groups.push(text);
+        let with_image = json!({ "model": "group/text", "input": [
+            { "type": "message", "role": "user", "content": [
+                { "type": "input_image", "image_url": "data:image/png;base64,AAAA" }
+            ]},
+            { "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "好" }] },
+            // 本轮没有新图，历史里的图片还在上下文里：照样走图像输入模型。
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "继续" }] }
+        ]});
+        let without = json!({ "model": "group/text", "input": [
+            { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "hi" }] }
+        ]});
+        let route = |request: &serde_json::Value| {
+            let plan = resolve_plan_for_request(
+                &gateway,
+                &ToolId::Claude,
+                "group/text",
+                Some("image-conv"),
+                request,
+            )
+            .unwrap();
+            let pairs = plan
+                .candidates
+                .iter()
+                .map(|candidate| (candidate.relay.id.clone(), candidate.upstream_model.clone()))
+                .collect::<Vec<_>>();
+            (plan, pairs)
+        };
+
+        let (plan, pairs) = route(&with_image);
+        assert_eq!(pairs, vec![pair("vision", "gpt-6-vision")], "带图只发图像输入模型");
+        assert_eq!(plan.group_id.as_deref(), Some("text"));
+        assert_eq!(plan.sticky_ttl, None, "改发图像输入模型不记会话固定");
+        assert_eq!(plan.preferred, None);
+
+        let (plan, pairs) = route(&without);
+        assert_eq!(
+            pairs,
+            vec![pair("ds", "deepseek-v4-flash"), pair("kimi", "kimi-k3")],
+            "没图片照常按组路由"
+        );
+        assert_eq!(plan.sticky_ttl, Some(CACHE_STICKY_TTL));
+
+        // 没设图像输入模型的组：带图也照旧按成员路由（行为不变）。
+        assert_eq!(
+            resolve_plan_for_request(&gateway, &ToolId::Claude, "group/fast", None, &with_image)
+                .unwrap()
+                .candidates
+                .iter()
+                .map(|candidate| (candidate.relay.id.clone(), candidate.upstream_model.clone()))
+                .collect::<Vec<_>>(),
+            vec![pair("ds", "deepseek-v4-flash"), pair("kimi", "kimi-k3")]
+        );
+    }
+
+    #[test]
+    fn unavailable_group_image_model_fails_instead_of_dropping_images() {
+        use serde_json::json;
+        let mut gateway = gateway("deepseek-v4-pro");
+        let mut text = group("text", GroupMode::InOrder, vec![member("kimi-k3")]);
+        // 指向关掉的供应商：不换成组里不收图的成员，也不换别家同名模型。
+        text.image_input_model = "off/off-model".into();
+        gateway.groups.push(text);
+        let request = json!({ "messages": [{ "role": "user", "content": [
+            { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } }
+        ]}]});
+        let error =
+            resolve_plan_for_request(&gateway, &ToolId::Claude, "group/text", None, &request)
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("图像输入模型 off/off-model 不可用"), "{error}");
+        // 指向自己也算不可用，不会死循环。
+        gateway.groups.last_mut().unwrap().image_input_model = "group/text".into();
+        assert!(
+            resolve_plan_for_request(&gateway, &ToolId::Claude, "group/text", None, &request)
+                .is_err()
+        );
+        // 没图片的请求不受影响。
+        assert_eq!(routed(&gateway, "group/text"), vec![pair("kimi", "kimi-k3")]);
     }
 
     #[test]
@@ -2362,6 +2849,85 @@ mod tests {
                 .iter()
                 .all(|(_, model)| !model.starts_with("gone/")),
             "前缀不能原样发给上游"
+        );
+    }
+
+    /// #3179：`<池外供应商>/<模型>` 不能按「未知模型」静默换成默认模型。
+    #[test]
+    fn qualified_model_of_an_unpooled_provider_is_never_swapped_for_the_default() {
+        let codex_gateway = |policy: UnknownModelPolicy| {
+            let mut gateway = GatewaySettings {
+                providers: vec![
+                    provider("pool-astra", "gpt-6-astra\ngpt-6.1-terra"),
+                    provider("direct-cpa", "gpt-6.1-sol"),
+                ],
+                ..GatewaySettings::default()
+            };
+            gateway.bindings.insert(
+                "codex".to_string(),
+                AgentBinding {
+                    enabled: true,
+                    model: "gpt-6-astra".to_string(),
+                    unknown_model: policy,
+                    ..AgentBinding::default()
+                },
+            );
+            gateway
+        };
+        let routed_codex = |gateway: &GatewaySettings, model: &str| {
+            resolve_plan(gateway, &ToolId::Codex, model, None).map(|plan| {
+                plan.candidates
+                    .into_iter()
+                    .map(|candidate| (candidate.relay.id, candidate.upstream_model))
+                    .collect::<Vec<_>>()
+            })
+        };
+
+        // 供应商在池里：照常发给它。
+        let gateway = codex_gateway(UnknownModelPolicy::MapToDefault);
+        assert_eq!(
+            routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap(),
+            vec![pair("direct-cpa", "gpt-6.1-sol")]
+        );
+
+        for policy in [UnknownModelPolicy::MapToDefault, UnknownModelPolicy::Passthrough] {
+            // 被排除出 Codex 的池：池里没人提供 gpt-6.1-sol → 明确报错，不改发到 gpt-6-astra。
+            let mut gateway = codex_gateway(policy);
+            gateway
+                .bindings
+                .get_mut("codex")
+                .unwrap()
+                .pool_exclude
+                .push("direct-cpa".to_string());
+            let binding = gateway.active_binding(&ToolId::Codex).unwrap();
+            assert_eq!(
+                effective_model_detailed(&gateway, binding, "gpt-6-astra", "direct-cpa/gpt-6.1-sol"),
+                ("direct-cpa/gpt-6.1-sol".to_string(), false),
+                "{policy:?}"
+            );
+            let error = routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap_err().to_string();
+            assert!(error.contains("direct-cpa") && error.contains("不在 codex 的网关供应商池里"), "{error}");
+
+            // 关掉的供应商同理。
+            let mut gateway = codex_gateway(policy);
+            gateway.providers[1].enabled = false;
+            let error = routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap_err().to_string();
+            assert!(error.contains("已关闭"), "{error}");
+
+            // 池里有别家提供同名模型：去掉前缀交给它，仍是 gpt-6.1-sol。
+            gateway.providers.push(provider("official", "gpt-6.1-sol"));
+            assert_eq!(
+                routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap(),
+                vec![pair("official", "gpt-6.1-sol")],
+                "{policy:?}"
+            );
+        }
+
+        // 真正的未知模型仍按策略改写成默认模型（#2874 不受影响）。
+        let gateway = codex_gateway(UnknownModelPolicy::MapToDefault);
+        assert_eq!(
+            routed_codex(&gateway, "gpt-unknown").unwrap(),
+            vec![pair("pool-astra", "gpt-6-astra")]
         );
     }
 
@@ -3007,6 +3573,46 @@ mod tests {
             routed(&gateway, "ds/private-model"),
             vec![pair("router", "ds/private-model")]
         );
+    }
+
+    #[test]
+    fn known_codex_models_remain_available_when_their_route_still_works() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        let mut gateway = gateway("deepseek-v4-pro");
+        let binding = gateway.bindings.get_mut("claude").unwrap();
+        binding.known_models.extend([
+            "deepseek-v4-pro".into(),
+            "group/fast".into(),
+            "ds/private-model".into(),
+        ]);
+        binding.model_selections.push(DefaultModelSelection {
+            provider_id: "ds".into(),
+            upstream_model: "private-model".into(),
+            provider_source: String::new(),
+            provider_removed: false,
+        });
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert!(!retired_codex_model(&gateway, binding, "ds/private-model"));
+
+        gateway.providers[0].enabled = false;
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert!(!retired_codex_model(&gateway, binding, "deepseek-v4-pro"));
+        assert!(!retired_codex_model(&gateway, binding, "group/fast"));
+        assert!(retired_codex_model(&gateway, binding, "ds/private-model"));
+
+        gateway.providers[1].enabled = false;
+        gateway.providers[2].enabled = false;
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert!(retired_codex_model(&gateway, binding, "deepseek-v4-pro"));
+        assert!(retired_codex_model(&gateway, binding, "group/fast"));
+
+        gateway.providers[0].enabled = true;
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        assert!(!retired_codex_model(&gateway, binding, "deepseek-v4-pro"));
+        assert!(!retired_codex_model(&gateway, binding, "group/fast"));
+        assert!(!retired_codex_model(&gateway, binding, "ds/private-model"));
+        assert!(!retired_codex_model(&gateway, binding, "never-published"));
     }
 
     #[test]

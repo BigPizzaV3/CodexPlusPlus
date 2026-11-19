@@ -248,3 +248,46 @@ fn downloaded_installer_requires_complete_marker_with_matching_size() {
     std::fs::remove_file(dir.path().join("pkg.dmg.complete")).unwrap();
     assert!(codex_plus_core::update::downloaded_installer(&release, dir.path()).is_none());
 }
+
+#[test]
+fn prune_installed_installers_removes_versions_not_newer_than_current() {
+    // #3094：装上新版后，不高于当前版本的安装包连同完成标记一起删掉；
+    // 后台已下好、比当前新的保留；认不出版本号的文件不动。
+    let dir = tempfile::tempdir().unwrap();
+    let names = [
+        "CodexPlusPlus-2.6.6-windows-x64-setup.exe",
+        "CodexPlusPlus-2.6.7-windows-x64-setup.exe",
+        "CodexPlusPlus-2.6.8-macos-universal.dmg",
+        "CodexPlusPlus-2.10.0-linux-amd64.deb",
+        "setup.exe",
+        "notes-2.6.6.txt",
+    ];
+    for name in names {
+        std::fs::write(dir.path().join(name), b"x").unwrap();
+        std::fs::write(dir.path().join(format!("{name}.complete")), b"1").unwrap();
+    }
+
+    let mut removed = codex_plus_core::update::prune_installed_installers(dir.path(), "v2.6.7");
+    removed.sort();
+
+    assert_eq!(
+        removed,
+        vec![
+            dir.path().join("CodexPlusPlus-2.6.6-windows-x64-setup.exe"),
+            dir.path().join("CodexPlusPlus-2.6.7-windows-x64-setup.exe"),
+        ]
+    );
+    assert!(!dir.path().join("CodexPlusPlus-2.6.6-windows-x64-setup.exe.complete").exists());
+    assert!(!dir.path().join("CodexPlusPlus-2.6.7-windows-x64-setup.exe.complete").exists());
+    for kept in [
+        "CodexPlusPlus-2.6.8-macos-universal.dmg",
+        "CodexPlusPlus-2.10.0-linux-amd64.deb",
+        "setup.exe",
+        "notes-2.6.6.txt",
+    ] {
+        assert!(dir.path().join(kept).exists(), "{kept} 不应被删除");
+    }
+    // 目录不存在或版本号非法时什么都不做。
+    assert!(codex_plus_core::update::prune_installed_installers(&dir.path().join("missing"), "2.6.7").is_empty());
+    assert!(codex_plus_core::update::prune_installed_installers(dir.path(), "dev").is_empty());
+}

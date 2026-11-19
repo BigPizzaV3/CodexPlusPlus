@@ -36,6 +36,31 @@ pub fn save_config(config: &GlobalDictationConfig) -> anyhow::Result<()> {
     crate::settings::atomic_write(&path, serde_json::to_string_pretty(config)?.as_bytes())
 }
 
+/// 「保存并注册」全局热键的实现。热键注册在管理器进程里（回调要触发管理器的听写流程），
+/// core 只在桥接路由里转发：管理器启动时用 [`set_apply_host`] 注册。
+pub type GlobalDictationApplyHost = fn(&GlobalDictationConfig) -> anyhow::Result<()>;
+
+static APPLY_HOST: Mutex<Option<GlobalDictationApplyHost>> = Mutex::new(None);
+
+/// 管理器启动时注册（见 `apps/codex-plus-manager/src-tauri/src/lib.rs`）。
+pub fn set_apply_host(host: GlobalDictationApplyHost) {
+    if let Ok(mut slot) = APPLY_HOST.lock() {
+        *slot = Some(host);
+    }
+}
+
+/// Codex 设置页保存全局热键：先校验，再交给管理器保存并重新注册。
+/// 没有管理器时明确报错，不只写文件——否则看起来保存了，热键却没注册。
+pub fn apply_config(config: &GlobalDictationConfig) -> anyhow::Result<()> {
+    validate_hotkey(&config.hotkey)?;
+    let host = APPLY_HOST
+        .lock()
+        .ok()
+        .and_then(|slot| *slot)
+        .ok_or_else(|| anyhow::anyhow!("Codex++ 管理器未运行，暂时不能修改全局听写热键；请先打开 Codex++。"))?;
+    host(config)
+}
+
 #[derive(Debug)]
 pub struct GlobalHotkeyHandle {
     stop: Arc<AtomicBool>,

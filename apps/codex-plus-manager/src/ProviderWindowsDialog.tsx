@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import { formatTokens, maskAccountName, parseContextWindow, type GatewayPoolEntry } from "./gateway-model";
+import { parseCompactPercent } from "./gateway-auto-compact-model";
 import { lookupPublicPrices } from "./ProviderExtrasDialog";
 import { Avatar } from "./gateway-ui";
 import { useEscapeLayer } from "./use-escape-layer";
@@ -16,6 +17,13 @@ import "./ProviderFormDialog.css";
 const FALLBACK = "";
 
 type LookupState = { state: "idle" } | { state: "loading" } | { state: "done"; found: number };
+
+/** 某个模型单独写的自动压缩百分比（忽略大小写）。 */
+function ownPercent(entry: GatewayPoolEntry, model: string): number | undefined {
+  const percents = entry.autoCompact?.models ?? {};
+  const key = Object.keys(percents).find((name) => name.toLowerCase() === model.toLowerCase());
+  return key === undefined ? undefined : percents[key];
+}
 
 /** 某个模型单独写的窗口（忽略大小写）。 */
 function ownWindow(entry: GatewayPoolEntry, model: string): number | undefined {
@@ -56,12 +64,18 @@ export function ProviderWindowsDialog({
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
-  onSave: (windows: Record<string, number>, fallback: number | null) => void;
+  onSave: (windows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }) => void;
   onCancel: () => void;
 }) {
   const [rows, setRows] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = { [FALLBACK]: windowText(entry.contextWindow) };
     for (const model of entry.models) initial[model] = windowText(ownWindow(entry, model));
+    return initial;
+  });
+  // 自动压缩阈值（#3100）：窗口的百分比，空表示用 Codex 默认。只在设了窗口的模型上有意义。
+  const [percents, setPercents] = useState<Record<string, string>>(() => {
+    const initial: Record<string, string> = { [FALLBACK]: entry.autoCompact?.fallback ? String(entry.autoCompact.fallback) : "" };
+    for (const model of entry.models) initial[model] = ownPercent(entry, model) ? String(ownPercent(entry, model)) : "";
     return initial;
   });
   const [lookup, setLookup] = useState<LookupState>({ state: "idle" });
@@ -72,6 +86,9 @@ export function ProviderWindowsDialog({
     const value = parseContextWindow(text);
     return value !== null && (!Number.isFinite(value) || value < 1000);
   }).map(([model]) => model);
+
+  // 阈值写错的同样标出来：不是 1~100 的数字。
+  const invalidPercent = Object.entries(percents).filter(([, text]) => Number.isNaN(parseCompactPercent(text))).map(([model]) => model);
 
   const fillPublic = async () => {
     setLookup({ state: "loading" });
@@ -88,7 +105,7 @@ export function ProviderWindowsDialog({
   };
 
   const row = (model: string, label: ReactNode) => (
-    <div className="pf-price-row pf-window-row" data-invalid={invalid.includes(model)} key={model || "*"}>
+    <div className="pf-price-row pf-window-row" data-invalid={invalid.includes(model) || invalidPercent.includes(model)} key={model || "*"}>
       {label}
       <Input
         aria-label={t("上下文窗口")}
@@ -99,6 +116,17 @@ export function ProviderWindowsDialog({
         placeholder={model === FALLBACK ? t("用模型自带资料") : "—"}
         spellCheck={false}
         value={rows[model] ?? ""}
+      />
+      <Input
+        aria-label={t("自动压缩阈值")}
+        onChange={(event) => {
+          const text = event.currentTarget.value;
+          setPercents((previous) => ({ ...previous, [model]: text }));
+        }}
+        placeholder={model === FALLBACK ? t("默认") : "—"}
+        spellCheck={false}
+        title={t("窗口的百分比，如 85；留空用 Codex 默认压缩")}
+        value={percents[model] ?? ""}
       />
     </div>
   );
@@ -115,7 +143,15 @@ export function ProviderWindowsDialog({
             const value = parseContextWindow(rows[model] ?? "");
             if (value) windows[model] = value;
           }
-          onSave(windows, parseContextWindow(rows[FALLBACK] ?? "") || null);
+          const models: Record<string, number> = {};
+          for (const model of entry.models) {
+            const value = parseCompactPercent(percents[model] ?? "");
+            if (value !== null) models[model] = value;
+          }
+          onSave(windows, parseContextWindow(rows[FALLBACK] ?? "") || null, {
+            models,
+            fallback: parseCompactPercent(percents[FALLBACK] ?? ""),
+          });
         }}
       >
         <header className="pf-head">
@@ -143,12 +179,13 @@ export function ProviderWindowsDialog({
             ) : lookup.state === "loading" ? (
               <p className="pf-note">{t("正在查公开资料…")}</p>
             ) : (
-              <p className="pf-note">{t("留空的模型用「其它模型」那一行；都不填就用模型自带的资料。")}</p>
+              <p className="pf-note">{t("留空的模型用「其它模型」那一行；都不填就用模型自带的资料。自动压缩阈值是窗口的百分比，留空用 Codex 默认。")}</p>
             )}
             <div className="pf-price-table">
               <div className="pf-price-row pf-window-row pf-price-head">
                 <span>{t("模型")}</span>
                 <span>{t("上下文窗口")}</span>
+                <span>{t("自动压缩阈值")}</span>
               </div>
               <div className="pf-price-rows">
                 {entry.models.map((model) => row(model, <code title={model}>{model}</code>))}
@@ -159,9 +196,9 @@ export function ProviderWindowsDialog({
         </div>
 
         <footer className="pf-foot">
-          <span className="pf-error">{invalid.length ? t("窗口要写成 128k、1M 或至少 1000 的数字") : ""}</span>
+          <span className="pf-error">{invalid.length ? t("窗口要写成 128k、1M 或至少 1000 的数字") : invalidPercent.length ? t("自动压缩阈值要写成 1 到 100 之间的数字") : ""}</span>
           <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
-          <Button disabled={busy || invalid.length > 0} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
+          <Button disabled={busy || invalid.length > 0 || invalidPercent.length > 0} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
         </footer>
       </form>
     </div>,

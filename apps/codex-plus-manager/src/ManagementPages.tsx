@@ -11,7 +11,7 @@ import { AppSelect } from "./AppSelect";
 import { matchesManagementQuery, sessionGroups, skillRepoKey, type ManagedSession } from "./management-model";
 import { TopbarActions } from "./TopbarActions";
 import { AgentGlyph } from "./HubOverview";
-import { MCP_AGENTS, mcpCount, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
+import { MCP_AGENTS, editedEnabledState, mcpCount, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
 import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
@@ -81,8 +81,8 @@ export function Menu({ label = t("更多操作"), children }: { label?: string; 
   return <div className="mg-menu-wrap" ref={ref}><button type="button" className="mg-icon-button" aria-label={label} aria-expanded={open} aria-haspopup="menu" onClick={(event) => { event.stopPropagation(); setOpen(!open); }}><MoreHorizontal size={17} /></button>{menu && portal ? createPortal(<div className="shell-portal">{menu}</div>, document.body) : menu}</div>;
 }
 /** 菜单项；传了 `checked` 就是单选项（例如 Skill 的分组），选中的项右侧打勾。 */
-export function MenuItem({ children, onClick, disabled, danger, checked }: { children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; checked?: boolean }) {
-  return <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className={danger ? "mg-danger" : ""} disabled={disabled} onClick={onClick}>{children}</button>;
+export function MenuItem({ children, onClick, disabled, danger, checked, title }: { children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; checked?: boolean; title?: string }) {
+  return <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className={danger ? "mg-danger" : ""} disabled={disabled} onClick={onClick} title={title}>{children}</button>;
 }
 export function ManagementDrawer({ title, onClose, children, footer, wide = false, dismissOnBackdrop = true }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; dismissOnBackdrop?: boolean }) {
   const ref = useRef<HTMLElement>(null);
@@ -230,10 +230,15 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
       onSave={(id, body, targets) => write(async () => {
         // 表体可能取自某家停用的条目（带 enabled = false），先统一成启用，再按各家原来的启停状态写回；
         // 否则写到 Claude 时会被当成「停用即移除」。
+        // 例外：用户在编辑器里亲手改了启停行（插件只能这样改），Codex 以用户写的为准——
+        // 以前这里一律改回原状态，「编辑 → enabled = false → 保存」等于什么都没写（#3115）。
         const base = enabledBody(body, true);
+        const edited = editedEnabledState(editor.row?.body, body);
         for (const agent of targets) {
           const previous = editor.row?.byAgent[agent];
-          const next = previous && !previous.enabled && agent !== "claude" ? enabledBody(base, false) : base;
+          const next = agent === "codex" && edited !== undefined
+            ? enabledBody(base, edited)
+            : previous && !previous.enabled && agent !== "claude" ? enabledBody(base, false) : base;
           if (!(await writeAgent(agent, id, next))) return false;
         }
         setEditor(null);

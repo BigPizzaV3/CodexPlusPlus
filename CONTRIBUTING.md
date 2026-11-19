@@ -73,6 +73,25 @@ CodexPlusPlus/
 - Write self-documenting code with clear variable/function names
 - Add doc comments (`///`) for public APIs
 
+## UI Injected into Codex
+
+UI that Codex++ injects into the Codex app (the `assets/inject/renderer-inject/` fragments: extensions page,
+providers page, task board, …) should look and behave like Codex's own components, so it doesn't feel bolted on.
+
+- **Measure the native component first.** Start an isolated Codex instance (separate `--user-data-dir` plus a
+  remote debugging port), open the equivalent native component, and read its computed styles and the CSS
+  variables its classes use (size, radius, padding, colors, shadow, blur) over CDP. Match those values; don't
+  invent a new look.
+- **Don't use native HTML form controls** such as `<select>`: their popups ignore the Codex theme. For dropdowns
+  and menus reuse `.codex-plus-menu-trigger` / `.codex-plus-menu-popover` / `.codex-plus-menu-item` from
+  `10-style.js` (see the sort menu in `41-extension-sources.js`).
+- **Reference Codex's CSS variables with a fallback** instead of hard-coded colors, so light and dark themes both
+  follow Codex, e.g. `--color-surface-elevated-secondary`, `--shadow-dropdown-overlay`,
+  `--color-token-list-hover-background`, `--color-text-tertiary`.
+- **Handle keys in the window capture phase.** Codex grabs key events in the document capture phase and sends
+  them to its composer.
+- Put a screenshot next to the native component you matched in the pull request.
+
 ## Pull Request Process
 
 1. Fork the repository

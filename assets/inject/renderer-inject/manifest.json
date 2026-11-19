@@ -3,17 +3,17 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测与常量",
-      "lines": 483
+      "lines": 566
     },
     {
       "name": "01-registry.js",
       "description": "拓展注册中心、扩展选择器登记与失败上报",
-      "lines": 190
+      "lines": 191
     },
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 2837
+      "lines": 3572
     },
     {
       "name": "20-menu.js",
@@ -23,7 +23,7 @@
     {
       "name": "30-service-tier.js",
       "description": "供应商会话适配、请求桥接与原生状态模块定位",
-      "lines": 1319
+      "lines": 1676
     },
     {
       "name": "31-config-read-deadline.js",
@@ -32,8 +32,8 @@
     },
     {
       "name": "32-fork-readiness-fallback.js",
-      "description": "无账号时原生 Fork 放置门控读不到、启动时没联网 Statsig 无数据的兜底（#2826 #2898）",
-      "lines": 121
+      "description": "无账号时原生 Fork 放置门控读不到、Statsig 无数据或缓存数据原生不认的兜底（#2826 #2898 #3162）",
+      "lines": 136
     },
     {
       "name": "32-thread-goal.js",
@@ -43,22 +43,62 @@
     {
       "name": "33-offline-auto-review.js",
       "description": "拿不到远程功能开关时补开「替我审批」（#2817），及 Statsig 离线补数据的通用部分",
-      "lines": 108
+      "lines": 162
     },
     {
       "name": "34-statsig-overrides.js",
       "description": "Statsig 界面增强：升级推销、网络超时、记忆开关的客户端覆盖",
-      "lines": 133
+      "lines": 348
     },
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 2419
+      "lines": 2966
     },
     {
       "name": "41-extension-detail.js",
       "description": "拓展详情页的页签（细节 README / 设置 / 功能）、右侧栏、通用设置表单与 README 的 Markdown 渲染",
-      "lines": 555
+      "lines": 557
+    },
+    {
+      "name": "41-extension-sources.js",
+      "description": "拓展页的「社区 / 我发布的 / dsh 插件」分栏与精选 / 社区排序，经宿主路由交给管理器",
+      "lines": 915
+    },
+    {
+      "name": "42-provider-editing.generated.js",
+      "description": "生成文件：与管理器共用的供应商编辑纯函数（relay-profile-editing.ts，scripts/assemble-provider-editing.mjs 打包）",
+      "lines": 3237
+    },
+    {
+      "name": "43-provider-page.js",
+      "description": "左侧图标栏「供应商」页：在 Codex 里增删改切供应商，经 /providers/* 走管理器的保存与切换",
+      "lines": 1025
+    },
+    {
+      "name": "44-provider-gateway.js",
+      "description": "「供应商」页的网关页签：在 Codex 里管理网关供应商池、接入 / 断开网关（经 /providers/gateway 走管理器的网关命令）",
+      "lines": 533
+    },
+    {
+      "name": "45-remote-control-page.js",
+      "description": "左侧图标栏「远程控制」页：在 Codex 里开关远程控制与局域网访问、给手机配对、管理设备（经 /remote-control 走管理器托管的服务）",
+      "lines": 318
+    },
+    {
+      "name": "45-weixin-connect-page.js",
+      "description": "左侧图标栏「微信连接」页：在 Codex 里扫码登录、启停微信连接、改常用设置（经 /weixin-connect 走管理器登记的宿主路由，与管理器微信页共用命令）",
+      "lines": 597
+    },
+    {
+      "name": "46-service-settings.js",
+      "description": "Codex++ 设置页的语音输入与下一步建议服务配置（地址、模型、Key、本地模型下载、全局热键、测试连接）与原生浏览器状态",
+      "lines": 628
+    },
+    {
+      "name": "47-task-board-page.js",
+      "description": "左侧图标栏「任务面板」页：记下要做什么、拖卡片改状态、详情编辑（经 /task-board 读写 core task_board 的任务文件）",
+      "lines": 874
     },
     {
       "name": "50-navigation.js",
@@ -68,7 +108,7 @@
     {
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
-      "lines": 1945
+      "lines": 2046
     },
     {
       "name": "61-plugin-market-ui.js",
@@ -78,17 +118,17 @@
     {
       "name": "62-plugin-market-adapter.js",
       "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
-      "lines": 456
+      "lines": 482
     },
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1613
+      "lines": 1726
     },
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器供应商图标与折叠列表双视图、有效默认身份展示",
-      "lines": 2302
+      "lines": 2341
     },
     {
       "name": "80-session-share.js",
@@ -138,7 +178,7 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 508
+      "lines": 511
     },
     {
       "name": "91-extension-runtime.js",
@@ -148,27 +188,27 @@
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 636
+      "lines": 912
     },
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
-      "lines": 585
+      "lines": 587
     },
     {
       "name": "92-extension-slots.js",
       "description": "拓展消息插槽（操作按钮、装饰）与右侧面板",
-      "lines": 728
+      "lines": 729
     },
     {
       "name": "92-extension-extras.js",
       "description": "拓展输入触发、快捷键、主题、向用户提问与拓展变更事件",
-      "lines": 402
+      "lines": 405
     },
     {
       "name": "92-extension-views.js",
       "description": "悬浮球页签、工具调用视图、Codex 设置页分区",
-      "lines": 174
+      "lines": 167
     },
     {
       "name": "93-dictation.js",
@@ -181,14 +221,39 @@
       "lines": 684
     },
     {
+      "name": "96-feature-lab.js",
+      "description": "内置拓展 Feature Lab：原生实验开关列表与启停",
+      "lines": 1002
+    },
+    {
+      "name": "96-hooks-editor.js",
+      "description": "内置拓展 Hooks 编辑器：hooks.json 的模板新建、编辑、启停、信任与试运行",
+      "lines": 1217
+    },
+    {
+      "name": "96-shell-command.js",
+      "description": "内置拓展「! 命令」：输入框 !命令 经 thread/shellCommand 在会话目录运行，输出卡片",
+      "lines": 267
+    },
+    {
+      "name": "96-context-tuning.js",
+      "description": "内置拓展「上下文与压缩」：压缩提示词、回合后压缩、工具输出上限、精简系统提示，写 live 并同步通用配置",
+      "lines": 480
+    },
+    {
       "name": "96-builtin-extensions.js",
       "description": "内置拓展：自带功能挂到拓展内核（可停用、可被 replaces 顶替）、多开身份提示、会话标题中间件",
-      "lines": 438
+      "lines": 444
     },
     {
       "name": "96-paste-fix.js",
       "description": "内置拓展「粘贴修复」：Word 粘贴降级为纯文本（监听随拓展装卸）",
       "lines": 41
+    },
+    {
+      "name": "96-prompt-args.js",
+      "description": "内置拓展「自定义 prompt 参数」：发送 /prompts:名字 参数 时按 CLI 规则展开占位符",
+      "lines": 219
     },
     {
       "name": "96-dsh-client.js",
@@ -208,7 +273,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 43
+      "lines": 45
     },
     {
       "name": "99-tail.js",

@@ -231,6 +231,71 @@ pub async fn install_market_script_by_id(
     Ok(result)
 }
 
+/// 精选 / 官方拓展包的安装记录与暂存目录：和 `market_packages_payload` 判断「已安装」用的是同一处。
+fn package_store(manager: &UserScriptManager) -> crate::extension_discovery::CommunityStore {
+    let config_dir = manager.user_dir().parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+    crate::extension_discovery::CommunityStore::new(config_dir)
+}
+
+/// Codex 页内安装精选拓展包的第一步：按清单锁定的提交下载、校验并暂存，返回确认框要显示的权限。
+///
+/// 只收 id，仓库与提交从清单里查，不信任页面传来的 sha（与管理器的 `preparePackage` 一致）。
+pub async fn prepare_market_package(manager: &UserScriptManager, id: &str) -> anyhow::Result<Value> {
+    let manifest = cached_market_manifest(false).await?;
+    let package = manifest
+        .packages
+        .iter()
+        .find(|package| package.id == id)
+        .with_context(|| format!("精选清单里没有拓展包 {id}"))?;
+    let endpoints = crate::extension_discovery::Endpoints::github();
+    package_store(manager).prepare_pinned(&endpoints, manager, &package.pinned()).await
+}
+
+/// 用户在确认框里点了安装：把暂存的包换进拓展目录，同步钩子，带回合并后的市场清单与本地脚本清单。
+pub async fn install_market_package(
+    manager: &UserScriptManager,
+    token: &str,
+    enable: bool,
+    replace: bool,
+) -> anyhow::Result<Value> {
+    let mut installed = package_store(manager).install(manager, token, enable, replace)?;
+    if installed["hooks"] == true {
+        let hooks = crate::extension_hooks::sync_default(manager);
+        installed["hooksError"] = hooks.get("error").cloned().unwrap_or(Value::Null);
+        installed["hooksAdded"] = Value::Bool(hooks["added"].as_array().is_some_and(|added| !added.is_empty()));
+    }
+    let manifest = cached_market_manifest(false).await?;
+    let mut result = market_scripts_payload(manager, &manifest, "ok", "拓展已安装。");
+    result["installed"] = installed;
+    result["user_scripts"] = manager.inventory()?;
+    Ok(result)
+}
+
+/// 用户取消安装：清掉暂存。
+pub fn discard_market_package(manager: &UserScriptManager, token: &str) -> Value {
+    package_store(manager).discard(token);
+    serde_json::json!({ "status": "ok" })
+}
+
+/// 桥接路由 `/script-market/package/*` 的分发，两个 `BridgeRuntimeService` 实现共用。
+pub async fn market_package_request(manager: &UserScriptManager, action: &str, payload: &Value) -> anyhow::Result<Value> {
+    let text = |key: &str| {
+        payload
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .with_context(|| format!("缺少参数 {key}"))
+    };
+    let flag = |key: &str| payload.get(key).and_then(Value::as_bool).unwrap_or(false);
+    match action {
+        "prepare" => prepare_market_package(manager, text("id")?).await,
+        "install" => install_market_package(manager, text("token")?, flag("enable"), flag("replace")).await,
+        "discard" => Ok(discard_market_package(manager, text("token")?)),
+        other => anyhow::bail!("未知操作 {other}"),
+    }
+}
+
 /// 把市场清单与本地已安装状态合成给前端的 payload。
 ///
 /// 已安装状态来自 `UserScriptManager` 的清单（`installed` / `version` 字段），

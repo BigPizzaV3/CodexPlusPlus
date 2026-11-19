@@ -1020,16 +1020,16 @@ describe("renderer injection header compatibility", () => {
 
     assert.match(renderer, /function installCodexPlusPageLayout\(overlay, tab\)/);
     assert.match(renderer, /function refreshCodexPlusPageNav\(tab = /);
-    assert.match(renderer, /function renderCodexPlusPageNavItems\(tab\)/);
+    assert.match(renderer, /function renderCodexPlusPageNavItems\(tab, root = document\)/);
     // 三栏容器是 createElement + className 赋值的，不是 markup 字面量。
     assert.match(renderer, /layout\.className = "codex-plus-page-layout"/);
     assert.match(renderer, /main\.className = "codex-plus-page-main"/);
     // 只搬动已有的 modal-body，不重建里面的 data-codex-* 挂载点，
     // 否则 renderUserScripts / 各 toggle 的 querySelector 会找不到目标。
     assert.match(renderer, /main\.appendChild\(body\)/);
-    // 左面板只有「拓展」需要（它是脚本列表）；主页与推荐内容是单栏内容页，
-    // 页面切换交给图标栏那三个入口，所以导航容器要在条件分支里创建。
+    // 左面板按页面决定：「拓展」是脚本列表，设置页是分组导航；推荐内容是单栏内容页，没有左面板。
     assert.match(renderer, /if \(tab === codexPlusExtensionsTab\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
+    assert.match(renderer, /\} else if \(tab === "home"\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /data-codex-plus-page-nav-body="true"/);
     // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。
     assert.match(renderer, /installCodexPlusPageLayout\(overlay, initialTab\);[\s\S]{0,900}selectCodexPlusTab\(initialTab\);/);
@@ -1086,6 +1086,48 @@ describe("renderer injection header compatibility", () => {
     assert.ok(!themeBody.includes('textSecondary: "#a1a1aa"'), "主题函数里残留硬编码的次要色");
   });
 
+  it("梦皮壁纸模式下，注入页自己画遮罩 + 壁纸，不再用实色底盖住（#3152）", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const scope = 'html[data-dream-skin="active"][data-dream-art-ready="true"]';
+    const rules = renderer.split("\n").filter((line) => line.includes(scope));
+    assert.ok(rules.some((line) => line.includes('[data-dream-task-mode="full"]') && line.includes(".codex-plus-modal-content {")),
+      "内容区要在梦皮下透明");
+    const start = renderer.indexOf("--codex-plus-settings-page-bg: transparent !important;");
+    assert.ok(start > 0, "页面底色变量要在梦皮下改透明");
+    const block = renderer.slice(start, renderer.indexOf("}", start));
+    assert.match(block, /--codex-plus-nav-bg: transparent !important;/);
+    assert.match(block, /var\(--dream-skin-art, none\) var\(--ds-art-position, center\) \/ cover no-repeat fixed/);
+    // 变量缺失时必须退回实色底：遮罩、底色都要带兜底，否则整条 background 失效变成全透明。
+    assert.match(block, /var\(--codex-plus-dream-veil, linear-gradient\(transparent, transparent\)\)/);
+    assert.match(block, /var\(--ds-bg, var\(--codex-plus-bg-primary\)\) !important;/);
+
+    // 引用的梦皮变量与根节点属性必须真实存在于内置梦皮（Windows / macOS 两份），改名时这里先红。
+    for (const platform of ["windows", "macos"]) {
+      const css = await readFile(new URL(`../../../assets/inject/upstream/dream-skin/${platform}/dream-skin.css`, import.meta.url), "utf8");
+      const script = await readFile(new URL(`../../../assets/inject/upstream/dream-skin/${platform}/renderer-inject.js`, import.meta.url), "utf8");
+      for (const name of ["--ds-immersive-edge", "--ds-immersive-mid", "--ds-immersive-far", "--ds-task-immersive-edge",
+        "--ds-task-immersive-mid", "--ds-task-immersive-far", "--ds-art-position", "--ds-bg", "--ds-panel"]) {
+        assert.ok(css.includes(`${name}:`), `${platform} 梦皮缺少 ${name}`);
+      }
+      assert.match(script, /"--dream-skin-art"/);
+      for (const attribute of ["data-dream-art-ready", "data-dream-task-mode", "data-dream-art-task-mode"]) {
+        assert.ok(script.includes(`"${attribute}"`), `${platform} 梦皮不再设置 ${attribute}`);
+      }
+    }
+  });
+
+  it("各分片的顶层函数不重名（同一 IIFE 里后声明的会静默覆盖前面的）", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    // 10-31 拓展主题的 applyCodexPlusTheme() 覆盖了 40 分片的 applyCodexPlusTheme(overlay)，
+    // 所有页面根节点都没拿到宿主配色变量和 data-codex-plus-theme，原生下拉在深色下变成白底浅字。
+    // closeCodexPlusPage 是 92-extension-host 有意覆盖（多做拓展页清理），单独放行。
+    const intentional = new Set(["closeCodexPlusPage"]);
+    const names = [...renderer.matchAll(/^ {2}(?:async )?function\*? ?([\w$]+)\s*\(/gm)].map((match) => match[1]);
+    const duplicated = [...new Set(names.filter((name, index) => names.indexOf(name) !== index))].filter((name) => !intentional.has(name));
+    assert.deepEqual(duplicated, []);
+    assert.equal((renderer.match(/^ {2}function applyCodexPlusTheme\(/gm) || []).length, 1);
+  });
+
   it("lists user scripts in the 拓展 page left panel", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
@@ -1131,7 +1173,8 @@ describe("renderer injection header compatibility", () => {
     // 市场走 bridge 的两个新路由。
     assert.match(renderer, /postJson\("\/script-market\/list", \{\}\)/);
     assert.match(renderer, /postJson\("\/script-market\/install", \{ id \}\)/);
-    assert.match(renderer, /data-codex-extensions-browse="installed"/);
+    // 分栏与管理器「拓展」页一致：精选 / 社区 / 本地 / 我发布的 / dsh 插件。
+    assert.match(renderer, /\["market", "精选"\],\s*\["community", "社区"\],\s*\["installed", "本地"\],\s*\["mine", "我发布的"\],\s*\["dsh", "dsh 插件"\]/);
     const start = renderer.indexOf("  function refreshCodexPlusExtensionsView()");
     const end = renderer.indexOf("  function codexPlusExtensionsSelectionDetail()", start);
     assert.ok(start >= 0 && end > start);
@@ -1155,6 +1198,15 @@ describe("renderer injection header compatibility", () => {
 
     assert.equal(appended.length, 1);
     assert.match(appended[0].textContent ?? "", /#codex-plus-sidebar-nav/);
+  });
+
+  it("themes native select options so dark mode popups stay readable", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const css = installRendererStyle(renderer)[0].textContent ?? "";
+    // 弹出层不跟主题：不显式给选项底色，深色下就是浅色字配白底。
+    const rule = css.match(/:is\(\.codex-plus-page-overlay, \.codex-plus-modal-overlay\) select option \{([^}]+)\}/)?.[1] ?? "";
+    assert.match(rule, /background-color: var\(--codex-plus-bg-elevated\)/);
+    assert.match(rule, /color: var\(--codex-plus-text\)/);
   });
 
   it("does not override the host document root typography or foreground", async () => {
@@ -1269,22 +1321,33 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
   it("groups the settings homepage into labelled cards and keeps hidden service controls hidden", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const homeStart = renderer.indexOf('data-codex-plus-panel="home"');
-    const homeEnd = renderer.indexOf("${renderCodexPlusExtensionMenuRows()}", homeStart);
+    const homeEnd = renderer.indexOf("data-codex-plus-panel=\"${codexPlusExtensionsTab}\"", homeStart);
     assert.ok(homeStart >= 0 && homeEnd > homeStart);
-    // 模板里只剩清单挂载点和固定的「工具与关于」；设置分组全部按清单生成。
+    // 模板里只剩清单挂载点、拓展分区挂载点、固定的「拓展设置」和「工具与关于」；设置分组全部按清单生成。
+    // 「拓展设置」排在「工具与关于」前面：左栏里它和拓展分区同属「拓展」区。
     const template = renderer.slice(homeStart, homeEnd);
-    assert.match(template, /\$\{renderCodexPlusSettingsCatalogSections\(\)\}\s*<section class="codex-plus-settings-section" aria-label="工具与关于" data-codex-plus-settings-tools="true">/);
+    assert.match(template, /\$\{renderCodexPlusSettingsCatalogSections\(\)\}\s*\$\{renderCodexPlusSettingsSectionGroups\(\)\}\s*<div class="codex-plus-settings-group" data-codex-plus-settings-group="ext-menu"[\s\S]*?<\/section>\s*<\/div>\s*<div class="codex-plus-settings-group" data-codex-plus-settings-group="tools" data-codex-plus-settings-label="工具与关于"[^>]*data-codex-plus-settings-tools="true">\s*<section class="codex-plus-settings-section" aria-label="工具与关于">/);
+    assert.match(template, /data-codex-plus-settings-group="ext-menu" data-codex-plus-settings-label="拓展设置"[\s\S]*data-codex-plus-ext-menu-host="true"/);
     const catalog = JSON.parse(await readFile(settingsCatalogUrl, "utf8"));
     const page = await settingsCatalogRuntime(async () => catalog);
     await page.load();
-    const html = page.sections() + template.slice(template.indexOf('<section class="codex-plus-settings-section" aria-label="工具与关于"'));
+    const html = page.sections() + template.slice(template.indexOf('<div class="codex-plus-settings-group" data-codex-plus-settings-group="ext-menu"'));
+    // 每个分组一个容器，左栏一项对应一个；标签就是分组标题。
+    const groups = Array.from(html.matchAll(/<div class="codex-plus-settings-group" data-codex-plus-settings-group="([^"]+)" data-codex-plus-settings-label="([^"]+)"/g), ([, id, label]) => ({ id, label }));
+    const expectedGroupEntries = catalog.groups
+      .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex"))
+        || catalog.builtins.some((entry: { group: string }) => entry.group === group.id))
+      .map((group: { id: string; title: string }) => ({ id: group.id, label: group.title }));
+    // 「拓展设置」的容器总在；没有拓展菜单项时由样式隐藏、左栏也不列。
+    assert.deepEqual(groups, [...expectedGroupEntries, { id: "ext-menu", label: "拓展设置" }, { id: "tools", label: "工具与关于" }]);
     const sections = Array.from(html.matchAll(/<section class="codex-plus-settings-section" aria-label="([^"]+)"[^>]*>([\s\S]*?)<\/section>/g));
     const expectedGroups = catalog.groups
       .filter((group: { id: string }) => catalog.items.some((item: { group: string; surfaces: string[] }) => item.group === group.id && item.surfaces.includes("codex"))
         || catalog.builtins.some((entry: { group: string }) => entry.group === group.id))
       .map((group: { title: string }) => group.title);
-    assert.deepEqual(sections.map((match) => match[1]), [...expectedGroups, "工具与关于"]);
-    for (const [, title, contents] of sections) {
+    assert.deepEqual(sections.map((match) => match[1]), [...expectedGroups, "拓展设置", "工具与关于"]);
+    // 「拓展设置」的行由拓展菜单运行时填，模板里没有卡片。
+    for (const [, title, contents] of sections.filter((match) => match[1] !== "拓展设置")) {
       assert.ok(contents.includes(`<h2 class="codex-plus-settings-section-title">${title}</h2>`));
       assert.ok(contents.includes('class="codex-plus-settings-card"'));
       assert.ok(contents.includes('class="codex-plus-row"'));
@@ -1292,9 +1355,13 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
     const layoutStart = renderer.indexOf("  function installCodexPlusPageLayout(");
     const layoutEnd = renderer.indexOf("  function codexPlusPageTitle(", layoutStart);
     assert.ok(layoutStart >= 0 && layoutEnd > layoutStart);
-    assert.match(renderer.slice(layoutStart, layoutEnd), /if \(tab === "home"\)\s*\{[\s\S]*?body\.querySelector\("\.codex-plus-settings"\)\?\.prepend\(header\)/);
+    // 设置页：版本号与后端状态点挪进左栏顶上，右边按分组分页。
+    const layout = renderer.slice(layoutStart, layoutEnd);
+    assert.match(layout, /else if \(tab === "home"\)\s*\{[\s\S]*?nav\.firstElementChild\.appendChild\(header\)/);
+    assert.match(layout, /setAttribute\("data-codex-plus-settings-paged", "true"\)/);
     const css = installRendererStyle(renderer)[0].textContent ?? "";
     assert.match(css, /\.codex-plus-settings\s+\.codex-plus-row\[hidden\]\s*\{\s*display:\s*none\s*;/);
+    assert.match(css, /\.codex-plus-settings\[data-codex-plus-settings-paged="true"\] > \.codex-plus-settings-group:not\(\[data-active="true"\]\) \{ display: none; \}/);
   });
 
   it("rewrites official usage status at the cache boundary instead of scanning alerts", async () => {
@@ -1421,26 +1488,50 @@ describe("native-style extension and sponsor discovery", () => {
   function escapeSource(renderer: string) {
     return segment(renderer, "  function escapeHtml(value)", "  function confirmDelete(");
   }
-  function extensionRuntime(renderer: string) {
+  function extensionRuntime(renderer: string, options: { sources?: boolean } = {}) {
     const icon = renderer.match(/^  const codexPlusDefaultExtensionIconPath = .+;$/m)?.[0];
     assert.ok(icon);
+    // 带上「社区 / 我发布的 / dsh 插件」分片时，桥接与对话框用桩：调用记进 calls，返回 responses 里的值。
+    const sources = options.sources
+      ? `const calls = [], responses = {};
+const postJson = async (path, body) => { calls.push([path, body]); const reply = responses[path + ":" + body.action]; return typeof reply === "function" ? reply(body) : reply ?? { status: "failed", message: "no stub" }; };
+// 主区重画走真实的 refreshCodexPlusExtensionsView；不在拓展页时它直接返回，这里不需要画。
+const codexPlusActiveEntry = () => "";
+let askAnswer = null; const asks = []; const codexPlusAsk = async (question) => { asks.push(question); return askAnswer; };
+const showToast = () => {}; const reloadUserScriptsAfterChange = async () => { calls.push(["reload"]); };
+// 排序菜单开合会挂 / 摘 window 上的按键监听、找菜单节点；这里只需要它们存在。
+const window = { addEventListener() {}, removeEventListener() {} }; const document = { querySelector: () => null };
+const codexPlusConfirmPreparedInstall = async (prepared) => { asks.push(prepared); return askAnswer; };
+${segment(renderer, "  const codexPlusExtensionSources = {", "  // ── 事件 ──")}
+${segment(renderer, "  function codexPlusDshPluginById(", "  // ── 拓展页分栏到此为止 ──")}`
+      : `const codexPlusExtensionSources = null, calls = [], responses = {}, asks = []; let askAnswer = null;`;
     return new Function(`${icon}\n${escapeSource(renderer)}
 let codexPlusUserScripts = { scripts: [] }, codexPlusUserScriptsLoaded = false;
-let codexPlusScriptMarket = { scripts: [], loaded: false, loading: false, message: "" };
+let codexPlusScriptMarket = { scripts: [], packages: [], loaded: false, loading: false, message: "" };
 let codexPlusExtensionsQuery = "", codexPlusExtensionsFilter = "market", codexPlusExtensionsSelected = null;
+let codexPlusPackageInstalling = "";
 ${segment(renderer, "  function userScriptStatusLabel(", "  async function uninstallUserScript(")}
 ${segment(renderer, "  function codexPlusExtensionsEntries()", "  const codexPlusAdsUrl =")}
+${sources}
 return {
   nav: renderCodexPlusExtensionsNav, overview: renderCodexPlusExtensionsOverview, detail: renderCodexPlusExtensionsDetail,
+  sources: codexPlusExtensionSources, calls, responses, asks,
+  answer(value) { askAnswer = value; },
+  click(target) { return handleCodexPlusExtensionSourcesClick(target); },
+  load(filter, force) { codexPlusExtensionSourceEnsureLoaded(filter, force); },
   configure(scripts, market, options = {}) {
     codexPlusUserScripts = { scripts }; codexPlusUserScriptsLoaded = options.userLoaded ?? true;
-    codexPlusScriptMarket = { scripts: market, loaded: options.marketLoaded ?? true, loading: options.loading ?? false, message: options.message || "" };
+    codexPlusScriptMarket = { scripts: market, packages: options.packages || [], loaded: options.marketLoaded ?? true, loading: options.loading ?? false, message: options.message || "" };
+    codexPlusPackageInstalling = options.installing || "";
+    if (codexPlusExtensionSources && options.marketSort) codexPlusExtensionSources.marketSort = options.marketSort;
     codexPlusExtensionsQuery = options.query || ""; codexPlusExtensionsFilter = options.filter || "market";
     codexPlusExtensionsSelected = options.selected || null;
   }
 };`)() as {
       nav: () => string; overview: () => string; detail: () => string;
       configure: (scripts: Record<string, unknown>[], market: Record<string, unknown>[], options?: Record<string, unknown>) => void;
+      sources: Record<string, any>; calls: unknown[][]; responses: Record<string, unknown>; asks: any[];
+      answer: (value: unknown) => void; click: (target: unknown) => boolean; load: (filter: string, force?: boolean) => void;
     };
   }
 
@@ -1546,17 +1637,28 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     assert.ok(overview.includes("Available &lt;script&gt;"));
     assert.ok(overview.includes("Catalog &lt;docs&gt; &amp; &quot;more&quot;"));
     assert.ok(overview.includes('src="https://example.test/logo.png?x=1&amp;y=2"'));
-    assert.doesNotMatch(overview, /<script>|data-codex-market-install="owned"|Owned market|Builtin/);
+    assert.doesNotMatch(overview, /<script>|data-codex-market-install="owned"|Builtin/);
+    // 精选和管理器一样分「已安装」「可安装」两节：装过的市场脚本列在已安装里，点开看本地详情。
+    const [installedPart, availablePart] = overview.split("可安装");
+    assert.match(installedPart, /已安装 <span class="codex-plus-discovery-section-count">1<\/span>/);
+    assert.ok(installedPart.includes("Owned market"));
+    assert.ok(installedPart.includes('data-codex-extensions-select="installed:user&quot;&amp;"'));
+    assert.ok(installedPart.includes("已安装"));
+    assert.doesNotMatch(availablePart, /Owned market/);
     const cards = Array.from(overview.matchAll(/<article class="codex-plus-extension-card">([\s\S]*?)<\/article>/g));
-    assert.equal(cards.length, 1);
-    assert.match(cards[0][1], /<\/button>\s*<div class="codex-plus-extension-card-actions"><button/);
-    assert.equal(Array.from(cards[0][1].matchAll(/<button\b/g)).length, 2);
-    assert.doesNotMatch(cards[0][1], /<button\b(?:(?!<\/button>)[\s\S])*<button\b/);
+    assert.equal(cards.length, 2);
+    for (const [, card] of cards) {
+      assert.match(card, /<\/button>\s*<div class="codex-plus-extension-card-actions"><button/);
+      assert.equal(Array.from(card.matchAll(/<button\b/g)).length, 2);
+      assert.doesNotMatch(card, /<button\b(?:(?!<\/button>)[\s\S])*<button\b/);
+    }
     assert.equal(runtime.detail(), overview, "opening extensions initially displays the browse results");
 
     runtime.configure(scripts, market, { filter: "installed" });
     const installed = runtime.overview();
     assert.ok(installed.includes("Owned market"), "installed market scripts use their catalog display name");
+    // 本地分「已启用」「未启用」两节。
+    assert.ok(installed.indexOf("已启用") < installed.indexOf("Owned market") && installed.indexOf("Owned market") < installed.indexOf("未启用"));
     assert.ok(installed.includes('data-codex-user-script-key="user&quot;&amp;"'));
     assert.ok(installed.includes('role="switch" aria-checked="true"'));
     assert.ok(installed.includes('role="switch" aria-checked="false"'));
@@ -1574,6 +1676,288 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     assert.ok(runtime.detail().includes('data-codex-extensions-uninstall="user&quot;&amp;"'));
     runtime.configure(scripts, market, { selected: { kind: "installed", key: "builtin.js" } });
     assert.doesNotMatch(runtime.detail(), /data-codex-extensions-uninstall/);
+  });
+
+  it("lists curated packages like the manager's 精选: official first, badge, GitHub avatars, pinned install", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"));
+    const packages = [
+      { kind: "package", id: "request-toasts", name: "请求滚动提示", description: "toasts", repo: "BigPizzaV3/codexpp-request-toasts", official: true, version: "0.2.0", tag: "v0.2.0", sha: "a".repeat(40), installed: false, localSource: false, tags: [] },
+      { kind: "package", id: "rice-maid-pet", name: "大肥鱼吃米饭桌宠", description: "pet", repo: "BigPizzaV3/codexpp-rice-maid-pet", official: true, version: "1.0.2", sha: "b".repeat(40), installed: true, localSource: true, installedVersion: "1.0.2", updateAvailable: false, tags: [] },
+      { kind: "package", id: "ice-tea", name: "冰红茶语音按钮", description: "tea", repo: "BigPizzaV3/codexpp-ice-tea", official: false, version: "0.1.0", sha: "c".repeat(40), installed: false, tags: [] },
+    ];
+    const market = [
+      { id: "relay", name: "Codex Relay Balance", homepage: "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket", version: "1", tags: [] },
+      { id: "matrix", name: "Codex Model Matrix", homepage: "https://github.com/Xiazhixuan119748/Codex-Model-Matrix", version: "1", tags: [] },
+    ];
+    const scripts = [{ key: "user:rice-maid-pet", name: "Agent 桌宠", source: "user", enabled: true, status: "loaded", package: { id: "rice-maid-pet" } }];
+    runtime.configure(scripts, market, { packages });
+    const overview = runtime.overview();
+    const names = Array.from(overview.matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
+    // 「已安装」一节先列本机已装的（含本机源码）；「可安装」里拓展包排在单文件脚本前面。
+    assert.deepEqual(names, ["大肥鱼吃米饭桌宠", "请求滚动提示", "冰红茶语音按钮", "Codex Relay Balance", "Codex Model Matrix"]);
+    assert.ok(overview.includes("本机源码 1.0.2"));
+    assert.ok(overview.includes('data-codex-package-install="request-toasts"'));
+    assert.doesNotMatch(overview, /data-codex-market-install="request-toasts"|data-codex-package-install="relay"/);
+    assert.equal(overview.match(/codex-plus-extension-official/g)?.length, 2, "only official packages carry the badge");
+    // 头像与管理器同一套取法：拓展包用仓库作者，脚本用主页仓库作者，主页是市场仓库本身时不用头像。
+    assert.ok(overview.includes('src="https://github.com/BigPizzaV3.png?size=64"'));
+    assert.ok(overview.includes('src="https://github.com/Xiazhixuan119748.png?size=64"'));
+    const relayCard = overview.split("<article").find((card) => card.includes("Codex Relay Balance")) || "";
+    assert.doesNotMatch(relayCard, /<img/);
+    // 精选排序：选「名称」后脚本按名称排，拓展包仍在前。
+    const sortRuntime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
+    sortRuntime.configure(scripts, market, { packages, marketSort: "name" });
+    const sorted = Array.from(sortRuntime.overview().matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
+    assert.deepEqual(sorted.slice(-2), ["Codex Model Matrix", "Codex Relay Balance"]);
+    // 排序是仿 Codex 原生下拉的胶囊按钮 + 自绘菜单，不用原生 select（弹出层不跟主题）。
+    let html = sortRuntime.overview();
+    assert.doesNotMatch(html, /<select/);
+    assert.match(html, /<button type="button" class="codex-plus-menu-trigger" data-codex-extensions-sort-toggle="market" aria-haspopup="menu" aria-expanded="false"[^>]*><span>名称<\/span>/);
+    assert.doesNotMatch(html, /role="menu"/, "the menu stays closed until the trigger is clicked");
+    assert.equal(sortRuntime.click(fakeTarget({ "data-codex-extensions-sort-toggle": "market" })), true);
+    html = sortRuntime.overview();
+    assert.match(html, /aria-expanded="true"/);
+    const items = Array.from(html.matchAll(/role="menuitemradio" aria-checked="(true|false)" data-codex-extensions-sort-value="(\w+)"><span class="codex-plus-menu-item-label">([^<]+)</g)).map((match) => [match[2], match[3], match[1]]);
+    assert.deepEqual(items, [["default", "默认顺序", "false"], ["updated", "最近更新", "false"], ["name", "名称", "true"]]);
+    assert.equal(html.match(/M12\.7216 2\.99666/g)?.length, 1, "only the selected item carries the check mark");
+    // 选一项：改排序并收起菜单。
+    assert.equal(sortRuntime.click(fakeTarget({ "data-codex-extensions-sort-value": "updated" })), true);
+    assert.equal(sortRuntime.sources.marketSort, "updated");
+    assert.doesNotMatch(sortRuntime.overview(), /role="menu"/);
+    // 点菜单外面：收起，但不吞这次点击（交给后面的处理）。
+    sortRuntime.click(fakeTarget({ "data-codex-extensions-sort-toggle": "market" }));
+    const outside = { closest: (selector: string) => (selector === "[data-codex-extensions-browse]" ? {} : null), getAttribute: () => null };
+    assert.equal(sortRuntime.click(outside), false);
+    assert.equal(sortRuntime.sources.sortMenu, "");
+
+    runtime.configure(scripts, market, { packages, selected: { kind: "market", key: "request-toasts" } });
+    const detail = runtime.detail();
+    assert.ok(detail.includes('data-codex-package-install="request-toasts"'));
+    assert.ok(detail.includes("codex-plus-extension-official"));
+    runtime.configure(scripts, market, { packages, installing: "request-toasts", selected: { kind: "market", key: "request-toasts" } });
+    assert.match(runtime.detail(), /disabled>正在准备…/);
+    // 已装的拓展包回查清单拿到头像；本机源码不提示更新。
+    runtime.configure(scripts, market, { packages, selected: { kind: "installed", key: "user:rice-maid-pet" } });
+    assert.ok(runtime.detail().includes('src="https://github.com/BigPizzaV3.png?size=64"'));
+    assert.doesNotMatch(runtime.detail(), /可更新|data-codex-package-install/);
+    const updatable = packages.map((item) => item.id === "rice-maid-pet" ? { ...item, localSource: false, updateAvailable: true, tag: "v1.1.0" } : item);
+    runtime.configure(scripts, market, { packages: updatable, selected: { kind: "installed", key: "user:rice-maid-pet" } });
+    assert.match(runtime.detail(), /data-codex-package-install="rice-maid-pet"[^>]*>更新/);
+    assert.match(runtime.detail(), /有新版本 v1\.1\.0 可更新/);
+  });
+
+  // 假的点击目标：closest("[data-x]") 命中 attrs 里有的属性就返回自己。
+  function fakeTarget(attrs: Record<string, string>, disabled = false) {
+    const node = {
+      disabled,
+      getAttribute: (name: string) => attrs[name] ?? null,
+      closest: (selector: string) => (attrs[selector.replace(/^\[|\]$/g, "")] !== undefined ? node : null),
+    };
+    return node;
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it("renders the 社区 pane like the manager and installs through prepare → confirm → install", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
+    const permissions = { backend: "server.js", hooks: [], gatewayRequest: 0, gatewayResponse: 0, tools: [], routes: [], renderer: [] };
+    const entry = (repo: string, extra: Record<string, unknown> = {}) => ({ repo, url: `https://github.com/${repo}`, owner: repo.split("/")[0], ownerAvatar: `https://github.com/${repo.split("/")[0]}.png`, name: repo.split("/")[1], id: repo.split("/")[1], description: `${repo} <desc>`, stars: 1, pushedAt: "2026-11-01", compatible: true, engine: 1, keywords: [], permissions, installed: null, ...extra });
+    let listCalls = 0;
+    runtime.responses["/extension-market/community:list"] = () => { listCalls += 1; return { enabled: true, fetchedAt: Math.floor(Date.now() / 1000) - 120, problems: [], message: "", entries: [
+      entry("alice/low", { stars: 3 }),
+      entry("bob/high", { stars: 9 }),
+      entry("eve/old", { stars: 99, compatible: false, engine: 9 }),
+      entry("mallory/sus", { stars: 5, warnings: ["名字仿冒官方"] }),
+      entry("me/mine", { installed: { channel: "local", version: "0.3.0" } }),
+      entry("carol/done", { installed: { channel: "community", version: "1.0.0", tag: "v1.0.0" } }),
+    ] }; };
+    runtime.load("community");
+    await settle();
+    runtime.configure([], [], { filter: "community" });
+    const html = runtime.overview();
+    assert.match(html, /社区拓展未经 Codex\+\+ 审核/);
+    assert.match(html, /列表更新于 2 分钟前/);
+    const names = Array.from(html.matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
+    // 已安装在前；可安装按星数，需要更新 Codex++ 的排最后。
+    assert.deepEqual(names, ["mine", "done", "high", "sus", "low", "old"]);
+    assert.ok(html.includes("bob/high &lt;desc&gt;"));
+    assert.match(html, /data-tone="danger" title="名字仿冒官方">可疑/);
+    assert.match(html, />需要更新 Codex\+\+</);
+    assert.match(html, />后台进程</);
+    assert.match(html, /本机源码 0\.3\.0/);
+    assert.match(html, /已安装 v1\.0\.0/);
+    assert.doesNotMatch(html, /data-codex-community-install="me\/mine"/, "local sources are managed in 本地");
+    assert.match(html, /data-codex-community-install="eve\/old"[^>]*disabled/);
+    assert.match(html, /<a class="codex-plus-extension-card-select" href="https:\/\/github.com\/bob\/high" target="_blank"/);
+    // 排序：名称。
+    runtime.sources.communitySort = "name";
+    const byName = Array.from(runtime.overview().matchAll(/codex-plus-extension-card-title">([^<]+)</g)).map((match) => match[1]);
+    assert.deepEqual(byName.slice(2), ["high", "low", "sus", "old"]);
+
+    runtime.responses["/extension-market/community:prepare"] = { token: "t-1", repo: "bob/high", name: "high", channel: "community", permissions, conflict: null, sha: "f".repeat(40) };
+    runtime.responses["/extension-market/community:install"] = { hooksAdded: true };
+    runtime.answer({ value: "enable" });
+    assert.equal(runtime.click(fakeTarget({ "data-codex-community-install": "bob/high" })), true);
+    await settle(); await settle();
+    const actions = runtime.calls.map((call) => (call[1] as { action?: string } | undefined)?.action ?? call[0]);
+    assert.deepEqual(actions.slice(-4), ["prepare", "install", "reload", "list"]);
+    assert.deepEqual(runtime.calls.find((call) => (call[1] as { action?: string })?.action === "install")?.[1], { action: "install", payload: { token: "t-1", enable: true, replace: false } });
+    assert.match(runtime.sources.community.notice, /拓展已安装并启用。Codex 配置里新增了「Codex\+\+ 拓展钩子」/);
+    assert.equal(listCalls, 2);
+
+    runtime.answer(null);
+    runtime.click(fakeTarget({ "data-codex-community-install": "bob/high" }));
+    await settle(); await settle();
+    assert.equal((runtime.calls.at(-1)?.[1] as { action: string }).action, "discard");
+
+    // 关掉社区：只显示已关闭的说明，不再列条目。
+    runtime.responses["/extension-market/community:setEnabled"] = { enabled: false, entries: [] };
+    runtime.click(fakeTarget({ "data-codex-community-enabled": "true" }));
+    await settle();
+    assert.match(runtime.overview(), /社区拓展已关闭，不会访问 GitHub。/);
+  });
+
+  it("renders 我发布的 and only deletes a repo after its name is typed back", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
+    runtime.responses["/extension-market/published:mine"] = { account: "me", entries: [
+      { repo: "me/codexpp-a", url: "https://github.com/me/codexpp-a", description: "A", stars: 2, pushedAt: "2026-10-01T00:00:00Z", visibility: "PUBLIC", archived: false, listed: true, id: "a", version: "1.0.0" },
+      { repo: "me/codexpp-b", url: "https://github.com/me/codexpp-b", description: "B", stars: 0, pushedAt: "", visibility: "PRIVATE", archived: true, listed: false, id: null, version: null },
+    ] };
+    runtime.load("mine");
+    await settle();
+    runtime.configure([], [], { filter: "mine" });
+    const html = runtime.overview();
+    assert.match(html, /GitHub 账号 me 发布的拓展/);
+    assert.match(html, /data-tone="ok">已上架/);
+    assert.match(html, />已下架</);
+    assert.match(html, />私有</);
+    assert.match(html, />已归档</);
+    assert.match(html, /data-codex-published-action="unlist" data-codex-published-repo="me\/codexpp-a"/);
+    assert.match(html, /data-codex-published-action="relist" data-codex-published-repo="me\/codexpp-b"/);
+    assert.match(html, /codex-plus-extension-card-title">codexpp-b</, "falls back to the repo name without a local id");
+
+    runtime.answer({ value: "delete", text: "me/codexpp-x" });
+    runtime.click(fakeTarget({ "data-codex-published-action": "deleteRepo", "data-codex-published-repo": "me/codexpp-a" }));
+    await settle(); await settle();
+    assert.ok(!runtime.calls.some((call) => (call[1] as { action?: string })?.action === "deleteRepo"));
+    assert.match(runtime.sources.mine.error, /仓库名不一致/);
+
+    runtime.responses["/extension-market/published:deleteRepo"] = { ok: true };
+    runtime.answer({ value: "delete", text: " me/codexpp-a " });
+    runtime.click(fakeTarget({ "data-codex-published-action": "deleteRepo", "data-codex-published-repo": "me/codexpp-a" }));
+    await settle(); await settle();
+    assert.deepEqual(runtime.calls.find((call) => (call[1] as { action?: string })?.action === "deleteRepo")?.[1], { action: "deleteRepo", payload: { repo: "me/codexpp-a" } });
+    assert.equal(runtime.sources.mine.notice, "已删除仓库 me/codexpp-a");
+  });
+
+  it("renders dsh 插件 with expandable rows, JSON config and import confirmation", async () => {
+    const runtime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
+    const plugin = {
+      id: "word", name: "dsh-word", version: "1.2.0", source: { type: "npm", spec: "dsh-word" }, root: "/x", managed: true, enabled: true,
+      disabledRows: [], configs: { main: { lang: "zh" } }, importedSkills: [], toolCount: 2, mcpJson: "{}",
+      report: { title: "字数 <统计>", description: "count", rows: [
+        { id: "main", module: "main", status: "compatible", kind: "plugin", reasons: [], notes: [], tools: [{ name: "count_words", description: "数字数" }], mappings: ["instructions"] },
+        { id: "loop", module: "agent", status: "incompatible", kind: "plugin", reasons: ["依赖 dsh agent 循环"], notes: [], tools: [] },
+      ], skills: [{ name: "writing", description: "" }] },
+      companion: { id: "dsh-word-companion", hooks: ["PreToolUse"], instructions: true, staticPrompt: true, installed: true, enabled: true, scriptsEnabled: true },
+    };
+    const snapshot = (message = "") => ({ message, plugins: [plugin], integration: { status: "missing", registered: false, message: "" }, toolchain: { node: "22", npm: "10" }, pluginDir: "/p" });
+    runtime.responses["/extension-market/dsh:snapshot"] = snapshot();
+    runtime.load("dsh");
+    await settle();
+    runtime.configure([], [], { filter: "dsh" });
+    let html = runtime.overview();
+    assert.match(html, /dsh 插件 MCP 未接入 Codex/);
+    assert.match(html, /data-codex-dsh-action="connect_codex"/);
+    assert.match(html, /字数 &lt;统计&gt;/);
+    assert.match(html, /2 个工具/);
+    assert.match(html, /1 个 skill/);
+    assert.match(html, /1 项不兼容/);
+    assert.doesNotMatch(html, /count_words/, "rows stay collapsed until the plugin is opened");
+
+    runtime.click(fakeTarget({ "data-codex-dsh-expand": "word" }));
+    html = runtime.overview();
+    assert.match(html, /<code>count_words<\/code><span>数字数<\/span>/);
+    assert.match(html, /提示词 → instructions/);
+    assert.match(html, /依赖 dsh agent 循环/);
+    assert.match(html, /配套拓展「dsh-word-companion」/);
+    assert.match(html, /data-codex-dsh-edit-config="word" data-codex-dsh-row="main"/);
+    assert.doesNotMatch(html, /data-codex-dsh-row="loop"/, "incompatible rows cannot be configured");
+
+    runtime.click(fakeTarget({ "data-codex-dsh-edit-config": "word", "data-codex-dsh-row": "main" }));
+    assert.equal(runtime.sources.dsh.draft, JSON.stringify({ lang: "zh" }, null, 2));
+    runtime.sources.dsh.draft = "[1]";
+    runtime.click(fakeTarget({ "data-codex-dsh-save-config": "word", "data-codex-dsh-row": "main" }));
+    await settle();
+    assert.equal(runtime.sources.dsh.draftError, "配置必须是 JSON 对象");
+    runtime.responses["/extension-market/dsh:set_config"] = snapshot("配置已保存并重新分析。");
+    runtime.sources.dsh.draft = '{"lang":"en"}';
+    runtime.click(fakeTarget({ "data-codex-dsh-save-config": "word", "data-codex-dsh-row": "main" }));
+    await settle(); await settle();
+    assert.deepEqual(runtime.calls.at(-1)?.[1], { action: "set_config", payload: { id: "word", rowId: "main", config: { lang: "en" } } });
+    assert.equal(runtime.sources.dsh.editing, null);
+    assert.deepEqual(runtime.sources.dsh.notice, { tone: "ok", text: "配置已保存并重新分析。" });
+
+    runtime.responses["/extension-market/dsh:set_enabled"] = snapshot();
+    runtime.click(fakeTarget({ "data-codex-dsh-toggle": "word", "data-enabled": "true" }));
+    await settle(); await settle();
+    assert.deepEqual(runtime.calls.at(-1)?.[1], { action: "set_enabled", payload: { id: "word", enabled: false } });
+
+    // 导入会在本机跑插件代码：先确认；取消就不调。
+    runtime.sources.dsh.source = " dsh-new ";
+    runtime.answer(null);
+    runtime.click(fakeTarget({ "data-codex-dsh-import": "true" }));
+    await settle(); await settle();
+    assert.notEqual((runtime.calls.at(-1)?.[1] as { action: string }).action, "import");
+    runtime.responses["/extension-market/dsh:import"] = snapshot("已导入 dsh-new：1 个工具。");
+    runtime.answer({ value: "import" });
+    runtime.click(fakeTarget({ "data-codex-dsh-import": "true" }));
+    await settle(); await settle();
+    assert.deepEqual(runtime.calls.at(-1)?.[1], { action: "import", payload: { source: "dsh-new" } });
+    assert.equal(runtime.sources.dsh.source, "");
+
+    // 老版本管理器没有这条宿主路由：说清楚要新版。
+    runtime.responses["/extension-market/dsh:reinspect"] = { status: "failed", message: "Unknown bridge path" };
+    runtime.click(fakeTarget({ "data-codex-dsh-action": "reinspect", "data-codex-dsh-id": "word" }));
+    await settle(); await settle();
+    assert.match(runtime.sources.dsh.notice.text, /需要新版 Codex\+\+ 管理工具/);
+  });
+
+  it("installs curated packages through prepare → confirm → install and discards on cancel", async () => {
+    const renderer = await readFile(rendererPath, "utf8");
+    const harness = new Function("bridge", "answer", `
+const calls = [], toasts = [], asks = [];
+let codexPlusScriptMarket = { scripts: [], packages: [{ kind: "package", id: "request-toasts", name: "请求滚动提示" }], loaded: true };
+let codexPlusPackageInstalling = "", codexPlusExtensionsSelected = { kind: "market", key: "request-toasts" };
+let codexPlusUserScripts = { scripts: [{ key: "user:request-toasts" }] };
+const postJson = async (path, payload) => { calls.push([path, payload]); return bridge(path, payload); };
+const showToast = (message) => toasts.push(message);
+const codexPlusAsk = async (question) => { asks.push(question); return answer; };
+const reloadUserScriptsAfterChange = async () => calls.push(["reload"]);
+const refreshCodexPlusExtensionsView = () => {}, codexPlusActiveEntry = () => "extensions";
+${segment(renderer, "  function codexPlusScriptMarketFromPayload(", "  async function loadScriptMarket(")}
+${segment(renderer, "  /** 安装确认框里的能力清单", "  /**\n   * 市场条目与本地脚本合并后的视图。")}
+return { calls, toasts, asks, install: installPackageFromMarket, selected: () => codexPlusExtensionsSelected, busy: () => codexPlusPackageInstalling };`);
+    const prepared = { token: "request-toasts-1", repo: "BigPizzaV3/codexpp-request-toasts", id: "request-toasts", name: "请求滚动提示", version: "0.2.0", tag: "v0.2.0", sha: "a".repeat(40), channel: "official", permissions: { backend: null, hooks: [], gatewayRequest: 0, gatewayResponse: 0, tools: [], routes: ["/request-log/recent"], renderer: ["main.js"] }, conflict: null };
+    const bridge = async (path: string) => path === "/script-market/package/prepare" ? prepared
+      : path === "/script-market/package/install" ? { scripts: [], packages: [], installed: { key: "user:request-toasts", hooksAdded: false } }
+      : {};
+    const ok = harness(bridge, { value: "enable" });
+    await ok.install("request-toasts");
+    assert.deepEqual(ok.calls.map((call: unknown[]) => call[0]), ["/script-market/package/prepare", "/script-market/package/install", "reload"]);
+    assert.deepEqual(ok.calls[1][1], { token: "request-toasts-1", enable: true, replace: false });
+    assert.match(ok.asks[0].message, /官方拓展[\s\S]*锁定提交 aaaaaaa[\s\S]*本地路由 \/request-log\/recent[\s\S]*在 Codex 页面里运行脚本：main\.js/);
+    assert.deepEqual(ok.selected(), { kind: "installed", key: "user:request-toasts" });
+    assert.equal(ok.busy(), "");
+
+    const cancelled = harness(bridge, null);
+    await cancelled.install("request-toasts");
+    assert.deepEqual(cancelled.calls.map((call: unknown[]) => call[0]), ["/script-market/package/prepare", "/script-market/package/discard"]);
+
+    const failed = harness(async () => ({ status: "failed", message: "下载失败" }), { value: "enable" });
+    await failed.install("request-toasts");
+    assert.equal(failed.asks.length, 0);
+    assert.match(failed.toasts[0], /准备安装 请求滚动提示 失败：下载失败/);
+    assert.equal(failed.busy(), "");
   });
 
   it("retains loading, empty and escaped search/error states in extension browse results", async () => {
@@ -2190,29 +2574,35 @@ describe("relay pureApi provider resolution", () => {
   });
 });
 
-it("opens Stepwise configuration in the manager enhancement page", async () => {
+it("opens Stepwise service settings in the Codex++ settings page, not the manager", async () => {
   const source = await readFile(new URL("../../../assets/inject/floating-panel/core/views.js", import.meta.url), "utf8");
   const begin = source.indexOf("  async function openManager()");
   assert.ok(begin >= 0);
-  const state = { runtimeGeneration: 3, settingsStatus: "" };
-  const requests: Array<{ route: string; payload: unknown }> = [];
+  assert.doesNotMatch(source, /\/manager\/open-transient/);
+  const state = { runtimeGeneration: 3, settingsStatus: "pending" };
+  const opened: string[] = [];
   let renders = 0;
-  const openManager = new Function("isCurrentRuntime", "state", "renderFloat", "bridgeCall",
+  const fakeWindow: { __codexPlusOpenServiceSettings?: (section: string) => void } = {};
+  const openManager = new Function("isCurrentRuntime", "state", "renderFloat", "window",
     source.slice(begin) + "\nreturn openManager;",
   )(
     (generation?: number) => generation === undefined || generation === state.runtimeGeneration,
     state,
     () => { renders += 1; },
-    async (route: string, payload: unknown) => { requests.push({ route, payload }); return { status: "ok" }; },
+    fakeWindow,
   );
+  // 主注入脚本没加载：提示不可用，不打开任何东西。
   await openManager();
-  assert.deepEqual(requests, [{ route: "/manager/open-transient", payload: { page: "enhance", section: "stepwise" } }]);
-  assert.equal(state.settingsStatus, "已打开 Codex++");
+  assert.equal(state.settingsStatus, "Codex++ 设置页不可用");
+  fakeWindow.__codexPlusOpenServiceSettings = (section) => opened.push(section);
+  await openManager();
+  assert.deepEqual(opened, ["stepwise"]);
+  assert.equal(state.settingsStatus, "");
   assert.equal(renders, 2);
 });
 
 describe("Stepwise generation mode contracts", () => {
-  it("exposes automatic and manual generation in manager enhancements", async () => {
+  it("exposes automatic and manual generation in the Codex settings page", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
     const renderer = await readFile(
       new URL("../../../assets/inject/renderer-inject.js", import.meta.url),
@@ -2225,11 +2615,13 @@ describe("Stepwise generation mode contracts", () => {
     assert.match(app, /codexAppStepwiseGenerationMode: "auto",/);
     assert.match(app, /codexAppAnswerOutlineEnabled: false,/);
     assert.match(renderer, /answerOutline: false,/);
-    assert.match(app, /<Field label=\{t\("模式"\)\}>/);
-    assert.match(app, /\{ value: "auto", label: t\("自动生成"\) \}/);
-    assert.match(app, /\{ value: "manual", label: t\("手动刷新"\) \}/);
-    assert.match(app, /\{ value: "auto", label: t\("自动兼容"\) \}/);
-    assert.match(app, /\{ value: "anthropic_messages", label: "Anthropic Messages" \}/);
+    // 服务配置只在 Codex 的 Codex++ 设置页里改（46-service-settings.js），管理器只保留类型与默认值。
+    const service = await readFile(new URL("../../../assets/inject/renderer-inject/46-service-settings.js", import.meta.url), "utf8");
+    assert.match(service, /renderCodexPlusServiceRow\("生成方式", "", renderCodexPlusServiceSelect\('data-codex-plus-stepwise-select="codexAppStepwiseGenerationMode"'/);
+    assert.match(service, /\["auto", "自动生成"\],\n\s*\["manual", "手动刷新"\],/);
+    assert.match(service, /\["auto", "自动兼容"\],/);
+    assert.match(service, /\["anthropic_messages", "Anthropic Messages"\],/);
+    assert.ok(renderer.includes(service.trim().split("\n")[0]), "service settings are assembled into the bundle");
     assert.match(app, /function normalizeStepwiseProtocol\(/);
     assert.match(app, /return value === "manual" \? "manual" : "auto";/);
   });
@@ -2369,15 +2761,6 @@ describe("Stepwise generation mode contracts", () => {
     assert.match(stepwise, /VIEW_INDICATOR_MS = 220/);
   });
 
-  it("keeps Stepwise Manager controls at one height", async () => {
-    const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
-
-    assert.match(styles, /\.stepwise-settings-block\s*\{[\s\S]*?--stepwise-control-height:\s*40px;/);
-    assert.match(
-      styles,
-      /\.stepwise-settings-block input[^,]*,[\s\S]*?\.stepwise-settings-block \.app-select-trigger,[\s\S]*?\.stepwise-settings-block \.field-select,[\s\S]*?\.stepwise-settings-block \.select-input\s*\{[\s\S]*?height:\s*var\(--stepwise-control-height\);[\s\S]*?min-height:\s*var\(--stepwise-control-height\);/,
-    );
-  });
 });
 
 // issue #2256/#2255：app-server model request patch 的 miss 熔断以前被 provider
@@ -2777,7 +3160,8 @@ describe("拓展接口层", () => {
     const routes = await readRouteWhitelist();
     assert.ok(routes.length > 0, "白名单不能为空");
     // 这些路由一旦开放，第三方脚本就能改用户配置或操作远端，必须显式决策后才能加。
-    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create"]) {
+    // 「供应商」页的路由会改供应商、带 Key（43-provider-page.js），只给内置页面用。
+    for (const forbidden of ["/settings/set", "/settings/get", "/delete", "/undo", "/share/create", "/providers/list", "/providers/commit", "/providers/test", "/providers/models", "/providers/gateway", "/hooks/files", "/hooks/file/write", "/hooks/test-run"]) {
       assert.ok(!routes.includes(forbidden), `${forbidden} 不应默认开放给拓展`);
     }
     assert.ok(routes.includes("/usage/history"), "只读用量历史应开放给拓展");
@@ -2839,15 +3223,17 @@ describe("拓展菜单项", () => {
 
   it("内置菜单模板保持原样，只追加一个拓展挂载点", async () => {
     const source = await readFile(settingsPath, "utf8");
-    // 挂载点在 home 面板里，且位于「提出问题」之后（即内置项末尾）。
+    // 挂载点在 home 面板自己的「拓展设置」分组里，排在「工具与关于」之前（左栏里和拓展分区同属「拓展」区）。
     const openIdx = source.indexOf("overlay.innerHTML = `");
     const mountIdx = source.indexOf("${renderCodexPlusExtensionMenuRows()}");
-    const issueIdx = source.indexOf("提出问题");
+    const extGroupIdx = source.indexOf('data-codex-plus-settings-group="ext-menu"', openIdx);
+    const toolsGroupIdx = source.indexOf('data-codex-plus-settings-group="tools"', openIdx);
+    const issueIdx = source.indexOf("提出问题", toolsGroupIdx);
     assert.ok(mountIdx > 0, "找不到拓展菜单挂载点");
-    assert.ok(mountIdx > issueIdx, "挂载点应位于内置项之后");
+    assert.ok(extGroupIdx > openIdx && mountIdx > extGroupIdx && mountIdx < toolsGroupIdx, "挂载点应在「拓展设置」分组里、「工具与关于」之前");
     // 关键：内置的行仍然是内联模板，没有被拆成数组。
     assert.ok(
-      source.slice(openIdx, mountIdx).includes('class="codex-plus-row"'),
+      source.slice(toolsGroupIdx, issueIdx).includes('class="codex-plus-row"'),
       "内置菜单行应当仍是内联模板",
     );
     assert.ok(
@@ -3982,6 +4368,13 @@ describe("拓展运行时内核", () => {
     assert.match(scan, /refreshCodexPlusMessageSlots\(\);\n\s+refreshCodexPlusSidePanels\(\);/);
   });
 
+  it("异步内容挂载前隐藏空插槽，不使用浏览器无效的嵌套 :has", async () => {
+    const slots = await readFile(new URL("../../../assets/inject/renderer-inject/92-extension-slots.js", import.meta.url), "utf8");
+    assert.ok(slots.includes('.codex-plus-ui-slot:not(:has(> .codex-plus-ui-slot-item:not(:empty))){display:none}'));
+    assert.ok(!slots.includes(':not(:has(> [data-hidden="true"]:only-child))'), "嵌套 :has 会使整条空容器隐藏规则失效");
+    assert.ok(slots.includes('.codex-plus-ui-slot-item:has(> [data-hidden="true"]:only-child){display:none}'), "保留现有单项隐藏行为");
+  });
+
   describe("插槽 DOM 资源生命周期", () => {
     class SlotNode {
       nodeType = 1;
@@ -4843,9 +5236,6 @@ describe("extension rpc frame interception", () => {
       ["push", ["pipeline", -688, [], [{ clientUserMessageId: "blocked" }, "full", ["promise", -0.5]]]],
       ["reject", -0.5, ["error", "Error", "blocked by policy"]],
     ]);
-    const rpc = await readFile(new URL("../../../assets/inject/renderer-inject/91-extension-rpc.js", import.meta.url), "utf8");
-    assert.match(rpc, /codexPlusRpcInterceptorVersion = 9;/);
-    assert.doesNotMatch(rpc, /codexPlusRpcPlanResume|prepareCodexThreadProviderResume|codexPlusRpcResumeGates/);
   });
 
   it("routes manager sendRequest calls through codex/request", async () => {

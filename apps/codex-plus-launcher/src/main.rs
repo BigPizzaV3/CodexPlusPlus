@@ -1668,6 +1668,19 @@ impl BridgeDataService for LauncherDataService {
             .map_err(|error| anyhow::anyhow!("archived lookup task failed: {error}"))
     }
 
+    async fn prepare_thread_provider(&self, request: Value) -> anyhow::Result<Value> {
+        tokio::task::spawn_blocking(move || {
+            let settings = codex_plus_core::settings::SettingsStore::default().load()?;
+            codex_plus_data::prepare_thread_provider(
+                &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+                settings.provider_sync_enabled,
+                &request,
+            )
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("Thread provider preparation task failed: {error}"))?
+    }
+
     async fn recover_remote_control_session(&self, thread_id: String) -> anyhow::Result<Value> {
         let settings = codex_plus_core::settings::SettingsStore::default()
             .load()
@@ -1879,6 +1892,10 @@ impl BridgeRuntimeService for LauncherRuntimeService {
             anyhow::bail!("脚本 id 不能为空");
         }
         codex_plus_core::script_market::install_market_script_by_id(&self.user_scripts, id).await
+    }
+
+    async fn script_market_package(&self, action: &str, payload: Value) -> anyhow::Result<Value> {
+        codex_plus_core::script_market::market_package_request(&self.user_scripts, action, &payload).await
     }
 
     async fn open_devtools(&self) -> anyhow::Result<Value> {

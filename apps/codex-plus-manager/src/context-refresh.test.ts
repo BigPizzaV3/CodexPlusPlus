@@ -40,6 +40,7 @@ function runtime() {
     codexRemoteSessionActiveProfile: () => state.profileEnabled ? { relayMode: state.relayMode } : null,
     codexModelCatalog: { get runtimeContext() { return state.runtime; } },
     loadCodexModelCatalog: async () => ({ model: "selected", runtimeContext: state.runtime }),
+    codexBridgePreparationReadTimeoutMs: 8000,
     codexManagedSessionRecoveryOptions: () => ({ timeoutMs: 5000 }),
     applyCodexRemoteSessionProviderOverride: (_method: string, params: any) => params,
     applyCodexManagedSessionConnection: (_method: string, params: any) => params,
@@ -118,6 +119,16 @@ describe("runtime context refresh", () => {
     env.state.status = "active";
     await assert.rejects(env.refresh(), /当前回复/);
     assert.deepEqual(env.calls.map(call => call.method), ["thread/read"]);
+  });
+
+  it("refreshes context after a finished turn leaves a system error status", async () => {
+    const env = runtime();
+    env.state.status = "systemError";
+    env.snapshot.thread.status.type = "systemError";
+    assert.equal(await env.refresh(), true);
+    assert.deepEqual(env.calls.map(call => call.method),
+      ["thread/read", "thread/turns/list", "thread/resume", "thread/unsubscribe", "thread/resume"]);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 131072);
   });
 
   it("uses collaboration-mode model selection and preserves permissions and workspace settings", async () => {

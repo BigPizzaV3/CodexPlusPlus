@@ -34,9 +34,9 @@ export interface EnhancementSettingGroup {
   id: string;
   title: string;
   description?: string;
-  /** 管理器把这一组放在哪个标签页；缺省表示管理器另行安排位置（如总开关在工具栏）。 */
+  /** 历史字段：以前管理器按它分标签页。现在管理器只用它找独立模式组（managerTab = general 且 standalone）。 */
   managerTab?: "general" | "stepwise";
-  /** 增强总开关关闭后仍生效的补丁组：管理器按总开关状态置顶/置底。 */
+  /** 增强总开关关闭后仍生效的补丁组：管理器增强页里只显示这一组（应急用）。 */
   standalone?: boolean;
 }
 
@@ -107,14 +107,6 @@ export function enhancementGroup(id: string, catalog = enhancementCatalog): Enha
   return group;
 }
 
-/**
- * 管理器里分组卡片的 DOM id，左侧目录（PageSectionNav）靠它滚动定位。
- * 由清单分组 id 生成：改分组 id 等于改锚点，深链与目录都会跟着变，不要随意改名。
- */
-export function enhancementGroupAnchorId(group: Pick<EnhancementSettingGroup, "id">): string {
-  return `enhance-group-${group.id}`;
-}
-
 export function isEnhancementItemVisible(
   item: EnhancementSettingItem,
   surface: EnhancementSurface,
@@ -123,22 +115,8 @@ export function isEnhancementItemVisible(
   return item.surfaces.includes(surface) && (!item.platforms || item.platforms.includes(platform));
 }
 
-/** 某个分组在管理器里要渲染的项，保持清单顺序。 */
-export function managerGroupItems(
-  groupId: string,
-  platform: EnhancementPlatform,
-  catalog = enhancementCatalog,
-): EnhancementSettingItem[] {
-  return catalog.items.filter((item) => item.group === groupId && isEnhancementItemVisible(item, "manager", platform));
-}
-
-/** 「常用增强」标签里按清单顺序排列的普通分组（独立模式组单独安排位置）。 */
-export function managerGeneralGroups(catalog = enhancementCatalog): EnhancementSettingGroup[] {
-  return catalog.groups.filter((group) => group.managerTab === "general" && !group.standalone);
-}
-
 /**
- * 管理器「内置拓展」页的一张卡片：一个内置拓展。开关来自设置项（item）或清单顶层条目（entry），
+ * 一张内置拓展卡片：一个内置拓展。开关来自设置项（item）或清单顶层条目（entry），
  * 子选项（清单里 parent 指向它的设置项）作为参数挂在卡片下面。
  */
 export interface BuiltinExtensionCard {
@@ -165,22 +143,9 @@ export function managerBuiltinCards(
   ];
 }
 
-/** 「内置拓展」页按清单顺序列出的分组（常规组放总开关，独立模式组单独安排位置）。 */
-export function managerBuiltinGroups(catalog = enhancementCatalog): EnhancementSettingGroup[] {
-  return catalog.groups.filter((group) => group.id !== "core" && !group.standalone);
-}
-
 /** 设置字段的值；嵌套字段用点号（agentPet.enabled）。 */
 export function builtinSettingValue(settings: object, path: string): unknown {
   return path.split(".").reduce<unknown>((value, key) => (value && typeof value === "object" ? (value as Record<string, unknown>)[key] : undefined), settings);
-}
-
-/** 写回设置字段，嵌套对象逐层复制，不改原对象。 */
-export function withBuiltinSetting<T extends object>(settings: T, path: string, value: unknown): T {
-  const [head, ...rest] = path.split(".");
-  const current = (settings as Record<string, unknown>)[head];
-  const next = rest.length ? withBuiltinSetting((current && typeof current === "object" ? current : {}) as object, rest.join("."), value) : value;
-  return { ...settings, [head]: next };
 }
 
 export function managerStandaloneGroup(catalog = enhancementCatalog): EnhancementSettingGroup {

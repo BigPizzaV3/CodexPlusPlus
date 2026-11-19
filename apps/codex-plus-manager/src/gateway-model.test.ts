@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  compactionNote,
+  parseCompactionNote,
   ownPickerSection,
   visibleOwnModels,
   defaultProviderAgents,
@@ -49,6 +51,8 @@ import {
   validateDraft,
   validateProviderDraft,
   imageModelLabel,
+  quotaEntries,
+  quotaSupported,
   type GatewayAgentView,
   type GatewayPayload,
 } from "./gateway-model.ts";
@@ -492,6 +496,7 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
     stripImageGenerationTool: false,
     stripResponsesImageDetail: false,
     disableToolSearch: false,
+    customHeaders: [],
   });
   // #228：「移除托管生图工具」从池条目读回、原样提交。
   assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripImageGenerationTool: true }).stripImageGenerationTool, true);
@@ -504,6 +509,53 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
   assert.equal(validateProviderDraft({ ...editing, proxy: "127.0.0.1:7890" }, true), "代理地址要写成 http://主机:端口（也支持 https:// 与 socks5://）");
   assert.equal(validateProviderDraft({ ...editing, proxy: "socks5://127.0.0.1:1080" }, true), null);
   assert.deepEqual(providerInput({ ...editing, priceInput: "2", priceCached: "0.5", priceOutput: "abc" }).price, { currency: "CNY", input: 2, cachedInput: 0.5, output: 0 });
+});
+
+test("供应商表单：自定义请求头读回、敏感头不回显，没改就沿用（#3075）", () => {
+  const entry = {
+    ...payload().pool[0],
+    customHeaders: [
+      { key: "X-Tenant", value: "acme", masked: null },
+      { key: "X-Relay-Key", value: "", masked: "relay-…cdef" },
+    ],
+  };
+  const draft = providerDraftFromEntry(entry);
+  assert.deepEqual(draft.customHeaders, [
+    { key: "X-Tenant", value: "acme" },
+    { key: "X-Relay-Key", value: "", masked: "relay-…cdef", savedKey: "X-Relay-Key" },
+  ]);
+  // 没改：敏感头回传 keep，不带值。
+  assert.deepEqual(providerInput(draft).customHeaders, [
+    { key: "X-Tenant", value: "acme", keep: false },
+    { key: "X-Relay-Key", value: "", keep: true },
+  ]);
+  // 重新填了值：按新值保存。
+  const rows = draft.customHeaders!.map((row) => (row.masked ? { ...row, value: " new-secret " } : row));
+  assert.deepEqual(providerInput({ ...draft, customHeaders: rows }).customHeaders?.[1], { key: "X-Relay-Key", value: "new-secret", keep: false });
+  // 改了敏感头的名字又没填值：要求重填；传输头照直连模式的规则拒绝。
+  const renamed = draft.customHeaders!.map((row) => (row.masked ? { ...row, key: "X-Other-Key" } : row));
+  assert.match(validateProviderDraft({ ...draft, customHeaders: renamed }, true) ?? "", /X-Other-Key/);
+  assert.match(validateProviderDraft({ ...draft, customHeaders: [{ key: "Host", value: "evil" }] }, true) ?? "", /Host/);
+  assert.equal(validateProviderDraft(draft, true), null);
+  // 新添加时没碰请求头就不带这个字段（后端按空处理）。
+  assert.equal("customHeaders" in providerInput(providerDraftFromPreset(null)), false);
+});
+
+test("额度：后端标志优先，OpenCode Go / Command Code 首次查询前就显示；旧后端按账号类型（#3084）", () => {
+  const base = payload().pool[0];
+  assert.equal(quotaSupported({ ...base, quotaApi: true }), true);
+  assert.equal(quotaSupported({ ...base, quotaApi: false, account: "" }), false);
+  // 旧版后端没有标志：只有订阅账号算。
+  assert.equal(quotaSupported({ ...base, account: "copilot" }), true);
+  assert.equal(quotaSupported({ ...base, account: "chatgpt-api" }), false);
+  assert.equal(quotaSupported({ ...base, account: "" }), false);
+  const pool = [
+    { ...base, id: "go", quotaApi: true },
+    { ...base, id: "off", quotaApi: true, enabled: false },
+    { ...base, id: "plain", quotaApi: false },
+  ];
+  assert.deepEqual(quotaEntries(pool).map((entry) => entry.id), ["go"]);
+  assert.deepEqual(quotaEntries(undefined), []);
 });
 
 test("网关页接入导航，命令已注册", () => {
@@ -616,15 +668,17 @@ test("普通供应商的价格与代理在详情里编辑，官方账号可在�
 test("赞助商单独一组放在「添加供应商」最前面，不再混在中转里", () => {
   const presets = gatewayPresets(new Date(2026, 9, 26));
   const sponsors = presets.filter((preset) => preset.section === "sponsor").map((preset) => preset.key);
-  assert.deepEqual(sponsors, ["jojocode-max", "runapi", "apikeyfun", "cccccc-api", "tokenmy"]);
+  assert.deepEqual(sponsors, ["jojocode-max", "runapi", "apikeyfun", "cccccc-api", "tokenmy", "vegaapi"]);
   // 到期日当天仍显示，第二天起从目录里去掉。
   const keys = (date: Date) => gatewayPresets(date).map((preset) => preset.key);
   assert.ok(keys(new Date(2026, 11, 7)).includes("runapi"));
   assert.ok(!keys(new Date(2026, 11, 8)).includes("runapi"));
   assert.ok(keys(new Date(2026, 10, 20)).includes("tokenmy"));
   assert.ok(!keys(new Date(2026, 10, 21)).includes("tokenmy"));
-  assert.deepEqual(activeSponsorIds(new Date(2026, 10, 23)), ["jojocode-max", "runapi", "cccccc-api"]);
-  assert.deepEqual(activeSponsorIds(new Date(2026, 11, 2)), ["jojocode-max", "runapi"]);
+  assert.ok(keys(new Date(2027, 2, 18)).includes("vegaapi"));
+  assert.ok(!keys(new Date(2027, 2, 19)).includes("vegaapi"));
+  assert.deepEqual(activeSponsorIds(new Date(2026, 10, 23)), ["jojocode-max", "runapi", "cccccc-api", "vegaapi"]);
+  assert.deepEqual(activeSponsorIds(new Date(2026, 11, 2)), ["jojocode-max", "runapi", "vegaapi"]);
   for (const gone of ["pateway", "therouter", "shengsuanyun", "ccsub"]) assert.ok(!keys(new Date(2026, 9, 26)).includes(gone), gone);
   assert.equal(presets[0].section, "sponsor");
   const relays = presets.filter((preset) => preset.section === "relay").map((preset) => preset.key);
@@ -641,6 +695,26 @@ test("起名模型随绑定草稿往返，空值和旧版后端缺字段都当�
   assert.equal(binding.titleModel, "kimi/kimi-k3");
   assert.equal(draftFromBinding(binding).titleModel, "kimi/kimi-k3");
   assert.equal(bindingFromDraft({ ...draft, titleModel: "  " }, binding).titleModel, "");
+});
+
+test("压缩模型（#3142）随绑定草稿往返，旧版后端缺字段当成跟随当前模型", () => {
+  const legacy = { ...blankBinding(), enabled: true, model: "gpt-5.5" };
+  assert.equal(draftFromBinding(legacy).compactionModel, "");
+  assert.equal(draftFromBinding(legacy).compactionReasoningEffort, "");
+  const draft = { ...draftFromBinding(legacy), compactionModel: " deepseek/deepseek-v4-flash ", compactionReasoningEffort: "low" };
+  const binding = bindingFromDraft(draft, legacy);
+  assert.equal(binding.compactionModel, "deepseek/deepseek-v4-flash");
+  assert.equal(binding.compactionReasoningEffort, "low");
+  assert.equal(draftFromBinding(binding).compactionModel, "deepseek/deepseek-v4-flash");
+  assert.equal(bindingFromDraft({ ...draft, compactionModel: "  " }, binding).compactionModel, "");
+});
+
+test("请求日志里的压缩模型说明（#3142）", () => {
+  assert.deepEqual(parseCompactionNote("compaction_model:deepseek/deepseek-v4-flash"), { kind: "model", model: "deepseek/deepseek-v4-flash" });
+  assert.deepEqual(parseCompactionNote("compaction_fallback:window:kimi/k3:mini"), { kind: "fallback", reason: "window", model: "kimi/k3:mini" });
+  assert.equal(parseCompactionNote("local_rate_limit_wait_ms:300"), null);
+  assert.deepEqual(compactionNote(["upstream_5xx", "compaction_fallback:failed:m"]), { kind: "fallback", reason: "failed", model: "m" });
+  assert.equal(compactionNote(undefined), null);
 });
 
 test("主动限速：留空不限，只认正整数", () => {
