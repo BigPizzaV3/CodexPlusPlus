@@ -11,3 +11,16 @@
     background-color: color-mix(in srgb, var(--ds-panel, var(--color-token-main-surface-primary, Canvas)) 78%, transparent) !important;
   }
 }
+
+main[data-codex-plus-skin-video-host] { isolation: isolate; }
+main > video[data-codex-plus-ext="dream-skin-video"] {
+  position: absolute !important;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--ds-art-position, center);
+  z-index: -1 !important;
+  opacity: .58;
+  pointer-events: none;
+}

@@ -324,6 +324,9 @@ pub fn run() {
     let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            if let Some(state_dir) = codex_plus_core::paths::state_dir_override() {
+                app.asset_protocol_scope().allow_directory(state_dir.join("dream-skin"), true)?;
+            }
             let url = if show_update {
                 "/index.html?showUpdate=1"
             } else {

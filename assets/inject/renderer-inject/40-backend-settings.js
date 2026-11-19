@@ -2640,6 +2640,7 @@
       if (!button.className) button.className = "h-token-nav-row w-full flex items-center gap-2 px-3 py-2 text-sm";
       button.type = "button";
       button.removeAttribute("data-state");
+      button.removeAttribute("data-sidebar-destination");
       button.removeAttribute("aria-current");
       button.removeAttribute("disabled");
       button.removeAttribute("aria-disabled");

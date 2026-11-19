@@ -122,8 +122,8 @@
           back: "返回供应商列表",
           unnamed: "其他供应商",
           current: "当前使用",
-          modelCount: (count) => `${count} 个模型`,
-          groupAria: (name, count, current, isDefault) => `${name}${isDefault ? "（默认供应商）" : ""}，${count} 个模型${current ? "，当前使用" : ""}`,
+          modelCount: (count, members) => `${count} 个${members ? "成员" : "模型"}`,
+          groupAria: (name, countText, current, isDefault) => `${name}${isDefault ? "（默认供应商）" : ""}，${countText}${current ? "，当前使用" : ""}`,
           groupTitle: (name, count) => `${name} · ${count}`,
           favorite: "已收藏（在 Codex++ 里收藏的模型）",
           listView: "切换为列表视图",
@@ -143,8 +143,8 @@
           back: "Back to providers",
           unnamed: "Other providers",
           current: "Currently selected",
-          modelCount: (count) => `${count} models`,
-          groupAria: (name, count, current, isDefault) => `${name}${isDefault ? " (default provider)" : ""}, ${count} models${current ? ", currently selected" : ""}`,
+          modelCount: (count, members) => `${count} ${members ? "members" : "models"}`,
+          groupAria: (name, countText, current, isDefault) => `${name}${isDefault ? " (default provider)" : ""}, ${countText}${current ? ", currently selected" : ""}`,
           groupTitle: (name, count) => `${name} · ${count}`,
           favorite: "Favorite (starred in Codex++)",
           listView: "Switch to list view",
@@ -337,8 +337,8 @@
     const paths = {
       list: ["M8 6h13", "M8 12h13", "M8 18h13", "M3 6h.01", "M3 12h.01", "M3 18h.01"],
       icons: ["M3 3h7v7H3z", "M14 3h7v7h-7z", "M3 14h7v7H3z", "M14 14h7v7h-7z"],
-      expand: ["m7 10 5-5 5 5", "m7 14 5 5 5-5"],
-      collapse: ["m7 5 5 5 5-5", "m7 19 5-5 5 5"],
+      expand: ["m7 6 5 5 5-5", "m7 13 5 5 5-5"],
+      collapse: ["m7 11 5-5 5 5", "m7 18 5-5 5 5"],
       chevron: ["m9 6 6 6-6 6"],
     };
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -1160,7 +1160,11 @@
   }
 
   function codexPlusModelPickerSelectedRow(group) {
-    return group.entries.find((entry) => entry.row.matches('[data-model-selected], [aria-checked="true"], [data-state="checked"]'))?.row;
+    return group.entries.find((entry) => entry.row.matches('[data-model-selected]:not([data-model-selected="false"]), [aria-checked="true"], [data-state="checked"]'))?.row;
+  }
+
+  function codexPlusModelPickerMemberGroup(group) {
+    return group.entries?.some((entry) => entry.slug?.startsWith("group/"));
   }
 
   /** 自定义供应商没有品牌资源时，用稳定的名称头像区分不同账号。 */
@@ -1172,7 +1176,7 @@
       : Array.from(words[0] || "?").slice(0, 2);
     let hash = 0;
     for (const character of group.id) hash = (Math.imul(hash, 31) + character.codePointAt(0)) | 0;
-    const colors = ["#64ad94", "#809cdb", "#c78e63", "#c681a5", "#9baa5e", "#6ba5b8"];
+    const colors = ["#55957F", "#6289B0", "#B58A43", "#BD7769", "#9876A7", "#7F8991"];
     return { label: letters.join("").toLocaleUpperCase(), color: colors[(hash >>> 0) % colors.length] };
   }
 
@@ -1275,6 +1279,14 @@
     return 5;
   }
 
+  function codexPlusModelPickerPriceFill(price) {
+    const tier = codexPlusModelPickerPriceTier(price);
+    if (tier <= 0 || tier === 5) return tier;
+    const bounds = [0, 0.35, 1.2, 4, 12];
+    const score = (price.input + price.output) / 2;
+    return Math.max(0.15, tier - 1 + (score - bounds[tier - 1]) / (bounds[tier] - bounds[tier - 1]));
+  }
+
   /** 行尾价格节点：计量条或「免费」标签；无价目返回 null。最近使用行也用它。 */
   function codexPlusModelPickerPriceNode(price) {
     const tier = codexPlusModelPickerPriceTier(price);
@@ -1290,9 +1302,12 @@
     const node = codexPlusModelPickerElement("span", codexPlusModelPickerRowMeterClass);
     node.setAttribute("aria-hidden", "true");
     node.dataset.tier = String(tier);
+    const fill = codexPlusModelPickerPriceFill(price);
+    node.dataset.fill = String(fill);
     for (let index = 0; index < 5; index += 1) {
-      const segment = document.createElement("i");
+      const segment = codexPlusModelPickerElement("i", "");
       if (index < tier) segment.className = "on";
+      segment.style.setProperty("--codex-plus-segment-fill", `${Math.max(0, Math.min(1, fill - index)) * 100}%`);
       node.appendChild(segment);
     }
     if (title) node.title = title;
@@ -1337,10 +1352,12 @@
       host.insertBefore(meter, identity.outer.nextSibling);
       return;
     }
-    if (meter.dataset.tier !== wanted.dataset.tier) {
+    if (meter.dataset.tier !== wanted.dataset.tier || meter.dataset.fill !== wanted.dataset.fill) {
       meter.dataset.tier = wanted.dataset.tier;
+      meter.dataset.fill = wanted.dataset.fill;
       [...meter.children].forEach((segment, index) => {
         segment.classList.toggle("on", index < Number(wanted.dataset.tier));
+        segment.style.setProperty("--codex-plus-segment-fill", wanted.children[index].style.getPropertyValue("--codex-plus-segment-fill"));
       });
     }
     if (meter.title !== wanted.title) meter.title = wanted.title;
@@ -1469,6 +1486,7 @@
     button.type = "button";
     button.title = text.pickRecent(entry.name || entry.label, entry.provider);
     button.setAttribute("aria-label", button.title);
+    button.dataset.selected = String(!!codexPlusModelPickerSelectedRow({ entries: [entry] }));
     const icon = codexPlusModelPickerElement("span", codexPlusModelPickerRowIconClass);
     icon.setAttribute("aria-hidden", "true");
     icon.innerHTML = codexPlusModelPickerGlyphHtml(codexPlusModelPickerGlyph(entry));
@@ -1531,7 +1549,7 @@
       state.recentsSignature = "";
       return;
     }
-    const signature = `${state.viewMode}|${matched.map((entry) => entry.label).join("|")}`;
+    const signature = JSON.stringify([state.viewMode, ...matched.map((entry) => [entry.slug, entry.label, entry.provider, entry.price, !!codexPlusModelPickerSelectedRow({entries:[entry]})])]);
     if (block && state.recentsSignature === signature && block.parentElement === list) return;
     state.recentsSignature = signature;
     block?.remove();
@@ -1589,10 +1607,10 @@
       const name = group.name || text.unnamed;
       if (label && label.textContent !== name) label.textContent = name;
       const count = header.querySelector(".codex-plus-model-group-count");
-      const countText = text.modelCount(group.entries.length);
+      const countText = text.modelCount(group.entries.length, codexPlusModelPickerMemberGroup(group));
       if (count && count.textContent !== countText) count.textContent = countText;
       codexPlusModelPickerSyncDefaultBadge(header, group, text);
-      header.setAttribute("aria-label", text.groupAria(name, group.entries.length, current, group.isDefault));
+      header.setAttribute("aria-label", text.groupAria(name, countText, current, group.isDefault));
       header.title = `${text.groupTitle(name, group.entries.length)}${current ? ` · ${text.current}` : ""}`;
     }
   }
@@ -1625,6 +1643,7 @@
       inner.insertBefore(own, native || null);
     }
     if (own.textContent !== entry.name) own.textContent = entry.name;
+    if (own.title !== entry.name) own.title = entry.name;
     // 收藏星标跟在模型名后面；取消收藏后下一轮扫描拿掉。
     let star = [...inner.children].find((node) => node.classList.contains(codexPlusModelPickerFavoriteClass));
     if (entry.favorite && !star) {
@@ -1698,7 +1717,7 @@
         if (label && label.textContent !== name) label.textContent = name;
         if (label) label.title = name;
         const count = toolbar.querySelector(".codex-plus-model-group-count");
-        const countText = text.modelCount(active.entries.length);
+        const countText = text.modelCount(active.entries.length, codexPlusModelPickerMemberGroup(active));
         if (count && count.textContent !== countText) count.textContent = countText;
         codexPlusModelPickerSyncDefaultBadge(toolbar, active, text);
       }
@@ -1787,7 +1806,10 @@
     const glyph = codexPlusModelPickerProviderGlyph(group);
     const icon = codexPlusModelPickerElement("span", "codex-plus-model-provider-icon");
     icon.setAttribute("aria-hidden", "true");
-    if (glyph) {
+    if (codexPlusModelPickerGroupsState.viewMode === "list") {
+      if (codexPlusModelPickerMemberGroup(group)) icon.appendChild(codexPlusModelPickerActionIcon("icons"));
+      else icon.textContent = Array.from(group.name || avatar.label)[0];
+    } else if (glyph) {
       icon.innerHTML = glyph.svg;
       icon.setAttribute("data-brand", "true");
     } else {
@@ -1795,7 +1817,7 @@
       const compact = codexPlusModelPickerGroupsState.viewMode === "list" && /[^\x00-\x7f]/u.test(avatar.label);
       icon.textContent = compact ? Array.from(avatar.label)[0] : avatar.label;
     }
-    icon.style.setProperty("--codex-plus-provider-color", glyph ? "#8a8a8a" : avatar.color);
+    icon.style.setProperty("--codex-plus-provider-color", glyph && codexPlusModelPickerGroupsState.viewMode !== "list" ? "#8a8a8a" : avatar.color);
     const title = codexPlusModelPickerElement("span", "codex-plus-model-group-title");
     const count = codexPlusModelPickerElement("span", "codex-plus-model-group-count");
     header.append(icon, title, count);
@@ -2095,6 +2117,20 @@
       .codex-plus-model-row-meter i.on:nth-child(4){background:#e07f63}
       .codex-plus-model-row-meter i.on:nth-child(5){background:#b579dd}
       .codex-plus-model-row-free{flex:0 0 auto;margin-left:8px;color:#6ea8ff;font-size:11px;line-height:1;font-weight:500;white-space:nowrap}
+      [data-codex-plus-model-view-mode="list"] :is(.codex-plus-model-decorated,.codex-plus-model-recent-row){position:relative;min-height:30px;border-radius:6px}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-recent-row{padding-inline-start:28px}
+      [data-codex-plus-model-view-mode="list"] :is(.codex-plus-model-decorated,.codex-plus-model-recent-row)::before{position:absolute;inset-inline-start:8px;top:50%;transform:translateY(-50%);color:var(--color-token-text-success,#20a461);font-weight:600;pointer-events:none}
+      [data-codex-plus-model-view-mode="list"] :is(.codex-plus-model-decorated,.codex-plus-model-recent-row):is([aria-checked="true"],[data-state="checked"],[data-model-selected]:not([data-model-selected="false"]),[data-selected="true"]){background:color-mix(in srgb,var(--color-token-text-success,#20a461) 9%,var(--color-surface-elevated-secondary,Canvas));font-weight:600}
+      [data-codex-plus-model-view-mode="list"] :is(.codex-plus-model-decorated,.codex-plus-model-recent-row):is([aria-checked="true"],[data-state="checked"],[data-model-selected]:not([data-model-selected="false"]),[data-selected="true"])::before{content:'✓'}
+      [data-codex-plus-model-view-mode="list"] [data-codex-plus-model-default-row] :is(svg,[data-codex-plus-model-check]){display:none}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-decorated [data-codex-plus-model-check]{visibility:hidden;width:0;min-width:0;overflow:hidden;margin:0;padding:0}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-row-icon{width:14px;height:14px;color:var(--color-text-tertiary,#929ba2)}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-row-icon svg{width:14px;height:14px;filter:grayscale(1);opacity:.78}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-row-icon-letter{color:var(--color-text-tertiary,#929ba2)!important}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-group-header{min-height:32px;margin-block-start:6px}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-recents{border-block:1px solid var(--color-border,#eceff1);padding-block:4px}
+      [data-codex-plus-model-view-mode="list"] .codex-plus-model-row-meter i:nth-child(n){width:5px;height:3px;border-radius:1px;background:linear-gradient(to right,var(--segment-color) var(--codex-plus-segment-fill,0%),var(--color-border,#ecedee) var(--codex-plus-segment-fill,0%))}
+      .codex-plus-model-row-meter i:nth-child(1){--segment-color:#8fa795}.codex-plus-model-row-meter i:nth-child(2){--segment-color:#a4ae96}.codex-plus-model-row-meter i:nth-child(3){--segment-color:#b8b295}.codex-plus-model-row-meter i:nth-child(4){--segment-color:#c8b58c}.codex-plus-model-row-meter i:nth-child(5){--segment-color:#d6b77d}
     `;
     if (!style.isConnected) document.head?.appendChild(style);
   }

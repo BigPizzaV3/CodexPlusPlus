@@ -1181,6 +1181,7 @@
         padding: 0 8px;
       }
       .codex-plus-width-input:disabled { opacity: .55; cursor: not-allowed; }
+      .codex-plus-settings input.codex-plus-daily-project-path { width: min(20em, 32%); min-width: 5em; text-align: start; }
       .codex-plus-about { color: #a1a1aa; line-height: 1.5; }
       .codex-plus-panel[hidden] { display: none; }
       .codex-plus-action-button,

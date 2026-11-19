@@ -1,0 +1,6 @@
+:root[data-manager-density="compact"] { --manager-row-height: 44px; --manager-row-pad: 6px; --manager-nav-height: 26px; }
+:root[data-manager-density="standard"] { --manager-row-height: 60px; --manager-row-pad: 12px; --manager-nav-height: 32px; }
+:root[data-manager-density="comfortable"] { --manager-row-height: 68px; --manager-row-pad: 15px; --manager-nav-height: 37px; }
+:root[data-manager-density] .shell .cx-card .cx-row { min-height: var(--manager-row-height); }
+:root[data-manager-density] .shell .cx-card .cx-row-main { padding-block: var(--manager-row-pad); }
+:root[data-manager-density] .shell .cx-side-nav :is(.cx-side-item, .cx-side-subitem) { min-height: var(--manager-nav-height); height: auto; }

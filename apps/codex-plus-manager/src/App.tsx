@@ -140,6 +140,7 @@ import { MyPublishedPanel } from "./MyPublishedPanel";
 import { AgentIcon, SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
+import { DisplaySettings } from "./DisplaySettings";
 import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
@@ -435,6 +436,9 @@ import { Puzzle } from "lucide-react";
 import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
+const skinMediaExtensions = /Mac/i.test(navigator.platform)
+  ? ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp", "mp4", "webm"]
+  : ["png", "jpg", "jpeg", "webp", "gif", "bmp", "mp4", "webm"];
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
 const enhancementPlatform = enhancementPlatformFromUserAgent(navigator.userAgent);
 /// 会话维护页的两条开关与 Codex 设置页共用清单里的文案（#2846 拆开后分别显示）。
@@ -2751,13 +2755,8 @@ export function App() {
       selected = await open({
         directory: false,
         multiple: false,
-        title: t("选择皮肤图片"),
-        filters: [{
-          name: t("图片"),
-          extensions: isWindowsPlatform
-            ? ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
-            : ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp"],
-        }],
+        title: t("选择皮肤图片或视频"),
+        filters: [{ name: t("图片或视频"), extensions: skinMediaExtensions }],
       });
     } catch (error) {
       showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
@@ -2784,13 +2783,8 @@ export function App() {
       selected = await open({
         directory: false,
         multiple: false,
-        title: t("选择皮肤图片"),
-        filters: [{
-          name: t("图片"),
-          extensions: isWindowsPlatform
-            ? ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
-            : ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp"],
-        }],
+        title: t("选择皮肤图片或视频"),
+        filters: [{ name: t("图片或视频"), extensions: skinMediaExtensions }],
       });
     } catch (error) {
       showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
@@ -9168,6 +9162,14 @@ function EnhancementSettingControl({
   );
 }
 
+function DreamSkinPreview({ path, src, label, className, controls = false }: {
+  path: string; src: string; label: string; className?: string; controls?: boolean;
+}) {
+  return /\.(mp4|webm)$/i.test(path)
+    ? <video aria-label={label} className={className} controls={controls} muted playsInline preload="metadata" src={src} />
+    : <img alt={label} className={className} loading="lazy" src={src} />;
+}
+
 function DreamSkinScreen({
   form,
   launchPending,
@@ -9360,7 +9362,7 @@ function DreamSkinScreen({
           badges={<CxBadge tone={dirty ? "warn" : "neutral"}>{draftStateLabel}</CxBadge>}
           className="dream-skin-selected-row"
           detail={<span role="status">{currentThemeLabel}：{currentThemeName} · {stateLabel}</span>}
-          icon={<CxStatusIcon tone={stateDot}><img alt={t("Dream Skin 图片预览")} className="dream-skin-selected-thumb" src={previewUrl} /></CxStatusIcon>}
+          icon={<CxStatusIcon tone={stateDot}><DreamSkinPreview label={theme.name} className="dream-skin-selected-thumb" path={customImagePath} src={previewUrl} /></CxStatusIcon>}
           title={<span title={theme.name}>{theme.name || t("未命名主题")}</span>}
         >
           <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={!masterEnabled ? t("请先在 Codex增强 页面开启总开关。") : t("保存并应用主题（皮肤没开时会一起打开）；需要重启时只会标记为待应用")} type="button">
@@ -9435,7 +9437,7 @@ function DreamSkinScreen({
           </button>
           <button className="cx-primary" onClick={() => void actions.createDreamSkinTheme()} type="button">
             <ImagePlus className="h-4 w-4" />
-            {t("从图片创建")}
+            {t("从图片或视频创建")}
           </button>
         </CxToolbar>
       ) : null}
@@ -9520,7 +9522,7 @@ function DreamSkinScreen({
                       type="button"
                     >
                       <span className="dream-skin-theme-image">
-                        <img alt={item.name} loading="lazy" src={cardPreview} />
+                        <DreamSkinPreview label={item.name} path={item.previewPath} src={cardPreview} />
                         {currentRunning || pendingApplication ? (
                           <span className="dream-skin-theme-badges">
                             {currentRunning ? <b>{currentThemeLabel}</b> : null}
@@ -9605,14 +9607,14 @@ function DreamSkinScreen({
                     className="dream-skin-preview"
                     style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.background }}
                   >
-                    <img alt={t("Dream Skin 图片预览")} src={previewUrl} />
+                    <DreamSkinPreview controls label={theme.name} path={customImagePath} src={previewUrl} />
                     <span style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.panel, color: themeColors.text }}>
                       <strong>{theme.name}</strong>
-                      <small style={isWindowsPlatform ? undefined : { color: themeColors.muted }}>{customImagePath ? t("自定义托管图片") : t("目标项目默认图片")}</small>
+                      <small style={isWindowsPlatform ? undefined : { color: themeColors.muted }}>{customImagePath ? t("本地素材") : t("目标项目默认图片")}</small>
                     </span>
                   </div>
-                  <RelayFold className="relay-config-section dream-skin-image-info" title={t("图片信息")}>
-                    <Field label={t("托管图片路径")}>
+                  <RelayFold className="relay-config-section dream-skin-image-info" title={t("素材信息")}>
+                    <Field label={t("素材路径")}>
                       <Input
                         readOnly
                         placeholder={t("使用目标项目默认图片")}
@@ -9623,7 +9625,7 @@ function DreamSkinScreen({
                   <Toolbar>
                     <Button variant="secondary" onClick={() => void actions.chooseDreamSkinImagePath()}>
                       <Camera className="h-4 w-4" />
-                      {t("导入图片")}
+                      {t("导入图片或视频")}
                     </Button>
                     <Button
                       disabled={!customImagePath}
@@ -11539,6 +11541,7 @@ function GlobalSettingsScreen({
             >
               <AppSelect ariaLabel={t("界面主题")} className="cx-set-select" onChange={(value) => actions.setThemePreference(value)} options={themeOptions} size="sm" value={themePreference} />
             </CxRow>
+            <DisplaySettings />
           </CxCard>
         </CxSection>
         <CxSection title={t("窗口与托盘")}>

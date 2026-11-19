@@ -185,7 +185,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "27-dream-skin-1.5.20-wallpaper-shell";
+const DREAM_SKIN_RENDERER_REVISION: &str = "28-dream-skin-local-video";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -208,12 +208,20 @@ pub fn dream_skin_art_data_uri(settings: &BackendSettings) -> String {
             Path::new(custom_path),
             &crate::paths::default_app_state_dir(),
         )
-        && let Some(data_uri) = image_file_data_uri(Path::new(custom_path))
+        && let Some(data_uri) = dream_skin_file_data_uri(Path::new(custom_path))
     {
         return data_uri;
     }
     let (content_type, image) = dream_skin_default_image();
     image_data_uri(content_type, image)
+}
+
+fn dream_skin_file_data_uri(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?;
+    if let Some(mime) = crate::dream_skin::video_mime(extension) {
+        return Some(image_data_uri(mime, &crate::dream_skin::read_skin_video(path, extension).ok()?));
+    }
+    image_file_data_uri(path)
 }
 
 fn dream_skin_platform() -> &'static str {
@@ -258,9 +266,19 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
     let style_revision = dream_skin_content_signature(css.as_bytes());
     let payload_revision =
         dream_skin_target_payload_signature(settings, engine, &style_revision, &theme);
+    let media_path = Path::new(settings.codex_app_dream_skin_image_path.trim());
+    let video = media_path.extension().and_then(|extension| extension.to_str())
+        .and_then(crate::dream_skin::video_mime).is_some()
+        && crate::dream_skin::is_managed_dream_skin_image(media_path, &crate::paths::default_app_state_dir());
+    let static_art = if video {
+        let (mime, bytes) = dream_skin_default_image();
+        serde_json::to_string(&image_data_uri(mime, bytes)).unwrap()
+    } else {
+        "window.__CODEX_PLUS_DREAM_SKIN_ART__".into()
+    };
     let mut payload = renderer
         .replace("__DREAM_CSS_JSON__", &serde_json::to_string(&css).unwrap())
-        .replace("__DREAM_ART_JSON__", "window.__CODEX_PLUS_DREAM_SKIN_ART__")
+        .replace("__DREAM_ART_JSON__", &static_art)
         .replace(
             "__DREAM_THEME_JSON__",
             "window.__CODEX_PLUS_DREAM_SKIN_THEME__",
@@ -275,7 +293,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
         .replace(
             "__GLASS_VISION_ART_JSON__",
-            "window.__CODEX_PLUS_DREAM_SKIN_ART__",
+            &static_art,
         )
         .replace(
             "__DREAM_SKIN_CSS_JSON__",
@@ -283,7 +301,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
         .replace(
             "__DREAM_SKIN_ART_JSON__",
-            "window.__CODEX_PLUS_DREAM_SKIN_ART__",
+            &static_art,
         )
         .replace(
             "__DREAM_SKIN_THEME_JSON__",
@@ -314,8 +332,9 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
     });
     let skin_api_bootstrap = dream_skin_skin_api_bootstrap_script(&theme);
+    let video_install = if video { include_str!("../../../assets/inject/dream-skin-local-video.js") } else { "" };
     payload = format!(
-        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\n{}const result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
+        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\n{}const result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n{video_install}\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
         art_assignment.unwrap_or_default(),
         serde_json::to_string(&dream_skin_art_content_signature(settings)).unwrap(),
         theme,
@@ -742,7 +761,10 @@ pub fn dream_skin_art_content_signature(settings: &BackendSettings) -> String {
             Path::new(custom_path),
             &crate::paths::default_app_state_dir(),
         )
-        && let Ok(bytes) = std::fs::read(custom_path)
+        && let Ok(bytes) = match Path::new(custom_path).extension().and_then(|s| s.to_str()) {
+            Some(ext) if crate::dream_skin::video_mime(ext).is_some() => crate::dream_skin::read_skin_video(Path::new(custom_path), ext),
+            _ => std::fs::read(custom_path).map_err(anyhow::Error::from),
+        }
     {
         return dream_skin_content_signature(&bytes);
     }

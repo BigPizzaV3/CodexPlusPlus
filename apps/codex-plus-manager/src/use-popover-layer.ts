@@ -62,6 +62,7 @@ export function usePopoverLayer({
     const next = resolvePopoverLayout({
       trigger,
       viewport: { width: window.innerWidth, height: window.innerHeight },
+      rootZoom: Number(document.documentElement.style.zoom) || 1,
       menuHeight: menu.scrollHeight,
       align,
       minWidth,

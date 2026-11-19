@@ -5,6 +5,23 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "界面与日常操作": "Interface and everyday actions",
+  "在 Codex++ 设置页选择新任务模式、新项目目录和可见侧栏项目，收藏消息以便回看": "Choose the mode for new tasks, the folder for new projects and visible sidebar entries in Codex++ settings, and bookmark messages to revisit them.",
+  "管理器缩放": "Manager zoom",
+  "调整主窗口的文字和控件大小。": "Change the size of text and controls in the main window.",
+  "列表密度": "List density",
+  "调整管理器列表和导航行的间距。": "Change the spacing of list and navigation rows.",
+  "无法应用显示设置，请重试。": "Could not apply display settings. Try again.",
+  "紧凑": "Compact",
+  "标准": "Standard",
+  "宽松": "Comfortable",
+  "选择皮肤图片或视频": "Choose a skin image or video",
+  "图片或视频": "Images or videos",
+  "从图片或视频创建": "Create from image or video",
+  "导入图片或视频": "Import image or video",
+  "本地素材": "Local media",
+  "素材信息": "Media details",
+  "素材路径": "Media path",
   "钉钉": "DingTalk",
   "飞书": "Feishu",
   "钉钉与飞书通知": "DingTalk and Feishu notifications",
