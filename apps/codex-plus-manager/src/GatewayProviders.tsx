@@ -64,6 +64,7 @@ import {
   type SubscriptionView,
 } from "./gateway-model";
 import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaWindows, Switch, type Notify, type Run } from "./gateway-ui";
+import { AccountQuotaDetails, ProviderQuotaTimeline } from "./ProviderQuotaPanel";
 import { ProviderFormDialog, type ProviderFormState } from "./ProviderFormDialog";
 import { ProviderExtrasDialog, ProviderLimitsDialog, ProviderNewApiAccessDialog, keyLimitSummary, priceSummary } from "./ProviderExtrasDialog";
 import { ProviderWindowsDialog, windowSummary, withUnlistedWindows } from "./ProviderWindowsDialog";
@@ -388,6 +389,7 @@ export function ProvidersView({
           ) : null}
         </div>
       ) : null}
+      <ProviderQuotaTimeline entries={visible} />
       {localLogins.length && localDismissed !== localKey ? (
         <LocalLoginsCard busy={busy !== null} found={localLogins} onDismiss={() => setLocalDismissed(localKey)} onImport={importLocal} pending={loginPending} />
       ) : null}
@@ -962,10 +964,10 @@ function PoolRow({
             </div>
           ) : null}
           {hasQuota ? (
-            <div className="gw-detail-row">
+            <div className={`gw-detail-row${entry.account === "chatgpt" ? " gw-quota-detail-row" : ""}`}>
               <span className="gw-detail-label">{t("额度")}</span>
               <div className="gw-detail-value gw-chip-row">
-                {entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{entry.account ? t("尚未取得官方用量") : t("尚未取得套餐用量")}</span>}
+                {entry.account === "chatgpt" && entry.quota?.windows.length ? <AccountQuotaDetails entry={entry} /> : entry.quota ? <QuotaWindows maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} /> : <span className="gw-muted">{entry.account ? t("尚未取得官方用量") : t("尚未取得套餐用量")}</span>}
               </div>
               <span className="gw-detail-actions">
                 <button
