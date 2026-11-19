@@ -191,7 +191,10 @@
   // 不区分就会在无后端时把「正在读取」直接显示成「未发现」。
   let codexPlusUserScriptsLoaded = false;
   // 市场清单。为空 + 未加载 = 还在拉；加载过为空 = 市场里确实没东西。
-  let codexPlusScriptMarket = { scripts: [], loaded: false, loading: false, message: "" };
+  // packages：精选 / 官方拓展包（锁定到审核过的提交），和管理器「精选」栏同一份清单。
+  let codexPlusScriptMarket = { scripts: [], packages: [], loaded: false, loading: false, message: "" };
+  // 正在准备 / 安装的拓展包 id（按钮转圈、防重复点击）。
+  let codexPlusPackageInstalling = "";
   // 「拓展」页左面板的搜索关键词，纯前端过滤。
   let codexPlusExtensionsQuery = "";
   let codexPlusExtensionsFilter = "market";
@@ -200,6 +203,8 @@
   // 默认扩展图标：VSCode codicon 的 `extensions` 字形（\eae6），
   // 从本机 VSCode 的 codicon.ttf 抽出轮廓后归一到 16x16 视口。
   // 市场清单目前没有图标字段，所有市场条目都用它；本地脚本同理。
+  // Codex++ 的 logo（apps/codex-plus-manager/src/assets/codex-plus-logo.png 缩到 48px），图标栏入口用。
+  const codexPlusLogoDataUrl = "data:image/png;base64,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";
   const codexPlusDefaultExtensionIconPath = "M15.0 4.95 Q15.0 4.37 14.63 3.99 L12.01 1.37 Q11.63 1.0 11.05 1.0 Q10.46 1.0 10.08 1.37 L8.0 3.46 L8.0 3.3 Q8.0 2.71 7.6 2.31 Q7.2 1.91 6.61 1.91 L2.39 1.91 Q1.8 1.91 1.4 2.31 Q1.0 2.71 1.0 3.3 L1.0 13.61 Q1.0 14.2 1.4 14.6 Q1.8 15.0 2.39 15.0 L12.7 15.0 Q13.24 15.0 13.66 14.6 Q14.09 14.2 14.09 13.61 L14.09 9.39 Q14.09 8.8 13.66 8.4 Q13.24 8.0 12.7 8.0 L12.54 8.0 L14.63 5.92 Q15.0 5.54 15.0 4.95 Z M2.39 2.87 L6.61 2.87 Q6.77 2.87 6.93 3.0 Q7.09 3.14 7.09 3.3 L7.09 8.0 L1.91 8.0 L1.91 3.3 Q1.91 3.14 2.04 3.0 Q2.18 2.87 2.39 2.87 Z M1.91 13.61 L1.91 8.91 L7.09 8.91 L7.09 14.09 L2.39 14.09 Q2.18 14.09 2.04 13.96 Q1.91 13.82 1.91 13.61 Z M13.13 9.39 L13.13 13.61 Q13.13 13.82 13.0 13.96 Q12.86 14.09 12.7 14.09 L8.0 14.09 L8.0 8.91 L12.7 8.91 Q12.86 8.91 13.0 9.07 Q13.13 9.23 13.13 9.39 Z M8.0 8.0 L8.0 6.45 L9.55 8.0 Z M13.93 5.27 L11.37 7.84 Q11.21 8.0 11.02 8.0 Q10.83 8.0 10.73 7.84 L8.11 5.27 Q8.0 5.11 8.0 4.93 Q8.0 4.74 8.11 4.63 L10.73 2.02 Q10.83 1.91 11.02 1.91 Q11.21 1.91 11.37 2.02 L13.93 4.63 Q14.09 4.74 14.09 4.93 Q14.09 5.11 13.93 5.27 Z";
   let codexPlusBackendStatus = window.__codexPlusBackendStatus || { status: "checking", message: "正在检查后端…" };
   let codexPlusBackendCheckSeq = 0;
@@ -365,7 +370,7 @@
       const marketItem = codexPlusExtensionMarketItem(entry);
       return `
         <button type="button" class="codex-plus-page-nav-item codex-plus-extensions-nav-entry" data-codex-extensions-select="installed:${escapeHtml(entry.key)}" data-active="${String(selected)}" title="${escapeHtml(entry.name)}" aria-label="${escapeHtml(entry.name)}">
-          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon || entry.script?.package?.icon)}</span>
+          <span class="codex-plus-page-nav-item-icon" aria-hidden="true">${extensionIconMarkup(codexPlusExtensionIcon(marketItem, entry.script))}</span>
           <span class="codex-plus-page-nav-item-text"><span class="codex-plus-page-nav-item-name">${escapeHtml(entry.name)}</span></span>
           <span class="codex-plus-page-nav-item-state" data-state="${entry.enabled ? "on" : "off"}" title="${entry.enabled ? "已启用" : "已禁用"}"></span>
         </button>
@@ -384,45 +389,119 @@
     `;
   }
 
-  /** 主区使用原生插件列表的图标、简介和独立操作列，避免嵌套按钮。 */
-  function renderCodexPlusExtensionsOverview() {
-    const { installed, market } = codexPlusExtensionsEntries();
-    const isInstalled = codexPlusExtensionsFilter === "installed";
-    const entries = filterCodexPlusExtensionsEntries(isInstalled ? installed : market);
-    const cards = entries.map((entry) => {
-      const item = codexPlusExtensionMarketItem(entry);
-      const description = item?.description || entry.script?.description || entry.meta || "";
-      const select = `${entry.kind}:${escapeHtml(entry.key)}`;
-      const action = entry.kind === "market"
-        ? `<button type="button" class="codex-plus-discovery-icon-button" data-codex-market-install="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="安装 ${escapeHtml(entry.name)}">${codexPlusDiscoveryIcons.plus}</button>`
-        : `<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}"><span></span></button>`;
-      return `
+  /** 拓展页的分栏：和管理器「拓展」页同一排（精选 / 社区 / 本地 / 我发布的 / dsh 插件）。 */
+  const codexPlusExtensionsFilters = [
+    ["market", "精选"],
+    ["community", "社区"],
+    ["installed", "本地"],
+    ["mine", "我发布的"],
+    ["dsh", "dsh 插件"],
+  ];
+
+  function codexPlusExtensionsFilterValue(value) {
+    return codexPlusExtensionsFilters.some(([id]) => id === value) ? value : "market";
+  }
+
+  /** 分栏胶囊 + 右侧排序（精选、社区才有）。 */
+  function renderCodexPlusExtensionsFilterBar() {
+    const counts = {
+      market: codexPlusScriptMarket.loaded ? (codexPlusScriptMarket.scripts || []).length + (codexPlusScriptMarket.packages || []).length : null,
+      installed: codexPlusUserScriptsLoaded ? (codexPlusUserScripts.scripts || []).length : null,
+    };
+    const pills = codexPlusExtensionsFilters.map(([id, label]) => {
+      const active = codexPlusExtensionsFilter === id;
+      const count = counts[id] == null ? "" : ` <span class="codex-plus-extensions-filter-count">${counts[id]}</span>`;
+      return `<button type="button" data-codex-extensions-browse="${id}" data-active="${String(active)}" aria-pressed="${String(active)}">${escapeHtml(label)}${count}</button>`;
+    }).join("");
+    const sort = typeof renderCodexPlusExtensionsSortControl === "function" ? renderCodexPlusExtensionsSortControl(codexPlusExtensionsFilter) : "";
+    return `<div class="codex-plus-extensions-filterbar"><div class="codex-plus-extensions-filter" role="group" aria-label="拓展来源">${pills}</div>${sort}</div>`;
+  }
+
+  /** 列表里的一节：标题带数量，下面是两列卡片。 */
+  function renderCodexPlusExtensionsSection(title, cards) {
+    return `
+      <h2 class="codex-plus-discovery-section-title">${escapeHtml(title)} <span class="codex-plus-discovery-section-count">${cards.length}</span></h2>
+      <div class="codex-plus-extensions-grid" data-codex-plus-extensions-list="true">${cards.join("")}</div>
+    `;
+  }
+
+  /** 状态小标签（已安装 / 可更新 / 本机源码 …），tone：neutral / ok / warn / danger。 */
+  function codexPlusExtensionBadge(text, tone = "neutral", title = "") {
+    return `<span class="codex-plus-extension-badge" data-tone="${tone}"${title ? ` title="${escapeHtml(title)}"` : ""}>${escapeHtml(text)}</span>`;
+  }
+
+  /** 精选里已安装条目的状态：与管理器一致，只给已安装 / 可更新 / 本机源码打标。 */
+  function codexPlusCuratedStatusBadge(item) {
+    if (!item) return "";
+    if (item.localSource) return codexPlusExtensionBadge(`本机源码 ${item.installedVersion || ""}`.trim(), "neutral", "你在本机编写并发布的拓展，在「本地」里管理");
+    if (item.updateAvailable) return codexPlusExtensionBadge("可更新", "warn");
+    const version = item.installedVersion || String(item.installedSha || "").slice(0, 7);
+    return codexPlusExtensionBadge(version ? `已安装 ${version}` : "已安装");
+  }
+
+  /** 一张拓展卡片：左边选中按钮（图标、名字、标签、简介），右边独立的操作列，避免嵌套按钮。 */
+  function codexPlusExtensionCardHtml(entry, { status = false } = {}) {
+    const item = codexPlusExtensionMarketItem(entry);
+    const description = item?.description || entry.script?.description || entry.meta || "";
+    const select = `${entry.kind}:${escapeHtml(entry.key)}`;
+    const isPackage = item?.kind === "package";
+    const installAttr = isPackage ? "data-codex-package-install" : "data-codex-market-install";
+    const installing = isPackage && codexPlusPackageInstalling === item.id;
+    const busyAttrs = `${codexPlusPackageInstalling && isPackage ? " disabled" : ""}${installing ? ' data-busy="true"' : ""}`;
+    const actions = [];
+    if (entry.kind === "market") {
+      actions.push(`<button type="button" class="codex-plus-discovery-icon-button" ${installAttr}="${escapeHtml(entry.key)}" aria-label="安装 ${escapeHtml(entry.name)}" title="${installing ? "正在准备安装…" : `安装 ${escapeHtml(entry.name)}`}"${busyAttrs}>${codexPlusDiscoveryIcons.plus}</button>`);
+    } else {
+      // 精选里已安装、有审核过的新版本：给「更新」，走同一条安装流程。
+      if (status && item?.updateAvailable) {
+        actions.push(`<button type="button" class="codex-plus-discovery-icon-button" ${installAttr}="${escapeHtml(item.id)}" aria-label="更新 ${escapeHtml(entry.name)}" title="更新 ${escapeHtml(entry.name)}"${busyAttrs}>${codexPlusDiscoveryIcons.refresh}</button>`);
+      }
+      actions.push(`<button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(entry.key)}" data-enabled="${String(entry.enabled)}" role="switch" aria-checked="${String(entry.enabled)}" aria-label="启用 ${escapeHtml(entry.name)}"><span></span></button>`);
+    }
+    const badges = `${codexPlusOfficialBadge(item)}${status ? codexPlusCuratedStatusBadge(item) : ""}`;
+    return `
         <article class="codex-plus-extension-card">
           <button type="button" class="codex-plus-extension-card-select" data-codex-extensions-select="${select}" aria-label="查看 ${escapeHtml(entry.name)}">
-            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(item?.icon || entry.script?.package?.icon)}</span>
+            <span class="codex-plus-extension-card-icon" aria-hidden="true">${extensionIconMarkup(codexPlusExtensionIcon(item, entry.script))}</span>
             <span class="codex-plus-extension-card-copy">
-              <span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>
+              <span class="codex-plus-extension-card-heading"><span class="codex-plus-extension-card-title">${escapeHtml(entry.name)}</span>${badges}</span>
               <span class="codex-plus-extension-card-description">${escapeHtml(description)}</span>
             </span>
           </button>
-          <div class="codex-plus-extension-card-actions">${action}</div>
+          <div class="codex-plus-extension-card-actions">${actions.join("")}</div>
         </article>
       `;
-    }).join("");
-    const empty = codexPlusExtensionsQuery.trim() ? `没有匹配「${codexPlusExtensionsQuery}」的拓展。`
-      : isInstalled ? (codexPlusUserScriptsLoaded ? "未发现已安装的拓展。" : "正在读取用户拓展…")
-      : codexPlusScriptMarket.loading && !codexPlusScriptMarket.loaded ? "正在读取拓展…"
-      : codexPlusScriptMarket.message || "市场里没有可安装的拓展。";
-    return `
-      <div class="codex-plus-extensions-filter" role="group" aria-label="拓展来源">
-        <button type="button" data-codex-extensions-browse="market" data-active="${String(!isInstalled)}" aria-pressed="${String(!isInstalled)}">市场</button>
-        <button type="button" data-codex-extensions-browse="installed" data-active="${String(isInstalled)}" aria-pressed="${String(isInstalled)}">已安装</button>
-      </div>
-      <h2 class="codex-plus-discovery-section-title">${isInstalled ? "已安装拓展" : "市场拓展"}</h2>
-      <div class="codex-plus-extensions-grid" data-codex-plus-extensions-list="true">
-        ${cards || `<div class="codex-plus-extensions-detail-empty" role="status">${escapeHtml(empty)}</div>`}
-      </div>
-    `;
+  }
+
+  /**
+   * 主区：分栏条 + 当前分栏的列表。精选分「已安装 / 可安装」，本地分「已启用 / 未启用」（与管理器一致）；
+   * 社区、我发布的、dsh 插件由 41-extension-sources.js 画。
+   */
+  function renderCodexPlusExtensionsOverview() {
+    const filter = codexPlusExtensionsFilterValue(codexPlusExtensionsFilter);
+    const head = renderCodexPlusExtensionsFilterBar();
+    if (filter === "community" || filter === "mine" || filter === "dsh") {
+      return `${head}${typeof renderCodexPlusExtensionSourcePane === "function" ? renderCodexPlusExtensionSourcePane(filter) : ""}`;
+    }
+    const { installed, market, curated } = codexPlusExtensionsEntries();
+    const query = codexPlusExtensionsQuery.trim();
+    let sections;
+    let empty;
+    if (filter === "installed") {
+      const entries = filterCodexPlusExtensionsEntries(installed);
+      const on = entries.filter((entry) => entry.enabled).map((entry) => codexPlusExtensionCardHtml(entry));
+      const off = entries.filter((entry) => !entry.enabled).map((entry) => codexPlusExtensionCardHtml(entry));
+      sections = `${on.length ? renderCodexPlusExtensionsSection("已启用", on) : ""}${off.length ? renderCodexPlusExtensionsSection("未启用", off) : ""}`;
+      empty = query ? `没有匹配「${query}」的拓展。` : codexPlusUserScriptsLoaded ? "未发现已安装的拓展。" : "正在读取用户拓展…";
+    } else {
+      const own = filterCodexPlusExtensionsEntries(curated).map((entry) => codexPlusExtensionCardHtml(entry, { status: true }));
+      const available = filterCodexPlusExtensionsEntries(market).map((entry) => codexPlusExtensionCardHtml(entry));
+      sections = `${own.length ? renderCodexPlusExtensionsSection("已安装", own) : ""}${available.length ? renderCodexPlusExtensionsSection("可安装", available) : ""}`;
+      empty = query ? `没有匹配「${query}」的拓展。`
+        : codexPlusScriptMarket.loading && !codexPlusScriptMarket.loaded ? "正在读取拓展…"
+        : codexPlusScriptMarket.message || "市场里没有可安装的拓展。";
+    }
+    return `${head}${sections || `<div class="codex-plus-extensions-grid" data-codex-plus-extensions-list="true"><div class="codex-plus-extensions-detail-empty" role="status">${escapeHtml(empty)}</div></div>`}`;
   }
 
   /** 只刷新侧栏和结果区；搜索输入框保持原 DOM 与光标位置。 */
@@ -462,10 +541,7 @@
     const local = sel.kind === "installed"
       ? (codexPlusUserScripts.scripts || []).find((script) => script.key === sel.key) || null
       : null;
-    const marketId = sel.kind === "market" ? sel.key : (local?.market_id || "");
-    const marketItem = marketId
-      ? (codexPlusScriptMarket.scripts || []).find((item) => item.id === marketId) || null
-      : null;
+    const marketItem = sel.kind === "market" ? codexPlusMarketItemById(sel.key) : codexPlusLocalMarketItem(local);
     if ((sel.kind === "installed" && !local) || (sel.kind === "market" && !marketItem)) return null;
     return { sel, local, marketItem };
   }
@@ -513,14 +589,17 @@
     const { sel, local, marketItem } = detail;
     const name = marketItem?.name || local?.name || sel.key;
     const version = marketItem?.version || local?.version || "";
-    const author = marketItem?.author || "";
+    const author = marketItem?.author || marketItem?.repo?.split("/")[0] || "";
     const description = marketItem?.description || local?.description || local?.package?.description || "";
     const tags = marketItem?.tags || [];
     const requirements = marketItem?.requirements || [];
     const limitations = marketItem?.limitations || [];
     const homepage = marketItem?.homepage || local?.homepage || "";
     const isInstalled = sel.kind === "installed";
-    const updateAvailable = isInstalled && marketItem && version && local?.version && local.version !== version;
+    // 拓展包按锁定提交比对（后端算好，本机源码不算有更新）；单文件脚本按版本号比对。
+    const updateAvailable = marketItem?.kind === "package"
+      ? isInstalled && !!marketItem.updateAvailable
+      : isInstalled && marketItem && version && local?.version && local.version !== version;
 
     // 详情沿用列表的内容宽度，管理操作保持独立。
     const sourceLabel = local ? (typeof codexPlusScriptSourceLabel === "function" ? codexPlusScriptSourceLabel(local) : local.source === "builtin" ? "内置" : "用户") : "";
@@ -536,6 +615,10 @@
         <button type="button" class="codex-plus-toggle" data-codex-user-script-key="${escapeHtml(local?.key || "")}" data-enabled="${String(!!local?.enabled)}" role="switch" aria-checked="${String(!!local?.enabled)}" aria-label="启用 ${escapeHtml(name)}"><span></span></button>
       `);
       // 内置脚本在只读目录里，删不掉；只给用户目录的脚本提供卸载。
+      // 精选拓展包有审核过的新提交：和管理器一样直接给「更新」，走同一条确认安装流程。
+      if (updateAvailable && marketItem?.kind === "package") {
+        actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-package-install="${escapeHtml(marketItem.id)}"${codexPlusPackageInstalling ? " disabled" : ""}>${codexPlusPackageInstalling === marketItem.id ? "正在准备…" : "更新"}</button>`);
+      }
       if (local?.source === "user") {
         actions.push(`<button type="button" class="codex-plus-extensions-detail-button" data-codex-extensions-uninstall="${escapeHtml(local.key)}">卸载</button>`);
       }
@@ -543,6 +626,9 @@
       if (typeof codexPlusExtensionHasSettings === "function" && codexPlusExtensionHasSettings(local)) {
         actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-gear" data-codex-extensions-tab="settings" title="设置" aria-label="${escapeHtml(name)} 的设置">${codexPlusDiscoveryIcons.settings}</button>`);
       }
+    } else if (marketItem?.kind === "package") {
+      const installing = codexPlusPackageInstalling === marketItem.id;
+      actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-package-install="${escapeHtml(marketItem.id)}"${codexPlusPackageInstalling ? " disabled" : ""}>${installing ? "正在准备…" : "安装"}</button>`);
     } else if (marketItem) {
       actions.push(`<button type="button" class="codex-plus-extensions-detail-button codex-plus-extensions-detail-primary" data-codex-market-install="${escapeHtml(marketItem.id)}">安装</button>`);
     }
@@ -564,12 +650,12 @@
     return `
       <button type="button" class="codex-plus-extensions-back" data-codex-extensions-browse="${codexPlusExtensionsFilter}" aria-label="返回拓展列表">${codexPlusDiscoveryIcons.back}<span>返回拓展列表</span></button>
       <div class="codex-plus-extensions-detail-head">
-        <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(marketItem?.icon || local?.package?.icon)}</div>
+        <div class="codex-plus-extensions-detail-icon" aria-hidden="true">${extensionIconMarkup(codexPlusExtensionIcon(marketItem, local))}</div>
         <div class="codex-plus-extensions-detail-heading">
-          <div class="codex-plus-extensions-detail-title">${escapeHtml(name)}</div>
+          <div class="codex-plus-extensions-detail-title">${escapeHtml(name)}${codexPlusOfficialBadge(marketItem)}</div>
           ${publisherLine ? `<div class="codex-plus-extensions-detail-meta">${publisherLine}</div>` : ""}
           ${description ? `<div class="codex-plus-extensions-detail-description">${escapeHtml(description)}</div>` : ""}
-          ${updateAvailable ? `<div class="codex-plus-extensions-detail-update">有新版本 v${escapeHtml(version)} 可更新</div>` : ""}
+          ${updateAvailable ? `<div class="codex-plus-extensions-detail-update">有新版本 ${escapeHtml(marketItem?.tag || `v${version}`)} 可更新</div>` : ""}
         </div>
         <div class="codex-plus-extensions-detail-actions">${actions.join("")}</div>
       </div>
@@ -667,14 +753,10 @@
   }
 
   /** 左面板的导航项。Codex++ 页面切分组，「拓展」页面列脚本。 */
-  function renderCodexPlusPageNavItems(tab) {
+  /** 左面板内容：拓展页是脚本列表，设置页是分组导航（分组从 root 里已渲染的页面读）。 */
+  function renderCodexPlusPageNavItems(tab, root = document) {
     if (tab === codexPlusExtensionsTab) return renderCodexPlusExtensionsNav();
-    return [
-      { key: "home", label: "主页" },
-      { key: "sponsor", label: "推荐内容" },
-    ].map((item) => `
-      <button type="button" class="codex-plus-page-nav-item" data-codex-plus-page-nav="${item.key}" data-active="${String(tab === item.key)}">${item.label}</button>
-    `).join("");
+    return renderCodexPlusSettingsNavItems(root);
   }
 
   /**
@@ -692,8 +774,8 @@
     layout.className = "codex-plus-page-layout";
     const main = document.createElement("div");
     main.className = "codex-plus-page-main";
-    // 只有「拓展」需要左面板（它是脚本列表）。主页和推荐内容都是单栏内容页，
-    // 页面切换交给图标栏那三个入口，再列一遍就是重复。
+    // 「拓展」的左面板是脚本列表；设置页的左面板是分组导航（和 Codex 自己的设置页一样，右边一次只看一组）。
+    // 推荐内容是单栏内容页，没有左面板。
     if (tab === codexPlusExtensionsTab) {
       const nav = document.createElement("div");
       nav.className = "codex-plus-page-nav";
@@ -702,15 +784,24 @@
         <div class="codex-plus-page-nav-body" data-codex-plus-page-nav-body="true">${renderCodexPlusPageNavItems(tab)}</div>
       `;
       layout.appendChild(nav);
+    } else if (tab === "home") {
+      const nav = document.createElement("nav");
+      nav.className = "codex-plus-page-nav";
+      nav.setAttribute("aria-label", "Codex++ 设置分组");
+      nav.innerHTML = `
+        <div class="codex-plus-page-nav-header" data-codex-plus-settings-nav-header="true"></div>
+        <div class="codex-plus-page-nav-body" data-codex-plus-page-nav-body="true">${renderCodexPlusPageNavItems(tab, overlay)}</div>
+      `;
+      // 版本号与后端状态点放在左栏顶上，右边只留当前分组。
+      const header = content.querySelector(".codex-plus-modal-header");
+      if (header) nav.firstElementChild.appendChild(header);
+      body.querySelector(".codex-plus-settings")?.setAttribute("data-codex-plus-settings-paged", "true");
+      layout.appendChild(nav);
     }
     content.appendChild(layout);
     layout.appendChild(main);
     main.appendChild(body);
-    if (tab === "home") {
-      // 设置标题和卡片共用居中栏，并随内容滚动，保持原生设置页的阅读节奏。
-      const header = content.querySelector(".codex-plus-modal-header");
-      if (header) body.querySelector(".codex-plus-settings")?.prepend(header);
-    }
+    if (tab === "home") syncCodexPlusSettingsGroups(overlay);
   }
 
   /** 页面标题：每个 rail 入口一个名字，和图标栏上的标签保持一致。 */
@@ -731,6 +822,7 @@
     const title = document.querySelector(".codex-plus-page-nav-title");
     if (title) title.textContent = tab === codexPlusExtensionsTab ? "拓展" : "Codex++";
     body.innerHTML = renderCodexPlusPageNavItems(tab);
+    if (tab === "home" && typeof syncCodexPlusSettingsGroups === "function") syncCodexPlusSettingsGroups();
   }
 
   /**
@@ -766,6 +858,17 @@
    * 清单与「已安装」状态都由后端合并好（见 script_market::market_scripts_payload），
    * 前端只需合并本地脚本清单来显示来源与状态。
    */
+  /** 后端市场 payload（script_market::market_scripts_payload）→ 页面状态。 */
+  function codexPlusScriptMarketFromPayload(result) {
+    return {
+      scripts: result.scripts,
+      packages: Array.isArray(result.packages) ? result.packages : [],
+      loaded: true,
+      loading: false,
+      message: result.message || "",
+    };
+  }
+
   async function loadScriptMarket(force = false) {
     if (codexPlusScriptMarket.loading) return;
     if (codexPlusScriptMarket.loaded && !force) return;
@@ -773,12 +876,7 @@
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
     const result = await postJson("/script-market/list", {});
     if (Array.isArray(result?.scripts)) {
-      codexPlusScriptMarket = {
-        scripts: result.scripts,
-        loaded: true,
-        loading: false,
-        message: result.message || "",
-      };
+      codexPlusScriptMarket = codexPlusScriptMarketFromPayload(result);
     } else {
       codexPlusScriptMarket = {
         ...codexPlusScriptMarket,
@@ -794,12 +892,7 @@
     if (!id) return;
     const result = await postJson("/script-market/install", { id });
     if (Array.isArray(result?.scripts)) {
-      codexPlusScriptMarket = {
-        scripts: result.scripts,
-        loaded: true,
-        loading: false,
-        message: result.message || "",
-      };
+      codexPlusScriptMarket = codexPlusScriptMarketFromPayload(result);
     }
     // 后端装完会把本地清单一起带回来，省一次往返。
     if (result?.user_scripts?.scripts) {
@@ -814,6 +907,107 @@
       if (installed) codexPlusExtensionsSelected = { kind: "installed", key: installed.key };
     }
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
+  }
+
+  /** 安装确认框里的能力清单，按风险从高到低（与管理器 permissionLines 同一套文案）。 */
+  function codexPlusPackagePermissionLines(permissions = {}) {
+    const lines = [];
+    if (permissions.backend) lines.push(`常驻后台进程 ${permissions.backend}：可读写本机文件、访问网络`);
+    for (const hook of permissions.hooks || []) {
+      lines.push(hook.matcher ? `Codex 钩子 ${hook.event}（匹配 ${hook.matcher}）：可拦截或改写工具调用` : `Codex 钩子 ${hook.event}：可拦截或改写工具调用`);
+    }
+    if (permissions.gatewayRequest) lines.push(`网关请求中间件 ${permissions.gatewayRequest} 个：可读取并改写发往模型的完整请求`);
+    if (permissions.gatewayResponse) lines.push(`网关响应中间件 ${permissions.gatewayResponse} 个：可读取并改写模型回复`);
+    if (permissions.tools?.length) lines.push(`模型工具：${permissions.tools.join("、")}`);
+    for (const route of permissions.routes || []) lines.push(`本地路由 ${route}`);
+    if (permissions.renderer?.length) lines.push(`在 Codex 页面里运行脚本：${permissions.renderer.join("、")}`);
+    return lines;
+  }
+
+  /**
+   * 安装前的确认框（与管理器 InstallDialog 同一套说明）：审核渠道、实际版本、它要的能力、同名冲突。
+   * 返回 `{ value: "install" | "enable" }`，取消时为 null。精选 / 社区安装共用。
+   */
+  function codexPlusConfirmPreparedInstall(prepared, fallbackName) {
+    const trust = prepared.channel === "official"
+      ? "Codex++ 官方拓展，安装的是审核过的版本。"
+      : prepared.channel === "curated"
+      ? "经 Codex++ 审核的精选拓展，安装的是审核过的那一版；作者之后的改动要再审核才会更新。"
+      : "⚠ 未经 Codex++ 审核，作者可以在新版本里加入任意代码。只安装你信任的作者的拓展。";
+    const sha = String(prepared.sha || "").slice(0, 7);
+    const version = prepared.fromDefaultBranch
+      ? `${prepared.repo} · 作者未发布版本，将安装默认分支的提交 ${sha}`
+      : `${prepared.repo} · 版本 ${prepared.tag || prepared.version}，锁定提交 ${sha}`;
+    const lines = codexPlusPackagePermissionLines(prepared.permissions);
+    const conflict = prepared.conflict
+      ? prepared.conflict.source === "github" && prepared.conflict.channel && prepared.conflict.channel !== "community" && prepared.channel === "community"
+        ? `本机已装 ${prepared.conflict.repo || ""} 的${prepared.conflict.channel === "official" ? "官方" : "精选"}版本 ${prepared.id}，社区里的同 id 拓展不能替换它。`
+        : prepared.conflict.source === "github"
+        ? `本机已有来自 ${prepared.conflict.repo || ""} 的同名拓展 ${prepared.id}，安装会替换它（旧版本移到备份目录）。`
+        : `本机已有手动或对话生成的同名拓展 ${prepared.id}，安装会替换它（旧版本移到备份目录）。`
+      : "";
+    const message = [
+      trust,
+      version,
+      "",
+      "它会获得这些能力：",
+      ...(lines.length ? lines.map((line) => `• ${line}`) : ["没有声明任何能力。"]),
+      ...(conflict ? ["", conflict] : []),
+    ].join("\n");
+    const verb = prepared.conflict ? "替换并安装" : "安装";
+    return codexPlusAsk({
+      title: `安装 ${prepared.name || fallbackName}`,
+      message,
+      options: [{ value: "install", label: `${verb}（暂不启用）` }, { value: "enable", label: `${verb}并启用` }],
+    });
+  }
+
+  /**
+   * 安装精选 / 官方拓展包：后端按清单锁定的提交下载并暂存 → 确认框列出能力 → 用户确认后放进拓展目录。
+   * 与管理器「精选」栏的安装是同一条流程（extension_discovery::CommunityStore）。
+   */
+  async function installPackageFromMarket(id) {
+    if (!id || codexPlusPackageInstalling) return;
+    const item = (codexPlusScriptMarket.packages || []).find((entry) => entry.id === id);
+    const name = item?.name || id;
+    codexPlusPackageInstalling = id;
+    if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
+    try {
+      const prepared = await postJson("/script-market/package/prepare", { id });
+      if (!prepared?.token) {
+        showToast(`准备安装 ${name} 失败：${prepared?.message || "未知错误"}`, { type: "error" });
+        return;
+      }
+      const answer = await codexPlusConfirmPreparedInstall(prepared, name);
+      if (!answer) {
+        void postJson("/script-market/package/discard", { token: prepared.token });
+        return;
+      }
+      const result = await postJson("/script-market/package/install", {
+        token: prepared.token,
+        enable: answer.value === "enable",
+        replace: !!prepared.conflict,
+      });
+      if (!Array.isArray(result?.scripts)) {
+        showToast(`安装 ${name} 失败：${result?.message || "未知错误"}`, { type: "error" });
+        return;
+      }
+      codexPlusScriptMarket = codexPlusScriptMarketFromPayload(result);
+      const installed = result.installed || {};
+      const tips = [answer.value === "enable" ? `${name} 已安装并启用` : `${name} 已安装，尚未启用`];
+      if (installed.hooksError) tips.push(`Codex 钩子配置未能同步：${installed.hooksError}`);
+      else if (installed.hooksAdded) tips.push("Codex 配置里新增了「Codex++ 拓展钩子」，请在 Codex 的 Hooks 设置里信任一次，新开对话生效");
+      showToast(tips.join("。"), installed.hooksError ? { type: "warn" } : null);
+      // 装好后热重载，拓展立刻跑起来（与启停流程一致）；重载会顺带刷新本地清单。
+      await reloadUserScriptsAfterChange();
+      if (codexPlusExtensionsSelected?.kind === "market" && codexPlusExtensionsSelected.key === id) {
+        const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === installed.key);
+        if (local) codexPlusExtensionsSelected = { kind: "installed", key: local.key };
+      }
+    } finally {
+      codexPlusPackageInstalling = "";
+      if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
+    }
   }
 
   /**
@@ -836,8 +1030,19 @@
       enabled: !!script.enabled,
       script,
     }));
-    const market = (codexPlusScriptMarket.scripts || [])
-      .filter((item) => !localByMarketId.has(item.id))
+    // 和管理器「精选」一样：拓展包（官方在前，后端已排好）排在单文件脚本前面；已装的（含本机源码）不再列。
+    const packages = (codexPlusScriptMarket.packages || [])
+      .filter((item) => !item.installed && !item.localSource)
+      .map((item) => ({
+        kind: "market",
+        key: item.id,
+        name: item.name || item.id,
+        meta: `${item.author || item.repo?.split("/")[0] || "未知作者"} · ${item.tag || `v${item.version}`}`,
+        item,
+      }));
+    const sortScripts = (items) => typeof codexPlusSortMarketScripts === "function" ? codexPlusSortMarketScripts(items) : items;
+    const scripts = sortScripts((codexPlusScriptMarket.scripts || [])
+      .filter((item) => !localByMarketId.has(item.id)))
       .map((item) => ({
         kind: "market",
         key: item.id,
@@ -845,8 +1050,23 @@
         meta: `${item.author || "未知作者"} · v${item.version}`,
         item,
       }));
+    const market = [...packages, ...scripts];
     const available = (codexPlusScriptMarket.scripts || []).filter((item) => localByMarketId.has(item.id));
-    return { installed, market, available, localByMarketId };
+    // 精选里「已安装」一节：装了的拓展包（含本机源码，有更新的排前面）和市场脚本，点开看本地详情。
+    const localByPackageId = new Map(
+      local.filter((script) => script.source === "user" && script.package?.id).map((script) => [script.package.id, script]),
+    );
+    const curatedEntry = (item, script) => script
+      ? { kind: "installed", key: script.key, name: item.name || item.id, enabled: !!script.enabled, script, item }
+      : { kind: "market", key: item.id, name: item.name || item.id, item };
+    const curated = [
+      ...(codexPlusScriptMarket.packages || [])
+        .filter((item) => item.installed || item.localSource)
+        .sort((a, b) => Number(!!b.updateAvailable) - Number(!!a.updateAvailable))
+        .map((item) => curatedEntry(item, localByPackageId.get(item.id))),
+      ...sortScripts(available).map((item) => curatedEntry(item, localByMarketId.get(item.id))),
+    ];
+    return { installed, market, available, curated, localByMarketId };
   }
 
   /**
@@ -856,10 +1076,51 @@
    * `market_id` 回查，否则拿不到图标、简介、标签。纯本地脚本两者都没有。
    */
   function codexPlusExtensionMarketItem(entry) {
-    if (entry.kind === "market") return entry.item || null;
-    const marketId = entry.script?.market_id;
-    if (!marketId) return null;
-    return (codexPlusScriptMarket.scripts || []).find((item) => item.id === marketId) || null;
+    if (entry.item) return entry.item;
+    if (entry.kind === "market") return null;
+    return codexPlusLocalMarketItem(entry.script);
+  }
+
+  /** 本地脚本对应的市场条目：市场脚本靠 `market_id`，精选拓展包靠拓展包 id。 */
+  function codexPlusLocalMarketItem(script) {
+    const marketId = script?.market_id;
+    if (marketId) return (codexPlusScriptMarket.scripts || []).find((item) => item.id === marketId) || null;
+    const packageId = script?.package?.id;
+    if (!packageId) return null;
+    return (codexPlusScriptMarket.packages || []).find((item) => item.id === packageId) || null;
+  }
+
+  /** 按 id 找市场条目（单文件脚本或拓展包）。 */
+  function codexPlusMarketItemById(id) {
+    return (codexPlusScriptMarket.scripts || []).find((item) => item.id === id)
+      || (codexPlusScriptMarket.packages || []).find((item) => item.id === id)
+      || null;
+  }
+
+  // 市场仓库本身：主页指向它的脚本不用作者头像（否则一排全是同一个头像），退回默认图标。
+  const codexPlusScriptMarketRepo = "bigpizzav3/codexplusplusscriptmarket";
+
+  /** GitHub 头像地址：`owner/repo` 或 GitHub 仓库地址（与管理器 githubAvatar 一致）。 */
+  function codexPlusGithubAvatar(repoOrUrl) {
+    const match = /^(?:https?:\/\/github\.com\/)?([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+)/.exec(String(repoOrUrl || "").trim());
+    if (!match || `${match[1]}/${match[2]}`.toLowerCase() === codexPlusScriptMarketRepo) return "";
+    return `https://github.com/${match[1]}.png?size=64`;
+  }
+
+  /**
+   * 条目图标，与管理器同一套取法：清单给的图标 → 本地拓展包自带的图标 →
+   * 拓展包仓库 / 主页仓库作者的 GitHub 头像；都没有时由 extensionIconMarkup 退回默认字形。
+   */
+  function codexPlusExtensionIcon(item, local) {
+    if (item?.icon) return item.icon;
+    if (local?.package?.icon) return local.package.icon;
+    if (item?.kind === "package") return codexPlusGithubAvatar(item.repo);
+    return /^https?:\/\/github\.com\//i.test(String(item?.homepage || "")) ? codexPlusGithubAvatar(item.homepage) : "";
+  }
+
+  /** 「官方」徽标：只有清单标了官方且仓库属于官方账号的拓展包才有（后端已校验）。 */
+  function codexPlusOfficialBadge(item) {
+    return item?.official ? '<span class="codex-plus-extension-official" title="Codex++ 官方拓展">官方</span>' : "";
   }
 
   function filterCodexPlusExtensionsEntries(entries) {
@@ -867,7 +1128,7 @@
     if (!query) return entries;
     return entries.filter((entry) => {
       const marketItem = codexPlusExtensionMarketItem(entry);
-      return [entry.name, entry.key, entry.script?.name, entry.meta, marketItem?.description, ...(marketItem?.tags || [])]
+      return [entry.name, entry.key, entry.script?.name, entry.meta, marketItem?.description, marketItem?.author, marketItem?.repo, ...(marketItem?.tags || [])]
         .filter(Boolean)
         .some((text) => String(text).toLowerCase().includes(query));
     });
@@ -1012,6 +1273,7 @@
       loadUserScripts();
       // 市场清单拉过一次就缓存，切换分组不再重复请求；失败后可从界面手动刷新。
       void loadScriptMarket();
+      if (typeof codexPlusExtensionSourceEnsureLoaded === "function") codexPlusExtensionSourceEnsureLoaded(codexPlusExtensionsFilter);
     }
     refreshCodexPlusPageNav(normalized);
   }
@@ -1024,6 +1286,10 @@
     if (tab === codexPlusExtensionsTab) return "extensions";
     if (tab === codexPlusSponsorTab) return "sponsor";
     if (tab === codexPlusPluginMarketTab) return "plugin-market";
+    if (tab === codexPlusProviderTab) return "provider";
+    if (tab === codexPlusRemoteControlTab) return "remote";
+    if (tab === codexPlusWeixinConnectTab) return "weixin";
+    if (tab === codexPlusTaskBoardTab) return "tasks";
     return "home";
   }
 
@@ -1040,6 +1306,10 @@
       [codexPlusRailNavId, "home"],
       [codexPlusRailExtensionsId, "extensions"],
       [codexPlusRailSponsorId, "sponsor"],
+      [codexPlusRailProviderId, "provider"],
+      [codexPlusRailRemoteId, "remote"],
+      [codexPlusRailWeixinId, "weixin"],
+      [codexPlusRailTasksId, "tasks"],
     ].forEach(([id, name]) => {
       const railButton = document.querySelector(`#${id} > button`);
       if (!railButton) return;
@@ -1353,6 +1623,209 @@
   let codexPlusSettingsCatalogStatus = { status: "idle", message: "" };
   let codexPlusSettingsCatalogRequest = null;
 
+  // ── 设置页分组导航 ──────────────────────────────────────────────────────────
+  // 页面模式下左栏列出各分组，右边一次只显示一组（data-active），选中的分组记在 localStorage 里。
+  // 分组列表从已渲染的 DOM 里读：清单分组、「工具与关于」、有拓展菜单项时的「拓展设置」。
+  const codexPlusSettingsGroupStorageKey = "codex-plus-settings-group";
+  let codexPlusSettingsActiveGroup = (() => {
+    try { return String(window.localStorage.getItem(codexPlusSettingsGroupStorageKey) || ""); } catch { return ""; }
+  })();
+
+  function codexPlusSettingsGroupNodes(root = document) {
+    const panel = root.querySelector('[data-codex-plus-panel="home"]');
+    if (!panel) return [];
+    return [...panel.children].filter((node) => node.matches("[data-codex-plus-settings-group]")
+      && (node.getAttribute("data-codex-plus-settings-group") !== "ext-menu" || !!node.querySelector("[data-codex-plus-ext-menu]")));
+  }
+
+  /** 记住的分组不在了（清单变了、拓展菜单撤了）就落到第一组。 */
+  function codexPlusResolvedSettingsGroup(groups) {
+    const ids = groups.map((node) => node.getAttribute("data-codex-plus-settings-group"));
+    return ids.includes(codexPlusSettingsActiveGroup) ? codexPlusSettingsActiveGroup : ids[0] || "";
+  }
+
+  /**
+   * 左栏分组图标：直接用 Codex 原生设置页左栏的那套 16px 图标（从原生设置页 DOM 拷出的 SVG，
+   * 填充色跟 currentColor），和原生观感一致。值是 [viewBox, 内容]。
+   * 清单里新加的分组没登记就用「常规」的齿轮兜底。
+   */
+  const codexPlusSettingsGroupIcons = {
+    "core": ['0 0 16 16', '<path fill-rule="evenodd" clip-rule="evenodd" d="M8.00062 5.2793C9.50689 5.2793 10.7289 6.50063 10.7291 8.00684C10.7289 9.51311 9.50693 10.7354 8.00062 10.7354C6.49463 10.735 5.27328 9.51288 5.27308 8.00684C5.27335 6.50086 6.49467 5.27967 8.00062 5.2793ZM8.00062 6.33008C7.07457 6.33045 6.32413 7.08076 6.32386 8.00684C6.32406 8.93298 7.07453 9.68421 8.00062 9.68458C8.92703 9.68458 9.67816 8.93321 9.67836 8.00684C9.67809 7.08053 8.92699 6.33008 8.00062 6.33008Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M8.59633 1.24024C9.07592 1.24041 9.51987 1.49643 9.75941 1.91309C9.97218 2.28352 10.2906 2.83779 10.5465 3.28223C10.5982 3.37176 10.694 3.42675 10.7985 3.42676L12.3795 3.42774C12.8587 3.42793 13.3021 3.68368 13.5416 4.09864L14.1295 5.11719C14.3672 5.52926 14.3684 6.03653 14.1334 6.4502L13.2536 8.00098L14.1334 9.54786C14.3685 9.96173 14.3675 10.4706 14.1295 10.8828L13.5416 11.9014C13.302 12.3162 12.8586 12.5721 12.3795 12.5723L10.7975 12.5713C10.6934 12.5715 10.5981 12.6276 10.5465 12.7168C10.2906 13.1614 9.97118 13.7156 9.75844 14.0859C9.51881 14.5027 9.07511 14.7588 8.59535 14.7588C8.17471 14.7588 7.8383 14.7578 7.40492 14.7578C6.92515 14.7578 6.48146 14.5027 6.24183 14.0859C6.02905 13.7155 5.70972 13.1614 5.45375 12.7168C5.40213 12.6273 5.3062 12.5713 5.20179 12.5713H3.62172C3.14243 12.5713 2.69927 12.3155 2.45961 11.9004L1.87172 10.8818C1.63401 10.4698 1.63199 9.96251 1.86683 9.54883L2.74769 7.99903L1.86683 6.4502C1.63181 6.03636 1.63375 5.52838 1.87172 5.11622L2.45961 4.09864C2.69922 3.68389 3.14176 3.42795 3.62074 3.42774H5.20179C5.30622 3.42774 5.4021 3.37172 5.45375 3.28223C5.70967 2.83774 6.0281 2.28351 6.24086 1.91309C6.48037 1.49635 6.92432 1.24044 7.40394 1.24024C7.83772 1.24023 8.1753 1.24023 8.59633 1.24024ZM7.40492 2.29004C7.2999 2.29005 7.20281 2.34636 7.15101 2.43653C6.93819 2.80705 6.62008 3.3617 6.3639 3.80665C6.12441 4.22231 5.6814 4.47732 5.20277 4.47754H3.62172C3.51764 4.47754 3.42093 4.533 3.36879 4.62305L2.7809 5.64161C2.72924 5.73111 2.72899 5.84174 2.77992 5.93165L3.80629 7.73926C3.84008 7.79878 3.86295 7.86417 3.87172 7.93165L3.87562 7.99903C3.87565 8.06763 3.86231 8.13613 3.83656 8.19922L3.80629 8.25977L2.77894 10.0674C2.72805 10.1573 2.72924 10.2679 2.7809 10.3574L3.36879 11.376C3.42092 11.4661 3.51761 11.5215 3.62172 11.5215H5.20179C5.68071 11.5215 6.12432 11.7765 6.3639 12.1924C6.62013 12.6374 6.93914 13.1919 7.15199 13.5625C7.20372 13.6524 7.29923 13.7088 7.40394 13.709C7.83771 13.709 8.17531 13.708 8.59633 13.708C8.70115 13.7078 8.79754 13.6525 8.84926 13.5625C9.06202 13.1921 9.38023 12.6382 9.63636 12.1934C9.87592 11.7773 10.3195 11.5215 10.7985 11.5215H12.3795C12.4834 11.5213 12.5794 11.4658 12.6315 11.376L13.2194 10.3574C13.271 10.2679 13.2714 10.1573 13.2203 10.0674L12.193 8.25977C12.1481 8.18049 12.1256 8.09011 12.1256 7.99903C12.1257 7.9079 12.149 7.81751 12.194 7.73829L13.2203 5.93165C13.2712 5.84187 13.2708 5.73203 13.2194 5.64258L12.6315 4.62403C12.5794 4.53379 12.4828 4.47754 12.3786 4.47754L10.7985 4.47852C10.3197 4.47852 9.87697 4.22238 9.63734 3.80665C9.38106 3.36152 9.0621 2.80612 8.84926 2.43555C8.79741 2.3456 8.70021 2.29005 8.59535 2.29004C8.17471 2.29004 7.8383 2.29004 7.40492 2.29004Z" fill="currentColor"></path>'], // 原生「常规」
+    "plugins": ['0 0 16 16', '<path fill-rule="evenodd" clip-rule="evenodd" d="M8.25031 1.46094C12.2175 1.46116 14.7053 4.56317 14.4573 8.11328C14.3646 9.44154 13.6395 10.4315 12.6556 10.834C11.7842 11.1903 10.7744 11.0568 9.95637 10.3848C9.43406 10.8255 8.8274 11.1141 8.19465 11.167C7.46206 11.2281 6.74478 10.9691 6.16535 10.3672L6.16145 10.3623C6.16145 10.3623 6.15859 10.3586 6.15656 10.3564C6.15204 10.3517 6.14556 10.344 6.13703 10.335C6.11976 10.3167 6.09427 10.29 6.06281 10.2568C5.9996 10.1901 5.90986 10.0966 5.80793 9.98926C5.60368 9.77412 5.34664 9.50307 5.1341 9.28125C4.86457 8.99958 4.87183 8.55158 5.15363 8.28027L5.31672 8.12207L4.72004 7.50195C4.5193 7.29309 4.52604 6.96077 4.73469 6.75977C4.94359 6.55869 5.27678 6.56454 5.47785 6.77344L6.07453 7.39355L7.51789 6.00391L6.92121 5.38379C6.72021 5.17497 6.72621 4.8427 6.93488 4.6416C7.14378 4.44052 7.47697 4.44638 7.67805 4.65527L8.27473 5.27539L8.44465 5.1123C8.72754 4.84001 9.17872 4.85048 9.44953 5.13477L10.4808 6.21777C11.074 6.8285 11.3084 7.55474 11.2132 8.28613C11.1518 8.75707 10.9544 9.20384 10.6683 9.60938C11.1897 10.0141 11.7752 10.0597 12.2581 9.8623C12.8307 9.6281 13.3423 9.01591 13.4105 8.04004C13.6191 5.05211 11.5645 2.51194 8.25031 2.51172C5.3194 2.51172 2.78634 4.7507 2.58918 7.57031C2.36888 10.7251 4.6005 13.3876 7.99836 13.3877C9.02878 13.3877 10.0514 13.1687 10.8314 12.7041C11.0805 12.5558 11.4027 12.6377 11.5511 12.8867C11.6992 13.1357 11.6174 13.4581 11.3685 13.6064C10.3813 14.1943 9.15795 14.4375 7.99836 14.4375C3.956 14.4374 1.28142 11.2234 1.54133 7.49805C1.77976 4.08387 4.81315 1.46094 8.25031 1.46094ZM6.12727 8.80176C6.27942 8.9613 6.43614 9.12597 6.56965 9.2666C6.67197 9.37438 6.76112 9.46823 6.82453 9.53516C6.856 9.56836 6.88138 9.59493 6.89875 9.61328L6.9261 9.6416C7.2937 10.0219 7.7023 10.154 8.10774 10.1201C8.52986 10.0848 8.998 9.86387 9.43293 9.44531C9.87269 9.02201 10.1181 8.56488 10.1722 8.14941C10.2235 7.75361 10.1099 7.34127 9.72492 6.94629L9.72102 6.94238L8.9261 6.10742L6.12727 8.80176Z" fill="currentColor"></path>'], // 原生「插件」
+    "input": ['0 0 20 20', '<path d="M15.9951 7.33002C15.9951 6.61898 15.9942 6.12565 15.9629 5.74213C15.9398 5.46008 15.9021 5.27068 15.8506 5.12689L15.7949 4.99701C15.6409 4.69476 15.4068 4.44188 15.1191 4.26556L14.9932 4.19525C14.8352 4.11475 14.6237 4.05799 14.248 4.02728C13.8645 3.99595 13.3712 3.99506 12.6602 3.99506H7.33008C6.61904 3.99506 6.12571 3.99595 5.74219 4.02728C5.36648 4.05799 5.15508 4.11474 4.99707 4.19525C4.65183 4.37117 4.37124 4.65177 4.19531 4.99701C4.1148 5.15502 4.05805 5.36642 4.02734 5.74213C3.99601 6.12565 3.99512 6.61898 3.99512 7.33002V12.6601C3.99512 13.3711 3.99601 13.8645 4.02734 14.248C4.05805 14.6236 4.11481 14.8351 4.19531 14.9931L4.26563 15.1191C4.44194 15.4067 4.69482 15.6409 4.99707 15.7949L5.12695 15.8505C5.27074 15.902 5.46014 15.9398 5.74219 15.9628C6.12571 15.9942 6.61904 15.9951 7.33008 15.9951H12.6602C13.3712 15.9951 13.8645 15.9942 14.248 15.9628C14.6237 15.9321 14.8352 15.8754 14.9932 15.7949L15.1191 15.7245C15.4068 15.5482 15.6409 15.2953 15.7949 14.9931L15.8506 14.8632C15.9021 14.7194 15.9398 14.53 15.9629 14.248C15.9942 13.8645 15.9951 13.3711 15.9951 12.6601V7.33002ZM17.3252 12.6601C17.3252 13.3492 17.3258 13.9062 17.2891 14.3564C17.2563 14.757 17.1911 15.1178 17.0469 15.454L16.9805 15.5966C16.7149 16.1179 16.3105 16.5542 15.8145 16.8583L15.5967 16.9804C15.2201 17.1722 14.8142 17.2516 14.3564 17.289C13.9062 17.3258 13.3492 17.3251 12.6602 17.3251H7.33008C6.64099 17.3251 6.08403 17.3258 5.63379 17.289C5.23315 17.2563 4.87242 17.191 4.53613 17.0468L4.39356 16.9804C3.87229 16.7148 3.43595 16.3104 3.13184 15.8144L3.00977 15.5966C2.81795 15.22 2.73859 14.8142 2.70117 14.3564C2.66439 13.9062 2.66504 13.3492 2.66504 12.6601V7.33002C2.66504 6.64093 2.66439 6.08397 2.70117 5.63373C2.73858 5.17594 2.81796 4.77011 3.00977 4.39349C3.31321 3.79796 3.79802 3.31314 4.39356 3.00971C4.77017 2.8179 5.176 2.73852 5.63379 2.70111C6.08403 2.66433 6.64099 2.66498 7.33008 2.66498H12.6602C13.3492 2.66498 13.9062 2.66433 14.3564 2.70111C14.8142 2.73853 15.2201 2.81789 15.5967 3.00971L15.8145 3.13178C16.3105 3.43589 16.7149 3.87223 16.9805 4.39349L17.0469 4.53607C17.1911 4.87236 17.2563 5.23309 17.2891 5.63373C17.3258 6.08397 17.3252 6.64093 17.3252 7.33002V12.6601Z" fill="currentColor"></path><path d="M7.42654 10.6038L9.90146 6.85396C10.1554 6.46917 10.7538 6.7207 10.6565 7.17136L10.3159 8.75002H12.2258C12.5577 8.75002 12.7564 9.11918 12.5736 9.3962L10.0987 13.1461C9.8447 13.5309 9.24637 13.2793 9.34362 12.8287L9.68427 11.25H7.7743C7.44238 11.25 7.24371 10.8809 7.42654 10.6038Z" fill="currentColor"></path>'], // 原生「键盘快捷键」
+    "chat": ['0 0 16 16', '<path d="M9.33423 8.14124C9.6238 8.14167 9.85864 8.37695 9.85864 8.66663C9.85864 8.9563 9.6238 9.19158 9.33423 9.19202H6.66724C6.37729 9.19202 6.14185 8.95658 6.14185 8.66663C6.14185 8.37668 6.37729 8.14124 6.66724 8.14124H9.33423Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M12.3333 2.14124C13.3595 2.14124 14.1915 2.97346 14.1917 3.99963V4.66663C14.1917 5.11035 14.0352 5.51699 13.7756 5.83655V11.3336C13.7755 12.7279 12.6445 13.8589 11.2502 13.859H4.75024C3.35584 13.859 2.22504 12.728 2.22485 11.3336V5.83752C1.96478 5.51781 1.80786 5.11082 1.80786 4.66663V3.99963C1.80804 2.97356 2.64019 2.14141 3.66626 2.14124H12.3333ZM12.7249 6.48206C12.5985 6.50918 12.4677 6.52502 12.3333 6.52502H3.66626C3.53214 6.525 3.4017 6.50907 3.27563 6.48206V11.3336C3.27582 12.1481 3.93574 12.8082 4.75024 12.8082H11.2502C12.0646 12.8081 12.7247 12.148 12.7249 11.3336V6.48206ZM3.66626 3.19202C3.22009 3.19219 2.85882 3.55346 2.85864 3.99963V4.66663C2.85864 4.94388 2.99856 5.18793 3.21118 5.33362H3.27563V5.37366C3.39145 5.43793 3.5244 5.47516 3.66626 5.47522H12.3333C12.4754 5.47522 12.6088 5.43811 12.7249 5.37366V5.33362H12.7903C13.0026 5.18786 13.1418 4.94346 13.1418 4.66663V3.99963C13.1417 3.55335 12.7796 3.19202 12.3333 3.19202H3.66626Z" fill="currentColor"></path>'], // 原生「已归档的聊天」
+    "appearance": ['0 0 16 16', '<path d="M8 13.1406C8.28995 13.1406 8.52539 13.3761 8.52539 13.666V14.666C8.52539 14.956 8.28995 15.1914 8 15.1914C7.71016 15.1913 7.47461 14.9559 7.47461 14.666V13.666C7.47461 13.3761 7.71016 13.1408 8 13.1406Z" fill="currentColor"></path><path d="M11.7393 11.7324C11.9442 11.5276 12.2764 11.5268 12.4814 11.7314L13.0908 12.3418C13.2957 12.5468 13.2957 12.879 13.0908 13.084C12.8858 13.289 12.5527 13.289 12.3477 13.084L11.7383 12.4746C11.5336 12.2696 11.5344 11.9373 11.7393 11.7324Z" fill="currentColor"></path><path d="M3.52539 11.7305C3.73042 11.5258 4.06362 11.5256 4.26855 11.7305C4.47348 11.9354 4.47329 12.2686 4.26855 12.4736L3.6582 13.084C3.45313 13.2884 3.12085 13.2878 2.91602 13.083C2.71123 12.8782 2.71061 12.5459 2.91504 12.3408L3.52539 11.7305Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M8 4.14258C10.1307 4.14271 11.8582 5.87031 11.8584 8.00098C11.8584 10.1318 10.1308 11.8592 8 11.8594C5.86925 11.8592 4.1416 10.1318 4.1416 8.00098C4.14178 5.87034 5.86936 4.14275 8 4.14258ZM8 5.19336C6.44926 5.19354 5.19256 6.45023 5.19238 8.00098C5.19238 9.55187 6.44915 10.8094 8 10.8096C9.55089 10.8094 10.8086 9.5519 10.8086 8.00098C10.8084 6.45021 9.55078 5.19349 8 5.19336Z" fill="currentColor"></path><path d="M2.33691 7.47363C2.62681 7.47366 2.86225 7.70817 2.8623 7.99805C2.86228 8.28798 2.62684 8.52344 2.33691 8.52344H1.33691C1.04698 8.52341 0.811523 8.28797 0.811523 7.99805C0.811552 7.70811 1.04699 7.47266 1.33691 7.47266L2.33691 7.47363Z" fill="currentColor"></path><path d="M14.6699 7.47363C14.9598 7.47366 15.1953 7.70817 15.1953 7.99805C15.1953 8.28798 14.9598 8.52344 14.6699 8.52344H13.6699C13.3801 8.52328 13.1445 8.28789 13.1445 7.99805C13.1446 7.7082 13.3801 7.47279 13.6699 7.47266L14.6699 7.47363Z" fill="currentColor"></path><path d="M12.3438 2.91211C12.5488 2.70739 12.882 2.70723 13.0869 2.91211C13.2918 3.11704 13.2916 3.45022 13.0869 3.65527L12.4766 4.26562C12.2715 4.47007 11.9392 4.46948 11.7344 4.26465C11.5296 4.05981 11.529 3.72752 11.7334 3.52246L12.3438 2.91211Z" fill="currentColor"></path><path d="M2.9209 2.91211C3.12582 2.70728 3.45807 2.70648 3.66309 2.91113L4.27246 3.52148C4.47736 3.72648 4.47733 4.05867 4.27246 4.26367C4.06743 4.46866 3.7343 4.46868 3.5293 4.26367L2.91992 3.6543C2.71523 3.44924 2.71599 3.11702 2.9209 2.91211Z" fill="currentColor"></path><path d="M8 0.808594C8.28995 0.808594 8.52539 1.04403 8.52539 1.33398V2.33398C8.52539 2.62393 8.28995 2.85938 8 2.85938C7.71016 2.85924 7.47461 2.62385 7.47461 2.33398V1.33398C7.47461 1.04412 7.71016 0.808726 8 0.808594Z" fill="currentColor"></path>'], // 原生「外观」
+    "pet": ['0 0 16 16', '<path d="M8.72925 8.8789V7.93135C8.72925 7.55641 9.03309 7.25256 9.40803 7.25256C9.78297 7.25256 10.0868 7.55641 10.0868 7.93135V8.8789C10.0867 9.25374 9.7829 9.55768 9.40803 9.55768C9.03317 9.55768 8.72937 9.25374 8.72925 8.8789Z" fill="currentColor"></path><path d="M5.91309 8.8789V7.93135C5.91309 7.55641 6.21693 7.25256 6.59187 7.25256C6.96681 7.25256 7.27066 7.55641 7.27066 7.93135V8.8789C7.27054 9.25374 6.96674 9.55768 6.59187 9.55768C6.21701 9.55768 5.9132 9.25374 5.91309 8.8789Z" fill="currentColor"></path><path d="M12.4746 9.26562C12.4745 7.40233 11.8081 5.60589 10.8838 4.2793C10.4223 3.61706 9.90605 3.08559 9.39453 2.72461C8.87891 2.36081 8.39952 2.19141 8 2.19141C7.60048 2.19141 7.12109 2.36081 6.60547 2.72461C6.09395 3.08559 5.57766 3.61706 5.11621 4.2793C4.19191 5.60589 3.52548 7.40233 3.52539 9.26562C3.52539 11.7651 5.26769 13.8076 8 13.8076C10.7323 13.8076 12.4746 11.7651 12.4746 9.26562ZM13.5254 9.26562C13.5254 12.2854 11.37 14.8574 8 14.8574C4.62996 14.8574 2.47461 12.2854 2.47461 9.26562C2.4747 7.16322 3.22245 5.16038 4.25488 3.67871C4.77191 2.93672 5.37038 2.3115 6 1.86719C6.62538 1.42587 7.31355 1.14062 8 1.14062C8.68645 1.14062 9.37462 1.42587 10 1.86719C10.6296 2.3115 11.2281 2.93672 11.7451 3.67871C12.7776 5.16038 13.5253 7.16322 13.5254 9.26562Z" fill="currentColor"></path>'], // 原生「迷你界面和智能伙伴」
+    "stepwise": ['0 0 16 16', '<path d="M10.7939 8.15723C11.0751 8.22756 11.2459 8.51278 11.1758 8.79395C10.9829 9.56501 10.5871 10.1775 10.0176 10.5918C9.45181 11.0032 8.75339 11.1924 8 11.1924C7.71018 11.1924 7.47483 10.9568 7.47461 10.667C7.47461 10.377 7.71005 10.1416 8 10.1416C8.57975 10.1416 9.04857 9.99728 9.39941 9.74219C9.74618 9.48999 10.0167 9.10162 10.1572 8.54004C10.2275 8.2588 10.5127 8.087 10.7939 8.15723Z" fill="currentColor"></path><path d="M6.90039 5.03516C7.06472 4.79669 7.39211 4.7364 7.63086 4.90039C7.86962 5.06459 7.92958 5.39198 7.76562 5.63086L6.3916 7.62793L7.42773 7.81641C7.71256 7.86845 7.90108 8.14185 7.84961 8.42676C7.79774 8.71203 7.52453 8.90148 7.23926 8.84961L5.91309 8.6084C5.30046 8.49698 5.0066 7.79046 5.35938 7.27734L6.90039 5.03516Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M8 1.47461C11.6037 1.47461 14.5254 4.39634 14.5254 8C14.5254 11.6037 11.6037 14.5254 8 14.5254C4.39634 14.5254 1.47461 11.6037 1.47461 8C1.47461 4.39634 4.39634 1.47461 8 1.47461ZM8 2.52539C4.97624 2.52539 2.52539 4.97624 2.52539 8C2.52539 11.0238 4.97624 13.4746 8 13.4746C11.0238 13.4746 13.4746 11.0238 13.4746 8C13.4746 4.97624 11.0238 2.52539 8 2.52539Z" fill="currentColor"></path>'], // 原生「个性化」
+    "standalone": ['0 0 16 16', '<path d="M5.13802 4.65365C5.51357 4.65365 5.81771 4.95778 5.81771 5.33333C5.8177 5.70888 5.51357 6.01302 5.13802 6.01302C4.76258 6.0129 4.45834 5.7088 4.45833 5.33333C4.45833 4.95786 4.76257 4.65377 5.13802 4.65365Z" fill="currentColor"></path><path d="M10.6667 4.79948C10.9612 4.79948 11.2005 5.03878 11.2005 5.33333C11.2005 5.62789 10.9612 5.86719 10.6667 5.86719H8C7.70545 5.86719 7.46615 5.62789 7.46615 5.33333C7.46615 5.03878 7.70545 4.79948 8 4.79948H10.6667Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M10.0664 2.13281C10.8043 2.13281 11.3906 2.13336 11.862 2.17188C12.3394 2.21092 12.747 2.29181 13.1198 2.48177C13.7218 2.78855 14.2115 3.2782 14.5182 3.88021C14.7082 4.25302 14.7891 4.66056 14.8281 5.13802C14.8666 5.60945 14.8672 6.19566 14.8672 6.93359V9.06641C14.8672 9.80434 14.8666 10.3906 14.8281 10.862C14.7891 11.3394 14.7082 11.747 14.5182 12.1198C14.2115 12.7218 13.7218 13.2115 13.1198 13.5182C12.747 13.7082 12.3394 13.7891 11.862 13.8281C11.3906 13.8666 10.8043 13.8672 10.0664 13.8672H5.93359C5.19566 13.8672 4.60945 13.8666 4.13802 13.8281C3.66056 13.7891 3.25302 13.7082 2.88021 13.5182C2.2782 13.2115 1.78855 12.7218 1.48177 12.1198C1.29181 11.747 1.21092 11.3394 1.17188 10.862C1.13336 10.3906 1.13281 9.80434 1.13281 9.06641V6.93359C1.13281 6.19566 1.13336 5.60945 1.17188 5.13802C1.21092 4.66056 1.29181 4.25302 1.48177 3.88021C1.78855 3.2782 2.2782 2.78855 2.88021 2.48177C3.25302 2.29181 3.66056 2.21092 4.13802 2.17188C4.60945 2.13336 5.19566 2.13281 5.93359 2.13281H10.0664ZM5.93359 3.20052C5.17806 3.20052 4.64318 3.20023 4.22526 3.23438C3.81359 3.26801 3.56208 3.33166 3.36458 3.43229C2.96325 3.63681 2.63681 3.96325 2.43229 4.36458C2.33166 4.56208 2.26801 4.81359 2.23438 5.22526C2.20023 5.64318 2.20052 6.17806 2.20052 6.93359V9.06641C2.20052 9.82194 2.20023 10.3568 2.23438 10.7747C2.26801 11.1864 2.33166 11.4379 2.43229 11.6354C2.63681 12.0368 2.96325 12.3632 3.36458 12.5677C3.56208 12.6683 3.81359 12.732 4.22526 12.7656C4.64318 12.7998 5.17806 12.7995 5.93359 12.7995H10.0664C10.8219 12.7995 11.3568 12.7998 11.7747 12.7656C12.1864 12.732 12.4379 12.6683 12.6354 12.5677C13.0368 12.3632 13.3632 12.0368 13.5677 11.6354C13.6683 11.4379 13.732 11.1864 13.7656 10.7747C13.7998 10.3568 13.7995 9.82194 13.7995 9.06641V6.93359C13.7995 6.17806 13.7998 5.64318 13.7656 5.22526C13.732 4.81359 13.6683 4.56208 13.5677 4.36458C13.3632 3.96325 13.0368 3.63681 12.6354 3.43229C12.4379 3.33166 12.1864 3.26801 11.7747 3.23438C11.3568 3.20023 10.8219 3.20052 10.0664 3.20052H5.93359Z" fill="currentColor"></path>'], // 原生「浏览器」
+    "tools": ['0 0 16 16', '<path d="M10.666 9.6416C10.956 9.6416 11.1914 9.87704 11.1914 10.167C11.1913 10.4568 10.9559 10.6924 10.666 10.6924H5.33301C5.04325 10.6923 4.80775 10.4567 4.80762 10.167C4.80762 9.87712 5.04317 9.64173 5.33301 9.6416H10.666Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M12.1338 2.47461C13.4543 2.47486 14.5251 3.54569 14.5254 4.86621V11.1338C14.5251 12.4543 13.4543 13.5251 12.1338 13.5254H3.86621C2.54569 13.5251 1.47486 12.4543 1.47461 11.1338V4.86621C1.47486 3.54569 2.54569 2.47486 3.86621 2.47461H12.1338ZM3.86621 3.52539C3.12559 3.52564 2.52564 4.12559 2.52539 4.86621V11.1338C2.52564 11.8744 3.12559 12.4744 3.86621 12.4746H12.1338C12.8744 12.4744 13.4744 11.8744 13.4746 11.1338V4.86621C13.4744 4.12559 12.8744 3.52564 12.1338 3.52539H3.86621Z" fill="currentColor"></path>'], // 原生「环境」
+    "ext-menu": ['0 0 16 16', '<path d="M1.66699 9.53271C1.95694 9.53271 2.19238 9.76816 2.19238 10.0581V10.1333C2.19238 10.7019 2.19268 11.0977 2.21777 11.4048C2.24238 11.7054 2.28759 11.876 2.35254 12.0034C2.49394 12.2808 2.71971 12.5066 2.99707 12.6479C3.12456 12.7129 3.29503 12.7581 3.5957 12.7827C3.90287 12.8078 4.29849 12.8081 4.86719 12.8081H5C5.28995 12.8081 5.52539 13.0435 5.52539 13.3335C5.52526 13.6233 5.28987 13.8589 5 13.8589H4.86719C4.31586 13.8589 3.87056 13.859 3.51074 13.8296C3.14481 13.7997 2.82074 13.7364 2.52051 13.5835C2.0455 13.3415 1.65907 12.955 1.41699 12.48C1.26404 12.1798 1.20081 11.8556 1.1709 11.4897C1.14151 11.13 1.1416 10.6845 1.1416 10.1333V10.0581C1.1416 9.76816 1.37704 9.53271 1.66699 9.53271Z" fill="currentColor"></path><path d="M14.333 9.4751C14.623 9.4751 14.8584 9.71054 14.8584 10.0005V10.1333C14.8584 10.6845 14.8585 11.13 14.8291 11.4897C14.7992 11.8556 14.736 12.1798 14.583 12.48C14.3409 12.9549 13.9545 13.3415 13.4795 13.5835C13.1793 13.7364 12.8552 13.7997 12.4893 13.8296C12.1294 13.859 11.6841 13.8589 11.1328 13.8589H10.833C10.5432 13.8589 10.3078 13.6233 10.3076 13.3335C10.3076 13.0435 10.5431 12.8081 10.833 12.8081H11.1328C11.7015 12.8081 12.0971 12.8078 12.4043 12.7827C12.705 12.7581 12.8754 12.7129 13.0029 12.6479C13.2803 12.5066 13.5061 12.2807 13.6475 12.0034C13.7124 11.876 13.7576 11.7053 13.7822 11.4048C13.8073 11.0977 13.8076 10.7019 13.8076 10.1333V10.0005C13.8076 9.71054 14.0431 9.4751 14.333 9.4751Z" fill="currentColor"></path><path d="M5 2.14111C5.28995 2.14111 5.52539 2.37655 5.52539 2.6665C5.52539 2.95645 5.28995 3.19189 5 3.19189H4.86719C4.29847 3.19189 3.90287 3.19219 3.5957 3.21729C3.29495 3.24189 3.12457 3.28709 2.99707 3.35205C2.71964 3.49344 2.49393 3.71915 2.35254 3.99658C2.28757 4.12408 2.24238 4.29447 2.21777 4.59521C2.19268 4.90238 2.19238 5.29798 2.19238 5.8667V5.99951C2.19238 6.28946 1.95694 6.5249 1.66699 6.5249C1.37704 6.5249 1.1416 6.28946 1.1416 5.99951V5.8667C1.1416 5.31536 1.14151 4.87008 1.1709 4.51025C1.2008 4.14428 1.264 3.82028 1.41699 3.52002C1.65907 3.04494 2.04543 2.65858 2.52051 2.4165C2.82077 2.26352 3.14477 2.20031 3.51074 2.17041C3.87057 2.14102 4.31585 2.14111 4.86719 2.14111H5Z" fill="currentColor"></path><path d="M11.1338 2.14111C11.6847 2.14111 12.1296 2.14105 12.4893 2.17041C12.8551 2.2003 13.1793 2.26361 13.4795 2.4165C13.9545 2.65855 14.3409 3.045 14.583 3.52002C14.736 3.82028 14.7992 4.14428 14.8291 4.51025C14.8585 4.8701 14.8584 5.31531 14.8584 5.8667V5.99951C14.8584 6.28946 14.623 6.52491 14.333 6.5249C14.0432 6.52473 13.8086 6.28936 13.8086 5.99951V5.8667C13.8086 5.29797 13.8083 4.90239 13.7832 4.59521C13.7586 4.29445 13.7124 4.12409 13.6475 3.99658C13.506 3.71918 13.2804 3.49342 13.0029 3.35205C12.8754 3.2871 12.7052 3.24187 12.4043 3.21729C12.0972 3.19219 11.7023 3.19189 11.1338 3.19189H11C10.7101 3.19189 10.4746 2.95645 10.4746 2.6665C10.4746 2.37655 10.7101 2.14111 11 2.14111H11.1338Z" fill="currentColor"></path><path d="M4.38672 4.55615C4.7326 4.55631 5.01255 4.83625 5.0127 5.18213C5.0127 5.52813 4.73269 5.80893 4.38672 5.80908C4.04062 5.80908 3.75977 5.52823 3.75977 5.18213C3.75991 4.83615 4.04071 4.55615 4.38672 4.55615Z" fill="currentColor"></path><path d="M6.69238 4.55615C7.03839 4.55615 7.31919 4.83615 7.31934 5.18213C7.31934 5.52823 7.03848 5.80908 6.69238 5.80908C6.34638 5.80897 6.06641 5.52816 6.06641 5.18213C6.06655 4.83622 6.34646 4.55626 6.69238 4.55615Z" fill="currentColor"></path><path d="M8.99902 4.55615C9.3449 4.55631 9.62486 4.83625 9.625 5.18213C9.625 5.52813 9.34499 5.80893 8.99902 5.80908C8.65293 5.80908 8.37207 5.52823 8.37207 5.18213C8.37221 4.83615 8.65301 4.55615 8.99902 4.55615Z" fill="currentColor"></path>'], // 原生「应用快照」
+    // 拓展注册的设置分区（registerSettingsSection）：内置的两个用原生对应页的图标，其余用「插件」。
+    "hooks-editor": ['0 0 16 16', '<path fill-rule="evenodd" clip-rule="evenodd" d="M8 1.59766C9.39452 1.59766 10.5254 2.72853 10.5254 4.12305C10.5254 5.33728 9.66764 6.34981 8.52539 6.5918V11.0342C8.52556 12.2139 9.47942 13.1717 10.6592 13.1758C11.8447 13.1798 12.8084 12.2197 12.8086 11.0342V9.95215L11.8086 10.6797C11.5742 10.8498 11.2457 10.7977 11.0752 10.5635C10.9049 10.329 10.9571 10.0006 11.1914 9.83008L12.7324 8.70898C13.2008 8.36838 13.8581 8.70314 13.8584 9.28223V11.0342C13.8582 12.801 12.4221 14.2316 10.6553 14.2256C9.5416 14.2216 8.56418 13.6464 7.99609 12.7793C7.42476 13.6433 6.44623 14.2148 5.33301 14.2148C3.57068 14.2147 2.14197 12.7857 2.1416 11.0234V9.28223C2.1416 8.70306 2.79918 8.36833 3.26758 8.70898L4.80859 9.83008C5.04289 10.0006 5.09511 10.329 4.9248 10.5635C4.75431 10.7977 4.42581 10.8498 4.19141 10.6797L3.19141 9.95215V11.0234C3.19178 12.2058 4.15058 13.1649 5.33301 13.165C6.51559 13.165 7.47424 12.2059 7.47461 11.0234V6.5918C6.33236 6.34981 5.47461 5.33728 5.47461 4.12305C5.47461 2.72853 6.60548 1.59766 8 1.59766ZM8 2.64844C7.18538 2.64844 6.52539 3.30843 6.52539 4.12305C6.52539 4.93767 7.18538 5.59766 8 5.59766C8.81462 5.59766 9.47461 4.93767 9.47461 4.12305C9.47461 3.30843 8.81462 2.64844 8 2.64844Z" fill="currentColor"></path>'], // 原生「钩子」
+    "feature-lab": ['0 0 16 16', '<path d="M10.7639 7.975C11.0539 7.975 11.2893 8.21044 11.2893 8.50039C11.2891 8.79017 11.0537 9.02578 10.7639 9.02578H8.69751C8.40779 9.02565 8.17232 8.79009 8.17212 8.50039C8.17212 8.21052 8.40767 7.97513 8.69751 7.975H10.7639Z" fill="currentColor"></path><path d="M5.02661 5.46231C5.23163 5.25729 5.56377 5.2573 5.7688 5.46231L6.98462 6.67813C7.25433 6.94821 7.25444 7.38565 6.98462 7.65567L5.7688 8.87149C5.56381 9.07623 5.23158 9.07627 5.02661 8.87149C4.82168 8.66653 4.82182 8.33433 5.02661 8.1293L5.98853 7.16641L5.02661 6.20449C4.82163 5.99949 4.82165 5.66733 5.02661 5.46231Z" fill="currentColor"></path><path fill-rule="evenodd" clip-rule="evenodd" d="M7.2561 1.13418C7.73078 0.92667 8.2717 0.926585 8.74634 1.13418L12.7405 2.88125C13.4166 3.17717 13.8536 3.84633 13.8538 4.58438V8.38125C13.8538 10.1831 13.2191 11.5903 12.2014 12.6684C11.1953 13.7339 9.83514 14.4574 8.40356 14.9564L8.39966 14.9574C8.14413 15.044 7.86712 15.041 7.61353 14.9496C6.17841 14.454 4.81353 13.7338 3.80396 12.6693C2.78265 11.5924 2.14575 10.1849 2.14575 8.38125V4.58438C2.14594 3.84613 2.58358 3.17705 3.26001 2.88125L7.2561 1.13418ZM8.32544 2.0961C8.11904 2.00585 7.88342 2.00589 7.677 2.0961L3.68091 3.84414C3.38676 3.97277 3.19672 4.26336 3.19653 4.58438V8.38125C3.19653 9.91061 3.72656 11.0608 4.56665 11.9467C5.31218 12.7326 6.31853 13.3274 7.45923 13.7748L7.9563 13.9574L7.96802 13.9613C7.99845 13.9726 8.03201 13.9737 8.06274 13.9633C9.40244 13.4958 10.5895 12.8452 11.4377 11.9467C12.2751 11.0596 12.804 9.90981 12.804 8.38125V4.58438C12.8038 4.26348 12.6136 3.97187 12.3196 3.84317L8.32544 2.0961Z" fill="currentColor"></path>'], // 原生「配置」
+    "ext-permissions": ['0 0 20 20', '<path fill-rule="evenodd" clip-rule="evenodd" d="M6.99512 2.7002C7.44919 2.7002 7.89367 2.83504 8.27148 3.08691L9.93164 4.19336C10.1014 4.30652 10.3009 4.36719 10.5049 4.36719H15.2998C16.8645 4.36719 18.1335 5.6356 18.1338 7.2002V14.334C18.1338 15.9723 16.8053 17.3006 15.167 17.3008H4.83301C3.19471 17.3006 1.86621 15.9723 1.86621 14.334V5.66699C1.86639 4.0288 3.19482 2.70037 4.83301 2.7002H6.99512ZM16.8662 9.80078H3.13379V14.334C3.13379 15.2728 3.89427 16.034 4.83301 16.0342H15.167C16.1057 16.034 16.8662 15.2728 16.8662 14.334V9.80078ZM3.13379 8.5332H16.8662V7.2002C16.866 6.33516 16.1649 5.63379 15.2998 5.63379H10.5049C10.0508 5.63379 9.60633 5.49992 9.22852 5.24805L7.56836 4.14062C7.39867 4.02757 7.19902 3.96777 6.99512 3.96777H4.83301C3.89438 3.96795 3.13396 4.72837 3.13379 5.66699V8.5332Z" fill="currentColor"></path>'], // 原生「存储」
+  };
+
+  function codexPlusSettingsGroupIcon(id) {
+    const [viewBox, glyph] = codexPlusSettingsGroupIcons[id] || codexPlusSettingsGroupIcons.core;
+    return `<svg viewBox="${viewBox}" width="16" height="16" fill="none">${glyph}</svg>`;
+  }
+
+  /**
+   * 左栏分区小标题，照原生设置页的「个人 / 集成 / 编码」。分组按 DOM 顺序排，换区时插一条小标题；
+   * 拓展注册的分区与「拓展设置」归「拓展」，清单里新加、没登记的分组归「功能」。
+   */
+  const codexPlusSettingsNavSections = {
+    core: "通用", plugins: "通用", input: "通用", chat: "通用", appearance: "通用",
+    pet: "功能", stepwise: "功能", standalone: "功能",
+    "ext-permissions": "拓展", "ext-menu": "拓展",
+    tools: "其他",
+  };
+
+  function codexPlusSettingsNavSection(id) {
+    if (String(id).startsWith("ext-section:")) return "拓展";
+    return codexPlusSettingsNavSections[id] || "功能";
+  }
+
+  function renderCodexPlusSettingsNavItems(root = document) {
+    const groups = codexPlusSettingsGroupNodes(root);
+    const active = codexPlusResolvedSettingsGroup(groups);
+    let section = "";
+    return groups.map((node) => {
+      const id = node.getAttribute("data-codex-plus-settings-group");
+      const label = node.getAttribute("data-codex-plus-settings-label") || id;
+      const current = id === active;
+      const nextSection = codexPlusSettingsNavSection(id);
+      const title = nextSection !== section
+        ? `
+      <div class="codex-plus-page-nav-section-title" role="presentation">${escapeHtml(nextSection)}</div>`
+        : "";
+      section = nextSection;
+      return `${title}
+      <button type="button" class="codex-plus-page-nav-item" data-codex-plus-settings-nav="${escapeHtml(id)}" data-active="${String(current)}"${current ? ' aria-current="page"' : ""}><span class="codex-plus-page-nav-item-icon" aria-hidden="true">${codexPlusSettingsGroupIcon(node.getAttribute("data-codex-plus-settings-icon") || id)}</span><span class="codex-plus-page-nav-item-name">${escapeHtml(label)}</span></button>`;
+    }).join("");
+  }
+
+  /** 把当前分组写回页面：分组的 data-active、左栏选中态。重建分组或左栏后都要调一次。 */
+  function syncCodexPlusSettingsGroups(root = document) {
+    const active = codexPlusResolvedSettingsGroup(codexPlusSettingsGroupNodes(root));
+    root.querySelectorAll('[data-codex-plus-panel="home"] > [data-codex-plus-settings-group]').forEach((node) => {
+      const value = String(node.getAttribute("data-codex-plus-settings-group") === active);
+      if (node.dataset.active !== value) node.dataset.active = value;
+    });
+    root.querySelectorAll("[data-codex-plus-settings-nav]").forEach((button) => {
+      const current = button.getAttribute("data-codex-plus-settings-nav") === active;
+      if (button.dataset.active !== String(current)) button.dataset.active = String(current);
+      if (current) button.setAttribute("aria-current", "page");
+      else button.removeAttribute("aria-current");
+    });
+    syncCodexPlusSettingsSectionMounts(root);
+  }
+
+  function selectCodexPlusSettingsGroup(id) {
+    codexPlusSettingsActiveGroup = String(id || "");
+    try { window.localStorage.setItem(codexPlusSettingsGroupStorageKey, codexPlusSettingsActiveGroup); } catch {}
+    syncCodexPlusSettingsGroups();
+    // 换一组从顶上看起。
+    const body = document.querySelector('[data-codex-plus-panel="home"]')?.closest(".codex-plus-modal-body");
+    if (body) body.scrollTop = 0;
+  }
+
+  /** 分组列表变了（清单读完、拓展菜单增减）时重画左栏；不在设置页时左栏属于别的页面，不动。 */
+  function refreshCodexPlusSettingsNav() {
+    if (document.querySelector(".codex-plus-modal-content")?.dataset.codexPlusActiveTab !== "home") return;
+    const body = document.querySelector("[data-codex-plus-page-nav-body]");
+    if (body) body.innerHTML = renderCodexPlusSettingsNavItems();
+    syncCodexPlusSettingsGroups();
+  }
+
+  // ── 拓展注册的设置分区（registerSettingsSection，92-extension-views.js 登记）────────────
+  // 一个分区一组，排在清单分组之后、「工具与关于」之前。外壳（标题 + 挂载点）随设置页重建；
+  // 内容只在选中时调 render 画，切走或关页时调清理函数并清空——注册表持久、DOM 瞬态。
+  const codexPlusSettingsSectionGroupPrefix = "ext-section:";
+
+  function codexPlusSettingsSectionItems() {
+    return codexPlusExtensionItems(codexPlusRegistry.settingsSections);
+  }
+
+  /** 分区列表的指纹：没变就不动 DOM，已经画好的分区（比如编辑到一半的 Hooks）不会被别的拓展注册冲掉。 */
+  function codexPlusSettingsSectionsFingerprint() {
+    return codexPlusSettingsSectionItems().map((item) => `${item.id}\u0000${item.title || ""}`).join("\u0001");
+  }
+
+  function renderCodexPlusSettingsSectionGroups() {
+    return codexPlusSettingsSectionItems().map((item) => {
+      const title = String(item.title || item.sectionKey || item.id);
+      const icon = Object.prototype.hasOwnProperty.call(codexPlusSettingsGroupIcons, item.sectionKey) ? item.sectionKey : "plugins";
+      return renderCodexPlusSettingsGroup(`${codexPlusSettingsSectionGroupPrefix}${item.id}`, title, `
+            <section class="codex-plus-settings-section" aria-label="${escapeHtml(title)}">
+              <h2 class="codex-plus-settings-section-title">${escapeHtml(title)}</h2>
+              <div class="codex-plus-settings-extension-section" data-codex-plus-settings-section-mount="${escapeHtml(item.id)}" ${codexPlusExtensionConstants.extensionAttribute}="${escapeHtml(item.scriptKey || "")}"></div>
+            </section>`, ` data-codex-plus-settings-extension="true" data-codex-plus-settings-icon="${escapeHtml(icon)}"`);
+    }).join("");
+  }
+
+  function mountCodexPlusSettingsSection(mount) {
+    mount.__codexPlusSectionMounted = true;
+    const item = codexPlusRegistry.settingsSections.get(mount.getAttribute("data-codex-plus-settings-section-mount"));
+    if (!item) return;
+    const outcome = runCodexPlusExtensionCallback(item.scriptKey, "settingsSection.render", () =>
+      item.render({ container: mount, close: () => closeCodexPlusPage(), script: item.scriptKey }));
+    if (outcome.ok && typeof outcome.value === "function") mount.__codexPlusSectionCleanup = outcome.value;
+    if (!outcome.ok) {
+      mount.innerHTML = `
+              <div class="codex-plus-settings-card"><div class="codex-plus-row"><div><div class="codex-plus-row-title">拓展分区加载失败</div><div class="codex-plus-row-description">${escapeHtml(item.scriptKey || "")}：${escapeHtml(outcome.error)}</div></div></div></div>`;
+    }
+  }
+
+  function unmountCodexPlusSettingsSection(mount) {
+    const cleanup = mount.__codexPlusSectionCleanup;
+    mount.__codexPlusSectionCleanup = null;
+    mount.__codexPlusSectionMounted = false;
+    if (typeof cleanup === "function") {
+      const item = codexPlusRegistry.settingsSections.get(mount.getAttribute("data-codex-plus-settings-section-mount"));
+      runCodexPlusExtensionCallback(item?.scriptKey || "", "settingsSection.cleanup", cleanup);
+    }
+    mount.replaceChildren();
+  }
+
+  /** 分页时只画当前选中的那组；不分页（弹窗）时每组都显示，全都画。 */
+  function syncCodexPlusSettingsSectionMounts(root = document) {
+    root.querySelectorAll("[data-codex-plus-settings-section-mount]").forEach((mount) => {
+      const group = mount.closest("[data-codex-plus-settings-group]");
+      const paged = !!mount.closest('[data-codex-plus-settings-paged="true"]');
+      const visible = !paged || group?.getAttribute("data-active") === "true";
+      if (visible && !mount.__codexPlusSectionMounted) mountCodexPlusSettingsSection(mount);
+      else if (!visible && mount.__codexPlusSectionMounted) unmountCodexPlusSettingsSection(mount);
+    });
+  }
+
+  /** 关页前把画着的分区都收掉，让拓展的清理函数有机会跑。 */
+  function unmountCodexPlusSettingsSections(root = document) {
+    root.querySelectorAll("[data-codex-plus-settings-section-mount]").forEach((mount) => {
+      if (mount.__codexPlusSectionMounted) unmountCodexPlusSettingsSection(mount);
+    });
+  }
+
+  /** 注册 / 撤销分区后重建分区外壳（指纹没变就跳过），再重画左栏。 */
+  function refreshCodexPlusSettingsSections() {
+    const fingerprint = codexPlusSettingsSectionsFingerprint();
+    let changed = false;
+    document.querySelectorAll('[data-codex-plus-panel="home"]').forEach((panel) => {
+      if (panel.getAttribute("data-codex-plus-settings-sections") === fingerprint) return;
+      const anchor = panel.querySelector('[data-codex-plus-settings-group="ext-menu"], [data-codex-plus-settings-tools]');
+      if (!anchor) return;
+      panel.querySelectorAll("[data-codex-plus-settings-extension]").forEach((node) => {
+        unmountCodexPlusSettingsSections(node);
+        node.remove();
+      });
+      anchor.insertAdjacentHTML("beforebegin", renderCodexPlusSettingsSectionGroups());
+      panel.setAttribute("data-codex-plus-settings-sections", fingerprint);
+      changed = true;
+    });
+    if (changed) refreshCodexPlusSettingsNav();
+  }
+
   function normalizeCodexPlusSettingsCatalog(value) {
     if (!value || typeof value !== "object" || !Array.isArray(value.groups) || !Array.isArray(value.items)) return null;
     const groups = value.groups.filter((group) => group && typeof group.id === "string" && typeof group.title === "string");
@@ -1400,13 +1873,21 @@
     return codexPlusSettingsCatalogRequest;
   }
 
-  function renderCodexPlusSettingsSection(title, rows) {
+  function renderCodexPlusSettingsSection(title, rows, description = "") {
     const label = escapeHtml(title);
     return `
             <section class="codex-plus-settings-section" aria-label="${label}" data-codex-plus-settings-catalog="section">
-              <h2 class="codex-plus-settings-section-title">${label}</h2>
+              <h2 class="codex-plus-settings-section-title">${label}</h2>${description ? `
+              <p class="codex-plus-settings-section-description">${escapeHtml(description)}</p>` : ""}
               <div class="codex-plus-settings-card">${rows}</div>
             </section>`;
+  }
+
+  /** 一个分组：清单分组（连同接在后面的服务配置节）或「工具与关于」，左栏里一项对应一个。 */
+  function renderCodexPlusSettingsGroup(id, label, content, attrs = "") {
+    return `
+          <div class="codex-plus-settings-group" data-codex-plus-settings-group="${escapeHtml(id)}" data-codex-plus-settings-label="${escapeHtml(label)}" data-active="${String(id === codexPlusSettingsActiveGroup)}"${attrs}>${content}
+          </div>`;
   }
 
   /** 后端连接状态不是设置项，固定放在第一组的最前面（清单读取失败时也要能看到它）。 */
@@ -1608,7 +2089,8 @@
                 <div class="codex-plus-row" data-codex-plus-settings-catalog-state="loading" role="status">
                   <div><div class="codex-plus-row-title">正在读取设置项…</div><div class="codex-plus-row-description">设置项清单由 Codex++ 后端提供，读取完成后显示。</div></div>
                 </div>`;
-      return renderCodexPlusSettingsSection("设置", renderCodexPlusBackendStatusRow() + state);
+      return renderCodexPlusSettingsGroup("core", "常规", renderCodexPlusSettingsSection("设置", renderCodexPlusBackendStatusRow() + state),
+        ' data-codex-plus-settings-catalog="group"');
     }
     // #686：「上下文感知建议」读写的是 Codex 自己的设置，不在后端清单里；放进 stepwise 组，
     // 清单没有这一组时退到 chat 组，再不行放第一组，保证总能看到。
@@ -1620,7 +2102,12 @@
       const rows = renderCodexPlusSettingsGroupRows(catalog, group);
       if (group.id === ambientGroupId) rows.push(renderCodexAmbientSuggestionsRow());
       if (index === 0) rows.unshift(renderCodexPlusBackendStatusRow());
-      return rows.length ? renderCodexPlusSettingsSection(group.title, rows.join("")) : "";
+      const section = rows.length ? renderCodexPlusSettingsSection(group.title, rows.join(""), group.description || "") : "";
+      // 听写与 stepwise 的服务配置（46-service-settings.js）紧跟在各自分组后面，和分组同一页。
+      const service = typeof renderCodexPlusServiceSettingsAfterGroup === "function" ? renderCodexPlusServiceSettingsAfterGroup(group.id) : "";
+      return section || service
+        ? renderCodexPlusSettingsGroup(group.id, group.title, section + service, ' data-codex-plus-settings-catalog="group"')
+        : "";
     }).join("");
   }
 
@@ -1628,7 +2115,8 @@
   function refreshCodexPlusSettingsCatalogView() {
     let rendered = false;
     document.querySelectorAll('[data-codex-plus-panel="home"]').forEach((panel) => {
-      const anchor = panel.querySelector("[data-codex-plus-settings-tools]");
+      // 顺序：清单分组 → 拓展分区 → 拓展设置 → 工具与关于。清单分组插在后三者里最靠前的那个前面。
+      const anchor = panel.querySelector('[data-codex-plus-settings-extension], [data-codex-plus-settings-group="ext-menu"], [data-codex-plus-settings-tools]');
       if (!anchor) return;
       const retryFocused = !!document.activeElement?.closest?.("[data-codex-plus-settings-catalog-retry]");
       panel.querySelectorAll("[data-codex-plus-settings-catalog]").forEach((node) => node.remove());
@@ -1639,6 +2127,9 @@
       rendered = true;
     });
     if (!rendered) return;
+    // 清单读完后分组才齐：左栏跟着重画，记住的分组也在这时才能落位。
+    refreshCodexPlusSettingsNav();
+    syncCodexPlusSettingsGroups();
     renderBackendStatus();
     refreshCodexPlusBackendToggles();
     syncCodexAmbientSuggestionsToggles();
@@ -1666,13 +2157,22 @@
           ${pageMode ? "" : `<button type="button" class="codex-plus-modal-close" aria-label="关闭">×</button>`}
         </div>
         <div class="codex-plus-modal-body">
-          <div class="codex-plus-panel codex-plus-settings" data-codex-plus-panel="home">
+          <div class="codex-plus-panel codex-plus-settings" data-codex-plus-panel="home" data-codex-plus-settings-sections="${escapeHtml(codexPlusSettingsSectionsFingerprint())}">
             ${renderCodexPlusSettingsCatalogSections()}
-            <section class="codex-plus-settings-section" aria-label="工具与关于" data-codex-plus-settings-tools="true">
+            ${renderCodexPlusSettingsSectionGroups()}
+            <div class="codex-plus-settings-group" data-codex-plus-settings-group="ext-menu" data-codex-plus-settings-label="拓展设置" data-active="${String(codexPlusSettingsActiveGroup === "ext-menu")}">
+            <section class="codex-plus-settings-section" aria-label="拓展设置" data-codex-plus-ext-menu-host="true">
+              <h2 class="codex-plus-settings-section-title">拓展设置</h2>
+              <p class="codex-plus-settings-section-description">已启用的拓展注册的开关与操作。</p>
+            ${renderCodexPlusExtensionMenuRows()}
+            </section>
+            </div>
+            <div class="codex-plus-settings-group" data-codex-plus-settings-group="tools" data-codex-plus-settings-label="工具与关于" data-active="${String(codexPlusSettingsActiveGroup === "tools")}" data-codex-plus-settings-tools="true">
+            <section class="codex-plus-settings-section" aria-label="工具与关于">
               <h2 class="codex-plus-settings-section-title">工具与关于</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">配置增强功能、模型和语音服务。</div></div>
+                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">增强总开关、供应商、网关与会话维护在管理工具里设置。</div></div>
                   <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
                 </div>
                 <div class="codex-plus-row">
@@ -1700,7 +2200,7 @@
                 </div>
               </div>
             </section>
-            ${renderCodexPlusExtensionMenuRows()}
+            </div>
           </div>
           <div class="codex-plus-panel" data-codex-plus-panel="${codexPlusExtensionsTab}" hidden>
             <div class="codex-plus-discovery codex-plus-extensions-page">
@@ -1741,6 +2241,7 @@
     }, true);
     overlay.addEventListener("input", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      if (typeof handleCodexPlusExtensionSourcesInput === "function" && handleCodexPlusExtensionSourcesInput(target)) return;
       const searchInput = target?.closest("[data-codex-extensions-search]");
       if (searchInput) {
         codexPlusExtensionsQuery = searchInput.value;
@@ -1754,6 +2255,7 @@
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
       if (typeof handleCodexPlusExtensionConfigChange === "function" && handleCodexPlusExtensionConfigChange(target)) return;
+      if (typeof handleCodexPlusServiceSettingsChange === "function" && handleCodexPlusServiceSettingsChange(target)) return;
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
       if (widthInput) {
         const width = normalizeConversationViewWidth(widthInput.value);
@@ -1778,14 +2280,23 @@
       if (handleCodexPlusExtensionMenuClick(target)) return;
       // 拓展详情的页签、设置表单开关、README 页内锚点。
       if (typeof handleCodexPlusExtensionDetailClick === "function" && handleCodexPlusExtensionDetailClick(target, event)) return;
+      // 社区 / 我发布的 / dsh 插件分栏的按钮。
+      if (typeof handleCodexPlusExtensionSourcesClick === "function" && handleCodexPlusExtensionSourcesClick(target, event)) return;
       const extensionsBrowse = target?.closest("[data-codex-extensions-browse]");
       if (extensionsBrowse) {
-        codexPlusExtensionsFilter = extensionsBrowse.dataset.codexExtensionsBrowse === "installed" ? "installed" : "market";
+        codexPlusExtensionsFilter = codexPlusExtensionsFilterValue(extensionsBrowse.dataset.codexExtensionsBrowse);
         codexPlusExtensionsSelected = null;
         refreshCodexPlusExtensionsView();
+        if (typeof codexPlusExtensionSourceEnsureLoaded === "function") codexPlusExtensionSourceEnsureLoaded(codexPlusExtensionsFilter);
         return;
       }
-      // 左面板的分组导航（仅拓展页有左面板）。
+      // 设置页左栏：切换右边显示的分组。
+      const settingsNav = target?.closest("[data-codex-plus-settings-nav]");
+      if (settingsNav) {
+        selectCodexPlusSettingsGroup(settingsNav.getAttribute("data-codex-plus-settings-nav"));
+        return;
+      }
+      // 左面板的分组导航（拓展页）。
       const pageNav = target?.closest("[data-codex-plus-page-nav]");
       if (pageNav) {
         selectCodexPlusTab(pageNav.getAttribute("data-codex-plus-page-nav"));
@@ -1795,6 +2306,7 @@
         void loadCodexPlusSettingsCatalog();
         return;
       }
+      if (typeof handleCodexPlusServiceSettingsClick === "function" && handleCodexPlusServiceSettingsClick(target)) return;
       if (target?.closest("[data-codex-open-devtools]")) {
         postJson("/devtools/open", {});
         return;
@@ -1883,11 +2395,18 @@
         void installScriptFromMarket(marketInstall.getAttribute("data-codex-market-install"));
         return;
       }
+      // 精选 / 官方拓展包的「安装」：先准备再弹确认框。
+      const packageInstall = target?.closest("[data-codex-package-install]");
+      if (packageInstall) {
+        if (!packageInstall.disabled) void installPackageFromMarket(packageInstall.getAttribute("data-codex-package-install"));
+        return;
+      }
       const extensionsRefresh = target?.closest("[data-codex-market-refresh]");
       if (extensionsRefresh) {
         // 顺带丢掉 README 缓存：改过的 README 重新打开详情就能看到。
         if (typeof clearCodexPlusExtensionReadmes === "function") clearCodexPlusExtensionReadmes();
         void loadScriptMarket(true);
+        if (typeof codexPlusExtensionSourceEnsureLoaded === "function") codexPlusExtensionSourceEnsureLoaded(codexPlusExtensionsFilter, true);
         return;
       }
       const extensionsUninstall = target?.closest("[data-codex-extensions-uninstall]");
@@ -1922,7 +2441,19 @@
       const backendToggle = target?.closest("[data-codex-backend-setting]");
       if (backendToggle) {
         const key = backendToggle.getAttribute("data-codex-backend-setting");
-        setBackendSetting(key, !codexPlusBackendSettings[key]);
+        const next = !codexPlusBackendSettings[key];
+        // 原生浏览器请求标识会把会话标识发给目标网站，开启前要用户明确同意（以前在管理器里确认）。
+        if (next && key === "codexAppNativeBrowserRequireIdentification") {
+          void Promise.resolve(codexPlusAsk({
+            title: "启用原生 Edge / Chrome 请求标识兼容？",
+            message: "受控标签页的目标网站可收到包含会话标识的 x-browser-agent 请求头。原生扩展会保留开启状态；关闭此兼容选项或恢复服务文件不会关闭扩展已保存的标识设置。\n\n此选项不代替站点授权、企业策略或浏览器操作审批。仅适配指定 Windows 原生运行时的 Edge / Chrome 稳定版扩展。\n\n保存后需由你关闭并重新启动 Codex / Codex++ 才能完成验收，不会自动重启。",
+            options: [{ value: "enable", label: "启用" }],
+          })).then((answer) => {
+            if (answer === "enable") setBackendSetting(key, true);
+          });
+          return;
+        }
+        setBackendSetting(key, next);
         return;
       }
     }, true);
@@ -1972,6 +2503,8 @@
     window.__codexPlusPageLayoutObserver?.disconnect();
     window.__codexPlusPageLayoutObserver = null;
     window.__codexPlusPageLayoutTargets = null;
+    // typeof 守卫：测试会把关页函数单独切出来执行。
+    if (typeof unmountCodexPlusSettingsSections === "function") unmountCodexPlusSettingsSections();
     document.querySelectorAll(`.${codexPlusPageClass}`).forEach((node) => node.remove());
     if (typeof unmountCodexPlusSettingsPanel === "function") unmountCodexPlusSettingsPanel();
     setCodexPlusSidebarNavActive(false);
@@ -2125,7 +2658,7 @@
   }
 
   function removeCodexPlusRailNavigation() {
-    [codexPlusRailNavId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
+    [codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId].forEach((id) => document.getElementById(id)?.remove());
   }
 
   function detachCodexPlusSidebarNavigation() {
@@ -2179,7 +2712,7 @@
     const wrapper = document.createElement("div");
     wrapper.id = id;
     wrapper.__codexPlusGeneration = codexPlusBackendGeneration;
-    wrapper.dataset.codexPlusRail = id === codexPlusRailExtensionsId ? "extensions" : "home";
+    wrapper.dataset.codexPlusRail = id === codexPlusRailExtensionsId ? "extensions" : id === codexPlusRailProviderId ? "provider" : "home";
     // 模板拿不到时不回退到旧模式，而是自建一个按钮：rail 上 destination 可能在
     // 登录态/接口就绪前还是空的，那只是暂时状态，不该让入口整个消失。
     const button = template
@@ -2365,7 +2898,7 @@
       rail.dataset.codexPlusRailNavigationListener = "true";
       rail.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}`)) return;
+        if (target?.closest(`#${codexPlusRailNavId}, #${codexPlusRailProviderId}, #${codexPlusRailExtensionsId}, #${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;
         // 拓展入口的 id 是动态生成的，不在上面三个之内。不排除它，点拓展入口会被
         // 当成「点了原生导航按钮」，刚打开的拓展页面立刻被关掉。
         if (target?.closest(`[${codexPlusExtensionConstants.extensionAttribute}]`)) return;
@@ -2374,16 +2907,30 @@
     }
 
     const icons = {
-      home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18M5.5 5.5l13 13M18.5 5.5l-13 13"/></svg>',
+      // Codex++ 入口直接用 Codex++ 自己的 logo（彩色），一眼能和原生入口区分开。
+      home: `<img class="codex-plus-rail-logo" src="${codexPlusLogoDataUrl}" alt="" draggable="false">`,
       // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
       // 和页面内部保持同一个符号，不再另画一个近似图形。
       extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
       // Lucide 的 megaphone：与 home 同一套 24 格线性风格，笔画宽度和端点也一致。
+      // Lucide 的 server：同一套 24 格线性风格。
+      provider: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg>',
       sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
+      // Lucide 的 smartphone：同一套 24 格线性风格。
+      remote: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>',
+      // Lucide 的 message-circle：同一套 24 格线性风格（管理器微信页的状态图标也是它）。
+      weixin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>',
+      // Lucide 的 square-kanban：同一套 24 格线性风格。
+      tasks: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/></svg>',
     };
 
     const specs = [
       { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
+      { id: codexPlusRailProviderId, label: "供应商", iconMarkup: icons.provider, withStatus: false, onActivate: openCodexPlusProviderPage },
+      { id: codexPlusRailRemoteId, label: "远程控制", iconMarkup: icons.remote, withStatus: false, onActivate: openCodexPlusRemoteControlPage },
+      // 和远程控制相邻：两者都是「在手机上用 Codex」，都由管理器托管、Codex 没开也能用。
+      { id: codexPlusRailWeixinId, label: "微信连接", iconMarkup: icons.weixin, withStatus: false, onActivate: openCodexPlusWeixinConnectPage },
+      { id: codexPlusRailTasksId, label: "任务面板", iconMarkup: icons.tasks, withStatus: false, onActivate: openCodexPlusTaskBoardPage },
       { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
       { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];

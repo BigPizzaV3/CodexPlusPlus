@@ -1552,7 +1552,9 @@ mod tests {
                 &task,
                 Provider::Antigravity,
                 command.spawn().unwrap(),
-                Duration::from_secs(5),
+                // 这里的超时只用来兜底挂死的假 CLI：Windows CI 起 node 加上
+                // 子进程进度事件，5 秒不够时会把本应 completed 的用例判成 interrupted。
+                Duration::from_secs(30),
             )
             .await
             .unwrap();

@@ -8,13 +8,15 @@
 //! - [`route`]：绑定 → 模型 → 候选上游；
 //! - [`key_pool`]：多 Key 冷却与熔断；[`accounts`]：在网关里登录订阅账号；
 //! - [`subscriptions`]：私有接口订阅（Cursor、Kiro 等）包成本地 Chat Completions 上游（`/sub/<供应商>`）；
-//! - [`quota`]：订阅账号的剩余额度；[`speed`]：各上游的响应速度（模型组「额度优先」「速度优先」用）；
+//! - [`quota`]：订阅账号的剩余额度（[`coding_plan`]：OpenCode Go、Command Code 等 API Key 套餐）；[`speed`]：各上游的响应速度（模型组「额度优先」「速度优先」用）；
 //! - [`activity`]：路由动态（最近一次请求怎么走的、计数），供界面实时展示；
 //! - [`images`]：生图请求（`/images/generations`、`/images/edits`）发给哪家；
 //! - [`model_sync`]：重新拉上游模型、补公开价格、定期检查新模型；
 //! - [`meta_sync`]：从上游 `/models` 的元数据同步上下文窗口和思考等级（先列差异，确认后写入）；
 //! - [`usage`]：按天汇总的用量统计；[`balance`]：供应商余额；[`sessions`]：各 Agent 的本地会话；
+//! - [`compaction_model`]：Codex 的上下文压缩请求改发到单独指定的压缩模型，失败回退原模型；
 //! - [`pipeline`]：候选循环；[`probe`]：供应商池的「测试」（单发一条短请求，不计入路由与统计）；
+//! - [`provider_headers`]：供应商池的自定义请求头（敏感值打码、换站点不沿用凭据）；
 //! - [`anthropic_inbound`] / [`anthropic_outbound`]：Claude Code 的协议转换；
 //! - [`chat_inbound`] / [`chat_outbound`]：OpenAI Chat Completions 客户端的协议转换；
 //! - [`gemini_inbound`] / [`gemini_outbound`]：Gemini API 客户端（如 Gemini CLI）的协议转换；
@@ -32,6 +34,8 @@ pub mod balance;
 pub mod chat_inbound;
 pub mod chat_outbound;
 pub mod chatgpt_backend;
+pub mod coding_plan;
+pub mod compaction_model;
 pub mod connection_generation;
 pub mod diagnostics;
 pub mod disconnect_preview;
@@ -46,6 +50,7 @@ pub mod opencode;
 pub mod own_models;
 pub mod pipeline;
 pub mod probe;
+pub mod provider_headers;
 pub mod quota;
 pub mod restore;
 pub mod route;

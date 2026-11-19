@@ -64,6 +64,45 @@ fn dictation_renderer_contract_harness() {
     );
 }
 
+/// Codex++ 设置页的分组导航（40-backend-settings.js）：左栏列哪些分组、切换与记住选择。
+#[test]
+fn settings_groups_renderer_harness() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let output = Command::new("node")
+        .arg("--test")
+        .arg(repo.join("assets/inject/settings-groups.test.cjs"))
+        .output()
+        .expect("node should run the settings groups harness");
+    assert!(
+        output.status.success(),
+        "settings groups harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Codex++ 设置页里的语音输入 / 下一步建议服务配置与原生浏览器状态（46-service-settings.js）。
+#[test]
+fn service_settings_renderer_harness() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("core crate should live under crates/codex-plus-core");
+    let output = Command::new("node")
+        .arg(repo.join("assets/inject/service-settings.test.cjs"))
+        .output()
+        .expect("node should run the service settings harness");
+    assert!(
+        output.status.success(),
+        "service settings harness failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn screenshot_command_uses_png_from_surface() {
     assert_eq!(
@@ -502,7 +541,8 @@ fn injection_script_no_longer_carries_the_image_overlay() {
     let script = assets::injection_script_with_settings(57321, &settings);
 
     assert!(!script.contains("__CODEX_PLUS_IMAGE_OVERLAY__"));
-    assert!(!script.contains("data:image/png;base64,iVBORw0KGgo"));
+    // 只查这张叠加图本身：脚本里另有 Codex++ 自己的 logo（也是 PNG data URL），不能按前缀一刀切。
+    assert!(!script.contains("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8"));
     assert!(!script.contains("/overlay/image"));
     assert!(!script.contains("function installCodexPlusImageOverlay"));
 }
@@ -1427,12 +1467,13 @@ fn stepwise_records_only_real_bridge_generation_requests() {
 }
 
 #[test]
-fn stepwise_opens_manager_as_transient_window() {
+fn stepwise_config_opens_codex_settings_page_not_manager() {
     let script = assets::stepwise_script();
 
-    assert!(script.contains("bridgeCall(\"/manager/open-transient\", {"));
-    assert!(script.contains("page: \"enhance\""));
-    assert!(script.contains("section: \"stepwise\""));
+    // 服务配置已搬进 Codex 里的 Codex++ 设置页，「配置」不再打开管理器。
+    assert!(script.contains("window.__codexPlusOpenServiceSettings"));
+    assert!(script.contains("open(\"stepwise\")"));
+    assert!(!script.contains("/manager/open-transient"));
 }
 
 #[test]
@@ -3046,7 +3087,10 @@ fn injection_script_guards_temporary_new_thread_ids_before_delete() {
     assert!(script.contains("onActivate: ({ row, button, event }) => openDeleteConfirmForRow(row, button, sessionRefFromRow(row), event)"));
     assert!(script.contains("return deleteUncreatedSession(row, button);"));
     assert!(script.contains("function uncreatedSessionActionFromRow(row)"));
-    assert!(script.contains("attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\"]"));
+    // 会话切换后历史容器上的 conversation id 也会变，观察器要跟着重扫（#3126 的阅读位置对齐）。
+    assert!(script.contains(
+        "attributeFilter: [\"data-app-action-sidebar-thread-id\", \"href\", \"data-above-composer-conversation-id\"]"
+    ));
 
     let cases = run_session_ref_contract_harness();
     assert_eq!(
@@ -3375,7 +3419,7 @@ fn injection_script_unlocks_custom_model_catalog() {
     assert!(script.contains("loadAppServerRequestCandidates"));
     assert!(script.contains("appServerFallbackAssetUrls"));
     assert!(script.contains("collectAppServerRequestCandidatesFromModule"));
-    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"42\""));
+    assert!(script.contains("codexAppServerModelRequestPatchVersion = \"48\""));
 
     assert!(script.contains("list-models-for-host"));
     assert!(script.contains("appServerModelRequestMethod"));
@@ -3528,7 +3572,7 @@ fn injection_script_keeps_remote_provider_patch_installed_for_openai_identity() 
 
     assert!(script
         .contains("codexPlusBackendSettingsLoaded && codexRemoteSessionProviderPatchEnabled()"));
-    assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()) return;"));
+    assert!(script.contains("if (!codexRemoteSessionProviderPatchEnabled()\n        && !(codexPlusBackendSettingsLoaded && codexPlusBackendSettings.providerSyncEnabled)) return;"));
 }
 
 #[test]

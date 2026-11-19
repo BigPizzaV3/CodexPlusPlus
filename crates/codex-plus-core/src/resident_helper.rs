@@ -132,9 +132,55 @@ fn start_helper(port: u16) -> anyhow::Result<()> {
                     let _ = ready_tx.send(Err(error));
                     return;
                 }
+                let scripts_config = crate::user_scripts::default_user_scripts_config_dir().join("user_scripts.json");
+                let revision = || std::fs::read(&scripts_config).ok();
+                let mut scripts_revision = revision();
+                let mut models_revision = crate::gateway::store::discovered_models_revision();
                 let _ = ready_tx.send(Ok(()));
-                // 只有收到停止信号才结束；Codex 会话生命周期与本线程无关。
-                let _ = stop_rx.await;
+                // 首次扫描也刷新，以追上 helper 停止期间发生的拓展变化。
+                let mut providers = None;
+                let mut interval = tokio::time::interval(Duration::from_secs(1));
+                tokio::pin!(stop_rx);
+                loop {
+                    tokio::select! {
+                        _ = &mut stop_rx => break,
+                        _ = interval.tick() => {
+                            let next_scripts = revision();
+                            let next_models = crate::gateway::store::discovered_models_revision();
+                            if next_scripts != scripts_revision || next_models != models_revision || providers.is_none() {
+                                let previous = providers.clone();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    let current = crate::gateway::store::GatewaySettings::default()
+                                        .with_extension_providers().providers;
+                                    if previous.as_ref() != Some(&current) {
+                                        let context = crate::gateway::apply::ApplyContext::default_paths(port);
+                                        crate::gateway::apply::refresh_enabled(&context)?;
+                                    }
+                                    anyhow::Ok(current)
+                                }).await;
+                                match result {
+                                    Ok(Ok(current)) => {
+                                        providers = Some(current);
+                                        scripts_revision = next_scripts;
+                                        models_revision = next_models;
+                                    }
+                                    Ok(Err(error)) => {
+                                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                                            "gateway.extension_catalog_refresh_failed",
+                                            serde_json::json!({ "message": format!("{error:#}") }),
+                                        );
+                                    }
+                                    Err(error) => {
+                                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                                            "gateway.extension_catalog_refresh_failed",
+                                            serde_json::json!({ "message": error.to_string() }),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
                 hooks.shutdown_helper(port).await;
             });
         })

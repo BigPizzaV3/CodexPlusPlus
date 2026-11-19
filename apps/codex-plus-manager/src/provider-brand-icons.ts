@@ -52,6 +52,8 @@ export const BRAND_ICON_URLS: Record<string, string> = {
   "together-color": new URL("./assets/providers/together-color.svg", import.meta.url).href,
   "vertexai-color": new URL("./assets/providers/vertexai-color.svg", import.meta.url).href,
   "volcengine-color": new URL("./assets/providers/volcengine-color.svg", import.meta.url).href,
+  "vscode-color": new URL("./assets/providers/vscode-color.svg", import.meta.url).href,
+  "vscode-insiders-color": new URL("./assets/providers/vscode-insiders-color.svg", import.meta.url).href,
   "vscodium": new URL("./assets/providers/vscodium.svg", import.meta.url).href,
   "workbuddy-color": new URL("./assets/providers/workbuddy-color.svg", import.meta.url).href,
   "xai": new URL("./assets/providers/xai.svg", import.meta.url).href,

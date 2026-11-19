@@ -5,6 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import * as gateway from "./gateway-model.ts";
 import * as forms from "./provider-form-model.ts";
+import * as headers from "./relay-headers.ts";
 import * as sync from "./provider-sync-model.ts";
 import * as policies from "./subscription-policy.ts";
 
@@ -28,7 +29,7 @@ function find(tree: Element, predicate: (element: Element) => boolean): Element 
   return found;
 }
 
-function harness(official = true, configured = true) {
+function harness(official = true, configured = true, customHeaders?: Array<{ key: string; value: string; masked?: string | null }>) {
   const secret = "synthetic-refresh-token-not-for-the-form";
   const entry = Object.assign({
     id: "official-account", name: "Account A", baseUrl: official ? "" : "https://api.example.com/v1", protocol: "responses" as const,
@@ -36,7 +37,7 @@ function harness(official = true, configured = true) {
     proxy: "", subscriptionPolicy: configured ? { windowUsedPercentLimits: { "43200": 91 } } : undefined,
     quota: { windowsComplete: true, updatedAtMs: Date.now(),
       windows: [{ windowMinutes: 10080, usedPercent: 20, resetsAtMs: null }] },
-  }, { authContents: secret, officialAccountRef: "canonical-account" });
+  }, { authContents: secret, officialAccountRef: "canonical-account" }, customHeaders ? { customHeaders } : {});
   const original = structuredClone(entry);
   const saved: gateway.ProviderDraft[] = [];
   const hooks: any[] = [];
@@ -62,7 +63,7 @@ function harness(official = true, configured = true) {
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "react-dom": { createPortal: (child: unknown) => child },
     "@tauri-apps/api/core": { invoke: () => { assert.fail("editing must not request credentials or perform network calls"); } },
-    "lucide-react": Object.fromEntries(["Pencil", "Plus", "RefreshCw", "Search", "Star", "X"].map(name => [name, name])),
+    "lucide-react": Object.fromEntries(["Pencil", "Plus", "RefreshCw", "Search", "Star", "Trash2", "X"].map(name => [name, name])),
     "@/components/ui/button": { Button: "Button" },
     "@/components/ui/input": { Input: "Input" },
     "./i18n": {
@@ -80,6 +81,7 @@ function harness(official = true, configured = true) {
     "./AppSelect": { AppSelect: "AppSelect" },
     "./ProviderFormDialog.css": {},
     "./NativeAuthControls.css": {},
+    "./relay-headers": headers,
   };
   const load = (filename: string) => {
     const exports: Record<string, any> = {};
@@ -95,6 +97,7 @@ function harness(official = true, configured = true) {
     return exports;
   };
   modules["./SubscriptionPolicyFields"] = load("./SubscriptionPolicyFields.tsx");
+  modules["./RelayHeaderRows"] = load("./RelayHeaderRows.tsx");
   const component = load("./ProviderFormDialog.tsx");
   return {
     entry, original, saved, secret,
@@ -205,4 +208,32 @@ test("普通API供应商真实表单保持连接和Key编辑，不加入代理�
   assert.equal(children(tree).some(element => element.props?.placeholder === "https://api.example.com/v1"), true);
   submit(tree);
   assert.equal(f.saved.length, 1);
+});
+
+test("普通API供应商可编辑自定义请求头：敏感头不回显、没改就沿用；官方账号没有这一块（#3075）", () => {
+  assert.equal(children(harness().render()).some(element => element.props?.["aria-label"] === "请求头名称"), false);
+  const f = harness(false, true, [
+    { key: "X-Tenant", value: "acme", masked: null },
+    { key: "X-Relay-Key", value: "", masked: "relay-…cdef" },
+  ]);
+  let tree = f.render();
+  const values = () => children(f.render()).filter(element => element.props?.["aria-label"] === "请求头值");
+  assert.deepEqual(structuredClone(values().map(element => element.props.value)), ["acme", ""]);
+  assert.equal(values()[1].props.placeholder, "已保存 relay-…cdef，留空不改");
+  values()[0].props.onChange({ currentTarget: { value: "acme2" } });
+  find(f.render(), element => element.type === "Button" && text(element).includes("添加请求头")).props.onClick();
+  const names = children(f.render()).filter(element => element.props?.["aria-label"] === "请求头名称");
+  names[2].props.onChange({ currentTarget: { value: "X-Extra" } });
+  values()[2].props.onChange({ currentTarget: { value: "1" } });
+  tree = f.render();
+  submit(tree);
+  assert.equal(f.saved.length, 1);
+  assert.deepEqual(structuredClone(gateway.providerInput(f.saved[0]).customHeaders), [
+    { key: "X-Tenant", value: "acme2", keep: false },
+    { key: "X-Relay-Key", value: "", keep: true },
+    { key: "X-Extra", value: "1", keep: false },
+  ]);
+  // 传输头被拒：保存按钮不可用。
+  names[2].props.onChange({ currentTarget: { value: "Host" } });
+  assert.equal(find(f.render(), element => element.type === "Button" && element.props.type === "submit").props.disabled, true);
 });

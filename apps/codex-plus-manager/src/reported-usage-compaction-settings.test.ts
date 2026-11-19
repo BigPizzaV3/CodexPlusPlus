@@ -48,7 +48,7 @@ test("reported usage compaction has one default-off App and CLI builtin setting 
   assert.equal(item.control, "bool");
   assert.equal(item.group, "chat");
   assert.notEqual(item.masterGated, false);
-  assert.deepEqual(item.surfaces, ["manager", "codex"]);
+  assert.deepEqual(item.surfaces, ["codex"]);
   assert.equal(item.title, "按上报用量判断压缩（实验）");
   assert.match(item.description, /仅对 Codex App 和 CLI.*本地代理/);
   assert.match(item.description, /不改 usage.*不自动启用代理/);

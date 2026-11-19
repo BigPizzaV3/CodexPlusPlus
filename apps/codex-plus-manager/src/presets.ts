@@ -257,6 +257,17 @@ export const PRESETS: ProviderPreset[] = [
     model: "",
   },
   {
+    id: "vegaapi",
+    name: "VegaAPI",
+    websiteUrl: "https://vegaapi.com",
+    apiKeyUrl: "https://vegaapi.com/register",
+    category: "aggregator",
+    baseUrl: "https://vegaapi.com/v1",
+    protocol: "responses",
+    // 模型留空：添加时「从上游获取」或手填。
+    model: "",
+  },
+  {
     id: "novita",
     name: "Novita AI",
     category: "aggregator",

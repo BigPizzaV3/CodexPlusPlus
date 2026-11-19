@@ -10,13 +10,15 @@ const app = read("./App.tsx");
 const settingsPage = read("../../../assets/inject/renderer-inject/40-backend-settings.js");
 const serviceTier = read("../../../assets/inject/renderer-inject/30-service-tier.js");
 
-test("native predictions is an experimental opt-in shown on both settings pages that explains cost and scope", () => {
+test("native predictions is an experimental opt-in shown only on the Codex settings page that explains cost and scope", () => {
   const item = catalog.items.find((entry: { key: string }) => entry.key === "codexAppNativePredictions");
   assert.ok(item);
-  assert.equal(item.group, "plugins");
+  // 输入框里的预测归在「输入与发送」。
+  assert.equal(item.group, "input");
   assert.equal(item.control, "bool");
   assert.equal(item.title, "原生输入预测（实验）");
-  assert.deepEqual(item.surfaces, ["manager", "codex"]);
+  // 管理器只留增强总开关，内置拓展的开关只在 Codex 里的 Codex++ 设置页里。
+  assert.deepEqual(item.surfaces, ["codex"]);
   for (const phrase of ["实验", "默认关闭", "额度", "API Key / 自定义供应商", "本机对话", "重新启动 Codex 后生效"]) {
     assert.ok(item.description.includes(phrase), phrase);
   }

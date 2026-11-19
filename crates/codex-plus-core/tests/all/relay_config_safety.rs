@@ -757,11 +757,9 @@ fn official_restore_rebuilds_its_catalog_and_keeps_per_model_limits() {
         .unwrap()
         .parse()
         .unwrap();
-    assert_eq!(config["model_context_window"].as_integer(), Some(1000000));
-    assert_eq!(
-        config["model_auto_compact_token_limit"].as_integer(),
-        Some(900000)
-    );
+    // 有逐模型窗口与阈值时，供应商级的值折进目录、不写顶层：Codex 里顶层压过目录（#3168）。
+    assert!(config.get("model_context_window").is_none());
+    assert!(config.get("model_auto_compact_token_limit").is_none());
     let catalog_path = std::path::Path::new(config["model_catalog_json"].as_str().unwrap());
     assert!(catalog_path.is_absolute());
     assert_eq!(catalog_path, home.path().join("model-catalogs").join("official.json"));

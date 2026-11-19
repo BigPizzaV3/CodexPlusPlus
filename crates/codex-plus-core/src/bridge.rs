@@ -1454,7 +1454,8 @@ fn cdp_websocket_config() -> WebSocketConfig {
         .max_frame_size(Some(CDP_MAX_MESSAGE_BYTES))
 }
 
-async fn connect_cdp_websocket(
+/// 连 CDP WebSocket（校验地址是本机调试端口）。远程控制的桌面镜像也用它。
+pub(crate) async fn connect_cdp_websocket(
     websocket_url: &str,
 ) -> anyhow::Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
