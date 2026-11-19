@@ -377,3 +377,39 @@ fn api_to_official_roundtrip_removes_managed_catalog_pointer() {
         assert_eq!(auth, serde_json::from_str::<Value>(OFFICIAL_AUTH).unwrap());
     }
 }
+
+#[test]
+fn unmatched_relay_models_do_not_get_official_only_catalog_fields() {
+    // #3193：未命中官方条目的中转模型（gpt-6.1-sol-relay）回退家族模板时，
+    // 不能把 gpt-6.1-sol 的 tool_mode=code_mode_only 带进生成目录。
+    let _lock = crate::common::global_state_lock();
+    for mode in API_MODES {
+        for (path_name, apply) in APPLY_PATHS {
+            let temp = tempfile::tempdir().unwrap();
+            let mut profile = profile(mode, "custom");
+            profile.model = "gpt-6.1-sol-relay".to_string();
+            // 带窗口后缀才会落受管 catalog（与报告者的配置一致）。
+            profile.model_list = "gpt-6.1-sol-relay[1M],gpt-5.6-sol-relay[1M]".to_string();
+            std::fs::write(temp.path().join("auth.json"), &profile.auth_contents).unwrap();
+            apply(temp.path(), &profile, "").unwrap();
+            let catalog = catalog(temp.path());
+            for slug in ["gpt-6.1-sol-relay", "gpt-5.6-sol-relay"] {
+                let model = catalog["models"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|model| model["slug"] == slug)
+                    .unwrap_or_else(|| panic!("{mode:?}, {path_name}: catalog 缺少 {slug}"));
+                assert!(
+                    model.get("tool_mode").is_none_or(Value::is_null),
+                    "{mode:?}, {path_name}, {slug} 不应带 tool_mode"
+                );
+                assert!(
+                    model.get("prefer_websockets").is_none_or(Value::is_null),
+                    "{mode:?}, {path_name}, {slug} 不应带 prefer_websockets"
+                );
+                assert_eq!(model["use_responses_lite"], false, "{mode:?}, {path_name}, {slug}");
+            }
+        }
+    }
+}

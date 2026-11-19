@@ -989,6 +989,15 @@ fn family_template_slug(slug: &str) -> Option<String> {
 /// 同家族回退模板：取家族 slug 的运行时/bundled 条目，并叠加它自己的兼容层字段，
 /// 与精确命中该家族 slug 时看到的能力字段一致。
 /// 这里刻意不走 `resolve_builtin_metadata`，避免它的兼容层回退再回头调用本函数。
+///
+/// 例外：官方链路专属的字段不跟着走（#3193）。克隆的是未命中官方条目的模型
+/// （如中转的 `gpt-6.1-sol-relay`），它并不一定跑在官方链路上：
+/// - `tool_mode: code_mode_only` 让 Codex 只保留 code mode 的 `exec`，
+///   中转不支持该 `exec` 时模型会一个 shell / 文件工具都拿不到；
+/// - `use_responses_lite` / `prefer_websockets` 同样依赖官方后端的线格式。
+///
+/// 与通用回退（bundled 首条 gpt-5.5：无 tool_mode、无 prefer_websockets、
+/// use_responses_lite=false）保持一致，这也是 2.7.2 的行为。精确命中的官方条目不经过这里。
 fn family_template_entry(slug: &str) -> Option<Value> {
     let family_slug = family_template_slug(slug)?;
     let mut entry = runtime_models_cache_entry(&family_slug)
@@ -998,6 +1007,14 @@ fn family_template_entry(slug: &str) -> Option<Value> {
     {
         for (key, value) in source {
             target.insert(key.clone(), value.clone());
+        }
+    }
+    // 必须在叠加兼容层之后剥：gpt-5.6-* 的兼容层本身就带 tool_mode / use_responses_lite=true。
+    if let Some(target) = entry.as_object_mut() {
+        target.remove("tool_mode");
+        target.remove("prefer_websockets");
+        if target.get("use_responses_lite").and_then(Value::as_bool) == Some(true) {
+            target.insert("use_responses_lite".to_string(), Value::Bool(false));
         }
     }
     Some(entry)
