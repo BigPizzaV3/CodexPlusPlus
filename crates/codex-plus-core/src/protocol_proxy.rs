@@ -6203,11 +6203,13 @@ async fn open_official_image_proxy_request(
     })
 }
 
+/// 模型请求等上游响应头的上限。非流式请求要整段生成完才回响应头，和压缩是同一种情况：
+/// 按探测类请求的 30 秒等，大上下文的非流式调用必然超时，客户端重试同一请求就一直 502（#3164）。
 fn response_header_timeout(is_stream: bool) -> Duration {
     if is_stream {
         stream_header_timeout()
     } else {
-        UPSTREAM_HEADER_TIMEOUT
+        UPSTREAM_SLOW_HEADER_TIMEOUT
     }
 }
 
@@ -7232,6 +7234,17 @@ mod image_proxy_tests {
     #[test]
     fn image_requests_allow_ten_minutes_for_response_headers() {
         assert_eq!(UPSTREAM_IMAGE_HEADER_TIMEOUT, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn non_stream_model_requests_wait_for_the_whole_generation() {
+        // 非流式请求整段生成完才回响应头，不能按探测类请求的 30 秒等（#3164）。
+        assert_eq!(super::response_header_timeout(false), Duration::from_secs(600));
+        assert_eq!(
+            super::responses_request_header_timeout(false, false, false),
+            Duration::from_secs(600)
+        );
+        assert_eq!(super::upstream_header_timeout(), Duration::from_secs(30));
     }
 
     #[test]
