@@ -5439,6 +5439,93 @@ experimental_bearer_token = "sk-official-mix"
     assert!(config.contains(r#"openai_base_url = "http://127.0.0.1:57321/v1""#));
 }
 
+/// 造一份 ChatGPT 登录：`subject` + `account` 决定是哪个账号，`generation` 是第几代 token。
+fn chatgpt_login(subject: &str, account: &str, generation: &str, last_refresh: &str) -> String {
+    let claims = serde_json::json!({
+        "iss": "https://auth.openai.com",
+        "sub": subject,
+        "https://api.openai.com/auth": { "chatgpt_account_id": account },
+    });
+    let id_token = format!(
+        "{}.{}.sig-{generation}",
+        base64_url_no_pad(r#"{"alg":"none"}"#),
+        base64_url_no_pad(&claims.to_string())
+    );
+    serde_json::json!({
+        "auth_mode": "chatgpt",
+        "last_refresh": last_refresh,
+        "tokens": {
+            "id_token": id_token,
+            "access_token": format!("access-{generation}"),
+            "refresh_token": format!("refresh-{generation}"),
+            "account_id": account,
+        }
+    })
+    .to_string()
+}
+
+/// 回归（#3129）：几个供应商各存着同一账号的旧登录快照。切过去时不能把快照里已经轮换掉的
+/// refresh token 写回 live，否则 Codex 重开就要求重新登录。
+#[test]
+fn switching_to_official_profile_keeps_newer_live_login_of_the_same_account() {
+    let profile_with = |auth_contents: String| RelayProfile {
+        id: "official-mix".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        hide_official_usage_alert: false,
+        config_contents: r#"model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-official-mix"
+"#
+        .to_string(),
+        auth_contents,
+        ..RelayProfile::default()
+    };
+    let refresh_token_after = |live: Option<String>, snapshot: String| {
+        let temp = tempfile::tempdir().unwrap();
+        if let Some(live) = live {
+            std::fs::write(temp.path().join("auth.json"), live).unwrap();
+        }
+        apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile_with(snapshot), "").unwrap();
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap()).unwrap();
+        assert!(auth.get("OPENAI_API_KEY").is_none(), "{auth}");
+        auth["tokens"]["refresh_token"].as_str().unwrap().to_string()
+    };
+    let stale_snapshot = || chatgpt_login("user-a", "acct-a", "old", "2026-10-26T08:00:00Z");
+
+    // 同一个账号：live 里是 Codex 刷新过的新一代，保留它。
+    let mut live: serde_json::Value =
+        serde_json::from_str(&chatgpt_login("user-a", "acct-a", "new", "2026-11-17T03:00:00Z")).unwrap();
+    live["OPENAI_API_KEY"] = serde_json::json!("sk-left-over");
+    assert_eq!(refresh_token_after(Some(live.to_string()), stale_snapshot()), "refresh-new");
+
+    // 同一个账号，但快照的刷新时间更晚（用户刚换上的）：用快照。
+    assert_eq!(
+        refresh_token_after(
+            Some(chatgpt_login("user-a", "acct-a", "new", "2026-10-01T00:00:00Z")),
+            stale_snapshot()
+        ),
+        "refresh-old"
+    );
+
+    // live 是另一个账号、同一用户的另一个工作区、或没有登录：以快照为准，和以前一样。
+    for live in [
+        Some(chatgpt_login("user-b", "acct-b", "new", "2026-11-17T03:00:00Z")),
+        Some(chatgpt_login("user-a", "acct-team", "new", "2026-11-17T03:00:00Z")),
+        Some(r#"{"OPENAI_API_KEY":"sk-pure-api"}"#.to_string()),
+        None,
+    ] {
+        assert_eq!(refresh_token_after(live, stale_snapshot()), "refresh-old");
+    }
+}
+
 #[test]
 fn uninstall_cleanup_restores_config_pointing_to_local_proxy() {
     // issue #406：卸载后本地代理已不存在，残留的 127.0.0.1:57321 让官方 Codex 一直 502。

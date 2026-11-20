@@ -6172,13 +6172,45 @@ fn sync_profile_mode_from_backfilled_live(profile: &mut RelayProfile) {
     }
 }
 
+/// 切到官方登录（含「官方 + API 混合」）供应商时要写进 live 的 auth.json。
+///
+/// 供应商里存的登录是上次回填时的快照。Codex 运行中会刷新登录并轮换 refresh token，所以同一个
+/// 账号在 live 里的那份比快照新，旧快照里的 refresh token 已经作废。几个供应商各存着同一账号的
+/// 旧快照时，照快照写回去，Codex 重开就要求重新登录（#3129）。
+/// 因此：live 里是同一个账号就沿用 live（快照的 `last_refresh` 更晚时除外，那是用户刚换上的）；
+/// live 是别的账号、没有登录或读不出来，照旧以快照为准。
 fn official_profile_auth_for_switch(home: &Path, auth_contents: &str) -> anyhow::Result<String> {
+    let live = read_optional_text(&home.join("auth.json"));
     let source = if auth_contents.trim().is_empty() {
-        read_optional_text(&home.join("auth.json"))?
+        live?
     } else {
-        auth_contents.to_string()
+        match live {
+            Ok(live)
+                if crate::native_auth::same_account(&live, auth_contents)
+                    && !login_was_refreshed_later(auth_contents, &live) =>
+            {
+                live
+            }
+            _ => auth_contents.to_string(),
+        }
     };
     remove_openai_api_key_from_auth_contents(&source)
+}
+
+/// 两份 auth.json 都带 `last_refresh` 且 `login` 的更晚（RFC 3339 的 UTC 时间戳按字面比较即可）。
+fn login_was_refreshed_later(login: &str, than: &str) -> bool {
+    let last_refresh = |contents: &str| {
+        serde_json::from_str::<Value>(contents)
+            .ok()?
+            .get("last_refresh")?
+            .as_str()
+            .map(|stamp| stamp.trim().to_string())
+            .filter(|stamp| !stamp.is_empty())
+    };
+    match (last_refresh(login), last_refresh(than)) {
+        (Some(login), Some(than)) => login > than,
+        _ => false,
+    }
 }
 
 /// 生成写入 live 的 auth.json 内容：把本地代理的 bearer token 放进 `OPENAI_API_KEY`，
