@@ -187,7 +187,7 @@
       return {
         ok: true,
         modules: [{ url, patchedSource: rewritten.source + hook }],
-        diagnostics: { reason: "modules-prepared", rewriters: { fast: "patched" }, matches: planned.diagnostics.matches, factories: planned.factories.map(f => f.key) },
+        diagnostics: { reason: "modules-prepared", format: "rspack", rewriters: { fast: "patched" }, matches: planned.diagnostics.matches, factories: planned.factories.map(f => f.key) },
       };
     } catch (error) {
       return failed(error instanceof Error ? error.message : "unsupported-rspack-syntax");
