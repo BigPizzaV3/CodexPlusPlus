@@ -1957,7 +1957,7 @@ ${key} = ${value}`]);
       protocol: "responses",
       model: "gpt-5.5",
       modelList: ["gpt-5.5"],
-      websiteUrl: "https://apikey.fun"
+      websiteUrl: "https://apikey.fan"
     },
     {
       id: "cccccc-api",
