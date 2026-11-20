@@ -257,6 +257,20 @@ impl SkillsManager {
     }
 }
 
+/// 不进迁移包的文件和目录（#2852）：本机的密钥文件、版本库、依赖和缓存目录、日志。
+/// 迁移包会被拷到别的机器、发给别人，这些要么敏感，要么换台机器就没用。
+/// `.env.example` 这类给人照着填的模板照常打包。
+fn is_left_out_of_bundles(name: &str) -> bool {
+    const DIRECTORIES: &[&str] = &[".git", "node_modules", "__pycache__", ".venv", "venv", ".pytest_cache", ".mypy_cache"];
+    const TEMPLATE_SUFFIXES: &[&str] = &[".example", ".sample", ".template"];
+    let lower = name.to_ascii_lowercase();
+    if DIRECTORIES.contains(&lower.as_str()) || lower == ".ds_store" || lower.ends_with(".log") {
+        return true;
+    }
+    (lower == ".env" || lower.starts_with(".env."))
+        && !TEMPLATE_SUFFIXES.iter().any(|suffix| lower.ends_with(suffix))
+}
+
 /// 把一个 Skill 目录写进 zip 的 `prefix/` 下。符号链接不打包（导入端也不接受），遇到就报错。
 fn write_bundle_dir<W: Write + Seek>(
     writer: &mut zip::ZipWriter<W>,
@@ -279,6 +293,9 @@ fn write_bundle_dir<W: Write + Seek>(
         let name = name
             .to_str()
             .with_context(|| format!("文件名不是有效的 UTF-8：{}", entry.path().display()))?;
+        if is_left_out_of_bundles(name) {
+            continue;
+        }
         let path = entry.path();
         let metadata = std::fs::symlink_metadata(&path)?;
         anyhow::ensure!(!metadata_is_link(&metadata), "包含符号链接：{}", path.display());
@@ -522,6 +539,57 @@ mod tests {
         assert!(manifest.contains("name: Local"), "本机已有的文件不被迁移包覆盖");
         let inventory = target.try_local_inventory().unwrap();
         assert!(entry(&inventory, "alpha").agents.contains(&"claude".to_string()));
+    }
+
+    /// #2852：密钥文件、版本库、依赖和缓存目录、日志不进迁移包。
+    #[test]
+    fn export_leaves_out_secrets_caches_and_logs() {
+        let temp = tempfile::tempdir().unwrap();
+        let manager = manager(temp.path());
+        let external = temp.path().join("external").join("alpha");
+        write_skill(&external, "Alpha");
+        manager.import_from_local_directory("alpha", &external).unwrap();
+        let installed = manager.source_dir().join("alpha");
+        for (path, contents) in [
+            (".env", "API_KEY=sk-live-secret"),
+            (".env.local", "TOKEN=secret"),
+            (".env.example", "API_KEY="),
+            (".DS_Store", ""),
+            ("debug.log", "log"),
+            (".git/config", "[core]"),
+            ("node_modules/pkg/index.js", "module.exports = 1"),
+            ("scripts/__pycache__/run.cpython-312.pyc", "pyc"),
+            ("scripts/.env", "NESTED=secret"),
+            ("scripts/helper.py", "print(1)"),
+        ] {
+            let path = installed.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, contents).unwrap();
+        }
+        // 依赖目录里常有符号链接（node_modules/.bin）：整个目录不打包，也就不该因此导出失败。
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(installed.join("node_modules").join(".bin")).unwrap();
+            std::os::unix::fs::symlink("../pkg/index.js", installed.join("node_modules").join(".bin").join("pkg")).unwrap();
+        }
+
+        let package = temp.path().join("skills.zip");
+        manager.export_skill_bundle(&[selection("alpha", "")], &[], &package).unwrap();
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&package).unwrap()).unwrap();
+        let mut names: Vec<String> = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .filter(|name| name.starts_with("skills/alpha/") && !name.ends_with('/'))
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "skills/alpha/.env.example",
+                "skills/alpha/SKILL.md",
+                "skills/alpha/scripts/helper.py",
+                "skills/alpha/scripts/run.sh",
+            ]
+        );
     }
 
     #[cfg(unix)]
