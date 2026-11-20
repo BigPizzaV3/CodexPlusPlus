@@ -94,25 +94,37 @@ test("reinjection removes the retired composer Fast badge", () => {
   assert.doesNotMatch(fragment("90-action-groups.js"), /function installCodexServiceTierBadge/);
 });
 
-test("Fast-only UI metadata leaves an existing native descriptor's name and reasoning default intact", () => {
+test("Fast flows into new-chat descriptors without changing native names or reasoning defaults", () => {
   const metadata: Record<string, unknown> = {
     prioritySupportOverride: true,
     serviceTiers: [{ id: "priority", name: "Fast", description: "Provider-declared priority" }],
+    additionalSpeedTiers: ["fast"],
     supportedReasoningEfforts: [],
   };
   const context = vm.createContext({
     codexPlusModelMetadata: () => metadata,
+    codexModelCatalog: {},
+    structuredClone,
     modelReasoningEfforts: () => { throw new Error("Fast does not configure reasoning choices"); },
   });
-  vm.runInContext(["applyCodexPlusModelMetadata", "codexPlusModelInputModalities", "codexPlusModelImageDetailOriginal"]
+  vm.runInContext(["applyCodexPlusModelMetadata", "codexPlusModelDescriptor", "codexPlusModelServiceTiers", "codexPlusModelInputModalities", "codexPlusModelImageDetailOriginal"]
     .map((name) => extract(fragment("70-model-catalog.js"), name)).join("\n"), context);
   const descriptor = { displayName: "Native Grok", description: "Native details", defaultReasoningEffort: "high", supportedReasoningEfforts: [{ reasoningEffort: "high" }] };
   const original = structuredClone(descriptor);
-  assert.equal(context.applyCodexPlusModelMetadata(descriptor, "grok-custom"), false);
-  assert.deepEqual(descriptor, original);
+  assert.equal(context.applyCodexPlusModelMetadata(descriptor, "gpt-6.2-sol"), true);
+  assert.deepEqual(descriptor, { ...original, serviceTiers: metadata.serviceTiers, additionalSpeedTiers: ["fast"] });
+  assert.equal(context.applyCodexPlusModelMetadata(descriptor, "gpt-6.2-sol"), false);
+  context.modelReasoningEfforts = () => [];
+  const inserted = context.codexPlusModelDescriptor("chatgpt/gpt-6.2-astra");
+  assert.deepEqual(inserted.serviceTiers, metadata.serviceTiers);
+  assert.deepEqual(inserted.additionalSpeedTiers, ["fast"]);
   Object.assign(metadata, { displayName: "Explicit name", description: "Explicit details", defaultReasoningEffort: "low" });
   assert.equal(context.applyCodexPlusModelMetadata(descriptor, "grok-custom"), true);
   assert.equal(descriptor.displayName, "Explicit name");
   assert.equal(descriptor.description, "Explicit details");
   assert.equal(descriptor.defaultReasoningEffort, "low");
+  Object.assign(metadata, { prioritySupportOverride: false, serviceTiers: [], additionalSpeedTiers: [] });
+  assert.equal(context.applyCodexPlusModelMetadata(descriptor, "gpt-6.2-sol"), true);
+  assert.equal(JSON.stringify(Reflect.get(descriptor, "serviceTiers")), "[]");
+  assert.equal(JSON.stringify(Reflect.get(descriptor, "additionalSpeedTiers")), "[]");
 });

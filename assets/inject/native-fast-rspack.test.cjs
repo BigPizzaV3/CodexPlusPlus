@@ -26,9 +26,21 @@ const inlineFixtures = () => fixtures().map(({ key, source }) => {
   };
 });
 
+const providerAwareFixtures = () => inlineFixtures().map(({ key, source }) => ({
+  key,
+  source: source
+    .replace("readServiceTier(model)", "readServiceTier(thread)")
+    .replace("function(client,logger,model,eligible)", "function(client,logger,model,eligible,provider)")
+    .replace("manager.logger,model,async", "manager.logger,manager.getConversation(thread)?.latestModel||null,async")
+    .replace("})},async writeServiceTier", "},manager.getThreadModelProvider(thread))},async writeServiceTier")
+    .replace("readDefault(conversation?.latestModel||null)", "readDefault(conversation)")
+    .replace(/^(Request|Queue)\(/, "function("),
+}));
+
 function load(source, window, dependency) {
-  const key = source.slice(0, source.indexOf("("));
-  const factory = vm.runInNewContext(`({${source}})`, { window })[key];
+  const factory = source.startsWith("function(")
+    ? vm.runInNewContext(`(${source})`, { window })
+    : vm.runInNewContext(`({${source}})`, { window })[source.slice(0, source.indexOf("("))];
   const module = { exports: {} };
   factory(module, module.exports, dependency);
   return module.exports;
@@ -78,6 +90,22 @@ test("Rspack supports inlined gates and rejects ambiguity across old and new sha
   }
 });
 
+test("Rspack accepts mixed factory syntax and exact provider-aware queue bindings", () => {
+  const current = providerAwareFixtures();
+  const result = rspack.planFactories(current);
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+  assert.deepEqual(Object.values(result.diagnostics.matches), [1, 1, 1, 1]);
+  for (const [before, after] of [
+    ["manager.getConversation(thread)", "manager.getConversation(other)"],
+    ["manager.getThreadModelProvider(thread)", "manager.getThreadModelProvider(other)"],
+    ["readDefault(conversation)", "readDefault(message)"],
+  ]) {
+    const changed = providerAwareFixtures();
+    changed[2].source = changed[2].source.replace(before, after);
+    assert.equal(rspack.planFactories(changed).diagnostics.reason, "incomplete-gates");
+  }
+});
+
 test("Rspack factory discovery keeps originals on re-prepare without executing modules", async () => {
   const source = 'const original=({UI(e,t){throw Error("readServiceTier must not execute")}}).UI;const replacement=({UI(e,t){throw Error("patched factory must not execute")}}).UI;replacement.__codexPlusNativeFastOriginal=original;export const __webpack_require__={m:{UI:replacement,ignored:()=>null}};';
   const found = await rspack.readFactories('data:text/javascript,' + encodeURIComponent(source), 1);
@@ -102,7 +130,7 @@ test("Rspack rejects invalid, shadowed and already patched factories", () => {
   }
 });
 
-for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFixtures]]) {
+for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFixtures], ["provider-aware", providerAwareFixtures]]) {
   test(`Rspack ${shape} UI and request access preserve auth, host and opt-in boundaries`, async () => {
     const factories = rspack.planFactories(makeFixtures()).factories;
     for (const enabled of [true, false]) for (const localApi of [true, false]) {
@@ -127,7 +155,12 @@ for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFix
     for (const enabled of [true, false]) for (const copilot of [true, false]) for (const host of ["local", "remote"]) {
       const queue = load(source, context(enabled), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
       let reads = 0;
-      const manager = { getHostId: () => host, getAccount: async () => { reads++; return { account: { type: "apiKey" } }; } };
+      const manager = {
+        getHostId: () => host,
+        getAccount: async () => { reads++; return { account: { type: "apiKey" } }; },
+        getConversation: () => ({ latestModel: "model" }),
+        getThreadModelProvider: () => "provider",
+      };
       const deps = { runtime: { isUsingCopilotInference: async () => copilot }, settings: { readPermissionRefreshEnabled: () => true } };
       const expected = enabled && host === "local" && !copilot;
       assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), expected ? "priority" : null);
@@ -143,7 +176,12 @@ for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFix
     }
     const queue = load(source, context(true, true), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
     for (const auth of ["chatgpt", "amazonBedrock", null]) {
-      const manager = { getHostId: () => "local", getAccount: async () => ({ account: auth == null ? null : { type: auth } }) };
+      const manager = {
+        getHostId: () => "local",
+        getAccount: async () => ({ account: auth == null ? null : { type: auth } }),
+        getConversation: () => null,
+        getThreadModelProvider: () => "provider",
+      };
       const deps = { runtime: { isUsingCopilotInference: async () => false }, settings: { readPermissionRefreshEnabled: () => true } };
       assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), "priority");
       assert.equal(await queue.explicit(manager, deps, () => null)({}, { submissionOptions: { serviceTier: "priority" }, context: {} }), "priority");
@@ -180,6 +218,21 @@ test("Rspack registration replaces duplicate chunk factories without touching ot
   const replacement = require.m.UI;
   register({ __rspack_esm_ids: [2], __webpack_modules__: { UI: original } });
   assert.equal(require.m.UI, replacement);
+});
+
+test("Rspack registration compiles and installs anonymous factories by module key", () => {
+  const prepared = rspack.prepare(chunkSource, "app://-/assets/782259.abcdef.js",
+    providerAwareFixtures(), source => ({ source }), source => source);
+  assert.equal(prepared.ok, true, JSON.stringify(prepared.diagnostics));
+  const sandbox = { window: context() };
+  vm.runInNewContext(prepared.modules[0].patchedSource.replaceAll("export const ", "const ")
+    + ";globalThis.install=__rspack_esm_runtime", sandbox);
+  const require = { m: {} };
+  sandbox.install(require);
+  const original = function original() {};
+  require.m.Request = original;
+  assert.equal(require.m.Request.__codexPlusNativeFastOriginal, original);
+  assert.notEqual(require.m.Request, original);
 });
 
 test("Rspack runtime preparation fails closed on missing or ambiguous registration", () => {
