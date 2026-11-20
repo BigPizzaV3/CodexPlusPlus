@@ -2409,6 +2409,8 @@ where
 }
 
 // 兼容直接写入 JSON 对象的配置；保存时仍使用原有文本形态。
+// 对象里直接写数字的（`{"model-a": 500000}`）转成文本形态里的字符串：窗口、压缩百分比这两张表
+// 应用时只认字符串值，原样留着数字会在切换供应商时报「值必须是字符串」。
 fn deserialize_json_text<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -2416,6 +2418,14 @@ where
     Ok(match Option::<Value>::deserialize(deserializer)? {
         None | Some(Value::Null) => String::new(),
         Some(Value::String(text)) => text,
+        Some(Value::Object(mut map)) => {
+            for value in map.values_mut() {
+                if let Value::Number(number) = value {
+                    *value = Value::String(number.to_string());
+                }
+            }
+            Value::Object(map).to_string()
+        }
         Some(other) => other.to_string(),
     })
 }
@@ -4521,8 +4531,9 @@ mod tests {
         .unwrap();
 
         let saved = serde_json::to_value(&profile).unwrap();
-        assert_eq!(saved["modelWindows"], r#"{"model-a":500000}"#);
-        assert_eq!(saved["modelAutoCompact"], r#"{"model-a":80}"#);
+        // 数字值转成字符串：应用供应商时这两张表只认字符串值。
+        assert_eq!(saved["modelWindows"], r#"{"model-a":"500000"}"#);
+        assert_eq!(saved["modelAutoCompact"], r#"{"model-a":"80"}"#);
         assert_eq!(
             saved["modelMetadata"],
             r#"{"model-a":{"supports_search_tool":true}}"#
