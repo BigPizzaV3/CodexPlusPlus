@@ -228,7 +228,7 @@ export const PRESETS: ProviderPreset[] = [
     id: "apikeyfun",
     name: "APIKEY.FUN",
     category: "aggregator",
-    baseUrl: "https://api.apikey.fun/v1",
+    baseUrl: "https://api.apikey.fan/v1",
     protocol: "responses",
     model: "gpt-5.5",
     modelList: ["gpt-5.5"],
