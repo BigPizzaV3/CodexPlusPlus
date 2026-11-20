@@ -1,16 +1,6 @@
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const PACKYCODE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-packycode.png");
-const TOKEN_BRIDGE_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-0029.svg");
-const APIKEY_FUN_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-apikey-fun.png");
-const RAWCHAT_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-rawchat.svg");
-const RUNAPI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-runapi.png");
-const BAIKEWEI_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-baikewei-ai.jpg");
-const APIMART_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-apimart.png");
-const FENNO_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-fenno-ai.png");
-const QINIU_AI_IMAGE: &[u8] = include_bytes!("../../../docs/images/sponsor-qiniu-ai.png");
-
 pub const DEFAULT_AD_LIST_URLS: [&str; 3] = [
     "https://ads.codexpp.cc/ads.json",
     "https://raw.githubusercontent.com/BigPizzaV3/Ad-List/main/ads.json",
@@ -19,7 +9,7 @@ pub const DEFAULT_AD_LIST_URLS: [&str; 3] = [
 
 pub fn normalize_ad_payload(payload: Value) -> Value {
     let version = payload.get("version").and_then(Value::as_u64).unwrap_or(1);
-    let mut ads = payload
+    let ads = payload
         .get("ads")
         .and_then(Value::as_array)
         .into_iter()
@@ -36,13 +26,12 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
         })
         .cloned()
         .collect::<Vec<_>>();
-    fill_known_remote_logos(&mut ads);
     // `topAd` 是独立的置顶赞助位，**不参与** `ads` 列表的排序与过期过滤语义。
     // 同时兼容单条对象和多条数组，数组用于管理工具的横幅轮播。
     let raw_top_ads = payload
         .get("top_ad")
         .or_else(|| payload.get("topAd"));
-    let mut top_ads = match raw_top_ads {
+    let top_ads = match raw_top_ads {
         Some(Value::Array(items)) => items
             .iter()
             .filter(|ad| is_usable_ad(ad))
@@ -51,7 +40,6 @@ pub fn normalize_ad_payload(payload: Value) -> Value {
         Some(value) if is_usable_ad(value) => vec![value.clone()],
         _ => Vec::new(),
     };
-    fill_known_remote_logos(&mut top_ads);
 
     let mut normalized = json!({ "version": version, "ads": ads });
     if !top_ads.is_empty() {
@@ -86,70 +74,6 @@ fn is_usable_ad(ad: &Value) -> bool {
         && field("title")
         && field("description")
         && ad.get("url").and_then(Value::as_str).is_some_and(is_web_url)
-}
-
-fn fill_known_remote_logos(ads: &mut [Value]) {
-    for ad in ads {
-        let Some(object) = ad.as_object_mut() else {
-            continue;
-        };
-        let has_image = object
-            .get("image")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty());
-        if has_image {
-            continue;
-        }
-        let Some(id) = object.get("id").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some((mime, image)) = known_remote_logo(id) else {
-            continue;
-        };
-        object.insert("image".to_string(), json!(data_uri(mime, image)));
-    }
-}
-
-fn known_remote_logo(id: &str) -> Option<(&'static str, &'static [u8])> {
-    match id {
-        "0029-token-bridge" => Some(("image/png", PACKYCODE_IMAGE)),
-        "0055-token-bridge" => Some(("image/svg+xml", TOKEN_BRIDGE_IMAGE)),
-        "apikey-fun-ai-relay" => Some(("image/png", APIKEY_FUN_IMAGE)),
-        "rawchat-codex-relay" => Some(("image/svg+xml", RAWCHAT_IMAGE)),
-        "runapi-openrouter-alternative" => Some(("image/png", RUNAPI_IMAGE)),
-        "baikewei-ai" => Some(("image/jpeg", BAIKEWEI_AI_IMAGE)),
-        "apimart" => Some(("image/png", APIMART_IMAGE)),
-        "fenno-ai" => Some(("image/png", FENNO_AI_IMAGE)),
-        "qiniu-ai" => Some(("image/png", QINIU_AI_IMAGE)),
-        _ => None,
-    }
-}
-
-fn data_uri(mime: &str, bytes: &[u8]) -> String {
-    format!("data:{mime};base64,{}", base64_encode(bytes))
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = chunk[0];
-        let second = *chunk.get(1).unwrap_or(&0);
-        let third = *chunk.get(2).unwrap_or(&0);
-        encoded.push(TABLE[(first >> 2) as usize] as char);
-        encoded.push(TABLE[(((first & 0b0000_0011) << 4) | (second >> 4)) as usize] as char);
-        if chunk.len() > 1 {
-            encoded.push(TABLE[(((second & 0b0000_1111) << 2) | (third >> 6)) as usize] as char);
-        } else {
-            encoded.push('=');
-        }
-        if chunk.len() > 2 {
-            encoded.push(TABLE[(third & 0b0011_1111) as usize] as char);
-        } else {
-            encoded.push('=');
-        }
-    }
-    encoded
 }
 
 pub async fn fetch_ad_list() -> anyhow::Result<Value> {
