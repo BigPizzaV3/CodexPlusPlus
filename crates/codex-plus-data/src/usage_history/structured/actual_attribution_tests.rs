@@ -185,6 +185,109 @@ mod actual_attribution {
         assert!(cache.verified[&original.id].rejected);
     }
 
+    #[test]
+    fn provider_display_name_is_not_required_for_saved_attribution() {
+        let original = event("auto", "custom");
+        let mut record = proof(&original);
+        record.relay_name.clear();
+        let root = tempfile::tempdir().unwrap();
+        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+        let mut disk = provider_cache::ProviderCache::default();
+        disk.open(root.path(), cutoff).unwrap();
+        disk.capture_proxy(&[record.clone()]).unwrap();
+
+        let mut cache = RequestEvidenceCache::default();
+        cache.records.push(record.clone());
+        let mut events = vec![original.clone()];
+        let mut names = BTreeMap::from([("supplier-b".into(), String::new())]);
+        let result = cache.attribute_with_cache(&mut events, &mut names, &BTreeMap::new(), &disk);
+        assert_eq!(result["recoveredEvents"], 1);
+        assert_eq!(events[0].provider, "supplier-b");
+        assert_eq!(names["supplier-b"], "supplier-b");
+        assert_eq!(events[0].id, original.id);
+        assert_eq!(events[0].total, original.total);
+        assert_eq!(events[0].delta, original.delta);
+        disk.save(&cache.verified, &BTreeMap::new()).unwrap();
+        drop(disk);
+
+        let mut disk = provider_cache::ProviderCache::default();
+        disk.open(root.path(), cutoff).unwrap();
+        let mut cache = RequestEvidenceCache::default();
+        cache.restore_verified(disk.load_verified(cutoff).unwrap());
+        record.relay_name = "Renamed supplier".into();
+        disk.capture_proxy(&[record.clone()]).unwrap();
+        cache.records.push(record);
+        cache.supplement_captured(&[original.clone()], &BTreeMap::new(), &disk);
+        assert_eq!(cache.records.len(), 1);
+        let mut events = vec![original.clone()];
+        let mut names = BTreeMap::from([("supplier-b".into(), String::new())]);
+        let result = cache.attribute_with_cache(&mut events, &mut names, &BTreeMap::new(), &disk);
+        assert_eq!(result["recoveredEvents"], 1);
+        assert_eq!(events[0].provider, "supplier-b");
+        assert_eq!(names["supplier-b"], "Renamed supplier");
+        assert_eq!(events[0].total, original.total);
+        assert_eq!(events[0].delta, original.delta);
+        assert!(!cache.verified[&original.id].rejected);
+    }
+
+    #[test]
+    fn provider_display_name_does_not_relax_conflicting_saved_evidence() {
+        let original = event("auto", "custom");
+        let record = proof(&original);
+        for conflict in ["provider", "model", "usage"] {
+            let root = tempfile::tempdir().unwrap();
+            let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+            let mut disk = provider_cache::ProviderCache::default();
+            disk.open(root.path(), cutoff).unwrap();
+            disk.capture_proxy(&[record.clone()]).unwrap();
+            let mut changed = record.clone();
+            changed.relay_name.clear();
+            match conflict {
+                "provider" => changed.relay_id = "supplier-c".into(),
+                "model" => changed.upstream_model = "other-model".into(),
+                "usage" => changed.usage.as_mut().unwrap().input_tokens = Some(101),
+                _ => unreachable!(),
+            }
+            disk.capture_proxy(&[changed.clone()]).unwrap();
+            drop(disk);
+            let mut disk = provider_cache::ProviderCache::default();
+            disk.open(root.path(), cutoff).unwrap();
+            assert!(
+                disk.rejected_proxy_ids([&changed])
+                    .unwrap()
+                    .contains(&changed.id),
+                "{conflict}"
+            );
+            let mut cache = RequestEvidenceCache::default();
+            cache.records.push(changed);
+            let mut events = vec![original.clone()];
+            cache.attribute_with_cache(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &disk);
+            assert!(unknown_provider(&events[0].provider), "{conflict}");
+            assert_eq!(events[0].total, original.total);
+            assert_eq!(events[0].delta, original.delta);
+        }
+    }
+
+    #[test]
+    fn provider_display_name_prefers_available_names_over_id_fallback() {
+        let original = event("auto", "custom");
+        let mut unnamed = proof(&original);
+        unnamed.relay_name.clear();
+        let mut another = original.clone();
+        another.id = [42; 32];
+        another.delta = Tokens::new(200, 20, 10);
+        let mut named = proof(&another);
+        named.id = "another-request".into();
+        named.usage.as_mut().unwrap().input_tokens = Some(200);
+        let mut events = vec![original, another];
+        let mut cache = RequestEvidenceCache::default();
+        cache.records = vec![unnamed, named];
+        let mut names = BTreeMap::new();
+        let result = cache.attribute(&mut events, &mut names, &BTreeMap::new());
+        assert_eq!(result["recoveredEvents"], 2);
+        assert_eq!(names["supplier-b"], "Supplier B");
+    }
+
     fn relay(id: &str, endpoint: &str) -> codex_plus_core::settings::RelayProfile {
         codex_plus_core::settings::RelayProfile {
             id: id.into(),
