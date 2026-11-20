@@ -3244,6 +3244,10 @@ export const EN_PLAIN: Record<string, string> = {
   "选择已有供应商作为成员，保存后写入 settings payload": "Select existing providers as members; saving writes them to the settings payload",
   "选择应用目录": "Select app directory",
   "通用配置文件": "Common config file",
+  "编辑配置": "Edit configuration",
+  "配置来源": "Configuration source",
+  "配置只读": "Read-only configuration",
+  "跨供应商的用户设置保存在 Codex 通用配置中。": "User settings shared across providers are stored in the Codex common configuration.",
   "关闭窗口": "Close",
   "选择模型": "Pick a model",
   "搜索模型…": "Search models…",
@@ -3881,6 +3885,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "编辑 {0} 配置": "Edit {0} configuration",
+  "输入格式：{0}": "Input format: {0}",
   "{0} 个 Skill 失败": "{0} skill operation(s) failed",
   "已批量{0} {1} 个 Skill": "{0} {1} skill(s)",
   "删除 Skill 备份“{0}”？": "Delete skill backup \"{0}\"?",

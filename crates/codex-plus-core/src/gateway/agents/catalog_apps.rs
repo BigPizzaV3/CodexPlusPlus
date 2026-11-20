@@ -113,7 +113,7 @@ fn find_binary(env: &AgentEnv, binary: &str, extra: &[&str]) -> Option<PathBuf> 
 }
 
 /// 进程在运行（按可执行文件名）。只在真实环境、且是本机系统时查。
-fn process_running(env: &AgentEnv, name: &str) -> bool {
+pub(super) fn process_running(env: &AgentEnv, name: &str) -> bool {
     if !is_live(env) || env.os != Os::current() {
         return false;
     }
@@ -919,7 +919,7 @@ fn air_dir(env: &AgentEnv) -> PathBuf {
     env.app_config().join("JetBrains").join("Air")
 }
 
-fn air_opencode_config(env: &AgentEnv) -> PathBuf {
+pub(super) fn air_opencode_config(env: &AgentEnv) -> PathBuf {
     air_dir(env).join("codexplus-opencode.json")
 }
 
@@ -1609,7 +1609,7 @@ fn openclaw_path(env: &AgentEnv) -> PathBuf {
 }
 
 fn openclaw_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Result<()> {
-    let root = set.json(&openclaw_path(env))?;
+    let root = set.json5(&openclaw_path(env))?;
     let provider = object_entry(
         object_entry(object_entry(root, "models"), "providers"),
         PROVIDER_ID,

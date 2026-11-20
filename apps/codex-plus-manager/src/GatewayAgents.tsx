@@ -7,6 +7,7 @@ import { t, tf } from "./i18n";
 import { appConfirm } from "./app-dialog";
 import { modelSlugFromRowName } from "./model-metadata";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
+import { AgentConfigButton } from "./AgentConfigEditor";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
 import {
   agentModels,
@@ -364,6 +365,7 @@ function AgentRow({
           </span>
         </div>
         <div className="cx-row-controls">
+          <AgentConfigButton agent={agent.agent} name={agent.name} />
           <ModelPicker
             agent={agent}
             connected={connected}

@@ -392,6 +392,45 @@ fn current_port_host_and_agent_path_are_compared_exactly() {
 }
 
 #[test]
+fn openclaw_json5_diagnostics_locate_endpoint_and_credential_changes() {
+    let fixture = fixture();
+    let ctx = &fixture.ctx;
+    let spec = agents::spec("openclaw").unwrap();
+    let agent = ToolId::Unknown(spec.id.into());
+    let path = (spec.config_path)(&ctx.agent_env);
+    write(&path, "{ui: {locale: 'en',},}");
+    enable_binding(ctx, &agent, binding()).unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    let token = &gateway.binding(&agent).unwrap().token;
+    let current = std::fs::read_to_string(&path).unwrap();
+    let changed = current
+        .replace(":57321/gw/", ":57322/gw/")
+        .replace(token, "fake-replacement-secret");
+    write(&path, &changed);
+    let result = inspect(ctx, &agent, &gateway, true, &ActivitySnapshot::default());
+    assert_eq!(result.state, "configChanged");
+    for (field, code) in [
+        (
+            "models.providers.codexplus.baseUrl",
+            "endpoint_port_mismatch",
+        ),
+        ("models.providers.codexplus.apiKey", "credential_changed"),
+    ] {
+        assert!(
+            result
+                .config_evidence
+                .iter()
+                .any(|item| item.field == field && item.code == code),
+            "{field}: {:?}",
+            result.config_evidence
+        );
+    }
+    let encoded = serde_json::to_string(&result).unwrap();
+    assert!(!encoded.contains(token) && !encoded.contains("fake-replacement-secret"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), changed);
+}
+
+#[test]
 fn jsonc_comments_do_not_verify_an_endpoint_and_urls_are_redacted() {
     let fixture = fixture();
     let agent = ToolId::Unknown("opencode".into());
