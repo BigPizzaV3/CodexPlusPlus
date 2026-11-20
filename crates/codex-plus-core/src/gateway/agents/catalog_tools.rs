@@ -560,14 +560,25 @@ fn write_hermes(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::R
         ("model", "provider", json!(PROVIDER_ID)),
         ("model", "default", json!(wiring.default_model)),
     ] {
-        let map = desired.as_object_mut().expect("已校验映射").entry(parent)
-            .or_insert_with(|| Value::Object(Map::new())).as_object_mut()
+        let map = desired
+            .as_object_mut()
+            .expect("已校验映射")
+            .entry(parent)
+            .or_insert_with(|| Value::Object(Map::new()))
+            .as_object_mut()
             .with_context(|| format!("Hermes 的 {parent} 不是映射，无法安全接入"))?;
-        if map.get(child) == Some(&value) { continue; }
-        if let Some(block) = doc.block(parent) {
-            block_style &= block.lines().next().is_some_and(|line| line_value(line).is_empty());
+        if map.get(child) == Some(&value) {
+            continue;
         }
-        if block_style { yaml_set_child(doc, parent, child, Some(&value)); }
+        if let Some(block) = doc.block(parent) {
+            block_style &= block
+                .lines()
+                .next()
+                .is_some_and(|line| line_value(line).is_empty());
+        }
+        if block_style {
+            yaml_set_child(doc, parent, child, Some(&value));
+        }
         map.insert(child.to_owned(), value);
         owned_paths.push(vec![parent.to_owned(), child.to_owned()]);
     }

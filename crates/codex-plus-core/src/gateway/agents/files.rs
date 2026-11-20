@@ -22,6 +22,7 @@ use crate::gateway::restore::{self as stash, ChangedKey, FileStash, KeyPath};
 #[serde(rename_all = "camelCase")]
 pub enum FileFormat {
     Json,
+    /// 保留 OpenClaw 配置中的 JSON5 语法。
     Json5,
     Toml,
     Yaml,
@@ -54,6 +55,7 @@ pub struct FileSet {
 /// 一个改动过的文件：接入前 / 后的全文。
 #[derive(Debug, Clone)]
 pub struct FileChange {
+    /// 网关接管的 YAML 子键路径，用于断开时保留同级的用户设置。
     pub yaml_paths: Vec<KeyPath>,
     pub path: PathBuf,
     pub format: FileFormat,
@@ -329,7 +331,10 @@ pub struct YamlDoc {
 
 impl YamlDoc {
     pub(super) fn mapping(text: &str) -> anyhow::Result<Value> {
-        if text.lines().all(|line| line.trim().is_empty() || line.trim_start().starts_with('#')) {
+        if text
+            .lines()
+            .all(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
+        {
             return Ok(Value::Object(Map::new()));
         }
         let value = Format::Yaml.read(text)?;
@@ -338,8 +343,15 @@ impl YamlDoc {
     }
 
     pub(super) fn patch_mapping(source: &str, expected: &Value) -> anyhow::Result<Self> {
-        let text = if source.lines().all(|line| line.trim().is_empty() || line.trim_start().starts_with('#')) {
-            let separator = if source.is_empty() || source.ends_with('\n') { "" } else { "\n" };
+        let text = if source
+            .lines()
+            .all(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
+        {
+            let separator = if source.is_empty() || source.ends_with('\n') {
+                ""
+            } else {
+                "\n"
+            };
             format!("{source}{separator}{}", serde_saphyr::to_string(expected)?)
         } else {
             Format::Yaml.patch(source, expected)?
@@ -716,7 +728,10 @@ impl AgentStash {
             for path in &change.yaml_paths {
                 let path = if legacy { &path[..1] } else { path.as_slice() };
                 if !file.stash.changed.iter().any(|known| known.path == path) {
-                    file.stash.changed.push(ChangedKey { path: path.to_vec(), written: None });
+                    file.stash.changed.push(ChangedKey {
+                        path: path.to_vec(),
+                        written: None,
+                    });
                 }
             }
             return Ok(());
@@ -783,9 +798,13 @@ pub fn restored_text(
         FileFormat::Toml => stash::restore_toml(before, current, &file.stash.paths()),
         FileFormat::Yaml => {
             if file.stash.changed.iter().any(|key| key.path.len() == 2) {
-                if !file.preserve_current_format && current.is_some_and(|text| {
-                    file.written_hash.as_ref().is_some_and(|hash| *hash == text_hash(text))
-                }) {
+                if !file.preserve_current_format
+                    && current.is_some_and(|text| {
+                        file.written_hash
+                            .as_ref()
+                            .is_some_and(|hash| *hash == text_hash(text))
+                    })
+                {
                     return Ok(before.map(str::to_owned));
                 }
                 let original = YamlDoc::mapping(before.unwrap_or_default())?;
@@ -793,19 +812,32 @@ pub fn restored_text(
                 let live = YamlDoc::mapping(source)?;
                 let mut desired = live.clone();
                 for key in &file.stash.changed {
-                    let [parent, child] = key.path.as_slice() else { bail!("不支持的 YAML 存档路径") };
+                    let [parent, child] = key.path.as_slice() else {
+                        bail!("不支持的 YAML 存档路径")
+                    };
                     let previous = original.get(parent).and_then(|map| map.get(child));
-                    if previous.is_none() && desired.get(parent).is_none() { continue; }
-                    let map = desired.as_object_mut().expect("已校验映射").entry(parent)
-                        .or_insert_with(|| Value::Object(Map::new())).as_object_mut()
+                    if previous.is_none() && desired.get(parent).is_none() {
+                        continue;
+                    }
+                    let map = desired
+                        .as_object_mut()
+                        .expect("已校验映射")
+                        .entry(parent)
+                        .or_insert_with(|| Value::Object(Map::new()))
+                        .as_object_mut()
                         .context("网关字段的父节点已不是 YAML 映射，无法安全还原")?;
-                    if let Some(value) = previous { map.insert(child.clone(), value.clone()); }
-                    else { map.remove(child); }
+                    if let Some(value) = previous {
+                        map.insert(child.clone(), value.clone());
+                    } else {
+                        map.remove(child);
+                    }
                     if map.is_empty() && original.get(parent).is_none() {
                         desired.as_object_mut().unwrap().remove(parent);
                     }
                 }
-                if desired == live { return Ok(current.map(str::to_owned)); }
+                if desired == live {
+                    return Ok(current.map(str::to_owned));
+                }
                 return Ok(Some(YamlDoc::patch_mapping(source, &desired)?.render()));
             }
             let before_doc = YamlDoc::parse(before.unwrap_or_default());
@@ -879,7 +911,8 @@ mod tests {
             let mut expected = Format::Json5.read(source).unwrap();
             assert_eq!(expected["other"], "A😀B");
             assert_eq!(expected["count"], u64::MAX);
-            expected["locale"] = Format::Json5.read(r#"{locale:'\x66r'}"#).unwrap()["locale"].clone();
+            expected["locale"] =
+                Format::Json5.read(r#"{locale:'\x66r'}"#).unwrap()["locale"].clone();
             assert_eq!(expected["locale"], "fr");
             let rendered = render_json5(Some(source), &expected).unwrap();
             assert!(rendered.contains(r#"A\uD83D\uDE00B"#));

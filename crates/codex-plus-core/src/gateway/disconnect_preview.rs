@@ -931,7 +931,9 @@ mod tests {
         let mut saved: AgentStash = restore::load_stash(&stash_path).unwrap();
         saved.files.get_mut(&path).unwrap().format = agents::files::FileFormat::Json;
         restore::save_stash(&stash_path, &saved).unwrap();
-        let current = fs::read_to_string(&path).unwrap().replace(r#""before""#, "'after'");
+        let current = fs::read_to_string(&path)
+            .unwrap()
+            .replace(r#""before""#, "'after'");
         fs::write(&path, &current).unwrap();
 
         let before_preview = snapshot(fixture.temp.path());
@@ -943,7 +945,10 @@ mod tests {
         apply::disable_binding(ctx, &settings, &agent).unwrap();
         let actual = fs::read_to_string(&path).unwrap();
         assert!(actual.contains("'after'") && !actual.contains("/gw/openclaw"));
-        assert_eq!(result.files[0].diff, text_diff(Some(&current), Some(&actual)));
+        assert_eq!(
+            result.files[0].diff,
+            text_diff(Some(&current), Some(&actual))
+        );
     }
 
     #[test]

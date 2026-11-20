@@ -403,16 +403,27 @@ fn openclaw_json5_diagnostics_locate_endpoint_and_credential_changes() {
     let gateway = ctx.gateway.load().unwrap();
     let token = &gateway.binding(&agent).unwrap().token;
     let current = std::fs::read_to_string(&path).unwrap();
-    let changed = current.replace(":57321/gw/", ":57322/gw/").replace(token, "fake-replacement-secret");
+    let changed = current
+        .replace(":57321/gw/", ":57322/gw/")
+        .replace(token, "fake-replacement-secret");
     write(&path, &changed);
     let result = inspect(ctx, &agent, &gateway, true, &ActivitySnapshot::default());
     assert_eq!(result.state, "configChanged");
     for (field, code) in [
-        ("models.providers.codexplus.baseUrl", "endpoint_port_mismatch"),
+        (
+            "models.providers.codexplus.baseUrl",
+            "endpoint_port_mismatch",
+        ),
         ("models.providers.codexplus.apiKey", "credential_changed"),
     ] {
-        assert!(result.config_evidence.iter().any(|item| item.field == field && item.code == code),
-            "{field}: {:?}", result.config_evidence);
+        assert!(
+            result
+                .config_evidence
+                .iter()
+                .any(|item| item.field == field && item.code == code),
+            "{field}: {:?}",
+            result.config_evidence
+        );
     }
     let encoded = serde_json::to_string(&result).unwrap();
     assert!(!encoded.contains(token) && !encoded.contains("fake-replacement-secret"));

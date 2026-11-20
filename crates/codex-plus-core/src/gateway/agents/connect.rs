@@ -326,9 +326,11 @@ mod tests {
                 for change in set.changes().unwrap() {
                     let text = change.after.as_deref().unwrap();
                     let value = match change.format {
-                        files::FileFormat::Json | files::FileFormat::Json5 | files::FileFormat::Toml => Some(
-                            files::content_value(change.format, Some(text)).unwrap(),
-                        ),
+                        files::FileFormat::Json
+                        | files::FileFormat::Json5
+                        | files::FileFormat::Toml => {
+                            Some(files::content_value(change.format, Some(text)).unwrap())
+                        }
                         files::FileFormat::Raw
                             if change.path.extension().is_some_and(|ext| ext == "json") =>
                         {

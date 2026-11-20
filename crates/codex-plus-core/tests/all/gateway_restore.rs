@@ -316,27 +316,74 @@ fn codex_editor_saves_the_shared_template_without_switching_provider() {
     ctx.settings.save(&settings).unwrap();
     let before = config(ctx, "codex", None).unwrap();
     assert!(!before.snapshot.contents.contains("projects"));
-    ctx.settings.update(json!({"codexAppPath": "concurrent-app-path"})).unwrap();
-    for invalid in ["[invalid", "model = 'other'", "[mcp_servers.test]\ncommand='test'"] {
+    ctx.settings
+        .update(json!({"codexAppPath": "concurrent-app-path"}))
+        .unwrap();
+    for invalid in [
+        "[invalid",
+        "model = 'other'",
+        "[mcp_servers.test]\ncommand='test'",
+    ] {
         assert!(config(ctx, "codex", Some((&before.snapshot, invalid))).is_err());
-        assert_eq!(ctx.settings.load().unwrap().relay_common_config_contents, settings.relay_common_config_contents);
+        assert_eq!(
+            ctx.settings.load().unwrap().relay_common_config_contents,
+            settings.relay_common_config_contents
+        );
     }
-    config(ctx, "codex", Some((&before.snapshot, "developer_instructions = 'fixture note'"))).unwrap();
+    config(
+        ctx,
+        "codex",
+        Some((&before.snapshot, "developer_instructions = 'fixture note'")),
+    )
+    .unwrap();
     let saved = ctx.settings.load().unwrap();
     assert_eq!(saved.codex_app_path, "concurrent-app-path");
-    assert!(config(ctx, "codex", Some((&before.snapshot, "personality = 'friendly'"))).is_err());
-    assert_eq!(ctx.settings.load().unwrap().relay_common_config_contents, saved.relay_common_config_contents);
+    assert!(
+        config(
+            ctx,
+            "codex",
+            Some((&before.snapshot, "personality = 'friendly'"))
+        )
+        .is_err()
+    );
+    assert_eq!(
+        ctx.settings.load().unwrap().relay_common_config_contents,
+        saved.relay_common_config_contents
+    );
     assert!(saved.relay_common_config_contents.contains("projects"));
     assert_eq!(saved.active_relay_id, settings.active_relay_id);
-    assert!(ctx.gateway.load().unwrap().binding(&ToolId::Codex).is_none());
+    assert!(
+        ctx.gateway
+            .load()
+            .unwrap()
+            .binding(&ToolId::Codex)
+            .is_none()
+    );
     enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
     let connected = config(ctx, "codex", None).unwrap();
-    config(ctx, "codex", Some((&connected.snapshot, "developer_instructions = 'connected note'"))).unwrap();
-    assert_eq!(codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap(), 1);
+    config(
+        ctx,
+        "codex",
+        Some((
+            &connected.snapshot,
+            "developer_instructions = 'connected note'",
+        )),
+    )
+    .unwrap();
+    assert_eq!(
+        codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap(),
+        1
+    );
     let live = std::fs::read_to_string(ctx.codex_home.join("config.toml")).unwrap();
     assert!(live.contains("connected note"));
     disable_binding(ctx, &ctx.settings.load().unwrap(), &ToolId::Codex).unwrap();
-    assert!(config(ctx, "codex", None).unwrap().snapshot.contents.contains("connected note"));
+    assert!(
+        config(ctx, "codex", None)
+            .unwrap()
+            .snapshot
+            .contents
+            .contains("connected note")
+    );
 }
 
 fn append(path: &std::path::Path, text: &str) {

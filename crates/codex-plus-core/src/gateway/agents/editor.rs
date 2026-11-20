@@ -1,3 +1,5 @@
+//! 读取和保存适配器允许用户编辑的偏好，不改变网关绑定。
+
 use std::path::Path;
 
 use anyhow::{Context, ensure};
@@ -8,19 +10,27 @@ use toml_edit::DocumentMut;
 use super::{editor_format::Format, files, jsonc_edit, spec};
 use crate::gateway::{apply::ApplyContext, restore};
 
+/// 编辑器显示的配置来源、可编辑字段和输入格式。没有开放字段时只显示来源。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigView {
+    /// 保存时应原样传回的来源和内容。
     #[serde(flatten)]
     pub snapshot: ConfigSnapshot,
+    /// 草稿使用的格式；只读来源没有输入格式。
     pub input_format: &'static str,
+    /// 当前适配器允许修改的键名。
     pub keys: Vec<String>,
+    /// 当前来源是否开放可编辑字段。
     pub editable: bool,
 }
 
+/// 打开编辑器时读取的快照，用于拒绝写入已切换的配置档或覆盖后续修改。
 #[derive(Deserialize, Serialize)]
 pub struct ConfigSnapshot {
+    /// 由后端解析的配置来源，保存时不将它作为写入路径。
     pub source: String,
+    /// 当时展示的可编辑内容，不包含同一文件中的其他字段。
     pub contents: String,
 }
 
@@ -372,6 +382,7 @@ fn preferences(
     })
 }
 
+/// 读取指定 Agent 的配置。传入原始快照和草稿时，只保存开放的字段并返回更新后的视图。
 pub fn config(
     ctx: &ApplyContext,
     agent: &str,
