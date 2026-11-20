@@ -97,7 +97,12 @@ fn editor_preserves_user_fields_through_gateway_refresh_and_disconnect() {
     use agents::editor::config;
     for (id, key, value, forbidden) in [
         ("pi", "theme", serde_json::json!("light"), "defaultProvider"),
-        ("opencode", "autoupdate", serde_json::json!(false), "provider"),
+        (
+            "opencode",
+            "autoupdate",
+            serde_json::json!(false),
+            "provider",
+        ),
     ] {
         let fixture = fixture();
         let ctx = &fixture.ctx;
@@ -108,21 +113,34 @@ fn editor_preserves_user_fields_through_gateway_refresh_and_disconnect() {
         assert!(!path.exists());
         let draft = serde_json::json!({(key): value});
         let saved = config(ctx, id, Some((&initial.snapshot, &draft.to_string()))).unwrap();
-        assert_eq!(ctx.gateway.load().unwrap().bindings, original_gateway.bindings);
+        assert_eq!(
+            ctx.gateway.load().unwrap().bindings,
+            original_gateway.bindings
+        );
         enable_binding(ctx, &agent, binding()).unwrap();
         let before = std::fs::read(&path).unwrap();
-        for invalid in ["[".to_owned(), serde_json::json!({(forbidden): "override"}).to_string()] {
+        for invalid in [
+            "[".to_owned(),
+            serde_json::json!({(forbidden): "override"}).to_string(),
+        ] {
             assert!(config(ctx, id, Some((&saved.snapshot, &invalid))).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), before);
         }
-        let changed_value = if id == "pi" { serde_json::json!("dark") } else { serde_json::json!(true) };
+        let changed_value = if id == "pi" {
+            serde_json::json!("dark")
+        } else {
+            serde_json::json!(true)
+        };
         let changed = serde_json::json!({(key): changed_value});
         let bindings = ctx.gateway.load().unwrap().bindings;
         config(ctx, id, Some((&saved.snapshot, &changed.to_string()))).unwrap();
         assert!(config(ctx, id, Some((&saved.snapshot, "{}"))).is_err());
         assert_eq!(ctx.gateway.load().unwrap().bindings, bindings);
         codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap();
-        assert!(agents::connect::points_at_gateway(ctx, agents::spec(id).unwrap()));
+        assert!(agents::connect::points_at_gateway(
+            ctx,
+            agents::spec(id).unwrap()
+        ));
         let read = || agents::files::parse_jsonc(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(read()[key], changed_value);
         disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
@@ -158,7 +176,11 @@ fn editor_rejects_switched_target_with_identical_preferences() {
         assert_ne!(before.snapshot.source, after.snapshot.source);
         assert_eq!(before.snapshot.contents, after.snapshot.contents);
         let stale = config(ctx, id, Some((&before.snapshot, draft)));
-        assert_eq!(std::fs::read_to_string(&second).unwrap(), initial, "{id}: stale save wrote the new target");
+        assert_eq!(
+            std::fs::read_to_string(&second).unwrap(),
+            initial,
+            "{id}: stale save wrote the new target"
+        );
         assert!(stale.is_err(), "{id}");
         assert_eq!(std::fs::read_to_string(&first).unwrap(), initial);
         config(ctx, id, Some((&after.snapshot, draft))).unwrap();
@@ -183,9 +205,20 @@ fn editor_vscode_writes_only_default_user_settings() {
         std::fs::write(&default_settings, initial).unwrap();
         let before = config(ctx, id, None).unwrap();
         assert!(before.snapshot.source.contains("默认 User/settings.json"));
-        assert!(before.snapshot.source.contains(default_settings.to_str().unwrap()));
-        config(ctx, id, Some((&before.snapshot, r#"{"editor.fontSize":16}"#))).unwrap();
-        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(default_settings).unwrap()).unwrap();
+        assert!(
+            before
+                .snapshot
+                .source
+                .contains(default_settings.to_str().unwrap())
+        );
+        config(
+            ctx,
+            id,
+            Some((&before.snapshot, r#"{"editor.fontSize":16}"#)),
+        )
+        .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(default_settings).unwrap()).unwrap();
         assert_eq!(saved["editor.fontSize"], 16);
         assert_eq!(std::fs::read_to_string(profile_settings).unwrap(), initial);
         assert!(!models.exists());
@@ -198,10 +231,18 @@ fn editor_opens_every_adapter_without_connecting_or_creating_files() {
     let before = snapshot(&fixture.home);
     let ctx = &fixture.ctx;
     let bindings = ctx.gateway.load().unwrap().bindings;
-    for id in agents::all().iter().map(|spec| spec.id).chain(["codex", "claude", "grok", "claude-desktop-local"]) {
-        let view = agents::editor::config(ctx, id, None).unwrap_or_else(|error| panic!("{id}: {error:#}"));
+    for id in agents::all().iter().map(|spec| spec.id).chain([
+        "codex",
+        "claude",
+        "grok",
+        "claude-desktop-local",
+    ]) {
+        let view =
+            agents::editor::config(ctx, id, None).unwrap_or_else(|error| panic!("{id}: {error:#}"));
         assert!(!view.snapshot.source.is_empty(), "{id}");
-        if !view.editable { assert!(agents::editor::config(ctx, id, Some((&view.snapshot, "{}"))).is_err()); }
+        if !view.editable {
+            assert!(agents::editor::config(ctx, id, Some((&view.snapshot, "{}"))).is_err());
+        }
     }
     assert_eq!(bindings, ctx.gateway.load().unwrap().bindings);
     assert_eq!(before, snapshot(&fixture.home));
@@ -212,23 +253,57 @@ fn editor_keeps_unrelated_toml_yaml_and_nested_json_fields() {
     let fixture = fixture();
     let ctx = &fixture.ctx;
     for (id, input, draft, excluded, expected) in [
-        ("stepcode", "# setup\ntheme = 'dark'\n[providers.mine]\napi_key = 'fixture'\n", "theme = 'light'", "api_key", "light"),
-        ("omp", "# setup\ntheme: dark\nmodelRoles:\n  default: fixture\n", r#"{"theme":"light"}"#, "modelRoles", "light"),
-        ("gemini-cli", "{\n// setup\n\"security\":{\"fixture\":true},\"ui\":{\"hideBanner\":false}}", r#"{"hideBanner":true}"#, "security", "true"),
-        ("openchamber", r#"{"version":1,"fields":{"theme":{"value":"dark","updatedAt":1},"defaultModel":{"value":"fixture"}}}"#, r#"{"theme":"light"}"#, "defaultModel", "light"),
+        (
+            "stepcode",
+            "# setup\ntheme = 'dark'\n[providers.mine]\napi_key = 'fixture'\n",
+            "theme = 'light'",
+            "api_key",
+            "light",
+        ),
+        (
+            "omp",
+            "# setup\ntheme: dark\nmodelRoles:\n  default: fixture\n",
+            r#"{"theme":"light"}"#,
+            "modelRoles",
+            "light",
+        ),
+        (
+            "gemini-cli",
+            "{\n// setup\n\"security\":{\"fixture\":true},\"ui\":{\"hideBanner\":false}}",
+            r#"{"hideBanner":true}"#,
+            "security",
+            "true",
+        ),
+        (
+            "openchamber",
+            r#"{"version":1,"fields":{"theme":{"value":"dark","updatedAt":1},"defaultModel":{"value":"fixture"}}}"#,
+            r#"{"theme":"light"}"#,
+            "defaultModel",
+            "light",
+        ),
     ] {
         let path = (agents::spec(id).unwrap().config_path)(&ctx.agent_env);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, input).unwrap();
         let view = agents::editor::config(ctx, id, None).unwrap();
         assert!(!view.snapshot.contents.contains(excluded));
-        assert!(agents::editor::config(ctx, id, Some((&view.snapshot, r#"{"model":"x"}"#))).is_err());
+        assert!(
+            agents::editor::config(ctx, id, Some((&view.snapshot, r#"{"model":"x"}"#))).is_err()
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), input);
         agents::editor::config(ctx, id, Some((&view.snapshot, draft))).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains(excluded) && text.contains("fixture"));
-        if input.contains("setup") { assert!(text.contains("setup")); }
-        assert!(agents::editor::config(ctx, id, None).unwrap().snapshot.contents.contains(expected));
+        if input.contains("setup") {
+            assert!(text.contains("setup"));
+        }
+        assert!(
+            agents::editor::config(ctx, id, None)
+                .unwrap()
+                .snapshot
+                .contents
+                .contains(expected)
+        );
     }
 }
 
@@ -238,16 +313,28 @@ fn editor_preserves_siblings_and_rejects_ambiguous_drafts() {
     let fixture = fixture();
     let ctx = &fixture.ctx;
     for (id, original, updated, draft, invalid) in [
-        ("jcode", "[ui]\ntheme  =  'dark' # mine\n[provider]\nname = 'mine'\n",
-         "[ui]\ntheme  =  \"light\" # mine\n[provider]\nname = 'mine'\n", "theme = 'light'", "theme = 'a'\ntheme = 'b'"),
-        ("gemini-cli", "{\r\n  // mine\r\n  \"ui\": {\"theme\": \"dark\", \"other\": [1, 2,],},\r\n}\r\n",
-         "{\r\n  // mine\r\n  \"ui\": {\"theme\": \"light\", \"other\": [1, 2,],},\r\n}\r\n", "{/* draft */ \"theme\": \"light\",}", "{\"theme\":\"a\",\"theme\":\"b\"}"),
+        (
+            "jcode",
+            "[ui]\ntheme  =  'dark' # mine\n[provider]\nname = 'mine'\n",
+            "[ui]\ntheme  =  \"light\" # mine\n[provider]\nname = 'mine'\n",
+            "theme = 'light'",
+            "theme = 'a'\ntheme = 'b'",
+        ),
+        (
+            "gemini-cli",
+            "{\r\n  // mine\r\n  \"ui\": {\"theme\": \"dark\", \"other\": [1, 2,],},\r\n}\r\n",
+            "{\r\n  // mine\r\n  \"ui\": {\"theme\": \"light\", \"other\": [1, 2,],},\r\n}\r\n",
+            "{/* draft */ \"theme\": \"light\",}",
+            "{\"theme\":\"a\",\"theme\":\"b\"}",
+        ),
     ] {
         let path = (agents::spec(id).unwrap().config_path)(&ctx.agent_env);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, original).unwrap();
         let view = config(ctx, id, None).unwrap();
-        assert!(!view.snapshot.contents.contains("mine") && view.snapshot.contents.contains("dark"));
+        assert!(
+            !view.snapshot.contents.contains("mine") && view.snapshot.contents.contains("dark")
+        );
         assert!(config(ctx, id, Some((&view.snapshot, invalid))).is_err());
         if id == "gemini-cli" {
             assert!(config(ctx, id, Some((&view.snapshot, "// no object"))).is_err());
@@ -256,7 +343,10 @@ fn editor_preserves_siblings_and_rejects_ambiguous_drafts() {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         let saved = config(ctx, id, Some((&view.snapshot, draft))).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), updated);
-        assert_eq!(config(ctx, id, None).unwrap().snapshot.contents, saved.snapshot.contents);
+        assert_eq!(
+            config(ctx, id, None).unwrap().snapshot.contents,
+            saved.snapshot.contents
+        );
     }
 }
 
@@ -278,12 +368,22 @@ fn editor_round_trips_quoted_yaml_strings_without_coercion() {
     ] {
         std::fs::write(&path, format!("theme: {literal}\n{model_roles}")).unwrap();
         let view = config(ctx, "omp", None).unwrap();
-        assert_eq!(serde_saphyr::from_str::<Value>(&view.snapshot.contents).unwrap(), json!({"theme": expected}));
+        assert_eq!(
+            serde_saphyr::from_str::<Value>(&view.snapshot.contents).unwrap(),
+            json!({"theme": expected})
+        );
         let draft = json!({"theme": "false"});
         config(ctx, "omp", Some((&view.snapshot, &draft.to_string()))).unwrap();
-        assert_eq!(serde_saphyr::from_str::<Value>(&config(ctx, "omp", None).unwrap().snapshot.contents).unwrap(), draft);
+        assert_eq!(
+            serde_saphyr::from_str::<Value>(&config(ctx, "omp", None).unwrap().snapshot.contents)
+                .unwrap(),
+            draft
+        );
         let saved = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(serde_saphyr::from_str::<Value>(&saved).unwrap()["theme"], "false");
+        assert_eq!(
+            serde_saphyr::from_str::<Value>(&saved).unwrap()["theme"],
+            "false"
+        );
         assert!(saved.contains(model_roles));
     }
     let previous = config(ctx, "omp", None).unwrap();
@@ -300,8 +400,22 @@ fn editor_round_trips_quoted_yaml_strings_without_coercion() {
 fn native_preferences_survive_gateway_refresh_and_disconnect() {
     use agents::editor::config;
     for (id, input, first, second, expected, untouched) in [
-        ("hermes", "# personal\ndisplay:\n  skin: night # my setting\n  language: en\nnotes: &notes [one, two]\ncopy: *notes\n", "skin: day\nlanguage: zh", "skin: dusk\nlanguage: zh", "dusk", "notes: &notes [one, two]\ncopy: *notes"),
-        ("openclaw", "{\n  // personal\n  ui: {prefs: {locale: 'en',},},\n  untouched: [0xff, 'mine'],\n}\n", "{locale:'zh',}", "{locale:'fr',}", "fr", "untouched: [0xff, 'mine']"),
+        (
+            "hermes",
+            "# personal\ndisplay:\n  skin: night # my setting\n  language: en\nnotes: &notes [one, two]\ncopy: *notes\n",
+            "skin: day\nlanguage: zh",
+            "skin: dusk\nlanguage: zh",
+            "dusk",
+            "notes: &notes [one, two]\ncopy: *notes",
+        ),
+        (
+            "openclaw",
+            "{\n  // personal\n  ui: {prefs: {locale: 'en',},},\n  untouched: [0xff, 'mine'],\n}\n",
+            "{locale:'zh',}",
+            "{locale:'fr',}",
+            "fr",
+            "untouched: [0xff, 'mine']",
+        ),
     ] {
         let fixture = fixture();
         let ctx = &fixture.ctx;
@@ -314,12 +428,24 @@ fn native_preferences_survive_gateway_refresh_and_disconnect() {
         enable_binding(ctx, &agent, binding()).unwrap();
         config(ctx, id, Some((&saved.snapshot, second))).unwrap();
         codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap();
-        assert!(agents::connect::points_at_gateway(ctx, agents::spec(id).unwrap()));
+        assert!(agents::connect::points_at_gateway(
+            ctx,
+            agents::spec(id).unwrap()
+        ));
         disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
         let source = std::fs::read_to_string(&path).unwrap();
-        assert!(source.contains(untouched) && source.contains("personal"), "{source}");
+        assert!(
+            source.contains(untouched) && source.contains("personal"),
+            "{source}"
+        );
         assert!(!source.contains("127.0.0.1"));
-        assert!(config(ctx, id, None).unwrap().snapshot.contents.contains(expected));
+        assert!(
+            config(ctx, id, None)
+                .unwrap()
+                .snapshot
+                .contents
+                .contains(expected)
+        );
     }
 }
 
@@ -327,9 +453,17 @@ fn native_preferences_survive_gateway_refresh_and_disconnect() {
 fn native_preferences_can_create_a_missing_source_and_reject_bad_drafts() {
     use agents::editor::config;
     for (id, valid, invalid) in [
-        ("openclaw", "{locale:'zh',}", ["{locale:'en',locale:'fr'}", "{model:'override'}"]),
+        (
+            "openclaw",
+            "{locale:'zh',}",
+            ["{locale:'en',locale:'fr'}", "{model:'override'}"],
+        ),
         ("hermes", "skin: night", ["skin: [", "model: override"]),
-        ("jcode", "theme = 'light'", ["theme = [", "model = 'override'"]),
+        (
+            "jcode",
+            "theme = 'light'",
+            ["theme = [", "model = 'override'"],
+        ),
     ] {
         let fixture = fixture();
         let ctx = &fixture.ctx;
@@ -360,17 +494,33 @@ fn yaml_edits_preserve_block_scalars_and_refuse_anchor_side_effects() {
     let view = config(ctx, "omp", None).unwrap();
     assert!(config(ctx, "omp", Some((&view.snapshot, "theme: light"))).is_err());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
-    for broken in ["theme: [", "theme: dark\ntheme: light", "theme: one\n---\ntheme: two"] {
+    for broken in [
+        "theme: [",
+        "theme: dark\ntheme: light",
+        "theme: one\n---\ntheme: two",
+    ] {
         std::fs::write(&path, broken).unwrap();
         assert!(config(ctx, "omp", None).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), broken);
     }
-    std::fs::write(&path, "theme: |-\n  before\nmodelRoles: {default: untouched}\n").unwrap();
+    std::fs::write(
+        &path,
+        "theme: |-\n  before\nmodelRoles: {default: untouched}\n",
+    )
+    .unwrap();
     let view = config(ctx, "omp", None).unwrap();
-    config(ctx, "omp", Some((&view.snapshot, "theme: |-\n  first\n  second\n"))).unwrap();
+    config(
+        ctx,
+        "omp",
+        Some((&view.snapshot, "theme: |-\n  first\n  second\n")),
+    )
+    .unwrap();
     let source = std::fs::read_to_string(&path).unwrap();
     assert!(source.contains("modelRoles: {default: untouched}"));
-    assert_eq!(serde_saphyr::from_str::<serde_json::Value>(&source).unwrap()["theme"], "first\nsecond");
+    assert_eq!(
+        serde_saphyr::from_str::<serde_json::Value>(&source).unwrap()["theme"],
+        "first\nsecond"
+    );
 }
 
 #[test]
@@ -749,22 +899,36 @@ fn hermes_preserves_yaml_siblings_through_refresh_and_disconnect() {
         assert_eq!(read(), original);
 
         enable_binding(ctx, &agent, binding()).unwrap();
-        std::fs::write(&path, read().replace("0.3", "0.8").replace("Mine", "Edited")
-            .replace("deepseek-v4-pro", "external-model")).unwrap();
+        std::fs::write(
+            &path,
+            read()
+                .replace("0.3", "0.8")
+                .replace("Mine", "Edited")
+                .replace("deepseek-v4-pro", "external-model"),
+        )
+        .unwrap();
         codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap();
         let refreshed: Value = serde_saphyr::from_str(&read()).unwrap();
         assert_eq!(refreshed["model"]["default"], "deepseek-v4-pro");
         disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
         let restored: Value = serde_saphyr::from_str(&read()).unwrap();
-        assert_eq!(restored, serde_json::json!({"model":{"default":"mine","temperature":0.8},
-            "providers":{"mine":{"name":"Edited"}}}));
+        assert_eq!(
+            restored,
+            serde_json::json!({"model":{"default":"mine","temperature":0.8},
+            "providers":{"mine":{"name":"Edited"}}})
+        );
     }
 }
 
 #[test]
 fn hermes_refuses_unsafe_yaml_before_writing() {
-    for original in ["model: scalar\n", "providers: []\n", "model: {default: a, default: b}\n",
-        "model: &shared {default: mine}\ncopy: *shared\n", "model: {\n"] {
+    for original in [
+        "model: scalar\n",
+        "providers: []\n",
+        "model: {default: a, default: b}\n",
+        "model: &shared {default: mine}\ncopy: *shared\n",
+        "model: {\n",
+    ] {
         let fixture = fixture();
         let ctx = &fixture.ctx;
         let path = (agents::spec("hermes").unwrap().config_path)(&ctx.agent_env);
@@ -788,14 +952,27 @@ fn hermes_restores_legacy_top_level_yaml_stash_after_refresh() {
     let stash = serde_json::json!({"files":{(path.to_str().unwrap()):{
         "format":"yaml", "before":original, "changed":[{"path":["model"]},{"path":["providers"]}]
     }}});
-    std::fs::write(agents::connect::stash_path(ctx, "hermes"), stash.to_string()).unwrap();
-    let connected = std::fs::read_to_string(&path).unwrap().replace("deepseek-v4-pro", "old_gateway");
+    std::fs::write(
+        agents::connect::stash_path(ctx, "hermes"),
+        stash.to_string(),
+    )
+    .unwrap();
+    let connected = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("deepseek-v4-pro", "old_gateway");
     std::fs::write(&path, format!("{connected}\nnotes: keep\n")).unwrap();
-    assert_eq!(codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap(), 1);
+    assert_eq!(
+        codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap(),
+        1
+    );
     disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
-    let restored: serde_json::Value = serde_saphyr::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(restored, serde_json::json!({"model":{"default":"mine","temperature":0.3},
-        "providers":{"mine":{"name":"Mine"}},"notes":"keep"}));
+    let restored: serde_json::Value =
+        serde_saphyr::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(
+        restored,
+        serde_json::json!({"model":{"default":"mine","temperature":0.3},
+        "providers":{"mine":{"name":"Mine"}},"notes":"keep"})
+    );
 }
 
 #[test]
@@ -809,7 +986,11 @@ fn other_yaml_adapters_do_not_require_json_compatible_config() {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, original).unwrap();
     enable_binding(ctx, &agent, binding()).unwrap();
-    assert!(std::fs::read_to_string(&path).unwrap().starts_with(original));
+    assert!(
+        std::fs::read_to_string(&path)
+            .unwrap()
+            .starts_with(original)
+    );
     disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), original);
 }
@@ -828,12 +1009,18 @@ fn hermes_writes_flow_root_to_disk_and_restores_original_bytes() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, original).unwrap();
         enable_binding(ctx, &agent, binding()).unwrap();
-        let saved: serde_json::Value = serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let saved: serde_json::Value =
+            serde_saphyr::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let before: serde_json::Value = serde_saphyr::from_str(original).unwrap();
         assert_eq!(saved["user"], before["user"]);
         assert_eq!(saved["model"]["default"], "deepseek-v4-pro");
         assert_eq!(saved["model"]["provider"], "codexplus");
-        assert!(saved["providers"]["codexplus"]["base_url"].as_str().unwrap().ends_with("/gw/hermes/v1"));
+        assert!(
+            saved["providers"]["codexplus"]["base_url"]
+                .as_str()
+                .unwrap()
+                .ends_with("/gw/hermes/v1")
+        );
         assert!(agents::connect::stash_path(ctx, "hermes").is_file());
         disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), original.as_bytes());

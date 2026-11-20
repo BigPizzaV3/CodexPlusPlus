@@ -294,7 +294,9 @@ pub(super) fn read_preferences(text: &str) -> anyhow::Result<Value> {
         match &node.kind {
             Kind::Object(members) => {
                 let mut seen = std::collections::HashSet::new();
-                members.iter().all(|member| seen.insert(&member.key) && unique_keys(&member.value))
+                members
+                    .iter()
+                    .all(|member| seen.insert(&member.key) && unique_keys(&member.value))
             }
             Kind::Array(elements) => elements.iter().all(|element| unique_keys(&element.value)),
             Kind::Scalar => true,
@@ -311,7 +313,10 @@ pub(super) fn preference_draft(text: &str) -> anyhow::Result<serde_json::Map<Str
     let Value::Object(values) = read_preferences(text)? else {
         bail!("请输入 JSON 对象");
     };
-    ensure!(!super::files::strip_jsonc(text).trim().is_empty(), "请输入 JSON 对象；清空设置请使用 {{}}");
+    ensure!(
+        !super::files::strip_jsonc(text).trim().is_empty(),
+        "请输入 JSON 对象；清空设置请使用 {{}}"
+    );
     Ok(values)
 }
 

@@ -2135,14 +2135,21 @@ pub fn delete_gateway_group(id: String) -> CommandResult<Option<GatewayPayload>>
     )
 }
 
+/// 读取 Agent 配置编辑器的初始视图，不接入网关。
 #[tauri::command]
 pub fn read_agent_config(agent: String) -> Result<ConfigView, String> {
     editor::config(&context(), &agent, None).map_err(|error| format!("{error:#}"))
 }
 
+/// 保存用户偏好；来源或可编辑内容与快照不一致时拒绝保存。
 #[tauri::command]
-pub fn save_agent_config(agent: String, original: ConfigSnapshot, contents: String) -> Result<ConfigView, String> {
-    editor::config(&context(), &agent, Some((&original, &contents))).map_err(|error| format!("{error:#}"))
+pub fn save_agent_config(
+    agent: String,
+    original: ConfigSnapshot,
+    contents: String,
+) -> Result<ConfigView, String> {
+    editor::config(&context(), &agent, Some((&original, &contents)))
+        .map_err(|error| format!("{error:#}"))
 }
 
 /// 在访达 / 资源管理器里显示网关改动的 Agent 配置文件。
