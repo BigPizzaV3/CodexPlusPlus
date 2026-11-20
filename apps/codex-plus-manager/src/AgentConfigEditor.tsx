@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { t, tf } from "./i18n";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalFocus } from "./use-modal-focus";
 
-type ConfigView = { source: string; inputFormat: string; contents: string; keys: string[]; editable: boolean };
+type ConfigView = { source: string; inputFormat: string; contents: string; editable: boolean };
 
 export type ConfigTarget = { agent: string; name: string };
 export const OpenAgentConfig = createContext<((target: ConfigTarget, navigate: boolean) => void) | null>(null);
@@ -26,6 +26,7 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & { onC
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   const root = useRef<HTMLDivElement>(null);
+  const editorId = useId();
   const close = () => { if (!saving) onClose(); };
   useEscapeLayer(true, close);
   useModalFocus(root);
@@ -58,11 +59,9 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & { onC
         {view ? <>
           <p>{t("配置来源")}：<code>{view.source}</code></p>
           {view.editable ? <>
-            <p>{t("保存不会接入网关。只修改列出的用户设置。")}</p>
-            <p>{tf("输入格式：{0}", [view.inputFormat])}</p>
-            <details><summary>{t("可编辑字段")}</summary><code>{view.keys.join(", ")}</code></details>
-            <textarea aria-label={title} className="relay-file-textarea" rows={12} spellCheck={false} disabled={saving} value={draft} onChange={event => setDraft(event.currentTarget.value)} />
-          </> : <p>{t("此适配器没有已登记的可编辑字段。模型、路由和凭据仍由原入口管理。")}</p>}
+            <label htmlFor={editorId}>{tf("输入格式：{0}", [view.inputFormat])}</label>
+            <textarea id={editorId} className="relay-file-textarea" rows={12} spellCheck={false} disabled={saving} value={draft} onChange={event => setDraft(event.currentTarget.value)} />
+          </> : <p>{t("配置只读")}</p>}
         </> : null}
         {error ? <p role="alert" className="gw-disconnect-error">{error}</p> : null}
       </div>
