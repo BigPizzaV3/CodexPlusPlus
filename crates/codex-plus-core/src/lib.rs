@@ -44,6 +44,7 @@ pub mod disclaimed_spawn;
 pub mod connect;
 pub(crate) mod context_usage;
 pub mod diagnostic_log;
+pub mod diagnostic_redaction;
 pub mod dictation;
 pub mod dream_skin;
 pub mod dream_skin_community;

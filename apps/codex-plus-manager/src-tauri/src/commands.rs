@@ -11609,7 +11609,10 @@ fn diagnostics_report() -> String {
         "generatedAtMs": generated_at_ms,
         "version": codex_plus_core::version::VERSION,
         "overview": overview.payload,
-        "settings": settings,
+        // 报告会被整段贴进 issue：设置里的 Key、登录 token 一律打码（#3129）。
+        "settings": codex_plus_core::diagnostic_redaction::redact_report_value(
+            serde_json::to_value(&settings).unwrap_or_default()
+        ),
         "logs": {
             "diagnosticLogPath": codex_plus_core::paths::default_diagnostic_log_path(),
             "latestStatusPath": codex_plus_core::paths::default_latest_status_path()

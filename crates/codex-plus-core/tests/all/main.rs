@@ -38,6 +38,7 @@ mod config_doctor;
 mod context_window_top_level;
 mod custom_prompts;
 mod diagnostic_log;
+mod diagnostic_redaction;
 mod dsh_plugins;
 mod extension_codex;
 mod extension_curation;
