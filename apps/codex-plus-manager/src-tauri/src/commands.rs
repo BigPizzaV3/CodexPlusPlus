@@ -3232,7 +3232,8 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     // 早先用 `find_codex_processes_for_debug_port`，但它在非 macOS 上返回全部
     // Codex 进程：Windows 上只要有多开实例在跑，就会把「主 Codex 没开」误判成
     // 「已运行」，进而走进重启分支去停进程。
-    let app_running = codex_plus_core::cdp::endpoint_available(request.debug_port);
+    let app_running =
+        codex_plus_core::cdp::endpoint_available(running_debug_port(request.debug_port));
     if restart_disposition(request.sync_active_relay, app_running, cfg!(windows))
         == RestartDisposition::LaunchOnly
     {
@@ -3430,10 +3431,10 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<usize> {
         );
     }
     #[cfg(not(windows))]
-    let was_running = codex_plus_core::cdp::endpoint_available(request.debug_port)
-        || main_codex_running_without_debug_port();
+    let debug_port = running_debug_port(request.debug_port);
     #[cfg(not(windows))]
-    let debug_port = request.debug_port;
+    let was_running = codex_plus_core::cdp::endpoint_available(debug_port)
+        || main_codex_running_without_debug_port();
     #[cfg(target_os = "macos")]
     codex_plus_core::watcher::stop_main_codex_processes_and_wait(debug_port);
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -3447,6 +3448,32 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<usize> {
     anyhow::ensure!(!main_codex_running_without_debug_port(), "Codex 进程尚未退出");
     #[cfg(not(windows))]
     Ok(usize::from(was_running))
+}
+
+/// 主 Codex 实际在用的调试端口。
+///
+/// 首选端口被别的程序占着时，启动器会给 Codex 换一个空闲端口（见
+/// `ports::select_packaged_codex_debug_port`）。这时按表单里的端口探测，会把正在运行的 Codex
+/// 当成「没开」：「重启」只启动不停止、复用旧会话，「停止」直接报没有在运行（#3191）。
+/// 本进程拉起的会话还活着时，以它的端口为准。
+fn running_debug_port(requested: u16) -> u16 {
+    let session = codex_plus_launcher::session_snapshot();
+    resolve_running_debug_port(
+        requested,
+        session.owned.then_some(session.debug_port).flatten(),
+        codex_plus_core::cdp::endpoint_available,
+    )
+}
+
+fn resolve_running_debug_port(
+    requested: u16,
+    owned: Option<u16>,
+    endpoint_available: impl Fn(u16) -> bool,
+) -> u16 {
+    match owned {
+        Some(port) if port != requested && endpoint_available(port) => port,
+        _ => requested,
+    }
 }
 
 /// 主 Codex 开着却没带调试端口：从 Dock / Finder 等外部启动，调试端口探测不到它。
@@ -3488,7 +3515,7 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         }),
     );
     if !cfg!(windows)
-        && !codex_plus_core::cdp::endpoint_available(request.debug_port)
+        && !codex_plus_core::cdp::endpoint_available(running_debug_port(request.debug_port))
         && !main_codex_running_without_debug_port()
     {
         return ok("Codex 没有在运行。", json!({}));
@@ -12686,6 +12713,17 @@ base_url = "https://example.invalid/v1"
                 RestartDisposition::StopAndRestart
             );
         }
+    }
+
+    /// #3191：首选端口被别的程序占着、Codex 实际跑在备用端口时，重启和停止要认备用端口。
+    #[test]
+    fn running_port_follows_the_owned_session_when_it_moved_off_the_requested_port() {
+        let alive = |port: u16| port == 51234;
+        assert_eq!(resolve_running_debug_port(9229, Some(51234), alive), 51234);
+        // 本进程没有会话、会话就在首选端口、或会话端口已经不通：都按首选端口。
+        assert_eq!(resolve_running_debug_port(9229, None, alive), 9229);
+        assert_eq!(resolve_running_debug_port(9229, Some(9229), alive), 9229);
+        assert_eq!(resolve_running_debug_port(9229, Some(40000), alive), 9229);
     }
 
     #[test]
