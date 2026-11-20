@@ -571,10 +571,7 @@ impl SQLiteStorageAdapter {
         }
         if session.host_id.as_deref().is_none_or(|host| host == "local")
             && let Some(id) = crate::whale_usage::normalize_session_id(&thread_id)
-            && let Some(rollout) =
-                find_session_rollout(self.session_rollout_roots(), &id, |path| {
-                    rollout_header_matches(path, &id)
-                })
+            && let Some(rollout) = remembered_session_rollout(self.session_rollout_roots(), &id)
         {
             return Ok(CodexThreadRollout::Ready {
                 thread_id,
@@ -1061,6 +1058,44 @@ fn find_session_rollout(
         }
     }
     None
+}
+
+/// 没有 threads 行的会话按目录查找 rollout，找到的路径按「查找根 + 会话 id」记住。
+///
+/// 用量状态栏每一两秒问一次，不记的话每次都要重新遍历会话目录。
+/// 记住的路径每次仍核对文件头：文件被删、挪走或换成别的会话后重新查找。
+/// 没找到的不记，会话稍后落盘就能找到。
+fn remembered_session_rollout(roots: Vec<PathBuf>, thread_id: &str) -> Option<PathBuf> {
+    type Found = std::collections::BTreeMap<(Vec<PathBuf>, String), PathBuf>;
+    static FOUND: std::sync::Mutex<Found> = std::sync::Mutex::new(Found::new());
+    const LIMIT: usize = 256;
+    let key = (roots, thread_id.to_string());
+    let remembered = FOUND
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .cloned();
+    if let Some(path) = remembered
+        && rollout_header_matches(&path, thread_id)
+    {
+        return Some(path);
+    }
+    let found = find_session_rollout(key.0.clone(), thread_id, |path| {
+        rollout_header_matches(path, thread_id)
+    });
+    let mut cache = FOUND.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match &found {
+        Some(path) => {
+            if cache.len() >= LIMIT {
+                cache.clear();
+            }
+            cache.insert(key, path.clone());
+        }
+        None => {
+            cache.remove(&key);
+        }
+    }
+    found
 }
 
 fn rollout_header_matches(path: &Path, thread_id: &str) -> bool {

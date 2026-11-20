@@ -107,7 +107,10 @@ fn duplicate_target_is_stable_and_all_candidate_errors_are_distinct_from_missing
 #[test]
 fn both_usage_routes_find_unindexed_local_rollouts() {
     let id = "12345678-1234-4234-8234-123456789012";
-    for folder in ["sessions/2026/01/01", "archived_sessions"] {
+    for (folder, moved_to) in [
+        ("sessions/2026/01/01", "sessions/2026/01/02"),
+        ("archived_sessions", "archived_sessions/older"),
+    ] {
         let temp = tempfile::tempdir().unwrap();
         let legacy = temp.path().join("state_5.sqlite");
         database(&legacy, None);
@@ -139,6 +142,15 @@ fn both_usage_routes_find_unindexed_local_rollouts() {
         assert_eq!(live["events"][0]["total_tokens"], 23);
         assert_eq!(history["status"], "ok", "{history}");
         assert_eq!(history["history"][0]["usage"]["totalTokens"], 23);
+
+        // 找到的路径会被记住；文件挪了位置后要重新查找，不能一直指着旧路径。
+        let moved = temp.path().join(moved_to);
+        fs::create_dir_all(&moved).unwrap();
+        let moved = moved.join(path.file_name().unwrap());
+        fs::rename(&path, &moved).unwrap();
+        let live = adapter.codex_thread_usage_live(&session);
+        assert_eq!(live["status"], "ok", "{live}");
+        let path = moved;
 
         session.host_id = Some("remote".into());
         assert_eq!(adapter.codex_thread_usage_live(&session)["status"], "failed");
