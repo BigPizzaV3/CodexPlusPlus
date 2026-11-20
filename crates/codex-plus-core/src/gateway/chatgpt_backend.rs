@@ -356,8 +356,8 @@ pub fn codex_prompt_from_models(value: &Value, model: &str) -> Option<String> {
 ///
 /// 取 `models_cache.json` 的 `client_version` 与本机实际安装的 Codex CLI / Desktop 内置 CLI 版本中较新者，
 /// 且不低于内置基线：旧缓存不能把官方目录限制在旧客户端能看到的模型上（#3178）。
-/// 安装版本从缓存读、不在请求路径上起进程；还没探测到时只按缓存与基线取值。
-pub fn codex_version(codex_home: &Path) -> String {
+/// 等待冷缓存探测；只有探测确认未找到安装版本时才只按文件缓存与基线取值。
+pub async fn codex_version(codex_home: &Path) -> String {
     let cached = std::fs::read_to_string(codex_home.join("models_cache.json"))
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
@@ -369,7 +369,7 @@ pub fn codex_version(codex_home: &Path) -> String {
         });
     select_codex_version(
         cached.as_deref(),
-        crate::codex_cli_version::installed_codex_version_cached().as_deref(),
+        crate::codex_cli_version::installed_codex_version().await.as_deref(),
     )
 }
 
@@ -794,8 +794,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn prompts_and_versions_come_from_codex_models_cache() {
+    #[tokio::test]
+    async fn prompts_and_versions_come_from_codex_models_cache() {
         let cache = json!({ "client_version": "0.170.2", "models": [
             { "slug": "gpt-6.1-sol", "model_messages": { "instructions_template": "T" }, "base_instructions": "B" },
             { "slug": "gpt-6-luna", "base_instructions": "B2" }
@@ -813,7 +813,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         std::fs::write(temp.path().join("models_cache.json"), cache.to_string()).unwrap();
         assert_ne!(
-            crate::codex_cli_version::compare(&codex_version(temp.path()), "0.170.2"),
+            crate::codex_cli_version::compare(&codex_version(temp.path()).await, "0.170.2"),
             Some(std::cmp::Ordering::Less)
         );
         assert_eq!(
@@ -823,8 +823,8 @@ mod tests {
         assert!(codex_user_agent("0.170.2").starts_with("codex_cli_rs/0.170.2 ("));
     }
 
-    #[test]
-    fn obsolete_or_invalid_cache_cannot_downgrade_official_requests() {
+    #[tokio::test]
+    async fn obsolete_or_invalid_cache_cannot_downgrade_official_requests() {
         let builtin = crate::model_catalog::OFFICIAL_MODELS_CLIENT_VERSION;
         for version in [
             "0.124.0", "0.99.9", "0", "1.2", "1.2.3.4", "9.bad.0", "9.0.0\n", "",
@@ -840,7 +840,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let cache = json!({"client_version": "0.124.0"}).to_string();
         std::fs::write(temp.path().join("models_cache.json"), &cache).unwrap();
-        let _ = codex_version(temp.path());
+        let _ = codex_version(temp.path()).await;
         assert_eq!(
             std::fs::read_to_string(temp.path().join("models_cache.json")).unwrap(),
             cache,
