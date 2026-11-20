@@ -3,7 +3,7 @@
  * 网关模式与直连模式完全独立：供应商池、模型组只属于网关；所有接入的 Agent 共用整个池。
  * 模型名三种写法：裸模型名（池里提供它的供应商依次尝试）、`<供应商 id>/<模型>`、`group/<组 id>`。
  */
-import { PRESETS } from "./presets.ts";
+import { PRESETS, type ProviderPreset } from "./presets.ts";
 import { modelSlugFromRowName } from "./model-metadata.ts";
 import { normalizeSubscriptionPolicy, type SubscriptionPolicy, type SubscriptionPolicyInput } from "./subscription-policy.ts";
 import { providerHeaderInputs, providerHeaderRows, providerHeadersValidationMessage, type ProviderHeaderRow, type ProviderHeaderView } from "./relay-headers.ts";
@@ -1342,51 +1342,35 @@ const GATEWAY_EXTRA_PRESETS: GatewayPreset[] = [
   },
 ];
 
-/** 「添加供应商」里的全部预设：厂商（官方 / 国内官方）、中转、本机。 */
-/**
- * 赞助商：「添加供应商」目录里单独一组，放在最前面。到期日与赞助商广告清单一致，
- * 过了到期日（当天仍显示）就不再出现在目录里。续约时改这里的日期。
- */
-export const SPONSORS: Array<{ id: string; expiresAt: string }> = [
-  { id: "jojocode-max", expiresAt: "2029-06-15" },
-  { id: "runapi", expiresAt: "2026-12-07" },
-  { id: "apikeyfun", expiresAt: "2026-11-22" },
-  { id: "cccccc-api", expiresAt: "2026-12-01" },
-  { id: "tokenmy", expiresAt: "2026-11-20" },
-  { id: "vegaapi", expiresAt: "2027-03-18" },
-];
-
-/** 本地日期（YYYY-MM-DD），与到期日按天比较。 */
-function localDay(now: Date): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
-export function activeSponsorIds(now: Date = new Date()): string[] {
-  const today = localDay(now);
-  return SPONSORS.filter((sponsor) => sponsor.expiresAt >= today).map((sponsor) => sponsor.id);
-}
-
-export function gatewayPresets(now: Date = new Date()): GatewayPreset[] {
-  const sponsorIds = activeSponsorIds(now);
-  const expired = new Set(SPONSORS.map((sponsor) => sponsor.id).filter((id) => !sponsorIds.includes(id)));
-  const shared = PRESETS.filter((preset) => !expired.has(preset.id)).map((preset): GatewayPreset => ({
+function toGatewayPreset(preset: ProviderPreset, section: PresetSection): GatewayPreset {
+  return {
     key: preset.id,
     name: preset.name,
     baseUrl: preset.baseUrl,
     protocol: preset.protocol,
     model: preset.model,
     modelList: preset.modelList ?? (preset.model ? [preset.model] : []),
-    section: sponsorIds.includes(preset.id)
-      ? "sponsor"
-      : preset.category === "official" || preset.category === "cn_official" ? "vendor" : "relay",
+    section,
     apiKeyUrl: preset.apiKeyUrl,
-  }));
+  };
+}
+
+/**
+ * 「添加供应商」里的全部预设：赞助商单独一组放在最前（来自远端推荐清单，见 sponsorPresets），
+ * 然后是厂商（官方 / 国内官方）、中转、本机。
+ */
+export function gatewayPresets(sponsors: ProviderPreset[] = []): GatewayPreset[] {
+  const sponsorIds = new Set(sponsors.map((preset) => preset.id));
+  const shared = PRESETS.filter((preset) => !sponsorIds.has(preset.id)).map((preset) =>
+    toGatewayPreset(preset, preset.category === "official" || preset.category === "cn_official" ? "vendor" : "relay"));
   const vendors = [...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "vendor"), ...shared.filter((preset) => preset.section === "vendor")];
   const relays = [...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "relay"), ...shared.filter((preset) => preset.section === "relay")];
-  // 赞助商按名单顺序排。
-  const sponsors = sponsorIds.flatMap((id) => shared.filter((preset) => preset.key === id));
-  return [...sponsors, ...vendors, ...relays, ...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "local")];
+  return [
+    ...sponsors.map((preset) => toGatewayPreset(preset, "sponsor")),
+    ...vendors,
+    ...relays,
+    ...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "local"),
+  ];
 }
 
 function normalizeUrl(url: string): string {

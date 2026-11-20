@@ -71,6 +71,7 @@ import { gatewayJump } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
+import { useSponsorPresets } from "./sponsor-store";
 
 /** 能在网关里直接登录的订阅。 */
 type AccountKind = "chatgpt" | "chatgpt-api" | "copilot" | "grok" | `sub:${string}`;
@@ -1145,7 +1146,8 @@ function ProviderCatalog({
 }) {
   const [query, setQuery] = useState("");
   const [importing, setImporting] = useState(false);
-  const presets = useMemo(() => gatewayPresets(), []);
+  const sponsors = useSponsorPresets();
+  const presets = useMemo(() => gatewayPresets(sponsors), [sponsors]);
   const needle = query.trim().toLowerCase();
   const hit = (...values: string[]) => !needle || values.some((value) => value.toLowerCase().includes(needle));
   const presetItems = (section: PresetSection): CatalogItem[] => presets

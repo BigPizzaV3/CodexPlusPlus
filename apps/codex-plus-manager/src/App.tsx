@@ -103,6 +103,7 @@ import {
 } from "lucide-react";
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
 import { PRESETS, type ProviderPreset } from "./presets";
+import { setSponsorAds, useSponsorPresets } from "./sponsor-store";
 import { createPortal } from "react-dom";
 import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
@@ -3828,6 +3829,7 @@ export function App() {
     const result = await run(() => call<AdsResult>("load_ads"));
     if (result) {
       setAds(result);
+      setSponsorAds(result);
       if (!silent) showResultNotice(t("推荐内容"), result, { silentSuccess: true });
     }
   };
@@ -8770,7 +8772,10 @@ function ProviderCatalogScreen({
     { id: "aggregator", label: t("聚合/中转") },
     { id: "third_party", label: t("第三方平台") },
   ];
-  const filteredPresets = PRESETS.filter((preset) => {
+  // 赞助商排在「聚合/中转」最前面。
+  const sponsors = useSponsorPresets();
+  const sponsorIds = new Set(sponsors.map((preset) => preset.id));
+  const filteredPresets = [...sponsors, ...PRESETS.filter((preset) => !sponsorIds.has(preset.id))].filter((preset) => {
     const haystack = `${preset.name} ${preset.baseUrl} ${preset.model}`.toLowerCase();
     return !query.trim() || haystack.includes(query.trim().toLowerCase());
   });

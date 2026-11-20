@@ -13439,9 +13439,7 @@ ${key} = ${value}`]);
     MIN_GATEWAY_PORT: () => MIN_GATEWAY_PORT,
     QUEUE_REASON_PREFIX: () => QUEUE_REASON_PREFIX,
     RECENT_USE_MS: () => RECENT_USE_MS,
-    SPONSORS: () => SPONSORS,
     activeAutoGroup: () => activeAutoGroup,
-    activeSponsorIds: () => activeSponsorIds,
     agentModels: () => agentModels,
     agentName: () => agentName,
     agentPoolProviders: () => agentPoolProviders,
@@ -13682,28 +13680,7 @@ ${key} = ${value}`]);
       modelList: ["LongCat-Flash-Chat"],
       websiteUrl: "https://longcat.chat/platform"
     },
-    // ── 聚合/中转 ──
-    {
-      id: "jojocode-max",
-      name: "JOJO Code",
-      websiteUrl: "https://max2.jojocode.com/",
-      apiKeyUrl: "https://max2.jojocode.com/",
-      category: "aggregator",
-      baseUrl: "https://max2.jojocode.com/v1",
-      protocol: "responses",
-      // 模型留空：添加时「从上游获取」或手填。
-      model: ""
-    },
-    {
-      id: "runapi",
-      name: "RunAPI",
-      websiteUrl: "https://runapi.host",
-      apiKeyUrl: "https://runapi.host",
-      category: "aggregator",
-      baseUrl: "https://runapi.host/v1",
-      protocol: "responses",
-      model: "gpt-5.5"
-    },
+    // ── 聚合/中转（赞助商不在这里，见 sponsorPresets）──
     {
       id: "siliconflow",
       name: "SiliconFlow",
@@ -13733,49 +13710,6 @@ ${key} = ${value}`]);
       protocol: "responses",
       model: "gpt-5.5",
       websiteUrl: "https://aihubmix.com"
-    },
-    {
-      id: "apikeyfun",
-      name: "APIKEY.FUN",
-      category: "aggregator",
-      baseUrl: "https://api.apikey.fan/v1",
-      protocol: "responses",
-      model: "gpt-5.5",
-      modelList: ["gpt-5.5"],
-      websiteUrl: "https://apikey.fan"
-    },
-    {
-      id: "cccccc-api",
-      name: "ccccccAPI",
-      websiteUrl: "https://dzhsmartai.com",
-      apiKeyUrl: "https://dzhsmartai.com/register?promo=CODEXPLUSPLUS",
-      category: "aggregator",
-      baseUrl: "https://dzhsmartai.com/v1",
-      protocol: "responses",
-      // 模型留空：添加时「从上游获取」或手填。
-      model: ""
-    },
-    {
-      id: "tokenmy",
-      name: "TokenMy",
-      websiteUrl: "https://agent.tokenmy.ai",
-      apiKeyUrl: "https://agent.tokenmy.ai",
-      category: "aggregator",
-      baseUrl: "https://agent.tokenmy.ai/v1",
-      protocol: "responses",
-      // 模型留空：添加时「从上游获取」或手填。
-      model: ""
-    },
-    {
-      id: "vegaapi",
-      name: "VegaAPI",
-      websiteUrl: "https://vegaapi.com",
-      apiKeyUrl: "https://vegaapi.com/register",
-      category: "aggregator",
-      baseUrl: "https://vegaapi.com/v1",
-      protocol: "responses",
-      // 模型留空：添加时「从上游获取」或手填。
-      model: ""
     },
     {
       id: "novita",
@@ -14605,39 +14539,29 @@ ${key} = ${value}`]);
       defaultKey: "lm-studio"
     }
   ];
-  var SPONSORS = [
-    { id: "jojocode-max", expiresAt: "2029-06-15" },
-    { id: "runapi", expiresAt: "2026-12-07" },
-    { id: "apikeyfun", expiresAt: "2026-11-22" },
-    { id: "cccccc-api", expiresAt: "2026-12-01" },
-    { id: "tokenmy", expiresAt: "2026-11-20" },
-    { id: "vegaapi", expiresAt: "2027-03-18" }
-  ];
-  function localDay(now) {
-    const pad = (value) => String(value).padStart(2, "0");
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-  }
-  function activeSponsorIds(now = /* @__PURE__ */ new Date()) {
-    const today = localDay(now);
-    return SPONSORS.filter((sponsor) => sponsor.expiresAt >= today).map((sponsor) => sponsor.id);
-  }
-  function gatewayPresets(now = /* @__PURE__ */ new Date()) {
-    const sponsorIds = activeSponsorIds(now);
-    const expired = new Set(SPONSORS.map((sponsor) => sponsor.id).filter((id) => !sponsorIds.includes(id)));
-    const shared = PRESETS.filter((preset) => !expired.has(preset.id)).map((preset) => ({
+  function toGatewayPreset(preset, section) {
+    return {
       key: preset.id,
       name: preset.name,
       baseUrl: preset.baseUrl,
       protocol: preset.protocol,
       model: preset.model,
       modelList: preset.modelList ?? (preset.model ? [preset.model] : []),
-      section: sponsorIds.includes(preset.id) ? "sponsor" : preset.category === "official" || preset.category === "cn_official" ? "vendor" : "relay",
+      section,
       apiKeyUrl: preset.apiKeyUrl
-    }));
+    };
+  }
+  function gatewayPresets(sponsors = []) {
+    const sponsorIds = new Set(sponsors.map((preset) => preset.id));
+    const shared = PRESETS.filter((preset) => !sponsorIds.has(preset.id)).map((preset) => toGatewayPreset(preset, preset.category === "official" || preset.category === "cn_official" ? "vendor" : "relay"));
     const vendors = [...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "vendor"), ...shared.filter((preset) => preset.section === "vendor")];
     const relays = [...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "relay"), ...shared.filter((preset) => preset.section === "relay")];
-    const sponsors = sponsorIds.flatMap((id) => shared.filter((preset) => preset.key === id));
-    return [...sponsors, ...vendors, ...relays, ...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "local")];
+    return [
+      ...sponsors.map((preset) => toGatewayPreset(preset, "sponsor")),
+      ...vendors,
+      ...relays,
+      ...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "local")
+    ];
   }
   function normalizeUrl(url) {
     return url.trim().replace(/\/+$/, "").toLowerCase();
