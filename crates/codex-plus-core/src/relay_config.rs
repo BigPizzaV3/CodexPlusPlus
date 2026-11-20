@@ -3834,6 +3834,10 @@ fn preserve_live_app_settings(home: &Path, config_text: &str) -> anyhow::Result<
     // `[memories]`（记忆的提取/整合模型等）同样是用户在 Codex 里的本机设置，
     // 切换供应商或重启时不能被模板冲掉（#2021）。
     preserve_missing_table_keys(&mut target_doc, &live_doc, "memories");
+    // `[permissions.<名字>]` 权限档由用户自己维护，模板和通用配置都不管理它（#3016）。
+    // 切入的供应商快照里没有这张表、或只有通用配置里的旧副本时，档会整条消失或丢键，
+    // 根上的 `default_permissions` 却还指着它。live 有而目标缺的档整条补回，同名档只补缺的键。
+    preserve_missing_permission_profiles(&mut target_doc, &live_doc);
     // hooks 的定义部分（除 state 外的键）同样由用户/桌面端管理，模板里没有时
     // 从 live 补回，否则切换供应商会把定义整段丢掉，只剩 hooks.state。
     preserve_live_hook_definitions(&mut target_doc, &live_doc);
@@ -3874,6 +3878,19 @@ fn preserve_missing_table_keys(
             target_table.insert(key, value.clone());
         }
     }
+}
+
+fn preserve_missing_permission_profiles(target_doc: &mut DocumentMut, live_doc: &DocumentMut) {
+    let Some(live_profiles) = live_doc.get("permissions").filter(|item| item.is_table_like()) else {
+        return;
+    };
+    if target_doc.get("permissions").and_then(Item::as_table_like).is_none() {
+        // 只有 `[permissions.<名字>]` 子表，不单独写一行空的 `[permissions]`。
+        let mut profiles = toml_edit::Table::new();
+        profiles.set_implicit(true);
+        target_doc["permissions"] = Item::Table(profiles);
+    }
+    fill_missing_toml_item(&mut target_doc["permissions"], live_profiles);
 }
 
 /// 多开实例（#3144）：`[windows]`（Windows 沙箱实现 elevated / unelevated 等）以主实例

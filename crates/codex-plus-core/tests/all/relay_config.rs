@@ -9062,6 +9062,73 @@ fn stale_codex_managed_mcp_in_snapshot_is_dropped_when_live_is_empty() {
     assert!(!out.contains("node_repl"), "{out}");
 }
 
+/// 回归（#3016）：`[permissions.<名字>]` 权限档是用户自己维护的。切入的供应商模板里没有它、
+/// 或只有一份旧副本时，档不能整条消失或丢键，否则根上的 `default_permissions` 指向不存在的档。
+#[test]
+fn live_permission_profiles_survive_a_template_without_them() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"default_permissions = "work"
+
+[permissions.work]
+approval_policy = "on-request"
+network_access = true
+
+[permissions.work.filesystem]
+writable_roots = ["/srv/work"]
+
+[permissions.readonly]
+approval_policy = "never"
+"#,
+    )
+    .unwrap();
+    // 模板（通用配置里的旧副本）只有 work 档的一个键，值和 live 不同；没有 readonly 档。
+    let template = r#"model = "gpt-5"
+default_permissions = "work"
+
+[permissions.work]
+network_access = false
+"#;
+
+    let out = codex_plus_core::relay_config::preserve_live_app_settings_for_test(temp.path(), template)
+        .unwrap();
+    let doc = out.parse::<toml_edit::DocumentMut>().unwrap();
+    let work = &doc["permissions"]["work"];
+    assert_eq!(work["network_access"].as_bool(), Some(false), "模板已有的键以模板为准：\n{out}");
+    assert_eq!(work["approval_policy"].as_str(), Some("on-request"), "缺的键从 live 补回：\n{out}");
+    assert_eq!(
+        work["filesystem"]["writable_roots"][0].as_str(),
+        Some("/srv/work"),
+        "缺的子表从 live 补回：\n{out}"
+    );
+    assert_eq!(
+        doc["permissions"]["readonly"]["approval_policy"].as_str(),
+        Some("never"),
+        "模板里没有的档整条补回：\n{out}"
+    );
+
+    // 模板完全没有 permissions 时同样补回，且不多出一行空的 `[permissions]`。
+    let out = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        temp.path(),
+        "model = \"gpt-5\"\ndefault_permissions = \"work\"\n",
+    )
+    .unwrap();
+    assert!(out.contains("[permissions.work]"), "{out}");
+    assert!(out.contains("[permissions.readonly]"), "{out}");
+    assert!(!out.lines().any(|line| line.trim() == "[permissions]"), "{out}");
+
+    // live 没有权限档时不凭空加表。
+    let empty = tempfile::tempdir().unwrap();
+    std::fs::write(empty.path().join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+    let out = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        empty.path(),
+        "model = \"gpt-5\"\n",
+    )
+    .unwrap();
+    assert!(!out.contains("permissions"), "{out}");
+}
+
 /// 回归（#3115）：`[[skills.config]]` 是按 path / name 列条的数组，切换渠道时
 /// 不能把整段换成模板里的那几条。模板同 path 的条目覆盖，其余 live 条目保留。
 #[test]
