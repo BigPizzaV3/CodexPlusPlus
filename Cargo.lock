@@ -510,8 +510,8 @@ dependencies = [
 
 [[package]]
 name = "claude-local"
-version = "0.1.9"
-source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=898751ee07b89171bb4ae996fd60095a359346e2#898751ee07b89171bb4ae996fd60095a359346e2"
+version = "0.1.12"
+source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=26fd340280b738004c0931c048239081f7f1fac4#26fd340280b738004c0931c048239081f7f1fac4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
