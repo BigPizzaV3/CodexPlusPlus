@@ -101,7 +101,8 @@ pub struct RelayProfile {
     #[serde(
         rename = "modelWindows",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_windows: String,
     /// 每模型自动压缩百分比（JSON map: slug -> 百分比字符串，如 "90" 或 "90%"）。
@@ -109,17 +110,24 @@ pub struct RelayProfile {
     #[serde(
         rename = "modelAutoCompact",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_auto_compact: String,
     /// 每模型元数据覆盖（JSON map: slug -> 字段覆盖）。
     #[serde(
         rename = "modelMetadata",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_metadata: String,
-    #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "modelVlm",
+        default,
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
+    )]
     pub model_vlm: String,
     #[serde(
         rename = "vlmApiKey",
@@ -2400,6 +2408,18 @@ where
         .unwrap_or_else(default_stepwise_timeout_ms))
 }
 
+// 兼容直接写入 JSON 对象的配置；保存时仍使用原有文本形态。
+fn deserialize_json_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<Value>::deserialize(deserializer)? {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(text)) => text,
+        Some(other) => other.to_string(),
+    })
+}
+
 fn deserialize_profile_api_key<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -4486,6 +4506,28 @@ mod tests {
         };
 
         assert!(settings.active_relay_uses_protocol_proxy());
+    }
+
+    #[test]
+    fn relay_profile_accepts_json_text_fields_written_as_maps() {
+        let profile: RelayProfile = serde_json::from_value(serde_json::json!({
+            "id": "relay",
+            "name": "Relay",
+            "modelWindows": { "model-a": 500000 },
+            "modelAutoCompact": { "model-a": 80 },
+            "modelMetadata": { "model-a": { "supports_search_tool": true } },
+            "modelVlm": { "model-a": "strip" }
+        }))
+        .unwrap();
+
+        let saved = serde_json::to_value(&profile).unwrap();
+        assert_eq!(saved["modelWindows"], r#"{"model-a":500000}"#);
+        assert_eq!(saved["modelAutoCompact"], r#"{"model-a":80}"#);
+        assert_eq!(
+            saved["modelMetadata"],
+            r#"{"model-a":{"supports_search_tool":true}}"#
+        );
+        assert_eq!(saved["modelVlm"], r#"{"model-a":"strip"}"#);
     }
 
     #[test]
