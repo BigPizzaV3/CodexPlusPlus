@@ -105,6 +105,7 @@ pub(crate) mod responses_exec_transport;
 pub(crate) mod rollout_file;
 pub mod routes;
 pub mod script_market;
+pub mod session_names;
 pub mod side_chat;
 pub mod session_tuning;
 pub mod settings;

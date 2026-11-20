@@ -4,6 +4,7 @@
 //! 整理过的条目（消息、工具调用、工具结果、推理摘要），不含加密推理内容与 Codex 注入的环境上下文。
 
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::Context;
 use rusqlite::{Connection, OpenFlags, params_from_iter};
@@ -13,6 +14,8 @@ use serde_json::{Value, json};
 pub const MAX_PAGE: usize = 500;
 /// 单个条目文本的截断长度（工具输出可能极长）。
 const MAX_TEXT: usize = 20_000;
+
+static THREAD_NAMES: OnceLock<Mutex<crate::session_names::ThreadNameCache>> = OnceLock::new();
 
 /// Codex 注入到用户消息里的上下文块，不是用户自己说的话。
 const INJECTED_PREFIXES: &[&str] = &[
@@ -442,7 +445,16 @@ pub fn call(home: &Path, method: &str, params: &Value) -> anyhow::Result<Value> 
             let (session, events) = session_events(home, &id_param()?)?;
             json!({ "session": session, "events": events })
         }
-        "readTitle" => get_session(home, &id_param()?)?["title"].take(),
+        "readTitle" => {
+            let id = id_param()?;
+            let mut title = get_session(home, &id)?["title"].take();
+            let mut names = THREAD_NAMES.get_or_init(Default::default).lock()
+                .map_err(|_| anyhow::anyhow!("会话名称缓存不可用"))?;
+            if let Some(name) = names.names(&home.join("session_index.jsonl")).get(&id) {
+                title = Value::String(name.clone());
+            }
+            title
+        }
         "listEvents" => {
             let (_, events) = session_events(home, &id_param()?)?;
             let types = type_filter(&options);
