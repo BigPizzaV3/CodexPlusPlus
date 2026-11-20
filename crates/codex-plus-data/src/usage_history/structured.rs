@@ -490,6 +490,11 @@ impl RequestEvidenceCache {
             };
         }
         self.bytes_read = 0;
+        let Ok(guard) = codex_plus_core::request_log::lock_request_log() else {
+            self.records.clear();
+            self.stamp = None;
+            return;
+        };
         let metadata = fs::symlink_metadata(path).ok().filter(|m| m.is_file());
         let stamp = metadata
             .as_ref()
@@ -502,7 +507,7 @@ impl RequestEvidenceCache {
         let Some(metadata) = metadata.filter(|m| m.len() <= MAX_REQUEST_LOG_BYTES) else {
             return;
         };
-        let Ok(file) = File::open(path) else {
+        let Ok(mut file) = File::open(path) else {
             self.stamp = None;
             return;
         };
@@ -515,8 +520,15 @@ impl RequestEvidenceCache {
             return;
         }
         self.reads += 1;
+        let mut contents = Vec::with_capacity(metadata.len() as usize);
+        let read_result = (&mut file).take(metadata.len()).read_to_end(&mut contents);
+        drop(guard);
+        if read_result.is_err() {
+            self.stamp = None;
+            return;
+        }
         // 总量和单行均有界；serde 跳过未声明字段，不分配 error/正文字符串。
-        let mut reader = BufReader::new(file.take(metadata.len()));
+        let mut reader = BufReader::new(contents.as_slice());
         let mut line = Vec::new();
         let mut oversized = false;
         let result = (|| -> io::Result<()> {
