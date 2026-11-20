@@ -1051,7 +1051,8 @@ mod tests {
             {"urlPattern":URL,"resourceType":"Script","requestStage":"Response"}
         ]));
         let script = matching("Page.addScriptToEvaluateOnNewDocument")[0]["params"]["source"].as_str().unwrap();
-        assert!(!script.contains("installModules(["));
+        assert!(!script.contains(";window.__codexPlusNativeFastUnlock.installModules("));
+        assert!(script.contains("\"reason\":\"response-interception-armed\""));
         let completed = matching("Fetch.fulfillRequest");
         assert_eq!(completed.len(), 2);
         assert_eq!(completed[0]["params"]["requestId"], "success");
