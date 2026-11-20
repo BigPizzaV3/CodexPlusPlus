@@ -528,6 +528,32 @@ fn function_calling_config(chat: &Value, antigravity_claude: bool) -> Value {
     }
 }
 
+/// 去掉 Codex 身份句里的「based on GPT-N」。
+///
+/// Codex 目录的系统提示词以 `You are Codex, a coding agent based on GPT-5.` 开头（另一种写法是
+/// `an agent based on GPT-5.`）。Antigravity 上游收到这句开头的请求回 429 `Resource has been
+/// exhausted`，只把这半句去掉、其余不变就正常（#3194 报告人的对照实验）。只改开头这一句。
+fn without_gpt_lineage(text: &str) -> String {
+    const OPENING: &str = "You are Codex, ";
+    const LINEAGE: &str = " based on GPT-";
+    let body = text.trim_start();
+    let first_line = &body[..body.find('\n').unwrap_or(body.len())];
+    let Some(at) = first_line.find(LINEAGE).filter(|_| first_line.starts_with(OPENING)) else {
+        return text.to_string();
+    };
+    let after = &body[at + LINEAGE.len()..];
+    // 版本号：数字，以及后面还跟着数字的小数点（`5`、`5.5`）；句末的句号留着。
+    let version = after
+        .char_indices()
+        .find(|&(index, c)| {
+            !(c.is_ascii_digit()
+                || c == '.' && after[index + 1..].starts_with(|next: char| next.is_ascii_digit()))
+        })
+        .map_or(after.len(), |(index, _)| index);
+    let leading = &text[..text.len() - body.len()];
+    format!("{leading}{}{}", &body[..at], &after[version..])
+}
+
 /// Chat Completions 请求 → Code Assist 信封里的 `request`（GenerateContentRequest）。
 pub fn build_request(chat: &Value, flavor: Flavor, model: &str) -> Value {
     let claude = is_claude(model);
@@ -551,7 +577,10 @@ pub fn build_request(chat: &Value, flavor: Flavor, model: &str) -> Value {
             .unwrap_or("user");
         match role {
             "system" | "developer" => {
-                let text = message_text(message);
+                let mut text = message_text(message);
+                if flavor == Flavor::Antigravity {
+                    text = without_gpt_lineage(&text);
+                }
                 if !text.trim().is_empty() {
                     system.push(text);
                 }
@@ -1489,6 +1518,48 @@ mod tests {
         assert_eq!(generation["stopSequences"], json!(["END"]));
         assert_eq!(generation["thinkingConfig"]["includeThoughts"], true);
         assert!(request.get("tools").is_none());
+    }
+
+    /// #3194：Antigravity 上游看到「based on GPT-5」开头的系统提示词回 429，转发前去掉这半句。
+    #[test]
+    fn antigravity_drops_the_gpt_lineage_from_the_codex_identity() {
+        let system_for = |flavor, system: &str| {
+            let chat = json!({
+                "messages": [
+                    { "role": "system", "content": system },
+                    { "role": "user", "content": "hi" },
+                ],
+            });
+            build_request(&chat, flavor, "gemini-3-pro")["systemInstruction"]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let rest = " You and the user share one workspace.\n\n# Personality\n\nbased on GPT-5 stays here.";
+        for (identity, neutral) in [
+            ("You are Codex, a coding agent based on GPT-5.", "You are Codex, a coding agent."),
+            ("You are Codex, an agent based on GPT-5.", "You are Codex, an agent."),
+            ("You are Codex, an agent based on GPT-5.5.", "You are Codex, an agent."),
+            ("You are Codex, an agent based on GPT-6.", "You are Codex, an agent."),
+        ] {
+            assert_eq!(
+                system_for(Flavor::Antigravity, &format!("{identity}{rest}")),
+                format!("{neutral}{rest}")
+            );
+            // Gemini CLI 没有这个问题，原样转发。
+            assert_eq!(
+                system_for(Flavor::GeminiCli, &format!("{identity}{rest}")),
+                format!("{identity}{rest}")
+            );
+        }
+        // 别的提示词不动，哪怕后文提到 GPT。
+        for untouched in [
+            "You are Codex, a coding agent.",
+            "You are Codex, a coding agent based on MiniMax-M3.",
+            "你是助手。\nYou are Codex, an agent based on GPT-5.",
+        ] {
+            assert_eq!(system_for(Flavor::Antigravity, untouched), untouched);
+        }
     }
 
     #[test]
