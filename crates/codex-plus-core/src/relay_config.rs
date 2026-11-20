@@ -2035,6 +2035,7 @@ fn recognized_managed_proxy_endpoint(profile: &RelayProfile, config: &str) -> bo
         || profile.strips_image_generation_tool()
         || profile.enables_pure_api_image_generation()
         || profile.strips_responses_image_detail()
+        || profile.strips_responses_output_encrypted_content()
         || profile.relay_mode == RelayMode::Aggregate;
     let saved_endpoint_matches = provider_string_from_config(&profile.config_contents, "base_url")
         .is_some_and(|saved| {
@@ -6479,6 +6480,7 @@ pub fn relay_profile_base_url(profile: &RelayProfile) -> String {
         || profile.strips_image_generation_tool()
         || profile.enables_pure_api_image_generation()
         || profile.strips_responses_image_detail()
+        || profile.strips_responses_output_encrypted_content()
         || has_managed_proxy_config
     {
         if !profile.upstream_base_url.trim().is_empty() {
@@ -6862,6 +6864,7 @@ fn complete_relay_profile_config_with_proxy_port(
         || profile.strips_image_generation_tool()
         || profile.enables_pure_api_image_generation()
         || profile.strips_responses_image_detail()
+        || profile.strips_responses_output_encrypted_content()
     {
         crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
     } else {

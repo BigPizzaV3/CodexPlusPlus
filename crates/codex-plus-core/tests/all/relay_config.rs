@@ -1918,6 +1918,45 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
     assert!(!live.contains("open.bigmodel.cn"));
 }
 
+/// 「不发送 output.encrypted_content」只在本地代理里执行（#3204）：打开后直连的 Responses 供应商
+/// 写进 config.toml 的地址必须是本地代理，否则开关不生效。关着时照旧直连上游。
+#[test]
+fn stripping_output_encrypted_content_routes_responses_profile_through_proxy() {
+    let live_config_with = |strip: bool| {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = RelayProfile {
+            id: "relay-strict".to_string(),
+            model: "strict-model".to_string(),
+            base_url: "https://strict.example.test/v1".to_string(),
+            upstream_base_url: "https://strict.example.test/v1".to_string(),
+            api_key: "sk-test-redacted".to_string(),
+            protocol: RelayProtocol::Responses,
+            relay_mode: RelayMode::PureApi,
+            strip_responses_output_encrypted_content: strip,
+            config_contents: r#"model = "strict-model"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://strict.example.test/v1"
+"#
+            .to_string(),
+            auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+            ..RelayProfile::default()
+        };
+        apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 61234)
+            .unwrap();
+        std::fs::read_to_string(temp.path().join("config.toml")).unwrap()
+    };
+
+    let proxied = live_config_with(true);
+    assert!(proxied.contains(r#"base_url = "http://127.0.0.1:61234/v1""#), "{proxied}");
+    let direct = live_config_with(false);
+    assert!(direct.contains(r#"base_url = "https://strict.example.test/v1""#), "{direct}");
+}
+
 #[test]
 fn official_mix_api_profile_does_not_generate_auth_api_key() {
     let mut profile = RelayProfile {
