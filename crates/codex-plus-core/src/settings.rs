@@ -196,6 +196,11 @@ pub struct RelayProfile {
     /// OpenAI 扩展字段，只会返回泛化的 invalid_request（#2870）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub strip_responses_image_detail: bool,
+    /// 转发前移除 Responses 顶层 `include` 里的 `output.encrypted_content`。
+    /// 部分严格上游只接受 `reasoning.encrypted_content`，带上该项会整单 400。
+    /// 默认关闭；Kimi 等已知上游仍由自动识别处理。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strip_responses_output_encrypted_content: bool,
     /// 不向该上游发送 `tool_search` 托管工具：部分第三方 Responses 上游不认识
     /// 它，供应商测试能过但实际聊天整单 400（#2868 / #2871）。Kimi 官方自动处理。
     #[serde(default, skip_serializing_if = "is_false")]
@@ -434,6 +439,7 @@ impl Default for RelayProfile {
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
+            strip_responses_output_encrypted_content: false,
             disable_tool_search: false,
             pure_api_image_generation: false,
             auto_review_model: String::new(),
@@ -496,6 +502,15 @@ impl RelayProfile {
     /// 第三方 Responses 上游生效。
     pub fn strips_responses_image_detail(&self) -> bool {
         self.strip_responses_image_detail
+            && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否在转发前移除 Responses 顶层 `include` 里的
+    /// `output.encrypted_content`；只对经本地代理转发的第三方 Responses 上游生效。
+    pub fn strips_responses_output_encrypted_content(&self) -> bool {
+        self.strip_responses_output_encrypted_content
             && self.protocol == RelayProtocol::Responses
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
@@ -1769,6 +1784,7 @@ impl BackendSettings {
                 strict_responses_reasoning: false,
                 strip_image_generation_tool: false,
                 strip_responses_image_detail: false,
+                strip_responses_output_encrypted_content: false,
                 disable_tool_search: false,
                 pure_api_image_generation: false,
                 auto_review_model: String::new(),
@@ -1845,6 +1861,7 @@ impl BackendSettings {
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
+            strip_responses_output_encrypted_content: false,
             disable_tool_search: false,
             pure_api_image_generation: false,
             auto_review_model: String::new(),
@@ -1918,6 +1935,7 @@ impl BackendSettings {
             || self.active_relay_profile().strips_image_generation_tool()
             || self.active_relay_profile().enables_pure_api_image_generation()
             || self.active_relay_profile().strips_responses_image_detail()
+            || self.active_relay_profile().strips_responses_output_encrypted_content()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -3668,6 +3686,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "strictResponsesReasoning",
     "stripImageGenerationTool",
     "stripResponsesImageDetail",
+    "stripResponsesOutputEncryptedContent",
     "disableToolSearch",
     "pureApiImageGeneration",
     "autoReviewModel",
@@ -6224,6 +6243,58 @@ experimental_bearer_token = "sk-existing""#
             ..BackendSettings::default()
         };
         assert!(!off.active_relay_transport_uses_protocol_proxy());
+    }
+
+    /// 「不发送 output.encrypted_content」也只在代理里执行：开启后必须改走本地代理，
+    /// 关闭后立即恢复直连，并确认配置按 camelCase 往返。
+    #[test]
+    fn strip_responses_output_encrypted_content_routes_through_protocol_proxy() {
+        let enabled = RelayProfile {
+            id: "on".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: RelayProtocol::Responses,
+            base_url: "https://responses.example.test/v1".to_string(),
+            strip_responses_output_encrypted_content: true,
+            ..RelayProfile::default()
+        };
+        assert!(enabled.strips_responses_output_encrypted_content());
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["stripResponsesOutputEncryptedContent"], true);
+        let restored: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(restored.strips_responses_output_encrypted_content());
+
+        let settings = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![enabled.clone()],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        let off = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![RelayProfile {
+                strip_responses_output_encrypted_content: false,
+                ..enabled
+            }],
+            ..BackendSettings::default()
+        };
+        assert!(!off.active_relay_transport_uses_protocol_proxy());
+
+        let default = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(
+            default
+                .get("stripResponsesOutputEncryptedContent")
+                .is_none()
+        );
+
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        let mut persisted = settings.clone();
+        store.save(&persisted).unwrap();
+        persisted = store.load().unwrap();
+        assert!(persisted.relay_profiles[0].strip_responses_output_encrypted_content);
+        persisted.relay_profiles[0].strip_responses_output_encrypted_content = false;
+        store.save(&persisted).unwrap();
+        assert!(!store.load().unwrap().relay_profiles[0].strip_responses_output_encrypted_content);
     }
 
     #[test]

@@ -69,6 +69,8 @@ pub struct GatewayPoolEntry {
     pub strip_image_generation_tool: bool,
     /// 转发前移除 Responses 图片 `detail`（#2870）。
     pub strip_responses_image_detail: bool,
+    /// 转发前移除 Responses 顶层 `include` 里的 `output.encrypted_content`。
+    pub strip_responses_output_encrypted_content: bool,
     /// 不向该上游发送 `tool_search` 托管工具（#2868）。
     pub disable_tool_search: bool,
     /// 上次检查时上游有、列表里没有的模型（界面提示新模型）。
@@ -266,6 +268,7 @@ fn pool_entry(
         key_concurrency: None,
         strip_image_generation_tool: relay.strip_image_generation_tool,
         strip_responses_image_detail: relay.strip_responses_image_detail,
+        strip_responses_output_encrypted_content: relay.strip_responses_output_encrypted_content,
         disable_tool_search: relay.disable_tool_search,
         upstream_new: upstream.0,
         upstream_gone: upstream.1,
@@ -1977,6 +1980,7 @@ async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Re
         strip_image_generation_tool: None,
         subscription_policy: None,
         strip_responses_image_detail: None,
+        strip_responses_output_encrypted_content: None,
         disable_tool_search: None,
         custom_headers: None,
     };
