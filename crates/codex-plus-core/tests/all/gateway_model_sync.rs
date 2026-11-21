@@ -4,10 +4,12 @@
 
 use codex_plus_core::gateway::apply::{ProviderInput, create_provider};
 use codex_plus_core::gateway::model_sync::{
-    apply_upstream_sync, preview_upstream_sync, sync_upstream_models,
+    apply_upstream_sync, check_provider, preview_provider_models, preview_upstream_sync,
+    sync_upstream_models,
 };
 use codex_plus_core::gateway::route::relay_models;
 use codex_plus_core::gateway::store::{GatewayStore, ProviderPrice};
+use codex_plus_core::gateway::subscriptions::models_or_fallback;
 use codex_plus_core::relay_config::relay_profile_model;
 use codex_plus_core::settings::RelayProtocol;
 
@@ -214,4 +216,117 @@ fn full_sync_still_removes_gone_and_appends_every_new_model() {
     assert_eq!(diff.removed, strings(&["old"]));
     assert_eq!(diff.added, strings(&["x", "y"]));
     assert_eq!(models(&store, &id), strings(&["b", "a", "x", "y"]));
+}
+
+// ---- 订阅账号从上游同步（#3221）--------------------------------------------
+
+/// 把供应商改成订阅账号：订阅供应商不存 Base URL（地址请求前才指到本机适配入口）。
+fn make_subscription(store: &GatewayStore, id: &str, kind: &str, credentials: serde_json::Value) {
+    store
+        .update(|gateway| {
+            let provider = gateway
+                .providers
+                .iter_mut()
+                .find(|provider| provider.relay.id == id)
+                .unwrap();
+            provider.relay.base_url = String::new();
+            provider.relay.upstream_base_url = String::new();
+            provider.relay.auth_contents = serde_json::json!({
+                codex_plus_core::gateway::accounts::ACCOUNT_KIND_FIELD: kind,
+                "account": "user@example.com",
+                "credentials": credentials,
+            })
+            .to_string();
+            Ok(())
+        })
+        .unwrap();
+}
+
+fn diagnostic_log() -> String {
+    std::fs::read_to_string(codex_plus_core::diagnostic_log::diagnostic_log_path())
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn subscription_without_model_list_api_reports_it_instead_of_base_url() {
+    let _state = crate::common::IsolatedTestState::new();
+    let (_temp, store, id) = setup("Sub Factory 3221", "a", &["a", "b"]);
+    // Factory 用 API Key 登录：不用刷新、不联网；它没有可查询的模型列表接口。
+    make_subscription(&store, &id, "sub:factory", serde_json::json!({ "api_key": "fk-3221" }));
+    let before = models(&store, &id);
+
+    let error = preview_provider_models(&store, &id).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(!text.contains("Base URL"), "{text}");
+    assert!(text.contains("Factory 没有可查询的模型列表接口"), "{text}");
+    assert_eq!(models(&store, &id), before);
+
+    let log = diagnostic_log();
+    assert!(log.contains("gateway.subscription_models_failed"), "{log}");
+    assert!(log.contains(&id), "{log}");
+    assert!(log.contains("sub:factory"), "{log}");
+}
+
+#[tokio::test]
+async fn antigravity_sync_surfaces_the_credential_error() {
+    let _state = crate::common::IsolatedTestState::new();
+    let (_temp, store, id) = setup("Sub Antigravity 3221", "a", &["a", "b"]);
+    // 凭据里没有 token：按订阅自己的刷新流程报「重新登录」，而不是去拉空的 Base URL。
+    make_subscription(&store, &id, "sub:antigravity", serde_json::json!({}));
+    let before = models(&store, &id);
+
+    let error = preview_provider_models(&store, &id).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(!text.contains("Base URL"), "{text}");
+    assert!(text.contains("重新登录"), "{text}");
+
+    // 后台检查同样走订阅自己的接口：失败只记检查时间，不改列表和提示。
+    let error = check_provider(&store, &id).await.unwrap_err();
+    assert!(!format!("{error:#}").contains("Base URL"), "{error:#}");
+    let gateway = store.load().unwrap();
+    let provider = gateway.provider(&id).unwrap();
+    assert!(provider.models_checked_at_ms > 0);
+    assert_eq!(provider.upstream_new, strings(&["hint-new"]));
+    assert_eq!(models(&store, &id), before);
+    assert!(diagnostic_log().contains("sub:antigravity"));
+}
+
+#[tokio::test]
+async fn unknown_subscription_kind_is_named() {
+    let _state = crate::common::IsolatedTestState::new();
+    let (_temp, store, id) = setup("Sub Unknown 3221", "a", &["a"]);
+    make_subscription(&store, &id, "sub:not-a-real-plan", serde_json::json!({}));
+    let error = preview_provider_models(&store, &id).await.unwrap_err();
+    let text = format!("{error:#}");
+    assert!(!text.contains("Base URL"), "{text}");
+    assert!(text.contains("不认识的订阅类型 sub:not-a-real-plan"), "{text}");
+}
+
+#[test]
+fn lenient_subscription_models_fall_back_with_a_diagnostic() {
+    let _state = crate::common::IsolatedTestState::new();
+    let fallback = || strings(&["default-a", "default-b"]);
+    // 拉到了就原样用，不记日志。
+    assert_eq!(
+        models_or_fallback("antigravity", Ok(strings(&["live"])), fallback),
+        strings(&["live"])
+    );
+    assert!(!diagnostic_log().contains("gateway.subscription_models_fallback"));
+    // 拉不到时登录、本机适配入口仍用默认列表，但要留下原因可查。
+    assert_eq!(
+        models_or_fallback(
+            "antigravity",
+            Err(anyhow::anyhow!("fetchAvailableModels 返回 503")),
+            fallback
+        ),
+        strings(&["default-a", "default-b"])
+    );
+    assert_eq!(
+        models_or_fallback("antigravity", Ok(Vec::new()), fallback),
+        strings(&["default-a", "default-b"])
+    );
+    let log = diagnostic_log();
+    assert!(log.contains("gateway.subscription_models_fallback"), "{log}");
+    assert!(log.contains("fetchAvailableModels 返回 503"), "{log}");
+    assert!(log.contains("上游没有返回模型"), "{log}");
 }

@@ -12,6 +12,7 @@ use serde::Serialize;
 
 use crate::gateway::accounts;
 use crate::gateway::store::{GatewaySettings, GatewayStore, ProviderPrice};
+use crate::gateway::subscriptions;
 use crate::settings::RelayProfile;
 
 /// 上游模型列表和现有列表的差异。
@@ -67,12 +68,27 @@ pub fn diff_models(current: &[String], upstream: &[String]) -> ModelDiff {
 }
 
 /// 用存下的凭据重新拉一个网关供应商的模型：订阅账号走各自的接口，OpenCode 用目录，
-/// 其它供应商拉 `/models`。
+/// 其它供应商拉 `/models`。订阅账号的凭据从默认网关存储读、刷新后写回那里。
 pub async fn upstream_models(relay: &RelayProfile) -> anyhow::Result<Vec<String>> {
+    upstream_models_in(&GatewayStore::default(), relay).await
+}
+
+/// 同 [`upstream_models`]，`store` 是供应商所在的网关存储：订阅账号刷新后的凭据写回这里。
+pub async fn upstream_models_in(
+    store: &GatewayStore,
+    relay: &RelayProfile,
+) -> anyhow::Result<Vec<String>> {
     if crate::official_login::member_uses_official_login_transport(relay) {
         return Ok(crate::model_catalog::fetch_relay_profile_model_ids(relay)
             .await?
             .0);
+    }
+    // 私有接口订阅（Antigravity、Cursor 等）：地址是请求前才拼的本机适配入口，存下的 Base URL
+    // 不能拿来拉 `/models`（#3221）。
+    if let Some(kind) = accounts::relay_account_kind(relay)
+        && kind.starts_with(subscriptions::KIND_PREFIX)
+    {
+        return subscription_models(store, relay, &kind).await;
     }
     // 模型列表也按供应商自己的代理设置拉（#2775）。
     let proxy = crate::relay_proxy::proxy_for_relay(relay);
@@ -115,6 +131,45 @@ pub async fn upstream_models(relay: &RelayProfile) -> anyhow::Result<Vec<String>
     Ok(models)
 }
 
+/// 订阅账号的模型：按本机适配入口的流程读最新凭据、快过期时刷新并写回，再照实调这家订阅自己的
+/// 模型列表接口（[`subscriptions::Subscription::list_models`]）。拉不到就报错并记诊断日志，
+/// 不拿内置默认列表冒充上游结果；没有模型列表接口的订阅给出明确提示。
+async fn subscription_models(
+    store: &GatewayStore,
+    relay: &RelayProfile,
+    kind: &str,
+) -> anyhow::Result<Vec<String>> {
+    let fetched = async {
+        if subscriptions::kind_of(relay).is_none() {
+            bail!("不认识的订阅类型 {kind}：请升级 Codex++ 或重新登录这个账号");
+        }
+        let (item, credentials, http) = subscriptions::server::ready_in(store, &relay.id).await?;
+        let models: Vec<String> = item
+            .list_models(&http, &credentials)
+            .await?
+            .into_iter()
+            .map(|model| model.trim().to_string())
+            .filter(|model| !model.is_empty())
+            .collect();
+        if models.is_empty() {
+            bail!("{} 没有返回模型", item.name());
+        }
+        Ok(models)
+    }
+    .await;
+    if let Err(error) = &fetched {
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "gateway.subscription_models_failed",
+            serde_json::json!({
+                "relayId": relay.id,
+                "kind": kind,
+                "error": format!("{error:#}"),
+            }),
+        );
+    }
+    fetched
+}
+
 /// 拉上游模型并和现有列表比较；结果记进供应商（界面据此提示新模型）。
 pub async fn check_provider(store: &GatewayStore, id: &str) -> anyhow::Result<ModelDiff> {
     let relay = store
@@ -122,7 +177,7 @@ pub async fn check_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Mo
         .provider(id)
         .map(|provider| provider.relay.clone())
         .ok_or_else(|| anyhow::anyhow!("供应商不存在：{id}"))?;
-    let fetched = upstream_models(&relay).await;
+    let fetched = upstream_models_in(store, &relay).await;
     // 拉的这段时间里可能有别的写入：在锁里重新读一次再改。
     let (_, result) = store.update(|gateway| {
         let Some(provider) = gateway
@@ -366,7 +421,7 @@ pub async fn preview_provider_models(
         .provider(id)
         .map(|provider| provider.relay.clone())
         .ok_or_else(|| anyhow::anyhow!("供应商不存在：{id}"))?;
-    let upstream = upstream_models(&relay).await?;
+    let upstream = upstream_models_in(store, &relay).await?;
     preview_upstream_sync(store, id, &upstream)
 }
 
