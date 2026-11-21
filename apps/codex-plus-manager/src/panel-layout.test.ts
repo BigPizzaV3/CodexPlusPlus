@@ -32,7 +32,7 @@ function layoutHarness(zoom = 1) {
     nodes[selector] = { rect, getBoundingClientRect() { return this.rect; } };
   }
   const style = styleNode();
-  const overlay = { style, isConnected: true, classList: { contains: (name: string) => name === "codex-plus-page-overlay" } };
+  const overlay = { style, dataset: {} as Record<string, string>, isConnected: true, classList: { contains: (name: string) => name === "codex-plus-page-overlay" } };
   const listeners = new Set<() => void>();
   const observers: Observer[] = [];
   class Observer {
@@ -53,7 +53,7 @@ function layoutHarness(zoom = 1) {
     querySelector: (selector: string) => nodes[selector] ?? null,
     querySelectorAll: () => overlay.isConnected ? [{ remove() { overlay.isConnected = false; } }] : [],
   };
-  const runtime = new Function("document", "window", "ResizeObserver", "codexPlusWindowZoom", `
+  const runtime = new Function("document", "window", "ResizeObserver", "codexPlusWindowZoom", "getComputedStyle", `
     const codexPlusPageClass = "codex-plus-page-overlay";
     const codexPlusRailSelector = "nav[data-app-navigation-rail]";
     function setCodexPlusSidebarNavActive() {}
@@ -64,7 +64,7 @@ function layoutHarness(zoom = 1) {
     ${functionSource("observeCodexPlusPageLayout")}
     ${functionSource("closeCodexPlusPage")}
     return { position: positionCodexPlusPage, attach: observeCodexPlusPageLayout, close: closeCodexPlusPage };
-  `)(document, window, Observer, () => zoom) as {
+  `)(document, window, Observer, () => zoom, (node: { radius?: string }) => ({ borderTopLeftRadius: node.radius ?? "0px", getPropertyValue: () => "" })) as {
     position(node: typeof overlay): void; attach(node: typeof overlay): void; close(): void;
   };
   return { ...runtime, overlay, nodes, listeners, observers, window, document };
@@ -93,6 +93,31 @@ it("keeps panel edges in layout coordinates without rewriting zoom during positi
     h.position(h.overlay);
     assert.equal(h.overlay.style.top, "0px");
     assert.equal(h.overlay.style.left, "0px");
+  }
+});
+
+it("starts at the window top under the transparent titlebar when the native panel does", () => {
+  for (const zoom of [1, 1.25]) {
+    const h = layoutHarness(zoom);
+    const add = (selector: string, rect: Record<string, number>, extra: Record<string, unknown> = {}) => {
+      h.nodes[selector] = { rect, getBoundingClientRect() { return this.rect; }, ...extra };
+    };
+    add("[data-app-shell-titlebar]", { left: 0, top: 0, width: 1000, height: 40, right: 1000, bottom: 40 });
+    add("[data-app-shell-surface-backing]", { left: 320, top: 0, width: 680, height: 800, right: 1000 }, { radius: "12px" });
+    h.position(h.overlay);
+    assert.equal(h.overlay.style.top, "0px", "no strip of native backing is left above the page");
+    assert.equal(h.overlay.style.values.get("--codex-plus-page-inset-top"), `${40 / zoom}px`);
+    assert.equal(h.overlay.dataset.codexPlusTitlebar, "inset");
+    assert.equal(h.overlay.style.values.get("--codex-plus-page-radius"), `${12 / zoom}px`, "sidebar open: rounded like the native panel");
+    assert.equal(h.overlay.style.values.get("--codex-plus-page-radius-end"), "0px");
+    h.nodes["[data-app-shell-surface-backing]"].rect.left = 0;
+    h.position(h.overlay);
+    assert.equal(h.overlay.style.values.get("--codex-plus-page-radius"), "0px", "sidebar collapsed: continuous with the panel");
+    delete h.nodes["[data-app-shell-surface-backing]"];
+    h.position(h.overlay);
+    assert.equal(h.overlay.style.top, `${40 / zoom}px`, "older shells keep starting below the header");
+    assert.equal(h.overlay.dataset.codexPlusTitlebar, undefined);
+    assert.equal(h.overlay.style.values.get("--codex-plus-page-radius-end"), undefined);
   }
 });
 
@@ -245,8 +270,11 @@ it("replaces version 31 styles with bounded panel geometry and keeps reinjection
   const pageRules = existing!.textContent!.match(/\.codex-plus-page-overlay\s*\{([^}]+)\}/)![1];
   assert.match(pageRules, /right: var\(--codex-plus-page-right, 0px\)/);
   assert.match(pageRules, /bottom: var\(--codex-plus-page-bottom, 0px\)/);
-  assert.match(pageRules, /border-radius: var\(--codex-plus-page-radius, 0px\)/);
+  assert.match(pageRules, /border-radius: var\(--codex-plus-page-radius, 0px\) var\(--codex-plus-page-radius-end, var\(--codex-plus-page-radius, 0px\)\)/);
   assert.match(pageRules, /height: calc\(100vh \/ var\(--codex-plus-zoom, 1\) - var\(--codex-plus-page-top, 0px\) - var\(--codex-plus-page-bottom, 0px\)\)/);
+  // 标题栏抬到页面之上（仍低于弹窗）；让出的那条不声明 no-drag，窗口照样能拖。
+  assert.match(existing!.textContent!, /\[data-app-shell-titlebar\] \{\s*z-index: 2147482001 !important;/);
+  assert.match(existing!.textContent!, /\[data-codex-plus-titlebar="inset"\] > \.codex-plus-modal-content \{\s*-webkit-app-region: none;/);
   const modalRules = existing!.textContent!.match(/\.codex-plus-modal-overlay\s*\{([^}]+)\}/)![1];
   assert.match(modalRules, /height: calc\(100vh \/ var\(--codex-plus-zoom, 1\)\)/);
   install();

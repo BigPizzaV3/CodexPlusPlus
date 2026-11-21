@@ -674,7 +674,7 @@
         left: var(--codex-plus-page-left, 0px);
         width: calc(100vw / var(--codex-plus-zoom, 1) - var(--codex-plus-page-left, 0px) - var(--codex-plus-page-right, 0px));
         height: calc(100vh / var(--codex-plus-zoom, 1) - var(--codex-plus-page-top, 0px) - var(--codex-plus-page-bottom, 0px));
-        border-radius: var(--codex-plus-page-radius, 0px);
+        border-radius: var(--codex-plus-page-radius, 0px) var(--codex-plus-page-radius-end, var(--codex-plus-page-radius, 0px)) var(--codex-plus-page-radius-end, var(--codex-plus-page-radius, 0px)) var(--codex-plus-page-radius, 0px);
         overflow: hidden;
         /*
          * 功能页是覆盖在 Codex 内容区上的基础层，不能压过原生侧栏/顶部栏
@@ -712,6 +712,27 @@
       html[data-codex-plus-page-open] [class*="ApplicationMenuTopBar"],
       html[data-codex-plus-page-open] .app-header-tint {
         z-index: 2147483645 !important;
+      }
+      /*
+       * 新外壳下页面从窗口顶边铺起（positionCodexPlusPage 量到标题栏叠在原生面板上时打 inset 标记）：
+       * 原生标题栏本身透明、只有按钮接收点击，抬到页面之上就和原生面板上一样浮着；
+       * 只比页面高一级，仍在我们的弹窗、提示之下。
+       * 页面内容让出标题栏的高度；让出的那条不能再声明 no-drag，否则会盖掉标题栏的拖动区，
+       * 页面开着时就拖不动窗口了，所以 no-drag 只给内容区里的元素。
+       */
+      html[data-codex-plus-page-open] [data-app-shell-titlebar] {
+        z-index: 2147482001 !important;
+      }
+      .${codexPlusPageClass}[data-codex-plus-titlebar="inset"],
+      .${codexPlusPageClass}[data-codex-plus-titlebar="inset"] > .codex-plus-modal-content {
+        -webkit-app-region: none;
+      }
+      .${codexPlusPageClass}[data-codex-plus-titlebar="inset"] > .codex-plus-modal-content {
+        box-sizing: border-box;
+        padding-top: var(--codex-plus-page-inset-top, 0px);
+      }
+      .${codexPlusPageClass}[data-codex-plus-titlebar="inset"] > .codex-plus-modal-content > * {
+        -webkit-app-region: no-drag;
       }
       .${codexPlusPageClass} .codex-plus-modal-content {
         width: auto;

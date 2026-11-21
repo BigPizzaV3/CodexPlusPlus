@@ -1374,15 +1374,34 @@
     const layoutLeft = zoom === 1 ? left : left / zoom;
     overlay.style.setProperty("--codex-plus-page-left", `${layoutLeft}px`);
     overlay.style.left = `${layoutLeft}px`;
-    // 官方顶部有一条 header（返回/前进/隐藏侧边栏），图标栏与侧边栏都从它的下沿开始。
+    const pageSurface = document.querySelector('[class*="_PageSurface_"], [class^="PageSurface-"], [class*=" PageSurface-"]');
+    // 26.1117 起的外壳没有 _PageSurface_：原生内容面板 [data-app-shell-surface-backing] 从窗口顶边铺起，
+    // 顶部那条标题栏（侧栏开关、前进后退，可拖动窗口）是透明地叠在面板与侧栏上的。
+    // overlay 若仍从标题栏下沿开始，上面就露出一条「侧栏那段发灰、面板那段发黑、拐角落在侧栏右边」的
+    // 原生底色——用户截图圈出的「顶上多出来一块黑的」就是它。这种外壳下改成和原生面板一样从标题栏
+    // 顶边铺起，由 CSS 把标题栏抬到 overlay 之上，内容整体下移标题栏的高度，按钮和拖动都照旧。
+    const titlebar = pageSurface ? null : document.querySelector("[data-app-shell-titlebar]");
+    const titlebarRect = titlebar?.getBoundingClientRect?.();
+    const backing = titlebarRect && titlebarRect.height > 0
+      ? document.querySelector("[data-app-shell-surface-backing]")
+      : null;
+    const backingRect = backing?.getBoundingClientRect?.();
+    const underTitlebar = Boolean(backingRect && backingRect.height > 0 && backingRect.top <= titlebarRect.top);
+    // 旧外壳：官方顶部有一条 header（返回/前进/隐藏侧边栏），图标栏与侧边栏都从它的下沿开始。
     // 我们的 overlay 若从 y=0 铺满就会把整条 header 盖住——用户反馈「比官方少了一条顶部栏」
     // 就是这个原因。这里同样量图标栏的顶边（而非硬编码高度），让 overlay 从 header 下沿开始。
-    const top = railRect && railRect.height > 0
-      ? Math.max(0, railRect.top)
-      : (rect && rect.height > 0 ? Math.max(0, rect.top) : 0);
+    const top = underTitlebar
+      ? Math.max(0, titlebarRect.top)
+      : railRect && railRect.height > 0
+        ? Math.max(0, railRect.top)
+        : (rect && rect.height > 0 ? Math.max(0, rect.top) : 0);
     const layoutTop = zoom === 1 ? top : top / zoom;
     overlay.style.setProperty("--codex-plus-page-top", `${layoutTop}px`);
     overlay.style.top = `${layoutTop}px`;
+    const insetTop = underTitlebar ? Math.max(0, titlebarRect.bottom - top) : 0;
+    overlay.style.setProperty("--codex-plus-page-inset-top", `${zoom === 1 ? insetTop : insetTop / zoom}px`);
+    if (underTitlebar) overlay.dataset.codexPlusTitlebar = "inset";
+    else delete overlay.dataset.codexPlusTitlebar;
     // 右侧与下方官方各留了一圈槽：整行的 [data-app-shell-workspace-row] 比视口小
     // （真机 1715x984 / 视口 1719x988，即右、下各 4px），官方内容面板正好收在行的右下角。
     // 我们原先 right/bottom 都贴 0，于是比官方多占这 4px。这里量取而不是硬编码 4。
@@ -1406,18 +1425,23 @@
     // 类名是 CSS Modules 的哈希名，但 PageSurface 这个名字稳定，且不会命中 PageSurfaceLayout
     //（新旧两种哈希格式 `_PageSurface_xx` / `PageSurface-xx` 都认，#2893）。量到的是视觉值，同样折算成布局坐标。
     // 读不到就保持 0，不做猜测。
-    const pageSurface = document.querySelector('[class*="_PageSurface_"], [class^="PageSurface-"], [class*=" PageSurface-"]');
+    // 新外壳没有 _PageSurface_，量原生面板 backing：它只圆起始一侧（右、下贴着窗口边）。
+    // 侧栏开着时 backing 起点在侧栏右边、比我们靠右，我们这块就像面板提前从图标栏边上开始，左侧照它圆；
+    // 侧栏收起时 backing 一直铺到图标栏底下，我们与它连成一片，左侧不圆，免得多出一道拐角。
     const pageSurfaceStyle = pageSurface ? getComputedStyle(pageSurface) : null;
     const mainSurfaceStyle = (() => {
       const main = document.querySelector("main[data-app-shell-main-surface]");
       return main ? getComputedStyle(main) : null;
     })();
-    const radius =
-      parseFloat(pageSurfaceStyle?.borderTopLeftRadius || "") ||
-      parseFloat(mainSurfaceStyle?.getPropertyValue("--app-shell-main-surface-clip-end-radius") || "") ||
-      0;
+    const radius = underTitlebar
+      ? (backingRect.left > left + 1 ? parseFloat(getComputedStyle(backing).borderTopLeftRadius || "") || 0 : 0)
+      : parseFloat(pageSurfaceStyle?.borderTopLeftRadius || "") ||
+        parseFloat(mainSurfaceStyle?.getPropertyValue("--app-shell-main-surface-clip-end-radius") || "") ||
+        0;
     const layoutRadius = zoom === 1 ? radius : radius / zoom;
     overlay.style.setProperty("--codex-plus-page-radius", `${layoutRadius}px`);
+    if (underTitlebar) overlay.style.setProperty("--codex-plus-page-radius-end", "0px");
+    else overlay.style.removeProperty("--codex-plus-page-radius-end");
     if (window.__codexPlusPageLayoutObserver &&
         (window.__codexPlusPageLayoutTargets?.main !== main ||
          window.__codexPlusPageLayoutTargets?.sidebar !== sidebar ||
