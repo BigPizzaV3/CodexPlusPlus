@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  abandonResetCardOperation,
   beginResetCardOperation,
   finishResetCardOperation,
   pendingResetCardOperation,
   resetCardUsable,
+  resetOutcomeSettled,
   soonestResetCardExpiry,
   usableResetCardCount,
 } from "./reset-card-operation.ts";
@@ -48,4 +50,25 @@ test("到期时不再信任旧 usable，未知张数保持 null", () => {
   assert.equal(usableResetCardCount(entry), null);
   entry.resetCredits!.availableCount = 0;
   assert.equal(usableResetCardCount(entry), 0);
+});
+
+test("确定结果结束操作，结果未知或没发出请求时保留", () => {
+  for (const outcome of ["reset", "alreadyRedeemed", "noCredit", "nothingToReset", "rejected"]) {
+    assert.equal(resetOutcomeSettled(outcome), true, outcome);
+  }
+  for (const outcome of ["unknown", undefined, null, "", "no_credit"]) {
+    assert.equal(resetOutcomeSettled(outcome), false, String(outcome));
+  }
+});
+
+test("放弃后另起新标识，损坏的记录也能清掉", () => {
+  const disk = storage();
+  assert.equal(beginResetCardOperation(disk, "a", () => "first"), "first");
+  abandonResetCardOperation(disk, "a");
+  assert.equal(pendingResetCardOperation(disk, "a"), null);
+  assert.equal(beginResetCardOperation(disk, "a", () => "second"), "second");
+  disk.setItem("codexpp:reset-card-operation:b", "bad\nid");
+  assert.throws(() => pendingResetCardOperation(disk, "b"));
+  abandonResetCardOperation(disk, "b");
+  assert.equal(beginResetCardOperation(disk, "b", () => "fresh"), "fresh");
 });

@@ -46,3 +46,15 @@ export function beginResetCardOperation(storage: Storage, providerId: string, cr
 export function finishResetCardOperation(storage: Storage, providerId: string, id: string): void {
   if (pendingResetCardOperation(storage, providerId) === id) storage.removeItem(key(providerId));
 }
+
+/** 后端给的确定结果（已重置、此前已生效、无卡、无需重置、被拒绝）：这次操作结束，可以清掉标识。 */
+const SETTLED_OUTCOMES = new Set(["reset", "alreadyRedeemed", "noCredit", "nothingToReset", "rejected"]);
+
+export function resetOutcomeSettled(outcome: unknown): boolean {
+  return typeof outcome === "string" && SETTLED_OUTCOMES.has(outcome);
+}
+
+/** 用户确认放弃上次未确认的操作：不论记录是否损坏都清掉，下次使用另起新标识。 */
+export function abandonResetCardOperation(storage: Storage, providerId: string): void {
+  storage.removeItem(key(providerId));
+}

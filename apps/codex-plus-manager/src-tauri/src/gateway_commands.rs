@@ -1911,6 +1911,33 @@ pub async fn refresh_gateway_reset_credits(id: String) -> CommandResult<Option<G
     }
 }
 
+/// 使用重置卡的结果：在网关数据之外带上 `resetOutcome`，界面据此决定是否结束未确认操作。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetConsumePayload {
+    /// `reset` / `alreadyRedeemed` / `noCredit` / `nothingToReset` / `rejected` / `unknown`；
+    /// 没发出请求或结果未知（网络、5xx、认证失败）时为空。
+    reset_outcome: Option<&'static str>,
+    #[serde(flatten)]
+    payload: Option<GatewayPayload>,
+}
+
+fn reset_consume_result(
+    succeeded: bool,
+    message: &str,
+    outcome: Option<codex_plus_core::gateway::reset_credits::ConsumeOutcome>,
+) -> CommandResult<ResetConsumePayload> {
+    let payload = ResetConsumePayload {
+        reset_outcome: outcome.map(|outcome| outcome.as_str()),
+        payload: current_payload(),
+    };
+    if succeeded {
+        ok(message, payload)
+    } else {
+        failed(message, payload)
+    }
+}
+
 /// 用掉一张额度重置卡。
 ///
 /// `requestId` 由界面持久保存；核心另按官方账号保存未确认操作，跨窗口也复用同一标识。
@@ -1918,39 +1945,72 @@ pub async fn refresh_gateway_reset_credits(id: String) -> CommandResult<Option<G
 pub async fn consume_gateway_reset_card(
     id: String,
     request_id: String,
-) -> CommandResult<Option<GatewayPayload>> {
+) -> CommandResult<ResetConsumePayload> {
+    use codex_plus_core::gateway::reset_credits::{self, ConsumeOutcome};
     let Some(relay) = pool_relay(&id) else {
-        return failed(&format!("供应商不存在：{id}"), current_payload());
+        return reset_consume_result(false, &format!("供应商不存在：{id}"), None);
     };
-    match codex_plus_core::gateway::reset_credits::consume(&relay, &request_id).await {
-        Ok(
-            outcome @ (codex_plus_core::gateway::reset_credits::ConsumeOutcome::Reset
-            | codex_plus_core::gateway::reset_credits::ConsumeOutcome::AlreadyRedeemed),
-        ) => {
+    let outcome = match reset_credits::consume(&relay, &request_id).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return reset_consume_result(false, &format!("使用重置卡失败：{error:#}"), None);
+        }
+    };
+    match outcome {
+        ConsumeOutcome::Reset | ConsumeOutcome::AlreadyRedeemed => {
             let quota_fresh = codex_plus_core::gateway::quota::refresh(&relay)
                 .await
                 .is_ok();
-            let cards_fresh = codex_plus_core::gateway::reset_credits::refresh_if_stale(&relay, 0)
-                .await
-                .is_ok();
-            let message =
-                if outcome == codex_plus_core::gateway::reset_credits::ConsumeOutcome::Reset {
-                    "已使用一张重置卡。"
-                } else {
-                    "这次重置此前已经生效，没有重复扣卡。"
-                };
-            let refresh = if quota_fresh && cards_fresh {
-                "额度与卡片读数已刷新。"
-            } else {
-                "部分读数尚未刷新，请稍后手动刷新；无需再次消费。"
+            let cards_fresh = reset_credits::refresh_if_stale(&relay, 0).await.is_ok();
+            let message = match (outcome == ConsumeOutcome::Reset, quota_fresh && cards_fresh) {
+                (true, true) => "已使用一张重置卡，额度已重置。额度与卡片读数已刷新。",
+                (true, false) => {
+                    "已使用一张重置卡，额度已重置。部分读数尚未刷新，请稍后手动刷新；无需再次使用。"
+                }
+                (false, true) => "这次重置此前已经生效，没有重复扣卡。额度与卡片读数已刷新。",
+                (false, false) => {
+                    "这次重置此前已经生效，没有重复扣卡。部分读数尚未刷新，请稍后手动刷新；无需再次使用。"
+                }
             };
-            ok(&format!("{message}{refresh}"), current_payload())
+            reset_consume_result(true, message, Some(outcome))
         }
-        Ok(codex_plus_core::gateway::reset_credits::ConsumeOutcome::Unknown) => failed(
+        // 没扣卡的确定结果：顺手刷新卡片，让界面上的张数与服务端一致。
+        ConsumeOutcome::NoCredit | ConsumeOutcome::NothingToReset => {
+            let _ = reset_credits::refresh_if_stale(&relay, 0).await;
+            let message = if outcome == ConsumeOutcome::NoCredit {
+                "账号没有可用的重置卡，本次没有扣卡。"
+            } else {
+                "当前额度无需重置，本次没有扣卡。"
+            };
+            reset_consume_result(false, message, Some(outcome))
+        }
+        ConsumeOutcome::Rejected(status) => reset_consume_result(
+            false,
+            &format!("服务端拒绝了这次重置（HTTP {status}），没有扣卡，可以重新发起。"),
+            Some(outcome),
+        ),
+        ConsumeOutcome::Unknown => reset_consume_result(
+            false,
             "重置结果未确认：请保留同一请求标识，先刷新额度再决定是否重试。",
+            Some(outcome),
+        ),
+    }
+}
+
+/// 放弃该账号上次未确认的重置操作（界面已让用户确认）。之后再使用会发起新的请求，
+/// 若上次其实已生效，可能再扣一张。
+#[tauri::command]
+pub async fn abandon_gateway_reset_operation(id: String) -> CommandResult<Option<GatewayPayload>> {
+    let Some(relay) = pool_relay(&id) else {
+        return failed(&format!("供应商不存在：{id}"), current_payload());
+    };
+    match codex_plus_core::gateway::reset_credits::abandon_pending(&relay).await {
+        Ok(true) => ok(
+            "已放弃上次未确认的重置操作，下次使用会发起新的请求。",
             current_payload(),
         ),
-        Err(error) => failed(&format!("使用重置卡失败：{error:#}"), current_payload()),
+        Ok(false) => ok("没有未确认的重置操作。", current_payload()),
+        Err(error) => failed(&format!("放弃重置操作失败：{error:#}"), current_payload()),
     }
 }
 

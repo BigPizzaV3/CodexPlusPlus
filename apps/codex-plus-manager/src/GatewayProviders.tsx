@@ -10,15 +10,17 @@ import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { appConfirm } from "./app-dialog";
 import {
+  abandonResetCardOperation,
   beginResetCardOperation,
   finishResetCardOperation,
   pendingResetCardOperation,
   resetCardUsable,
+  resetOutcomeSettled,
   soonestResetCardExpiry,
   usableResetCardCount,
 } from "./reset-card-operation";
 import { Check, ChevronRight, Copy, GripVertical, Pencil, Plus, RefreshCw, Search, X, Zap } from "lucide-react";
-import { t, tf } from "./i18n";
+import { getLanguage, t, tf } from "./i18n";
 import { providerPoolSections, reorderProviderSlots } from "./provider-pool-layout";
 import { ProviderBalancePoolBadge, RelayBillingPoolBadge, RelayBillingPoolLabel, RelayBillingRetry, useProviderBalance, useRelayBillingProbe } from "./RelayBillingLine";
 import { relayBillingGatewayCacheKey, type RelayBillingProbe } from "./relay-billing";
@@ -123,7 +125,7 @@ const MODEL_CHIP_COLLAPSE = 8;
 /** 重置卡的时间只到分钟；缺失时间由调用方分别标注。 */
 function creditTime(value: number | null | undefined, missing: string): string {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return missing;
-  return new Date(value).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+  return new Date(value).toLocaleString(getLanguage() === "en" ? "en-US" : "zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 /**
@@ -143,16 +145,18 @@ function ResetCreditsRow({ entry, busy, run }: { entry: GatewayPoolEntry; busy: 
   useEffect(() => {
     try { setRequestId(pendingResetCardOperation(localStorage, entry.id)); setOperationError(""); }
     catch { setOperationError(t("无法读取上次重置操作，请先核实结果")); }
-    const timer = setInterval(() => tick((value) => value + 1), 1000);
+    // 只为让「可用 / 到期」随时间翻过去；卡的到期时间只精确到分钟，30 秒足够。
+    const timer = setInterval(() => tick((value) => value + 1), 30_000);
     return () => clearInterval(timer);
   }, [entry.id]);
   const asking = useRef(false);
   // 展开详情、还没有读数或读数超过两分钟才真的打上游：这一步只读，不消耗卡。
+  // 用户没点，所以走后台：不占全局 busy，失败也不弹窗（界面仍显示「尚未查询」或旧读数）。
   useEffect(() => {
     if (!entry.enabled || asking.current) return;
     if (cards && Date.now() - cards.observedAtMs < 120_000) return;
     asking.current = true;
-    void run(`cards:${entry.id}`, "refresh_gateway_reset_credits", { id: entry.id }, t("刷新重置卡"), true)
+    void run(`cards:${entry.id}`, "refresh_gateway_reset_credits", { id: entry.id }, t("刷新重置卡"), true, { background: true, quiet: true })
       .finally(() => { asking.current = false; });
   }, [entry.id, entry.enabled, cards?.observedAtMs]);
   const consume = async () => {
@@ -163,11 +167,30 @@ function ResetCreditsRow({ entry, busy, run }: { entry: GatewayPoolEntry; busy: 
       if (!ok) return;
       const id = beginResetCardOperation(localStorage, entry.id, () => crypto.randomUUID());
       setRequestId(id);
-      const done = await run(`consume:${entry.id}`, "consume_gateway_reset_card", { id: entry.id, requestId: id }, t("使用重置卡"), true);
-      if (done) { finishResetCardOperation(localStorage, entry.id, id); setRequestId(null); }
+      let outcome: unknown;
+      // 不再静默：成功（含「此前已生效」）和没扣卡的确定结果都要明确提示，提示文字由后端按结果给出。
+      await run(`consume:${entry.id}`, "consume_gateway_reset_card", { id: entry.id, requestId: id }, t("使用重置卡"), false, {
+        onResult: (result) => { outcome = (result as { resetOutcome?: unknown }).resetOutcome; },
+      });
+      // 确定结果（含无卡、无需重置、被拒绝）才结束操作；结果未知时保留同一标识。
+      if (resetOutcomeSettled(outcome)) { finishResetCardOperation(localStorage, entry.id, id); setRequestId(null); }
       setOperationError("");
     } catch { setOperationError(t("重置操作未确认，请保留原操作并稍后重试")); }
     finally { consuming.current = false; }
+  };
+  // 记录卡住（一直结果未知、或本地记录损坏）时的出口：用户确认后放弃，下次另起新请求。
+  const abandon = async () => {
+    if (consuming.current) return;
+    consuming.current = true;
+    try {
+      const ok = await appConfirm(t("放弃后，上次未确认的重置操作不再重试，下次使用会发起新的请求。若上次其实已经生效，可能会再扣一张重置卡。建议先刷新额度确认上次是否已重置。"), { title: t("放弃上次重置操作"), confirmText: t("放弃并重新开始"), danger: true });
+      if (!ok) return;
+      const done = await run(`consume:${entry.id}`, "abandon_gateway_reset_operation", { id: entry.id }, t("放弃上次重置操作"));
+      if (!done) return;
+      try { abandonResetCardOperation(localStorage, entry.id); } catch { /* 存储不可用时后端记录已清，下次使用会换新标识 */ }
+      setRequestId(null);
+      setOperationError("");
+    } finally { consuming.current = false; }
   };
   const listed = (cards?.credits ?? []).filter((card) => resetCardUsable(card) || card.status !== "redeemed").slice(0, 6);
   return (
@@ -219,6 +242,17 @@ function ResetCreditsRow({ entry, busy, run }: { entry: GatewayPoolEntry; busy: 
         >
           {requestId ? t("核实上次操作") : t("使用一张")}
         </button>
+        {requestId || operationError ? (
+          <button
+            className="gw-text-button"
+            disabled={busy !== null}
+            onClick={() => void abandon()}
+            title={t("放弃上次未确认的重置操作，下次使用发起新的请求")}
+            type="button"
+          >
+            {t("放弃并重新开始")}
+          </button>
+        ) : null}
       </span>
     </div>
   );

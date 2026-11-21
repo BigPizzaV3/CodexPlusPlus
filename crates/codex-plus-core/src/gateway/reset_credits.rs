@@ -82,13 +82,22 @@ impl ResetCreditsView {
 }
 
 /// 消费的结果。`Unknown` 必须按「可能已扣、也可能没扣」处理：让用户保留同一请求标识，
-/// 不要另建一次操作。
+/// 不要另建一次操作。其余都是确定结果，未确认操作随之结束。
+///
+/// code 与官方 codex `ConsumeRateLimitResetCreditCode` 一致：
+/// `reset` / `nothing_to_reset` / `no_credit` / `already_redeemed`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConsumeOutcome {
     /// 这次真的重置了。
     Reset,
     /// 同一请求标识之前已经重置过，这次没有重复扣。
     AlreadyRedeemed,
+    /// 账号没有可用的重置卡，没有扣卡。
+    NoCredit,
+    /// 当前额度不需要重置，没有扣卡。
+    NothingToReset,
+    /// 服务端明确拒绝（4xx，认证失败与 409 除外），没有扣卡；带 HTTP 状态码。
+    Rejected(u16),
     /// 服务端返回了别的 code：不能断言成功，也不能断言失败。
     Unknown,
 }
@@ -98,8 +107,21 @@ impl ConsumeOutcome {
         match self {
             Self::Reset => "reset",
             Self::AlreadyRedeemed => "alreadyRedeemed",
+            Self::NoCredit => "noCredit",
+            Self::NothingToReset => "nothingToReset",
+            Self::Rejected(_) => "rejected",
             Self::Unknown => "unknown",
         }
+    }
+
+    /// 确定结果：这次操作已经结束，不必（也不应）再用同一标识重试。
+    pub fn settled(self) -> bool {
+        self != Self::Unknown
+    }
+
+    /// 卡确实用在了这次操作上（本次或此前同一标识）。
+    pub fn redeemed(self) -> bool {
+        matches!(self, Self::Reset | Self::AlreadyRedeemed)
     }
 }
 
@@ -135,6 +157,89 @@ pub fn cached(relay_id: &str) -> Option<ResetCreditsView> {
 struct RedemptionJournal {
     pending: Option<String>,
     completed: Vec<String>,
+    /// 已确定没扣卡（无卡、无需重置、被拒绝）或被用户放弃的标识：不再拿来发请求，
+    /// 界面若还拿着旧标识来，就换一个新的。
+    #[serde(default)]
+    settled: Vec<String>,
+}
+
+/// 每份记录最多留多少个已结束的标识。
+const JOURNAL_HISTORY: usize = 64;
+
+impl RedemptionJournal {
+    fn valid(&self) -> bool {
+        self.pending.as_deref().is_none_or(valid_request_id)
+            && self.completed.len() <= JOURNAL_HISTORY
+            && self.completed.iter().all(|id| valid_request_id(id))
+            && self.settled.len() <= JOURNAL_HISTORY
+            && self.settled.iter().all(|id| valid_request_id(id))
+    }
+}
+
+fn remember(list: &mut Vec<String>, ids: [&String; 2]) {
+    for id in ids {
+        if !list.contains(id) {
+            list.push(id.clone());
+        }
+    }
+    if list.len() > JOURNAL_HISTORY {
+        list.drain(..list.len() - JOURNAL_HISTORY);
+    }
+}
+
+/// 拿到账号的独占锁，返回锁、记录路径和读记录文件的原始结果（解析由调用方决定）。
+fn lock_journal(
+    root: &Path,
+    account_id: &str,
+) -> anyhow::Result<(File, PathBuf, std::io::Result<Vec<u8>>)> {
+    anyhow::ensure!(
+        !account_id.trim().is_empty(),
+        "缺少官方账号标识，未发送重置请求"
+    );
+    fs::create_dir_all(root)?;
+    let name = format!("{:x}", Sha256::digest(account_id.as_bytes()));
+    let path = root.join(format!("{name}.json"));
+    // 锁稳定的独立文件；不等待另一个联网请求，避免阻塞异步运行时。
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(root.join(format!("{name}.lock")))?;
+    FileExt::try_lock_exclusive(&file).context("该账号已有重置操作正在处理，请稍后重试")?;
+    let bytes = fs::read(&path);
+    Ok((file, path, bytes))
+}
+
+fn save_journal(path: &Path, journal: &RedemptionJournal) -> anyhow::Result<()> {
+    crate::settings::atomic_write(path, &serde_json::to_vec(journal)?)
+        .context("无法保存重置操作记录，未确认本次结果")
+}
+
+/// 放弃账号上未确认的操作：之后再消费会用新的请求标识。返回是否真有未确认操作。
+///
+/// 记录损坏也在这里重建为空记录——这是用户确认过的出口，否则只能手动删文件。
+fn abandon_in(root: &Path, account_id: &str) -> anyhow::Result<bool> {
+    let (_lock, path, bytes) = lock_journal(root, account_id)?;
+    let (mut journal, damaged) = match bytes {
+        Ok(bytes) => match serde_json::from_slice::<RedemptionJournal>(&bytes) {
+            Ok(journal) if journal.valid() => (journal, false),
+            _ => (RedemptionJournal::default(), true),
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (RedemptionJournal::default(), false)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let Some(pending) = journal.pending.take() else {
+        if damaged {
+            save_journal(&path, &journal)?;
+        }
+        return Ok(damaged);
+    };
+    remember(&mut journal.settled, [&pending, &pending]);
+    save_journal(&path, &journal)?;
+    Ok(true)
 }
 
 struct Redemption {
@@ -148,40 +253,25 @@ struct Redemption {
 
 impl Redemption {
     fn open(root: &Path, account_id: &str, caller_id: &str) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            !account_id.trim().is_empty(),
-            "缺少官方账号标识，未发送重置请求"
-        );
         anyhow::ensure!(valid_request_id(caller_id), "重置请求标识无效");
-        fs::create_dir_all(root)?;
-        let name = format!("{:x}", Sha256::digest(account_id.as_bytes()));
-        let path = root.join(format!("{name}.json"));
-        // 锁稳定的独立文件；不等待另一个联网请求，避免阻塞异步运行时。
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(root.join(format!("{name}.lock")))?;
-        FileExt::try_lock_exclusive(&file).context("该账号已有重置操作正在处理，请稍后重试")?;
-        let journal: RedemptionJournal = match fs::read(&path) {
+        let (file, path, bytes) = lock_journal(root, account_id)?;
+        let journal: RedemptionJournal = match bytes {
             Ok(bytes) => serde_json::from_slice(&bytes).context("重置操作记录损坏，未发送请求")?,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 RedemptionJournal::default()
             }
             Err(error) => return Err(error.into()),
         };
-        anyhow::ensure!(
-            journal.pending.as_deref().is_none_or(valid_request_id)
-                && journal.completed.len() <= 64
-                && journal.completed.iter().all(|id| valid_request_id(id)),
-            "重置操作记录无效，未发送请求"
-        );
+        anyhow::ensure!(journal.valid(), "重置操作记录无效，未发送请求");
         let completed = journal.completed.iter().any(|id| id == caller_id);
-        let request_id = journal
-            .pending
-            .clone()
-            .unwrap_or_else(|| caller_id.to_string());
+        // 已确定没扣卡或被放弃的标识不再发出去：界面没来得及清掉旧标识时换一个新的。
+        let request_id = journal.pending.clone().unwrap_or_else(|| {
+            if journal.settled.iter().any(|id| id == caller_id) {
+                new_request_id()
+            } else {
+                caller_id.to_string()
+            }
+        });
         let mut operation = Self {
             _lock: file,
             path,
@@ -198,23 +288,19 @@ impl Redemption {
     }
 
     fn save(&self) -> anyhow::Result<()> {
-        crate::settings::atomic_write(&self.path, &serde_json::to_vec(&self.journal)?)
-            .context("无法保存重置操作记录，未确认本次结果")
+        save_journal(&self.path, &self.journal)
     }
 
+    /// 记下确定结果并结束未确认操作；`Unknown` 保留同一标识等下次重试。
     fn finish(&mut self, outcome: ConsumeOutcome) -> anyhow::Result<()> {
-        if outcome == ConsumeOutcome::Unknown {
+        if !outcome.settled() {
             return Ok(());
         }
-        for id in [&self.request_id, &self.caller_id] {
-            if !self.journal.completed.contains(id) {
-                self.journal.completed.push(id.clone());
-            }
-        }
-        if self.journal.completed.len() > 64 {
-            self.journal
-                .completed
-                .drain(..self.journal.completed.len() - 64);
+        let ids = [&self.request_id, &self.caller_id];
+        if outcome.redeemed() {
+            remember(&mut self.journal.completed, ids);
+        } else {
+            remember(&mut self.journal.settled, ids);
         }
         self.journal.pending = None;
         self.save()
@@ -365,6 +451,10 @@ pub fn valid_request_id(value: &str) -> bool {
         && !trimmed.chars().any(|ch| ch.is_control())
 }
 
+fn operations_dir() -> PathBuf {
+    crate::paths::default_app_state_dir().join("reset-credit-operations")
+}
+
 /// 用掉一张重置卡。
 ///
 /// `request_id` 由调用方生成并保存：网络中断时用同一个标识重试，
@@ -378,7 +468,7 @@ pub async fn consume(relay: &RelayProfile, request_id: &str) -> anyhow::Result<C
     }
     let credential = crate::official_login::resolve_official_credential_for_quota(relay).await?;
     let mut operation = Redemption::open(
-        &crate::paths::default_app_state_dir().join("reset-credit-operations"),
+        &operations_dir(),
         &credential.account_id,
         request_id,
     )?;
@@ -393,7 +483,7 @@ pub async fn consume(relay: &RelayProfile, request_id: &str) -> anyhow::Result<C
         &operation.request_id,
     )
     .await?;
-    // 结果不确定也清缓存：下次读到的才是服务端的真实状态。
+    // 不论结果都清缓存：下次读到的才是服务端的真实状态。
     forget(&relay.id);
     operation.finish(outcome)?;
     Ok(outcome)
@@ -413,21 +503,55 @@ async fn send_redemption(
     if !credential.account_id.is_empty() {
         request = request.header("chatgpt-account-id", credential.account_id.as_str());
     }
-    let response = request.send().await?;
-    let status = response.status();
-    if status.as_u16() == 401 || status.as_u16() == 403 {
+    // 超时、连接断开：请求可能已到服务端，结果未知，保留同一标识重试。
+    let response = request.send().await.map_err(|error| {
+        let reason = if error.is_timeout() {
+            "请求超时"
+        } else if error.is_connect() {
+            "连接失败"
+        } else {
+            "网络中断"
+        };
+        anyhow::anyhow!("{reason}，重置结果未知，请稍后用同一操作重试：{error}")
+    })?;
+    let status = response.status().as_u16();
+    if status == 401 || status == 403 {
         anyhow::bail!("登录凭据无效，请恢复登录后重试同一操作");
     }
-    if !status.is_success() {
-        anyhow::bail!("使用重置卡失败：HTTP {}", status.as_u16());
+    if !(200..300).contains(&status) {
+        // 其余 4xx 是服务端明确拒绝、没有处理这次请求；409 可能是同一标识正在处理，
+        // 和 5xx、其它异常状态一样按结果未知保留。
+        if (400..500).contains(&status) && status != 409 {
+            return Ok(ConsumeOutcome::Rejected(status));
+        }
+        anyhow::bail!("服务端返回 HTTP {status}，重置结果未知，请稍后用同一操作重试");
     }
     let body: Value = response.json().await.unwrap_or(Value::Null);
-    let outcome = match body.get("code").and_then(Value::as_str) {
+    Ok(outcome_of_code(body.get("code").and_then(Value::as_str)))
+}
+
+/// 官方 `ConsumeRateLimitResetCreditCode` 的四种 code；认不出的按结果未知处理。
+fn outcome_of_code(code: Option<&str>) -> ConsumeOutcome {
+    match code {
         Some("reset") => ConsumeOutcome::Reset,
         Some("already_redeemed") => ConsumeOutcome::AlreadyRedeemed,
+        Some("no_credit") => ConsumeOutcome::NoCredit,
+        Some("nothing_to_reset") => ConsumeOutcome::NothingToReset,
         _ => ConsumeOutcome::Unknown,
-    };
-    Ok(outcome)
+    }
+}
+
+/// 放弃该账号上未确认的重置操作（用户确认过）：之后再消费会用新的请求标识。
+/// 返回是否真的清掉了什么（未确认操作或损坏的记录）。
+pub async fn abandon_pending(relay: &RelayProfile) -> anyhow::Result<bool> {
+    if !supported(relay) {
+        anyhow::bail!("只有 ChatGPT 订阅账号能使用重置卡");
+    }
+    let credential = crate::official_login::resolve_official_credential_for_quota(relay).await?;
+    abandon_in(
+        &operations_dir(),
+        &credential.account_id,
+    )
 }
 
 /// 生成一个可以重放的请求标识（UUID v4）。
@@ -572,14 +696,15 @@ mod tests {
         assert!(Redemption::open(root.path(), "", "two").is_err());
     }
 
-    #[tokio::test]
-    async fn unknown_http_outcome_reuses_the_saved_id_on_retry() {
+    /// 测试用的一次性服务端：每个连接读完一个请求，记下 `redeem_request_id`，按顺序回应。
+    /// `None` 表示读完请求后直接断开连接，不给响应。
+    fn serve(replies: Vec<Option<(u16, Value)>>) -> (String, std::thread::JoinHandle<Vec<String>>) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/consume", listener.local_addr().unwrap());
         let server = std::thread::spawn(move || {
             let mut ids = Vec::new();
-            for code in ["unrecognized_outcome", "already_redeemed"] {
+            for reply in replies {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(5)))
@@ -607,22 +732,43 @@ mod tests {
                         }
                     }
                 }
-                let body = serde_json::json!({ "code": code }).to_string();
-                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+                let Some((status, body)) = reply else {
+                    drop(stream);
+                    continue;
+                };
+                let body = body.to_string();
+                write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
             }
             ids
         });
-        let root = tempfile::tempdir().unwrap();
-        let client = reqwest::Client::builder()
+        (url, server)
+    }
+
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(5))
             .build()
-            .unwrap();
-        let credential = crate::official_login::OfficialCredential {
+            .unwrap()
+    }
+
+    fn test_credential() -> crate::official_login::OfficialCredential {
+        crate::official_login::OfficialCredential {
             access_token: "test-only".into(),
             account_id: "test-account".into(),
             account_scope: None,
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_http_outcome_reuses_the_saved_id_on_retry() {
+        let (url, server) = serve(vec![
+            Some((200, json!({ "code": "unrecognized_outcome" }))),
+            Some((200, json!({ "code": "already_redeemed" }))),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let client = test_client();
+        let credential = test_credential();
         let mut first =
             Redemption::open(root.path(), &credential.account_id, "original-request").unwrap();
         let outcome = send_redemption(&client, &url, &credential, &first.request_id)
@@ -647,6 +793,156 @@ mod tests {
         assert_eq!(
             server.join().unwrap(),
             ["original-request", "original-request"]
+        );
+    }
+
+    #[test]
+    fn official_consume_codes_are_all_recognized() {
+        assert_eq!(outcome_of_code(Some("reset")), ConsumeOutcome::Reset);
+        assert_eq!(
+            outcome_of_code(Some("already_redeemed")),
+            ConsumeOutcome::AlreadyRedeemed
+        );
+        assert_eq!(outcome_of_code(Some("no_credit")), ConsumeOutcome::NoCredit);
+        assert_eq!(
+            outcome_of_code(Some("nothing_to_reset")),
+            ConsumeOutcome::NothingToReset
+        );
+        assert_eq!(outcome_of_code(Some("other")), ConsumeOutcome::Unknown);
+        assert_eq!(outcome_of_code(None), ConsumeOutcome::Unknown);
+    }
+
+    /// 没扣卡的确定结果（无卡、无需重置、4xx 拒绝）清掉未确认操作，且旧标识不再发出去。
+    #[tokio::test]
+    async fn settled_outcomes_without_redemption_clear_pending() {
+        let (url, server) = serve(vec![
+            Some((200, json!({ "code": "no_credit" }))),
+            Some((200, json!({ "code": "nothing_to_reset" }))),
+            Some((400, json!({ "error": "bad request" }))),
+            Some((429, json!({ "error": "slow down" }))),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let client = test_client();
+        let credential = test_credential();
+        let mut expected = Vec::new();
+        for (caller, want) in [
+            ("no-credit", ConsumeOutcome::NoCredit),
+            ("nothing", ConsumeOutcome::NothingToReset),
+            ("rejected", ConsumeOutcome::Rejected(400)),
+            ("limited", ConsumeOutcome::Rejected(429)),
+        ] {
+            let mut operation =
+                Redemption::open(root.path(), &credential.account_id, caller).unwrap();
+            assert_eq!(operation.request_id, caller);
+            let outcome = send_redemption(&client, &url, &credential, &operation.request_id)
+                .await
+                .unwrap();
+            assert_eq!(outcome, want);
+            assert!(outcome.settled() && !outcome.redeemed());
+            operation.finish(outcome).unwrap();
+            drop(operation);
+            expected.push(caller.to_string());
+            // 界面没清掉旧标识又点了一次：换新标识，也不当成已兑换。
+            let again = Redemption::open(root.path(), &credential.account_id, caller).unwrap();
+            assert!(!again.completed);
+            assert_ne!(again.request_id, caller);
+            assert!(valid_request_id(&again.request_id));
+            drop(again);
+            assert!(abandon_in(root.path(), &credential.account_id).unwrap());
+        }
+        assert_eq!(server.join().unwrap(), expected);
+    }
+
+    /// 5xx、409、认证失败、连接断开：结果未知，保留同一标识，下次重试仍用它。
+    #[tokio::test]
+    async fn undetermined_http_failures_keep_the_pending_id() {
+        let (url, server) = serve(vec![
+            Some((503, json!({ "error": "unavailable" }))),
+            Some((500, Value::Null)),
+            Some((409, json!({ "error": "in progress" }))),
+            Some((401, json!({ "error": "unauthorized" }))),
+            None,
+            Some((200, json!({ "code": "reset" }))),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let client = test_client();
+        let credential = test_credential();
+        for caller in ["first", "second", "third", "fourth", "fifth"] {
+            let operation = Redemption::open(root.path(), &credential.account_id, caller).unwrap();
+            assert_eq!(operation.request_id, "first");
+            assert!(
+                send_redemption(&client, &url, &credential, &operation.request_id)
+                    .await
+                    .is_err()
+            );
+        }
+        let mut operation = Redemption::open(root.path(), &credential.account_id, "sixth").unwrap();
+        assert_eq!(operation.request_id, "first");
+        let outcome = send_redemption(&client, &url, &credential, &operation.request_id)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ConsumeOutcome::Reset);
+        operation.finish(outcome).unwrap();
+        drop(operation);
+        assert!(
+            Redemption::open(root.path(), &credential.account_id, "sixth")
+                .unwrap()
+                .completed
+        );
+        assert_eq!(server.join().unwrap(), ["first"; 6]);
+    }
+
+    #[test]
+    fn abandoning_ends_the_pending_operation_and_never_reuses_its_id() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(!abandon_in(root.path(), "account-a").unwrap());
+        drop(Redemption::open(root.path(), "account-a", "stuck").unwrap());
+        // 进行中的操作持锁时不能放弃。
+        let busy = Redemption::open(root.path(), "account-a", "other").unwrap();
+        assert!(abandon_in(root.path(), "account-a").is_err());
+        drop(busy);
+        assert!(abandon_in(root.path(), "account-a").unwrap());
+        assert!(!abandon_in(root.path(), "account-a").unwrap());
+        let fresh = Redemption::open(root.path(), "account-a", "next").unwrap();
+        assert_eq!(fresh.request_id, "next");
+        drop(fresh);
+        assert!(abandon_in(root.path(), "account-a").unwrap());
+        // 界面还拿着被放弃的旧标识：换一个新的。
+        let stale = Redemption::open(root.path(), "account-a", "stuck").unwrap();
+        assert_ne!(stale.request_id, "stuck");
+        // 其它账号不受影响。
+        assert!(!abandon_in(root.path(), "account-b").unwrap());
+    }
+
+    #[test]
+    fn abandoning_repairs_a_corrupt_journal() {
+        let root = tempfile::tempdir().unwrap();
+        let first = Redemption::open(root.path(), "account-a", "one").unwrap();
+        let path = first.path.clone();
+        drop(first);
+        fs::write(&path, b"broken").unwrap();
+        assert!(Redemption::open(root.path(), "account-a", "two").is_err());
+        assert!(abandon_in(root.path(), "account-a").unwrap());
+        assert_eq!(
+            Redemption::open(root.path(), "account-a", "two")
+                .unwrap()
+                .request_id,
+            "two"
+        );
+    }
+
+    #[test]
+    fn journal_without_settled_list_still_loads() {
+        let root = tempfile::tempdir().unwrap();
+        let first = Redemption::open(root.path(), "account-a", "one").unwrap();
+        let path = first.path.clone();
+        drop(first);
+        fs::write(&path, br#"{"pending":"one","completed":[]}"#).unwrap();
+        assert_eq!(
+            Redemption::open(root.path(), "account-a", "two")
+                .unwrap()
+                .request_id,
+            "one"
         );
     }
 }

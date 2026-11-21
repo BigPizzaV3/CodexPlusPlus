@@ -3839,6 +3839,10 @@ export const EN_PLAIN: Record<string, string> = {
   "核实上次操作": "Check previous operation",
   "消耗一张重置卡，重置账号额度": "Use one reset voucher to reset account quota",
   "已用、已失效或状态未知": "Used, expired, or status unknown",
+  "放弃上次重置操作": "Abandon previous reset operation",
+  "放弃并重新开始": "Abandon and start over",
+  "放弃上次未确认的重置操作，下次使用发起新的请求": "Abandon the unconfirmed reset operation; the next use sends a new request",
+  "放弃后，上次未确认的重置操作不再重试，下次使用会发起新的请求。若上次其实已经生效，可能会再扣一张重置卡。建议先刷新额度确认上次是否已重置。": "After abandoning, the unconfirmed reset operation will not be retried and the next use sends a new request. If the previous attempt actually went through, another voucher may be used. Refresh the quota first to check whether it was reset.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -4702,6 +4706,16 @@ export const EN_BACKEND: Record<string, string> = {
   // 从上游同步上下文窗口 / 思考等级（#2807）
   "这类供应商的模型接口不提供上下文窗口和思考等级，请手动填写": "This provider's model endpoint does not report context windows or reasoning levels; fill them in manually",
   "模型资料不是有效的 JSON，请先在「思考等级」里修正": "The model metadata is not valid JSON; fix it under Reasoning levels first",
+  // ChatGPT 额度重置卡：使用 / 放弃
+  "已使用一张重置卡，额度已重置。额度与卡片读数已刷新。": "Used one reset voucher; quota has been reset. Quota and voucher readings refreshed.",
+  "已使用一张重置卡，额度已重置。部分读数尚未刷新，请稍后手动刷新；无需再次使用。": "Used one reset voucher; quota has been reset. Some readings are not refreshed yet; refresh manually later. No need to use another voucher.",
+  "这次重置此前已经生效，没有重复扣卡。额度与卡片读数已刷新。": "This reset had already taken effect; no extra voucher was used. Quota and voucher readings refreshed.",
+  "这次重置此前已经生效，没有重复扣卡。部分读数尚未刷新，请稍后手动刷新；无需再次使用。": "This reset had already taken effect; no extra voucher was used. Some readings are not refreshed yet; refresh manually later. No need to use another voucher.",
+  "账号没有可用的重置卡，本次没有扣卡。": "The account has no usable reset voucher; nothing was used.",
+  "当前额度无需重置，本次没有扣卡。": "The quota does not need a reset right now; no voucher was used.",
+  "重置结果未确认：请保留同一请求标识，先刷新额度再决定是否重试。": "Reset outcome unconfirmed: keep the same request id and refresh the quota before deciding whether to retry.",
+  "已放弃上次未确认的重置操作，下次使用会发起新的请求。": "Abandoned the unconfirmed reset operation; the next use sends a new request.",
+  "没有未确认的重置操作。": "There is no unconfirmed reset operation.",
 };
 
 // Pattern-based backend translations: [regex, replacement template].
@@ -4822,4 +4836,8 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^删除 Key 失败：(.+)$/, "Failed to delete key: $1"],
   // 供应商池：测试供应商
   [/^测试失败：(.+)$/, "Test failed: $1"],
+  // ChatGPT 额度重置卡
+  [/^服务端拒绝了这次重置（HTTP (\d+)），没有扣卡，可以重新发起。$/, "The server rejected this reset (HTTP $1); no voucher was used. You can start a new one."],
+  [/^使用重置卡失败：(.+)$/, "Failed to use reset voucher: $1"],
+  [/^放弃重置操作失败：(.+)$/, "Failed to abandon reset operation: $1"],
 ];
