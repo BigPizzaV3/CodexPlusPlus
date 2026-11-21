@@ -392,6 +392,8 @@ fn normalized_for_compare(profile: &RelayProfile) -> Option<Value> {
     Some(value)
 }
 
+/// 当前供应商是聚合时，成员 / 路由 / 默认成员存在 `aggregate_relay_profiles` 里，不在供应商条目上，
+/// 要一并比较：改了当前聚合的成员（模型聚合的目录、同步的登录）同样要重新应用，与管理器保存当前供应商时一致。
 fn active_profile_changed(stored: &BackendSettings, next: &BackendSettings) -> bool {
     let find = |settings: &BackendSettings| {
         settings
@@ -400,8 +402,18 @@ fn active_profile_changed(stored: &BackendSettings, next: &BackendSettings) -> b
             .find(|profile| profile.id == stored.active_relay_id)
             .cloned()
     };
+    let aggregate = |settings: &BackendSettings| {
+        settings
+            .aggregate_relay_profiles
+            .iter()
+            .find(|aggregate| aggregate.id == stored.active_relay_id)
+            .cloned()
+    };
     match (find(stored), find(next)) {
-        (Some(before), Some(after)) => normalized_for_compare(&before) != normalized_for_compare(&after),
+        (Some(before), Some(after)) => {
+            normalized_for_compare(&before) != normalized_for_compare(&after)
+                || aggregate(stored) != aggregate(next)
+        }
         _ => true,
     }
 }

@@ -559,6 +559,14 @@
       .codex-plus-provider-menu-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
       .codex-plus-provider-menu-popover { top: calc(100% + 4px); right: 0; max-height: 320px; overflow-y: auto; }
       .codex-plus-provider-model-row .codex-plus-provider-menu { justify-self: end; }
+      /* 聚合供应商：成员行（名称 + 标签 | 权重 / 模型数 + 开关），路由行（匹配 | 目标 | 优先级 | 移除）。 */
+      .codex-plus-provider-agg-member .codex-plus-provider-line-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+      .codex-plus-provider-agg-member[data-selected="false"] .codex-plus-provider-line-title { color: var(--codex-plus-text-secondary); }
+      .codex-plus-provider-card .codex-plus-provider-agg-number { width: 64px; text-align: right; }
+      .codex-plus-provider-agg-label { color: var(--codex-plus-text-secondary); font-size: 12px; white-space: nowrap; }
+      .codex-plus-provider-agg-route { display: grid; grid-template-columns: minmax(0, 1fr) auto auto 64px auto; align-items: center; gap: 8px; padding: 12px 0; }
+      .codex-plus-provider-agg-route-error { grid-column: 1 / -1; color: var(--codex-plus-danger, #dc2626); font-size: 12px; }
+      .codex-plus-provider-agg-route-add { padding: 12px 0; }
       /* 「配置文件」折叠标题：小节标题是 flex，原生三角会消失，自己画一个会转的箭头。 */
       details.codex-plus-provider-group > summary { cursor: pointer; list-style: none; gap: 6px; user-select: none; }
       details.codex-plus-provider-group > summary::-webkit-details-marker { display: none; }
@@ -1801,12 +1809,12 @@
       .codex-plus-remote-page .codex-plus-action-button[data-primary="true"]:not(:disabled) { background: var(--codex-plus-text); color: var(--codex-plus-bg-primary); }
       .codex-plus-remote-url, .codex-plus-remote-fingerprint, .codex-plus-remote-address code { font-family: var(--codex-plus-font-mono, ui-monospace, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere; }
       .codex-plus-remote-address { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
-      .codex-plus-remote-segmented { display: inline-flex; border: 1px solid var(--codex-plus-border); border-radius: 8px; overflow: hidden; }
-      .codex-plus-remote-segmented button { min-height: 30px; padding: 0 10px; border: 0; border-left: 1px solid var(--codex-plus-border);
+      .codex-plus-remote-segmented, .codex-plus-provider-segmented { display: inline-flex; border: 1px solid var(--codex-plus-border); border-radius: 8px; overflow: hidden; }
+      .codex-plus-remote-segmented button, .codex-plus-provider-segmented button { min-height: 30px; padding: 0 10px; border: 0; border-left: 1px solid var(--codex-plus-border);
         background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
-      .codex-plus-remote-segmented button:first-child { border-left: 0; }
-      .codex-plus-remote-segmented button[aria-checked="true"] { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); font-weight: 550; }
-      .codex-plus-remote-segmented button:disabled { cursor: default; opacity: .6; }
+      .codex-plus-remote-segmented button:first-child, .codex-plus-provider-segmented button:first-child { border-left: 0; }
+      .codex-plus-remote-segmented button[aria-checked="true"], .codex-plus-provider-segmented button[aria-checked="true"] { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); font-weight: 550; }
+      .codex-plus-remote-segmented button:disabled, .codex-plus-provider-segmented button:disabled { cursor: default; opacity: .6; }
       .codex-plus-remote-pairing { display: grid; gap: 12px; padding: 14px 0 16px; border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
       .codex-plus-remote-pairing-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
       .codex-plus-remote-code { font-family: var(--codex-plus-font-mono, ui-monospace, Menlo, monospace); font-size: 16px; letter-spacing: 2px; }

@@ -78,13 +78,43 @@ describe("供应商编辑函数打包（42 分片）", () => {
   });
 });
 
+/**
+ * 桩 DOM 元素：带一组 data-* 属性，closest 只认属性选择器（"[data-x]" / "[data-x=\"v\"]"）和 "button"，
+ * 足够驱动页面的点击 / 输入分发。
+ */
+class FakeElement {
+  dataset: Record<string, string> = {};
+  disabled = false;
+  attrs: Record<string, string>;
+  value: string;
+  constructor(attrs: Record<string, string> = {}, value = "") {
+    this.attrs = attrs;
+    this.value = value;
+    for (const [name, attrValue] of Object.entries(attrs)) {
+      if (!name.startsWith("data-")) continue;
+      this.dataset[name.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase())] = attrValue;
+    }
+  }
+  closest(selector: string) {
+    if (selector === "button") return this;
+    for (const match of selector.matchAll(/\[([a-z-]+)(?:="([^"]*)")?\]/g)) {
+      if (match[1] in this.attrs && (match[2] === undefined || this.attrs[match[1]] === match[2])) return this;
+    }
+    return null;
+  }
+}
+
+function fake(attrs: Record<string, string>, value = "") {
+  return new FakeElement(attrs, value);
+}
+
 /** 在桩环境里执行 43 分片，拿到内部函数。 */
 function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: (question: any) => any }) {
   const calls: Array<{ path: string; payload: any }> = [];
   const toasts: string[] = [];
   const document = { querySelector: () => null, querySelectorAll: () => [], activeElement: null, hidden: false };
   const api = new Function(
-    "codexPlusProviderEditing", "postJson", "codexPlusAsk", "showToast", "escapeHtml", "document", "codexPlusMenuIcons",
+    "codexPlusProviderEditing", "postJson", "codexPlusAsk", "showToast", "escapeHtml", "document", "codexPlusMenuIcons", "Element", "HTMLElement",
     `${pageSource}\n${gatewaySource}\nreturn { state: codexPlusProviderPageState, applyList: codexPlusProviderApplyList, commit: codexPlusProviderCommit,
       use: codexPlusProviderUse, selectKey: codexPlusProviderSelectKey, applyModelLines: codexPlusProviderApplyModelLines,
       modelLines: codexPlusProviderModelLines, duplicate: codexPlusProviderDuplicate, renderPage: renderCodexPlusProviderPage,
@@ -92,7 +122,8 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
       gwEditable: codexPlusGatewayEditable, gwConnect: codexPlusGatewayConnect, gwOpenDisconnect: codexPlusGatewayOpenDisconnect,
       gwApplyDisconnect: codexPlusGatewayApplyDisconnect, gwInput: codexPlusGatewayHandleInput, gwStartNew: codexPlusGatewayStartNew,
       modelEditor: codexPlusProviderModelEditor, windowLabel: codexPlusProviderWindowLabel,
-      detail: renderCodexPlusProviderDetail, gwDetail: renderCodexPlusGatewayDetail, menuChanged: codexPlusProviderMenuChanged };`,
+      detail: renderCodexPlusProviderDetail, gwDetail: renderCodexPlusGatewayDetail, menuChanged: codexPlusProviderMenuChanged,
+      startNew: codexPlusProviderStartNew, save: codexPlusProviderSave, click: codexPlusProviderHandleClick, input: codexPlusProviderHandleInput };`,
   )(
     loadEditing(),
     async (path: string, payload: any) => {
@@ -105,6 +136,8 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
     document,
     // 41 分片的菜单图标，桩里不加载 41。
     { chevron: "<svg data-icon=\"chevron\"></svg>", check: "<svg data-icon=\"check\"></svg>" },
+    FakeElement,
+    FakeElement,
   );
   return { ...api, calls, toasts };
 }
@@ -251,6 +284,76 @@ describe("供应商页（43 分片）", () => {
     assert.match(pageSource, /data-codex-plus-active-tab="\$\{codexPlusProviderTab\}"/);
     assert.match(pageSource, /window\.__codexPlusExtensionPageCleanup = \(\) => \{/);
   });
+
+  function aggregateListResult(revision = "r1") {
+    const base = listResult(revision);
+    base.settings.relayProfiles.push({ id: "agg", name: "AGG", relayMode: "aggregate", protocol: "responses", sessionProvider: "custom",
+      apiKeys: [], modelRoutes: [], customHeaders: [], configContents: "", authContents: "" } as any);
+    (base.settings as any).aggregateRelayProfiles = [{ id: "agg", name: "AGG", sessionProvider: "custom", modelAggregationEnabled: false,
+      strategy: "failover", members: [{ relayId: "a", weight: 1 }], routes: [], defaultRelayId: "" }];
+    return base;
+  }
+
+  it("聚合供应商在本页编辑：成员、权重、策略、路由一起提交到 aggregateRelayProfiles", async () => {
+    const page = loadPage({ postJson: (path) => (path === "/providers/commit" ? aggregateListResult("r2") : aggregateListResult()) });
+    page.applyList(aggregateListResult());
+    page.state.selectedId = "agg";
+    page.applyList(aggregateListResult());
+    const html = page.detail();
+    assert.doesNotMatch(html, /管理器里编辑|<select|type="checkbox"/);
+    assert.match(html, /data-codex-provider-agg-member="b"/);
+    assert.match(html, /data-codex-provider-action="save"/);
+    assert.doesNotMatch(html, /data-codex-provider-action="test"/, "聚合没有单独的连接测试");
+
+    await page.click({ target: fake({ "data-codex-provider-agg-member": "b" }) });
+    page.input({ target: fake({ "data-codex-provider-agg-weight": "b" }, "3") });
+    page.menuChanged("agg-strategy", "weightedRoundRobin");
+    await page.click({ target: fake({ "data-codex-provider-action": "agg-route-add" }) });
+    page.input({ target: fake({ "data-codex-provider-agg-route-pattern": "0" }, "deepseek-*") });
+    page.input({ target: fake({ "data-codex-provider-agg-route-priority": "0" }, "5") });
+    page.menuChanged("agg-route-target", "b", fake({ "data-agg-route-index": "0" }));
+    assert.equal(page.state.dirty, true);
+
+    await page.save();
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.path === "/providers/commit")!;
+    assert.ok(sent, page.state.status);
+    const aggregate = sent.payload.aggregateRelayProfiles.find((item: any) => item.id === "agg");
+    assert.equal(aggregate.strategy, "weightedRoundRobin");
+    assert.deepEqual(aggregate.members, [{ relayId: "a", weight: 1 }, { relayId: "b", weight: 3 }]);
+    assert.deepEqual(aggregate.routes, [{ pattern: "deepseek-*", relayId: "b", priority: 5 }]);
+    assert.equal(sent.payload.activate, undefined, "只保存，不切换");
+  });
+
+  it("新建模型聚合：没有默认成员时不提交，设好默认成员后带着新聚合提交", async () => {
+    const page = loadPage({ postJson: (path) => (path === "/providers/commit" ? aggregateListResult("r2") : aggregateListResult()) });
+    page.applyList(aggregateListResult());
+    page.startNew("model");
+    const id = page.state.draft.id;
+    assert.equal(page.state.isNew, true);
+    assert.equal(page.state.draft.aggregate.modelAggregationEnabled, true);
+    assert.match(page.detail(), /data-codex-provider-agg-mode="model"/);
+
+    // 去掉唯一的成员：默认成员跟着清空，保存被校验拦下。
+    await page.click({ target: fake({ "data-codex-provider-agg-member": "a" }) });
+    await page.save();
+    assert.equal(page.calls.filter((call: { path: string }) => call.path === "/providers/commit").length, 0);
+    assert.match(page.state.status, /至少需要|默认供应商/);
+
+    await page.click({ target: fake({ "data-codex-provider-agg-member": "a" }) });
+    await page.click({ target: fake({ "data-codex-provider-agg-member": "b" }) });
+    await page.click({ target: fake({ "data-codex-provider-agg-default": "b" }) });
+    await page.save();
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.path === "/providers/commit")!;
+    assert.ok(sent, page.state.status);
+    assert.ok(sent.payload.relayProfiles.some((profile: any) => profile.id === id));
+    const aggregate = sent.payload.aggregateRelayProfiles.find((item: any) => item.id === id);
+    assert.equal(aggregate.modelAggregationEnabled, true);
+    assert.equal(aggregate.defaultRelayId, "b");
+    assert.deepEqual(aggregate.members.map((member: any) => member.relayId), ["a", "b"]);
+    // 判定成员时给打码 Key 填的占位值不能跟着提交。
+    assert.doesNotMatch(JSON.stringify(sent.payload), /"apiKey":"stored"/);
+  });
+
 });
 
 function poolEntry(id: string, extra: Record<string, unknown> = {}) {

@@ -347,6 +347,70 @@ fn gateway_entry_is_kept_from_storage() {
     assert_eq!(key_values(&fixture.stored(CODEX_GATEWAY_RELAY_ID)), key_values(&gateway));
 }
 
+/// 页面编辑聚合供应商：成员 / 策略只在 aggregateRelayProfiles 里，供应商条目本身不变。
+fn fixture_with_aggregate(active_aggregate: bool) -> (Fixture, Value) {
+    use codex_plus_core::settings::{AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, RelaySessionProvider};
+
+    let fixture = Fixture::new(vec![RelayProfile {
+        id: "agg".into(),
+        name: "聚合".into(),
+        relay_mode: RelayMode::Aggregate,
+        ..RelayProfile::default()
+    }]);
+    let mut settings = fixture.store.load().unwrap();
+    settings.aggregate_relay_profiles = vec![AggregateRelayProfile {
+        id: "agg".into(),
+        name: "聚合".into(),
+        session_provider: RelaySessionProvider::Custom,
+        model_aggregation_enabled: false,
+        strategy: AggregateRelayStrategy::Failover,
+        members: vec![AggregateRelayMember { relay_id: "a".into(), weight: 1 }],
+        routes: Vec::new(),
+        default_relay_id: String::new(),
+        sync_default_member_login: false,
+        auto_review_relay_id: String::new(),
+    }];
+    if active_aggregate {
+        settings.active_relay_id = "agg".into();
+        settings.active_aggregate_relay_id = "agg".into();
+    }
+    fixture.store.save(&settings).unwrap();
+    let list = fixture.list();
+    let mut aggregates = list["settings"]["aggregateRelayProfiles"].clone();
+    aggregates[0]["strategy"] = json!("weightedRoundRobin");
+    aggregates[0]["members"] = json!([{ "relayId": "a", "weight": 3 }, { "relayId": "b", "weight": 1 }]);
+    let request = json!({
+        "revision": list["revision"],
+        "relayProfiles": profiles_of(&list),
+        "aggregateRelayProfiles": aggregates,
+        "activeAggregateRelayId": list["settings"]["activeAggregateRelayId"],
+    });
+    (fixture, request)
+}
+
+#[test]
+fn editing_inactive_aggregate_only_saves_members_and_strategy() {
+    use codex_plus_core::settings::AggregateRelayStrategy;
+
+    let (fixture, request) = fixture_with_aggregate(false);
+    let outcome = fixture.commit(request).unwrap();
+    assert!(!outcome.switched);
+    assert_eq!(fixture.switches.load(Ordering::SeqCst), 0);
+    let saved = fixture.store.load().unwrap();
+    let aggregate = &saved.aggregate_relay_profiles[0];
+    assert_eq!(aggregate.strategy, AggregateRelayStrategy::WeightedRoundRobin);
+    let members: Vec<(String, u32)> = aggregate.members.iter().map(|member| (member.relay_id.clone(), member.weight)).collect();
+    assert_eq!(members, vec![("a".to_string(), 3), ("b".to_string(), 1)]);
+}
+
+#[test]
+fn editing_active_aggregate_members_reapplies_it() {
+    let (fixture, request) = fixture_with_aggregate(true);
+    // 切换本身成不成功取决于测试环境里的聚合代理，这里只关心「改了当前聚合」会走切换流程。
+    let _ = fixture.commit(request);
+    assert_eq!(fixture.switches.load(Ordering::SeqCst), 1, "改了当前聚合的成员要像管理器一样重新应用");
+}
+
 #[test]
 fn commit_route_requires_registered_host() {
     let error = route_commit(&json!({ "relayProfiles": [] })).unwrap_err();
