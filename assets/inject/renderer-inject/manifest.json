@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3573
+      "lines": 3576
     },
     {
       "name": "20-menu.js",
@@ -113,12 +113,12 @@
     {
       "name": "61-plugin-market-ui.js",
       "description": "独立 Codex 插件市场、索引检索与按需单包安装",
-      "lines": 300
+      "lines": 281
     },
     {
       "name": "62-plugin-market-adapter.js",
       "description": "原生插件 UI 适配、索引合并与托管插件单包安装",
-      "lines": 482
+      "lines": 811
     },
     {
       "name": "70-model-catalog.js",
@@ -133,7 +133,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 678
+      "lines": 680
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -188,7 +188,7 @@
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 929
+      "lines": 1044
     },
     {
       "name": "92-extension-host.js",
@@ -278,7 +278,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 45
+      "lines": 46
     },
     {
       "name": "99-tail.js",

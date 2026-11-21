@@ -375,6 +375,12 @@
         background: var(--codex-plus-bg-selected);
         color: var(--codex-plus-text);
       }
+      /* 插件页「公开」页签的本机分类标题：点了看这一类的全部（选择器与 62-plugin-market-adapter 的 codexPlusPluginCategoryTitle 一致）。 */
+      html[data-codex-plus-plugin-categories] section[id^="plugins-"]:not([id^="plugins-marketplace-"], #plugins-created-by-you, #plugins-shared-with-you) > [data-slot="section-header"] > h2:not(:has(*)) { cursor: pointer; }
+      html[data-codex-plus-plugin-categories] section[id^="plugins-"]:not([id^="plugins-marketplace-"], #plugins-created-by-you, #plugins-shared-with-you) > [data-slot="section-header"] > h2:not(:has(*))::after {
+        content: "›"; color: var(--color-token-text-tertiary, currentColor); font-weight: 400; transition: transform 0.15s ease-out;
+      }
+      html[data-codex-plus-plugin-categories] section[id^="plugins-"]:not([id^="plugins-marketplace-"], #plugins-created-by-you, #plugins-shared-with-you) > [data-slot="section-header"] > h2:not(:has(*)):hover::after { transform: translateX(2px); }
       .codex-plus-plugin-sidebar { position: relative; flex: 0 0 auto; }
       .codex-plus-plugin-sidebar .codex-plus-sidebar-nav-icon { width: 20px; height: 20px; flex: 0 0 20px; display: inline-flex; align-items: center; justify-content: center; }
       .codex-plus-plugin-sidebar .codex-plus-sidebar-nav-icon svg { width: 19px; height: 19px; }
@@ -383,9 +389,6 @@
       .codex-plus-plugin-market-panel { max-width: 1140px; width: 100%; margin: 0 auto; box-sizing: border-box; }
       .codex-plus-plugin-intro { margin: 0 0 18px; color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 1.6; }
       .codex-plus-plugin-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
-      .codex-plus-plugin-sources { display: flex; gap: 4px; flex: 1 1 auto; }
-      .codex-plus-plugin-sources button { border: 1px solid var(--codex-plus-border); border-radius: 7px; padding: 7px 12px; color: var(--codex-plus-text-secondary); background: transparent; cursor: pointer; }
-      .codex-plus-plugin-sources button[data-active="true"] { background: var(--codex-plus-bg-selected); color: var(--codex-plus-text); }
       .codex-plus-plugin-search { flex: 1 1 240px; min-width: 120px; border: 1px solid var(--codex-plus-border); border-radius: 8px; background: var(--codex-plus-bg-secondary); color: var(--codex-plus-text); padding: 9px 12px; font-size: 14px; }
       .codex-plus-plugin-filter { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--codex-plus-text-secondary); }
       .codex-plus-plugin-status { font-size: 12px; color: var(--codex-plus-text-secondary); white-space: pre-wrap; margin-bottom: 14px; }

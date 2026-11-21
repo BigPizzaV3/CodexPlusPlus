@@ -569,13 +569,13 @@ const demoSkills = {
 const demoMarketPlugin = (id: string, description: string, extra: Record<string, unknown> = {}) =>
   ({ id, name: id, displayName: id, description, version: "1.0.0", author: "demo", tags: [], license: "MIT", path: "", tree: "", bytes: 64_000, skills: 1, requiresAuth: false, installed: false, updateAvailable: false, ...extra });
 const demoPluginMarket = {
-  status: "ok", message: "", source: "public", repository: "demo/plugins", total: 6, cached: true,
+  status: "ok", message: "", source: "full", repository: "demo/plugins", total: 6, cached: true, updatedAt: "2026-10-08",
   plugins: [
     demoMarketPlugin("01 Superdesign", "Superdesign adds a design skill to ChatGPT for web UI, presentations, and graphics.", { version: "0.6.0", bytes: 230_900 }),
     demoMarketPlugin("12ui Design", "Create distinctive interfaces with 12ui design skills and hosted design APIs.", { version: "0.2.65", bytes: 108_400 }),
-    demoMarketPlugin("1Password", "Use the local 1Password MCP server to manage 1Password Developer Environments and local .env mounts from Codex.", { version: "0.2.0", bytes: 42_500, installed: true }),
+    demoMarketPlugin("1Password", "Use the local 1Password MCP server to manage 1Password Developer Environments and local .env mounts from Codex.", { version: "0.2.0", bytes: 42_500, installed: true, requiresAuth: true, hasMcp: true }),
     demoMarketPlugin("6X6", "Essential answers first, with focused detail on request.", { version: "1.0.2", bytes: 64_700 }),
-    demoMarketPlugin("Accurate Translation", "Translate text and files locally without metered translation API tokens.", { requiresAuth: true }),
+    demoMarketPlugin("Accurate Translation", "Translate text and files locally without metered translation API tokens.", { requiresAuth: true, hasApps: true }),
     demoMarketPlugin("Actively", "Win more deals with Actively by directly accessing your always-on personal sales assistant."),
   ],
 };

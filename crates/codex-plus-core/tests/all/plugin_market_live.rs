@@ -2,14 +2,15 @@
 use codex_plus_core::plugin_market;
 
 #[tokio::test]
-#[ignore = "需要访问两个 GitHub 缓存仓库；完整来源使用已有 gh 登录"]
-async fn index_only_then_install_selected_public_and_private_plugin() {
+#[ignore = "需要访问 GitHub 上的插件缓存仓库"]
+async fn index_only_then_install_selected_plugin() {
     let home = tempfile::tempdir().unwrap().keep();
     std::fs::write(home.join("config.toml"), "model = \"test-preserved\"\n").unwrap();
-    for (source, name) in [
-        ("public", "google-drive"),
-        ("full", "life-sciences-databases"),
-    ] {
+    // 一个 2026-10-08 就有的插件，一个 2026-11-21 新增分组里的插件。
+    for (index, (source, name)) in [("full", "life-sciences-databases"), ("full", "1social-scheduler")]
+        .into_iter()
+        .enumerate()
+    {
         let before_packages = std::fs::read_dir(home.join("plugins/cache"))
             .map(|entries| entries.count())
             .unwrap_or_default();
@@ -17,7 +18,7 @@ async fn index_only_then_install_selected_public_and_private_plugin() {
             .await
             .unwrap();
         assert_eq!(before["status"], "ok");
-        assert!(!home.join("plugins/cache").exists() || source == "full");
+        assert!(!home.join("plugins/cache").exists() || index > 0);
         assert_eq!(
             std::fs::read_dir(home.join("plugins/cache"))
                 .map(|entries| entries.count())
@@ -45,7 +46,7 @@ async fn index_only_then_install_selected_public_and_private_plugin() {
             .iter()
             .filter(|item| item["installed"] == true)
             .count();
-        assert_eq!(installed_count, 1, "只安装当前选中的插件");
+        assert_eq!(installed_count, index + 1, "只安装当前选中的插件");
         assert!(
             std::fs::read_to_string(home.join("config.toml"))
                 .unwrap()
