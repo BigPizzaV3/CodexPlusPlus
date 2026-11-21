@@ -1631,9 +1631,15 @@ pub fn process_started_at_secs_from_birth_id(birth_id: u64) -> Option<u64> {
 
 #[cfg(windows)]
 pub fn activate_process_window(process_id: u32) -> bool {
-    let Some(hwnd) = process_window(process_id, false) else {
+    // 工具窗口（如托盘快捷面板）只是兜底命中；把这类隐藏窗口用 ShowWindow 翻出来，
+    // 会弹出一个 tao 认为不可见、因此 hide() 不生效的浮窗（issue #3223）。
+    // 真正的唤起交给 window-activation 请求文件，由主进程重建/显示主窗口。
+    let Some((hwnd, score)) = process_window_with_score(process_id, false) else {
         return false;
     };
+    if score == ProcessWindowScore::Fallback {
+        return false;
+    }
     unsafe {
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -1685,6 +1691,14 @@ fn visible_window_for_process(process_id: u32) -> Option<HWND> {
 
 #[cfg(windows)]
 fn process_window(process_id: u32, visible_only: bool) -> Option<HWND> {
+    process_window_with_score(process_id, visible_only).map(|(hwnd, _)| hwnd)
+}
+
+#[cfg(windows)]
+fn process_window_with_score(
+    process_id: u32,
+    visible_only: bool,
+) -> Option<(HWND, ProcessWindowScore)> {
     let mut state = ActivateWindowState {
         process_id,
         hwnd: HWND::default(),
@@ -1700,7 +1714,7 @@ fn process_window(process_id: u32, visible_only: bool) -> Option<HWND> {
     if state.hwnd.is_invalid() {
         None
     } else {
-        Some(state.hwnd)
+        Some((state.hwnd, state.score))
     }
 }
 

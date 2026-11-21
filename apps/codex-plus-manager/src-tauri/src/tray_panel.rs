@@ -103,8 +103,18 @@ pub fn handle_tray_event<R: Runtime>(app: &AppHandle<R>, event: &TrayIconEvent) 
 
 pub fn hide<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.hide();
+        hide_window(&window);
     }
+}
+
+/// Windows 上若面板曾被 Win32 ShowWindow 直接显示（tao 的可见标记仍为 false），
+/// hide() 会被框架当成重复操作跳过（同 issue #1542），先强制同步再隐藏。
+fn hide_window<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    #[cfg(windows)]
+    if !window.is_visible().unwrap_or(false) {
+        let _ = window.show();
+    }
+    let _ = window.hide();
 }
 
 /// 面板因失去焦点收起的时刻。Windows 上按下托盘图标先让面板失焦收起，松开时的点击事件再来切换，
@@ -184,7 +194,7 @@ fn create<R: Runtime>(app: &AppHandle<R>) -> Option<tauri::WebviewWindow<R>> {
             {
                 *at = Some(std::time::Instant::now());
             }
-            let _ = handle.hide();
+            hide_window(&handle);
         }
     });
     Some(window)
