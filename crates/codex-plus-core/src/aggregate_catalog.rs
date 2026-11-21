@@ -854,6 +854,19 @@ pub fn catalog_summary(
     }))
 }
 
+/// 官方池成员补的 GPT-6.2 Fast 档位，只解析一次。内置资产解析失败只可能是改坏了 JSON，
+/// 按空表处理（不补档位），`gpt62_fast_tiers_reach_the_gateway_catalog` 会兜住。
+fn official_fast_defaults() -> &'static Map<String, Value> {
+    static DEFAULTS: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(|| {
+        crate::relay_config::parse_model_metadata_map(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/gpt62-model-metadata-compat.json"
+        )))
+        .unwrap_or_default()
+    })
+}
+
 pub(crate) fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Value> {
     let entries = profile_catalog_entries(profile)?;
     if entries.is_empty() {
@@ -873,10 +886,7 @@ pub(crate) fn build_member_catalog(profile: &RelayProfile) -> anyhow::Result<Val
     // 官方池成员同步的是模型 ID，不一定有同版本的本机目录。只补已知型号的
     // 官方 Fast 档位，不把同家族旧模板的能力移给未知型号或第三方供应商。
     if crate::official_login::member_uses_official_login_transport(profile) {
-        let fast_defaults = crate::relay_config::parse_model_metadata_map(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/gpt62-model-metadata-compat.json"
-        )))?;
+        let fast_defaults = official_fast_defaults();
         for entry in &entries {
             let slug = entry.slug.to_ascii_lowercase();
             let Some(defaults) = fast_defaults.get(&slug) else {

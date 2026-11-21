@@ -241,9 +241,10 @@ async fn initialize_module(
             url.to_owned(),
             base64::engine::general_purpose::STANDARD.encode(source),
         );
+        // 页面侧守护：回填没发生或补丁没执行时，超时发布 failed（与 import map 通道的 30 秒一致）。
         format!(
-            "{bootstrap}\n;window.__codexPlusNativeFastModuleDiagnostics={};",
-            json!({ "url": entry["url"], "reason": "response-interception-armed", "rewriters": rewriters })
+            "{bootstrap}\n;window.__codexPlusNativeFastUnlock.armResponseModule({});",
+            json!({ "url": url, "rewriters": rewriters })
         )
     } else {
         format!(
@@ -1052,7 +1053,11 @@ mod tests {
         ]));
         let script = matching("Page.addScriptToEvaluateOnNewDocument")[0]["params"]["source"].as_str().unwrap();
         assert!(!script.contains(";window.__codexPlusNativeFastUnlock.installModules("));
-        assert!(script.contains("\"reason\":\"response-interception-armed\""));
+        // 新文档脚本必须装上页面侧超时守护，否则拦截没触发时会一直停在 armed（#3224）。
+        assert!(script.ends_with(&format!(
+            "\n;window.__codexPlusNativeFastUnlock.armResponseModule({});",
+            json!({"url":URL,"rewriters":{"fast":"patched"}})
+        )));
         let completed = matching("Fetch.fulfillRequest");
         assert_eq!(completed.len(), 2);
         assert_eq!(completed[0]["params"]["requestId"], "success");

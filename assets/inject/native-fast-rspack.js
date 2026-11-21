@@ -167,7 +167,8 @@
     if (!planned.ok) return { ...failed(planned.diagnostics.reason), diagnostics: { ...planned.diagnostics, rewriters: { fast: planned.diagnostics.reason } } };
     // script[src] 不走 import map；入口的静态依赖会走。依赖的原生 runtime 回调在入口启动前
     // 安装模块表代理，所有后续分块（包括重复工厂）仍由原生注册器处理，不改加载器或模块缓存。
-    const hook = `\nexport const __rspack_esm_runtime = (__codexPlusRequire) => {
+    // 分块求值时先写下自己的地址：页面超时守护据此区分「没拦截到」和「回填了但补丁没执行」。
+    const hook = `\nwindow.__codexPlusNativeFastResponseLoaded=${JSON.stringify(url)};\nexport const __rspack_esm_runtime = (__codexPlusRequire) => {
       const __codexPlusFastFactories={${planned.factories.map(f => f.source.startsWith("function(")
         ? `[${JSON.stringify(f.key)}]:${f.source}` : f.source).join(",")}};
       __codexPlusRequire.m=new Proxy(__codexPlusRequire.m,{

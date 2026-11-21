@@ -235,6 +235,68 @@ test("Rspack registration compiles and installs anonymous factories by module ke
   assert.notEqual(require.m.Request, original);
 });
 
+test("Rspack response watchdog distinguishes executed, unexecuted and missing fulfilled chunks (#3224)", async () => {
+  const runtimeUrl = "app://-/assets/348410.abcdef.js";
+  const chunkUrl = "app://-/assets/782259.abcdef.js";
+  const page = async () => {
+    const window = context();
+    const timers = new Map();
+    let next = 0;
+    let domReady = null;
+    window.document = {
+      readyState: "loading",
+      addEventListener: (type, listener) => { if (type === "DOMContentLoaded") domReady = listener; },
+      removeEventListener: (type, listener) => { if (domReady === listener) domReady = null; },
+    };
+    window.setTimeout = (callback, delay) => { timers.set(++next, { callback, delay }); return next; };
+    window.clearTimeout = id => timers.delete(id);
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "native-fast-rspack.js"), "utf8"), { window, Error, URL });
+    const api = window.__codexPlusNativeFastUnlock;
+    const prepared = await api.prepareDocumentModules({
+      location: new URL("app://-/index.html"), document: { scripts: [{ src: runtimeUrl }] },
+      fetchText: async value => value === runtimeUrl ? runtimeSource : chunkSource, readRspackFactories: async () => fixtures(),
+    });
+    assert.equal(prepared.ok, true, JSON.stringify(prepared.diagnostics));
+    // 新文档：bootstrap 置 armed，Rust 登记的脚本再装守护。
+    window.__codexPlusNativeFastPatchState = "armed";
+    assert.equal(api.armResponseModule({ url: chunkUrl, rewriters: prepared.diagnostics.rewriters }).ok, true);
+    const fulfill = () => {
+      const sandbox = { window };
+      vm.runInNewContext(prepared.modules[0].patchedSource.replaceAll("export const ", "const ")
+        + ";globalThis.install=__rspack_esm_runtime", sandbox);
+      return sandbox.install;
+    };
+    const expire = () => { domReady?.(); for (const [id, timer] of [...timers]) { timers.delete(id); timer.callback(); } };
+    return { window, timers, fulfill, expire, domReady: () => domReady?.() };
+  };
+
+  const patched = await page();
+  const install = patched.fulfill();
+  assert.equal(patched.window.__codexPlusNativeFastResponseLoaded, chunkUrl, "分块求值即记下回填地址");
+  assert.equal(patched.window.__codexPlusNativeFastCompiled, undefined);
+  install({ m: {} });
+  assert.equal(patched.window.__codexPlusNativeFastCompiled, "v1");
+  assert.equal(patched.window.__codexPlusNativeFastPatchState, "patched");
+  patched.domReady();
+  assert.equal(patched.timers.size, 0, "补丁执行后不再计时");
+  patched.expire();
+  assert.equal(patched.window.__codexPlusNativeFastPatchState, "patched");
+
+  const unexecuted = await page();
+  unexecuted.fulfill();
+  unexecuted.domReady();
+  assert.equal([...unexecuted.timers.values()][0].delay, 30000);
+  unexecuted.expire();
+  assert.equal(unexecuted.window.__codexPlusNativeFastPatchState, "failed");
+  assert.equal(unexecuted.window.__codexPlusNativeFastFailureReason, "module-execution-timeout");
+
+  const missing = await page();
+  missing.expire();
+  assert.equal(missing.window.__codexPlusNativeFastPatchState, "failed");
+  assert.equal(missing.window.__codexPlusNativeFastFailureReason, "response-not-intercepted");
+  assert.equal(missing.window.__codexPlusNativeFastModuleDiagnostics.reason, "response-not-intercepted");
+});
+
 test("Rspack runtime preparation fails closed on missing or ambiguous registration", () => {
   const select = source => rspack.registrationChunk(source, "app://-/assets/123.abc.js");
   assert.equal(select(runtimeSource), "app://-/assets/782259.abcdef.js");
