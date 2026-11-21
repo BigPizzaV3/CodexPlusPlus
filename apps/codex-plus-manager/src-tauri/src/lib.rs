@@ -1179,7 +1179,7 @@ pub(crate) fn request_app_exit<R: tauri::Runtime>(app_handle: &tauri::AppHandle<
 /// 窗口在就显示并聚焦，轻量模式下已销毁就按原配置重建再显示（#2677）。必须在主线程调用。
 fn show_main_window<R: tauri::Runtime>(app_handle: &tauri::AppHandle<R>) {
     lightweight::cancel_pending_release();
-    // 主窗口销毁后，Windows 上二次启动按进程找窗口时可能把隐藏的快捷面板翻出来，这里顺手收起。
+    // 打开主窗口时顺手收起快捷面板（开着才会真的收起）。
     tray_panel::hide(app_handle);
     let Some((window, created)) = ensure_main_window(app_handle) else {
         return;
@@ -1227,6 +1227,10 @@ pub fn focus_existing_manager_window() {
         .as_nanos()
         .to_string();
     let _ = std::fs::write(path, request);
+    // Windows 上本进程刚由用户启动，持有前台权限，借它把已显示的主窗口提到前台。
+    // 只碰可见窗口：隐藏窗口若用 Win32 直接翻出来，会绕过 tao 的可见标记，主窗口已销毁时
+    // 还会翻出隐藏的托盘快捷面板且收不起来（issue #3223）。隐藏/已销毁的主窗口由上面的请求文件
+    // 交给主进程 show_main_window 处理。
     #[cfg(windows)]
     {
         let current_process_id = std::process::id();
@@ -1237,7 +1241,7 @@ pub fn focus_existing_manager_window() {
             if ["codex-plus-plus.exe", "codex-plus-plus-manager.exe"]
                 .iter()
                 .any(|name| process.exe_file.eq_ignore_ascii_case(name))
-                && codex_plus_core::windows_activate_process_window(process.process_id)
+                && codex_plus_core::windows_activate_visible_process_window(process.process_id)
             {
                 break;
             }
