@@ -1631,20 +1631,31 @@ pub fn process_started_at_secs_from_birth_id(birth_id: u64) -> Option<u64> {
 
 #[cfg(windows)]
 pub fn activate_process_window(process_id: u32) -> bool {
-    // 工具窗口（如托盘快捷面板）只是兜底命中；把这类隐藏窗口用 ShowWindow 翻出来，
-    // 会弹出一个 tao 认为不可见、因此 hide() 不生效的浮窗（issue #3223）。
-    // 真正的唤起交给 window-activation 请求文件，由主进程重建/显示主窗口。
-    let Some((hwnd, score)) = process_window_with_score(process_id, false) else {
+    let Some(hwnd) = process_window(process_id, false) else {
         return false;
     };
-    if score == ProcessWindowScore::Fallback {
-        return false;
-    }
     unsafe {
         if IsIconic(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         } else if !IsWindowVisible(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        SetForegroundWindow(hwnd).as_bool()
+    }
+}
+
+/// 只唤起该进程已经显示（含最小化）的窗口，绝不把隐藏窗口翻出来。
+/// 给管理器二次启动用：Win32 直接 ShowWindow 隐藏的 Tauri 窗口会绕过 tao 的可见标记，
+/// 轻量模式下主窗口已销毁时还会翻出仅剩的、隐藏着的托盘快捷面板，且之后 hide() 不生效（issue #3223）。
+/// 主窗口隐藏或已销毁时返回 false，交给 window-activation 请求文件由主进程用 tauri 显示。
+#[cfg(windows)]
+pub fn activate_visible_process_window(process_id: u32) -> bool {
+    let Some(hwnd) = visible_window_for_process(process_id) else {
+        return false;
+    };
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
         }
         SetForegroundWindow(hwnd).as_bool()
     }
@@ -1691,14 +1702,6 @@ fn visible_window_for_process(process_id: u32) -> Option<HWND> {
 
 #[cfg(windows)]
 fn process_window(process_id: u32, visible_only: bool) -> Option<HWND> {
-    process_window_with_score(process_id, visible_only).map(|(hwnd, _)| hwnd)
-}
-
-#[cfg(windows)]
-fn process_window_with_score(
-    process_id: u32,
-    visible_only: bool,
-) -> Option<(HWND, ProcessWindowScore)> {
     let mut state = ActivateWindowState {
         process_id,
         hwnd: HWND::default(),
@@ -1714,7 +1717,7 @@ fn process_window_with_score(
     if state.hwnd.is_invalid() {
         None
     } else {
-        Some((state.hwnd, state.score))
+        Some(state.hwnd)
     }
 }
 

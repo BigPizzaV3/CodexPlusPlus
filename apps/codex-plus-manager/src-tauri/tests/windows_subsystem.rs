@@ -37,7 +37,20 @@ fn manager_repeated_launch_activates_existing_window() {
         .expect("read manager lib.rs");
 
     assert!(lib_rs.contains("focus_existing_manager_window();"));
-    assert!(lib_rs.contains("windows_activate_process_window"));
+    // 管理器二次启动只唤起可见窗口，隐藏/已销毁的主窗口交给请求文件，
+    // 不能用会 ShowWindow 隐藏窗口的版本，否则会翻出托盘快捷面板（issue #3223）。
+    assert!(lib_rs.contains("windows_activate_visible_process_window(process.process_id)"));
+    assert!(!lib_rs.contains("windows_activate_process_window("));
+    assert!(lib_rs.contains("window_activation_request_path()"));
+
+    // 启动器唤起 Codex 的行为不变：仍可显示隐藏的 Codex 窗口。
+    let launcher_rs = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../codex-plus-launcher/src/main.rs"
+    ))
+    .expect("read launcher main.rs");
+    assert!(launcher_rs.contains(".any(codex_plus_core::windows_activate_process_window)"));
+    assert!(!launcher_rs.contains("windows_activate_visible_process_window"));
 }
 
 #[test]
