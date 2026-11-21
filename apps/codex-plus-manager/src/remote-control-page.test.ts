@@ -95,3 +95,76 @@ test("Codex 左侧图标栏的「远程控制」入口：登记进所有写死�
   }
   assert.match(pageSource, /codexPlusRemoteRun\("setDeviceRole", \{ id: deviceId, role \}\)/);
 });
+
+/** 分片顶层只有常量和函数声明：补上它依赖的工具函数，直接求值拿出渲染函数。 */
+async function loadRemoteShard() {
+  const source = await read("../../../assets/inject/renderer-inject/45-remote-control-page.js");
+  const stubs = `
+    const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
+    const postJson = async () => ({ status: "failed" });
+  `;
+  return new Function(`${stubs}\n${source}\nreturn { codexPlusRemoteRobotSection, codexPlusRemotePageState };`)() as {
+    codexPlusRemoteRobotSection: (data: Record<string, any>) => string;
+    codexPlusRemotePageState: Record<string, any>;
+  };
+}
+
+test("Codex 远程控制页的钉钉与飞书通知：经 /remote-control/robots 调与管理器同一份分发，不开放给拓展", async () => {
+  const pageSource = await read("../../../assets/inject/renderer-inject/45-remote-control-page.js");
+  const routes = await read("../../../crates/codex-plus-core/src/routes.rs");
+  const extensionApi = await read("../../../assets/inject/renderer-inject/91-extension-api.js");
+  const core = await read("../../../crates/codex-plus-core/src/remote_control/mod.rs");
+  const robots = await read("../../../crates/codex-plus-core/src/remote_control/chat_notifications.rs");
+  const commands = await read("../src-tauri/src/remote_control_commands.rs");
+  assert.match(pageSource, /postJson\("\/remote-control\/robots", \{ action, provider, update \}\)/);
+  assert.match(routes, /"\/remote-control\/robots" => crate::remote_control::robots_bridge_route\(&payload\)\.await,/);
+  assert.ok(!extensionApi.includes(`"/remote-control/robots"`), "不开放给拓展");
+  assert.match(core, /pub async fn robots_bridge_route[\s\S]*?if !HOSTED\.load/, "bridge 不在管理器进程里时不放行");
+  assert.match(core, /chat_notifications::dispatch\(action, provider, update\)\.await/);
+  assert.match(commands, /rc::chat_notifications::dispatch\(&action, provider, update\)\.await/, "管理器命令也走同一份分发");
+  for (const action of ["status", "save", "clear", "test"]) {
+    assert.ok(robots.includes(`("${action}", `), `后端缺少动作 ${action}`);
+    assert.ok(pageSource.includes(`"${action}"`), `Codex 页面缺少动作 ${action}`);
+  }
+  assert.match(pageSource, /window\.addEventListener\("keydown", codexPlusRemoteCaptureKeydown, true\);/, "按键在 window 捕获阶段接");
+  assert.match(pageSource, /window\.removeEventListener\("keydown", codexPlusRemoteCaptureKeydown, true\);/);
+  assert.doesNotMatch(pageSource, /<select|type="checkbox"/, "不用原生 select / checkbox");
+});
+
+test("机器人设置的渲染：没配置时只有「配置机器人」；配置中展开 Webhook、密钥、会话链接；已保存的值不回显", async () => {
+  const { codexPlusRemoteRobotSection, codexPlusRemotePageState: state } = await loadRemoteShard();
+  const data = { running: true, lan: { running: false } };
+  state.robots = {
+    dingtalk: { enabled: false, hasWebhook: false, hasSecret: false, linkNetwork: "lan", lastResult: null },
+    feishu: { enabled: true, hasWebhook: true, hasSecret: true, linkNetwork: "tailscale", lastResult: "发送成功" },
+  };
+  let html = codexPlusRemoteRobotSection(data);
+  assert.match(html, /aria-label="钉钉与飞书通知"/);
+  assert.match(html, /要在手机上打开会话，请启用局域网访问并配对设备。/);
+  assert.match(html, /尚未配置机器人/);
+  assert.match(html, /发送成功/);
+  assert.match(html, /data-codex-remote-action="robotToggle" data-codex-remote-robot="dingtalk" disabled>/, "没 Webhook 不能打开");
+  assert.match(html, /aria-checked="true"[^>]*data-codex-remote-action="robotToggle" data-codex-remote-robot="feishu" >/);
+  assert.match(html, /data-codex-remote-action="robotTest" data-codex-remote-robot="feishu"/);
+  assert.doesNotMatch(html, /data-codex-remote-action="robotTest" data-codex-remote-robot="dingtalk"/);
+  assert.doesNotMatch(html, /data-codex-remote-robot-field/);
+
+  state.robotEdit = { provider: "feishu", webhook: "", secret: "", clearSecret: false, network: "tailscale" };
+  html = codexPlusRemoteRobotSection(data);
+  assert.match(html, /data-codex-remote-action="robotEdit" data-codex-remote-robot="feishu" >取消</);
+  assert.match(html, /type="password" data-codex-remote-robot-field="webhook" value="" placeholder="已保存，留空保留"/);
+  assert.match(html, /type="password" data-codex-remote-robot-field="secret" value="" placeholder="已保存，留空保留"/);
+  assert.match(html, /data-codex-remote-action="robotClearSecret"/);
+  assert.match(html, /aria-checked="true" data-codex-remote-robot-network="tailscale"/);
+  assert.match(html, /data-codex-remote-action="robotClear"/);
+  assert.match(html, /data-codex-remote-action="robotSave"/);
+  assert.match(html, /data-codex-remote-action="robotToggle" data-codex-remote-robot="feishu" disabled>/, "配置中不能开关");
+
+  state.robots = null;
+  state.robotEdit = null;
+  state.robotError = "Codex++ 管理器未运行，暂时不能在 Codex 里设置钉钉与飞书通知；请先打开 Codex++。";
+  html = codexPlusRemoteRobotSection({ running: false, lan: {} });
+  assert.match(html, /打开远程控制后开始监听任务通知。/);
+  assert.match(html, /role="alert">Codex\+\+ 管理器未运行/);
+  assert.match(html, /data-codex-remote-action="robotReload">重试</);
+});

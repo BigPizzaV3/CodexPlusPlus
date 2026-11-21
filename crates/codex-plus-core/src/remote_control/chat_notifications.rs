@@ -258,6 +258,19 @@ pub async fn test(provider: Provider) -> anyhow::Result<Value> {
     status()
 }
 
+/// 管理器（`chat_robot_request`）与 Codex 远程控制页（bridge `/remote-control/robots`）共用的动作分发：
+/// `status`、`save {provider, update}`、`clear {provider}`、`test {provider}`。
+/// Webhook 和签名密钥只能写，读回来只有「有没有」。
+pub async fn dispatch(action: &str, provider: Option<Provider>, update: Option<Update>) -> anyhow::Result<Value> {
+    match (action, provider) {
+        ("status", _) => status(),
+        ("save", Some(provider)) => configure(provider, Some(update.context("缺少机器人配置")?)),
+        ("clear", Some(provider)) => configure(provider, None),
+        ("test", Some(provider)) => test(provider).await,
+        _ => anyhow::bail!("不支持的机器人操作"),
+    }
+}
+
 #[derive(Clone)]
 struct Notice { revision: String, kind: EventKind, thread: Uuid }
 

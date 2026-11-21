@@ -595,6 +595,24 @@ pub fn bridge_route(payload: &Value) -> anyhow::Result<Value> {
     Ok(value)
 }
 
+/// Codex 远程控制页里「钉钉与飞书通知」的 bridge 路由 `/remote-control/robots`：`{ action, provider?, update? }`，
+/// 动作同管理器（`chat_notifications::dispatch`）。通知由管理器里的远程控制服务发出，机器人配置也缓存在它的内存里，
+/// 所以同样只在管理器进程里放行。不在拓展路由白名单里。
+pub async fn robots_bridge_route(payload: &Value) -> anyhow::Result<Value> {
+    if !HOSTED.load(std::sync::atomic::Ordering::SeqCst) {
+        anyhow::bail!("Codex++ 管理器未运行，暂时不能在 Codex 里设置钉钉与飞书通知；请先打开 Codex++。");
+    }
+    let field = |key: &str| payload.get(key).filter(|value| !value.is_null()).cloned();
+    let provider = field("provider").map(serde_json::from_value).transpose().context("不支持的机器人平台")?;
+    let update = field("update").map(serde_json::from_value).transpose().context("机器人配置格式不对")?;
+    let action = payload.get("action").and_then(Value::as_str).unwrap_or("status");
+    let mut value = chat_notifications::dispatch(action, provider, update).await?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("status".into(), json!("ok"));
+    }
+    Ok(value)
+}
+
 fn render_qr_svg(content: &str) -> Option<String> {
     let code = qrcode::QrCode::new(content.as_bytes()).ok()?;
     Some(

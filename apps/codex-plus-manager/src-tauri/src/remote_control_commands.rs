@@ -23,16 +23,9 @@ pub async fn chat_robot_request(
     provider: Option<rc::chat_notifications::Provider>,
     update: Option<rc::chat_notifications::Update>,
 ) -> Result<Value, String> {
-    use rc::chat_notifications as robots;
     if window.label() != "main" { return Err("请从管理器主窗口操作".into()); }
-    let result = match (action.as_str(), provider) {
-        ("status", _) => robots::status(),
-        ("save", Some(provider)) => robots::configure(provider, Some(update.ok_or("缺少机器人配置")?)),
-        ("clear", Some(provider)) => robots::configure(provider, None),
-        ("test", Some(provider)) => robots::test(provider).await,
-        _ => return Err("不支持的机器人操作".into()),
-    };
-    result.map_err(|error| error.to_string())
+    // 与 Codex 远程控制页（bridge `/remote-control/robots`）共用 core 的分发。
+    rc::chat_notifications::dispatch(&action, provider, update).await.map_err(|error| error.to_string())
 }
 
 /// 管理器启动时：标记服务由本进程托管（Codex 页面经 bridge 操作时据此放行），

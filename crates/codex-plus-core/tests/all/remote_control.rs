@@ -656,6 +656,60 @@ async fn codex_page_bridge_route_shares_the_manager_dispatch() {
     assert_eq!(cancelled["pairing"], Value::Null);
 }
 
+/// Codex 远程控制页的「钉钉与飞书通知」（bridge `/remote-control/robots`）：与管理器共用一份分发，
+/// 只在管理器进程里放行；Webhook 和密钥读不回来；平台、地址、配置格式不对时整体拒绝。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn codex_page_robot_route_shares_the_manager_dispatch() {
+    use codex_plus_core::remote_control::{mark_hosted_by_this_process, robots_bridge_route};
+    let _guard = crate::common::global_state_lock();
+    let _temp = TempState::new();
+
+    // 托管标记是进程级的：同进程里别的用例先标记过就跳过这一步。
+    if let Err(error) = robots_bridge_route(&json!({ "action": "status" })).await {
+        assert!(error.to_string().contains("管理器未运行"), "{error}");
+    }
+    mark_hosted_by_this_process();
+
+    let status = robots_bridge_route(&json!({})).await.unwrap();
+    assert_eq!(status["status"], "ok", "缺省动作是 status，回包带 status: ok");
+    assert_eq!(status["dingtalk"]["hasWebhook"], false);
+
+    let saved = robots_bridge_route(&json!({
+        "action": "save",
+        "provider": "dingtalk",
+        "update": {
+            "webhook": "https://oapi.dingtalk.com/robot/send?access_token=fixture-token",
+            "secret": "SECfixture",
+            "linkNetwork": "none",
+            "enabled": true
+        }
+    }))
+    .await
+    .unwrap();
+    assert_eq!(saved["dingtalk"]["hasWebhook"], true);
+    assert_eq!(saved["dingtalk"]["hasSecret"], true);
+    assert_eq!(saved["dingtalk"]["enabled"], true);
+    assert_eq!(saved["dingtalk"]["linkNetwork"], "none");
+    let text = saved.to_string();
+    assert!(!text.contains("fixture-token") && !text.contains("SECfixture"), "Webhook 和密钥读不回来：{saved}");
+
+    for (payload, needle) in [
+        (json!({ "action": "save", "provider": "dingtalk", "update": { "webhook": "https://evil.example/robot/send?access_token=x" } }), "Webhook"),
+        (json!({ "action": "save", "provider": "wechat", "update": {} }), "不支持的机器人平台"),
+        (json!({ "action": "save", "provider": "feishu", "update": { "url": "x" } }), "机器人配置格式不对"),
+        (json!({ "action": "save", "provider": "feishu" }), "缺少机器人配置"),
+        (json!({ "action": "nope" }), "不支持的机器人操作"),
+    ] {
+        let error = robots_bridge_route(&payload).await.unwrap_err();
+        assert!(format!("{error:#}").contains(needle), "{payload}: {error:#}");
+    }
+    assert_eq!(robots_bridge_route(&json!({ "action": "status" })).await.unwrap()["dingtalk"]["enabled"], true, "被拒的改动不动原配置");
+
+    let cleared = robots_bridge_route(&json!({ "action": "clear", "provider": "dingtalk" })).await.unwrap();
+    assert_eq!(cleared["dingtalk"]["hasWebhook"], false);
+    assert_eq!(cleared["dingtalk"]["enabled"], false);
+}
+
 /// 网页的两种对话样式：Codex 样式（桌面形态）与聊天样式（独立的手机界面，照微信与 Codex 手机端做），切换按设备记住。
 #[test]
 fn web_page_offers_both_conversation_styles() {

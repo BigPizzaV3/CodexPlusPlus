@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3576
+      "lines": 3579
     },
     {
       "name": "20-menu.js",
@@ -83,7 +83,7 @@
     {
       "name": "45-remote-control-page.js",
       "description": "左侧图标栏「远程控制」页：在 Codex 里开关远程控制与局域网访问、给手机配对、管理设备（经 /remote-control 走管理器托管的服务）",
-      "lines": 318
+      "lines": 513
     },
     {
       "name": "45-weixin-connect-page.js",

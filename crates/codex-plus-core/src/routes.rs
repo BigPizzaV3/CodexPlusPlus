@@ -539,6 +539,8 @@ pub async fn handle_bridge_request(
                 .map_err(anyhow::Error::from)
                 .and_then(|result| result)
         }
+        // 同一页里的「钉钉与飞书通知」。不在拓展路由白名单里：能改机器人 Webhook、开关推送。
+        "/remote-control/robots" => crate::remote_control::robots_bridge_route(&payload).await,
         // Codex 页面里的「微信连接」页（45-weixin-connect-page.js）。不在拓展路由白名单里：能扫码登录、启停连接、改微信设置。
         // 扫码会话和运行中的连接都在管理器进程内存里，由管理器启动时登记成宿主路由（与它的 Tauri 命令共用实现）；
         // bridge 不在管理器进程里时没有登记，照实提示，而不是报「未知路径」。

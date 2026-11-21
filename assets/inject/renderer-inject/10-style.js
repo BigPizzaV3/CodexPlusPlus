@@ -1796,6 +1796,9 @@
         background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); color: var(--codex-plus-text-secondary); }
       .codex-plus-remote-banner[data-tone="warn"] { color: var(--codex-plus-warning); }
       .codex-plus-remote-banner[data-tone="ok"] { color: var(--codex-plus-success); }
+      .codex-plus-remote-banner.codex-plus-remote-robot-error { margin: 0 0 12px; }
+      .codex-plus-remote-robot-input { width: 280px; max-width: 100%; min-width: 0; }
+      .codex-plus-remote-page .codex-plus-action-button[data-primary="true"]:not(:disabled) { background: var(--codex-plus-text); color: var(--codex-plus-bg-primary); }
       .codex-plus-remote-url, .codex-plus-remote-fingerprint, .codex-plus-remote-address code { font-family: var(--codex-plus-font-mono, ui-monospace, Menlo, monospace); font-size: 12px; overflow-wrap: anywhere; }
       .codex-plus-remote-address { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
       .codex-plus-remote-segmented { display: inline-flex; border: 1px solid var(--codex-plus-border); border-radius: 8px; overflow: hidden; }
