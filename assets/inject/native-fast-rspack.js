@@ -32,10 +32,13 @@
       pattern: [
         `function\\((?<manager>${id}),\\{runtime:(?<runtime>${id})\\},(?<before>${id}),${id}\\)\\{let (?<pending>${id})=null;`,
         `return\\{async readServiceTier\\((?<model>${id})\\)\\{for\\(;null!=\\k<pending>;\\)await \\k<pending>\\.catch\\(\\(\\)=>void 0\\);`,
-        `return \\k<before>\\(\\),(?:${id}|async function\\(${id},${id},${id},${id}\\)\\{[^]{0,1800}?\\})\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,\\k<model>,async\\(\\)=>\\{`,
+        // 26.1111.71xxx 起档位读取闭包多了一个 provider 形参，模型参数从变量变成
+        // `manager.getConversation(model)?.latestModel||null` 这样的表达式，闭包调用后
+        // 还可能跟额外的实参；两种结构都接受，合并计数。
+        `return \\k<before>\\(\\),(?:${id}|async function\\(${id},${id},${id},${id}(?:,${id})?\\)\\{[^]{0,1800}?\\})\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,(?:\\k<model>|[^,]{1,120}?),async\\(\\)=>\\{`,
         `if\\("local"===\\k<manager>\\.getHostId\\(\\)&&await \\k<runtime>\\.isUsingCopilotInference\\(\\)\\)return!1;`,
         `let (?<result>${id})=await \\k<manager>\\.getAccount\\(\\{priority:"critical"\\}\\);`,
-        `return (?<gate>\\k<result>\\.account\\?\\.type==="chatgpt"(?:\\|\\|\\k<result>\\.account\\?\\.type===${literal})*)\\}\\)\\},async writeServiceTier\\(`,
+        `return (?<gate>\\k<result>\\.account\\?\\.type==="chatgpt"(?:\\|\\|\\k<result>\\.account\\?\\.type===${literal})*)\\}(?:,${id}\\.${id}\\(${id}\\))?\\)\\},async writeServiceTier\\(`,
       ].join(""),
       distinct: ["manager", "result"],
       replacement: g => `(${g.gate}||${allow(`${g.manager}.getHostId()`, `${g.result}.account?.type`)})`,
@@ -50,7 +53,8 @@
         `function\\((?<manager>${id}),\\{settings:(?<settings>${id}),storage:${id},filesystem:${id},runtime:(?<runtime>${id})\\},(?<readDefault>${id}),${id},${id}\\)\\{`,
         `return async\\(${id},(?<message>${id})\\)=>\\{let (?<options>${id})=\\k<message>\\.submissionOptions,${id}=\\k<message>\\.context\\.workPermissions,${id}=null!=${id},`,
         `(?<host>${id})=\\k<options>\\?\\.executionHostId\\?\\?\\k<manager>\\.getHostId\\(\\);`,
-        `[^]{0,2400}?${start}if\\(null==\\k<options>\\)return \\k<readDefault>\\(${id}\\?\\.latestModel\\|\\|null\\);`,
+        // 26.1111.71xxx 起默认档位读取直接回传会话变量，不再包 `.latestModel||null`；两种都接受。
+        `[^]{0,2400}?${start}if\\(null==\\k<options>\\)return \\k<readDefault>\\((?:${id}\\?\\.latestModel\\|\\|null|${id})\\);`,
         `if\\(null==\\k<options>\\.serviceTier\\)return null;let\\{account:(?<account>${id})\\}=await \\k<manager>\\.getAccount\\(\\{priority:"critical"\\}\\);`,
         `return (?<gate>\\k<account>\\?\\.type==="chatgpt"(?:\\|\\|\\k<account>\\?\\.type===${literal})*)\\?\\k<options>\\.serviceTier:null${end}\\k<options>\\?\\.usePermissionSelection\\?\\?\\k<settings>\\.readPermissionRefreshEnabled\\(\\)\\]\\)`,
       ].join("")),
@@ -69,7 +73,9 @@
       || source.includes("query.setData") && source.includes("personalAccessToken");
   }
 
-  async function readFactories(url, attempts = 50) {
+  // 26.1111.71xxx 起四个 gate 所在的分块不再随入口模块图注册，要等界面挂起后的懒加载分块；
+  // 冷启动（尤其首次启动解压缓存）可能超过 5 秒，放宽到 15 秒。Rust 侧 prepare 的总预算是 30 秒。
+  async function readFactories(url, attempts = 150) {
     // 只读取当前文档已经执行的入口的模块表，不执行工厂，也不扫描所有懒加载分块。
     const namespace = await import(url);
     const modules = namespace.__webpack_require__?.m;

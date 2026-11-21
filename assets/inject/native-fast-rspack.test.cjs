@@ -26,6 +26,15 @@ const inlineFixtures = () => fixtures().map(({ key, source }) => {
   };
 });
 
+// 26.1111.71xxx / 26.1117 起的结构：档位读取闭包多一个 provider 形参、模型参数改为表达式、
+// 闭包调用后带额外实参；显式档位的默认读取直接回传会话变量；UI 与请求包上 React Compiler 的
+// 记忆化外壳或 try/catch 包装。独立合成，不携带官方应用资产。
+const currentFixtures = () => [
+  { key: "UI", source: 'UI(e,t,n){const cache=[void 0,void 0,void 0,void 0,void 0,void 0,void 0,void 0,void 0,void 0];function access(arg){let fallback="local",host=arg?.hostId??fallback,identity=(0,n.account)(host),allowed=identity?.authMethod==="chatgpt"||identity?.authMethod==="personalAccessToken"||identity?.authMethod==="amazonBedrock",method=identity?.authMethod??null;cache[0]!==host||cache[1]!==method?(req={authMethod:method,hostId:host},cache[0]=host,cache[1]=method,cache[2]=req):req=cache[2];let query=allowed&&!identity?.isLoading?{fast:!0}:null;cache[3]!==allowed||cache[4]!==query?(value=allowed&&null!=query?query:null,cache[3]=allowed,cache[4]=query,cache[5]=value):value=cache[5];return cache[6]!==identity?.isLoading||cache[7]!==value?(state={serviceTierAccess:value,isLoading:!!identity?.isLoading},cache[6]=identity?.isLoading,cache[7]=value,cache[8]=state):state=cache[8],state}e.exports=access}' },
+  { key: "Request", source: 'Request(e,t,n){e.exports=async function(scope,hostId,extra,other,last){try{let value=await async function(scope,host){let auth=await (0,n.auth)(scope,host);if("chatgpt"!==auth&&"personalAccessToken"!==auth&&"amazonBedrock"!==auth)return null;let requirements=await (0,n.requirements)(scope,host,{priority:"critical"});return scope.query.setData(n.key,{authMethod:auth,hostId:host},requirements),(0,n.parse)(requirements)}(scope,hostId);return value}catch(error){return null}}}' },
+  { key: "Queue", source: 'Queue(e,t,n){const read=n.read;e.exports={defaults:function(manager,{runtime:runtime},before,changed){let pending=null;return{async readServiceTier(model){for(;null!=pending;)await pending.catch(()=>void 0);return before(),async function(client,logger,conversation,eligible,provider){return await eligible()?"priority":null}(manager.requestClient,manager.logger,manager.getConversation(model)?.latestModel||null,async()=>{if("local"===manager.getHostId()&&await runtime.isUsingCopilotInference())return!1;let result=await manager.getAccount({priority:"critical"});return result.account?.type==="chatgpt"||result.account?.type==="amazonBedrock"},manager.getThreadModelProvider(model))},async writeServiceTier(tier,profile){}}},explicit:function(manager,{settings:settings,storage:storage,filesystem:filesystem,runtime:runtime},readDefault,other,last){return async(conversation,message)=>{let options=message.submissionOptions,work=message.context.workPermissions,hasWork=null!=work,host=options?.executionHostId??manager.getHostId();let[tier,permissions]=await Promise.all([(async()=>{if(null==options)return readDefault(conversation);if(null==options.serviceTier)return null;let{account:account}=await manager.getAccount({priority:"critical"});return account?.type==="chatgpt"||account?.type==="amazonBedrock"?options.serviceTier:null})(),options?.usePermissionSelection??settings.readPermissionRefreshEnabled()]);return tier}}}}' },
+];
+
 function load(source, window, dependency) {
   const key = source.slice(0, source.indexOf("("));
   const factory = vm.runInNewContext(`({${source}})`, { window })[key];
@@ -102,7 +111,7 @@ test("Rspack rejects invalid, shadowed and already patched factories", () => {
   }
 });
 
-for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFixtures]]) {
+for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFixtures], ["current", currentFixtures]]) {
   test(`Rspack ${shape} UI and request access preserve auth, host and opt-in boundaries`, async () => {
     const factories = rspack.planFactories(makeFixtures()).factories;
     for (const enabled of [true, false]) for (const localApi of [true, false]) {
@@ -127,7 +136,7 @@ for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFix
     for (const enabled of [true, false]) for (const copilot of [true, false]) for (const host of ["local", "remote"]) {
       const queue = load(source, context(enabled), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
       let reads = 0;
-      const manager = { getHostId: () => host, getAccount: async () => { reads++; return { account: { type: "apiKey" } }; } };
+      const manager = { getHostId: () => host, getAccount: async () => { reads++; return { account: { type: "apiKey" } }; }, getConversation: () => null, getThreadModelProvider: () => null };
       const deps = { runtime: { isUsingCopilotInference: async () => copilot }, settings: { readPermissionRefreshEnabled: () => true } };
       const expected = enabled && host === "local" && !copilot;
       assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), expected ? "priority" : null);
@@ -143,7 +152,7 @@ for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFix
     }
     const queue = load(source, context(true, true), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
     for (const auth of ["chatgpt", "amazonBedrock", null]) {
-      const manager = { getHostId: () => "local", getAccount: async () => ({ account: auth == null ? null : { type: auth } }) };
+      const manager = { getHostId: () => "local", getAccount: async () => ({ account: auth == null ? null : { type: auth } }), getConversation: () => null, getThreadModelProvider: () => null };
       const deps = { runtime: { isUsingCopilotInference: async () => false }, settings: { readPermissionRefreshEnabled: () => true } };
       assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), "priority");
       assert.equal(await queue.explicit(manager, deps, () => null)({}, { submissionOptions: { serviceTier: "priority" }, context: {} }), "priority");
@@ -154,6 +163,22 @@ for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFix
     }
   });
 }
+
+test("Rspack matches the 26.1111.71xxx / 26.1117 factory shapes exactly once", () => {
+  const result = rspack.planFactories(currentFixtures());
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+  assert.deepEqual(Object.values(result.diagnostics.matches), [1, 1, 1, 1]);
+  for (const factory of result.factories) new vm.Script(`({${factory.source}})`);
+  // 新旧形态混装同 key 工厂仍按重复拒绝，不做部分补丁。
+  const duplicate = { key: "Other", source: currentFixtures()[0].source.replace(/^UI/, "Other") };
+  assert.equal(rspack.planFactories([...currentFixtures(), duplicate]).diagnostics.reason, "ambiguous-gates");
+  // 变量遮蔽在新形态下同样拒绝。
+  const shadowed = currentFixtures();
+  shadowed[2].source = shadowed[2].source
+    .replaceAll("account:account", "account:runtime")
+    .replaceAll("account?.type", "runtime?.type");
+  assert.equal(rspack.planFactories(shadowed).diagnostics.reason, "shadowed-bindings");
+});
 
 const runtimeSource = 'const require={m:{},o:(o,k)=>Object.prototype.hasOwnProperty.call(o,k),O(){}};const register=chunk=>{var key,unused,ids=chunk.__rspack_esm_ids,modules=chunk.__webpack_modules__,run=chunk.__rspack_esm_runtime,i=0;for(key in modules)require.o(modules,key)&&(require.m[key]=modules[key]);for(run&&run(require);i<ids.length;i++){}require.O()};require.C=register;import*as support from"./782259.abcdef.js";require.C(support);export{require as __webpack_require__,register};';
 const reorderedRuntimeSource = runtimeSource
