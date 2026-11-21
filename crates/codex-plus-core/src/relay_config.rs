@@ -2140,6 +2140,31 @@ impl std::fmt::Display for LiveEndpointChanged {
 
 impl std::error::Error for LiveEndpointChanged {}
 
+/// 回填时实时配置里找不到有效的供应商 endpoint（`model_provider` 段缺 `base_url`、
+/// 指向不存在的段等）。和 [`LiveEndpointChanged`] 一样分不清实时文件归谁，自动回填只能停下；
+/// 但这份实时配置不该卡死后续切换（#2819、#3222：接入网关时报错里的是接入前的供应商，
+/// 删改目标供应商都绕不过去）。切换流程按同一类冲突处理，由用户/调用方显式放弃或导入。
+#[derive(Debug)]
+pub struct LiveEndpointMissing;
+
+impl std::fmt::Display for LiveEndpointMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "实时配置缺少有效的供应商 endpoint，已停止回填并保留原快照。请先显式导入完整上游 URL 与凭据，或确认当前登录模式后重试。",
+        )
+    }
+}
+
+impl std::error::Error for LiveEndpointMissing {}
+
+/// 回填因实时 endpoint 与供应商快照对不上而停下（改成了别的地址，或干脆缺失）。
+/// 这类错误不改动任何文件，切换流程可以让用户选择「导入为新供应商」或「放弃实时改动」。
+pub fn is_live_endpoint_conflict(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.is::<LiveEndpointChanged>() || cause.is::<LiveEndpointMissing>())
+}
+
 fn validate_backfill_endpoint_identity(profile: &RelayProfile, config: &str) -> anyhow::Result<()> {
     if profile.relay_mode == RelayMode::Official && !profile.official_mix_api_key {
         return Ok(());
@@ -2159,9 +2184,11 @@ fn validate_backfill_endpoint_identity(profile: &RelayProfile, config: &str) -> 
         .as_deref()
         .is_some_and(valid_relay_endpoint)
     {
-        anyhow::bail!(
-            "实时配置缺少有效的供应商 endpoint，已停止回填并保留原快照。请先显式导入完整上游 URL 与凭据，或确认当前登录模式后重试。"
-        );
+        // TOML 本身坏了是语法问题，要用户先修，不能当成可放弃的归属冲突。
+        if parse_toml_document(config).is_err() {
+            anyhow::bail!("实时 config.toml 无法解析，已停止回填并保留原快照；请检查 TOML 语法后重试。");
+        }
+        return Err(LiveEndpointMissing.into());
     }
     if recognized_managed_proxy_endpoint(profile, config)
         || live_endpoint_matches_profile(profile, config)

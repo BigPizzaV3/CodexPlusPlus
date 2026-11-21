@@ -10083,9 +10083,7 @@ pub fn backfill_relay_profile_from_live(
             )
         }
         Err(error) => {
-            let live_conflict = error
-                .chain()
-                .any(|cause| cause.is::<codex_plus_core::relay_config::LiveEndpointChanged>());
+            let live_conflict = codex_plus_core::relay_config::is_live_endpoint_conflict(&error);
             log_manager_event(
                 "manager.backfill_relay_profile_from_live.failed",
                 json!({

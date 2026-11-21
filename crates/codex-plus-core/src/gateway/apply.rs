@@ -1789,6 +1789,7 @@ fn write_codex(
                     .downcast_ref::<crate::relay_switch::LiveEndpointConflict>()
                     .is_some() =>
         {
+            // 实时 endpoint 被改过或缺失（#2666、#3222）：回填不了接入前的供应商，但不该挡住接入。
             // 先存接入前的原文（还没记改了哪些键：万一切换中途退出，还原时按已知的网关键兜底）。
             stash::save_stash(&codex_stash_path(ctx), &live)?;
             crate::relay_switch::switch_relay_profile_in_home_resolving_conflict(

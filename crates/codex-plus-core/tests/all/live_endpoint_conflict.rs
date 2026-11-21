@@ -30,13 +30,8 @@ base_url = "{base_url}"
 
 /// 已保存 A、B 两个供应商，当前是 A；实时文件被外部工具改成了另一个地址和 Key。
 fn fixture() -> (tempfile::TempDir, SettingsStore, std::path::PathBuf, BackendSettings) {
-    let temp = tempfile::tempdir().unwrap();
-    let home = temp.path().join("codex");
-    std::fs::create_dir(&home).unwrap();
-    std::fs::write(
-        home.join("config.toml"),
-        format!(
-            r#"model_provider = "custom"
+    fixture_with_live(&format!(
+        r#"model_provider = "custom"
 
 [model_providers.custom]
 name = "custom"
@@ -44,9 +39,16 @@ wire_api = "responses"
 requires_openai_auth = true
 base_url = "{EXTERNAL_URL}"
 "#
-        ),
-    )
-    .unwrap();
+    ))
+}
+
+fn fixture_with_live(
+    live_config: &str,
+) -> (tempfile::TempDir, SettingsStore, std::path::PathBuf, BackendSettings) {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("codex");
+    std::fs::create_dir(&home).unwrap();
+    std::fs::write(home.join("config.toml"), live_config).unwrap();
     std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk-external"}"#).unwrap();
     let store = SettingsStore::new(temp.path().join("settings.json"));
     let original = BackendSettings {
@@ -170,4 +172,91 @@ fn resolution_wire_names_match_manager_frontend() {
     assert_eq!(parse("discardLiveChanges"), LiveConflictResolution::DiscardLiveChanges);
     assert_eq!(parse("stop"), LiveConflictResolution::Stop);
     assert_eq!(LiveConflictResolution::default(), LiveConflictResolution::Stop);
+}
+
+/// issue #3222 / #2819：实时 config.toml 的 model_provider 段缺 base_url。
+const LIVE_WITHOUT_BASE_URL: &str = r#"model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+"#;
+
+#[test]
+fn missing_live_endpoint_stops_with_the_same_typed_conflict() {
+    let (_temp, store, home, next) = fixture_with_live(LIVE_WITHOUT_BASE_URL);
+
+    let error = switch_relay_profile_in_home_resolving_conflict(
+        &store,
+        &home,
+        next,
+        "a",
+        LiveConflictResolution::Stop,
+    )
+    .expect_err("实时配置缺 endpoint 时默认仍要停下");
+
+    // 和 endpoint 被改过同一类：管理器弹同一个冲突窗，网关接入走放弃回填的出路，不再是死路。
+    let conflict = error
+        .downcast_ref::<LiveEndpointConflict>()
+        .expect("缺 endpoint 也要保留冲突类型，不能退化成纯文本错误");
+    assert_eq!(conflict.profile_id, "a");
+    assert!(conflict.message.contains("回填当前供应商配置失败（供应商：a）"), "{}", conflict.message);
+    assert!(conflict.message.contains("缺少有效的供应商 endpoint"), "{}", conflict.message);
+    assert_eq!(store.load().unwrap().active_relay_id, "a");
+    assert_eq!(
+        std::fs::read_to_string(home.join("config.toml")).unwrap(),
+        LIVE_WITHOUT_BASE_URL
+    );
+}
+
+#[test]
+fn missing_live_endpoint_can_be_discarded_without_touching_previous_snapshot() {
+    let (_temp, store, home, next) = fixture_with_live(LIVE_WITHOUT_BASE_URL);
+    let saved_a = profile(&store.load().unwrap(), "a").clone();
+
+    let (_, outcome) = switch_relay_profile_in_home_resolving_conflict(
+        &store,
+        &home,
+        next,
+        "a",
+        LiveConflictResolution::DiscardLiveChanges,
+    )
+    .expect("选择放弃后应完成切换");
+
+    let backup = std::path::PathBuf::from(outcome.live_backup_path.expect("放弃前必须先备份"));
+    assert_eq!(
+        std::fs::read_to_string(backup.join("config.toml")).unwrap(),
+        LIVE_WITHOUT_BASE_URL
+    );
+    let stored = store.load().unwrap();
+    assert_eq!(stored.active_relay_id, "b");
+    let previous = profile(&stored, "a");
+    assert_eq!(previous.config_contents, saved_a.config_contents, "A 的快照不能被缺地址的实时配置覆盖");
+    assert_eq!(relay_profile_api_key(previous), "sk-a");
+    let live = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(live.contains("https://b.example/v1"), "{live}");
+}
+
+#[test]
+fn missing_live_endpoint_is_not_importable_as_new_profile() {
+    let (_temp, store, home, next) = fixture_with_live(LIVE_WITHOUT_BASE_URL);
+
+    let error = switch_relay_profile_in_home_resolving_conflict(
+        &store,
+        &home,
+        next,
+        "a",
+        LiveConflictResolution::ImportAsNewProfile,
+    )
+    .expect_err("没有地址可导入，不能凭空造一个新供应商");
+
+    assert!(format!("{error:#}").contains("缺少有效的供应商 URL"), "{error:#}");
+    let stored = store.load().unwrap();
+    assert_eq!(stored.active_relay_id, "a");
+    assert_eq!(stored.relay_profiles.len(), 2);
+    assert_eq!(
+        std::fs::read_to_string(home.join("config.toml")).unwrap(),
+        LIVE_WITHOUT_BASE_URL
+    );
 }
