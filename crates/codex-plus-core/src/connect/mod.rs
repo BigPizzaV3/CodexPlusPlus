@@ -317,7 +317,7 @@ async fn run_weixin_connect_with_jiajia(
         config.bridge_settings(),
         push_log,
     )
-    .with_focus(Arc::new(jiajia_bridge::LiveSessions), &config.work_dir));
+    .with_focus(Arc::new(jiajia_bridge::LiveSessions), &config.work_dir, outbound.clone()));
     bridge.seed_tokens(&state.context_tokens);
     let _forwarder = AbortOnDrop(tokio::spawn(Arc::clone(&bridge).run_forwarder(Arc::clone(&stop))));
     let mut app_config = AppServerConfig {

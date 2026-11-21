@@ -1,5 +1,7 @@
 //! 微信专注模式：假的远程控制会话（[`MockSessions`]）+ 假的加加 + 假微信网关，不碰真实微信和侧车。
 
+use std::path::Path;
+
 use super::*;
 use crate::connect::jiajia_bridge::focus::{LIST_TTL_MS, SessionPort, ThreadSummary, pick_project, session_line, turn_report};
 use crate::remote_control::uploads::{Attachment, AttachmentKind};
@@ -441,6 +443,292 @@ async fn non_owners_and_remote_control_off_get_an_explanation() {
     assert!(bridge.state().focus.contains_key("me"), "远程控制没开不算会话没了");
     say(&bridge, "me", "/退出").await;
     assert!(fixture.last_text().starts_with("已退出「重构登录」"), "退出不需要远程控制");
+}
+
+// ---------- 附件回传 ----------
+
+const NO_REGISTRATION: &str = "（附件回传失败：这一轮没有可用的回传登记（不是从微信发起的，或中途重启、退出、切换过会话），附件没有发送）";
+
+/// 开了附件回传（回传目录就是会话目录）、本人已进入「重构登录」；网关正好接 `uploads` 次上传（多了少了都在收尾时报错）。
+async fn export_setup(uploads: u64) -> (Fixture, JiajiaBridge, String) {
+    let mut fixture = Fixture::new().await;
+    let cwd = fixture.add_login_thread();
+    fixture.outbound = crate::connect::outbound::OutboundPolicy::new(true, "me", &cwd);
+    std::fs::write(Path::new(&cwd).join("apple.png"), b"\x89PNG\r\n\x1a\nfixture").unwrap();
+    std::fs::write(Path::new(&cwd).join("result.txt"), b"completed").unwrap();
+    let gateway = &fixture.gateway.server;
+    Mock::given(method("POST"))
+        .and(path("/ilink/bot/getuploadurl"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"upload_full_url": format!("{}/cdn/upload", gateway.uri())})))
+        .expect(uploads)
+        .mount(gateway)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/cdn/upload"))
+        .respond_with(ResponseTemplate::new(200).insert_header("x-encrypted-param", "fixture"))
+        .expect(uploads)
+        .mount(gateway)
+        .await;
+    let bridge = fixture.bridge_with(Some("me"), PeerMode::Direct, false);
+    say(&bridge, "me", "/进入 11111111").await;
+    (fixture, bridge, cwd)
+}
+
+/// 本人在微信发一句（带自己的 context_token），返回发给会话的完整提示和里面的回传标记。
+async fn ask(fixture: &Fixture, bridge: &JiajiaBridge, text: &str, token: &str) -> (String, String) {
+    bridge.handle_inbound(&message("me", text, token), text).await;
+    let prompt = fixture.sessions.sent().last().unwrap().1.clone();
+    let marker = prompt.lines().find_map(|line| line.strip_prefix("[微信专注回传 ").and_then(|rest| rest.strip_suffix(']'))).unwrap().to_string();
+    (prompt, marker)
+}
+
+fn commentary(text: &str) -> Value {
+    json!({ "type": "agentMessage", "phase": "commentary", "text": text })
+}
+
+/// 发到微信的附件消息（2 图片，4 文件）。
+async fn attachments_sent(fixture: &Fixture) -> Vec<Value> {
+    fixture
+        .gateway
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == "/ilink/bot/sendmessage")
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .filter(|message: &Value| matches!(message["msg"]["item_list"][0]["type"].as_i64(), Some(2 | 4)))
+        .collect()
+}
+
+/// 发到微信的文字（附件消息不算）。
+fn texts_sent(fixture: &Fixture) -> Vec<String> {
+    fixture.gateway.texts().into_iter().filter(|text| !text.is_empty()).collect()
+}
+
+#[tokio::test]
+async fn focus_returns_only_authorized_attachments_from_the_matching_weixin_turn() {
+    let (fixture, bridge, cwd) = export_setup(2).await;
+    std::fs::write(fixture.dir.path().join("outside.txt"), b"outside").unwrap();
+    let (prompt, marker) = ask(&fixture, &bridge, "生成并发送图片和文件", "request-token").await;
+    let final_reply = format!(
+        "成品已生成\n{marker} {}",
+        json!([
+            {"kind": "image", "path": "apple.png"},
+            {"kind": "file", "path": "result.txt"},
+            {"kind": "file", "path": "../outside.txt"}
+        ])
+    );
+    // 同一会话里另一轮（比如桌面上发起的）：没有这条微信消息的回传说明，声明不算数，但声明行也不能转到微信。
+    let unregistered_turn = turn("t-desktop", "completed", json!([agent(&final_reply)]));
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([unregistered_turn.clone()]), json!([])));
+    bridge.poll_focus(true).await;
+    assert!(attachments_sent(&fixture).await.is_empty());
+    assert_eq!(fixture.last_text(), format!("成品已生成\n{NO_REGISTRATION}"));
+
+    let focused_turn = turn(
+        "t-weixin",
+        "completed",
+        json!([{"type": "userMessage", "text": prompt}, agent(&final_reply)]),
+    );
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([unregistered_turn, focused_turn]), json!([])));
+    bridge.poll_focus(true).await;
+    bridge.poll_focus(true).await;
+    let messages = attachments_sent(&fixture).await;
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0]["msg"]["item_list"][0]["type"], 2);
+    assert_eq!(messages[1]["msg"]["item_list"][0]["type"], 4);
+    for message in messages {
+        assert_eq!(message["msg"]["to_user_id"], "me");
+        assert_eq!(message["msg"]["context_token"], "request-token");
+    }
+    assert!(fixture.last_text().contains("成品已生成"));
+    assert!(fixture.last_text().contains("附件回传失败"));
+    assert!(texts_sent(&fixture).iter().all(|text| !text.contains("WEIXIN_ATTACHMENTS")));
+}
+
+#[tokio::test]
+async fn declarations_are_stripped_even_when_the_registration_is_gone() {
+    let (fixture, bridge, cwd) = export_setup(0).await;
+    let (prompt, marker) = ask(&fixture, &bridge, "把图发我", "token-1").await;
+    let image = json!([{"kind": "image", "path": "apple.png"}]);
+
+    // 管理器重启：回传登记只在内存里，没了。回复只有声明一行时也不能退回去转发旁白。
+    let restarted = fixture.bridge_with(Some("me"), PeerMode::Direct, false);
+    say(&restarted, "me", "/状态").await; // 重启后先有一条消息，才有 context_token 可回
+    let old = turn("t-old", "completed", json!([{ "type": "userMessage", "text": "重构登录" }, agent("登录页改好了")]));
+    let declaration_only = turn(
+        "t-1",
+        "completed",
+        json!([{"type": "userMessage", "text": prompt}, commentary("先看看目录"), agent("我先找找图在哪"), agent(&format!("`{marker} {image}`"))]),
+    );
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([old.clone(), declaration_only.clone()]), json!([])));
+    restarted.poll_focus(true).await;
+    assert_eq!(fixture.last_text(), NO_REGISTRATION);
+
+    // 再进入时附上的上一条回复也不带声明行（只有声明的那一轮跳过）。
+    say(&restarted, "me", "/退出").await;
+    say(&restarted, "me", "/进入 11111111").await;
+    assert!(fixture.last_text().contains("上次 Codex 说：登录页改好了"), "{}", fixture.last_text());
+
+    // /退出 清掉了进行中那一轮的登记：照样去掉声明行，说明附件没发。
+    let (prompt, marker) = ask(&fixture, &restarted, "再发一次", "token-2").await;
+    say(&restarted, "me", "/退出").await;
+    say(&restarted, "me", "/进入 11111111").await;
+    let after_exit = turn("t-2", "completed", json!([{"type": "userMessage", "text": prompt}, agent(&format!("做好了\n\n{marker} {image}\n"))]));
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([old, declaration_only, after_exit]), json!([])));
+    restarted.poll_focus(true).await;
+    assert_eq!(fixture.last_text(), format!("做好了\n{NO_REGISTRATION}"));
+
+    let texts = texts_sent(&fixture);
+    assert!(texts.iter().all(|text| !text.contains("WEIXIN_ATTACHMENTS") && !text.contains("先看看目录") && !text.contains("我先找找图在哪")), "{texts:?}");
+    assert!(attachments_sent(&fixture).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_declaration_only_reply_sends_just_the_attachments() {
+    let (fixture, bridge, cwd) = export_setup(1).await;
+    let (prompt, marker) = ask(&fixture, &bridge, "把图发我", "token-1").await;
+    let before = texts_sent(&fixture).len();
+    let finished = turn(
+        "t-1",
+        "completed",
+        json!([
+            {"type": "userMessage", "text": prompt},
+            commentary("先看看目录"),
+            agent("我先找找图在哪"),
+            agent(&format!("{marker} {}", json!([{"kind": "image", "path": "apple.png"}])))
+        ]),
+    );
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([finished]), json!([])));
+    bridge.poll_focus(true).await;
+    let messages = attachments_sent(&fixture).await;
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["msg"]["item_list"][0]["type"], 2);
+    assert_eq!(texts_sent(&fixture).len(), before, "没有文字可发：不拿旁白和前面的回复凑数");
+}
+
+#[tokio::test]
+async fn steered_messages_merge_their_declarations_and_use_the_latest_token() {
+    let (fixture, bridge, cwd) = export_setup(2).await;
+    let (first, first_marker) = ask(&fixture, &bridge, "生成图片", "token-1").await;
+    let (second, second_marker) = ask(&fixture, &bridge, "顺便把结果文件也发来", "token-2").await;
+    assert_ne!(first_marker, second_marker);
+    let reply = format!(
+        "都好了\n{first_marker} {}\n{second_marker} {}",
+        json!([{"kind": "image", "path": "apple.png"}]),
+        json!([{"kind": "file", "path": "result.txt"}, {"kind": "image", "path": "apple.png"}])
+    );
+    let finished = turn(
+        "t-1",
+        "completed",
+        json!([{"type": "userMessage", "text": first}, {"type": "steeringUserMessage", "text": second}, agent(&reply)]),
+    );
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([finished]), json!([])));
+    bridge.poll_focus(true).await;
+    let messages = attachments_sent(&fixture).await;
+    assert_eq!(messages.len(), 2, "两条声明合并，重复的图只发一次");
+    assert_eq!(messages[0]["msg"]["item_list"][0]["type"], 2);
+    assert_eq!(messages[1]["msg"]["item_list"][0]["type"], 4);
+    assert!(messages.iter().all(|message| message["msg"]["context_token"] == "token-2"), "用最新一条微信消息的 token");
+    assert_eq!(fixture.last_text(), "都好了");
+    let logs = fixture.logs();
+    let (_, detail) = logs.iter().find(|(event, _)| event == "weixin.jiajia_focus_export").expect("回传记日志");
+    assert_eq!(detail, &json!({ "registrations": 2, "files": 2, "sent": 2, "problems": 0 }));
+}
+
+#[tokio::test]
+async fn a_registration_only_matches_turns_of_its_own_session() {
+    let (fixture, bridge, cwd) = export_setup(1).await;
+    fixture.sessions.add(T2, "写文档", &cwd, "空闲", view(T2, "写文档", &cwd, "idle", json!([]), json!([])));
+    let (prompt, marker) = ask(&fixture, &bridge, "把图发我", "token-1").await;
+    let reply = format!("拿去\n{marker} {}", json!([{"kind": "image", "path": "apple.png"}]));
+    let finished = |id: &str| turn(id, "completed", json!([{"type": "userMessage", "text": prompt}, agent(&reply)]));
+
+    // 另一个会话里出现了同样的说明和声明（比如提示被复制过去）：不认。
+    bridge.inner().state.focus.get_mut("me").unwrap().thread_id = T2.into();
+    fixture.sessions.set_view(T2, view(T2, "写文档", &cwd, "idle", json!([finished("t-other")]), json!([])));
+    bridge.poll_focus(true).await;
+    assert!(attachments_sent(&fixture).await.is_empty());
+    assert_eq!(fixture.last_text(), format!("拿去\n{NO_REGISTRATION}"));
+
+    // 登记没被别的会话领走：回到原会话那一轮照常发。
+    bridge.inner().state.focus.get_mut("me").unwrap().thread_id = T1.into();
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", json!([finished("t-mine")]), json!([])));
+    bridge.poll_focus(true).await;
+    assert_eq!(attachments_sent(&fixture).await.len(), 1);
+    assert_eq!(fixture.last_text(), "拿去");
+}
+
+#[tokio::test]
+async fn bad_declarations_send_nothing_and_say_why() {
+    let (fixture, bridge, cwd) = export_setup(0).await;
+    let mut turns = Vec::new();
+    let mut finish = |id: &str, status: &str, prompt: &str, reply: String| {
+        turns.push(turn(id, status, json!([{"type": "userMessage", "text": prompt}, agent(&reply)])));
+        fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "idle", Value::Array(turns.clone()), json!([])));
+    };
+
+    let (prompt, marker) = ask(&fixture, &bridge, "发图", "token-1").await;
+    finish("t-1", "completed", &prompt, format!("坏了\n{marker} [not json]"));
+    bridge.poll_focus(true).await;
+    assert_eq!(fixture.last_text(), "坏了\n（附件回传失败：附件回传声明格式错误）");
+
+    let (prompt, marker) = ask(&fixture, &bridge, "发一堆", "token-2").await;
+    let many: Vec<Value> = (0..11).map(|index| json!({"kind": "file", "path": format!("f{index}.txt")})).collect();
+    finish("t-2", "completed", &prompt, format!("太多了\n{marker} {}", Value::Array(many)));
+    bridge.poll_focus(true).await;
+    assert_eq!(fixture.last_text(), "太多了\n（附件回传失败：一次最多回传 10 个附件，这次声明了 11 个，都没有发送）");
+
+    let (prompt, marker) = ask(&fixture, &bridge, "发个空的", "token-3").await;
+    finish("t-3", "completed", &prompt, format!("空的\n{marker} []"));
+    bridge.poll_focus(true).await;
+    assert_eq!(fixture.last_text(), "空的\n（附件回传失败：声明里没有附件）");
+
+    // 用了上一轮的旧标记。
+    let (prompt, _) = ask(&fixture, &bridge, "再来", "token-4").await;
+    finish("t-4", "completed", &prompt, format!("旧的\n{marker} {}", json!([{"kind": "image", "path": "apple.png"}])));
+    bridge.poll_focus(true).await;
+    assert_eq!(fixture.last_text(), "旧的\n（附件回传失败：声明的标记不属于这一轮，没有发送）");
+
+    // 被停止的一轮：不发附件，声明行照样去掉。
+    let (prompt, marker) = ask(&fixture, &bridge, "做一半", "token-5").await;
+    finish("t-5", "interrupted", &prompt, format!("做到一半\n{marker} {}", json!([{"kind": "image", "path": "apple.png"}])));
+    bridge.poll_focus(true).await;
+    assert_eq!(fixture.last_text(), "做到一半\n\n（这一轮被停止了）");
+
+    assert!(texts_sent(&fixture).iter().all(|text| !text.contains("WEIXIN_ATTACHMENTS")));
+    assert!(attachments_sent(&fixture).await.is_empty());
+}
+
+#[tokio::test]
+async fn status_tells_where_returned_files_go() {
+    let (fixture, bridge, cwd) = export_setup(0).await;
+    say(&bridge, "me", "/状态").await;
+    let text = fixture.last_text();
+    let workspace = Path::new(&cwd).canonicalize().unwrap();
+    let line = format!("附件回传可用，要回传的文件放在 {}", workspace.display());
+    assert!(text.lines().any(|l| l == line), "回传目录就是项目目录时不加说明：{text}");
+
+    // 回传目录和会话的项目目录不是一个：点出来。
+    let mut other = Fixture::new().await;
+    other.add_login_thread();
+    let outbox = other.dir.path().join("outbox");
+    std::fs::create_dir(&outbox).unwrap();
+    other.outbound = crate::connect::outbound::OutboundPolicy::new(true, "me", &outbox.display().to_string());
+    let bridge = other.bridge();
+    say(&bridge, "me", "/进入 11111111").await;
+    say(&bridge, "me", "/状态").await;
+    let text = other.last_text();
+    assert!(text.contains(&format!("附件回传可用，要回传的文件放在 {}（不是这个会话的项目目录）", outbox.canonicalize().unwrap().display())), "{text}");
+
+    // 没开回传：说为什么不可用。
+    let off = Fixture::new().await;
+    off.add_login_thread();
+    let bridge = off.bridge();
+    say(&bridge, "me", "/进入 11111111").await;
+    say(&bridge, "me", "/状态").await;
+    assert!(off.last_text().contains("附件回传不可用（微信附件回传未开启）"), "{}", off.last_text());
 }
 
 #[tokio::test]

@@ -570,6 +570,7 @@ struct Inner {
     focus_polled_at: i64,
     focus_sent_at: i64,
     focus_busy: bool,
+    focus_exports: VecDeque<focus::FocusExport>,
 }
 
 pub struct JiajiaBridge {
@@ -578,6 +579,7 @@ pub struct JiajiaBridge {
     sessions: Arc<dyn focus::SessionPort>,
     /// 微信连接配置的工作目录（/新会话 没写项目、也没用过项目时用）。
     work_dir: String,
+    outbound: super::outbound::OutboundPolicy,
     client: WeixinClient,
     path: PathBuf,
     owner: Option<String>,
@@ -603,6 +605,7 @@ impl JiajiaBridge {
             port,
             sessions: Arc::new(focus::LiveSessions),
             work_dir: String::new(),
+            outbound: super::outbound::OutboundPolicy::new(false, "", ""),
             client,
             path,
             owner,
@@ -620,14 +623,16 @@ impl JiajiaBridge {
                 focus_polled_at: 0,
                 focus_sent_at: 0,
                 focus_busy: false,
+                focus_exports: VecDeque::new(),
             }),
         }
     }
 
     /// 专注模式用的会话操作和默认工作目录。
-    pub fn with_focus(mut self, sessions: Arc<dyn focus::SessionPort>, work_dir: &str) -> Self {
+    pub fn with_focus(mut self, sessions: Arc<dyn focus::SessionPort>, work_dir: &str, outbound: super::outbound::OutboundPolicy) -> Self {
         self.sessions = sessions;
         self.work_dir = work_dir.trim().to_string();
+        self.outbound = outbound;
         self
     }
 
