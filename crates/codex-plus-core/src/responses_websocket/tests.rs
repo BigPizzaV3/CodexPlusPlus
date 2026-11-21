@@ -736,20 +736,19 @@ async fn gateway_ws_cached_response_keeps_its_key_when_another_key_is_available(
         None,
     )
     .unwrap();
-    let key = plan
+    let candidate = plan
         .candidates
         .iter()
         .find(|candidate| candidate.key.key_id == "ws-affinity-a")
-        .unwrap()
-        .key
-        .clone();
+        .unwrap();
+    let (key, upstream_model) = (candidate.key.clone(), candidate.upstream_model.clone());
     let mut response = create("");
     response["previous_response_id"] = json!("pinned");
     // 路由提前保留冷却中的原 Key，不把可用的 B 当成续接候选。
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert("retry-after", "1".parse().unwrap());
     let class = crate::gateway::key_pool::classify_failure(429, &headers, b"rate limited");
-    crate::gateway::key_pool::record_failure(&key, &class, std::time::Instant::now());
+    crate::gateway::key_pool::record_failure(&key, &upstream_model, &class, std::time::Instant::now());
     send(&mut ws, response).await;
     assert_eq!(next(&mut ws).await["response"]["id"], "pinned-next");
     ws.close(None).await.unwrap();

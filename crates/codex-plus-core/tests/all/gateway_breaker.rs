@@ -245,7 +245,7 @@ async fn open_breaker_still_yields_to_other_providers() {
     let key = plan(&gateway).candidates[0].key.clone();
     assert_eq!(key.relay_id, "br-first");
     for _ in 0..3 {
-        key_pool::record_failure(&key, &FailureClass::ServerError, Instant::now());
+        key_pool::record_failure(&key, "", &FailureClass::ServerError, Instant::now());
     }
     let plan = plan(&gateway);
     assert_eq!(

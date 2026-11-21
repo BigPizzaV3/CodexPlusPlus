@@ -575,7 +575,7 @@ pub(crate) async fn open_responses_for_agent(
             response.request_trace = Some(merged);
             Ok((response, slot))
         }
-        GatewayUpstream::Cooling(wait) => Ok((cooling_response(wait), None)),
+        GatewayUpstream::Cooling(wait) => Ok((cooling_response(wait, trace), None)),
         GatewayUpstream::Native(_) => anyhow::bail!("Responses 客户端不会走 Anthropic 原样转发"),
     }
 }
@@ -587,7 +587,11 @@ fn cooling_message(wait: std::time::Duration) -> String {
     )
 }
 
-fn cooling_response(wait: std::time::Duration) -> UpstreamProxyResponse {
+/// 本地回的 429：带上候选循环的 trace，请求日志才看得出本来要发给哪家、哪个模型（#3229）。
+fn cooling_response(
+    wait: std::time::Duration,
+    trace: crate::request_log::RequestTrace,
+) -> UpstreamProxyResponse {
     UpstreamProxyResponse {
         status_code: 429,
         content_type: JSON.to_string(),
@@ -603,7 +607,7 @@ fn cooling_response(wait: std::time::Duration) -> UpstreamProxyResponse {
             .unwrap_or_default(),
         ),
         stream_prefix: Vec::new(),
-        request_trace: None,
+        request_trace: Some(trace),
         exec_adapted: false,
         exec_outcome: None,
         websocket: None,

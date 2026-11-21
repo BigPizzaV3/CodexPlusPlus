@@ -242,7 +242,7 @@ async fn auth_failure_uses_only_the_chosen_key_and_names_it() {
         key_id: "key-1".into(),
         fingerprint: key_pool::fingerprint(KEY_A),
     };
-    key_pool::record_success(&first_key, Some("probe-conversation"));
+    key_pool::record_success(&first_key, "", Some("probe-conversation"));
     let upstream = tokio::spawn(serve(
         listener,
         vec![reply(
