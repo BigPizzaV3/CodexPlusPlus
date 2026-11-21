@@ -10,6 +10,8 @@
 //! - `qrStart` / `qrStatus`：扫码登录，网关地址与路由标记取已保存的设置
 //! - `start` / `stop`：启动 / 停止连接
 //! - `catalog`：模型目录（模型与推理强度下拉用）
+//! - `projects`：新会话项目下拉用的项目列表（按已保存的 CLI 路径和工作目录查）
+//! - `resetSession {peerId}`：重置某个联系人的会话，账号取已保存的设置
 //!
 //! 不在拓展路由白名单里。改了设置后通知管理器界面重新读取，两边看到的一致。
 
@@ -63,6 +65,22 @@ pub async fn bridge_request(payload: Value) -> anyhow::Result<Value> {
             "status": "ok",
             "catalog": commands::weixin_connect_catalog().await,
         })),
+        "projects" => {
+            let mut value = commands::weixin_connect_projects(None, None)
+                .await
+                .map_err(anyhow::Error::msg)?;
+            value["status"] = json!("ok");
+            Ok(value)
+        }
+        "resetSession" => {
+            let peer_id = payload.get("peerId").and_then(Value::as_str).unwrap_or_default().to_string();
+            let account_id = SettingsStore::default().load()?.weixin_connect_account_id;
+            commands::weixin_connect_reset_session(peer_id, account_id).map_err(anyhow::Error::msg)?;
+            Ok(json!({
+                "status": "ok",
+                "message": "已保存重置请求，下一条消息开启新会话，原历史保留。",
+            }))
+        }
         other => anyhow::bail!("未知操作：{other}"),
     }
 }

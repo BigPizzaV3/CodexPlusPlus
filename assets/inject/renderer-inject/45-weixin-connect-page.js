@@ -6,7 +6,8 @@
    *     本页经 bridge 路由 `/weixin-connect` `{ action, ...args }` 调管理器登记的宿主路由，
    *     动作与管理器微信页共用同一组命令函数（`weixin_connect_bridge.rs`），两边看到的是同一个状态。
    *   - 路由不在拓展白名单里（能扫码登录、启停连接、改设置）。管理器没在跑时路由返回 failed + 提示，本页照实显示。
-   *   - 只放每天会碰的设置；新会话项目、重置联系人会话、登录凭据、连接参数到管理器里改（页底有入口）。
+   *   - 登录凭据、连接参数、Codex CLI 路径不在这里改（后端白名单也不收，见 core `connect::page`），
+   *     到管理器里改（页底有入口）。
    *
    * 页面 DOM 每次打开重建，状态只放在 codexPlusWeixinPageState 里（见 01-registry 的生命周期约定）。
    */
@@ -25,6 +26,11 @@
     catalog: null,
     catalogError: "",
     catalogLoading: false,
+    // 项目列表要起一次 Codex app-server，按需读：已选过项目时打开页面读，否则点「刷新」才读。
+    projects: null,
+    projectsError: "",
+    projectsLoading: false,
+    resetPeer: "",
     qr: null,
     qrGeneration: 0,
     busy: "",
@@ -97,6 +103,32 @@
       state.catalogLoading = false;
       renderCodexPlusWeixinPage();
     }
+  }
+
+  async function codexPlusWeixinLoadProjects() {
+    const state = codexPlusWeixinPageState;
+    if (state.projectsLoading) return;
+    state.projectsLoading = true;
+    renderCodexPlusWeixinPage();
+    try {
+      const result = await codexPlusWeixinRequest("projects");
+      if (!Array.isArray(result.projects)) throw new Error("读取项目列表失败。");
+      state.projects = result.projects;
+      state.projectsError = "";
+    } catch (error) {
+      state.projectsError = error?.message || String(error);
+    } finally {
+      state.projectsLoading = false;
+      renderCodexPlusWeixinPage();
+    }
+  }
+
+  /** 选项目时工作目录跟着换成项目的第一个目录（同管理器微信页）。 */
+  function codexPlusWeixinProjectPatch(id) {
+    const state = codexPlusWeixinPageState;
+    const project = (state.projects || []).find((entry) => entry.id === id);
+    const root = project?.roots?.[0]?.path;
+    return root ? { weixinConnectProjectId: id, weixinConnectWorkDir: root } : { weixinConnectProjectId: id };
   }
 
   /** 扫码：生成二维码后一直查状态，直到确认、过期、出错或关页（qrGeneration 变了就停）。 */
@@ -215,7 +247,9 @@
     const value = item.dataset.codexWeixinMenuValue || "";
     const changed = value !== (trigger.dataset.value || "");
     codexPlusWeixinCloseMenu(true);
-    if (changed) void codexPlusWeixinSave({ [trigger.dataset.codexWeixinMenu]: value });
+    if (!changed) return;
+    const field = trigger.dataset.codexWeixinMenu;
+    void codexPlusWeixinSave(field === "weixinConnectProjectId" ? codexPlusWeixinProjectPatch(value) : { [field]: value });
   }
 
   /** 菜单键盘操作：上下移动、Home / End、回车 / 空格选中、Esc / Tab 收起（与供应商页菜单一致）。 */
@@ -279,6 +313,11 @@
     if (!input) return;
     const field = input.getAttribute("data-codex-weixin-field");
     const value = input.value.trim();
+    // 要重置的联系人 ID 不是设置，只记下来给「重置」按钮用。
+    if (field === "resetPeer") {
+      codexPlusWeixinPageState.resetPeer = value;
+      return;
+    }
     const saved = codexPlusWeixinPageState.data?.settings?.[field] ?? "";
     if (value === saved) return;
     void codexPlusWeixinSave({ [field]: value });
@@ -312,6 +351,21 @@
       || (catalog && !models.length ? "当前没有可用模型，请检查供应商配置。" : "")
       || "微信里的新会话用这个模型；推理强度跟着模型走。";
     return { modelOptions, effortOptions, hint };
+  }
+
+  function codexPlusWeixinProjectOptions(state, settings) {
+    const projects = Array.isArray(state.projects) ? state.projects : [];
+    const id = settings.weixinConnectProjectId || "";
+    const missing = Boolean(id && !projects.some((project) => project.id === id));
+    const options = [
+      ["", "不归属项目"],
+      ...(missing ? [[id, `${id} (${state.projects && !state.projectsError ? "不可用" : "当前值"})`]] : []),
+      ...projects.map((project) => [project.id, project.name || project.id]),
+    ];
+    const hint = state.projectsError
+      || (state.projects && missing ? "当前项目已不在项目列表中，请重新选择。" : "")
+      || (state.projects ? "新会话归到 Codex 里的哪个项目；选项目会把工作目录换成它的目录。" : "新会话归到 Codex 里的哪个项目；点「刷新」读取项目列表。");
+    return { options, hint };
   }
 
   /** 整页 HTML（纯函数，便于测试）。 */
@@ -371,6 +425,7 @@
       </div>
     </section>` : "";
     const { modelOptions, effortOptions, hint } = codexPlusWeixinModelOptions(state, settings);
+    const project = codexPlusWeixinProjectOptions(state, settings);
     const sessionSection = `<section class="codex-plus-settings-section" aria-label="对话">
       <h2 class="codex-plus-settings-section-title">对话</h2>
       <div class="codex-plus-settings-card">
@@ -378,8 +433,12 @@
           codexPlusWeixinInput("weixinConnectAllowFrom", settings.weixinConnectAllowFrom, "允许的微信用户 ID", "user@im.wechat"))}
         ${codexPlusWeixinRow("工作目录", "新会话在这个目录里工作。",
           codexPlusWeixinInput("weixinConnectWorkDir", settings.weixinConnectWorkDir, "工作目录", "输入工作目录的完整路径"))}
+        ${codexPlusWeixinRow("新会话项目", escapeHtml(project.hint),
+          `${codexPlusWeixinMenu("weixinConnectProjectId", settings.weixinConnectProjectId || "", project.options, "新会话项目")}<button type="button" class="codex-plus-action-button" data-codex-weixin-action="projects" ${state.projectsLoading ? "disabled" : ""}>${state.projectsLoading ? "读取中…" : "刷新"}</button>`)}
         ${codexPlusWeixinRow("模型", escapeHtml(hint),
           `${codexPlusWeixinMenu("weixinConnectModel", settings.weixinConnectModel || "", modelOptions, "模型")}${codexPlusWeixinMenu("weixinConnectReasoningEffort", settings.weixinConnectReasoningEffort || "", effortOptions, "推理强度")}<button type="button" class="codex-plus-action-button" data-codex-weixin-action="catalog" ${state.catalogLoading ? "disabled" : ""}>${state.catalogLoading ? "读取中…" : "刷新"}</button>`)}
+        ${codexPlusWeixinRow("重置联系人会话", "下一条消息开启新会话，原历史保留。",
+          `${codexPlusWeixinInput("resetPeer", state.resetPeer, "需要重置的联系人 ID", connection.lastPeerId || "联系人 ID")}<button type="button" class="codex-plus-action-button" data-codex-weixin-action="resetSession" ${busy || !loggedIn ? "disabled" : ""}>${state.busy === "resetSession" ? "正在重置…" : "重置"}</button>`)}
       </div>
     </section>`;
     const remoteRunning = Boolean(data.remoteControlRunning);
@@ -409,7 +468,7 @@
     const moreSection = `<section class="codex-plus-settings-section" aria-label="更多设置">
       <h2 class="codex-plus-settings-section-title">更多设置</h2>
       <div class="codex-plus-settings-card">
-        ${codexPlusWeixinRow("新会话项目、重置联系人会话、登录凭据、连接参数", "这些不常用的设置在 Codex++ 管理工具的微信连接页里改。",
+        ${codexPlusWeixinRow("登录凭据、连接参数、Codex CLI 路径", "登录凭据和账号扫码后自动填好，一般不用改；要手动改它们、iLink 地址或 Codex CLI 路径，到 Codex++ 管理工具的微信连接页。",
           '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="openManager">在 Codex++ 管理工具里打开更多设置</button>')}
       </div>
     </section>`;
@@ -511,6 +570,22 @@
       case "catalog":
         await codexPlusWeixinLoadCatalog();
         return;
+      case "projects":
+        await codexPlusWeixinLoadProjects();
+        return;
+      case "resetSession": {
+        // 打完字直接点按钮时，输入框失焦的 change 先于 click，resetPeer 已记下。
+        if (!state.resetPeer) {
+          state.error = "请填写需要重置的微信联系人 ID。";
+          renderCodexPlusWeixinPage();
+          return;
+        }
+        if (await codexPlusWeixinRun("resetSession", { peerId: state.resetPeer })) {
+          state.resetPeer = "";
+          renderCodexPlusWeixinPage();
+        }
+        return;
+      }
       case "openRemote":
         openCodexPlusRemoteControlPage();
         return;
@@ -590,8 +665,10 @@
       const editing = document.activeElement;
       if (editing instanceof Element && editing.matches("[data-codex-weixin-field]")) codexPlusWeixinHandleChange({ target: editing });
     };
-    Object.assign(state, { error: "", notice: "", copied: false, renderPending: false, qr: null });
+    Object.assign(state, { error: "", notice: "", copied: false, renderPending: false, qr: null, projects: null, projectsError: "", resetPeer: "" });
     renderCodexPlusWeixinPage();
-    void codexPlusWeixinRun("state", {}, "load");
+    void codexPlusWeixinRun("state", {}, "load").then(() => {
+      if (state.data?.settings?.weixinConnectProjectId) void codexPlusWeixinLoadProjects();
+    });
     void codexPlusWeixinLoadCatalog();
   }

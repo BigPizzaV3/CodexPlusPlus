@@ -4,7 +4,8 @@
 //! 由管理器登记成宿主路由，动作分发与管理器的 Tauri 命令共用同一组函数；这里只放两边都用得到、
 //! 与进程状态无关的部分：页面能看到哪些字段、能改哪些字段、值域是什么。
 //!
-//! - 页面看不到登录凭据（只给「是否已登录」），也改不了凭据、账号、网关地址这类扫码后自动填的项。
+//! - 页面看不到登录凭据（只给「是否已登录」），也改不了凭据、账号、网关地址这类扫码后自动填的项，
+//!   和 Codex CLI 路径：页面里的脚本都能调 bridge，放开这些就能把微信流量和凭据转走、指定要运行的程序。
 //! - 改动走白名单：没列在这里的键一律拒绝，免得页面顺手把整份设置写回去。
 
 use anyhow::bail;
@@ -21,9 +22,10 @@ pub const SANDBOX_VALUES: [&str; 3] = ["read-only", "workspace-write", "danger-f
 pub const DEFAULT_MODE_VALUES: [&str; 2] = ["jiajia", "direct"];
 
 /// 页面能改的字符串字段。
-const TEXT_FIELDS: [&str; 6] = [
+const TEXT_FIELDS: [&str; 7] = [
     "weixinConnectAllowFrom",
     "weixinConnectWorkDir",
+    "weixinConnectProjectId",
     "weixinConnectModel",
     "weixinConnectReasoningEffort",
     "weixinConnectDefaultMode",
@@ -40,6 +42,7 @@ pub fn page_settings(settings: &BackendSettings) -> Value {
     json!({
         "weixinConnectAllowFrom": settings.weixin_connect_allow_from,
         "weixinConnectWorkDir": settings.weixin_connect_work_dir,
+        "weixinConnectProjectId": settings.weixin_connect_project_id,
         "weixinConnectModel": settings.weixin_connect_model,
         "weixinConnectReasoningEffort": settings.weixin_connect_reasoning_effort,
         "weixinConnectDefaultMode": settings.weixin_connect_default_mode,
@@ -86,6 +89,7 @@ pub fn apply_page_settings(settings: &mut BackendSettings, patch: &Value) -> any
         match key.as_str() {
             "weixinConnectAllowFrom" => settings.weixin_connect_allow_from = text(),
             "weixinConnectWorkDir" => settings.weixin_connect_work_dir = text(),
+            "weixinConnectProjectId" => settings.weixin_connect_project_id = text(),
             "weixinConnectModel" => settings.weixin_connect_model = text(),
             "weixinConnectReasoningEffort" => settings.weixin_connect_reasoning_effort = text(),
             "weixinConnectDefaultMode" => settings.weixin_connect_default_mode = text(),

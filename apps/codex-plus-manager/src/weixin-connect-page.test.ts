@@ -21,9 +21,10 @@ async function loadShard() {
     const codexPlusMenuIcons = { chevron: "<svg data-chevron></svg>", check: "<svg data-check></svg>" };
     const postJson = async () => ({ status: "failed" });
   `;
-  return new Function(`${stubs}\n${source}\nreturn { codexPlusWeixinPageHtml, codexPlusWeixinPageState };`)() as {
+  return new Function(`${stubs}\n${source}\nreturn { codexPlusWeixinPageHtml, codexPlusWeixinPageState, codexPlusWeixinProjectPatch };`)() as {
     codexPlusWeixinPageHtml: (state: PageState) => string;
     codexPlusWeixinPageState: PageState;
+    codexPlusWeixinProjectPatch: (id: string) => PageState;
   };
 }
 
@@ -43,12 +44,17 @@ const baseState = (patch: PageState = {}): PageState => ({
   },
   catalogError: "",
   catalogLoading: false,
+  projects: null,
+  projectsError: "",
+  projectsLoading: false,
+  resetPeer: "",
   data: {
     status: "ok",
     connection: { state: "running", message: "微信连接运行中。", accountId: longAccount, processedMessages: 7, lastPeerId: "wxid_peer_with_a_really_long_identifier_value@im.wechat" },
     settings: {
       weixinConnectAllowFrom: "me@im.wechat",
       weixinConnectWorkDir: "/Users/me/code/project",
+      weixinConnectProjectId: "",
       weixinConnectModel: "",
       weixinConnectReasoningEffort: "high",
       weixinConnectDefaultMode: "jiajia",
@@ -84,6 +90,8 @@ test("宿主路由在管理器登记，每个动作调管理器微信页同一�
     "commands::weixin_connect_stop()",
     "commands::weixin_connect_status()",
     "commands::weixin_connect_catalog()",
+    "commands::weixin_connect_projects(None, None)",
+    "commands::weixin_connect_reset_session(peer_id, account_id)",
     "commands::save_settings(settings, None)",
   ]) {
     assert.ok(bridge.includes(call), `应复用 ${call}`);
@@ -105,7 +113,7 @@ test("分片登记进清单，行数与文件一致；页面的动作都在后�
   const source = await read(shardPath);
   assert.equal(fragments[index].lines, source.split("\n").length - 1);
   const bridge = await read("../src-tauri/src/weixin_connect_bridge.rs");
-  for (const action of ["state", "save", "qrStart", "qrStatus", "start", "stop", "catalog"]) {
+  for (const action of ["state", "save", "qrStart", "qrStatus", "start", "stop", "catalog", "projects", "resetSession"]) {
     assert.ok(source.includes(`"${action}"`), `页面缺少动作 ${action}`);
     assert.ok(bridge.includes(`"${action}"`), `后端缺少动作 ${action}`);
   }
@@ -171,6 +179,13 @@ test("已登录、运行中：状态、停止 / 重新登录、对话、加加�
   assert.match(html, /data-codex-weixin-menu="weixinConnectSandbox" data-value="workspace-write"[^>]*aria-label="沙箱权限：允许修改工作目录"/);
   assert.match(html, /data-codex-weixin-toggle="weixinConnectAllowOutboundAttachments" >/, "填了白名单和目录时能打开附件回传");
   assert.match(html, /data-codex-weixin-action="openManager">在 Codex\+\+ 管理工具里打开更多设置</);
+  assert.match(html, /登录凭据、连接参数、Codex CLI 路径/);
+  // 新会话项目：没读过项目列表时只有「不归属项目」，提示点刷新；重置联系人会话在页内。
+  assert.match(html, /data-codex-weixin-menu="weixinConnectProjectId" data-value=""[^>]*aria-label="新会话项目：不归属项目"/);
+  assert.match(html, /点「刷新」读取项目列表/);
+  assert.match(html, /data-codex-weixin-action="projects"/);
+  assert.match(html, /data-codex-weixin-field="resetPeer" value=""[^>]*placeholder="wxid_peer_with/);
+  assert.match(html, /data-codex-weixin-action="resetSession" >重置</);
   for (const title of ["连接", "对话", "加加", "权限", "更多设置"]) assert.match(html, new RegExp(`aria-label="${title}"`));
   assert.doesNotMatch(html, /<select/);
   assert.doesNotMatch(html, /weixinConnectToken/, "页面里没有登录凭据");
@@ -202,6 +217,35 @@ test("还没读到状态：读取中 / 失败时给重试；出错信息进横�
   const failed = codexPlusWeixinPageHtml(baseState({ data: null, error: "Codex++ 管理器未运行，暂时不能在 Codex 里操作微信连接；请先打开 Codex++。" }));
   assert.match(failed, /role="alert">Codex\+\+ 管理器未运行/);
   assert.match(failed, /data-codex-weixin-action="reload">重试</);
+});
+
+test("新会话项目：列出读到的项目，已选的不在列表里标「不可用」；选项目时工作目录换成它的第一个目录", async () => {
+  const { codexPlusWeixinPageHtml, codexPlusWeixinPageState, codexPlusWeixinProjectPatch } = await loadShard();
+  const projects = [
+    { id: "p1", name: "项目一", roots: [{ path: "/Users/me/p1" }] },
+    { id: "p2", name: "", roots: [] },
+  ];
+  const state = baseState({ projects });
+  state.data.settings = { ...state.data.settings, weixinConnectProjectId: "gone" };
+  const html = codexPlusWeixinPageHtml(state);
+  assert.match(html, /data-codex-weixin-menu="weixinConnectProjectId" data-value="gone"/);
+  assert.match(html, /gone \(不可用\)/);
+  assert.match(html, /当前项目已不在项目列表中，请重新选择。/);
+  assert.match(html, /项目一/);
+  const failed = codexPlusWeixinPageHtml(baseState({ projectsError: "读取微信连接项目失败：boom" }));
+  assert.match(failed, /读取微信连接项目失败：boom/);
+
+  codexPlusWeixinPageState.projects = projects;
+  assert.deepEqual(codexPlusWeixinProjectPatch("p1"), { weixinConnectProjectId: "p1", weixinConnectWorkDir: "/Users/me/p1" });
+  assert.deepEqual(codexPlusWeixinProjectPatch("p2"), { weixinConnectProjectId: "p2" }, "项目没有目录时不动工作目录");
+  assert.deepEqual(codexPlusWeixinProjectPatch(""), { weixinConnectProjectId: "" });
+});
+
+test("没登录时不能重置联系人会话", async () => {
+  const { codexPlusWeixinPageHtml } = await loadShard();
+  const state = baseState();
+  state.data.settings = { ...state.data.settings, loggedIn: false };
+  assert.match(codexPlusWeixinPageHtml(state), /data-codex-weixin-action="resetSession" disabled>重置</);
 });
 
 test("模型不在目录里时标「不可用」并提示；目录读失败时显示原因", async () => {
