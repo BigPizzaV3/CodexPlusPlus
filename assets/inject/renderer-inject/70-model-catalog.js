@@ -389,6 +389,12 @@
         changed = true;
       }
     }
+    for (const [key, value] of Object.entries(codexPlusModelServiceTiers(metadata, descriptor))) {
+      if (JSON.stringify(descriptor[key] ?? []) !== JSON.stringify(value)) {
+        descriptor[key] = value;
+        changed = true;
+      }
+    }
     // 图片输入能力（#3042）：只在目录/元数据明确声明时覆盖，没声明保留原生描述符的值。
     const modalities = codexPlusModelInputModalities(metadata);
     if (modalities && JSON.stringify(descriptor.inputModalities ?? null) !== JSON.stringify(modalities)) {
@@ -425,11 +431,32 @@
       isDefault: false,
       defaultReasoningEffort: metadata?.defaultReasoningEffort || "medium",
       supportedReasoningEfforts: modelReasoningEfforts(modelName),
+      ...codexPlusModelServiceTiers(metadata),
       // 图片输入能力只带目录/元数据里声明过的；没声明不写，不替未知模型宣称收图，
       // 与此前的原生行为一致。
       ...(modalities ? { inputModalities: modalities } : {}),
       ...(original !== null ? { supportsImageDetailOriginal: original } : {}),
     };
+  }
+
+  function codexPlusModelServiceTiers(metadata, descriptor) {
+    if (!metadata) return {};
+    const denyFast = metadata.prioritySupportOverride === false;
+    const fields = {};
+    // New-chat model queries use these descriptors before a thread exists.
+    for (const [key, id] of [["serviceTiers", "priority"], ["additionalSpeedTiers", "fast"]]) {
+      const declared = metadata[key];
+      if (Array.isArray(declared) && declared.length) {
+        fields[key] = structuredClone(declared);
+      }
+      if (denyFast) {
+        const existing = fields[key] ?? descriptor?.[key];
+        if (Array.isArray(existing)) {
+          fields[key] = existing.filter((tier) => String(typeof tier === "string" ? tier : tier?.id || "").trim().toLowerCase() !== id);
+        }
+      }
+    }
+    return fields;
   }
 
   // 元数据里声明的输入模态（camelCase / snake_case 都认），没声明返回 null。

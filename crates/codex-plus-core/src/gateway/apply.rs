@@ -4691,6 +4691,57 @@ mod tests {
         assert!(!fields.contains_key("base_instructions"));
     }
 
+    #[test]
+    fn gpt62_fast_tiers_reach_the_gateway_catalog() {
+        let mut gateway = GatewaySettings::default();
+        gateway.providers.push(
+            serde_json::from_value(json!({
+                "relay": RelayProfile {
+                    id: "official".into(),
+                    relay_mode: RelayMode::Official,
+                    protocol: RelayProtocol::Responses,
+                    auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"fixture","account_id":"fixture"}}"#.into(),
+                    model: "gpt-6.2-astra".into(),
+                    model_list: "gpt-6.2-astra\ngpt-6.2-sol\ngpt-6.2-unknown".into(),
+                    ..RelayProfile::default()
+                }
+            }))
+            .unwrap(),
+        );
+        let binding = AgentBinding {
+            model: "gpt-6.2-astra".into(),
+            token: crate::gateway::store::new_client_token(&ToolId::Codex),
+            ..AgentBinding::default()
+        };
+        let catalog = |gateway: &GatewaySettings| {
+            let profile = codex_gateway_profile(gateway, &binding, 57390, false).unwrap();
+            serde_json::from_str::<Value>(&profile.model_metadata).unwrap()
+        };
+
+        let metadata = catalog(&gateway);
+        for slug in ["gpt-6.2-astra", "gpt-6.2-sol"] {
+            assert_eq!(metadata[slug]["service_tiers"][0]["id"], "priority");
+            assert_eq!(metadata[slug]["additional_speed_tiers"], json!(["fast"]));
+        }
+        assert_eq!(metadata["gpt-6.2-unknown"]["service_tiers"], json!([]));
+
+        gateway.providers[0].relay.model_metadata =
+            r#"{"gpt-6.2-sol":{"codex_plus_fast_support":"unsupported"}}"#.into();
+        let metadata = catalog(&gateway);
+        assert_eq!(metadata["gpt-6.2-astra"]["service_tiers"][0]["id"], "priority");
+        assert_eq!(metadata["gpt-6.2-sol"]["service_tiers"], json!([]));
+        assert_eq!(metadata["gpt-6.2-sol"]["additional_speed_tiers"], json!([]));
+
+        let relay = &mut gateway.providers[0].relay;
+        relay.model_metadata = r#"{"gpt-6.2-astra":{"service_tiers":[]}}"#.into();
+        assert_eq!(catalog(&gateway)["gpt-6.2-astra"]["additional_speed_tiers"], json!([]));
+
+        let relay = &mut gateway.providers[0].relay;
+        relay.relay_mode = RelayMode::PureApi;
+        relay.model_metadata.clear();
+        assert_eq!(catalog(&gateway)["gpt-6.2-astra"]["service_tiers"], json!([]));
+    }
+
     /// #2746：没登录时的托管供应商要被原生 Fast 认成本机 API 配置；登录后是 openai 身份，
     /// 交给原生的账号门控。
     #[test]
