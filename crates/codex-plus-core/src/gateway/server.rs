@@ -1030,7 +1030,15 @@ async fn handle_claude_messages(
             Ok(())
         }
         GatewayUpstream::Native(response) => {
-            write_native(stream, &mut request_log, &trace, response, wants_stream).await
+            write_native(
+                stream,
+                &mut request_log,
+                &trace,
+                response,
+                wants_stream,
+                remote_addr_text.as_deref(),
+            )
+            .await
         }
         GatewayUpstream::Pipeline(mut response) => {
             request_log.record_trace(&trace, response.status_code, wants_stream);
@@ -1054,7 +1062,14 @@ async fn handle_claude_messages(
                 let (responses_json, usage) = match read_pipeline_json(&mut response, &responses_body).await {
                     Ok(json) => json,
                     Err(error) => {
-                        return write_bad_upstream(stream, &dialect, &mut request_log, &error).await;
+                        return write_bad_upstream(
+                            stream,
+                            &dialect,
+                            &mut request_log,
+                            &error,
+                            remote_addr_text.as_deref(),
+                        )
+                        .await;
                     }
                 };
                 request_log.record_stream(None, usage, None);
@@ -1071,6 +1086,9 @@ async fn handle_claude_messages(
                     converter: dialect.converter(&client_model, input_estimate),
                 };
                 let mut explicit_chat_zero = false;
+                // 转发层看到的失败原因（例如读流出错的原文），和转换器给客户端的那条分开记。
+                let mut upstream_failure = None;
+                let mut upstream_detail = None;
                 {
                     // 拓展的网关响应流中间件看到的是 Responses 事件，转换成客户端格式之前生效。
                     let mut filtered = crate::launcher::ExtensionResponseSink::new(&mut sink, "/responses", Some(&responses_body)).await;
@@ -1079,7 +1097,7 @@ async fn handle_claude_messages(
                     } else {
                         let prefix = std::mem::take(&mut response.stream_prefix);
                         let wire_api = response.wire_api;
-                        let (_failure, upstream_usage, _detail, first_output_at_ms) =
+                        let (failure, upstream_usage, detail, first_output_at_ms) =
                             forward_protocol_proxy_stream(
                                 &mut filtered,
                                 &prefix,
@@ -1089,6 +1107,8 @@ async fn handle_claude_messages(
                                 session.as_deref(),
                             )
                             .await?;
+                        upstream_failure = failure;
+                        upstream_detail = detail;
                         explicit_chat_zero = filtered.is_unmodified()
                             && wire_api == UpstreamWireApi::ChatCompletions
                             && upstream_usage.is_some_and(|usage| usage.cached_tokens_known && usage.cached_tokens == 0);
@@ -1114,13 +1134,30 @@ async fn handle_claude_messages(
                     usage,
                     failure.clone(),
                 );
+                if let Some(error) = failure.as_deref().or(upstream_failure.as_deref()) {
+                    log_gateway_failure(
+                        "gateway.claude_stream_failed",
+                        &request_log,
+                        error,
+                        upstream_failure.as_deref(),
+                        upstream_detail.as_deref(),
+                        remote_addr_text.as_deref(),
+                    );
+                }
                 stream.shutdown().await?;
                 return Ok(());
             }
             let (responses_json, usage) = match read_pipeline_json(&mut response, &responses_body).await {
                 Ok(json) => json,
                 Err(error) => {
-                    return write_bad_upstream(stream, &dialect, &mut request_log, &error).await;
+                    return write_bad_upstream(
+                        stream,
+                        &dialect,
+                        &mut request_log,
+                        &error,
+                        remote_addr_text.as_deref(),
+                    )
+                    .await;
                 }
             };
             request_log.record_stream(None, usage, None);
@@ -1148,9 +1185,18 @@ async fn write_bad_upstream(
     dialect: &Dialect,
     request_log: &mut ProxyRequestLog,
     error: &anyhow::Error,
+    remote_addr_text: Option<&str>,
 ) -> anyhow::Result<()> {
     let message = format!("上游答复无法解析：{error:#}");
     request_log.record_error("502 Bad Gateway", message.clone());
+    log_gateway_failure(
+        "gateway.claude_bad_upstream",
+        request_log,
+        &message,
+        None,
+        None,
+        remote_addr_text,
+    );
     let body = serde_json::to_vec(&dialect.error_body(502, &message))?;
     write_http_response(stream, "502 Bad Gateway", JSON, &body).await?;
     stream.shutdown().await?;
@@ -1176,6 +1222,7 @@ async fn write_native(
     trace: &crate::request_log::RequestTrace,
     mut response: NativeAnthropicResponse,
     wants_stream: bool,
+    remote_addr_text: Option<&str>,
 ) -> anyhow::Result<()> {
     request_log.record_trace(trace, response.status_code, response.is_stream);
     if let Some(body) = response.buffered_body.take() {
@@ -1249,8 +1296,54 @@ async fn write_native(
         failure = Some("上游在 message_stop 之前结束了响应流".to_string());
     }
     request_log.record_stream(failure.as_deref(), observer.usage(), failure.clone());
+    if let Some(error) = failure.as_deref() {
+        log_gateway_failure(
+            "gateway.claude_stream_failed",
+            request_log,
+            error,
+            None,
+            None,
+            remote_addr_text,
+        );
+    }
     stream.shutdown().await?;
     Ok(())
+}
+
+/// 网关转发失败时写一条诊断日志（#3164）。
+///
+/// 这些失败原因原来只进请求日志，诊断日志里查不到，用户导出诊断日志排查时就缺了这一环。
+/// 字段对齐 Codex 代理的 `helper.protocol_proxy_stream_failed`，再带上路由（供应商、上游模型、
+/// 协议），方便判断是哪家上游掐断的。不带 Key / token；账号类供应商的名字里带邮箱，
+/// 和 `gateway.upstream_failed` 一样只留打码后的。
+fn log_gateway_failure(
+    event: &str,
+    request_log: &ProxyRequestLog,
+    error: &str,
+    upstream_error: Option<&str>,
+    detail: Option<&str>,
+    remote_addr_text: Option<&str>,
+) {
+    let entry = &request_log.entry;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        event,
+        json!({
+            "method": entry.method,
+            "path": entry.path,
+            "status": crate::protocol_proxy::http_status_line(entry.status_code),
+            "stream": entry.stream,
+            "agent": entry.agent,
+            "relayId": entry.relay_id,
+            "relayName": crate::gateway::accounts::mask_account_name(&entry.relay_name),
+            "model": entry.model,
+            "upstreamModel": entry.upstream_model,
+            "wireApi": entry.wire_api,
+            "error": error,
+            "upstreamError": upstream_error,
+            "detail": detail,
+            "remote_addr": remote_addr_text,
+        }),
+    );
 }
 
 /// 非流式 Anthropic 响应里的 usage。
