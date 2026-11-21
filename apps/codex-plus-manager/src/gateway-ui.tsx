@@ -22,8 +22,12 @@ import { providerAvatarText } from "./provider-name";
 
 export type Status = "ok" | "failed" | "warning" | "info";
 export type Notify = (title: string, message: string, status?: Status) => Promise<void>;
-/** `background`：不占全局 busy（订阅登录要等用户在浏览器里操作几分钟，不能把其它按钮都锁住）。 */
-export type RunOptions = { background?: boolean };
+/**
+ * `background`：不占全局 busy（订阅登录要等用户在浏览器里操作几分钟，不能把其它按钮都锁住）。
+ * `quiet`：失败也不弹提示（界面自己发起的后台刷新，用户没点就别打扰）。
+ * `onResult`：收到后端结果时回调，用来读命令附带的额外字段。
+ */
+export type RunOptions = { background?: boolean; quiet?: boolean; onResult?: (result: GatewayResult) => void };
 export type Run = (
   key: string,
   command: string,
@@ -43,15 +47,16 @@ export function makeRun(setBusy: (key: string | null) => void, accept: (result: 
     try {
       const result = await invoke<GatewayResult>(command, args);
       accept(result);
+      options.onResult?.(result);
       if (result.status === "cancelled") return false;
       if (result.status !== "ok") {
-        await notify(tf("{0}失败", [title]), maskAccountText(result.message), "failed");
+        if (!options.quiet) await notify(tf("{0}失败", [title]), maskAccountText(result.message), "failed");
         return false;
       }
       if (!silent) await notify(title, maskAccountText(result.message), "ok");
       return true;
     } catch (error) {
-      await notify(t("调用失败"), maskAccountText(String(error)), "failed");
+      if (!options.quiet) await notify(t("调用失败"), maskAccountText(String(error)), "failed");
       return false;
     } finally {
       if (!options.background) setBusy(null);

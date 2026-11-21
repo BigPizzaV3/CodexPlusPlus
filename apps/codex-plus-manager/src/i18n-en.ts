@@ -3877,6 +3877,58 @@ export const EN_PLAIN: Record<string, string> = {
   "完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「智能体」页重新接入一次。": "Takes effect after fully quitting Codex++ (including the tray) and reopening it. Agents on the gateway switch to the new port at startup; reconnect any that don't on the Agents page.",
   "待重启": "Restart pending",
   "Agent 配置里写的是这个端口。保存时会检测端口是否被占用；旧端口会被记住，旧配置里的地址仍认作 Codex++ 的地址。": "Agent configs point at this port. Saving checks whether the port is in use; old ports are remembered so addresses in old configs are still recognized as Codex++'s.",
+
+  // ChatGPT quota reset credits.
+  "重置券": "Reset vouchers",
+  "配额窗口": "Quota windows",
+  "配额时间轴": "Quota timeline",
+  "两周": "Two weeks",
+  "24 小时": "24 hours",
+  "上一时段": "Previous period",
+  "下一时段": "Next period",
+  "按周": "Weekly",
+  "已知窗口": "Observed window",
+  "后续窗口（推算）": "Upcoming window (projected)",
+  "此时段无已知窗口": "No known window in this period",
+  "预计": "Projected",
+  "当前时间": "Current time",
+  "自然重置 {0}": "Scheduled reset: {0}",
+  "重置卡到期": "Voucher expiry",
+  "重置卡到期 {0}": "Voucher expires: {0}",
+  "已到重置时间，请刷新": "Reset time reached; refresh quota",
+  "未提供重置时间": "Reset time not provided",
+  "剩余 {0}%": "{0}% left",
+  "{0}剩余额度": "{0} quota remaining",
+  "Credit 状态": "Credit status",
+  "尚未查询": "Not checked yet",
+  "不过期": "No expiry",
+  "刷新重置卡": "Refresh vouchers",
+  "已用或已失效": "Used or expired",
+  "这个账号没有可用的重置卡": "This account has no usable reset vouchers",
+  "上次结果未确认：再点一次会用同一请求标识重试": "The last attempt was not confirmed. Click again to retry with the same request id",
+  "使用一张": "Use one",
+  "没有可用的重置卡": "No usable reset vouchers",
+  "没有重置卡": "No reset vouchers",
+  "使用重置卡": "Use reset voucher",
+  "重置 Codex 配额": "Reset Codex quota",
+  "确认重置": "Confirm reset",
+  "将消耗 1 张重置卡，把 5 小时与每周额度一起重置。是否继续？": "This uses one reset voucher and resets both the 5-hour and weekly allowance. Continue?",
+  "消耗一张重置卡，重置 5 小时与每周额度": "Use one reset voucher to reset the 5-hour and weekly allowance",
+  "可用张数未知": "Available count unknown",
+  "尚无卡片明细，可用张数未知": "No card details; available count unknown",
+  "接口只返回汇总数": "Only summary counts returned",
+  "未提供到期时间": "Expiry not provided",
+  "无法读取上次重置操作，请先核实结果": "Cannot read the previous reset operation; verify its outcome first",
+  "重置操作未确认，请保留原操作并稍后重试": "Reset outcome unconfirmed; retain the operation and retry later",
+  "将消耗 1 张重置卡，请确认后重置账号额度。未确认的上次操作会优先核实。": "This uses one reset voucher to reset account quota. Any unresolved operation will be checked first. Continue?",
+  "核实上次重置操作": "Check the previous reset operation",
+  "核实上次操作": "Check previous operation",
+  "消耗一张重置卡，重置账号额度": "Use one reset voucher to reset account quota",
+  "已用、已失效或状态未知": "Used, expired, or status unknown",
+  "放弃上次重置操作": "Abandon previous reset operation",
+  "放弃并重新开始": "Abandon and start over",
+  "放弃上次未确认的重置操作，下次使用发起新的请求": "Abandon the unconfirmed reset operation; the next use sends a new request",
+  "放弃后，上次未确认的重置操作不再重试，下次使用会发起新的请求。若上次其实已经生效，可能会再扣一张重置卡。建议先刷新额度确认上次是否已重置。": "After abandoning, the unconfirmed reset operation will not be retried and the next use sends a new request. If the previous attempt actually went through, another voucher may be used. Refresh the quota first to check whether it was reset.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -4560,6 +4612,14 @@ export const EN_TEMPLATE: Record<string, string> = {
   "端口要在 {0}–{1} 之间。": "Port must be between {0} and {1}.",
   "已改为 {0}，当前仍在 {1} 上监听：需要重启 Codex++ 并重新接入 Agent 后生效。": "Changed to {0} but still listening on {1}: restart Codex++ and reconnect Agents for it to take effect.",
   "和其它程序端口冲突时换一个（默认 {0}）。保存后需要重启 Codex++ 并重新接入 Agent 后生效。": "Change it if another program uses the same port (default {0}). Takes effect after restarting Codex++ and reconnecting Agents.",
+
+  // ChatGPT quota reset credits.
+  "重置券 {0}": "{0} reset vouchers",
+  "{0} 张可用": "{0} usable",
+  "最近到期 {0}": "Earliest expiry {0}",
+  "最近一张 {0} 到期": "Next expires {0}",
+  "获得 {0}": "Granted {0}",
+  "到期 {0}": "Expires {0}",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated
@@ -4743,6 +4803,16 @@ export const EN_BACKEND: Record<string, string> = {
   // 从上游同步上下文窗口 / 思考等级（#2807）
   "这类供应商的模型接口不提供上下文窗口和思考等级，请手动填写": "This provider's model endpoint does not report context windows or reasoning levels; fill them in manually",
   "模型资料不是有效的 JSON，请先在「思考等级」里修正": "The model metadata is not valid JSON; fix it under Reasoning levels first",
+  // ChatGPT 额度重置卡：使用 / 放弃
+  "已使用一张重置卡，额度已重置。额度与卡片读数已刷新。": "Used one reset voucher; quota has been reset. Quota and voucher readings refreshed.",
+  "已使用一张重置卡，额度已重置。部分读数尚未刷新，请稍后手动刷新；无需再次使用。": "Used one reset voucher; quota has been reset. Some readings are not refreshed yet; refresh manually later. No need to use another voucher.",
+  "这次重置此前已经生效，没有重复扣卡。额度与卡片读数已刷新。": "This reset had already taken effect; no extra voucher was used. Quota and voucher readings refreshed.",
+  "这次重置此前已经生效，没有重复扣卡。部分读数尚未刷新，请稍后手动刷新；无需再次使用。": "This reset had already taken effect; no extra voucher was used. Some readings are not refreshed yet; refresh manually later. No need to use another voucher.",
+  "账号没有可用的重置卡，本次没有扣卡。": "The account has no usable reset voucher; nothing was used.",
+  "当前额度无需重置，本次没有扣卡。": "The quota does not need a reset right now; no voucher was used.",
+  "重置结果未确认：请保留同一请求标识，先刷新额度再决定是否重试。": "Reset outcome unconfirmed: keep the same request id and refresh the quota before deciding whether to retry.",
+  "已放弃上次未确认的重置操作，下次使用会发起新的请求。": "Abandoned the unconfirmed reset operation; the next use sends a new request.",
+  "没有未确认的重置操作。": "There is no unconfirmed reset operation.",
 };
 
 // Pattern-based backend translations: [regex, replacement template].
@@ -4873,4 +4943,8 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^删除 Key 失败：(.+)$/, "Failed to delete key: $1"],
   // 供应商池：测试供应商
   [/^测试失败：(.+)$/, "Test failed: $1"],
+  // ChatGPT 额度重置卡
+  [/^服务端拒绝了这次重置（HTTP (\d+)），没有扣卡，可以重新发起。$/, "The server rejected this reset (HTTP $1); no voucher was used. You can start a new one."],
+  [/^使用重置卡失败：(.+)$/, "Failed to use reset voucher: $1"],
+  [/^放弃重置操作失败：(.+)$/, "Failed to abandon reset operation: $1"],
 ];

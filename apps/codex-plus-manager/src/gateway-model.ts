@@ -128,6 +128,8 @@ export type GatewayPoolEntry = {
   quota?: ProviderQuota | null;
   /** 有额度可查（订阅账号，或按地址认出的 API Key 套餐，#3084）。旧版后端没有。 */
   quotaApi?: boolean;
+  /** ChatGPT 账号手上的额度重置卡；只有订阅账号有，没查过时为空。 */
+  resetCredits?: ResetCredits | null;
   /** 已保存的 Key（打码，#2782）：订阅账号等不用 Key 的为空。旧版后端没有。 */
   keys?: ProviderKeyView[];
   /** 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额。旧版后端没有。 */
@@ -182,6 +184,26 @@ export type ProviderQuota = {
   officialLimitReached?: boolean | null;
   creditsAvailable?: boolean | null;
 };
+/** 一张额度重置卡。 */
+export type ResetCredit = {
+  id: string;
+  /** available / redeemed / expired / redeeming / pending / unknown */
+  status: string;
+  grantedAtMs?: number | null;
+  expiresAtMs?: number | null;
+  /** 后端算好的「现在就能用」：状态是 available 且没过期。 */
+  usable: boolean;
+};
+
+/** 一个账号手上的重置卡与汇总数（汇总数为空表示上游没给，不是 0）。 */
+export type ResetCredits = {
+  availableCount?: number | null;
+  applicableAvailableCount?: number | null;
+  totalEarnedCount?: number | null;
+  credits: ResetCredit[];
+  observedAtMs: number;
+};
+
 export type SpeedView = { relayId: string; model: string; ms: number; samples: number };
 
 /** 私有接口订阅的登录方式。 */
