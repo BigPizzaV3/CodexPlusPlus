@@ -4,7 +4,7 @@ use std::path::PathBuf;
 pub(super) fn causal_order(
     events: &mut Vec<super::UsageEvent>,
     files: &BTreeMap<PathBuf, super::FileState>,
-) -> (Vec<usize>, bool) {
+) -> (Vec<usize>, Vec<Vec<usize>>, bool) {
     let selected: HashMap<_, _> = events
         .iter()
         .enumerate()
@@ -83,6 +83,17 @@ pub(super) fn causal_order(
         events[position].count_uncertain = true;
     }
 
+    let mut ordered_positions = vec![0; events.len()];
+    for (position, &original) in order.iter().enumerate() {
+        ordered_positions[original] = position;
+    }
+    let mut predecessors = vec![Vec::new(); events.len()];
+    for (before, afters) in successors.iter().enumerate() {
+        for &after in afters {
+            predecessors[ordered_positions[after]].push(ordered_positions[before]);
+        }
+    }
+
     let mut component_ids = HashMap::new();
     let components = order
         .iter()
@@ -99,7 +110,74 @@ pub(super) fn causal_order(
             .into_iter()
             .map(|position| original[position].take().unwrap()),
     );
-    (components, cyclic)
+    (components, predecessors, cyclic)
+}
+
+pub(super) fn prune_transitive_predecessors(
+    predecessors: &mut [Vec<usize>],
+    mut budget: usize,
+) -> Vec<bool> {
+    let mut unresolved = vec![false; predecessors.len()];
+    let mut visited = vec![0usize; predecessors.len()];
+    let mut source_roots = vec![0usize; predecessors.len()];
+    let mut stack = Vec::new();
+    for position in 0..predecessors.len() {
+        let mut candidates = std::mem::take(&mut predecessors[position]);
+        candidates.sort_unstable();
+        candidates.dedup();
+        source_roots[position] = candidates
+            .first()
+            .filter(|&&before| before < position)
+            .map_or(position, |&before| source_roots[before]);
+        if candidates.len() < 2 || candidates.iter().any(|&before| before >= position) {
+            predecessors[position] = candidates;
+            continue;
+        }
+        if candidates.len() == 2 && source_roots[candidates[1]] == candidates[0] {
+            source_roots[position] = source_roots[candidates[1]];
+            predecessors[position] = vec![candidates[1]];
+            continue;
+        }
+        let epoch = position + 1;
+        let mut direct = Vec::with_capacity(candidates.len());
+        let mut exhausted = false;
+        for &candidate in candidates.iter().rev() {
+            if visited[candidate] == epoch {
+                continue;
+            }
+            direct.push(candidate);
+            visited[candidate] = epoch;
+            stack.push(candidate);
+            while let Some(node) = stack.pop() {
+                for &before in &predecessors[node] {
+                    if budget == 0 {
+                        exhausted = true;
+                        break;
+                    }
+                    budget -= 1;
+                    if visited[before] != epoch {
+                        visited[before] = epoch;
+                        stack.push(before);
+                    }
+                }
+                if exhausted {
+                    break;
+                }
+            }
+            if exhausted {
+                break;
+            }
+        }
+        stack.clear();
+        if exhausted {
+            unresolved[position] = true;
+            predecessors[position] = candidates;
+        } else {
+            direct.reverse();
+            predecessors[position] = direct;
+        }
+    }
+    unresolved
 }
 
 fn root(parents: &mut [usize], mut position: usize) -> usize {
