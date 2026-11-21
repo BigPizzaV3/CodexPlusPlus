@@ -22,6 +22,7 @@ mod skill_backup_usage;
 mod tray_panel;
 mod shutdown_watchdog;
 pub mod weixin_connect_bridge;
+pub mod dream_skin_bridge;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -210,7 +211,7 @@ pub fn run_computer_use_cli(args: &[std::ffi::OsString]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Codex 拓展页的「社区 / 我发布的 / dsh 插件」分栏、Codex 里的「微信连接」页：实现在管理器里，
+/// Codex 拓展页的「社区 / 我发布的 / dsh 插件」分栏、Codex 里的「微信连接」页与「皮肤」分区：实现在管理器里，
 /// 经 helper 桥接分发给页面。helper 跑在本进程里，登记一次即可。
 fn register_codex_bridge_routes() {
     use codex_plus_core::routes::{HostRouteHandler, register_host_route};
@@ -223,6 +224,9 @@ fn register_codex_bridge_routes() {
     register_host_route("/extension-market/published", published);
     register_host_route("/extension-market/dsh", dsh);
     register_host_route(codex_plus_core::connect::page::BRIDGE_ROUTE, weixin);
+    // 皮肤只在 Codex 里有界面：主题库、市场、激活、恢复都调管理器原来的命令函数。
+    let dream_skin: HostRouteHandler = std::sync::Arc::new(|payload| Box::pin(dream_skin_bridge::bridge_request(payload)));
+    register_host_route("/dream-skin", dream_skin);
 }
 
 pub fn run() {
@@ -324,9 +328,6 @@ pub fn run() {
     let app_result = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            if let Some(state_dir) = codex_plus_core::paths::state_dir_override() {
-                app.asset_protocol_scope().allow_directory(state_dir.join("dream-skin"), true)?;
-            }
             let url = if show_update {
                 "/index.html?showUpdate=1"
             } else {
@@ -552,28 +553,11 @@ pub fn run() {
             commands::find_desktop_codex_cli,
             commands::query_builtin_model_metadata,
             commands::builtin_model_metadata_index,
-            commands::dream_skin_status,
-            commands::import_dream_skin_image,
-            commands::reset_dream_skin_image,
-            commands::reset_dream_skin_theme,
-            commands::apply_dream_skin,
             commands::restore_dream_skin,
-            commands::verify_dream_skin,
-            commands::list_dream_skin_themes,
-            commands::refresh_dream_skin_market,
-            commands::refresh_dream_skin_community,
             commands::load_pending_dream_skin_community,
             commands::confirm_pending_dream_skin_community,
             commands::dismiss_pending_dream_skin_community,
-            commands::install_dream_skin_market_theme,
-            commands::install_dream_skin_community_theme,
-            commands::import_dream_skin_theme_package,
-            commands::load_dream_skin_theme,
-            commands::create_dream_skin_theme,
-            commands::save_dream_skin_theme,
-            commands::rename_dream_skin_theme,
-            commands::delete_dream_skin_theme,
-            commands::activate_dream_skin_theme,
+            dream_skin_bridge::activate_installed_dream_skin_theme,
             commands::load_ccs_providers,
             commands::import_ccs_providers,
             commands::load_pending_provider_import,

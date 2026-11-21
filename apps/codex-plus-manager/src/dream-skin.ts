@@ -70,91 +70,12 @@ export type DreamSkinRuntimeStatus = {
   checks: DreamSkinCheck[];
 };
 
-export type DreamSkinVerification = {
-  state: DreamSkinState;
-  pass: boolean;
-  version: string | null;
-  checks: DreamSkinCheck[];
-  screenshotPath: string | null;
-  raw: unknown;
-};
-
-export type DreamSkinImagePayload = {
-  path: string;
-  contentType: string;
-  sizeBytes: number;
-};
-
-export type DreamSkinThemeKind = "builtin" | "stored" | "activeUnsaved";
-
-export type DreamSkinThemeSummary = {
-  key: string;
-  id: string;
-  name: string;
-  previewPath: string;
-  kind: DreamSkinThemeKind;
-  builtin: boolean;
-  active: boolean;
-  modified: boolean;
-};
-
-export type DreamSkinThemeDraft = {
-  config: DreamSkinThemeConfig;
-  imagePath: string;
-  builtin: boolean;
-};
-
-export type DreamSkinThemeLibrary = {
-  themes: DreamSkinThemeSummary[];
-  activeDraft: DreamSkinThemeDraft;
-};
-
-export type DreamSkinThemeActivationPayload = {
-  library: DreamSkinThemeLibrary;
-  runtime: DreamSkinRuntimeStatus;
-  savedForNextLaunch: boolean;
-};
-
 export type DreamSkinCommandResult<T> = T & {
   status: string;
   message: string;
 };
 
 export type DreamSkinRuntimeResult = DreamSkinCommandResult<DreamSkinRuntimeStatus>;
-export type DreamSkinVerificationResult = DreamSkinCommandResult<DreamSkinVerification>;
-export type DreamSkinImageResult = DreamSkinCommandResult<DreamSkinImagePayload>;
-export type DreamSkinThemeLibraryResult = DreamSkinCommandResult<DreamSkinThemeLibrary>;
-export type DreamSkinThemeDraftResult = DreamSkinCommandResult<DreamSkinThemeDraft>;
-export type DreamSkinThemeActivationResult = DreamSkinCommandResult<DreamSkinThemeActivationPayload>;
-
-export type DreamSkinMarketTheme = {
-  id: string;
-  name: string;
-  version: string;
-  author: string;
-  description: string;
-  license: string;
-  sourceUrl: string;
-  tags: string[];
-  theme: string;
-  image: string;
-  preview: string;
-  themeSha256: string;
-  imageSha256: string;
-  previewUrl: string;
-  installed: boolean;
-  installedVersion: string;
-  updateAvailable: boolean;
-};
-
-export type DreamSkinMarketResult = DreamSkinCommandResult<{
-  schemaVersion: number;
-  updatedAt: string;
-  repositoryUrl: string;
-  cached: boolean;
-  warning: string;
-  themes: DreamSkinMarketTheme[];
-}>;
 
 export type DreamSkinCommunityTheme = {
   applyCompatible: boolean;
@@ -258,28 +179,6 @@ const textOr = (value: unknown, fallback: string): string => {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 };
 
-export function resolveDreamSkinStylePreset(id: string, stylePreset: unknown): string {
-  const preset = typeof stylePreset === "string" ? stylePreset.trim() : "";
-  if (preset && preset !== "dream-original") return preset;
-
-  const legacyPresets: Record<string, string> = {
-    "caishen-lite": "caishen-lite",
-    "caishen-max": "caishen-max",
-    "caishen-readable": "caishen-readable",
-    "export-night": "export-night",
-    "global-founder-bright": "global-founder-bright",
-    "mythic-guardian-noir": "mythic-guardian-noir",
-    "codex-snow-skin": "codex-snow",
-    "glass-vision": "glass-vision",
-    "preset-midnight-aurora": "midnight-aurora",
-    "preset-amber-dusk": "amber-dusk",
-    "preset-forest-mist": "forest-mist",
-    "preset-cyber-neon": "cyber-neon",
-    "preset-sakura-dawn": "sakura-dawn",
-  };
-  return legacyPresets[id.trim()] ?? "dream-original";
-}
-
 export function normalizeDreamSkinTheme(
   value: Partial<DreamSkinThemeConfig> | null | undefined,
 ): DreamSkinThemeConfig {
@@ -328,35 +227,4 @@ export function normalizeDreamSkinTheme(
     delete normalized.colors;
   }
   return normalized;
-}
-
-export function dreamSkinDraftFingerprint(draft: DreamSkinThemeDraft): string {
-  return JSON.stringify({
-    config: normalizeDreamSkinTheme(draft.config),
-    imagePath: draft.imagePath.trim(),
-    builtin: draft.builtin,
-  });
-}
-
-export function isDreamSkinDraftDirty(
-  saved: DreamSkinThemeDraft,
-  draft: DreamSkinThemeDraft,
-): boolean {
-  return dreamSkinDraftFingerprint(saved) !== dreamSkinDraftFingerprint(draft);
-}
-
-export async function runExclusiveDreamSkinInstall<T>(
-  lock: { current: boolean },
-  setPending: (pending: boolean) => void,
-  install: () => Promise<T>,
-): Promise<T | null> {
-  if (lock.current) return null;
-  lock.current = true;
-  setPending(true);
-  try {
-    return await install();
-  } finally {
-    lock.current = false;
-    setPending(false);
-  }
 }

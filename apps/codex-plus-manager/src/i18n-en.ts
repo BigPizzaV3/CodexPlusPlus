@@ -1599,6 +1599,12 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex++ 导入": "Codex++ import",
   "Codex++ 版本": "Codex++ version",
   "Codex-Dream-Skin 风格主题和换图": "Codex-Dream-Skin style themes and image replacement",
+  "皮肤已移到 Codex 里，这里只留恢复默认皮肤的急救入口": "Skins now live inside Codex; this page only keeps a rescue entry to restore the default skin",
+  "皮肤已移到 Codex 里：打开 Codex 左侧的 Codex++ → 设置 → 皮肤，可以换主题、装社区和市场主题、编辑主题。": "Skins are now managed inside Codex: open Codex++ → Settings → Skin in Codex's sidebar to switch themes, install community and market themes, and edit themes.",
+  "皮肤已启用": "Skin enabled",
+  "恢复默认皮肤": "Restore default skin",
+  "皮肤设置已保存，重启 Codex 后完整生效。": "Skin settings saved; restart Codex for them to take full effect.",
+  "皮肤让 Codex 显示异常或打不开时使用：关掉皮肤并清掉当前窗口里的皮肤，主题库不受影响；重启 Codex 后完整生效。": "Use this when a skin breaks Codex's display or keeps it from opening: turns the skin off and clears it from the current window; your theme library is kept. Takes full effect after restarting Codex.",
   "Codex增强": "Codex enhancements",
   "Debug 端口": "Debug port",
   "原生 Fast 强制解锁": "Force unlock native Fast",
@@ -3934,6 +3940,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "当前主题：{0}": "Current theme: {0}",
   "{0} 个 Skill 失败": "{0} skill operation(s) failed",
   "已批量{0} {1} 个 Skill": "{0} {1} skill(s)",
   "删除 Skill 备份“{0}”？": "Delete skill backup \"{0}\"?",

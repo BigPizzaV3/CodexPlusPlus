@@ -189,9 +189,10 @@
     codexPlusAlignWith(ctx, () => window.__codexPlusModelPickerGroupsRuntime?.sync?.());
   }
 
-  /** 梦皮主题：主界面重建时补皮肤，设置变了就重装或清理。 */
+  /** 梦皮主题：主界面重建时补皮肤，设置变了就重装或清理；Codex++ 设置页里的「皮肤」分区也由它登记。 */
   function codexPlusDreamSkinExtension(ctx) {
     codexPlusAlignWith(ctx, refreshDreamSkin, { settings: "heartbeat", scan: "deferred" });
+    ctx.registerSettingsSection({ id: "dream-skin", title: "皮肤", order: 40, render: codexPlusDreamSkinPageRender });
   }
 
   /** 插件市场解锁：补丁装上后撤不掉，停用后刷新页面才完全恢复。 */

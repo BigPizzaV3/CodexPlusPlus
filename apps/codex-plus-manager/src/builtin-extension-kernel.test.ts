@@ -50,6 +50,8 @@ function harness(windowState: Record<string, unknown> = {}) {
           return track(() => domListeners.splice(domListeners.indexOf(entry), 1));
         },
         registerSlot: () => () => {},
+        // 梦皮拓展在 Codex++ 设置页登记「皮肤」分区（96-dream-skin-page.js）。
+        registerSettingsSection: () => () => {},
         setTimeout: () => () => {},
         // 公开的 ctx.onScan：登记到扫描步骤登记处（owner 为拓展 id），卸载时撤销。
         onScan(handler: () => void, options: { phase?: string } = {}) {

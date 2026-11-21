@@ -14,7 +14,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -29,16 +29,13 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Camera,
   CircleHelp,
   Copy,
   Download,
   Edit3,
-  Eye,
   GripVertical,
   Info,
   ScrollText,
-  ImagePlus,
   Github,
   GitBranch,
   ExternalLink,
@@ -54,7 +51,6 @@ import {
   Palette,
   Play,
   MessageCircle,
-  MoreHorizontal,
   PackageOpen,
   FileCode2,
   FolderOpen,
@@ -144,7 +140,7 @@ import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { DisplaySettings } from "./DisplaySettings";
 import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
-import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
+import { AppDialogHost, appAlert, appConfirm } from "./app-dialog";
 import { GatewayPage, type GatewayTab } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload, useTodayUsage } from "./HubOverview";
 import { publishGatewayPayload } from "./gateway-store";
@@ -299,26 +295,10 @@ import { isProviderSyncTargetSelectable, preferredProviderSyncTarget } from "./p
 import { resolveLaunchStatus, launchCompletionNotice } from "./launch-status";
 import {
   defaultDreamSkinTheme,
-  defaultDreamSkinColors,
-  isDreamSkinDraftDirty,
   normalizeDreamSkinTheme,
-  runExclusiveDreamSkinInstall,
-  type DreamSkinCheck,
-  type DreamSkinColors,
   type DreamSkinCommunityResult,
-  type DreamSkinCommunityTheme,
-  type DreamSkinImageResult,
-  type DreamSkinMarketResult,
-  type DreamSkinMarketTheme,
   type DreamSkinRuntimeResult,
-  type DreamSkinThemeActivationResult,
   type DreamSkinThemeConfig,
-  type DreamSkinThemeDraft,
-  type DreamSkinThemeDraftResult,
-  type DreamSkinThemeLibrary,
-  type DreamSkinThemeLibraryResult,
-  type DreamSkinThemeSummary,
-  type DreamSkinVerificationResult,
 } from "./dream-skin";
 import { subscribeLanguage, getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import {
@@ -437,10 +417,6 @@ import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxStat
 import { Puzzle } from "lucide-react";
 import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
 
-const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
-const skinMediaExtensions = /Mac/i.test(navigator.platform)
-  ? ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp", "mp4", "webm"]
-  : ["png", "jpg", "jpeg", "webp", "gif", "bmp", "mp4", "webm"];
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
 const enhancementPlatform = enhancementPlatformFromUserAgent(navigator.userAgent);
 /// 会话维护页的两条开关与 Codex 设置页共用清单里的文案（#2846 拆开后分别显示）。
@@ -450,10 +426,6 @@ const sessionIndexRepairItem = enhancementItem("sessionIndexRepairEnabled");
 /// 多开启动后轮询「就绪/失败」结论的节奏：worker 最长等 90 秒就绪，这里给到 2 分钟。
 const MULTI_LAUNCH_POLL_INTERVAL_MS = 3000;
 const MULTI_LAUNCH_POLL_TIMEOUT_MS = 120_000;
-const dreamSkinWindowsPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/windows/dream-reference.jpg", import.meta.url).href;
-const dreamSkinMacPreviewUrl = new URL("../../../assets/inject/upstream/dream-skin/macos/portal-hero.png", import.meta.url).href;
-const dreamSkinCompanionDataUrlLimit = 240_000;
-const dreamSkinCompanionMimeTypes = new Set(["image/png", "image/jpeg", "image/webp", "image/gif"]);
 
 type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
@@ -473,18 +445,8 @@ type CommandResult<T> = T & {
 
 type PendingDreamSkinCommunityResult = CommandResult<{ versionId: string }>;
 
-type PendingDreamSkinRestart = {
-  currentThemeKey: string | null;
-  currentThemeName: string;
-  pendingThemeKey: string;
-  pendingThemeName: string;
-};
-
-type DreamSkinInstallOperation = {
-  source: "market" | "community" | "pending-community" | "import";
-  id: string;
-  name: string;
-};
+/// activate_installed_dream_skin_theme（dream_skin_bridge.rs）的结果：需要重启 Codex 才完整切换时 savedForNextLaunch 为 true。
+type DreamSkinInstalledThemeActivationResult = CommandResult<{ savedForNextLaunch?: boolean }>;
 
 type PathState = {
   status: string;
@@ -1850,23 +1812,11 @@ export function App() {
   const [logs, setLogs] = useState<LogsResult | null>(null);
   const [diagnostics, setDiagnostics] = useState<DiagnosticsResult | null>(null);
   const [watcher, setWatcher] = useState<WatcherResult | null>(null);
-  const [dreamSkinStatus, setDreamSkinStatus] = useState<DreamSkinRuntimeResult | null>(null);
-  const [dreamSkinVerification, setDreamSkinVerification] = useState<DreamSkinVerificationResult | null>(null);
-  const [dreamSkinLibrary, setDreamSkinLibrary] = useState<DreamSkinThemeLibrary | null>(null);
-  const [dreamSkinMarket, setDreamSkinMarket] = useState<DreamSkinMarketResult | null>(null);
-  const [dreamSkinCommunity, setDreamSkinCommunity] = useState<DreamSkinCommunityResult | null>(null);
-  const [dreamSkinLibraryLoading, setDreamSkinLibraryLoading] = useState(false);
-  const [dreamSkinMarketLoading, setDreamSkinMarketLoading] = useState(false);
-  const [dreamSkinCommunityLoading, setDreamSkinCommunityLoading] = useState(false);
-  const [dreamSkinInstallOperation, setDreamSkinInstallOperation] = useState<DreamSkinInstallOperation | null>(null);
-  const dreamSkinInstallLockRef = useRef(false);
+  // 皮肤界面已移到 Codex 里；管理器只留网页一键换肤确认和「恢复默认皮肤」急救入口。
   const [pendingDreamSkinCommunity, setPendingDreamSkinCommunity] = useState("");
-  const [selectedDreamSkinTheme, setSelectedDreamSkinTheme] = useState("builtin");
-  const [savedDreamSkinThemeDraft, setSavedDreamSkinThemeDraft] = useState<DreamSkinThemeDraft | null>(null);
-  const [dreamSkinThemeDraft, setDreamSkinThemeDraft] = useState<DreamSkinThemeDraft | null>(null);
-  const [pendingDreamSkinRestart, setPendingDreamSkinRestart] = useState<PendingDreamSkinRestart | null>(null);
-  const [dreamSkinUnsavedDialog, setDreamSkinUnsavedDialog] = useState(false);
-  const dreamSkinPendingActionRef = useRef<(() => void) | null>(null);
+  const [dreamSkinCommunityInstalling, setDreamSkinCommunityInstalling] = useState(false);
+  const dreamSkinCommunityInstallingRef = useRef(false);
+  const [dreamSkinRestartPending, setDreamSkinRestartPending] = useState(false);
   const [update, setUpdate] = useState<UpdateResult | null>(null);
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** 正在看的拓展页面（route === "extension" 时）。 */
@@ -2009,11 +1959,6 @@ export function App() {
   const [selectedProviderSyncTarget, setSelectedProviderSyncTarget] = useState("");
   const [autoTakeover, setAutoTakeoverState] = useState<AutoTakeoverResult | null>(null);
   const [relaySwitching, setRelaySwitching] = useState(false);
-  const dreamSkinDraftDirty = Boolean(
-    savedDreamSkinThemeDraft
-      && dreamSkinThemeDraft
-      && isDreamSkinDraftDirty(savedDreamSkinThemeDraft, dreamSkinThemeDraft),
-  );
   const settingsDirty = useMemo(
     () => Boolean(settings && !backendSettingsEqual(settingsForm, settings.settings)),
     [settings, settingsForm],
@@ -2205,24 +2150,12 @@ export function App() {
     return result;
   };
 
-  const dreamSkinRequest = (screenshotPath?: string) => ({
+  const dreamSkinRequest = () => ({
     request: {
       debugPort: overview?.latest_launch?.debug_port ?? parsePort(launchForm.debugPort, 9229),
       helperPort: overview?.latest_launch?.helper_port ?? parsePort(launchForm.helperPort, 57321),
-      screenshotPath: screenshotPath || null,
     },
   });
-
-  const refreshDreamSkinStatus = async (silent = false) => {
-    const result = await run(() => call<DreamSkinRuntimeResult>("dream_skin_status", dreamSkinRequest()));
-    if (result) {
-      setDreamSkinStatus(result);
-      if (!silent || !isSuccessStatus(result.status)) {
-        showResultNotice(t("Dream Skin 状态"), result, { silentSuccess: true });
-      }
-    }
-    return result;
-  };
 
   const refreshScriptMarket = async (silent = false, preserveRuntime = false) => {
     const result = await run(() => call<ScriptMarketResult>("refresh_script_market"));
@@ -2486,412 +2419,49 @@ export function App() {
       });
     });
 
-  const setDreamSkinDraftSelection = (
-    key: string,
-    draft: DreamSkinThemeDraft,
-  ) => {
-    setSelectedDreamSkinTheme(key);
-    setSavedDreamSkinThemeDraft(draft);
-    setDreamSkinThemeDraft(draft);
-  };
-
-  const refreshDreamSkinLibrary = async (silent = false) => {
-    setDreamSkinLibraryLoading(true);
-    try {
-      const result = await run(() => call<DreamSkinThemeLibraryResult>("list_dream_skin_themes"));
-      if (!result) return null;
-      const library: DreamSkinThemeLibrary = {
-        themes: result.themes,
-        activeDraft: result.activeDraft,
-      };
-      setDreamSkinLibrary(library);
-      const active = library.themes.find((item) => item.active) ?? library.themes[0];
-      if (active) {
-        const draft = active.builtin
-          ? { config: defaultDreamSkinTheme(), imagePath: "", builtin: true }
-          : library.activeDraft;
-        setDreamSkinDraftSelection(active.key, draft);
-      }
-      if (!silent && !isSuccessStatus(result.status)) {
-        showResultNotice(t("主题库"), result);
-      }
-      return library;
-    } finally {
-      setDreamSkinLibraryLoading(false);
-    }
-  };
-
-  const refreshDreamSkinMarket = async (silent = false) => {
-    setDreamSkinMarketLoading(true);
-    try {
-      const result = await run(() => call<DreamSkinMarketResult>("refresh_dream_skin_market"));
-      if (result) {
-        setDreamSkinMarket(result);
-        if (!silent || !isSuccessStatus(result.status)) {
-          showResultNotice(t("主题市场"), result, { silentSuccess: true });
-        }
-      }
-      return result;
-    } finally {
-      setDreamSkinMarketLoading(false);
-    }
-  };
-
-  const refreshDreamSkinCommunity = async (silent = false) => {
-    setDreamSkinCommunityLoading(true);
-    try {
-      const result = await run(() => call<DreamSkinCommunityResult>("refresh_dream_skin_community"));
-      if (result) {
-        setDreamSkinCommunity(result);
-        if (!silent || !isSuccessStatus(result.status)) {
-          showResultNotice(t("DreamSkin 社区"), result, { silentSuccess: true });
-        }
-      }
-      return result;
-    } finally {
-      setDreamSkinCommunityLoading(false);
-    }
-  };
-
-  const runDreamSkinInstallOperation = async <T,>(
-    operation: DreamSkinInstallOperation,
-    install: () => Promise<T>,
-  ): Promise<T | null> => runExclusiveDreamSkinInstall(
-    dreamSkinInstallLockRef,
-    (pending) => setDreamSkinInstallOperation(pending ? operation : null),
-    install,
-  );
-
-  const installDreamSkinCommunityTheme = async (theme: DreamSkinCommunityTheme) => {
-    const installed = await runDreamSkinInstallOperation(
-      { source: "community", id: theme.id, name: theme.name },
-      async () => {
-        const result = await run(() => call<DreamSkinCommunityResult>(
-          "install_dream_skin_community_theme",
-          { id: theme.id },
-        ));
-        if (!result) return false;
-        setDreamSkinCommunity(result);
-        showResultNotice(t("DreamSkin 社区"), result);
-        if (!isSuccessStatus(result.status)) return false;
-        await refreshDreamSkinLibrary(true);
-        const draft = await loadDreamSkinThemeDraft(theme.themeId);
-        if (draft) setDreamSkinDraftSelection(`stored:${theme.themeId}`, draft);
-        return true;
-      },
-    );
-    return installed ?? false;
-  };
-
   const refreshPendingDreamSkinCommunity = async () => {
     const result = await run(() => call<PendingDreamSkinCommunityResult>("load_pending_dream_skin_community"));
     if (result) setPendingDreamSkinCommunity(result.versionId);
     return result;
   };
 
+  /// 网页一键换肤（dreamskin:// 链接由系统交给管理器）：确认后下载安装，再按安装出的主题 id 应用。
+  /// 主题库和编辑界面已移到 Codex 里，这里只走安装 + 应用两条命令。
   const confirmPendingDreamSkinCommunity = async () => {
-    await runDreamSkinInstallOperation(
-      { source: "pending-community", id: pendingDreamSkinCommunity, name: t("网页一键换肤主题") },
-      async () => {
-        const result = await run(() => call<DreamSkinCommunityResult>("confirm_pending_dream_skin_community"));
-        if (!result) return false;
-        setDreamSkinCommunity(result);
-        showResultNotice(t("DreamSkin 社区"), result);
-        if (!isSuccessStatus(result.status)) return false;
-        setPendingDreamSkinCommunity("");
-        setRoute("dreamSkin");
-        await refreshDreamSkinLibrary(true);
-        if (result.installedThemeId) {
-          const draft = await loadDreamSkinThemeDraft(result.installedThemeId);
-          if (draft) {
-            setDreamSkinDraftSelection(`stored:${result.installedThemeId}`, draft);
-            await activateDreamSkinDraft(draft);
-          }
+    if (dreamSkinCommunityInstallingRef.current) return;
+    dreamSkinCommunityInstallingRef.current = true;
+    setDreamSkinCommunityInstalling(true);
+    try {
+      const result = await run(() => call<DreamSkinCommunityResult>("confirm_pending_dream_skin_community"));
+      if (!result) return;
+      showResultNotice(t("DreamSkin 社区"), result);
+      if (!isSuccessStatus(result.status)) return;
+      setPendingDreamSkinCommunity("");
+      setRoute("dreamSkin");
+      const themeId = result.installedThemeId?.trim();
+      if (themeId) {
+        const activation = await run(() => call<DreamSkinInstalledThemeActivationResult>(
+          "activate_installed_dream_skin_theme",
+          { id: themeId },
+        ));
+        if (activation) {
+          showResultNotice(t("主题库"), activation);
+          if (isSuccessStatus(activation.status) && activation.savedForNextLaunch) setDreamSkinRestartPending(true);
         }
-        return true;
       }
-    );
+      await refreshSettings(true);
+    } finally {
+      dreamSkinCommunityInstallingRef.current = false;
+      setDreamSkinCommunityInstalling(false);
+    }
   };
 
   const dismissPendingDreamSkinCommunity = async () => {
-    if (dreamSkinInstallLockRef.current && dreamSkinInstallOperation?.source === "pending-community") return;
+    if (dreamSkinCommunityInstallingRef.current) return;
     const result = await run(() => call<PendingDreamSkinCommunityResult>("dismiss_pending_dream_skin_community"));
     if (!result) return;
     if (isSuccessStatus(result.status)) setPendingDreamSkinCommunity("");
     else showResultNotice(t("DreamSkin 社区"), result);
-  };
-
-  const importDreamSkinThemePackage = async () => {
-    let selected: string | string[] | null;
-    try {
-      selected = await open({
-        title: t("导入 DreamSkin 主题包"),
-        multiple: false,
-        directory: false,
-        filters: [{ name: "DreamSkin ZIP", extensions: ["zip"] }],
-      });
-    } catch (error) {
-      showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
-      return;
-    }
-    const path = Array.isArray(selected) ? selected[0] : selected;
-    if (!path) return;
-    await runDreamSkinInstallOperation(
-      { source: "import", id: "local-package", name: t("本地主题包") },
-      async () => {
-        const previousIds = new Set(dreamSkinLibrary?.themes.map((item) => item.id) ?? []);
-        const result = await run(() => call<DreamSkinThemeLibraryResult>(
-          "import_dream_skin_theme_package",
-          { path },
-        ));
-        if (!result) return false;
-        showResultNotice(t("主题库"), result);
-        if (!isSuccessStatus(result.status)) return false;
-        const library = { themes: result.themes, activeDraft: result.activeDraft };
-        setDreamSkinLibrary(library);
-        const imported = result.themes.find((item) => item.kind === "stored" && !previousIds.has(item.id));
-        if (imported) {
-          const draft = await loadDreamSkinThemeDraft(imported.id);
-          if (draft) setDreamSkinDraftSelection(imported.key, draft);
-        }
-        await refreshDreamSkinCommunity(true);
-        return true;
-      },
-    );
-  };
-
-  const installDreamSkinMarketTheme = async (theme: DreamSkinMarketTheme) => {
-    const installed = await runDreamSkinInstallOperation(
-      { source: "market", id: theme.id, name: theme.name },
-      async () => {
-        const result = await run(() => call<DreamSkinMarketResult>("install_dream_skin_market_theme", { id: theme.id }));
-        if (!result) return false;
-        setDreamSkinMarket(result);
-        showResultNotice(t("主题市场"), result);
-        if (!isSuccessStatus(result.status)) return false;
-        await refreshDreamSkinLibrary(true);
-        const draft = await loadDreamSkinThemeDraft(theme.id);
-        if (draft) setDreamSkinDraftSelection(`stored:${theme.id}`, draft);
-        return true;
-      },
-    );
-    return installed ?? false;
-  };
-
-  const runAfterDreamSkinDraftGuard = (action: () => void) => {
-    if (!dreamSkinDraftDirty) {
-      action();
-      return;
-    }
-    dreamSkinPendingActionRef.current = action;
-    setDreamSkinUnsavedDialog(true);
-  };
-
-  const loadDreamSkinThemeDraft = async (id: string) => {
-    const result = await run(() => call<DreamSkinThemeDraftResult>("load_dream_skin_theme", { id }));
-    if (!result || !isSuccessStatus(result.status)) {
-      if (result) showResultNotice(t("主题库"), result);
-      return null;
-    }
-    return {
-      config: result.config,
-      imagePath: result.imagePath,
-      builtin: result.builtin,
-    } satisfies DreamSkinThemeDraft;
-  };
-
-  const selectDreamSkinTheme = (item: DreamSkinThemeSummary) => {
-    if (item.key === selectedDreamSkinTheme) return;
-    runAfterDreamSkinDraftGuard(() => {
-      void (async () => {
-        if (item.builtin) {
-          setDreamSkinDraftSelection(item.key, {
-            config: defaultDreamSkinTheme(),
-            imagePath: "",
-            builtin: true,
-          });
-          return;
-        }
-        if (item.active && dreamSkinLibrary) {
-          setDreamSkinDraftSelection(item.key, dreamSkinLibrary.activeDraft);
-          return;
-        }
-        const draft = await loadDreamSkinThemeDraft(item.id);
-        if (draft) setDreamSkinDraftSelection(item.key, draft);
-      })();
-    });
-  };
-
-  const saveDreamSkinThemeDraft = async (): Promise<DreamSkinThemeDraft | null> => {
-    if (!dreamSkinThemeDraft) return null;
-    const selected = dreamSkinLibrary?.themes.find((item) => item.key === selectedDreamSkinTheme);
-    const saveAsNew = dreamSkinThemeDraft.builtin || selected?.kind === "activeUnsaved";
-    const draft: DreamSkinThemeDraft = saveAsNew
-      ? {
-          ...dreamSkinThemeDraft,
-          config: {
-            ...dreamSkinThemeDraft.config,
-            id: dreamSkinThemeDraft.builtin
-              ? `theme-${Date.now()}`
-              : dreamSkinThemeDraft.config.id,
-            name: dreamSkinThemeDraft.config.name === "Dream Skin"
-              ? t("Dream Skin 副本")
-              : dreamSkinThemeDraft.config.name,
-          },
-          builtin: false,
-        }
-      : dreamSkinThemeDraft;
-    const result = await run(() => call<DreamSkinThemeLibraryResult>("save_dream_skin_theme", { draft }));
-    if (!result || !isSuccessStatus(result.status)) {
-      if (result) showResultNotice(t("主题库"), result);
-      return null;
-    }
-    const stored = await loadDreamSkinThemeDraft(draft.config.id);
-    if (!stored) return null;
-    setDreamSkinLibrary({ themes: result.themes, activeDraft: result.activeDraft });
-    setDreamSkinDraftSelection(`stored:${draft.config.id}`, stored);
-    return stored;
-  };
-
-  const createDreamSkinTheme = async () => {
-    let selected: unknown;
-    try {
-      selected = await open({
-        directory: false,
-        multiple: false,
-        title: t("选择皮肤图片或视频"),
-        filters: [{ name: t("图片或视频"), extensions: skinMediaExtensions }],
-      });
-    } catch (error) {
-      showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
-      return;
-    }
-    if (typeof selected !== "string" || !selected.trim()) return;
-    const result = await run(() => call<DreamSkinThemeDraftResult>("create_dream_skin_theme", { path: selected.trim() }));
-    if (!result || !isSuccessStatus(result.status)) {
-      if (result) showResultNotice(t("主题库"), result);
-      return;
-    }
-    const draft: DreamSkinThemeDraft = {
-      config: result.config,
-      imagePath: result.imagePath,
-      builtin: result.builtin,
-    };
-    await refreshDreamSkinLibrary(true);
-    setDreamSkinDraftSelection(`stored:${draft.config.id}`, draft);
-  };
-
-  const chooseDreamSkinDraftImage = async () => {
-    let selected: unknown;
-    try {
-      selected = await open({
-        directory: false,
-        multiple: false,
-        title: t("选择皮肤图片或视频"),
-        filters: [{ name: t("图片或视频"), extensions: skinMediaExtensions }],
-      });
-    } catch (error) {
-      showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
-      return;
-    }
-    if (typeof selected === "string" && selected.trim()) {
-      setDreamSkinThemeDraft((current) => current ? { ...current, imagePath: selected.trim() } : current);
-    }
-  };
-
-  const activateDreamSkinDraft = async (initialDraft: DreamSkinThemeDraft) => {
-    const currentTheme = pendingDreamSkinRestart
-      ? {
-          key: pendingDreamSkinRestart.currentThemeKey,
-          name: pendingDreamSkinRestart.currentThemeName,
-        }
-      : dreamSkinLibrary?.themes.find((item) => item.active) ?? null;
-    let draft = initialDraft;
-    if (draft.builtin && dreamSkinDraftDirty) {
-      const stored = await saveDreamSkinThemeDraft();
-      if (!stored) return false;
-      draft = stored;
-    }
-    const saved = await persistDreamSkinSettings({
-      ...settingsForm,
-      codexAppDreamSkinEnabled: true,
-      codexAppDreamSkinPaused: false,
-    });
-    if (!saved) return false;
-    const ports = dreamSkinRequest().request;
-    const result = await run(() => call<DreamSkinThemeActivationResult>("activate_dream_skin_theme", {
-      request: {
-        draft,
-        debugPort: ports.debugPort,
-        helperPort: ports.helperPort,
-      },
-    }));
-    if (!result || !isSuccessStatus(result.status)) {
-      if (result) showResultNotice(t("主题库"), result);
-      return false;
-    }
-    setDreamSkinLibrary(result.library);
-    setDreamSkinStatus({ ...result.runtime, status: result.status, message: result.message });
-    const active = result.library.themes.find((item) => item.active);
-    if (active) setDreamSkinDraftSelection(active.key, result.library.activeDraft);
-    await refreshSettings(true);
-    if (result.savedForNextLaunch) {
-      setPendingDreamSkinRestart({
-        currentThemeKey: currentTheme?.key ?? null,
-        currentThemeName: currentTheme?.name ?? t("当前皮肤"),
-        pendingThemeKey: active?.key ?? selectedDreamSkinTheme,
-        pendingThemeName: active?.name ?? draft.config.name,
-      });
-      showNotice(t("主题库"), t("主题已保存并设为待应用，不会自动重启 Codex。"), "not_checked");
-    } else {
-      setPendingDreamSkinRestart(null);
-    }
-    return true;
-  };
-
-  const activateDreamSkinTheme = async () => {
-    if (!dreamSkinThemeDraft) return;
-    await activateDreamSkinDraft(dreamSkinThemeDraft);
-  };
-
-  const renameDreamSkinTheme = async (item: DreamSkinThemeSummary) => {
-    const name = (await appPrompt(t("重命名主题"), { defaultValue: item.name, placeholder: t("输入新的主题名称") }))?.trim();
-    if (!name || name === item.name) return;
-    const result = await run(() => call<DreamSkinThemeLibraryResult>("rename_dream_skin_theme", { id: item.id, name }));
-    if (!result || !isSuccessStatus(result.status)) {
-      if (result) showResultNotice(t("主题库"), result);
-      return;
-    }
-    setDreamSkinLibrary({ themes: result.themes, activeDraft: result.activeDraft });
-    if (selectedDreamSkinTheme === item.key) {
-      setDreamSkinThemeDraft((current) => current
-        ? { ...current, config: { ...current.config, name } }
-        : current);
-      setSavedDreamSkinThemeDraft((current) => current
-        ? { ...current, config: { ...current.config, name } }
-        : current);
-    }
-  };
-
-  const deleteDreamSkinTheme = async (item: DreamSkinThemeSummary) => {
-    const confirmed = await confirmSessionDelete(
-      t("删除主题"),
-      tf("删除主题“{0}”？此操作无法撤销。", [item.name]),
-    );
-    if (!confirmed) return;
-    const result = await run(() => call<DreamSkinThemeLibraryResult>("delete_dream_skin_theme", { id: item.id }));
-    if (!result || !isSuccessStatus(result.status)) {
-      if (result) showResultNotice(t("主题库"), result);
-      return;
-    }
-    setDreamSkinLibrary({ themes: result.themes, activeDraft: result.activeDraft });
-    const active = result.themes.find((candidate) => candidate.active) ?? result.themes[0];
-    if (active) {
-      const draft = active.builtin
-        ? { config: defaultDreamSkinTheme(), imagePath: "", builtin: true }
-        : result.activeDraft;
-      setDreamSkinDraftSelection(active.key, draft);
-    }
   };
 
   const selectSessionIndexCleanupCandidates = (candidates: SessionIndexCleanupCandidate[]) =>
@@ -3058,16 +2628,12 @@ export function App() {
     }
   };
 
-  const navigate = async (target: Route, skipDreamSkinDraftGuard = false) => {
+  const navigate = async (target: Route) => {
     // 安装维护并进了 Codex 设置页；关于并进了设置页（滚到版本与更新）。
     if (target === "about") setSettingsFocus("app-settings-update");
     // 旧版代理设置并进了「连接与供应商」页底部的「高级」：旧入口打开那一页并展开「高级」。
     setRelayAdvancedOpen(target === "relayEnvironment");
     const next: Route = target === "maintenance" ? "agentSettings" : target === "about" ? "settings" : target === "relayEnvironment" ? "relay" : target === "recommendations" ? "home" : target;
-    if (!skipDreamSkinDraftGuard && route === "dreamSkin" && next !== "dreamSkin" && dreamSkinDraftDirty) {
-      runAfterDreamSkinDraftGuard(() => void navigate(next, true));
-      return;
-    }
     setRoute(next);
     if (next === "overview") await refreshOverview(true);
     if (next === "relay" || next === "multiLaunch") {
@@ -3101,10 +2667,6 @@ export function App() {
     if (next === "dreamSkin") {
       await refreshSettings(true);
       await refreshOverview(true);
-      await refreshDreamSkinStatus(true);
-      await refreshDreamSkinLibrary(true);
-      await refreshDreamSkinMarket(true);
-      await refreshDreamSkinCommunity(true);
     }
     if (next === "settings" || next === "agentSettings" || next === "enhance") await refreshSettings(true);
     if (next === "userScripts") {
@@ -3315,7 +2877,7 @@ export function App() {
         completion
         && resolveLaunchStatus(completion.latest_launch, result.launchStartedAtMs ?? 0) === "success",
       );
-      if (succeeded) setPendingDreamSkinRestart(null);
+      if (succeeded) setDreamSkinRestartPending(false);
       return succeeded;
     } finally {
       launchPendingRef.current = false;
@@ -4694,64 +4256,13 @@ export function App() {
     return result;
   };
 
-  const persistDreamSkinSettings = async (next: BackendSettings) => {
-    const normalized = normalizeSettings(next);
-    const result = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (!result) return null;
-    setSettings(result);
-    setSettingsForm(normalizeSettings(result.settings));
-    if (!isSuccessStatus(result.status)) {
-      showNotice(t("皮肤管理"), result.message, result.status);
-      return null;
-    }
-    return result;
-  };
-
+  /// 皮肤急救入口：关掉皮肤并恢复 Codex 原始外观；命令只记为待应用，重启 Codex 后完整生效（提示文案来自命令结果）。
   const restoreDreamSkin = async () => {
-    const currentTheme = pendingDreamSkinRestart
-      ? {
-          key: pendingDreamSkinRestart.currentThemeKey,
-          name: pendingDreamSkinRestart.currentThemeName,
-        }
-      : dreamSkinLibrary?.themes.find((item) => item.active) ?? null;
     const result = await run(() => call<DreamSkinRuntimeResult>("restore_dream_skin", dreamSkinRequest()));
     if (!result) return;
-    setDreamSkinStatus(result);
     await refreshSettings(true);
     showResultNotice(t("皮肤管理"), result);
-    if (isSuccessStatus(result.status)) {
-      setPendingDreamSkinRestart({
-        currentThemeKey: currentTheme?.key ?? null,
-        currentThemeName: currentTheme?.name ?? t("当前皮肤"),
-        pendingThemeKey: "codex-original-appearance",
-        pendingThemeName: t("Codex 原始外观"),
-      });
-    }
-  };
-
-  const verifyDreamSkin = async (withScreenshot: boolean) => {
-    let screenshotPath: string | undefined;
-    if (withScreenshot) {
-      try {
-        const selected = await saveDialog({
-          title: t("保存 Dream Skin 截图"),
-          defaultPath: "codex-dream-skin-verification.png",
-          filters: [{ name: "PNG", extensions: ["png"] }],
-        });
-        if (!selected) return;
-        screenshotPath = selected;
-      } catch (error) {
-        showNotice(t("保存截图"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
-        return;
-      }
-    }
-    const result = await run(() =>
-      call<DreamSkinVerificationResult>("verify_dream_skin", dreamSkinRequest(screenshotPath)),
-    );
-    if (!result) return;
-    setDreamSkinVerification(result);
-    showResultNotice(withScreenshot ? t("保存截图") : t("实机验证"), result);
-    await refreshDreamSkinStatus(true);
+    if (isSuccessStatus(result.status)) setDreamSkinRestartPending(true);
   };
 
   const actions = useMemo(
@@ -4819,51 +4330,7 @@ export function App() {
           await refreshOverview(true);
         }
       },
-      chooseDreamSkinImagePath: chooseDreamSkinDraftImage,
-      resetDreamSkinImage: async () => runAfterDreamSkinDraftGuard(() => {
-        setDreamSkinThemeDraft((current) => current ? { ...current, imagePath: "" } : current);
-      }),
-      resetDreamSkinTheme: async () => runAfterDreamSkinDraftGuard(() => {
-        setDreamSkinThemeDraft((current) => {
-          if (!current) return current;
-          if (isWindowsPlatform) {
-            const config = { ...current.config };
-            delete config.colors;
-            delete config.palette;
-            return { ...current, config };
-          }
-          const defaults = defaultDreamSkinTheme();
-          return {
-            ...current,
-            config: current.builtin
-              ? defaults
-              : { ...defaults, id: current.config.id, name: current.config.name },
-            imagePath: "",
-          };
-        });
-      }),
-      refreshDreamSkinLibrary,
-      refreshDreamSkinMarket,
-      refreshDreamSkinCommunity,
-      installDreamSkinMarketTheme,
-      installDreamSkinCommunityTheme,
-      importDreamSkinThemePackage,
-      createDreamSkinTheme: async () => runAfterDreamSkinDraftGuard(() => void createDreamSkinTheme()),
-      saveDreamSkinTheme: saveDreamSkinThemeDraft,
-      selectDreamSkinTheme,
-      renameDreamSkinTheme,
-      deleteDreamSkinTheme: async (item: DreamSkinThemeSummary) => {
-        if (item.key === selectedDreamSkinTheme && dreamSkinDraftDirty) {
-          runAfterDreamSkinDraftGuard(() => void deleteDreamSkinTheme(item));
-          return;
-        }
-        await deleteDreamSkinTheme(item);
-      },
-      activateDreamSkinTheme,
-      refreshDreamSkinStatus,
       restoreDreamSkin,
-      verifyDreamSkin: () => verifyDreamSkin(false),
-      saveDreamSkinScreenshot: () => verifyDreamSkin(true),
       saveManualCodexAppPath: async () => {
         const appPath = launchForm.appPath.trim();
         if (!appPath) {
@@ -4948,7 +4415,7 @@ export function App() {
       toggleTheme: () => setThemePreference(toggledThemePreference(theme)),
       setThemePreference,
     }),
-    [route, launchForm, settingsForm, settings, overview, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, dreamSkinLibrary, dreamSkinMarket, dreamSkinCommunity, selectedDreamSkinTheme, savedDreamSkinThemeDraft, dreamSkinThemeDraft, dreamSkinDraftDirty, pendingDreamSkinRestart, getLanguage()],
+    [route, launchForm, settingsForm, settings, overview, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, getLanguage()],
   );
   // 拓展贡献的管理器页面：侧栏入口与对内置页面的顶替（见 extension-manager-pages.ts）。
   const extensionPages = useMemo(() => managerExtensionPages(settings?.user_scripts), [settings?.user_scripts]);
@@ -5520,24 +4987,10 @@ export function App() {
             />
           ) : null}
           {route === "dreamSkin" ? (
-            <DreamSkinScreen
+            <DreamSkinRescueScreen
               form={settingsForm}
               launchPending={launchPending}
-              library={dreamSkinLibrary}
-              libraryLoading={dreamSkinLibraryLoading}
-              market={dreamSkinMarket}
-              marketLoading={dreamSkinMarketLoading}
-              community={dreamSkinCommunity}
-              communityLoading={dreamSkinCommunityLoading}
-              installOperation={dreamSkinInstallOperation}
-              draft={dreamSkinThemeDraft}
-              dirty={dreamSkinDraftDirty}
-              pendingRestart={pendingDreamSkinRestart}
-              selectedTheme={selectedDreamSkinTheme}
-              status={dreamSkinStatus}
-              verification={dreamSkinVerification}
-              onFormChange={setSettingsForm}
-              onDraftChange={setDreamSkinThemeDraft}
+              restartPending={dreamSkinRestartPending}
               actions={actions}
             />
           ) : null}
@@ -5729,29 +5182,6 @@ export function App() {
           }}
         />
       ) : null}
-      {dreamSkinUnsavedDialog ? (
-        <DreamSkinUnsavedDialog
-          onCancel={() => {
-            dreamSkinPendingActionRef.current = null;
-            setDreamSkinUnsavedDialog(false);
-          }}
-          onDiscard={() => {
-            const pending = dreamSkinPendingActionRef.current;
-            dreamSkinPendingActionRef.current = null;
-            setDreamSkinThemeDraft(savedDreamSkinThemeDraft);
-            setDreamSkinUnsavedDialog(false);
-            pending?.();
-          }}
-          onSave={() => void (async () => {
-            const saved = await saveDreamSkinThemeDraft();
-            if (!saved) return;
-            const pending = dreamSkinPendingActionRef.current;
-            dreamSkinPendingActionRef.current = null;
-            setDreamSkinUnsavedDialog(false);
-            pending?.();
-          })()}
-        />
-      ) : null}
       {pendingProviderImport ? (
         <PendingProviderImportDialog
           request={pendingProviderImport.request}
@@ -5761,8 +5191,7 @@ export function App() {
       ) : null}
       {pendingDreamSkinCommunity ? (
         <DreamSkinCommunityLinkDialog
-          installBlocked={Boolean(dreamSkinInstallOperation)}
-          installPending={dreamSkinInstallOperation?.source === "pending-community"}
+          installPending={dreamSkinCommunityInstalling}
           versionId={pendingDreamSkinCommunity}
           onConfirm={() => void confirmPendingDreamSkinCommunity()}
           onDismiss={() => void dismissPendingDreamSkinCommunity()}
@@ -5929,25 +5358,7 @@ type Actions = {
   resetSettingsPath: () => Promise<void>;
   chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
   clearCodexAppPath: () => Promise<void>;
-  chooseDreamSkinImagePath: () => Promise<void>;
-  resetDreamSkinImage: () => Promise<void>;
-  resetDreamSkinTheme: () => Promise<void>;
-  refreshDreamSkinLibrary: (silent?: boolean) => Promise<DreamSkinThemeLibrary | null>;
-  refreshDreamSkinMarket: (silent?: boolean) => Promise<DreamSkinMarketResult | null>;
-  installDreamSkinMarketTheme: (theme: DreamSkinMarketTheme) => Promise<boolean>;
-  refreshDreamSkinCommunity: (silent?: boolean) => Promise<DreamSkinCommunityResult | null>;
-  installDreamSkinCommunityTheme: (theme: DreamSkinCommunityTheme) => Promise<boolean>;
-  importDreamSkinThemePackage: () => Promise<void>;
-  createDreamSkinTheme: () => Promise<void>;
-  saveDreamSkinTheme: () => Promise<DreamSkinThemeDraft | null>;
-  selectDreamSkinTheme: (item: DreamSkinThemeSummary) => void;
-  renameDreamSkinTheme: (item: DreamSkinThemeSummary) => Promise<void>;
-  deleteDreamSkinTheme: (item: DreamSkinThemeSummary) => Promise<void>;
-  activateDreamSkinTheme: () => Promise<void>;
-  refreshDreamSkinStatus: (silent?: boolean) => Promise<DreamSkinRuntimeResult | null>;
   restoreDreamSkin: () => Promise<void>;
-  verifyDreamSkin: () => Promise<void>;
-  saveDreamSkinScreenshot: () => Promise<void>;
   saveManualCodexAppPath: () => Promise<void>;
   syncProvidersNow: () => Promise<void>;
   recoverProviderSync: () => Promise<void>;
@@ -9183,1054 +8594,74 @@ function EnhancementSettingControl({
   );
 }
 
-function DreamSkinPreview({ path, src, label, className, controls = false }: {
-  path: string; src: string; label: string; className?: string; controls?: boolean;
-}) {
-  return /\.(mp4|webm)$/i.test(path)
-    ? <video aria-label={label} className={className} controls={controls} muted playsInline preload="metadata" src={src} />
-    : <img alt={label} className={className} loading="lazy" src={src} />;
-}
-
-function DreamSkinScreen({
+/// 皮肤的界面已移到 Codex 里（Codex++ → 设置 → 皮肤，见 96-dream-skin-page.js）。
+/// 管理器只留急救入口：皮肤把 Codex 弄得显示异常或打不开时，在这里恢复默认皮肤。
+function DreamSkinRescueScreen({
   form,
   launchPending,
-  library,
-  libraryLoading,
-  market,
-  marketLoading,
-  community,
-  communityLoading,
-  installOperation,
-  draft,
-  dirty,
-  pendingRestart,
-  selectedTheme,
-  status,
-  verification,
-  onFormChange,
-  onDraftChange,
+  restartPending,
   actions,
 }: {
   form: BackendSettings;
   launchPending: boolean;
-  library: DreamSkinThemeLibrary | null;
-  libraryLoading: boolean;
-  market: DreamSkinMarketResult | null;
-  marketLoading: boolean;
-  community: DreamSkinCommunityResult | null;
-  communityLoading: boolean;
-  installOperation: DreamSkinInstallOperation | null;
-  draft: DreamSkinThemeDraft | null;
-  dirty: boolean;
-  pendingRestart: PendingDreamSkinRestart | null;
-  selectedTheme: string;
-  status: DreamSkinRuntimeResult | null;
-  verification: DreamSkinVerificationResult | null;
-  onFormChange: (value: BackendSettings) => void;
-  onDraftChange: (value: DreamSkinThemeDraft | null) => void;
+  /** 恢复默认皮肤（或网页一键换肤）已保存，重启 Codex 才完整生效。 */
+  restartPending: boolean;
   actions: Actions;
 }) {
-  const [themeView, setThemeView] = useState<"market" | "community" | "local">("local");
-  const [localQuery, setLocalQuery] = useState("");
-  const companionInputRef = useRef<HTMLInputElement>(null);
-  const [companionError, setCompanionError] = useState("");
+  const { CxBadge, CxBanner, CxCard, CxRow, CxStatusIcon } = AgentCx;
   const masterEnabled = form.enhancementsEnabled;
-  const theme = draft?.config ?? defaultDreamSkinTheme();
-  const themeColors = theme.colors ?? defaultDreamSkinColors();
-  const customImagePath = draft?.imagePath.trim() ?? "";
-  const previewUrl = customImagePath
-    ? convertFileSrc(customImagePath)
-    : isWindowsPlatform
-      ? dreamSkinWindowsPreviewUrl
-      : dreamSkinMacPreviewUrl;
-  const selectedItem = library?.themes.find((item) => item.key === selectedTheme) ?? null;
-  const savedThemeSelected = selectedItem?.kind === "stored";
-  const updateTheme = (next: DreamSkinThemeConfig) => {
-    if (draft) onDraftChange({ ...draft, config: next });
-  };
-  const updateThemeText = (
-    key: "id" | "name" | "brandSubtitle" | "tagline" | "projectPrefix" | "projectLabel" | "statusText" | "quote",
-    value: string,
-  ) => updateTheme({ ...theme, [key]: value });
-  const updateThemeColor = (key: keyof DreamSkinColors, value: string) => {
-    updateTheme({ ...theme, colors: { ...themeColors, [key]: value } });
-  };
-  const themeAppearance = theme.appearance === "light" || theme.appearance === "dark"
-    ? theme.appearance
-    : "auto";
-  const windowsAccent = typeof theme.palette?.accent === "string" ? theme.palette.accent : "";
-  const updateWindowsAccent = (value: string) => {
-    const palette = { ...(theme.palette ?? {}) };
-    if (value.trim()) palette.accent = value;
-    else delete palette.accent;
-    const next: DreamSkinThemeConfig = { ...theme, palette };
-    if (!Object.keys(palette).length) delete next.palette;
-    updateTheme(next);
-  };
-  const companion = theme.companion;
-  const companionDataUrl = typeof companion?.dataUrl === "string" ? companion.dataUrl : "";
-  const companionEnabled = Boolean(companionDataUrl) && companion?.enabled !== false;
-  const updateCompanion = (patch: Partial<NonNullable<DreamSkinThemeConfig["companion"]>>) => {
-    const nextCompanion = {
-      dataUrl: companionDataUrl,
-      enabled: companion?.enabled ?? true,
-      width: companion?.width ?? 96,
-      side: companion?.side ?? "right",
-      offsetX: companion?.offsetX ?? 0,
-      offsetY: companion?.offsetY ?? 4,
-      ...patch,
-    };
-    updateTheme({ ...theme, companion: nextCompanion });
-  };
-  const clearCompanion = () => {
-    const next = { ...theme };
-    delete next.companion;
-    setCompanionError("");
-    updateTheme(next);
-  };
-  const chooseCompanion = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0];
-    event.currentTarget.value = "";
-    if (!file) return;
-    if (!dreamSkinCompanionMimeTypes.has(file.type)) {
-      setCompanionError(t("仅支持 PNG、JPEG、WebP 或 GIF 图片"));
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = typeof reader.result === "string" ? reader.result : "";
-      if (!dataUrl || dataUrl.length > dreamSkinCompanionDataUrlLimit) {
-        setCompanionError(t("图片过大，请选择 180 KB 以内的图片"));
-        return;
-      }
-      setCompanionError("");
-      updateCompanion({ dataUrl });
-    };
-    reader.onerror = () => setCompanionError(t("读取图片失败，请重新选择"));
-    reader.readAsDataURL(file);
-  };
-  const currentItem = library?.themes.find((item) => pendingRestart
-    ? item.key === pendingRestart.currentThemeKey
-    : item.active);
-  const currentThemeName = pendingRestart?.currentThemeName || currentItem?.name || t("未记录");
-  const currentThemeLabel = status?.liveApplied
-    ? t("当前运行")
-    : pendingRestart ? t("此前配置") : t("当前配置");
+  const skinActive = masterEnabled && form.codexAppDreamSkinEnabled && !form.codexAppDreamSkinPaused;
   const stateLabel = !masterEnabled
     ? t("增强总开关已关闭")
     : !form.codexAppDreamSkinEnabled
       ? t("皮肤未启用")
-      : form.codexAppDreamSkinPaused || status?.paused
+      : form.codexAppDreamSkinPaused
         ? t("已恢复原始外观")
-        : status ? dreamSkinStateLabel(status.state) : t("等待状态检查");
-  const stateTone = !masterEnabled || !form.codexAppDreamSkinEnabled || form.codexAppDreamSkinPaused || status?.paused
-    ? "disabled"
-    : status?.state === "pass" ? "pass" : status?.state === "fail" ? "fail" : status ? "warning" : "unchecked";
-  const localThemes = (library?.themes ?? []).filter((item) =>
-    !localQuery.trim() || item.name.toLocaleLowerCase().includes(localQuery.trim().toLocaleLowerCase()),
-  );
-  // 数据未就绪或正在刷新时，tab 计数显示转圈而不是 0，避免被误读成空列表。
-  const libraryPending = libraryLoading || !library;
-  const marketPending = marketLoading || !market;
-  const communityPending = communityLoading || !community;
-  const libraryCount = library?.themes.length ?? 0;
-  const marketCount = market?.themes.length ?? 0;
-  const communityCount = community?.items.length ?? 0;
-  const runtimeChecks = status?.checks ?? [];
-  const verificationChecks = verification?.checks ?? [];
-
-  const { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxStatusIcon, CxToolbar } = AgentCx;
-  const stateDot = stateTone === "pass" ? "ok" : stateTone === "fail" ? "danger" : stateTone === "warning" ? "warn" : "off";
-  const draftStateLabel = dirty ? t("有未保存修改") : savedThemeSelected ? t("已保存主题") : draft?.builtin ? t("内置主题") : t("当前未保存主题");
-  const viewTab = (view: "local" | "community" | "market", icon: ReactNode, label: string, count: ReactNode) => (
-    <button
-      aria-selected={themeView === view}
-      className={themeView === view ? "is-active" : ""}
-      data-active={themeView === view}
-      onClick={() => setThemeView(view)}
-      role="tab"
-      type="button"
-    >
-      {icon}
-      {label}
-      {count}
-    </button>
-  );
+        : t("皮肤已启用");
+  const themeName = form.codexAppDreamSkinThemeConfig?.name?.trim() || t("未记录");
 
   return (
     <div className="cx-page dream-skin-page">
-      {/* 顶部最多一条提示：总开关关闭 > 有待重启应用的主题。 */}
-      {!masterEnabled ? (
-        <CxBanner icon={<Info />} title={t("请先在 Codex增强 页面开启总开关。")} tone="warn" />
-      ) : pendingRestart ? (
+      <CxBanner
+        icon={<Info />}
+        title={t("皮肤已移到 Codex 里：打开 Codex 左侧的 Codex++ → 设置 → 皮肤，可以换主题、装社区和市场主题、编辑主题。")}
+      />
+      {restartPending ? (
         <CxBanner
-          detail={`${currentThemeLabel}：${pendingRestart.currentThemeName}。${t("配置已保存，可以继续浏览和编辑，稍后重启即可生效。")}`}
+          detail={t("皮肤设置已保存，重启 Codex 后完整生效。")}
           icon={<Rocket />}
-          title={`${t("待应用主题")}：${pendingRestart.pendingThemeName}`}
+          title={t("需要重启 Codex")}
           tone="warn"
         >
           <button className="cx-primary" disabled={launchPending} onClick={() => void actions.restart()} type="button">
             <Rocket />
-            {t("重启并应用")}
+            {t("重启 Codex")}
           </button>
         </CxBanner>
       ) : null}
-
-      {/* 一行说完：左边是正在编辑的主题（缩略图带运行状态点）和当前运行的主题，右边是唯一的「应用」、菜单和皮肤开关。
-          原来「启用开关」「正在编辑」各占一行，两行说的是同一个皮肤。 */}
-      <CxCard className="dream-skin-overview">
+      <CxCard>
         <CxRow
-          badges={<CxBadge tone={dirty ? "warn" : "neutral"}>{draftStateLabel}</CxBadge>}
-          className="dream-skin-selected-row"
-          detail={<span role="status">{currentThemeLabel}：{currentThemeName} · {stateLabel}</span>}
-          icon={<CxStatusIcon tone={stateDot}><DreamSkinPreview label={theme.name} className="dream-skin-selected-thumb" path={customImagePath} src={previewUrl} /></CxStatusIcon>}
-          title={<span title={theme.name}>{theme.name || t("未命名主题")}</span>}
+          badges={<CxBadge tone={skinActive ? "ok" : "neutral"}>{stateLabel}</CxBadge>}
+          detail={<span role="status">{tf("当前主题：{0}", [themeName])}</span>}
+          icon={<CxStatusIcon tone={skinActive ? "ok" : "off"}><Palette /></CxStatusIcon>}
+          title={t("当前皮肤")}
+        />
+        <CxRow
+          detail={t("皮肤让 Codex 显示异常或打不开时使用：关掉皮肤并清掉当前窗口里的皮肤，主题库不受影响；重启 Codex 后完整生效。")}
+          icon={<CxStatusIcon tone="warn"><RotateCcw /></CxStatusIcon>}
+          title={t("恢复默认皮肤")}
         >
-          <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={!masterEnabled ? t("请先在 Codex增强 页面开启总开关。") : t("保存并应用主题（皮肤没开时会一起打开）；需要重启时只会标记为待应用")} type="button">
-            <Play />
-            {pendingRestart ? t("更新待应用") : t("应用所选主题")}
+          <button className="cx-secondary" onClick={() => void actions.restoreDreamSkin()} type="button">
+            <RotateCcw />
+            {t("恢复默认皮肤")}
           </button>
-          <Menu>
-            <MenuItem disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()}>
-              {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
-            </MenuItem>
-            <MenuItem onClick={() => void actions.refreshDreamSkinStatus()}>{t("刷新状态")}</MenuItem>
-            <MenuItem onClick={() => void actions.restoreDreamSkin()}>{t("恢复 Codex 外观")}</MenuItem>
-          </Menu>
-          <label className="switch-row compact dream-skin-enable-switch" title={t("启用 Codex 皮肤")}>
-            <span className="dream-skin-enable-label">{t("皮肤")}</span>
-            <input
-              aria-label={t("启用 Codex 皮肤")}
-              checked={form.codexAppDreamSkinEnabled}
-              disabled={!masterEnabled}
-              onChange={(event) => onFormChange({
-                ...form,
-                codexAppDreamSkinEnabled: event.currentTarget.checked,
-                codexAppDreamSkinPaused: false,
-              })}
-              type="checkbox"
-            />
-            <ToggleVisual />
-          </label>
         </CxRow>
       </CxCard>
-
-      {/* 主题库：三个胶囊切换「我的 / 社区 / 市场」，右侧是当前视图的操作。 */}
-      <div className="cx-filters dream-skin-browser-toolbar">
-        <nav aria-label={t("主题视图")} className="tp-tabs cx-pills dream-skin-view-tabs" role="tablist">
-          {viewTab("local", <Palette className="h-4 w-4" />, t("我的主题"), (
-            <span className={libraryPending ? "is-loading" : "cx-pill-count"} title={libraryPending ? t("加载中…") : undefined}>
-              {libraryPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : libraryCount}
-            </span>
-          ))}
-          {viewTab("community", <Github className="h-4 w-4" />, t("DreamSkin 社区"), (
-            <span className={communityPending ? "is-loading" : "cx-pill-count"} title={communityPending ? t("加载中…") : undefined}>
-              {communityPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : communityCount}
-            </span>
-          ))}
-          {viewTab("market", <Store className="h-4 w-4" />, t("主题市场"), (
-            <span className={marketPending ? "is-loading" : "cx-pill-count"} title={marketPending ? t("加载中…") : undefined}>
-              {marketPending ? <Loader2 aria-hidden="true" className="h-3 w-3 animate-spin" /> : marketCount}
-            </span>
-          ))}
-        </nav>
-        {themeView === "market" ? (
-          <div className="cx-filters-trailing">
-            <button className="cx-secondary" onClick={() => void actions.refreshDreamSkinMarket()} type="button">
-              <RefreshCw />
-              {t("刷新市场")}
-            </button>
-            <button className="cx-secondary" onClick={() => void actions.openExternalUrl(market?.repositoryUrl || "https://github.com/BigPizzaV3/CodexPlusPlus-Themes")} type="button">
-              <Github />
-              {t("投稿主题")}
-            </button>
-          </div>
-        ) : null}
-      </div>
-
-      {themeView === "local" ? (
-        <CxToolbar onQuery={setLocalQuery} placeholder={t("搜索主题名称")} query={localQuery}>
-          <button className="cx-secondary dream-skin-toolbar-button" disabled={Boolean(installOperation)} onClick={() => void actions.importDreamSkinThemePackage()} type="button">
-            {installOperation?.source === "import"
-              ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-              : <PackageOpen className="h-4 w-4" />}
-            {installOperation?.source === "import" ? t("导入中…") : t("导入主题包")}
-          </button>
-          <button className="cx-primary" onClick={() => void actions.createDreamSkinTheme()} type="button">
-            <ImagePlus className="h-4 w-4" />
-            {t("从图片或视频创建")}
-          </button>
-        </CxToolbar>
-      ) : null}
-
-      {installOperation ? (
-        <DreamSkinInstallProgress label={dreamSkinInstallOperationLabel(installOperation)} />
-      ) : null}
-
-      {themeView === "community" ? (
-        <DreamSkinCommunitySection
-          community={community}
-          communityLoading={communityLoading}
-          installOperation={installOperation}
-          actions={actions}
-          onInstalled={() => setThemeView("local")}
-        />
-      ) : themeView === "market" ? (
-        <section className="dream-skin-market">
-          <p className="dream-skin-market-meta">
-            {market?.updatedAt
-              ? tf("清单更新于 {0}，安装后会保存到“我的主题”。", [market.updatedAt])
-              : t("从 CodexPlusPlus-Themes 仓库加载可安装主题。")}
-          </p>
-          {market?.cached || market?.warning ? (
-            <div className="dream-skin-market-warning">
-              <Info className="h-4 w-4" />
-              <span>{market.warning || t("远程仓库暂不可用，当前显示本地缓存。")}</span>
-            </div>
-          ) : null}
-          {market?.themes.length ? (
-            <div className="dream-skin-market-grid">
-              {market.themes.map((item) => (
-                <DreamSkinMarketCard
-                  actions={actions}
-                  installOperation={installOperation}
-                  key={item.id}
-                  onInstalled={() => setThemeView("local")}
-                  theme={item}
-                />
-              ))}
-            </div>
-          ) : (
-            <CxCard>
-              <CxEmpty title={market?.status === "failed" ? market.message : (
-                <span className="dream-skin-loading" role="status">
-                  {marketPending ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" /> : null}
-                  {t("正在加载主题市场…")}
-                </span>
-              )} />
-            </CxCard>
-          )}
-        </section>
-      ) : (
-        <>
-          <section
-            className="dream-skin-theme-library"
-            title={pendingRestart
-              ? t("选择其他卡片可继续调整待应用主题；当前界面不会自动重启。")
-              : t("选择卡片只会载入草稿；需要完整切换时会保存为待应用主题。")}
-          >
-            <div className="dream-skin-theme-list">
-              {localThemes.map((item) => {
-                const cardPreview = item.previewPath
-                  ? convertFileSrc(item.previewPath)
-                  : isWindowsPlatform
-                    ? dreamSkinWindowsPreviewUrl
-                    : dreamSkinMacPreviewUrl;
-                const cardDirty = item.key === selectedTheme && dirty;
-                const currentRunning = pendingRestart
-                  ? pendingRestart.currentThemeKey === item.key
-                  : item.active;
-                const pendingApplication = pendingRestart?.pendingThemeKey === item.key;
-                return (
-                  <article
-                    className={`dream-skin-theme-card${item.key === selectedTheme ? " is-selected" : ""}${currentRunning ? " is-current" : ""}${pendingApplication ? " is-pending" : ""}`}
-                    key={item.key}
-                  >
-                    <button
-                      aria-pressed={item.key === selectedTheme}
-                      className="dream-skin-theme-select"
-                      onClick={() => actions.selectDreamSkinTheme(item)}
-                      type="button"
-                    >
-                      <span className="dream-skin-theme-image">
-                        <DreamSkinPreview label={item.name} path={item.previewPath} src={cardPreview} />
-                        {currentRunning || pendingApplication ? (
-                          <span className="dream-skin-theme-badges">
-                            {currentRunning ? <b>{currentThemeLabel}</b> : null}
-                            {pendingApplication ? <b className="is-pending">{t("待应用")}</b> : null}
-                          </span>
-                        ) : null}
-                      </span>
-                      <span className="dream-skin-theme-copy">
-                        <strong title={item.name}>{item.name}</strong>
-                        <small>
-                          {item.builtin
-                            ? t("内置主题")
-                            : item.kind === "activeUnsaved"
-                              ? t("当前未保存主题")
-                              : t("用户主题")}
-                        </small>
-                      </span>
-                      {item.modified || cardDirty ? <em>{t("已修改")}</em> : null}
-                    </button>
-                    {item.kind === "stored" ? (
-                      <details className="dream-skin-theme-menu" data-popover-menu="">
-                        <summary aria-label={tf("主题操作：{0}", [item.name])} title={t("主题操作")}><MoreHorizontal className="h-4 w-4" /></summary>
-                        <div>
-                          <button onClick={() => void actions.renameDreamSkinTheme(item)} type="button">
-                            <Edit3 className="h-4 w-4" />
-                            {t("重命名")}
-                          </button>
-                          <button disabled={item.active || currentRunning} onClick={() => void actions.deleteDreamSkinTheme(item)} type="button">
-                            <Trash2 className="h-4 w-4" />
-                            {t("删除")}
-                          </button>
-                        </div>
-                      </details>
-                    ) : null}
-                  </article>
-                );
-              })}
-            </div>
-            {!library ? (
-              <CxCard>
-                <CxEmpty title={(
-                  <span className="dream-skin-loading" role="status">
-                    <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-                    {t("正在加载主题库…")}
-                  </span>
-                )} />
-              </CxCard>
-            ) : null}
-            {library && !localThemes.length ? (
-              <CxCard>
-                <CxEmpty title={t("没有匹配的主题")}>
-                  <button className="cx-secondary" onClick={() => setLocalQuery("")} type="button">{t("清除搜索")}</button>
-                </CxEmpty>
-              </CxCard>
-            ) : null}
-          </section>
-
-          <details className="dream-skin-customizer">
-            <summary>
-              <span className="dream-skin-customizer-title">
-                <Settings className="h-4 w-4" />
-                <span>
-                  <strong>{t("自定义主题")}</strong>
-                  <small>{t("图片、文字和配色等高级编辑项")}</small>
-                </span>
-              </span>
-              {dirty ? <em className="is-dirty">{t("有未保存修改")}</em> : null}
-                </summary>
-            <div className="dream-skin-customizer-content">
-              <div className="dream-skin-platform-note">
-                <Info className="h-4 w-4" />
-                <span>
-                  {isWindowsPlatform
-                    ? t("Windows 使用亮暗模式、图片取色和可选强调色；完整色板仅在 macOS 生效。")
-                    : t("macOS 会应用主题中的图片、文字和颜色配置。")}
-                </span>
-              </div>
-
-              <div className="dream-skin-editor-layout">
-                <div className="dream-skin-media-editor">
-                  <div
-                    className="dream-skin-preview"
-                    style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.background }}
-                  >
-                    <DreamSkinPreview controls label={theme.name} path={customImagePath} src={previewUrl} />
-                    <span style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.panel, color: themeColors.text }}>
-                      <strong>{theme.name}</strong>
-                      <small style={isWindowsPlatform ? undefined : { color: themeColors.muted }}>{customImagePath ? t("本地素材") : t("目标项目默认图片")}</small>
-                    </span>
-                  </div>
-                  <RelayFold className="relay-config-section dream-skin-image-info" title={t("素材信息")}>
-                    <Field label={t("素材路径")}>
-                      <Input
-                        readOnly
-                        placeholder={t("使用目标项目默认图片")}
-                        value={draft?.imagePath ?? ""}
-                      />
-                    </Field>
-                  </RelayFold>
-                  <Toolbar>
-                    <Button variant="secondary" onClick={() => void actions.chooseDreamSkinImagePath()}>
-                      <Camera className="h-4 w-4" />
-                      {t("导入图片或视频")}
-                    </Button>
-                    <Button
-                      disabled={!customImagePath}
-                      variant="outline"
-                      onClick={() => void actions.resetDreamSkinImage()}
-                    >
-                      <RotateCcw className="h-4 w-4" />
-                      {t("恢复默认图片")}
-                    </Button>
-                  </Toolbar>
-                </div>
-
-                <div className="dream-skin-edit-sections">
-                  <details className="dream-skin-edit-section">
-                    <summary><ChevronDown aria-hidden="true" className="dream-skin-edit-chevron h-4 w-4" /><strong>{t("输入框旁照片")}</strong></summary>
-                    <div className="dream-skin-edit-section-body">
-                      <div className="dream-skin-companion-controls">
-                        <div className="dream-skin-companion-heading">
-                          <div>
-                            <small>{t("为主题选择一张显示在 Codex 输入框旁的自定义照片")}</small>
-                          </div>
-                          {companionDataUrl ? (
-                            <img alt={t("输入框旁照片预览")} src={companionDataUrl} />
-                          ) : null}
-                        </div>
-                        <input
-                          accept="image/png,image/jpeg,image/webp,image/gif"
-                          className="sr-only"
-                          onChange={chooseCompanion}
-                          ref={companionInputRef}
-                          type="file"
-                        />
-                        <Toolbar>
-                          <Button onClick={() => companionInputRef.current?.click()} type="button" variant="secondary">
-                            <Camera className="h-4 w-4" />
-                            {companionDataUrl ? t("更换照片") : t("选择照片")}
-                          </Button>
-                          <Button disabled={!companionDataUrl} onClick={clearCompanion} type="button" variant="outline">
-                            <Trash2 className="h-4 w-4" />
-                            {t("清除照片")}
-                          </Button>
-                        </Toolbar>
-                        {companionError ? <small className="dream-skin-companion-error">{companionError}</small> : null}
-                        <div className="dream-skin-companion-fields">
-                          <label className="switch-row compact">
-                            <input
-                              checked={companionEnabled}
-                              disabled={!companionDataUrl}
-                              onChange={(event) => updateCompanion({ enabled: event.currentTarget.checked })}
-                              type="checkbox"
-                            />
-                            <span>
-                              <strong>{t("显示在输入框旁")}</strong>
-                              <small>{t("应用主题后显示在输入框的左侧或右侧")}</small>
-                            </span>
-                            <ToggleVisual />
-                          </label>
-                          <Field label={t("照片宽度") }>
-                            <Input
-                              disabled={!companionDataUrl}
-                              inputMode="numeric"
-                              max={160}
-                              min={48}
-                              type="number"
-                              value={companion?.width ?? 96}
-                              onChange={(event) => updateCompanion({ width: Math.max(48, Math.min(160, Number(event.currentTarget.value) || 96)) })}
-                            />
-                          </Field>
-                          <Field label={t("显示位置") }>
-                            <AppSelect
-                              disabled={!companionDataUrl}
-                              value={companion?.side ?? "right"}
-                              onChange={(value) => updateCompanion({ side: value })}
-                              options={[
-                                { value: "auto", label: t("自动") },
-                                { value: "left", label: t("左侧") },
-                                { value: "right", label: t("右侧") },
-                              ]}
-                            />
-                          </Field>
-                          <Field label={t("水平偏移") }>
-                            <Input
-                              disabled={!companionDataUrl}
-                              inputMode="numeric"
-                              max={48}
-                              min={-48}
-                              type="number"
-                              value={companion?.offsetX ?? 0}
-                              onChange={(event) => updateCompanion({ offsetX: Math.max(-48, Math.min(48, Number(event.currentTarget.value) || 0)) })}
-                            />
-                          </Field>
-                          <Field label={t("垂直偏移") }>
-                            <Input
-                              disabled={!companionDataUrl}
-                              inputMode="numeric"
-                              max={160}
-                              min={-160}
-                              type="number"
-                              value={companion?.offsetY ?? 4}
-                              onChange={(event) => updateCompanion({ offsetY: Math.max(-160, Math.min(160, Number(event.currentTarget.value) || 0)) })}
-                            />
-                          </Field>
-                        </div>
-                      </div>
-
-                    </div>
-                  </details>
-                  <details className="dream-skin-edit-section">
-                    <summary><ChevronDown aria-hidden="true" className="dream-skin-edit-chevron h-4 w-4" /><strong>{t("界面文字")}</strong></summary>
-                    <div className="dream-skin-edit-section-body">
-                      <div className="dream-skin-text-grid">
-                        <Field label={t("主题 ID")}><Input readOnly={draft?.builtin || savedThemeSelected} value={theme.id} onChange={(event) => updateThemeText("id", event.currentTarget.value)} /></Field>
-                        <Field label={t("主题名称")}><Input value={theme.name} onChange={(event) => updateThemeText("name", event.currentTarget.value)} /></Field>
-                        <Field label={t("品牌副标题")}><Input value={theme.brandSubtitle} onChange={(event) => updateThemeText("brandSubtitle", event.currentTarget.value)} /></Field>
-                        <Field label={t("主题标语")}><Input value={theme.tagline} onChange={(event) => updateThemeText("tagline", event.currentTarget.value)} /></Field>
-                        <Field label={t("项目前缀")}><Input value={theme.projectPrefix} onChange={(event) => updateThemeText("projectPrefix", event.currentTarget.value)} /></Field>
-                        <Field label={t("项目按钮文字")}><Input value={theme.projectLabel} onChange={(event) => updateThemeText("projectLabel", event.currentTarget.value)} /></Field>
-                        <Field label={t("状态文字")}><Input value={theme.statusText} onChange={(event) => updateThemeText("statusText", event.currentTarget.value)} /></Field>
-                        <Field label={t("引用文字")}><Input value={theme.quote} onChange={(event) => updateThemeText("quote", event.currentTarget.value)} /></Field>
-                      </div>
-                    </div>
-                  </details>
-                  <details className="dream-skin-edit-section">
-                    <summary><ChevronDown aria-hidden="true" className="dream-skin-edit-chevron h-4 w-4" /><strong>{t("主题配色")}</strong></summary>
-                    <div className="dream-skin-edit-section-body">
-                      {isWindowsPlatform ? (
-                        <div className="dream-skin-windows-theme-controls">
-                          <Field label={t("外观模式")}>
-                            <div aria-label={t("外观模式")} className="segmented dream-skin-appearance-options" role="group">
-                              {([
-                                ["auto", t("自动")],
-                                ["light", t("亮色")],
-                                ["dark", t("暗色")],
-                              ] as const).map(([value, label]) => (
-                                <button
-                                  aria-pressed={themeAppearance === value}
-                                  className={themeAppearance === value ? "active" : ""}
-                                  key={value}
-                                  onClick={() => updateTheme({ ...theme, appearance: value })}
-                                  type="button"
-                                >
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                          </Field>
-                          <div className="dream-skin-windows-accent">
-                            <DreamSkinColorField
-                              label={t("强调色")}
-                              value={windowsAccent}
-                              onChange={updateWindowsAccent}
-                            />
-                            <Button
-                              disabled={!windowsAccent.trim()}
-                              onClick={() => updateWindowsAccent("")}
-                              size="sm"
-                              variant="outline"
-                            >
-                              <RotateCcw className="h-4 w-4" />
-                              {t("跟随图片配色")}
-                            </Button>
-                          </div>
-                          <small className="dream-skin-windows-theme-note">
-                            {t("亮暗模式直接控制 Codex 外观；强调色留空时自动从主题图片提取。")}
-                          </small>
-                        </div>
-                      ) : (
-                        <div className="dream-skin-colors">
-                          {dreamSkinColorFields().map(([key, label]) => (
-                            <DreamSkinColorField
-                              key={key}
-                              label={label}
-                              value={String(themeColors[key])}
-                              onChange={(value) => updateThemeColor(key, value)}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </details>
-                </div>
-              </div>
-              <div className="dream-skin-editor-footer">
-              <Toolbar>
-                <Button disabled={!draft} onClick={() => void actions.saveDreamSkinTheme()}>
-                  <Save className="h-4 w-4" />
-                  {draft?.builtin || selectedItem?.kind === "activeUnsaved" ? t("保存为新主题") : t("保存主题")}
-                </Button>
-                <Button variant="outline" onClick={() => void actions.resetDreamSkinTheme()}>
-                  <RotateCcw className="h-4 w-4" />
-                  {isWindowsPlatform ? t("恢复 Codex 默认配色") : t("恢复 Dream Skin 默认主题")}
-                </Button>
-              </Toolbar>
-              </div>
-            </div>
-          </details>
-        </>
-      )}
-      <details className="dream-skin-diagnostics-fold">
-        <summary>
-          <span className="dream-skin-customizer-title">
-            <ShieldCheck className="h-4 w-4" />
-            <span>
-              <strong>{t("诊断与验证")}</strong>
-              <small>{t("检查官方应用身份、CDP renderer、目标样式和页面布局")}</small>
-            </span>
-          </span>
-        </summary>
-        <div className="dream-skin-customizer-content">
-          <div className="dream-skin-diagnostics-grid">
-            <DreamSkinCheckList title={t("运行诊断")} checks={runtimeChecks} emptyText={t("刷新状态后显示运行诊断。")}/>
-            <DreamSkinCheckList title={t("最近实机验证")} checks={verificationChecks} emptyText={t("运行实机验证后显示页面检查结果。")}/>
-          </div>
-          {verification ? (
-            <div className="dream-skin-verification-meta">
-              <span><small>{t("注入版本")}</small><code>{verification.version || t("未检测到")}</code></span>
-              <span><small>{t("截图路径")}</small><code>{verification.screenshotPath || t("未保存截图")}</code></span>
-            </div>
-          ) : null}
-          <div className="dream-skin-fold-actions">
-            <button className="cx-secondary" onClick={() => void actions.refreshDreamSkinStatus()} type="button">
-              <RefreshCw />
-              {t("刷新诊断")}
-            </button>
-            <button className="cx-secondary" onClick={() => void actions.saveDreamSkinScreenshot()} type="button">
-              <Camera />
-              {t("保存截图")}
-            </button>
-            <button className="cx-primary" onClick={() => void actions.verifyDreamSkin()} type="button">
-              <ShieldCheck />
-              {t("实机验证")}
-            </button>
-          </div>
-        </div>
-      </details>
-      <p className="dream-skin-about" title={t("应用会保存当前图片与主题配置；恢复原始外观不会删除主题。")}>
+      <p className="dream-skin-about">
         {t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}
       </p>
     </div>
   );
-}
-
-function DreamSkinColorField({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <Field className="dream-skin-color-field" label={label}>
-      <span className="dream-skin-color-control">
-        <input
-          aria-label={label}
-          type="color"
-          value={dreamSkinPickerColor(value)}
-          onChange={(event) => onChange(event.currentTarget.value.toUpperCase())}
-        />
-        <Input value={value} onChange={(event) => onChange(event.currentTarget.value)} />
-      </span>
-    </Field>
-  );
-}
-
-function DreamSkinMarketCard({
-  theme,
-  actions,
-  installOperation,
-  onInstalled,
-}: {
-  theme: DreamSkinMarketTheme;
-  actions: Actions;
-  installOperation: DreamSkinInstallOperation | null;
-  onInstalled: () => void;
-}) {
-  const installing = installOperation?.source === "market" && installOperation.id === theme.id;
-  const installBlocked = Boolean(installOperation);
-  const status = theme.updateAvailable
-    ? t("可更新")
-    : theme.installed
-      ? theme.installedVersion
-        ? tf("已安装 {0}", [theme.installedVersion])
-        : t("已安装")
-      : t("未安装");
-  return (
-    <article className="dream-skin-market-card">
-      <div className="dream-skin-market-preview">
-        <img
-          alt={theme.name}
-          loading="lazy"
-          onError={(event) => {
-            event.currentTarget.onerror = null;
-            event.currentTarget.src = isWindowsPlatform ? dreamSkinWindowsPreviewUrl : dreamSkinMacPreviewUrl;
-          }}
-          src={theme.previewUrl}
-        />
-        <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
-      </div>
-      <div className="dream-skin-market-copy">
-        <div className="dream-skin-market-title">
-          <strong title={theme.name}>{theme.name}</strong>
-          <span>v{theme.version}</span>
-        </div>
-        <small>{tf("作者：{0} · {1}", [theme.author, theme.license])}</small>
-        <p>{theme.description || t("暂无主题说明。")}</p>
-        <div className="dream-skin-market-tags">
-          {theme.tags.map((tag) => <span key={tag}>{tag}</span>)}
-        </div>
-      </div>
-      <div className="dream-skin-market-actions">
-        <Button
-          aria-busy={installing}
-          disabled={installBlocked}
-          onClick={async () => {
-            if (await actions.installDreamSkinMarketTheme(theme)) onInstalled();
-          }}
-          size="sm"
-        >
-          {installing
-            ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-            : <Download className="h-4 w-4" />}
-          {installing ? t("安装中…") : theme.updateAvailable ? t("更新") : theme.installed ? t("重新安装") : t("安装")}
-        </Button>
-        <Button onClick={() => void actions.openExternalUrl(theme.sourceUrl)} size="sm" variant="outline">
-          <ExternalLink className="h-4 w-4" />
-          {t("来源")}
-        </Button>
-        {installing ? <DreamSkinInstallProgress /> : null}
-      </div>
-    </article>
-  );
-}
-
-function DreamSkinCommunitySection({
-  community,
-  communityLoading,
-  installOperation,
-  actions,
-  onInstalled,
-}: {
-  community: DreamSkinCommunityResult | null;
-  communityLoading: boolean;
-  installOperation: DreamSkinInstallOperation | null;
-  actions: Actions;
-  onInstalled: () => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [sort, setSort] = useState<"latest" | "popular" | "name">("latest");
-  const items = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
-    const filtered = (community?.items ?? []).filter((item) => {
-      if (!normalized) return true;
-      return [item.name, item.authorDisplayName, item.themeId, item.license]
-        .some((value) => value.toLowerCase().includes(normalized));
-    });
-    return [...filtered].sort((left, right) => {
-      if (sort === "popular") return right.downloadCount - left.downloadCount;
-      if (sort === "name") return left.name.localeCompare(right.name, "zh-CN");
-      return right.reviewedAt.localeCompare(left.reviewedAt);
-    });
-  }, [community?.items, query, sort]);
-
-  const { CxCard, CxEmpty, CxToolbar } = AgentCx;
-  return (
-    <section
-      className="dream-skin-community"
-      title={community?.total
-        ? tf("来自 DreamSkin.cc 的已审核主题，共 {0} 套；安装前仍会在本机再次校验。", [String(community.total)])
-        : t("从 DreamSkin.cc 加载已审核主题包。")}
-    >
-      {/* 一条工具条：搜索 + 排序 + 刷新；两个外部链接收进三点菜单。 */}
-      <CxToolbar onQuery={setQuery} placeholder={t("搜索主题名称、作者或许可证")} query={query}>
-        <AppSelect
-          ariaLabel={t("社区主题排序")}
-          onChange={(value) => setSort(value as typeof sort)}
-          options={[
-            { value: "latest", label: t("最新审核") },
-            { value: "popular", label: t("下载最多") },
-            { value: "name", label: t("名称排序") },
-          ]}
-          size="sm"
-          title={t("社区主题排序")}
-          value={sort}
-        />
-        <button aria-label={t("刷新社区")} className="cx-icon-button" onClick={() => void actions.refreshDreamSkinCommunity()} title={t("刷新社区")} type="button">
-          <RefreshCw />
-        </button>
-        <Menu>
-          <MenuItem onClick={() => void actions.openExternalUrl("https://dreamskin.cc/gallery")}>{t("在线主题库")}</MenuItem>
-          <MenuItem onClick={() => void actions.openExternalUrl("https://dreamskin.cc/studio")}>{t("在线 Studio")}</MenuItem>
-        </Menu>
-      </CxToolbar>
-      {community?.warning ? (
-        <div className="dream-skin-market-warning">
-          <Info className="h-4 w-4" />
-          <span>{community.warning}</span>
-        </div>
-      ) : null}
-      {items.length ? (
-        <div className="dream-skin-community-grid">
-          {items.map((item) => (
-            <DreamSkinCommunityCard
-              actions={actions}
-              installOperation={installOperation}
-              key={item.id}
-              onInstalled={onInstalled}
-              theme={item}
-            />
-          ))}
-        </div>
-      ) : (
-        <CxCard>
-          <CxEmpty title={!community || communityLoading ? (
-            <span className="dream-skin-loading" role="status">
-              <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-              {t("正在加载 DreamSkin 社区…")}
-            </span>
-          ) : community.status === "failed"
-            ? community.message
-            : query.trim()
-              ? t("没有匹配的社区主题。")
-              : t("DreamSkin 社区暂时没有可用主题。")}
-          >
-            {query.trim() ? <button className="cx-secondary" onClick={() => setQuery("")} type="button">{t("清除搜索")}</button> : null}
-          </CxEmpty>
-        </CxCard>
-      )}
-    </section>
-  );
-}
-
-function DreamSkinCommunityCard({
-  theme,
-  actions,
-  installOperation,
-  onInstalled,
-}: {
-  theme: DreamSkinCommunityTheme;
-  actions: Actions;
-  installOperation: DreamSkinInstallOperation | null;
-  onInstalled: () => void;
-}) {
-  const installing = installOperation?.source === "community" && installOperation.id === theme.id;
-  const installBlocked = Boolean(installOperation);
-  const status = theme.updateAvailable
-    ? t("可更新")
-    : theme.installed
-      ? tf("已安装 {0}", [theme.installedVersion])
-      : t("未安装");
-  const packageSize = theme.packageBytes >= 1024 * 1024
-    ? `${(theme.packageBytes / 1024 / 1024).toFixed(1)} MiB`
-    : `${Math.ceil(theme.packageBytes / 1024)} KiB`;
-  return (
-    <article className="dream-skin-community-card">
-      <div className="dream-skin-community-preview">
-        <img
-          alt={theme.name}
-          loading="lazy"
-          onError={(event) => {
-            event.currentTarget.onerror = null;
-            event.currentTarget.src = isWindowsPlatform ? dreamSkinWindowsPreviewUrl : dreamSkinMacPreviewUrl;
-          }}
-          src={theme.previewUrl}
-        />
-        <UiBadge variant={theme.updateAvailable ? "default" : theme.installed ? "secondary" : "outline"}>{status}</UiBadge>
-      </div>
-      <div className="dream-skin-community-copy">
-        <div className="dream-skin-market-title">
-          <strong title={theme.name}>{theme.name}</strong>
-          <span>v{theme.version}</span>
-        </div>
-        <small>{tf("作者：{0} · {1} · {2} 次下载", [theme.authorDisplayName, theme.license, String(theme.downloadCount)])}</small>
-        <small>{tf("主题包：{0}", [packageSize])}</small>
-      </div>
-      <div className="dream-skin-community-actions">
-        <Button
-          aria-busy={installing}
-          disabled={installBlocked || !theme.applyCompatible}
-          onClick={async () => {
-            if (await actions.installDreamSkinCommunityTheme(theme)) onInstalled();
-          }}
-          size="sm"
-          title={theme.applyCompatible ? t("下载、校验并安装主题包") : t("此主题仅支持在线预览或下载")}
-        >
-          {installing
-            ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
-            : <Download className="h-4 w-4" />}
-          {installing ? t("安装中…") : theme.updateAvailable ? t("更新") : theme.installed ? t("重新安装") : t("安装")}
-        </Button>
-        <Button onClick={() => void actions.openExternalUrl(`https://dreamskin.cc/preview?themeVersion=${encodeURIComponent(theme.id)}`)} size="sm" variant="outline">
-          <Eye className="h-4 w-4" />
-          {t("预览")}
-        </Button>
-        {installing ? <DreamSkinInstallProgress /> : null}
-      </div>
-    </article>
-  );
-}
-
-function dreamSkinInstallOperationLabel(operation: DreamSkinInstallOperation): string {
-  if (operation.source === "import") return t("正在导入并校验本地主题包…");
-  return tf("正在下载、校验并安装“{0}”…", [operation.name]);
-}
-
-function DreamSkinInstallProgress({ label = t("正在下载、校验并安装主题包…") }: { label?: string }) {
-  return (
-    <div aria-live="polite" className="dream-skin-install-progress" role="status">
-      <span>{label}</span>
-      <div aria-label={label} className="dream-skin-install-progress-bar" role="progressbar">
-        <div />
-      </div>
-    </div>
-  );
-}
-
-function DreamSkinCheckList({ title, checks, emptyText }: { title: string; checks: DreamSkinCheck[]; emptyText: string }) {
-  return (
-    <section className="dream-skin-check-section">
-      <strong>{title}</strong>
-      <div className="dream-skin-check-list">
-        {checks.length ? checks.map((check) => (
-          <div className={`dream-skin-check is-${check.level}`} key={`${title}-${check.id}`}>
-            {dreamSkinCheckIcon(check.level)}
-            <span>
-              <strong>{check.label}</strong>
-              <small>{check.message}</small>
-            </span>
-            <b>{dreamSkinCheckLevelLabel(check.level)}</b>
-          </div>
-        )) : <p className="empty">{emptyText}</p>}
-      </div>
-    </section>
-  );
-}
-
-function dreamSkinColorFields(): Array<[keyof DreamSkinColors, string]> {
-  return [
-    ["background", t("背景色")],
-    ["panel", t("面板色")],
-    ["panelAlt", t("次级面板色")],
-    ["accent", t("强调色")],
-    ["accentAlt", t("次级强调色")],
-    ["secondary", t("辅助色")],
-    ["highlight", t("高亮色")],
-    ["text", t("文字色")],
-    ["muted", t("弱化文字色")],
-    ["line", t("边线色")],
-  ];
-}
-
-function dreamSkinPickerColor(value: string): string {
-  const color = value.trim();
-  const hex = /^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i.exec(color);
-  if (hex) {
-    const digits = hex[1];
-    return digits.length === 3
-      ? `#${digits.split("").map((part) => `${part}${part}`).join("")}`
-      : `#${digits.slice(0, 6)}`;
-  }
-  const rgb = /^rgba?\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)/i.exec(color);
-  if (!rgb) return "#808080";
-  const channel = (raw: string) => Math.max(0, Math.min(255, Math.round(Number(raw)))).toString(16).padStart(2, "0");
-  return `#${channel(rgb[1])}${channel(rgb[2])}${channel(rgb[3])}`;
-}
-
-function dreamSkinCheckIcon(level: "pass" | "warning" | "fail") {
-  if (level === "pass") return <CheckCircle2 aria-hidden="true" className="h-4 w-4" />;
-  if (level === "fail") return <ShieldAlert aria-hidden="true" className="h-4 w-4" />;
-  return <Info aria-hidden="true" className="h-4 w-4" />;
-}
-
-function dreamSkinCheckLevelLabel(level: "pass" | "warning" | "fail"): string {
-  if (level === "pass") return t("通过");
-  if (level === "fail") return t("失败");
-  return t("警告");
-}
-
-function dreamSkinStateLabel(state: "pass" | "warning" | "fail" | "not_running"): string {
-  if (state === "pass") return t("已应用并通过检查");
-  if (state === "warning") return t("需要处理");
-  if (state === "fail") return t("验证失败");
-  return t("Codex 未运行或不可连接");
 }
 
 function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, onOpenBuiltins, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; onOpenClaude: () => void; actions: Actions }) {
@@ -15510,38 +13941,6 @@ function GuideList({ items }: { items: string[] }) {
   );
 }
 
-function DreamSkinUnsavedDialog({
-  onSave,
-  onDiscard,
-  onCancel,
-}: {
-  onSave: () => void;
-  onDiscard: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card">
-        <div className="modal-head">
-          <div>
-            <h2>{t("主题有未保存修改")}</h2>
-            <p className="modal-message">{t("保存修改后继续，或放弃修改。")}</p>
-          </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
-        </div>
-        <Toolbar>
-          <Button onClick={onSave}>
-            <Save className="h-4 w-4" />
-            {t("保存并继续")}
-          </Button>
-          <Button onClick={onDiscard} variant="secondary">{t("放弃修改")}</Button>
-          <Button onClick={onCancel} variant="outline">{t("取消")}</Button>
-        </Toolbar>
-      </div>
-    </div>
-  );
-}
-
 function UpdateDialog({ update, progress, downloaded = false, onClose, onSkipVersion, onMuteToday, onUpdate, onOpenUrl }: {
   update: UpdateResult;
   progress: TaskProgress;
@@ -15843,13 +14242,11 @@ function PendingProviderImportDialog({
 
 function DreamSkinCommunityLinkDialog({
   versionId,
-  installBlocked,
   installPending,
   onConfirm,
   onDismiss,
 }: {
   versionId: string;
-  installBlocked: boolean;
   installPending: boolean;
   onConfirm: () => void;
   onDismiss: () => void;
@@ -15872,7 +14269,7 @@ function DreamSkinCommunityLinkDialog({
           {t("链接不能携带任意下载地址、文件路径或命令；安装后主题会进入“我的主题”，不会自动重启 Codex。")}
         </div>
         <Toolbar>
-          <Button aria-busy={installPending} disabled={installBlocked} onClick={onConfirm}>
+          <Button aria-busy={installPending} disabled={installPending} onClick={onConfirm}>
             {installPending
               ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />
               : <Download className="h-4 w-4" />}
@@ -15881,9 +14278,17 @@ function DreamSkinCommunityLinkDialog({
           <Button disabled={installPending} onClick={onDismiss} variant="secondary">{t("取消")}</Button>
         </Toolbar>
         {installPending ? <DreamSkinInstallProgress /> : null}
-        {installBlocked && !installPending ? (
-          <div className="hint-line" role="status">{t("其他主题正在安装，请等待完成后再安装此主题。")}</div>
-        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function DreamSkinInstallProgress({ label = t("正在下载、校验并安装主题包…") }: { label?: string }) {
+  return (
+    <div aria-live="polite" className="dream-skin-install-progress" role="status">
+      <span>{label}</span>
+      <div aria-label={label} className="dream-skin-install-progress-bar" role="progressbar">
+        <div />
       </div>
     </div>
   );
@@ -17950,7 +16355,7 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
     skills: t("从 GitHub 仓库安装 Skill，按 Agent 启用到 Codex、Claude Code 或 Grok"),
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("管理常用功能、语音输入与下一步建议。"),
-    dreamSkin: t("Codex-Dream-Skin 风格主题和换图"),
+    dreamSkin: t("皮肤已移到 Codex 里，这里只留恢复默认皮肤的急救入口"),
     userScripts: t("万物皆拓展：内置、市场和自己做的拓展"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("来自 Codex++ 广告源的推荐，点卡片在浏览器里打开"),

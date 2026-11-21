@@ -1,14 +1,10 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile } from "node:fs/promises";
-import ts from "typescript";
 
 import {
   defaultDreamSkinTheme,
-  isDreamSkinDraftDirty,
   normalizeDreamSkinTheme,
-  resolveDreamSkinStylePreset,
-  runExclusiveDreamSkinInstall,
 } from "./dream-skin.ts";
 
 describe("dream skin theme helpers", () => {
@@ -34,98 +30,21 @@ describe("dream skin theme helpers", () => {
     assert.equal(theme.colors!.accent, "#E25563");
   });
 
-  it("maps legacy market themes to their layout presets", () => {
-    assert.equal(resolveDreamSkinStylePreset("preset-cyber-neon", undefined), "cyber-neon");
-    assert.equal(resolveDreamSkinStylePreset("codex-snow-skin", "dream-original"), "codex-snow");
-    assert.equal(resolveDreamSkinStylePreset("custom-theme", undefined), "dream-original");
-  });
-
-  it("locks theme installation synchronously and releases the lock after completion", async () => {
-    const lock = { current: false };
-    const pending: boolean[] = [];
-    let finish!: (value: boolean) => void;
-    let runs = 0;
-    const task = () => {
-      runs += 1;
-      return new Promise<boolean>((resolve) => { finish = resolve; });
-    };
-
-    const first = runExclusiveDreamSkinInstall(lock, (value) => pending.push(value), task);
-    const duplicate = await runExclusiveDreamSkinInstall(lock, (value) => pending.push(value), task);
-
-    assert.equal(duplicate, null);
-    assert.equal(runs, 1);
-    assert.equal(lock.current, true);
-    assert.deepEqual(pending, [true]);
-
-    finish(true);
-    assert.equal(await first, true);
-    assert.equal(lock.current, false);
-    assert.deepEqual(pending, [true, false]);
-  });
-
-  it("releases the theme installation lock when the request throws", async () => {
-    const lock = { current: false };
-    const pending: boolean[] = [];
-
-    await assert.rejects(
-      runExclusiveDreamSkinInstall(lock, (value) => pending.push(value), async () => {
-        throw new Error("network failed");
-      }),
-      /network failed/,
-    );
-
-    assert.equal(lock.current, false);
-    assert.deepEqual(pending, [true, false]);
-  });
-
-  it("keeps the real task locked when the initiating view unmounts and remounts", async () => {
-    const appLock = { current: false };
-    let runs = 0;
-    let finish!: (value: boolean) => void;
-    const task = () => {
-      runs += 1;
-      return new Promise<boolean>((resolve) => { finish = resolve; });
-    };
-    const mountView = () => () => runExclusiveDreamSkinInstall(appLock, () => {}, task);
-
-    const firstView = mountView();
-    const activeTask = firstView();
-    const remountedView = mountView();
-    const duplicate = await remountedView();
-
-    assert.equal(duplicate, null);
-    assert.equal(runs, 1);
-    assert.equal(appLock.current, true);
-
-    finish(true);
-    assert.equal(await activeTask, true);
-    assert.equal(appLock.current, false);
-  });
-
-  it("keeps global indeterminate install state across theme views and every install entry", async () => {
+  it("keeps only the rescue entry and the dreamskin:// confirmation in the manager", async () => {
+    // 皮肤界面已移到 Codex 里（Codex++ → 设置 → 皮肤）；管理器不再列主题、激活主题。
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-    const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
 
-    assert.match(app, /const \[dreamSkinInstallOperation, setDreamSkinInstallOperation\] = useState<DreamSkinInstallOperation \| null>\(null\)/);
-    assert.match(app, /const dreamSkinInstallLockRef = useRef\(false\)/);
-    assert.match(app, /runExclusiveDreamSkinInstall\([\s\S]*dreamSkinInstallLockRef,[\s\S]*setDreamSkinInstallOperation/);
-    for (const source of ["market", "community", "pending-community", "import"]) {
-      assert.match(app, new RegExp(`source: "${source}"`));
-    }
-    assert.doesNotMatch(app, /const installLock = useRef\(false\)/);
-    assert.match(app, /const installing = installOperation\?\.source === "market"/);
-    assert.match(app, /const installing = installOperation\?\.source === "community"/);
-    assert.match(app, /disabled=\{installBlocked\}/);
-    assert.match(app, /disabled=\{installBlocked \|\| !theme\.applyCompatible\}/);
-    assert.match(app, /aria-busy=\{installing\}/);
-    assert.match(app, /installOperation=\{dreamSkinInstallOperation\}/);
-    assert.match(app, /DreamSkinInstallProgress label=\{dreamSkinInstallOperationLabel\(installOperation\)\}/);
-    assert.match(app, /installPending=\{dreamSkinInstallOperation\?\.source === "pending-community"\}/);
-    // 导入主题包在「我的主题」工具条上，安装进行中同样禁用。
-    assert.match(app, /disabled=\{Boolean\(installOperation\)\} onClick=\{\(\) => void actions\.importDreamSkinThemePackage\(\)\}/);
+    assert.doesNotMatch(app, /"list_dream_skin_themes"/);
+    assert.doesNotMatch(app, /"activate_dream_skin_theme"/);
+    assert.match(app, /"restore_dream_skin"/);
+    assert.match(app, /"activate_installed_dream_skin_theme"/);
+    assert.match(app, /"confirm_pending_dream_skin_community"/);
+    assert.match(app, /皮肤已移到 Codex 里：打开 Codex 左侧的 Codex\+\+ → 设置 → 皮肤/);
+    // 网页一键换肤确认框的安装中状态：进度条不带具体数值（不确定进度）。
+    assert.match(app, /installPending=\{dreamSkinCommunityInstalling\}/);
     assert.match(app, /className="dream-skin-install-progress-bar" role="progressbar"/);
     assert.doesNotMatch(app, /dream-skin-install-progress-bar[^>]*aria-valuenow/);
+    const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
     assert.match(css, /\.dream-skin-install-progress-bar > div\s*\{[^}]*animation:\s*task-progress-indeterminate/s);
   });
 
@@ -195,16 +114,14 @@ describe("dream skin theme helpers", () => {
 
   it("aligns tall companion images by rendered height with a wider vertical offset range", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
 
     assert.match(renderer, /companion\.naturalWidth/);
     assert.match(renderer, /companion\.naturalHeight/);
     assert.match(renderer, /composer\.rect\.bottom - renderedHeight \+ config\.offsetY/);
     assert.match(renderer, /window\.innerHeight - renderedHeight - edge/);
     assert.match(renderer, /const offsetY = Math\.max\(-160, Math\.min\(Number\(companion\.offsetY\) \|\| 0, 160\)\)/);
-    assert.match(app, /min=\{-160\}/);
-    assert.match(app, /max=\{160\}/);
-    assert.match(app, /Math\.max\(-160, Math\.min\(160, Number\(event\.currentTarget\.value\) \|\| 0\)\)/);
+    // 编辑界面在 Codex 的皮肤页里（96-dream-skin-page.js），垂直偏移同样限制在 ±160。
+    assert.match(renderer, /\{ width: \[48, 160\], offsetX: \[-48, 48\], offsetY: \[-160, 160\] \}/);
   });
 
   it("uses the current shared selector contract without requiring a visible sidebar", async () => {
@@ -264,73 +181,30 @@ describe("dream skin theme helpers", () => {
     assert.match(css, /data-ds-part="home"[\s\S]*overflow:\s*hidden\s*!important/);
   });
 
-  it("exposes companion image controls in the theme editor", async () => {
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  it("exposes companion image controls in the Codex skin page editor", async () => {
+    // 主题编辑在 Codex 的 Codex++ 设置页「皮肤」里，不在管理器。
+    const page = await readFile(new URL("../../../assets/inject/renderer-inject/96-dream-skin-page.js", import.meta.url), "utf8");
 
-    assert.match(app, /dream-skin-companion-controls/);
-    assert.match(app, /FileReader/);
-    assert.match(app, /companion\.dataUrl/);
-    assert.match(app, /companion\?\.offsetX/);
-    assert.match(app, /companion\?\.offsetY/);
-    assert.match(app, /companionEnabled/);
-  });
-
-  it("detects text, color, and image draft changes", () => {
-    const draft = {
-      config: defaultDreamSkinTheme(),
-      imagePath: "current.png",
-      builtin: false,
-    };
-
-    assert.equal(isDreamSkinDraftDirty(draft, draft), false);
-    assert.equal(isDreamSkinDraftDirty(draft, {
-      ...draft,
-      config: { ...draft.config, name: "Changed" },
-    }), true);
-    assert.equal(isDreamSkinDraftDirty(draft, {
-      ...draft,
-      config: { ...draft.config, stylePreset: "cyber-neon" },
-    }), true);
-    assert.equal(isDreamSkinDraftDirty(draft, {
-      ...draft,
-      config: {
-        ...draft.config,
-        colors: { ...draft.config.colors!, accent: "#112233" },
-      },
-    }), true);
-    assert.equal(isDreamSkinDraftDirty(draft, { ...draft, imagePath: "other.png" }), true);
+    assert.match(page, /data-skin-file="companion"/);
+    assert.match(page, /FileReader/);
+    assert.match(page, /companion\?\.dataUrl/);
+    assert.match(page, /\["width", "offsetX", "offsetY"\]/);
+    assert.match(page, /companion-toggle/);
   });
 
   it("visibly credits the source project and exposes complete controls", async () => {
     const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const page = await readFile(new URL("../../../assets/inject/renderer-inject/96-dream-skin-page.js", import.meta.url), "utf8");
 
-    for (const text of [
-      "Fei-Away/Codex-Dream-Skin",
-      "MIT License",
-      "第三方图片",
-      "主题名称",
-      "品牌副标题",
-      "主题标语",
-      "项目前缀",
-      "项目按钮文字",
-      "状态文字",
-      "引用文字",
-      "应用所选主题",
-      "恢复 Codex 外观",
-      "实机验证",
-      "保存截图",
-    ]) {
+    // 管理器的皮肤急救页保留来源说明。
+    for (const text of ["Fei-Away/Codex-Dream-Skin", "MIT License", "第三方图片"]) {
       assert.match(source, new RegExp(text));
     }
+    // 主题编辑字段与恢复入口在 Codex 的皮肤页里。
+    for (const text of ["主题名称", "品牌副标题", "主题标语", "项目前缀", "项目按钮文字", "状态文字", "引用文字", "恢复 Codex 原始外观"]) {
+      assert.match(page, new RegExp(text));
+    }
     assert.doesNotMatch(source, /暂停皮肤|继续皮肤|pauseDreamSkin/);
-  });
-
-  it("keeps the image preview inside its grid column in a compact window", async () => {
-    const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
-    const previewRule = styles.match(/\.dream-skin-preview\s*\{([^}]*)\}/)?.[1] ?? "";
-
-    assert.match(previewRule, /width:\s*100%/);
-    assert.doesNotMatch(previewRule, /min-height:\s*220px/);
   });
 
   it("uses the current launcher debug port for live skin operations", async () => {
@@ -339,145 +213,62 @@ describe("dream skin theme helpers", () => {
     assert.match(source, /overview\?\.latest_launch\?\.debug_port\s*\?\?/);
   });
 
-  it("keeps theme draft separate from backend settings until explicit activation", async () => {
-    const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-
-    assert.match(source, /selectedDreamSkinTheme/);
-    assert.match(source, /dreamSkinThemeDraft/);
-    assert.match(source, /activate_dream_skin_theme/);
-    assert.match(source, /DreamSkinUnsavedDialog/);
-    assert.match(source, /pendingDreamSkinRestart/);
-    assert.match(source, /重启并应用/);
-    assert.doesNotMatch(source, /当前 Codex 无法实时切换完整主题，需要重启 Codex\+\+。是否立即重启/);
-  });
-
   it("restores the original appearance as pending without reloading or restarting Codex", async () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
     const commands = await readFile(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
     const restoreStart = app.indexOf("const restoreDreamSkin = async () =>");
-    const restoreEnd = app.indexOf("const verifyDreamSkin", restoreStart);
+    const restoreEnd = app.indexOf("const actions = useMemo", restoreStart);
     const restoreHandler = app.slice(restoreStart, restoreEnd);
     const commandStart = commands.indexOf("pub async fn restore_dream_skin");
     const commandEnd = commands.indexOf("pub fn reset_dream_skin_theme", commandStart);
     const restoreCommand = commands.slice(commandStart, commandEnd);
 
-    assert.match(restoreHandler, /Codex 原始外观/);
-    assert.match(restoreHandler, /setPendingDreamSkinRestart/);
+    assert.ok(restoreStart > -1 && restoreEnd > restoreStart);
+    assert.match(restoreHandler, /call<DreamSkinRuntimeResult>\("restore_dream_skin", dreamSkinRequest\(\)\)/);
+    assert.match(restoreHandler, /showResultNotice\(/);
+    // 恢复只记为待应用；急救页给出「重启 Codex」按钮，由用户决定何时重启。
+    assert.match(restoreHandler, /setDreamSkinRestartPending\(true\)/);
     assert.doesNotMatch(restoreHandler, /window\.confirm|await restart\(\)/);
+    assert.match(app, /restartPending=\{dreamSkinRestartPending\}/);
     assert.doesNotMatch(restoreCommand, /reload_dream_skin_live/);
     assert.match(restoreCommand, /pending_restart\(false, false\)/);
   });
 
-  it("renders responsive three-column theme grids with platform guidance", async () => {
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-    const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  it("exposes only effective Windows appearance and accent controls in the Codex skin page", async () => {
+    const page = await readFile(new URL("../../../assets/inject/renderer-inject/96-dream-skin-page.js", import.meta.url), "utf8");
 
-    assert.match(app, /dream-skin-theme-library/);
-    assert.match(app, /Windows 使用亮暗模式、图片取色和可选强调色/);
-    assert.match(css, /\.dream-skin-market-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,/s);
-    assert.match(css, /\.dream-skin-theme-list\s*\{[^}]*grid-template-columns:\s*repeat\(3,/s);
-    assert.match(css, /@media \(max-width:\s*760px\)[\s\S]*\.dream-skin-theme-list\s*\{[^}]*grid-template-columns:\s*1fr/s);
+    assert.match(page, /codexPlusDreamSkinPlatform === "windows"/);
+    assert.match(page, /\[\["auto", "自动"\], \["light", "亮色"\], \["dark", "暗色"\]\]/);
+    assert.match(page, /跟随图片配色/);
   });
 
-  it("keeps advanced editing collapsed with one explicit theme activation action", async () => {
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-    const source = ts.createSourceFile("App.tsx", app, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-    const screen = source.statements.find((node): node is ts.FunctionDeclaration =>
-      ts.isFunctionDeclaration(node) && node.name?.text === "DreamSkinScreen",
-    );
-    assert.ok(screen);
+  it("keeps the remote marketplace and community catalogs in the Codex skin page", async () => {
+    const page = await readFile(new URL("../../../assets/inject/renderer-inject/96-dream-skin-page.js", import.meta.url), "utf8");
 
-    // 用 JSX 结构定位完整区域，避免新增嵌套 details 后截在第一个结束标签。
-    const elements = new Map<string, ts.JsxElement>();
-    const visit = (node: ts.Node): void => {
-      if (ts.isJsxElement(node)) {
-        const className = node.openingElement.attributes.properties.find((attribute) =>
-          ts.isJsxAttribute(attribute) && attribute.name.getText(source) === "className",
-        );
-        if (className && ts.isJsxAttribute(className) && className.initializer && ts.isStringLiteral(className.initializer)) {
-          for (const name of className.initializer.text.split(/\s+/)) elements.set(name, node);
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(screen);
-    const customizerNode = elements.get("dream-skin-customizer");
-    const libraryNode = elements.get("dream-skin-theme-library");
-    const overviewNode = elements.get("dream-skin-overview");
-    assert.ok(customizerNode);
-    assert.ok(libraryNode);
-    assert.ok(overviewNode);
-    const customizer = customizerNode.getText(source);
-    const library = libraryNode.getText(source);
-    const overview = overviewNode.getText(source);
-
-    assert.doesNotMatch(customizerNode.openingElement.getText(source), /\sopen(?:=|\s|>)/);
-    assert.match(overview, /应用所选主题/);
-    assert.match(overview, /actions\.activateDreamSkinTheme\(\)/);
-    assert.equal((screen.getText(source).match(/actions\.activateDreamSkinTheme\(\)/g) ?? []).length, 1);
-    assert.match(library, /actions\.selectDreamSkinTheme\(item\)/);
-    assert.doesNotMatch(library, /actions\.activateDreamSkinTheme\(\)/);
-    assert.doesNotMatch(library, /t\("(?:从图片或视频创建|保存主题|恢复 Dream Skin 默认主题)"\)/);
-    // 「从图片创建」只在主题库工具条上放一处（主操作），自定义区不再重复。
-    const toolbar = screen.getText(source).slice(screen.getText(source).indexOf("<CxToolbar onQuery={setLocalQuery}"));
-    assert.match(toolbar.slice(0, toolbar.indexOf("</CxToolbar>")), /t\("从图片或视频创建"\)/);
-    assert.doesNotMatch(customizer, /t\("从图片或视频创建"\)/);
-    assert.match(customizer, /t\("保存主题"\)/);
-    assert.match(customizer, /t\("恢复 Dream Skin 默认主题"\)/);
-    assert.match(customizer, /t\("恢复 Codex 默认配色"\)/);
+    assert.match(page, /"installMarket"/);
+    assert.match(page, /"installCommunity"/);
+    assert.match(page, /主题市场/);
+    assert.match(page, /DreamSkin 社区/);
   });
 
-  it("exposes only effective Windows appearance and accent controls", async () => {
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  it("keeps the skin bridge private to the built-in page and never sends local paths", async () => {
+    const page = await readFile(new URL("../../../assets/inject/renderer-inject/96-dream-skin-page.js", import.meta.url), "utf8");
+    const extensionApi = await readFile(new URL("../../../assets/inject/renderer-inject/91-extension-api.js", import.meta.url), "utf8");
 
-    assert.match(app, /dream-skin-windows-theme-controls/);
-    assert.match(app, /自动/);
-    assert.match(app, /亮色/);
-    assert.match(app, /暗色/);
-    assert.match(app, /跟随图片配色/);
-    assert.match(app, /isWindowsPlatform \? \([\s\S]*dream-skin-windows-theme-controls[\s\S]*dream-skin-colors/);
-    assert.match(app, /if \(isWindowsPlatform\) \{[\s\S]*delete config\.colors;[\s\S]*delete config\.palette;/);
+    // 写操作不进拓展白名单：第三方拓展拿不到改皮肤、装主题、重启 Codex 的口子。
+    assert.doesNotMatch(extensionApi, /"\/dream-skin"/);
+    assert.deepEqual(page.match(/postJson\("[^"]*"/g), ['postJson("/dream-skin"']);
+    // 文件以内容上传，由管理器落到自己的目录；页面不传、也不收本机路径。
+    assert.doesNotMatch(page, /path/i);
+    assert.match(page, /readAsDataURL/);
   });
 
-  it("separates the remote marketplace from local theme editing", async () => {
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-    const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
-
-    assert.match(app, /refresh_dream_skin_market/);
-    assert.match(app, /install_dream_skin_market_theme/);
-    assert.match(app, /主题市场/);
-    assert.match(app, /投稿主题/);
-    assert.match(app, /onInstalled=\{\(\) => setThemeView\("local"\)\}/);
-    assert.match(css, /\.dream-skin-market-grid\s*\{[^}]*grid-template-columns:\s*repeat\(3,/s);
-    assert.match(css, /\.dream-skin-market-preview\s*\{[^}]*aspect-ratio:\s*16 \/ 9/s);
-  });
-
-  it("shows a loading spinner instead of 0 while theme lists are loading", async () => {
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
-    const css = await readFile(new URL("./styles.css", import.meta.url), "utf8");
-
-    assert.match(app, /dreamSkinLibraryLoading/);
-    assert.match(app, /dreamSkinMarketLoading/);
-    assert.match(app, /dreamSkinCommunityLoading/);
-    // tab 计数在加载中渲染转圈图标，而不是渲染 0
-    assert.match(app, /libraryPending \? <Loader2[^/]*className="h-3 w-3 animate-spin" \/> : libraryCount/);
-    assert.match(app, /communityPending \? <Loader2[^/]*className="h-3 w-3 animate-spin" \/> : communityCount/);
-    assert.match(app, /marketPending \? <Loader2[^/]*className="h-3 w-3 animate-spin" \/> : marketCount/);
-    assert.doesNotMatch(app, /<span>\{library\?\.themes\.length \?\? 0\}<\/span>/);
-    assert.doesNotMatch(app, /<span>\{community\?\.items\.length \?\? 0\}<\/span>/);
-    assert.doesNotMatch(app, /<span>\{market\?\.themes\.length \?\? 0\}<\/span>/);
-    // 各区块的加载文案也带转圈
-    assert.match(app, /className="dream-skin-loading" role="status"/);
-    assert.match(css, /\.dream-skin-view-tabs button > span\.is-loading/);
-    assert.match(css, /\.dream-skin-loading\s*\{/);
-  });
-
-  it("allows the webview to load managed theme images only", async () => {
+  it("no longer opens the asset protocol now that skin images are shown inside Codex", async () => {
     const raw = await readFile(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8");
     const config = JSON.parse(raw);
-    const assetProtocol = config.app?.security?.assetProtocol;
+    const cargo = await readFile(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
 
-    assert.equal(assetProtocol?.enable, true);
-    assert.deepEqual(assetProtocol?.scope, ["$HOME/.codex-session-delete/dream-skin/**"]);
+    assert.equal(config.app?.security?.assetProtocol, undefined);
+    assert.doesNotMatch(cargo, /protocol-asset/);
   });
 });

@@ -370,6 +370,9 @@
     state.fetchedModels = [];
     codexPlusProviderSetStatus("");
     renderCodexPlusProviderPage();
+    // 重绘会沿用上一个供应商的滚动位置；新建从头看起。
+    const detail = document.querySelector("[data-codex-provider-panel] .codex-plus-provider-detail");
+    if (detail) detail.scrollTop = 0;
   }
 
   /**
