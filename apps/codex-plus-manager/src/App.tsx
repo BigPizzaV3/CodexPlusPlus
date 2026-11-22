@@ -4,18 +4,13 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowRight, Languages, Moon, Rocket, Sparkles, Sun, AppWindow, X } from "lucide-react";
 import { setSponsorAds } from "./sponsor-store";
 import { managerExtensionPages, managerPageOverrides, type ManagerExtensionPage } from "./extension-manager-pages";
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { AgentCachePanel } from "./agent-cache";
 import { mergeRotatedAuthContents, rebaseSettingsEdits } from "./settings-rebase";
 import { contextEntriesByKind, dedupeContextEntryList, type CodexContextEntries, type CodexContextEntry, type ContextKind } from "./context-config-text";
-import { AgentCollaborationPage } from "./AgentCollaborationPage";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
-import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AppDialogHost, appConfirm } from "./app-dialog";
-import { GatewayPage } from "./GatewayPage";
-import { HubOverview } from "./HubOverview";
 import { publishGatewayPayload } from "./gateway-store";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { SessionsView, sessionDeleteSucceeded } from "./AgentSessions";
@@ -27,7 +22,6 @@ import { keepIfSame, usePolling } from "./use-polling";
 import { useStableCallbacks } from "./use-stable-callbacks";
 import { isRouteAlias, resolveRouteAlias } from "./route-aliases";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
-import { OnboardingTour } from "./OnboardingTour";
 import { OnboardingSetup } from "./OnboardingSetup";
 import { hasCodexEnhancements, SETUP_STORAGE_KEY, serializeSetupState, shouldShowSetup } from "./onboarding-setup-model";
 import { AgentFocusDialog } from "./AgentFocusDialog";
@@ -36,13 +30,10 @@ import { agentVisible, commitAgentFocusSelection, singleAgent, type FocusMode } 
 import { backupAgentFocus, needAgentFocusPrompt, resolveAgentFocusPrompt, restoreAgentFocusFromSettings, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
 import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
-import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
-import { RemoteControlPage } from "./RemoteControlPage";
-import { PluginMarketScreen } from "./PluginMarketScreen";
+import { BACKEND_SETTINGS_CHANGED_EVENT } from "./settings-events";
 import type { ExtensionHost } from "./extension-host-model";
 import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
 import { McpPage } from "./ManagementPages";
-import { SkillsPage } from "./SkillsPage";
 import { ProjectSessionPage } from "./ProjectSessionPage";
 import type { LocalSessionFilter } from "./management-model";
 import { managerNavigationDestination, type ManagerNavigationIntent } from "./enhancement-navigation";
@@ -162,13 +153,8 @@ import {
   visibleActiveTool,
   visibleRoutes,
 } from "./routes";
-import { RequestLogScreen } from "./RequestLogScreen";
 import { CodexMultiLaunchScreen } from "./MultiLaunchScreen";
-import { ClaudeLocalizationScreen } from "./ClaudeDesktopPage";
-import { WeixinConnectScreen } from "./WeixinPage";
-import { EnhanceScreen, UserScriptsScreen } from "./ExtensionsPage";
 import { SessionRepairPanel } from "./SessionRepairPanel";
-import { AboutScreen, AgentSettingsScreen, AppSettingsFocus, GlobalSettingsScreen, MaintenanceScreen, SharedServiceSettings } from "./SettingsScreens";
 import { HomeScreen } from "./HomeScreen";
 import { OverviewScreen } from "./OverviewScreen";
 import {
@@ -181,6 +167,30 @@ import {
 } from "./AppDialogs";
 import { LegacyRelayGatewayHint, ProxySettingsScreen, RelayScreen } from "./RelayScreen";
 import { activeSettingsEntry, AppSidebar, CustomizeTabs, settingsNavEntries } from "./AppSidebar";
+import { lazyNamed, PageFallback } from "./lazy-page";
+
+// 不常用的页面按需加载（首页、侧栏、Codex 连接 / 多开 / 会话 / MCP 等常用页仍随主界面一起加载）。
+const GatewayPage = lazyNamed(() => import("./GatewayPage"), "GatewayPage");
+const HubOverview = lazyNamed(() => import("./HubOverview"), "HubOverview");
+const SkillsPage = lazyNamed(() => import("./SkillsPage"), "SkillsPage");
+const ComputerUsePage = lazyNamed(() => import("./ComputerUsePage"), "ComputerUsePage");
+const AgentCollaborationPage = lazyNamed(() => import("./AgentCollaborationPage"), "AgentCollaborationPage");
+const PluginMarketScreen = lazyNamed(() => import("./PluginMarketScreen"), "PluginMarketScreen");
+const RemoteControlPage = lazyNamed(() => import("./RemoteControlPage"), "RemoteControlPage");
+const ClaudeLocalizationScreen = lazyNamed(() => import("./ClaudeDesktopPage"), "ClaudeLocalizationScreen");
+const WeixinConnectScreen = lazyNamed(() => import("./WeixinPage"), "WeixinConnectScreen");
+const UserScriptsScreen = lazyNamed(() => import("./ExtensionsPage"), "UserScriptsScreen");
+const EnhanceScreen = lazyNamed(() => import("./ExtensionsPage"), "EnhanceScreen");
+const ExtensionManagerPanel = lazyNamed(() => import("./ExtensionManagerPanel"), "ExtensionManagerPanel");
+const GlobalSettingsScreen = lazyNamed(() => import("./SettingsScreens"), "GlobalSettingsScreen");
+const AboutScreen = lazyNamed(() => import("./SettingsScreens"), "AboutScreen");
+const AppSettingsFocus = lazyNamed(() => import("./SettingsScreens"), "AppSettingsFocus");
+const MaintenanceScreen = lazyNamed(() => import("./SettingsScreens"), "MaintenanceScreen");
+const AgentSettingsScreen = lazyNamed(() => import("./SettingsScreens"), "AgentSettingsScreen");
+const SharedServiceSettings = lazyNamed(() => import("./SettingsScreens"), "SharedServiceSettings");
+const AgentCachePanel = lazyNamed(() => import("./agent-cache"), "AgentCachePanel");
+const OnboardingTour = lazyNamed(() => import("./OnboardingTour"), "OnboardingTour");
+const RequestLogScreen = lazyNamed(() => import("./RequestLogScreen"), "RequestLogScreen");
 
 /// 多开启动后轮询「就绪/失败」结论的节奏：worker 最长等 90 秒就绪，这里给到 2 分钟。
 const MULTI_LAUNCH_POLL_INTERVAL_MS = 3000;
@@ -3454,7 +3464,7 @@ export function App() {
           onAddDirectProvider={() => setAddDirectProviderRequested(true)}
         />
       ) : null}
-      {tourOpen && !agentFocusOpen ? <OnboardingTour focus={agentFocus} onClose={closeTour} /> : null}
+      {tourOpen && !agentFocusOpen ? <Suspense fallback={null}><OnboardingTour focus={agentFocus} onClose={closeTour} /></Suspense> : null}
       <main className="workspace">
         <section
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
@@ -3484,6 +3494,8 @@ export function App() {
               <Button size="sm" variant="ghost" onClick={() => setBuiltinPagesShown((current) => { const next = new Set(current); next.delete(route); return next; })}>{t("使用拓展页面")}</Button>
             </div>
           ) : null}
+          {/* 按需加载的页面在这里等代码到位；不常用的页面才走这里，常用页不受影响。 */}
+          <Suspense fallback={<PageFallback />}>
           {extensionPageView ?? (<>
           {route === "overview" ? (
             <OverviewScreen
@@ -3677,12 +3689,15 @@ export function App() {
           {gatewayTabByRoute[route] ? (
             <GatewayPage
               extraSettings={
-                <SharedServiceSettings
-                  autoSave={<SettingsAutoSave dirty={settingsDirty} form={settingsForm} actions={actions} />}
-                  form={settingsForm}
-                  onFormChange={setSettingsForm}
-                  overview={overview}
-                />
+                // 这块和设置页同一个按需加载的模块：网关页已经显示出来了，等它时不再把整页换成占位。
+                <Suspense fallback={null}>
+                  <SharedServiceSettings
+                    autoSave={<SettingsAutoSave dirty={settingsDirty} form={settingsForm} actions={actions} />}
+                    form={settingsForm}
+                    onFormChange={setSettingsForm}
+                    overview={overview}
+                  />
+                </Suspense>
               }
               codexRun={codexRun}
               notify={actions.showMessage}
@@ -3780,6 +3795,7 @@ export function App() {
             </div>
           ) : null}
           </>)}
+          </Suspense>
         </section>
       </main>
       {updatePrompt && !agentFocusOpen && !tourOpen ? (

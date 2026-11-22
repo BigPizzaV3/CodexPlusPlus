@@ -30,17 +30,22 @@ export function readAppSource(): string {
   return APP_SOURCE_FILES.map((name) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8")).join("\n");
 }
 
-/** 按名字取主界面某个顶层声明（函数、变量、类型）的源码，不管它拆到了哪个文件；找不到时返回空串。 */
+/**
+ * 按名字取主界面某个顶层声明（函数、变量、类型）的源码，不管它拆到了哪个文件；找不到时返回空串。
+ * 函数 / 类型声明优先：按需加载的页面在 App.tsx 里还有一个同名的 `const X = lazyNamed(...)`，要取的是页面本身。
+ */
 export function appDeclarationSource(name: string): string {
+  let variable = "";
   for (const file of APP_SOURCE_FILES) {
     const text = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
     const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     for (const statement of source.statements) {
-      const names = ts.isVariableStatement(statement)
-        ? statement.declarationList.declarations.map((declaration) => declaration.name.getText(source))
-        : "name" in statement && statement.name && ts.isIdentifier(statement.name as ts.Node) ? [(statement.name as ts.Identifier).text] : [];
-      if (names.includes(name)) return statement.getText(source);
+      if (ts.isVariableStatement(statement)) {
+        if (!variable && statement.declarationList.declarations.some((declaration) => declaration.name.getText(source) === name)) variable = statement.getText(source);
+      } else if ("name" in statement && statement.name && ts.isIdentifier(statement.name as ts.Node) && (statement.name as ts.Identifier).text === name) {
+        return statement.getText(source);
+      }
     }
   }
-  return "";
+  return variable;
 }
