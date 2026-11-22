@@ -18,7 +18,7 @@ import {
 } from "./gateway-model";
 import { hubAgents, hubLinks, hubPoolState, hubProviders, hubTotals, routeRecordsByEntry, successRate, type CodexSummary, type HubLink } from "./hub-overview-model";
 import { AGENT_ICONS, APP_LOGO_URL, Avatar, GatewayLoadError, KeyCount, MemberStatusLabel, agentIconIsColor, makeRun, type Notify, type Run } from "./gateway-ui";
-import { publishGatewayPayload, useGatewayPayload, useGatewayState } from "./gateway-store";
+import { gatewayJump, publishGatewayPayload, useGatewayPayload, useGatewayState } from "./gateway-store";
 import { AgentConnectDialog } from "./GatewayAgents";
 import { busyLinks, liveFlowRoutes, flowRoutePosition, flowAgent, pulseHops, type FlowEntry, type LiveFlowRoute } from "./request-flow-model";
 import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
@@ -111,6 +111,11 @@ export function HubOverview({
   const [busy, setBusy] = useState<string | null>(null);
   const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
   const poolState = hubPoolState(payload);
+  // 点拓扑里的某家供应商：到供应商池并展开、滚到那一家。
+  const openProvider = (id: string) => {
+    gatewayJump.provider = id;
+    onNavigate("gatewayProviders");
+  };
 
   // 参照 Cursor 的 Customize：顶部一排今日数字，中间一张拓扑卡（Codex++ 的卖点：任意 Agent → 网关 → 多家供应商），
   // 下面「最近请求」一个列表。现状说明不再单独写一段，拓扑图自己就说明了。
@@ -187,7 +192,7 @@ export function HubOverview({
               </button>
             ) : null}
             {providers.map((provider) => (
-              <button className="hub-node" data-node={`provider:${provider.id}`} data-flow-provider={flowProviderSlot(provider.id)} key={provider.id} onClick={() => onNavigate("gatewayProviders")} title={provider.name} type="button">
+              <button className="hub-node" data-node={`provider:${provider.id}`} data-flow-provider={flowProviderSlot(provider.id)} key={provider.id} onClick={() => openProvider(provider.id)} title={provider.name} type="button">
                 <i className="flow-provider-mark" aria-hidden="true" />
                 <Avatar baseUrl={provider.baseUrl} name={provider.name} size="sm" />
                 <span className="hub-node-text">

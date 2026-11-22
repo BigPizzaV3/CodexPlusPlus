@@ -18,3 +18,12 @@ test("供应商池和总览共用同一套添加流程", () => {
   assert.match(providers, /export function ProviderAdder/);
   assert.match(providers, /\{adding \? <ProviderAdder/);
 });
+
+test("总览里点某家供应商：带上落地位置跳到供应商池，那边展开并滚到它", () => {
+  const hub = read("HubOverview.tsx");
+  assert.match(hub, /gatewayJump\.provider = id;\s*onNavigate\("gatewayProviders"\);/);
+  assert.match(hub, /onClick=\{\(\) => openProvider\(provider\.id\)\}/);
+  const providers = read("GatewayProviders.tsx");
+  assert.match(providers, /takeGatewayJump\("provider"\)/);
+  assert.match(providers, /scrollIntoView\(\{ block: "center" \}\)/);
+});
