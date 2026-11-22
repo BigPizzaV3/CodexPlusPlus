@@ -14788,16 +14788,18 @@ function ClaudeLocalizationScreen(
     }
     return succeeded;
   };
-  const toggleVoiceInput = async (enabled: boolean) => {
+  /// 补丁版的三个开关（汉化、语音输入、Computer Use）共用：一次只跑一个，成功时才更新状态。
+  const setClaudeFlag = async (
+    key: "localization" | "voiceInput" | "computerUse",
+    command: "claude_localization_set_localization" | "claude_localization_set_voice_input" | "claude_localization_set_computer_use",
+    enabled: boolean,
+  ) => {
     if (pending.current || localPending.current) return;
     pending.current = true;
     statusGeneration.current++;
-    setBusy("voiceInput"); setError(null);
+    setBusy(key); setError(null);
     try {
-      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
-        "claude_localization_set_voice_input",
-        { enabled },
-      );
+      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(command, { enabled });
       // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
       // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
       accept(result);
@@ -14807,23 +14809,8 @@ function ClaudeLocalizationScreen(
       if (mounted.current) setBusy(null);
     }
   };
-  const toggleComputerUse = async (enabled: boolean) => {
-    if (pending.current || localPending.current) return;
-    pending.current = true;
-    statusGeneration.current++;
-    setBusy("computerUse"); setError(null);
-    try {
-      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
-        "claude_localization_set_computer_use",
-        { enabled },
-      );
-      accept(result);
-    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
-    finally {
-      pending.current = false;
-      if (mounted.current) setBusy(null);
-    }
-  };
+  const toggleVoiceInput = (enabled: boolean) => setClaudeFlag("voiceInput", "claude_localization_set_voice_input", enabled);
+  const toggleComputerUse = (enabled: boolean) => setClaudeFlag("computerUse", "claude_localization_set_computer_use", enabled);
   const saveBashTimeout = async (next: ClaudeBashTimeoutSettings) => {
     if (localPending.current || (pending.current && !bashTimeoutSaving.current)) return;
     bashTimeoutQueued.current = next;
@@ -14862,25 +14849,7 @@ function ClaudeLocalizationScreen(
       if (mounted.current) setBusy(null);
     }
   };
-  const toggleLocalization = async (enabled: boolean) => {
-    if (pending.current || localPending.current) return;
-    pending.current = true;
-    statusGeneration.current++;
-    setBusy("localization"); setError(null);
-    try {
-      const result = await invoke<CommandResult<ClaudeLocalizationStatus>>(
-        "claude_localization_set_localization",
-        { enabled },
-      );
-      // 失败响应里的 data 是空对象：直接覆盖状态会让下面的渲染读到不存在的字段
-      // （曾经就是这样整页白屏的），所以只有成功时才更新状态。
-      accept(result);
-    } catch (cause) { if (mounted.current) setError(stringifyError(cause)); }
-    finally {
-      pending.current = false;
-      if (mounted.current) setBusy(null);
-    }
-  };
+  const toggleLocalization = (enabled: boolean) => setClaudeFlag("localization", "claude_localization_set_localization", enabled);
   const s = status;
   const bashTimeout = bashTimeoutDraft ?? s?.bashTimeout;
   useEffect(() => {
