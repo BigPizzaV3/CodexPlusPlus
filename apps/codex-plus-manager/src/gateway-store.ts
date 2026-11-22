@@ -3,7 +3,7 @@
  * 间隔取所有在用组件要的最短那个；窗口不可见时不读，重新可见时补一轮。
  * 读取失败时保留上一次的数据，另记一个 `error` 给还没有数据的页面显示重试。
  */
-import { createContext, useEffect, useSyncExternalStore } from "react";
+import { createContext, useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { rememberAgentNames, type GatewayPayload, type GatewayResult } from "./gateway-model";
 
@@ -153,7 +153,39 @@ export function useGatewayPayload(intervalMs: number): GatewayPayload | null {
 }
 
 /** 网关各页之间跳转时带的落地位置：跳过去的页面读一次就清掉。 */
-export const gatewayJump: { provider: string | null } = { provider: null };
+export const gatewayJump: { provider: string | null; agent: string | null } = { provider: null, agent: null };
+
+/** 取出并清掉跳转带来的落地位置。 */
+export function takeGatewayJump(kind: keyof typeof gatewayJump): string | null {
+  const target = gatewayJump[kind];
+  gatewayJump[kind] = null;
+  return target;
+}
+
+const viewState = new Map<string, unknown>();
+
+/**
+ * 网关各页签切换时会重新挂载：搜索词、展开的行、折叠状态按 `key` 记在模块里，切回来还是原样（只在本次运行内）。
+ * `key` 为 null 时就是普通的 state（比如嵌在弹窗里的同一个列表，不和页面共用）；
+ * `override` 不是 undefined 时以它为准（从别的页跳过来，指定了要展开的那一行）。
+ */
+export function useGatewayViewState<T>(key: string | null, initial: T, override?: T): [T, (next: T) => void] {
+  const [value, setValue] = useState<T>(() => {
+    if (override !== undefined) {
+      if (key) viewState.set(key, override);
+      return override;
+    }
+    return key && viewState.has(key) ? (viewState.get(key) as T) : initial;
+  });
+  const update = useCallback(
+    (next: T) => {
+      if (key) viewState.set(key, next);
+      setValue(next);
+    },
+    [key],
+  );
+  return [value, update];
+}
 
 /** 网关页里的跳转入口（只在网关页里有；总览、托盘里的模型下拉拿不到就不显示对应链接）。 */
 export const GatewayNavContext = createContext<{ openModelGroups?: () => void }>({});

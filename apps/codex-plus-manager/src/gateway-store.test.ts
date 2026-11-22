@@ -47,7 +47,14 @@ function harness() {
         },
       };
       if (name === "./gateway-model") return { rememberAgentNames: () => {} };
-      if (name === "react") return { createContext: () => ({}), useEffect: () => {}, useSyncExternalStore: () => null };
+      if (name === "react") return {
+        createContext: () => ({}),
+        useEffect: () => {},
+        useSyncExternalStore: () => null,
+        useCallback: (callback: unknown) => callback,
+        // 每次调用都是一次新的挂载：只跑初始化函数，setter 什么都不做（组件里的 state 不在这里测）。
+        useState: (initial: () => unknown) => [initial(), () => {}],
+      };
       assert.fail(name);
     },
   });
@@ -164,4 +171,19 @@ test("读取失败：保留上一份数据，记下错误；成功后清掉", as
   await ok;
   assert.deepEqual(store.getGatewayState().error, null);
   assert.equal(store.getGatewayState().payload.port, 1);
+});
+
+test("切换页签重新挂载后，搜索词、展开状态还在；跳转指定的行优先", () => {
+  const { store } = harness();
+  const [query, setQuery] = store.useGatewayViewState("routing.query", "");
+  assert.equal(query, "");
+  setQuery("gpt");
+  assert.equal(store.useGatewayViewState("routing.query", "")[0], "gpt", "重新挂载后还是上次的搜索词");
+  assert.equal(store.useGatewayViewState(null, "x")[0], "x", "不记的（弹窗里）每次从初始值开始");
+  store.useGatewayViewState("providers.expanded", null)[1]("relay-a");
+  store.gatewayJump.provider = "relay-b";
+  const jumped = store.takeGatewayJump("provider");
+  assert.equal(store.gatewayJump.provider, null, "读一次就清掉");
+  assert.equal(store.useGatewayViewState("providers.expanded", null, jumped)[0], "relay-b");
+  assert.equal(store.useGatewayViewState("providers.expanded", null)[0], "relay-b", "跳转结果也记下");
 });

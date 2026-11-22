@@ -42,7 +42,7 @@ import {
 } from "./gateway-model";
 import { AppSelect } from "./AppSelect";
 import { shortProviderName } from "./GatewayModelMatrix";
-import { GatewayNavContext, publishGatewayPayload } from "./gateway-store";
+import { GatewayNavContext, publishGatewayPayload, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
@@ -81,6 +81,7 @@ export function AgentsView({
   onManage,
   onOpenCodexProviderSettings,
   codexRun,
+  embedded = false,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -90,15 +91,18 @@ export function AgentsView({
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：不传（比如总览里的接入弹窗）就不显示那个键。 */
   codexRun?: CodexRunControls;
+  /** 嵌在别的页面的弹窗里：展开状态不和「Agent 接入」页共用。 */
+  embedded?: boolean;
 }) {
   // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
   const focus = useAgentFocus();
   const solo = singleAgent(focus);
   const agents = visibleAgents(focus, payload?.agents ?? []);
-  const [expanded, setExpanded] = useState<string | null>(solo);
+  // 展开的那一行、「未接入」折叠状态在切换页签后保留；嵌在弹窗里时不和页面共用。
+  const [expanded, setExpanded] = useGatewayViewState<string | null>(embedded ? null : "agents.expanded", solo);
   const connected = agents.filter((agent) => agent.enabled);
   const others = agents.filter((agent) => !agent.enabled);
-  const [othersOpen, setOthersOpen] = useState<boolean | null>(null);
+  const [othersOpen, setOthersOpen] = useGatewayViewState<boolean | null>(embedded ? null : "agents.othersOpen", null);
   const othersShown = othersOpen ?? connected.length === 0;
   const row = (agent: GatewayAgentView) => (
     <AgentRow
@@ -171,7 +175,7 @@ export function AgentConnectDialog({
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body gw-agent-modal-body">
-          <AgentsView busy={busy} notify={notify} onManage={onManage} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
+          <AgentsView busy={busy} embedded notify={notify} onManage={onManage} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
         </div>
       </div>
     </div>

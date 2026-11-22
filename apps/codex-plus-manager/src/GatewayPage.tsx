@@ -53,7 +53,7 @@ import { UsageView } from "./GatewayUsage";
 import { Avatar, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
 import { shortProviderName } from "./GatewayModelMatrix";
 import { TopbarActions } from "./TopbarActions";
-import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState } from "./gateway-store";
+import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
@@ -204,7 +204,8 @@ const STICKY_OPTIONS: GroupSticky[] = ["cache", "session", "off"];
 /** 路由页：你建的组和自动组，每张卡片上直接改路由方式、会话固定、隐藏成员，手动模式下点成员锁定。 */
 function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
   const [editing, setEditing] = useState<GatewayGroupEntry | "new" | null>(null);
-  const [query, setQuery] = useState("");
+  // 搜索词和自动组的展开状态在切换页签后保留。
+  const [query, setQuery] = useGatewayViewState("routing.query", "");
   const autoOn = payload?.gateway.autoModels !== false;
   const needle = query.trim().toLowerCase();
   const hit = (group: GatewayGroupEntry) =>
@@ -212,7 +213,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
   const mine = (payload?.groups ?? []).filter(hit);
   const autos = (payload?.autoGroups ?? []).filter(hit);
   // 自动组默认折叠（多家都有的模型一多就是一长串）；自己还没建组、或正在搜索时直接展开。
-  const [autosOpen, setAutosOpen] = useState<boolean | null>(null);
+  const [autosOpen, setAutosOpen] = useGatewayViewState<boolean | null>("routing.autosOpen", null);
   const autosShown = autosOpen ?? ((payload?.groups ?? []).length === 0 || Boolean(needle));
 
   const saveMine = (group: GatewayGroupEntry, patch: Partial<GatewayGroupEntry>) => {

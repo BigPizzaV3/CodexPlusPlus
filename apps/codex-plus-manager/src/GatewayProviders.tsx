@@ -78,7 +78,7 @@ import { ProviderMetaSyncDialog } from "./ProviderMetaSyncDialog";
 import type { MetaSyncKind } from "./provider-meta-sync-model";
 import { ProviderKeyList } from "./ProviderKeyList";
 import { ProviderTestDialog } from "./ProviderTestDialog";
-import { gatewayJump } from "./gateway-store";
+import { takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
@@ -287,14 +287,12 @@ export function ProvidersView({
   notify: Notify;
 }) {
   const pool = payload?.pool ?? [];
-  const [query, setQuery] = useState("");
+  // 搜索词、展开的那一家、「已关闭」折叠状态在切换页签后保留。
+  const [query, setQuery] = useGatewayViewState("providers.query", "");
   // 从别的页跳过来指定了供应商：展开那一家并滚到它。读完就清掉。
-  const [expanded, setExpanded] = useState<string | null>(() => {
-    const jumped = gatewayJump.provider;
-    gatewayJump.provider = null;
-    return jumped;
-  });
-  const jumpedTo = useRef(expanded);
+  const [jumped] = useState(() => takeGatewayJump("provider"));
+  const [expanded, setExpanded] = useGatewayViewState<string | null>("providers.expanded", null, jumped ?? undefined);
+  const jumpedTo = useRef(jumped);
   useEffect(() => {
     const id = jumpedTo.current;
     jumpedTo.current = null;
@@ -324,7 +322,7 @@ export function ProvidersView({
   const { active: onList, inactive: offList } = providerPoolSections(ordered, query);
   const visible = ordered.filter((entry) => onList.includes(entry) || offList.includes(entry));
   // 关掉的供应商默认折叠在「已关闭」里；搜索时、或者一家都没开时照常全列出来。从别的页跳到某家时先展开，免得它正好藏在折叠里。
-  const [offOpen, setOffOpen] = useState(Boolean(expanded));
+  const [offOpen, setOffOpen] = useGatewayViewState("providers.offOpen", false, jumped ? true : undefined);
   const collapseOff = onList.length > 0 && offList.length > 0 && !needle;
   const renderRow = (entry: GatewayPoolEntry) => (
     <PoolRow
