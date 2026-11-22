@@ -2592,7 +2592,8 @@ details.relay-fold[open] > .relay-fold-body {
 }
 
 .app-select-option:hover:not(:disabled),
-.app-select-option:focus-visible {
+.app-select-option:focus-visible,
+.app-select-option[data-active="true"] {
   background: hsl(var(--foreground) / 0.08);
   outline: none;
 }
