@@ -151,13 +151,19 @@ pub fn start_supervisor() {
         with_inner(|state| state.state = "disabled");
         return;
     }
+    // 先撤销停止请求：关掉又马上打开时，旧线程还在睡（最多 2 秒），让它接着跑；
+    // 否则这里见 RUNNING 为真直接返回，旧线程醒来看到 STOP 就退出，开关开着却没人监听。
+    STOP.store(false, Ordering::Release);
     if RUNNING.swap(true, Ordering::AcqRel) {
         return;
     }
-    STOP.store(false, Ordering::Release);
+    let paused = load_paused_instance();
     with_inner(|state| {
         state.started_at = Some(Instant::now());
         state.state = "probing";
+        if state.paused_instance.is_none() {
+            state.paused_instance = paused;
+        }
     });
     let spawned = std::thread::Builder::new()
         .name("codex-plus-auto-takeover".into())
@@ -219,7 +225,7 @@ pub fn take_over_now() -> Result<(), String> {
         Err(error) => return Err(error),
     };
     if !inputs.platform_supported {
-        return Err("自动接管目前只支持 macOS。".to_string());
+        return Err("自动接管目前只支持 macOS 和 Linux。".to_string());
     }
     if inputs.session.is_degraded() {
         return Err("当前会话注入已降级，请先重试注入。".to_string());
@@ -296,6 +302,10 @@ fn supervisor_loop() {
     });
     RUNNING.store(false, Ordering::Release);
     log_event("takeover.supervisor_stopped", json!({}));
+    // 退出循环后、清 RUNNING 前又被重新打开：那次 start 以为线程还在而直接返回了，这里补起。
+    if !STOP.load(Ordering::Acquire) {
+        start_supervisor();
+    }
 }
 
 /// 一次探测 + 决策。返回下一次 tick 的间隔。
@@ -456,7 +466,23 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
             current_pid,
         )
     }) || multi_instance_running();
-    let user_active = user_seems_active();
+
+    // 「本次不接管」只管那一个实例：它退了或换了代，跳过标记就作废，
+    // 否则状态行一直显示「本次已跳过」，重开管理器后读回的旧标记也会一直挂着。
+    let paused_instance = match (&state.5, &app) {
+        (Some(paused), AppProbe::Running(current)) if paused != current => None,
+        (Some(_), AppProbe::NotRunning) => None,
+        (paused, _) => paused.clone(),
+    };
+    if state.5.is_some() && paused_instance.is_none() {
+        with_inner(|state| {
+            state.paused_instance = None;
+            if state.state == "paused" {
+                state.state = "probing";
+            }
+        });
+        let _ = std::fs::remove_file(paused_instance_path());
+    }
 
     let session = SessionSnapshot {
         owned: session_snapshot.owned,
@@ -470,6 +496,10 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
         debug_port: session_snapshot.debug_port,
         started_at_ms: session_snapshot.started_at_ms,
     };
+    // 「疑似有人在用」要把会话目录整个走一遍，只在真可能接管时才算（每 2 秒一次）。
+    let user_active = matches!(app, AppProbe::Running(_))
+        && !(cdp_ready && session.is_running())
+        && user_seems_active();
 
     let now = Instant::now();
     let inputs = TakeoverInputs {
@@ -493,7 +523,7 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
         consecutive_failures: state.3,
         user_active,
         active_policy: active_policy(),
-        paused_instance: state.5.clone(),
+        paused_instance,
         restart_history_ms: state.4.clone(),
         now_ms: now_ms(),
     };
@@ -788,6 +818,16 @@ fn persist_paused_instance(key: &InstanceKey) {
     }))
     .unwrap_or_default();
     let _ = codex_plus_core::settings::atomic_write(&paused_instance_path(), &bytes);
+}
+
+/// 读回上次的「本次不接管」：管理器重开后，用户跳过的那个实例仍要跳过。
+fn load_paused_instance() -> Option<InstanceKey> {
+    let bytes = std::fs::read(paused_instance_path()).ok()?;
+    let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok()?;
+    Some(InstanceKey::new(
+        u32::try_from(value.get("pid")?.as_u64()?).ok()?,
+        value.get("lstart")?.as_str()?,
+    ))
 }
 
 #[cfg(test)]

@@ -148,16 +148,19 @@ pub fn has_other_desktop_instance(
             .to_string();
         let all = crate::watcher::find_macos_codex_desktop_main_processes(None);
         let excluded = crate::watcher::find_macos_codex_desktop_main_processes(Some(exclude_port));
-        let mut excluded = excluded
+        let on_our_port = excluded
             .into_iter()
             .map(|process| process.pid)
             .collect::<Vec<_>>();
-        if let Some(pid) = current_pid {
-            excluded.push(pid);
-        }
-        return all
-            .iter()
-            .any(|process| process.executable == expected && !excluded.contains(&process.pid));
+        return all.iter().any(|process| {
+            process.executable == expected
+                && counts_as_other_instance(
+                    process.pid,
+                    process.has_debug_port,
+                    &on_our_port,
+                    current_pid,
+                )
+        });
     }
     #[cfg(windows)]
     {
@@ -184,19 +187,22 @@ pub fn has_other_desktop_instance(
         let expected_str = expected.to_string_lossy();
         let all = crate::watcher::find_linux_codex_desktop_main_processes(None);
         let excluded = crate::watcher::find_linux_codex_desktop_main_processes(Some(exclude_port));
-        let mut excluded = excluded
+        let on_our_port = excluded
             .into_iter()
             .map(|process| process.pid)
             .collect::<Vec<_>>();
-        if let Some(pid) = current_pid {
-            excluded.push(pid);
-        }
         return all.iter().any(|process| {
             let matches_expected = process.executable == expected_str
                 || std::fs::read_link(format!("/proc/{}/exe", process.pid))
                     .map(|target| target == expected || target.starts_with(app_dir))
                     .unwrap_or(false);
-            matches_expected && !excluded.contains(&process.pid)
+            matches_expected
+                && counts_as_other_instance(
+                    process.pid,
+                    process.has_debug_port,
+                    &on_our_port,
+                    current_pid,
+                )
         });
     }
     #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
@@ -204,6 +210,25 @@ pub fn has_other_desktop_instance(
         let _ = (app_dir, exclude_port, current_pid);
         false
     }
+}
+
+/// 一个主进程算不算「别的实例」（多开判据的纯逻辑部分）。
+///
+/// - 跑在我们调试端口上的，是我们管的实例，不算。
+/// - 当前评估的实例本身也不算——**除非**它自带了别的调试端口：那是多开实例、
+///   截图/调试用的隔离实例，或别的工具拉起的，不是用户裸启动的。接管它要先
+///   `osascript quit`，而那会按应用名把所有实例一起退出。
+#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+fn counts_as_other_instance(
+    pid: u32,
+    has_debug_port: bool,
+    on_our_port: &[u32],
+    current_pid: Option<u32>,
+) -> bool {
+    if on_our_port.contains(&pid) {
+        return false;
+    }
+    Some(pid) != current_pid || has_debug_port
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -755,6 +780,21 @@ mod tests {
             "ChatGPT (Beta).exe",
             r#""ChatGPT (Beta).exe" --user-data-dir="C:\cache --type=main""#,
         ));
+    }
+
+    /// 只剩一个自带别的调试端口的实例（截图隔离实例、别的工具拉起的）：
+    /// 它不是裸启动，不能当成要接管的那个去 quit。
+    #[test]
+    fn instance_with_a_foreign_debug_port_counts_as_other() {
+        // 当前实例、没带端口：裸启动，不算别的实例。
+        assert!(!counts_as_other_instance(10, false, &[], Some(10)));
+        // 当前实例、自带别的端口：算。
+        assert!(counts_as_other_instance(10, true, &[], Some(10)));
+        // 跑在我们端口上的：不算。
+        assert!(!counts_as_other_instance(10, true, &[10], Some(10)));
+        assert!(!counts_as_other_instance(20, true, &[20], Some(10)));
+        // 另一个进程：算。
+        assert!(counts_as_other_instance(20, false, &[], Some(10)));
     }
 
     fn running_instance() -> AppProbe {

@@ -2594,9 +2594,11 @@ export function App() {
   /**
    * 读取自动接管状态。总开关关闭时不探测：守护线程本来就不工作，
    * 读到的只会是「未运行」，徒增一次 IPC。
+   * `enabled` 由刚保存开关的调用方传入：那时闭包里的 settings 还是旧值（关），
+   * 照旧值判断会把刚打开的状态清空，状态行一直显示「未运行」。
    */
-  const refreshAutoTakeover = async (silent = false) => {
-    if (settings && !settings.settings.codexAppAutoTakeover) {
+  const refreshAutoTakeover = async (silent = false, enabled = settings?.settings.codexAppAutoTakeover) => {
+    if (enabled === false) {
       setAutoTakeoverState(null);
       return;
     }
@@ -2614,7 +2616,7 @@ export function App() {
     if (!saved) return;
     setSettings((current) => (current ? { ...current, settings: saved } : current));
     if (enabled) {
-      await refreshAutoTakeover(true);
+      await refreshAutoTakeover(true, true);
     } else {
       setAutoTakeoverState(null);
     }
@@ -2627,6 +2629,25 @@ export function App() {
       showResultNotice(t("自动接管"), result, { silentSuccess: false });
     }
   };
+
+  // 首页和设置页都显示接管状态：开着时轮询，接管、跳过、出错都能马上看到（原先只在进页面时读一次）。
+  // 首页的「Codex++ 没开机自启」提示要用到 watcher，进首页时顺带读一次。
+  const autoTakeoverOn = Boolean(settings?.settings.codexAppAutoTakeover);
+  const autoTakeoverVisible = route === "home" || route === "agentSettings";
+  useEffect(() => {
+    if (!autoTakeoverVisible || !autoTakeoverOn) return;
+    let cancelled = false;
+    const load = () => void invoke<AutoTakeoverResult>("load_auto_takeover_state")
+      .then((result) => { if (!cancelled) setAutoTakeoverState(result); })
+      .catch(() => {});
+    load();
+    if (route === "home") void invoke<WatcherResult>("load_watcher_state").then((result) => { if (!cancelled) setWatcher(result); }).catch(() => {});
+    const timer = window.setInterval(load, 3000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [autoTakeoverVisible, autoTakeoverOn, route]);
 
   const navigate = async (target: Route) => {
     // 安装维护并进了 Codex 设置页；关于并进了设置页（滚到版本与更新）。
@@ -5007,6 +5028,9 @@ export function App() {
               onLaunchCodex={() => void (codexAppRunning ? restart() : launch())}
               onNavigate={(next) => void navigate(next)}
               onOpenAgent={(agent) => void switchTool(agent, agentEntryRoute(agent))}
+              autoTakeover={autoTakeover}
+              autoTakeoverOn={settings ? autoTakeoverOn : null}
+              watcherEnabled={watcher ? Boolean(watcher.enabled) : null}
             />
           ) : null}
           {route === "agentCache" ? <AgentCachePanel /> : null}
@@ -9322,6 +9346,9 @@ function HomeScreen({
   onLaunchCodex,
   onNavigate,
   onOpenAgent,
+  autoTakeover,
+  autoTakeoverOn,
+  watcherEnabled,
 }: {
   ads: AdsResult | null;
   actions: Actions;
@@ -9332,6 +9359,10 @@ function HomeScreen({
   onLaunchCodex: () => void;
   onNavigate: (route: Route) => void;
   onOpenAgent: (agent: ToolId) => void;
+  autoTakeover: AutoTakeoverResult | null;
+  /** 设置还没读到时为 null，开关先禁用。 */
+  autoTakeoverOn: boolean | null;
+  watcherEnabled: boolean | null;
 }) {
   const gateway = useGatewayPayload(10_000);
   const usage = useTodayUsage();
@@ -9355,11 +9386,43 @@ function HomeScreen({
     { route: "settings", label: t("设置"), detail: t("主题、更新、日志与诊断"), icon: Settings },
   ];
 
+  // 自动接管紧挨着 Codex 那一行：打开后从 Dock / 启动台直接开 Codex 也有增强，不必再从这里点启动。
+  // Windows 不支持，不显示。关掉 Codex++ 就没人监听，所以没开登录自启时在这一行提醒并给开关。
+  const takeover = autoTakeoverView(autoTakeover);
+  const takeoverNeedsLogin = autoTakeoverOn === true && watcherEnabled === false;
+  const takeoverRow = enhancementPlatform === "windows" ? null : (
+    <CxRow
+      badges={autoTakeoverOn ? <StatusBadge status={takeover.status} label={takeover.label} /> : null}
+      detail={autoTakeoverOn
+        ? [takeover.detail, takeoverNeedsLogin ? t("Codex++ 没有设为登录时打开，退出 Codex++ 后不会接管。") : ""].filter(Boolean).join(" ")
+        : t("打开后，直接打开 Codex（Dock、启动台）也会自动接管并注入增强，不用再从 Codex++ 启动。")}
+      icon={<CxStatusIcon tone={autoTakeoverOn ? (takeover.status === "ok" ? "ok" : takeover.status === "failed" ? "danger" : "warn") : "off"}><Plug /></CxStatusIcon>}
+      key="codex-auto-takeover"
+      title={t("自动接管官方 App")}
+      tooltip={t("官方 App 已在运行且没有调试端口时，会先退出再带参数重开（可能中断正在进行的操作）。")}
+    >
+      {takeoverNeedsLogin ? (
+        <button className="cx-secondary" onClick={() => void actions.setWatcherEnabled(true)} type="button">{t("登录时打开 Codex++")}</button>
+      ) : null}
+      <label className="switch-row compact relay-master-switch relay-master-switch-compact">
+        <input
+          aria-label={t("开启自动接管")}
+          checked={autoTakeoverOn === true}
+          disabled={autoTakeoverOn === null}
+          onChange={(event) => void actions.setAutoTakeover(event.currentTarget.checked)}
+          type="checkbox"
+        />
+        <span>{t("自动接管")}</span>
+        <ToggleVisual />
+      </label>
+    </CxRow>
+  );
+
   const agentRow = (tool: ToolEntry) => {
     const viaGateway = connected.has(tool.id);
     if (tool.id === "codex") {
       const mode = viaGateway ? t("经网关") : tool.activeRelayName ? tf("直连 · {0}", [tool.activeRelayName]) : t("直连");
-      return (
+      return [
         <CxRow
           detail={`${codexRunning ? t("运行中") : t("未运行")} · ${mode}`}
           icon={<CxStatusIcon tone={codexRunning ? "ok" : "off"}><AgentGlyph agent="codex" className="home-agent-glyph" /></CxStatusIcon>}
@@ -9371,8 +9434,9 @@ function HomeScreen({
             {codexRunning ? <RotateCcw /> : <Play />}
             {codexRunning ? t("重启") : t("启动")}
           </button>
-        </CxRow>
-      );
+        </CxRow>,
+        takeoverRow,
+      ];
     }
     return (
       <CxRow
@@ -9533,16 +9597,7 @@ function MaintenanceScreen({
 }) {
   const savedCodexAppPath = settings?.settings.codexAppPath ?? "";
   const takeoverOn = Boolean(settings?.settings.codexAppAutoTakeover);
-  const takeoverStatus = autoTakeover?.state === "degraded" ? "failed" : autoTakeover?.running ? "ok" : "disabled";
-  // 接管状态压成一行：官方 App、调试端口、上次接管；需要注意的情况（出错、本次跳过、平台不支持）优先显示。
-  const takeoverDetail = autoTakeover?.lastError
-    || (autoTakeover?.pausedInstance ? t("本次已跳过自动接管，重启官方 App 后恢复。") : "")
-    || (autoTakeover && !autoTakeover.platformSupported ? t("自动接管目前只支持 macOS 和 Linux。") : "")
-    || [
-      `${t("官方 App")} ${autoTakeover?.appRunning ? t("运行中") : t("未运行")}`,
-      autoTakeover?.actualDebugPort ? `${t("调试端口")} ${autoTakeover.actualDebugPort}` : "",
-      autoTakeover?.lastTakeoverAtMs ? tf("上次接管：{0}", [new Date(autoTakeover.lastTakeoverAtMs).toLocaleString()]) : "",
-    ].filter(Boolean).join(" · ");
+  const takeover = autoTakeoverView(autoTakeover);
   return (
     <>
       {/* Codex 应用一行：识别到的路径 + 状态；换路径、清除保存的路径都在它的菜单里（原来「检查与修复」「应用路径」两节显示同一个路径三次）。 */}
@@ -9653,8 +9708,8 @@ function MaintenanceScreen({
           </label>
           {takeoverOn ? (
             <CxRow
-              badges={<StatusBadge status={takeoverStatus} label={autoTakeover?.state === "degraded" ? t("已降级") : autoTakeover?.running ? t("监听中") : t("未运行")} />}
-              detail={takeoverDetail}
+              badges={<StatusBadge status={takeover.status} label={takeover.label} />}
+              detail={takeover.detail}
               title={t("接管状态")}
               tooltip={t("仅在 Codex++ 正在运行时生效；需要重启官方 App 时会自动重启。")}
             >
@@ -9704,6 +9759,39 @@ function MaintenanceScreen({
       </CxSection>
     </>
   );
+}
+
+/**
+ * 自动接管的状态标签与一行说明（首页和设置页共用）。
+ * 说明里需要注意的情况优先：出错、本次跳过、平台不支持、为什么还没接管；都没有才显示官方 App、端口、上次接管。
+ * `lastReason` / 降级时的 `lastError` 是 Rust 判据的英文原因码（`auto_takeover::decide`），这里翻成人话。
+ */
+function autoTakeoverView(state: AutoTakeoverResult | null): { status: string; label: string; detail: string } {
+  const reasons: Record<string, string> = {
+    multi_instance: t("有另一个 Codex 实例在运行（多开或带调试端口启动的）；接管要先退出 Codex，会把它一起关掉，所以先不接管。"),
+    user_active: t("Codex 正在执行任务，等它空闲后再接管；也可以点「立即接管」。"),
+    probe_unknown: t("无法确认官方 App 状态，已保守跳过。"),
+    backoff: t("上次接管没有成功，稍后自动重试。"),
+    restart_budget_exhausted: t("一小时内接管次数已达上限，已停止自动重试。"),
+    injection_ready_failed: t("上次注入没有成功，重启 Codex 可以重新注入。"),
+    takeover: t("正在接管：退出官方 App 后带参数重开。"),
+  };
+  const reasonText = (code?: string | null) => (code ? reasons[code] ?? "" : "");
+  if (!state) return { status: "off", label: t("未运行"), detail: "" };
+  const attached = state.lastReason === "already_attached";
+  const detail = reasonText(state.lastError) || state.lastError
+    || (state.pausedInstance ? t("本次已跳过自动接管，重启官方 App 后恢复。") : "")
+    || (!state.platformSupported ? t("自动接管目前只支持 macOS 和 Linux。") : "")
+    || reasonText(state.lastReason)
+    || [
+      attached ? t("官方 App 已接管") : `${t("官方 App")} ${state.appRunning ? t("运行中") : t("未运行")}`,
+      state.actualDebugPort ? `${t("调试端口")} ${state.actualDebugPort}` : "",
+      state.lastTakeoverAtMs ? tf("上次接管：{0}", [new Date(state.lastTakeoverAtMs).toLocaleString()]) : "",
+    ].filter(Boolean).join(" · ");
+  if (state.state === "degraded") return { status: "failed", label: t("已降级"), detail };
+  if (state.state === "taking_over") return { status: "warning", label: t("接管中"), detail };
+  if (state.state === "paused") return { status: "warning", label: t("本次跳过"), detail };
+  return state.running ? { status: "ok", label: t("监听中"), detail } : { status: "off", label: t("未运行"), detail };
 }
 
 /// 状态小标签：沿用 statusLabel / statusClass 的文案与分级，换成 CxBadge 的四种色调。

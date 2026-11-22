@@ -744,6 +744,8 @@ pub struct MacosDesktopProcess {
     /// 主可执行文件的绝对路径。
     pub executable: String,
     pub bundle_identifier: Option<String>,
+    /// 启动参数里带了 `--remote-debugging-port`（不论哪个端口）。
+    pub has_debug_port: bool,
 }
 
 /// 从 `ps -axo pid=,uid=,lstart=,args=` 的快照里挑出官方 App 主进程。
@@ -803,6 +805,7 @@ pub fn macos_desktop_main_processes_from_snapshot<'a>(
             lstart: process.lstart,
             executable: executable.to_string(),
             bundle_identifier: bundle_identifier(&app_dir),
+            has_debug_port: process.args.contains("--remote-debugging-port"),
         });
     }
     processes.sort_by_key(|process| process.pid);
@@ -862,6 +865,8 @@ pub struct LinuxDesktopProcess {
     pub pid: u32,
     pub lstart: String,
     pub executable: String,
+    /// 启动参数里带了调试端口（不论哪个端口）。
+    pub has_debug_port: bool,
 }
 
 /// 判定参数列表中是否包含合法的 Chrome / Electron 调试端口参数。
@@ -1108,6 +1113,7 @@ pub fn find_linux_codex_desktop_main_processes(
             pid,
             lstart,
             executable,
+            has_debug_port: has_linux_codex_debug_flag(&argv, None),
         });
     }
 
@@ -1154,6 +1160,7 @@ mod desktop_main_process_tests {
             processes[0].executable,
             "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
         );
+        assert!(processes[0].has_debug_port);
     }
 
     /// renderer / gpu / utility 在 `Contents/Frameworks/.../Helpers/` 下；包内

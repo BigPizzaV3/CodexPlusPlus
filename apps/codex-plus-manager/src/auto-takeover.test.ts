@@ -102,6 +102,20 @@ test("auto-takeover status fields stay aligned with the Rust payload", () => {
   }
 });
 
+test("auto-takeover switch is on the home screen, right under the Codex row", () => {
+  // 只放在设置页太深，用户找不到，还以为必须从 Codex++ 启动 Codex。
+  const home = appSource.slice(appSource.indexOf("function HomeScreen("), appSource.indexOf("function MaintenanceScreen("));
+  assert.match(home, /const takeoverRow = [\s\S]*?actions\.setAutoTakeover\(/, "首页必须有自动接管开关");
+  assert.match(home, /<\/CxRow>,\s*takeoverRow,\s*\]/, "开关行必须紧跟在 Codex 那一行后面");
+  assert.match(home, /actions\.setWatcherEnabled\(true\)/, "没开登录自启时首页要能直接打开");
+});
+
+test("turning the switch on does not read the stale settings closure", () => {
+  // setAutoTakeover 闭包里的 settings 还是旧值（关）；照它判断会把状态清空，状态行一直显示「未运行」。
+  assert.ok(appSource.includes("await refreshAutoTakeover(true, true);"), "打开开关后刷新必须显式传 enabled");
+  assert.ok(appSource.includes('invoke<AutoTakeoverResult>("load_auto_takeover_state")'), "首页 / 设置页要轮询接管状态");
+});
+
 test("auto-takeover copy is translated in the English dictionary", () => {
   // 关掉自动接管现在是开关的反向操作，不再有「关闭自动接管」按钮文案。
   for (const key of [
