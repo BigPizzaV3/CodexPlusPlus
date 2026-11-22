@@ -188,7 +188,8 @@ test("总览：读取中、空池、全部关闭分开显示；最近请求没�
   assert.equal(hubAgents(null, { running: true, providerName: "ChatGPT · me@example.com" })[0].detail, "ChatGPT · m***@example.com");
 
   const hub = read("HubOverview.tsx");
-  assert.match(hub, /poolState === "loading" \? <p className="hub-empty">\{t\("读取中…"\)\}<\/p>/);
+  assert.match(hub, /poolState === "loading" \? <p className="hub-empty">\{error \? t\("读取失败"\) : t\("读取中…"\)\}<\/p>/);
+  assert.match(hub, /\{!payload && error \? <GatewayLoadError error=\{error\} \/> : null\}/, "读不到网关状态时给重试，不再一直读取中");
   assert.match(hub, /poolState === "allOff"/);
   assert.match(hub, /\? t\("正在读取网关状态…"\)/);
   const matrix = read("GatewayModelMatrix.tsx");

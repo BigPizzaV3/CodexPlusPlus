@@ -3528,6 +3528,7 @@ export const EN_PLAIN: Record<string, string> = {
   "自定义配置": "Custom configuration",
   "手动填写请求地址和 API Key，适合中转站和自建服务": "Enter the request URL and API key yourself. Suited to relays and self-hosted services.",
   "读取失败": "Failed to load",
+  "读取网关状态失败": "Couldn't load the gateway status",
   "已刷新": "Refreshed",
   "重新写入当前供应商": "Rewrite current provider",
   "重新写入": "Rewrite",

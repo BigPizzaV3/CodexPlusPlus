@@ -50,7 +50,7 @@ import { AppSelect } from "./AppSelect";
 import { ProvidersView } from "./GatewayProviders";
 import { SessionsView } from "./GatewaySessions";
 import { UsageView } from "./GatewayUsage";
-import { Avatar, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
+import { Avatar, GatewayLoadError, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
 import { shortProviderName } from "./GatewayModelMatrix";
 import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState, useGatewayViewState } from "./gateway-store";
@@ -108,7 +108,7 @@ export function GatewayPage({
   };
   // 数据来自共享存储（整个窗口一个轮询）：订阅额度在后台预取，供应商、路由页要及时收到首次查询和授权后的结果，
   // 所以这两页要的间隔短；其它页签跟侧栏一样。别处改了网关数据（如模型下拉里收藏）也会同步过来。
-  const { payload } = useGatewayState(tab === "routing" || tab === "providers" ? LIVE_REFRESH_MS : IDLE_REFRESH_MS);
+  const { payload, error } = useGatewayState(tab === "routing" || tab === "providers" ? LIVE_REFRESH_MS : IDLE_REFRESH_MS);
   // 切换页签时已有数据，不锁按钮：只有命令执行时才占 busy。
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -135,6 +135,9 @@ export function GatewayPage({
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, []);
+
+  // 一份数据都还没读到就失败了：各页签显示原因和重试，不再一直「正在读取…」（用量页签读自己的数据，不受影响）。
+  const loadFailed = !payload && error !== null && tab !== "usage";
 
   // 与侧栏同序：供应商 → Agent → 路由。
   const tabs: Array<{ id: Tab; label: string }> = [
@@ -182,12 +185,13 @@ export function GatewayPage({
             <span>{t("本地网关当前没有运行，走网关的 Agent 会连不上。请重新保存一次绑定或重启 Codex++。")}</span>
           </p>
         ) : null}
-        {tab === "agents" ? <AgentsView busy={busy} codexRun={codexRun} notify={notify} onManage={() => setTab("providers")} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} /> : null}
+        {loadFailed && error ? <GatewayLoadError error={error} /> : null}
+        {tab === "agents" && !loadFailed ? <AgentsView busy={busy} codexRun={codexRun} notify={notify} onManage={() => setTab("providers")} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} /> : null}
         {tab === "sessions" ? <SessionsView notify={notify} /> : null}
-        {tab === "providers" ? <ProvidersView busy={busy} notify={notify} payload={payload} run={run} /> : null}
-        {tab === "routing" ? <RoutingView busy={busy} payload={payload} run={run} /> : null}
+        {tab === "providers" && !loadFailed ? <ProvidersView busy={busy} notify={notify} payload={payload} run={run} /> : null}
+        {tab === "routing" && !loadFailed ? <RoutingView busy={busy} payload={payload} run={run} /> : null}
         {tab === "usage" ? <UsageView busy={busy} notify={notify} payload={payload} run={run} /> : null}
-        {tab === "gateway" ? <GatewayView busy={busy} notify={notify} payload={payload} run={run} /> : null}
+        {tab === "gateway" && !loadFailed ? <GatewayView busy={busy} notify={notify} payload={payload} run={run} /> : null}
         {tab === "gateway" && extraSettings ? extraSettings : null}
       </div>
       </GatewayNavContext.Provider>

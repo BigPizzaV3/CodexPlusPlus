@@ -17,8 +17,8 @@ import {
   type UsageSummary,
 } from "./gateway-model";
 import { hubAgents, hubLinks, hubPoolState, hubProviders, hubTotals, routeRecordsByEntry, successRate, type CodexSummary, type HubLink } from "./hub-overview-model";
-import { AGENT_ICONS, APP_LOGO_URL, Avatar, KeyCount, MemberStatusLabel, agentIconIsColor, makeRun, type Notify, type Run } from "./gateway-ui";
-import { publishGatewayPayload, useGatewayPayload } from "./gateway-store";
+import { AGENT_ICONS, APP_LOGO_URL, Avatar, GatewayLoadError, KeyCount, MemberStatusLabel, agentIconIsColor, makeRun, type Notify, type Run } from "./gateway-ui";
+import { publishGatewayPayload, useGatewayPayload, useGatewayState } from "./gateway-store";
 import { AgentConnectDialog } from "./GatewayAgents";
 import { busyLinks, liveFlowRoutes, flowRoutePosition, flowAgent, pulseHops, type FlowEntry, type LiveFlowRoute } from "./request-flow-model";
 import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
@@ -80,7 +80,7 @@ export function HubOverview({
   /** 跳到网关的某个页签或其它页面。 */
   onNavigate: (target: "gateway" | "gatewayProviders" | "gatewayUsage" | "requestLog") => void;
 }) {
-  const payload = useGatewayPayload(LIVE_REFRESH_MS);
+  const { payload, error } = useGatewayState(LIVE_REFRESH_MS);
   const usage = useTodayUsage();
   const callsByProvider = useMemo(
     () => (usage ? new Map(usage.byProvider.map((group) => [group.key, group.calls])) : null),
@@ -123,6 +123,9 @@ export function HubOverview({
         <UsageStats showAgents={!solo} usage={usage} />
       </CxSection>
 
+      {/* 网关状态一次都没读到：说明原因、给重试，不再一直「读取中…」。 */}
+      {!payload && error ? <GatewayLoadError error={error} /> : null}
+
       <CxCard className="hub-topology-card">
         <HubTopology className="hub-topology-compact" flow={flow} links={links}>
           <div className="hub-col">
@@ -145,7 +148,7 @@ export function HubOverview({
                 <strong>Codex++</strong>
                 <span className="hub-addr">
                   <i className="hub-dot" data-tone={payload?.helperRunning ? "ok" : "off"} />
-                  {payload ? `127.0.0.1:${payload.port}` : t("读取中…")}
+                  {payload ? `127.0.0.1:${payload.port}` : error ? t("读取失败") : t("读取中…")}
                 </span>
               </span>
             </div>
@@ -175,7 +178,7 @@ export function HubOverview({
 
           <div className="hub-col">
             <div className="hub-col-head"><span>{t("供应商池")}</span><span>{t("今日调用")}</span></div>
-            {poolState === "loading" ? <p className="hub-empty">{t("读取中…")}</p> : null}
+            {poolState === "loading" ? <p className="hub-empty">{error ? t("读取失败") : t("读取中…")}</p> : null}
             {poolState === "empty" ? <p className="hub-empty">{t("供应商池还是空的。")}</p> : null}
             {poolState === "allOff" ? <p className="hub-empty">{tf("池里的 {0} 个供应商都已关闭。", [payload?.pool.length ?? 0])}</p> : null}
             {poolState === "empty" && pendingImports ? (
