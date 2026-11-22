@@ -465,6 +465,18 @@
     }
   }
 
+  /** 左栏目录：页面里的左栏和图标栏悬浮卡片共用。 */
+  const codexPlusRemoteSectionNav = {
+    title: "远程控制",
+    titleHtml: '远程控制<em class="codex-plus-feature-tag" data-tone="experimental">实验</em>',
+    groups: [
+      { id: "remote", label: "远程控制", icon: "core" },
+      { id: "devices", label: "手机与其它设备", icon: "standalone" },
+      { id: "notify", label: "钉钉与飞书通知", icon: "chat" },
+      { id: "help", label: "使用说明", icon: "tools" },
+    ],
+  };
+
   function openCodexPlusRemoteControlPage() {
     closeCodexPlusPage();
     document.querySelectorAll('.codex-plus-modal-overlay, [data-codex-plus-dialog="true"]').forEach((node) => node.remove());
@@ -478,16 +490,7 @@
       <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-remote-panel="true"></div></div></div>`;
     overlay.addEventListener("click", (event) => { void codexPlusRemoteHandleClick(event); });
     overlay.addEventListener("input", codexPlusRemoteHandleInput);
-    installCodexPlusSectionNav(overlay, {
-      title: "远程控制",
-      titleHtml: '远程控制<em class="codex-plus-feature-tag" data-tone="experimental">实验</em>',
-      groups: [
-        { id: "remote", label: "远程控制", icon: "core" },
-        { id: "devices", label: "手机与其它设备", icon: "standalone" },
-        { id: "notify", label: "钉钉与飞书通知", icon: "chat" },
-        { id: "help", label: "使用说明", icon: "tools" },
-      ],
-    });
+    installCodexPlusSectionNav(overlay, codexPlusRemoteSectionNav);
     document.body.appendChild(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);

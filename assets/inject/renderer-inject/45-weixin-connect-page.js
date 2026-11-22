@@ -616,6 +616,17 @@
     }).catch(() => {});
   }
 
+  /** 左栏目录：页面里的左栏和图标栏悬浮卡片共用。 */
+  const codexPlusWeixinSectionNav = {
+    title: "微信连接",
+    groups: [
+      { id: "connection", label: "连接", icon: "core" },
+      { id: "session", label: "对话", icon: "chat" },
+      { id: "jiajia", label: "加加", icon: "pet" },
+      { id: "permission", label: "权限", icon: "feature-lab" },
+    ],
+  };
+
   function openCodexPlusWeixinConnectPage() {
     closeCodexPlusPage();
     document.querySelectorAll('.codex-plus-modal-overlay, [data-codex-plus-dialog="true"]').forEach((node) => node.remove());
@@ -634,15 +645,7 @@
       const panel = document.querySelector("[data-codex-weixin-panel]");
       if (panel && codexPlusWeixinPageState.renderPending && !codexPlusWeixinEditing(panel)) renderCodexPlusWeixinPage();
     }, 0));
-    installCodexPlusSectionNav(overlay, {
-      title: "微信连接",
-      groups: [
-        { id: "connection", label: "连接", icon: "core" },
-        { id: "session", label: "对话", icon: "chat" },
-        { id: "jiajia", label: "加加", icon: "pet" },
-        { id: "permission", label: "权限", icon: "feature-lab" },
-      ],
-    });
+    installCodexPlusSectionNav(overlay, codexPlusWeixinSectionNav);
     document.body.appendChild(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);

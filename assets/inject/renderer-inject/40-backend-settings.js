@@ -810,9 +810,24 @@
     main.appendChild(body);
     if (tab === "home") syncCodexPlusSettingsGroups(overlay);
     // 推荐内容只有一组「合作伙伴」，左栏照原生插件页的「自定义」栏，只为和其它页面同一副样子。
-    if (tab === codexPlusSponsorTab) {
-      installCodexPlusSectionNav(overlay, { title: codexPlusPageTitle(tab), groups: [{ id: "partners", label: "合作伙伴", icon: "plugins" }] });
-    }
+    if (tab === codexPlusSponsorTab) installCodexPlusSectionNav(overlay, codexPlusSponsorSectionNav);
+  }
+
+  const codexPlusSponsorSectionNav = { title: "推荐内容", groups: [{ id: "partners", label: "合作伙伴", icon: "plugins" }] };
+
+  /** 左栏目录的按钮：页面里的左栏和图标栏悬浮卡片（showCodexPlusRailPeek）共用。 */
+  function codexPlusSectionNavItemsHtml(groups, active = "") {
+    return groups.map((group) => {
+      const current = group.id === active;
+      return `<button type="button" class="codex-plus-page-nav-item" data-codex-plus-section-nav="${escapeHtml(group.id)}" data-active="${String(current)}"${current ? ' aria-current="page"' : ""}><span class="codex-plus-page-nav-item-icon" aria-hidden="true">${codexPlusSettingsGroupIcon(group.icon)}</span><span class="codex-plus-page-nav-item-name">${escapeHtml(group.label)}</span></button>`;
+    }).join("");
+  }
+
+  /** 记住的组（localStorage），不在了就是第一组。 */
+  function codexPlusSectionNavActive({ title, groups }) {
+    let active = "";
+    try { active = window.localStorage.getItem(`codex-plus-section-nav:${title}`) || ""; } catch {}
+    return groups.some((group) => group.id === active) ? active : groups[0]?.id || "";
   }
 
   /**
@@ -840,14 +855,12 @@
       main.appendChild(body);
     }
     const storageKey = `codex-plus-section-nav:${title}`;
-    let active = "";
-    try { active = window.localStorage.getItem(storageKey) || ""; } catch {}
-    if (!groups.some((group) => group.id === active)) active = groups[0].id;
+    let active = codexPlusSectionNavActive({ title, groups });
     const nav = document.createElement("nav");
     nav.className = "codex-plus-page-nav";
     nav.setAttribute("aria-label", `${title}分组`);
     nav.innerHTML = `<div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title">${titleHtml || escapeHtml(title)}</div></div>
-      <div class="codex-plus-page-nav-body" data-codex-plus-section-nav-body="true">${groups.map((group) => `<button type="button" class="codex-plus-page-nav-item" data-codex-plus-section-nav="${escapeHtml(group.id)}"><span class="codex-plus-page-nav-item-icon" aria-hidden="true">${codexPlusSettingsGroupIcon(group.icon)}</span><span class="codex-plus-page-nav-item-name">${escapeHtml(group.label)}</span></button>`).join("")}</div>`;
+      <div class="codex-plus-page-nav-body" data-codex-plus-section-nav-body="true">${codexPlusSectionNavItemsHtml(groups, active)}</div>`;
     main.before(nav);
     content.dataset.codexPlusSectionNav = "true";
     const sync = () => {
@@ -1575,48 +1588,215 @@
   }
 
   /**
-   * 侧栏收起时左栏照原生悬浮（CSS 见 data-codex-plus-sidebar="floating"）：鼠标停在图标栏上当前页的入口、
-   * 窗口左边缘 4px 以内或卡片本身上时浮出，移开一会儿收起，和原生侧栏的悬浮触发一样。
-   * 只认 pointermove / 离开窗口，监听挂在 document 上，重复注入时换成新一代的处理函数。
+   * 侧栏收起时照原生悬浮：鼠标停在图标栏的哪个入口上，就浮出那个入口自己的侧栏卡片，换一个入口卡片跟着换，
+   * 移开一会儿收起。当前页面的入口（以及窗口左边缘 4px）浮出页面自己的左栏（CSS 见 data-codex-plus-sidebar="floating"，
+   * 这里打 data-codex-plus-nav-peek）；别的入口——没打开的、或者正在看原生页面时——浮出独立卡片（showCodexPlusRailPeek）。
+   * 侧栏展开时不浮，和原生一样。
+   * 只认 pointermove / 离开窗口，监听挂在 document 上；同一代注入只装一次，重复注入时换成新一代的处理函数。
    */
   function installCodexPlusNavPeek() {
+    if (window.__codexPlusNavPeekHandler && window.__codexPlusNavPeekGeneration === codexPlusBackendGeneration) return;
     document.removeEventListener("pointermove", window.__codexPlusNavPeekHandler, true);
     document.removeEventListener("pointerout", window.__codexPlusNavPeekHandler, true);
-    let showTimer = null;
-    let hideTimer = null;
-    window.__codexPlusNavPeekHandler = (event) => {
+    window.__codexPlusNavPeekGeneration = codexPlusBackendGeneration;
+    // shown / pending：null 是收起，"page" 是页面自己的左栏，其余是图标栏入口的 id（独立卡片）。
+    let shown = null;
+    let pending = null;
+    let timer = null;
+    const pageCard = () => {
       const overlay = document.querySelector(`.${codexPlusPageClass}[data-codex-plus-sidebar="floating"]`);
       const card = overlay?.querySelector(".codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav");
-      if (!card) return;
+      return card ? { overlay, card } : null;
+    };
+    const apply = (next) => {
+      timer = null;
+      const page = pageCard();
+      if (next === "page" && !page) next = null;
+      if (next !== null && next !== "page" && !showCodexPlusRailPeek(next)) next = null;
+      if (next === null || next === "page") hideCodexPlusRailPeek();
+      if (page) {
+        if (next === "page") page.overlay.dataset.codexPlusNavPeek = "true";
+        else delete page.overlay.dataset.codexPlusNavPeek;
+      }
+      shown = next;
+    };
+    window.__codexPlusNavPeekHandler = (event) => {
       const target = event.target instanceof Element ? event.target : null;
       const leavingWindow = event.type === "pointerout" && !event.relatedTarget;
-      const want = !leavingWindow && Boolean(
-        target?.closest('[data-codex-plus-rail] > button[aria-current="page"]')
-        || card.contains(target)
-        || event.clientX <= 4
-      );
-      if (want) {
-        clearTimeout(hideTimer);
-        hideTimer = null;
-        if (overlay.dataset.codexPlusNavPeek !== "true" && !showTimer) {
-          showTimer = setTimeout(() => {
-            showTimer = null;
-            overlay.dataset.codexPlusNavPeek = "true";
-          }, card.contains(target) ? 0 : 120);
-        }
-      } else {
-        clearTimeout(showTimer);
-        showTimer = null;
-        if (overlay.dataset.codexPlusNavPeek === "true" && !hideTimer) {
-          hideTimer = setTimeout(() => {
-            hideTimer = null;
-            delete overlay.dataset.codexPlusNavPeek;
-          }, 250);
-        }
+      const page = pageCard();
+      const peek = document.getElementById(codexPlusRailPeekId);
+      let next = null;
+      if (!leavingWindow) {
+        const railButton = target?.closest("[data-codex-plus-rail] > button");
+        if (railButton) {
+          if (codexPlusSidebarFloating()) next = page && railButton.getAttribute("aria-current") === "page" ? "page" : railButton.parentElement.id;
+        } else if (page?.card.contains(target)) next = "page";
+        else if (peek?.dataset.open === "true" && peek.contains(target)) next = shown;
+        else if (page && event.clientX <= 4) next = "page";
       }
+      if (next === shown) {
+        clearTimeout(timer);
+        timer = null;
+        return;
+      }
+      if (timer && next === pending) return;
+      clearTimeout(timer);
+      pending = next;
+      // 原生入口之间换卡片是立刻的；移到原生入口上时原生卡片马上出来，我们的也马上让开。
+      const delay = next === null
+        ? (target?.closest(codexPlusRailDestinationSelector) ? 0 : 250)
+        : (shown !== null || page?.card.contains(target) ? 0 : 120);
+      timer = setTimeout(() => apply(next), delay);
     };
     document.addEventListener("pointermove", window.__codexPlusNavPeekHandler, true);
     document.addEventListener("pointerout", window.__codexPlusNavPeekHandler, true);
+  }
+
+  /** 侧栏收起：原生面板一直铺到图标栏右边（展开时它从侧栏右边起）。旧外壳没有这块面板，不算。 */
+  function codexPlusSidebarFloating() {
+    const rail = document.querySelector(codexPlusRailSelector)?.getBoundingClientRect();
+    const backing = document.querySelector("[data-app-shell-surface-backing]")?.getBoundingClientRect();
+    return Boolean(rail?.width > 0 && backing?.width > 0 && backing.left <= rail.right + 1);
+  }
+
+  const codexPlusRailPeekId = "codex-plus-rail-peek";
+
+  /**
+   * 图标栏入口的悬浮卡片内容：标题、左栏条目和点一项要做的事（打开那一页并停在那一组）。
+   * 条目和页面里的左栏同一套标记，样式也共用（10-style.js 里 .codex-plus-rail-peek-content）。
+   * 供应商、任务面板的左栏还不浮，没有卡片。
+   */
+  function codexPlusRailPeekSpec(railId, load = true) {
+    // 条目要等后台读完（设置项清单、用户拓展）：读完时卡片还开着就照新数据重画（重画不再触发读取）。
+    const refreshAfter = (loader) => {
+      if (!load) return;
+      Promise.resolve(loader()).then(() => {
+        const peek = document.getElementById(codexPlusRailPeekId);
+        if (peek?.dataset.open === "true" && peek.dataset.railId === railId) showCodexPlusRailPeek(railId, false);
+      }, () => {});
+    };
+    const section = (nav, open) => ({
+      label: nav.title,
+      titleHtml: nav.titleHtml || escapeHtml(nav.title),
+      attrs: ' data-codex-plus-section-nav="true"',
+      items: codexPlusSectionNavItemsHtml(nav.groups, codexPlusSectionNavActive(nav)),
+      pick(button) {
+        const id = button.getAttribute("data-codex-plus-section-nav");
+        if (!id) return;
+        try { window.localStorage.setItem(`codex-plus-section-nav:${nav.title}`, id); } catch {}
+        open();
+      },
+    });
+    if (railId === codexPlusRailRemoteId) return section(codexPlusRemoteSectionNav, openCodexPlusRemoteControlPage);
+    if (railId === codexPlusRailWeixinId) return section(codexPlusWeixinSectionNav, openCodexPlusWeixinConnectPage);
+    if (railId === codexPlusRailSponsorId) return section(codexPlusSponsorSectionNav, openCodexPlusSponsor);
+    if (railId === codexPlusRailNavId) {
+      if (!codexPlusSettingsCatalog) refreshAfter(loadCodexPlusSettingsCatalog);
+      return {
+        label: "Codex++ 设置分组",
+        titleHtml: `Codex++ ${escapeHtml(codexPlusVersion)}`,
+        attrs: ' data-codex-plus-active-tab="home" data-codex-plus-section-nav="true"',
+        items: codexPlusSettingsPeekNavItems(),
+        pick(button) {
+          const id = button.getAttribute("data-codex-plus-settings-nav");
+          if (!id) return;
+          openCodexPlusPage();
+          selectCodexPlusSettingsGroup(id);
+        },
+      };
+    }
+    if (railId === codexPlusRailExtensionsId) {
+      if (!codexPlusUserScriptsLoaded) refreshAfter(loadUserScripts);
+      return {
+        label: "拓展",
+        titleHtml: escapeHtml(codexPlusPageTitle(codexPlusExtensionsTab)),
+        attrs: ` data-codex-plus-active-tab="${codexPlusExtensionsTab}"`,
+        items: renderCodexPlusExtensionsNav(),
+        pick(button) {
+          const select = button.getAttribute("data-codex-extensions-select");
+          if (!select && !button.hasAttribute("data-codex-extensions-browse")) return;
+          if (!select) codexPlusExtensionsFilter = "market";
+          openCodexPlusExtensions();
+          if (!select) return;
+          const [kind, ...rest] = select.split(":");
+          codexPlusExtensionsSelected = { kind, key: rest.join(":") };
+          if (typeof resetCodexPlusExtensionsDetailTab === "function") resetCodexPlusExtensionsDetailTab();
+          refreshCodexPlusExtensionsView();
+        },
+      };
+    }
+    return null;
+  }
+
+  /**
+   * 设置页没打开时的分组导航：分组外壳照设置页的顺序拼一份（不画里面的设置项），
+   * 交给 renderCodexPlusSettingsNavItems，小标题、图标、选中态和页面里的左栏一样。
+   */
+  function codexPlusSettingsPeekNavItems() {
+    const catalog = codexPlusSettingsCatalog;
+    const groups = catalog
+      ? catalog.groups.map((group) => renderCodexPlusSettingsGroup(group.id, group.title, "")).join("")
+      : renderCodexPlusSettingsGroup("core", "常规", "");
+    const menu = codexPlusExtensionItems(codexPlusRegistry.menuItems).length ? '<div data-codex-plus-ext-menu="true"></div>' : "";
+    const root = document.createElement("div");
+    root.innerHTML = `<div data-codex-plus-panel="home">${groups}${renderCodexPlusSettingsSectionGroups()}${renderCodexPlusSettingsGroup("ext-menu", "拓展设置", menu)}${renderCodexPlusSettingsGroup("tools", "工具与关于", "")}</div>`;
+    return renderCodexPlusSettingsNavItems(root);
+  }
+
+  /** 浮出入口的独立卡片，位置照原生悬浮侧栏：图标栏右边起，上下左各留 4px，宽 = 原生侧栏宽 − 4。 */
+  function showCodexPlusRailPeek(railId, load = true) {
+    const spec = codexPlusRailPeekSpec(railId, load);
+    const rail = document.querySelector(codexPlusRailSelector)?.getBoundingClientRect();
+    if (!spec || !rail || rail.width <= 0) return false;
+    let peek = document.getElementById(codexPlusRailPeekId);
+    // 上一代注入留下的卡片绑着旧闭包，换掉。
+    if (peek && peek.__codexPlusGeneration !== codexPlusBackendGeneration) {
+      peek.remove();
+      peek = null;
+    }
+    if (!peek) {
+      peek = document.createElement("div");
+      peek.id = codexPlusRailPeekId;
+      peek.__codexPlusGeneration = codexPlusBackendGeneration;
+      peek.className = "codex-plus-rail-peek";
+      markCodexPlusExtensionNode(peek, "builtin-rail-peek");
+      peek.addEventListener("click", (event) => {
+        const button = event.target instanceof Element ? event.target.closest("button") : null;
+        const pick = peek.__codexPlusPick;
+        if (!button || !pick) return;
+        hideCodexPlusRailPeek(true);
+        pick(button);
+        // 新开的页面左栏接着浮在鼠标底下，和在原生卡片里点一项一样。
+        const overlay = document.querySelector(`.${codexPlusPageClass}[data-codex-plus-sidebar="floating"]`);
+        if (overlay) overlay.dataset.codexPlusNavPeek = "true";
+      });
+      document.body.appendChild(peek);
+    }
+    applyCodexPlusTheme(peek);
+    const zoom = applyCodexPlusZoom(peek);
+    const navWidth = document.querySelector("[data-sidebar-navigation-root]")?.getBoundingClientRect().width || 288;
+    peek.style.left = `${(rail.right + 4) / zoom}px`;
+    peek.style.top = `${(rail.top + 4) / zoom}px`;
+    peek.style.bottom = `${(window.innerHeight - rail.bottom + 4) / zoom}px`;
+    peek.style.width = `${(navWidth - 4) / zoom}px`;
+    peek.innerHTML = `<div class="codex-plus-rail-peek-content"${spec.attrs}><nav class="codex-plus-page-nav" aria-label="${escapeHtml(spec.label)}">
+      <div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title">${spec.titleHtml}</div></div>
+      <div class="codex-plus-page-nav-body">${spec.items}</div></nav></div>`;
+    peek.__codexPlusPick = spec.pick;
+    peek.dataset.railId = railId;
+    if (peek.dataset.open !== "true") {
+      // 先按收起的样子排一次，打开才有淡入。
+      void peek.offsetWidth;
+      peek.dataset.open = "true";
+    }
+    return true;
+  }
+
+  function hideCodexPlusRailPeek(instant = false) {
+    const peek = document.getElementById(codexPlusRailPeekId);
+    if (!peek) return;
+    if (instant) peek.remove();
+    else peek.dataset.open = "false";
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -3149,6 +3329,8 @@
 
     const status = document.getElementById(codexPlusRailNavId)?.querySelector(".codex-plus-sidebar-nav-status");
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
+    // 侧栏收起时入口浮出各自的侧栏卡片，原生页面上也要有，所以随入口一起装。
+    installCodexPlusNavPeek();
     return true;
   }
 

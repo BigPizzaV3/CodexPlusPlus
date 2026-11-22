@@ -1031,9 +1031,13 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /if \(tab === codexPlusExtensionsTab\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /\} else if \(tab === "home"\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /data-codex-plus-page-nav-body="true"/);
-    assert.match(renderer, /if \(tab === codexPlusSponsorTab\) \{\s*installCodexPlusSectionNav\(overlay, \{ title: codexPlusPageTitle\(tab\), groups: \[\{ id: "partners"/);
-    assert.match(renderer, /installCodexPlusSectionNav\(overlay, \{\s*title: "远程控制",[\s\S]{0,200}groups: \[\s*\{ id: "remote"[\s\S]{0,80}\{ id: "devices"[\s\S]{0,80}\{ id: "notify"[\s\S]{0,80}\{ id: "help"/);
-    assert.match(renderer, /installCodexPlusSectionNav\(overlay, \{\s*title: "微信连接",\s*groups: \[\s*\{ id: "connection"[\s\S]{0,80}\{ id: "session"[\s\S]{0,80}\{ id: "jiajia"[\s\S]{0,80}\{ id: "permission"/);
+    // 目录是常量，页面里的左栏和图标栏悬浮卡片共用。
+    assert.match(renderer, /if \(tab === codexPlusSponsorTab\) installCodexPlusSectionNav\(overlay, codexPlusSponsorSectionNav\);/);
+    assert.match(renderer, /const codexPlusSponsorSectionNav = \{ title: "推荐内容", groups: \[\{ id: "partners"/);
+    assert.match(renderer, /const codexPlusRemoteSectionNav = \{\s*title: "远程控制",[\s\S]{0,200}groups: \[\s*\{ id: "remote"[\s\S]{0,80}\{ id: "devices"[\s\S]{0,80}\{ id: "notify"[\s\S]{0,80}\{ id: "help"/);
+    assert.match(renderer, /const codexPlusWeixinSectionNav = \{\s*title: "微信连接",\s*groups: \[\s*\{ id: "connection"[\s\S]{0,80}\{ id: "session"[\s\S]{0,80}\{ id: "jiajia"[\s\S]{0,80}\{ id: "permission"/);
+    assert.match(renderer, /installCodexPlusSectionNav\(overlay, codexPlusRemoteSectionNav\);/);
+    assert.match(renderer, /installCodexPlusSectionNav\(overlay, codexPlusWeixinSectionNav\);/);
     // 两页的面板用设置页的分页样式；重画后由 MutationObserver 补回当前组，左栏不占 refreshCodexPlusPageNav 认的挂载点。
     assert.match(renderer, /codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-remote-panel="true"/);
     assert.match(renderer, /codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-weixin-panel="true"/);
@@ -1046,8 +1050,17 @@ describe("renderer injection header compatibility", () => {
     const railButton = renderer.slice(renderer.indexOf("function createCodexPlusRailButton("), renderer.indexOf("function createCodexPlusRailButton(") + 2500);
     assert.match(railButton, /button\.removeAttribute\("data-slate-sidebar-peek-area"\);/);
     assert.match(railButton, /button\.removeAttribute\("data-slate-sidebar-peek-product-mode"\);/);
-    // 左栏样式同设置页左栏。
-    assert.match(renderer, /\.codex-plus-modal-content:is\(\[data-codex-plus-active-tab="home"\], \[data-codex-plus-section-nav\]\) \.codex-plus-page-nav \{/);
+    // 左栏样式同设置页左栏；图标栏悬浮卡片里的左栏（.codex-plus-rail-peek-content）也用这一套。
+    assert.match(renderer, /:is\(\.\$\{codexPlusPageClass\} \.codex-plus-modal-content, \.codex-plus-rail-peek-content\):is\(\[data-codex-plus-active-tab="home"\], \[data-codex-plus-section-nav\]\) \.codex-plus-page-nav \{/);
+    assert.match(renderer, /:is\(\.\$\{codexPlusPageClass\} \.codex-plus-modal-content, \.codex-plus-rail-peek-content\)\[data-codex-plus-active-tab="extensions"\] \.codex-plus-page-nav \{/);
+    // 侧栏收起时每个入口浮出自己的卡片：处理函数随图标栏入口一起装（原生页面上也要有）。
+    assert.match(renderer, /installCodexPlusNavPeek\(\);\s*return true;\s*\}/);
+    const peekSpec = renderer.slice(renderer.indexOf("function codexPlusRailPeekSpec("), renderer.indexOf("function codexPlusSettingsPeekNavItems("));
+    for (const [rail, nav] of [["codexPlusRailRemoteId", "codexPlusRemoteSectionNav"], ["codexPlusRailWeixinId", "codexPlusWeixinSectionNav"], ["codexPlusRailSponsorId", "codexPlusSponsorSectionNav"]]) {
+      assert.match(peekSpec, new RegExp(`if \\(railId === ${rail}\\) return section\\(${nav}, `));
+    }
+    assert.match(peekSpec, /if \(railId === codexPlusRailNavId\) \{[\s\S]{0,900}openCodexPlusPage\(\);\s*selectCodexPlusSettingsGroup\(id\);/);
+    assert.match(peekSpec, /if \(railId === codexPlusRailExtensionsId\) \{[\s\S]{0,400}items: renderCodexPlusExtensionsNav\(\)/);
     // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。
     assert.match(renderer, /installCodexPlusPageLayout\(overlay, initialTab\);[\s\S]{0,900}selectCodexPlusTab\(initialTab\);/);
     // 左面板分组导航走同一个选中函数。

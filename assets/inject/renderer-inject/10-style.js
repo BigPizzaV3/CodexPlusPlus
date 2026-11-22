@@ -761,7 +761,7 @@
         min-height: 0;
         width: 100%;
       }
-      .${codexPlusPageClass} .codex-plus-page-nav {
+      :is(.${codexPlusPageClass}, .codex-plus-rail-peek) .codex-plus-page-nav {
         width: 260px;
         flex: 0 0 260px;
         display: flex;
@@ -769,16 +769,16 @@
         min-height: 0;
         border-right: 1px solid var(--codex-plus-border-subtle);
       }
-      .${codexPlusPageClass} .codex-plus-page-nav-header {
+      :is(.${codexPlusPageClass}, .codex-plus-rail-peek) .codex-plus-page-nav-header {
         flex: 0 0 auto;
         padding: 4px 16px 10px;
       }
-      .${codexPlusPageClass} .codex-plus-page-nav-title {
+      :is(.${codexPlusPageClass}, .codex-plus-rail-peek) .codex-plus-page-nav-title {
         font-size: 15px;
         font-weight: 600;
         color: var(--codex-plus-text);
       }
-      .${codexPlusPageClass} .codex-plus-page-nav-body {
+      :is(.${codexPlusPageClass}, .codex-plus-rail-peek) .codex-plus-page-nav-body {
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
@@ -1530,6 +1530,41 @@
         pointer-events: auto;
         transition: opacity .3s ease, transform .3s ease;
       }
+      /*
+       * 别的入口（没打开的页面，或者正在看原生页面时）浮出的独立卡片（showCodexPlusRailPeek）：
+       * 外框照原生悬浮侧栏，位置由脚本量好写在 left / top / bottom / width；里面的左栏和页面里的同一套样式。
+       */
+      .codex-plus-rail-peek {
+        position: fixed;
+        z-index: 2147482003;
+        box-sizing: border-box;
+        display: flex;
+        overflow: hidden;
+        border-radius: var(--app-shell-sidebar-popover-radius, 12px);
+        background: var(--app-shell-sidebar-popover-background, var(--codex-plus-nav-bg));
+        box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
+        color: var(--codex-plus-text);
+        opacity: 0;
+        transform: translateX(-12px);
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+        -webkit-app-region: no-drag;
+      }
+      .codex-plus-rail-peek[data-open="true"] {
+        opacity: 1;
+        transform: none;
+        visibility: visible;
+        pointer-events: auto;
+        transition: opacity .3s ease, transform .3s ease;
+      }
+      .codex-plus-rail-peek-content { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
+      .codex-plus-rail-peek .codex-plus-page-nav {
+        width: 100% !important;
+        flex: 1 1 auto !important;
+        border-right: 0 !important;
+        background: transparent !important;
+      }
       /* 页面开着时鼠标停在原生入口上，原生悬浮侧栏（带 popover 底色的那张卡）要浮在页面之上，和在原生页面上一样。 */
       html[data-codex-plus-page-open]:has([data-sidebar-navigation-root][class*="sidebar-popover-background"]) aside.app-shell-left-panel {
         z-index: 2147482002 !important;
@@ -1631,18 +1666,18 @@
        * 版本号与后端状态点在顶上，位置对应原生的「设置」标题。
        * 远程控制、微信连接、推荐内容的左栏（data-codex-plus-section-nav，见 installCodexPlusSectionNav）用同一套。
        */
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav {
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav {
         box-sizing: border-box;
         width: 288px;
         flex-basis: 288px;
         background: var(--codex-plus-nav-bg);
       }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-header { padding: 14px 16px 10px; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-header { padding: 14px 16px 10px; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header > .codex-plus-modal-header { padding: 0; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header .codex-plus-modal-title,
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav-title { font-family: var(--font-openai-sans, inherit); font-synthesis: weight style small-caps; font-size: 18px; font-weight: 600; line-height: 24px; }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-body { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 8px; }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item {
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content)[data-codex-plus-section-nav] .codex-plus-page-nav-title { font-family: var(--font-openai-sans, inherit); font-synthesis: weight style small-caps; font-size: 18px; font-weight: 600; line-height: 24px; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-body { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 8px; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item {
         box-sizing: border-box;
         height: 30px;
         min-height: 30px;
@@ -1653,13 +1688,13 @@
         font-weight: 400;
         line-height: 21px;
       }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item:hover { background: var(--codex-plus-nav-hover-bg); }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg); }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-icon { width: 16px; height: 16px; border-radius: 0; background: none; color: inherit; }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-icon svg { width: 16px; height: 16px; }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-name { flex: 1 1 auto; min-width: 0; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item:hover { background: var(--codex-plus-nav-hover-bg); }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg); }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-icon { width: 16px; height: 16px; border-radius: 0; background: none; color: inherit; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-icon svg { width: 16px; height: 16px; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-name { flex: 1 1 auto; min-width: 0; }
       /* 分区小标题照原生：14px/500、次要灰、30 高；分区之间空 16px，标题和第一项之间空 4px（nav-body 自带 1px 间距）。 */
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-section-title {
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-section-title {
         display: flex;
         align-items: center;
         box-sizing: border-box;
@@ -1671,8 +1706,8 @@
         font-weight: 500;
         line-height: 21px;
       }
-      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-section-title:first-child { margin-top: 0; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav-title .codex-plus-feature-tag { margin-left: 6px; vertical-align: 3px; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content):is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-section-title:first-child { margin-top: 0; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content)[data-codex-plus-section-nav] .codex-plus-page-nav-title .codex-plus-feature-tag { margin-left: 6px; vertical-align: 3px; }
       /* 分页后横幅（出错、提示）在大标题上面，不再往上贴页面标题。 */
       .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-remote-banner { margin: 0 0 16px; }
       /* 窗口窄时左栏让出宽度，同设置页。三个页面的 modal-content 各自是 inline-size 容器。 */
@@ -2188,16 +2223,16 @@
         box-sizing: border-box;
         padding: 32px 32px 56px;
       }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav {
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content)[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav {
         box-sizing: border-box;
         width: 312px;
         flex-basis: 312px;
         background: var(--codex-plus-nav-bg, var(--codex-plus-bg-secondary));
       }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-header { padding: 16px; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-title { font-size: 18px; line-height: 24px; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-body { padding: 0 12px 20px; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content)[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg, var(--codex-plus-bg-selected)); }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content)[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-header { padding: 16px; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content)[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-title { font-size: 18px; line-height: 24px; }
+      :is(.${codexPlusPageClass} .codex-plus-modal-content, .codex-plus-rail-peek-content)[data-codex-plus-active-tab="extensions"] .codex-plus-page-nav-body { padding: 0 12px 20px; }
       .codex-plus-extensions-nav-entry {
         min-height: 36px;
         gap: 10px;
