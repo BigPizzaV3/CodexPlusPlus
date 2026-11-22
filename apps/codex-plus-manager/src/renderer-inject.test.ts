@@ -3274,6 +3274,30 @@ describe("renderer model reasoning efforts patch", () => {
     );
   });
 
+  it("字符串与 Codex 原生 {effort} 条目也能归一化出档位（#3210）", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    for (const declaration of [
+      { supportedReasoningEfforts: ["low", "high", "max"] },
+      { supportedReasoningEfforts: ["low", "high", "max"].map((effort) => ({ effort, description: `${effort} effort` })) },
+    ]) {
+      const efforts = reasoningRuntime(renderer, declaration)("cpx-relay/deepseek-flash");
+      assert.deepEqual(
+        efforts.map((entry) => entry.reasoningEffort),
+        ["low", "high", "max"],
+      );
+      assert.ok(efforts.every((entry) => (entry as Record<string, unknown>).effort === undefined), "原生 effort 字段不应残留在产物里");
+    }
+  });
+
+  it("档位声明存在但全部无法解析时回落到完整兜底列表", async () => {
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const efforts = reasoningRuntime(renderer, { supportedReasoningEfforts: [42, null] })("deepseek-flash");
+    assert.deepEqual(
+      efforts.map((entry) => entry.reasoningEffort),
+      ["low", "medium", "high", "xhigh", "max", "ultra"],
+    );
+  });
+
   it("没有档位声明时仍回落到完整兜底列表", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
     const efforts = reasoningRuntime(renderer, null)("deepseek-flash");
