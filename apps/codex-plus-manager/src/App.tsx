@@ -5894,7 +5894,7 @@ function WeixinConnectScreen({
                   ariaLabel={t("模型")}
                   onChange={(next) => onFormChange({ ...form, weixinConnectModel: next })}
                   options={[
-                    { value: "", label: `${t("继承 Codex 默认模型")}${inheritedModel ? ` (${groupDisplayName(gatewayPayload, inheritedModel) ?? catalog?.modelMetadata?.[inheritedModel]?.displayName ?? inheritedModel})` : ""}` },
+                    { value: "", label: inheritedModel ? tf("继承 Codex 默认模型（{0}）", [groupDisplayName(gatewayPayload, inheritedModel) ?? catalog?.modelMetadata?.[inheritedModel]?.displayName ?? inheritedModel]) : t("继承 Codex 默认模型") },
                     ...(form.weixinConnectModel && !models.includes(form.weixinConnectModel) ? [{
                       value: form.weixinConnectModel,
                       label: `${groupDisplayName(gatewayPayload, form.weixinConnectModel) ?? form.weixinConnectModel} (${modelUnavailable ? t("不可用") : t("当前值")})`,
@@ -14922,10 +14922,10 @@ function ClaudeLocalizationScreen(
   const statusTone = !s ? "pending" : s.prepared ? (s.needsRebuild ? "warn" : "ok") : "idle";
   const statusText = busy === "detect" ? t("检测中…") : !s ? t("未检测") : !s.supported ? t("未检测到 Claude") : s.prepared ? (s.needsRebuild ? t("需要更新") : t("已准备")) : t("未准备");
   const meta = [
-    `${t("官方版本")} ${!s ? t("未检测") : s.sourceVersion || t("未检测到")}`,
-    `${t("副本版本")} ${s?.copyVersion || t("未准备")}`,
-    `${t("外壳语言")} ${s?.shellLocale || t("未设置")}`,
-    `${t("官方词条")} ${s?.catalogEntries != null ? `${s.catalogEntries.toLocaleString()} ${t("条")}` : t("未检测")}`,
+    tf("官方版本 {0}", [!s ? t("未检测") : s.sourceVersion || t("未检测到")]),
+    tf("副本版本 {0}", [s?.copyVersion || t("未准备")]),
+    tf("外壳语言 {0}", [s?.shellLocale || t("未设置")]),
+    s?.catalogEntries != null ? tf("官方词条 {0} 条", [s.catalogEntries.toLocaleString()]) : tf("官方词条 {0}", [t("未检测")]),
   ].join(" · ");
   const prepareLabel = busy === "prepare"
     ? t("制作中…")
@@ -14945,7 +14945,7 @@ function ClaudeLocalizationScreen(
   const localDisabled = localBusy !== null || busy !== null;
   const localTemplates = local?.templates ?? [];
   const localDetail = local
-    ? (local.supported ? `${t("原版版本")} ${local.version || t("未检测到")}` : t("未检测到支持的 Claude Desktop"))
+    ? (local.supported ? tf("原版版本 {0}", [local.version || t("未检测到")]) : t("未检测到支持的 Claude Desktop"))
       + ` · ${local.contextWindow != null && local.contextWindow > 0
         ? tf("上下文窗口 {0}（供应商声明）", [formatContextWindow(local.contextWindow)])
         : t("上下文窗口 未声明（Claude 按 200k）")}`

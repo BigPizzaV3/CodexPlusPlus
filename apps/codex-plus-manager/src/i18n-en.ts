@@ -3139,7 +3139,6 @@ export const EN_PLAIN: Record<string, string> = {
   "「{0}」是当前「配置模型」：Codex 会始终把它发布在模型列表里，删掉保存后也会被加回来。要减少模型，请先把上方「配置模型」改成要保留的那个，再删这一行。":
     "\"{0}\" is the configured model: Codex always publishes it in the model list, so removing it only brings it back on save. To drop models, change the configured model above to the one you keep, then delete this row.",
   "未设置（未匹配到成员的请求会报错）": "Not set (requests matching no member will error)",
-  "副本版本": "Copy version",
   "模型固定绑定 · {0} 个成员": "Models stay bound · {0} members",
   "把成员模型合并到 Codex 列表，选择模型后固定发送到对应供应商。": "Merge member models into Codex and bind each selected model to its provider.",
   "聚合方式": "Aggregation mode",
@@ -4088,6 +4087,7 @@ export const EN_PLAIN: Record<string, string> = {
   "更换访问令牌？": "Replace the access token?",
   "浏览器访问": "Browser access",
   // Computer Use、拓展弹窗、dsh 插件等页面
+  "继承 Codex 默认模型": "Inherit Codex default model",
   "CLAUDE_CONFIG_DIR 指向的目录（里面有 .claude.json）": "The folder CLAUDE_CONFIG_DIR points to (it holds .claude.json)",
   "包含 claude_desktop_config.json 的目录": "The folder that holds claude_desktop_config.json",
   "包含 config.toml 的目录": "The folder that holds config.toml",
@@ -5002,6 +5002,14 @@ export const EN_TEMPLATE: Record<string, string> = {
   "最近活动 {0}": "Last active {0}",
   "移除设备「{0}」": "Remove device “{0}”",
   "端口 {0}": "Port {0}",
+  "{0} 机器人签名密钥": "{0} robot signing secret",
+  "官方版本 {0}": "Official version {0}",
+  "副本版本 {0}": "Copy version {0}",
+  "外壳语言 {0}": "Shell language {0}",
+  "官方词条 {0} 条": "{0} official strings",
+  "官方词条 {0}": "Official strings {0}",
+  "原版版本 {0}": "Original version {0}",
+  "继承 Codex 默认模型（{0}）": "Inherit Codex default model ({0})",
   // Computer Use 页
   "{0} · 已接入，重启客户端后加载工具": "{0} · connected; restart the client to load the tools",
   "{0} · 已移除": "{0} · removed",
