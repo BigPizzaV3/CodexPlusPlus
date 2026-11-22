@@ -74,7 +74,6 @@ function harness() {
     singleAgent, providersHidden, pageVisibleForTool,
     useGatewayPayload: () => null,
     useState: () => [[], () => {}],
-    loadCollapsedGroups: () => [],
     getLanguage: () => "zh",
     paletteShortcut: "Ctrl+K",
     APP_LOGO_URL: "logo.png",

@@ -12,7 +12,7 @@ test("远程控制页挂在侧栏 Codex 下面、紧跟「微信连接」，⌘K
   const app = await read("./App.tsx");
   assert.match(app, /\| "remoteControl" \|/, "Route 类型里要有 remoteControl");
   // 属于 Codex：只在 Codex 的子项里出现，切到别的 Agent 时不跟过去。
-  assert.match(app, /\{ id: "remoteControl", get label\(\) \{ return t\("远程控制"\); \}, icon: Smartphone, badge: "实验", tool: "codex" \}/);
+  assert.match(app, /\{ id: "remoteControl", get label\(\) \{ return t\("远程控制"\); \}, icon: Smartphone, tool: "codex" \}/);
   // 侧栏 Codex 子项来自 navigationSections：放在「微信连接」后面（两者都是「在手机上用 Codex」）。
   const sections = app.slice(app.indexOf("const navigationSections"), app.indexOf("const routeTool"));
   assert.match(sections, /"weixin", "remoteControl"/);

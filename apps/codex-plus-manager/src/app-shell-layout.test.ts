@@ -204,7 +204,7 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
   // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话、用量；「聚合网关」（总览、供应商池、Agent 接入、路由）排在 Agent 增强后面。
   const sidebar = functionSource("AppSidebar");
-  assert.match(sidebar, /\{ key: "extensions", route: "userScripts" as Route, label: t\("万物皆拓展"\)/);
+  assert.match(sidebar, /\{ key: "extensions", route: "userScripts", label: t\("万物皆拓展"\)/);
   assert.ok(sidebar.indexOf('key: "extensions"') < sidebar.indexOf('key: "customize"'), "万物皆拓展排在第一个");
   assert.match(sidebar, /match: customizeRoutes/);
   assert.match(sidebar, /<span>\{t\("聚合网关"\)\}<\/span>/);
@@ -307,9 +307,8 @@ test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里�
   assert.doesNotMatch(app, /route === "maintenance"|route === "about"|route === "relayEnvironment"|route === "recommendations"/);
   assert.match(text, /\{ key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent"/);
   // 分类目录交给侧栏，页内不再有左侧目录；分组卡片 id 仍然保留，深链照常。
-  assert.doesNotMatch(app, /sections=\{codexSettingsSections\(\)\}/);
-  const ids = [...text.slice(text.indexOf("function codexSettingsSections"), text.indexOf("const EXPERIMENTAL_TITLE")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(ids, ["codex-settings-check", "codex-settings-startup", "codex-settings-takeover", "codex-settings-manual-launch"]);
+  assert.doesNotMatch(text, /codexSettingsSections/);
+  const ids = ["codex-settings-check", "codex-settings-startup", "codex-settings-takeover", "codex-settings-manual-launch"];
   // 每个分组是一节（CxSection），id 挂在节的最外层。
   for (const id of ids) assert.match(text, new RegExp(`<CxSection(?:(?!<CxSection)[\\s\\S])*?\\bid="${id}"`));
   // 常用的在上，不常用的额外启动参数放进维护页最后的「高级」卡片，和手动启动在一起。
@@ -557,7 +556,7 @@ test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式�
   }
   assert.match(app, /if \(target === "about"\) setSettingsFocus\("app-settings-update"\);/);
   assert.ok(app.indexOf("<GlobalSettingsScreen") < app.indexOf("<AboutScreen"));
-  const ids = [...text.slice(text.indexOf("function appSettingsSections"), text.indexOf("function AppSettingsFocus")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
+  const ids = [...new Set([...entries.matchAll(/"(app-settings-[a-z]+)"/g)].map((match) => match[1]))];
   assert.equal(ids.length, 7);
   // 「配置体检」的分组卡片由 ConfigDoctorPanel 自带，其余都在 App.tsx 里。
   const sections = `${text}\n${readSource("./ConfigDoctorPanel.tsx")}`;

@@ -1494,7 +1494,7 @@ const FOCUS_REFRESH_MIN_INTERVAL_MS = 5_000;
  *
  * 新增页面时**必须**想清楚归属：默认可见会让 Codex 专属功能在 Grok 下露出来。
  */
-const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string; tool?: string; tools?: readonly string[] }> = [
+const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: string; tools?: readonly string[] }> = [
   // 首页：整个程序的落脚页，专门放赞助商推荐（原「推荐内容」页并进来）。
   { id: "home", get label() { return t("首页"); }, icon: House },
   // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
@@ -1520,10 +1520,10 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
   { id: "agentCache", get label() { return t("AI Agent 缓存清理"); }, icon: Trash2 },
   // 跨客户端协作属于应用级能力，各工具下共用同一组任务。
-  { id: "agentCollaboration", get label() { return t("Agent 协作"); }, icon: GitBranch, badge: "实验" },
-  { id: "computerUse", get label() { return t("Computer Use"); }, icon: MousePointerClick, badge: "实验" },
+  { id: "agentCollaboration", get label() { return t("Agent 协作"); }, icon: GitBranch },
+  { id: "computerUse", get label() { return t("Computer Use"); }, icon: MousePointerClick },
   // 远程控制：在浏览器或手机上操控 Codex 的会话。和「微信连接」同是「在手机上用 Codex」，挂在侧栏 Codex 下面、紧跟微信连接。
-  { id: "remoteControl", get label() { return t("远程控制"); }, icon: Smartphone, badge: "实验", tool: "codex" },
+  { id: "remoteControl", get label() { return t("远程控制"); }, icon: Smartphone, tool: "codex" },
   // 网关：任意 Agent 经 Codex++ 接入任意供应商，与具体 Agent 无关，是应用级页面。
   { id: "hub", get label() { return t("总览"); }, icon: Waypoints },
   // 先有供应商，再接 Agent；路由是进阶设置，放在 Agent 接入之后。
@@ -1808,7 +1808,6 @@ export function App() {
   settingsRef.current = settings;
   const [weixinStatus, setWeixinStatus] = useState<WeixinConnectStatusResult | null>(null);
   const [weixinQr, setWeixinQr] = useState<WeixinQrResult | null>(null);
-  const [relay, setRelay] = useState<RelayResult | null>(null);
   const [relayFiles, setRelayFiles] = useState<RelayFilesResult | null>(null);
   const [envConflicts, setEnvConflicts] = useState<EnvConflictsResult | null>(null);
   const [relayEnvironment, setRelayEnvironment] = useState<RelayEnvironmentResult | null>(null);
@@ -2265,14 +2264,6 @@ export function App() {
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地拓展"), result);
       await refreshUserScriptInventory();
-    }
-  };
-
-  const refreshRelay = async (silent = false) => {
-    const result = await run(() => call<RelayResult>("relay_status"));
-    if (result) {
-      setRelay(result);
-      if (!silent) showResultNotice(t("登录状态"), result, { silentSuccess: true });
     }
   };
 
@@ -3646,7 +3637,6 @@ export function App() {
     }
     const result = await run(() => call<RelayResult>("apply_relay_injection"));
     if (result) {
-      setRelay(result);
       await refreshRelayFiles(true);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方混入 API Key"), result.message, result.status);
     }
@@ -3667,7 +3657,6 @@ export function App() {
     }
     const result = await run(() => call<RelayResult>("apply_pure_api_injection"));
     if (result) {
-      setRelay(result);
       await refreshRelayFiles(true);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("纯 API 模式"), result.message, result.status);
     }
@@ -3677,7 +3666,6 @@ export function App() {
   const clearRelayInjection = async (silent = false) => {
     const result = await run(() => call<RelayResult>("clear_relay_injection"));
     if (result) {
-      setRelay(result);
       await refreshRelayFiles(true);
       if (!silent || !isSuccessStatus(result.status)) showNotice(t("官方登录模式"), result.message, result.status);
     }
@@ -3691,7 +3679,6 @@ export function App() {
       if (!silent || !isSuccessStatus(result.status)) {
         showNotice(kind === "config" ? "config.toml" : "auth.json", result.message, result.status);
       }
-      await refreshRelay(true);
     }
   };
 
@@ -3878,11 +3865,6 @@ export function App() {
         user_scripts: result.user_scripts as UserScriptInventory,
       });
       setSettingsForm(selectedSettings);
-      setRelay({
-        status: result.status,
-        message: result.message,
-        ...result.relay,
-      });
       await refreshRelayFiles(true);
       if (!isSuccessStatus(result.status)) {
         logDiagnostic("switchRelayProfile.apply_failed", {
@@ -4392,7 +4374,6 @@ export function App() {
       setProviderSyncTarget: (provider: string) => {
         setSelectedProviderSyncTarget(provider);
       },
-      refreshRelay,
       refreshRelayFiles,
       refreshEnvConflicts,
       refreshRelayEnvironment,
@@ -4441,9 +4422,7 @@ export function App() {
       copyDiagnostics: () => copyText(diagnostics?.report ?? "", t("诊断报告已复制。")),
       goLogs: () => { setSettingsFocus("app-settings-logs"); return navigate("settings"); },
       checkHealth: async () => {
-        await refreshOverview(true);
-        await refreshRelay(true);
-        await refreshWatcher(true);
+        await Promise.all([refreshOverview(true), refreshWatcher(true)]);
         showNotice(t("检查完成"), t("已刷新 Codex 应用、入口和 Watcher 状态。"), "ok");
       },
       setWatcherEnabled,
@@ -4698,7 +4677,6 @@ export function App() {
     }
   }, [agentFocus, settings]);
 
-  const isGatewayPage = gatewayNavigationRoutes.includes(route);
   // ⌘K：页面、各 Agent 的页面和常用操作。非当前 Agent 的页面会先切到那个 Agent。
   const paletteCommands: PaletteCommand[] = [];
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
@@ -5439,7 +5417,6 @@ type Actions = {
   repairSessionIndex: () => Promise<void>;
   refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
   setProviderSyncTarget: (provider: string) => void;
-  refreshRelay: () => Promise<void>;
   refreshRelayFiles: () => Promise<RelayFilesResult | null>;
   refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
   refreshRelayEnvironment: (silent?: boolean) => Promise<RelayEnvironmentResult | null>;
@@ -9981,14 +9958,8 @@ function AboutScreen({
   );
 }
 
-/// Agent 专属设置页。
-///
-/// 入口在侧栏各 Agent 自己的菜单里，只放跟随该 Agent 的选项：
-/// - **Codex**：额外启动参数
-/// - **Grok / Claude**：供应商与模型在各自页面里管理，这里给出跳转
-///
-/// 应用级选项（主题、配置备份、配置文件路径）在最左侧齿轮的「设置」里，
-/// 见 [GlobalSettingsScreen]。语音输入和 Stepwise 的完整配置在 Codex增强 页面管理。
+/// Codex 的额外启动参数：设置模式「Codex」分类（agentSettings）里，维护页最后「高级」卡片的内容。
+/// 应用级选项在整体设置里，见 [GlobalSettingsScreen]。
 function AgentSettingsScreen({
   dirty,
   form,
@@ -13878,64 +13849,6 @@ function providerDoctorSteps(
   });
 }
 
-function FeatureItem({ title, detail, enabled }: { title: string; detail: string; enabled: boolean }) {
-  return (
-    <div className="feature-item">
-      <div>
-        <strong>{title}</strong>
-        <span>{detail}</span>
-      </div>
-      <Badge status={enabled ? "ok" : "disabled"} />
-    </div>
-  );
-}
-
-/**
- * 设置类页面（增强、设置）左侧的分类目录：点一下滚到对应分组，滚动时高亮当前所在的分组。
- * `children` 放在目录最上面（增强页把「常用增强 / 语音输入 / 下一步建议」页签放在这里）。
- */
-function PageSectionNav({ label, sections, children }: { label: string; sections: Array<{ id: string; label: string }>; children?: ReactNode }) {
-  const [current, setCurrent] = useState(sections[0]?.id ?? "");
-  const sectionKey = sections.map((section) => section.id).join("|");
-  useEffect(() => {
-    const nodes = sections.map((section) => document.getElementById(section.id)).filter((node): node is HTMLElement => Boolean(node));
-    if (!nodes.length) return;
-    const scroller = nodes[0].closest(".screen");
-    const sync = () => {
-      const line = (scroller?.getBoundingClientRect().top ?? 0) + 96;
-      let active = nodes[0].id;
-      for (const node of nodes) if (node.getBoundingClientRect().top <= line) active = node.id;
-      setCurrent(active);
-    };
-    sync();
-    scroller?.addEventListener("scroll", sync, { passive: true });
-    return () => scroller?.removeEventListener("scroll", sync);
-    // sections 每次渲染都是新数组，按 id 列表判断是否变化。
-  }, [sectionKey]);
-  return (
-    <nav aria-label={label} className="page-section-nav">
-      {children}
-      {sections.length ? (
-        <div className="page-section-nav-list">
-          {sections.map((section) => (
-            <button
-              aria-current={current === section.id ? "true" : undefined}
-              key={section.id}
-              onClick={() => {
-                setCurrent(section.id);
-                document.getElementById(section.id)?.scrollIntoView({ block: "start", behavior: "smooth" });
-              }}
-              type="button"
-            >
-              {section.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-    </nav>
-  );
-}
-
 // 增强页的一组开关：卡片外的小标题（分组说明收进悬停）+ 一张卡，卡里一行一项。
 function FeatureGroup({ title, detail, children, id, hidden = false }: { title: string; detail: string; children: ReactNode; id?: string; hidden?: boolean }) {
   const { CxCard, CxSection } = AgentCx;
@@ -13985,19 +13898,6 @@ function FeatureToggle({
   );
 }
 
-/** 应用设置页（含原「关于」）左侧目录的分组，id 对应各张卡片。 */
-function appSettingsSections() {
-  return [
-    { id: "app-settings-general", label: t("基础设置") },
-    { id: "app-settings-config", label: t("配置文件") },
-    { id: "app-settings-doctor", label: t("配置体检") },
-    { id: "app-settings-update", label: t("版本与更新") },
-    { id: "app-settings-about", label: t("关于") },
-    { id: "app-settings-logs", label: t("日志") },
-    { id: "app-settings-diagnostics", label: t("诊断") },
-  ];
-}
-
 /** 打开设置页时滚到指定分组（例如启动时提示更新 → 版本与更新），滚完清掉。 */
 function AppSettingsFocus({ focus, onDone }: { focus: string | null; onDone: () => void }) {
   useEffect(() => {
@@ -14009,17 +13909,6 @@ function AppSettingsFocus({ focus, onDone }: { focus: string | null; onDone: () 
     return () => window.cancelAnimationFrame(frame);
   }, [focus, onDone]);
   return null;
-}
-
-/** 设置页（含安装维护）左侧目录的分组，id 对应各张卡片。 */
-function codexSettingsSections() {
-  return [
-    { id: "codex-settings-check", label: t("应用与入口") },
-    { id: "codex-settings-startup", label: t("开机启动") },
-    { id: "codex-settings-takeover", label: t("自动接管") },
-    // 额外启动参数和手动启动都在「高级」里。
-    { id: "codex-settings-manual-launch", label: t("高级") },
-  ];
 }
 
 const EXPERIMENTAL_TITLE = /\s*(?:（实验性?）|\(experimental\))$/i;
@@ -14048,19 +13937,6 @@ function formatBytes(bytes: number) {
 function formatProgressPercent(value: number): string {
   if (!Number.isFinite(value)) return "0.00";
   return Math.min(100, Math.max(0, value)).toFixed(2);
-}
-
-function GuideList({ items }: { items: string[] }) {
-  return (
-    <div className="guide-list">
-      {items.map((item, index) => (
-        <div className="guide-step" key={item}>
-          <span>{index + 1}</span>
-          <p>{item}</p>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function UpdateDialog({ update, progress, downloaded = false, onClose, onSkipVersion, onMuteToday, onUpdate, onOpenUrl }: {
@@ -15513,43 +15389,6 @@ function SettingRow({ title, description, detail, stacked = false, children }: {
   );
 }
 
-/// 标题栏右侧带开关的卡片头：开关关闭时，卡片里的设置整块收起，只留一行提示。
-function SwitchPanelHead({ title, detail, checked, onChange, label }: {
-  title: string;
-  detail: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  label: string;
-}) {
-  return (
-    <CardHeader className="panel-head switch-panel-head">
-      <div className="switch-panel-head-copy">
-        <CardTitle>{title}</CardTitle>
-        <CardDescription>{detail}</CardDescription>
-      </div>
-      <label className="switch-row compact relay-master-switch-compact">
-        <input aria-label={label} checked={checked} onChange={(event) => onChange(event.currentTarget.checked)} type="checkbox" />
-        <span>{checked ? t("已开启") : t("已关闭")}</span>
-        <ToggleVisual />
-      </label>
-    </CardHeader>
-  );
-}
-
-/// 带状态图标的小卡片，与概览页健康检查同一套样式。
-function HealthTile({ item }: { item: ReturnType<typeof healthItems>[number] }) {
-  return (
-    <div className={`health-item ${item.ok ? "ok" : "needs-fix"}`}>
-      <span className={`health-icon ${statusClass(item.status)}`}><item.icon className="h-4 w-4" /></span>
-      <div>
-        <strong>{item.title}</strong>
-        <span title={item.detail}>{item.detail}</span>
-      </div>
-      <Badge status={item.status} />
-    </div>
-  );
-}
-
 function CardHead({ title, detail }: { title: string; detail: string }) {
   return (
     <CardHeader className="panel-head">
@@ -15563,24 +15402,6 @@ function Toolbar({ children, className = "" }: { children: React.ReactNode; clas
   return <div className={`toolbar ${className}`.trim()}>{children}</div>;
 }
 
-/**
- * Grok 分区的供应商管理。
- *
- * 映射约定是「一个供应商 = 一个 base_url」：应用到 Grok 时，这个供应商的模型
- * 列表会整体替换 `~/.grok/config.toml` 里所有受管的 `[model.*]` 表，未管理字段
- * （`[ui]`、`[models].web_search` 等）保留。所以「应用到 Grok」是需要确认的
- * 破坏性操作，这里显式二次确认。
- */
-const SIDEBAR_COLLAPSED_KEY = "codex-plus-sidebar-collapsed";
-
-function loadCollapsedGroups(): string[] {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) ?? "[]");
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
 
 
 /**
@@ -15813,13 +15634,12 @@ function AppSidebar({
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
   // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话、用量；聚合网关排在 Agent 增强后面，只在有 Agent 接入网关时出现。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
-  // 万物皆拓展是独立入口，不随侧栏当前选的 Agent 显隐；宿主在页内切换。
-  const extensionsShown = true;
   // 用量也记直连代理的请求，不算网关专属。
   const general: SideEntry[] = [
     { key: "home", route: "home", label: t("首页"), icon: House, match: ["home"] },
-    ...(extensionsShown ? [{ key: "extensions", route: "userScripts" as Route, label: t("万物皆拓展"), icon: Blocks, match: ["userScripts" as Route], tour: "management" }] : []),
-    { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes, tour: extensionsShown ? undefined : "management" },
+    // 万物皆拓展是独立入口，不随侧栏当前选的 Agent 显隐；宿主在页内切换。
+    { key: "extensions", route: "userScripts", label: t("万物皆拓展"), icon: Blocks, match: ["userScripts"], tour: "management" },
+    { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes },
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
     { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
   ];
@@ -16071,16 +15891,6 @@ function Field({ label, children, className = "" }: { label: string; children: R
       <span>{label}</span>
       {children}
     </Label>
-  );
-}
-
-function StatusRow({ title, status = "unknown", path }: { title: string; status?: string; path?: string | null }) {
-  return (
-    <div className="status-row">
-      <span>{title}</span>
-      <Badge status={status} />
-      <code>{path || t("未记录路径")}</code>
-    </div>
   );
 }
 
@@ -17192,29 +17002,6 @@ function relayProfileModeHelp(profile: RelayProfile): string {
   return t("此供应商会保留官方登录模式，并把请求混入当前 API Key；Codex增强仍使用兼容模式。");
 }
 
-function relayProfileReadinessText(profile: RelayProfile, relay: RelayResult | null): string {
-  if (isAggregateRelayProfile(profile)) {
-    const aggregate = normalizeAggregateConfig(profile.aggregate, []);
-    return tf("聚合供应商已配置为{0}，包含 {1} 个成员；真实对话会走本地代理轮转。", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
-  }
-  if (profile.relayMode === "official") {
-    if (profile.officialMixApiKey) {
-      const hasApiFields = profile.baseUrl.trim() && profile.apiKey.trim();
-      if (!relay?.authenticated && !hasApiFields) return t("当前未登录官方账号，也未配置混入 API 的 Base URL / Key。");
-      if (!relay?.authenticated) return t("当前未登录官方账号；官方登录混入 API Key 需要先登录官方账号。");
-      if (!hasApiFields) return t("当前还没有填写混入 API 的 Base URL / Key。");
-      return tf("官方登录已就绪：{0}，会混入当前 API Key。", [relay.accountLabel || t("已登录")]);
-    }
-    return relay?.authenticated
-      ? tf("官方账号已登录：{0}。", [relay.accountLabel || relay.authSource || t("已检测")])
-      : t("当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。");
-  }
-  const hasFiles = profile.configContents.trim() && profile.authContents.trim();
-  if (!hasFiles) return t("当前供应商还没有完整 config.toml / API Key 存档。");
-  if (relay && !relay.configured) return t("纯 API 配置未完整写入：请检查此供应商是否有 OPENAI_API_KEY，且 config.toml 是否包含 model_provider / provider / base_url。");
-  return t("纯 API 就绪：会同时写入 config.toml 和 auth.json。");
-}
-
 function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injection" | "apply_relay_injection" | "apply_pure_api_injection" {
   if (isAggregateRelayProfile(profile)) return "apply_relay_injection";
   if (profile.relayMode === "pureApi") return "apply_pure_api_injection";
@@ -17231,18 +17018,6 @@ function numberOrDefault(value: string, fallback: number) {
 function formatTime(value: number) {
   if (!value) return "-";
   return new Date(value).toLocaleString("zh-CN");
-}
-
-function formatDuration(startedAtMs: number): string {
-  if (!startedAtMs) return "-";
-  const elapsed = Date.now() - startedAtMs;
-  if (elapsed < 0) return formatTime(startedAtMs);
-  const mins = Math.floor(elapsed / 60000);
-  if (mins < 1) return t("刚刚启动");
-  if (mins < 60) return tf("已运行 {0} 分钟", [mins]);
-  const hours = Math.floor(mins / 60);
-  const remainMins = mins % 60;
-  return tf("已运行 {0} 小时 {1} 分钟", [hours, remainMins]);
 }
 
 function stringifyError(error: unknown) {
