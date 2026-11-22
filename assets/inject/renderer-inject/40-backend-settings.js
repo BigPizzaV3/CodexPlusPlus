@@ -1457,15 +1457,27 @@
       overlay.style.removeProperty("--codex-plus-shell-surface");
       delete overlay.dataset.codexPlusSurface;
     }
+    // 侧栏展开时原生面板从侧栏右边起：记下侧栏宽度，CSS 让有左栏的页面照原生「左灰右黑带圆角」画。
+    if (underTitlebar && backingRect.left > left + 1) {
+      overlay.dataset.codexPlusSidebar = "open";
+      const sidebarWidth = backingRect.left - left;
+      overlay.style.setProperty("--codex-plus-native-sidebar-width", `${zoom === 1 ? sidebarWidth : sidebarWidth / zoom}px`);
+    } else {
+      delete overlay.dataset.codexPlusSidebar;
+      overlay.style.removeProperty("--codex-plus-native-sidebar-width");
+    }
+    // 侧栏开合时 aside 本身的尺寸不一定变，原生面板 backing 的宽度一定变，所以也盯着它。
+    const surfaceBacking = document.querySelector("[data-app-shell-surface-backing]");
     if (window.__codexPlusPageLayoutObserver &&
         (window.__codexPlusPageLayoutTargets?.main !== main ||
          window.__codexPlusPageLayoutTargets?.sidebar !== sidebar ||
-         window.__codexPlusPageLayoutTargets?.rail !== rail)) {
+         window.__codexPlusPageLayoutTargets?.rail !== rail ||
+         window.__codexPlusPageLayoutTargets?.backing !== surfaceBacking)) {
       window.__codexPlusPageLayoutObserver.disconnect();
-      for (const target of new Set([main, sidebar, rail])) {
+      for (const target of new Set([main, sidebar, rail, surfaceBacking])) {
         if (target) window.__codexPlusPageLayoutObserver.observe(target);
       }
-      window.__codexPlusPageLayoutTargets = { main, sidebar, rail };
+      window.__codexPlusPageLayoutTargets = { main, sidebar, rail, backing: surfaceBacking };
     }
   }
 

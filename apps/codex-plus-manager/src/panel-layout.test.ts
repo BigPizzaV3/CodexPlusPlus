@@ -116,9 +116,13 @@ it("starts at the window top under the transparent titlebar when the native pane
     assert.equal(h.overlay.dataset.codexPlusTitlebar, "inset");
     assert.equal(h.overlay.style.values.get("--codex-plus-page-radius"), `${12 / zoom}px`, "sidebar open: rounded like the native panel");
     assert.equal(h.overlay.style.values.get("--codex-plus-page-radius-end"), "0px");
+    assert.equal(h.overlay.dataset.codexPlusSidebar, "open", "sidebar open: pages with a left column draw over the native sidebar");
+    assert.equal(h.overlay.style.values.get("--codex-plus-native-sidebar-width"), `${(320 - 62) / zoom}px`, "left column ends where the native panel starts");
     h.nodes["[data-app-shell-surface-backing]"].rect.left = 0;
     h.position(h.overlay);
     assert.equal(h.overlay.style.values.get("--codex-plus-page-radius"), "0px", "sidebar collapsed: continuous with the panel");
+    assert.equal(h.overlay.dataset.codexPlusSidebar, undefined);
+    assert.equal(h.overlay.style.values.get("--codex-plus-native-sidebar-width"), undefined);
     (h.nodes["[data-app-shell-surface-backing]"] as unknown as { background: string }).background = "rgba(0, 0, 0, 0)";
     h.position(h.overlay);
     assert.equal(h.overlay.dataset.codexPlusSurface, undefined, "a skin-cleared panel never makes the page see-through");
@@ -285,6 +289,11 @@ it("replaces version 31 styles with bounded panel geometry and keeps reinjection
   // 标题栏抬到页面之上（仍低于弹窗）；让出的那条不声明 no-drag，窗口照样能拖。
   assert.match(existing!.textContent!, /\[data-app-shell-titlebar\] \{\s*z-index: 2147482001 !important;/);
   assert.match(existing!.textContent!, /\[data-codex-plus-titlebar="inset"\] > \.codex-plus-modal-content \{\s*-webkit-app-region: none;/);
+  // 侧栏展开：有左栏的页面整块透明、左栏对齐原生侧栏，原生会话列表与页面内容藏起来，标题栏照常显示。
+  assert.match(existing!.textContent!, /\[data-codex-plus-sidebar="open"\]:has\(:is\(\.codex-plus-page-nav, \.codex-plus-provider-sidebar, \.codex-plus-task-sidebar\)\) \{\s*border-radius: 0 !important;\s*background: transparent !important;/);
+  assert.match(existing!.textContent!, /\[data-codex-plus-sidebar="open"\] :is\(\.codex-plus-page-nav, \.codex-plus-provider-sidebar, \.codex-plus-task-sidebar\) \{[^}]*width: var\(--codex-plus-native-sidebar-width\) !important;/);
+  assert.match(existing!.textContent!, /html:has\([^)]*\[data-codex-plus-sidebar="open"\]\) :is\(\[data-sidebar-navigation-root\], \[data-app-shell-active-page\]\) \{\s*visibility: hidden !important;/);
+  assert.match(existing!.textContent!, /html:has\([^)]*\[data-codex-plus-sidebar="open"\]\) \[data-app-shell-titlebar\] \{\s*visibility: visible !important;/);
   assert.match(existing!.textContent!, /\[data-codex-plus-surface="native"\] \{\s*--codex-plus-bg-primary: var\(--codex-plus-shell-surface\) !important;\s*--codex-plus-settings-page-bg: var\(--codex-plus-shell-surface\) !important;\s*--codex-plus-nav-bg: var\(--codex-plus-shell-surface\) !important;/);
   const modalRules = existing!.textContent!.match(/\.codex-plus-modal-overlay\s*\{([^}]+)\}/)![1];
   assert.match(modalRules, /height: calc\(100vh \/ var\(--codex-plus-zoom, 1\)\)/);

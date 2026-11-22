@@ -1464,6 +1464,38 @@
         --codex-plus-settings-page-bg: var(--codex-plus-shell-surface) !important;
         --codex-plus-nav-bg: var(--codex-plus-shell-surface) !important;
       }
+      .${codexPlusPageClass}[data-codex-plus-surface="native"] :is(.codex-plus-page-nav, .codex-plus-provider-sidebar, .codex-plus-task-sidebar) {
+        border-right-color: transparent !important;
+      }
+      /*
+       * 侧栏展开时照原生页面画：原生是「侧栏一层灰，面板从侧栏右边起、带圆角」。
+       * 有左栏的页面整块透明，左栏宽度对齐原生侧栏，于是左栏底下透出的就是原生侧栏的灰，
+       * 内容区底下透出的就是原生面板，拐角是原生面板自己的圆角，颜色、半透明都和原生同源。
+       * 被透出来的原生会话列表和原生页面内容在页面开着时藏起来（只是 visibility，不动布局）。
+       * 没有左栏的页面仍是不透明的整块面板，不受影响。
+       */
+      .${codexPlusPageClass}[data-codex-plus-surface="native"][data-codex-plus-sidebar="open"]:has(:is(.codex-plus-page-nav, .codex-plus-provider-sidebar, .codex-plus-task-sidebar)) {
+        border-radius: 0 !important;
+        background: transparent !important;
+      }
+      .${codexPlusPageClass}[data-codex-plus-surface="native"][data-codex-plus-sidebar="open"]:has(:is(.codex-plus-page-nav, .codex-plus-provider-sidebar, .codex-plus-task-sidebar)) :is(.codex-plus-modal-content, .codex-plus-task-list-pane, .codex-plus-task-detail, .codex-plus-provider-tabs, .codex-plus-provider-footer, .codex-plus-task-status) {
+        background: transparent !important;
+        border-top-color: transparent !important;
+        border-bottom-color: transparent !important;
+      }
+      .${codexPlusPageClass}[data-codex-plus-surface="native"][data-codex-plus-sidebar="open"] :is(.codex-plus-page-nav, .codex-plus-provider-sidebar, .codex-plus-task-sidebar) {
+        box-sizing: border-box;
+        width: var(--codex-plus-native-sidebar-width) !important;
+        flex-basis: var(--codex-plus-native-sidebar-width) !important;
+        background: transparent !important;
+      }
+      html:has(.${codexPlusPageClass}[data-codex-plus-surface="native"][data-codex-plus-sidebar="open"]) :is([data-sidebar-navigation-root], [data-app-shell-active-page]) {
+        visibility: hidden !important;
+      }
+      /* 标题栏（侧栏开关、前进后退）挂在原生页面里面，单独放出来。 */
+      html:has(.${codexPlusPageClass}[data-codex-plus-surface="native"][data-codex-plus-sidebar="open"]) [data-app-shell-titlebar] {
+        visibility: visible !important;
+      }
       /*
        * 梦皮（Dream Skin）壁纸模式（#3152）：原生设置页在梦皮下是一层半透明遮罩叠在壁纸上，
        * 我们的页面却是实色底，整块盖住壁纸。页面是盖在内容区上的独立 fixed 层，底下不是同一页，
