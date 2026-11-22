@@ -94,12 +94,10 @@
 
 .cu-flow-icon-button {
   display:inline-flex; flex-shrink:0; align-items:center; justify-content:center; gap:4px;
-  font:inherit; cursor:pointer; color:inherit;
-}
-.cu-flow-icon-button:disabled { opacity:.45; cursor:not-allowed; }
-.cu-flow-icon-button {
+  font:inherit; cursor:pointer;
   width:22px; height:22px; padding:0; border:0; border-radius:6px; color:hsl(var(--muted-foreground)); background:transparent;
 }
+.cu-flow-icon-button:disabled { opacity:.45; cursor:not-allowed; }
 .cu-flow-icon-button:hover:not(:disabled) { color:hsl(var(--foreground)); background:hsl(var(--muted)); }
 .cu-flow-recommend { margin-left:4px; padding:0 4px; border-radius:4px; background:hsl(var(--brand-accent)/.15); color:hsl(var(--brand-accent)); font-size:9.5px; font-weight:600; }
 

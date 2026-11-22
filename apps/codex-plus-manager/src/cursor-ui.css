@@ -430,12 +430,7 @@
 }
 
 :root .shell .cx-side-card-action {
-  padding-left: 14px;
-  color: hsl(var(--muted-foreground));
   font-size: 11.5px;
-}
-
-:root .shell .cx-side-card-action {
   padding-left: 22px;
   color: hsl(var(--foreground) / 0.8);
 }

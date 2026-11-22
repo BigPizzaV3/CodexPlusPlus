@@ -1176,6 +1176,7 @@ body {
 .relay-advanced-fields {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   padding: 2px 14px 14px;
+  animation-duration: 220ms;
 }
 
 .relay-advanced-fields > .field,
@@ -1185,10 +1186,6 @@ body {
 
 .relay-field-official-key {
   grid-column: 1 / -1;
-}
-
-.relay-advanced-fields {
-  animation-duration: 220ms;
 }
 
 .relay-advanced-fields .field:nth-child(1),
@@ -1308,9 +1305,6 @@ body {
   font-size: 12px;
   line-height: 1.5;
   overflow-wrap: anywhere;
-}
-
-.provider-doctor-recommendation {
   margin: 0;
 }
 
@@ -4530,9 +4524,6 @@ select {
 
   .relay-config-section-head {
     grid-template-columns: 1fr;
-  }
-
-  .relay-config-section-head {
     align-items: stretch;
     flex-direction: column;
   }
