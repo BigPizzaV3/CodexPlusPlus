@@ -251,6 +251,30 @@ fn dream_skin_target_assets(
     }
 }
 
+/// 当前主题用的上游皮肤引擎；只有 `dream-skin` 引擎认 `userTransparency`。
+pub fn dream_skin_target_engine(settings: &BackendSettings) -> &'static str {
+    dream_skin_target_assets(settings).0
+}
+
+/// 交给渲染器的主题配置：设置里的主题配置，再并进只存在 Codex++ 设置里的用户偏好。
+/// 上游渲染器约定偏好由本地注入方提供、不来自主题包：`userTransparency` 是壁纸透出百分比
+/// （30 => 面板 alpha .70）。没设时原样序列化主题配置，字节不变，现有用户外观和签名都不变（#3233）。
+fn dream_skin_theme_json(settings: &BackendSettings) -> String {
+    let theme = &settings.codex_app_dream_skin_theme_config;
+    let serialized = match settings.codex_app_dream_skin_user_transparency {
+        None => serde_json::to_string(theme),
+        Some(percent) => {
+            let mut theme = theme.clone();
+            // 设了偏好就盖过主题配置里同名的值（老版本手写进设置里的那份）。
+            theme
+                .extra_fields
+                .insert("userTransparency".to_string(), Value::from(percent.min(100)));
+            serde_json::to_string(&theme)
+        }
+    };
+    serialized.expect("dream skin target theme should serialize")
+}
+
 fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: bool) -> String {
     if !settings.codex_app_dream_skin_enabled || settings.codex_app_dream_skin_paused {
         return String::new();
@@ -261,8 +285,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
     // 原生 shell 兼容属于基础主题：内置图片和没有 Safe CSS 的图片也必须可达。
     let native_shell_css = include_str!("../../../assets/inject/dream-skin-native-shell-compat.css");
     let css = format!("{base_css}\n{native_shell_css}\n{managed_css}");
-    let theme = serde_json::to_string(&settings.codex_app_dream_skin_theme_config)
-        .expect("dream skin target theme should serialize");
+    let theme = dream_skin_theme_json(settings);
     let style_revision = dream_skin_content_signature(css.as_bytes());
     let payload_revision =
         dream_skin_target_payload_signature(settings, engine, &style_revision, &theme);
@@ -687,7 +710,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         .unwrap_or_default();
     let dream_skin_art = dream_skin_art_data_uri(settings);
     let dream_skin_art_signature = dream_skin_art_content_signature(settings);
-    let dream_skin_theme = &settings.codex_app_dream_skin_theme_config;
+    let dream_skin_theme = dream_skin_theme_json(settings);
     let dream_skin_target_runtime = dream_skin_target_runtime_after_document_ready(settings);
     let paste_fix = paste_fix_enabled_config(settings);
     let force_chinese_locale = force_chinese_locale_config(settings);
@@ -717,7 +740,7 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
         serde_json::to_string(&dream_skin_art).expect("dream skin art should serialize"),
         serde_json::to_string(&dream_skin_art_signature)
             .expect("dream skin art signature should serialize"),
-        serde_json::to_string(dream_skin_theme).expect("dream skin theme should serialize"),
+        dream_skin_theme,
         serde_json::to_string(&paste_fix).expect("paste fix config should serialize"),
         serde_json::to_string(&force_chinese_locale)
             .expect("force Chinese locale config should serialize"),
@@ -773,8 +796,7 @@ pub fn dream_skin_art_content_signature(settings: &BackendSettings) -> String {
 
 pub fn dream_skin_runtime_content_signature(settings: &BackendSettings) -> String {
     let (engine, _, css) = dream_skin_target_assets(settings);
-    let theme = serde_json::to_string(&settings.codex_app_dream_skin_theme_config)
-        .expect("dream skin target theme should serialize");
+    let theme = dream_skin_theme_json(settings);
     let style_revision = dream_skin_content_signature(css.as_bytes());
     dream_skin_target_payload_signature(settings, engine, &style_revision, &theme)
 }
@@ -899,6 +921,70 @@ mod tests {
         );
         let output = std::process::Command::new("node").arg("-e").arg(test).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    // #3233：壁纸透出是 Codex++ 设置里的偏好，注入时作为 userTransparency 并进主题配置。
+    #[test]
+    fn dream_skin_user_transparency_is_injected_only_when_set() {
+        let mut settings = BackendSettings::default();
+        settings.codex_app_dream_skin_enabled = true;
+        let theme_assignment = |settings: &BackendSettings| {
+            format!("window.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};", dream_skin_theme_json(settings))
+        };
+
+        // 没设：主题配置原样序列化，字节和签名都与以前一致，现有用户外观不变。
+        let plain = serde_json::to_string(&settings.codex_app_dream_skin_theme_config).unwrap();
+        assert_eq!(dream_skin_theme_json(&settings), plain);
+        assert!(!plain.contains("userTransparency"));
+        let unset_signature = dream_skin_runtime_content_signature(&settings);
+        assert!(injection_script_with_settings(57321, &settings).contains(&theme_assignment(&settings)));
+
+        settings.codex_app_dream_skin_user_transparency = Some(40);
+        let theme: Value = serde_json::from_str(&dream_skin_theme_json(&settings)).unwrap();
+        assert_eq!(theme["userTransparency"], 40);
+        // 设置里存的主题配置本身不带它：主题库「已修改」比较、导出主题包都不受影响。
+        assert!(!settings.codex_app_dream_skin_theme_config.extra_fields.contains_key("userTransparency"));
+        // 启动注入和实时更新拿到的是同一份主题配置；签名跟着变，实时应用才会重跑皮肤。
+        assert!(injection_script_with_settings(57321, &settings).contains(&theme_assignment(&settings)));
+        assert!(dream_skin_live_update_script(&settings, false).contains(&theme_assignment(&settings)));
+        assert_ne!(dream_skin_runtime_content_signature(&settings), unset_signature);
+
+        // 设了偏好就盖过主题配置里手写的同名值；没设时那份手写值照旧生效。
+        settings
+            .codex_app_dream_skin_theme_config
+            .extra_fields
+            .insert("userTransparency".to_string(), json!(100));
+        let theme: Value = serde_json::from_str(&dream_skin_theme_json(&settings)).unwrap();
+        assert_eq!(theme["userTransparency"], 40);
+        settings.codex_app_dream_skin_user_transparency = None;
+        let theme: Value = serde_json::from_str(&dream_skin_theme_json(&settings)).unwrap();
+        assert_eq!(theme["userTransparency"], 100);
+    }
+
+    // 字段名和换算以上游渲染器为准：透出 40% => 面板 alpha .6；没设时回到上游自己的默认。
+    #[test]
+    fn upstream_dream_skin_renderer_reads_injected_user_transparency() {
+        for renderer in [
+            include_str!("../../../assets/inject/upstream/dream-skin/macos/renderer-inject.js"),
+            include_str!("../../../assets/inject/upstream/dream-skin/windows/renderer-inject.js"),
+        ] {
+            let start = renderer.find("const userAlpha =").expect("upstream userAlpha");
+            let end = renderer[start..].find("const backgroundAlpha").expect("upstream panelAlpha") + start;
+            let formula = &renderer[start..end];
+            let mut settings = BackendSettings::default();
+            settings.codex_app_dream_skin_user_transparency = Some(40);
+            let set = dream_skin_theme_json(&settings);
+            let test = format!(
+                r#"
+                  const assert=require('node:assert/strict');
+                  const alpha=(THEME)=>{{const explicitAlpha=()=>null;{formula}return panelAlpha;}};
+                  assert.equal(alpha({set}),0.6);
+                  assert.equal(alpha({{}}),0.7);
+                "#,
+            );
+            let output = std::process::Command::new("node").arg("-e").arg(test).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     #[test]

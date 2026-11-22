@@ -8,6 +8,9 @@
    * 页面拿不到也不提交本地路径：预览图按 key 由服务端读成 data URL；新建主题、导入主题包、
    * 换素材都是把选中的文件内容传过去，由服务端落到自己的上传目录再交给核心函数校验。
    * 换成不同主题时皮肤样式要重启 Codex 才完整切换（与管理器一致），这时给出「重启 Codex」。
+   *
+   * 「壁纸透出」（#3233）是本机偏好，存在 Codex++ 设置里、不写进主题包；服务端注入时作为
+   * userTransparency 并进主题配置交给上游渲染器，皮肤开着就当场实时重应用。
    */
   const codexPlusSkinState = {
     data: null,
@@ -22,7 +25,12 @@
     pendingRestart: false,
     checks: null,
     root: null,
+    // 「壁纸透出」提交中 / 提交中又改了的下一个值（{ value }）：松手才提交，连按方向键只发最后一个。
+    transparencyBusy: false,
+    transparencyQueued: null,
   };
+  /** 「跟随主题」时滑块停的位置：上游渲染器给没写透明度的主题的默认透出。 */
+  const codexPlusSkinTransparencyFallback = 30;
 
   const codexPlusSkinColorFields = [
     ["background", "背景色"], ["panel", "面板色"], ["panelAlt", "次级面板色"], ["accent", "强调色"], ["accentAlt", "次级强调色"],
@@ -114,6 +122,34 @@
       codexPlusSkinState.pendingRestart = true;
       codexPlusSkinRender();
     }
+  }
+
+  /** 设置里的「壁纸透出」：0–100 的整数，其它（含未设）都是跟随主题（null）。 */
+  function codexPlusSkinTransparencyValue(value) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null;
+  }
+
+  function codexPlusSkinTransparencyText(value) {
+    return value === null ? "跟随主题" : `${value}%`;
+  }
+
+  /** 提交「壁纸透出」（null = 跟随主题）。提交中再改只记下最新值，这一次回来后接着发。 */
+  async function codexPlusSkinSetTransparency(value) {
+    const state = codexPlusSkinState;
+    state.transparencyQueued = { value: codexPlusSkinTransparencyValue(value) };
+    if (state.transparencyBusy) return;
+    state.transparencyBusy = true;
+    let result = null;
+    while (state.transparencyQueued) {
+      const next = state.transparencyQueued.value;
+      state.transparencyQueued = null;
+      result = await codexPlusSkinRequest("transparency", { value: next });
+    }
+    state.transparencyBusy = false;
+    codexPlusSkinMerge(result);
+    if (result?.status === "pending_restart") state.pendingRestart = true;
+    codexPlusSkinSetStatus(result?.message || (result?.status === "ok" ? "" : "保存壁纸透出失败"), codexPlusSkinTone(result));
+    codexPlusSkinRender();
   }
 
   async function codexPlusSkinLoadCatalog(kind) {
@@ -350,6 +386,23 @@
       `<button type="button" role="radio" aria-checked="${String(id === value)}" data-skin-choice="${field}" data-value="${escapeHtml(id)}">${escapeHtml(text)}</button>`).join("")}</div>`;
   }
 
+  /** 「壁纸透出」行：滑块 + 当前值 + 「跟随主题」。当前主题的引擎不认这个偏好时禁用。 */
+  function codexPlusSkinTransparencyRow() {
+    const data = codexPlusSkinState.data || {};
+    const value = codexPlusSkinTransparencyValue(data.userTransparency);
+    const follow = value === null;
+    const supported = data.transparencySupported !== false;
+    const text = codexPlusSkinTransparencyText(value);
+    const description = supported
+      ? "侧栏、主区和输入框的底色透出多少壁纸（0% 不透，100% 全透）。「跟随主题」用主题配色自带的透明度，没写的透出 30%。只存在本机设置里，不写进主题包。"
+      : "当前主题使用的皮肤引擎不支持调节壁纸透出。";
+    return codexPlusSkinRow("壁纸透出", escapeHtml(description), `<span class="codex-plus-skin-inline">
+        <input type="range" class="codex-plus-skin-range" min="0" max="100" step="1" value="${follow ? codexPlusSkinTransparencyFallback : value}" data-skin-transparency data-follow="${String(follow)}" aria-label="壁纸透出" aria-valuetext="${escapeHtml(text)}" ${supported ? "" : "disabled"}>
+        <span class="codex-plus-skin-range-value" data-skin-transparency-value>${escapeHtml(text)}</span>
+        ${follow || !supported ? "" : '<button type="button" class="codex-plus-action-button" data-skin-action="transparency-follow">跟随主题</button>'}
+      </span>`);
+  }
+
   function codexPlusSkinEditor() {
     const editing = codexPlusSkinState.editing;
     if (!editing) return "";
@@ -431,6 +484,7 @@
       ${banner}
       <div class="codex-plus-settings-card">
         ${codexPlusSkinRow("启用皮肤", stateText, `<button type="button" class="codex-plus-toggle" role="switch" aria-label="启用皮肤" aria-checked="${String(enabled)}" data-enabled="${String(enabled)}" data-pending="${String(Boolean(state.busy))}" data-skin-action="toggle" ${state.busy ? "disabled" : ""}><span></span></button>`)}
+        ${codexPlusSkinTransparencyRow()}
         ${codexPlusSkinRow("恢复 Codex 原始外观", "关掉皮肤并清掉当前窗口里的皮肤，主题库不受影响。", codexPlusSkinButton("restore", "恢复", "", "restore"))}
         ${codexPlusSkinRow("检查运行状态", checks, codexPlusSkinButton("check", "检查", "", "status"))}
       </div>
@@ -444,6 +498,15 @@
   /** 编辑区的输入：就地写回草稿不重绘（重绘会丢焦点），色块跟着变。 */
   function codexPlusSkinHandleInput(event) {
     const target = event.target;
+    // 拖动「壁纸透出」只改旁边的数字，不重绘（重绘会打断拖动）；松手的 change 才提交。
+    if (target?.dataset && "skinTransparency" in target.dataset) {
+      const text = codexPlusSkinTransparencyText(codexPlusSkinTransparencyValue(Number(target.value)));
+      target.dataset.follow = "false";
+      target.setAttribute("aria-valuetext", text);
+      const label = target.parentElement?.querySelector("[data-skin-transparency-value]");
+      if (label) label.textContent = text;
+      return;
+    }
     const editing = codexPlusSkinState.editing;
     const field = target?.dataset?.skinField;
     if (!editing || !field) return;
@@ -474,6 +537,7 @@
 
   async function codexPlusSkinHandleChange(event) {
     const target = event.target;
+    if (target?.dataset && "skinTransparency" in target.dataset) return codexPlusSkinSetTransparency(Number(target.value));
     const kind = target?.dataset?.skinFile;
     if (!kind) return;
     const file = target.files?.[0];
@@ -513,6 +577,7 @@
       }
       case "restore": return codexPlusSkinRestore();
       case "check": return codexPlusSkinCheck();
+      case "transparency-follow": return codexPlusSkinSetTransparency(null);
       case "restart": {
         const result = await codexPlusSkinRun("restart", "restart", {});
         if (result?.status === "accepted" || result?.status === "ok") codexPlusSkinSetStatus("正在重启 Codex…", "ok");

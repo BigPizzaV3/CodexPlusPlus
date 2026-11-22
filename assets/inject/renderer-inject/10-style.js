@@ -2008,6 +2008,11 @@
         background: var(--codex-plus-control-bg); color: var(--codex-plus-text); font: inherit; font-size: 13px; }
       .codex-plus-skin-input:focus { outline: none; border-color: var(--codex-plus-focus, #2563eb); }
       .codex-plus-skin-number { width: 64px; text-align: right; }
+      /* 「壁纸透出」滑块：跟随主题时淡显，拖动即改成自定义值。 */
+      .codex-plus-skin-range { width: 160px; max-width: 100%; accent-color: var(--codex-plus-text); cursor: pointer; }
+      .codex-plus-skin-range[data-follow="true"] { opacity: .45; }
+      .codex-plus-skin-range:disabled { opacity: .35; cursor: default; }
+      .codex-plus-skin-range-value { min-width: 56px; color: var(--codex-plus-text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
       .codex-plus-skin-color { display: inline-flex; align-items: center; gap: 8px; }
       .codex-plus-skin-color .codex-plus-skin-input { width: 140px; font-family: var(--codex-plus-font-mono, ui-monospace, Menlo, monospace); font-size: 12px; }
       .codex-plus-skin-swatch { width: 20px; height: 20px; border: 1px solid var(--codex-plus-control-border); border-radius: 5px; }
