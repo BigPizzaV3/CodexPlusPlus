@@ -53,7 +53,7 @@
         if (value.toLowerCase() === "transparent") return declaration;
         const hasAlpha = /^#(?:[0-9a-f]{4}|[0-9a-f]{8})$/i.test(value)
           || /^rgba\(/i.test(value) || /^var\(/i.test(value);
-        return `${prefix}rgb(from ${value} r g b / var(--ds-user-surface-alpha, ${hasAlpha ? "alpha" : "0.70"}))${suffix}`;
+        return `${prefix}rgb(from ${value} r g b / var(--ds-user-surface-alpha, ${hasAlpha ? "alpha" : "0.30"}))${suffix}`;
       },
     );
     cssText = cssText.slice(0, communityStart) + communityCss;
@@ -362,7 +362,7 @@
       && Number.isFinite(THEME.userTransparency)
       && THEME.userTransparency >= 0 && THEME.userTransparency <= 100
       ? (100 - THEME.userTransparency) / 100 : null;
-    const panelAlpha = userAlpha ?? explicitAlpha("panel") ?? 0.70;
+    const panelAlpha = userAlpha ?? explicitAlpha("panel") ?? 0.30;
     const backgroundAlpha = userAlpha ?? explicitAlpha("background") ?? panelAlpha;
     const panelAltAlpha = userAlpha ?? explicitAlpha("panelAlt") ?? panelAlpha;
     if (userAlpha !== null) setStyleProperty(root, "--ds-user-surface-alpha", String(userAlpha));
