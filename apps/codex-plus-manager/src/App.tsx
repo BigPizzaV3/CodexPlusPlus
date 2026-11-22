@@ -7317,22 +7317,10 @@ function LegacyRelayGatewayHint({
 }) {
   const managed = form.relayProfiles.find((profile) => profile.id === CODEX_GATEWAY_RELAY_ID);
   const onGateway = form.activeRelayId === CODEX_GATEWAY_RELAY_ID;
-  // 网关里有没有开着的 Codex 接入记录；读不出 gateway.json 也算没有。
-  const [bound, setBound] = useState<boolean | null>(null);
-  useEffect(() => {
-    if (!onGateway) return;
-    let cancelled = false;
-    invoke<GatewayResult>("load_gateway")
-      .then((result) => {
-        if (!cancelled) setBound(result.status === "ok" && result.gateway?.bindings?.codex?.enabled === true);
-      })
-      .catch(() => {
-        if (!cancelled) setBound(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [onGateway, form.relayProfiles]);
+  // 网关里有没有开着的 Codex 接入记录：读共享的网关数据（和本页「供应商池」标记同一份轮询），不再单独请求；
+  // 还没读到时当作未知，不误报「还指向网关托管的供应商」。
+  const gatewayPayload = useGatewayPayload(15_000);
+  const bound = gatewayPayload ? gatewayPayload.gateway?.bindings?.codex?.enabled === true : null;
   const orphan = onGateway && (!managed || bound === false);
   const viaGateway = onGateway && !orphan;
   const direct = form.relayProfiles.find((profile) => profile.id === form.activeRelayId && profile.id !== CODEX_GATEWAY_RELAY_ID);
