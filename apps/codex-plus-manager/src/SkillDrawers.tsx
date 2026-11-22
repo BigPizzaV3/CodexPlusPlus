@@ -1,5 +1,5 @@
 /** Skills 页的抽屉与共用的类型、工具函数：仓库管理、备份列表、Skill 详情。页面本身在 SkillsPage.tsx。 */
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, CloudDownload, Edit3, ExternalLink, FolderOpen, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { matchesManagementQuery, skillRepoKey } from "./management-model";
@@ -63,6 +63,18 @@ export function repoUrl(skill: Skill) {
   const parts = skill.repoKey.split("@")[0].split("/");
   if (parts.length < 2) return "";
   return `https://github.com/${parts.join("/")}${skill.repoPath ? `/tree/${skill.repoKey.split("@")[1]?.split(":")[0] || "main"}/${skill.repoPath}` : ""}`;
+}
+/** 粘贴 GitHub 仓库地址再按按钮（或回车）：仓库管理和来源匹配共用这一个输入。 */
+export function SkillRepoUrlInput({ value, onChange, onSubmit, disabled, busy, icon, buttonLabel, busyLabel, label = t("仓库地址"), className = "" }: {
+  value: string; onChange: (value: string) => void; onSubmit: () => void; disabled?: boolean; busy?: boolean;
+  icon: ReactNode; buttonLabel: string; busyLabel: string; label?: string; className?: string;
+}) {
+  return <div className={`mg-repo-quick ${className}`.trim()}>
+    <input disabled={disabled} value={value} aria-label={label} placeholder="https://github.com/owner/repo"
+      onChange={(event) => onChange(event.currentTarget.value)}
+      onKeyDown={(event) => { if (event.key === "Enter" && value.trim() && !disabled) { event.preventDefault(); onSubmit(); } }} />
+    <Button onClick={onSubmit} disabled={disabled || !value.trim()}>{icon}{busy ? busyLabel : buttonLabel}</Button>
+  </div>;
 }
 export function SkillRepoDrawer({ repos, catalog, counts, initialKey, busy, updates, conflictIds, onClose, onSave, onDelete, onInspect, onOpenUrl, onOpenSkill, onRun }: {
   repos: Repo[]; catalog: Skill[]; counts: Record<string, number>; initialKey: string | null; busy: boolean; onClose: () => void;
@@ -170,10 +182,8 @@ export function SkillRepoDrawer({ repos, catalog, counts, initialKey, busy, upda
         <button className="mg-icon-button" title={t("取消编辑")} aria-label={t("取消编辑")} onClick={() => { cancelScan(); setFormOpen(false); }}><X size={14}/></button>
       </div>
       <div className="mg-repo-form-content">
-        <div className="mg-repo-quick">
-          <input disabled={locked} value={input} onChange={(e) => { setInput(e.target.value); setParseError(""); }} aria-label={t("仓库地址")} placeholder="https://github.com/owner/repo" />
-          <Button onClick={() => void parse()} disabled={locked || !input.trim()}><Search size={14}/>{scanning ? t("解析中…") : t("解析")}</Button>
-        </div>
+        <SkillRepoUrlInput value={input} onChange={(value) => { setInput(value); setParseError(""); }} onSubmit={() => void parse()}
+          disabled={locked} busy={scanning} icon={<Search size={14}/>} buttonLabel={t("解析")} busyLabel={t("解析中…")} />
         {parseError && <p className="mg-form-error">{parseError}</p>}
         <fieldset disabled={locked} className="mg-form-grid">
           <Field label={t("所有者")}><input value={draft.owner} onChange={(e) => set({ owner: e.target.value })} /></Field>

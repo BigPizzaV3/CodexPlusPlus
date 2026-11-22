@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Pause, Play, Plus, RefreshCw, Search } from "lucide-react";
 import { AppSelect } from "./AppSelect";
 import { ManagementDrawer } from "./ManagementPages";
+import { SkillRepoUrlInput } from "./SkillDrawers";
 import { t, tf } from "./i18n";
 import { parseSkillRepository, type SkillRepository } from "./skill-repository";
 import { discardSkillSourceScan, getSkillSourceScan, skillSourceRepoKey as keyOfRepo, type SkillSourceMatch as Match } from "./skill-source-scan";
@@ -124,11 +125,9 @@ export function SkillSourceMatchDrawer({ repos, id, localPath, agentLabel, curre
         : <button type="button" className="cx-primary" disabled={busy || !complete} onClick={() => void apply()}>{action === "apply" ? t("正在关联来源…") : tf("关联所选 {0} 项", [choices.length])}</button>}
     </>}>
     {localPath && <dl className="mg-detail"><dt>{t("所选安装位置")}</dt><dd>{agentLabel ? `${agentLabel} · ${localPath}` : localPath}</dd></dl>}
-    <div className="mg-repo-quick mg-source-add">
-      <input aria-label={t("GitHub 仓库地址")} placeholder="https://github.com/owner/repo" value={input} disabled={busy}
-        onChange={(event) => { setInput(event.currentTarget.value); setFeedback(""); }}/>
-      <button type="button" className="cx-secondary" disabled={busy || !input.trim()} onClick={() => void add()}><Plus size={14}/>{t(action === "add" ? "正在检查仓库…" : "检查并添加")}</button>
-    </div>
+    <SkillRepoUrlInput className="mg-source-add" label={t("GitHub 仓库地址")} value={input} disabled={busy} busy={action === "add"}
+      onChange={(value) => { setInput(value); setFeedback(""); }} onSubmit={() => void add()}
+      icon={<Plus size={14}/>} buttonLabel={t("检查并添加")} busyLabel={t("正在检查仓库…")} />
     {feedback && <p className="mg-warning" role="alert">{feedback}</p>}
     {evidenceErrors.length > 0 && <p className="mg-warning" role="alert">{evidenceErrors.join("；")}</p>}
     {evidenceScanning && <p className="mg-muted" role="status">{t(status === "paused" ? "正在完成当前线索" : "正在检查本地来源线索")}</p>}
@@ -141,7 +140,7 @@ export function SkillSourceMatchDrawer({ repos, id, localPath, agentLabel, curre
     <p className="mg-muted" role="status">{scanning
       ? `${tf("正在检查仓库 {0}/{1}", [progress, knownRepos.length])}${currentRepo ? `：${currentRepo}` : ""}`
       : status === "paused"
-        ? `${tf("已暂停，已检查 {0}/{1} 个仓库", [progress, knownRepos.length])}${currentRepo ? ` · ${t("正在完成当前仓库")}：${currentRepo}` : ""}`
+        ? `${tf("已暂停，已检查 {0}/{1} 个仓库", [progress, knownRepos.length])}${currentRepo ? ` · ${tf("正在完成当前仓库：{0}", [currentRepo])}` : ""}`
         : tf("已检查 {0} 个仓库，{1} 个 Skill 有候选来源", [progress, groups.size])}</p>
     {id && <label className="mg-search mg-source-search"><Search size={14}/><input aria-label={t("搜索候选来源")} placeholder={t("搜索候选来源")} value={query} onChange={(event) => setQuery(event.currentTarget.value)}/></label>}
     {!!warnings.length && <details className="mg-source-warnings"><summary>{tf("{0} 项检查提示", [warnings.length])}</summary>{warnings.map((warning, index) => <p key={`${index}:${warning}`}>{warning}</p>)}</details>}

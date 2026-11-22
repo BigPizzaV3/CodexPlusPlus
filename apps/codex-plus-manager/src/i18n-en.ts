@@ -166,7 +166,6 @@ export const EN_PLAIN: Record<string, string> = {
   "填入仓库地址": "Use repository address",
   "正在完成当前线索": "Finishing the current source clue",
   "正在检查本地来源线索": "Checking local source clues",
-  "正在完成当前仓库": "Finishing the current repository",
   "搜索候选来源": "Search source candidates",
   "已检查的仓库中没有候选来源，可继续扫描。": "No candidates in the repositories checked so far. Resume scanning to continue.",
   "没有找到候选来源，可添加 GitHub 仓库后重试。": "No candidates found. Add a GitHub repository and try again.",
@@ -4769,6 +4768,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "更新方式：{0}": "Updates: {0}",
   "无法比较受控源：{0}": "Cannot compare the managed source: {0}",
   "{0} · {1}：{2}": "{0} · {1}: {2}",
+  "正在完成当前仓库：{0}": "Finishing the current repository: {0}",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated
