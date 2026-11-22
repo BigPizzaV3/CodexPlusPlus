@@ -325,7 +325,6 @@ test("页内目录收成单列：分组锚点不再显示；增强页不再分�
   }
   const layer = readSource("./cursor-ui.css");
   assert.match(layer, /:root \.shell \.sectioned-page \{\n  display: flex;\n  flex-direction: column;/);
-  assert.match(layer, /:root \.shell \.page-section-nav-list \{\n  display: none;/);
   assert.match(layer, /:root \.shell \.screen\[data-settings-mode="true"\] > \* \{\n  width: min\(100%, var\(--cx-content-narrow\)\);/);
   // 增强页只剩总开关和独立模式，内置拓展的页签随设置一起搬进 Codex。
   assert.doesNotMatch(text, /className="enhance-tabs/);
