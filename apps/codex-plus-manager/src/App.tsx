@@ -165,7 +165,7 @@ import { AgentFocusDialog } from "./AgentFocusDialog";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentVisible, commitAgentFocusSelection, providersHidden, singleAgent, type AgentFocus, type FocusMode } from "./agent-focus-model";
 import { backupAgentFocus, needAgentFocusPrompt, resolveAgentFocusPrompt, restoreAgentFocusFromSettings, saveAgentFocus, useAgentFocus } from "./agent-focus-store";
-import { AgentDashboard, type DashboardAgent, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
+import { AgentDashboard, type DashboardAgent, type DashboardRequestLogs, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
 import { BACKEND_SETTINGS_CHANGED_EVENT, ComputerUsePage } from "./ComputerUsePage";
@@ -6144,19 +6144,15 @@ function OverviewScreen({
   const tool = toolEntries.find((entry) => entry.id === activeTool);
   const normalized = normalizeSettings(form);
   const activeProfile = normalized.relayProfiles.find((profile) => profile.id === normalized.activeRelayId);
-  // 最近请求只在 Codex 概览里用；失败时静默显示空状态，不打断概览。
+  // 最近请求只在 Codex 概览里用，数据由仪表板读请求日志时一并交过来；失败时静默显示空状态，不打断概览。
   const [recent, setRecent] = useState<RecentRequestSummary | null>(null);
-  useEffect(() => {
-    if (activeTool !== "codex") return;
-    let cancelled = false;
-    void invoke<RequestLogsResult>("load_request_logs", { limit: 300 })
-      .then((result) => {
-        // 网关记录里也有 Claude Code / Grok 的请求，Codex 概览只统计 Codex 自己的。
-        if (!cancelled) setRecent(summarizeRecentRequests(result.status === "ok" ? result.entries.filter((entry) => requestLogAgent(entry) === "codex") : [], Date.now()));
-      })
-      .catch(() => { if (!cancelled) setRecent(summarizeRecentRequests([], Date.now())); });
-    return () => { cancelled = true; };
-  }, [activeTool]);
+  const summarizeCodexRequests = (result: DashboardRequestLogs | null) => {
+    // 网关记录里也有 Claude Code / Grok 的请求，Codex 概览只统计 Codex 自己的。
+    const entries = result?.status === "ok" ? ((result.entries ?? []) as RequestLogEntry[]) : [];
+    setRecent(summarizeRecentRequests(entries.filter((entry) => requestLogAgent(entry) === "codex"), Date.now()));
+  };
+  // 「刷新状态」连仪表板的数字、最近会话和请求一起重读。
+  const [dashboardRefresh, setDashboardRefresh] = useState(0);
   const switchFromOverview = (profileId: string) => {
     if (!profileId || profileId === normalized.activeRelayId) return;
     void actions.switchRelayProfile(syncLegacyRelayFields({ ...normalized, activeRelayId: profileId }), normalized.activeRelayId);
@@ -6237,6 +6233,8 @@ function OverviewScreen({
           notify={actions.showMessage}
           onNavigate={onNavigate}
           onOpenList={onOpenList}
+          onRequestLogs={summarizeCodexRequests}
+          refreshKey={dashboardRefresh}
           stats={codexStats}
           status={codexStatus}
           version={overview?.codex_version}
@@ -6245,7 +6243,7 @@ function OverviewScreen({
             aside={
               <span className="overview-health-header-actions">
                 {healthProblems.length ? <span title={t("概览只展示关键问题，具体配置在对应页面处理")}>{tf("{0} 项需处理", [healthProblems.length])}</span> : null}
-                <button aria-label={t("刷新状态")} className="cx-icon-button" onClick={() => void actions.refreshCurrent()} title={t("刷新状态")} type="button">
+                <button aria-label={t("刷新状态")} className="cx-icon-button" onClick={() => { setDashboardRefresh((value) => value + 1); void actions.refreshCurrent(); }} title={t("刷新状态")} type="button">
                   <RefreshCw aria-hidden="true" />
                 </button>
               </span>

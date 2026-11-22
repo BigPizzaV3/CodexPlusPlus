@@ -39,3 +39,15 @@ it("顶栏操作按钮在 layout effect 里找挂载点，切页时不晚一帧"
   assert.match(source, /useLayoutEffect\(\(\) => \{\n\s*setSlot\(document\.querySelector\("\[data-topbar-actions\]"\)\);/);
   assert.doesNotMatch(source, /\buseEffect\b/);
 });
+
+it("Codex 概览的请求日志只读一次（仪表板读、概览算统计），刷新按钮连仪表板一起重读", async () => {
+  const app = await read("./App.tsx");
+  const dashboard = await read("./AgentDashboard.tsx");
+  const overview = app.slice(app.indexOf("function OverviewScreen("), app.indexOf("\nfunction ", app.indexOf("function OverviewScreen(") + 10));
+  assert.doesNotMatch(overview, /load_request_logs/);
+  assert.match(overview, /onRequestLogs=\{summarizeCodexRequests\}/);
+  assert.match(overview, /refreshKey=\{dashboardRefresh\}/);
+  assert.match(overview, /onClick=\{\(\) => \{ setDashboardRefresh\(\(value\) => value \+ 1\); void actions\.refreshCurrent\(\); \}\}/);
+  assert.equal(dashboard.match(/"load_request_logs"/g)?.length, 1);
+  assert.match(dashboard, /\}, \[agent, refreshKey\]\);/);
+});
