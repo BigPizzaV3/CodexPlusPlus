@@ -263,11 +263,6 @@ body {
   box-shadow: 0 14px 38px hsl(0 0% 0% / 0.24);
 }
 
-.relay-select span {
-  color: hsl(var(--muted-foreground));
-  line-height: 1.45;
-}
-
 .fill {
   min-height: calc(100vh - 188px);
 }
@@ -323,13 +318,6 @@ body {
 .relay-profile-list {
   display: grid;
   gap: 10px;
-}
-
-.relay-add-row {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-bottom: 10px;
 }
 
 .third-party-import {
@@ -805,19 +793,6 @@ body {
   scrollbar-gutter: stable;
 }
 
-/* 不透明：保存按钮常驻底部，透出下方表单会像渲染错位 */
-.relay-detail-footer {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 10px;
-  padding: 12px 24px;
-  border-top: 1px solid hsl(var(--border) / 0.6);
-  background: hsl(var(--shell-bg));
-}
-
 .relay-profile-editor {
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
@@ -843,19 +818,6 @@ body {
 .aggregate-editor {
   display: grid;
   gap: 12px;
-}
-
-.relay-file-head {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.relay-file-head div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
 }
 
 .relay-editor-heading {
@@ -889,8 +851,7 @@ body {
   white-space: nowrap;
 }
 
-.relay-editor-heading-copy span,
-.relay-file-head span {
+.relay-editor-heading-copy span {
   overflow-wrap: anywhere;
   color: hsl(var(--muted-foreground));
   font-size: 12px;
@@ -1108,11 +1069,6 @@ body {
   color: hsl(var(--brand-accent));
 }
 
-.relay-connection-section {
-  grid-column: 1 / -1;
-}
-
-.relay-connection-section,
 .relay-basic-fields > *,
 .relay-api-fields > * {
   min-width: 0;
@@ -1184,10 +1140,6 @@ body {
   grid-column: auto;
 }
 
-.relay-field-official-key {
-  grid-column: 1 / -1;
-}
-
 .relay-advanced-fields .field:nth-child(1),
 .relay-api-fields .field:nth-child(1) {
   animation-delay: 20ms;
@@ -1222,48 +1174,18 @@ body {
   padding: 11px 14px;
 }
 
-.relay-switch-copy {
-  min-width: 0;
-}
-
-.relay-switch-row strong,
-.relay-switch-copy strong {
+.relay-switch-row strong {
   display: block;
   font-size: 12.5px;
   font-weight: 600;
 }
 
-.relay-switch-row small,
-.relay-switch-copy small {
+.relay-switch-row small {
   display: block;
   margin-top: 3px;
   color: hsl(var(--muted-foreground));
   font-size: 11.5px;
   line-height: 1.5;
-}
-
-.relay-switch-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-/* 文案 / 编辑链接 / 开关三列。开关得是 input 的直接同级才吃得到
-   .switch-row > input:checked ~ .toggle-switch-visual，所以不另包一层。
-   .toggle-switch-visual 自带 grid-column: 2，这里把两者的列位显式对调，
-   否则开关会抢到中间、链接被挤到最右。 */
-.relay-switch-row.relay-field-common-config {
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 10px;
-}
-
-.relay-field-common-config > .relay-link-button {
-  grid-column: 2;
-  grid-row: 1;
-}
-
-.relay-field-common-config > .toggle-switch-visual {
-  grid-column: 3;
 }
 
 /* 只有开关本体、没有描边的一行内控件；描边由外层 .relay-switch-row 提供 */
@@ -1306,65 +1228,6 @@ body {
   line-height: 1.5;
   overflow-wrap: anywhere;
   margin: 0;
-}
-
-.relay-environment-checks {
-  display: grid;
-  gap: 8px;
-}
-
-.relay-environment-check {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  min-height: 74px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--background));
-  padding: 12px;
-}
-
-.relay-environment-check.ok {
-  border-color: hsl(var(--status-success) / 0.35);
-}
-
-.relay-environment-check.failed {
-  border-color: hsl(0 72% 55% / 0.4);
-}
-
-.relay-environment-check-icon {
-  display: grid;
-  place-items: center;
-}
-
-.relay-environment-check.ok .relay-environment-check-icon {
-  color: hsl(var(--status-success));
-}
-
-.relay-environment-check.failed .relay-environment-check-icon {
-  color: hsl(0 72% 55%);
-}
-
-.relay-environment-check.pending .relay-environment-check-icon {
-  color: hsl(var(--muted-foreground));
-}
-
-.relay-environment-check-copy {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.relay-environment-check-copy strong {
-  font-size: 14px;
-}
-
-.relay-environment-check-copy span {
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
 }
 
 .provider-doctor-modal {
@@ -1459,12 +1322,10 @@ body {
 }
 
 .relay-field-name,
-.relay-field-mode,
 .relay-field-session-provider,
 .relay-field-config-model,
 .relay-field-context-window,
 .relay-field-auto-compact,
-.relay-field-model-mode,
 .relay-field-base-url,
 .relay-field-key,
 .relay-field-protocol {
@@ -1574,10 +1435,6 @@ body {
   color: hsl(var(--brand-accent));
 }
 
-.relay-api-key-add {
-  justify-self: start;
-}
-
 /* 折叠式高级区：整块描边，标题行自带箭头，收起时用一行提示说明里面有什么 */
 .relay-advanced-block {
   grid-column: 1 / -1;
@@ -1595,48 +1452,6 @@ body {
   background: hsl(var(--surface-raised));
 }
 
-/* 内边距挂在 button 上而不是外层盒子：收起时整块描边区域都是可点区域 */
-.relay-advanced-trigger {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  width: 100%;
-  border: 0;
-  border-radius: inherit;
-  background: none;
-  padding: 12px 14px;
-  color: hsl(var(--foreground));
-  font-size: 13px;
-  font-weight: 600;
-  text-align: left;
-  cursor: pointer;
-}
-
-.relay-advanced-trigger-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.relay-advanced-chevron {
-  transform: rotate(-90deg);
-  transition: transform var(--motion-normal) var(--motion-ease);
-}
-
-.relay-advanced-chevron.is-open {
-  transform: rotate(0deg);
-}
-
-.relay-advanced-hint {
-  display: block;
-  margin: 0 0 0 22px;
-  color: hsl(var(--muted-foreground));
-  font-size: 11.5px;
-  font-weight: 400;
-  line-height: 1.5;
-}
-
 /* 分组用描边卡片而非分割线，和高级区/开关行统一成同一种块级形态 */
 .relay-config-section {
   grid-column: 1 / -1;
@@ -1647,29 +1462,6 @@ body {
   border-radius: var(--radius-lg);
   background: hsl(var(--surface-raised) / 0.45);
   padding: 14px;
-}
-
-/* 通用配置默认折叠为一行文字：summary 复用 .relay-file-head 的排版，
-   展开后才显示提取按钮与编辑器。 */
-details.relay-common-config-panel > summary.relay-common-config-summary {
-  cursor: pointer;
-  list-style: none;
-}
-
-details.relay-common-config-panel > summary.relay-common-config-summary::-webkit-details-marker {
-  display: none;
-}
-
-details.relay-common-config-panel > summary.relay-common-config-summary::after {
-  content: "\25BE";
-  flex-shrink: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
-  transition: transform var(--motion-fast) var(--motion-ease);
-}
-
-details.relay-common-config-panel[open] > summary.relay-common-config-summary::after {
-  transform: rotate(180deg);
 }
 
 /* 折叠态必须显式隐藏：Chrome 现在用 `::details-content` 的 visibility 实现
@@ -2094,102 +1886,11 @@ details.relay-fold[open] > .relay-fold-body {
   margin-top: 12px;
 }
 
-.relay-context-panel {
-  display: grid;
-  gap: 12px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--surface-sunken));
-  padding: 14px;
-  transition:
-    border-color var(--motion-normal) var(--motion-ease),
-    box-shadow var(--motion-normal) var(--motion-ease);
-}
-
-.relay-context-panel:focus-within {
-  border-color: hsl(var(--primary) / 0.38);
-  box-shadow: 0 10px 26px hsl(var(--foreground) / 0.07);
-}
-
-.relay-context-head {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.relay-context-head > div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.relay-context-head-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.relay-context-head span,
-.relay-context-summary {
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-}
-
-.relay-context-list {
-  display: grid;
-  gap: 8px;
-}
-
-.relay-context-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--secondary) / 0.18);
-  padding: 8px;
-  transition:
-    border-color var(--motion-normal) var(--motion-ease),
-    background-color var(--motion-normal) var(--motion-ease),
-    box-shadow var(--motion-normal) var(--motion-ease),
-    transform var(--motion-normal) var(--motion-ease);
-}
-
-.relay-context-row:hover {
-  border-color: hsl(var(--primary) / 0.32);
-  background: hsl(var(--secondary) / 0.28);
-  transform: translateY(-1px);
-}
-
-.relay-context-actions {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.relay-context-delete {
-  color: hsl(var(--destructive, 0 84% 60%));
-}
-
-.relay-context-delete:hover {
-  background: hsl(var(--destructive, 0 84% 60%) / 0.12);
-  color: hsl(var(--destructive, 0 84% 60%));
-}
-
 /* 一行一个：两列并排时每个预览都很窄，config.toml 的长行几乎全靠横向滚动 */
 .relay-file-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 12px;
-}
-
-.relay-file-grid.three {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 12px;
 }
 
 .relay-file-panel {
@@ -2212,32 +1913,6 @@ details.relay-fold[open] > .relay-fold-body {
 
 .relay-file-textarea.compact {
   min-height: 190px;
-}
-
-.relay-link-button {
-  border: 0;
-  background: none;
-  padding: 0;
-  color: hsl(var(--brand-accent));
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.relay-link-button:hover {
-  text-decoration: underline;
-}
-
-.relay-link-button:focus-visible {
-  border-radius: 4px;
-  outline: none;
-  box-shadow: var(--focus-ring);
-}
-
-/* 按遮罩容器限定宽度，避免弹层右侧被裁切。 */
-.modal-card.relay-common-config {
-  display: grid;
-  gap: 12px;
-  width: min(860px, 100%);
 }
 
 .mode-option {
@@ -2324,16 +1999,6 @@ details.relay-fold[open] > .relay-fold-body {
   min-height: 132px;
 }
 
-.aggregate-model-mode-hint {
-  display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border: 1px solid hsl(var(--primary) / 0.35);
-  border-radius: 8px;
-  background: hsl(var(--primary) / 0.08);
-}
-
-.aggregate-model-mode-hint span,
 .aggregate-member-models {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
@@ -3489,7 +3154,6 @@ input[type="range"]:disabled {
 
   .form-row,
   .relay-fields,
-  .relay-context-row,
   .relay-file-grid,
   .relay-grid {
     grid-template-columns: 1fr;
@@ -4185,7 +3849,6 @@ select {
 /* ── 状态色 ─────────────────────────────────────────────────── */
 
 .good,
-.relay-environment-check.ok .relay-environment-check-icon,
 .provider-doctor-step.ok .provider-doctor-step-icon {
   color: hsl(var(--status-success));
 }
@@ -4196,7 +3859,6 @@ select {
 }
 
 .bad,
-.relay-environment-check.failed .relay-environment-check-icon,
 .provider-doctor-step.failed .provider-doctor-step-icon {
   color: hsl(var(--status-error));
 }
@@ -4229,16 +3891,13 @@ select {
 
 /* ── 列表行 ─────────────────────────────────────────────────── */
 
-.relay-profile-list,
-.relay-environment-checks {
+.relay-profile-list {
   gap: 6px;
 }
 
 .relay-profile-card,
 .feature-toggle,
 .switch-row,
-.relay-context-row,
-.relay-environment-check,
 .provider-doctor-step,
 .provider-sync-progress {
   border-color: hsl(var(--border) / 0.7);
@@ -4257,8 +3916,7 @@ select {
 .relay-profile-card:hover,
 .relay-profile-card:focus-visible,
 .feature-toggle:hover,
-.switch-row:hover,
-.relay-context-row:hover {
+.switch-row:hover {
   border-color: hsl(var(--border));
   background: hsl(var(--surface-raised));
   box-shadow: none;
@@ -4318,7 +3976,6 @@ select {
 }
 
 .relay-profile-editor,
-.relay-context-panel,
 .aggregate-editor,
 .relay-file-panel {
   border-color: hsl(var(--border) / 0.8);
@@ -4327,8 +3984,7 @@ select {
   box-shadow: var(--shadow-xs);
 }
 
-.relay-profile-editor:focus-within,
-.relay-context-panel:focus-within {
+.relay-profile-editor:focus-within {
   border-color: hsl(var(--brand-accent) / 0.4);
   box-shadow: var(--shadow-xs);
 }
@@ -4424,14 +4080,6 @@ select {
   color: hsl(var(--brand-accent));
 }
 
-.relay-environment-check.ok {
-  border-color: hsl(var(--status-success) / 0.34);
-}
-
-.relay-environment-check.failed {
-  border-color: hsl(var(--status-error) / 0.38);
-}
-
 /* ── 浮层 ───────────────────────────────────────────────────── */
 
 .third-party-import-menu,
@@ -4484,8 +4132,7 @@ select {
 }
 
 .light .panel,
-.light .relay-profile-editor,
-.light .relay-context-panel {
+.light .relay-profile-editor {
   box-shadow: var(--shadow-xs);
 }
 
@@ -4517,8 +4164,7 @@ select {
     margin-inline: 16px;
   }
 
-  .relay-detail-header,
-  .relay-detail-footer {
+  .relay-detail-header {
     padding-inline: 16px;
   }
 
@@ -4550,19 +4196,6 @@ select {
   }
 }
 
-.relay-model-row-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 4px;
-}
-
-.relay-model-row-hint {
-  font-size: 11px;
-  color: hsl(var(--muted-foreground));
-  align-self: center;
-  white-space: nowrap;
-}
-
 .relay-vlm-section {
   display: grid;
   grid-column: 1 / -1;
@@ -4585,13 +4218,6 @@ select {
 .relay-field-user-agent,
 .relay-field-proxy {
   grid-column: 1 / -1;
-}
-
-.relay-inline-field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
 }
 
 .relay-field-custom-headers {
@@ -4815,14 +4441,6 @@ select {
   .relay-model-cell-reasoning {
     grid-row: 5;
   }
-}
-
-.relay-detail-body .relay-file-head {
-  flex-wrap: wrap;
-}
-
-.relay-detail-body .relay-file-head > div:first-child {
-  flex: 1 1 220px;
 }
 
 @media (max-width: 860px) {
@@ -5195,12 +4813,12 @@ select {
 .screen.management-screen>.provider-catalog-screen{flex:1 1 auto;width:min(100%,1240px);min-height:0;margin:0 auto 22px;border:1px solid hsl(var(--border));border-radius:14px;overflow:hidden}
 
 /* 四个管理页统一内容容器：外层边框承载页面内容，内部列表保持独立分组。 */
-.mg-page>.mg-content{margin:18px 22px 22px;padding:20px;border:1px solid hsl(var(--border));border-radius:14px;background:hsl(var(--surface-sunken)/.32);box-shadow:var(--shadow-sm)}.relay-management-page>.mg-content>.relay-management-panel{border:0;background:transparent;box-shadow:none}.relay-management-page>.mg-content>.relay-management-panel:hover{box-shadow:none;border-color:transparent}.mg-page>.mg-content>.mg-notice{margin-top:12px}@media(max-width:760px){.mg-page>.mg-content{margin:14px 14px 18px;padding:14px}}
+.mg-page>.mg-content{margin:18px 22px 22px;padding:20px;border:1px solid hsl(var(--border));border-radius:14px;background:hsl(var(--surface-sunken)/.32);box-shadow:var(--shadow-sm)}.mg-page>.mg-content>.mg-notice{margin-top:12px}@media(max-width:760px){.mg-page>.mg-content{margin:14px 14px 18px;padding:14px}}
 
 /* 外层页面边框：包住管理页标题栏与全部内容，内部列表只保留分组边框。
    左右留白由 .screen 的内边距负责，这里水平方向只能 auto 居中；
    再加固定外边距会在 width:100% 之外多出一截，整块被挤出右边缘裁掉。 */
-.mg-page{margin:0 auto 22px;border:1px solid hsl(var(--border));border-radius:14px;overflow:hidden}.mg-page>.mg-content{margin:0;border:0;border-radius:0;background:transparent;box-shadow:none;padding:20px}.relay-management-page>.mg-content>.relay-management-panel{border:0;border-radius:0}@media(max-width:760px){.mg-page{margin:0 auto 18px}.mg-page>.mg-content{padding:14px}}
+.mg-page{margin:0 auto 22px;border:1px solid hsl(var(--border));border-radius:14px;overflow:hidden}.mg-page>.mg-content{margin:0;border:0;border-radius:0;background:transparent;box-shadow:none;padding:20px}@media(max-width:760px){.mg-page{margin:0 auto 18px}.mg-page>.mg-content{padding:14px}}
 
 /* 顶部通栏是所有增强共同依赖的受管副本（状态 + 操作）；下方左栏增强开关、右栏上手步骤。 */
 .claude-localization-page {
@@ -5375,34 +4993,6 @@ select {
   height: 2rem;
   background-color: hsl(var(--surface-sunken));
   font-size: 12.5px;
-}
-
-.relay-environment-head {
-  align-items: center;
-}
-
-.relay-environment-head-side {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 12px;
-}
-
-.relay-environment-head-side p {
-  max-width: none;
-}
-
-.proxy-settings-page .relay-environment-check {
-  min-height: 0;
-  padding: 10px 12px;
-}
-
-.proxy-settings-page .relay-environment-check-copy strong {
-  font-size: 13px;
-}
-
-.proxy-settings-page .relay-environment-check-copy span {
-  overflow-wrap: anywhere;
 }
 
 /* ── 请求日志页 ──────────────────────────────────────────────── */
@@ -5698,16 +5288,6 @@ select {
   transform: translateX(14px);
 }
 
-.relay-switch-off-note {
-  margin: 0 0 12px;
-  padding: 9px 12px;
-  border: 1px solid hsl(var(--status-warning) / 0.35);
-  border-radius: 8px;
-  background: hsl(var(--status-warning) / 0.07);
-  color: hsl(var(--status-warning));
-  font-size: 12px;
-}
-
 /* 「使用」固定贴右；悬停才出现的次要按钮排在它左边，不在行中间留一段空白。 */
 .relay-management-page .relay-profile-card .relay-card-actions {
   flex-direction: row-reverse;
@@ -5939,18 +5519,6 @@ select {
 /* 模型聚合模式：名称与会话身份并排，不再各占一行。 */
 .aggregate-editor[data-aggregate-mode="model"] .aggregate-fields .relay-field-name { grid-column: auto; }
 
-/* 「模型聚合已启用」从大说明框收成一行提示。 */
-.aggregate-editor .aggregate-model-mode-hint {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px 10px;
-  padding: 8px 12px;
-  border-color: hsl(var(--primary) / 0.25);
-  background: hsl(var(--primary) / 0.05);
-}
-.aggregate-editor .aggregate-model-mode-hint strong { font-size: 12.5px; white-space: nowrap; }
-
 /* 成员行：单行高度、勾选与否一眼可分。 */
 .aggregate-editor .aggregate-member-list { gap: 6px; }
 .aggregate-editor .aggregate-member-row { padding: 7px 10px; cursor: pointer; }
@@ -6008,7 +5576,6 @@ select {
 
 /* ── 设置行（代理设置 / Codex 设置共用）──────────────────────── */
 /* 左边标题 + 一句说明，右边控件；行与行之间细线分隔。 */
-.setting-rows { display: flex; flex-direction: column; gap: 0; }
 .setting-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(200px, 320px);

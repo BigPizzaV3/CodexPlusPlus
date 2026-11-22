@@ -926,7 +926,6 @@
   font-size: 12px;
 }
 
-:root .shell .cx-codex-advanced-body .relay-environment-panel,
 :root .shell .cx-codex-advanced-body > .panel {
   margin: 0;
   border-top: 1px solid hsl(var(--cx-row-divider));
