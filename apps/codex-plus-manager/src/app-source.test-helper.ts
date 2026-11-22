@@ -11,6 +11,7 @@ export const APP_SOURCE_FILES = [
   "app-shared.tsx",
   "routes.ts",
   "RelayEditor.tsx",
+  "RequestLogScreen.tsx",
 ] as const;
 
 export function readAppSource(): string {
