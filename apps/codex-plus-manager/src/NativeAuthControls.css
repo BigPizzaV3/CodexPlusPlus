@@ -94,6 +94,11 @@
   color: hsl(var(--destructive));
   overflow-wrap: anywhere;
 }
+.native-auth-pending {
+  margin: 6px 0 0;
+  color: hsl(var(--muted-foreground));
+  overflow-wrap: anywhere;
+}
 .subscription-policy {
   display: grid;
   gap: 10px;

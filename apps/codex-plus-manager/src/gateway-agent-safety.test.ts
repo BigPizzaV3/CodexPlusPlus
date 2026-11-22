@@ -44,8 +44,10 @@ test("供应商配置总开关关闭时只阻止 Codex 重新接入，旧 payloa
 
   const agents = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
   assert.match(agents, /reconnectAllowed \? \([\s\S]*?重新接入[\s\S]*?: \([\s\S]*?供应商配置切换已关闭[\s\S]*?onOpenCodexProviderSettings/);
+  assert.match(agents, /const reconnect = \(\) =>\s*run\(`save:\$\{agent\.agent\}`, "save_gateway_binding", \{ agent: agent\.agent, binding: bindingFromDraft\(draft, binding\), reconnect: true \}/);
+  assert.match(agents, /run\(`save:\$\{agent\.agent\}`, "save_gateway_binding", \{ agent: agent\.agent, binding: bindingFromDraft\(next, binding, item\) \}/);
   const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
-  assert.match(app, /onOpenCodexProviderSettings=\{\(\) => \{ void switchTool\("codex", "relay"\); \}\}/);
+  assert.match(app, /onOpenCodexProviderSettings=\{\(addDirectProvider\) => \{[\s\S]*?switchTool\("codex", "relay"\)/);
   assert.match(app, /takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(/);
 });
 
@@ -326,7 +328,7 @@ function renderTrayAgent(connected: boolean, requiresDisconnectPreview = false, 
     render: () => {
       cursor = 0;
       return exports.PanelAgentRow({
-        agent: { ...agent(), enabled: connected, requiresDisconnectPreview },
+        agent: { ...agent(), enabled: connected, requiresDisconnectPreview, defaultModel: group && !group.disabled ? "group/daily" : "gpt" },
         payload: group ? { groups: [{ id: "daily", name: "Daily", disabled: group.disabled }], gateway: { bindings: {} } } : null,
         onRun: async (command: string, args: Record<string, unknown>) => { calls.push({ command, args }); return true; },
       }) as Element;
@@ -340,7 +342,7 @@ test("托盘在模型组停用时显示回退模型，重新启用后恢复原�
   let tree = tray.render();
   let picker = elements(tree).find((element) => element.props.className === "gw-picker-button tp-agent-picker")!;
   assert.match(text(picker), /GPT/);
-  assert.equal(picker.props.title, "原模型组「Daily」已停用，当前使用 GPT");
+  assert.equal(picker.props.title, "原模型组「Daily」已停用，网关默认回退为 GPT");
   assert.equal(elements(tree).find((element) => element.type === "ModelList")!.props.selectedModel, "gpt");
 
   group.disabled = false;

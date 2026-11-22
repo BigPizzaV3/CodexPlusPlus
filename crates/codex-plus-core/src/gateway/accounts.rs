@@ -2280,6 +2280,7 @@ mod tests {
                 newapi_access: None,
             subscription_policy: None,
                 upstream_meta: Default::default(),
+                auto_compact: Default::default(),
                 relay,
                 extra: Default::default(),
             });
@@ -2664,6 +2665,7 @@ mod tests {
                 newapi_access: None,
             subscription_policy: None,
                 upstream_meta: Default::default(),
+                auto_compact: Default::default(),
                 relay,
                 extra: Default::default(),
             });

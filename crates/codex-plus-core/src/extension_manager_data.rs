@@ -95,8 +95,15 @@ pub fn gateway_quota(
 
 pub fn installed_skills(entries: &[SkillEntry]) -> Value {
     let skills: Vec<Value> = entries.iter().filter(|entry| entry.installed).map(|entry| {
-        json!({"id": entry.id, "name": entry.name, "enabled": entry.enabled, "bundled": entry.bundled,
-            "managed": entry.managed, "agents": entry.agents, "contentHash": entry.content_hash})
+        let unknown = (!entry.enabled).then(|| entry.locations.iter()
+            .find_map(|location| location.status_error.as_deref())).flatten();
+        let mut skill = json!({"id": entry.id, "name": entry.name, "enabled": entry.enabled, "bundled": entry.bundled,
+            "managed": entry.managed, "agents": entry.agents, "contentHash": entry.content_hash});
+        if let Some(error) = unknown {
+            skill["enabled"] = Value::Null;
+            skill["statusError"] = json!(error);
+        }
+        skill
     }).collect();
     json!({"skills": skills})
 }

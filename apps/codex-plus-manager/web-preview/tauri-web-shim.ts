@@ -96,6 +96,9 @@ const demoSettings = {
   weixinConnectModel: "",
   weixinConnectSandbox: "read-only",
   weixinConnectCodexPath: "",
+  weixinConnectLinkedUserId: "",
+  weixinConnectDefaultMode: "jiajia",
+  weixinConnectPushToWeixin: false,
   relayBaseUrl: "",
   relayApiKey: "",
   relayProfiles: [{
@@ -265,7 +268,7 @@ const overview = ok({
     debugger: { status: "disconnected", address: null, message: "等待 Codex 连接" },
     protocol_conversion_enabled: true,
   },
-  current_version: "2.6.3",
+  current_version: "2.8.0",
   update_status: "up_to_date",
   settings_path: "演示模式",
   logs_path: "演示模式",
@@ -328,7 +331,7 @@ const gateway = ok({
   ],
   agents: [
     { agent: "codex", name: "Codex", version: "26.1029", enabled: true, baseUrl: "http://127.0.0.1:63130/codex", defaultModel: "group/coding", models: [] },
-    { agent: "claude", name: "Claude Code", version: "2.6.3", enabled: true, baseUrl: "http://127.0.0.1:63130/claude", defaultModel: "deepseek-v4-pro", models: [] },
+    { agent: "claude", name: "Claude Code", version: "2.8.0", enabled: true, baseUrl: "http://127.0.0.1:63130/claude", defaultModel: "deepseek-v4-pro", models: [] },
     { agent: "grok", name: "Grok", enabled: false, baseUrl: "http://127.0.0.1:63130/grok", defaultModel: "", models: [] },
   ],
   health: { keys: [{ relayId: "zhipu", keyId: "k1", state: "cooling", remainingMs: 42000 }], providers: [] },
@@ -532,8 +535,9 @@ const agentCacheReport = {
 const demoBanner = (label: string, hue: number) =>
   `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="640"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="hsl(${hue} 60% 18%)"/><stop offset="1" stop-color="hsl(${hue + 40} 60% 30%)"/></linearGradient></defs><rect width="1600" height="640" fill="url(#g)"/><text x="400" y="360" font-family="Helvetica" font-size="120" font-weight="700" fill="white">${label}</text></svg>`)}`;
 const demoAds = [
-  { id: "demo-a", type: "sponsor", title: "示例中转站 A", description: "稳定的 API 中转服务，支持主流模型与图像能力，适合日常开发和团队协作。", url: "https://example.com/a", image: demoBanner("Relay A", 220), highlights: ["价格划算", "稳定接入", "高缓存命中"] },
-  { id: "demo-b", type: "sponsor", title: "示例聚合平台 B", description: "一个 Key 访问多家模型，兼容 Claude Code 等工具。", url: "https://example.com/b", image: demoBanner("Hub B", 280), highlights: ["多模型", "兼容 Claude Code"] },
+  // preset：「添加供应商」目录里的赞助商预设，和线上清单一样只来自赞助位。
+  { id: "demo-a", type: "sponsor", title: "示例中转站 A", description: "稳定的 API 中转服务，支持主流模型与图像能力，适合日常开发和团队协作。", url: "https://example.com/a", image: demoBanner("Relay A", 220), highlights: ["价格划算", "稳定接入", "高缓存命中"], preset: { id: "demo-relay-a", name: "示例中转站 A", baseUrl: "https://a.example.com/v1", protocol: "responses", model: "gpt-5.5" } },
+  { id: "demo-b", type: "sponsor", title: "示例聚合平台 B", description: "一个 Key 访问多家模型，兼容 Claude Code 等工具。", url: "https://example.com/b", image: demoBanner("Hub B", 280), highlights: ["多模型", "兼容 Claude Code"], preset: { id: "demo-hub-b", name: "示例聚合平台 B", baseUrl: "https://b.example.com/v1", protocol: "chatCompletions", model: "" } },
   { id: "demo-c", type: "sponsor", title: "示例服务 C", description: "开放、稳定、高性价比的模型中转。", url: "https://example.com/c", image: demoBanner("Service C", 20), highlights: ["按量计费"] },
   { id: "demo-e", type: "sponsor", title: "示例云 E", description: "150+ 主流模型，企业级 MaaS，按需选用，适合团队统一采购和管理。这一句故意写得很长，用来检查一行说明超出宽度时会不会把页面撑宽。", url: "https://example.com/e", image: demoBanner("Cloud E", 200), highlights: ["150+ 模型", "企业级"] },
   { id: "demo-f", type: "sponsor", title: "示例站 F", description: "兼容 OpenAI / Anthropic 协议。", url: "https://example.com/f", highlights: ["支持开票"] },
@@ -565,13 +569,13 @@ const demoSkills = {
 const demoMarketPlugin = (id: string, description: string, extra: Record<string, unknown> = {}) =>
   ({ id, name: id, displayName: id, description, version: "1.0.0", author: "demo", tags: [], license: "MIT", path: "", tree: "", bytes: 64_000, skills: 1, requiresAuth: false, installed: false, updateAvailable: false, ...extra });
 const demoPluginMarket = {
-  status: "ok", message: "", source: "public", repository: "demo/plugins", total: 6, cached: true,
+  status: "ok", message: "", source: "full", repository: "demo/plugins", total: 6, cached: true, updatedAt: "2026-10-08",
   plugins: [
     demoMarketPlugin("01 Superdesign", "Superdesign adds a design skill to ChatGPT for web UI, presentations, and graphics.", { version: "0.6.0", bytes: 230_900 }),
     demoMarketPlugin("12ui Design", "Create distinctive interfaces with 12ui design skills and hosted design APIs.", { version: "0.2.65", bytes: 108_400 }),
-    demoMarketPlugin("1Password", "Use the local 1Password MCP server to manage 1Password Developer Environments and local .env mounts from Codex.", { version: "0.2.0", bytes: 42_500, installed: true }),
+    demoMarketPlugin("1Password", "Use the local 1Password MCP server to manage 1Password Developer Environments and local .env mounts from Codex.", { version: "0.2.0", bytes: 42_500, installed: true, requiresAuth: true, hasMcp: true }),
     demoMarketPlugin("6X6", "Essential answers first, with focused detail on request.", { version: "1.0.2", bytes: 64_700 }),
-    demoMarketPlugin("Accurate Translation", "Translate text and files locally without metered translation API tokens.", { requiresAuth: true }),
+    demoMarketPlugin("Accurate Translation", "Translate text and files locally without metered translation API tokens.", { requiresAuth: true, hasApps: true }),
     demoMarketPlugin("Actively", "Win more deals with Actively by directly accessing your always-on personal sales assistant."),
   ],
 };
@@ -719,16 +723,16 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     ] : [] }) as T;
     case "load_request_logs": return ok({ entries: demoRequestLogs() }) as T;
     // 「版本与更新」演示：有新版本，后台下载 1 秒后完成（只下载不安装）。
-    case "check_update": if (!new URLSearchParams(window.location.search).has("showUpdate")) return ok({ currentVersion: "2.6.3", latestVersion: "2.6.3", releaseSummary: "", assetName: null, assetUrl: null, updateAvailable: false, progress: 0 }) as T;
-      return ok({ currentVersion: "2.6.3", latestVersion: "2.6.3", releaseSummary: "### 新增\n- 界面整体重做", assetName: "Codex++-2.3.0.dmg", assetUrl: "https://example.test/Codex++-2.3.0.dmg", updateAvailable: true, downloaded: false, progress: 0 }) as T;
-    case "download_update": await new Promise((resolve) => setTimeout(resolve, 1000)); return ok({ downloaded: true, latestVersion: "2.6.3" }) as T;
+    case "check_update": if (!new URLSearchParams(window.location.search).has("showUpdate")) return ok({ currentVersion: "2.8.0", latestVersion: "2.8.0", releaseSummary: "", assetName: null, assetUrl: null, updateAvailable: false, progress: 0 }) as T;
+      return ok({ currentVersion: "2.8.0", latestVersion: "2.8.0", releaseSummary: "### 新增\n- 界面整体重做", assetName: "Codex++-2.3.0.dmg", assetUrl: "https://example.test/Codex++-2.3.0.dmg", updateAvailable: true, downloaded: false, progress: 0 }) as T;
+    case "download_update": await new Promise((resolve) => setTimeout(resolve, 1000)); return ok({ downloaded: true, latestVersion: "2.8.0" }) as T;
     // 「日志与诊断」演示：几条诊断日志（含出错和重试）和一份诊断报告。
     case "read_latest_logs": {
       const now = Date.now();
       const line = (offset: number, event: string, detail: unknown) => JSON.stringify({ timestamp_ms: now - offset, pid: 17040, event, detail });
       const text = [
         'ount":0,"models":[]}',
-        line(3_600_000, "manager.start", { version: "2.6.3", platform: "macos" }),
+        line(3_600_000, "manager.start", { version: "2.8.0", platform: "macos" }),
         line(1_800_000, "gateway.helper_started", { port: 63130, agents: 2 }),
         line(900_000, "manager.save_settings", { activeRelayId: "codex-plus-gateway", relayProfiles: [{ id: "default", modelCount: 2 }, { id: "sub2api-demo", modelCount: 3 }] }),
         line(600_000, "gateway.retry", { provider: "zhipu", status: 429, attempt: 2 }),
@@ -737,7 +741,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       ].join("\n");
       return ok({ path: "~/Library/Application Support/Codex++/codex-plus.log", text, lines: 7, truncated: true, fileSize: 2_400_000 }) as T;
     }
-    case "copy_diagnostics": return ok({ report: JSON.stringify({ generatedAtMs: Date.now(), version: "2.6.3", overview: { codex_app: { status: "found", path: "/Applications/ChatGPT.app" }, codex_version: "26.1027.61615", silent_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, management_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, latest_launch: { status: "stopped", phase: "user_stopped" } } }, null, 2) }) as T;
+    case "copy_diagnostics": return ok({ report: JSON.stringify({ generatedAtMs: Date.now(), version: "2.8.0", overview: { codex_app: { status: "found", path: "/Applications/ChatGPT.app" }, codex_version: "26.1027.61615", silent_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, management_shortcut: { status: "missing", path: "/Applications/Codex++.app" }, latest_launch: { status: "stopped", phase: "user_stopped" } } }, null, 2) }) as T;
     case "load_request_flow": return ok({ entries: demoRequestFlow(Number(args.limit) || 30) }) as T;
     case "startup_options": return ok({ showUpdate: false }) as T;
     case "consume_pending_manager_navigation": return null as T;
@@ -792,7 +796,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     case "load_pending_dream_skin_community": return ok({ versionId: "" }) as T;
     case "load_watcher_state": return ok({ enabled: false, running: false, status: "disabled", message: "演示模式" }) as T;
     case "load_auto_takeover_state": return ok({ running: false, enabled: false, message: "演示模式" }) as T;
-    case "update_check": return ok({ currentVersion: "2.6.3", latestVersion: "2.6.3", updateAvailable: false }) as T;
+    case "update_check": return ok({ currentVersion: "2.8.0", latestVersion: "2.8.0", updateAvailable: false }) as T;
     case "refresh_script_market": return ok({ market: { status: "ok", message: "演示模式", updatedAt: "2026-10-26T12:51:00Z", scripts: [
       { id: "relay-balance", name: "Codex Relay Balance", description: "通用中转站余额与模型用量监控，支持自动读取或手动填写接口、日期范围、Token 明细和实际扣费倍率。", version: "0.3.7", author: "Codex++ Community", tags: ["codex", "relay", "balance", "usage", "quota"], homepage: "https://github.com/demo/relay-balance", script_url: "", installed: false, installedVersion: "", updateAvailable: false },
       { id: "model-matrix", name: "Codex Model Matrix", description: "紧凑且适配主题的 Codex 模型选择器，配备可拖动吸附的推理强度滑块。", version: "1.0.0", author: "lx", tags: ["codex", "models", "reasoning"], homepage: "https://github.com/demo/model-matrix", script_url: "", installed: true, installedVersion: "1.0.0", updateAvailable: false },
@@ -814,7 +818,7 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
     // Computer Use 演示数据：找到了 ChatGPT.app，Claude Code 与 DeepSeek Harness 已接入（Claude Desktop 用增强版自带的那份）。
     case "computer_use_status": return ok({ runtimeFound: true, appPath: "/Applications/ChatGPT.app", packageVersion: "1.2026.300", targets: demoComputerUseTargets() }) as T;
     case "computer_use_browser_extension_status": return { installed: true, storeUrl: "" } as T;
-    case "computer_use_approval_get": return ok({ mode: "auto", cuMode: "js", pip: true, approvals: [], lastClient: { name: "claude-code", version: "2.6.3", at: Date.now() - 120_000 } }) as T;
+    case "computer_use_approval_get": return ok({ mode: "auto", cuMode: "js", pip: true, approvals: [], lastClient: { name: "claude-code", version: "2.8.0", at: Date.now() - 120_000 } }) as T;
     // Claude 增强演示数据：增强版已制作，开了界面汉化与 Computer Use。
     case "claude_localization_status": return ok(demoClaudeEnhance) as T;
     case "claude_local_status":

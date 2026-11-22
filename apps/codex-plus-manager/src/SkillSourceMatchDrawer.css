@@ -1,0 +1,25 @@
+.mg-source-add { display:flex; gap:8px; align-items:center; }
+.mg-source-add input { flex:1; min-width:0; }
+.mg-source-search { width:100%; min-width:0; }
+.mg-version-section { border-top:1px solid hsl(var(--border)); margin-top:14px; }
+.mg-version-section summary { padding:12px 2px; cursor:pointer; font-weight:600; }
+.mg-version-section summary small { margin-inline-start:8px; font-weight:400; color:hsl(var(--muted-foreground)); }
+.mg-version-list { margin-top:12px; display:grid; gap:2px; }
+.mg-version-list button { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:3px 10px; padding:9px 10px; text-align:start; border-bottom:1px solid hsl(var(--border)); background:transparent; color:inherit; }
+.mg-version-list button:enabled:hover { background:hsl(var(--muted)); }
+.mg-version-list button:disabled { opacity:.55; }
+.mg-version-list button.mg-version-unavailable:disabled { opacity:1; cursor:default; }
+.mg-version-list .mg-version-unavailable [role="alert"] { color:hsl(var(--foreground)); }
+.mg-version-list small { grid-column:1/-1; overflow-wrap:anywhere; }
+.mg-version-list small,.mg-version-list time { color:hsl(var(--muted-foreground)); font-size:12px; font-variant-numeric:tabular-nums; }
+.mg-source-warnings { font-size:12px; overflow-wrap:anywhere; }
+.mg-source-list { display:flex; flex-direction:column; border-top:1px solid hsl(var(--border)); }
+.mg-source-row { display:grid; grid-template-columns:minmax(125px, .7fr) minmax(0, 1fr); gap:12px; padding:12px 0; border-bottom:1px solid hsl(var(--border)); }
+.mg-source-row label { display:flex; align-items:flex-start; gap:8px; min-width:0; }
+.mg-source-row label span { display:flex; flex-direction:column; min-width:0; overflow-wrap:anywhere; }
+.mg-source-row small { display:block; margin-top:4px; color:hsl(var(--muted-foreground)); overflow-wrap:anywhere; }
+/* 迁移包导出：每个分组一行勾选，占满整行。 */
+.mg-source-row.mg-bundle-row { grid-template-columns:minmax(0, 1fr); padding:9px 0; }
+.mg-bundle-row label { cursor:pointer; }
+.mg-source-list.mg-bundle-list { margin-top:12px; }
+@media (max-width:480px) { .mg-source-add { flex-wrap:wrap; } .mg-source-add input { flex-basis:100%; } .mg-source-row { grid-template-columns:minmax(0, 1fr); } }

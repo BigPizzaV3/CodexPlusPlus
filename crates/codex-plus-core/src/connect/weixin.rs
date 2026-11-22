@@ -327,7 +327,7 @@ impl WeixinClient {
         &self,
         get_updates_buf: &str,
         timeout_ms: u64,
-    ) -> anyhow::Result<WeixinUpdates> {
+    ) -> anyhow::Result<Option<WeixinUpdates>> {
         let request_body = json!({
             "get_updates_buf": get_updates_buf,
             "base_info": { "channel_version": CHANNEL_VERSION }
@@ -343,16 +343,7 @@ impl WeixinClient {
             .await;
         let response = match response {
             Ok(response) => response,
-            Err(error) if error.is_timeout() => {
-                return Ok(WeixinUpdates {
-                    ret: 0,
-                    errcode: 0,
-                    errmsg: String::new(),
-                    messages: Vec::new(),
-                    get_updates_buf: get_updates_buf.to_string(),
-                    longpolling_timeout_ms: timeout_ms,
-                });
-            }
+            Err(error) if error.is_timeout() && !error.is_connect() => return Ok(None),
             Err(error) => return Err(error).context("微信长轮询请求失败"),
         };
         let (http_status, bytes) =
@@ -370,7 +361,7 @@ impl WeixinClient {
                 updates.errmsg
             );
         }
-        Ok(updates)
+        Ok(Some(updates))
     }
 
     pub async fn send_text_chunks(
@@ -765,6 +756,23 @@ mod tests {
         let svg = render_qr_svg("https://example.test/login").unwrap();
         assert!(svg.starts_with("<?xml"));
         assert!(svg.contains("<svg"));
+    }
+
+    #[tokio::test]
+    async fn long_poll_timeout_is_not_a_successful_gateway_response() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/ilink/bot/getupdates"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({"ret": 0, "msgs": []}))
+                    .set_delay(Duration::from_secs(7)),
+            )
+            .mount(&server)
+            .await;
+        let client = WeixinClient::new(&server.uri(), "test-token", "").unwrap();
+        let result = client.get_updates("", 1_000).await.unwrap();
+        assert!(result.is_none());
     }
 
     #[tokio::test]

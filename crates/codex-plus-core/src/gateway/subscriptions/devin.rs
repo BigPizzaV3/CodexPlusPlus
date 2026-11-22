@@ -1170,6 +1170,25 @@ impl Subscription for Devin {
         http: &reqwest::Client,
         credentials: &Value,
     ) -> anyhow::Result<Vec<String>> {
+        // 凭据不对照旧报错；接口失败或为空时用默认列表兜底（记诊断日志）。
+        token_of(credentials)?;
+        Ok(crate::gateway::subscriptions::models_or_fallback(
+            self.id(),
+            self.list_models(http, credentials).await,
+            || {
+                DEFAULT_MODELS
+                    .iter()
+                    .map(|model| model.to_string())
+                    .collect()
+            },
+        ))
+    }
+
+    async fn list_models(
+        &self,
+        http: &reqwest::Client,
+        credentials: &Value,
+    ) -> anyhow::Result<Vec<String>> {
         let token = token_of(credentials)?;
         let mut body = Pb::default();
         body.message(1, &metadata(&token));
@@ -1180,23 +1199,21 @@ impl Subscription for Devin {
             .body(body.0)
             .timeout(std::time::Duration::from_secs(15))
             .send()
-            .await;
-        let models = match response {
-            Ok(response) if response.status().is_success() => response
-                .bytes()
-                .await
-                .ok()
-                .and_then(|bytes| parse_model_configs(&bytes).ok())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        if models.is_empty() {
-            return Ok(DEFAULT_MODELS
-                .iter()
-                .map(|model| model.to_string())
-                .collect());
+            .await
+            .context("无法连接 Devin")?;
+        let status = response.status().as_u16();
+        if !response.status().is_success() {
+            let text = response.text().await.unwrap_or_default();
+            return Err(crate::gateway::subscriptions::fail(
+                status,
+                format!(
+                    "Devin 模型列表返回 {status}：{}",
+                    text.chars().take(300).collect::<String>()
+                ),
+            ));
         }
-        Ok(models)
+        let bytes = response.bytes().await.context("读取 Devin 模型列表失败")?;
+        parse_model_configs(&bytes).context("Devin 模型列表格式不对")
     }
 
     async fn chat(

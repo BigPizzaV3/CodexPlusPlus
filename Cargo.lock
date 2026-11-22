@@ -509,19 +509,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "claude-local"
+version = "0.1.12"
+source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=26fd340280b738004c0931c048239081f7f1fac4#26fd340280b738004c0931c048239081f7f1fac4"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "directories",
+ "libc",
+ "rcgen",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "time",
+ "url",
+ "uuid",
+ "windows 0.58.0",
+]
+
+[[package]]
 name = "codex-plus-core"
-version = "2.6.3"
+version = "2.8.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
  "async-trait",
  "base64 0.22.1",
  "block2",
+ "claude-local",
  "directories",
  "ecb",
  "flate2",
  "fs2",
  "futures-util",
+ "hmac",
  "http",
  "httpdate",
  "libc",
@@ -535,6 +557,7 @@ dependencies = [
  "rcgen",
  "reqwest 0.12.28",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "sha1",
@@ -544,6 +567,7 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "toml 0.8.2",
  "toml_edit 0.22.27",
@@ -556,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-data"
-version = "2.6.3"
+version = "2.8.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -577,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-launcher"
-version = "2.6.3"
+version = "2.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -591,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "codex-plus-manager"
-version = "2.6.3"
+version = "2.8.0"
 dependencies = [
  "anyhow",
  "async-trait",

@@ -6,4 +6,21 @@
     :is([data-app-shell-page-surface="true"], [class*="_ApplicationMenuPageSurfaceLayout_"], [class~="bg-token-main-surface-primary"][class~="h-full"][class~="w-full"]):not([data-codex-composer-root], [data-codex-composer-root] *, [role="dialog"], [role="dialog"] *, [role="menu"], [role="menu"] *, [data-slot="popover-content"], [data-slot="popover-content"] *) {
     background: transparent !important;
   }
+  html[data-dream-skin="active"][data-dream-art-wide="true"]:is([data-dream-task-mode="ambient"], [data-dream-task-mode="full"])
+    main[data-app-shell-main-surface] [class~="@container/skills-grid"] {
+    background-color: color-mix(in srgb, var(--ds-panel, var(--color-token-main-surface-primary, Canvas)) 78%, transparent) !important;
+  }
+}
+
+main[data-codex-plus-skin-video-host] { isolation: isolate; }
+main > video[data-codex-plus-ext="dream-skin-video"] {
+  position: absolute !important;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: var(--ds-art-position, center);
+  z-index: -1 !important;
+  opacity: .58;
+  pointer-events: none;
 }

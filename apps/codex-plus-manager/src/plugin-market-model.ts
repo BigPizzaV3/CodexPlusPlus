@@ -15,6 +15,9 @@ export type MarketPlugin = {
   bytes: number;
   skills: number;
   requiresAuth: boolean;
+  /** 带 ChatGPT 托管的连接器 / 带可在本机登录的 MCP 服务。旧索引没有这两项。 */
+  hasApps?: boolean;
+  hasMcp?: boolean;
   installed: boolean;
   installedVersion: string;
   updateAvailable: boolean;
@@ -28,7 +31,18 @@ export type MarketResult = {
   total: number;
   plugins: MarketPlugin[];
   cached?: boolean;
+  /** 索引的快照日期：目录是缓存仓库的快照，不是官方实时目录。 */
+  updatedAt?: string;
 };
+
+/** 连接器怎么连：mcp 在 Codex 里登录；hosted 要 ChatGPT 登录；unknown 是旧索引，只知道带连接器。 */
+export type MarketConnector = "none" | "mcp" | "hosted" | "unknown";
+
+export function pluginMarketConnector(plugin: MarketPlugin): MarketConnector {
+  if (plugin.hasMcp) return "mcp";
+  if (plugin.hasApps) return "hosted";
+  return plugin.requiresAuth ? "unknown" : "none";
+}
 
 export type MarketCatalogs = Partial<Record<MarketSource, MarketResult>>;
 
@@ -81,7 +95,7 @@ export function applyPluginInstallation(catalogs: MarketCatalogs, source: Market
   };
 }
 
-/** 请求归属页实例。过期响应不能覆盖切换后的索引，安装期间禁止刷新与切源。 */
+/** 请求归属页实例。过期响应不能覆盖新的索引，安装期间禁止刷新。 */
 export class PluginMarketRequests {
   private active = false;
   private catalogSequence = 0;
@@ -109,11 +123,6 @@ export class PluginMarketRequests {
     return this.active && this.catalogPending && sequence === this.catalogSequence;
   }
 
-  invalidateCatalog() {
-    this.catalogSequence += 1;
-    this.catalogPending = false;
-  }
-
   finishCatalog(sequence: number): boolean {
     if (!this.isCurrentCatalog(sequence)) return false;
     this.catalogPending = false;
@@ -135,6 +144,4 @@ export class PluginMarketRequests {
     this.installPending = false;
     return true;
   }
-
-  canSelectSource(): boolean { return this.active && !this.installPending; }
 }

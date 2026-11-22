@@ -8,6 +8,8 @@ const declarations = source.slice(source.indexOf("  const previousCodexModelCata
   source.indexOf("  if (window.__CODEX_PLUS_TEST_SERVICE_TIER__)"));
 const functions = source.slice(source.indexOf("  function codexPlusModelUnlockEnabled()"),
   source.indexOf("  function codexPerModelContextEnabled("));
+const contextHelpers = source.slice(source.indexOf("  function codexPerModelContextEnabled("),
+  source.indexOf("  function patchAppServerModelRequestClient("));
 
 function runtime(sharedWindow: any = {}, initialSettings?: any) {
   let now = 10000;
@@ -17,6 +19,7 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
   };
   const pending: Array<{ resolve: (value: any) => void; reject: (error: Error) => void }> = [];
   const invalidated: any[] = [];
+  const diagnostics: Array<{ event: string; detail: any }> = [];
   const timers: Array<() => void> = sharedWindow.testTimers ||= [];
   const listeners: Map<string, Array<(event: any) => void>> = sharedWindow.testListeners ||= new Map();
   sharedWindow.setTimeout ||= (callback: () => void) => timers.push(callback);
@@ -38,9 +41,10 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
       ? settings.relayProfiles.find((entry: any) => entry.id === settings.activeRelayId) : null,
     codexServiceTierModelFromValue: (value: any) => value,
     renderCodexPlusMenu: () => {}, scheduleCodexModelWhitelistRefresh: () => {},
-    sendCodexPlusDiagnostic: () => {},
+    sendCodexPlusDiagnostic: (event: string, detail: any) => diagnostics.push({ event, detail }),
     uniqueValues: (values: any[]) => [...new Set(values.filter(value => typeof value === "string" && value.trim()))],
     readCodexAppServerPreparation: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
+    codexBridgePreparationReadTimeoutMs: 8000,
     findCodexQueryClient: () => sharedWindow.testQueryClient || ({
       getQueryCache: () => ({
         getAll: () => [...queries, { queryKey: ["threads", "local"] }],
@@ -49,8 +53,9 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
       invalidateQueries: (filter: any) => invalidated.push(filter.queryKey),
     }),
   });
-  const api = vm.runInContext(`(() => {${declarations}${functions}
+  const api = vm.runInContext(`(() => {${declarations}${functions}${contextHelpers}
     return { load: loadCodexModelCatalog, refresh: refreshCodexModelCatalogForSettings,
+      runtimeContext: codexThreadRuntimeContext,
       patch: patchModelContainer, install: installModelJsonResponsePatch,
       installMessages: patchAppServerModelMessages, record: recordModelListRequest,
       patchMcp: patchMcpModelResponseData, patchAppResult: patchAppServerModelResult,
@@ -59,7 +64,7 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
       installStatsig: patchStatsigModelWhitelist,
       catalog: () => codexModelCatalog }; })()`, context);
   return {
-    api, pending, invalidated, timers, window: sharedWindow, settings: () => settings,
+    api, pending, invalidated, diagnostics, timers, window: sharedWindow, settings: () => settings,
     emit: (type: string, event: any) => listeners.get(type)?.forEach(callback => callback(event)),
     tick: (ms: number) => { now += ms; },
     update: (next: any) => {
@@ -327,6 +332,47 @@ it("a new supplier does not inherit a previous supplier's successful snapshot on
   assert.equal(r.api.catalog().status, "failed");
 });
 
+const runtimeContextCatalog = (models: string[]) => ({
+  ...catalog(models),
+  runtimeContext: { status: "ok", models: Object.fromEntries(models.map(model =>
+    [model, { model_context_window: 1000000, model_auto_compact_token_limit: 900000 }])) },
+});
+
+it("a timed-out forced refresh reuses the same supplier and fingerprint snapshot (#3137)", async () => {
+  const r = runtime();
+  const first = r.api.load(true);
+  r.pending.shift()!.resolve(runtimeContextCatalog(["a/sol"]));
+  await first;
+  const context = r.api.runtimeContext({ model: "a/sol" });
+  r.pending.shift()!.reject(new Error("Codex 桥接请求超时：/codex-model-catalog"));
+  const result = await context;
+  assert.equal(result.model, "a/sol");
+  assert.equal(result.config.model_context_window, 1000000);
+  assert.deepEqual(JSON.parse(JSON.stringify(r.diagnostics.filter(entry =>
+    entry.event === "model_catalog_snapshot_fallback"))), [{ event: "model_catalog_snapshot_fallback",
+    detail: { message: "Codex 桥接请求超时：/codex-model-catalog" } }]);
+});
+
+it("a failed forced refresh never reuses a snapshot from another fingerprint or supplier (#3137)", async () => {
+  for (const change of [
+    { modelCatalogFingerprint: "catalog-2" },
+    { activeRelayId: "other", relayProfiles: [{ id: "other", relayMode: "pureApi", modelList: "c/luna" }] },
+  ]) {
+    const r = runtime();
+    const first = r.api.load(true);
+    r.pending.shift()!.resolve(runtimeContextCatalog(["a/sol"]));
+    await first;
+    r.update({ ...r.settings(), ...change });
+    // 设置变化触发的刷新也失败，快照仍归属旧配置。
+    r.pending.shift()!.reject(new Error("unavailable"));
+    await settle();
+    const context = r.api.runtimeContext({ model: "a/sol" });
+    r.pending.shift()!.reject(new Error("timeout"));
+    await assert.rejects(context, /timeout/);
+    assert.equal(r.diagnostics.some(entry => entry.event === "model_catalog_snapshot_fallback"), false);
+  }
+});
+
 it("changes source when the active supplier keeps its ID but changes mode or protocol", async () => {
   for (const change of [{ relayMode: "official" }, { protocol: "chat" }]) {
     const r = runtime({}, {
@@ -404,6 +450,34 @@ it("catalog patches respect hidden entries and never alter selected model or rea
   assert.equal(value.models[0].hidden, true);
   assert.equal(value.models[1].hidden, false);
   assert.deepEqual([...value.hiddenModels], ["group/1"]);
+});
+
+it("catalog image capability reaches native descriptors only when declared (#3042)", async () => {
+  const r = runtime();
+  await load(r, ["a/native", "a/text", "a/vision", "a/plain"], {
+    "a/native": { displayName: "Native" },
+    "a/text": { inputModalities: ["text"], supportsImageDetailOriginal: false },
+    "a/vision": { input_modalities: ["text", "image"], supports_image_detail_original: true },
+    "a/plain": { displayName: "Plain" },
+  });
+  const value = { hostId: "local", models: [
+    { model: "a/native", inputModalities: ["text", "image"], supportsImageDetailOriginal: true },
+    { model: "a/text", inputModalities: ["text", "image"], supportsImageDetailOriginal: true },
+  ] };
+  r.api.patch(value);
+  const byModel = new Map(value.models.map((entry: any) => [entry.model, entry]));
+  // 没声明：保留原生描述符的值。
+  assert.deepEqual(byModel.get("a/native").inputModalities, ["text", "image"]);
+  assert.equal(byModel.get("a/native").supportsImageDetailOriginal, true);
+  // 声明为纯文本：覆盖原生值。
+  assert.deepEqual(byModel.get("a/text").inputModalities, ["text"]);
+  assert.equal(byModel.get("a/text").supportsImageDetailOriginal, false);
+  // 注入的描述符：snake_case 声明同样生效。
+  assert.deepEqual(byModel.get("a/vision").inputModalities, ["text", "image"]);
+  assert.equal(byModel.get("a/vision").supportsImageDetailOriginal, true);
+  // 注入的描述符没声明：不替它宣称收图。
+  assert.equal("inputModalities" in byModel.get("a/plain"), false);
+  assert.equal("supportsImageDetailOriginal" in byModel.get("a/plain"), false);
 });
 
 it("recognizes only a verified local pure API multi-instance catalog when relay switching is disabled", async () => {

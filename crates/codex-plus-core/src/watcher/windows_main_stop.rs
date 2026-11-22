@@ -22,6 +22,9 @@ struct StopContext {
     owner: StopProcessOwner,
     app_data: String,
     owned_debug_port: Option<u16>,
+    /// Codex++ 多开实例的用户数据根目录（已归一化）。落在其下的进程是多开窗口，不是主实例，
+    /// 直接跳过，不能当成「用户数据目录不一致的主进程」拒绝停止（#3160）。
+    isolated_user_data_roots: Vec<String>,
 }
 
 trait HeldMainProcess {
@@ -63,6 +66,23 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
     owned_debug_port: Option<u16>,
     launch_extra_args: Option<&[String]>,
 ) -> Result<usize> {
+    stop_windows_main_codex_processes_excluding_and_wait(
+        expected_executable,
+        owned_debug_port,
+        launch_extra_args,
+        &[],
+    )
+}
+
+/// 同 [`stop_windows_main_codex_processes_with_args_and_wait`]；`isolated_user_data_roots` 是
+/// Codex++ 多开实例的用户数据根目录，用户数据落在其下的 Codex 进程是多开窗口，不参与主实例停止。
+#[cfg(windows)]
+pub fn stop_windows_main_codex_processes_excluding_and_wait(
+    expected_executable: &Path,
+    owned_debug_port: Option<u16>,
+    launch_extra_args: Option<&[String]>,
+    isolated_user_data_roots: &[PathBuf],
+) -> Result<usize> {
     use crate::windows_integration::{VerifiedStopProcess, bounded_process_snapshot};
 
     let expected_name = expected_executable
@@ -79,6 +99,7 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
         manager.stop_environment()?,
         owned_debug_port,
     )?;
+    context.isolated_user_data_roots = isolated_roots(isolated_user_data_roots);
     // 接管会话没有目录快照时，绑定真实监听者的持有身份，不按相同端口参数批量匹配。
     let listener = if let Some(port) = owned_debug_port {
         let listener =
@@ -139,12 +160,43 @@ pub fn stop_windows_main_codex_processes_with_args_and_wait(
         anyhow::ensure!(!listener.is_alive()?, "已接管的 Codex 原监听进程尚未退出");
     }
     if let Some(port) = owned_debug_port {
-        anyhow::ensure!(
-            crate::windows_integration::loopback_listener_process_ids(port)?.is_empty(),
-            "停止后调试端口出现其他监听者，未继续启动"
-        );
+        // 停止后复核（#3074）：短暂的暂态监听者（例如同实例正在退出的残留进程）
+        // 允许有限等待其退出；超时仍占用则失败并附上脱敏身份摘要，明确显示未启动新实例。
+        ensure_debug_port_released(
+            port,
+            crate::windows_integration::loopback_listener_summaries,
+            || std::thread::sleep(Duration::from_millis(super::RESTART_STOP_WAIT_INTERVAL_MS)),
+            Duration::from_millis(super::RESTART_STOP_WAIT_TIMEOUT_MS),
+        )?;
     }
     Ok(stopped)
+}
+
+/// 停止后复核调试端口：短暂的暂态监听者（例如同实例正在退出的残留进程）允许有限等待其退出；
+/// 超时仍有监听者则失败并附上脱敏身份摘要（PID 与映像文件名），明确显示旧窗口已关闭、未启动新实例，
+/// 不放宽进程归属保护，也不停止未知归属的监听者。
+#[cfg_attr(not(test), allow(dead_code))]
+fn ensure_debug_port_released(
+    port: u16,
+    mut listener_summaries: impl FnMut(u16) -> Result<Vec<String>>,
+    mut wait: impl FnMut(),
+    timeout: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let summaries = listener_summaries(port)?;
+        if summaries.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!(
+                "停止后调试端口仍有 {} 个监听者（{}）：旧窗口已关闭，未启动新实例；请确认监听者身份或结束残留进程后重试",
+                summaries.len(),
+                summaries.join("、")
+            );
+        }
+        wait();
+    }
 }
 
 fn ensure_listener_matches(facts: &ProcessFacts, context: &StopContext) -> Result<()> {
@@ -157,9 +209,9 @@ fn ensure_listener_matches(facts: &ProcessFacts, context: &StopContext) -> Resul
         TargetClassification::Child => {
             anyhow::bail!("已接管的 Codex 监听进程是 Chromium 子进程而非主实例，未结束任何进程")
         }
-        TargetClassification::Irrelevant => {
-            anyhow::bail!("已接管的 Codex 监听进程不属于当前入口或用户会话，未结束任何进程")
-        }
+        TargetClassification::Irrelevant(reason) => anyhow::bail!(
+            "已接管的 Codex 监听进程与当前停止上下文不一致（{reason}），未结束任何进程"
+        )
     }
 }
 
@@ -208,6 +260,29 @@ fn stop_context(
                 .ok_or_else(|| anyhow::anyhow!("无法核实管理器 APPDATA"))?,
         )?,
         owned_debug_port,
+        isolated_user_data_roots: Vec::new(),
+    })
+}
+
+/// 归一化多开根目录；无法归一化（相对路径等）的跳过，不扩大跳过范围。
+#[cfg_attr(not(windows), allow(dead_code))]
+fn isolated_roots(roots: &[PathBuf]) -> Vec<String> {
+    let mut normalized: Vec<String> = roots
+        .iter()
+        .filter_map(|root| normalized_path(root).ok())
+        // 盘符根不能当多开根，否则会把整个盘上的进程都当成多开。
+        .filter(|root| root.trim_end_matches('\\').len() > 2)
+        .collect();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn under_isolated_root(user_data: &str, roots: &[String]) -> bool {
+    roots.iter().any(|root| {
+        user_data
+            .strip_prefix(root.as_str())
+            .is_some_and(|rest| rest.starts_with('\\') && rest.len() > 1)
     })
 }
 
@@ -242,7 +317,7 @@ impl HeldMainProcess for crate::windows_integration::VerifiedStopProcess {
 
     fn possible_target(&self, context: &StopContext) -> Result<Option<bool>> {
         let image = normalized_path(&self.image()?)?;
-        if !image_matches(&context.executable, &image) {
+        if !executable_matches(&context.executable, &image) {
             return Ok(Some(false));
         }
         let arguments = self.arguments()?;
@@ -293,7 +368,7 @@ fn capture_and_stop<P: HeldMainProcess>(
             continue;
         };
         match classify_target(&facts, context)? {
-            TargetClassification::Irrelevant | TargetClassification::Child => continue,
+            TargetClassification::Irrelevant(_) | TargetClassification::Child => continue,
             TargetClassification::Mismatch(reason) => {
                 if process.alive()? {
                     reject_skipped_owned_session(&facts, context)?;
@@ -424,7 +499,7 @@ fn candidate_facts<P: HeldMainProcess>(
                 "已接管的 Codex 监听进程创建身份发生变化"
             );
             let image = normalized_path(&facts.image)?;
-            if !image_matches(&context.executable, &image) {
+            if !executable_matches(&context.executable, &image) {
                 return Ok(None);
             }
             if facts.owner != context.owner {
@@ -517,7 +592,7 @@ fn target_matches(facts: &ProcessFacts, context: &StopContext) -> Result<bool> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TargetClassification {
-    Irrelevant,
+    Irrelevant(&'static str),
     Child,
     Mismatch(&'static str),
     Main,
@@ -526,8 +601,19 @@ enum TargetClassification {
 fn classify_target(facts: &ProcessFacts, context: &StopContext) -> Result<TargetClassification> {
     anyhow::ensure!(facts.birth != 0, "缺少 Codex 进程创建身份");
     let image = normalized_path(&facts.image)?;
-    if !image_matches(&context.executable, &image) || facts.owner != context.owner {
-        return Ok(TargetClassification::Irrelevant);
+    if !executable_matches(&context.executable, &image) {
+        return Ok(TargetClassification::Irrelevant("Codex 入口（可执行文件映像）"));
+    }
+    if facts.owner.user_sid != context.owner.user_sid {
+        return Ok(TargetClassification::Irrelevant("用户账户（SID）"));
+    }
+    if facts.owner.session_id != context.owner.session_id {
+        return Ok(TargetClassification::Irrelevant("Windows 会话"));
+    }
+    if facts.owner != context.owner {
+        return Ok(TargetClassification::Irrelevant(
+            "登录会话（authentication id）",
+        ));
     }
     let environment = &facts.environment;
     let app_data = environment
@@ -542,6 +628,12 @@ fn classify_target(facts: &ProcessFacts, context: &StopContext) -> Result<Target
         return Ok(TargetClassification::Child);
     }
     let effective = effective_user_data(arguments.user_data, environment)?;
+    if effective
+        .as_deref()
+        .is_some_and(|user_data| under_isolated_root(user_data, &context.isolated_user_data_roots))
+    {
+        return Ok(TargetClassification::Irrelevant("Codex++ 多开实例"));
+    }
     if environment
         .agent_run_id
         .as_deref()
@@ -571,14 +663,34 @@ struct ParsedArguments {
 }
 
 fn parsed_arguments(arguments: &[String], image: &str) -> Result<ParsedArguments> {
+    parsed_arguments_resolving(arguments, image, resolved_path_text)
+}
+
+/// argv[0] 可能是 junction 别名（C 盘 WindowsApps 包目录），映像是实际卷路径（#3010）：
+/// 字面不同时再按解析后的真实路径比较一次。解析只跟随链接，不放宽「同一个可执行文件」的要求。
+fn parsed_arguments_resolving(
+    arguments: &[String],
+    image: &str,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> Result<ParsedArguments> {
     let first = arguments
         .first()
         .ok_or_else(|| anyhow::anyhow!("Codex 命令行缺少 argv[0]"))?;
+    let first = normalized_path_text(first)?;
     anyhow::ensure!(
-        normalized_path_text(first)? == image,
+        first == image
+            || resolve(&first).is_some_and(|resolved| {
+                resolved == image || resolve(image).is_some_and(|image| image == resolved)
+            }),
         "Codex argv[0] 与实际映像不一致"
     );
     parsed_launch_arguments(&arguments[1..])
+}
+
+/// 解析链接后的真实路径（已归一化）；路径不存在或无权访问时返回 None，由调用方沿用原路径。
+fn resolved_path_text(path: &str) -> Option<String> {
+    let resolved = std::fs::canonicalize(path).ok()?;
+    normalized_path_text(resolved.to_str()?).ok()
 }
 
 fn parsed_launch_arguments(arguments: &[String]) -> Result<ParsedArguments> {
@@ -673,6 +785,27 @@ fn normalized_path_text(path: &str) -> Result<String> {
     Ok(path)
 }
 
+/// 先按字面比较；对不上时两边都解析成真实路径再比一次（#3010）。
+/// 商店版装在非系统卷时，预期入口可能是 C 盘 WindowsApps 下的 junction 别名、映像是实际卷路径；
+/// 反过来短文件名（8.3）等写法也可能只在一侧解析。只跟随链接，仍要求是同一个可执行文件。
+fn executable_matches(expected: &str, actual: &str) -> bool {
+    executable_matches_resolving(expected, actual, resolved_path_text)
+}
+
+fn executable_matches_resolving(
+    expected: &str,
+    actual: &str,
+    resolve: impl Fn(&str) -> Option<String>,
+) -> bool {
+    if image_matches(expected, actual) {
+        return true;
+    }
+    match (resolve(expected), resolve(actual)) {
+        (Some(expected), Some(actual)) => image_matches(&expected, &actual),
+        _ => false,
+    }
+}
+
 fn image_matches(expected: &str, actual: &str) -> bool {
     if expected == actual {
         return true;
@@ -737,6 +870,7 @@ mod tests {
             },
             app_data: normalized_path_text(APP_DATA).unwrap(),
             owned_debug_port: None,
+            isolated_user_data_roots: Vec::new(),
         }
     }
 
@@ -794,7 +928,7 @@ mod tests {
             anyhow::ensure!(self.0.exiting_after_alive_checks.is_none(), "模拟映像已读不到");
             let facts = &self.0.facts[0];
             let image = normalized_path(&facts.image)?;
-            if !image_matches(&context.executable, &image) {
+            if !executable_matches(&context.executable, &image) {
                 return Ok(Some(false));
             }
             Ok(match parsed_arguments(&facts.arguments, &image) {
@@ -923,6 +1057,49 @@ mod tests {
             .collect();
         assert!(stop(processes, &context(None)).is_err());
         assert!(events.borrow().is_empty());
+    }
+
+    #[test]
+    fn multi_instance_windows_are_skipped_instead_of_blocking_main_stop() {
+        // #3160：主 Codex 没在跑，只开着一个多开窗口。
+        const MULTI_ROOT: &str = r"C:\Users\test\AppData\Local\CodexPlusPlus\multi";
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let mut isolated = context(None);
+        isolated.isolated_user_data_roots = isolated_roots(&[
+            PathBuf::from(MULTI_ROOT),
+            // 盘符根不能当多开根。
+            PathBuf::from(r"C:\"),
+        ]);
+        assert_eq!(isolated.isolated_user_data_roots.len(), 1);
+        let by_argument = facts(&[&format!(r"--user-data-dir={MULTI_ROOT}\relay-mw74pmxo")]);
+        let mut by_environment = facts(&[]);
+        by_environment.environment.user_data = Some(format!(r"{MULTI_ROOT}\relay-b"));
+        for multi in [by_argument.clone(), by_environment] {
+            assert_eq!(
+                classify_target(&multi, &isolated).unwrap(),
+                TargetClassification::Irrelevant("Codex++ 多开实例")
+            );
+        }
+        // 只有多开窗口：按「没有在运行」处理，不报安全校验失败。
+        assert_eq!(
+            stop(vec![fake(1, vec![by_argument.clone()], &events)], &isolated).unwrap(),
+            0
+        );
+        // 多开窗口与主实例同时在：只停主实例。
+        let main = fake(2, vec![facts(&[])], &events);
+        assert_eq!(
+            stop(vec![fake(1, vec![by_argument], &events), main], &isolated).unwrap(),
+            1
+        );
+        assert_eq!(*events.borrow(), vec![2]);
+        // 根目录本身、同名前缀的兄弟目录不算多开，仍按用户数据不一致拒绝。
+        for other in [MULTI_ROOT.to_string(), format!("{MULTI_ROOT}-other\\x")] {
+            let process = facts(&[&format!("--user-data-dir={other}")]);
+            assert_eq!(
+                classify_target(&process, &isolated).unwrap(),
+                TargetClassification::Mismatch("用户数据目录")
+            );
+        }
     }
 
     #[test]
@@ -1073,11 +1250,24 @@ mod tests {
         let message = format!("{error:#}");
         assert!(message.contains("子进程"), "{message}");
 
-        let mut unrelated = facts(&[]);
-        unrelated.owner.user_sid.push(9);
-        let error = ensure_listener_matches(&unrelated, &context(None)).unwrap_err();
+        let mut other_user = facts(&[]);
+        other_user.owner.user_sid.push(9);
+        let error = ensure_listener_matches(&other_user, &context(None)).unwrap_err();
         let message = format!("{error:#}");
-        assert!(message.contains("入口或用户会话"), "{message}");
+        // #3010：入口/会话不一致也要指出具体是哪一项，用户才能把信息报给我们。
+        assert!(message.contains("用户账户"), "{message}");
+
+        let mut other_session = facts(&[]);
+        other_session.owner.session_id += 1;
+        let error = ensure_listener_matches(&other_session, &context(None)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("Windows 会话"), "{message}");
+
+        let mut other_logon = facts(&[]);
+        other_logon.owner.authentication_id = (7, 8);
+        let error = ensure_listener_matches(&other_logon, &context(None)).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("登录会话"), "{message}");
 
         ensure_listener_matches(&facts(&[]), &context(None)).unwrap();
     }
@@ -1250,6 +1440,49 @@ mod tests {
         assert!(!target_matches(&candidate, &expected).unwrap());
         candidate.image = PathBuf::from(IMAGE.replace("__publisher", "__other"));
         assert!(!target_matches(&candidate, &expected).unwrap());
+    }
+
+    /// #3010：预期入口和映像只要有一侧是别名，就两边都解析后再比；字面相同（如都用 8.3 短名）不依赖解析。
+    #[test]
+    fn executable_match_resolves_both_sides_only_when_literal_paths_differ() {
+        let alias = normalized_path_text(IMAGE).unwrap();
+        let real = normalized_path_text(r"D:\WindowsApps\OpenAI.Codex_26.1106.6628.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe").unwrap();
+        let short = normalized_path_text(r"C:\Users\RUNNER~1\AppData\Local\Temp\x\ChatGPT.exe").unwrap();
+        let resolve = |path: &str| Some(if path == alias { real.clone() } else if path == short {
+            "c:\\users\\runneradmin\\appdata\\local\\temp\\x\\chatgpt.exe".to_string()
+        } else { path.to_string() });
+        assert!(executable_matches_resolving(&alias, &real, resolve));
+        // CI 的临时目录是 8.3 短名：预期和映像都是短名时字面就相同，不能因为只解析一侧而失配。
+        assert!(executable_matches_resolving(&short, &short, |_| None));
+        assert!(executable_matches_resolving(&short, &short, resolve));
+        // 解析不了时保持严格比较；解析到不同文件不放行。
+        assert!(!executable_matches_resolving(&alias, &real, |_| None));
+        let other = normalized_path_text(r"D:\other\ChatGPT.exe").unwrap();
+        assert!(!executable_matches_resolving(&alias, &other, resolve));
+    }
+
+    /// #3010：商店版装在 D 盘时，argv[0] 是 C 盘 WindowsApps 下的 junction 别名，映像是 D 盘真实路径。
+    #[test]
+    fn junction_alias_argv0_matches_the_real_image_only_through_resolution() {
+        let alias = IMAGE;
+        let real = r"D:\WindowsApps\OpenAI.Codex_26.1106.6628.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe";
+        let image = normalized_path_text(real).unwrap();
+        let arguments = vec![alias.to_string(), "--remote-debugging-port=9229".to_string()];
+        let alias_key = normalized_path_text(alias).unwrap();
+        let resolves_to_real = |path: &str| (path == alias_key).then(|| image.clone());
+        let parsed = parsed_arguments_resolving(&arguments, &image, resolves_to_real).unwrap();
+        assert_eq!(parsed.debug_port, Some(9229));
+        // 解析不到（路径不存在 / 无权访问）时保持原来的严格比较。
+        let error = parsed_arguments_resolving(&arguments, &image, |_| None)
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("argv[0] 与实际映像不一致"));
+        // 解析到别的文件也不能放行。
+        let other = normalized_path_text(r"D:\other\ChatGPT.exe").unwrap();
+        let resolves_to_other = |path: &str| (path == alias_key).then(|| other.clone());
+        assert!(parsed_arguments_resolving(&arguments, &image, resolves_to_other).is_err());
+        // 字面相同仍直接通过，不依赖解析。
+        assert!(parsed_arguments_resolving(&[real.to_string()], &image, |_| None).is_ok());
     }
 
     #[test]
@@ -1501,6 +1734,7 @@ mod tests {
             owner,
             app_data: normalized_path(&app_data).unwrap(),
             owned_debug_port: None,
+            isolated_user_data_roots: Vec::new(),
         };
         let count = capture_and_stop(
             [main.0.id(), isolated.0.id()],
@@ -1550,6 +1784,61 @@ mod tests {
                 b"ok"
             );
         }
+    }
+
+    #[test]
+    fn debug_port_released_waits_for_transient_listener_then_succeeds() {
+        let reads = std::cell::Cell::new(0_u32);
+        let waits = std::cell::Cell::new(0_u32);
+        ensure_debug_port_released(
+            9222,
+            |_port| {
+                let n = reads.get();
+                reads.set(n + 1);
+                if n < 3 {
+                    Ok(vec!["pid 4242（ChatGPT.exe）".to_owned()])
+                } else {
+                    Ok(Vec::new())
+                }
+            },
+            || waits.set(waits.get() + 1),
+            Duration::from_millis(100),
+        )
+        .expect("暂态监听者退出后应通过停止后复核");
+        assert!(reads.get() >= 4);
+        assert!(waits.get() >= 3);
+    }
+
+    #[test]
+    fn debug_port_released_reports_sanitized_listener_identity_on_timeout() {
+        let error = ensure_debug_port_released(
+            9222,
+            |_port| {
+                Ok(vec![
+                    "pid 4242（ChatGPT.exe）".to_owned(),
+                    "pid 512".to_owned(),
+                ])
+            },
+            || {},
+            Duration::from_millis(0),
+        )
+        .expect_err("超时仍有监听者应失败");
+        let message = error.to_string();
+        assert!(message.contains("2 个监听者"), "{message}");
+        assert!(message.contains("pid 4242（ChatGPT.exe）"), "{message}");
+        assert!(message.contains("pid 512"), "{message}");
+        assert!(message.contains("旧窗口已关闭，未启动新实例"), "{message}");
+    }
+
+    #[test]
+    fn debug_port_released_propagates_listener_query_errors() {
+        let result = ensure_debug_port_released(
+            9222,
+            |_port| Err(anyhow::anyhow!("监听者查询失败")),
+            || {},
+            Duration::from_millis(100),
+        );
+        assert!(result.is_err());
     }
 
     #[cfg(windows)]

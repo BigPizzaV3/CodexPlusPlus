@@ -32,6 +32,8 @@
       // Agent 桌宠（含大肥鱼）、用量状态栏、请求状态条已改成随 Codex++ 发布的官方拓展包（bundled:agent-pet、
       // bundled:usage-statusline、bundled:proxy-request-status），不再是内置拓展。
       { id: "dictation", name: "语音听写", apply: codexPlusDictationExtension },
+      { id: "feature-lab", name: "Feature Lab", apply: codexPlusFeatureLabExtension },
+      { id: "hooks-editor", name: "Hooks 编辑器", apply: codexPlusHooksEditorExtension },
       { id: "turn-rewind", name: "轮次回退", apply: codexPlusTurnRewindExtension },
       { id: "side-chat-save", name: "侧聊保存", apply: codexPlusSideChatSaveExtension },
       // 由 Rust 经 CDP 驱动，页面侧只登记；被顶替时 Rust 侧不再补载，顶替它的拓展订阅 codexpp/session-index-repaired 自己做。
@@ -49,6 +51,10 @@
       { id: "conversation-view", name: "对话宽度", apply: codexPlusConversationViewExtension },
       { id: "activity-overlay-right", name: "消息导航条靠右", apply: codexPlusActivityOverlayExtension },
       { id: "paste-fix", name: "粘贴修复", apply: codexPlusPasteFixExtension },
+      { id: "prompt-args", name: "自定义 prompt 参数", apply: codexPlusPromptArgsExtension },
+      { id: "shell-command", name: "! 命令", apply: codexPlusShellCommandExtension },
+      { id: "context-tuning", name: "上下文与压缩", apply: codexPlusContextTuningExtension },
+      { id: "daily-ui", name: "界面与日常操作", apply: codexPlusDailyUiExtension },
       { id: "offline-auto-review", name: "拿不到远程开关时补开「替我审批」", apply: codexPlusOfflineAutoReviewExtension },
       { id: "statsig-overrides", name: "Statsig 界面增强", apply: codexPlusStatsigOverridesExtension },
       { id: "weixin-desktop-sync", name: "微信会话同步", apply: codexPlusWeixinDesktopSyncExtension },
@@ -274,7 +280,8 @@
       installThreadScrollNavigationCapture();
       installThreadScrollUserIntentCapture();
       installThreadScrollRouteHooks();
-      scheduleThreadScrollSync(true);
+      // 可见性恢复和普通 DOM 补扫不是导航，不能重新锁住旧的阅读位置。
+      scheduleThreadScrollSync();
     }, { phase: "light" });
     ctx.onScan(() => scheduleThreadScrollSync());
     let enabled = threadScrollRestoreEnabled();
@@ -333,7 +340,12 @@
 
   /** 微信会话同步：微信写入的会话通知桌面目录，读到设置（含心跳）时按设置里的待同步清单跑一次。 */
   function codexPlusWeixinDesktopSyncExtension(ctx) {
-    ctx.on("settings/loaded", () => void syncWeixinDesktopThreads());
+    const sync = () => void syncWeixinDesktopThreads();
+    ctx.on("settings/loaded", sync);
+    ctx.effect(() => {
+      codexPlusWeixinSyncHeartbeat = sync;
+      return () => { codexPlusWeixinSyncHeartbeat = null; };
+    });
   }
 
   /**

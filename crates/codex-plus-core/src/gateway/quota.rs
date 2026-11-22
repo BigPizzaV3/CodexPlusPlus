@@ -1,8 +1,9 @@
 //! 订阅账号的额度：ChatGPT 账号的 5 小时 / 每周用量百分比，Copilot 的本月高级请求，
-//! SuperGrok 的本周期额度。
+//! SuperGrok 的本周期额度；以及 API Key 型套餐 OpenCode Go、Command Code 的
+//! 5 小时 / 每周 / 每月窗口（#3084，见 [`crate::gateway::coding_plan`]）。
 //!
 //! 两个来源：ChatGPT 后端每次响应都带的 `x-codex-*` 响应头，以及后台定期查询额度接口
-//! （ChatGPT `wham/usage`、Copilot `copilot_internal/user`、SuperGrok `billing`）。
+//! （ChatGPT `wham/usage`、Copilot `copilot_internal/user`、SuperGrok `billing`、套餐用量接口）。
 //! 只存在内存，重启后重新查；同一官方账号的不同供应商别名按身份作用域共享。
 //! 模型组「额度优先」按剩余额度排先后，供应商池在账号行上显示。
 
@@ -515,7 +516,7 @@ pub fn parse_grok_billing(value: &Value, now_ms: u64) -> Option<ProviderQuota> {
 }
 
 /// RFC 3339 时间（`2026-10-12T02:17:59.504011+00:00`、`…Z`）→ 毫秒时间戳。
-fn parse_rfc3339_ms(text: &str) -> Option<u64> {
+pub(crate) fn parse_rfc3339_ms(text: &str) -> Option<u64> {
     let day_ms = i64::try_from(parse_reset_date(text)?).ok()?;
     let time = text.get(10..)?.strip_prefix(['T', 't', ' '])?;
     let number = |range: std::ops::Range<usize>| -> Option<i64> {
@@ -580,13 +581,15 @@ fn parse_reset_date(text: &str) -> Option<u64> {
     u64::try_from(days * 86_400_000).ok()
 }
 
-/// 这个供应商有没有额度可查：ChatGPT 订阅账号、Copilot 账号或 SuperGrok 账号。
+/// 这个供应商有没有额度可查：ChatGPT 订阅账号、Copilot 账号、SuperGrok 账号，
+/// 或地址认得出的 API Key 型套餐（OpenCode Go、Command Code）。
 pub fn supports(relay: &RelayProfile) -> bool {
     crate::official_login::member_uses_official_login_transport(relay)
         || matches!(
             crate::gateway::accounts::relay_account_kind(relay).as_deref(),
             Some("copilot" | "grok")
         )
+        || crate::gateway::coding_plan::plan_for_relay(relay).is_some()
 }
 
 #[derive(Default)]
@@ -690,7 +693,8 @@ async fn fetch_reading(relay: &RelayProfile) -> anyhow::Result<Option<ProviderQu
         let value = crate::gateway::accounts::grok_billing(&prepared).await?;
         parse_grok_billing(&value, now)
     } else {
-        return Ok(None);
+        // API Key 型套餐；地址认不出时不发请求。
+        return crate::gateway::coding_plan::fetch(relay, now).await;
     };
     Ok(quota)
 }
@@ -705,6 +709,10 @@ fn prefetch_targets(gateway: &GatewaySettings) -> Vec<(&RelayProfile, u64)> {
             || crate::official_login::is_native_owned_login(relay)
             || !supports(relay)
         {
+            continue;
+        }
+        // API Key 型套餐关着时不在后台轮询（手动刷新照常可查）。
+        if !provider.enabled && crate::gateway::coding_plan::plan_for_relay(relay).is_some() {
             continue;
         }
         let max_age_ms = provider.subscription_policy.as_ref()

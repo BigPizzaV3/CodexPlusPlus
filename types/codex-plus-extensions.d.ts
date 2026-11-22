@@ -509,6 +509,7 @@ interface CodexPlusSessionQuery {
   listSessions(options?: { archived?: boolean; limit?: number; offset?: number }): Promise<CodexPlusSession[]>;
   filterSessions(filters: { id?: string; cwd?: string; archived?: boolean; createdAfter?: number; createdBefore?: number; limit?: number }): Promise<CodexPlusSession[]>;
   readSession(id: string): Promise<{ session: CodexPlusSession; events: CodexPlusSessionEvent[] }>;
+  /** 优先返回侧栏名称，无名称时返回数据库标题。 */
   readTitle(id: string): Promise<string>;
   listEvents(id: string, options?: { types?: string[]; offset?: number; limit?: number; fromEnd?: boolean }): Promise<CodexPlusSessionEvent[]>;
   filterEvents(id: string, filters?: { types?: string[]; text?: string; limit?: number }): Promise<CodexPlusSessionEvent[]>;
@@ -743,7 +744,7 @@ interface CodexPlusManagerPublicData {
     } }>;
   };
   installedSkills: { skills: Array<{
-    id: string; name: string; enabled: boolean; bundled: boolean; managed: boolean; agents: string[]; contentHash: string;
+    id: string; name: string; enabled: boolean | null; statusError?: string; bundled: boolean; managed: boolean; agents: string[]; contentHash: string;
   }> };
   /** 仅 Codex++ 市场托管的插件，不是全部 Codex 插件。 */
   installedPlugins: { plugins: Array<{ id: string; name: string; version: string; source: "public" | "full"; enabled: boolean }> };

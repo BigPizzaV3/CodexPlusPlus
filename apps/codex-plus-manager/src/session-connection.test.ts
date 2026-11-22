@@ -11,6 +11,7 @@ const source = renderer.slice(
 
 function runtime() {
   const calls: { method: string; params: any }[] = [];
+  const preparations: any[] = [];
   const window = {} as any;
   const state = {
     profile: { id: "aggregate", relayMode: "aggregate" },
@@ -35,15 +36,19 @@ function runtime() {
   const create = new Function("window", "codexPlusBackendSettings", "codexRemoteSessionActiveProfile",
     "validThreadScrollSessionKey", "loadBackendSettingsState", "codexAppServerPreparationTimeoutMs",
     "nativeHostClient", "sendCodexPlusDiagnostic", "codexRemoteSessionTargetProvider",
-    "applyCodexServiceTierRequestOnly", `${source}
+    "applyCodexServiceTierRequestOnly", "prepareCodexGatewayReconnect", "noteCodexGatewayThreadStart",
+    "prepareCodexThreadProviderWithTimeout", `${source}
     return { apply: applyCodexManagedSessionConnection, prepare: prepareCodexManagedSessionConnection,
       send: sendCodexManagedSessionTurn,
       prewarm: prewarmCodexManagedSession, observeError: observeCodexManagedSessionConnectionError,
       note: noteCodexManagedSessionStart };`);
   const api = create(window, state.settings, () => state.profile, (id: string) => id === "thread" ? id : "",
     async () => state.refresh, 1500, () => client, () => {}, () => "custom",
-    (_method: string, params: any) => params);
-  return { ...api, state, calls, client, window };
+    (_method: string, params: any) => params, async () => {}, () => {},
+    async (method: string, params: any, hostId: string, _send: any, _internal: any, knownManaged: boolean) => {
+      preparations.push({ method, params, hostId, knownManaged });
+    });
+  return { ...api, state, calls, client, window, preparations };
 }
 
 describe("managed aggregate session connection", () => {
@@ -271,21 +276,27 @@ describe("managed aggregate session connection", () => {
     }, { model: "chosen" });
     assert.equal(calls, 2);
   });
-  it("upgrades installed version 16 wrappers and sends fresh threads without a resume", async () => {
+  it("upgrades previous wrappers and switches equal-context account aliases without a resume", async () => {
     const prelude = readFileSync(new URL("../../../assets/inject/renderer-inject/00-prelude.js", import.meta.url), "utf8");
     const version = prelude.match(/const codexAppServerModelRequestPatchVersion = "([^"]+)"/)?.[1];
     assert.notEqual(version, "16", "the previous mandatory-preflight closure must be replaced");
+    assert.notEqual(version, "37", "the previous model-alias context closure must be replaced");
     const catalog = readFileSync(new URL("../../../assets/inject/renderer-inject/70-model-catalog.js", import.meta.url), "utf8");
     const instancePatch = catalog.slice(catalog.indexOf("  function patchAppServerModelRequestClient("),
       catalog.indexOf("  // issue #2177"));
     const prototypePatch = catalog.slice(catalog.indexOf("    function installCodexAppServerClientPrototypePatch()"),
       catalog.indexOf("  const appServerModelRequestPatchMaxMisses"));
-    for (const mode of ["instance", "prototype", "envelope"]) {
+    for (const [mode, previousVersion] of ["16", "37"].flatMap(version =>
+      ["instance", "prototype", "envelope"].map(mode => [mode, version]))) {
       const calls: string[] = [];
+      let nativeParams: any;
+      let runtimeContext: any = null;
       const nativeSend = async function(this: any, method: string, params: any): Promise<any> {
         assert.equal(this.hostId, "local", "preserve the native method receiver during upgrade");
         if (method === "send-cli-request-for-host") return nativeSend.call(this, params.method, params.params);
         calls.push(method);
+        nativeParams = params;
+        if (method === "thread/read") return { thread: { status: { type: "active" } } };
         if (method === "thread/resume") throw new Error("no rollout found for thread id fresh");
         return method === "thread/start" ? { thread: { id: "fresh" } } : { turn: { id: "first" } };
       };
@@ -299,7 +310,7 @@ describe("managed aggregate session connection", () => {
       Object.assign(Client.prototype, {
         sendRequest: oldWrapper,
         __codexPlusModelOriginalSendRequest: nativeSend,
-        __codexPlusModelRequestPatch: "16",
+        __codexPlusModelRequestPatch: previousVersion,
         __codexPlusServiceTierOriginalPrewarmThreadStart: nativePrewarm,
         prewarmThreadStart: oldWrapper,
       });
@@ -308,12 +319,12 @@ describe("managed aggregate session connection", () => {
       else Object.assign(client, {
         sendRequest: oldWrapper,
         __codexPlusModelOriginalSendRequest: nativeSend,
-        __codexPlusModelRequestPatch: "16",
+        __codexPlusModelRequestPatch: previousVersion,
       });
       const profile: any = { id: "aggregate", relayMode: "aggregate" };
       const context = vm.createContext({
         window: { __codexPlusAppServerClientClass: Client,
-          __codexPlusAppServerClientPrototypePatchInstalled: "16", __codexSessionDeleteBridge: {} },
+          __codexPlusAppServerClientPrototypePatchInstalled: previousVersion, __codexSessionDeleteBridge: {} },
         client, codexAppServerModelRequestPatchVersion: version,
         codexPlusBackendSettings: { managedSessionConnection: {
           profileId: "aggregate", provider: "codex_plus_managed", baseUrl: "http://127.0.0.1:62021/v1",
@@ -328,13 +339,15 @@ describe("managed aggregate session connection", () => {
         codexRemoteSessionProviderOverrideEnabled: () => false,
         applyCodexRemoteSessionProviderOverride: (_method: string, params: any) => params,
         prepareCodexPureApiResume: async (_method: string, params: any) => params,
+        prepareCodexGatewayReconnect: async () => {},
+        noteCodexGatewayThreadStart() {},
         verifyCodexPureApiResumeResult() {},
         applyCodexServiceTierRequestOnly: (_method: string, params: any) => params,
         loadBackendSettingsState: async () => { calls.push("settings/get"); return true; },
-        loadCodexModelCatalog: async () => ({ runtimeContext: null }),
-        codexModelCatalog: { runtimeContext: null },
+        loadCodexModelCatalog: async () => ({ runtimeContext }),
+        codexModelCatalog: { get runtimeContext() { return runtimeContext; } },
         modelResponseHostId: (params: any, hostId: string) => params?.hostId || hostId,
-        codexAppServerPreparationTimeoutMs: 1500,
+        codexAppServerPreparationTimeoutMs: 1500, codexBridgePreparationReadTimeoutMs: 8000,
         sendCodexPlusDiagnostic() {}, codexPlusModelUnlockEnabled: () => false,
         codexPluginMarketplacePatchEnabled: () => false, codexPlusSettings: () => ({}),
         setTimeout, clearTimeout,
@@ -366,6 +379,19 @@ describe("managed aggregate session connection", () => {
         assert.deepEqual(calls, ["turn/start"], `${mode}:unchanged`);
         delete profile[key];
       }
+      runtimeContext = { status: "ok", models: {
+        "account-a": { model_auto_compact_token_limit: 117964, model_context_window: 131072 },
+        "account-b": { model_context_window: 131072, model_auto_compact_token_limit: 117964 },
+      } };
+      await send("thread/start", { model: "account-a" });
+      calls.length = 0;
+      const selected = {
+        threadId: "fresh", model: "account-b", serviceTier: "fast",
+        collaborationMode: { settings: { model: "account-b", reasoning_effort: "max" } },
+      };
+      await send("turn/start", selected);
+      assert.deepEqual(calls, ["turn/start"], `${mode}:${previousVersion}:equal-context`);
+      assert.equal(nativeParams, selected, "keep the explicit account, reasoning and service tier");
     }
   });
 
@@ -455,6 +481,8 @@ describe("managed aggregate session connection", () => {
     const patched = await api.prepare("thread/resume", params, "local",
       async () => ({ thread: { modelProvider: "codex_plus_managed" } }));
     assert.equal(patched.modelProvider, "custom");
+    assert.deepEqual(api.preparations, [{ method: "thread/resume", params: { threadId: "thread", modelProvider: "custom" },
+      hostId: "local", knownManaged: true }]);
     const ordinary = await api.prepare("thread/resume", params, "local",
       async () => ({ thread: { modelProvider: "other" } }));
     assert.equal(ordinary, params);

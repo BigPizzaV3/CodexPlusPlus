@@ -37,7 +37,7 @@ const LINUX_CODEX_EXECUTABLES: &[&str] = &[
 
 
 #[cfg(windows)]
-const OPENAI_PACKAGE_FAMILY_NAMES: &[&str] = &[
+pub(crate) const OPENAI_PACKAGE_FAMILY_NAMES: &[&str] = &[
     "OpenAI.Codex_2p2nqsd0c76g0",
     "OpenAI.CodexBeta_2p2nqsd0c76g0",
     "OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0",
@@ -863,7 +863,8 @@ pub fn build_codex_executable(app_dir: &Path) -> PathBuf {
 
 pub fn find_bundled_codex_cli(app_dir: &Path) -> Option<PathBuf> {
     let candidates = if app_dir.extension() == Some(OsStr::new("app")) {
-        vec![app_dir.join("Contents").join("Resources").join("codex")]
+        let resources = app_dir.join("Contents/Resources");
+        vec![resources.join("codex-cli/bin/codex"), resources.join("codex")]
     } else {
         vec![
             app_dir.join("resources").join("codex.exe"),

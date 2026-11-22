@@ -1,8 +1,9 @@
 import { useState, type ButtonHTMLAttributes, type ReactNode } from "react";
-import { Archive, ArrowLeft, ArrowRight, Check, ChevronDown, Copy, RefreshCw, Trash2 } from "lucide-react";
+import { Archive, ArrowLeft, ArrowRight, Check, ChevronDown, Copy, FolderInput, FolderSymlink, RefreshCw, Trash2 } from "lucide-react";
 import { t, tf } from "./i18n";
 import { matchesManagementQuery, sessionGroups, type ManagedSession } from "./management-model";
 import { ManagementDrawer } from "./ManagementPages";
+import { SessionRelocateDrawer, type SessionRelocationRequest } from "./SessionRelocateDrawer";
 import { CxCard, CxEmpty, CxRow, CxToolbar } from "./cx-layout";
 import { TopbarActions } from "./TopbarActions";
 import "./ManagementPages.css";
@@ -20,6 +21,8 @@ export function ProjectSessionPage({
   onDeleteMany,
   onArchiveMany,
   onListProjectSessions,
+  onPickFolder,
+  onRelocated,
   repairPanel,
 }: {
   sessions: SessionPageData | null;
@@ -29,6 +32,10 @@ export function ProjectSessionPage({
   onDeleteMany: (sessions: ManagedSession[]) => Promise<boolean | void>;
   onArchiveMany: (sessions: ManagedSession[], archived?: boolean) => Promise<boolean | void>;
   onListProjectSessions: (cwd: string) => Promise<ManagedSession[]>;
+  // 让用户选一个文件夹，取消时返回 null。
+  onPickFolder: (title: string) => Promise<string | null>;
+  // 会话目录改完（或没改成）之后：提示结果并刷新列表。
+  onRelocated: (message: string, ok: boolean) => Promise<void>;
   repairPanel?: ReactNode;
 }) {
   const [query, setQuery] = useState("");
@@ -74,6 +81,22 @@ export function ProjectSessionPage({
     if (!selectedRows.length) return;
     if ((await onArchiveMany(selectedRows, true)) !== false) setSelected(new Map());
   };
+  // 会话目录重定位（#1085）：先选文件夹，再在抽屉里预览、确认。
+  const [relocation, setRelocation] = useState<SessionRelocationRequest | null>(null);
+  const moveSelected = async () => {
+    if (!selectedRows.length) return;
+    const to = await onPickFolder(t("选择要把会话移到的文件夹"));
+    if (to) setRelocation({ kind: "move", threadIds: selectedRows.map((session) => session.id), to });
+  };
+  const relocateProject = async (from: string) => {
+    const to = await onPickFolder(t("选择这个项目现在所在的文件夹"));
+    if (to) setRelocation({ kind: "remap", from, to });
+  };
+  const relocated = async (message: string, ok: boolean) => {
+    setRelocation(null);
+    if (ok) setSelected(new Map());
+    await onRelocated(message, ok);
+  };
   // 选择可以跨分页（整项目选择），不能按当前页修剪；单删成功的会话要移出选择，
   // 否则随后的批量操作会把已删除的会话再提交一次并报失败。
   const deleteOne = async (session: ManagedSession) => {
@@ -115,6 +138,7 @@ export function ProjectSessionPage({
       <Button className="cx-secondary" onClick={selectCurrentPage}>{t("全选当前列表")}</Button>
       <Button className="cx-secondary" disabled={!selectedRows.length} onClick={() => setSelected(new Map())}>{t("取消全部选择")}</Button>
       <span className="cx-session-selection-spacer" />
+      <Button className="cx-secondary" disabled={!selectedRows.length} onClick={() => void moveSelected()} title={t("把选中会话的工作目录改到另一个文件夹；会先列出受影响的会话，确认后才执行。")}><FolderInput size={14} aria-hidden="true" />{t("移动已选…")}</Button>
       <Button className="cx-secondary" disabled={!selectedRows.length} onClick={() => void archiveSelected()}><Archive size={14} aria-hidden="true" />{t("归档已选")}</Button>
       <Button className="cx-secondary" danger disabled={!selectedRows.length} onClick={() => void deleteSelected()} title={t("删除会创建本地备份；如果 Codex App 正在使用该会话，建议先关闭对应会话窗口再操作。")}><Trash2 size={14} aria-hidden="true" />{tf("删除已选 ({0})", [selectedRows.length])}</Button>
     </div> : null}
@@ -130,6 +154,7 @@ export function ProjectSessionPage({
             <span className="cx-section-count">{group.sessions.length}</span>
             {group.path ? <small title={group.path}>{group.path}</small> : null}
           </button>
+          {mode === "project" && group.path ? <button type="button" className="mg-icon-button cx-session-relocate" onClick={() => void relocateProject(group.path)} aria-label={`${t("重新定位目录")}：${group.path}`} title={t("重新定位目录：项目文件夹挪了位置时，把这个目录下的全部会话改到新的文件夹")}><FolderSymlink size={15} aria-hidden="true" /></button> : null}
           {selection && mode === "project" && group.path ? <Button className="cx-secondary" disabled={projectLoading !== null} onClick={() => void selectProject(group.path)}>{projectLoading === group.path ? t("读取中…") : t("全选项目")}</Button> : null}
         </header>
         <div id={groupId} hidden={!open}>
@@ -152,6 +177,7 @@ export function ProjectSessionPage({
       <Button className="cx-secondary" onClick={() => void onRefresh((sessions?.offset || 0) + pageSize)} disabled={!sessions?.hasMore}>{t("下一页")}<ArrowRight size={14} aria-hidden="true" /></Button>
     </div>
     {repairPanel}
+    {relocation ? <SessionRelocateDrawer request={relocation} onClose={() => setRelocation(null)} onDone={(message, ok) => void relocated(message, ok)} /> : null}
     {detail ? <ManagementDrawer title={detail.title || t("未命名会话")} onClose={() => setDetail(null)} footer={<><Button onClick={() => navigator.clipboard.writeText(detail.id)}><Copy size={14} />{t("复制会话 ID")}</Button><Button danger onClick={() => void deleteOne(detail)}><Trash2 size={14} />{t("删除会话")}</Button></>}><dl className="mg-detail"><dt>{t("会话 ID")}</dt><dd>{detail.id}</dd><dt>{t("项目目录")}</dt><dd>{detail.cwd || "—"}</dd><dt>{t("模型供应商")}</dt><dd>{detail.modelProvider || "Codex"}</dd><dt>{t("数据库")}</dt><dd>{detail.dbPath || "—"}</dd></dl></ManagementDrawer> : null}
   </div>;
 }

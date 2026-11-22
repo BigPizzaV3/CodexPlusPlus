@@ -129,7 +129,8 @@ fn normalize_navigation(
         navigation.page = "enhance".to_string();
     }
     match (navigation.page.as_str(), navigation.section.as_deref()) {
-        ("settings" | "pluginMarket", None) | ("enhance", None | Some("stepwise" | "dictation")) => Ok(navigation),
+        // weixin：Codex 里「微信连接」页的「在 Codex++ 管理工具里打开更多设置」。
+        ("settings" | "pluginMarket" | "weixin" | "sessions", None) | ("enhance", None | Some("stepwise" | "dictation")) => Ok(navigation),
         _ => anyhow::bail!(
             "不支持的管理工具导航：{}/{}",
             navigation.page,
@@ -141,6 +142,12 @@ fn normalize_navigation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accepts_sessions_navigation_for_provider_recovery() {
+        let intent = ManagerNavigationIntent { page: "sessions".into(), section: None };
+        assert_eq!(normalize_navigation(intent.clone()).unwrap(), intent);
+    }
 
     #[test]
     fn saves_and_consumes_stepwise_navigation_once() {
@@ -257,6 +264,11 @@ mod tests {
             },
             ManagerNavigationIntent {
                 page: "settings".to_string(),
+                section: None,
+            },
+            // Codex 里「微信连接」页跳到管理器的微信页。
+            ManagerNavigationIntent {
+                page: "weixin".to_string(),
                 section: None,
             },
         ] {

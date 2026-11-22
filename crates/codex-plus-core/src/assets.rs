@@ -185,7 +185,7 @@ const STEPWISE_SCRIPT: &str = concat!(
     "\n})();\n",
 );
 pub const DIAGNOSTIC_BUILD_ID: &str = "diag-20260518-1";
-const DREAM_SKIN_RENDERER_REVISION: &str = "27-dream-skin-1.5.20-wallpaper-shell";
+const DREAM_SKIN_RENDERER_REVISION: &str = "28-dream-skin-local-video";
 
 pub fn renderer_script() -> &'static str {
     RENDERER_SCRIPT
@@ -208,12 +208,20 @@ pub fn dream_skin_art_data_uri(settings: &BackendSettings) -> String {
             Path::new(custom_path),
             &crate::paths::default_app_state_dir(),
         )
-        && let Some(data_uri) = image_file_data_uri(Path::new(custom_path))
+        && let Some(data_uri) = dream_skin_file_data_uri(Path::new(custom_path))
     {
         return data_uri;
     }
     let (content_type, image) = dream_skin_default_image();
     image_data_uri(content_type, image)
+}
+
+fn dream_skin_file_data_uri(path: &Path) -> Option<String> {
+    let extension = path.extension()?.to_str()?;
+    if let Some(mime) = crate::dream_skin::video_mime(extension) {
+        return Some(image_data_uri(mime, &crate::dream_skin::read_skin_video(path, extension).ok()?));
+    }
+    image_file_data_uri(path)
 }
 
 fn dream_skin_platform() -> &'static str {
@@ -258,9 +266,19 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
     let style_revision = dream_skin_content_signature(css.as_bytes());
     let payload_revision =
         dream_skin_target_payload_signature(settings, engine, &style_revision, &theme);
+    let media_path = Path::new(settings.codex_app_dream_skin_image_path.trim());
+    let video = media_path.extension().and_then(|extension| extension.to_str())
+        .and_then(crate::dream_skin::video_mime).is_some()
+        && crate::dream_skin::is_managed_dream_skin_image(media_path, &crate::paths::default_app_state_dir());
+    let static_art = if video {
+        let (mime, bytes) = dream_skin_default_image();
+        serde_json::to_string(&image_data_uri(mime, bytes)).unwrap()
+    } else {
+        "window.__CODEX_PLUS_DREAM_SKIN_ART__".into()
+    };
     let mut payload = renderer
         .replace("__DREAM_CSS_JSON__", &serde_json::to_string(&css).unwrap())
-        .replace("__DREAM_ART_JSON__", "window.__CODEX_PLUS_DREAM_SKIN_ART__")
+        .replace("__DREAM_ART_JSON__", &static_art)
         .replace(
             "__DREAM_THEME_JSON__",
             "window.__CODEX_PLUS_DREAM_SKIN_THEME__",
@@ -275,7 +293,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
         .replace(
             "__GLASS_VISION_ART_JSON__",
-            "window.__CODEX_PLUS_DREAM_SKIN_ART__",
+            &static_art,
         )
         .replace(
             "__DREAM_SKIN_CSS_JSON__",
@@ -283,7 +301,7 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
         .replace(
             "__DREAM_SKIN_ART_JSON__",
-            "window.__CODEX_PLUS_DREAM_SKIN_ART__",
+            &static_art,
         )
         .replace(
             "__DREAM_SKIN_THEME_JSON__",
@@ -314,8 +332,9 @@ fn dream_skin_target_runtime_script(settings: &BackendSettings, include_art: boo
         )
     });
     let skin_api_bootstrap = dream_skin_skin_api_bootstrap_script(&theme);
+    let video_install = if video { include_str!("../../../assets/inject/dream-skin-local-video.js") } else { "" };
     payload = format!(
-        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\n{}const result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
+        "(() => {{\nwindow.__CODEX_PLUS_EXTERNAL_DREAM_SKIN_RUNTIME__ = true;\nwindow.__CODEX_PLUS_CLEAR_DREAM_SKIN__?.();\n{}window.__CODEX_PLUS_DREAM_SKIN_ART_SIGNATURE__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_THEME__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__ = {};\nwindow.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__ = {};\n{}const result = {};\nconst state = window.__CODEX_DREAM_SKIN_STATE__ || window.__CODEX_GLASS_VISION_SKIN_STATE__;\nif (state) {{\n  state.version = `codex-plus:${{String(window.__CODEX_PLUS_DREAM_SKIN_PLATFORM__ || 'unknown')}}:${{window.__CODEX_PLUS_DREAM_SKIN_TARGET_ENGINE__}}:r${{window.__CODEX_PLUS_DREAM_SKIN_RUNTIME_REVISION__}}`;\n{video_install}\n}}\nwindow.__CODEX_PLUS_DREAM_SKIN_PAYLOAD_SIGNATURE__ = {};\nreturn result;\n}})()",
         art_assignment.unwrap_or_default(),
         serde_json::to_string(&dream_skin_art_content_signature(settings)).unwrap(),
         theme,
@@ -564,18 +583,46 @@ pub fn force_chinese_locale_config(settings: &BackendSettings) -> Value {
     json!({ "enabled": settings.codex_app_force_chinese_locale, "locale": "zh-CN" })
 }
 
+/// Statsig 已知开关清单（中文说明 + 默认是否覆盖），见 assets/statsig-gates.json。
+const STATSIG_GATES_JSON: &str = include_str!("../assets/statsig-gates.json");
+
+/// 已知开关清单：`[{ id, title, description, defaultOverride, risk, note? }]`。
+///
+/// Feature Lab 的「Statsig 开关」页签按它列出开关；`defaultOverride: true` 的项就是
+/// 总开关打开时默认强制打开的闸门。解析失败（只可能是改坏了 JSON）时返回空清单，测试会兜住。
+pub fn statsig_gate_catalog() -> Vec<Value> {
+    serde_json::from_str::<Value>(STATSIG_GATES_JSON)
+        .ok()
+        .and_then(|value| value.get("gates").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+}
+
 /// Statsig 界面增强的注入配置。
 ///
-/// 只包含「纯客户端」的远程开关：隐藏升级/额度推销、放宽网络与流式超时、补开记忆。
+/// 只包含「纯客户端」的远程开关：隐藏升级/额度推销、放宽网络与流式超时、补开记忆，
+/// 以及原生界面里已经存在但默认灰度不到的功能（消息队列、时间线、侧聊 attach）。
 /// 服务端校验的能力（云端任务、真实配额）不在这里，也改不动。
+///
+/// `gates` 只放默认覆盖项；用户在 Feature Lab 里逐项改的覆盖存在
+/// `codexAppStatsigGateOverrides`，页面从后端设置实时读、叠加在 `gates` 上，不用重新注入。
 pub fn statsig_overrides_config(settings: &BackendSettings) -> Value {
+    let catalog = statsig_gate_catalog();
+    let gates = catalog
+        .iter()
+        .filter(|entry| entry.get("defaultOverride") == Some(&Value::Bool(true)))
+        .filter_map(|entry| entry.get("id").and_then(Value::as_str))
+        .map(|id| (id.to_string(), Value::Bool(true)))
+        .collect::<serde_json::Map<String, Value>>();
     json!({
         "enabled": settings.codex_app_statsig_overrides,
-        // 布尔闸门：值为 true 时强制打开。
-        "gates": {
-            // 抑制升级 / 额度推销提示（ChatGPT 界面侧）
-            "1174206456": true
-        },
+        // 布尔闸门：值为 true 时强制打开（来自清单里 defaultOverride=true 的项）。
+        "gates": gates,
+        // Feature Lab 用的已知开关清单（中文说明、风险、默认值）。
+        "gateCatalog": catalog,
+        // 实验按 key 覆盖，未列出的 key 保持远端下发值。
+        "experiments": {},
+        // Layer 按 key 覆盖（例如 1574672957 的自定义指令层）。
+        "layers": {},
         // 动态配置：按 key 覆盖，未列出的 key 保持远端下发值。
         "dynamicConfigs": {
             // 网络重试：更耐心的退避，弱网下少断流
@@ -714,7 +761,10 @@ pub fn dream_skin_art_content_signature(settings: &BackendSettings) -> String {
             Path::new(custom_path),
             &crate::paths::default_app_state_dir(),
         )
-        && let Ok(bytes) = std::fs::read(custom_path)
+        && let Ok(bytes) = match Path::new(custom_path).extension().and_then(|s| s.to_str()) {
+            Some(ext) if crate::dream_skin::video_mime(ext).is_some() => crate::dream_skin::read_skin_video(Path::new(custom_path), ext),
+            _ => std::fs::read(custom_path).map_err(anyhow::Error::from),
+        }
     {
         return dream_skin_content_signature(&bytes);
     }

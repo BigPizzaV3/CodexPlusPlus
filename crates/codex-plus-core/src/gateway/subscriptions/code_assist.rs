@@ -528,6 +528,66 @@ fn function_calling_config(chat: &Value, antigravity_claude: bool) -> Value {
     }
 }
 
+/// 去掉 Codex 身份句里的「based on GPT-N」。
+///
+/// Codex 目录的系统提示词以 `You are Codex, a coding agent based on GPT-5.` 开头（另一种写法是
+/// `an agent based on GPT-5.`）。Antigravity 上游收到这句开头的请求回 429 `Resource has been
+/// exhausted`，只把这半句去掉、其余不变就正常（#3194 报告人的对照实验）。只改开头这一句。
+fn without_gpt_lineage(text: &str) -> String {
+    const OPENING: &str = "You are Codex, ";
+    const LINEAGE: &str = " based on GPT-";
+    let body = text.trim_start();
+    let first_line = &body[..body.find('\n').unwrap_or(body.len())];
+    let Some(at) = first_line.find(LINEAGE).filter(|_| first_line.starts_with(OPENING)) else {
+        return text.to_string();
+    };
+    let after = &body[at + LINEAGE.len()..];
+    // 版本号：数字，以及后面还跟着数字的小数点（`5`、`5.5`）；句末的句号留着。
+    let version = after
+        .char_indices()
+        .find(|&(index, c)| {
+            !(c.is_ascii_digit()
+                || c == '.' && after[index + 1..].starts_with(|next: char| next.is_ascii_digit()))
+        })
+        .map_or(after.len(), |(index, _)| index);
+    let leading = &text[..text.len() - body.len()];
+    format!("{leading}{}{}", &body[..at], &after[version..])
+}
+
+/// 去掉开头的 Claude Code 身份声明句。
+///
+/// Claude Code / Claude 桌面端的系统提示词以 `You are Claude Code, Anthropic's official CLI for Claude.`
+/// 开头（Agent SDK 里是 `…for Claude, running within the Claude Agent SDK.`；Anthropic 入站把 system
+/// 各块用空行拼起来，这句通常自成一段）。Antigravity 上游收到带这句的请求同样回 429，不带就正常
+/// （#3194 评论里的对照实验，报告人写的是没有 `'s` 的 `Anthropic official CLI`，两种都认）。
+/// 只去掉开头这一句，其余原样；整段只有这一句时得到空串，调用方就不发 system。
+fn without_claude_code_identity(text: &str) -> String {
+    const OPENING: &str = "You are Claude Code, Anthropic";
+    const MARK: &str = "official CLI for Claude";
+    let body = text.trim_start();
+    if !body.starts_with(OPENING) {
+        return text.to_string();
+    }
+    let first_line = &body[..body.find('\n').unwrap_or(body.len())];
+    // 句末：第一个后面是空白或行尾的句号。
+    let Some(end) = first_line
+        .char_indices()
+        .find(|&(index, c)| {
+            c == '.'
+                && first_line[index + 1..]
+                    .chars()
+                    .next()
+                    .is_none_or(char::is_whitespace)
+        })
+        .map(|(index, _)| index + 1)
+        .filter(|&end| first_line[..end].contains(MARK))
+    else {
+        return text.to_string();
+    };
+    let leading = &text[..text.len() - body.len()];
+    format!("{leading}{}", body[end..].trim_start())
+}
+
 /// Chat Completions 请求 → Code Assist 信封里的 `request`（GenerateContentRequest）。
 pub fn build_request(chat: &Value, flavor: Flavor, model: &str) -> Value {
     let claude = is_claude(model);
@@ -551,7 +611,10 @@ pub fn build_request(chat: &Value, flavor: Flavor, model: &str) -> Value {
             .unwrap_or("user");
         match role {
             "system" | "developer" => {
-                let text = message_text(message);
+                let mut text = message_text(message);
+                if flavor == Flavor::Antigravity {
+                    text = without_claude_code_identity(&without_gpt_lineage(&text));
+                }
                 if !text.trim().is_empty() {
                     system.push(text);
                 }
@@ -1489,6 +1552,98 @@ mod tests {
         assert_eq!(generation["stopSequences"], json!(["END"]));
         assert_eq!(generation["thinkingConfig"]["includeThoughts"], true);
         assert!(request.get("tools").is_none());
+    }
+
+    /// #3194：Antigravity 上游看到「based on GPT-5」开头的系统提示词回 429，转发前去掉这半句。
+    #[test]
+    fn antigravity_drops_the_gpt_lineage_from_the_codex_identity() {
+        let system_for = |flavor, system: &str| {
+            let chat = json!({
+                "messages": [
+                    { "role": "system", "content": system },
+                    { "role": "user", "content": "hi" },
+                ],
+            });
+            build_request(&chat, flavor, "gemini-3-pro")["systemInstruction"]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let rest = " You and the user share one workspace.\n\n# Personality\n\nbased on GPT-5 stays here.";
+        for (identity, neutral) in [
+            ("You are Codex, a coding agent based on GPT-5.", "You are Codex, a coding agent."),
+            ("You are Codex, an agent based on GPT-5.", "You are Codex, an agent."),
+            ("You are Codex, an agent based on GPT-5.5.", "You are Codex, an agent."),
+            ("You are Codex, an agent based on GPT-6.", "You are Codex, an agent."),
+        ] {
+            assert_eq!(
+                system_for(Flavor::Antigravity, &format!("{identity}{rest}")),
+                format!("{neutral}{rest}")
+            );
+            // Gemini CLI 没有这个问题，原样转发。
+            assert_eq!(
+                system_for(Flavor::GeminiCli, &format!("{identity}{rest}")),
+                format!("{identity}{rest}")
+            );
+        }
+        // 别的提示词不动，哪怕后文提到 GPT。
+        for untouched in [
+            "You are Codex, a coding agent.",
+            "You are Codex, a coding agent based on MiniMax-M3.",
+            "你是助手。\nYou are Codex, an agent based on GPT-5.",
+        ] {
+            assert_eq!(system_for(Flavor::Antigravity, untouched), untouched);
+        }
+    }
+
+    /// #3194 评论：Claude 桌面端 / Claude Code 的身份句同样让 Antigravity 回 429，转发前去掉这一句。
+    #[test]
+    fn antigravity_drops_the_claude_code_identity() {
+        let request_for = |flavor, system: &str| {
+            let chat = json!({
+                "messages": [
+                    { "role": "system", "content": system },
+                    { "role": "user", "content": "hi" },
+                ],
+            });
+            build_request(&chat, flavor, "gemini-3-pro")
+        };
+        let system_for = |flavor, system: &str| {
+            request_for(flavor, system)["systemInstruction"]["parts"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // Anthropic 入站把 system 各块用空行拼起来，身份句自成一段。
+        let rest = "You are an interactive agent.\n\nYou are Claude Code, Anthropic's official CLI for Claude. stays here.";
+        for identity in [
+            "You are Claude Code, Anthropic's official CLI for Claude.",
+            "You are Claude Code, Anthropic official CLI for Claude.",
+            "You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
+        ] {
+            for separator in ["\n\n", " ", "\n"] {
+                let system = format!("{identity}{separator}{rest}");
+                assert_eq!(system_for(Flavor::Antigravity, &system), rest, "{system:?}");
+                // Gemini CLI 没有这个问题，原样转发。
+                assert_eq!(system_for(Flavor::GeminiCli, &system), system);
+            }
+            // 整段只有这一句（报告人的复现请求）：去掉后不再发 systemInstruction。
+            assert!(
+                request_for(Flavor::Antigravity, identity)
+                    .get("systemInstruction")
+                    .is_none(),
+                "{identity}"
+            );
+            assert_eq!(system_for(Flavor::GeminiCli, identity), identity);
+        }
+        // 别的提示词不动：不是开头、不是这句身份声明。
+        for untouched in [
+            "You are Claude Code.",
+            "You are Claude Code, Anthropic's helper.",
+            "你是助手。\nYou are Claude Code, Anthropic's official CLI for Claude.",
+        ] {
+            assert_eq!(system_for(Flavor::Antigravity, untouched), untouched);
+        }
     }
 
     #[test]

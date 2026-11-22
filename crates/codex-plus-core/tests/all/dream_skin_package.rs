@@ -102,7 +102,11 @@ fn package_compatibility_uses_dream_skin_version_instead_of_product_version() {
     );
     assert!(validate_and_read_package(&supported, "macos").is_ok());
 
-    for minimum in ["1.5.21", "26.805.11740"] {
+    // 上游 v1.5.21 的包能导入（#3050），再往上的未来引擎版本仍要拒绝。
+    let v1_5_21 = package_bytes_with_min_client_version("macos", css, None, "", "1.5.21");
+    assert!(validate_and_read_package(&v1_5_21, "macos").is_ok());
+
+    for minimum in ["1.5.22", "26.805.11740"] {
         let bytes = package_bytes_with_min_client_version("macos", css, None, "", minimum);
         let error = validate_and_read_package(&bytes, "macos")
             .unwrap_err()

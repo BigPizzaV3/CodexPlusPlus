@@ -602,7 +602,7 @@ codexPlus.extension({ inject: ["sessionQuery"], async apply(ctx) {
 | `listSessions({ archived?, limit?, offset? })` | 会话数组，新到旧 |
 | `filterSessions({ id?, cwd?, archived?, createdAfter?, createdBefore?, limit? })` | 会话数组 |
 | `readSession(id)` | `{ session, events }` 完整事件日志 |
-| `readTitle(id)` | 标题 |
+| `readTitle(id)` | 标题，优先使用侧栏的最新会话名称，无名称时使用数据库标题 |
 | `listEvents(id, { types?, offset?, limit?, fromEnd? })` | 轻量事件（长文本截到 200 字） |
 | `filterEvents(id, { types?, text?, limit? })` | 匹配的事件（文本不分大小写） |
 | `readEvent({ sessionId, seq, before?, after? })` | 以 seq 为中心的事件窗口 |
@@ -899,7 +899,7 @@ codexPlus.extension((ctx) => {
     container.textContent = `${call.name} 输出 ${String(call.output ?? "").length} 字`;
   } });
   ctx.registerToolView({ kinds: ["plan"], render: ({ container }) => { container.textContent = "计划条目"; } });
-  // Codex 设置页左侧导航末尾加一项，点开是自己画的页面
+  // Codex++ 设置页左栏加一组（排在内置分组之后、「工具与关于」之前），选中时画右边内容；可返回清理函数，切走或关页时调用
   ctx.registerSettingsSection({ title: "我的拓展", icon: "⚙", render: ({ container }) => {
     container.textContent = "设置内容";
   } });
@@ -1109,7 +1109,7 @@ codexPlus.extension((ctx) => {
 | `gatewayRouting` | `{ groups, autoGroups }`：组的 `id/name/mode/sticky/members[{model,weight}]/hideMembers/pick`；自动组额外给 `hidden/customized` |
 | `gatewayHealth` | `{ scope: "managerProcess", providers, speeds, agents }`：供应商熔断状态、剩余冷却时间、连续错误数；模型首字耗时样本；Agent 请求／改道／失败计数及进行中的供应商 id。不返回 Key id、错误原文、完整请求轨迹 |
 | `gatewayQuota` | `{ scope: "managerProcess", cachedOnly: true, providers: [{ id, name, quota }] }`：已有额度缓存，`quota` 为 `{ windows: [{ windowMinutes, usedPercent, resetsAtMs }], updatedAtMs }`；无缓存时为 `null`，不是零额度 |
-| `installedSkills` | `{ skills: [{ id, name, enabled, bundled, managed, agents, contentHash }] }`：本地已装技能；`enabled` 对应 Codex，其他 Agent 看 `agents`；不读远端目录，版本以内容哈希表示 |
+| `installedSkills` | `{ skills: [{ id, name, enabled, bundled, managed, agents, contentHash, statusError? }] }`：本地已装技能；`enabled` 对应 Codex，无法确定时为 `null` 并提供 `statusError`；其他 Agent 看 `agents`；不读远端目录，版本以内容哈希表示 |
 | `installedPlugins` | `{ plugins: [{ id, name, version, source, enabled }] }`：仅 Codex++ 插件市场托管的本地安装记录，不代表全部 Codex 插件；`source` 仅 `public/full`，`id` 沿用原生 `name@market` 标识 |
 | `agentCollaboration` | `{ enabled, agents, tasks, total }`：Agent 的 `id/name/enabled/model/maxConcurrentTasks`；任务的 `id/agentId/status/createdAtMs/updatedAtMs/cancelRequested`。参数 `{ limit }` 默认 50、范围 1–200，按更新时间倒序、同时间按 id 升序 |
 

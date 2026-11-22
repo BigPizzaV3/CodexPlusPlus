@@ -1,9 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { customSkillGroupKey, defaultSkillGroupKey, groupSkills, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { aggregateSkillGroupItems, applySkillBundleGroups, customSkillGroupKey, defaultSkillGroupKey, groupSkills, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillBundleExportGroups, skillBundleSelections, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
 
 const skill = (id: string, repoKey = "", bundled = false) => ({ id, repoKey, bundled });
 const labels = { builtin: "Built-in", user: "User", source: (item: ReturnType<typeof skill>) => item.repoKey === "local" ? "Local import" : item.repoKey.split("@", 1)[0] };
+
+test("same repository variants combine across Agents but keep each source path", () => {
+  const first = { ...skill("alpha", "owner/repo@main"), installed: true, enabled: true, agents: ["codex"],
+    repoPath: ".agents/skills/alpha", locations: [{ rootKind: "shared" }] };
+  const second = { ...skill("alpha", "owner/repo@main"), installed: true, enabled: false, agents: ["claude"],
+    repoPath: ".claude/skills/alpha", locations: [{ rootKind: "claude" }] };
+  const merged = aggregateSkillGroupItems([first, second]);
+  assert.equal(merged.length, 1);
+  assert.deepEqual(merged[0].displayInstances?.map((item) => item.repoPath),
+    [".agents/skills/alpha", ".claude/skills/alpha"]);
+  assert.deepEqual(merged[0].agents, ["codex", "claude"]);
+  assert.equal(aggregateSkillGroupItems([first, { ...second, repoKey: "other/repo@main" }]).length, 2);
+  assert.equal(aggregateSkillGroupItems([first, { ...second, locations: [{ rootKind: "codex" }] }]).length, 2);
+});
 
 test("empty custom groups and pinned groups remain visible without skills", () => {
   const groups = groupSkills([], [], ["Empty"], {}, [], labels);
@@ -52,6 +66,23 @@ test("configured and discovered sources of the same repository create only one g
   const groups = groupSkills([item], [item], [], {}, [], labels, true, {}, {}, repos);
   assert.equal(groups.filter((group) => group.key === "repo:owner/repo").length, 1);
   assert.deepEqual(groups.find((group) => group.key === "repo:owner/repo")?.items, [item]);
+});
+
+test("a display-only source groups identical installations without changing their identity or assignments", () => {
+  const inferred = { ...skill("alpha"), instanceKey: "alpha:C:/claude/alpha",
+    conflict: "different installs", displayGroupRepoKey: "owner/repo@main" };
+  const confirmed = { ...skill("alpha", "owner/repo@main"), instanceKey: "alpha:C:/codex/alpha",
+    conflict: "different installs" };
+  const other = { ...skill("alpha"), instanceKey: "alpha:C:/other/alpha", conflict: "different installs" };
+  const items = [inferred, confirmed, other];
+  const groups = groupSkills(items, items, ["Manual"], {}, [], labels);
+  assert.equal(groups.find((group) => group.key === "repo:owner/repo")?.label, "owner/repo");
+  assert.deepEqual(groups.find((group) => group.key === "repo:owner/repo")?.items, [inferred, confirmed]);
+  assert.deepEqual(groups.find((group) => group.key === "user")?.items, [other]);
+  assert.equal(inferred.repoKey, "");
+  const assignments = { [skillIdentityKey(inferred)]: "custom:Manual" };
+  const assigned = groupSkills(items, items, ["Manual"], {}, [], labels, true, {}, assignments);
+  assert.deepEqual(assigned.find((group) => group.key === "custom:Manual")?.items, [inferred]);
 });
 
 test("import channels default to the user group and both generations of custom assignments are preserved", () => {
@@ -138,6 +169,81 @@ test("identity keys cannot collide with other tuples, legacy IDs, or inherited p
   assert.equal(skillGroupAssignment(skill("toString", "local"), ["Legacy"], {}, {}), "");
 });
 
+test("conflicting same-name locations have independent identities and do not inherit ambiguous old assignments", () => {
+  const first = { ...skill("shared"), instanceKey: "shared:C:/agents/shared", conflict: "不同内容" };
+  const second = { ...skill("shared"), instanceKey: "shared:C:/codex/shared", conflict: "不同内容" };
+  const old = { shared: "Manual" };
+  const oldIdentity = { [skillIdentityKey(skill("shared"))]: "custom:Manual" };
+  assert.notEqual(skillIdentityKey(first), skillIdentityKey(second));
+  assert.equal(skillGroupAssignment(first, ["Manual"], old, oldIdentity), "");
+  assert.equal(skillGroupAssignment(second, ["Manual"], old, oldIdentity), "");
+  const assigned = { [skillIdentityKey(first)]: "custom:Manual", [skillIdentityKey(second)]: "" };
+  assert.equal(skillGroupAssignment(first, ["Manual"], old, assigned), "custom:Manual");
+  assert.equal(skillGroupAssignment(second, ["Manual"], old, assigned), "");
+  assert.equal(skillIdentityKey({ ...skill("shared"), instanceKey: "shared" }), skillIdentityKey(skill("shared")));
+});
+
+test("instance assignments survive conflict, source changes, and conflict resolution", () => {
+  const original = { ...skill("shared", "owner/repo@main"), instanceKey: "shared:C:/agents/shared" };
+  const conflict = { ...original, repoKey: "", conflict: "不同内容" };
+  const other = { ...conflict, instanceKey: "shared:C:/codex/shared" };
+  const after = { ...original, repoKey: "other/repo@main" };
+  assert.equal(skillIdentityKey(original), skillIdentityKey(conflict));
+  assert.equal(skillIdentityKey(conflict), skillIdentityKey(after));
+  assert.notEqual(skillIdentityKey(conflict), skillIdentityKey(other));
+
+  const oldIdentity = { [skillIdentityKey(skill("shared", "owner/repo@main"))]: "custom:Manual" };
+  const migrated = migrateSkillInstanceAssignments(oldIdentity, {}, [original], ["Manual"]);
+  assert.equal(skillGroupAssignment(conflict, ["Manual"], {}, migrated), "custom:Manual");
+  assert.equal(skillGroupAssignment(other, ["Manual"], {}, migrated), "");
+  assert.equal(skillGroupAssignment(after, ["Manual"], {}, migrated), "custom:Manual");
+  assert.equal(oldIdentity[skillIdentityKey(original)], undefined);
+  assert.equal(migrateSkillInstanceAssignments(migrated, {}, [original], ["Manual"]), migrated);
+});
+
+test("instance migration retains legacy defaults, prior conflict choices, and existing instance choices", () => {
+  const original = { ...skill("shared", "local"), instanceKey: "shared:C:/agents/shared" };
+  const other = { ...skill("other", "local"), instanceKey: "other:C:/agents/other" };
+  const conflict = { ...original, repoKey: "", conflict: "不同内容" };
+  const legacyTuple = JSON.stringify(["", "shared", original.instanceKey]);
+  const existing = {
+    [legacyTuple]: "custom:Prior",
+    [skillIdentityKey(other)]: "",
+    [JSON.stringify(["local", "other"])]: "custom:Manual",
+  };
+  const migrated = migrateSkillInstanceAssignments(existing, { shared: "Manual", other: "Manual" }, [conflict, other], ["Manual", "Prior"]);
+  assert.equal(migrated[skillIdentityKey(conflict)], "custom:Prior");
+  assert.equal(migrated[skillIdentityKey(other)], "");
+  assert.equal(migrated[legacyTuple], "custom:Prior");
+  const fromLegacy = migrateSkillInstanceAssignments({}, { shared: "Manual" }, [original], ["Manual"]);
+  assert.equal(fromLegacy[skillIdentityKey(original)], "custom:Manual");
+  assert.deepEqual(migrateSkillInstanceAssignments({}, { shared: "Manual" }, [conflict], ["Manual"]), {});
+});
+
+test("equal independent aggregate keeps unambiguous legacy groups without assigning a physical instance", () => {
+  const aggregate = { ...skill("shared"), instanceKey: "shared:C:/agents/shared",
+    conflict: "多个独立安装", conflictKind: "equal-independent" };
+  const first = { ...aggregate, conflict: "不同内容", conflictKind: "independent" };
+  const second = { ...first, instanceKey: "shared:C:/claude/shared" };
+  for (const [old, oldByIdentity] of [
+    [{ shared: "Manual" }, {}],
+    [{}, { [JSON.stringify(["cc-switch", "shared"])]: "custom:Manual" }],
+    [{}, { [JSON.stringify(["one/repo@main", "shared"])]: "custom:Manual",
+      [JSON.stringify(["two/repo@main", "shared"])]: "custom:Manual" }],
+  ] as Array<[Record<string, string>, Record<string, string>]>) {
+    assert.equal(skillGroupAssignment(aggregate, ["Manual"], old, oldByIdentity), "custom:Manual");
+    const migrated = migrateSkillInstanceAssignments(oldByIdentity, old, [aggregate], ["Manual"]);
+    assert.equal(migrated[skillGroupIdentityKey(aggregate)], "custom:Manual");
+    assert.equal(migrated[skillIdentityKey(first)], undefined);
+    assert.equal(skillGroupAssignment(first, ["Manual"], old, migrated), "");
+    assert.equal(skillGroupAssignment(second, ["Manual"], old, migrated), "");
+  }
+  const conflicting = { [JSON.stringify(["one/repo@main", "shared"])]: "custom:Manual",
+    [JSON.stringify(["two/repo@main", "shared"])]: "custom:Other" };
+  assert.equal(skillGroupAssignment(aggregate, ["Manual", "Other"], { shared: "Manual" }, conflicting), "");
+  assert.equal(migrateSkillInstanceAssignments(conflicting, { shared: "Manual" }, [aggregate], ["Manual", "Other"]), conflicting);
+});
+
 test("changed backend identity does not silently inherit another tuple's override", () => {
   const original = skill("shared", "owner/repo@main");
   const changed = skill("shared", "owner/repo@other");
@@ -146,6 +252,34 @@ test("changed backend identity does not silently inherit another tuple's overrid
   assert.equal(skillGroupAssignment(original, ["Legacy", "Other"], legacy, overrides), "custom:Other");
   assert.equal(skillGroupAssignment(changed, ["Legacy", "Other"], legacy, overrides), "custom:Legacy");
   assert.deepEqual(overrides, { [skillIdentityKey(original)]: "custom:Other" });
+});
+
+test("explicit source associations migrate identity assignments, including source defaults", () => {
+  const first = skill("first", "local");
+  const second = skill("second", "cc-switch");
+  const other = skill("other", "local");
+  const assignments = { [skillIdentityKey(first)]: "custom:Manual", [skillIdentityKey(second)]: "", [skillIdentityKey(other)]: "custom:Other" };
+  const result = migrateSkillGroupAssignments(assignments, [
+    { id: "first", fromRepoKey: "local", toRepoKey: "owner/repo@main" },
+    { id: "second", fromRepoKey: "cc-switch", toRepoKey: "owner/repo@main" },
+  ]);
+  assert.deepEqual(result, {
+    [skillIdentityKey(skill("first", "owner/repo@main"))]: "custom:Manual",
+    [skillIdentityKey(skill("second", "owner/repo@main"))]: "",
+    [skillIdentityKey(other)]: "custom:Other",
+  });
+  assert.equal(assignments[skillIdentityKey(first)], "custom:Manual");
+});
+
+test("source association does not overwrite an existing destination assignment", () => {
+  const from = skill("same", "local");
+  const to = skill("same", "owner/repo@main");
+  assert.deepEqual(migrateSkillGroupAssignments({
+    [skillIdentityKey(from)]: "custom:Old",
+    [skillIdentityKey(to)]: "custom:Existing",
+  }, [{ id: "same", fromRepoKey: "local", toRepoKey: "owner/repo@main" }]), {
+    [skillIdentityKey(to)]: "custom:Existing",
+  });
 });
 
 test("legacy explicit assignments and source aliases keep their stable identities", () => {
@@ -183,4 +317,51 @@ test("storage reads old data and retains unknown fields while rejecting malforme
   assert.deepEqual(restored.aliases, { "repo:a": "Alias" });
   assert.deepEqual(restored.future, { keep: true });
   assert.deepEqual(readSkillGroupStorage("broken"), { names: [], assignments: {}, assignmentsByIdentity: {}, order: [], sortDirection: null, aliases: {} });
+});
+
+test("migration package (#2852): selected groups carry their group keys, and importing restores names, members and order", () => {
+  const installed = (id: string, repoKey = "local", bundled = false) => ({ ...skill(id, repoKey, bundled), installed: true });
+  const known = [installed("alpha", "owner/repo@main"), installed("beta"), installed("gamma"), installed("sys", "", true),
+    { ...skill("remote", "owner/repo@main"), installed: false }];
+  const assignments = { [skillIdentityKey(known[1])]: customSkillGroupKey("Workflow") };
+  const groups = groupSkills(known, known, ["Workflow", "Empty"], {}, [], labels, true, {}, assignments);
+  const exportable = skillBundleExportGroups(groups);
+  assert.deepEqual(exportable.map((group) => [group.key, group.bundleGroup, group.ids]), [
+    ["user", "", ["gamma"]],
+    ["repo:owner/repo", "repo:owner/repo", ["alpha"]],
+    ["custom:Workflow", "custom:Workflow", ["beta"]],
+  ], "内置、未安装的不导出；空分组不列");
+
+  assert.deepEqual(skillBundleSelections(exportable, new Set(["user", "custom:Workflow"])), {
+    skills: [{ id: "gamma", group: "" }, { id: "beta", group: "custom:Workflow" }],
+    groups: ["custom:Workflow"],
+  });
+  const duplicated = [...exportable, { key: "custom:Other", label: "Other", bundleGroup: "custom:Other", ids: ["beta", "delta"] }];
+  assert.deepEqual(skillBundleSelections(duplicated, new Set(["custom:Workflow", "custom:Other"])).skills.map((item) => item.id),
+    ["beta", "delta"], "同一个 Skill 只进包一次");
+
+  // 新机器：导入后来源都是本地导入，本机原有一个分组和一条顺序。
+  const imported = [installed("alpha"), installed("beta"), installed("gamma"), installed("sys", "", true)];
+  const current = { names: ["Mine"], assignmentsByIdentity: { [skillIdentityKey(imported[2])]: customSkillGroupKey("Mine") }, order: ["custom:Mine"] };
+  const restored = applySkillBundleGroups({
+    groups: ["custom:Workflow", "repo:owner/repo", "custom:Mine"],
+    skills: [{ id: "alpha", group: "repo:owner/repo" }, { id: "beta", group: "custom:Workflow" }, { id: "gamma", group: "" },
+      { id: "sys", group: "custom:Workflow" }, { id: "absent", group: "custom:Ghost" }],
+  }, imported, current);
+  assert.deepEqual(restored.names, ["Mine", "Workflow", "Ghost"]);
+  assert.deepEqual(restored.assignmentsByIdentity, {
+    [skillIdentityKey(imported[2])]: "custom:Mine",
+    [skillIdentityKey(imported[0])]: "repo:owner/repo",
+    [skillIdentityKey(imported[1])]: "custom:Workflow",
+  }, "按来源的不动本机设置；内置 Skill 不改分组");
+  assert.deepEqual(restored.order, ["custom:Mine", "custom:Workflow", "repo:owner/repo"]);
+  assert.deepEqual(current.names, ["Mine"], "不改传入的状态");
+
+  const regrouped = groupSkills(imported, imported, restored.names, {}, restored.order, labels, true, {}, restored.assignmentsByIdentity);
+  assert.deepEqual(regrouped.filter((group) => group.items.length).map((group) => [group.key, group.items.map((item) => item.id)]), [
+    ["builtin", ["sys"]],
+    ["custom:Mine", ["gamma"]],
+    ["custom:Workflow", ["beta"]],
+    ["repo:owner/repo", ["alpha"]],
+  ]);
 });

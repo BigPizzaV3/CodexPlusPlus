@@ -3,10 +3,13 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import vm from "node:vm";
+import { modelSlugFromRowName } from "./model-metadata.ts";
 
 const ts = createRequire(import.meta.url)("typescript");
 
 type Element = { type: unknown; props: Record<string, any> };
+type PickerFixtureItem = { model: string; label: string; sub: string; providerModel?: string; direct?: string; custom?: boolean };
+type PickerFixtureSection = { key: string; title: string; items: PickerFixtureItem[] };
 
 function elements(value: unknown): Element[] {
   if (Array.isArray(value)) return value.flatMap(elements);
@@ -15,7 +18,10 @@ function elements(value: unknown): Element[] {
   return [element, ...elements(element.props.children)];
 }
 
-function picker(onPick: (item: { model: string }) => void = () => {}) {
+function picker(
+  onPick: (item: { model: string }) => void = () => {},
+  options: { pinProvider?: boolean; sections?: PickerFixtureSection[]; conflicts?: string[] } = {},
+) {
   const source = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
   const file = ts.createSourceFile("GatewayAgents.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
   const component = file.statements.find((node: any) => ts.isFunctionDeclaration(node) && node.name?.text === "ModelList");
@@ -31,7 +37,7 @@ function picker(onPick: (item: { model: string }) => void = () => {}) {
     { id: "a", name: "Provider A", baseUrl: "https://a.invalid" },
     { id: "b", name: "Provider B", baseUrl: "https://b.invalid" },
   ];
-  const groups = [
+  const groups = options.sections ?? [
     { key: "provider:a", title: "Provider A", items: [{ model: "alpha", label: "Alpha", sub: "Provider A" }] },
     { key: "provider:b", title: "Provider B", items: [{ model: "beta", label: "Beta", sub: "Provider B" }] },
     { key: "own", title: "自带模型", items: [{ model: "own", label: "Own", sub: "自带模型", direct: "example" }] },
@@ -62,9 +68,11 @@ function picker(onPick: (item: { model: string }) => void = () => {}) {
       .filter((group) => group.items.length),
     ownPickerSection: () => null,
     withOwnSection: (sections: unknown) => sections,
+    modelSlugFromRowName,
     avatarOf: () => "",
     loadFavorites: () => [],
     isFavoriteModel: () => false,
+    servingProviders: (_payload: unknown, model: string) => options.conflicts?.includes(model) ? [model] : [],
     persistFavorites: () => {},
     t: (value: string) => value,
     tf: (value: string, values: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(values[Number(index)])),
@@ -80,6 +88,7 @@ function picker(onPick: (item: { model: string }) => void = () => {}) {
         exclude: [],
         selectedModel: "",
         onPick,
+        pinProvider: options.pinProvider,
       }) as Element;
     },
   };
@@ -179,6 +188,46 @@ test("收藏按钮的 Enter 不会触发模型选择，模型行的 Enter 仍可
   assert.deepEqual(picked, []);
   modelRow.props.onKeyDown({ key: "Enter", currentTarget: row, target: row });
   assert.deepEqual(picked, ["alpha"]);
+});
+
+test("固定供应商时拒绝保留前缀、通配符和同名冲突，其他模型仍可选择", () => {
+  const picked: string[] = [];
+  const view = picker((item) => picked.push(item.model), {
+    pinProvider: true,
+    conflicts: ["a/native"],
+    sections: [
+      { key: "provider:a", title: "Provider A", items: [
+        { model: "reserved", label: "Reserved", sub: "Provider A", providerModel: "GROUP/fast" },
+        { model: "wildcard", label: "Wildcard", sub: "Provider A", providerModel: "a/gpt-*" },
+        { model: "native", label: "Native", sub: "Provider A", providerModel: "a/native" },
+        { model: "valid", label: "Valid", sub: "Provider A", providerModel: "a/valid" },
+      ] },
+      { key: "custom", title: "Custom", items: [
+        { model: "GROUP/typed", label: "Custom", sub: "Provider A", custom: true },
+      ] },
+      { key: "auto", title: "Auto", items: [{ model: "shared", label: "Auto", sub: "Auto" }] },
+      { key: "group", title: "Group", items: [{ model: "group/fast", label: "Group", sub: "Group" }] },
+      { key: "own", title: "Own", items: [{ model: "own", label: "Own", sub: "Own", direct: "example" }] },
+    ],
+  });
+  heading(view.render(), "provider:a").props.onClick();
+  const rows = elements(view.render()).filter((element) => element.props.role === "option");
+  const findRow = (label: string) => rows.find((row) => elements(row).some((element) => element.type === "strong" && element.props.children === label));
+  for (const label of ["Reserved", "Wildcard", "Native", "Custom"]) {
+    const row = findRow(label);
+    assert.ok(row, label);
+    assert.equal(row.props["aria-disabled"], true, label);
+    row.props.onClick();
+    row.props.onKeyDown({ key: "Enter", currentTarget: row, target: row });
+  }
+  assert.deepEqual(picked, []);
+  for (const label of ["Valid", "Auto", "Group", "Own"]) {
+    const row = findRow(label);
+    assert.ok(row, label);
+    assert.equal(row.props["aria-disabled"], undefined, label);
+    row.props.onClick();
+  }
+  assert.deepEqual(picked, ["valid", "shared", "group/fast", "own"]);
 });
 
 test("空间不足时模型选择器使用窗口高度，普通浮层保持锚点定位", () => {

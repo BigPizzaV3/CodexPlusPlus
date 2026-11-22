@@ -24,13 +24,6 @@
 
 .plugin-market-controls { flex-wrap: wrap; gap: 10px; }
 
-.plugin-market-source {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-}
-
 .plugin-market-summary,
 .plugin-market-metadata {
   color: hsl(var(--muted-foreground));
@@ -295,14 +288,6 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-.shell .plugin-market-toolbar .plugin-market-source {
-  width: 128px;
-  flex: none;
-}
-.shell .plugin-market-toolbar .plugin-market-source .app-select-trigger {
-  min-height: 34px;
-  border-radius: 999px;
 }
 .shell .plugin-market-toolbar .plugin-market-summary {
   margin: 0;

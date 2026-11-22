@@ -132,6 +132,7 @@ const HELPER_BIND_RETRY_INTERVAL_MS: u64 = 200;
 /// 期间界面上一直停在「启动中」。改成按总时长收敛：预算耗尽即判失败并降级，
 /// 由上层写入 `running_degraded` 让用户知道增强没生效。
 const INJECTION_TOTAL_BUDGET: std::time::Duration = std::time::Duration::from_secs(90);
+const INJECTION_ATTEMPT_BUDGET: std::time::Duration = std::time::Duration::from_secs(30);
 /// 两次注入尝试之间的间隔；失败很快时用它避免忙等。
 const INJECTION_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// 注入失败日志的节流周期：只在第 1 次和之后每隔这么多次各记一条。
@@ -519,6 +520,7 @@ pub trait LaunchHooks: Send + Sync {
     async fn ensure_injection(&self, debug_port: u16, helper_port: u16, app_dir: &Path) -> bool {
         let outcome = run_injection_attempts(
             INJECTION_TOTAL_BUDGET,
+            INJECTION_ATTEMPT_BUDGET,
             INJECTION_RETRY_INTERVAL,
             INJECTION_LOG_EVERY_ATTEMPTS,
             |attempt, message| {
@@ -602,7 +604,7 @@ struct HelperRuntime {
 }
 
 struct BridgeWatchdogRuntime {
-    shutdown: tokio::sync::oneshot::Sender<()>,
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -672,6 +674,7 @@ struct InjectionOutcome {
 /// 而不必去动进程级的诊断日志路径（那是全局状态，并发测试会互相干扰）。
 async fn run_injection_attempts<F, Fut, L>(
     budget: std::time::Duration,
+    attempt_budget: std::time::Duration,
     retry_interval: std::time::Duration,
     log_every_attempts: u32,
     mut log_failure: L,
@@ -700,7 +703,8 @@ where
             };
         }
         attempts += 1;
-        match tokio::time::timeout(remaining, attempt(attempts)).await {
+        let attempt_timeout = remaining.min(attempt_budget);
+        match tokio::time::timeout(attempt_timeout, attempt(attempts)).await {
             Ok(Ok(())) => {
                 return InjectionOutcome {
                     ready: true,
@@ -711,19 +715,11 @@ where
                 };
             }
             Ok(Err(error)) => last_error = Some(error.to_string()),
-            // 单次尝试把剩余预算耗光：算超时，不再往下重试。
             Err(_) => {
                 last_error = Some(format!(
-                    "injection attempt timed out after {} ms of the total budget",
-                    budget.as_millis()
+                    "injection attempt timed out after {} ms",
+                    attempt_timeout.as_millis()
                 ));
-                return InjectionOutcome {
-                    ready: false,
-                    attempts,
-                    elapsed_ms: started.elapsed().as_millis(),
-                    reason: InjectionStopReason::BudgetExhausted,
-                    last_error,
-                };
             }
         }
         // 首次失败立刻记一条，之后每隔 N 次记一条，避免 100+ 条同内容记录。
@@ -1154,7 +1150,7 @@ where
 
         // 注入降级或只启用协议代理也要固定身份；后台重注入不能为旧启动器换绑实例。
         hooks.capture_injected_launch_identity(debug_port).await;
-        if settings.enhancements_enabled && !injection_degraded {
+        if settings.enhancements_enabled {
             hooks.start_bridge_watchdog(debug_port, helper_port).await?;
         }
 
@@ -1266,6 +1262,19 @@ impl DefaultLaunchHooks {
     /// Configures the launcher-specific callback used by subsequent watchdog reinjections.
     pub async fn set_bridge_reinjector(&self, reinjector: BridgeReinjector) {
         *self.bridge_reinjector.lock().await = Some(reinjector);
+    }
+
+    /// 不再开始重注入，等待已经开始的工作完成后再释放 helper。
+    pub async fn stop_bridge_watchdog(&self) {
+        let mut slot = self.bridge_watchdog.lock().await;
+        if let Some(runtime) = slot.as_mut() {
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            // 退出等待可能被宿主 stop 分支取消；保留句柄让外层清理继续等待。
+            let _ = (&mut runtime.task).await;
+        }
+        slot.take();
     }
 }
 
@@ -1439,7 +1448,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         extra_args: &[String],
         instance: &LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
-        let launch_extra_args = normalize_codex_extra_args(extra_args);
+        // 远程控制开着时补上桌面镜像要的开关：Codex 窗口在后台、被挡住时照常出画面，不降帧。
+        let launch_extra_args = crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args));
         let isolated_multi_instance =
             std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").is_some_and(|value| value == "1");
         // 打包版（MSIX/Store）上的多开必须另走一条路。
@@ -1710,6 +1720,8 @@ impl LaunchHooks for DefaultLaunchHooks {
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
             let child = Command::new(executable)
                 .args(&command[1..])
+                // `open` 会把自身环境带给新启动的应用：回环地址不走系统代理（issue #3131）。
+                .envs(crate::proxy::codex_launch_no_proxy_env())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -1741,6 +1753,8 @@ impl LaunchHooks for DefaultLaunchHooks {
         if let Some(state_dir) = instance.state_dir.as_deref() {
             child_command.env(crate::paths::STATE_DIR_ENV, state_dir);
         }
+        // 发往本地网关 / 协议代理的请求不能被系统代理拦走（issue #3131）。
+        child_command.envs(crate::proxy::codex_launch_no_proxy_env());
         #[cfg(windows)]
         child_command.creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
         let child = child_command
@@ -1867,6 +1881,7 @@ impl LaunchHooks for DefaultLaunchHooks {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
             loop {
                 tokio::select! {
+                    biased;
                     _ = &mut shutdown_rx => break,
                     _ = interval.tick() => {
                         let current_browser_id = match crate::cdp::browser_identity(debug_port).await {
@@ -1902,13 +1917,15 @@ impl LaunchHooks for DefaultLaunchHooks {
                 let _ = pet_cursor_task.await;
             }
         });
-        if let Some(runtime) = self
+        if let Some(mut runtime) = self
             .bridge_watchdog
             .lock()
             .await
-            .replace(BridgeWatchdogRuntime { shutdown, task })
+            .replace(BridgeWatchdogRuntime { shutdown: Some(shutdown), task })
         {
-            let _ = runtime.shutdown.send(());
+            if let Some(shutdown) = runtime.shutdown.take() {
+                let _ = shutdown.send(());
+            }
             let _ = runtime.task.await;
         }
         Ok(())
@@ -1989,10 +2006,7 @@ impl LaunchHooks for DefaultLaunchHooks {
     }
 
     async fn shutdown_helper(&self, helper_port: u16) {
-        if let Some(runtime) = self.bridge_watchdog.lock().await.take() {
-            let _ = runtime.shutdown.send(());
-            let _ = runtime.task.await;
-        }
+        self.stop_bridge_watchdog().await;
         if let Some(runtime) = self.helper.lock().await.take() {
             let _ = runtime.shutdown.send(());
             let _ = runtime.task.await;
@@ -2207,11 +2221,17 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     // 浏览器里的网页能对 127.0.0.1 发「简单请求」（不触发预检），读不到答复，但请求照样执行、照样计费。
-    // Agent 都不带 Origin；带了的模型 / 生图 / 转写请求一律拒绝，免得本地服务被网页拿去用池里的额度。
-    if method == "POST"
+    // Agent 都不带 Origin；WS 升级也在路由和鉴权前拦截，免得网页使用上游额度并读取输出。
+    if (method == "POST"
+        || (method == "GET"
+            && header_value_from_headers(&request_headers, "upgrade")
+                .is_some_and(|upgrade| upgrade.eq_ignore_ascii_case("websocket"))))
         && is_billable_proxy_path(path)
-        && header_value_from_headers(&request_headers, "origin")
-            .is_some_and(|origin| !origin.trim().is_empty())
+        && request_headers.lines().skip(1).any(|line| {
+            line.split_once(':').is_some_and(|(name, value)| {
+                name.trim().eq_ignore_ascii_case("origin") && !value.trim().is_empty()
+            })
+        })
     {
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "forbidden",
@@ -2262,6 +2282,7 @@ pub(crate) async fn handle_helper_connection_on(
                         raw_path,
                         &request_headers,
                         &request.body,
+                        request.read_ahead.clone(),
                         remote_addr_text,
                     ),
                 ),
@@ -2321,6 +2342,9 @@ pub(crate) async fn handle_helper_connection_on(
         .await;
     }
     if crate::protocol_proxy::is_responses_proxy_path(path) && method == "GET" {
+        if !crate::protocol_proxy::is_responses_compact_proxy_path(path) {
+            return crate::responses_websocket::handle(&mut stream, &request_headers, request.read_ahead, path, ProxyOpener::Legacy).await;
+        }
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "upgrade_required",
             "message": "WebSocket transport is not supported by the local protocol proxy; retry with HTTP."
@@ -2847,6 +2871,7 @@ impl ProxyRequestLog {
                 usage: None,
                 cache_hit_ratio: None,
                 final_response_evidence: None,
+                final_response_id: None,
                 agent: None,
             },
             written: false,
@@ -2873,6 +2898,7 @@ impl ProxyRequestLog {
     ) {
         self.final_response_eligible = false;
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.entry.status_code = status_code;
         self.entry.success = (200..300).contains(&status_code);
         self.entry.stream = stream;
@@ -2893,6 +2919,7 @@ impl ProxyRequestLog {
 
     pub(crate) fn record_upstream(&mut self, upstream: &crate::protocol_proxy::UpstreamProxyResponse) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.final_response_eligible = upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses
             && !upstream.compaction
             && !upstream.native_compaction_passthrough
@@ -2928,6 +2955,7 @@ impl ProxyRequestLog {
 
     pub(crate) fn record_error(&mut self, status: &str, error: String) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
         self.entry.status_code = status
             .split_whitespace()
             .next()
@@ -2944,17 +2972,19 @@ impl ProxyRequestLog {
     }
 
     /// 仅在全部响应字节成功写出并正常关闭后调用；usage 必须来自最终终态。
-    fn record_final_response(&mut self, usage: Option<crate::request_log::RequestUsage>) {
+    pub(crate) fn record_final_response(&mut self, terminal: Option<crate::request_log::FinalResponseUsage>) {
         self.entry.final_response_evidence = None;
+        self.entry.final_response_id = None;
+        let Some(terminal) = terminal else { return };
         if self.final_response_eligible
             && self.entry.success
             && (200..300).contains(&self.entry.status_code)
             && self.entry.error.is_none()
-            && usage.is_some()
-            && usage == self.entry.usage
+            && Some(&terminal.usage) == self.entry.usage.as_ref()
         {
             self.entry.final_response_evidence =
                 Some(crate::request_log::FINAL_RESPONSE_EVIDENCE_V1.to_string());
+            self.entry.final_response_id = terminal.response_id;
         }
     }
 
@@ -2967,6 +2997,7 @@ impl ProxyRequestLog {
         match failure {
             Some(reason) => {
                 self.entry.final_response_evidence = None;
+                self.entry.final_response_id = None;
                 self.entry.success = false;
                 self.entry.stream_outcome = Some(reason.to_string());
                 if self.entry.error.is_none() {
@@ -3145,7 +3176,9 @@ async fn handle_protocol_proxy_connection_inner(
                 let file_unsupported = error.downcast_ref::<crate::protocol_proxy::UnsupportedInputFile>();
                 let vlm_failure = error.downcast_ref::<crate::vision::VlmPreprocessError>();
                 let local_limited = error.downcast_ref::<crate::gateway::pipeline::LocalRateLimited>();
+                let retired_model = error.downcast_ref::<crate::gateway::server::RetiredCodexModel>();
                 let status = if unsupported.is_some() || search_unsupported.is_some() || file_unsupported.is_some()
+                    || retired_model.is_some()
                     || matches!(vlm_failure, Some(crate::vision::VlmPreprocessError::MissingConfiguration)) {
                     "400 Bad Request"
                 } else if local_limited.is_some() {
@@ -3162,6 +3195,9 @@ async fn handle_protocol_proxy_connection_inner(
                         .or_else(|| search_unsupported.map(|error| error.response_body()))
                         .or_else(|| file_unsupported.map(|error| error.response_body()))
                         .or_else(|| vlm_failure.map(|error| error.response_body()))
+                        .or_else(|| retired_model.map(|error| serde_json::json!({
+                            "error": { "message": error.to_string(), "type": "invalid_request_error", "code": "model_not_found" }
+                        })))
                         .unwrap_or_else(
                             || serde_json::json!({"status":"failed","message":error_chain.clone()}),
                         ),
@@ -3557,13 +3593,13 @@ async fn handle_protocol_proxy_connection_inner(
         request_log.record_final_response(final_usage);
         return Ok(());
     }
-    let response_json = non_stream_body_to_responses(
+    let (response_json, usage) = non_stream_body_to_responses(
         upstream.wire_api,
         &upstream_body,
         request_json.as_ref(),
     )?;
     let body = serde_json::to_vec(&response_json)?;
-    request_log.record_usage_json(&body);
+    request_log.entry.usage = request_log.entry.usage.take().or(usage);
     write_http_response_with_usage(stream, "200 OK", "application/json; charset=utf-8", &body, usage_headers).await?;
     log_helper_response(
         "helper.protocol_proxy_ok",
@@ -3583,24 +3619,31 @@ mod final_response_gateway_tests;
 #[cfg(test)]
 #[path = "launcher/reported_usage_tests.rs"]
 mod reported_usage_tests;
-/// 非流式的 Chat / Anthropic 上游响应体 → Responses 响应 JSON。
+/// 转换非流式响应，同时为请求日志保留转换后省略的显式缓存零值。
 pub(crate) fn non_stream_body_to_responses(
     wire_api: crate::protocol_proxy::UpstreamWireApi,
     upstream_body: &[u8],
     request_json: Option<&Value>,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<(Value, Option<crate::request_log::RequestUsage>)> {
     if wire_api == crate::protocol_proxy::UpstreamWireApi::Responses {
         // ChatGPT 订阅后端只回流式结果：客户端要非流式时，从 response.completed 里取完整响应。
         if let Ok(upstream_json) = serde_json::from_slice::<serde_json::Value>(upstream_body) {
-            return Ok(upstream_json);
+            let usage = upstream_json.get("usage").and_then(crate::request_log::usage_from_usage_value);
+            return Ok((upstream_json, usage));
         }
         if let Some(response) =
             crate::gateway::chatgpt_backend::responses_json_from_sse(upstream_body)
         {
-            return Ok(response);
+            let usage = response.get("usage").and_then(crate::request_log::usage_from_usage_value);
+            return Ok((response, usage));
         }
     }
     let upstream_json: serde_json::Value = serde_json::from_slice(upstream_body)?;
+    let explicit_chat_zero = wire_api == crate::protocol_proxy::UpstreamWireApi::ChatCompletions
+        && upstream_json
+            .pointer("/usage/prompt_tokens_details/cached_tokens")
+            .or_else(|| upstream_json.pointer("/usage/input_tokens_details/cached_tokens"))
+            .and_then(Value::as_u64) == Some(0);
     // Anthropic 上游先落成 chat 响应体，再复用同一份 chat → Responses 映射；
     // 签名思考块要挂回 Responses 的 reasoning item，下一轮才能原样回放。
     let (chat_json, thinking_blocks) =
@@ -3622,7 +3665,14 @@ pub(crate) fn non_stream_body_to_responses(
     if !thinking_blocks.is_empty() {
         crate::anthropic_bridge::attach_thinking_to_responses(&mut response_json, &thinking_blocks);
     }
-    Ok(response_json)
+    let mut usage = crate::request_log::usage_from_response_json(&response_json);
+    if let Some(usage) = usage.as_mut()
+        && explicit_chat_zero
+        && usage.cached_tokens == 0
+    {
+        usage.cached_tokens_known = true;
+    }
+    Ok((response_json, usage))
 }
 
 async fn handle_dictation_connection(
@@ -5472,6 +5522,10 @@ impl<'a, S: SseSink> ExtensionResponseSink<'a, S> {
         Self { inner, filter }
     }
 
+    pub(crate) fn is_unmodified(&self) -> bool {
+        self.filter.is_none()
+    }
+
     /// 上游结束后调用：交出残余字节与中间件在流尾追加的事件。
     pub(crate) async fn finish(&mut self) -> std::io::Result<()> {
         if let Some(filter) = self.filter.as_mut() {
@@ -5551,7 +5605,7 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
     thread_id: Option<&str>,
     foreign_client: bool,
     live_request_id: Option<&str>,
-    final_response_usage: &mut Option<crate::request_log::RequestUsage>,
+    final_response_usage: &mut Option<crate::request_log::FinalResponseUsage>,
 ) -> anyhow::Result<(
     Option<String>,
     Option<crate::request_log::RequestUsage>,
@@ -6095,7 +6149,7 @@ async fn read_http_request_with_limits(
                 if end > MAX_HTTP_HEADER_BYTES {
                     return Err(HttpRequestReadError::bad_request("HTTP 请求头过大"));
                 }
-                if is_local_dictation_ws_upgrade(&buffer[..end]) {
+                if is_local_dictation_ws_upgrade(&buffer[..end]) || is_responses_ws_upgrade(&buffer[..end]) {
                     // The first WebSocket frame can arrive in the same TCP read as the
                     // upgrade headers. Do not consume it as an HTTP body.
                     local_dictation_upgrade = true;
@@ -6174,6 +6228,17 @@ fn is_local_dictation_ws_upgrade(headers: &[u8]) -> bool {
     method == "GET"
         && raw_path.split('?').next() == Some("/dictation/claude-stream")
         && crate::extension_backend::is_websocket_upgrade(&headers)
+}
+
+fn is_responses_ws_upgrade(headers: &[u8]) -> bool {
+    let headers = String::from_utf8_lossy(headers);
+    let line = headers.lines().next().unwrap_or_default();
+    let mut parts = line.split_whitespace();
+    let method = parts.next().unwrap_or_default();
+    let path = parts.next().unwrap_or_default().split('?').next().unwrap_or_default();
+    method == "GET" && crate::extension_backend::is_websocket_upgrade(&headers)
+        && ((crate::protocol_proxy::is_responses_proxy_path(path) && !crate::protocol_proxy::is_responses_compact_proxy_path(path))
+            || (crate::gateway::is_gateway_path(path) && path.ends_with("/responses")))
 }
 
 fn http_body_framing(headers: &[u8]) -> Result<HttpBodyFraming, HttpRequestReadError> {
@@ -7369,7 +7434,7 @@ async fn run_bridge_reinjector(
     }
 }
 
-async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
+pub async fn bridge_health_ok(debug_port: u16) -> anyhow::Result<bool> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
     let websocket_url = target
@@ -8077,6 +8142,47 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn stopping_bridge_watchdog_waits_for_its_cleanup_and_is_idempotent() {
+        let hooks = super::DefaultLaunchHooks::default();
+        let cleaned = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let done = cleaned.clone();
+        let task = tokio::spawn(async move {
+            let _ = stopped.await;
+            tokio::task::yield_now().await;
+            done.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        *hooks.bridge_watchdog.lock().await = Some(super::BridgeWatchdogRuntime { shutdown: Some(shutdown), task });
+        hooks.stop_bridge_watchdog().await;
+        assert!(cleaned.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(hooks.bridge_watchdog.lock().await.is_none());
+        hooks.stop_bridge_watchdog().await;
+    }
+
+    #[tokio::test]
+    async fn interrupted_watchdog_stop_keeps_the_join_handle_for_outer_cleanup() {
+        let hooks = std::sync::Arc::new(super::DefaultLaunchHooks::default());
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let (entered, waiting) = tokio::sync::oneshot::channel();
+        let (finish, finished) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            stopped.await.unwrap();
+            entered.send(()).unwrap();
+            finished.await.unwrap();
+        });
+        *hooks.bridge_watchdog.lock().await = Some(super::BridgeWatchdogRuntime { shutdown: Some(shutdown), task });
+        let stopping = hooks.clone();
+        let stop = tokio::spawn(async move { stopping.stop_bridge_watchdog().await });
+        waiting.await.unwrap();
+        stop.abort();
+        let _ = stop.await;
+        assert!(hooks.bridge_watchdog.lock().await.is_some());
+        finish.send(()).unwrap();
+        hooks.stop_bridge_watchdog().await;
+        assert!(hooks.bridge_watchdog.lock().await.is_none());
+    }
+
     use super::*;
     use std::sync::atomic::AtomicUsize;
 
@@ -8117,22 +8223,25 @@ mod tests {
             request_trace: Some(trace),
             exec_adapted: false,
             exec_outcome: None,
+            websocket: None,
             response: None,
         };
         let usage = crate::request_log::final_response_usage(&serde_json::json!({
-            "status":"completed","usage":{"input_tokens":12,"output_tokens":3,
+            "id":"resp_returned","status":"completed","usage":{"input_tokens":12,"output_tokens":3,
                 "input_tokens_details":{"cached_tokens":0}}
         })).unwrap();
         log.record_upstream(&upstream);
         assert!(log.entry.final_response_evidence.is_none(), "HTTP 200 is insufficient");
-        log.record_stream(None, Some(usage.clone()), None);
+        log.record_stream(None, Some(usage.usage.clone()), None);
         log.record_final_response(Some(usage.clone()));
+        assert_eq!(log.entry.final_response_id.as_deref(), Some("resp_returned"));
         assert_eq!(log.entry.final_response_evidence.as_deref(), Some("final-response-v1"));
         assert_eq!(log.entry.relay_id, "final-supplier");
         assert_eq!(log.entry.upstream_model, "after-middleware");
         assert_eq!(log.entry.attempts, 2);
-        log.record_stream(Some("incomplete"), Some(usage.clone()), None);
+        log.record_stream(Some("incomplete"), Some(usage.usage.clone()), None);
         log.record_final_response(Some(usage.clone()));
+        assert!(log.entry.final_response_id.is_none());
         assert!(log.entry.final_response_evidence.is_none());
         log.entry.error = None;
 
@@ -8150,7 +8259,7 @@ mod tests {
                 _ => unreachable!(),
             }
             log.record_upstream(&upstream);
-            log.record_stream(None, Some(usage.clone()), None);
+            log.record_stream(None, Some(usage.usage.clone()), None);
             log.record_final_response(Some(usage.clone()));
             assert!(log.entry.final_response_evidence.is_none(), "{case}");
             upstream.request_trace = saved_trace;
@@ -8163,7 +8272,9 @@ mod tests {
         log.record_upstream(&upstream);
         log.record_final_response(None);
         assert!(log.entry.final_response_evidence.is_none(), "unverified response middleware / counts");
-        log.record_final_response(Some(crate::request_log::RequestUsage { input_tokens: 999, ..usage }));
+        let mut discarded = usage;
+        discarded.usage.input_tokens = 999;
+        log.record_final_response(Some(discarded));
         assert!(log.entry.final_response_evidence.is_none(), "counts from a discarded attempt");
     }
 
@@ -9038,13 +9149,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn helper_returns_426_for_responses_websocket_upgrade() {
+    async fn helper_rejects_incomplete_responses_websocket_upgrade() {
         let response = send_raw_helper_request(
             b"GET /v1/responses HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n",
         )
         .await;
 
-        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 426 Upgrade Required"));
+        assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 400 Bad Request"));
     }
 
     #[tokio::test]
@@ -9353,6 +9464,7 @@ mod tests {
         assert_eq!(usage.output_tokens, 30);
         assert_eq!(usage.cached_tokens, 100);
         assert_eq!(entry.cache_hit_ratio, Some(100.0 / 120.0));
+        assert_eq!(entry.final_response_id.as_deref(), Some("resp_logged"));
         assert_eq!(entry.final_response_evidence.as_deref(), Some("final-response-v1"));
 
         crate::request_log::set_request_log_path_for_tests(None);
@@ -9471,6 +9583,7 @@ mod tests {
         assert_eq!(entries[0].attempts, 2);
         assert_eq!(entries[0].auto_retries, 1);
         assert_eq!(entries[0].usage.as_ref().map(|u| u.input_tokens), Some(12));
+        assert_eq!(entries[0].final_response_id.as_deref(), Some("resp_ok"));
         assert_eq!(entries[0].final_response_evidence.as_deref(), Some("final-response-v1"));
 
         crate::request_log::set_request_log_path_for_tests(None);
@@ -10098,8 +10211,9 @@ mod tests {
 
 #[cfg(test)]
 mod proxy_stream_tests {
-    use super::forward_protocol_proxy_stream;
+    use super::{forward_protocol_proxy_stream, non_stream_body_to_responses};
     use crate::protocol_proxy::UpstreamWireApi;
+    use serde_json::Value;
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -10214,7 +10328,42 @@ mod proxy_stream_tests {
         assert_eq!(usage.input_tokens, 120);
         assert_eq!(usage.output_tokens, 30);
         assert_eq!(usage.cached_tokens, 100);
+        assert!(usage.cached_tokens_known);
         assert_eq!(usage.reasoning_tokens, 8);
+    }
+
+    #[tokio::test]
+    async fn chat_usage_keeps_explicit_zero_in_logs_without_changing_wire_format() {
+        for cached in [None, Some(0), Some(7)] {
+            let mut usage = serde_json::json!({"prompt_tokens": 10, "completion_tokens": 2});
+            if let Some(cached) = cached {
+                usage["prompt_tokens_details"] = serde_json::json!({"cached_tokens": cached});
+            }
+            let chat = serde_json::json!({"id": "test", "model": "test-model", "usage": usage,
+                "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]});
+            let (response, logged) = non_stream_body_to_responses(
+                UpstreamWireApi::ChatCompletions, chat.to_string().as_bytes(), None,
+            ).unwrap();
+            let logged = logged.unwrap();
+            assert_eq!(logged.cached_tokens_known, cached.is_some());
+            assert_eq!(logged.cached_tokens, cached.unwrap_or(0));
+            assert_eq!(logged.input_tokens, 10 - cached.unwrap_or(0));
+            assert_eq!(logged.output_tokens, 2);
+            assert_eq!(response.pointer("/usage/input_tokens_details/cached_tokens").and_then(Value::as_u64),
+                cached.filter(|&value| value > 0));
+
+            let sse = format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"hi\"}},\"finish_reason\":\"stop\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{usage}}}\n\ndata: [DONE]\n\n");
+            let (failure, body, _, logged) = forward_fixture_with_prefix_and_delay(
+                &[], &sse, false, UpstreamWireApi::ChatCompletions, Duration::ZERO,
+            ).await;
+            assert_eq!(failure, None);
+            let logged = logged.unwrap();
+            assert_eq!(logged.cached_tokens_known, cached.is_some());
+            assert_eq!(logged.cached_tokens, cached.unwrap_or(0));
+            assert_eq!(logged.input_tokens, 10);
+            assert_eq!(logged.output_tokens, 2);
+            assert_eq!(body.contains("\"cached_tokens\""), cached.is_some_and(|value| value > 0));
+        }
     }
 
     #[tokio::test]
@@ -10240,6 +10389,7 @@ mod proxy_stream_tests {
         assert_eq!(usage.input_tokens, 7);
         assert_eq!(usage.output_tokens, 5);
         assert_eq!(usage.cached_tokens, 50);
+        assert!(usage.cached_tokens_known);
     }
 
     #[tokio::test]
@@ -10582,6 +10732,7 @@ mod injection_budget_tests {
         // 每次尝试都卡住：总预算耗尽后必须返回，而不是跑满次数上限（issue #2681）。
         let outcome = run_injection_attempts(
             Duration::from_millis(120),
+            Duration::from_millis(35),
             Duration::from_millis(10),
             10,
             |_attempt, _message| {},
@@ -10594,7 +10745,7 @@ mod injection_budget_tests {
 
         assert!(!outcome.ready);
         assert_eq!(outcome.reason, InjectionStopReason::BudgetExhausted);
-        assert_eq!(outcome.attempts, 1, "单次尝试吃光预算后不应再重试");
+        assert!(outcome.attempts >= 2);
         assert!(
             outcome
                 .last_error
@@ -10616,6 +10767,7 @@ mod injection_budget_tests {
         let mut calls = 0;
         let outcome = run_injection_attempts(
             Duration::from_secs(5),
+            Duration::from_millis(50),
             Duration::from_millis(1),
             10,
             |_attempt, _message| {},
@@ -10623,6 +10775,7 @@ mod injection_budget_tests {
                 calls += 1;
                 let attempt = calls;
                 async move {
+                    if attempt == 1 { std::future::pending::<()>().await; }
                     if attempt < 3 {
                         anyhow::bail!("cdp not ready yet");
                     }
@@ -10644,6 +10797,7 @@ mod injection_budget_tests {
 
         let outcome = run_injection_attempts(
             Duration::from_millis(400),
+            Duration::from_millis(100),
             Duration::from_millis(1),
             10,
             |attempt, message| {

@@ -26,7 +26,7 @@ test("macOS 主窗口用 Overlay 标题栏，页面标题行和侧栏顶部是�
   assert.equal((app.match(/className="cx-titlebar-drag" data-tauri-drag-region \/>/g) ?? []).length, 2);
   // 托盘面板、悬浮预览本来没有标题栏，不加 mac-titlebar。
   const main = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
-  assert.match(main, /if \(window\.location\.hash !== "#tray-panel" && window\.location\.hash !== "#cu-pip"\) applyMacTitlebarClass\(\);/);
+  assert.match(main, /if \(window\.location\.hash !== "#tray-panel" && window\.location\.hash !== "#cu-pip"\) \{\s*applyMacTitlebarClass\(\);/);
   const css = readFileSync(new URL("./cursor-ui.css", import.meta.url), "utf8");
   assert.match(css, /:root\.mac-titlebar \.shell \.screen > header\.cx-page-head,[\s\S]*?position: sticky;/);
 });

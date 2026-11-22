@@ -1,12 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {
-  applyDictationPreset,
-  defaultDictationSettings,
-  dictationPreset,
-  dictationSettingsIssue,
-  normalizeDictationSettings,
-} from "./dictation-settings.ts";
+// 预设与校验在 Codex 设置页里，见 assets/inject/service-settings.test.cjs。
+import { defaultDictationSettings, normalizeDictationSettings } from "./dictation-settings.ts";
 
 test("old settings keep API dictation opt-in and each default is independent", () => {
   const first = normalizeDictationSettings(undefined);
@@ -46,46 +41,7 @@ test("legacy SenseVoice marker restores the local provider", () => {
     model: "SenseVoiceSmall (INT8)",
   });
   assert.equal(restored.provider, "sensevoice");
-  assert.equal(dictationPreset(restored), "sensevoice");
-  assert.equal(dictationSettingsIssue(restored), null);
-});
-
-test("presets select independent speech endpoints while custom preserves its configuration", () => {
-  const configured = {
-    ...defaultDictationSettings(), apiKey: "test-speech-key", apiKeyEnv: "SPEECH_API_KEY", language: "en", timeoutSeconds: 60,
-  };
-  for (const preset of ["groq", "openai", "local"] as const) {
-    const next = applyDictationPreset(configured, preset);
-    assert.equal(dictationPreset(next), preset);
-    assert.equal(next.language, "en");
-    assert.equal(next.timeoutSeconds, 60);
-    assert.equal(next.enabled, false);
-    assert.equal(next.apiKey, "test-speech-key");
-    assert.equal(next.apiKeyEnv, "SPEECH_API_KEY");
-  }
-  const custom = { ...configured, baseUrl: "http://localhost:9090/asr/v1", model: "local-whisper" };
-  assert.equal(dictationPreset(custom), "custom");
-  assert.deepEqual(applyDictationPreset(custom, "custom"), custom);
-});
-
-test("SenseVoice preset selects the local provider and does not require an API endpoint", () => {
-  const next = applyDictationPreset(defaultDictationSettings(), "sensevoice");
-  assert.equal(next.provider, "sensevoice");
-  assert.equal(next.model, "SenseVoiceSmall (INT8)");
-  assert.equal(dictationPreset(next), "sensevoice");
-  assert.equal(dictationSettingsIssue({ ...next, enabled: true }), null);
-});
-
-test("enabled settings validate endpoints and environment names without requiring local credentials", () => {
-  const local = { ...applyDictationPreset(defaultDictationSettings(), "local"), enabled: true };
-  assert.equal(dictationSettingsIssue(local), null);
-  for (const baseUrl of ["", "file:///tmp/asr", "https://user:pass@example.com/v1", "https://example.com/v1?key=x", "https://example.com/v1#fragment"]) {
-    assert.equal(dictationSettingsIssue({ ...local, baseUrl }), "baseUrl");
-  }
-  assert.equal(dictationSettingsIssue({ ...local, model: " " }), "model");
-  assert.equal(dictationSettingsIssue({ ...local, apiKeyEnv: "1INVALID" }), "apiKeyEnv");
-  assert.equal(dictationSettingsIssue({ ...local, apiKeyEnv: "ASR_API_KEY" }), null);
-  assert.equal(dictationSettingsIssue({ ...local, enabled: false, baseUrl: "" }), null);
+  assert.equal(restored.baseUrl, "LOCAL://SENSEVOICE");
 });
 
 test("timeout normalization remains finite and within the backend bounds", () => {

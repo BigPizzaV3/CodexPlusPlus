@@ -1924,6 +1924,46 @@ async fn llm_token(http: &reqwest::Client, credentials: &Value) -> anyhow::Resul
         .to_string())
 }
 
+/// 照实拉 `/models`，顺带记下各模型的上游。外层错误是模型 token 拿不到、换不了；
+/// 内层是列表接口本身失败（宽松版据此兜底，「从上游同步」据此报错）。
+async fn fetch_models(
+    http: &reqwest::Client,
+    credentials: &Value,
+) -> anyhow::Result<anyhow::Result<Vec<String>>> {
+    let fetch = |token: String| {
+        http.get(format!("{CLOUD}/models"))
+            .bearer_auth(token)
+            .header("x-zed-client-supports-x-ai", "true")
+            .header("user-agent", user_agent())
+            .timeout(Duration::from_secs(15))
+            .send()
+    };
+    let mut token = llm_token(http, credentials).await?;
+    let mut response = fetch(token.clone()).await;
+    if response.as_ref().is_ok_and(token_stale) {
+        token = text_of(&renew(http, credentials).await?, "llmToken")
+            .unwrap_or_default()
+            .to_string();
+        response = fetch(token).await;
+    }
+    let listed = match response {
+        Ok(response) => crate::gateway::subscriptions::oauth::read_json(response)
+            .await
+            .map(|value| parse_models(&value))
+            .map_err(|error| error.context("Zed 模型列表")),
+        Err(error) => Err(anyhow::anyhow!("无法连接 Zed：{error}")),
+    };
+    Ok(listed.map(|listed| {
+        let mut map = providers()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (id, provider) in &listed {
+            map.insert(id.clone(), *provider);
+        }
+        listed.into_iter().map(|(id, _)| id).collect()
+    }))
+}
+
 /* —————————————— Subscription —————————————— */
 
 #[async_trait::async_trait]
@@ -2051,38 +2091,21 @@ impl Subscription for Zed {
         http: &reqwest::Client,
         credentials: &Value,
     ) -> anyhow::Result<Vec<String>> {
-        let fetch = |token: String| {
-            http.get(format!("{CLOUD}/models"))
-                .bearer_auth(token)
-                .header("x-zed-client-supports-x-ai", "true")
-                .header("user-agent", user_agent())
-                .timeout(Duration::from_secs(15))
-                .send()
-        };
-        let mut token = llm_token(http, credentials).await?;
-        let mut response = fetch(token.clone()).await;
-        if response.as_ref().is_ok_and(token_stale) {
-            token = text_of(&renew(http, credentials).await?, "llmToken")
-                .unwrap_or_default()
-                .to_string();
-            response = fetch(token).await;
-        }
-        let listed = match response {
-            Ok(response) if response.status().is_success() => {
-                parse_models(&response.json::<Value>().await.unwrap_or(Value::Null))
-            }
-            _ => Vec::new(),
-        };
-        if listed.is_empty() {
-            return Ok(DEFAULT_MODELS.iter().map(|id| id.to_string()).collect());
-        }
-        let mut map = providers()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for (id, provider) in &listed {
-            map.insert(id.clone(), *provider);
-        }
-        Ok(listed.into_iter().map(|(id, _)| id).collect())
+        // token 拿不到照旧报错；列表接口失败或为空时用默认列表兜底（记诊断日志）。
+        let listed = fetch_models(http, credentials).await?;
+        Ok(crate::gateway::subscriptions::models_or_fallback(
+            self.id(),
+            listed,
+            || DEFAULT_MODELS.iter().map(|id| id.to_string()).collect(),
+        ))
+    }
+
+    async fn list_models(
+        &self,
+        http: &reqwest::Client,
+        credentials: &Value,
+    ) -> anyhow::Result<Vec<String>> {
+        fetch_models(http, credentials).await?
     }
 
     async fn chat(

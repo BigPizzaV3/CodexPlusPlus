@@ -4,9 +4,8 @@ import { ArrowLeft, ArrowRight, CheckCircle2, Download, KeyRound, LoaderCircle, 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { t, tf } from "./i18n";
-import { AppSelect } from "./AppSelect";
 import { appConfirm } from "./app-dialog";
-import { applyPluginInstallation, filterMarketPlugins, isPluginMarketSuccess, mergePluginMarketCatalog, pluginMarketPage, PluginMarketRequests, type MarketCatalogs, type MarketFilter, type MarketPlugin, type MarketResult, type MarketSource } from "./plugin-market-model";
+import { applyPluginInstallation, filterMarketPlugins, isPluginMarketSuccess, mergePluginMarketCatalog, pluginMarketConnector, pluginMarketPage, PluginMarketRequests, type MarketCatalogs, type MarketConnector, type MarketFilter, type MarketPlugin, type MarketResult, type MarketSource } from "./plugin-market-model";
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxToolbar } from "./cx-layout";
 import "./PluginMarketScreen.css";
 
@@ -19,6 +18,13 @@ type InstallResult = {
 
 const PAGE_SIZE = 50;
 
+/** 连接器的说明；没有连接器时为空。 */
+function connectorLabel(kind: MarketConnector): string {
+  if (kind === "mcp") return t("连接器在 Codex 的「设置 → MCP」里登录");
+  if (kind === "hosted") return t("连接器需要 ChatGPT 登录");
+  return kind === "unknown" ? t("需服务授权") : "";
+}
+
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -27,7 +33,8 @@ function formatBytes(bytes: number): string {
 }
 
 export function PluginMarketScreen() {
-  const [source, setSource] = useState<MarketSource>("public");
+  // 只有完整库一个来源；旧公开库已并入它。
+  const source: MarketSource = "full";
   const [catalogs, setCatalogs] = useState<MarketCatalogs>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -36,7 +43,7 @@ export function PluginMarketScreen() {
   const [page, setPage] = useState(0);
   const [installing, setInstalling] = useState<MarketPlugin | null>(null);
   const [uninstalling, setUninstalling] = useState<MarketPlugin | null>(null);
-  const [notice, setNotice] = useState<{ message: string; failed: boolean; restart: boolean } | null>(null);
+  const [notice, setNotice] = useState<{ message: string; failed: boolean; restart: boolean; connector?: MarketConnector } | null>(null);
   const [detailPlugin, setDetailPlugin] = useState<MarketPlugin | null>(null);
   const detailDialog = useRef<HTMLDialogElement | null>(null);
   const detailTrigger = useRef<HTMLButtonElement | null>(null);
@@ -45,7 +52,7 @@ export function PluginMarketScreen() {
   if (!requestRef.current) requestRef.current = new PluginMarketRequests();
   const requests = requestRef.current;
 
-  // 只在市场页面挂载、切换来源或点击刷新时读取索引，应用启动不下载插件包。
+  // 只在市场页面挂载或点击刷新时读取索引，应用启动不下载插件包。
   const loadCatalog = useCallback(async (nextSource: MarketSource, refresh: boolean) => {
     const sequence = requests.beginCatalog();
     if (sequence === null) return;
@@ -105,12 +112,6 @@ export function PluginMarketScreen() {
   const filtered = useMemo(() => filterMarketPlugins(plugins, query, filter), [plugins, query, filter]);
   const { totalPages, currentPage, visible } = pluginMarketPage(filtered, page, PAGE_SIZE);
 
-  const selectSource = (nextSource: MarketSource) => {
-    if (!requests.canSelectSource() || nextSource === source) return;
-    requests.invalidateCatalog();
-    setSource(nextSource);
-  };
-
   const install = async (plugin: MarketPlugin) => {
     const sequence = requests.beginInstall();
     if (sequence === null) return;
@@ -131,6 +132,7 @@ export function PluginMarketScreen() {
         message: result.message || (succeeded ? t("插件安装完成。") : t("插件安装失败。")),
         failed: !succeeded,
         restart: succeeded && result.restartRequired === true,
+        connector: pluginMarketConnector(plugin),
       });
     } catch (cause) {
       if (requests.isCurrentInstall(sequence)) setNotice({ message: String(cause), failed: true, restart: false });
@@ -188,22 +190,9 @@ export function PluginMarketScreen() {
 
   return (
     <div className="cx-page plugin-market-screen">
-      {/* 一条工具条：搜索 + 来源 + 刷新；下面一排筛选胶囊带数量。 */}
+      {/* 一条工具条：搜索 + 刷新；下面一排筛选胶囊带数量。 */}
       <div className="plugin-market-toolbar">
         <CxToolbar onQuery={setQuery} placeholder={t("搜索名称、作者、描述或标签")} query={query}>
-          <AppSelect<MarketSource>
-            ariaLabel={t("插件市场来源")}
-            className="plugin-market-source"
-            disabled={busy}
-            onChange={selectSource}
-            options={[
-              { value: "public", label: t("公开精选") },
-              { value: "full", label: t("完整缓存") },
-            ]}
-            size="sm"
-            title={source === "public" ? t("收录已确认可公开分发的插件。") : t("完整市场收录全部插件，索引较大，首次加载可能需要几秒。")}
-            value={source}
-          />
           <button aria-label={t("刷新索引")} className="cx-icon-button" disabled={loading || busy} onClick={() => void loadCatalog(source, true)} title={t("刷新索引")} type="button">
             <RefreshCw aria-hidden="true" className={loading ? "plugin-market-spinner" : ""} />
           </button>
@@ -215,6 +204,7 @@ export function PluginMarketScreen() {
           trailing={(
             <p aria-live="polite" className="plugin-market-summary">
               {market ? null : loading ? t("正在读取插件清单…") : t("尚未加载插件清单。")}
+              {market?.updatedAt ? <span title={t("目录是缓存快照，不是官方实时目录")}>{tf("快照 {0}", [market.updatedAt])}</span> : null}
               {market?.cached ? <span title={t("使用本地索引缓存")}>{t("缓存")}</span> : null}
             </p>
           )}
@@ -235,7 +225,10 @@ export function PluginMarketScreen() {
       ) : notice ? (
         <div aria-live="polite" className={`plugin-market-feedback ${notice.failed ? "plugin-market-error" : ""}`} role={notice.failed ? "alert" : "status"}>
           <CxBanner
-            detail={notice.restart ? t("新开聊天或重启 Codex++ 后加载已安装插件。") : undefined}
+            detail={!notice.restart ? undefined
+              : notice.connector === "mcp" ? t("新开聊天后加载。连接器要先登录：打开 Codex 的「设置 → MCP」，找到这个插件的服务后登录。")
+              : notice.connector === "hosted" ? t("新开聊天后加载。连接器由 ChatGPT 托管，要给 Codex 登录 ChatGPT 账号才能连接；Skills 不受影响。")
+              : t("新开聊天或重启 Codex++ 后加载已安装插件。")}
             icon={notice.failed ? <X aria-hidden="true" /> : <CheckCircle2 aria-hidden="true" />}
             title={notice.message}
             tone={notice.failed ? "warn" : "ok"}
@@ -266,7 +259,7 @@ export function PluginMarketScreen() {
                     <PackageOpen aria-hidden="true" className="plugin-market-package" />
                     <strong title={title}>{title}</strong>
                     {plugin.installed ? <CxBadge tone="ok">{t("已安装")}</CxBadge> : null}
-                    {plugin.requiresAuth ? <CxBadge title={t("需服务授权")}><KeyRound aria-hidden="true" /></CxBadge> : null}
+                    {connectorLabel(pluginMarketConnector(plugin)) ? <CxBadge title={connectorLabel(pluginMarketConnector(plugin))}><KeyRound aria-hidden="true" /></CxBadge> : null}
                   </span>
                   <span className="plugin-market-description">{plugin.description || t("暂无插件描述。")}</span>
                 </button>
@@ -327,6 +320,7 @@ export function PluginMarketScreen() {
             <div><dt>{t("作者")}</dt><dd>{detailPlugin.author || t("未提供")}</dd></div>
             <div><dt>{t("许可")}</dt><dd>{detailPlugin.license || t("未声明许可")}</dd></div>
             <div><dt>{t("技能数")}</dt><dd>{detailPlugin.skills}</dd></div>
+            {connectorLabel(pluginMarketConnector(detailPlugin)) ? <div><dt>{t("连接器")}</dt><dd>{connectorLabel(pluginMarketConnector(detailPlugin))}</dd></div> : null}
             <div><dt>{t("内部名称")}</dt><dd>{detailPlugin.name}</dd></div>
             {detailPlugin.installedVersion ? <div><dt>{t("已安装")}</dt><dd>{detailPlugin.installedVersion}</dd></div> : null}
             {detailPlugin.tags.length ? <div><dt>{t("标签")}</dt><dd className="plugin-market-tags">{detailPlugin.tags.map((tag, index) => <Badge key={`${tag}:${index}`} variant="outline">{tag}</Badge>)}</dd></div> : null}

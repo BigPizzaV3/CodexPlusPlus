@@ -6,7 +6,8 @@
 //! - 项目：Google 已不再为个人账号提供 Gemini CLI 的免费额度，Code Assist Standard / Enterprise
 //!   需要一个 Google Cloud 项目。登录时按 Gemini CLI 的流程查（loadCodeAssist / onboardUser），
 //!   查不到又没指定时提示用户用「粘贴凭据」填项目 id 重新登录。
-//! - 模型：retrieveUserQuota 列出这个账号有额度的模型；拉不到时用默认列表。
+//! - 模型：retrieveUserQuota 列出这个账号有额度的模型。登录、本机适配入口拉不到时用默认列表
+//!   （记诊断日志）；「从上游同步」拉不到就报错。
 
 use std::path::{Path, PathBuf};
 
@@ -124,6 +125,28 @@ fn default_models() -> Vec<String> {
         .collect()
 }
 
+/// 照实拉有额度的模型：凭据不对、没有项目、接口失败都报错，不用默认列表兜底。
+async fn fetch_models(http: &reqwest::Client, credentials: &Value) -> anyhow::Result<Vec<String>> {
+    let mut credentials = GoogleCredentials::from_value(credentials)?;
+    if credentials.project_id.is_empty() {
+        match GEMINI_CLI.setup(http, &credentials).await? {
+            Setup::Ready { project, .. } => credentials.project_id = project,
+            Setup::NeedsProject(message) => bail!(message),
+        }
+    }
+    let reply = GEMINI_CLI
+        .call(
+            http,
+            GEMINI_CLI.base,
+            "retrieveUserQuota",
+            &credentials.access_token,
+            &json!({ "project": credentials.project_id }),
+            &[],
+        )
+        .await?;
+    Ok(parse_quota_models(&reply))
+}
+
 #[async_trait::async_trait]
 impl Subscription for Gemini {
     fn id(&self) -> &'static str {
@@ -193,33 +216,19 @@ impl Subscription for Gemini {
         http: &reqwest::Client,
         credentials: &Value,
     ) -> anyhow::Result<Vec<String>> {
-        let Ok(mut credentials) = GoogleCredentials::from_value(credentials) else {
-            return Ok(default_models());
-        };
-        if credentials.project_id.is_empty() {
-            match GEMINI_CLI.setup(http, &credentials).await {
-                Ok(Setup::Ready { project, .. }) => credentials.project_id = project,
-                _ => return Ok(default_models()),
-            }
-        }
-        let reply = GEMINI_CLI
-            .call(
-                http,
-                GEMINI_CLI.base,
-                "retrieveUserQuota",
-                &credentials.access_token,
-                &json!({ "project": credentials.project_id }),
-                &[],
-            )
-            .await;
-        let models = reply
-            .map(|value| parse_quota_models(&value))
-            .unwrap_or_default();
-        Ok(if models.is_empty() {
-            default_models()
-        } else {
-            models
-        })
+        Ok(crate::gateway::subscriptions::models_or_fallback(
+            "gemini",
+            fetch_models(http, credentials).await,
+            default_models,
+        ))
+    }
+
+    async fn list_models(
+        &self,
+        http: &reqwest::Client,
+        credentials: &Value,
+    ) -> anyhow::Result<Vec<String>> {
+        fetch_models(http, credentials).await
     }
 
     async fn chat(

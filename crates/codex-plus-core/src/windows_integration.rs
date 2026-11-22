@@ -1421,6 +1421,24 @@ pub(crate) fn loopback_listener_process_ids(port: u16) -> anyhow::Result<Vec<u32
     Ok(ids)
 }
 
+/// 停止后复核失败时的监听者脱敏身份摘要：只暴露 PID 与映像文件名，不记录完整路径或参数（#3074）。
+#[cfg(windows)]
+pub(crate) fn loopback_listener_summaries(port: u16) -> anyhow::Result<Vec<String>> {
+    Ok(loopback_listener_process_ids(port)?
+        .into_iter()
+        .map(|process_id| {
+            let image = query_process_image_path(process_id).and_then(|path| {
+                path.file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+            });
+            match image {
+                Some(name) => format!("pid {process_id}（{name}）"),
+                None => format!("pid {process_id}"),
+            }
+        })
+        .collect())
+}
+
 #[cfg(any(windows, test))]
 fn unique_listener_process_id(ids: &[u32]) -> anyhow::Result<Option<u32>> {
     let first = ids.first().copied();
@@ -1639,6 +1657,23 @@ pub fn activate_process_window(process_id: u32) -> bool {
             let _ = ShowWindow(hwnd, SW_RESTORE);
         } else if !IsWindowVisible(hwnd).as_bool() {
             let _ = ShowWindow(hwnd, SW_SHOW);
+        }
+        SetForegroundWindow(hwnd).as_bool()
+    }
+}
+
+/// 只唤起该进程已经显示（含最小化）的窗口，绝不把隐藏窗口翻出来。
+/// 给管理器二次启动用：Win32 直接 ShowWindow 隐藏的 Tauri 窗口会绕过 tao 的可见标记，
+/// 轻量模式下主窗口已销毁时还会翻出仅剩的、隐藏着的托盘快捷面板，且之后 hide() 不生效（issue #3223）。
+/// 主窗口隐藏或已销毁时返回 false，交给 window-activation 请求文件由主进程用 tauri 显示。
+#[cfg(windows)]
+pub fn activate_visible_process_window(process_id: u32) -> bool {
+    let Some(hwnd) = visible_window_for_process(process_id) else {
+        return false;
+    };
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
         }
         SetForegroundWindow(hwnd).as_bool()
     }

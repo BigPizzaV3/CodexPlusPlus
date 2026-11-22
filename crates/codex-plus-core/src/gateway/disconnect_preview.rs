@@ -34,6 +34,7 @@ pub struct DisconnectPreview {
     pub files: Vec<DisconnectFile>,
     pub warnings: Vec<String>,
     pub can_disconnect: bool,
+    pub needs_direct_provider: bool,
     /// Codex 没法逐项预览（接入前没有实时存档，或要切回的是聚合供应商）时：断开等于把 Codex
     /// 完整切换到这个直连供应商（和在供应商列表里切换一样，切换前备份当前配置、收回借出的登录）。
     /// 这时 `can_disconnect` 仍为 false（普通断开不放行），由用户确认后走「完整切换并断开」。
@@ -188,6 +189,7 @@ pub fn preview(
                 .into(),
         ],
         can_disconnect: true,
+        needs_direct_provider: false,
         full_switch: None,
         fingerprint: String::new(),
     };
@@ -440,7 +442,7 @@ fn native_preview(
     };
     let projected = match projected {
         Ok(Some(files)) => files,
-        projected => {
+        _ => {
             result.can_disconnect = false;
             // Codex 的存档投影给不出结果（没存档、要切回聚合供应商、存档损坏）时，真实断开
             // 走的是完整切换到直连供应商：在隔离副本里跑同一套切换，把结果文件读回来做 diff。
@@ -484,10 +486,10 @@ fn native_preview(
                         ),
                     }
                 }
-                None if *agent == ToolId::Codex && projected.is_ok() => result.warnings.push(
-                    "Codex 的直连模式里没有别的供应商可切回：先在「连接与供应商」里添加一个直连供应商。"
-                        .into(),
-                ),
+                None if *agent == ToolId::Codex && settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID => {
+                    result.needs_direct_provider = true;
+                    result.warnings.push("Codex 的直连模式里没有别的供应商可切回：先在「连接与供应商」里添加一个直连供应商。".into());
+                }
                 None => result.warnings.push(
                     "隔离预演未能完成还原；原配置未被修改，请检查可切回的供应商和恢复存档。"
                         .into(),
@@ -797,7 +799,9 @@ mod tests {
                 strip_image_generation_tool: None,
                 subscription_policy: None,
                 strip_responses_image_detail: None,
+                strip_responses_output_encrypted_content: None,
                 disable_tool_search: None,
+                custom_headers: None,
             },
             "custom",
             None,
@@ -1196,6 +1200,7 @@ mod tests {
         let before = snapshot(fixture.temp.path());
         let result = preview(&fixture.ctx, &settings, &ToolId::Codex).unwrap();
         assert!(!result.can_disconnect);
+        assert!(!result.needs_direct_provider);
         assert_eq!(
             result.full_switch,
             Some(FullSwitchTarget { relay_id: "direct".into(), name: "Direct".into() })
@@ -1229,6 +1234,32 @@ mod tests {
                 "{name} 的预演 diff 应与真实断开一致"
             );
         }
+    }
+
+    #[test]
+    fn codex_without_stash_or_direct_profile_offers_to_create_a_restore_target() {
+        let fixture = fixture();
+        let ctx = &fixture.ctx;
+        ctx.gateway.update(|gateway| {
+            gateway.bindings.insert("codex".into(), binding());
+            Ok(())
+        }).unwrap();
+        let mut settings = BackendSettings::default();
+        settings.relay_profiles = vec![crate::settings::RelayProfile {
+            id: apply::CODEX_GATEWAY_RELAY_ID.into(),
+            name: "Codex++ 网关".into(),
+            ..Default::default()
+        }];
+        settings.active_relay_id = apply::CODEX_GATEWAY_RELAY_ID.into();
+        ctx.settings.save(&settings).unwrap();
+        fs::write(ctx.codex_home.join("config.toml"),
+            "model_provider = \"openai\"\nopenai_base_url = \"http://127.0.0.1:57491/gw/codex/v1\"\n").unwrap();
+        let before = snapshot(fixture.temp.path());
+        let result = preview(ctx, &settings, &ToolId::Codex).unwrap();
+        assert!(result.needs_direct_provider, "{:?}", result.warnings);
+        assert!(!result.can_disconnect);
+        assert!(result.full_switch.is_none());
+        assert_eq!(snapshot(fixture.temp.path()), before);
     }
 
     #[test]

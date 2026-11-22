@@ -98,6 +98,7 @@ fn provider(id: &str, base_url: &str, keys: &[&str], limits: KeyLimits) -> Gatew
         newapi_access: None,
             subscription_policy: None,
         upstream_meta: Default::default(),
+        auto_compact: Default::default(),
         relay: RelayProfile {
             id: id.to_string(),
             name: id.to_string(),
@@ -383,7 +384,7 @@ async fn full_sticky_key_is_replaced_temporarily_without_changing_the_pin() {
     let key_b = key_pool::expand_keys(&gateway.providers[0].relay)[1]
         .key
         .clone();
-    key_pool::record_success(&key_b, conversation);
+    key_pool::record_success(&key_b, "", conversation);
     let plan_b = plan(&gateway, conversation);
     assert_eq!(plan_b.candidates[0].key.key_id, "b", "会话固定在 b");
     let held = key_pool::try_acquire(

@@ -90,9 +90,12 @@ pub fn prepare_instance_theme_snapshot(
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
-        .filter(|value| ["png", "jpg", "jpeg", "webp", "gif", "bmp"].contains(&value.as_str()))
+        .filter(|_| supported_image_extension(source))
         .context("unsupported instance theme image")?;
-    let image_bytes = read_snapshot_asset(source, &source_state, 32 * 1024 * 1024)?;
+    let video = crate::dream_skin::video_mime(&extension).is_some();
+    let limit = if video { crate::dream_skin::DREAM_SKIN_PREPARED_LIMIT } else { 32 * 1024 * 1024 };
+    let image_bytes = read_snapshot_asset(source, &source_state, limit)?;
+    if video { crate::dream_skin::validate_skin_video(&image_bytes, &extension)?; }
     let css_source = if crate::dream_skin::is_managed_dream_skin_image(source, &source_state) {
         source.with_file_name("current.css")
     } else {
@@ -139,7 +142,7 @@ pub fn prepare_instance_theme_snapshot(
         crate::settings::atomic_write(&stored.join(name), bytes)?;
     }
     // 复制各文件期间主实例可能切换主题；发布前再核对同一份输入，拒绝混合快照。
-    if read_snapshot_asset(source, &source_state, 32 * 1024 * 1024)? != image_bytes
+    if read_snapshot_asset(source, &source_state, limit)? != image_bytes
         || css.as_ref().is_some_and(|bytes| {
             read_snapshot_asset(&css_source, &source_state, THEME_CONFIG_LIMIT)
                 .ok()
@@ -334,7 +337,7 @@ fn supported_image_extension(path: &Path) -> bool {
         .is_some_and(|extension| {
             matches!(
                 extension.as_str(),
-                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
+                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp" | "mp4" | "webm"
             )
         })
 }
@@ -344,12 +347,7 @@ fn stored_theme_image_extension(state_dir: &Path, source: &Path) -> Option<Strin
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
-        .filter(|extension| {
-            matches!(
-                extension.as_str(),
-                "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
-            )
-        })?;
+        .filter(|_| supported_image_extension(source))?;
     let source = std::fs::canonicalize(source).ok()?;
     let themes_dir = std::fs::canonicalize(state_dir.join(THEMES_DIR)).ok()?;
     let theme_dir = source.parent()?;
@@ -582,8 +580,12 @@ pub fn prepare_dream_skin_activation(
         std::fs::create_dir_all(&managed_dir)
             .with_context(|| format!("failed to create {}", managed_dir.display()))?;
         let destination = managed_dir.join(format!("current.{extension}"));
-        let bytes = std::fs::read(source)
-            .with_context(|| format!("failed to read Dream Skin image {}", source.display()))?;
+        let bytes = if crate::dream_skin::video_mime(&extension).is_some() {
+            crate::dream_skin::read_skin_video(source, &extension)?
+        } else {
+            std::fs::read(source)
+                .with_context(|| format!("failed to read Dream Skin image {}", source.display()))?
+        };
         crate::settings::atomic_write(&destination, &bytes).with_context(|| {
             format!("failed to store Dream Skin image {}", destination.display())
         })?;

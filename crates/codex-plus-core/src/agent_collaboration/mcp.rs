@@ -13,7 +13,7 @@ pub const MAX_REQUEST_BYTES: usize = 128 * 1024;
 const MAX_WAIT_MS: u64 = 30_000;
 const MAX_CONCURRENT_WAITS: usize = 8;
 
-const INSTRUCTIONS: &str = "在当前 Codex 对话中承接用户的自然语言委派。用户明确要求 DeepSeek/DeepSeek Harness 时调用 delegate_to_deepseek；明确要求 Claude/Claude Code 时调用 delegate_to_claude_code；明确要求另一个 Codex 时调用 delegate_to_codex，不能用默认 Agent 替换用户点名的对象。用户泛指委派给其他 Agent、未指定对象时使用 delegate_task，省略 agentId 会采用 Codex++ 配置的默认 Agent；显式 agentId 始终优先。用户的委派请求已构成执行该任务的授权，不要再要求每次确认，也不要让用户去管理面板手工提交任务。提供完整、自包含的 prompt 和已存在的绝对 cwd。工具可能编辑该目录并消耗原生 CLI 账户额度，权限仍由各 CLI 控制。返回 queued/taskId 只代表任务已接收；先继续独立工作，再用 wait_task（每次最多 30 秒）或 get_task 收取结果，必须把结果带回当前对话。pending=true 时可继续工作并稍后查询；只有 task.status=completed 才能报告子任务成功，failed/cancelled/interrupted 必须如实说明，结果不确定时禁止自动重发。同一 Agent 可以同时运行多个任务（并发上限在 Codex++ 中按 Agent 设置，默认 1），互不依赖的子任务可以连续派发、各自用 taskId 收取；运行中的任务达到上限时新任务会排队（返回 queued 和排队进度），任一任务结束后按提交顺序自动启动，不同 Agent 可并行。并发任务各自独立进程和会话，但会在各自 cwd 中直接改文件：可能同时运行的任务应使用不同的 cwd（例如各自的 git worktree），返回 cwdWarning 时说明同目录有其他任务可能同时运行；只有排队已满、目标未启用或不可用时才报错，此时报告该目标的问题，不擅自改派。continueTaskId 只续本工具先前创建的同 Agent、同目录已完成 CLI 会话。这些是外部 harness/CLI 协作任务，不是原生 spawn_agent 子树，也不能接管或唤醒同窗口中已有桌面会话。";
+const INSTRUCTIONS: &str = "在当前 Codex 对话中承接用户的自然语言委派。用户明确要求 DeepSeek/DeepSeek Harness 时调用 delegate_to_deepseek；明确要求 Claude/Claude Code 时调用 delegate_to_claude_code；明确要求另一个 Codex 时调用 delegate_to_codex；明确要求 Google Antigravity、Antigravity 或反重力时调用 delegate_to_antigravity，不能用默认 Agent 替换用户点名的对象。用户泛指委派给其他 Agent、未指定对象时使用 delegate_task，省略 agentId 会采用 Codex++ 配置的默认 Agent；显式 agentId 始终优先。用户的委派请求已构成执行该任务的授权，不要再要求每次确认，也不要让用户去管理面板手工提交任务。提供完整、自包含的 prompt 和已存在的绝对 cwd。工具可能编辑该目录并消耗原生 CLI 账户额度，权限仍由各 CLI 控制。返回 queued/taskId 只代表任务已接收；先继续独立工作，再用 wait_task（每次最多 30 秒）或 get_task 收取结果，必须把结果带回当前对话。pending=true 时可继续工作并稍后查询；只有 task.status=completed 才能报告子任务成功，failed/cancelled/interrupted 必须如实说明，结果不确定时禁止自动重发。同一 Agent 可以同时运行多个任务（并发上限在 Codex++ 中按 Agent 设置，默认 1），互不依赖的子任务可以连续派发、各自用 taskId 收取；运行中的任务达到上限时新任务会排队（返回 queued 和排队进度），任一任务结束后按提交顺序自动启动，不同 Agent 可并行。并发任务各自独立进程和会话，但会在各自 cwd 中直接改文件：可能同时运行的任务应使用不同的 cwd（例如各自的 git worktree），返回 cwdWarning 时说明同目录有其他任务可能同时运行；只有排队已满、目标未启用或不可用时才报错，此时报告该目标的问题，不擅自改派。continueTaskId 只续本工具先前创建的同 Agent、同目录已完成 CLI 会话。这些是外部 harness/CLI 协作任务，不是原生 spawn_agent 子树，也不能接管或唤醒同窗口中已有桌面会话。";
 
 enum InputLine {
     Data(Vec<u8>),
@@ -283,6 +283,7 @@ fn delegation_request(store: &Store, name: &str, arguments: Value) -> anyhow::Re
         "delegate_to_deepseek" => "deepseek",
         "delegate_to_claude_code" => "claude",
         "delegate_to_codex" => "codex",
+        "delegate_to_antigravity" => "antigravity",
         _ => anyhow::bail!("未知委派工具"),
     };
     let arguments: FixedDelegateArguments = serde_json::from_value(arguments)
@@ -383,7 +384,10 @@ fn call_tool(store: &Store, name: &str, arguments: Value) -> anyhow::Result<Valu
         "delegate_task"
         | "delegate_to_deepseek"
         | "delegate_to_claude_code"
-        | "delegate_to_codex" => dispatch_task(store, delegation_request(store, name, arguments)?),
+        | "delegate_to_codex"
+        | "delegate_to_antigravity" => {
+            dispatch_task(store, delegation_request(store, name, arguments)?)
+        }
         "send_task" => {
             let request: TaskRequest =
                 serde_json::from_value(arguments).context("send_task 参数无效")?;
@@ -430,7 +434,7 @@ fn tool_definitions() -> Vec<Value> {
         "continueTaskId": {"type": ["string", "null"], "description": "可选：继续本工具先前创建的同 Agent、同目录已完成任务"}
     }, "required": ["prompt", "cwd"], "additionalProperties": false});
     let mut delegate_schema = fixed_schema.clone();
-    delegate_schema["properties"]["agentId"] = json!({"type": "string", "enum": ["codex", "deepseek", "claude"], "description": "可选；省略时使用 Codex++ 默认 Agent，明确指定时优先使用该目标"});
+    delegate_schema["properties"]["agentId"] = json!({"type": "string", "enum": ["codex", "deepseek", "claude", "antigravity"], "description": "可选；省略时使用 Codex++ 默认 Agent，明确指定时优先使用该目标"});
     let mut send_schema = delegate_schema.clone();
     send_schema["required"] = json!(["agentId", "prompt", "cwd"]);
     let dispatch_annotations =
@@ -440,6 +444,7 @@ fn tool_definitions() -> Vec<Value> {
         json!({"name": "delegate_to_deepseek", "description": "把用户指定的子任务交给 DeepSeek Harness。用户点名 DeepSeek 时使用本工具，固定目标不受默认 Agent 设置影响。异步启动真实外部 CLI，可能编辑 cwd 并消耗账户额度；返回 taskId 后先做独立工作，再 wait_task/get_task 收取结果带回当前对话。不是原生 spawn_agent 子树，不接管已有桌面会话。同一 Agent 可并发执行多个任务（上限按 Agent 配置，默认 1），达到上限时排队、按提交顺序自动启动，排队已满会报错；并发任务请使用不同 cwd 避免互相修改相同文件。失败不自动重发。", "inputSchema": fixed_schema, "annotations": dispatch_annotations}),
         json!({"name": "delegate_to_claude_code", "description": "把用户指定的子任务交给 Claude Code。用户点名 Claude/Claude Code 时使用本工具，固定目标不受默认 Agent 设置影响。异步启动真实外部 CLI，可能编辑 cwd 并消耗账户额度；返回 taskId 后先做独立工作，再 wait_task/get_task 收取结果带回当前对话。调用的是 Claude Code harness，不是 Claude Desktop 普通 Chat，也不接管已有会话。同一 Agent 可并发执行多个任务（上限按 Agent 配置，默认 1），达到上限时排队、按提交顺序自动启动，排队已满会报错；并发任务请使用不同 cwd 避免互相修改相同文件。失败不自动重发。", "inputSchema": fixed_schema, "annotations": dispatch_annotations}),
         json!({"name": "delegate_to_codex", "description": "把子任务交给另一个 Codex CLI 会话。用户明确要求另一个 Codex 时使用本工具，固定目标不受默认 Agent 设置影响。可能编辑 cwd 并消耗账户额度；异步返回 taskId 后先做独立工作，再 wait_task/get_task 收结果。不是当前对话原生 spawn_agent 子树，也不接管已有桌面会话。同一 Agent 可并发执行多个任务（上限按 Agent 配置，默认 1），达到上限时排队、按提交顺序自动启动，排队已满会报错；并发任务请使用不同 cwd 避免互相修改相同文件。失败不自动重发。", "inputSchema": fixed_schema, "annotations": dispatch_annotations}),
+        json!({"name": "delegate_to_antigravity", "description": "把用户指定的子任务交给 Google Antigravity CLI。用户明确要求 Google Antigravity、Antigravity 或反重力时使用本工具，固定目标不受默认 Agent 设置影响。使用官方 agy CLI 的 stream-json 协议，可能编辑 cwd 并消耗账户额度；返回 taskId 后再 wait_task/get_task 收取结果。支持显式会话续聊，不接管已经打开的 Antigravity 桌面会话。只有 CLI 退出成功、根 conversation_id 一致、result.status=SUCCESS 且存在 result.response 才算完成。失败不自动重发。", "inputSchema": fixed_schema, "annotations": dispatch_annotations}),
         json!({"name": "delegate_task", "description": "用户泛指委派给其他 Agent 时使用：省略 agentId 会路由到 Codex++ 配置的默认 Agent，显式 agentId 始终优先。目标未启用或不可用时直接报错，不改派别家。可能编辑 cwd 并消耗原生 CLI 账户额度；异步返回 taskId 后先做独立工作，再 wait_task/get_task 收取终态及答案并带回当前对话。不是原生 spawn_agent 子树，不接管已有桌面会话。", "inputSchema": delegate_schema, "annotations": dispatch_annotations}),
         json!({"name": "send_task", "description": "兼容入口：向显式 agentId 异步派发真实 CLI 任务。可能编辑 cwd 并消耗账户额度；continueTaskId 只续本工具创建的同 Agent、同目录已完成会话。返回 taskId 后先做独立工作，再 wait_task/get_task 收结果；queued 不代表成功；同一 Agent 运行中的任务达到并发上限时排队，失败不自动重发；并发任务请使用不同 cwd。不唤醒已有桌面会话。", "inputSchema": send_schema, "annotations": dispatch_annotations}),
         json!({"name": "wait_task", "description": "只读：用 taskId 等待先前委派任务，timeoutMs 为 0..30000，默认最多等待 30 秒；终态立即返回。返回 task、pending、timedOut、succeeded。pending=true 时继续独立工作并稍后查询同一 taskId；只有 task.status=completed 才成功，failed/cancelled/interrupted 必须如实报告，绝不因此自动重发。", "inputSchema": {"type": "object", "properties": {"taskId": {"type": "string"}, "timeoutMs": {"type": "integer", "minimum": 0, "maximum": 30000, "default": 30000}}, "required": ["taskId"], "additionalProperties": false}, "annotations": {"readOnlyHint": true}}),
@@ -481,6 +486,7 @@ mod tests {
             ("delegate_to_deepseek", "deepseek"),
             ("delegate_to_claude_code", "claude"),
             ("delegate_to_codex", "codex"),
+            ("delegate_to_antigravity", "antigravity"),
         ] {
             let mut config = store.config().unwrap();
             config.default_agent_id = if expected == "codex" {
@@ -614,6 +620,7 @@ mod tests {
         let instructions = response["result"]["instructions"].as_str().unwrap();
         assert!(instructions.contains("delegate_to_deepseek"));
         assert!(instructions.contains("delegate_to_claude_code"));
+        assert!(instructions.contains("delegate_to_antigravity"));
         assert!(instructions.contains("wait_task"));
         assert!(instructions.contains("task.status=completed"));
         assert!(instructions.contains("不是原生 spawn_agent"));

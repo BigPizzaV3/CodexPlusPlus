@@ -4,14 +4,14 @@ import { test } from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import { modelSlugFromRowName, suffixWindowString } from "./model-metadata.ts";
-import { independentProxyEnabled, setIndependentProxyConfigured, requestCompatibilityEnabled, stripImageGenerationToolEnabled, stripResponsesImageDetailEnabled, pureApiImageGenerationEnabled, normalizeRelayModelRoutes } from "./model-routes.ts";
+import { independentProxyEnabled, setIndependentProxyConfigured, requestCompatibilityEnabled, stripImageGenerationToolEnabled, stripResponsesImageDetailEnabled, stripResponsesOutputEncryptedContentEnabled, pureApiImageGenerationEnabled, normalizeRelayModelRoutes } from "./model-routes.ts";
 import { sessionProviderForProtocol } from "./relay-session.ts";
 import { aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile } from "./aggregate-members.ts";
 import { relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey } from "./provider-api-keys.ts";
 import { resolveProviderName, tomlSectionStringValue } from "./provider-name.ts";
 
 // 执行 App 中实际使用的配置 helper，避免把另一份实现复制进测试。
-const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8") + "\n" + readFileSync(new URL("./relay-profile-editing.ts", import.meta.url), "utf8");
 const app = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const names = new Set([
   "withGeneratedRelayFiles", "buildRelayConfigToml", "buildRelayAuthJson", "buildOfficialRelayAuthJson",
@@ -33,14 +33,14 @@ const names = new Set([
 const helpers = app.statements.filter((node) =>
   ts.isFunctionDeclaration(node) && node.name && names.has(node.name.text));
 assert.equal(helpers.length, names.size);
-const code = ts.transpileModule(helpers.map((node) => node.getText(app)).join("\n"), {
+const code = ts.transpileModule(helpers.map((node) => node.getText(app).replace(/^export /, "")).join("\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText;
 const context = vm.createContext({
   exports: {},
   PROTOCOL_PROXY_BASE_URL: "http://127.0.0.1:57321/v1",
   CHAT_UPSTREAM_BASE_URL_KEY: "codex_plus_chat_base_url",
-  requestCompatibilityEnabled, stripImageGenerationToolEnabled, stripResponsesImageDetailEnabled, pureApiImageGenerationEnabled, independentProxyEnabled, normalizeRelayModelRoutes, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
+  requestCompatibilityEnabled, stripImageGenerationToolEnabled, stripResponsesImageDetailEnabled, stripResponsesOutputEncryptedContentEnabled, pureApiImageGenerationEnabled, independentProxyEnabled, normalizeRelayModelRoutes, sessionProviderForProtocol, modelSlugFromRowName, suffixWindowString,
   aggregateMemberCandidates, isAggregateProfile, isOfficialLoginMemberProfile,
   relayProfileWithUpdatedApiKey, resolveProviderName, tomlSectionStringValue,
 });
@@ -154,11 +154,11 @@ test("file editor callbacks keep rotated credentials through profile normalizati
   const editors = app.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "RelayFileEditors")!;
   const handlers = new Map<string, string>();
   const visit = (node: ts.Node) => {
-    if (ts.isJsxAttribute(node) && node.name.getText(app) === "onValueChange"
+    if (ts.isJsxAttribute(node) && node.name.getText(app).replace(/^export /, "") === "onValueChange"
       && node.initializer && ts.isJsxExpression(node.initializer)) {
-      const value = node.parent.properties.find((attr) => ts.isJsxAttribute(attr) && attr.name.getText(app) === "value");
+      const value = node.parent.properties.find((attr) => ts.isJsxAttribute(attr) && attr.name.getText(app).replace(/^export /, "") === "value");
       if (value && ts.isJsxAttribute(value) && value.initializer && ts.isJsxExpression(value.initializer)) {
-        handlers.set(value.initializer.expression!.getText(app), node.initializer.expression!.getText(app));
+        handlers.set(value.initializer.expression!.getText(app).replace(/^export /, ""), node.initializer.expression!.getText(app).replace(/^export /, ""));
       }
     }
     ts.forEachChild(node, visit);

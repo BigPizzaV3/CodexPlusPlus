@@ -2,6 +2,7 @@
   void installCodexForkReadinessFallback();
   installCodexForkStatsigFallback();
   installCodexPlusForceChineseLocale();
+  installCodexPlusPluginCategoryLinks();
   // 打字特效、桌宠（含大肥鱼）由各自的内置拓展装上（syncCodexPlusBuiltinExtensions），这里不再直接调用。
   let codexPlusResizeRafId = 0;
   window.__codexPlusResizeHandler = () => {
@@ -15,6 +16,8 @@
   window.__codexSessionDeleteObserver = new MutationObserver((mutations) => {
     // 先同步藏起已删会话的重建行（首帧前生效，#2791），再按原规则排扫描。
     runScanStep(() => hideDeletedSessionRowsInMutations(mutations));
+    // 挂载后的微任务内对齐阅读位置，避免等待轻量扫描期间先绘制原生恢复位置。
+    runScanStep(() => { if (threadScrollRestoreEnabled()) syncThreadScrollState(); });
     scheduleScan(mutations);
   });
   window.__codexSessionDeleteObserver.observe(document.body || document.documentElement, {
@@ -24,7 +27,7 @@
     // persisted UUID without replacing the DOM node. Re-scan those rows so the
     // action button and its delete reference are rebuilt from the canonical ID.
     attributes: true,
-    attributeFilter: ["data-app-action-sidebar-thread-id", "href"],
+    attributeFilter: ["data-app-action-sidebar-thread-id", "href", "data-above-composer-conversation-id"],
   });
   // 会话复制 / 自动命名两项已下线；同页重复注入时摘掉旧脚本留下的触发器监听。
   document.removeEventListener("pointerdown", window.__codexSessionActionTriggerHandler, true);

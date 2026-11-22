@@ -34,14 +34,15 @@ import {
   Settings,
   Square,
   Waypoints,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { t, tf } from "./i18n";
+import { useEscapeLayer } from "./use-escape-layer";
 import { ModelList, Floating, ownCurrent } from "./GatewayAgents";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import {
   glanceAgents,
-  agentModels,
   agentName,
   bindingFromDraft,
   disabledGroup,
@@ -50,6 +51,7 @@ import {
   formatMoney,
   formatTokens,
   modelDisplay,
+  providerEnabled,
   groupDisplayName,
   prettyModelName,
   quotaWindowLabel,
@@ -327,7 +329,11 @@ export function TrayPanel() {
     void invoke("tray_panel_action", { action: "open" });
   };
 
-  const action = (name: "open" | "quit") => void invoke("tray_panel_action", { action: name });
+  const action = (name: "open" | "quit" | "hide") => void invoke("tray_panel_action", { action: name });
+
+  // 面板靠失焦收起；没拿到焦点时不会失焦，就一直置顶关不掉（#3213）。给一个收起按钮，Esc 也收起。
+  // 面板里的弹层后登记、排在上面，Esc 先关它们。
+  useEscapeLayer(true, () => action("hide"));
 
   const refreshNow = async () => {
     setRefreshing(true);
@@ -356,6 +362,9 @@ export function TrayPanel() {
         </button>
         <button aria-label={t("打开 Codex++")} className="gw-icon-button" onClick={() => action("open")} title={t("打开 Codex++")} type="button">
           <ExternalLink className="h-4 w-4" />
+        </button>
+        <button aria-label={t("收起面板")} className="gw-icon-button" onClick={() => action("hide")} title={t("收起面板")} type="button">
+          <X className="h-4 w-4" />
         </button>
       </header>
 
@@ -773,7 +782,7 @@ function GatewayTab({
       <Section title={solo ? tf("{0} 用的模型", [agentName(solo)]) : t("各 Agent 用的模型")}>
         <div className="tp-card tp-list">
           {visibleAgents(focus, glanceAgents(payload?.agents)).map((agent) => (
-            <PanelAgentRow agent={agent} key={agent.agent} onRun={run} payload={payload} />
+            <PanelAgentRow agent={agent} key={agent.agent} onRun={run} payload={payload} onAddDirectProvider={() => void onOpenRoute("addDirectProvider")} />
           ))}
         </div>
         {message ? <p className="tp-error">{message}</p> : null}
@@ -886,10 +895,12 @@ function FlowTab({ today, payload, onOpenRoute }: { today: UsageSummary | null; 
 
 /** 一个 Agent：名字 + 当前模型下拉；选模型即接入，选「默认」即断开。 */
 function PanelAgentRow({
+  onAddDirectProvider,
   agent,
   payload,
   onRun,
 }: {
+  onAddDirectProvider: () => void;
   agent: GatewayAgentView;
   payload: GatewayPayload | null;
   onRun: (command: string, args: Record<string, unknown>) => Promise<boolean>;
@@ -899,13 +910,30 @@ function PanelAgentRow({
   const buttonRef = useRef<HTMLButtonElement>(null);
   const binding = payload?.gateway.bindings[agent.agent];
   const draft = draftFromBinding(binding);
-  const inactive = disabledGroup(payload, draft.model);
-  const effectiveModel = agent.enabled && inactive ? agent.defaultModel : draft.model;
-  const display = inactive && agent.enabled && !effectiveModel
+  const inactive = disabledGroup(payload, draft.model, binding?.defaultModelSelection);
+  const selection = binding?.defaultModelSelection;
+  const original = modelDisplay(payload, draft.model, draft.poolExclude, selection);
+  const selectionProvider = selection && payload?.pool.find((entry) => entry.id === selection.providerId);
+  const unavailable = agent.defaultSelectionStatus
+    ? agent.defaultSelectionStatus === "fallback"
+    : original.issue === "unavailable"
+      && (!selectionProvider || !providerEnabled(selectionProvider) || draft.poolExclude.includes(selectionProvider.id) || selection?.providerRemoved);
+  const effectiveModel = agent.enabled ? agent.defaultModel : draft.model;
+  const effectiveSelection = unavailable ? null : selection;
+  const baseDisplay = agent.enabled && !effectiveModel
     ? { title: "", sub: "", group: false }
-    : modelDisplay(payload, effectiveModel, draft.poolExclude);
+    : agent.enabled && agent.defaultModelDiffers && agent.defaultSelectionStatus !== "invalid" && !effectiveModel.startsWith("group/")
+      ? { title: effectiveModel, sub: "", group: false }
+    : modelDisplay(payload, effectiveModel, draft.poolExclude, effectiveSelection);
+  const display = agent.enabled && agent.defaultSelectionStatus === "invalid"
+    ? { ...baseDisplay, issue: "invalid" as const }
+    : agent.enabled && agent.defaultSelectionStatus === "available"
+      ? { ...baseDisplay, issue: undefined }
+      : baseDisplay;
   const inactiveHint = inactive && agent.enabled
-    ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
+    : unavailable && agent.enabled
+      ? tf("原默认模型「{0}」不可用，网关默认回退为 {1}", [original.title, display.title || t("未设置")])
     : undefined;
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);
@@ -942,7 +970,7 @@ function PanelAgentRow({
           head={head}
           onPick={(item) => {
             setOpen(false);
-            void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.model }, binding) });
+            void onRun("save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft({ ...draft, model: item.providerModel ?? item.model }, binding, item) });
           }}
           onPickOwn={(item) => {
             setOpen(false);
@@ -952,11 +980,14 @@ function PanelAgentRow({
           own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
-          selectedModel={agent.enabled ? effectiveModel || agentModels(payload, draft.poolExclude)[0] || "" : ""}
+          pinProvider
+          selectedModel={agent.enabled && (!agent.defaultModelDiffers || effectiveModel.startsWith("group/")) ? effectiveModel : ""}
+          selectedModelSelection={effectiveSelection}
         />
       </Floating>
       {disconnectTarget ? (
         <AgentDisconnectDialog
+          onAddDirectProvider={onAddDirectProvider}
           agent={agent}
           busy={false}
           onApply={(previewToken) => disconnectTarget === "disconnect"

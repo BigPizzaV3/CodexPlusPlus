@@ -80,7 +80,19 @@ async fn ready(
     Value,
     reqwest::Client,
 )> {
-    let store = GatewayStore::default();
+    ready_in(&GatewayStore::default(), id).await
+}
+
+/// 同 [`ready`]，凭据从 `store` 读、刷新后写回 `store`。「从上游同步」拉模型也走这里（#3221），
+/// 和对话请求共用同一把刷新锁。
+pub(crate) async fn ready_in(
+    store: &GatewayStore,
+    id: &str,
+) -> anyhow::Result<(
+    &'static dyn subscriptions::Subscription,
+    Value,
+    reqwest::Client,
+)> {
     let load = || -> anyhow::Result<_> {
         let gateway = store.load()?;
         let provider = gateway

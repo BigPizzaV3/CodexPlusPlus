@@ -28,6 +28,8 @@
     const mappings = await readMappings();
     const matches = Object.entries(mappings).filter(([id, serverId]) =>
       serverId === project.id && Object.hasOwn(projects, id));
+    // 新版侧栏可以接收未归属的原生会话。项目未登记时也刷新会话目录。
+    if (matches.length === 0 && weixinDesktopSync.rspack) return;
     if (matches.length !== 1) throw Error("微信项目的桌面归属暂不可确认");
     const assignments = await weixinDesktopSync.readState(weixinDesktopSync.keys.THREAD_PROJECT_ASSIGNMENTS);
     if (assignments != null && (typeof assignments !== "object" || Array.isArray(assignments)))
@@ -39,6 +41,67 @@
       threadId: entry.threadId, hostId: "local", projectless: false,
       assignment: { projectKind: "local", projectId: matches[0][0] },
     }]);
+  }
+
+  async function discoverWeixinDesktopServices() {
+    const hasCatalog = (value) => value && typeof value === "object"
+      && Object.hasOwn(value, "localThreadCatalog")
+      && typeof value.localThreadCatalog?.notifyThread === "function"
+      && typeof value.localThreadCatalog?.readEntries === "function"
+      && typeof value.projects?.getLocalProjects === "function"
+      && typeof value.executionPaths?.readCodexHome === "function"
+      && typeof value.threadProjectAssignments?.setProjectless === "function"
+      && typeof value.threadProjectAssignments?.assignIfUnassigned === "function";
+    const hasKeys = (value) => value && typeof value === "object"
+      && typeof value.APP_SERVER_PROJECT_ID_BY_LEGACY_PROJECT_ID_BY_HOST === "string"
+      && typeof value.THREAD_PROJECT_ASSIGNMENTS === "string";
+    const legacy = Object.values(await loadOptionalCodexAppModule("app-shared-") || {});
+    const services = legacy.filter(hasCatalog);
+    const keys = legacy.filter(hasKeys);
+    const clients = legacy.filter((value) => typeof value === "function"
+      && Object.hasOwn(value, "prototype") && Object.hasOwn(value, "getInstance")
+      && typeof value.getInstance === "function"
+      && ["post", "sendRequest", "onFetchResponse", "cancelStream"]
+        .every((method) => typeof value.prototype?.[method] === "function"));
+    if (services.length === 1 && keys.length === 1 && clients.length === 1) {
+      return {
+        services: services[0], keys: keys[0], rspack: false,
+        readState: async (key) => {
+          const response = await clients[0].getInstance().post("vscode://codex/get-global-state", JSON.stringify({ key }));
+          if (!response?.body || !Object.hasOwn(response.body, "value")) throw Error("原生状态暂不可读");
+          return response.body.value;
+        },
+      };
+    }
+    // Rspack 的服务通过已初始化的模块缓存导出。不运行模块工厂，也不依赖哈希或压缩 ID。
+    for (const { src } of document.querySelectorAll('script[type="module"][src]')) {
+      if (!/^app:\/\/-\/assets\/\d+\.[a-f\d]+\.js$/.test(src)) continue;
+      const { __webpack_require__: runtime } = await import(src);
+      if (!runtime?.c) continue;
+      const modules = Object.values(runtime.c).map(({ exports }) => exports);
+      const hosts = modules.filter((module) => module && Object.hasOwn(module, "appServices")
+        && Object.hasOwn(module, "setAppServices") && hasCatalog(module.appServices));
+      if (hosts.length !== 1) continue;
+      const services = hosts[0].appServices;
+      const keys = {
+        APP_SERVER_PROJECT_ID_BY_LEGACY_PROJECT_ID_BY_HOST: "app-server-project-id-by-legacy-project-id-by-host",
+        THREAD_PROJECT_ASSIGNMENTS: "thread-project-assignments",
+      };
+      return {
+        services, keys, rspack: true,
+        readState: async (key) => {
+          if (key === keys.THREAD_PROJECT_ASSIGNMENTS) {
+            const memberships = await services.threadProjectAssignments.readMemberships();
+            if (!Object.hasOwn(memberships, "assignments")) throw Error("原生会话归属暂不可读");
+            return memberships.assignments;
+          }
+          const state = await services.applicationState.read(key);
+          if (!Object.hasOwn(state, "value")) throw Error("原生状态暂不可读");
+          return state.value;
+        },
+      };
+    }
+    throw Error("原生会话目录暂不可用");
   }
 
   async function syncWeixinDesktopThreads() {
@@ -63,34 +126,7 @@
     weixinDesktopSync.flight = (async () => {
       try {
         if (!weixinDesktopSync.services) {
-          const module = await loadOptionalCodexAppModule("app-shared-");
-          // 导出名随打包变化；只接受拥有明确服务能力的唯一原生服务集合。
-          const services = Object.values(module || {}).filter((value) => value && typeof value === "object"
-            && Object.hasOwn(value, "localThreadCatalog")
-            && typeof value.localThreadCatalog?.notifyThread === "function"
-            && typeof value.localThreadCatalog?.readEntries === "function"
-            && typeof value.projects?.getLocalProjects === "function"
-            && typeof value.executionPaths?.readCodexHome === "function"
-            && typeof value.threadProjectAssignments?.setProjectless === "function"
-            && typeof value.threadProjectAssignments?.assignIfUnassigned === "function");
-          const keys = Object.values(module || {}).filter((value) => value && typeof value === "object"
-            && typeof value.APP_SERVER_PROJECT_ID_BY_LEGACY_PROJECT_ID_BY_HOST === "string"
-            && typeof value.THREAD_PROJECT_ASSIGNMENTS === "string");
-          const clients = Object.values(module || {}).filter((value) => typeof value === "function"
-            && Object.hasOwn(value, "prototype") && Object.hasOwn(value, "getInstance")
-            && typeof value.getInstance === "function"
-            && ["post", "sendRequest", "onFetchResponse", "cancelStream"]
-              .every((method) => typeof value.prototype?.[method] === "function"));
-          if (services.length !== 1 || keys.length !== 1 || clients.length !== 1)
-            throw Error("原生会话目录暂不可用");
-          // 直接使用原生请求客户端；不按函数源码中的读写关键字猜测调用器。
-          weixinDesktopSync.readState = async (key) => {
-            const response = await clients[0].getInstance().post("vscode://codex/get-global-state", JSON.stringify({ key }));
-            if (!response?.body || !Object.hasOwn(response.body, "value")) throw Error("原生状态暂不可读");
-            return response.body.value;
-          };
-          weixinDesktopSync.services = services[0];
-          weixinDesktopSync.keys = keys[0];
+          Object.assign(weixinDesktopSync, await discoverWeixinDesktopServices());
         }
         for (const entry of pending) {
           try {

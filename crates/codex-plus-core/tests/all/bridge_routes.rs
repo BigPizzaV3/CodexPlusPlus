@@ -32,6 +32,7 @@ async fn bridge_routes_cover_all_current_paths() {
 
     let cases = [
         ("/settings/get", json!({})),
+        ("/gateway/connection-generation", json!({})),
         ("/settings/set", json!({"providerSyncEnabled": true})),
         ("/settings/catalog", json!({})),
         ("/settings/public", json!({})),
@@ -73,6 +74,9 @@ async fn bridge_routes_cover_all_current_paths() {
             "/script-market/install",
             json!({"id": "codex-relay-balance"}),
         ),
+        ("/script-market/package/prepare", json!({"id": "request-toasts"})),
+        ("/script-market/package/install", json!({"token": "t1", "enable": true})),
+        ("/script-market/package/discard", json!({"token": "t1"})),
         ("/stepwise/settings", json!({})),
         (
             "/stepwise/generate",
@@ -107,6 +111,47 @@ async fn bridge_routes_cover_all_current_paths() {
             "{path} should be routed"
         );
     }
+}
+
+#[tokio::test]
+async fn gateway_connection_generation_uses_current_home_and_reports_read_errors() {
+    let service = Arc::new(FakeSettings::default());
+    let home = service.codex_home_dir();
+    let ctx = BridgeContext::new(service.clone(), Arc::new(FakeRuntime::default()), Arc::new(FakeData));
+
+    let initial = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(initial, json!({"status": "ok", "active": false, "generation": ""}));
+    let generation = codex_plus_core::gateway::connection_generation::publish(&home).unwrap();
+    {
+        let mut settings = service.settings.lock().unwrap();
+        settings.relay_profiles_enabled = true;
+        settings.active_relay_id = codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
+    }
+    let active = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(active, json!({"status": "ok", "active": true, "generation": generation}));
+    service.settings.lock().unwrap().relay_profiles_enabled = false;
+    let disabled = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(disabled["active"], false);
+    service.settings.lock().unwrap().relay_profiles_enabled = true;
+    service.settings.lock().unwrap().active_relay_id = "direct".into();
+    let direct = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(direct["active"], false);
+
+    let marker = home.join("codex-plus-gateway-connection-generation");
+    std::fs::remove_file(&marker).unwrap();
+    std::fs::create_dir(&marker).unwrap();
+    let direct = handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await;
+    assert_eq!(direct, json!({"status": "ok", "active": false, "generation": ""}));
+    let settings = handle_bridge_request(ctx.clone(), "/settings/get", json!({})).await;
+    assert_eq!(settings["activeRelayId"], "direct");
+    let saved = handle_bridge_request(ctx.clone(), "/settings/set", json!({"providerSyncEnabled": true})).await;
+    assert_eq!(saved["providerSyncEnabled"], true);
+    service.settings.lock().unwrap().active_relay_id =
+        codex_plus_core::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/gateway/connection-generation", json!({})).await["status"],
+        "failed"
+    );
 }
 
 #[tokio::test]
@@ -1813,6 +1858,9 @@ impl FakeSettings {
 
 #[async_trait]
 impl BridgeSettingsService for FakeSettings {
+    fn codex_home_dir(&self) -> std::path::PathBuf {
+        self.agent_pet_cache.path().join("codex")
+    }
     fn agent_pet_cache_dir(&self) -> std::path::PathBuf {
         self.agent_pet_cache.path().join("agent-pet-cache")
     }
@@ -2236,4 +2284,47 @@ async fn retired_remote_routes_are_unavailable() {
             "{path}: {result}"
         );
     }
+}
+
+/// 管理器登记的宿主路由（Codex 拓展页的社区 / 我发布的 / dsh 插件）：登记后按路径分发，错误转成 failed；
+/// 没登记的路径仍是未知路径。
+#[tokio::test]
+async fn host_routes_dispatch_registered_handlers_and_map_errors() {
+    use codex_plus_core::routes::{HostRouteHandler, register_host_route};
+    let ctx = test_context();
+    let unregistered = handle_bridge_request(ctx.clone(), "/extension-market/test-host-missing", json!({})).await;
+    assert_eq!(unregistered["message"], "Unknown bridge path");
+
+    let echo: HostRouteHandler = Arc::new(|payload| Box::pin(async move { Ok(json!({ "status": "ok", "echo": payload })) }));
+    register_host_route("/extension-market/test-host-echo", echo);
+    let ok = handle_bridge_request(ctx.clone(), "/extension-market/test-host-echo", json!({ "action": "list" })).await;
+    assert_eq!(ok["echo"]["action"], "list");
+
+    let failing: HostRouteHandler = Arc::new(|_| Box::pin(async { anyhow::bail!("gh 未登录") }));
+    register_host_route("/extension-market/test-host-failing", failing);
+    let failed = handle_bridge_request(ctx, "/extension-market/test-host-failing", json!({})).await;
+    assert_eq!(failed["status"], "failed");
+    assert!(failed["message"].as_str().unwrap_or_default().contains("gh 未登录"));
+}
+
+/// Codex 里「微信连接」页的路由：连接本体在管理器进程里，由管理器登记宿主路由；
+/// 没登记（bridge 不在管理器进程里）时照实提示「管理器未运行」，而不是「未知路径」。登记后照常分发。
+#[tokio::test]
+async fn weixin_connect_route_needs_the_manager_host_route() {
+    use codex_plus_core::connect::page::BRIDGE_ROUTE;
+    use codex_plus_core::routes::{HostRouteHandler, register_host_route};
+    let ctx = test_context();
+    let missing = handle_bridge_request(ctx.clone(), BRIDGE_ROUTE, json!({ "action": "state" })).await;
+    assert_eq!(missing["status"], "failed");
+    assert!(
+        missing["message"].as_str().unwrap_or_default().contains("Codex++ 管理器未运行"),
+        "{missing}"
+    );
+
+    let echo: HostRouteHandler = Arc::new(|payload| Box::pin(async move { Ok(json!({ "status": "ok", "echo": payload })) }));
+    register_host_route(BRIDGE_ROUTE, echo);
+    let ok = handle_bridge_request(ctx, BRIDGE_ROUTE, json!({ "action": "save", "settings": { "weixinConnectSandbox": "read-only" } })).await;
+    assert_eq!(ok["status"], "ok");
+    assert_eq!(ok["echo"]["action"], "save");
+    assert_eq!(ok["echo"]["settings"]["weixinConnectSandbox"], "read-only");
 }

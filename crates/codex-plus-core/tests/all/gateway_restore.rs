@@ -52,7 +52,9 @@ fn fixture(port: u16) -> Fixture {
             strip_image_generation_tool: None,
             subscription_policy: None,
             strip_responses_image_detail: None,
+            strip_responses_output_encrypted_content: None,
             disable_tool_search: None,
+            custom_headers: None,
         },
         "preset:deepseek",
         None,
@@ -386,6 +388,67 @@ fn codex_disconnect_keeps_login_made_while_on_the_gateway() {
     disable_binding(ctx, &settings, &ToolId::Codex).unwrap();
     let auth: Value = serde_json::from_str(&read(&auth_path)).unwrap();
     assert_eq!(auth["tokens"]["access_token"], "at-new", "{auth}");
+}
+
+/// issue #3222：接入前的供应商在实时 config.toml 里找不到有效 endpoint 时，接入网关不能卡死：
+/// 先存原文再放弃回填，接入照常完成；接入前供应商的档案不被缺地址的实时配置写坏，断开后原文回来。
+fn assert_codex_connects_despite_missing_live_endpoint(ctx: &ApplyContext, broken_live: &str) {
+    let config_path = ctx.codex_home.join("config.toml");
+    let direct_before = ctx
+        .settings
+        .load()
+        .unwrap()
+        .relay_profiles
+        .into_iter()
+        .find(|profile| profile.id == "direct")
+        .unwrap();
+    std::fs::write(&config_path, broken_live).unwrap();
+
+    enable_binding(ctx, &ToolId::Codex, binding()).expect("live 缺 endpoint 不能挡住接入网关");
+
+    assert!(read(&config_path).contains("/gw/codex/v1"), "{}", read(&config_path));
+    let stash: Value =
+        serde_json::from_str(&read(&ctx.backup_root.join("codex-before-gateway.json")))
+            .expect("接入前的原文要存下来");
+    assert_eq!(stash["configToml"].as_str(), Some(broken_live), "{stash}");
+    let settings = ctx.settings.load().unwrap();
+    let direct = settings
+        .relay_profiles
+        .iter()
+        .find(|profile| profile.id == "direct")
+        .unwrap();
+    assert_eq!(direct.config_contents, direct_before.config_contents, "直连供应商的档案不能被回填写坏");
+    assert_eq!(direct.auth_contents, direct_before.auth_contents);
+    assert!(direct.config_contents.contains("https://api.direct.test/v1"));
+
+    disable_binding(ctx, &settings, &ToolId::Codex).unwrap();
+    let restored = read(&config_path);
+    assert!(!restored.contains("/gw/codex"), "{restored}");
+    assert_eq!(ctx.settings.load().unwrap().active_relay_id, "direct");
+}
+
+#[test]
+fn codex_connects_when_live_provider_section_lacks_base_url() {
+    let fixture = fixture(57440);
+    let ctx = &fixture.ctx;
+    seed_codex_direct(ctx);
+    let seeded = read(&ctx.codex_home.join("config.toml"));
+    let broken: String = seeded
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("base_url"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert!(!broken.contains("api.direct.test"), "{broken}");
+    assert_codex_connects_despite_missing_live_endpoint(ctx, &broken);
+}
+
+#[test]
+fn codex_connects_when_live_model_provider_points_at_missing_section() {
+    let fixture = fixture(57441);
+    let ctx = &fixture.ctx;
+    seed_codex_direct(ctx);
+    let broken = "model_provider = \"ghost\"\nmodel = \"gpt-direct\"\n";
+    assert_codex_connects_despite_missing_live_endpoint(ctx, broken);
 }
 
 /// 正常接入（直连模式能从自己的记录还原，没存副本）：接入期间加的 MCP 段断开后仍在。

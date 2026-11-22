@@ -1838,6 +1838,20 @@ impl Subscription for Kiro {
         http: &reqwest::Client,
         credentials: &Value,
     ) -> anyhow::Result<Vec<String>> {
+        // 凭据不对照旧报错；接口失败或为空时用 auto 兜底（记诊断日志）。
+        access_token(credentials)?;
+        Ok(crate::gateway::subscriptions::models_or_fallback(
+            self.id(),
+            self.list_models(http, credentials).await,
+            || vec!["auto".to_string()],
+        ))
+    }
+
+    async fn list_models(
+        &self,
+        http: &reqwest::Client,
+        credentials: &Value,
+    ) -> anyhow::Result<Vec<String>> {
         let token = access_token(credentials)?;
         let profile = text_of(credentials, "profileArn")
             .unwrap_or_default()
@@ -1846,17 +1860,14 @@ impl Subscription for Kiro {
         if !profile.is_empty() {
             params.push(("profileArn", profile.as_str()));
         }
-        let listed = management_get(
+        let value = management_get(
             http,
             &api_region(credentials),
             &token,
             "List-Available-Models",
             &params,
         )
-        .await;
-        let Ok(value) = listed else {
-            return Ok(vec!["auto".to_string()]);
-        };
+        .await?;
         let models = parse_models(&value);
         {
             let mut limits = input_limits()
@@ -1868,12 +1879,7 @@ impl Subscription for Kiro {
                 }
             }
         }
-        let ids: Vec<String> = models.into_iter().map(|(id, _)| id).collect();
-        Ok(if ids.is_empty() {
-            vec!["auto".to_string()]
-        } else {
-            ids
-        })
+        Ok(models.into_iter().map(|(id, _)| id).collect())
     }
 
     async fn chat(

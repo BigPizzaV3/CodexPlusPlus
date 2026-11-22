@@ -261,11 +261,65 @@ impl BrowserPaths {
             "Native browser compatibility is Windows-only"
         );
         let local = std::env::var_os("LOCALAPPDATA").context("LOCALAPPDATA is unavailable")?;
-        Ok(Self {
-            codex_home: crate::codex_home::default_codex_home_dir(),
-            runtime_root: PathBuf::from(local).join("OpenAI/Codex/runtimes/cua_node"),
-            state_root: crate::paths::default_app_state_dir().join("native-browser-identification"),
-        })
+        Ok(Self::anchored(
+            crate::codex_home::default_codex_home_dir(),
+            PathBuf::from(local).join("OpenAI/Codex/runtimes/cua_node"),
+            crate::paths::default_app_state_dir().join("native-browser-identification"),
+        ))
+    }
+
+    /// 三个根目录都来自用户可控的入口（CODEX_HOME、Codex++ 状态目录、LOCALAPPDATA），
+    /// 作为信任锚点先解析成真实路径，见 [`trusted_root`]。
+    fn anchored(codex_home: PathBuf, runtime_root: PathBuf, state_root: PathBuf) -> Self {
+        Self {
+            codex_home: trusted_root(codex_home),
+            runtime_root: trusted_root(runtime_root),
+            state_root: trusted_root(state_root),
+        }
+    }
+}
+
+/// issue #3157：用户把 `%USERPROFILE%\.codex-session-delete`、`.codex` 等入口目录挪到别的盘、
+/// 在原位置留 Junction / 软链，是合法的迁移用法。所以入口根目录本身及其祖先是信任锚点：
+/// 这里把它解析成真实路径（Junction / 软链都会被解开），之后所有操作都基于真实路径。
+/// `plain_path` / `pin_parents` 仍对整条真实路径做校验，锚点**之下**出现的链接、重解析点照旧拒绝。
+///
+/// 根目录本身已是普通路径时原样返回：不改变 Windows 上的大小写 / 短文件名写法，
+/// 因为描述符里的运行时路径是按字面比较的。含 `..` 的路径也原样返回，交给 `plain_path` 拒绝，
+/// 不能让 canonicalize 把它「洗」成合法路径。
+fn trusted_root(root: PathBuf) -> PathBuf {
+    if !root.is_absolute()
+        || root
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        || plain_path(&root).is_ok()
+    {
+        return root;
+    }
+    real_path(&root).unwrap_or(root)
+}
+
+/// 解析最深的已存在祖先，再把尚不存在的部分原样接回（状态目录在首次启用前可能还没建）。
+/// 接回的部分若之后被换成链接，仍由 `plain_path` 拒绝。
+fn real_path(path: &Path) -> Option<PathBuf> {
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        match fs::canonicalize(existing) {
+            Ok(real) => {
+                // Windows 的 canonicalize 带 `\\?\` 前缀，去掉后才能和描述符、控制文件路径对得上。
+                let mut real = crate::paths::strip_verbatim_prefix(&real);
+                for name in missing.iter().rev() {
+                    real.push(name);
+                }
+                return Some(real);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing.push(existing.file_name()?.to_owned());
+                existing = existing.parent()?;
+            }
+            Err(_) => return None,
+        }
     }
 }
 
@@ -331,6 +385,11 @@ fn plain_path(path: &Path) -> Result<()> {
         "Parent traversal is unsupported"
     );
     Ok(())
+}
+
+/// 路径确实不存在（不跟随末端链接）。悬空链接算「存在」，留给 `plain_path` 拒绝。
+fn is_missing(path: &Path) -> bool {
+    matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
 }
 
 // Deny directory deletion/renaming while a Windows transaction uses its descendants.
@@ -671,6 +730,10 @@ fn discover(paths: &BrowserPaths) -> Result<Option<String>> {
     let plugins = paths
         .codex_home
         .join("plugins/cache/openai-bundled/unified-computer-use");
+    // 插件目录不存在时没有可读的东西，先判断再校验，免得无关路径问题挡住启动。
+    if is_missing(&plugins) {
+        return Ok(None);
+    }
     plain_path(&plugins)?;
     if !plugins.exists() {
         return Ok(None);
@@ -1180,7 +1243,18 @@ fn wait_for_monitor_shutdown_at(
     paths: &BrowserPaths,
     timeout: Duration,
 ) -> Result<NativeBrowserShutdown> {
+    // issue #3157：状态目录都不存在，说明从没接管过任何文件，没有要等、要恢复的东西，
+    // 不能因为路径校验失败阻断「重启 / 停止」。
+    if is_missing(&paths.state_root) {
+        return Ok(NativeBrowserShutdown::Ready);
+    }
     let path = paths.state_root.join("monitor.lock");
+    // 锁文件不存在说明当前没有 monitor 持有它：直接只读核对磁盘
+    // （核对时读每个文件都会做链接校验），不必先钉住祖先目录。
+    if is_missing(&path) {
+        verify_restored_state(paths)?;
+        return Ok(NativeBrowserShutdown::Ready);
+    }
     let _guards = pin_parents(&path)?;
     let mut options = OpenOptions::new();
     options.read(true).write(true);
@@ -1679,6 +1753,126 @@ mod tests {
             plain_path(&root.join("a").join("..").join("b")).is_err(),
             "含 .. 的路径应被拒"
         );
+    }
+
+    /// issue #3157：用软链模拟 Windows 上「家目录点目录挪到别的盘、原位置留 Junction」。
+    /// `is_symlink` 分支跨平台，Windows 的 Junction 走的是同一个锚点解析。
+    #[cfg(unix)]
+    #[test]
+    fn linked_entry_roots_are_trusted_anchors_but_links_below_are_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp_root(&temp);
+        let moved = root.join("other-drive/profile");
+        fs::create_dir_all(&moved).unwrap();
+        let profile = root.join("profile");
+        std::os::unix::fs::symlink(&moved, &profile).unwrap();
+
+        // 祖先是链接、状态目录尚不存在：锚点解析成真实路径，尚不存在的部分原样接回。
+        let paths = BrowserPaths::anchored(
+            profile.join(".codex"),
+            profile.join("runtimes/cua_node"),
+            profile.join(".codex-session-delete/native-browser-identification"),
+        );
+        assert_eq!(
+            paths.state_root,
+            moved.join(".codex-session-delete/native-browser-identification")
+        );
+        assert_eq!(paths.codex_home, moved.join(".codex"));
+        assert_eq!(paths.runtime_root, moved.join("runtimes/cua_node"));
+        assert!(plain_path(&paths.state_root).is_ok());
+
+        // 启动期：discover / reconcile / acquire 都能正常进行。
+        assert_eq!(discover(&paths).unwrap(), None);
+        let mut owner = acquire_monitor_owner(&paths).unwrap();
+        write_monitor_receipt(&mut owner, &uuid::Uuid::new_v4().to_string(), "restored").unwrap();
+        assert!(
+            moved
+                .join(".codex-session-delete/native-browser-identification/monitor.lock")
+                .is_file(),
+            "锁文件应落在真实目录里"
+        );
+        release_lock(owner);
+        assert_eq!(reconcile(&paths, false).unwrap().state, "restored");
+        // 重启期：没有 monitor 在跑、也没有要恢复的文件，等待直接就绪。
+        assert_eq!(
+            wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap(),
+            NativeBrowserShutdown::Ready
+        );
+
+        // 状态目录本身就是链接（锚点本身）也同样放行。
+        let state_link = root.join("state-link");
+        std::os::unix::fs::symlink(&paths.state_root, &state_link).unwrap();
+        let linked_state = BrowserPaths::anchored(
+            paths.codex_home.clone(),
+            paths.runtime_root.clone(),
+            state_link.clone(),
+        );
+        assert_eq!(linked_state.state_root, paths.state_root);
+        release_lock(acquire_monitor_owner(&linked_state).unwrap());
+
+        // 锚点之下的链接仍被拒绝：备份目录、锁文件被换成链接都不放行。
+        let elsewhere = root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let key_dir = paths.state_root.join("0123456789abcdef");
+        std::os::unix::fs::symlink(&elsewhere, &key_dir).unwrap();
+        let error = plain_path(&key_dir.join("journal.json")).unwrap_err();
+        assert!(error.to_string().contains("Linked paths"), "{error}");
+        fs::remove_file(&key_dir).unwrap();
+
+        let lock = paths.state_root.join("monitor.lock");
+        fs::remove_file(&lock).unwrap();
+        fs::write(elsewhere.join("lock"), b"").unwrap();
+        std::os::unix::fs::symlink(elsewhere.join("lock"), &lock).unwrap();
+        let error = wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap_err();
+        assert!(error.to_string().contains("Linked paths"), "{error}");
+        let error = acquire_monitor_owner(&paths).unwrap_err();
+        assert!(error.to_string().contains("Linked paths"), "{error}");
+
+        // 未经锚点解析的原始链接路径照旧被拒，`..` 也不会被 canonicalize 洗掉。
+        assert!(plain_path(&profile.join(".codex-session-delete")).is_err());
+        let traversal = moved.join("a").join("..").join("b");
+        assert_eq!(trusted_root(traversal.clone()), traversal);
+    }
+
+    #[test]
+    fn manager_wait_is_ready_when_nothing_was_ever_taken_over() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = paths(&temp);
+        // 状态目录不存在：直接就绪，也不创建任何东西。
+        assert_eq!(
+            wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap(),
+            NativeBrowserShutdown::Ready
+        );
+        assert!(!paths.state_root.exists());
+        // 状态目录在、锁文件不在、兼容已关闭（关闭开关后的常态）：同样就绪且只读。
+        fs::create_dir_all(&paths.state_root).unwrap();
+        fs::write(
+            paths.state_root.join("control.json"),
+            br#"{"schema":1,"requireIdentification":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            wait_for_monitor_shutdown_at(&paths, Duration::ZERO).unwrap(),
+            NativeBrowserShutdown::Ready
+        );
+        assert!(!paths.state_root.join("monitor.lock").exists());
+
+        // 祖先链上有链接但状态目录根本不存在（未经锚点解析）：也不阻断重启。
+        #[cfg(unix)]
+        {
+            let root = temp_root(&temp);
+            let link = root.join("linked-profile");
+            std::os::unix::fs::symlink(root.join("missing-target"), &link).unwrap();
+            let unanchored = BrowserPaths {
+                codex_home: link.join(".codex"),
+                runtime_root: link.join("runtimes"),
+                state_root: link.join(".codex-session-delete/native-browser-identification"),
+            };
+            assert_eq!(
+                wait_for_monitor_shutdown_at(&unanchored, Duration::ZERO).unwrap(),
+                NativeBrowserShutdown::Ready
+            );
+        }
     }
 
     #[test]

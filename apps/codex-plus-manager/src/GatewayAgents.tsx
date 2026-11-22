@@ -2,8 +2,10 @@
 import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, RotateCcw, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
+import { appConfirm } from "./app-dialog";
+import { modelSlugFromRowName } from "./model-metadata";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
 import {
@@ -19,8 +21,11 @@ import {
   visibleOwnModels,
   pickerSections,
   providerEnabled,
+  qualifiedProvider,
+  servingProviders,
   validateDraft,
   type BindingDraft,
+  type DefaultModelSelection,
   type GatewayAgentId,
   type GatewayAgentView,
   type GatewayPayload,
@@ -29,6 +34,7 @@ import {
   maskAccountName,
   relativeTime,
   type ImageOption,
+  imageModelLabel,
   isFavoriteModel,
   toggleFavoriteModel,
   type GatewayResult,
@@ -81,7 +87,7 @@ export function AgentsView({
   run: Run;
   notify: Notify;
   onManage: () => void;
-  onOpenCodexProviderSettings?: () => void;
+  onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：不传（比如总览里的接入弹窗）就不显示那个键。 */
   codexRun?: CodexRunControls;
 }) {
@@ -152,7 +158,7 @@ export function AgentConnectDialog({
   run: Run;
   notify: Notify;
   onManage: () => void;
-  onOpenCodexProviderSettings?: () => void;
+  onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   onClose: () => void;
 }) {
   // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。
@@ -191,7 +197,7 @@ function AgentRow({
   expanded: boolean;
   onToggleExpand: () => void;
   onManage: () => void;
-  onOpenCodexProviderSettings?: () => void;
+  onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   run: Run;
   notify: Notify;
 }) {
@@ -257,19 +263,22 @@ function AgentRow({
       await refreshClaudeRun();
     }
   };
-  const save = async (next: BindingDraft) => {
-    const error = validateDraft(next, payload, connected ? binding?.model : undefined);
+  const save = async (next: BindingDraft, updateDraft = true, item?: PickerItem) => {
+    const error = validateDraft(next, payload, connected ? binding?.model : undefined, connected && !item ? binding?.defaultModelSelection : null);
     if (error) {
       void notify(t("还不能接入"), t(error), "warning");
       return false;
     }
-    return run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding) }, t("保存网关绑定"), connected);
+    if (updateDraft) setDraft(next);
+    const saved = await run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding, item) }, t("保存网关绑定"), connected);
+    if (!saved && updateDraft) setDraft(draft);
+    return saved;
   };
   const disconnect = () => setDisconnectTarget("disconnect");
   // 在选择器里选模型：已接入时直接改默认模型，未接入时选完即接入。
   const pick = (item: PickerItem) => {
     setPickerOpen(false);
-    void save({ ...draft, model: item.model });
+    void save({ ...draft, model: item.providerModel ?? item.model }, false, item);
   };
   // 已接入时先预览还原差异，确认后才断开并选择直连模型。
   const pickOwn = async (item: PickerItem) => {
@@ -300,7 +309,7 @@ function AgentRow({
   const modelCount = agentModels(payload, draft.poolExclude).length;
   const reconnectAllowed = canReconnectAgent(agent, payload?.relayProfilesEnabled);
   const reconnect = () =>
-    run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(draft, binding) }, t("重新接入"));
+    run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(draft, binding), reconnect: true }, t("重新接入"));
   const note = diagnostic.reconnect
     ? drift?.by ? tf("配置被 {0} 改了", [drift.by]) : t("当前文件与接入配置不一致")
     : connected && isClaude
@@ -344,7 +353,7 @@ function AgentRow({
                   <>
                     <span>{t("供应商配置切换已关闭，在供应商配置页打开后才能切换")}</span>
                     {onOpenCodexProviderSettings ? (
-                      <button className="gw-link gw-drift-reconnect" onClick={onOpenCodexProviderSettings} type="button">
+                      <button className="gw-link gw-drift-reconnect" onClick={() => onOpenCodexProviderSettings()} type="button">
                         {t("打开供应商页")}
                       </button>
                     ) : null}
@@ -410,6 +419,7 @@ function AgentRow({
                   : <Play aria-hidden="true" className="h-4 w-4" />}
             </button>
           ) : null}
+          {binding ? <ResetModelSelections agent={agent} busy={busy !== null} run={run} /> : null}
           <Switch pending={busy !== null} label={tf("{0} 接入 Codex++", [agent.name])} on={connected} onToggle={toggle} />
           <button
             aria-expanded={expanded}
@@ -429,6 +439,7 @@ function AgentRow({
       ) : null}
       {disconnectTarget ? (
         <AgentDisconnectDialog
+          onAddDirectProvider={onOpenCodexProviderSettings && (() => onOpenCodexProviderSettings(true))}
           agent={agent}
           busy={busy !== null}
           onApply={(previewToken) => disconnectTarget === "disconnect"
@@ -440,6 +451,22 @@ function AgentRow({
         />
       ) : null}
     </div>
+  );
+}
+
+function ResetModelSelections({ agent, busy, run }: { agent: GatewayAgentView; busy: boolean; run: Run }) {
+  const reset = async () => {
+    const accepted = await appConfirm(
+      t("重置后，历史会话可能按当前路由规则选择供应商。有效的当前默认模型供应商身份会保留；失效的当前默认选择会清除。是否继续？"),
+      { title: tf("重置 {0} 的历史模型选择", [agent.name]), confirmText: t("重置"), danger: true },
+    );
+    if (!accepted) return;
+    await run(`reset-model-selections:${agent.agent}`, "reset_gateway_model_selections", { agent: agent.agent }, t("重置历史模型选择"));
+  };
+  return (
+    <button aria-label={t("重置历史模型选择")} className="gw-icon-button" disabled={busy} onClick={() => void reset()} title={t("重置历史模型选择")} type="button">
+      <RotateCcw aria-hidden="true" className="h-4 w-4" />
+    </button>
   );
 }
 
@@ -606,6 +633,38 @@ function AgentDetail({
               onPick={(model) => onSave({ ...draft, titleModel: model })}
               payload={payload}
               value={draft.titleModel}
+            />
+          </SetLine>
+        ) : null}
+        {/* Codex 的上下文压缩（手动 /compact 与自动压缩）可单独用更便宜的模型（#3142）；不兼容、装不下或失败时回退原模型。 */}
+        {agent.agent === "codex" ? (
+          <SetLine hint={t("压缩上下文用；不指定时跟随当前模型")} title={t("压缩模型")} tooltip={t("Codex 压缩上下文（/compact 与自动压缩）的请求发给这个模型，普通对话仍用主模型。压缩模型不可用、协议不兼容、窗口装不下或上游拒绝时回退到原模型，请求日志里会标出来")}>
+            <TierPicker
+              emptyLabel={t("跟随当前模型")}
+              exclude={draft.poolExclude}
+              inactiveBlocksRequest
+              label=""
+              onPick={(model) => onSave({ ...draft, compactionModel: model })}
+              payload={payload}
+              value={draft.compactionModel}
+            />
+          </SetLine>
+        ) : null}
+        {agent.agent === "codex" && draft.compactionModel ? (
+          <SetLine hint={t("改发到压缩模型时用的推理强度")} title={t("压缩推理强度")}>
+            <AppSelect
+              disabled={busy !== null}
+              label={t("压缩推理强度")}
+              menuWidth={200}
+              onChange={(next) => onSave({ ...draft, compactionReasoningEffort: next })}
+              options={[
+                { value: "", label: t("沿用原请求") },
+                { value: "minimal", label: "minimal" },
+                { value: "low", label: "low" },
+                { value: "medium", label: "medium" },
+                { value: "high", label: "high" },
+              ]}
+              value={draft.compactionReasoningEffort}
             />
           </SetLine>
         ) : null}
@@ -828,16 +887,19 @@ export function ModelList({
   payload,
   exclude,
   selectedModel,
+  selectedModelSelection,
   head,
   skipGroup,
   onPick,
   own,
   ownAgent,
   onPickOwn,
+  pinProvider = false,
 }: {
   payload: GatewayPayload | null;
   exclude: string[];
   selectedModel: string;
+  selectedModelSelection?: DefaultModelSelection | null;
   head?: ReactNode;
   skipGroup?: string;
   onPick: (item: PickerItem) => void;
@@ -845,6 +907,7 @@ export function ModelList({
   /** Agent 的显示名，自带模型的说明里用。 */
   ownAgent?: string;
   onPickOwn?: (item: PickerItem) => void;
+  pinProvider?: boolean;
 }) {
   const nav = useContext(GatewayNavContext);
   const [query, updateQuery] = useState("");
@@ -890,6 +953,19 @@ export function ModelList({
       .map((section) => ({ ...section, items: section.items.filter((item) => isFavoriteModel(favorites, item.model, payload)) }))
       .filter((section) => section.items.length);
   }, [payload, query, exclude, favoritesOnly, sectionOnly, favorites, skipGroup, ownList]);
+  const displaySections = useMemo<PickerSection[]>(() => {
+    const current = selectedModel.trim();
+    if (pinProvider && !favoritesOnly && !sectionOnly && !query.trim() && current && modelDisplay(payload, current, exclude).auto &&
+        !sections.some((section) => section.items.some((item) => !item.direct && item.model.toLowerCase() === current.toLowerCase()))) {
+      return [{
+        key: "current",
+        title: "当前选择",
+        avatar: "",
+        items: [{ model: current, label: modelDisplay(payload, current, exclude).title, sub: "按供应商池顺序尝试", avatar: "" }],
+      }, ...sections];
+    }
+    return sections;
+  }, [sections, selectedModel, pinProvider, favoritesOnly, sectionOnly, query, payload, exclude]);
   const toggleFavorite = (model: string) => {
     const next = toggleFavoriteModel(favorites, model, payload);
     setFavorites(next);
@@ -905,8 +981,18 @@ export function ModelList({
     if (listRef.current) listRef.current.scrollTop = 0;
   };
   const isSelected = (item: PickerItem) => {
-    const current = item.direct ? ownList?.current ?? "" : selectedModel;
-    return Boolean(current) && item.model.toLowerCase() === current.toLowerCase();
+    const current = item.direct ? ownList?.current ?? "" : modelSlugFromRowName(selectedModel);
+    if (!item.direct && selectedModelSelection && current.toLowerCase() ===
+        `${selectedModelSelection.providerId}/${modelSlugFromRowName(selectedModelSelection.upstreamModel)}`.toLowerCase()) {
+      return !selectedModelSelection.providerRemoved
+        && item.defaultModelSelection?.providerId === selectedModelSelection.providerId
+        && modelSlugFromRowName(item.defaultModelSelection.upstreamModel).toLowerCase() === modelSlugFromRowName(selectedModelSelection.upstreamModel).toLowerCase()
+        && item.defaultModelSelection.providerSource === selectedModelSelection.providerSource;
+    }
+    const model = item.direct ? item.model : modelSlugFromRowName(item.model);
+    const providerModel = item.direct ? item.providerModel : item.providerModel && modelSlugFromRowName(item.providerModel);
+    return Boolean(current) && (model.toLowerCase() === current.toLowerCase() ||
+      Boolean(providerModel && qualifiedProvider(payload, current, exclude) && providerModel.toLowerCase() === current.toLowerCase()));
   };
   const choose = (item: PickerItem) => (item.direct && onPickOwn ? onPickOwn(item) : onPick(item));
 
@@ -914,8 +1000,8 @@ export function ModelList({
     () => withOwnSection(pickerSections(payload, "", avatarOf, exclude, skipGroup), ownPickerSection(ownList, "", avatarOf)).filter((section) => section.key !== "custom"),
     [payload, exclude, skipGroup, ownList],
   );
-  const total = sections.reduce((sum, section) => sum + section.items.length, 0);
-  const customCount = sections.find((section) => section.key === "custom")?.items.length ?? 0;
+  const total = displaySections.reduce((sum, section) => sum + section.items.length, 0);
+  const customCount = displaySections.find((section) => section.key === "custom")?.items.length ?? 0;
 
   // 排版：搜索 + 一排横向筛选在上；列表每个模型两行（模型名 / 供应商）；「默认」「断开」这类操作在底部。
   return (
@@ -938,12 +1024,12 @@ export function ModelList({
         </div>
       </div>
       <div className="gw-mp-list" ref={listRef}>
-        {sections.length === 0 ? (
+        {displaySections.length === 0 ? (
           <div className="gw-empty">
             {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("供应商池是空的，先到「供应商」里添加。")}
           </div>
         ) : null}
-        {sections.map((section) => {
+        {displaySections.map((section) => {
           const provider = providersBySection.get(section.key);
           const expanded = searching ? !closedSearchSections.includes(section.key) : openSections[section.key] ?? !section.key.startsWith("provider:");
           return (
@@ -962,8 +1048,8 @@ export function ModelList({
                 type="button"
               >
                 <ChevronRight aria-hidden="true" className="gw-mp-heading-arrow h-3.5 w-3.5" data-open={expanded} />
-                {section.key === "group" ? <Waypoints className="h-3.5 w-3.5" /> : section.key === "auto" ? <Shuffle className="h-3.5 w-3.5" /> : section.key === "custom" ? null : <Avatar baseUrl={provider?.baseUrl} name={provider?.name ?? section.title} size="sm" />}
-                <span className="gw-mp-heading-name">{section.key === "group" || section.key === "custom" || section.key === "auto" ? t(section.title) : section.title}</span>
+                {section.key === "group" ? <Waypoints className="h-3.5 w-3.5" /> : section.key === "auto" || section.key === "current" ? <Shuffle className="h-3.5 w-3.5" /> : section.key === "custom" ? null : <Avatar baseUrl={provider?.baseUrl} name={provider?.name ?? section.title} size="sm" />}
+                <span className="gw-mp-heading-name">{section.key === "group" || section.key === "custom" || section.key === "auto" || section.key === "current" ? t(section.title) : section.title}</span>
                 <em>{section.items.length}</em>
               </button>
               {section.key === "group" && nav.openModelGroups ? (
@@ -973,21 +1059,28 @@ export function ModelList({
             {expanded ? section.items.map((item) => {
               const selected = isSelected(item);
               const favorite = isFavoriteModel(favorites, item.model, payload);
+              const candidate = item.providerModel ?? (item.custom ? item.model : "");
+              const ambiguous = Boolean(pinProvider && candidate && (
+                candidate.toLowerCase().startsWith(GROUP_MODEL_PREFIX) ||
+                candidate.includes("*") ||
+                servingProviders(payload, candidate, exclude).length
+              ));
               return (
                 <div
                   aria-selected={selected}
+                  aria-disabled={ambiguous || undefined}
                   className="gw-mp-item"
                   data-direct={item.direct ? true : undefined}
                   data-selected={selected}
                   key={item.model}
-                  onClick={() => choose(item)}
-                  onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) choose(item); }}
+                  onClick={() => { if (!ambiguous) choose(item); }}
+                  onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget && !ambiguous) choose(item); }}
                   role="option"
                   tabIndex={0}
                 >
                   <span className="gw-mp-text">
                     <strong title={item.model.startsWith(GROUP_MODEL_PREFIX) ? item.sub : item.model}>{item.label}</strong>
-                    {item.custom ? <small>{item.sub} · {t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{item.sub}</small> : null}
+                    {ambiguous ? <small>{t("模型 ID 与已有模型名冲突，无法固定到此供应商")}</small> : item.custom ? <small>{item.sub} · {t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{section.key === "current" ? t(item.sub) : item.sub}</small> : null}
                   </span>
                   {item.direct ? (
                     <em className="gw-mp-direct" title={tf("{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。", [ownAgent ?? "Agent", item.direct])}>
@@ -1023,9 +1116,9 @@ function withOwnSection(sections: PickerSection[], own: PickerSection | null): P
   return custom < 0 ? [...sections, own] : [...sections.slice(0, custom), own, ...sections.slice(custom)];
 }
 
-/** 一项生图选项的显示名：「ChatGPT Pro · gpt-image」。 */
+/** 一项生图选项的显示名：「ChatGPT Pro · GPT Image」。 */
 function imageOptionLabel(option: ImageOption): string {
-  return `${maskAccountName(shortProviderName(option.providerName))} · ${option.model}`;
+  return `${maskAccountName(shortProviderName(option.providerName))} · ${imageModelLabel(option.model, option.vendorPicks)}`;
 }
 
 /** Agent 详情里的「生图模型」：这个 Agent 的生图请求经网关发给谁。 */
@@ -1133,18 +1226,37 @@ function ModelPicker({
   onDisconnect: () => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const inactive = disabledGroup(payload, draft.model);
-  const effectiveModel = connected && inactive ? agent.defaultModel : draft.model;
-  const display = inactive && connected && !effectiveModel
+  const selection = payload?.gateway.bindings[agent.agent as GatewayAgentId]?.defaultModelSelection;
+  const inactive = disabledGroup(payload, draft.model, selection);
+  const original = modelDisplay(payload, draft.model, draft.poolExclude, selection);
+  const selectionProvider = selection && payload?.pool.find((entry) => entry.id === selection.providerId);
+  const unavailable = agent.defaultSelectionStatus
+    ? agent.defaultSelectionStatus === "fallback"
+    : original.issue === "unavailable"
+      && (!selectionProvider || !providerEnabled(selectionProvider) || draft.poolExclude.includes(selectionProvider.id) || selection?.providerRemoved);
+  const effectiveModel = connected ? agent.defaultModel : draft.model;
+  const effectiveSelection = unavailable ? null : selection;
+  const baseDisplay = connected && !effectiveModel
     ? { title: "", sub: "", group: false }
-    : modelDisplay(payload, effectiveModel, draft.poolExclude);
+    : connected && agent.defaultModelDiffers && agent.defaultSelectionStatus !== "invalid" && !effectiveModel.startsWith("group/")
+      ? { title: effectiveModel, sub: "", group: false }
+    : modelDisplay(payload, effectiveModel, draft.poolExclude, effectiveSelection);
+  const display = connected && agent.defaultSelectionStatus === "invalid"
+    ? { ...baseDisplay, issue: "invalid" as const }
+    : connected && agent.defaultSelectionStatus === "available"
+      ? { ...baseDisplay, issue: undefined }
+      : baseDisplay;
   const inactiveHint = inactive && connected
-    ? tf("原模型组「{0}」已停用，当前使用 {1}", [inactive.name, display.title || t("未设置")])
+    ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
+    : unavailable && connected
+      ? tf("原默认模型「{0}」不可用，网关默认回退为 {1}", [original.title, display.title || t("未设置")])
     : undefined;
   // 没接入、Agent 用着自带的某个模型：按钮上显示它（直连）。
   const own = connected ? null : ownCurrent(agent);
   const showDefault = !connected && !draft.model && !own;
-  const selectedModel = connected || draft.model ? effectiveModel.trim() || agentModels(payload, draft.poolExclude)[0] || "" : "";
+  const selectedModel = connected && agent.defaultModelDiffers && !effectiveModel.startsWith("group/")
+    ? ""
+    : connected || draft.model ? effectiveModel.trim() || (connected ? "" : agentModels(payload, draft.poolExclude)[0] || "") : "";
   const head = (
     <>
       {/* 用默认 = 断开网关并还原接入前的配置，只放这一个入口。 */}
@@ -1182,7 +1294,9 @@ function ModelPicker({
           own={visibleOwnModels(agent, payload)}
           ownAgent={agent.name}
           payload={payload}
+          pinProvider
           selectedModel={selectedModel}
+          selectedModelSelection={effectiveSelection}
         />
       </Floating>
     </div>

@@ -2,26 +2,35 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { managerNavigationDestination } from "./enhancement-navigation.ts";
 
-test("existing settings links open their complete enhancement configuration", () => {
+test("old settings links with a service section open the enhancement page", () => {
   for (const section of ["stepwise", "dictation"] as const) {
     const intent = { page: "settings", section } as const;
-    assert.deepEqual(managerNavigationDestination(intent), { route: "enhance", section });
+    assert.deepEqual(managerNavigationDestination(intent), { route: "enhance" });
     assert.deepEqual(intent, { page: "settings", section });
   }
 });
 
-test("enhancement links preserve the requested section", () => {
-  assert.deepEqual(managerNavigationDestination({ page: "enhance" }), { route: "enhance", section: null });
+test("enhancement links open the enhancement page whatever the section", () => {
+  assert.deepEqual(managerNavigationDestination({ page: "enhance" }), { route: "enhance" });
   for (const section of ["stepwise", "dictation"] as const) {
-    assert.deepEqual(managerNavigationDestination({ page: "enhance", section }), { route: "enhance", section });
+    assert.deepEqual(managerNavigationDestination({ page: "enhance", section }), { route: "enhance" });
   }
 });
 
 test("ordinary manager settings links still open settings", () => {
-  assert.deepEqual(managerNavigationDestination({ page: "settings" }), { route: "settings", section: null });
+  assert.deepEqual(managerNavigationDestination({ page: "settings" }), { route: "settings" });
 });
 
-test("plugin market navigation opens its own page without an enhancement section", () => {
-  assert.deepEqual(managerNavigationDestination({ page: "pluginMarket" }), { route: "pluginMarket", section: null });
-  assert.deepEqual(managerNavigationDestination({ page: "pluginMarket", section: "dictation" }), { route: "pluginMarket", section: null });
+test("pending provider recovery opens session maintenance", () => {
+  assert.deepEqual(managerNavigationDestination({ page: "sessions" }), { route: "sessions" });
+});
+
+test("plugin market navigation opens its own page", () => {
+  assert.deepEqual(managerNavigationDestination({ page: "pluginMarket" }), { route: "pluginMarket" });
+  assert.deepEqual(managerNavigationDestination({ page: "pluginMarket", section: "dictation" }), { route: "pluginMarket" });
+});
+
+test("Codex 里的微信连接页跳到管理器的微信页", () => {
+  assert.deepEqual(managerNavigationDestination({ page: "weixin" }), { route: "weixin" });
+  assert.deepEqual(managerNavigationDestination({ page: "weixin", section: "dictation" }), { route: "weixin" });
 });

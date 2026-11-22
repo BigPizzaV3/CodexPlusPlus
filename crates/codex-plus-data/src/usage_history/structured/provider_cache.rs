@@ -15,6 +15,19 @@ pub(super) fn database_path(storage: &Path) -> io::Result<PathBuf> {
     Ok(storage.join("usage-provider-cache.sqlite"))
 }
 
+fn saved_request_matches(data: &str, request: &RequestEvidence) -> bool {
+    let Ok(mut saved) = serde_json::from_str::<Value>(data) else {
+        return false;
+    };
+    let Some(saved_fields) = saved.as_object_mut() else {
+        return false;
+    };
+    saved_fields.remove("relayName");
+    let mut current = serde_json::to_value(request).expect("serialize request evidence");
+    current.as_object_mut().unwrap().remove("relayName");
+    saved == current
+}
+
 pub(super) struct Captured<T> {
     pub(super) rows: Vec<T>,
     pub(super) floor: i64,
@@ -631,7 +644,9 @@ impl ProviderCache {
                 let denied = denied
                     || duplicates.contains(row.id.as_str())
                     || row.keys().is_empty()
-                    || old.as_ref().is_some_and(|old| old != &data);
+                    || old
+                        .as_ref()
+                        .is_some_and(|old| !saved_request_matches(old, row));
                 let at = if row.timestamp_ms > 0 {
                     row.timestamp_ms
                 } else {
@@ -736,17 +751,16 @@ impl ProviderCache {
             .db
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
-        let mut current: BTreeMap<&str, [u8; 32]> = BTreeMap::new();
+        let mut current: BTreeMap<&str, &RequestEvidence> = BTreeMap::new();
         let mut rejected = HashSet::new();
         for row in rows {
             if row.id.is_empty() || row.id.len() > 256 {
                 continue;
             }
-            let fingerprint = Sha256::digest(serde_json::to_vec(row)?).into();
             if row.keys().is_empty()
                 || current
-                    .insert(row.id.as_str(), fingerprint)
-                    .is_some_and(|old| old != fingerprint)
+                    .insert(row.id.as_str(), row)
+                    .is_some_and(|old| !old.same_request(row))
             {
                 rejected.insert(row.id.clone());
             }
@@ -769,8 +783,10 @@ impl ProviderCache {
             })?;
             for row in stored {
                 let (id, data) = row?;
-                let fingerprint: [u8; 32] = Sha256::digest(data.as_bytes()).into();
-                if current.get(id.as_str()) != Some(&fingerprint) {
+                let matches = current
+                    .get(id.as_str())
+                    .is_some_and(|row| saved_request_matches(&data, row));
+                if !matches {
                     rejected.insert(id);
                 }
             }

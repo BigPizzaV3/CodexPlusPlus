@@ -17,8 +17,9 @@ const LICENSE_LIMIT: usize = 65_536;
 const SIGNATURE_LIMIT: usize = 4096;
 
 // 包导入的 Dream Skin 兼容级别独立于 Codex++ 产品版本和 Codex Desktop build。
-// 与内置上游 v1.5.20 渲染资源及 Safe CSS 桥接同步（issue #2541）；提高前须验证配套能力。
-pub const DREAM_SKIN_PACKAGE_CLIENT_VERSION: &str = "1.5.20";
+// 与内置上游渲染资源及 Safe CSS 桥接同步（issue #2541）；提高前须验证配套能力。
+// 上游 v1.5.21 只改了 Windows 安装脚本，渲染脚本和 CSS 与 v1.5.20 相同，可直接放行（issue #3050）。
+pub const DREAM_SKIN_PACKAGE_CLIENT_VERSION: &str = "1.5.21";
 
 const ALLOWED_FILES: &[&str] = &[
     "manifest.json",

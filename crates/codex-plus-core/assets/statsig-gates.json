@@ -1,0 +1,107 @@
+{
+  "//": "Statsig 界面增强的已知开关。defaultOverride=true：总开关打开时默认强制打开；null：默认不覆盖，只在 Feature Lab 里手动选。每一项都从 26.1111 的应用包代码核对过用途。",
+  "gates": [
+    {
+      "id": "1174206456",
+      "title": "隐藏升级 / 额度推销",
+      "description": "打开后不再弹升级套餐、额度不足的推销入口（ChatGPT 界面侧）。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "2120612410",
+      "title": "会话忙时排队追问",
+      "description": "Agent 正在跑时，下一条消息先排进队列，跑完自动发出（threadQueue，app-server 0.148+）。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "1189013788",
+      "title": "云端会话排队追问",
+      "description": "云端会话同样支持排队追问。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "1079089693",
+      "title": "会话时间线历史",
+      "description": "历史消息按时间线接口读取（thread/timeline/list，app-server 0.150+）。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "1450837220",
+      "title": "侧聊 attach 到源会话",
+      "description": "从会话分出的侧聊保留并挂回原会话（persistentSideChats，app-server 0.166+）。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "4226282475",
+      "title": "会话内权限刷新",
+      "description": "切换权限档位后当前会话立即生效，不用新开会话。",
+      "defaultOverride": true,
+      "risk": "low"
+    },
+    {
+      "id": "983842163",
+      "title": "截图选区命令",
+      "description": "命令面板里出现「截图选区到当前 / 新会话」。",
+      "defaultOverride": null,
+      "risk": "low"
+    },
+    {
+      "id": "3009531526",
+      "title": "Spotlight 命令",
+      "description": "命令面板里出现 Spotlight 快速唤起相关命令。",
+      "defaultOverride": null,
+      "risk": "low"
+    },
+    {
+      "id": "1372061905",
+      "title": "快捷键唤出窗口",
+      "description": "全局快捷键唤出的小窗及其命令、设置项。",
+      "defaultOverride": null,
+      "risk": "medium"
+    },
+    {
+      "id": "623263923",
+      "title": "设置里的「模型提供商」页",
+      "description": "原生设置「编码」分组里出现「模型提供商」：可看到 config.toml 里的供应商并改新会话的默认供应商。",
+      "defaultOverride": null,
+      "risk": "high",
+      "note": "在这里改默认供应商不会同步到 Codex++：管理器和「供应商」页显示的使用中会和 Codex 实际不一致。要切供应商请用 Codex++ 的「供应商」页。"
+    },
+    {
+      "id": "4259148646",
+      "title": "把 git 状态带给模型",
+      "description": "本机会话发消息前，Codex 抓一份工作目录的 git 快照（是否仓库、分支、HEAD、上游、远端、改动概况）作为上下文发给模型，模型不用自己跑 git status 就知道仓库现状。",
+      "defaultOverride": null,
+      "risk": "medium",
+      "note": "快照里有远端地址和分支名，会随请求发给当前供应商；只对本机会话生效，单份不超过约 4KB。"
+    },
+    {
+      "id": "140487509",
+      "title": "出错时的诊断报告",
+      "description": "会话报错后，错误下方多一个「查看诊断信息」：给出错误归类、下一步建议、会话 / 轮次 ID 等技术详情，可一键复制或带着报告反馈。",
+      "defaultOverride": null,
+      "risk": "low",
+      "note": "诊断会查 OpenAI 公开状态页；用第三方供应商时，它可能把供应商自己的错误归到「平台故障」，看技术详情里的原始错误为准。"
+    },
+    {
+      "id": "1937538638",
+      "title": "编辑更早的消息",
+      "description": "不只最后一条，会话里更早的用户消息也能点「编辑」改写重发（原生回退到该条再重跑）。",
+      "defaultOverride": null,
+      "risk": "medium",
+      "note": "改写更早的消息会丢掉它之后的所有轮次；与 Codex++ 的「轮次回退」是两套机制，回退记录互不相通。"
+    },
+    {
+      "id": "3278809559",
+      "title": "设置里的「导入」页",
+      "description": "原生设置出现「导入」：从 Claude Code 等其他 AI 应用导入聊天、AGENTS.md、技能、MCP、子智能体、钩子等，可开自动同步。拉不到远程开关时这一页会被藏起来。",
+      "defaultOverride": null,
+      "risk": "low"
+    }
+  ]
+}

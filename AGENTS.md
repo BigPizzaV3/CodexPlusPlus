@@ -58,6 +58,25 @@
   （issue #1960）。选择器按「有归属/无归属」两档登记，不要按脚本逐个登记，会耗尽配额。
 - 改分片后必须跑 `node scripts/assemble-renderer-inject.mjs` 重新组装产物。
 
+## 注入 Codex 的界面：和 Codex 原生一样
+
+注入到 Codex 里的界面（拓展页、供应商页、任务面板等 `renderer-inject` 分片）要尽量复用 Codex 自己的样式，
+做得和 Codex 原生组件一样，减少割裂感。
+
+- **先量原生组件再动手**：在隔离 Codex 实例（独立 `--user-data-dir` + 调试端口）里找到同类原生组件，
+  用 CDP 读计算样式和它 class 引用的 CSS 变量（尺寸、圆角、内边距、颜色、阴影、模糊），照着实现，不自己另定一套。
+- **不用原生 HTML 控件**：`<select>` 这类控件的弹出层不跟主题，样子也和 Codex 不一样。下拉、菜单复用
+  `10-style.js` 里的 `.codex-plus-menu-trigger` / `.codex-plus-menu-popover` / `.codex-plus-menu-item`
+  （照 Codex「更改权限」「推理强度」菜单实测），用法见 `41-extension-sources.js` 的排序菜单。
+- **颜色、阴影引用 Codex 变量并给兜底**，浅色主题会自动跟着变，例如：
+  - `--color-surface-elevated-secondary`：浮层底
+  - `--shadow-dropdown-overlay`：已包含 0.5px 描边
+  - `--color-token-list-hover-background`：悬停底色
+  - `--color-text-tertiary`：次要文字
+- **按键在 window 捕获阶段接**：Codex 会在 document 捕获阶段把按键截进输入框。
+- **改了 CSS 不用手动加版本号**：`installStyle` 按样式全文哈希判断，同页重新注入也会换成新样式表。
+- 交付前把截图和对应的原生组件并排对照。
+
 ## 测试约定
 
 - 沿用现有 `#[test]` + tempfile 风格（见 `crates/codex-plus-core/tests/all/relay_config.rs`）
@@ -94,6 +113,21 @@
 
 不要在只跑完测试就交付；构建启动属于交付的一部分。
 
+## Claude Desktop 完整功能模式（claude-local，与 ClaudeMom 共用）
+
+完整功能模式的核心不在本仓库：在 [ClaudeMom](https://github.com/BigPizzaV3/ClaudeMom) 仓库的
+`crates/claude-local`（本地兼容服务 Node 脚本、证书、真实 profile 切换、启动 / 停止、会话同步、Desktop 探测），
+`codex-plus-core` 以 git 依赖按 `rev` 钉住引用它。ClaudeMom 是只做这件事的独立程序，两边只维护这一份。
+
+- Codex++ 这边只有宿主实现 `crates/codex-plus-core/src/claude_local_backend.rs`：设置（`claudeDesktopLocal`）、
+  经网关的上游（`claude-desktop-local` 绑定）、常驻 helper 听写、3p 模式。对外函数名不变，管理器不用关心拆分。
+- 改完整功能模式的行为（代理脚本、证书、profile、启动流程）去 ClaudeMom 仓库改、测、推，再把这里的 `rev` 升上去。
+  升级用 `node scripts/bump-claude-local.mjs`（改 `rev`、更新 `Cargo.lock`、列出带进来的提交）；加 `--check` 只检查是否落后，
+  `check-claude-local.yml` 每天跑一次，落后时失败。
+  本地联调可在根 `Cargo.toml` 临时加
+  `[patch."https://github.com/BigPizzaV3/ClaudeMom"] claude-local = { path = "../ClaudeMom/crates/claude-local" }`，**不要提交**。
+- 补丁 Desktop（汉化副本，`claude_localization.rs` + `assets/claude-localization/`）仍在本仓库，Desktop 探测调 claude-local。
+
 ## 提交与合入
 
 - 默认直接提交并合入 `main`。
@@ -104,7 +138,8 @@
 
 - 先在 `CHANGELOG.md` 顶部写好 `## X.Y.Z - YYYY-MM-DD` 一节（这一节原样成为 Release 说明），
   再跑 `node scripts/release.mjs X.Y.Z`（可先加 `--dry-run` 预览）：改 6 处版本号 → 提交 `release: vX.Y.Z` → 打 tag → 原子推送。
-- 推 `v*` tag 触发 `release-assets.yml`：校验版本号 → 建草稿 Release → 构建 Windows / macOS → 上传 `SHA256SUMS.txt`、`latest.json` → 附件齐了自动发布，只有最新版本才标 Latest。
+- 推 `v*` tag 触发 `release-assets.yml`：校验版本号 → 建草稿 Release → 构建 Windows / macOS / Linux(.deb) → 上传 `SHA256SUMS.txt`、`latest.json` → Windows、macOS 齐了自动发布，只有最新版本才标 Latest。
+  Linux 不卡发布：它失败只少 .deb 这一个附件，事后补跑。
 - 不要再手动 `gh release create` / 在网页上点发布；网页发布不会触发构建。补跑某个平台用
-  `gh workflow run "Release assets" -f tag=vX.Y.Z -f platform=macos -f publish=true`。
+  `gh workflow run "Release assets" -f tag=vX.Y.Z -f platform=macos -f publish=true`（`platform` 可选 all / windows / macos / linux）。
 - 版本号文件清单在 `scripts/release-meta.mjs` 的 `VERSION_FILES`，新增带版本号的文件要登记进去。

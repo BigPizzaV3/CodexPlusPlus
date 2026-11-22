@@ -43,105 +43,8 @@ fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase", default)]
-pub struct ClaudeLocalSettings {
-    pub enabled: bool,
-    pub model: String,
-    pub localization: bool,
-    pub voice_input: bool,
-    pub computer_use: bool,
-    pub background_mode: bool,
-    /// Claude 里显示的用户名；空串按「Local User」。
-    pub display_name: String,
-    /// Claude 里显示的邮箱；空串按「local@claude.local」。
-    pub email: String,
-    /// Claude 里显示的套餐：free / pro / max / ultra。
-    pub plan: String,
-    /// 启动前同步 3p 模式与完整功能模式的 Code 会话（默认关）。
-    pub session_sync: bool,
-    /// 交给 Claude 的模型是否按窗口过滤：默认只列窗口不小于默认模型的那些
-    /// （Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）。
-    /// 打开后池里的聊天模型全列出来，代价是切到小窗口模型时可能超上限。
-    pub list_all_models: bool,
-    /// 隐藏 Claude 自带、供应商池里没有对应路由的模型（Opus / Sonnet / Haiku 等原生条目，默认开）。
-    /// 这些条目选了也会被换成默认模型；关掉则照旧显示。
-    pub hide_unrouted_models: bool,
-}
-
-impl Default for ClaudeLocalSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            model: String::new(),
-            localization: true,
-            voice_input: true,
-            computer_use: false,
-            background_mode: false,
-            display_name: String::new(),
-            email: String::new(),
-            plan: "ultra".into(),
-            session_sync: false,
-            list_all_models: false,
-            hide_unrouted_models: true,
-        }
-    }
-}
-
-impl ClaudeLocalSettings {
-    /// 套餐只认 free / pro / max / ultra（大小写不敏感），其他一律 ultra。
-    pub fn normalized_plan(&self) -> &str {
-        match self.plan.trim().to_ascii_lowercase().as_str() {
-            "free" => "free",
-            "pro" => "pro",
-            "max" => "max",
-            _ => "ultra",
-        }
-    }
-
-    /// 显示名：trim、去控制字符、最多 64 字符；空则按默认「Local User」。
-    pub fn effective_display_name(&self) -> String {
-        let name: String = self
-            .display_name
-            .trim()
-            .chars()
-            .filter(|ch| !ch.is_control())
-            .take(64)
-            .collect();
-        let name = name.trim();
-        if name.is_empty() {
-            "Local User".to_string()
-        } else {
-            name.to_string()
-        }
-    }
-
-    /// 用户填的邮箱是否可用：去首尾空白后为空，或形如 `a@b`
-    /// （最长 254 字符、不含空白与控制字符、`@` 两侧都非空）。
-    pub fn email_is_valid(&self) -> bool {
-        normalized_email(&self.email).is_some()
-    }
-
-    /// 显示邮箱：空或格式不对都按默认「local@claude.local」。
-    pub fn effective_email(&self) -> String {
-        normalized_email(&self.email)
-            .filter(|email| !email.is_empty())
-            .unwrap_or_else(|| "local@claude.local".to_string())
-    }
-}
-
-/// 邮箱规范化：`Some("")` 表示没填，`None` 表示格式不对。
-fn normalized_email(raw: &str) -> Option<String> {
-    let email = raw.trim();
-    if email.is_empty() {
-        return Some(String::new());
-    }
-    if email.chars().count() > 254 || email.chars().any(|ch| ch.is_whitespace() || ch.is_control()) {
-        return None;
-    }
-    let (local, domain) = email.rsplit_once('@')?;
-    (!local.is_empty() && !domain.is_empty()).then(|| email.to_string())
-}
+/// Claude Desktop 完整功能模式的设置：类型定义在 claude-local（与 ClaudeMom 共用），这里只是重新导出。
+pub use claude_local::ClaudeLocalSettings;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -170,6 +73,8 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inactive_mixed_api: Option<InactiveMixedApi>,
     /// 供应商引用的网关/账号凭证；留空时沿用供应商自己的 auth 快照。
     #[serde(rename = "officialAccountRef", default, skip_serializing_if = "String::is_empty")]
     pub official_account_ref: String,
@@ -196,7 +101,8 @@ pub struct RelayProfile {
     #[serde(
         rename = "modelWindows",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_windows: String,
     /// 每模型自动压缩百分比（JSON map: slug -> 百分比字符串，如 "90" 或 "90%"）。
@@ -204,17 +110,24 @@ pub struct RelayProfile {
     #[serde(
         rename = "modelAutoCompact",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_auto_compact: String,
     /// 每模型元数据覆盖（JSON map: slug -> 字段覆盖）。
     #[serde(
         rename = "modelMetadata",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_metadata: String,
-    #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "modelVlm",
+        default,
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
+    )]
     pub model_vlm: String,
     #[serde(
         rename = "vlmApiKey",
@@ -283,6 +196,11 @@ pub struct RelayProfile {
     /// OpenAI 扩展字段，只会返回泛化的 invalid_request（#2870）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub strip_responses_image_detail: bool,
+    /// 转发前移除 Responses 顶层 `include` 里的 `output.encrypted_content`。
+    /// 部分严格上游只接受 `reasoning.encrypted_content`，带上该项会整单 400。
+    /// 默认关闭；Kimi 等已知上游仍由自动识别处理。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strip_responses_output_encrypted_content: bool,
     /// 不向该上游发送 `tool_search` 托管工具：部分第三方 Responses 上游不认识
     /// 它，供应商测试能过但实际聊天整单 400（#2868 / #2871）。Kimi 官方自动处理。
     #[serde(default, skip_serializing_if = "is_false")]
@@ -467,6 +385,15 @@ pub struct AggregateRelayProfile {
     pub auto_review_relay_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InactiveMixedApi {
+    pub config_contents: String,
+    pub upstream_base_url: String,
+    #[serde(default)]
+    pub model_routes: Vec<RelayModelRoute>,
+}
+
 impl Default for RelayProfile {
     fn default() -> Self {
         Self {
@@ -481,6 +408,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
@@ -511,6 +439,7 @@ impl Default for RelayProfile {
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
+            strip_responses_output_encrypted_content: false,
             disable_tool_search: false,
             pure_api_image_generation: false,
             auto_review_model: String::new(),
@@ -573,6 +502,15 @@ impl RelayProfile {
     /// 第三方 Responses 上游生效。
     pub fn strips_responses_image_detail(&self) -> bool {
         self.strip_responses_image_detail
+            && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否在转发前移除 Responses 顶层 `include` 里的
+    /// `output.encrypted_content`；只对经本地代理转发的第三方 Responses 上游生效。
+    pub fn strips_responses_output_encrypted_content(&self) -> bool {
+        self.strip_responses_output_encrypted_content
             && self.protocol == RelayProtocol::Responses
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
@@ -1219,6 +1157,10 @@ pub struct BackendSettings {
     /// 打开后启动前把容器挪走、项目留在顶层，切回官方登录时再放回。默认关闭。
     #[serde(rename = "keepProjectsWithoutAccount", default)]
     pub keep_projects_without_account: bool,
+    /// 流式请求等上游响应头的上限（秒）。默认 120；首字时间经常超过 120s 的上游
+    /// （长推理模型、慢中转，#3130）可在 settings.json 调大，上限 3600，写小不生效。
+    #[serde(rename = "upstreamStreamHeaderTimeoutSecs", default)]
+    pub upstream_stream_header_timeout_secs: Option<u64>,
     /// 当前 Codex 原生 auth 的显式选择；None 表示旧版本未设置，Some(None) 表示明确不登录。
     #[serde(rename = "nativeAuthSelection", default)]
     pub native_auth_selection: Option<NativeAuthSelection>,
@@ -1318,6 +1260,10 @@ pub struct BackendSettings {
     pub computer_use_pip: bool,
     #[serde(rename = "codexAppPasteFix", default)]
     pub codex_app_paste_fix: bool,
+    /// 发送 /prompts:<名字> 参数 时按 CLI 规则展开 $1…$9、$ARGUMENTS、$名字（Codex 应用原生只把参数拼在正文后）。
+    /// 只在带参数发送已有 prompt 时介入，默认开启。
+    #[serde(rename = "codexAppPromptArgs", default = "default_true")]
+    pub codex_app_prompt_args: bool,
     // 默认关闭：撤下的那版会主动从 settings.json 删掉这个键，老用户升级后读不到，
     // 若默认开启等于替他们重新打开一个从没同意过的行为。要开请显式勾选。
     #[serde(rename = "codexAppForceChineseLocale", default)]
@@ -1356,6 +1302,15 @@ pub struct BackendSettings {
     /// 只改本机界面与超时参数，服务端能力不变。默认关。
     #[serde(rename = "codexAppStatsigOverrides", default)]
     pub codex_app_statsig_overrides: bool,
+    /// Statsig 开关逐项覆盖（Codex 页面 Feature Lab 里设置）：key 是开关 ID（纯数字），
+    /// 值是 "on"（强制开）/ "off"（强制关）/ "native"（不覆盖，用远端原值）。
+    /// 没列出的开关按 assets/statsig-gates.json 的默认处理；只在总开关打开时生效。
+    #[serde(
+        rename = "codexAppStatsigGateOverrides",
+        default,
+        skip_serializing_if = "BTreeMap::is_empty"
+    )]
+    pub codex_app_statsig_gate_overrides: BTreeMap<String, String>,
     /// Codex App 与 CLI 的本地代理响应信任上报用量，不改 usage；旧会话首次响应前仍可能使用原估算。默认关。
     #[serde(rename = "codexAppReportedUsageCompaction", default)]
     pub codex_app_reported_usage_compaction: bool,
@@ -1512,6 +1467,18 @@ pub struct BackendSettings {
     pub weixin_connect_sandbox: String,
     #[serde(rename = "weixinConnectCodexPath", default)]
     pub weixin_connect_codex_path: String,
+    /// 扫码绑定的本人（微信 ilink_user_id）：只有本人能在微信里用加加、审批。
+    #[serde(rename = "weixinConnectLinkedUserId", default)]
+    pub weixin_connect_linked_user_id: String,
+    /// 微信联系人没自己选过模式时用哪种：`jiajia`（加加，默认）或 `direct`（直连 Codex 会话）。
+    #[serde(
+        rename = "weixinConnectDefaultMode",
+        default = "default_weixin_connect_mode"
+    )]
+    pub weixin_connect_default_mode: String,
+    /// 加加的事件（等审批、出错、跑完）在没在对话时也推到微信。默认关。
+    #[serde(rename = "weixinConnectPushToWeixin", default)]
+    pub weixin_connect_push_to_weixin: bool,
     #[serde(rename = "relayBaseUrl", default = "default_relay_base_url")]
     pub relay_base_url: String,
     #[serde(rename = "relayApiKey", default)]
@@ -1626,6 +1593,7 @@ impl Default for BackendSettings {
             session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
             keep_projects_without_account: false,
+            upstream_stream_header_timeout_secs: None,
             native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
             provider_sync_manual_providers: Vec::new(),
@@ -1658,6 +1626,7 @@ impl Default for BackendSettings {
             computer_use_mode: default_computer_use_mode(),
             computer_use_pip: true,
             codex_app_paste_fix: false,
+            codex_app_prompt_args: true,
             codex_app_force_chinese_locale: false,
             codex_app_typing_effect: default_typing_effect(),
             codex_app_thread_id_badge: false,
@@ -1671,6 +1640,7 @@ impl Default for BackendSettings {
             codex_app_third_party_reasoning_collapse: false,
             codex_app_offline_auto_review: false,
             codex_app_statsig_overrides: false,
+            codex_app_statsig_gate_overrides: BTreeMap::new(),
             codex_app_reported_usage_compaction: false,
             manager_agent_focus: String::new(),
             codex_app_pet_real_mouse_look: false,
@@ -1719,6 +1689,9 @@ impl Default for BackendSettings {
             weixin_connect_project_id: String::new(),
             weixin_connect_sandbox: default_weixin_connect_sandbox(),
             weixin_connect_codex_path: String::new(),
+            weixin_connect_linked_user_id: String::new(),
+            weixin_connect_default_mode: default_weixin_connect_mode(),
+            weixin_connect_push_to_weixin: false,
             relay_base_url: default_relay_base_url(),
             relay_api_key: String::new(),
             relay_profiles: default_relay_profiles(),
@@ -1780,6 +1753,7 @@ impl BackendSettings {
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
+                inactive_mixed_api: None,
                 official_account_ref: String::new(),
                 no_auth: false,
                 hide_official_usage_alert: false,
@@ -1810,6 +1784,7 @@ impl BackendSettings {
                 strict_responses_reasoning: false,
                 strip_image_generation_tool: false,
                 strip_responses_image_detail: false,
+                strip_responses_output_encrypted_content: false,
                 disable_tool_search: false,
                 pure_api_image_generation: false,
                 auto_review_model: String::new(),
@@ -1855,6 +1830,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
@@ -1885,6 +1861,7 @@ impl BackendSettings {
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
+            strip_responses_output_encrypted_content: false,
             disable_tool_search: false,
             pure_api_image_generation: false,
             auto_review_model: String::new(),
@@ -1958,6 +1935,7 @@ impl BackendSettings {
             || self.active_relay_profile().strips_image_generation_tool()
             || self.active_relay_profile().enables_pure_api_image_generation()
             || self.active_relay_profile().strips_responses_image_detail()
+            || self.active_relay_profile().strips_responses_output_encrypted_content()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -2210,6 +2188,10 @@ fn default_weixin_connect_sandbox() -> String {
     "read-only".to_string()
 }
 
+fn default_weixin_connect_mode() -> String {
+    "jiajia".to_string()
+}
+
 pub fn default_active_relay_id() -> String {
     "default".to_string()
 }
@@ -2442,6 +2424,28 @@ where
     Ok(Option::<u64>::deserialize(deserializer)?
         .map(clamp_stepwise_timeout_ms)
         .unwrap_or_else(default_stepwise_timeout_ms))
+}
+
+// 兼容直接写入 JSON 对象的配置；保存时仍使用原有文本形态。
+// 对象里直接写数字的（`{"model-a": 500000}`）转成文本形态里的字符串：窗口、压缩百分比这两张表
+// 应用时只认字符串值，原样留着数字会在切换供应商时报「值必须是字符串」。
+fn deserialize_json_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<Value>::deserialize(deserializer)? {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(text)) => text,
+        Some(Value::Object(mut map)) => {
+            for value in map.values_mut() {
+                if let Value::Number(number) = value {
+                    *value = Value::String(number.to_string());
+                }
+            }
+            Value::Object(map).to_string()
+        }
+        Some(other) => other.to_string(),
+    })
 }
 
 fn deserialize_profile_api_key<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -3107,6 +3111,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "usageHistoryEnabled");
     merge_bool_setting(target, source, "codexAppProxyRequestStatus");
     merge_bool_setting(target, source, "codexAppPasteFix");
+    merge_bool_setting(target, source, "codexAppPromptArgs");
     merge_bool_setting(target, source, "codexAppForceChineseLocale");
     if let Some(value @ ("off" | "rainbow" | "fireworks" | "stars")) =
         source.get("codexAppTypingEffect").and_then(Value::as_str)
@@ -3127,6 +3132,15 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppThirdPartyReasoningCollapse");
     merge_bool_setting(target, source, "codexAppOfflineAutoReview");
     merge_bool_setting(target, source, "codexAppStatsigOverrides");
+    if let Some(map) = source
+        .get("codexAppStatsigGateOverrides")
+        .and_then(Value::as_object)
+    {
+        target.insert(
+            "codexAppStatsigGateOverrides".to_string(),
+            Value::Object(sanitize_statsig_gate_overrides(map)),
+        );
+    }
     merge_bool_setting(target, source, "codexAppReportedUsageCompaction");
     if let Some(value @ ("" | "codex" | "enhance" | "all")) =
         source.get("managerAgentFocus").and_then(Value::as_str)
@@ -3466,6 +3480,25 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     }
 }
 
+/// Statsig 逐项覆盖的上限：清单本身只有十来项，记录页能手动加未知开关，留足余量即可。
+const STATSIG_GATE_OVERRIDE_LIMIT: usize = 200;
+
+/// 只保留「纯数字开关 ID → on/off/native」的条目。页面整份提交，非法条目直接丢弃，
+/// 避免把任意 key 写进设置文件、再原样注入页面。
+pub fn sanitize_statsig_gate_overrides(source: &Map<String, Value>) -> Map<String, Value> {
+    source
+        .iter()
+        .filter_map(|(key, value)| {
+            let id = key.trim();
+            let valid_id = !id.is_empty() && id.len() <= 12 && id.bytes().all(|byte| byte.is_ascii_digit());
+            let choice = value.as_str().map(str::trim)?;
+            (valid_id && matches!(choice, "on" | "off" | "native"))
+                .then(|| (id.to_string(), Value::String(choice.to_string())))
+        })
+        .take(STATSIG_GATE_OVERRIDE_LIMIT)
+        .collect()
+}
+
 fn merge_bool_setting(target: &mut Map<String, Value>, source: &Map<String, Value>, key: &str) {
     if let Some(value) = source.get(key).and_then(Value::as_bool) {
         target.insert(key.to_string(), Value::Bool(value));
@@ -3622,6 +3655,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "protocol",
     "relayMode",
     "officialMixApiKey",
+    "inactiveMixedApi",
     "officialAccountRef",
     "noAuth",
     "hideOfficialUsageAlert",
@@ -3651,7 +3685,12 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "trustUpstreamCatalogLite",
     "strictResponsesReasoning",
     "stripImageGenerationTool",
+    "stripResponsesImageDetail",
+    "stripResponsesOutputEncryptedContent",
+    "disableToolSearch",
+    "pureApiImageGeneration",
     "autoReviewModel",
+    "multiAgent",
     "anthropicAuthHeader",
     "anthropicMaxTokens",
     "anthropicPromptCache",
@@ -3871,6 +3910,13 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
     if crate::app_paths::is_windows_store_cli_path(&settings.weixin_connect_codex_path) {
         settings.weixin_connect_codex_path = String::new();
     }
+    settings.weixin_connect_linked_user_id =
+        settings.weixin_connect_linked_user_id.trim().to_string();
+    // 只认两种模式，其它值（含旧版本没有这个字段）都按默认的加加。
+    settings.weixin_connect_default_mode =
+        crate::connect::jiajia_bridge::PeerMode::parse(&settings.weixin_connect_default_mode)
+            .as_str()
+            .to_string();
     settings.codex_app_stepwise_max_items =
         clamp_stepwise_max_items(settings.codex_app_stepwise_max_items);
     settings.codex_app_stepwise_max_input_chars =
@@ -4489,6 +4535,29 @@ mod tests {
         };
 
         assert!(settings.active_relay_uses_protocol_proxy());
+    }
+
+    #[test]
+    fn relay_profile_accepts_json_text_fields_written_as_maps() {
+        let profile: RelayProfile = serde_json::from_value(serde_json::json!({
+            "id": "relay",
+            "name": "Relay",
+            "modelWindows": { "model-a": 500000 },
+            "modelAutoCompact": { "model-a": 80 },
+            "modelMetadata": { "model-a": { "supports_search_tool": true } },
+            "modelVlm": { "model-a": "strip" }
+        }))
+        .unwrap();
+
+        let saved = serde_json::to_value(&profile).unwrap();
+        // 数字值转成字符串：应用供应商时这两张表只认字符串值。
+        assert_eq!(saved["modelWindows"], r#"{"model-a":"500000"}"#);
+        assert_eq!(saved["modelAutoCompact"], r#"{"model-a":"80"}"#);
+        assert_eq!(
+            saved["modelMetadata"],
+            r#"{"model-a":{"supports_search_tool":true}}"#
+        );
+        assert_eq!(saved["modelVlm"], r#"{"model-a":"strip"}"#);
     }
 
     #[test]
@@ -6174,6 +6243,58 @@ experimental_bearer_token = "sk-existing""#
             ..BackendSettings::default()
         };
         assert!(!off.active_relay_transport_uses_protocol_proxy());
+    }
+
+    /// 「不发送 output.encrypted_content」也只在代理里执行：开启后必须改走本地代理，
+    /// 关闭后立即恢复直连，并确认配置按 camelCase 往返。
+    #[test]
+    fn strip_responses_output_encrypted_content_routes_through_protocol_proxy() {
+        let enabled = RelayProfile {
+            id: "on".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: RelayProtocol::Responses,
+            base_url: "https://responses.example.test/v1".to_string(),
+            strip_responses_output_encrypted_content: true,
+            ..RelayProfile::default()
+        };
+        assert!(enabled.strips_responses_output_encrypted_content());
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["stripResponsesOutputEncryptedContent"], true);
+        let restored: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(restored.strips_responses_output_encrypted_content());
+
+        let settings = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![enabled.clone()],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        let off = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![RelayProfile {
+                strip_responses_output_encrypted_content: false,
+                ..enabled
+            }],
+            ..BackendSettings::default()
+        };
+        assert!(!off.active_relay_transport_uses_protocol_proxy());
+
+        let default = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(
+            default
+                .get("stripResponsesOutputEncryptedContent")
+                .is_none()
+        );
+
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        let mut persisted = settings.clone();
+        store.save(&persisted).unwrap();
+        persisted = store.load().unwrap();
+        assert!(persisted.relay_profiles[0].strip_responses_output_encrypted_content);
+        persisted.relay_profiles[0].strip_responses_output_encrypted_content = false;
+        store.save(&persisted).unwrap();
+        assert!(!store.load().unwrap().relay_profiles[0].strip_responses_output_encrypted_content);
     }
 
     #[test]

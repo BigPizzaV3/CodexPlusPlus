@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -68,6 +69,12 @@ pub(crate) fn prepare_dream_skin_image_for_directory(
         )
     })?;
 
+    if video_mime(&extension).is_some() {
+        let bytes = read_skin_video(source, &extension)?;
+        let destination = destination_dir.join(format!("{destination_stem}.{extension}"));
+        crate::settings::atomic_write(&destination, &bytes)?;
+        return Ok(destination);
+    }
     let (prepared_path, prepared_extension) = prepare_image(source, destination_dir, &extension)?;
     let prepared_metadata = std::fs::metadata(&prepared_path).with_context(|| {
         format!(
@@ -139,10 +146,47 @@ fn supported_image_extension(path: &Path) -> anyhow::Result<String> {
         extension.as_str(),
         "png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp"
     );
-    if !supported {
+    if !supported && video_mime(&extension).is_none() {
         bail!("unsupported Dream Skin image format: {extension}");
     }
     Ok(extension)
+}
+
+pub(crate) fn video_mime(extension: &str) -> Option<&'static str> {
+    match extension {
+        "mp4" => Some("video/mp4"),
+        "webm" => Some("video/webm"),
+        _ => None,
+    }
+}
+
+pub(crate) fn validate_skin_video(bytes: &[u8], extension: &str) -> anyhow::Result<()> {
+    let valid = match extension {
+        "mp4" if bytes.len() >= 16 => {
+            let box_len = u32::from_be_bytes(bytes[..4].try_into()?) as usize;
+            (16..=bytes.len()).contains(&box_len) && &bytes[4..8] == b"ftyp"
+                && std::iter::once(&bytes[8..12]).chain(bytes[16..box_len].chunks_exact(4)).any(|brand| {
+                    matches!(brand, b"isom" | b"iso2" | b"iso4" | b"iso5" | b"iso6" | b"mp41" | b"mp42" | b"avc1" | b"dash" | b"M4V ")
+                })
+        }
+        "webm" => bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3])
+            && bytes[..bytes.len().min(4096)].windows(7).any(|field| field == b"\x42\x82\x84webm"),
+        _ => false,
+    };
+    if !valid { bail!("Dream Skin video is not a supported {extension} container"); }
+    Ok(())
+}
+
+pub(crate) fn read_skin_video(path: &Path, extension: &str) -> anyhow::Result<Vec<u8>> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file() || metadata.len() > DREAM_SKIN_PREPARED_LIMIT {
+        bail!("Dream Skin video must be a local file of at most 16 MiB");
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?.take(DREAM_SKIN_PREPARED_LIMIT + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > DREAM_SKIN_PREPARED_LIMIT { bail!("Dream Skin video exceeds 16 MiB"); }
+    validate_skin_video(&bytes, extension)?;
+    Ok(bytes)
 }
 
 #[cfg(target_os = "macos")]

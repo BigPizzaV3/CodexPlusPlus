@@ -20,11 +20,12 @@ pub mod cdp;
 mod claude_ion_asar;
 pub mod claude_hooks;
 pub mod claude_local_backend;
-pub mod claude_session_sync;
 pub mod claude_localization;
 pub mod codex_app_state;
+pub mod codex_cli_version;
 pub mod config_doctor;
 pub mod codex_home;
+pub mod custom_prompts;
 pub mod codex_local_storage;
 pub mod codex_sqlite;
 pub mod browser_use;
@@ -43,6 +44,7 @@ pub mod disclaimed_spawn;
 pub mod connect;
 pub(crate) mod context_usage;
 pub mod diagnostic_log;
+pub mod diagnostic_redaction;
 pub mod dictation;
 pub mod dream_skin;
 pub mod dream_skin_community;
@@ -56,6 +58,7 @@ pub mod gateway;
 pub mod grok_config;
 pub mod global_dictation;
 pub mod history_turn_recovery;
+pub mod hooks_editor;
 pub mod http_client;
 pub mod install;
 pub mod launcher;
@@ -81,7 +84,9 @@ pub mod ports;
 // 独立插件市场按需下载安装，不调用原生授权安装流程。
 pub mod plugin_market;
 pub mod protocol_proxy;
+pub(crate) mod responses_websocket;
 pub mod provider_import;
+pub mod provider_page;
 pub mod proxy;
 pub mod relay_billing;
 pub mod relay_config;
@@ -91,6 +96,7 @@ pub mod relay_proxy;
 pub mod relay_headers;
 pub mod relay_rotation;
 pub mod relay_switch;
+pub mod remote_control;
 pub mod remote_control_recovery;
 pub mod request_log;
 pub mod resident_helper;
@@ -100,7 +106,9 @@ pub(crate) mod responses_exec_transport;
 pub(crate) mod rollout_file;
 pub mod routes;
 pub mod script_market;
+pub mod session_names;
 pub mod side_chat;
+pub mod session_tuning;
 pub mod settings;
 pub mod settings_catalog;
 pub mod skills;
@@ -109,6 +117,7 @@ pub mod status;
 pub mod stepwise;
 pub mod newapi;
 pub mod sub2api;
+pub mod task_board;
 pub mod tools;
 pub mod update;
 pub mod extension_backend;
@@ -153,6 +162,12 @@ pub fn windows_open_url(url: &str) -> anyhow::Result<()> {
 #[cfg(windows)]
 pub fn windows_activate_process_window(process_id: u32) -> bool {
     windows_integration::activate_process_window(process_id)
+}
+
+/// 只唤起已显示（含最小化）的窗口，不把隐藏窗口翻出来（管理器二次启动用，issue #3223）。
+#[cfg(windows)]
+pub fn windows_activate_visible_process_window(process_id: u32) -> bool {
+    windows_integration::activate_visible_process_window(process_id)
 }
 
 /// 设置 Codex++ 任务栏分组、名称和重启入口，保留 Codex 自己的图标。

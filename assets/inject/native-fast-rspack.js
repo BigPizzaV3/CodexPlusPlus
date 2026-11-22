@@ -29,14 +29,18 @@
     },
     {
       kind: "queue-default-access",
-      pattern: [
+      patterns: [
+        [`(?:${id}|async function\\(${id},${id},${id},${id}\\)\\{[^]{0,1800}?\\})`, "\\k<model>", ""],
+        // Newer builds read the model and provider from the queued conversation.
+        [`async function\\(${id},${id},${id},${id},${id}\\)\\{[^]{0,1800}?\\}`, "\\k<manager>\\.getConversation\\(\\k<model>\\)\\?\\.latestModel\\|\\|null", ",\\k<manager>\\.getThreadModelProvider\\(\\k<model>\\)"],
+      ].map(([reader, model, provider]) => [
         `function\\((?<manager>${id}),\\{runtime:(?<runtime>${id})\\},(?<before>${id}),${id}\\)\\{let (?<pending>${id})=null;`,
         `return\\{async readServiceTier\\((?<model>${id})\\)\\{for\\(;null!=\\k<pending>;\\)await \\k<pending>\\.catch\\(\\(\\)=>void 0\\);`,
-        `return \\k<before>\\(\\),(?:${id}|async function\\(${id},${id},${id},${id}\\)\\{[^]{0,1800}?\\})\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,\\k<model>,async\\(\\)=>\\{`,
+        `return \\k<before>\\(\\),${reader}\\(\\k<manager>\\.requestClient,\\k<manager>\\.logger,${model},async\\(\\)=>\\{`,
         `if\\("local"===\\k<manager>\\.getHostId\\(\\)&&await \\k<runtime>\\.isUsingCopilotInference\\(\\)\\)return!1;`,
         `let (?<result>${id})=await \\k<manager>\\.getAccount\\(\\{priority:"critical"\\}\\);`,
-        `return (?<gate>\\k<result>\\.account\\?\\.type==="chatgpt"(?:\\|\\|\\k<result>\\.account\\?\\.type===${literal})*)\\}\\)\\},async writeServiceTier\\(`,
-      ].join(""),
+        `return (?<gate>\\k<result>\\.account\\?\\.type==="chatgpt"(?:\\|\\|\\k<result>\\.account\\?\\.type===${literal})*)\\}${provider}\\)\\},async writeServiceTier\\(`,
+      ].join("")),
       distinct: ["manager", "result"],
       replacement: g => `(${g.gate}||${allow(`${g.manager}.getHostId()`, `${g.result}.account?.type`)})`,
     },
@@ -44,13 +48,13 @@
       kind: "queue-explicit-access",
       // 26.1103 将读取档位的闭包内联进 Promise.all；两种结构分别匹配，合并计数。
       patterns: [
-        [`let (?<readTier>${id})=async\\(\\)=>\\{`, `\\},\\[${id},${id}\\]=await Promise\\.all\\(\\[\\k<readTier>\\(\\),`],
-        [`let\\[${id},${id}\\]=await Promise\\.all\\(\\[\\(async\\(\\)=>\\{`, `\\}\\)\\(\\),`],
-      ].map(([start, end]) => [
+        [`let (?<readTier>${id})=async\\(\\)=>\\{`, `\\},\\[${id},${id}\\]=await Promise\\.all\\(\\[\\k<readTier>\\(\\),`, `${id}\\?\\.latestModel\\|\\|null`],
+        [`let\\[${id},${id}\\]=await Promise\\.all\\(\\[\\(async\\(\\)=>\\{`, `\\}\\)\\(\\),`, `${id}\\?\\.latestModel\\|\\|null|\\k<conversation>`],
+      ].map(([start, end, inherit]) => [
         `function\\((?<manager>${id}),\\{settings:(?<settings>${id}),storage:${id},filesystem:${id},runtime:(?<runtime>${id})\\},(?<readDefault>${id}),${id},${id}\\)\\{`,
-        `return async\\(${id},(?<message>${id})\\)=>\\{let (?<options>${id})=\\k<message>\\.submissionOptions,${id}=\\k<message>\\.context\\.workPermissions,${id}=null!=${id},`,
+        `return async\\((?<conversation>${id}),(?<message>${id})\\)=>\\{let (?<options>${id})=\\k<message>\\.submissionOptions,${id}=\\k<message>\\.context\\.workPermissions,${id}=null!=${id},`,
         `(?<host>${id})=\\k<options>\\?\\.executionHostId\\?\\?\\k<manager>\\.getHostId\\(\\);`,
-        `[^]{0,2400}?${start}if\\(null==\\k<options>\\)return \\k<readDefault>\\(${id}\\?\\.latestModel\\|\\|null\\);`,
+        `[^]{0,2400}?${start}if\\(null==\\k<options>\\)return \\k<readDefault>\\((?:${inherit})\\);`,
         `if\\(null==\\k<options>\\.serviceTier\\)return null;let\\{account:(?<account>${id})\\}=await \\k<manager>\\.getAccount\\(\\{priority:"critical"\\}\\);`,
         `return (?<gate>\\k<account>\\?\\.type==="chatgpt"(?:\\|\\|\\k<account>\\?\\.type===${literal})*)\\?\\k<options>\\.serviceTier:null${end}\\k<options>\\?\\.usePermissionSelection\\?\\?\\k<settings>\\.readPermissionRefreshEnabled\\(\\)\\]\\)`,
       ].join("")),
@@ -99,7 +103,8 @@
     for (const factory of factories) {
       const { key, source } = factory ?? {};
       if (typeof key !== "string" || !new RegExp(`^${id}$`).test(key) || keys.has(key)
-        || typeof source !== "string" || !source.startsWith(`${key}(`)
+        || typeof source !== "string"
+        || !(source.startsWith(`${key}(`) || source.startsWith("function("))
         || !new RegExp(`^${id}\\(${id}(?:,${id}){1,2}\\)\\{`).test(source)) return failed("invalid-factories");
       keys.add(key);
       bytes += source.length;
@@ -162,8 +167,10 @@
     if (!planned.ok) return { ...failed(planned.diagnostics.reason), diagnostics: { ...planned.diagnostics, rewriters: { fast: planned.diagnostics.reason } } };
     // script[src] 不走 import map；入口的静态依赖会走。依赖的原生 runtime 回调在入口启动前
     // 安装模块表代理，所有后续分块（包括重复工厂）仍由原生注册器处理，不改加载器或模块缓存。
-    const hook = `\nexport const __rspack_esm_runtime = (__codexPlusRequire) => {
-      const __codexPlusFastFactories={${planned.factories.map(f => f.source).join(",")}};
+    // 分块求值时先写下自己的地址：页面超时守护据此区分「没拦截到」和「回填了但补丁没执行」。
+    const hook = `\nwindow.__codexPlusNativeFastResponseLoaded=${JSON.stringify(url)};\nexport const __rspack_esm_runtime = (__codexPlusRequire) => {
+      const __codexPlusFastFactories={${planned.factories.map(f => f.source.startsWith("function(")
+        ? `[${JSON.stringify(f.key)}]:${f.source}` : f.source).join(",")}};
       __codexPlusRequire.m=new Proxy(__codexPlusRequire.m,{
         set(target,key,value,receiver){
           const replacement=Object.prototype.hasOwnProperty.call(__codexPlusFastFactories,key)?__codexPlusFastFactories[key]:null;
@@ -181,7 +188,7 @@
       return {
         ok: true,
         modules: [{ url, patchedSource: rewritten.source + hook }],
-        diagnostics: { reason: "modules-prepared", rewriters: { fast: "patched" }, matches: planned.diagnostics.matches, factories: planned.factories.map(f => f.key) },
+        diagnostics: { reason: "modules-prepared", format: "rspack", rewriters: { fast: "patched" }, matches: planned.diagnostics.matches, factories: planned.factories.map(f => f.key) },
       };
     } catch (error) {
       return failed(error instanceof Error ? error.message : "unsupported-rspack-syntax");

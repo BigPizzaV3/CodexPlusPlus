@@ -103,7 +103,47 @@ pub fn handle_tray_event<R: Runtime>(app: &AppHandle<R>, event: &TrayIconEvent) 
 
 pub fn hide<R: Runtime>(app: &AppHandle<R>) {
     if let Some(window) = app.get_webview_window(LABEL) {
-        let _ = window.hide();
+        hide_window(&window);
+    }
+}
+
+/// 收起面板时要做的事。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HideAction {
+    /// 已经不可见，什么都不做。
+    Nothing,
+    /// 直接 hide()。
+    Hide,
+    /// 先 show() 把 tao 的可见标记同步为 true，再 hide()。
+    SyncThenHide,
+}
+
+/// `actually_visible` 是窗口真实的可见性（Windows 上 tao 的 `is_visible()` 读的是 `IsWindowVisible`，
+/// 不是它内部的 VISIBLE 标记）。
+///
+/// Windows 上 tao 只按内部标记的差异决定要不要 ShowWindow：面板若被 Win32 直接显示过，标记仍是 false，
+/// 单独 hide() 会被当成重复操作跳过（同 issue #1542、#3223），所以真实可见时先 show() 同步标记再 hide()。
+/// 不可见时什么都不做：此时再 show() 会用 SW_SHOW 把面板激活出来闪一下，失焦回调还可能来回触发。
+/// 其他平台保持原样，直接 hide()。
+fn hide_action(windows: bool, actually_visible: bool) -> HideAction {
+    match (windows, actually_visible) {
+        (false, _) => HideAction::Hide,
+        (true, true) => HideAction::SyncThenHide,
+        (true, false) => HideAction::Nothing,
+    }
+}
+
+fn hide_window<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    let actually_visible = cfg!(windows) && window.is_visible().unwrap_or(false);
+    match hide_action(cfg!(windows), actually_visible) {
+        HideAction::Nothing => {}
+        HideAction::Hide => {
+            let _ = window.hide();
+        }
+        HideAction::SyncThenHide => {
+            let _ = window.show();
+            let _ = window.hide();
+        }
     }
 }
 
@@ -121,7 +161,7 @@ fn toggle<R: Runtime>(app: &AppHandle<R>, anchor: PhysicalPosition<f64>) {
         },
     };
     if window.is_visible().unwrap_or(false) {
-        let _ = window.hide();
+        hide_window(&window);
         return;
     }
     let just_hidden = HIDDEN_BY_BLUR_AT
@@ -184,7 +224,7 @@ fn create<R: Runtime>(app: &AppHandle<R>) -> Option<tauri::WebviewWindow<R>> {
             {
                 *at = Some(std::time::Instant::now());
             }
-            let _ = handle.hide();
+            hide_window(&handle);
         }
     });
     Some(window)
@@ -294,9 +334,20 @@ pub fn refresh_tray_mode<R: Runtime>(app: AppHandle<R>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{PanelEvent, panel_event};
+    use super::{HideAction, PanelEvent, hide_action, panel_event};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent, TrayIconId};
     use tauri::{PhysicalPosition, Rect};
+
+    #[test]
+    fn hiding_syncs_tao_flag_only_when_actually_visible_on_windows() {
+        // Windows：真实可见（含被 Win32 直接翻出来、tao 标记仍为 false 的情况）先同步再隐藏。
+        assert_eq!(hide_action(true, true), HideAction::SyncThenHide);
+        // Windows：已经隐藏就什么都不做，不能先 show()（SW_SHOW 会激活面板闪一下）。
+        assert_eq!(hide_action(true, false), HideAction::Nothing);
+        // 其他平台保持原样：直接 hide()。
+        assert_eq!(hide_action(false, true), HideAction::Hide);
+        assert_eq!(hide_action(false, false), HideAction::Hide);
+    }
 
     fn rect() -> Rect {
         Rect::default()

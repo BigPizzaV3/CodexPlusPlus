@@ -1,0 +1,28 @@
+name: Check claude-local pin
+
+# claude-local（ClaudeMom 仓库）按 rev 钉在 crates/codex-plus-core/Cargo.toml 里。
+# 上游改到 crates/claude-local 而这里没跟上时，这个检查失败并列出落后的提交；
+# 本地运行 node scripts/bump-claude-local.mjs 升级。
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 1 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Check claude-local pin
+        run: node scripts/bump-claude-local.mjs --check

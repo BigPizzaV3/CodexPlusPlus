@@ -18,16 +18,20 @@ use tokio::process::Command;
 use toml_edit::{DocumentMut, Item, Table};
 
 pub const MARKETPLACE_NAME: &str = "codex-plus-plugin-market";
-const MAX_INDEX_BYTES: usize = 8 * 1024 * 1024;
+const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_PACKAGE_FILES: u64 = 100_000;
 const INDEX_TIMEOUT: Duration = Duration::from_secs(35);
 const GIT_TIMEOUT: Duration = Duration::from_secs(180);
 
+/// 插件来源。现在只有完整库（`full`）一个仓库在用；`public` 是已归档的旧公开库，
+/// 只为以前从它装上的插件保留（显示、卸载），不再用它浏览和安装。
 #[derive(Debug, Clone, Copy)]
 struct Source {
     id: &'static str,
     repository: &'static str,
+    /// 仓库里的索引文件。完整库的 `plugin-index.json` 留给旧版本（它只收 8 MiB 以内的索引）。
+    index_file: &'static str,
     private: bool,
 }
 
@@ -37,12 +41,14 @@ impl Source {
             "public" => Ok(Self {
                 id: "public",
                 repository: "BigPizzaV3/CodexPlusPlusPluginCache",
+                index_file: "plugin-index.json",
                 private: false,
             }),
             // 完整库已改为公开仓库（#2804）：和公开库一样匿名拉取，不需要 gh 登录。
             "full" => Ok(Self {
                 id: "full",
                 repository: "BigPizzaV3/CodexPlusPlusFullPluginCache",
+                index_file: "plugin-index-v2.json",
                 private: false,
             }),
             _ => bail!("未知插件市场来源，请选择 public 或 full"),
@@ -59,6 +65,23 @@ struct PluginIndex {
     #[serde(default)]
     updated_at: String,
     plugins: Vec<PluginEntry>,
+    /// 官方目录的分组，按官方顺序。旧索引没有。
+    #[serde(default)]
+    sections: Vec<IndexSection>,
+}
+
+/// 官方目录里的一个分组：标题、成员和组内顺序都照官方目录记下来。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IndexSection {
+    slug: String,
+    /// 语言 → 标题，至少有 `en`。
+    title: BTreeMap<String, String>,
+    /// 人工编排的合集（热门、新品推荐…）：成员同时还在各自的分类里。
+    #[serde(default)]
+    curated: bool,
+    /// 成员的索引 id。
+    plugins: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,6 +107,23 @@ struct PluginEntry {
     skills: u64,
     #[serde(default)]
     requires_auth: bool,
+    /// 包内带 `.app.json`：连接器由 ChatGPT 托管，有 ChatGPT 登录才连得上。旧索引没有这两项。
+    #[serde(default)]
+    has_apps: bool,
+    /// 包内带 `.mcp.json`：连接器是 MCP 服务，可以在本机登录。
+    #[serde(default)]
+    has_mcp: bool,
+    /// 包清单里的 `interface.category`，原生插件页按它分组。旧索引没有这一项。
+    #[serde(default)]
+    category: String,
+    /// 列表里显示的一句话简介；没有就用完整描述。
+    #[serde(default)]
+    short_description: String,
+    /// 官方目录里的图标地址（深色界面另有一张的才有 `icon_url_dark`）。
+    #[serde(default)]
+    icon_url: String,
+    #[serde(default)]
+    icon_url_dark: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -122,11 +162,19 @@ fn plugin_market_root(home: &Path, source: Source, id: &str) -> PathBuf {
 }
 
 fn package_root(home: &Path, source: Source, plugin: &PluginEntry) -> PathBuf {
+    package_dir(home, source, &plugin.id, &plugin.name, &plugin.version)
+}
+
+fn package_dir(home: &Path, source: Source, id: &str, name: &str, version: &str) -> PathBuf {
     home.join("plugins")
         .join("cache")
-        .join(plugin_market_name(source, &plugin.id))
-        .join(&plugin.name)
-        .join(&plugin.version)
+        .join(plugin_market_name(source, id))
+        .join(name)
+        .join(version)
+}
+
+fn installed_dir(home: &Path, source: Source, installed: &InstalledPlugin) -> PathBuf {
+    package_dir(home, source, &installed.id, &installed.name, &installed.version)
 }
 
 fn state_path(home: &Path) -> PathBuf {
@@ -134,7 +182,9 @@ fn state_path(home: &Path) -> PathBuf {
 }
 
 fn index_path(home: &Path, source: Source) -> PathBuf {
-    market_root(home).join(format!("index-{}.json", source.id))
+    // 本机缓存跟着仓库里的索引文件换名：旧文件里是旧索引，不能当新的读。
+    let version = if source.index_file == "plugin-index.json" { "" } else { "-v2" };
+    market_root(home).join(format!("index-{}{version}.json", source.id))
 }
 
 fn valid_component(value: &str, allow_plus: bool) -> bool {
@@ -189,7 +239,7 @@ fn validate_package_path(source: Source, value: &str) -> anyhow::Result<()> {
 
 fn parse_index(bytes: &[u8], source: Source) -> anyhow::Result<PluginIndex> {
     if bytes.len() > MAX_INDEX_BYTES {
-        bail!("插件索引超过 8 MiB 限制");
+        bail!("插件索引超过 32 MiB 限制");
     }
     let index: PluginIndex = serde_json::from_slice(bytes).context("插件市场索引格式错误")?;
     if index.schema_version != 1 || index.repository != source.repository {
@@ -341,14 +391,14 @@ async fn command_output(
 
 async fn fetch_index(source: Source) -> anyhow::Result<Vec<u8>> {
     let raw = format!(
-        "https://raw.githubusercontent.com/{}/main/plugin-index.json",
-        source.repository
+        "https://raw.githubusercontent.com/{}/main/{}",
+        source.repository, source.index_file
     );
     // raw.githubusercontent.com 在部分网络里连不上，但 api.github.com 可达（#2804）：
     // 再匿名走 contents 接口取一次原文。
     let api = format!(
-        "https://api.github.com/repos/{}/contents/plugin-index.json?ref=main",
-        source.repository
+        "https://api.github.com/repos/{}/contents/{}?ref=main",
+        source.repository, source.index_file
     );
     // 插件索引走 GitHub raw，和更新检查一样必须尊重系统代理，否则在需要代理的
     // 网络里会一直超时、表现为插件市场空白或加载失败（#1329 / #2442）。
@@ -365,8 +415,8 @@ async fn fetch_index(source: Source) -> anyhow::Result<Vec<u8>> {
         bail!("无法获取插件市场索引，请检查网络或稍后重试");
     }
     let endpoint = format!(
-        "repos/{}/contents/plugin-index.json?ref=main",
-        source.repository
+        "repos/{}/contents/{}?ref=main",
+        source.repository, source.index_file
     );
     command_output(
         Command::new(gh_binary()).args([
@@ -400,14 +450,14 @@ async fn fetch_index_over_http(
             continue;
         }
         if response.content_length().unwrap_or_default() > MAX_INDEX_BYTES as u64 {
-            bail!("插件索引超过 8 MiB 限制");
+            bail!("插件索引超过 32 MiB 限制");
         }
         let mut bytes = Vec::new();
         loop {
             match response.chunk().await {
                 Ok(Some(chunk)) => {
                     if bytes.len() + chunk.len() > MAX_INDEX_BYTES {
-                        bail!("插件索引超过 8 MiB 限制");
+                        bail!("插件索引超过 32 MiB 限制");
                     }
                     bytes.extend_from_slice(&chunk);
                 }
@@ -437,7 +487,48 @@ async fn load_index(
     let bytes = fetch_index(source).await?;
     let index = parse_index(&bytes, source)?;
     crate::settings::atomic_write(&path, &bytes).context("无法缓存插件市场索引")?;
+    if source.id == "full" {
+        // 旧版本缓存的完整库索引（另一个文件名）不再读，顺手清掉。
+        let _ = fs::remove_file(market_root(home).join("index-full.json"));
+    }
     Ok((index, false))
+}
+
+/// 旧公开库的安装记录是不是这个完整库条目的同一个插件。公开库里的 id 有两种：
+/// 和完整库一样的官方 id，或者直接用插件名（来自 OpenAI 的 Git 市场的那些）。
+fn legacy_install_of(installed: &InstalledPlugin, plugin: &PluginEntry) -> bool {
+    installed.source == "public"
+        && (installed.id == plugin.id || (installed.id == installed.name && installed.name == plugin.name))
+}
+
+/// 这个索引条目在本机的安装记录，连同它实际装在哪个来源名下。公开库已并入完整库：
+/// 以前从公开库装的同一个插件也算装上了，它的文件和配置仍在公开库那个市场名下。
+fn installed_record<'a>(
+    home: &Path,
+    source: Source,
+    plugin: &PluginEntry,
+    state: &'a InstalledState,
+) -> Option<(Source, &'a InstalledPlugin)> {
+    let present = |source: Source, installed: &InstalledPlugin| {
+        fs::symlink_metadata(installed_dir(home, source, installed))
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
+    };
+    if let Some(installed) = state
+        .plugins
+        .get(&install_key(source, &plugin.id))
+        .filter(|installed| present(source, installed))
+    {
+        return Some((source, installed));
+    }
+    if source.id != "full" {
+        return None;
+    }
+    let public = Source::parse("public").ok()?;
+    state
+        .plugins
+        .values()
+        .find(|installed| legacy_install_of(installed, plugin) && present(public, installed))
+        .map(|installed| (public, installed))
 }
 
 fn plugin_payload(
@@ -446,18 +537,14 @@ fn plugin_payload(
     plugin: &PluginEntry,
     state: &InstalledState,
 ) -> Value {
-    let local = state
-        .plugins
-        .get(&install_key(source, &plugin.id))
-        .filter(|installed| {
-            let mut entry = plugin.clone();
-            entry.version.clone_from(&installed.version);
-            fs::symlink_metadata(package_root(home, source, &entry))
-                .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink())
-        });
+    let record = installed_record(home, source, plugin, state);
+    let local = record.map(|(_, installed)| installed);
     let mut result = serde_json::to_value(plugin).unwrap_or_else(|_| json!({}));
     result["installed"] = json!(local.is_some());
-    result["marketplaceName"] = json!(plugin_market_name(source, &plugin.id));
+    result["marketplaceName"] = json!(match record {
+        Some((owner, installed)) => plugin_market_name(owner, &installed.id),
+        None => plugin_market_name(source, &plugin.id),
+    });
     result["installedVersion"] = json!(local.map(|item| item.version.as_str()).unwrap_or_default());
     result["updateAvailable"] = json!(
         local
@@ -571,7 +658,7 @@ pub fn install_status(home: &Path, source: &str, id: &str) -> anyhow::Result<Val
             {
                 value["installedVersion"] = json!(plugin.version);
                 value["restartRequired"] = json!(true);
-                value["nativeResult"] = native_install_result();
+                value["nativeResult"] = native_install_result(&home, source, Some(plugin));
                 if let Ok(bytes) = fs::read(index_path(&home, source)) {
                     if let Ok(index) = parse_index(&bytes, source) {
                         if let Some(entry) = index.plugins.iter().find(|entry| entry.id == id) {
@@ -1274,7 +1361,7 @@ fn market_manifest(home: &Path, source: Source, plugin: &PluginEntry) -> Value {
         "name": plugin.name,
         "source": { "source": "local", "path": path.to_string_lossy() },
         "policy": { "installation": "AVAILABLE", "authentication": "ON_USE" },
-        "category": "Productivity",
+        "category": native_category(plugin).unwrap_or("Productivity"),
     })];
     json!({ "name": plugin_market_name(source, &plugin.id), "interface": { "displayName": format!("Codex 插件市场 · {}", plugin.display_name) }, "plugins": plugins })
 }
@@ -1369,18 +1456,32 @@ pub async fn install_plugin(home: &Path, source: &str, id: &str) -> anyhow::Resu
                     && item.tree.eq_ignore_ascii_case(&plugin.tree)
                     && package_root(&home, source, plugin).is_dir()
             });
-        if existing
+        // 以前从旧公开库装的同一个插件：装上这一份后换掉它，不然会有两份同名插件。
+        let legacy = (source.id == "full")
+            .then(|| state.plugins.values().find(|item| legacy_install_of(item, plugin)))
+            .flatten()
+            .map(|item| item.id.clone());
+        let mut installed = if existing
             || (package_root(&home, source, plugin).is_dir()
                 && receipt_matches(&home, source, plugin))
         {
-            return commit_install(&home, source, plugin, None);
+            commit_install(&home, source, plugin, None)?
+        } else {
+            // 下载之前先验证当前配置，避免无意义下载或覆盖不可解析配置。
+            updated_config(&home, source, plugin)?;
+            set_status(&home, source, id, true, "fetching", "正在下载所选插件…")?;
+            let downloaded = download_package(&home, source, &index, plugin).await?;
+            set_status(&home, source, id, true, "fetching", "正在校验并启用插件…")?;
+            commit_install(&home, source, plugin, Some(&downloaded))?
+        };
+        if let Some(legacy) = legacy {
+            if let Err(error) = remove_installed(&home, Source::parse("public")?, &legacy) {
+                installed["message"] = json!(format!(
+                    "插件文件已安装并启用，重启 Codex 后加载。以前从旧公开库装的那一份没能移除：{error}"
+                ));
+            }
         }
-        // 下载之前先验证当前配置，避免无意义下载或覆盖不可解析配置。
-        updated_config(&home, source, plugin)?;
-        set_status(&home, source, id, true, "fetching", "正在下载所选插件…")?;
-        let downloaded = download_package(&home, source, &index, plugin).await?;
-        set_status(&home, source, id, true, "fetching", "正在校验并启用插件…")?;
-        commit_install(&home, source, plugin, Some(&downloaded))
+        anyhow::Ok(installed)
     }
     .await;
     match &result {
@@ -1520,45 +1621,21 @@ pub fn uninstall_plugin(home: &Path, source: &str, id: &str) -> anyhow::Result<V
     }
     let home = prepare_home(home)?;
     let _lock = acquire_lock(&home, "install.lock", "正在安装插件，请等待完成后再卸载")?;
-    let _config_lock = acquire_lock(
-        &home,
-        "config.lock",
-        "另一个窗口正在更新插件配置，请稍后重试",
-    )?;
-    let mut state = read_state(&home)?;
-    let market_name = plugin_market_name(source, id);
-    let cache_parent = home.join("plugins").join("cache");
-    let cache_root = cache_parent.join(&market_name);
-    let markets_parent = market_root(&home).join("markets");
-    let receipt_root = plugin_market_root(&home, source, id);
-    let (original_config, config) = config_without_plugin(&home, source, id)?;
-    let recorded = state.plugins.remove(&install_key(source, id)).is_some();
-    // 改动任何东西之前先校验两个目录，路径异常时整个卸载不生效。
-    let cache_present = owned_directory_present(&home, &cache_parent, &cache_root)?;
-    let receipt_present = owned_directory_present(&home, &markets_parent, &receipt_root)?;
-    if !recorded && config.is_none() && !cache_present && !receipt_present {
-        bail!("该插件未通过插件市场安装，无需卸载");
+    // 这个条目装在旧公开库名下时，卸的是那一份。
+    let state = read_state(&home)?;
+    let legacy = (source.id == "full" && !state.plugins.contains_key(&install_key(source, id)))
+        .then(|| cached_index(&home, source))
+        .flatten()
+        .and_then(|index| {
+            let entry = index.plugins.iter().find(|entry| entry.id == id)?;
+            let installed = state.plugins.values().find(|item| legacy_install_of(item, entry))?;
+            Some(installed.id.clone())
+        });
+    match legacy {
+        Some(legacy) => remove_installed(&home, Source::parse("public")?, &legacy)?,
+        None => remove_installed(&home, source, id)?,
     }
-    // 先撤销配置，Codex 不再加载该插件；配置被其他窗口改过时不删任何文件。
-    if let Some(config) = config {
-        if config_bytes(&home)?.as_deref() != original_config.as_deref() {
-            bail!("Codex 配置已被其他窗口更新，请重试卸载；未覆盖新的配置");
-        }
-        crate::settings::atomic_write(&home.join("config.toml"), config.as_bytes())
-            .context("无法移除插件配置")?;
-    }
-    remove_owned_directory(&home, &cache_parent, &cache_root)?;
-    remove_owned_directory(&home, &markets_parent, &receipt_root)?;
-    if recorded {
-        write_json(&state_path(&home), &state)?;
-    }
-    let status = status_path(&home, source, id);
-    check_regular_file(&status)?;
-    match fs::remove_file(&status) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error).context("无法清除插件安装状态"),
-    }
+    let state = read_state(&home)?;
     let plugin = cached_index(&home, source).and_then(|index| {
         index
             .plugins
@@ -1572,8 +1649,172 @@ pub fn uninstall_plugin(home: &Path, source: &str, id: &str) -> anyhow::Result<V
     }))
 }
 
-fn native_install_result() -> Value {
-    json!({ "appsNeedingAuth": [], "authPolicy": "ON_USE" })
+/// 移除一份安装：配置、缓存目录、市场清单和安装记录。调用方持有安装锁。
+fn remove_installed(home: &Path, source: Source, id: &str) -> anyhow::Result<()> {
+    let _config_lock = acquire_lock(
+        home,
+        "config.lock",
+        "另一个窗口正在更新插件配置，请稍后重试",
+    )?;
+    let mut state = read_state(home)?;
+    let market_name = plugin_market_name(source, id);
+    let cache_parent = home.join("plugins").join("cache");
+    let cache_root = cache_parent.join(&market_name);
+    let markets_parent = market_root(home).join("markets");
+    let receipt_root = plugin_market_root(home, source, id);
+    let (original_config, config) = config_without_plugin(home, source, id)?;
+    let recorded = state.plugins.remove(&install_key(source, id)).is_some();
+    // 改动任何东西之前先校验两个目录，路径异常时整个卸载不生效。
+    let cache_present = owned_directory_present(home, &cache_parent, &cache_root)?;
+    let receipt_present = owned_directory_present(home, &markets_parent, &receipt_root)?;
+    if !recorded && config.is_none() && !cache_present && !receipt_present {
+        bail!("该插件未通过插件市场安装，无需卸载");
+    }
+    // 先撤销配置，Codex 不再加载该插件；配置被其他窗口改过时不删任何文件。
+    if let Some(config) = config {
+        if config_bytes(home)?.as_deref() != original_config.as_deref() {
+            bail!("Codex 配置已被其他窗口更新，请重试卸载；未覆盖新的配置");
+        }
+        crate::settings::atomic_write(&home.join("config.toml"), config.as_bytes())
+            .context("无法移除插件配置")?;
+    }
+    remove_owned_directory(home, &cache_parent, &cache_root)?;
+    remove_owned_directory(home, &markets_parent, &receipt_root)?;
+    if recorded {
+        write_json(&state_path(home), &state)?;
+    }
+    let status = status_path(home, source, id);
+    check_regular_file(&status)?;
+    match fs::remove_file(&status) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).context("无法清除插件安装状态"),
+    }
+}
+
+/// Codex 的 ChatGPT 登录在不在（auth.json）。在的话原生插件页直接读官方云端目录，托管连接器也能连。
+fn codex_signed_in(home: &Path) -> bool {
+    crate::relay_config::chatgpt_auth_status_from_home(home).authenticated
+}
+
+/// 已安装包里声明的连接器：`.mcp.json` 的服务名，以及有没有 ChatGPT 托管的 `.app.json`。
+fn package_connectors(directory: &Path, manifest: &Value) -> (Vec<String>, bool) {
+    let object_at = |key: &str, default: &str, field: &str| {
+        let relative = manifest.get(key).and_then(Value::as_str).unwrap_or(default);
+        let path = safe_local_path(directory, relative)?;
+        if !fs::metadata(&path).is_ok_and(|metadata| metadata.len() <= 1024 * 1024) {
+            return None;
+        }
+        let config = serde_json::from_slice::<Value>(&fs::read(path).ok()?).ok()?;
+        config.get(field)?.as_object().cloned()
+    };
+    let servers = object_at("mcpServers", ".mcp.json", "mcpServers")
+        .map(|servers| servers.keys().cloned().collect())
+        .unwrap_or_default();
+    let has_apps = object_at("apps", ".app.json", "apps").is_some_and(|apps| !apps.is_empty());
+    (servers, has_apps)
+}
+
+/// 原生界面只读 authPolicy 和 appsNeedingAuth；codexPlus* 两项给注入层决定装完提示什么。
+/// 不走原生 plugin/install：它会不经询问直接弹出浏览器授权页。
+fn native_install_result(home: &Path, source: Source, installed: Option<&InstalledPlugin>) -> Value {
+    let (servers, has_apps) = installed
+        .map(|plugin| package_dir(home, source, &plugin.id, &plugin.name, &plugin.version))
+        .and_then(|directory| {
+            let manifest = plugin_manifest(&directory).ok()?;
+            Some(package_connectors(&directory, &manifest))
+        })
+        .unwrap_or_default();
+    let hosted_only = has_apps && servers.is_empty() && !codex_signed_in(home);
+    json!({
+        "appsNeedingAuth": [], "authPolicy": "ON_USE",
+        "codexPlusMcpServers": servers, "codexPlusHostedOnly": hosted_only,
+    })
+}
+
+/// 没有 ChatGPT 登录时，在原生插件页上说明这个插件的连接器怎么连。
+fn annotate_connectors(summary: &mut Value, plugin: &PluginEntry) {
+    let (tag, note) = if plugin.has_mcp {
+        ("", "连接器是 MCP 服务：安装后在 Codex 的「设置 → MCP」里登录。")
+    } else if plugin.has_apps {
+        (
+            "需 ChatGPT 登录 · ",
+            "连接器由 ChatGPT 托管，要有 ChatGPT 登录才能连接；插件里的 Skills 可以直接使用。",
+        )
+    } else if plugin.requires_auth {
+        // 旧索引只知道「带连接器」，分不出是哪一种。
+        ("", "这个插件带连接器或 MCP 服务，可能需要另行登录。")
+    } else {
+        return;
+    };
+    let interface = &mut summary["interface"];
+    let short = interface["shortDescription"].as_str().unwrap_or_default();
+    interface["shortDescription"] = json!(format!("{tag}{short}"));
+    let long = interface["longDescription"].as_str().unwrap_or_default();
+    interface["longDescription"] = json!(format!("{note}\n\n{long}"));
+}
+
+/// 原生插件页拿分类当分组标题；索引里没有或不像标题时不给，页面归到 "Other"。
+fn native_category(plugin: &PluginEntry) -> Option<&str> {
+    let category = plugin.category.trim();
+    (!category.is_empty() && category.chars().count() <= 40 && !category.chars().any(char::is_control))
+        .then_some(category)
+}
+
+/// 图标只认 https 地址；别的一律当没有，页面画默认图标。
+fn native_icon(url: &str) -> Option<&str> {
+    (url.starts_with("https://")
+        && url.len() <= 600
+        && !url.chars().any(|c| c.is_whitespace() || c.is_control() || "\"'<>\\".contains(c)))
+    .then_some(url)
+}
+
+/// 交给注入层排版的官方分组（见 62-plugin-market-adapter 的 codexPlusPluginNativeArrange）。
+/// 标题会进页面，这里只放行像标题的文字。
+fn native_sections(index: &PluginIndex) -> Vec<Value> {
+    let titled = |text: &str| {
+        let text = text.trim();
+        (!text.is_empty() && text.chars().count() <= 40 && !text.chars().any(char::is_control))
+            .then(|| text.to_owned())
+    };
+    index
+        .sections
+        .iter()
+        .filter_map(|section| {
+            let slug_ok = !section.slug.is_empty()
+                && section.slug.len() <= 80
+                && section.slug.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+            let title: BTreeMap<&str, String> = section
+                .title
+                .iter()
+                .filter_map(|(lang, text)| Some((lang.as_str(), titled(text)?)))
+                .collect();
+            (slug_ok && title.contains_key("en")).then(|| {
+                json!({ "slug": section.slug, "title": title, "curated": section.curated, "plugins": section.plugins })
+            })
+        })
+        .collect()
+}
+
+/// 目录是缓存快照，不是官方实时目录：在插件详情里写明快照日期。
+fn annotate_snapshot(summary: &mut Value, index: &PluginIndex) {
+    let Some(date) = snapshot_date(&index.updated_at) else {
+        return;
+    };
+    let interface = &mut summary["interface"];
+    let long = interface["longDescription"].as_str().unwrap_or_default();
+    interface["longDescription"] = json!(format!(
+        "{long}\n\n来自 Codex++ 缓存的官方目录快照（{date}），不是实时目录。"
+    ));
+}
+
+/// 索引的快照日期（YYYY-MM-DD）；格式不对就不显示。
+fn snapshot_date(updated_at: &str) -> Option<&str> {
+    let date = updated_at.get(..10)?;
+    date.bytes()
+        .enumerate()
+        .all(|(index, byte)| if index == 4 || index == 7 { byte == b'-' } else { byte.is_ascii_digit() })
+        .then_some(date)
 }
 
 fn virtual_market_name(source: Source) -> String {
@@ -1664,21 +1905,31 @@ fn native_summary(
     state: &InstalledState,
     enabled: &BTreeMap<String, bool>,
 ) -> Value {
-    let payload = plugin_payload(home, source, plugin, state);
-    let installed = payload["installed"].as_bool().unwrap_or(false);
-    let id = format!("{}@{}", plugin.name, plugin_market_name(source, &plugin.id));
-    let local_version = payload["installedVersion"]
-        .as_str()
-        .filter(|value| !value.is_empty());
+    // 装在旧公开库名下的，id 和本地目录都按那个市场名算：配置里的启用状态、Codex 加载的插件用的是它。
+    let record = installed_record(home, source, plugin, state);
+    let installed = record.is_some();
+    let id = match record {
+        Some((owner, local)) => format!("{}@{}", local.name, plugin_market_name(owner, &local.id)),
+        None => format!("{}@{}", plugin.name, plugin_market_name(source, &plugin.id)),
+    };
+    let local_version = record.map(|(_, local)| local.version.as_str());
     let source_value = if let Some(revision) = revision {
         json!({ "type": "git", "url": format!("https://github.com/{}.git", source.repository), "path": plugin.path, "sha": revision, "refName": null })
     } else {
-        let mut local = plugin.clone();
-        if let Some(version) = local_version {
-            local.version = version.to_owned();
-        }
-        json!({ "type": "local", "path": package_root(home, source, &local).to_string_lossy() })
+        let path = match record {
+            Some((owner, local)) => installed_dir(home, owner, local),
+            None => package_root(home, source, plugin),
+        };
+        json!({ "type": "local", "path": path.to_string_lossy() })
     };
+    // 列表里一行显示的简介：包里没写就取完整描述的开头。
+    let short: String = if plugin.short_description.trim().is_empty() {
+        plugin.description.chars().take(300).collect()
+    } else {
+        plugin.short_description.clone()
+    };
+    let logo = native_icon(&plugin.icon_url);
+    let logo_dark = native_icon(&plugin.icon_url_dark);
     json!({
         "id": id, "name": alias, "source": source_value,
         "codexPlusIndexId": plugin.id,
@@ -1690,51 +1941,61 @@ fn native_summary(
         "mustShowInstallationInterstitial": false,
         "interface": {
             "displayName": if plugin.display_name.is_empty() { &plugin.name } else { &plugin.display_name },
-            "shortDescription": plugin.description, "longDescription": plugin.description,
-            "developerName": plugin.author, "category": "Productivity", "capabilities": [],
+            "shortDescription": short, "longDescription": plugin.description,
+            "developerName": plugin.author, "category": native_category(plugin), "capabilities": [],
             "screenshots": [], "screenshotUrls": [],
             "composerIcon": null, "logo": null, "logoDark": null,
-            "composerIconUrl": null, "logoUrl": null, "logoUrlDark": null,
+            "composerIconUrl": null, "logoUrl": logo, "logoUrlDark": logo_dark,
             "brandColor": null, "defaultPrompt": null, "privacyPolicyUrl": null,
             "termsOfServiceUrl": null, "websiteUrl": null,
         },
     })
 }
 
+/// 原生插件页按市场名分页签：显示名里的字母数字连起来是 `codex-official` 的市场进「公开」页签，
+/// 和官方插件一起按分类分组；其他市场都在「个人」页签里各占一组、不分类。
+/// 所以这个名字里除了 Codex、official 不能再有别的字母或数字（快照日期写在插件详情里）。
 fn native_market(home: &Path, source: Source, plugins: Vec<Value>) -> Value {
+    let name = if source.id == "full" { "Codex official 目录快照" } else { "Codex official 目录快照 · 旧公开库" };
     json!({
         "name": virtual_market_name(source), "path": virtual_market_path(home, source).to_string_lossy(),
-        "interface": { "displayName": if source.id == "full" { "Codex 插件市场 · 完整库" } else { "Codex 插件市场 · 公开库" } },
+        "interface": { "displayName": name },
         "plugins": plugins,
     })
 }
 
 fn native_list_payload(
     home: &Path,
-    results: &[(Source, anyhow::Result<(PluginIndex, bool)>)],
+    source: Source,
+    result: anyhow::Result<(PluginIndex, bool)>,
     state: &InstalledState,
     enabled: &BTreeMap<String, bool>,
 ) -> Value {
-    // 公开库是完整库的子集；完整库可访问时只显示一次，已安装查询仍保留两来源。
-    let full_available = results
+    let (index, _) = match result {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            let errors = [json!({ "marketplacePath": virtual_market_path(home, source).to_string_lossy(), "message": error.to_string() })];
+            return json!({ "marketplaces": [], "marketplaceLoadErrors": errors, "featuredPluginIds": [], "codexPlusSections": [] });
+        }
+    };
+    let aliases = native_aliases(&index);
+    let plugins = index
+        .plugins
         .iter()
-        .any(|(source, result)| source.id == "full" && result.is_ok());
-    let mut marketplaces = Vec::new();
-    let mut errors = Vec::new();
-    for (source, result) in results {
-        if full_available && source.id != "full" {
-            continue;
-        }
-        match result {
-            Ok((index, _)) => {
-                let aliases = native_aliases(index);
-                let plugins = index.plugins.iter().map(|plugin| native_summary(home, *source, Some(&index.revision), plugin, aliases.get(&plugin.id).map(String::as_str).unwrap_or(&plugin.name), state, enabled)).collect();
-                marketplaces.push(native_market(home, *source, plugins));
-            }
-            Err(error) => errors.push(json!({ "marketplacePath": virtual_market_path(home, *source).to_string_lossy(), "message": error.to_string() })),
-        }
-    }
-    json!({ "marketplaces": marketplaces, "marketplaceLoadErrors": errors, "featuredPluginIds": [] })
+        .map(|plugin| {
+            let alias = aliases.get(&plugin.id).map(String::as_str).unwrap_or(&plugin.name);
+            let mut summary = native_summary(home, source, Some(&index.revision), plugin, alias, state, enabled);
+            // 这份目录只在没有 ChatGPT 登录时给出（见 native_request）。
+            annotate_connectors(&mut summary, plugin);
+            // 列表有上万条，完整描述只在详情（plugin/read）里给。
+            summary["interface"]["longDescription"] = Value::Null;
+            summary
+        })
+        .collect();
+    json!({
+        "marketplaces": [native_market(home, source, plugins)], "marketplaceLoadErrors": [],
+        "featuredPluginIds": [], "codexPlusSections": native_sections(&index),
+    })
 }
 
 fn cached_index(home: &Path, source: Source) -> Option<PluginIndex> {
@@ -1899,12 +2160,11 @@ fn native_detail(
     );
     let mut skills = Vec::new();
     let mut mcp_servers = Vec::new();
-    if summary["installed"].as_bool().unwrap_or(false) {
+    let mut declared = None;
+    if let Some((owner, record)) = installed_record(home, source, plugin, state) {
         let mut local = plugin.clone();
-        if let Some(version) = summary["localVersion"].as_str() {
-            local.version = version.to_owned();
-        }
-        let directory = package_root(home, source, &local);
+        local.version.clone_from(&record.version);
+        let directory = installed_dir(home, owner, record);
         if let Ok(manifest) = plugin_manifest(&directory) {
             skills = installed_skill_summaries(
                 &directory,
@@ -1935,25 +2195,19 @@ fn native_detail(
                     }
                 }
             }
-            let mcp_path = manifest
-                .get("mcpServers")
-                .and_then(Value::as_str)
-                .unwrap_or(".mcp.json");
-            if let Some(path) = safe_local_path(&directory, mcp_path) {
-                if fs::metadata(&path).is_ok_and(|metadata| metadata.len() <= 1024 * 1024) {
-                    if let Ok(bytes) = fs::read(path) {
-                        if let Ok(config) = serde_json::from_slice::<Value>(&bytes) {
-                            if let Some(servers) =
-                                config.get("mcpServers").and_then(Value::as_object)
-                            {
-                                mcp_servers = servers.keys().cloned().collect();
-                            }
-                        }
-                    }
-                }
-            }
+            let (servers, has_apps) = package_connectors(&directory, &manifest);
+            // 装好的包以包里的声明为准，比索引里的标记准。
+            local.has_mcp = !servers.is_empty();
+            local.has_apps = has_apps;
+            local.requires_auth = local.has_mcp || has_apps;
+            mcp_servers = servers;
+            declared = Some(local);
         }
     }
+    if !codex_signed_in(home) {
+        annotate_connectors(&mut summary, declared.as_ref().unwrap_or(plugin));
+    }
+    annotate_snapshot(&mut summary, index);
     json!({ "plugin": {
         "summary": summary, "marketplaceName": virtual_market_name(source), "marketplacePath": virtual_market_path(home, source).to_string_lossy(),
         "description": plugin.description, "skills": skills, "mcpServers": mcp_servers,
@@ -1976,6 +2230,12 @@ fn installed_fallback(home: &Path, source: Source, installed: &InstalledPlugin) 
         bytes: 0,
         skills: 0,
         requires_auth: false,
+        has_apps: false,
+        has_mcp: false,
+        category: String::new(),
+        short_description: String::new(),
+        icon_url: String::new(),
+        icon_url_dark: String::new(),
     };
     if let Ok(manifest) = plugin_manifest(&package_root(home, source, &plugin)) {
         plugin.display_name = manifest
@@ -1993,6 +2253,11 @@ fn installed_fallback(home: &Path, source: Source, installed: &InstalledPlugin) 
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
+        plugin.category = manifest
+            .pointer("/interface/category")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
     }
     plugin
 }
@@ -2005,22 +2270,18 @@ pub async fn native_request(home: &Path, method: &str, params: Value) -> anyhow:
     let enabled = configured_plugin_enabled(&home)?;
     match method {
         "plugin/list" | "list-plugins" => {
-            let public = Source::parse("public")?;
+            // 有 ChatGPT 登录时原生插件页直接读官方云端目录，不再并入缓存快照；
+            // 已经从快照装上的插件仍由下面的 plugin/installed 给出。
+            if codex_signed_in(&home) {
+                return Ok(json!({ "marketplaces": [], "marketplaceLoadErrors": [], "featuredPluginIds": [] }));
+            }
             let full = Source::parse("full")?;
             let refresh = params
                 .get("forceRefetch")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            let (public_result, full_result) = tokio::join!(
-                load_index(&home, public, refresh),
-                load_index(&home, full, refresh)
-            );
-            Ok(native_list_payload(
-                &home,
-                &[(public, public_result), (full, full_result)],
-                &state,
-                &enabled,
-            ))
+            let result = load_index(&home, full, refresh).await;
+            Ok(native_list_payload(&home, full, result, &state, &enabled))
         }
         "plugin/installed"
         | "plugin/installed-list"
@@ -2028,18 +2289,29 @@ pub async fn native_request(home: &Path, method: &str, params: Value) -> anyhow:
         | "installed-plugins" => {
             // 提及、聊天初始化等高频路径只读本地已安装记录，不拉市场目录。
             let mut marketplaces = Vec::new();
+            let full_index = cached_index(&home, Source::parse("full")?);
+            // 以前从公开库装的、完整库里有同一个插件的，算在完整库名下。
+            let merged = |installed: &InstalledPlugin| {
+                full_index.as_ref().and_then(|index| {
+                    index.plugins.iter().find(|entry| legacy_install_of(installed, entry))
+                })
+            };
             for name in ["public", "full"] {
                 let source = Source::parse(name)?;
-                let index = cached_index(&home, source);
+                let index = if name == "full" { full_index.clone() } else { cached_index(&home, source) };
                 let aliases = index.as_ref().map(native_aliases).unwrap_or_default();
                 let mut plugins = Vec::new();
-                for installed in state
-                    .plugins
-                    .values()
-                    .filter(|installed| installed.source == source.id)
-                {
+                for installed in state.plugins.values().filter(|installed| {
+                    if name == "full" {
+                        installed.source == "full" || merged(installed).is_some()
+                    } else {
+                        installed.source == "public" && merged(installed).is_none()
+                    }
+                }) {
                     let fallback;
-                    let entry = if let Some(entry) = index.as_ref().and_then(|index| {
+                    let entry = if let Some(entry) = merged(installed).filter(|_| name == "full") {
+                        entry
+                    } else if let Some(entry) = index.as_ref().and_then(|index| {
                         index.plugins.iter().find(|entry| entry.id == installed.id)
                     }) {
                         entry
@@ -2075,7 +2347,12 @@ pub async fn native_request(home: &Path, method: &str, params: Value) -> anyhow:
             let (plugin, alias) = managed_entry(&index, source, &params)?;
             if matches!(method, "plugin/install" | "install-plugin") {
                 install_plugin(&home, source.id, &plugin.id).await?;
-                Ok(native_install_result())
+                let state = read_state(&home)?;
+                Ok(native_install_result(
+                    &home,
+                    source,
+                    state.plugins.get(&install_key(source, &plugin.id)),
+                ))
             } else {
                 Ok(native_detail(
                     &home, source, &index, plugin, &alias, &state, &enabled,
@@ -2091,14 +2368,208 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_market_is_public_and_keeps_its_name() {
-        // 完整库已公开（#2804）：不再要求 gh 登录，界面名称仍是「完整库」。
+    fn full_market_is_public_and_reads_its_own_index_file() {
+        // 完整库已公开（#2804）：不再要求 gh 登录。
         let full = Source::parse("full").unwrap();
         assert!(!full.private);
-        let market = native_market(Path::new("/tmp/home"), full, Vec::new());
-        assert_eq!(market["interface"]["displayName"], "Codex 插件市场 · 完整库");
-        let public = native_market(Path::new("/tmp/home"), Source::parse("public").unwrap(), Vec::new());
-        assert_eq!(public["interface"]["displayName"], "Codex 插件市场 · 公开库");
+        // 仓库里的 plugin-index.json 留给旧版本，新索引和它的本机缓存都另起文件名。
+        assert_eq!(full.index_file, "plugin-index-v2.json");
+        assert!(index_path(Path::new("/tmp/home"), full).ends_with("index-full-v2.json"));
+        let public = Source::parse("public").unwrap();
+        assert!(index_path(Path::new("/tmp/home"), public).ends_with("index-public.json"));
+    }
+
+    #[tokio::test]
+    async fn plugins_installed_from_the_old_public_market_count_as_the_full_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        let public = Source::parse("public").unwrap();
+        // 旧公开库里来自 Git 市场的插件直接拿名字当 id。
+        let mut legacy = entry();
+        legacy.id = "notes".into();
+        legacy.name = "notes".into();
+        let download = home.join(".tmp/notes");
+        write_payload(&download, &legacy);
+        commit_install(&home, public, &legacy, Some(&download)).unwrap();
+        let legacy_market = plugin_market_name(public, "notes");
+
+        let mut same = entry();
+        same.id = "plugin_notes".into();
+        same.name = "notes".into();
+        same.version = "2.0.0".into();
+        let mut other = entry();
+        other.id = "plugin_other".into();
+        other.name = "other".into();
+        let full = cache_indexes(&home, vec![same.clone(), other]);
+
+        let listed = list_plugins(&home, "full", false).await.unwrap();
+        let notes = &listed["plugins"][0];
+        assert_eq!(notes["id"], "plugin_notes");
+        assert_eq!(notes["installed"], true);
+        assert_eq!(notes["installedVersion"], "1.0.0");
+        assert_eq!(notes["updateAvailable"], true);
+        assert_eq!(notes["marketplaceName"], legacy_market.as_str());
+        assert_eq!(listed["plugins"][1]["installed"], false);
+
+        // 原生页面上它的 id 仍是装的那一份的（配置里的启用状态按它记），并且只列在完整库名下。
+        let native = native_request(&home, "plugin/list", json!({})).await.unwrap();
+        let summary = &native["marketplaces"][0]["plugins"][0];
+        assert_eq!(summary["id"], format!("notes@{legacy_market}"));
+        assert_eq!(summary["installed"], true);
+        assert_eq!(summary["localVersion"], "1.0.0");
+        let installed = native_request(&home, "installed-plugins", json!({})).await.unwrap();
+        assert_eq!(installed["marketplaces"].as_array().unwrap().len(), 1);
+        assert_eq!(installed["marketplaces"][0]["name"], "codex-plus-index-full");
+        assert_eq!(installed["marketplaces"][0]["plugins"][0]["id"], format!("notes@{legacy_market}"));
+        let params = json!({ "marketplacePath": virtual_market_path(&home, full), "pluginName": "notes" });
+        let detail = native_request(&home, "plugin/read", params).await.unwrap();
+        assert_eq!(detail["plugin"]["skills"].as_array().unwrap().len(), 1);
+
+        // 装上完整库的这一份后，旧的那一份被换掉。
+        let download = home.join(".tmp/notes-full");
+        write_payload(&download, &same);
+        commit_install(&home, full, &same, Some(&download)).unwrap();
+        install_plugin(&home, "full", "plugin_notes").await.unwrap();
+        let state = read_state(&home).unwrap();
+        assert_eq!(state.plugins.keys().collect::<Vec<_>>(), [&install_key(full, "plugin_notes")]);
+        assert!(!home.join("plugins/cache").join(&legacy_market).exists());
+        let config = fs::read_to_string(home.join("config.toml")).unwrap();
+        assert!(!config.contains(&legacy_market), "{config}");
+        assert!(config.contains(&plugin_market_name(full, "plugin_notes")), "{config}");
+    }
+
+    #[tokio::test]
+    async fn uninstalling_a_full_entry_removes_the_copy_from_the_old_public_market() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        let public = Source::parse("public").unwrap();
+        // 两个仓库里 id 相同的插件。
+        let plugin = entry();
+        let download = home.join(".tmp/sample");
+        write_payload(&download, &plugin);
+        commit_install(&home, public, &plugin, Some(&download)).unwrap();
+        cache_indexes(&home, vec![plugin.clone()]);
+        let result = uninstall_plugin(&home, "full", &plugin.id).unwrap();
+        assert_eq!(result["plugin"]["installed"], false);
+        assert!(read_state(&home).unwrap().plugins.is_empty());
+        assert!(!home.join("plugins/cache").join(plugin_market_name(public, &plugin.id)).exists());
+        // 没装过的照旧报错。
+        assert!(uninstall_plugin(&home, "full", &plugin.id).is_err());
+    }
+
+    #[test]
+    fn market_names_land_in_the_public_tab_of_the_native_page() {
+        // Codex 26.1117 的插件页：市场显示名去掉首尾空白、转小写、非 [a-z0-9] 连成一个 `-`、
+        // 再去掉首尾的 `-`，得到 codex-official 的进「公开」页签。
+        let normalised = |name: &str| {
+            let mut result = String::new();
+            for part in name
+                .trim()
+                .to_lowercase()
+                .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit()))
+                .filter(|part| !part.is_empty())
+            {
+                if !result.is_empty() {
+                    result.push('-');
+                }
+                result.push_str(part);
+            }
+            result
+        };
+        for source in ["public", "full"] {
+            let market = native_market(Path::new("/tmp/home"), Source::parse(source).unwrap(), Vec::new());
+            assert_eq!(
+                normalised(market["interface"]["displayName"].as_str().unwrap()),
+                "codex-official",
+                "{source}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_list_groups_plugins_by_the_category_in_the_index() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        let mut tools = entry();
+        tools.category = " Developer Tools ".into();
+        let mut unknown = entry();
+        unknown.id = "plugin_unknown".into();
+        unknown.name = "unknown".into();
+        let mut odd = entry();
+        odd.id = "plugin_odd".into();
+        odd.name = "odd".into();
+        odd.category = "x".repeat(41);
+        cache_indexes(&home, vec![tools, unknown, odd]);
+        let payload = native_request(&home, "plugin/list", json!({}))
+            .await
+            .unwrap();
+        let category = |name: &str| {
+            payload["marketplaces"][0]["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|plugin| plugin["name"] == name)
+                .unwrap()["interface"]["category"]
+                .clone()
+        };
+        assert_eq!(category("sample"), "Developer Tools");
+        // 旧索引没有分类、或分类不像标题：不给，原生页面归到 "Other"。
+        assert!(category("unknown").is_null());
+        assert!(category("odd").is_null());
+        // 旧索引也没有官方分组。
+        assert_eq!(payload["codexPlusSections"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn native_list_carries_the_official_layout_icons_and_short_descriptions() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        let mut listed = entry();
+        listed.short_description = "Short".into();
+        listed.icon_url = "https://files.example.com/content?id=1&sig=ab".into();
+        listed.icon_url_dark = "https://files.example.com/content?id=2&sig=cd".into();
+        let mut plain = entry();
+        plain.id = "plugin_plain".into();
+        plain.name = "plain".into();
+        plain.icon_url = "javascript:alert(1)".into();
+        plain.icon_url_dark = "https://files.example.com/a b".into();
+        let full = cache_indexes(&home, vec![listed, plain]);
+        let path = index_path(&home, full);
+        let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        value["sections"] = json!([
+            { "slug": "featured", "title": { "en": " Featured ", "zh": "热门" }, "curated": true, "plugins": ["plugin_test"] },
+            { "slug": "productivity", "title": { "en": "Productivity", "zh": "x".repeat(41) }, "plugins": ["plugin_test", "plugin_plain"] },
+            { "slug": "Bad Slug", "title": { "en": "Bad" }, "plugins": [] },
+            { "slug": "untitled", "title": { "zh": "没有英文标题" }, "plugins": [] },
+        ]);
+        fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+        let payload = native_request(&home, "plugin/list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            payload["codexPlusSections"],
+            json!([
+                { "slug": "featured", "title": { "en": "Featured", "zh": "热门" }, "curated": true, "plugins": ["plugin_test"] },
+                { "slug": "productivity", "title": { "en": "Productivity" }, "curated": false, "plugins": ["plugin_test", "plugin_plain"] },
+            ])
+        );
+        let interface = |name: &str| {
+            payload["marketplaces"][0]["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|plugin| plugin["name"] == name)
+                .unwrap()["interface"]
+                .clone()
+        };
+        let listed = interface("sample");
+        assert_eq!(listed["shortDescription"], "Short");
+        assert_eq!(listed["logoUrl"], "https://files.example.com/content?id=1&sig=ab");
+        assert_eq!(listed["logoUrlDark"], "https://files.example.com/content?id=2&sig=cd");
+        // 没有简介的用完整描述；不是 https 的图标地址不给。
+        let plain = interface("plain");
+        assert_eq!(plain["shortDescription"], "sample plugin");
+        assert!(plain["logoUrl"].is_null() && plain["logoUrlDark"].is_null());
     }
 
     #[tokio::test]
@@ -2140,7 +2611,7 @@ mod tests {
             .mount(&large)
             .await;
         let error = fetch_index_over_http(&client, &[&large.uri(), &api]).await.unwrap_err();
-        assert!(error.to_string().contains("8 MiB"), "{error:#}");
+        assert!(error.to_string().contains("32 MiB"), "{error:#}");
     }
 
     #[test]
@@ -2385,6 +2856,12 @@ exit 1
             bytes: 128,
             skills: 1,
             requires_auth: false,
+            has_apps: false,
+            has_mcp: false,
+            category: String::new(),
+            short_description: String::new(),
+            icon_url: String::new(),
+            icon_url_dark: String::new(),
         }
     }
 
@@ -2394,6 +2871,7 @@ exit 1
             repository: Source::parse("public").unwrap().repository.into(),
             revision: "b".repeat(40),
             updated_at: "2026-10-08".into(),
+            sections: Vec::new(),
             plugins: vec![plugin],
         }
     }
@@ -3019,7 +3497,7 @@ enabled = true
     }
 
     #[tokio::test]
-    async fn native_list_prefers_cached_full_index_without_duplicate_public_entries() {
+    async fn native_list_reads_only_the_full_index() {
         let temp = tempfile::tempdir().unwrap();
         let home = prepare_home(temp.path()).unwrap();
         let public = Source::parse("public").unwrap();
@@ -3059,37 +3537,233 @@ enabled = true
         assert!(!market_root(&home).join("downloads").exists());
     }
 
-    #[test]
-    fn native_list_falls_back_to_public_with_explicit_full_access_error() {
+    fn sign_in(home: &Path) {
+        fs::write(
+            home.join("auth.json"),
+            r#"{"auth_mode":"chatgpt","tokens":{"access_token":"token"}}"#,
+        )
+        .unwrap();
+    }
+
+    /// 两个来源的索引都写进缓存，列表请求就不会去联网。
+    fn cache_indexes(home: &Path, plugins: Vec<PluginEntry>) -> Source {
+        let full = Source::parse("full").unwrap();
+        fs::write(
+            index_path(home, Source::parse("public").unwrap()),
+            serde_json::to_vec(&index(entry())).unwrap(),
+        )
+        .unwrap();
+        let mut manifest = index(entry());
+        manifest.repository = full.repository.into();
+        manifest.plugins = plugins;
+        for plugin in &mut manifest.plugins {
+            plugin.path = format!("markets/01/plugins/{}", plugin.name);
+        }
+        fs::write(
+            index_path(home, full),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        full
+    }
+
+    #[tokio::test]
+    async fn native_list_leaves_the_catalog_to_codex_when_chatgpt_is_signed_in() {
         let temp = tempfile::tempdir().unwrap();
         let home = prepare_home(temp.path()).unwrap();
-        let public = Source::parse("public").unwrap();
+        let source = cache_indexes(&home, vec![entry()]);
+        let before = native_request(&home, "plugin/list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(before["marketplaces"].as_array().unwrap().len(), 1);
+
+        sign_in(&home);
+        let after = native_request(&home, "plugin/list", json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            after,
+            json!({ "marketplaces": [], "marketplaceLoadErrors": [], "featuredPluginIds": [] })
+        );
+        // 已经装上的仍能打开详情。
+        let params = json!({ "marketplacePath": virtual_market_path(&home, source), "pluginName": "sample" });
+        let detail = native_request(&home, "plugin/read", params).await.unwrap();
+        assert_eq!(detail["plugin"]["summary"]["name"], "sample");
+    }
+
+    #[tokio::test]
+    async fn native_page_shows_snapshot_date_and_how_connectors_connect() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        let mut hosted = entry();
+        hosted.requires_auth = true;
+        hosted.has_apps = true;
+        let mut local = entry();
+        local.id = "plugin_local".into();
+        local.name = "local".into();
+        local.requires_auth = true;
+        local.has_apps = true;
+        local.has_mcp = true;
+        let mut plain = entry();
+        plain.id = "plugin_plain".into();
+        plain.name = "plain".into();
+        let source = cache_indexes(&home, vec![hosted, local, plain]);
+        let payload = native_request(&home, "plugin/list", json!({}))
+            .await
+            .unwrap();
+        let market = &payload["marketplaces"][0];
+        let interface = |name: &str| {
+            market["plugins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|plugin| plugin["name"] == name)
+                .unwrap()["interface"]
+                .clone()
+        };
+        assert_eq!(
+            interface("sample")["shortDescription"],
+            "需 ChatGPT 登录 · sample plugin"
+        );
+        assert_eq!(interface("local")["shortDescription"], "sample plugin");
+        // 完整描述和连接器说明在详情里，列表不带。
+        assert!(interface("sample")["longDescription"].is_null());
+        for (name, start) in [("sample", "连接器由 ChatGPT 托管"), ("local", "连接器是 MCP 服务")] {
+            let params = json!({ "marketplacePath": virtual_market_path(&home, source), "pluginName": name });
+            let detail = native_request(&home, "plugin/read", params).await.unwrap();
+            let long = detail["plugin"]["summary"]["interface"]["longDescription"].as_str().unwrap();
+            assert!(long.starts_with(start), "{long}");
+            assert!(long.contains("\n\nsample plugin\n\n"), "{long}");
+        }
+
+        // 快照日期写在详情里（市场名要留给页签判定，放不了日期）。
+        let params = json!({ "marketplacePath": virtual_market_path(&home, source), "pluginName": "plain" });
+        let detail = native_request(&home, "plugin/read", params).await.unwrap();
+        assert_eq!(
+            detail["plugin"]["summary"]["interface"]["longDescription"],
+            "sample plugin\n\n来自 Codex++ 缓存的官方目录快照（2026-10-08），不是实时目录。"
+        );
+
+        // ChatGPT 登录后托管连接器能连，详情里不再提示。
+        sign_in(&home);
+        let params = json!({ "marketplacePath": virtual_market_path(&home, source), "pluginName": "sample" });
+        let detail = native_request(&home, "plugin/read", params).await.unwrap();
+        assert_eq!(
+            detail["plugin"]["summary"]["interface"]["shortDescription"],
+            "sample plugin"
+        );
+    }
+
+    #[test]
+    fn snapshot_date_is_shown_only_when_it_is_a_date() {
+        assert_eq!(snapshot_date("2026-10-08"), Some("2026-10-08"));
+        assert_eq!(snapshot_date("2026-10-08T08:29:33Z"), Some("2026-10-08"));
+        for value in ["", "2026-10", "<script>xx", "2026/10/08", "二〇二六年十月八日"] {
+            assert_eq!(snapshot_date(value), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn index_connector_fields_are_optional() {
+        let source = Source::parse("public").unwrap();
+        let mut value = serde_json::to_value(index(entry())).unwrap();
+        let plugin = value["plugins"][0].as_object_mut().unwrap();
+        plugin.remove("hasApps");
+        plugin.remove("hasMcp");
+        plugin.remove("category");
+        let old = parse_index(&serde_json::to_vec(&value).unwrap(), source).unwrap();
+        assert!(!old.plugins[0].has_apps && !old.plugins[0].has_mcp);
+        assert_eq!(old.plugins[0].category, "");
+        value["plugins"][0]["hasApps"] = json!(true);
+        value["plugins"][0]["hasMcp"] = json!(true);
+        let new = parse_index(&serde_json::to_vec(&value).unwrap(), source).unwrap();
+        assert!(new.plugins[0].has_apps && new.plugins[0].has_mcp);
+    }
+
+    #[test]
+    fn install_result_tells_which_connectors_the_package_declares() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        let source = Source::parse("public").unwrap();
+        let install = |id: &str, name: &str, files: &[(&str, &str)]| {
+            let mut plugin = entry();
+            plugin.id = id.into();
+            plugin.name = name.into();
+            let download = home.join(".tmp").join(name);
+            write_payload(&download, &plugin);
+            for (file, contents) in files {
+                fs::write(download.join(file), contents).unwrap();
+            }
+            commit_install(&home, source, &plugin, Some(&download)).unwrap();
+            set_status(&home, source, id, false, "complete", "done").unwrap();
+            install_status(&home, "public", id).unwrap()["nativeResult"].clone()
+        };
+        let apps = r#"{"apps":{"demo":{"id":"connector_demo"}}}"#;
+        let mcp = r#"{"mcpServers":{"demo":{"type":"http","url":"https://mcp.example.com/mcp"}}}"#;
+
+        let both = install("plugin_both", "both", &[(".app.json", apps), (".mcp.json", mcp)]);
+        assert_eq!(both["authPolicy"], "ON_USE");
+        assert_eq!(both["appsNeedingAuth"], json!([]));
+        assert_eq!(both["codexPlusMcpServers"], json!(["demo"]));
+        assert_eq!(both["codexPlusHostedOnly"], false);
+
+        let hosted = install("plugin_hosted", "hosted", &[(".app.json", apps)]);
+        assert_eq!(hosted["codexPlusMcpServers"], json!([]));
+        assert_eq!(hosted["codexPlusHostedOnly"], true);
+
+        let plain = install("plugin_plain", "plain", &[]);
+        assert_eq!(plain["codexPlusMcpServers"], json!([]));
+        assert_eq!(plain["codexPlusHostedOnly"], false);
+
+        // 旧索引只标了「带连接器」；装好以后详情页按包里的声明说清楚是哪一种。
+        let note = |id: &str, name: &str| {
+            let mut plugin = entry();
+            plugin.id = id.into();
+            plugin.name = name.into();
+            plugin.requires_auth = true;
+            let detail = native_detail(
+                &home,
+                source,
+                &index(plugin.clone()),
+                &plugin,
+                name,
+                &read_state(&home).unwrap(),
+                &configured_plugin_enabled(&home).unwrap(),
+            );
+            let summary = &detail["plugin"]["summary"];
+            assert_eq!(summary["installed"], true, "{name}");
+            summary["interface"]["longDescription"].as_str().unwrap().to_owned()
+        };
+        assert!(note("plugin_both", "both").starts_with("连接器是 MCP 服务"));
+        assert!(note("plugin_hosted", "hosted").starts_with("连接器由 ChatGPT 托管"));
+        assert!(!note("plugin_plain", "plain").contains("连接器"));
+
+        // 有 ChatGPT 登录时托管连接器能连，不用提示。
+        sign_in(&home);
+        let signed_in = install_status(&home, "public", "plugin_hosted").unwrap();
+        assert_eq!(signed_in["nativeResult"]["codexPlusHostedOnly"], false);
+    }
+
+    #[test]
+    fn native_list_reports_why_the_index_is_unavailable() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
         let full = Source::parse("full").unwrap();
-        let results = [
-            (public, Ok((index(entry()), true))),
-            (
-                full,
-                Err(anyhow::anyhow!("完整市场需要 GitHub 仓库访问权限")),
-            ),
-        ];
         let payload = native_list_payload(
             &home,
-            &results,
+            full,
+            Err(anyhow::anyhow!("无法获取插件市场索引，请检查网络或稍后重试")),
             &InstalledState::default(),
             &BTreeMap::new(),
         );
-        assert_eq!(payload["marketplaces"].as_array().unwrap().len(), 1);
+        // 旧公开库不再用来兜底。
+        assert_eq!(payload["marketplaces"], json!([]));
         assert_eq!(
-            payload["marketplaces"][0]["name"],
-            "codex-plus-index-public"
-        );
-        assert_eq!(
-            payload["marketplaceLoadErrors"].as_array().unwrap().len(),
-            1
-        );
-        assert_eq!(
-            payload["marketplaceLoadErrors"][0]["marketplacePath"],
-            virtual_market_path(&home, full).to_string_lossy().as_ref()
+            payload["marketplaceLoadErrors"],
+            json!([{
+                "marketplacePath": virtual_market_path(&home, full).to_string_lossy(),
+                "message": "无法获取插件市场索引，请检查网络或稍后重试",
+            }])
         );
     }
 }

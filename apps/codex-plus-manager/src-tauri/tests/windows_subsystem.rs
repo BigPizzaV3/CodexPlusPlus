@@ -37,7 +37,20 @@ fn manager_repeated_launch_activates_existing_window() {
         .expect("read manager lib.rs");
 
     assert!(lib_rs.contains("focus_existing_manager_window();"));
-    assert!(lib_rs.contains("windows_activate_process_window"));
+    // 管理器二次启动只唤起可见窗口，隐藏/已销毁的主窗口交给请求文件，
+    // 不能用会 ShowWindow 隐藏窗口的版本，否则会翻出托盘快捷面板（issue #3223）。
+    assert!(lib_rs.contains("windows_activate_visible_process_window(process.process_id)"));
+    assert!(!lib_rs.contains("windows_activate_process_window("));
+    assert!(lib_rs.contains("window_activation_request_path()"));
+
+    // 启动器唤起 Codex 的行为不变：仍可显示隐藏的 Codex 窗口。
+    let launcher_rs = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../codex-plus-launcher/src/main.rs"
+    ))
+    .expect("read launcher main.rs");
+    assert!(launcher_rs.contains(".any(codex_plus_core::windows_activate_process_window)"));
+    assert!(!launcher_rs.contains("windows_activate_visible_process_window"));
 }
 
 #[test]
@@ -371,13 +384,16 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let app_tsx = manifest_dir.parent().unwrap().join("src/App.tsx");
     let app_tsx = std::fs::read_to_string(&app_tsx).expect("read manager App.tsx");
+    // 供应商编辑纯函数已从 App.tsx 抽到 relay-profile-editing.ts（管理器与 Codex 供应商页共用）。
+    let editing_ts = manifest_dir.parent().unwrap().join("src/relay-profile-editing.ts");
+    let editing_ts = std::fs::read_to_string(&editing_ts).expect("read relay-profile-editing.ts");
     let commands_rs = manifest_dir.join("src/commands.rs");
     let commands_rs = std::fs::read_to_string(&commands_rs).expect("read manager commands.rs");
 
     assert!(app_tsx.contains("snapshotActiveRelayFilesBeforeSwitch"));
     assert!(app_tsx.contains("backfill_relay_profile_from_live"));
     assert!(app_tsx.contains("relayProfileSwitchValidation(selectedBeforeSave, switchSettings)"));
-    assert!(app_tsx.contains("缺少独立 config.toml"));
+    assert!(editing_ts.contains("缺少独立 config.toml"));
     assert!(app_tsx.contains("const command = relayProfileSwitchCommand(selectedAfterSave)"));
     assert!(app_tsx.contains("function relayProfileSwitchCommand"));
     assert!(app_tsx.contains("return \"apply_pure_api_injection\""));
@@ -385,11 +401,11 @@ fn relay_settings_keeps_profile_config_and_auth_files_isolated() {
     assert!(app_tsx.contains("const createNewAggregateProfile = (mode: AggregateMode)"));
     assert!(app_tsx.contains("onClick={() => createNewAggregateProfile("));
     assert!(app_tsx.contains("已打开聚合供应商详情"));
-    assert!(app_tsx.contains(
+    assert!(editing_ts.contains(
         "buildRelayConfigToml(profile, { includeBearerToken: !profile.noAuth, requiresOpenAiAuth: false })"
     ));
     assert!(
-        app_tsx.contains(
+        editing_ts.contains(
             "`requires_openai_auth = ${options.requiresOpenAiAuth ? \"true\" : \"false\"}`"
         )
     );
@@ -494,18 +510,6 @@ fn relay_preview_deduplicates_root_keys_when_merging_common_config() {
     assert!(app_tsx.contains("dedupeTomlRootLines"));
     assert!(app_tsx.contains("rootSeen.add(key)"));
     assert!(app_tsx.contains("joinTomlSectionsRootFirst"));
-}
-
-#[test]
-fn provider_presets_include_runapi() {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let presets = manifest_dir.parent().unwrap().join("src/presets.ts");
-    let presets = std::fs::read_to_string(&presets).expect("read manager presets.ts");
-
-    assert!(presets.contains("id: \"runapi\""));
-    assert!(presets.contains("name: \"RunAPI\""));
-    assert!(presets.contains("category: \"aggregator\""));
-    assert!(presets.contains("baseUrl: \"https://runapi.host/v1\""));
 }
 
 #[test]

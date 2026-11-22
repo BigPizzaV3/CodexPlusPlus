@@ -59,6 +59,23 @@ impl Project {
     }
 }
 
+pub(crate) fn revision(home: &Path) -> std::io::Result<Option<String>> {
+    let file = match std::fs::File::open(home.join(FILE)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // 同步记录每次原子替换。文件身份可区分时间戳和字节数相同的更新。
+    let (volume, index) = crate::codex_sqlite::opened_file_identity(&file)?;
+    let modified = file
+        .metadata()?
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(std::io::Error::other)?
+        .as_nanos();
+    Ok(Some(format!("{modified:x}:{volume:x}:{index:x}")))
+}
+
 fn load(home: &Path, database: &Path) -> anyhow::Result<Snapshot> {
     let file = home.join(FILE);
     if std::fs::metadata(&file)
@@ -188,11 +205,18 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let database = home.path().join("state_5.sqlite");
         let id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(revision(home.path()).unwrap(), None);
         record_at(home.path(), &database, &id, None).unwrap();
+        let first_file_revision = revision(home.path()).unwrap().unwrap();
+        assert_eq!(
+            revision(home.path()).unwrap().as_deref(),
+            Some(first_file_revision.as_str())
+        );
         let first = load(home.path(), &database).unwrap().entries[0]
             .revision
             .clone();
         record_at(home.path(), &database, &id, None).unwrap();
+        assert_ne!(revision(home.path()).unwrap().unwrap(), first_file_revision);
         let next = load(home.path(), &database).unwrap();
         assert_eq!(next.entries.len(), 1);
         assert_ne!(next.entries[0].revision, first);

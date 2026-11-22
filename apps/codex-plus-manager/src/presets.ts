@@ -172,28 +172,7 @@ export const PRESETS: ProviderPreset[] = [
     websiteUrl: "https://longcat.chat/platform",
   },
 
-  // ── 聚合/中转 ──
-  {
-    id: "jojocode-max",
-    name: "JOJO Code",
-    websiteUrl: "https://max2.jojocode.com/",
-    apiKeyUrl: "https://max2.jojocode.com/",
-    category: "aggregator",
-    baseUrl: "https://max2.jojocode.com/v1",
-    protocol: "responses",
-    // 模型留空：添加时「从上游获取」或手填。
-    model: "",
-  },
-  {
-    id: "runapi",
-    name: "RunAPI",
-    websiteUrl: "https://runapi.host",
-    apiKeyUrl: "https://runapi.host",
-    category: "aggregator",
-    baseUrl: "https://runapi.host/v1",
-    protocol: "responses",
-    model: "gpt-5.5",
-  },
+  // ── 聚合/中转（赞助商不在这里，见 sponsorPresets）──
   {
     id: "siliconflow",
     name: "SiliconFlow",
@@ -225,38 +204,6 @@ export const PRESETS: ProviderPreset[] = [
     websiteUrl: "https://aihubmix.com",
   },
   {
-    id: "apikeyfun",
-    name: "APIKEY.FUN",
-    category: "aggregator",
-    baseUrl: "https://api.apikey.fun/v1",
-    protocol: "responses",
-    model: "gpt-5.5",
-    modelList: ["gpt-5.5"],
-    websiteUrl: "https://apikey.fun",
-  },
-  {
-    id: "cccccc-api",
-    name: "ccccccAPI",
-    websiteUrl: "https://dzhsmartai.com",
-    apiKeyUrl: "https://dzhsmartai.com/register?promo=CODEXPLUSPLUS",
-    category: "aggregator",
-    baseUrl: "https://dzhsmartai.com/v1",
-    protocol: "responses",
-    // 模型留空：添加时「从上游获取」或手填。
-    model: "",
-  },
-  {
-    id: "tokenmy",
-    name: "TokenMy",
-    websiteUrl: "https://agent.tokenmy.ai",
-    apiKeyUrl: "https://agent.tokenmy.ai",
-    category: "aggregator",
-    baseUrl: "https://agent.tokenmy.ai/v1",
-    protocol: "responses",
-    // 模型留空：添加时「从上游获取」或手填。
-    model: "",
-  },
-  {
     id: "novita",
     name: "Novita AI",
     category: "aggregator",
@@ -278,3 +225,67 @@ export const PRESETS: ProviderPreset[] = [
     websiteUrl: "https://learn.microsoft.com/en-us/azure/ai-foundry/openai/how-to/codex",
   },
 ];
+
+/** 推荐清单（ads.json 归一后的 load_ads 结果）里与赞助商预设有关的部分。 */
+export type SponsorAdsPayload = { ads?: unknown[]; topAds?: unknown[] } | null | undefined;
+
+/** 本地日期（YYYY-MM-DD），与到期日按天比较。 */
+function localDay(now: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function isWebUrl(value: string): boolean {
+  return /^https?:\/\/[^\s/]\S*$/i.test(value);
+}
+
+function sponsorPreset(ad: unknown, today: string): ProviderPreset | null {
+  if (!isRecord(ad) || ad.type !== "sponsor" || !isRecord(ad.preset)) return null;
+  const expiresAt = text(ad.expires_at).slice(0, 10);
+  if (expiresAt && expiresAt < today) return null;
+  const preset = ad.preset;
+  const id = text(preset.id);
+  const name = text(preset.name);
+  const baseUrl = text(preset.baseUrl);
+  const protocol = preset.protocol;
+  if (!id || !name || !isWebUrl(baseUrl) || (protocol !== "responses" && protocol !== "chatCompletions")) return null;
+  const modelList = Array.isArray(preset.modelList) ? preset.modelList.map(text).filter(Boolean) : [];
+  const websiteUrl = text(preset.websiteUrl);
+  const apiKeyUrl = text(preset.apiKeyUrl);
+  return {
+    id,
+    name,
+    ...(isWebUrl(websiteUrl) ? { websiteUrl } : {}),
+    ...(isWebUrl(apiKeyUrl) ? { apiKeyUrl } : {}),
+    category: "aggregator",
+    baseUrl,
+    protocol,
+    model: text(preset.model),
+    ...(modelList.length ? { modelList } : {}),
+  };
+}
+
+/**
+ * 赞助商预设不内置：只来自远端推荐清单里赞助位的 `preset` 字段，按清单顺序（置顶位在前），
+ * 过了 `expires_at`（当天仍显示）就不再出现。清单没拉到时没有赞助商预设。
+ */
+export function sponsorPresets(payload: SponsorAdsPayload, now: Date = new Date()): ProviderPreset[] {
+  const today = localDay(now);
+  const seen = new Set<string>();
+  const presets: ProviderPreset[] = [];
+  for (const ad of [...(payload?.topAds ?? []), ...(payload?.ads ?? [])]) {
+    const preset = sponsorPreset(ad, today);
+    if (!preset || seen.has(preset.id)) continue;
+    seen.add(preset.id);
+    presets.push(preset);
+  }
+  return presets;
+}
