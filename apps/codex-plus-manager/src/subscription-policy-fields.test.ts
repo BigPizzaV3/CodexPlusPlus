@@ -8,6 +8,8 @@ import * as policies from "./subscription-policy.ts";
 type Element = { type: string; props: Record<string, any> };
 const jsx = (type: string, props: Record<string, any>) => ({ type, props });
 const modules: Record<string, unknown> = {
+  // 无状态渲染：useState 只给初值，useEffect 不跑。
+  react: { useState: (initial: unknown) => [initial, () => undefined], useEffect: () => undefined },
   "react/jsx-runtime": { jsx, jsxs: jsx },
   "./i18n": {
     t: (value: string) => value,
@@ -87,4 +89,19 @@ test("编辑账号的窗口阈值时保留其他窗口和失败策略", () => {
   assert.ok(input);
   input.props.onChange({ currentTarget: { value: "85" } });
   assert.deepEqual(structuredClone(saved), { ...value, windowUsedPercentLimits: { "43200": 85 } });
+});
+
+test("用量有效期可以删空、先打一半：只有 1~86400 的整数才写回，不合法时提示", () => {
+  let saved: policies.SubscriptionPolicy | undefined;
+  const tree = exports.SubscriptionPolicyFields({ value: policies.defaultSubscriptionPolicy(), onChange: (policy: policies.SubscriptionPolicy) => { saved = policy; } });
+  const input = children(tree).find((element) => element.props?.["aria-label"] === "用量有效期（秒）");
+  assert.ok(input);
+  assert.equal(input.props.type, "text", "不用 number 输入框，删空不会被弹回旧值");
+  input.props.onChange({ currentTarget: { value: "" } });
+  assert.equal(saved, undefined, "删空时不写回");
+  input.props.onChange({ currentTarget: { value: "90000" } });
+  assert.equal(saved, undefined, "超出范围不写回");
+  input.props.onChange({ currentTarget: { value: "60" } });
+  assert.equal((saved as policies.SubscriptionPolicy | undefined)?.maxAgeSeconds, 60);
+  assert.equal(typeof input.props.onBlur, "function", "失焦时不合法的还原");
 });

@@ -8877,12 +8877,38 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
     )
 }
 
+/// 一次读出多个供应商的独立代理（「Codex 连接 → 高级」里的供应商列表用），不再每个供应商单独请求一次。
+#[tauri::command]
+pub fn load_relay_proxies(profile_ids: Vec<String>) -> CommandResult<Value> {
+    let proxies: serde_json::Map<String, Value> = profile_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .map(|id| {
+            (
+                id.to_string(),
+                json!({
+                    "proxyUrl": codex_plus_core::relay_proxy::proxy_for_profile(id).unwrap_or_default(),
+                    "configured": codex_plus_core::relay_proxy::configured_proxy_for_profile(id).is_some()
+                }),
+            )
+        })
+        .collect();
+    ok("供应商代理已读取。", json!({ "proxies": proxies }))
+}
+
+// 下面两个读请求日志的命令都被页面定时轮询：放到阻塞线程池里做，读文件、查会话库期间不卡界面线程。
 /// 实时请求流：托盘「流量」页签和总览拓扑图的光点动画每秒轮询它。
 /// 只读日志末尾和进行中的请求，不补会话标题和费用，保持轻量。
 #[tauri::command]
-pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
+pub async fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
     let limit = limit.unwrap_or(30).clamp(1, 200);
-    match codex_plus_core::request_log::read_recent_request_logs(limit) {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::request_log::read_recent_request_logs(limit)
+    })
+    .await
+    .unwrap_or_else(|error| Err(std::io::Error::other(error.to_string())));
+    match result {
         Ok(entries) => ok(
             &format!("已读取 {} 条请求。", entries.len()),
             json!({ "entries": entries }),
@@ -8894,14 +8920,38 @@ pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
     }
 }
 
+/// 读请求日志。带上次返回的 `cursor` 时只读之后新写入的记录（自动刷新用），
+/// 返回 `incremental: true`，前端把新记录并进已有列表；游标对不上（清空、裁剪过）时照常整页返回。
 #[tauri::command]
-pub fn load_request_logs(
+pub async fn load_request_logs(
     limit: Option<usize>,
     since_ms: Option<u64>,
     agent: Option<String>,
     relay_id: Option<String>,
     relay_unknown: Option<bool>,
     model: Option<String>,
+    cursor: Option<codex_plus_core::request_log::RequestLogCursor>,
+) -> CommandResult<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        load_request_logs_blocking(limit, since_ms, agent, relay_id, relay_unknown, model, cursor)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        failed(
+            &format!("读取请求日志失败：{error}"),
+            json!({ "entries": [] }),
+        )
+    })
+}
+
+fn load_request_logs_blocking(
+    limit: Option<usize>,
+    since_ms: Option<u64>,
+    agent: Option<String>,
+    relay_id: Option<String>,
+    relay_unknown: Option<bool>,
+    model: Option<String>,
+    cursor: Option<codex_plus_core::request_log::RequestLogCursor>,
 ) -> CommandResult<Value> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
     let present = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
@@ -8912,49 +8962,31 @@ pub fn load_request_logs(
         relay_unknown: relay_unknown.unwrap_or(false),
         model: present(model),
     };
+    if let Some(cursor) = cursor {
+        match codex_plus_core::request_log::read_request_logs_after(&filter, &cursor) {
+            Ok(Some(delta)) => {
+                let entries = decorate_request_log_entries(&delta.entries);
+                return ok(
+                    &format!("已读取 {} 条新请求日志。", entries.len()),
+                    json!({ "entries": entries, "incremental": true, "cursor": delta.cursor }),
+                );
+            }
+            // 游标失效：落到下面整页重读。
+            Ok(None) => {}
+            Err(error) => {
+                return failed(
+                    &format!("读取请求日志失败：{error}"),
+                    json!({ "entries": [] }),
+                );
+            }
+        }
+    }
     match codex_plus_core::request_log::read_request_log_page(limit, &filter) {
         Ok(page) => {
-            let entries = page.entries;
-            // 费用按供应商里现在填的价格估算，和用量统计一致。
-            let gateway = codex_plus_core::gateway::store::GatewayStore::default()
-                .load()
-                .unwrap_or_default();
-            // 会话标题来自 Codex 本地会话库，只用于展示；查不到时前端退回短 id。
-            let thread_ids: Vec<String> = entries
-                .iter()
-                .filter_map(|entry| entry.thread_id.clone())
-                .collect();
-            let titles = if thread_ids.is_empty() {
-                std::collections::HashMap::new()
-            } else {
-                let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-                let db_paths =
-                    codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
-                codex_plus_data::local_session_titles(&db_paths, &thread_ids)
-            };
-            let entries: Vec<Value> = entries
-                .iter()
-                .map(|entry| {
-                    let mut value = serde_json::to_value(entry).unwrap_or_else(|_| json!({}));
-                    if let Some(title) = entry
-                        .thread_id
-                        .as_ref()
-                        .and_then(|thread_id| titles.get(thread_id))
-                        && let Some(object) = value.as_object_mut()
-                    {
-                        object.insert("threadTitle".to_string(), json!(title));
-                    }
-                    if let Some(cost) = codex_plus_core::gateway::usage::entry_cost(entry, &gateway)
-                        && let Some(object) = value.as_object_mut()
-                    {
-                        object.insert("cost".to_string(), json!(cost));
-                    }
-                    value
-                })
-                .collect();
+            let entries = decorate_request_log_entries(&page.entries);
             ok(
                 &format!("已读取 {} 条请求日志。", entries.len()),
-                json!({ "entries": entries, "more": page.more, "oldestMs": page.oldest_ms }),
+                json!({ "entries": entries, "more": page.more, "oldestMs": page.oldest_ms, "cursor": page.cursor }),
             )
         }
         Err(error) => failed(
@@ -8962,6 +8994,51 @@ pub fn load_request_logs(
             json!({ "entries": [] }),
         ),
     }
+}
+
+/// 给请求日志补上展示用的会话标题和估算费用；没有记录时不读网关配置、不开会话库。
+fn decorate_request_log_entries(
+    entries: &[codex_plus_core::request_log::RequestLogEntry],
+) -> Vec<Value> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    // 费用按供应商里现在填的价格估算，和用量统计一致。
+    let gateway = codex_plus_core::gateway::store::GatewayStore::default()
+        .load()
+        .unwrap_or_default();
+    // 会话标题来自 Codex 本地会话库，只用于展示；查不到时前端退回短 id。
+    let thread_ids: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| entry.thread_id.clone())
+        .collect();
+    let titles = if thread_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+        codex_plus_data::local_session_titles(&db_paths, &thread_ids)
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let mut value = serde_json::to_value(entry).unwrap_or_else(|_| json!({}));
+            if let Some(title) = entry
+                .thread_id
+                .as_ref()
+                .and_then(|thread_id| titles.get(thread_id))
+                && let Some(object) = value.as_object_mut()
+            {
+                object.insert("threadTitle".to_string(), json!(title));
+            }
+            if let Some(cost) = codex_plus_core::gateway::usage::entry_cost(entry, &gateway)
+                && let Some(object) = value.as_object_mut()
+            {
+                object.insert("cost".to_string(), json!(cost));
+            }
+            value
+        })
+        .collect()
 }
 
 #[tauri::command]

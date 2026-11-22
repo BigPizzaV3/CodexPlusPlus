@@ -23,22 +23,15 @@ export function sameModel(left: string, right: string): boolean {
   return modelSlug(left) === modelSlug(right);
 }
 
-/** 按勾选算同步后的列表：现有的去掉勾选移除的、保持原顺序，勾选的新增追加在后面。
- * 默认模型还在就不变，被删了换成列表第一个（与后端 apply 的口径一致）。 */
-export function syncOutcome(
-  preview: ModelSyncPreview,
-  remove: ReadonlySet<string>,
-  add: ReadonlySet<string>,
-): { models: string[]; defaultModel: string; defaultReplaced: boolean } {
-  const models = preview.current.filter((model) => !remove.has(model));
-  for (const model of preview.added) {
-    if (add.has(model) && !models.some((item) => sameModel(item, model))) models.push(model);
-  }
-  const kept = models.find((model) => sameModel(model, preview.defaultModel));
+/** 模型列表和上游的差异：上游有、列表里没有的（added），列表里有、上游已没有的（removed）。 */
+export type UpstreamDiff = { added: string[]; removed: string[] };
+
+/** 按当前列表（可能已在弹窗里手动改过）和上游的全部模型算差异，比对口径同 {@link sameModel}。 */
+export function upstreamDiff(models: string[], upstream: string[]): UpstreamDiff {
   return {
-    models,
-    defaultModel: kept ?? models[0] ?? "",
-    defaultReplaced: Boolean(preview.defaultModel) && !kept,
+    added: upstream.filter((model, index) => !models.some((item) => sameModel(item, model))
+      && upstream.findIndex((item) => sameModel(item, model)) === index),
+    removed: models.filter((model) => !upstream.some((item) => sameModel(item, model))),
   };
 }
 

@@ -9265,8 +9265,19 @@ select {
   background: hsl(var(--accent) / 0.45);
 }
 
-.request-log-entry[aria-expanded="true"] {
+.request-log-entry[data-expanded="true"] {
   background: hsl(var(--accent) / 0.35);
+}
+
+/* 行是 role="row" 的 div，第一格「时间」是展开按钮：去掉按钮外观，看起来和其它格一样。 */
+.request-log-toggle {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .request-log-status {

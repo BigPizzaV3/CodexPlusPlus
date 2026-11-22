@@ -1,6 +1,6 @@
 /** 供应商的价格与独立代理：在供应商池的详情里编辑（添加 / 编辑供应商的弹窗只管连接、Key 与模型）。
  * 价格按模型填：同一家的不同模型价格往往差好几倍。 */
-import { useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Check, RefreshCw, X } from "lucide-react";
@@ -20,7 +20,8 @@ import {
   type PriceRow,
 } from "./provider-form-model";
 import { Avatar } from "./gateway-ui";
-import { useEscapeLayer } from "./use-escape-layer";
+import { filterModels } from "./provider-sync-model";
+import { useModalShell } from "./use-modal-shell";
 import "./ProviderFormDialog.css";
 
 type Result = { status: string; message: string };
@@ -48,6 +49,9 @@ type PriceState =
 const FALLBACK = "";
 
 /** 详情里一行的展示文字：没填价格时为空。 */
+/** 模型多到这个数时，价格表上方给一个搜索框。 */
+const PRICE_SEARCH_THRESHOLD = 12;
+
 export function priceSummary(entry: GatewayPoolEntry): string {
   const perModel = Object.keys(entry.modelPrices ?? {}).length;
   const price = entry.price;
@@ -99,8 +103,14 @@ export function ProviderExtrasDialog({
     ? t(proxyAddressProblem)
     : proxyMode === "custom" && !proxy.trim() ? t("请填写代理地址") : "";
 
-  // Esc 栈：币种下拉开着时 Esc 只关下拉，不会把整个价格弹窗（和填了一半的价格）关掉。
-  useEscapeLayer(true, onCancel);
+  // 弹窗外壳：Esc 走全局栈（币种下拉开着时 Esc 只关下拉），改过再关会先确认，不丢填了一半的价格。
+  const titleId = useId();
+  const [initial] = useState(() => JSON.stringify({ rows, currency, proxyMode, proxy }));
+  const dirty = JSON.stringify({ rows, currency, proxyMode, proxy }) !== initial;
+  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
+  // 模型多时价格表上方给搜索框。
+  const [query, setQuery] = useState("");
+  const shownModels = useMemo(() => filterModels(entry.models, query, (model) => model), [entry.models, query]);
 
   const fillPublicPrices = async () => {
     if (!entry.models.length) return;
@@ -131,8 +141,9 @@ export function ProviderExtrasDialog({
   };
 
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
+        {...dialogProps}
         className="pf-modal pf-extras-modal"
         onSubmit={(event) => {
           event.preventDefault();
@@ -148,10 +159,10 @@ export function ProviderExtrasDialog({
         <header className="pf-head">
           <Avatar baseUrl={entry.baseUrl} name={entry.name} />
           <div>
-            <strong>{section === "price" ? tf("{0} 的价格", [maskAccountName(entry.name)]) : tf("{0} 的代理", [maskAccountName(entry.name)])}</strong>
+            <strong id={titleId}>{section === "price" ? tf("{0} 的价格", [maskAccountName(entry.name)]) : tf("{0} 的代理", [maskAccountName(entry.name)])}</strong>
             <small>{section === "price" ? t("用于「用量」里估算费用") : t("只作用于这个供应商")}</small>
           </div>
-          <button aria-label={t("关闭")} className="pf-icon" onClick={onCancel} type="button"><X /></button>
+          <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
 
         <div className="pf-body">
@@ -185,6 +196,9 @@ export function ProviderExtrasDialog({
             ) : (
               <p className="pf-note">{t("留空的模型用「其它模型」那一行；都不填就不估算费用。")}</p>
             )}
+            {entry.models.length >= PRICE_SEARCH_THRESHOLD ? (
+              <Input aria-label={t("搜索模型")} className="pf-table-search" onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索模型")} value={query} />
+            ) : null}
             <div className="pf-price-table">
               <div className="pf-price-row pf-price-head">
                 <span>{t("模型")}</span>
@@ -193,7 +207,7 @@ export function ProviderExtrasDialog({
                 <span>{t("输出")}</span>
               </div>
               <div className="pf-price-rows">
-                {entry.models.map((model) => row(model, <code title={model}>{model}</code>))}
+                {shownModels.map((model) => row(model, <code title={model}>{model}</code>))}
                 {row(FALLBACK, <span className="pf-price-fallback">{t("其它模型")}</span>)}
               </div>
             </div>
@@ -213,7 +227,7 @@ export function ProviderExtrasDialog({
               ))}
             </div>
             {proxyMode === "custom" ? (
-              <Input autoFocus className="pf-mono" onChange={(event) => setProxy(event.currentTarget.value)} placeholder="http://127.0.0.1:7890" spellCheck={false} value={proxy} />
+              <Input autoFocus className="pf-mono" data-autofocus onChange={(event) => setProxy(event.currentTarget.value)} placeholder="http://127.0.0.1:7890" spellCheck={false} value={proxy} />
             ) : (
               <p className="pf-hint">
                 {proxyMode === "direct"
@@ -227,7 +241,7 @@ export function ProviderExtrasDialog({
 
         <footer className="pf-foot">
           <span className="pf-error">{section === "proxy" ? proxyError : ""}</span>
-          <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+          <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
           <Button disabled={busy || (section === "proxy" && Boolean(proxyError))} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
         </footer>
       </form>
@@ -261,11 +275,14 @@ export function ProviderLimitsDialog({
   const rpmValue = parseKeyLimit(rpm);
   const concurrencyValue = parseKeyLimit(concurrency);
   const invalid = Number.isNaN(rpmValue) || Number.isNaN(concurrencyValue);
-  useEscapeLayer(true, onCancel);
+  const titleId = useId();
+  const dirty = rpm !== (entry.keyRpm ? String(entry.keyRpm) : "") || concurrency !== (entry.keyConcurrency ? String(entry.keyConcurrency) : "");
+  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
 
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
+        {...dialogProps}
         className="pf-modal pf-extras-modal"
         onSubmit={(event) => {
           event.preventDefault();
@@ -275,10 +292,10 @@ export function ProviderLimitsDialog({
         <header className="pf-head">
           <Avatar baseUrl={entry.baseUrl} name={entry.name} />
           <div>
-            <strong>{tf("{0} 的限速", [maskAccountName(entry.name)])}</strong>
+            <strong id={titleId}>{tf("{0} 的限速", [maskAccountName(entry.name)])}</strong>
             <small>{t("按每个 Key 计，留空表示不限")}</small>
           </div>
-          <button aria-label={t("关闭")} className="pf-icon" onClick={onCancel} type="button"><X /></button>
+          <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
 
         <div className="pf-body">
@@ -298,7 +315,7 @@ export function ProviderLimitsDialog({
 
         <footer className="pf-foot">
           <span className="pf-error">{invalid ? t("上限要填正整数，留空表示不限") : ""}</span>
-          <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+          <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
           <Button disabled={busy || invalid} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
         </footer>
       </form>
@@ -336,11 +353,14 @@ export function ProviderNewApiAccessDialog({
     : !/^\d*$/.test(userIdValue)
       ? t("用户 ID 只能是数字")
       : "";
-  useEscapeLayer(true, onCancel);
+  const titleId = useId();
+  const dirty = token !== "" || userId !== (saved?.userId ?? "");
+  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
 
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
+        {...dialogProps}
         className="pf-modal pf-extras-modal"
         onSubmit={(event) => {
           event.preventDefault();
@@ -350,10 +370,10 @@ export function ProviderNewApiAccessDialog({
         <header className="pf-head">
           <Avatar baseUrl={entry.baseUrl} name={entry.name} />
           <div>
-            <strong>{tf("{0} 的访问令牌", [maskAccountName(entry.name)])}</strong>
+            <strong id={titleId}>{tf("{0} 的访问令牌", [maskAccountName(entry.name)])}</strong>
             <small>{t("可选：只用来查 new-api 账户余额，留空不查")}</small>
           </div>
-          <button aria-label={t("关闭")} className="pf-icon" onClick={onCancel} type="button"><X /></button>
+          <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
 
         <div className="pf-body">
@@ -383,7 +403,7 @@ export function ProviderNewApiAccessDialog({
           {saved ? (
             <Button disabled={busy} onClick={onClear} size="sm" type="button" variant="ghost">{t("清除令牌")}</Button>
           ) : null}
-          <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+          <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
           <Button disabled={busy || missing || Boolean(error)} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
         </footer>
       </form>

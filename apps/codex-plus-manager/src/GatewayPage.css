@@ -2384,6 +2384,12 @@ body.gw-sorting * {
   margin-left: auto;
 }
 
+/* 读用量中（第一次进来或切换时间段）：数字、图表和明细先变淡，读完恢复。 */
+.shell .gw-usage[data-loading] :is(.cx-stats, .gw-chart-card, .gw-usage-table) {
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
 .shell .gw-usage-num[data-tone="err"] {
   color: var(--gw-warn);
 }

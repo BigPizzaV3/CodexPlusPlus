@@ -35,6 +35,7 @@ import { singleAgent } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { CxCard, CxEmpty, CxRow, CxSection, CxStats } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
+import { onTabListKeyDown } from "./tablist-keys";
 
 const memo: { range: UsageRange; summary: UsageSummary | null } = { range: "30d", summary: null };
 
@@ -44,6 +45,8 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
   // 余额和供应商池卡片共用一份（#2793），谁先查到另一边直接用。
   const [balances, setBalances] = useState<ProviderBalance[] | null>(cachedProviderBalances().balances);
   const [loadingBalances, setLoadingBalances] = useState(false);
+  // 读用量中：第一次进来（没有缓存）不先显示「0 次调用 / 还没有请求」，切换时间段时旧数字变淡。
+  const [loading, setLoading] = useState(false);
   const [split, setSplit] = useState<"provider" | "model" | "agent">("provider");
   // 只管理 Codex 时不按 Agent 拆分：没有占比条，也没有「按 Agent」页签。
   const codexOnly = singleAgent(useAgentFocus()) === "codex";
@@ -52,6 +55,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
   const latest = useRef(0);
   const load = async (next: UsageRange) => {
     const id = ++latest.current;
+    setLoading(true);
     try {
       const result = await invoke<{ status: string; message: string } & Partial<UsageSummary>>("load_gateway_usage", { range: next });
       if (id !== latest.current) return;
@@ -64,6 +68,8 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
       setSummary(value);
     } catch (error) {
       if (id === latest.current) await notify(t("调用失败"), String(error), "failed");
+    } finally {
+      if (id === latest.current) setLoading(false);
     }
   };
   const loadBalances = async (force: boolean) => {
@@ -110,7 +116,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
 
   // 参照 Cursor 的设置页：时间段在标题行、数字一排、图表一张卡、明细一张表；余额放最后。
   return (
-    <div className="gw-usage cx-page">
+    <div aria-busy={loading || undefined} className="gw-usage cx-page" data-loading={loading || undefined}>
       {/* 时间段和刷新都放进标题行右侧：页内只剩「统计 / 请求」一排胶囊，不再上下两排。 */}
       <TopbarActions>
         <div aria-label={t("时间段")} className="mg-segmented gw-usage-range" role="radiogroup">
@@ -121,7 +127,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
           ))}
         </div>
         <button aria-label={t("刷新")} className="gw-icon-button gw-usage-refresh" onClick={() => { void load(range); void loadBalances(true); }} title={t("刷新")} type="button">
-          <RefreshCw className={`h-4 w-4 ${loadingBalances ? "animate-spin" : ""}`} />
+          <RefreshCw className={`h-4 w-4 ${loading || loadingBalances ? "animate-spin" : ""}`} />
         </button>
       </TopbarActions>
 
@@ -151,7 +157,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
             value: totals?.calls ?? 0,
             hint: (
               <span data-tone={totals?.errors ? "err" : undefined}>
-                {rate === null ? t("还没有请求") : totals?.errors ? tf("成功率 {0}% · {1} 次出错", [(rate * 100).toFixed(1), totals.errors]) : t("全部成功")}
+                {rate === null ? (loading && !summary ? t("正在读取…") : t("还没有请求")) : totals?.errors ? tf("成功率 {0}% · {1} 次出错", [(rate * 100).toFixed(1), totals.errors]) : t("全部成功")}
                 {totals?.images ? ` · ${tf("生图 {0} 次", [totals.images])}` : ""}
               </span>
             ),
@@ -172,9 +178,9 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
       <CxSection
         aside={
           <>
-            <nav aria-label={t("明细")} className="tp-tabs cx-pills gw-split-pills" role="tablist">
+            <nav aria-label={t("明细")} className="tp-tabs cx-pills gw-split-pills" onKeyDown={onTabListKeyDown} role="tablist">
               {([["provider", t("按供应商")], ["model", t("按模型")], ["agent", t("按 Agent")]] as const).filter(([id]) => !codexOnly || id !== "agent").map(([id, label]) => (
-                <button aria-selected={split === id} data-active={split === id} key={id} onClick={() => setSplit(id)} role="tab" type="button">{label}</button>
+                <button aria-controls="gw-usage-detail" aria-selected={split === id} data-active={split === id} key={id} onClick={() => setSplit(id)} role="tab" tabIndex={split === id ? 0 : -1} type="button">{label}</button>
               ))}
             </nav>
             {/* 清空是少用的破坏性操作：收进三点菜单，确认框保留。 */}
@@ -195,7 +201,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
         }
         title={t("明细")}
       >
-        <div className="cx-card gw-usage-table" data-cost={anyCost}>
+        <div aria-label={t("明细")} className="cx-card gw-usage-table" data-cost={anyCost} id="gw-usage-detail" role="tabpanel">
           {groups.length ? (
             <div className="gw-usage-row gw-usage-row-head">
               <span>{split === "provider" ? t("供应商") : split === "model" ? t("模型") : t("Agent")}</span>
@@ -225,7 +231,13 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
                       ? { relayId: group.key, relayLabel: maskAccountName(group.label), range }
                       : { relayUnknown: true, relayLabel: t("未知"), range }
                     : { model: group.key, range })}
-                onKeyDown={(event) => { if (event.key === "Enter") (event.currentTarget as HTMLElement).click(); }}
+                onKeyDown={(event) => {
+                  // role="button"：Enter 和空格都能打开（空格不让页面滚动）。
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    (event.currentTarget as HTMLElement).click();
+                  }
+                }}
                 role="button"
                 tabIndex={0}
                 title={t("查看这些请求")}

@@ -1,6 +1,6 @@
 /** 供应商的上下文窗口：按模型填，在供应商池的详情里编辑。
  * 窗口写进 Agent 的模型资料（Agent 按它压缩上下文），路由时请求比窗口还长的成员排到最后。 */
-import { useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, RefreshCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,13 +10,22 @@ import { formatTokens, maskAccountName, parseContextWindow, type GatewayPoolEntr
 import { parseCompactPercent } from "./gateway-auto-compact-model";
 import { lookupPublicPrices } from "./ProviderExtrasDialog";
 import { Avatar } from "./gateway-ui";
-import { useEscapeLayer } from "./use-escape-layer";
+import { ProviderMetaSyncPanel } from "./ProviderMetaSyncPanel";
+import { filterModels } from "./provider-sync-model";
+import { windowPicks } from "./provider-meta-sync-model";
+import { useModalShell } from "./use-modal-shell";
 import "./ProviderFormDialog.css";
 
 /** 「其它模型」那一行的键：没单独写窗口的模型用它。 */
 const FALLBACK = "";
 
 type LookupState = { state: "idle" } | { state: "loading" } | { state: "done"; found: number };
+
+/** 从上游同步填进来、保存时仍是上游值的窗口：保存后再记成「同步来的」，下次同步才会默认跟着上游更新。 */
+export type WindowSyncPick = { model: string; window: number };
+
+/** 模型多到这个数时，表格上方给一个搜索框。 */
+const SEARCH_THRESHOLD = 12;
 
 /** 某个模型单独写的自动压缩百分比（忽略大小写）。 */
 function ownPercent(entry: GatewayPoolEntry, model: string): number | undefined {
@@ -59,27 +68,42 @@ function windowText(value: number | null | undefined): string {
 export function ProviderWindowsDialog({
   entry,
   busy,
+  upstreamSync = false,
+  syncOnOpen = false,
   onSave,
   onCancel,
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
-  onSave: (windows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }) => void;
+  /** 能「从上游同步」（供应商池详情里打开、不是订阅账号）。编辑弹窗里按编辑中的列表打开时不给。 */
+  upstreamSync?: boolean;
+  /** 从详情行的「从上游同步」进来：打开就展开同步面板。 */
+  syncOnOpen?: boolean;
+  onSave: (windows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }, synced: WindowSyncPick[]) => void;
   onCancel: () => void;
 }) {
-  const [rows, setRows] = useState<Record<string, string>>(() => {
+  const titleId = useId();
+  const [initialRows] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = { [FALLBACK]: windowText(entry.contextWindow) };
     for (const model of entry.models) initial[model] = windowText(ownWindow(entry, model));
     return initial;
   });
+  const [rows, setRows] = useState<Record<string, string>>(initialRows);
   // 自动压缩阈值（#3100）：窗口的百分比，空表示用 Codex 默认。只在设了窗口的模型上有意义。
-  const [percents, setPercents] = useState<Record<string, string>>(() => {
+  const [initialPercents] = useState<Record<string, string>>(() => {
     const initial: Record<string, string> = { [FALLBACK]: entry.autoCompact?.fallback ? String(entry.autoCompact.fallback) : "" };
     for (const model of entry.models) initial[model] = ownPercent(entry, model) ? String(ownPercent(entry, model)) : "";
     return initial;
   });
+  const [percents, setPercents] = useState<Record<string, string>>(initialPercents);
   const [lookup, setLookup] = useState<LookupState>({ state: "idle" });
-  useEscapeLayer(true, onCancel);
+  // 从上游同步：展开同步面板；填进来的值记下来做高亮，保存时还没被改掉的记成同步来的。
+  const [syncOpen, setSyncOpen] = useState(upstreamSync && syncOnOpen);
+  const [filled, setFilled] = useState<Record<string, number>>({});
+  const [query, setQuery] = useState("");
+  const shownModels = useMemo(() => filterModels(entry.models, query, (model) => model), [entry.models, query]);
+  const dirty = JSON.stringify(rows) !== JSON.stringify(initialRows) || JSON.stringify(percents) !== JSON.stringify(initialPercents);
+  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
 
   // 写错的（不是 128k / 1M / 纯数字，或小于 1000）在保存前标出来。
   const invalid = Object.entries(rows).filter(([, text]) => {
@@ -104,8 +128,15 @@ export function ProviderWindowsDialog({
     setLookup({ state: "done", found: hits.length });
   };
 
+  const fromUpstream = (model: string) => filled[model] !== undefined && parseContextWindow(rows[model] ?? "") === filled[model];
   const row = (model: string, label: ReactNode) => (
-    <div className="pf-price-row pf-window-row" data-invalid={invalid.includes(model) || invalidPercent.includes(model)} key={model || "*"}>
+    <div
+      className="pf-price-row pf-window-row"
+      data-invalid={invalid.includes(model) || invalidPercent.includes(model)}
+      data-upstream={fromUpstream(model) || undefined}
+      key={model || "*"}
+      title={fromUpstream(model) ? t("从上游同步填入，保存后生效") : undefined}
+    >
       {label}
       <Input
         aria-label={t("上下文窗口")}
@@ -132,8 +163,9 @@ export function ProviderWindowsDialog({
   );
 
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
+        {...dialogProps}
         className="pf-modal pf-extras-modal"
         onSubmit={(event) => {
           event.preventDefault();
@@ -148,19 +180,22 @@ export function ProviderWindowsDialog({
             const value = parseCompactPercent(percents[model] ?? "");
             if (value !== null) models[model] = value;
           }
+          const synced = Object.entries(filled)
+            .filter(([model, window]) => windows[model] === window)
+            .map(([model, window]) => ({ model, window }));
           onSave(windows, parseContextWindow(rows[FALLBACK] ?? "") || null, {
             models,
             fallback: parseCompactPercent(percents[FALLBACK] ?? ""),
-          });
+          }, synced);
         }}
       >
         <header className="pf-head">
           <Avatar baseUrl={entry.baseUrl} name={entry.name} />
           <div>
-            <strong>{tf("{0} 的上下文窗口", [maskAccountName(entry.name)])}</strong>
+            <strong id={titleId}>{tf("{0} 的上下文窗口", [maskAccountName(entry.name)])}</strong>
             <small>{t("Agent 按它压缩上下文；请求比它还长时，路由先试别家")}</small>
           </div>
-          <button aria-label={t("关闭")} className="pf-icon" onClick={onCancel} type="button"><X /></button>
+          <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
 
         <div className="pf-body">
@@ -170,6 +205,11 @@ export function ProviderWindowsDialog({
               <button className="pf-action" disabled={!entry.models.length || lookup.state === "loading"} onClick={() => void fillPublic()} type="button">
                 <RefreshCw className={lookup.state === "loading" ? "animate-spin" : ""} />{t("按公开资料填写")}
               </button>
+              {upstreamSync && !syncOpen ? (
+                <button className="pf-action" onClick={() => setSyncOpen(true)} title={t("读取上游 /models 返回的上下文窗口，先列出差异，勾选后填入")} type="button">
+                  <RefreshCw />{t("从上游同步")}
+                </button>
+              ) : null}
             </h4>
             {lookup.state === "done" ? (
               <p className="pf-note" data-tone={lookup.found ? "ok" : undefined}>
@@ -181,6 +221,9 @@ export function ProviderWindowsDialog({
             ) : (
               <p className="pf-note">{t("留空的模型用「其它模型」那一行；都不填就用模型自带的资料。自动压缩阈值是窗口的百分比，留空用 Codex 默认。")}</p>
             )}
+            {entry.models.length >= SEARCH_THRESHOLD ? (
+              <Input aria-label={t("搜索模型")} className="pf-table-search" onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索模型")} value={query} />
+            ) : null}
             <div className="pf-price-table">
               <div className="pf-price-row pf-window-row pf-price-head">
                 <span>{t("模型")}</span>
@@ -188,16 +231,28 @@ export function ProviderWindowsDialog({
                 <span>{t("自动压缩阈值")}</span>
               </div>
               <div className="pf-price-rows">
-                {entry.models.map((model) => row(model, <code title={model}>{model}</code>))}
+                {shownModels.map((model) => row(model, <code title={model}>{model}</code>))}
                 {row(FALLBACK, <span className="pf-price-fallback">{t("其它模型")}</span>)}
               </div>
             </div>
           </section>
+          {syncOpen ? (
+            <ProviderMetaSyncPanel
+              entryId={entry.id}
+              kind="windows"
+              onFill={(preview, picked) => {
+                // 填精确数值（不用 128K 这类缩写，免得换算有误差）。
+                const picks = windowPicks(preview, picked);
+                setRows((previous) => ({ ...previous, ...Object.fromEntries(picks.map((pick) => [pick.model, String(pick.window)])) }));
+                setFilled((previous) => ({ ...previous, ...Object.fromEntries(picks.map((pick) => [pick.model, pick.window])) }));
+              }}
+            />
+          ) : null}
         </div>
 
         <footer className="pf-foot">
           <span className="pf-error">{invalid.length ? t("窗口要写成 128k、1M 或至少 1000 的数字") : invalidPercent.length ? t("自动压缩阈值要写成 1 到 100 之间的数字") : ""}</span>
-          <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+          <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
           <Button disabled={busy || invalid.length > 0 || invalidPercent.length > 0} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
         </footer>
       </form>

@@ -105,10 +105,15 @@ describe("网关的弹窗、弹层都走 Esc 栈", () => {
     const providers = read("GatewayProviders.tsx");
     assert.equal(providers.match(/useModalShell<HTMLDivElement>\(\{ onClose, labelledBy: titleId \}\)/g)?.length, 2, "ProviderCatalog + ImportDialog");
     assert.match(providers, /useModalShell<HTMLDivElement>\(\{ onClose: onCancel, labelledBy: titleId, dismissOnBackdrop: false \}\)/, "DeviceCodeDialog");
-    assert.match(read("ProviderExtrasDialog.tsx"), /useEscapeLayer\(true, onCancel\)/);
-    assert.match(read("ProviderModelsDialog.tsx"), /useEscapeLayer\(true, onCancel\)/);
+    // 供应商的编辑弹窗走 useModalShell（Esc 栈 + 焦点圈 + 改过先确认），每个弹窗都登记一层。
+    const extras = read("ProviderExtrasDialog.tsx");
+    assert.equal(extras.match(/useModalShell<HTMLFormElement>\(\{ onClose: onCancel, dirty, labelledBy: titleId \}\)/g)?.length, 3, "价格 / 代理、限速、访问令牌");
+    for (const name of ["ProviderModelsDialog.tsx", "ProviderWindowsDialog.tsx", "ProviderFormDialog.tsx"]) {
+      assert.match(read(name), /useModalShell<HTMLFormElement>\(\{ onClose: onCancel, dirty, labelledBy: titleId \}\)/, name);
+    }
+    assert.match(read("ProviderReasoningDialog.tsx"), /useModalShell<HTMLFormElement>\(\{\s*onClose: onCancel,\s*dirty: metadata !== \(entry\.modelMetadata \?\? ""\),/);
+    assert.match(read("ProviderTestDialog.tsx"), /useModalShell<HTMLFormElement>\(\{ onClose: close, labelledBy: titleId \}\)/);
     const form = read("ProviderFormDialog.tsx");
-    assert.match(form, /useEscapeLayer\(true, onCancel\)/);
     assert.match(form, /useEscapeLayer\(true, \(\) => setPicker\(null\)\)/);
     assert.match(read("app-dialog.tsx"), /useEscapeLayer\(true, cancel\)/);
     assert.match(read("use-popover-layer.ts"), /useEscapeLayer\(open, /);

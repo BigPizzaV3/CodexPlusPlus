@@ -3,7 +3,7 @@
  * 请求走网关同一条路（协议转换、这家的代理与 Key、账号类先换 token），但不计入路由与统计：
  * 不占限速名额、不记冷却 / 熔断 / 测速、不改会话固定，请求日志和用量里也没有它。
  * 后台最多等 60 秒；关掉弹窗或点「取消」会中止进行中的测试。 */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { CheckCircle2, Loader2, X, XCircle, Zap } from "lucide-react";
@@ -12,7 +12,7 @@ import { t, tf } from "./i18n";
 import { AppSelect } from "./AppSelect";
 import { maskAccountName, maskAccountText, subscriptionBlockReason, type GatewayPoolEntry } from "./gateway-model";
 import { Avatar } from "./gateway-ui";
-import { useEscapeLayer } from "./use-escape-layer";
+import { useModalShell } from "./use-modal-shell";
 import { formatProbeMs, probeHints, probeWireLabel, type ProviderProbeResult } from "./provider-test";
 import "./ProviderFormDialog.css";
 
@@ -65,7 +65,9 @@ export function ProviderTestDialog({
     cancel();
     onClose();
   };
-  useEscapeLayer(true, close);
+  const titleId = useId();
+  // 测试弹窗没有要保存的内容：Esc、点遮罩直接关（同时中止后台测试）。
+  const { backdropProps, dialogProps } = useModalShell<HTMLFormElement>({ onClose: close, labelledBy: titleId });
   // 弹窗被卸载（例如整页切走）时也中止后台测试。
   useEffect(() => () => {
     seq.current += 1;
@@ -107,8 +109,9 @@ export function ProviderTestDialog({
   const hints = result ? probeHints(result, Boolean(entry.account)) : [];
 
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) close(); }}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
+        {...dialogProps}
         className="pf-modal pf-extras-modal pt-modal"
         onSubmit={(event) => {
           event.preventDefault();
@@ -118,7 +121,7 @@ export function ProviderTestDialog({
         <header className="pf-head">
           <Avatar baseUrl={entry.baseUrl} name={entry.name} />
           <div>
-            <strong>{tf("测试 {0}", [maskAccountName(entry.name)])}</strong>
+            <strong id={titleId}>{tf("测试 {0}", [maskAccountName(entry.name)])}</strong>
             <small>{t("发一条很短的请求，不计入路由、限速与统计")}</small>
           </div>
           <button aria-label={t("关闭")} className="pf-icon" onClick={close} type="button"><X /></button>

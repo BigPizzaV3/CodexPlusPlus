@@ -27,7 +27,9 @@ test("编辑供应商不带 modelPrices（后端保留原来的）；新添加�
 
 test("价格弹窗按模型列出，提交 modelPrices", () => {
   const dialog = readFileSync(new URL("./ProviderExtrasDialog.tsx", import.meta.url), "utf8");
-  assert.match(dialog, /entry\.models\.map\(\(model\) => row\(model/);
+  // 按模型一行；模型多时可搜索，列的是筛过的。
+  assert.match(dialog, /filterModels\(entry\.models, query, \(model\) => model\)/);
+  assert.match(dialog, /shownModels\.map\(\(model\) => row\(model/);
   assert.match(dialog, /lookup_model_prices", \{ baseUrl, models \}/);
   const providers = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
   assert.match(providers, /"save_gateway_provider_extras", \{ id: entry\.id, price: nextPrice, modelPrices, proxy \}/);

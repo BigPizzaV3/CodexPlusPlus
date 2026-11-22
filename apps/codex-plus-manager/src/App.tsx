@@ -102,7 +102,7 @@ import { PRESETS, type ProviderPreset } from "./presets";
 import { setSponsorAds, useSponsorPresets } from "./sponsor-store";
 import { createPortal } from "react-dom";
 import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -148,7 +148,7 @@ import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, relayFilterFromFocus, relayFilterArgs, type RelayFilter, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, relayFilterFromFocus, relayFilterArgs, proxyAddressError, type RelayFilter, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
@@ -284,6 +284,10 @@ import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
+import { CompatToggles } from "./CompatToggles";
+import { errorText } from "@/lib/utils";
+import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
+import { useModalShell } from "./use-modal-shell";
 import { sessionProviderForProtocol } from "./relay-session";
 import { historyRecoveryStatusLabel, type FrontendRecoveryReport } from "./history-recovery-report";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -345,7 +349,7 @@ import {
   relayProfileSwitchValidation,
   relayModelRoutesValidation,
   relayModelRoutesSettingsValidation,
-  relaySettingsValidation,
+  relaySettingsValidationForSave,
   relaySessionProviderValidation,
   relayModelRouteIssueMessage,
   relaySettingsWithDraft,
@@ -919,6 +923,10 @@ type RequestLogsResult = {
   more?: boolean;
   /** 日志文件里最早一条的开始时间（日志按大小滚动）。 */
   oldestMs?: number | null;
+  /** 文件里最后读到的位置：下一轮带上它只读新写入的记录。 */
+  cursor?: RequestLogCursor | null;
+  /** 带游标读到的增量：entries 只是新完成的 + 进行中的，要并进已有列表。 */
+  incremental?: boolean;
 };
 
 type SettingsResult = CommandResult<{
@@ -3761,7 +3769,7 @@ export function App() {
 
   const diagnoseRelayProfile = async (profile: RelayProfile) => {
     const result = await run(() => call<ProviderDoctorResult>("diagnose_relay_profile", { profile }));
-    if (result) showNotice("Provider Doctor", result.message, result.status);
+    // 结果在诊断弹窗里逐项展示，不再另弹一条提示。
     return result ?? null;
   };
 
@@ -6453,6 +6461,9 @@ function SharedServiceSettings({
   );
 }
 
+/** 「Codex 连接」页把「打开某个供应商的编辑页并跳到某项设置」交给嵌在页底「高级」里的列表用。 */
+const RelayProfileLinkContext = createContext<((profileId: string, section: "proxy") => void) | null>(null);
+
 function ProxySettingsScreen({
   dirty,
   form,
@@ -6473,67 +6484,25 @@ function ProxySettingsScreen({
     [form.relayProfiles],
   );
   const proxyProfileKey = proxyProfiles.map((profile) => profile.id).join("|");
-  const [proxyUrls, setProxyUrls] = useState<Record<string, string>>({});
-  // 已保存的值：输入与它一致时「保存」置灰，十几行供应商里一眼看出哪行改过。
-  const [savedProxyUrls, setSavedProxyUrls] = useState<Record<string, string>>({});
-  const [proxyConfigured, setProxyConfigured] = useState<Record<string, boolean>>({});
-  const [proxyBusyId, setProxyBusyId] = useState<string | null>(null);
-
+  // 每个供应商的独立代理只在这里列出来，一次读完；改代理去供应商编辑页（随「保存供应商」一起写），这里不再单独编辑。
+  const [proxies, setProxies] = useState<Record<string, { proxyUrl?: string; configured?: boolean }>>({});
+  const openRelayProfile = useContext(RelayProfileLinkContext);
   useEffect(() => {
     let cancelled = false;
     const ids = proxyProfileKey ? proxyProfileKey.split("|") : [];
-    void Promise.all(
-      ids.map(async (id) => {
-        try {
-          const result = await invoke<{ status: string; proxyUrl?: string; configured?: boolean }>(
-            "load_relay_proxy",
-            { profileId: id },
-          );
-          return { id, url: result.status === "ok" ? result.proxyUrl ?? "" : "", configured: result.configured === true };
-        } catch {
-          return { id, url: "", configured: false };
-        }
-      }),
-    ).then((entries) => {
-      if (cancelled) return;
-      const urls: Record<string, string> = {};
-      const configured: Record<string, boolean> = {};
-      entries.forEach((entry) => {
-        urls[entry.id] = entry.url;
-        configured[entry.id] = entry.configured;
-      });
-      setProxyUrls(urls);
-      setSavedProxyUrls(urls);
-      setProxyConfigured(configured);
-    });
+    if (!ids.length) {
+      setProxies({});
+      return;
+    }
+    void invoke<{ status: string; proxies?: Record<string, { proxyUrl?: string; configured?: boolean }> }>("load_relay_proxies", { profileIds: ids })
+      .then((result) => {
+        if (!cancelled && result.status === "ok") setProxies(result.proxies ?? {});
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, [proxyProfileKey]);
-
-  const saveProviderProxy = async (profile: RelayProfile) => {
-    const profileId = profile.id;
-    setProxyBusyId(profileId);
-    try {
-      const result = await invoke<{
-        status: string;
-        message: string;
-        proxyUrl?: string;
-        configured?: boolean;
-      }>("set_relay_proxy", { profileId, proxyUrl: proxyUrls[profileId] ?? "" });
-      if (result.status === "ok") {
-        setProxyUrls((current) => ({ ...current, [profileId]: result.proxyUrl ?? "" }));
-        setSavedProxyUrls((current) => ({ ...current, [profileId]: result.proxyUrl ?? "" }));
-        setProxyConfigured((current) => ({ ...current, [profileId]: result.configured === true }));
-      }
-      await actions.showMessage(t("供应商独立代理"), result.message, result.status === "ok" ? "ok" : "failed");
-    } catch (error) {
-      await actions.showMessage(t("供应商独立代理"), String(error), "failed");
-    } finally {
-      setProxyBusyId(null);
-    }
-  };
-
 
   // 嵌在「Codex 连接」页底部的「高级」折叠区里：每项一行，说明一行，长说明放悬停。
   return (
@@ -6563,38 +6532,30 @@ function ProxySettingsScreen({
 
       <div className="cx-codex-proxy-head" title={t("为旧版的单个供应商单独指定 HTTP 代理；留空表示沿用系统代理。网关供应商的代理在供应商池里编辑供应商时设置。")}>
         <strong>{t("供应商独立代理（旧版供应商）")}</strong>
-        <small>{t("保存后需重新应用该供应商并重启 Codex，独立代理才会作用于会话请求。")}</small>
+        <small>{t("点「编辑」到供应商编辑页里改，随「保存供应商」一起保存；当前供应商会重新应用，重启 Codex 后作用于会话请求。")}</small>
       </div>
-      {proxyProfiles.length ? proxyProfiles.map((profile) => (
-        <CxRow
-          detail={proxyConfigured[profile.id] ? t("已配置独立代理") : t("未配置独立代理")}
-          key={profile.id}
-          title={profile.name || t("未命名供应商")}
-        >
-          <Input
-            aria-label={tf("{0} 的独立代理", [profile.name || t("未命名供应商")])}
-            className="cx-codex-proxy-input"
-            placeholder={t("留空使用系统代理，例如 http://127.0.0.1:7890")}
-            value={proxyUrls[profile.id] ?? ""}
-            onChange={(event) => {
-              // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏（#2705）
-              const value = event.currentTarget.value;
-              setProxyUrls((current) => ({ ...current, [profile.id]: value }));
-            }}
-          />
-          <button
-            className="cx-secondary"
-            disabled={
-              proxyBusyId === profile.id ||
-              (proxyUrls[profile.id] ?? "").trim() === (savedProxyUrls[profile.id] ?? "").trim()
-            }
-            onClick={() => void saveProviderProxy(profile)}
-            type="button"
+      {proxyProfiles.length ? proxyProfiles.map((profile) => {
+        const proxy = proxies[profile.id];
+        const url = (proxy?.proxyUrl ?? "").trim();
+        return (
+          <CxRow
+            detail={url || (proxy?.configured ? t("已配置独立代理（来自环境变量）") : t("未配置独立代理，沿用系统代理"))}
+            key={profile.id}
+            title={profile.name || t("未命名供应商")}
           >
-            {proxyBusyId === profile.id ? t("保存中…") : t("保存")}
-          </button>
-        </CxRow>
-      )) : (
+            {openRelayProfile ? (
+              <button
+                aria-label={tf("编辑 {0} 的独立代理", [profile.name || t("未命名供应商")])}
+                className="cx-secondary"
+                onClick={() => openRelayProfile(profile.id, "proxy")}
+                type="button"
+              >
+                {t("编辑")}
+              </button>
+            ) : null}
+          </CxRow>
+        );
+            }) : (
         <CxRow detail={t("还没有可配置独立代理的供应商。")} muted title={t("供应商独立代理（旧版供应商）")} />
       )}
       </>
@@ -6613,7 +6574,7 @@ function formatRequestLogTime(timestampMs: number) {
     date.getFullYear() === now.getFullYear()
     && date.getMonth() === now.getMonth()
     && date.getDate() === now.getDate();
-  const time = date.toLocaleTimeString("zh-CN", { hour12: false });
+  const time = date.toLocaleTimeString(getLanguage() === "en" ? "en-US" : "zh-CN", { hour12: false });
   return sameDay ? time : `${date.getMonth() + 1}/${date.getDate()} ${time}`;
 }
 
@@ -6708,6 +6669,7 @@ function isImageRequest(entry: { wireApi?: string }): boolean {
 }
 
 const REQUEST_LOG_LIMIT = 300;
+const REQUEST_LOG_POLL_MS = 2000;
 
 /** 失败请求在列表里直接显示的错误摘要：上游返回 JSON 时取里面的 message，否则取第一行。 */
 function requestLogErrorSummary(error: string): string {
@@ -6721,6 +6683,184 @@ function requestLogErrorSummary(error: string): string {
   }
   return text.split("\n")[0] ?? text;
 }
+
+type RequestLogRowProps = {
+  entry: RequestLogEntry;
+  /** 模型名、上游模型名的展示名（分组别名），父组件按 entries 缓存好传进来。 */
+  model: string;
+  upstream: string;
+  expanded: boolean;
+  /** 只有进行中的行用得到（算已用时）；其它行传 0，免得每秒跟着重渲染。 */
+  nowMs: number;
+  onToggle: (id: string) => void;
+};
+
+/** 请求日志的一行（含展开的明细）。按 props 记忆：自动刷新时只有变了的行（进行中、新来的）才重渲染。 */
+const RequestLogRow = memo(function RequestLogRow({ entry, model, upstream, expanded, nowMs, onToggle }: RequestLogRowProps) {
+  const running = entry.state === "running";
+  const detailId = `request-log-detail-${entry.id}`;
+  return (
+    <>
+      <div
+        className={`request-log-row request-log-entry ${running ? "running" : entry.success ? "ok" : "bad"}`}
+        data-expanded={expanded || undefined}
+        onClick={() => onToggle(entry.id)}
+        role="row"
+      >
+        <span role="cell">
+          {/* 展开 / 收起靠第一格的按钮（能用键盘聚焦、带 aria-expanded）；点整行也一样。 */}
+          <button
+            aria-controls={expanded ? detailId : undefined}
+            aria-expanded={expanded}
+            className="request-log-toggle"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle(entry.id);
+            }}
+            type="button"
+          >
+            {formatRequestLogTime(entry.startedAtMs || entry.timestampMs)}
+          </button>
+        </span>
+        {running ? (
+          <span className="request-log-status running" role="cell">
+            {t("运行中")}
+          </span>
+        ) : (
+          <span
+            className={`request-log-status ${entry.success ? "ok" : "bad"}`}
+            role="cell"
+            title={entry.error ?? ""}
+          >
+            {entry.statusCode || (entry.success ? "OK" : "ERR")}
+            {!entry.success ? (
+              <small className="request-log-stream-failed">
+                {entry.stream ? t("流失败") : t("失败")}
+              </small>
+            ) : null}
+          </span>
+        )}
+        <span className="request-log-ellipsis request-log-source" role="cell" title={`${agentName(requestLogAgent(entry))} · ${maskAccountName(entry.relayName)}`}>
+          <AgentGlyph agent={requestLogAgent(entry)} />
+          {maskAccountName(entry.relayName) || "-"}
+        </span>
+        <span className="request-log-ellipsis" role="cell" title={entry.upstreamModel ? `${model} → ${upstream}` : model}>
+          {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
+          {model || "-"}
+          {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
+            <small> → {upstream}</small>
+          ) : null}
+        </span>
+        <span
+          className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) || compactionNote(entry.retryReasons)?.kind === "fallback" ? "request-log-retry" : "request-log-muted"}
+          role="cell"
+          title={requestLogRetryReasons(entry)}
+        >
+          {requestLogRetryLabel(entry)}
+        </span>
+        {!running && !entry.success && entry.error ? (
+          // 失败的请求没有 token 和费用：这几列直接显示错误原因。
+          <span className="request-log-error-cell" role="cell" title={entry.error}>{requestLogErrorSummary(entry.error)}</span>
+        ) : (
+          <>
+            <span className="request-log-muted" role="cell" title={running ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
+              {running ? (isImageRequest(entry) ? t("生成中") : t("流式中")) : formatRequestLogTokens(entry.usage?.inputTokens)}
+            </span>
+            <span
+              className="request-log-muted"
+              role="cell"
+              title={running
+                ? t("按流式增量估算，完成后会更新为准确值")
+                : ""}
+            >
+              {running
+                ? entry.estimatedOutputTokens
+                  ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
+                  : (isImageRequest(entry) ? t("生成中") : t("流式中"))
+                : formatRequestLogTokens(entry.usage?.outputTokens)}
+            </span>
+            <span role="cell">
+              {running ? (
+                <span className="request-log-muted">{(isImageRequest(entry) ? t("生成中") : t("流式中"))}</span>
+              ) : entry.usage?.cachedTokens ? (
+                <>
+                  {formatRequestLogTokens(entry.usage.cachedTokens)}
+                  <small>
+                    {" · "}
+                    {formatRequestLogCacheHitRatio(
+                      entry.usage.inputTokens,
+                      entry.usage.cachedTokens,
+                      entry.cacheHitRatio,
+                    )}
+                  </small>
+                </>
+              ) : "-"}
+            </span>
+            <span className="request-log-muted" role="cell">{entry.cost ? formatRequestCost(entry.cost) : "-"}</span>
+          </>
+        )}
+        <span className="request-log-duration" role="cell">
+          {formatRequestLogDuration(
+            running
+              ? Math.max(0, nowMs - entry.startedAtMs)
+              : entry.durationMs,
+          )}
+          {running ? (
+            <small>{t("进行中")}</small>
+          ) : entry.firstTokenMs != null ? (
+            <small>{tf("首字 {0}", [formatRequestLogDuration(entry.firstTokenMs)])}</small>
+          ) : null}
+        </span>
+      </div>
+      {expanded ? (
+        <div role="row">
+          <div className="request-log-detail" id={detailId} role="cell">
+            <dl>
+              <div><dt>{t("请求 ID")}</dt><dd><code>{entry.id}</code></dd></div>
+              <div>
+                <dt>{t("会话 ID")}</dt>
+                <dd>
+                  {entry.threadTitle ? <strong className="request-log-session-title">{entry.threadTitle}</strong> : null}
+                  <code>{entry.threadId || "-"}</code>
+                </dd>
+              </div>
+              <div><dt>{t("路径")}</dt><dd><code>{entry.method} {entry.path}</code></dd></div>
+              <div><dt>{t("上游协议")}</dt><dd>{entry.wireApi || "-"}</dd></div>
+              <div><dt>{t("上游模型")}</dt><dd>{upstream || "-"}</dd></div>
+              <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (running ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
+              <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
+              <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
+              <div><dt>{t("重试原因")}</dt><dd>{requestLogRetryReasons(entry) || "-"}</dd></div>
+              {entry.attemptDetails?.length ? (
+                <div className="request-log-attempts">
+                  <dt>{t("尝试明细")}</dt>
+                  <dd>
+                    <ul>
+                      {entry.attemptDetails.map((detail) => (
+                        <li key={`${detail.attempt}-${detail.code ?? ""}`}>
+                          <strong>{tf("第 {0} 次", [detail.attempt])}</strong>
+                          <code>{detail.code || "-"}</code>
+                          {detail.delayMs != null ? (
+                            <small>{tf("退避 {0}", [formatRequestLogDuration(detail.delayMs)])}</small>
+                          ) : null}
+                          {detail.message ? <small title={detail.message}>{detail.message}</small> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </dd>
+                </div>
+              ) : null}
+              <div><dt>{t("流式")}</dt><dd>{entry.stream ? "SSE" : "JSON"}</dd></div>
+              <div><dt>{t("流结果")}</dt><dd>{entry.streamOutcome || "-"}</dd></div>
+              <div><dt>{t("推理 tokens")}</dt><dd>{formatRequestLogTokens(entry.usage?.reasoningTokens)}</dd></div>
+              <div><dt>{t("错误")}</dt><dd>{entry.error || "-"}</dd></div>
+            </dl>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+});
 
 function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeInitialAgent }: { initialAgent?: "all" | "codex" | "claude" | "grok"; initialFocus?: RequestLogFocus; onConsumeInitialAgent?: () => void }) {
   const payload = useGatewayPayload(10_000);
@@ -6766,22 +6906,38 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   const filterRef = useRef(filterArgs);
   filterRef.current = filterArgs;
   const latestLoad = useRef(0);
+  // 自动刷新只读上次之后新写入的记录（后端按游标增量读），不再每轮把整个日志读一遍、整表重渲染。
+  const cursorRef = useRef<RequestLogCursor | null>(null);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
   const load = async (silent = false) => {
     const id = ++latestLoad.current;
-    if (!silent) setLoading(true);
+    // 手动刷新、换筛选条件时整页重读：旧游标对应的是旧条件下的列表。
+    if (!silent) {
+      setLoading(true);
+      cursorRef.current = null;
+    }
+    const args = silent && cursorRef.current ? { ...filterRef.current, cursor: cursorRef.current } : filterRef.current;
     try {
-      const result = await invoke<RequestLogsResult>("load_request_logs", filterRef.current);
+      const result = await invoke<RequestLogsResult>("load_request_logs", args);
       if (id !== latestLoad.current) return;
       if (result.status === "ok") {
-        setEntries(result.entries ?? []);
-        setMore(Boolean(result.more));
-        setOldestMs(result.oldestMs ?? null);
+        cursorRef.current = result.cursor ?? null;
+        if (result.incremental) {
+          const merged = mergeRequestLogDelta(entriesRef.current, result.entries ?? [], REQUEST_LOG_LIMIT, filterRef.current.sinceMs);
+          if (merged.entries !== entriesRef.current) setEntries(merged.entries);
+          if (merged.truncated) setMore(true);
+        } else {
+          setEntries((prev) => reuseRequestLogEntries(prev, result.entries ?? []));
+          setMore(Boolean(result.more));
+          setOldestMs(result.oldestMs ?? null);
+        }
         setError("");
       } else {
-        setError(result.message || t("读取请求日志失败。"));
+        setError(result.message ? t(result.message) : t("读取请求日志失败。"));
       }
     } catch (cause) {
-      setError(String(cause));
+      setError(t(errorText(cause)));
     } finally {
       setLoading(false);
     }
@@ -6792,23 +6948,18 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range, agentScope, filterArgs.relayId, filterArgs.relayUnknown, modelFilter]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void load(true);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [autoRefresh]);
+  // 每 2 秒增量读一次；窗口不可见时暂停，回到前台立刻补一轮。
+  usePolling(() => load(true), REQUEST_LOG_POLL_MS, { enabled: autoRefresh, immediate: false });
 
   const clearLogs = async () => {
     if (!(await appConfirm(t("清空全部请求日志？此操作不可撤销。"), { title: t("清空请求日志"), confirmText: t("清空"), danger: true }))) return;
     setClearing(true);
     try {
       const result = await invoke<{ status: Status; message: string }>("clear_request_logs");
-      if (result.status !== "ok") setError(result.message);
+      if (result.status !== "ok") setError(t(result.message));
       await load(true);
     } catch (cause) {
-      setError(String(cause));
+      setError(t(errorText(cause)));
     } finally {
       setClearing(false);
     }
@@ -6848,6 +6999,19 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   // 筛的时间段（或点进来的那一项）比日志里最早的一条还早：日志里看到的比统计少。
   const partial = oldestMs !== null && (sinceMs ?? 0) < oldestMs && (range !== "all" || relayFilter !== null || modelFilter !== "");
 
+  // 模型展示名（分组别名）按 entries 和网关数据算一次，行组件和搜索都用它，不再每行每次渲染线性查找。
+  const displayNames = useMemo(() => {
+    const names = new Map<string, { model: string; upstream: string }>();
+    for (const entry of entries) {
+      names.set(entry.id, {
+        model: groupDisplayName(payload, entry.model) ?? entry.model,
+        upstream: groupDisplayName(payload, entry.upstreamModel) ?? entry.upstreamModel,
+      });
+    }
+    return names;
+  }, [entries, payload]);
+  const toggleExpanded = useCallback((id: string) => setExpanded((current) => (current === id ? null : id)), []);
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return entries.filter((entry) => {
@@ -6867,8 +7031,8 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
       return [
         entry.model,
         entry.upstreamModel,
-        groupDisplayName(payload, entry.model),
-        groupDisplayName(payload, entry.upstreamModel),
+        displayNames.get(entry.id)?.model,
+        displayNames.get(entry.id)?.upstream,
         entry.relayName,
         entry.path,
         entry.threadId ?? "",
@@ -6880,7 +7044,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         .toLowerCase()
         .includes(needle);
     });
-  }, [entries, filter, query, sessionFilter, agentScope, payload]);
+  }, [entries, filter, query, sessionFilter, agentScope, displayNames]);
 
   // 工具条：搜索 + 自动刷新开关（关掉时旁边出现手动刷新）+ 三点菜单（清空日志，确认框保留）；
   // 下面一行：状态胶囊在左，Agent / 时间 / 会话三个下拉在右；表格一张卡，占满剩下的高度。
@@ -6894,7 +7058,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   return (
     <div className="request-log-panel request-log-page cx-page">
       <CxToolbar onQuery={setQuery} placeholder={t("搜索模型 / 供应商 / 路径 / 错误 / 状态码")} query={query}>
-        <span className="request-log-auto" title={t("每秒读取一次新请求")}>
+        <span className="request-log-auto" title={t("每 2 秒读取一次新请求")}>
           <Switch label={t("自动刷新")} on={autoRefresh} onToggle={() => setAutoRefresh(!autoRefresh)} />
           <span>{t("自动刷新")}</span>
         </span>
@@ -6993,162 +7157,29 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         ) : filtered.length ? (
             <div className="request-log-table" role="table" aria-label={t("请求日志")}>
               <div className="request-log-row request-log-head" role="row">
-                <span>{t("时间")}</span>
-                <span>{t("状态")}</span>
-                <span>{t("来源")}</span>
-                <span>{t("模型")}</span>
-                <span>{t("重试")}</span>
-                <span>{t("输入")}</span>
-                <span>{t("输出")}</span>
-                <span>{t("缓存")}</span>
-                <span>{t("费用")}</span>
-                <span>{t("耗时")}</span>
+                <span role="columnheader">{t("时间")}</span>
+                <span role="columnheader">{t("状态")}</span>
+                <span role="columnheader">{t("来源")}</span>
+                <span role="columnheader">{t("模型")}</span>
+                <span role="columnheader">{t("重试")}</span>
+                <span role="columnheader">{t("输入")}</span>
+                <span role="columnheader">{t("输出")}</span>
+                <span role="columnheader">{t("缓存")}</span>
+                <span role="columnheader">{t("费用")}</span>
+                <span role="columnheader">{t("耗时")}</span>
               </div>
               {filtered.map((entry) => {
-                const model = groupDisplayName(payload, entry.model) ?? entry.model;
-                const upstream = groupDisplayName(payload, entry.upstreamModel) ?? entry.upstreamModel;
+                const names = displayNames.get(entry.id);
                 return (
-                <Fragment key={entry.id}>
-                  <button
-                    aria-expanded={expanded === entry.id}
-                    className={`request-log-row request-log-entry ${entry.state === "running" ? "running" : entry.success ? "ok" : "bad"}`}
-                    onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
-                    role="row"
-                    type="button"
-                  >
-                    <span>{formatRequestLogTime(entry.startedAtMs || entry.timestampMs)}</span>
-                    {entry.state === "running" ? (
-                      <span className="request-log-status running">
-                        {t("运行中")}
-                      </span>
-                    ) : (
-                      <span
-                        className={`request-log-status ${entry.success ? "ok" : "bad"}`}
-                        title={entry.error ?? ""}
-                      >
-                        {entry.statusCode || (entry.success ? "OK" : "ERR")}
-                        {!entry.success ? (
-                          <small className="request-log-stream-failed">
-                            {entry.stream ? t("流失败") : t("失败")}
-                          </small>
-                        ) : null}
-                      </span>
-                    )}
-                    <span className="request-log-ellipsis request-log-source" title={`${agentName(requestLogAgent(entry))} · ${maskAccountName(entry.relayName)}`}>
-                      <AgentGlyph agent={requestLogAgent(entry)} />
-                      {maskAccountName(entry.relayName) || "-"}
-                    </span>
-                    <span className="request-log-ellipsis" title={entry.upstreamModel ? `${model} → ${upstream}` : model}>
-                      {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
-                      {model || "-"}
-                      {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
-                        <small> → {upstream}</small>
-                      ) : null}
-                    </span>
-                    <span
-                      className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) || compactionNote(entry.retryReasons)?.kind === "fallback" ? "request-log-retry" : "request-log-muted"}
-                      title={requestLogRetryReasons(entry)}
-                    >
-                      {requestLogRetryLabel(entry)}
-                    </span>
-                    {entry.state !== "running" && !entry.success && entry.error ? (
-                      // 失败的请求没有 token 和费用：这几列直接显示错误原因。
-                      <span className="request-log-error-cell" title={entry.error}>{requestLogErrorSummary(entry.error)}</span>
-                    ) : (
-                      <>
-                        <span className="request-log-muted" title={entry.state === "running" ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
-                          {entry.state === "running" ? (isImageRequest(entry) ? t("生成中") : t("流式中")) : formatRequestLogTokens(entry.usage?.inputTokens)}
-                        </span>
-                        <span
-                          className="request-log-muted"
-                          title={entry.state === "running"
-                            ? t("按流式增量估算，完成后会更新为准确值")
-                            : ""}
-                        >
-                          {entry.state === "running"
-                            ? entry.estimatedOutputTokens
-                              ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
-                              : (isImageRequest(entry) ? t("生成中") : t("流式中"))
-                            : formatRequestLogTokens(entry.usage?.outputTokens)}
-                        </span>
-                        <span>
-                          {entry.state === "running" ? (
-                            <span className="request-log-muted">{(isImageRequest(entry) ? t("生成中") : t("流式中"))}</span>
-                          ) : entry.usage?.cachedTokens ? (
-                            <>
-                              {formatRequestLogTokens(entry.usage.cachedTokens)}
-                              <small>
-                                {" · "}
-                                {formatRequestLogCacheHitRatio(
-                                  entry.usage.inputTokens,
-                                  entry.usage.cachedTokens,
-                                  entry.cacheHitRatio,
-                                )}
-                              </small>
-                            </>
-                          ) : "-"}
-                        </span>
-                        <span className="request-log-muted">{entry.cost ? formatRequestCost(entry.cost) : "-"}</span>
-                      </>
-                    )}
-                    <span className="request-log-duration">
-                      {formatRequestLogDuration(
-                        entry.state === "running"
-                          ? Math.max(0, nowMs - entry.startedAtMs)
-                          : entry.durationMs,
-                      )}
-                      {entry.state === "running" ? (
-                        <small>{t("进行中")}</small>
-                      ) : entry.firstTokenMs != null ? (
-                        <small>{tf("首字 {0}", [formatRequestLogDuration(entry.firstTokenMs)])}</small>
-                      ) : null}
-                    </span>
-                  </button>
-                  {expanded === entry.id ? (
-                    <div className="request-log-detail">
-                      <dl>
-                        <div><dt>{t("请求 ID")}</dt><dd><code>{entry.id}</code></dd></div>
-                        <div>
-                          <dt>{t("会话 ID")}</dt>
-                          <dd>
-                            {entry.threadTitle ? <strong className="request-log-session-title">{entry.threadTitle}</strong> : null}
-                            <code>{entry.threadId || "-"}</code>
-                          </dd>
-                        </div>
-                        <div><dt>{t("路径")}</dt><dd><code>{entry.method} {entry.path}</code></dd></div>
-                        <div><dt>{t("上游协议")}</dt><dd>{entry.wireApi || "-"}</dd></div>
-                        <div><dt>{t("上游模型")}</dt><dd>{upstream || "-"}</dd></div>
-                        <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (entry.state === "running" ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
-                        <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
-                        <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
-                        <div><dt>{t("重试原因")}</dt><dd>{requestLogRetryReasons(entry) || "-"}</dd></div>
-                        {entry.attemptDetails?.length ? (
-                          <div className="request-log-attempts">
-                            <dt>{t("尝试明细")}</dt>
-                            <dd>
-                              <ul>
-                                {entry.attemptDetails.map((detail) => (
-                                  <li key={`${detail.attempt}-${detail.code ?? ""}`}>
-                                    <strong>{tf("第 {0} 次", [detail.attempt])}</strong>
-                                    <code>{detail.code || "-"}</code>
-                                    {detail.delayMs != null ? (
-                                      <small>{tf("退避 {0}", [formatRequestLogDuration(detail.delayMs)])}</small>
-                                    ) : null}
-                                    {detail.message ? <small title={detail.message}>{detail.message}</small> : null}
-                                  </li>
-                                ))}
-                              </ul>
-                            </dd>
-                          </div>
-                        ) : null}
-                        <div><dt>{t("流式")}</dt><dd>{entry.stream ? "SSE" : "JSON"}</dd></div>
-                        <div><dt>{t("流结果")}</dt><dd>{entry.streamOutcome || "-"}</dd></div>
-                        <div><dt>{t("推理 tokens")}</dt><dd>{formatRequestLogTokens(entry.usage?.reasoningTokens)}</dd></div>
-                        <div><dt>{t("错误")}</dt><dd>{entry.error || "-"}</dd></div>
-                      </dl>
-                    </div>
-                  ) : null}
-                </Fragment>
+                  <RequestLogRow
+                    entry={entry}
+                    expanded={expanded === entry.id}
+                    key={entry.id}
+                    model={names?.model ?? entry.model}
+                    nowMs={entry.state === "running" ? nowMs : 0}
+                    onToggle={toggleExpanded}
+                    upstream={names?.upstream ?? entry.upstreamModel}
+                  />
                 );
               })}
             </div>
@@ -7278,22 +7309,10 @@ function LegacyRelayGatewayHint({
 }) {
   const managed = form.relayProfiles.find((profile) => profile.id === CODEX_GATEWAY_RELAY_ID);
   const onGateway = form.activeRelayId === CODEX_GATEWAY_RELAY_ID;
-  // 网关里有没有开着的 Codex 接入记录；读不出 gateway.json 也算没有。
-  const [bound, setBound] = useState<boolean | null>(null);
-  useEffect(() => {
-    if (!onGateway) return;
-    let cancelled = false;
-    invoke<GatewayResult>("load_gateway")
-      .then((result) => {
-        if (!cancelled) setBound(result.status === "ok" && result.gateway?.bindings?.codex?.enabled === true);
-      })
-      .catch(() => {
-        if (!cancelled) setBound(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [onGateway, form.relayProfiles]);
+  // 网关里有没有开着的 Codex 接入记录：读共享的网关数据（和本页「供应商池」标记同一份轮询），不再单独请求；
+  // 还没读到时当作未知，不误报「还指向网关托管的供应商」。
+  const gatewayPayload = useGatewayPayload(15_000);
+  const bound = gatewayPayload ? gatewayPayload.gateway?.bindings?.codex?.enabled === true : null;
   const orphan = onGateway && (!managed || bound === false);
   const viaGateway = onGateway && !orphan;
   const direct = form.relayProfiles.find((profile) => profile.id === form.activeRelayId && profile.id !== CODEX_GATEWAY_RELAY_ID);
@@ -7466,7 +7485,8 @@ function RelayScreen({
   /** 打开网关的供应商池。 */
   onOpenGateway?: () => void;
 }) {
-  const normalized = normalizeSettings(form);
+  // normalizeSettings 要解析共享 TOML、规整每个供应商，不随每次渲染重算。
+  const normalized = useMemo(() => normalizeSettings(form), [form]);
   const takenOverByGateway = normalized.activeRelayId === CODEX_GATEWAY_RELAY_ID;
   // 直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可以一键复制进去。
   const poolLink = useCodexPoolLink(actions, normalized.relayProfiles.map((profile) => profile.id));
@@ -7601,8 +7621,16 @@ function RelayScreen({
     const next = syncLegacyRelayFields({ ...normalized, activeRelayId: profileId });
     void actions.switchRelayProfile(next, normalized.activeRelayId);
   };
+  // 「高级」里的供应商代理列表点进来时直接跳到代理输入框。
+  const [detailSection, setDetailSection] = useState<"proxy" | null>(null);
+  const openRelayProfileSection = useCallback((profileId: string, section: "proxy") => {
+    setNewProfileDraft(null);
+    setDetailSection(section);
+    setDetailProfileId(profileId);
+  }, []);
   const editRelayProfile = async (profileId: string) => {
     setNewProfileDraft(null);
+    setDetailSection(null);
     setDetailProfileId(
       normalized.relayProfiles.some((item) => item.id === profileId) ? profileId : null,
     );
@@ -7666,6 +7694,7 @@ function RelayScreen({
         form={normalized}
         isNew={isNewProfile}
         initialAggregateMode={isNewProfile ? newAggregateMode : null}
+        initialSection={isNewProfile ? null : detailSection}
         // 从目录页选模板进来时目录页状态还开着：返回只清掉草稿，回到目录页继续挑。
         onBack={() => {
           setNewProfileDraft(null);
@@ -7902,7 +7931,7 @@ function RelayScreen({
           <CxFilters
             items={(["direct", "modelAggregation", "routing", "failover"] as ProviderViewKind[]).map((view) => ({
               id: view,
-              label: <span title={viewTip[view]}>{view === "direct" ? t("直连") : view === "modelAggregation" ? t("模型聚合") : view === "routing" ? t("需协议转换") : t("故障转移")}</span>,
+              label: <span title={viewTip[view]}>{/* 「直连」和分区标题「直连供应商」撞名：按是否要协议转换来叫，和「需协议转换」对照。 */}{view === "direct" ? t("无需转换") : view === "modelAggregation" ? t("模型聚合") : view === "routing" ? t("需协议转换") : t("故障转移")}</span>,
               count: viewCount(view),
             }))}
             label={t("供应商配置模式")}
@@ -7998,7 +8027,9 @@ function RelayScreen({
                 <ToggleVisual />
               </label>
             </CxRow>
-            {advanced}
+            <RelayProfileLinkContext.Provider value={openRelayProfileSection}>
+              {advanced}
+            </RelayProfileLinkContext.Provider>
           </details>
         </CxCard>
       </CxSection>
@@ -8013,6 +8044,33 @@ function multiLaunchSupported(profile: RelayProfile): boolean {
     && !(profile.modelRoutes ?? []).some((route) => route.model.trim() || route.targetRelayId.trim());
 }
 
+/**
+ * 删除直连供应商的统一确认（旧版供应商列表、多开页共用）：
+ * 先查占用（当前正在使用、聚合配置的默认 / 最后成员直接说明原因），再提醒运行中的多开实例，最后危险确认。
+ * 确认后返回删掉它的新设置，取消或不能删时返回 null。
+ */
+async function confirmRemoveRelayProfile(
+  settings: BackendSettings,
+  profile: RelayProfile,
+  actions: Actions,
+  from: "relay" | "multiLaunch",
+): Promise<BackendSettings | null> {
+  const name = profile.name || t("未命名供应商");
+  const deleteIssue = relayProfileDeleteIssue(settings, profile.id);
+  if (deleteIssue) {
+    await actions.showMessage(t("删除供应商"), deleteIssue, "failed");
+    return null;
+  }
+  const running = runningInstancesForProfile(actions.multiLaunchInstances, profile.id);
+  const message = running.length
+    ? tf("删除供应商「{0}」？它还有 {1} 个多开实例在运行，删除后实例不会被结束，但之后不能再用它启动。", [name, running.length])
+    : from === "multiLaunch"
+      ? tf("删除供应商「{0}」？删除后不能再用它启动多开实例，旧版供应商列表里也会一并移除。", [name])
+      : tf("删除供应商「{0}」？它的 API Key、模型列表和配置文件会一并删除，不能撤销。", [name]);
+  if (!(await appConfirm(message, { title: t("删除供应商"), confirmText: t("删除"), danger: true }))) return null;
+  return removeRelayProfile(settings, profile.id);
+}
+
 function CodexMultiLaunchScreen({
   form,
   relayFiles,
@@ -8024,7 +8082,8 @@ function CodexMultiLaunchScreen({
   onOpenRelay: () => void;
   actions: Actions;
 }) {
-  const normalized = normalizeSettings(form);
+  // normalizeSettings 要解析共享 TOML、规整每个供应商，不随每次渲染重算。
+  const normalized = useMemo(() => normalizeSettings(form), [form]);
   // #2801：Codex 被网关接管、或「配置切换」关闭时，旧版供应商页的列表整块隐藏，
   // 多开里这些供应商（多是早年从 cc-switch 导入的）就没地方编辑、删除了，这里直接给入口。
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
@@ -8037,19 +8096,8 @@ function CodexMultiLaunchScreen({
     }
   }, [detailProfileId, normalized.relayProfiles]);
   const deleteProfile = async (profile: RelayProfile) => {
-    const name = profile.name || t("未命名供应商");
-    // 当前正在使用、或是聚合配置的默认 / 最后成员：和旧版列表一样直接说明原因，不弹确认。
-    const deleteIssue = relayProfileDeleteIssue(normalized, profile.id);
-    if (deleteIssue) {
-      await actions.showMessage(t("删除供应商"), deleteIssue, "failed");
-      return;
-    }
-    const running = runningInstancesForProfile(actions.multiLaunchInstances, profile.id);
-    const message = running.length
-      ? tf("删除供应商「{0}」？它还有 {1} 个多开实例在运行，删除后实例不会被结束，但之后不能再用它启动。", [name, running.length])
-      : tf("删除供应商「{0}」？删除后不能再用它启动多开实例，旧版供应商列表里也会一并移除。", [name]);
-    if (!(await appConfirm(message, { title: t("删除供应商"), confirmText: t("删除"), danger: true }))) return;
-    await actions.saveSettingsValue(removeRelayProfile(normalized, profile.id), true);
+    const next = await confirmRemoveRelayProfile(normalized, profile, actions, "multiLaunch");
+    if (next) await actions.saveSettingsValue(next, true);
   };
   if (detailProfile) {
     return (
@@ -10486,12 +10534,9 @@ function SortableRelayProfileCard({
               danger
               disabled={form.relayProfiles.length <= 1}
               onClick={() => {
-                const deleteIssue = relayProfileDeleteIssue(form, profile.id);
-                if (deleteIssue) {
-                  void actions.showMessage(t("删除供应商"), deleteIssue, "failed");
-                  return;
-                }
-                onFormChange(removeRelayProfile(form, profile.id));
+                void confirmRemoveRelayProfile(form, profile, actions, "relay").then((next) => {
+                  if (next) onFormChange(next);
+                });
               }}
             >
               {t("删除供应商")}
@@ -10595,12 +10640,28 @@ function withModelRowSortId(row: ModelWindowRow, sortId?: string): SortableModel
   return { ...row, sortId: sortId ?? `model-row-${++nextModelRowSortId}` };
 }
 
+/** 把编辑中的模型行写回草稿（保存、诊断、未保存判断共用同一份序列化）。 */
+function relayDraftWithModelRows(draft: RelayProfile, rows: ModelWindowRow[]): RelayProfile {
+  const serializedRows = serializeModelWindowRows(rows);
+  const validSlugs = serializedRows.modelList.split("\n").map((slug) => slug.trim()).filter(Boolean);
+  return {
+    ...draft,
+    modelList: serializedRows.modelList,
+    modelWindows: serializedRows.modelWindows,
+    modelAutoCompact: serializedRows.modelAutoCompact,
+    modelMetadata: retainModelMetadataForSlugs(draft.modelMetadata, validSlugs),
+    customHeaders: serializeRelayHeaders(draft.customHeaders || []),
+    modelVlm: serializedRows.modelVlm,
+  };
+}
+
 function RelayProfileDetail({
   profile,
   relayFiles,
   form,
   isNew = false,
   initialAggregateMode = null,
+  initialSection = null,
   onBack,
   onFormChange,
   onSaved,
@@ -10611,6 +10672,8 @@ function RelayProfileDetail({
   form: BackendSettings;
   isNew?: boolean;
   initialAggregateMode?: AggregateMode | null;
+  /** 打开时直接跳到的设置（「Codex 连接 → 高级」里点某个供应商的独立代理进来）。 */
+  initialSection?: "proxy" | null;
   onBack: () => void;
   onFormChange: (value: BackendSettings) => Promise<BackendSettings | null>;
   onSaved?: () => void;
@@ -10622,6 +10685,60 @@ function RelayProfileDetail({
     modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm, profile.modelAutoCompact)
       .map((row) => withModelRowSortId(row)),
   );
+  // 供应商独立代理、前缀稳定层按供应商 id 存在设置之外，也算进草稿：改了随「保存供应商」一起写，不再各自立即保存。
+  const [proxyUrl, setProxyUrl] = useState("");
+  const [savedProxy, setSavedProxy] = useState<{ url: string; configured: boolean }>({ url: "", configured: false });
+  const [promptPrefix, setPromptPrefix] = useState(false);
+  const [savedPromptPrefix, setSavedPromptPrefix] = useState(false);
+  const extrasTouchedRef = useRef({ proxy: false, prefix: false });
+  useEffect(() => {
+    let cancelled = false;
+    extrasTouchedRef.current = { proxy: false, prefix: false };
+    setProxyUrl("");
+    setSavedProxy({ url: "", configured: false });
+    setPromptPrefix(false);
+    setSavedPromptPrefix(false);
+    setIndependentProxyConfigured(profile.id, false);
+    void invoke<{ status: string; proxyUrl?: string; configured?: boolean }>("load_relay_proxy", { profileId: profile.id })
+      .then((result) => {
+        if (cancelled || result.status !== "ok") return;
+        const url = result.proxyUrl || "";
+        const configured = result.configured ?? Boolean(url.trim());
+        setIndependentProxyConfigured(profile.id, configured);
+        setSavedProxy({ url, configured });
+        // 读回来之前已经开始改了：不覆盖用户的输入。
+        if (!extrasTouchedRef.current.proxy) setProxyUrl(url);
+      })
+      .catch(() => {});
+    void invoke<{ stabilizePromptPrefix?: boolean }>("load_relay_feature", { profileId: profile.id })
+      .then((result) => {
+        if (cancelled) return;
+        const enabled = result.stabilizePromptPrefix === true;
+        setSavedPromptPrefix(enabled);
+        if (!extrasTouchedRef.current.prefix) setPromptPrefix(enabled);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [profile.id]);
+  const changeProxyUrl = (value: string) => {
+    extrasTouchedRef.current.proxy = true;
+    setProxyUrl(value);
+  };
+  const changePromptPrefix = (value: boolean) => {
+    extrasTouchedRef.current.prefix = true;
+    setPromptPrefix(value);
+  };
+  const proxyChanged = !isAggregateRelayProfile(draft) && proxyUrl.trim() !== savedProxy.url.trim();
+  const promptPrefixChanged = !isAggregateRelayProfile(draft) && promptPrefix !== savedPromptPrefix;
+  const proxyProblem = isAggregateRelayProfile(draft) ? null : proxyAddressError(proxyUrl);
+  const proxyError = proxyProblem ? t(proxyProblem) : null;
+  // 从「高级」里的供应商代理列表进来：展开「请求」分区并聚焦代理输入框。
+  useEffect(() => {
+    if (initialSection !== "proxy") return;
+    const root = detailBodyRef.current;
+    jumpToRelaySection(root, "requests");
+    requestAnimationFrame(() => root?.querySelector<HTMLInputElement>(".relay-field-proxy input")?.focus());
+  }, [initialSection, profile.id]);
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
@@ -10662,48 +10779,47 @@ function RelayProfileDetail({
     setDraft(nextDraft);
     const switchedProfile = lastDetailProfileIdRef.current !== profile.id;
     lastDetailProfileIdRef.current = profile.id;
+    const nextRows = modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact)
+      .map((row) => withModelRowSortId(row));
+    // 未保存判断的基线：用载入后的草稿按同样方式序列化，刚打开时不会误报「有未保存修改」。
+    baselineDraftRef.current = JSON.stringify(relayDraftWithModelRows(nextDraft, nextRows));
     if (switchedProfile || !unsavedRowEditsRef.current) {
-      setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact)
-        .map((row) => withModelRowSortId(row)));
+      setModelWindowRows(nextRows);
     }
     // 依赖里刻意不放 profile.modelMetadata / 原始 relayFiles：元数据改动是本编辑器自己触发的
     // （删行会清该模型元数据），把它当依赖会让「删行 → 清元数据 → 重建行」把删掉的行加回来。
   }, [profile.id, profile.modelList, profile.modelWindows, profile.modelAutoCompact, profile.modelVlm, profileUsesLiveFiles, isActive, isNew, liveConfigContents, liveAuthContents]);
-  const validationSettings = relaySettingsWithDraft(form, profile.id, draft, isNew);
-  const validationError = relaySessionProviderValidation(draft)
+  // 每次按键都会重算：relaySettingsWithDraft 要解析 TOML，模型行要序列化，按依赖缓存。
+  const validationSettings = useMemo(() => relaySettingsWithDraft(form, profile.id, draft, isNew), [form, profile.id, draft, isNew]);
+  const validationError = useMemo(() => relaySessionProviderValidation(draft)
     ?? (isAggregateRelayProfile(draft)
       ? aggregateRelayProfileValidation(draft)
-      : relayModelRoutesSettingsValidation(validationSettings));
-  const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
-  const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
-  const draftWithModelRows = () => {
-    const serializedRows = serializeModelWindowRows(modelWindowRows);
-    const validSlugs = serializedRows.modelList.split("\n").map((slug) => slug.trim()).filter(Boolean);
-    return {
-      ...draft,
-      modelList: serializedRows.modelList,
-      modelWindows: serializedRows.modelWindows,
-      modelAutoCompact: serializedRows.modelAutoCompact,
-      modelMetadata: retainModelMetadataForSlugs(draft.modelMetadata, validSlugs),
-      customHeaders: serializeRelayHeaders(draft.customHeaders || []),
-      modelVlm: serializedRows.modelVlm,
-    };
-  };
-  const currentModelState = draftWithModelRows();
-  const persistedModelState = {
+      : relayModelRoutesSettingsValidation(validationSettings)), [draft, validationSettings]);
+  const modelRowsError = useMemo(() => modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows)), [modelWindowRows]);
+  // 请求头写错（名字非法、值里有换行）也挡住保存，和模型行错误一样就地写出原因。
+  const headersError = useMemo(() => relayHeadersValidationMessage(draft.customHeaders || []), [draft.customHeaders]);
+  const blockingIssue = validationError || modelRowsError || headersError || proxyError;
+  const currentDraft = useMemo(() => relayDraftWithModelRows(draft, modelWindowRows), [draft, modelWindowRows]);
+  const draftWithModelRows = () => currentDraft;
+  // 「有未保存修改」：整份草稿（名称、地址、Key、协议、请求头、文件……）和打开时的基线比，
+  // 不只比模型行；基线在载入 / 外部更新草稿时重设。
+  const baselineDraftRef = useRef<string | null>(null);
+  const currentDraftJson = useMemo(() => JSON.stringify(currentDraft), [currentDraft]);
+  if (baselineDraftRef.current === null) baselineDraftRef.current = currentDraftJson;
+  const hasUnsavedChanges = currentDraftJson !== baselineDraftRef.current || proxyChanged || promptPrefixChanged;
+  const hasUnsavedModelChanges = useMemo(() => JSON.stringify({
+    modelList: currentDraft.modelList,
+    modelWindows: currentDraft.modelWindows,
+    modelAutoCompact: currentDraft.modelAutoCompact,
+    modelMetadata: currentDraft.modelMetadata,
+    modelVlm: currentDraft.modelVlm,
+  }) !== JSON.stringify({
     modelList: profile.modelList || "",
     modelWindows: profile.modelWindows || "",
     modelAutoCompact: profile.modelAutoCompact || "",
     modelMetadata: profile.modelMetadata || "",
     modelVlm: profile.modelVlm || "",
-  };
-  const hasUnsavedModelChanges = JSON.stringify({
-    modelList: currentModelState.modelList,
-    modelWindows: currentModelState.modelWindows,
-    modelAutoCompact: currentModelState.modelAutoCompact,
-    modelMetadata: currentModelState.modelMetadata,
-    modelVlm: currentModelState.modelVlm,
-  }) !== JSON.stringify(persistedModelState);
+  }), [currentDraft, profile.modelList, profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata, profile.modelVlm]);
   // 交给上面的行编辑守卫：有未保存行改动时，外部变化不覆盖模型行。
   unsavedRowEditsRef.current = hasUnsavedModelChanges;
   const saveDraft = async () => {
@@ -10713,20 +10829,29 @@ function RelayProfileDetail({
       void actions.showMessage(t("保存供应商"), t("先选择聚合类型（模型聚合 / 故障转移）再保存。"), "failed");
       return;
     }
-    const blockingIssue = validationError || modelRowsError;
     if (blockingIssue) {
       void actions.showMessage(t("保存供应商"), blockingIssue, "failed");
       return;
     }
     setSavingDraft(true);
+    // 代理决定这个供应商是否经本地代理转发：先按改后的代理重算配置文件，写入失败或取消时还原。
+    const proxyConfiguredNow = Boolean(proxyUrl.trim()) || (savedProxy.configured && !savedProxy.url.trim());
+    if (proxyChanged) setIndependentProxyConfigured(profile.id, proxyConfiguredNow);
+    let proxySaved = !proxyChanged;
     try {
-      const draftWithWindows = draftWithModelRows();
+      const draftWithWindows = proxyChanged && !isAggregateRelayProfile(draftWithModelRows())
+        ? applyRelayProfilePatchToFiles(draftWithModelRows(), { baseUrl: draftWithModelRows().baseUrl }, { allowGenerateFiles: isNew })
+        : draftWithModelRows();
       const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
       const next = normalizeSettings(isNew
         ? addRelayProfile(form, normalizedDraft)
         : updateRelayProfile(form, profile.id, normalizedDraft));
-      const settingsValidationError = relaySettingsValidation(next);
-      if (settingsValidationError) return;
+      // 校验的是保存后的整份设置：别的供应商有问题也存不了，弹出原因并点名是哪一个，不再静默不动。
+      const settingsValidationError = relaySettingsValidationForSave(next, normalizedDraft.id);
+      if (settingsValidationError) {
+        void actions.showMessage(t("保存供应商"), settingsValidationError, "failed");
+        return;
+      }
       const activeLiveBaseUrl = codexBaseUrlFromConfig(
         relayFiles?.configContents ?? profile.configContents,
       );
@@ -10737,6 +10862,27 @@ function RelayProfileDetail({
       );
       if (requiresRestart && !(await appConfirm(t("此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？"), { title: t("需要重启 Codex"), confirmText: t("保存并重启") }))) {
         return;
+      }
+      // 代理、前缀稳定层单独存：先写它们，失败就停下，不留一半。
+      if (proxyChanged) {
+        const result = await invoke<{ status: string; message: string; proxyUrl?: string; configured?: boolean }>("set_relay_proxy", { profileId: normalizedDraft.id, proxyUrl });
+        if (result.status !== "ok") {
+          void actions.showMessage(t("供应商独立代理"), t(result.message), "failed");
+          return;
+        }
+        proxySaved = true;
+        const url = result.proxyUrl ?? proxyUrl.trim();
+        const configured = result.configured ?? Boolean(url);
+        setIndependentProxyConfigured(normalizedDraft.id, configured);
+        setSavedProxy({ url, configured });
+      }
+      if (promptPrefixChanged) {
+        const result = await invoke<{ status: string; message: string }>("set_relay_feature", { profileId: normalizedDraft.id, stabilizePromptPrefix: promptPrefix });
+        if (result.status !== "ok") {
+          void actions.showMessage(t("前缀稳定层"), t(result.message), "failed");
+          return;
+        }
+        setSavedPromptPrefix(promptPrefix);
       }
       const savedSettings = await onFormChange(next);
       if (!savedSettings) return;
@@ -10752,12 +10898,16 @@ function RelayProfileDetail({
         await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
       }
       onSaved?.();
+    } catch (error) {
+      void actions.showMessage(t("保存供应商"), errorText(error), "failed");
     } finally {
+      // 没写成代理（校验没过、取消重启、写入失败）：把按新代理算的状态还原。
+      if (!proxySaved) setIndependentProxyConfigured(profile.id, savedProxy.configured);
       setSavingDraft(false);
     }
   };
   const switchDraft = () => {
-    if (isNew || validationError || modelRowsError) return;
+    if (isNew || blockingIssue) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -10797,18 +10947,18 @@ function RelayProfileDetail({
       <div className="relay-detail-header">
         <div className="relay-editor-heading">
           <Button aria-label={t("返回列表")} onClick={() => void (async () => {
-            if (hasUnsavedModelChanges && !(await appConfirm(t("有未保存的模型修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true }))) return;
+            if (hasUnsavedChanges && !(await appConfirm(t("有未保存的修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true }))) return;
             onBack();
           })()} size="icon" title={t("返回列表")} type="button" variant="ghost">
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="relay-editor-heading-copy">
             <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
-            <span>{hasUnsavedModelChanges ? `${detailStatus} · ${t("有未保存修改")}` : detailStatus}</span>
-            {validationError || modelRowsError ? (
+            <span>{hasUnsavedChanges ? `${detailStatus} · ${t("有未保存修改")}` : detailStatus}</span>
+            {blockingIssue ? (
               // 就地写出「为什么存不了」：按钮不再禁用，这里也给人一眼能看到的原因。
               <span className="relay-editor-validation" role="alert">
-                {validationError || modelRowsError}
+                {blockingIssue}
               </span>
             ) : null}
           </div>
@@ -10838,7 +10988,7 @@ function RelayProfileDetail({
             // 配置有误时也让人点：点一下把原因弹出来，比一个点不动的按钮清楚。
             disabled={savingDraft}
             onClick={() => void saveDraft()}
-            title={aggregateModeRequired ? t("先选择类型") : validationError || modelRowsError || t("保存")}
+            title={aggregateModeRequired ? t("先选择类型") : blockingIssue || t("保存")}
             type="button"
           >
             <Save className="h-4 w-4" />
@@ -10864,6 +11014,8 @@ function RelayProfileDetail({
             profile={draft}
             form={form}
             isNew={isNew}
+            proxy={{ value: proxyUrl, error: proxyError, onChange: changeProxyUrl }}
+            promptPrefix={{ value: promptPrefix, onChange: changePromptPrefix }}
             onProfileChange={setDraft}
             actions={actions}
             modelWindowRows={modelWindowRows}
@@ -11027,6 +11179,8 @@ function RelayProfileEditor({
   profile,
   form,
   isNew = false,
+  proxy,
+  promptPrefix,
   onProfileChange,
   actions,
   modelWindowRows,
@@ -11035,23 +11189,21 @@ function RelayProfileEditor({
   profile: RelayProfile;
   form: BackendSettings;
   isNew?: boolean;
+  /** 供应商独立代理：草稿的一部分，随「保存供应商」写入。 */
+  proxy: { value: string; error: string | null; onChange: (value: string) => void };
+  /** 前缀稳定层开关：同上。 */
+  promptPrefix: { value: boolean; onChange: (value: boolean) => void };
   onProfileChange: (value: RelayProfile) => void;
   actions: Actions;
   modelWindowRows: SortableModelWindowRow[];
   setModelWindowRows: (value: SortableModelWindowRow[]) => void;
 }) {
   const [vlmTestOpen, setVlmTestOpen] = useState(false);
-  const [relayProxyUrl, setRelayProxyUrl] = useState("");
-  const [relayProxyBusy, setRelayProxyBusy] = useState(false);
-  const relayProxyProfileRef = useRef(profile);
-  relayProxyProfileRef.current = profile;
-  const relayProxyRevisionRef = useRef(0);
-  const [stabilizePromptPrefix, setStabilizePromptPrefix] = useState(false);
   // 「高级兼容选项」分组：null = 用户没手动开合过，按是否有开启项决定。
   const [compatOpen, setCompatOpen] = useState<boolean | null>(null);
   const compatEnabledCount = [
     profile.standardOpenaiProtocol,
-    stabilizePromptPrefix,
+    promptPrefix.value,
     profile.webSearchHistoryCompat,
     profile.localCompactionPromptAtEnd === true,
     profile.trustUpstreamCatalogLite === true,
@@ -11062,71 +11214,7 @@ function RelayProfileEditor({
     profile.disableToolSearch === true,
     profile.pureApiImageGeneration === true,
   ].filter(Boolean).length;
-  const [stabilizePromptPrefixBusy, setStabilizePromptPrefixBusy] = useState(false);
   const useCommonConfig = profile.useCommonConfig !== false;
-  useEffect(() => {
-    let cancelled = false;
-    const revision = ++relayProxyRevisionRef.current;
-    setRelayProxyUrl("");
-    setIndependentProxyConfigured(profile.id, false);
-    void invoke<{ status: string; proxyUrl?: string; configured?: boolean }>("load_relay_proxy", { profileId: profile.id })
-      .then((result) => {
-        if (!cancelled && revision === relayProxyRevisionRef.current && result.status === "ok") {
-          setIndependentProxyConfigured(profile.id, result.configured ?? Boolean(result.proxyUrl?.trim()));
-          setRelayProxyUrl(result.proxyUrl || "");
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [profile.id]);
-  useEffect(() => {
-    let cancelled = false;
-    setStabilizePromptPrefix(false);
-    void invoke<{ stabilizePromptPrefix?: boolean }>("load_relay_feature", { profileId: profile.id })
-      .then((result) => { if (!cancelled) setStabilizePromptPrefix(result.stabilizePromptPrefix === true); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [profile.id]);
-  const saveRelayProxy = async () => {
-    const profileId = profile.id;
-    ++relayProxyRevisionRef.current;
-    setRelayProxyBusy(true);
-    try {
-      const result = await invoke<{ status: string; message: string; configured?: boolean }>("set_relay_proxy", {
-        profileId,
-        proxyUrl: relayProxyUrl,
-      });
-      if (result.status === "ok") {
-        setIndependentProxyConfigured(profileId, result.configured ?? Boolean(relayProxyUrl.trim()));
-        const current = relayProxyProfileRef.current;
-        if (current.id === profileId) {
-          // 保存响应返回时从最新草稿重算，保留期间编辑的其它字段。
-          onProfileChange(applyRelayProfilePatchToFiles(current, { baseUrl: current.baseUrl }, { allowGenerateFiles: isNew }));
-        }
-      }
-      await actions.showMessage(t("供应商独立代理"), result.message, result.status === "ok" ? "ok" : "failed");
-    } catch (error) {
-      await actions.showMessage(t("供应商独立代理"), String(error), "failed");
-    } finally {
-      setRelayProxyBusy(false);
-    }
-  };
-  const saveStabilizePromptPrefix = async (enabled: boolean) => {
-    setStabilizePromptPrefix(enabled);
-    setStabilizePromptPrefixBusy(true);
-    try {
-      const result = await invoke<{ status: string; message: string }>("set_relay_feature", {
-        profileId: profile.id,
-        stabilizePromptPrefix: enabled,
-      });
-      await actions.showMessage(t("前缀稳定层"), result.message, result.status === "ok" ? "ok" : "failed");
-    } catch (error) {
-      setStabilizePromptPrefix(!enabled);
-      await actions.showMessage(t("前缀稳定层"), String(error), "failed");
-    } finally {
-      setStabilizePromptPrefixBusy(false);
-    }
-  };
   const [activeImportDraft, setActiveImportDraft] = useState<ActiveImportDraft | null>(null);
   const [metadataImportError, setMetadataImportError] = useState("");
   const [builtinMatch, setBuiltinMatch] = useState<BuiltinModelMetadataMatch | null>(null);
@@ -12541,17 +12629,14 @@ function RelayProfileEditor({
             ) : null}
             {showApiFields ? (
               <Field className="relay-field-proxy" label={t("供应商独立代理")}>
-                <div className="relay-inline-field">
-                  <Input
-                    value={relayProxyUrl}
-                    onChange={(event) => setRelayProxyUrl(event.currentTarget.value)}
-                    placeholder="http://127.0.0.1:7890"
-                  />
-                  <Button disabled={relayProxyBusy} onClick={() => void saveRelayProxy()} size="sm" type="button" variant="secondary">
-                    {t("保存")}
-                  </Button>
-                </div>
-                <span className="hint-line">{t("留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。")}</span>
+                <Input
+                  aria-invalid={proxy.error ? true : undefined}
+                  value={proxy.value}
+                  onChange={(event) => proxy.onChange(event.currentTarget.value)}
+                  placeholder="http://127.0.0.1:7890"
+                />
+                <span className="hint-line">{t("留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。随「保存供应商」一起保存。")}</span>
+                {proxy.error ? <span className="hint-line relay-custom-headers-error">{proxy.error}</span> : null}
               </Field>
             ) : null}
             {showApiFields ? (
@@ -12594,9 +12679,8 @@ function RelayProfileEditor({
                 {showApiFields ? (
                   <label className="switch-row compact relay-switch-row">
                     <input
-                      checked={stabilizePromptPrefix}
-                      disabled={stabilizePromptPrefixBusy}
-                      onChange={(event) => void saveStabilizePromptPrefix(event.currentTarget.checked)}
+                      checked={promptPrefix.value}
+                      onChange={(event) => promptPrefix.onChange(event.currentTarget.checked)}
                       type="checkbox"
                     />
                     <span><strong>{t("前缀稳定层")}</strong><small>{t("按供应商稳定可选历史块的顺序并移除成对 image_resize_notice；默认关闭，适合已确认上游支持的缓存场景。")}</small></span>
@@ -12646,22 +12730,7 @@ function RelayProfileEditor({
                     <input type="checkbox" checked={profile.strictResponsesReasoning === true} onChange={(event) => updateDraft({ strictResponsesReasoning: event.currentTarget.checked })} />
                     <span><strong>{t("严格 Responses 推理历史兼容")}</strong><small>{t("仅当目标上游接受当前账号的加密历史时启用。混合推理只发送可识别的加密信封；占位或无效密文会明确报错。本地记录不变。")}</small></span><ToggleVisual />
                   </label>
-                  <label className="switch-row compact relay-switch-row relay-field-strip-image-generation">
-                    <input type="checkbox" checked={profile.stripImageGenerationTool === true} onChange={(event) => updateDraft({ stripImageGenerationTool: event.currentTarget.checked })} />
-                    <span><strong>{t("移除请求里的托管生图工具（image_generation）")}</strong><small>{t("Codex App 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发前从 tools 里去掉它（及指向它的 tool_choice），请求改走本地代理；Codex 里将无法调用内置生图。默认关闭。")}</small></span><ToggleVisual />
-                  </label>
-                  <label className="switch-row compact relay-switch-row relay-field-strip-responses-image-detail">
-                    <input type="checkbox" checked={profile.stripResponsesImageDetail === true} onChange={(event) => updateDraft({ stripResponsesImageDetail: event.currentTarget.checked })} />
-                    <span><strong>{t("移除 Responses 图片 detail 字段")}</strong><small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail，请求改走本地代理。默认关闭。")}</small></span><ToggleVisual />
-                  </label>
-                  <label className="switch-row compact relay-switch-row relay-field-strip-responses-output-encrypted-content">
-                    <input type="checkbox" checked={profile.stripResponsesOutputEncryptedContent === true} onChange={(event) => updateDraft({ stripResponsesOutputEncryptedContent: event.currentTarget.checked })} />
-                    <span><strong>{t("不发送 output.encrypted_content（上游不支持时开启）")}</strong><small>{t("部分严格 Responses 上游不接受 Codex 请求 include 里的 output.encrypted_content，会整条返回 400。开启后只删除这一项，保留 reasoning.encrypted_content 和其他项，请求改走本地代理。Kimi 地址或模型名会自动处理。默认关闭。")}</small></span><ToggleVisual />
-                  </label>
-                  <label className="switch-row compact relay-switch-row relay-field-disable-tool-search">
-                    <input type="checkbox" checked={profile.disableToolSearch === true} onChange={(event) => updateDraft({ disableToolSearch: event.currentTarget.checked })} />
-                    <span><strong>{t("不发送 tool_search（上游不支持时开启）")}</strong><small>{t("部分第三方 Responses 上游不认 Codex 的托管工具 tool_search，供应商测试能通过，但实际聊天会返回 400（tool type \"tool_search\" is not supported）。开启后模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。Kimi 官方地址会自动处理。重启 Codex 后生效。默认关闭。")}</small></span><ToggleVisual />
-                  </label>
+                  <CompatToggles onChange={(patch) => updateDraft(patch)} values={profile} variant="direct" />
                 </> : null}
                 {showApiFields && profile.relayMode === "pureApi" ? (
                   <label className="switch-row compact relay-switch-row relay-field-pure-api-image-generation">
@@ -13774,12 +13843,15 @@ function ProviderDoctorModal({
   const steps = providerDoctorSteps(result, running);
   const doneCount = steps.filter((step) => step.state === "ok" || step.state === "warning" || step.state === "failed").length;
   const progress = Math.round((doneCount / steps.length) * 100);
+  const titleId = useId();
+  // Esc、点遮罩关闭（诊断中 onClose 自己不关）；焦点圈在弹窗里。
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card provider-doctor-modal">
+    <div className="modal-backdrop" {...backdropProps}>
+      <div {...dialogProps} className="modal-card provider-doctor-modal">
         <div className="modal-head">
           <div>
-            <h2>Provider Doctor</h2>
+            <h2 id={titleId}>{t("诊断供应商")}</h2>
             <p>{running ? t("正在诊断供应商，请稍候。") : result?.summary ?? t("诊断已完成。")}</p>
           </div>
           <UiBadge variant={result && !isSuccessStatus(result.status) ? "outline" : "secondary"}>

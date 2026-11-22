@@ -71,29 +71,50 @@ test("被忽略的字段按类别分开提示（#2807）", () => {
   assert.deepEqual(normalizePreview(undefined).windows, []);
 });
 
-test("供应商详情的上下文窗口、思考等级两行都有「从上游同步」，订阅账号不显示（#2807）", () => {
+test("上下文窗口、思考等级的「从上游同步」并进各自的编辑弹窗：先列差异、填入并高亮，保存时才写；订阅账号不显示（#2807）", () => {
   const source = read("GatewayProviders.tsx");
   assert.match(source, /const metaSyncable = !entry\.account && entry\.models\.length > 0;/);
-  assert.match(source, /onClick=\{\(\) => setMetaSync\("windows"\)\}/);
-  assert.match(source, /onClick=\{\(\) => setMetaSync\("reasoning"\)\}/);
-  assert.match(source, /"apply_gateway_provider_windows_sync", \{ id: entry\.id, picks \}/);
-  assert.match(source, /"apply_gateway_provider_reasoning_sync", \{ id: entry\.id, picks \}/);
-  const dialog = read("ProviderMetaSyncDialog.tsx");
-  // 打开时只预览，确认后才写入；初始勾选按手动值区分。
-  assert.match(dialog, /invoke<PreviewResult>\("preview_gateway_provider_meta_sync", \{ id: entry\.id \}\)/);
-  assert.match(dialog, /setPicked\(defaultPicked\(preview, kind\)\);\r?\n/);
-  assert.doesNotMatch(dialog, /apply_gateway_provider_/);
+  assert.match(source, /onClick=\{\(\) => setWindowsOpen\("sync"\)\}/);
+  assert.match(source, /onClick=\{\(\) => setReasoningOpen\("sync"\)\}/);
+  assert.equal(source.match(/upstreamSync=\{metaSyncable\}/g)?.length, 2);
+  // 保存后仍是上游值的，再按同步写一遍，记成「同步来的」。
+  assert.match(source, /"apply_gateway_provider_windows_sync", \{ id: entry\.id, picks: synced \}/);
+  assert.match(source, /"apply_gateway_provider_reasoning_sync", \{ id: entry\.id, picks: synced \}/);
+  assert.doesNotMatch(source, /ProviderMetaSyncDialog/);
+  const panel = read("ProviderMetaSyncPanel.tsx");
+  // 打开时只预览，填入只改弹窗里的表格；初始勾选按手动值区分。
+  assert.match(panel, /invoke<PreviewResult>\("preview_gateway_provider_meta_sync", \{ id: entryId \}\)/);
+  assert.match(panel, /setPicked\(defaultPicked\(preview, kind\)\);\r?\n/);
+  assert.doesNotMatch(panel, /apply_gateway_provider_/);
+  for (const name of ["ProviderWindowsDialog.tsx", "ProviderReasoningDialog.tsx"]) {
+    const dialog = read(name);
+    assert.match(dialog, /<ProviderMetaSyncPanel/, name);
+    assert.match(dialog, /data-upstream=/, name);
+  }
   const lib = read("../src-tauri/src/lib.rs");
   for (const command of ["preview_gateway_provider_meta_sync", "apply_gateway_provider_windows_sync", "apply_gateway_provider_reasoning_sync"]) {
     assert.match(lib, new RegExp(`gateway_commands::${command},`));
   }
 });
 
+test("思考等级填入上游档位：上游给的默认档优先，没给就保留原默认档（不在新档位里则去掉）", async () => {
+  const { fillUpstreamReasoning } = await import("./model-reasoning.ts");
+  const start = JSON.stringify({ "gpt-x": { default_reasoning_level: "low" } });
+  const kept = JSON.parse(fillUpstreamReasoning(start, [{ model: "gpt-x", levels: ["low", "high"], defaultLevel: null }]));
+  assert.deepEqual(kept["gpt-x"].supported_reasoning_levels.map((level: { effort: string }) => level.effort), ["low", "high"]);
+  assert.equal(kept["gpt-x"].default_reasoning_level, "low");
+  const upstream = JSON.parse(fillUpstreamReasoning(start, [{ model: "gpt-x", levels: ["medium", "high"], defaultLevel: "high" }]));
+  assert.equal(upstream["gpt-x"].default_reasoning_level, "high");
+  const dropped = JSON.parse(fillUpstreamReasoning(start, [{ model: "gpt-x", levels: ["medium", "high"], defaultLevel: null }]));
+  assert.equal(dropped["gpt-x"].default_reasoning_level, undefined);
+});
+
 test("同步上下文窗口 / 思考等级的文案都有英文（#2807）", () => {
-  const sources = read("ProviderMetaSyncDialog.tsx") + read("GatewayProviders.tsx") + read("provider-meta-sync-model.ts");
-  const plain = [...read("ProviderMetaSyncDialog.tsx").matchAll(/\bt\("([^"]+)"\)/g)].map((match) => match[1]);
+  const panel = ["ProviderMetaSyncPanel.tsx", "ProviderModelsDialog.tsx", "ProviderWindowsDialog.tsx", "ProviderReasoningDialog.tsx", "ProviderExtrasDialog.tsx", "CompatToggles.tsx"].map(read).join("\n");
+  const sources = panel + read("GatewayProviders.tsx") + read("provider-meta-sync-model.ts");
+  const plain = [...panel.matchAll(/\bt\("([^"]+)"\)/g)].map((match) => match[1]);
   for (const key of plain) assert.ok(EN_PLAIN[key], `缺英文：${key}`);
-  const templates = [...read("ProviderMetaSyncDialog.tsx").matchAll(/\btf\("([^"]+)"/g)].map((match) => match[1]);
+  const templates = [...panel.matchAll(/\btf\("([^"]+)"/g)].map((match) => match[1]);
   for (const key of templates) assert.ok(EN_TEMPLATE[key], `缺英文：${key}`);
   for (const label of ["手动设置", "上次同步", "供应商默认", "内置资料", "未设置", "窗口数值不合理", "不是 Codex 支持的档位", "默认档不在支持的档位里", "字段类型不对"]) {
     assert.ok(sources.includes(`"${label}"`), label);
