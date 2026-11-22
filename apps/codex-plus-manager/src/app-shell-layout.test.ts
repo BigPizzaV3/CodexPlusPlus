@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
-import { readAppSource } from "./app-source.test-helper.ts";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 
 // 源码契约与 checkout 行尾无关，统一后仍保留全部结构与空白断言。
 function readSource(path: string) {
@@ -554,7 +554,7 @@ test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式�
   assert.match(app, /const settingsLogsShown = route === "settings" && settingsSections\.includes\("app-settings-logs"\);/);
   assert.match(app, /if \(next !== route\) void navigate\(next\);/);
   assert.match(app, /if \(settingsFocus\) setSettingsSections\(settingsSectionsFor\(settingsFocus\)\);/);
-  const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
+  const entries = appDeclarationSource("settingsNavEntries");
   for (const id of ["app-settings-general", "app-settings-config", "app-settings-doctor", "app-settings-update", "app-settings-logs", "app-settings-diagnostics", "app-settings-about"]) {
     assert.ok(entries.includes(`"${id}"`), `${id} 要归到某个设置分类`);
   }

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
-import { readAppSource } from "./app-source.test-helper.ts";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 
 const text = readAppSource();
 const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -62,7 +62,7 @@ test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Age
   // Computer Use、Agent 协作、缓存清理都在设置模式里，⌘K 经设置分类搜到；网关自己一组。
   assert.doesNotMatch(text, /toolNavigationRoutes/);
   assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
-  const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
+  const entries = appDeclarationSource("settingsNavEntries");
   assert.match(entries, /\{ key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta"/);
   assert.match(entries, /entries\.filter\(\(entry\) => routeVisible\(focus, entry\.route\)/);
   // 只管理 Codex 时不显示：Codex 自带 Computer Use，这一页接入的是其他客户端。
