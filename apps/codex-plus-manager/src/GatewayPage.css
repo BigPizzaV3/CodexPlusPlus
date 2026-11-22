@@ -17,21 +17,6 @@
   background: hsl(var(--background));
 }
 
-/* 顶部工具条：分段标签居中，刷新靠右。页面标题由外层框架显示。 */
-.gw-toolbar {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 56px;
-  padding: 12px 22px 4px;
-}
-
-.gw-toolbar .gw-icon-button {
-  position: absolute;
-  right: 22px;
-}
-
 /* 顶部分段标签：居中，选中项白底浮起。 */
 .gw-tabs {
   display: flex;
@@ -131,8 +116,7 @@
   padding: 0 4px;
 }
 
-.gw-section-label > span,
-.gw-section-title {
+.gw-section-label > span {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -201,14 +185,6 @@
 .gw-empty strong {
   color: var(--gw-ink);
   font-size: 13.5px;
-}
-
-.gw-footnote {
-  margin: 0;
-  padding: 0 4px;
-  color: var(--gw-mute);
-  font-size: 12px;
-  line-height: 1.6;
 }
 
 /* 状态点 */
@@ -291,15 +267,6 @@
   font-size: 12.5px;
 }
 
-.gw-pill-solid {
-  height: 24px;
-  padding: 0 12px;
-  background: var(--gw-ink);
-  color: hsl(var(--background));
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .gw-chip {
   overflow: hidden;
   max-width: 260px;
@@ -350,23 +317,6 @@
 }
 
 /* —— 智能体 —— */
-
-.gw-agent-main {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.gw-agent-main small {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  overflow: hidden;
-  color: var(--gw-mute);
-  font-size: 12.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 /* 配置被别的工具改掉时，状态行末尾的「重新接入」 */
 .gw-drift-reconnect {
@@ -445,16 +395,6 @@
   box-shadow: 0 18px 48px hsl(var(--shadow-color) / 0.22);
 }
 
-.gw-popover-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--gw-line);
-  color: var(--gw-mute);
-}
-
-.gw-popover-search input,
 .gw-sheet-search input {
   flex: 1;
   min-width: 0;
@@ -466,56 +406,6 @@
   font-size: 13.5px;
 }
 
-.gw-popover-body {
-  display: grid;
-  grid-template-columns: 50px minmax(0, 1fr);
-  min-height: 0;
-  flex: 1;
-}
-
-.gw-popover-rail {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  overflow-y: auto;
-  padding: 10px 0;
-  border-right: 1px solid var(--gw-line);
-}
-
-.gw-popover-rail button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  flex-shrink: 0;
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
-  color: var(--gw-mute);
-  cursor: pointer;
-}
-
-.gw-popover-rail button:hover,
-.gw-popover-rail button[data-active="true"] {
-  background: var(--gw-soft);
-  color: var(--gw-ink);
-}
-
-.gw-rail-divider {
-  width: 22px;
-  height: 1px;
-  flex-shrink: 0;
-  background: var(--gw-line);
-}
-
-.gw-popover-list {
-  position: relative;
-  overflow-y: auto;
-  padding: 6px 8px 10px;
-}
-
 .gw-popover-heading {
   padding: 10px 8px 4px;
   color: var(--gw-mute);
@@ -523,26 +413,6 @@
   font-weight: 600;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-}
-
-.gw-popover-item:hover {
-  background: var(--gw-soft);
-}
-
-.gw-popover-item[data-selected="true"] {
-  background: hsl(var(--primary) / 0.1);
-}
-
-.gw-popover-item-label {
-  overflow: hidden;
-  font-size: 13.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gw-popover-check {
-  flex-shrink: 0;
-  color: hsl(var(--primary));
 }
 
 /* 展开的档位 / 高级设置 */
@@ -564,18 +434,6 @@
   font-weight: 400;
 }
 
-.gw-select {
-  height: 34px;
-  min-width: 0;
-  padding: 0 10px;
-  border: 1px solid hsl(var(--input));
-  border-radius: 8px;
-  background: hsl(var(--background));
-  color: var(--gw-ink);
-  font: inherit;
-  font-size: 13px;
-}
-
 .gw-error {
   flex: 1;
   min-width: 0;
@@ -585,33 +443,7 @@
 
 /* —— 供应商 —— */
 
-.gw-status {
-  color: var(--gw-mute);
-  font-size: 13px;
-  white-space: nowrap;
-}
-
-.gw-status[data-state="busy"],
-.gw-status[data-state="answered"] {
-  color: var(--gw-ink);
-}
-
-.gw-status[data-state="cooling"] {
-  color: var(--gw-err);
-}
-
 /* 添加供应商 */
-
-.gw-sheet-head {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 0 4px;
-}
-
-.gw-sheet-head .gw-section-title {
-  margin-right: auto;
-}
 
 .gw-sheet-search {
   display: flex;
@@ -624,39 +456,6 @@
   border-radius: 9px;
   background: var(--gw-card);
   color: var(--gw-mute);
-}
-
-.shell .gw-dispatch-more {
-  width: 100%;
-  height: 38px;
-  border: 0;
-  border-top: 1px solid var(--gw-line);
-  border-radius: 0 0 16px 16px;
-  background: transparent;
-  color: var(--gw-mute);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.shell .gw-dispatch-more:hover {
-  color: var(--gw-ink);
-}
-
-.shell .gw-dispatch-none {
-  margin: 0;
-  padding: 16px 20px;
-  color: var(--gw-mute);
-  font-size: 13px;
-}
-
-.gw-group-row {
-  display: grid;
-  grid-template-columns: 76px minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 14px;
-  min-height: 70px;
-  padding: 10px 18px;
 }
 
 .gw-avatar-stack {
@@ -673,31 +472,6 @@
 
 .gw-avatar-stack .gw-avatar + .gw-avatar {
   margin-left: -8px;
-}
-
-.gw-group-main {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-}
-
-.gw-group-main > div {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.gw-group-main strong {
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.gw-group-main small {
-  overflow: hidden;
-  color: var(--gw-mute);
-  font-size: 12.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* —— 网关 —— */
@@ -806,16 +580,6 @@
 }
 
 /* 状态码一行放不下：说明在上，编辑区在下 */
-.gw-setting-row-stacked {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 10px;
-  padding-top: 14px;
-  padding-bottom: 14px;
-}
-
-.gw-setting-row-stacked > :last-child:not(:first-child) {
-  justify-self: stretch;
-}
 
 .gw-retry-codes {
   display: flex !important;
@@ -844,24 +608,15 @@
   font-size: 12.5px;
 }
 
-@media (max-width: 900px) {
-}
-
 @media (max-width: 760px) {
   .gw-tabs button {
     padding: 0 10px;
-  }
-
-  .gw-sheet-head {
-    flex-wrap: wrap;
   }
 
   .gw-sheet-search {
     width: 100%;
   }
 }
-
-/* 供应商行右侧操作 */
 
 /* 预设表单弹窗 */
 .gw-modal-backdrop {
@@ -908,24 +663,12 @@
   padding: 16px 18px;
 }
 
-.gw-modal-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 180px;
-  gap: 10px;
-}
-
 .gw-modal footer {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 12px 18px;
   border-top: 1px solid var(--gw-line);
-}
-
-@media (max-width: 560px) {
-  .gw-modal-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 /* ———————————— 智能体：一行一个 Agent，展开后是「标签 | 值」的明细 ———————————— */
@@ -942,34 +685,6 @@
   width: 30px;
   height: 30px;
   object-fit: contain;
-}
-
-.gw-agent-title {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
-.gw-agent-title strong {
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.gw-version {
-  color: var(--gw-mute);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-}
-
-.gw-subhead {
-  padding: 14px 20px 6px;
-  color: var(--gw-mute);
-  font-size: 12.5px;
-}
-
-.gw-card > .gw-subhead + .gw-agent {
-  border-top: 0;
 }
 
 .gw-soft-button {
@@ -1045,30 +760,6 @@
 
 .gw-chip-row {
   flex-wrap: wrap;
-}
-
-.gw-code {
-  padding: 1px 7px;
-  border-radius: 6px;
-  background: var(--gw-soft);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12.5px;
-}
-
-.gw-model-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 30px;
-  padding: 0 11px 0 7px;
-  border: 1px solid var(--gw-line);
-  border-radius: 8px;
-  font-size: 13px;
-}
-
-.gw-model-chip em {
-  color: var(--gw-mute);
-  font-style: normal;
 }
 
 .gw-muted {
@@ -1182,25 +873,6 @@
   cursor: not-allowed;
 }
 
-.gw-collapse-bar {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 46px;
-  border-top: 1px solid var(--gw-line);
-  background: hsl(var(--muted) / 0.22);
-}
-
-.gw-agent:last-child .gw-collapse-bar {
-  border-radius: 0 0 16px 16px;
-}
-
-.gw-collapse-manage {
-  position: absolute;
-  right: 20px;
-}
-
 /* 挑选供应商 */
 .gw-select-list {
   overflow-y: auto;
@@ -1248,89 +920,6 @@
 /* 模型选择器的条目：图标 · 名字 · 「经 Codex++」 · 说明 · 收藏 · 勾 */
 .gw-model-popover {
   min-height: 0;
-}
-
-.gw-popover-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  min-height: 42px;
-  padding: 6px 10px;
-  border-radius: 10px;
-  color: var(--gw-ink);
-  cursor: pointer;
-  outline: none;
-}
-
-.gw-popover-item:hover,
-.gw-popover-item:focus-visible {
-  background: var(--gw-soft);
-}
-
-.gw-popover-item[data-selected="true"] {
-  background: hsl(var(--primary) / 0.14);
-}
-
-.gw-popover-item-label {
-  flex-shrink: 0;
-  max-width: 52%;
-}
-
-.gw-via {
-  flex-shrink: 0;
-  padding: 1px 7px;
-  border-radius: 6px;
-  background: hsl(var(--primary) / 0.14);
-  color: hsl(var(--primary));
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-
-.gw-via-off {
-  background: var(--gw-soft);
-  color: var(--gw-mute);
-}
-
-.gw-popover-item small {
-  overflow: hidden;
-  flex: 1;
-  min-width: 0;
-  color: var(--gw-mute);
-  font-size: 12.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gw-star {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--gw-mute);
-  opacity: 0;
-  cursor: pointer;
-}
-
-.gw-popover-item:hover .gw-star,
-.gw-star[data-on="true"] {
-  opacity: 1;
-}
-
-.gw-star[data-on="true"] svg {
-  color: hsl(var(--status-warning));
-  fill: currentColor;
-}
-
-span.gw-popover-check {
-  width: 16px;
-  flex-shrink: 0;
 }
 
 /* 打包的品牌图标 */
@@ -1502,10 +1091,6 @@ span.gw-popover-check {
   margin-top: 18px;
 }
 
-.gw-catalog .gw-sheet-head {
-  margin-bottom: 6px;
-}
-
 .gw-catalog-section {
   padding: 8px 4px 6px;
 }
@@ -1558,13 +1143,6 @@ span.gw-popover-check {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.gw-catalog-logo {
-  width: 22px;
-  height: 22px;
-  flex-shrink: 0;
-  object-fit: contain;
 }
 
 /* 导入弹窗 */
@@ -1645,16 +1223,6 @@ span.gw-popover-check {
   }
 }
 
-/* 路由组列表右侧的编辑 / 删除 */
-.gw-row-buttons {
-  display: inline-flex;
-  gap: 14px;
-}
-
-.gw-group-row {
-  grid-template-columns: 76px minmax(0, 1fr) auto auto;
-}
-
 /* 路由组编辑弹窗 */
 .gw-group-modal {
   width: min(600px, 100%);
@@ -1711,12 +1279,6 @@ span.gw-popover-check {
   width: 64px;
 }
 
-/* Key 输入框：多行但不明文显示 */
-.gw-secret {
-  -webkit-text-security: disc;
-  font-family: var(--font-mono, ui-monospace, monospace);
-}
-
 .gw-import-note {
   margin: 0 0 4px;
 }
@@ -1741,57 +1303,6 @@ span.gw-popover-check {
 }
 
 /* ———————————— 用量 ———————————— */
-.gw-usage-head {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.gw-range-tabs {
-  margin: 0;
-}
-
-.gw-balance-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
-}
-
-.gw-balance-card {
-  display: grid;
-  gap: 18px;
-  padding: 16px 20px;
-}
-
-.gw-balance-card > * + * {
-  border-top: 0;
-}
-
-.gw-balance-name {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.gw-balance-name strong {
-  font-size: 15px;
-  font-weight: 500;
-}
-
-.gw-balance-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  color: var(--gw-mute);
-  font-size: 13px;
-}
-
-.gw-balance-row strong {
-  color: var(--gw-ink);
-  font-size: 22px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
 
 .gw-chart {
   position: relative;
@@ -1813,33 +1324,6 @@ span.gw-popover-check {
   transform: translateX(-50%);
 }
 
-.gw-split-tabs {
-  margin: 0;
-}
-
-.gw-split-tabs button {
-  height: 26px;
-  padding: 0 10px;
-  font-size: 12.5px;
-}
-
-.gw-price-row {
-  display: grid;
-  grid-template-columns: 110px repeat(3, minmax(0, 1fr));
-  align-items: end;
-  gap: 8px;
-}
-
-.gw-price-row label {
-  display: grid;
-  gap: 4px;
-}
-
-.gw-price-row label span {
-  color: var(--gw-mute);
-  font-size: 11.5px;
-}
-
 /* ———————————— 会话 ———————————— */
 .gw-tabs button {
   display: inline-flex;
@@ -1853,84 +1337,10 @@ span.gw-popover-check {
   object-fit: contain;
 }
 
-.gw-tab-count {
-  color: var(--gw-mute);
-  font-size: 11.5px;
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-}
-
-.gw-session-search {
-  flex: 1;
-  max-width: 340px;
-  margin-left: auto;
-}
-
-.gw-session-row {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto auto auto;
-  align-items: center;
-  gap: 12px;
-  min-height: 58px;
-  padding: 8px 18px;
-}
-
 .gw-session-agent {
   width: 20px;
   height: 20px;
   object-fit: contain;
-}
-
-.gw-session-main {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.gw-session-main strong,
-.gw-session-main small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.gw-session-main strong {
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.gw-session-main strong .gw-pill {
-  margin-right: 6px;
-  vertical-align: 1px;
-}
-
-.gw-session-main small {
-  color: var(--gw-mute);
-  font-family: var(--font-mono, ui-monospace, monospace);
-  font-size: 12px;
-}
-
-.gw-session-time {
-  color: var(--gw-mute);
-  font-size: 12.5px;
-  white-space: nowrap;
-}
-
-.gw-session-resume {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-@media (max-width: 760px) {
-  .gw-session-row {
-    grid-template-columns: 22px minmax(0, 1fr) auto;
-  }
-
-  .gw-session-time,
-  .gw-session-row .gw-icon-button {
-    display: none;
-  }
 }
 
 /* Copilot 设备码 */
@@ -1986,21 +1396,6 @@ span.gw-avatar[data-size] {
   font-style: normal;
   font-weight: 650;
   line-height: 1;
-}
-
-.gw-node-agent .gw-node-agent-icon {
-  width: 20px;
-  height: 20px;
-}
-
-/* 会话行：Agent 图标（单色图标跟随文字颜色）与删除按钮 */
-.gw-session-agent-wrap {
-  display: grid;
-  flex: none;
-  place-items: center;
-}
-.gw-session-delete:hover:not(:disabled) {
-  color: hsl(var(--status-error));
 }
 
 /* 用量图表的鼠标交互：悬停的一天高亮、其余变暗，上方浮出明细卡；明细行与数据卡悬停有反馈 */
@@ -2746,12 +2141,6 @@ body.gw-sorting * {
   font-size: 12.5px;
 }
 
-.shell .gw-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
 /* Agent 接入：图标 · 名称与状态标签 · 默认模型 · 开关 · 展开箭头 */
 .shell .gw-agent > .gw-agent-row {
   grid-template-columns: 34px minmax(0, 1fr) minmax(200px, 300px) auto 24px;
@@ -2801,33 +2190,6 @@ body.gw-sorting * {
 .shell .gw-agent-badge[data-tone="error"] {
   border-color: hsl(var(--status-error) / 0.4);
   color: hsl(var(--status-error));
-}
-
-.shell .gw-agent-count {
-  display: inline-flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  font-variant-numeric: tabular-nums;
-}
-
-.shell .gw-agent-count svg {
-  width: 13px;
-  height: 13px;
-  opacity: 0.75;
-}
-
-.shell .gw-agent-card > .gw-subhead {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.shell .gw-agent-card > .gw-subhead em {
-  color: var(--gw-mute);
-  font-size: 11.5px;
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
 }
 
 /* 供应商池顶栏：搜索框和「添加供应商」同高、垂直居中 */
@@ -3017,90 +2379,13 @@ body.gw-sorting * {
   font-size: 11.5px;
 }
 
-/* 模型组一行：图标、名称、模式、会话固定、按钮。 */
-.shell .gw-group-row {
-  grid-template-columns: 76px minmax(0, 1fr) auto auto auto;
-}
-
 /* ———————————— 用量 ———————————— */
 .shell .gw-usage-refresh {
   margin-left: auto;
 }
 
-/* 统计格：每格画右边和下边的细线，贴卡片边缘的那几条被裁掉，换行时也整齐。 */
-.shell .gw-usage-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(176px, 1fr));
-  flex-shrink: 0;
-  overflow: hidden;
-}
-
-.shell .gw-usage-stats > * + * {
-  border-top: 0;
-}
-
-.shell .gw-usage-stat {
-  position: relative;
-  display: grid;
-  align-content: start;
-  gap: 6px;
-  min-width: 0;
-  padding: 16px 20px 18px;
-  box-shadow: 1px 0 0 var(--gw-line), 0 1px 0 var(--gw-line);
-  transition: background-color 0.12s ease;
-}
-
-.shell .gw-usage-stat:hover {
-  background: color-mix(in srgb, var(--gw-card) 92%, hsl(var(--foreground)));
-}
-
-.shell .gw-usage-stat > span {
-  color: var(--gw-mute);
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.shell .gw-usage-stat strong {
-  overflow: hidden;
-  font-size: 26px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.15;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.shell .gw-usage-stat[data-kind="cost"] strong {
-  color: hsl(var(--primary));
-}
-
-.shell .gw-usage-stat small {
-  overflow: hidden;
-  color: var(--gw-mute);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.shell .gw-usage-stat small[data-tone="err"],
 .shell .gw-usage-num[data-tone="err"] {
   color: var(--gw-warn);
-}
-
-.shell .gw-usage-meter {
-  display: block;
-  height: 4px;
-  margin-top: 2px;
-  overflow: hidden;
-  border-radius: 99px;
-  background: var(--gw-soft);
-}
-
-.shell .gw-usage-meter b {
-  display: block;
-  height: 100%;
-  border-radius: 99px;
-  background: hsl(var(--status-success) / 0.75);
 }
 
 /* 图表卡片 */
@@ -3546,45 +2831,7 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   line-height: 18px;
 }
 
-/* ———————— 路由页工具栏、供应商池「按模型」矩阵 ———————— */
-.shell .gw-models-tabs {
-  display: inline-flex;
-  gap: 4px;
-  width: max-content;
-  padding: 3px;
-  border-radius: 10px;
-  background: var(--gw-soft);
-}
-
-.shell .gw-models-tabs button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 14px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--gw-mute);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.shell .gw-models-tabs button[data-active="true"] {
-  background: var(--gw-card);
-  color: var(--gw-ink);
-  box-shadow: 0 1px 2px hsl(var(--shadow-color) / 0.12), 0 0 0 1px var(--gw-line);
-}
-
-.shell .gw-models-tabs em,
-.shell .gw-models-filters em {
-  color: var(--gw-mute);
-  font-size: 11.5px;
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-}
+/* ———————— 路由页工具栏 ———————— */
 
 .shell .gw-models-toolbar {
   display: flex;
@@ -3595,11 +2842,6 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
 
 .shell .gw-models-toolbar .gw-primary-button {
   margin: 0 0 0 auto;
-}
-
-.shell .gw-models-toolbar .gw-models-hint {
-  flex: 1;
-  min-width: 260px;
 }
 
 .shell .gw-models-search {
@@ -3618,220 +2860,6 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   font-weight: 500;
 }
 
-.shell .gw-models-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.shell .gw-models-filters button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px 0 8px;
-  border: 1px solid var(--gw-line);
-  border-radius: 99px;
-  background: transparent;
-  color: var(--gw-ink);
-  font: inherit;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.shell .gw-models-filters button[data-active="true"] {
-  border-color: hsl(var(--primary) / 0.5);
-  background: hsl(var(--primary) / 0.1);
-}
-
-.shell .gw-models-filters .gw-avatar {
-  width: 18px;
-  height: 18px;
-}
-
-.shell .gw-models-hint {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px 8px;
-  margin: 0;
-  color: var(--gw-mute);
-  font-size: 12.5px;
-  line-height: 1.6;
-}
-
-.shell .gw-matrix-card {
-  overflow: hidden;
-}
-
-.shell .gw-matrix-scroll {
-  overflow-x: auto;
-}
-
-.shell .gw-matrix {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.shell .gw-matrix th,
-.shell .gw-matrix td {
-  padding: 0;
-  border-bottom: 1px solid var(--gw-line);
-  text-align: center;
-  vertical-align: middle;
-}
-
-.shell .gw-matrix tbody tr:last-child th,
-.shell .gw-matrix tbody tr:last-child td {
-  border-bottom: 0;
-}
-
-.shell .gw-matrix thead th {
-  height: 44px;
-  padding: 0 12px;
-  background: var(--gw-soft);
-  color: var(--gw-mute);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.shell .gw-matrix td {
-  min-width: 112px;
-  height: 46px;
-}
-
-.shell .gw-matrix tbody tr:hover > * {
-  background: hsl(var(--muted) / 0.35);
-}
-
-/* 模型列固定在左边，供应商多时横向滚动也看得到是哪个模型。 */
-.shell .gw-matrix .gw-matrix-model {
-  position: sticky;
-  left: 0;
-  z-index: 1;
-  width: 38%;
-  min-width: 220px;
-  padding: 6px 20px;
-  background: var(--gw-card);
-  text-align: left;
-}
-
-.shell .gw-matrix thead .gw-matrix-model {
-  background: var(--gw-soft);
-}
-
-.shell .gw-matrix tbody .gw-matrix-model {
-  display: table-cell;
-}
-
-.shell .gw-matrix tbody .gw-matrix-model strong {
-  display: block;
-  overflow: hidden;
-  font-size: 13.5px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.shell .gw-matrix tbody .gw-matrix-model code {
-  display: block;
-  overflow: hidden;
-  color: var(--gw-mute);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 400;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.shell .gw-matrix-provider {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--gw-ink);
-}
-
-.shell .gw-matrix-provider .gw-avatar {
-  width: 20px;
-  height: 20px;
-}
-
-/* 格子：有这个模型就放这家的图标；外圈颜色是状态，变淡是有 Agent 不用这家；下面一行小字是平均首包耗时。 */
-.shell .gw-matrix-cell,
-.shell .gw-models-legend .gw-matrix-cell {
-  display: inline-flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-}
-
-/* 不让图标自己的 title 盖掉格子的状态提示。 */
-.shell .gw-matrix-cell .gw-avatar {
-  width: 22px;
-  height: 22px;
-  pointer-events: none;
-  border-radius: 7px;
-  box-shadow: 0 0 0 2px transparent;
-}
-
-.shell .gw-matrix-cell[data-state="answered"] .gw-avatar {
-  box-shadow: 0 0 0 2px var(--gw-ok);
-}
-
-.shell .gw-matrix-cell[data-state="cooling"] .gw-avatar {
-  box-shadow: 0 0 0 2px var(--gw-warn);
-}
-
-.shell .gw-matrix-cell[data-excluded="true"] .gw-avatar {
-  opacity: 0.35;
-  filter: grayscale(1);
-}
-
-.shell .gw-matrix-cell small {
-  color: var(--gw-mute);
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
-.shell .gw-models-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 18px;
-  margin: -4px 0 0;
-  color: var(--gw-mute);
-  font-size: 12px;
-}
-
-.shell .gw-models-legend > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* 图例用小方块示意外圈与变淡。 */
-.shell .gw-models-legend .gw-matrix-cell i {
-  display: inline-block;
-  width: 12px;
-  height: 12px;
-  border-radius: 4px;
-  background: var(--gw-soft);
-}
-
-.shell .gw-models-legend .gw-matrix-cell[data-state="answered"] i {
-  box-shadow: 0 0 0 2px var(--gw-ok);
-}
-
-.shell .gw-models-legend .gw-matrix-cell[data-state="cooling"] i {
-  box-shadow: 0 0 0 2px var(--gw-warn);
-}
-
-.shell .gw-models-legend .gw-matrix-cell[data-excluded="true"] i {
-  background: hsl(var(--muted-foreground) / 0.35);
-  opacity: 0.5;
-}
-
 @media (max-width: 760px) {
   .shell .gw-models-auto {
     margin-left: 0;
@@ -3839,9 +2867,6 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
 }
 
 /* 页面内容是网格：表的最小宽度不能把整页撑宽，横向滚动只发生在表里。 */
-.shell .gw-matrix-card,
-.shell .gw-models-filters,
-.shell .gw-models-hint,
 .shell .gw-models-toolbar {
   min-width: 0;
   max-width: 100%;
@@ -3855,32 +2880,6 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
 .shell .gw-provider-search-row .gw-primary-button {
   flex: none;
   white-space: nowrap;
-}
-
-/* 矩阵列头：点了去供应商池展开这一家。 */
-.shell button.gw-matrix-provider {
-  padding: 4px 6px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.shell button.gw-matrix-provider svg {
-  color: var(--gw-mute);
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.shell button.gw-matrix-provider:hover {
-  background: hsl(var(--muted) / 0.6);
-}
-
-.shell button.gw-matrix-provider:hover svg,
-.shell button.gw-matrix-provider:focus-visible svg {
-  opacity: 1;
 }
 
 /* 模型下拉里「模型组」标题旁的「管理」。 */
@@ -4092,65 +3091,6 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   padding: 10px 8px;
   color: var(--gw-mute);
   font-size: 12.5px;
-}
-
-.shell .gw-route-group-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 16px;
-  padding: 10px 18px;
-}
-
-.shell .gw-route-hide {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  cursor: pointer;
-}
-
-.shell .gw-route-group-mode {
-  flex: 1;
-  min-width: 200px;
-  color: var(--gw-mute);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.shell .gw-hidden-autos {
-  display: grid;
-  gap: 6px;
-  justify-items: start;
-}
-
-.shell .gw-hidden-auto {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 14px;
-  border: 1px dashed var(--gw-line);
-  border-radius: 10px;
-  color: var(--gw-mute);
-  font-size: 12.5px;
-}
-
-.shell .gw-hidden-auto code {
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.shell .gw-hidden-auto button {
-  margin-left: auto;
-}
-
-.shell .gw-provider-search-row .gw-models-tabs {
-  flex: none;
-}
-
-.shell .gw-provider-search-gap {
-  flex: 1;
 }
 
 @media (max-width: 760px) {

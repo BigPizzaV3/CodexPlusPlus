@@ -206,19 +206,13 @@
   border-top: 1px solid hsl(var(--cx-row-divider));
 }
 
-:root .shell .gw-agent .gw-detail-label,
-:root .shell .gw-agent .gw-detail-window > span {
+:root .shell .gw-agent .gw-detail-label {
   color: hsl(var(--muted-foreground));
   font-size: 12.5px;
 }
 
 :root .shell .gw-agent .gw-detail-value {
   font-size: 13px;
-}
-
-:root .shell .gw-agent .gw-model-chip {
-  height: 26px;
-  font-size: 12.5px;
 }
 
 /* 「高级」折叠区：一行小标题，点开是同样的标签 / 控件行。 */
