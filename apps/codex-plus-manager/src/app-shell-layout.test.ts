@@ -285,7 +285,7 @@ test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一
   const extra = readSource("./SkillsPage.tsx");
   const css = readSource("./ManagementPages.css");
   assert.match(extra, /<CxRow className="cx-skill-row"/);
-  assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
+  assert.match(extra, /const agentColumns: McpAgentId\[\] = useMemo\(\(\) => MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\), \[focus\]\);/);
   // 行里每个可见 Agent 一枚开关；分组标题同一列是这一组的批量开关。
   assert.match(extra, /agentColumns\.map\(\(agent\) => \{[\s\S]*?return <AgentToggle /);
   assert.match(extra, /agentColumns\.map\(\(agent\) => <GroupAgentSelect /);

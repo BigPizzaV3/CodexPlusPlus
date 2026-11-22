@@ -344,7 +344,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
   // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
   const focus = useAgentFocus();
-  const agentColumns: McpAgentId[] = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
+  // 记住这一列数组：它是每个 SkillRow 的属性，每次渲染都新建会让行的 memo 失效。
+  const agentColumns: McpAgentId[] = useMemo(() => MCP_AGENTS.filter((agent) => agentVisible(focus, agent)), [focus]);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   // 每组展开了多少行（默认 SKILL_GROUP_PAGE）。
   const [rowLimits, setRowLimits] = useState<Record<string, number>>({});
