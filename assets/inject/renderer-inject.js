@@ -23403,7 +23403,23 @@ ${key} = ${value}`]);
   function modelReasoningEfforts(modelName) {
     const supported = codexPlusModelMetadata(modelName)?.supportedReasoningEfforts;
     if (Array.isArray(supported) && supported.length > 0) {
-      const efforts = supported.map((entry) => ({ ...entry }));
+      // 目录声明存在三种形态：字符串数组（provider 配置）、Codex 原生 {effort} 对象
+      // 与前端 {reasoningEffort} 对象。归一化后再消费，避免 {...entry} 把字符串展开
+      // 成空对象、或 {effort} 条目因缺少 reasoningEffort 字段被界面过滤掉（#3210）。
+      const efforts = supported.flatMap((entry) => {
+        if (typeof entry === "string") return entry ? [{ reasoningEffort: entry }] : [];
+        if (!entry || typeof entry !== "object") return [];
+        const effort = typeof entry.reasoningEffort === "string" && entry.reasoningEffort
+          ? entry.reasoningEffort
+          : typeof entry.effort === "string" && entry.effort ? entry.effort : "";
+        if (!effort) return [];
+        const next = { ...entry, reasoningEffort: effort };
+        delete next.effort;
+        return [next];
+      });
+      if (!efforts.length) {
+        return ["low", "medium", "high", "xhigh", "max", "ultra"].map((reasoningEffort) => ({ reasoningEffort, description: `${reasoningEffort} effort` }));
+      }
       const hasMax = efforts.some((e) => e.reasoningEffort === "max");
       const hasUltra = efforts.some((e) => e.reasoningEffort === "ultra");
       if (!hasMax) efforts.push({ reasoningEffort: "max", description: "Maximum reasoning depth for the hardest problems" });
