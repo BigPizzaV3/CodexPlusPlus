@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 // #511：Skills 页「从本地目录导入」走系统目录选择 → 后端 import_local_skills → 用返回的列表刷新。
-const extra = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
+// 页面在 SkillsPage.tsx，来源标签等工具函数在 SkillDrawers.tsx。
+const extra = readFileSync(new URL("./SkillsPage.tsx", import.meta.url), "utf8") + readFileSync(new URL("./SkillDrawers.tsx", import.meta.url), "utf8");
 const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
 

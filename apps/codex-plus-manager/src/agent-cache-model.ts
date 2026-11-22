@@ -31,29 +31,28 @@ export function cacheCleanupSummary(groups: CacheGroup[]) {
   };
 }
 
-// 卡片里直接列出「缓存 / 日志 / 更新包 / 临时文件」各占多少，不必打开目录明细才知道占用来自哪里。
-// 顺序固定，按体积排会让同一类在不同卡片里跳位置。
-const KIND_ORDER = ["cache", "update", "logs", "temporary"];
-
-export function cacheKindTotals(groups: CacheGroup[]) {
-  const totals = new Map<string, { kind: string; totalBytes: number; eligibleBytes: number }>();
-  for (const group of groups) {
-    const entry = totals.get(group.kind) ?? { kind: group.kind, totalBytes: 0, eligibleBytes: 0 };
-    entry.totalBytes += group.totalBytes;
-    entry.eligibleBytes += group.cleanable ? group.eligibleBytes : 0;
-    totals.set(group.kind, entry);
-  }
-  const rank = (kind: string) => {
-    const index = KIND_ORDER.indexOf(kind);
-    return index === -1 ? KIND_ORDER.length : index;
-  };
-  return [...totals.values()]
-    .filter((entry) => entry.totalBytes > 0)
-    .sort((left, right) => rank(left.kind) - rank(right.kind));
+/** 缓存分组的应用名对应哪个 Agent；Codex++ 自己不属于任何 Agent，总是显示。 */
+export function cacheAppAgent(app: string): string | null {
+  if (app === "Codex") return "codex";
+  if (app === "Claude") return "claude";
+  if (app === "Grok") return "grok";
+  return null;
 }
 
-export function cacheApps(groups: CacheGroup[]) {
-  const names = [...new Set(["Codex", "Claude", "Codex++", ...groups.map((group) => group.app)])];
+/** 只留当前使用模式下显示的 Agent 的缓存（例如只管理 Codex 时不统计、不清理 Claude 的缓存）。 */
+export function visibleCacheGroups(groups: CacheGroup[], visible: (agent: string) => boolean) {
+  return groups.filter((group) => {
+    const agent = cacheAppAgent(group.app);
+    return !agent || visible(agent);
+  });
+}
+
+export function cacheApps(groups: CacheGroup[], visible: (agent: string) => boolean = () => true) {
+  const defaults = ["Codex", "Claude", "Codex++"].filter((name) => {
+    const agent = cacheAppAgent(name);
+    return !agent || visible(agent);
+  });
+  const names = [...new Set([...defaults, ...groups.map((group) => group.app)])];
   return names.map((name) => {
     const appGroups = groups.filter((group) => group.app === name);
     return {

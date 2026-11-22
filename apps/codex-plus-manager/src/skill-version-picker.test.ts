@@ -39,7 +39,7 @@ async function picker(mode: string, versions = [healthy, broken]) {
       if (name === "@tauri-apps/api/core") return { invoke: async () => versions };
       if (name === "./ManagementPages") return { ManagementDrawer: "drawer" };
       if (name === "./app-dialog") return { appConfirm: async () => true };
-      if (name === "./i18n") return { t: (text: string) => text };
+      if (name === "./i18n") return { t: (text: string) => text, tf: (text: string, args: unknown[]) => text.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])) };
       if (name === "lucide-react") return { FolderOpen: "folder", Trash2: "trash" };
       if (name === "@tauri-apps/plugin-dialog") return { open: async () => null };
       throw new Error(`Unexpected import: ${name}`);
@@ -62,7 +62,7 @@ test("a comparison error stays visible while another version can be enabled", as
   const { elements, actions } = await picker("enable");
   const bad = elements.find(node => node.type === "button" && collect(node).some(child => child.children.includes(broken.path)))!;
   assert.equal(bad.props.disabled, true);
-  assert.ok(collect(bad).some(node => node.props.role === "alert" && node.children.includes("nested link")));
+  assert.ok(collect(bad).some(node => node.props.role === "alert" && node.children.includes("无法比较：nested link")));
   assert.equal(collect(bad).some(node => node.type === "time"), false);
   const good = elements.find(node => node.type === "button" && collect(node).some(child => child.children.includes(healthy.path)))!;
   assert.equal(good.props.disabled, false);

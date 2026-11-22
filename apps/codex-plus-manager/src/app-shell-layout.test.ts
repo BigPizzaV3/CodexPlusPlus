@@ -170,10 +170,12 @@ test("Claude / Grok 的供应商配置页已去掉：要么经网关接入供应
 
 test("页面不再画第二条标题栏：PageHeader 和工具页的操作都送进外壳顶栏", () => {
   const management = readSource("./ManagementPages.tsx");
-  const extra = readSource("./ManagementExtra.tsx");
+  const extra = readSource("./SkillsPage.tsx");
   const cache = readSource("./agent-cache.tsx");
   assert.match(management, /export function PageHeader\([^)]*\) \{\n  return <TopbarActions>\{actions\}<\/TopbarActions>;/);
-  assert.match(extra, /function Header\([^)]*\) \{ return <TopbarActions>\{actions\}<\/TopbarActions>; \}/);
+  // Skills 页也用 ManagementPages 的 PageHeader，不再自己定义一份。
+  assert.match(extra, /<PageHeader icon=/);
+  assert.doesNotMatch(extra, /function Header\(/);
   for (const source of [management, extra]) assert.doesNotMatch(source, /className="mg-header"/);
   assert.match(cache, /<TopbarActions>/);
   assert.doesNotMatch(cache, /CardHeader|className="panel agent-cache-panel"/);
@@ -224,7 +226,9 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
   // 只管理 Codex 时没有 Agent 页签，固定显示 Codex 的完整会话管理。
-  assert.match(entry, /const shownSessionTab: SessionTab = soloAgent === "codex" \? "codex" : sessionTab;/);
+  assert.match(entry, /const shownSessionTab: SessionTab = soloAgent === "codex" \|\| \(sessionTab !== "all" && !agentVisible\(agentFocus, sessionTab\)\) \? "codex" : sessionTab;/);
+  // 默认是 Codex 页签（完整的会话管理）。
+  assert.match(entry, /useState<SessionTab>\("codex"\)/);
   assert.match(entry, /route === "sessions" && !soloAgent \? <SessionAgentTabs/);
   assert.match(entry, /route === "sessions" && shownSessionTab !== "codex" \? \(/);
   assert.match(entry, /<SessionsView agent=\{shownSessionTab\}/);
@@ -282,10 +286,10 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
 });
 
 test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一枚开关胶囊，不再有页面自己的配色和按钮尺寸", () => {
-  const extra = readSource("./ManagementExtra.tsx");
+  const extra = readSource("./SkillsPage.tsx");
   const css = readSource("./ManagementPages.css");
   assert.match(extra, /<CxRow className="cx-skill-row"/);
-  assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
+  assert.match(extra, /const agentColumns: McpAgentId\[\] = useMemo\(\(\) => MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\), \[focus\]\);/);
   // 行里每个可见 Agent 一枚开关；分组标题同一列是这一组的批量开关。
   assert.match(extra, /agentColumns\.map\(\(agent\) => \{[\s\S]*?return <AgentToggle /);
   assert.match(extra, /agentColumns\.map\(\(agent\) => <GroupAgentSelect /);
@@ -642,7 +646,7 @@ test("内层滚动的页面（网关各页、Computer Use）滚动区延伸到�
 });
 
 test("会话页可以删除会话，不再有「在终端继续」；Claude Code / Grok 走 delete_agent_session，Codex 走 delete_local_session", () => {
-  const sessions = readSource("./GatewaySessions.tsx");
+  const sessions = readSource("./AgentSessions.tsx");
   assert.doesNotMatch(sessions, /在终端继续|resume_agent_session/);
   assert.match(sessions, /"delete_agent_session"/);
   assert.match(sessions, /"delete_local_session"/);
@@ -652,7 +656,7 @@ test("会话页可以删除会话，不再有「在终端继续」；Claude Code
 });
 
 test("会话页列出 Claude Desktop 的会话：标出 Desktop / 已归档，恢复命令用 cliSessionId，删除前提示先退出 Desktop", () => {
-  const sessions = readSource("./GatewaySessions.tsx");
+  const sessions = readSource("./AgentSessions.tsx");
   // Desktop / 已归档是行标题旁的小标签（CxRow 的 badges）。
   assert.match(sessions, /session\.surface === "desktop" \? <CxBadge title=\{t\("Claude Desktop 里的会话"\)\}>Desktop<\/CxBadge>/);
   assert.match(sessions, /session\.archived \? <CxBadge>\{t\("已归档"\)\}<\/CxBadge>/);

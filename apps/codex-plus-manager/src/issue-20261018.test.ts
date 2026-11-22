@@ -88,38 +88,3 @@ test("language switches notify React without reload or storing drafts", async ()
     }; visit(file);
   }
 });
-
-test("session selection cancellation, search and pagination never delete hidden rows", async () => {
-  const { sessionGroups, matchesManagementQuery } = await import("./management-model.ts");
-  const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-  const file = ts.createSourceFile("ManagementExtra.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const fn = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SessionPage");
-  assert.ok(fn);
-  const slots: any[] = []; let cursor = 0; let effects: Array<() => void> = []; const deleted: string[] = [];
-  const scope = vm.createContext({
-    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }), fragment: "fragment",
-    useState: (initial: any) => { const index = cursor++; if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
-      return [slots[index], (next: any) => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }]; },
-    useEffect: (run: () => void) => effects.push(run),
-    t: (x: string) => x, tf: (x: string, args: any[]) => x.replace(/\{(\d+)\}/g, (_, n) => args[n]),
-    sessionGroups, matchesManagementQuery,
-    Header: "Header", Button: "Button", SearchBox: "SearchBox", ManagementDrawer: "Drawer",
-    History: "Icon", RefreshCw: "Icon", Trash2: "Icon", ArrowLeft: "Icon", ArrowRight: "Icon", ChevronDown: "Icon", Copy: "Icon",
-  });
-  vm.runInContext(ts.transpileModule(fn.getText(file), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, scope);
-  const first = { id: "one", title: "first", cwd: "/fixture", modelProvider: "custom" };
-  let props: any = { sessions: { sessions: [first, { ...first, id: "two", title: "second" }], offset: 0, limit: 50, totalCount: 2, hasMore: false },
-    onRefresh: async () => {}, onDelete: async () => {}, onDeleteMany: async (rows: any[]) => { deleted.push(...rows.map((r) => r.id)); }, notify: async () => {} };
-  let nodes: any[] = [];
-  const render = () => { cursor = 0; effects = []; nodes = [];
-    const collect = (node: any) => { if (!node || typeof node !== "object") return; if (Array.isArray(node)) return node.forEach(collect); nodes.push(node); node.children?.forEach(collect); collect(node.props?.actions); };
-    collect(scope.exports.SessionPage(props)); effects.forEach((run) => run()); };
-  const button = (label: string) => { const node = nodes.find((n) => n.type === "Button" && n.children?.includes(label)); assert.ok(node, label); return node; };
-  render(); button("选择多个…").props.onClick(); render(); button("全选当前列表").props.onClick(); render();
-  nodes.find((n) => n.type === "SearchBox").props.onChange("first"); render();
-  await button("删除已选").props.onClick(); assert.deepEqual(deleted, ["one"]);
-  button("取消全部选择").props.onClick(); render(); assert.equal(button("删除已选").props.disabled, true);
-  button("全选当前列表").props.onClick(); render();
-  props = { ...props, sessions: { ...props.sessions, sessions: [{ ...first, id: "three", title: "first next page" }], offset: 50, totalCount: 51 } };
-  render(); assert.equal(button("删除已选").props.disabled, true);
-});

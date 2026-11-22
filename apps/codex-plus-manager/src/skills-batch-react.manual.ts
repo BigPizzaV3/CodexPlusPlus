@@ -19,7 +19,7 @@ async function buildPage() {
     stdin: { resolveDir: dirname(fileURLToPath(import.meta.url)), sourcefile: "skills-batch-entry.tsx", loader: "tsx", contents: `
       import React from 'react';
       import { createRoot } from 'react-dom/client';
-      import { SkillsPage } from './ManagementExtra';
+      import { SkillsPage } from './SkillsPage';
       let root;
       window.mountPage = () => { root = createRoot(document.getElementById('root')); root.render(<SkillsPage notify={async (...args) => { window.notice = args; }} />); };
       window.unmountPage = () => root.unmount();

@@ -32,7 +32,6 @@ import {
   CircleHelp,
   Copy,
   Download,
-  Edit3,
   GripVertical,
   Info,
   ScrollText,
@@ -106,7 +105,7 @@ import { createContext, Fragment, memo, useCallback, useContext, useEffect, useI
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -118,7 +117,6 @@ import {
   dedupeContextEntryList,
   parseContextEntries,
   selectedContextConfigToml,
-  setContextEntryEnabled,
   splitContextConfigText,
   stripContextEntriesFromConfig,
   type CodexContextEntries,
@@ -147,7 +145,7 @@ import { publishGatewayPayload } from "./gateway-store";
 import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "./log-view-model";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
-import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
+import { SessionsView, sessionDeleteSucceeded } from "./AgentSessions";
 import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, relayFilterFromFocus, relayFilterArgs, proxyAddressError, type RelayFilter, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
@@ -177,8 +175,9 @@ import { extensionEnabledForHost, extensionsForHost, extensionStateForHost, type
 import { ReleaseNotes } from "./ReleaseNotes";
 import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
 import { McpPage, Menu, MenuItem, PageHeader } from "./ManagementPages";
-import { SkillsPage } from "./ManagementExtra";
+import { SkillsPage } from "./SkillsPage";
 import { ProjectSessionPage } from "./ProjectSessionPage";
+import type { LocalSessionFilter, SessionProjectCount } from "./management-model";
 import { managerNavigationDestination, type ManagerNavigationIntent } from "./enhancement-navigation";
 import {
   builtinSettingValue,
@@ -929,11 +928,18 @@ type RequestLogsResult = {
   incremental?: boolean;
 };
 
-type SettingsResult = CommandResult<{
+type SettingsResult = CommandResult<SettingsPayload>;
+type SettingsPayload = {
   revision: string;
   settings: BackendSettings;
   settings_path: string;
   user_scripts: UserScriptInventory;
+};
+
+/** apply_context_entry：saved 是保存后的设置，liveEntries 是同步后 live config.toml 里的条目（失败的那一步之后为 null）。 */
+type AppliedContextEntryResult = CommandResult<{
+  saved: SettingsPayload | null;
+  liveEntries: CodexContextEntries | null;
 }>;
 
 type WeixinConnectStatusResult = CommandResult<{
@@ -1013,7 +1019,20 @@ type LocalSessionsResult = CommandResult<{
   offset: number;
   limit: number;
   hasMore: boolean;
+  /** 筛选后的会话总数。 */
   totalCount: number;
+  /** 筛选结果里每个项目的会话数（不受分页影响）。 */
+  projects: SessionProjectCount[];
+  /** 这一页对应的搜索词和归档筛选。 */
+  query: string;
+  archived: boolean | null;
+}>;
+
+type DeleteLocalSessionsResult = CommandResult<{
+  results: Array<{ sessionId: string; title: string; deleted: boolean; message: string }>;
+  succeeded: number;
+  failed: number;
+  undoToken: string | null;
 }>;
 
 type DeleteLocalSessionResult = CommandResult<{
@@ -1103,11 +1122,6 @@ type CcsProvidersResult = CommandResult<{
   configuredDbPath: string;
   fallbackReason?: string | null;
   providers: CcsProviderImport[];
-}>;
-
-type SkillInventoryResult = CommandResult<{
-  skills: Array<{ id: string; name: string; description: string; enabled: boolean; bundled: boolean }>;
-  codexSkillsDir: string;
 }>;
 
 type ProviderImportRequest = {
@@ -1793,14 +1807,7 @@ export function App() {
   const [relayAdvancedOpen, setRelayAdvancedOpen] = useState(() => initialPreviewRoute() === "relayEnvironment");
   /** 进设置模式前停的页面：侧栏「返回」回到这里。 */
   const lastMainRoute = useRef<Route>("home");
-  const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
-  const [confirmDialog, setConfirmDialog] = useState<{
-    title: string;
-    message: string;
-    confirmText: string;
-    cancelText: string;
-    resolve: (confirmed: boolean) => void;
-  } | null>(null);
+  const [notice, setNotice] = useState<NoticeState | null>(null);
   const [liveConflictDialog, setLiveConflictDialog] = useState<{
     profileName: string;
     resolve: (choice: LiveConflictResolution | null) => void;
@@ -1880,7 +1887,8 @@ export function App() {
     setTourOpen(false);
   }, []);
   // 「会话」页默认看所有 Agent；切到 Codex 页签才是带删除 / 归档 / 修复的完整会话管理。
-  const [sessionTab, setSessionTab] = useState<SessionTab>("all");
+  // 会话页默认看 Codex 的完整会话管理（删除、归档、移动、撤销都在这里）。
+  const [sessionTab, setSessionTab] = useState<SessionTab>("codex");
   const [recoveryRefreshRequest, setRecoveryRefreshRequest] = useState(0);
   /** 请求日志打开时的 Agent 过滤（从 Agent 概览跳过去时设置，用一次就清掉）。 */
   const [requestLogAgentFilter, setRequestLogAgentFilter] = useState<"all" | "codex" | "claude" | "grok">("all");
@@ -2372,13 +2380,19 @@ export function App() {
     }
   };
 
-  const refreshLocalSessions = async (silent = false, offset = 0): Promise<LocalSessionsResult | null> => {
+  /** 会话页的搜索词和归档筛选；导航、删除后的刷新沿用最近一次的条件。 */
+  const localSessionFilter = useRef<LocalSessionFilter>({ query: "", archived: false });
+  const refreshLocalSessions = async (silent = false, offset = 0, filter?: LocalSessionFilter): Promise<LocalSessionsResult | null> => {
+    if (filter) localSessionFilter.current = filter;
+    const { query, archived } = localSessionFilter.current;
     const result = await run(() =>
       call<LocalSessionsResult>("list_local_sessions", {
-        request: { offset, limit: 50 },
+        request: { offset, limit: 50, query, archived },
       }),
     );
     if (result) {
+      // 期间又换了筛选条件：这次结果已经过时，交给后发的请求。
+      if (localSessionFilter.current.query !== query || localSessionFilter.current.archived !== archived) return result;
       if (!result.sessions.length && result.offset > 0) {
         return refreshLocalSessions(silent, Math.max(0, result.offset - result.limit));
       }
@@ -2404,16 +2418,15 @@ export function App() {
       request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
     });
 
-  const confirmSessionDelete = (title: string, message: string) =>
-    new Promise<boolean>((resolve) => {
-      setConfirmDialog({
-        title,
-        message,
-        confirmText: t("确认删除"),
-        cancelText: t("取消"),
-        resolve,
-      });
-    });
+  /** 删除后提示里的「撤销」：按删除结果里的 token 从备份恢复。 */
+  const undoDeleteLocalSessions = async (token: string) => {
+    const result = await run(() => call<DeleteLocalSessionResult>("undo_delete_local_sessions", { token }));
+    if (!result) return;
+    showNotice(t("撤销删除"), result.message, result.status === "undone" ? "ok" : "failed");
+    await refreshLocalSessions(true, localSessions?.offset ?? 0);
+  };
+  const undoDeleteAction = (token: string | null | undefined): NoticeAction | undefined =>
+    token ? { label: t("撤销"), run: () => void undoDeleteLocalSessions(token) } : undefined;
 
   const refreshPendingDreamSkinCommunity = async () => {
     const result = await run(() => call<PendingDreamSkinCommunityResult>("load_pending_dream_skin_community"));
@@ -2470,14 +2483,19 @@ export function App() {
 
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
-    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [title]));
+    const confirmed = await appConfirm(tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [title]), {
+      title: t("删除会话"),
+      confirmText: t("删除"),
+      danger: true,
+    });
     if (!confirmed) return false;
     const result = await run(() => requestDeleteLocalSession(session));
+    const deleted = !!result && sessionDeleteSucceeded(result.status);
     if (result) {
-      showResultNotice(t("会话删除"), result);
+      showNotice(t("会话删除"), result.message, deleted ? "ok" : "failed", deleted ? undoDeleteAction(result.undo_token) : undefined);
       await refreshLocalSessions(true, localSessions?.offset ?? 0);
     }
-    return !!result && sessionDeleteSucceeded(result.status);
+    return deleted;
   };
 
   const deleteLocalSessions = async (sessions: LocalSession[]) => {
@@ -2491,32 +2509,16 @@ export function App() {
       .map((session) => `- ${truncateSessionDeletePreview(session.title || session.id)}`)
       .join("\n");
     const extraCount = uniqueSessions.length > 6 ? tf("\n...以及另外 {0} 个会话", [uniqueSessions.length - 6]) : "";
-    const confirmed = await confirmSessionDelete(
-      t("批量删除会话"),
+    const confirmed = await appConfirm(
       tf("删除选中的 {0} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{1}{2}", [uniqueSessions.length, preview, extraCount]),
+      { title: t("批量删除会话"), confirmText: t("删除"), danger: true },
     );
     if (!confirmed) return false;
-
-    let succeeded = 0;
-    const failed: string[] = [];
-    for (const session of uniqueSessions) {
-      const result = await run(() => requestDeleteLocalSession(session));
-      if (result && sessionDeleteSucceeded(result.status)) {
-        succeeded += 1;
-      } else {
-        failed.push(session.title || session.id);
-      }
-    }
-
-    if (failed.length) {
-      showNotice(
-        t("批量删除会话"),
-        tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).map(truncateSessionDeletePreview).join(t("、"))]),
-        succeeded ? "ok" : "failed",
-      );
-    } else {
-      showNotice(t("批量删除会话"), tf("已删除 {0} 个会话。", [succeeded]), "ok");
-    }
+    // 一次调用在后台逐个删除，不会每删一个就往返一次、卡住窗口；所有备份合成一个撤销 token。
+    const result = await run(() => call<DeleteLocalSessionsResult>("delete_local_sessions", {
+      request: { sessions: uniqueSessions.map((session) => ({ sessionId: session.id, title: session.title, dbPath: session.dbPath })) },
+    }));
+    if (result) showNotice(t("批量删除会话"), result.message, result.status, result.succeeded ? undoDeleteAction(result.undoToken) : undefined);
     await refreshLocalSessions(true, localSessions?.offset ?? 0);
     return true;
   };
@@ -2524,9 +2526,11 @@ export function App() {
   const archiveLocalSessions = async (sessions: LocalSession[], archived = true) => {
     const uniqueSessions = Array.from(new Map(sessions.map((session) => [session.id, session])).values());
     if (!uniqueSessions.length) return false;
-    const confirmed = await confirmSessionDelete(
-      archived ? t("归档会话") : t("取消归档会话"),
-      tf("{0} 个会话？这只更新本地归档状态，不删除 rollout 文件。", [uniqueSessions.length]),
+    const confirmed = await appConfirm(
+      archived
+        ? tf("归档选中的 {0} 个会话？只改本地归档状态，不删除对话文件，之后可以取消归档。", [uniqueSessions.length])
+        : tf("取消归档选中的 {0} 个会话？它们会回到未归档列表。", [uniqueSessions.length]),
+      { title: archived ? t("归档会话") : t("取消归档会话"), confirmText: archived ? t("归档") : t("取消归档") },
     );
     if (!confirmed) return false;
     const result = await run(() => call<CommandResult<{ succeeded: number; failed: number }>>("archive_local_sessions", {
@@ -3694,40 +3698,20 @@ export function App() {
     }
   };
 
-  const upsertContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string) => {
-    const result = await run(() =>
-      call<ContextEntriesResult>("upsert_context_entry", {
-        request: { settings: next, kind, id, tomlBody },
-      }),
-    );
-    if (!result) return null;
-    let normalized = normalizeSettings(result.settings);
-    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (saveResult) {
-      setSettings(saveResult);
-      normalized = normalizeSettings(saveResult.settings);
+  /**
+   * MCP 页的开关 / 编辑 / 删除：一次后端调用完成改公共配置、保存设置、同步 live config.toml
+   * （原来是三次串行往返）。tomlBody 为 null 表示删除。返回是否全部成功。
+   */
+  const applyContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string | null) => {
+    const result = await run(() => call<AppliedContextEntryResult>("apply_context_entry", { request: { settings: next, kind, id, tomlBody } }));
+    if (!result) return false;
+    if (result.saved) {
+      setSettings({ status: "ok", message: result.message, ...result.saved });
+      setSettingsForm(normalizeSettings(result.saved.settings));
     }
-    setSettingsForm(normalized);
+    if (result.liveEntries) setLiveContextEntries(result.liveEntries);
     if (!isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result);
-    return normalized;
-  };
-
-  const deleteContextEntry = async (next: BackendSettings, kind: ContextKind, id: string) => {
-    const result = await run(() =>
-      call<ContextEntriesResult>("delete_context_entry", {
-        request: { settings: next, kind, id },
-      }),
-    );
-    if (!result) return null;
-    let normalized = normalizeSettings(result.settings);
-    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (saveResult) {
-      setSettings(saveResult);
-      normalized = normalizeSettings(saveResult.settings);
-    }
-    setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result);
-    return normalized;
+    return isSuccessStatus(result.status);
   };
 
   const previewMcpServersJson = async (json: string) => {
@@ -3964,8 +3948,8 @@ export function App() {
     }
   };
 
-  const showNotice = (title: string, message: string, status?: Status) => {
-    setNotice({ title, message: t(message), status });
+  const showNotice = (title: string, message: string, status?: Status, action?: NoticeAction) => {
+    setNotice({ title, message: t(message), status, action });
   };
 
   const exitManagerApp = async () => {
@@ -4415,8 +4399,7 @@ export function App() {
       applyPureApiInjection,
       clearRelayInjection,
       saveRelayFile,
-      upsertContextEntry,
-      deleteContextEntry,
+      applyContextEntry,
       previewMcpServersJson,
       importMcpServersJson,
       extractRelayCommonConfig,
@@ -4661,7 +4644,13 @@ export function App() {
   // 没勾选的 Agent 不进侧栏和命令面板；只影响显示，它的配置和网关接入照旧。
   const shownTools = toolEntries.filter((entry) => agentVisible(agentFocus, entry.id));
   const soloAgent = singleAgent(agentFocus);
-  const shownSessionTab: SessionTab = soloAgent === "codex" ? "codex" : sessionTab;
+  // MCP 页的条目：设置里的条目叠上 live config.toml 的启停状态。只在两者变化时重算，免得每次渲染都给 McpPage 一个新数组。
+  const mcpPageEntries = useMemo(() => {
+    const entries = contextEntriesWithLiveEntries(settingsForm, liveContextEntries);
+    return [...contextEntriesByKind(entries, "mcp"), ...contextEntriesByKind(entries, "plugin")];
+  }, [settingsForm, liveContextEntries]);
+  // 选中的页签对应的 Agent 被隐藏了（换了使用模式）时退回 Codex。
+  const shownSessionTab: SessionTab = soloAgent === "codex" || (sessionTab !== "all" && !agentVisible(agentFocus, sessionTab)) ? "codex" : sessionTab;
   // 侧栏聚焦的 Agent 被隐藏了：换到第一个还显示的 Agent，免得停在一个看不见的 Agent 的页面上。
   const fallbackTool = shownTools.find((entry) => entry.switchable)?.id;
   useEffect(() => {
@@ -4979,7 +4968,7 @@ export function App() {
           {route === "sessions" && shownSessionTab === "codex" ? (
             <ProjectSessionPage
               sessions={localSessions}
-              onRefresh={async (offset) => { await actions.refreshLocalSessions(false, offset ?? 0); }}
+              onRefresh={(offset, filter) => actions.refreshLocalSessions(false, offset ?? 0, filter)}
               onDelete={actions.deleteLocalSession}
               onDeleteMany={actions.deleteLocalSessions}
               onArchiveMany={actions.archiveLocalSessions}
@@ -5005,20 +4994,10 @@ export function App() {
           ) : null}
           {route === "context" ? (
             <McpPage
-              entries={[...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "mcp"), ...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "plugin")]}
-              onSave={async (kind, id, body) => {
-                const next = await actions.upsertContextEntry(settingsForm, kind, id, body);
-                if (!next) return false;
-                const synced = await actions.syncLiveContextEntries(next, true);
-                return Boolean(synced && isSuccessStatus(synced.status));
-              }}
-              onDelete={async (entry) => {
-                const next = await actions.deleteContextEntry(settingsForm, entry.kind, entry.id);
-                if (!next) return false;
-                const synced = await actions.syncLiveContextEntries(next, true);
-                return Boolean(synced && isSuccessStatus(synced.status));
-              }}
-              onRefresh={async () => { await actions.refreshLiveContextEntries(); await actions.refreshRelayFiles(); }}
+              entries={mcpPageEntries}
+              onSave={(kind, id, body) => actions.applyContextEntry(settingsForm, kind, id, body)}
+              onDelete={(entry) => actions.applyContextEntry(settingsForm, entry.kind, entry.id, null)}
+              onRefresh={async () => { await Promise.all([actions.refreshLiveContextEntries(), actions.refreshRelayFiles()]); }}
               onImport={async (json) => {
                 const next = await actions.importMcpServersJson(settingsForm, json);
                 if (!next) return false;
@@ -5222,19 +5201,6 @@ export function App() {
         />
       ) : null}
       <AppDialogHost />
-      {confirmDialog ? (
-        <ConfirmDialog
-          confirm={confirmDialog}
-          onCancel={() => {
-            confirmDialog.resolve(false);
-            setConfirmDialog(null);
-          }}
-          onConfirm={() => {
-            confirmDialog.resolve(true);
-            setConfirmDialog(null);
-          }}
-        />
-      ) : null}
       {liveConflictDialog ? (
         <LiveConflictDialog
           profileName={liveConflictDialog.profileName}
@@ -5459,7 +5425,7 @@ type Actions = {
   setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean }) => Promise<boolean>;
   showExtensionNotice: (title: string, message: string) => void;
   deleteUserScript: (key: string) => Promise<void>;
-  refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
+  refreshLocalSessions: (silent?: boolean, offset?: number, filter?: LocalSessionFilter) => Promise<LocalSessionsResult | null>;
   listProjectSessions: (cwd: string) => Promise<LocalSession[]>;
   // 返回是否真正执行（用户取消时为 false），调用方据此决定是否清空选择。
   deleteLocalSession: (session: LocalSession) => Promise<boolean>;
@@ -5470,13 +5436,7 @@ type Actions = {
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
   saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
-  upsertContextEntry: (
-    settings: BackendSettings,
-    kind: ContextKind,
-    id: string,
-    tomlBody: string,
-  ) => Promise<BackendSettings | null>;
-  deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
+  applyContextEntry: (settings: BackendSettings, kind: ContextKind, id: string, tomlBody: string | null) => Promise<boolean>;
   previewMcpServersJson: (json: string) => Promise<McpImportPreviewResult | null>;
   importMcpServersJson: (settings: BackendSettings, json: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
@@ -9221,214 +9181,6 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
   </details>;
 }
 
-function SessionsScreen({
-  settings,
-  form,
-  sessions,
-  providerSyncProgress,
-  sessionIndexRepairActive,
-  sessionIndexRepairReport,
-  sessionIndexRepairReportError,
-  providerSyncTargets,
-  selectedProviderSyncTarget,
-  onFormChange,
-  actions,
-}: {
-  settings: SettingsResult | null;
-  form: BackendSettings;
-  sessions: LocalSessionsResult | null;
-  providerSyncProgress: ProviderSyncProgress;
-  sessionIndexRepairActive: boolean;
-  sessionIndexRepairReport: SessionIndexRepairReport | null;
-  sessionIndexRepairReportError: string | null;
-  providerSyncTargets: ProviderSyncTargetsResult | null;
-  selectedProviderSyncTarget: string;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const items = sessions?.sessions ?? [];
-  const pageOffset = sessions?.offset ?? 0;
-  const pageSize = sessions?.limit ?? 50;
-  const currentPage = Math.floor(pageOffset / pageSize) + 1;
-  const hasPreviousPage = pageOffset > 0;
-  const hasNextPage = sessions?.hasMore === true;
-  const activeCount = items.filter((item) => !item.archived).length;
-  const archivedCount = items.length - activeCount;
-  const totalCount = sessions?.totalCount ?? items.length;
-  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [bulkDeleting, setBulkDeleting] = useState(false);
-  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
-  const selectedCount = selectedSessions.length;
-  const allSelected = items.length > 0 && selectedCount === items.length;
-  const providerTargets = providerSyncTargets?.targets ?? [];
-  const selectedProviderTarget = providerTargets.find(
-    (target) => target.id === selectedProviderSyncTarget,
-  );
-  const canRepairProviderSessions = selectedProviderTarget
-    ? isProviderSyncTargetSelectable(selectedProviderTarget)
-    : false;
-
-  useEffect(() => {
-    const itemIds = new Set(items.map((session) => session.id));
-    setSelectedSessionIds((current) => {
-      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [items]);
-
-  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
-    setSelectedSessionIds((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      return next;
-    });
-  };
-
-  const selectAllSessions = () => {
-    setSelectionMode(true);
-    setSelectedSessionIds(new Set(items.map((session) => session.id)));
-  };
-
-  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
-
-  const deleteSelectedSessions = async () => {
-    if (!selectionMode) {
-      setSelectionMode(true);
-      return;
-    }
-    setBulkDeleting(true);
-    try {
-      await actions.deleteLocalSessions(selectedSessions);
-    } finally {
-      setBulkDeleting(false);
-    }
-  };
-
-  return (
-    <>
-      <Panel className="sessions-overview-panel">
-        <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
-        <CardContent className="sessions-overview-content">
-          <div className="session-summary-bar">
-            <div>
-              <span>{t("会话总数")}</span>
-              <strong>{tf("{0} 个", [totalCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页会话")}</span>
-              <strong>{tf("{0} 个", [items.length])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页未归档")}</span>
-              <strong>{tf("{0} 个", [activeCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页已归档")}</span>
-              <strong>{tf("{0} 个", [archivedCount])}</strong>
-            </div>
-            <div className="session-summary-path">
-              <span>{t("数据库")}</span>
-              <code>{sessions?.dbPath ?? "~/.codex/sqlite/*.db"}</code>
-            </div>
-          </div>
-
-          <SessionRepairPanel dirty={false} form={form} providerSyncProgress={providerSyncProgress} sessionIndexRepairActive={sessionIndexRepairActive} sessionIndexRepairReport={sessionIndexRepairReport} sessionIndexRepairReportError={sessionIndexRepairReportError} providerSyncTargets={providerSyncTargets} selectedProviderSyncTarget={selectedProviderSyncTarget} onFormChange={onFormChange} actions={actions} />
-        </CardContent>
-      </Panel>
-      <Panel className="sessions-list-panel">
-        <CardHead
-          title={t("本地会话")}
-          detail={sessions ? tf("第 {0} 页，每页最多 {1} 条，按更新时间倒序显示", [currentPage, pageSize]) : t("点击刷新会话读取本地数据库")}
-        />
-        <CardContent className="session-list-content">
-          {items.length ? (
-            <>
-              <div className="session-list-toolbar">
-                <span className="session-selection-summary">{t("已选择")} {selectedCount} / {items.length} {t("个会话")}</span>
-                <div className="session-selection-actions">
-                  <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
-                    {t("全选当前列表")}
-                  </Button>
-                  <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
-                    {t("清空选择")}
-                  </Button>
-                  <Button disabled={(selectionMode && !selectedCount) || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
-                    {selectionMode ? <Trash2 className="h-4 w-4" /> : null}
-                    {selectionMode ? (bulkDeleting ? t("正在删除…") : t("删除已选")) : t("多选")}
-                  </Button>
-                </div>
-              </div>
-              <div className="session-list">
-                {items.map((session) => {
-                  const selected = selectedSessionIds.has(session.id);
-                  return (
-                    <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
-                      {selectionMode ? (
-                        <label className="session-select" title={t("选择会话")}>
-                          <input
-                            aria-label={tf("选择会话 {0}", [session.title || session.id])}
-                            checked={selected}
-                            onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
-                            type="checkbox"
-                          />
-                        </label>
-                      ) : null}
-                      <div className="session-main">
-                        <strong>{session.title || t("未命名会话")}</strong>
-                        <span>{session.id}</span>
-                        <small>{session.cwd || t("未记录项目路径")}</small>
-                      </div>
-                      <div className="session-meta">
-                        <Badge status={session.archived ? "archived" : "ok"} />
-                        <span>{session.modelProvider || t("provider 未记录")}</span>
-                        <span>{formatTime(session.updatedAtMs ?? 0)}</span>
-                      </div>
-                      <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
-                        <Trash2 className="h-4 w-4" />
-                        {t("删除")}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="session-pagination">
-                <Button
-                  aria-label={t("上一页")}
-                  disabled={!hasPreviousPage || bulkDeleting}
-                  onClick={() => void actions.refreshLocalSessions(true, Math.max(0, pageOffset - pageSize))}
-                  size="icon"
-                  title={t("上一页")}
-                  variant="outline"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-                <span>{tf("第 {0} 页", [currentPage])}</span>
-                <Button
-                  aria-label={t("下一页")}
-                  disabled={!hasNextPage || bulkDeleting}
-                  onClick={() => void actions.refreshLocalSessions(true, pageOffset + pageSize)}
-                  size="icon"
-                  title={t("下一页")}
-                  variant="outline"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="empty">{t("未读取到本地会话，或当前 SQLite 会话库不存在。")}</div>
-          )}
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
-
 /// 首页：整个程序的落脚页。上面是各 Agent 与网关的状态，中间是精选推荐和其他赞助商，最下面是常用入口。
 ///
 /// 推荐：置顶位全部做大卡片，排成一行均分宽度；推荐池里的赞助商全部列出，两列小卡片，紧跟在精选下面。
@@ -11045,35 +10797,6 @@ function RelayProfileDetail({
         />
       ) : null}
     </div>
-  );
-}
-
-function ContextScreen({
-  form,
-  liveEntries,
-  relayFiles,
-  onFormChange,
-  actions,
-}: {
-  form: BackendSettings;
-  liveEntries: CodexContextEntries | null;
-  relayFiles: RelayFilesResult | null;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  return (
-    <Panel fill>
-      <CardHead title={t("Codex MCP&插件")} detail={t("独立管理 Codex 的 MCP 服务器与插件；切换任意供应商都会带上。")} />
-      <CardContent>
-        <RelayContextManager
-          form={normalizeSettings(form)}
-          liveEntries={liveEntries}
-          relayFiles={relayFiles}
-          onFormChange={onFormChange}
-          actions={actions}
-        />
-      </CardContent>
-    </Panel>
   );
 }
 
@@ -13394,295 +13117,6 @@ function AggregateRelayProfileEditor({
   );
 }
 
-function RelayContextManager({
-  form,
-  liveEntries,
-  relayFiles,
-  onFormChange,
-  actions,
-}: {
-  form: BackendSettings;
-  liveEntries: CodexContextEntries | null;
-  relayFiles: RelayFilesResult | null;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const entries = contextEntriesWithLiveEntries(form, liveEntries);
-  const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
-  const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
-  const [importOpen, setImportOpen] = useState(false);
-  const [skillInventory, setSkillInventory] = useState<SkillInventoryResult | null>(null);
-  const refreshSkillInventory = async () => {
-    try {
-      setSkillInventory(await invoke<SkillInventoryResult>("list_installed_skills"));
-    } catch (error) {
-      setSkillInventory({ status: "failed", message: stringifyError(error), skills: [], codexSkillsDir: "" });
-      await actions.showMessage("Skills", stringifyError(error), "failed");
-    }
-  };
-  useEffect(() => { void refreshSkillInventory(); }, []);
-  const visibleEntries = contextEntriesByKind(entries, activeKind);
-  const label = contextKindLabel(activeKind);
-
-  const syncContextEntries = async (next: BackendSettings) => {
-    const syncResult = await actions.syncLiveContextEntries(next, true);
-    if (!syncResult || !isSuccessStatus(syncResult.status)) return false;
-    await actions.refreshRelayFiles();
-    return true;
-  };
-
-  const saveEntry = async (kind: ContextKind, id: string, tomlBody: string) => {
-    const next = await actions.upsertContextEntry(form, kind, id, tomlBody);
-    if (!next) return;
-    onFormChange(next);
-    if (!(await syncContextEntries(next))) return;
-    setEditor(null);
-  };
-
-  const toggleContextEntryEnabled = async (entry: CodexContextEntry) => {
-    const nextBody = setContextEntryEnabled(entry.tomlBody, !entry.enabled);
-    const next = await actions.upsertContextEntry(form, entry.kind, entry.id, nextBody);
-    if (!next) return;
-    onFormChange(next);
-    await syncContextEntries(next);
-  };
-
-  const deleteEntry = async (entry: CodexContextEntry) => {
-    const next = await actions.deleteContextEntry(form, entry.kind, entry.id);
-    if (!next) return;
-    onFormChange(next);
-    await syncContextEntries(next);
-  };
-
-  const importJson = async (json: string) => {
-    const next = await actions.importMcpServersJson(form, json);
-    if (!next) return;
-    onFormChange(next);
-    if (!(await syncContextEntries(next))) return;
-    setImportOpen(false);
-  };
-
-  return (
-    <div className="relay-context-panel">
-      <div className="relay-context-head">
-        <div>
-          <strong>{t("Codex MCP&插件")}</strong>
-          <span>{t("MCP 与插件作为全局配置独立管理，切换任意供应商都会合并。")}</span>
-        </div>
-        <div className="relay-context-head-actions">
-          {activeKind === "mcp" ? (
-            <Button
-              onClick={() => {
-                setEditor(null);
-                setImportOpen(true);
-              }}
-              size="sm"
-              variant="secondary"
-            >
-              <Download className="h-4 w-4" />
-              {t("导入 JSON")}
-            </Button>
-          ) : null}
-          {activeKind === "skill" ? (
-            <Button onClick={() => void refreshSkillInventory()} size="sm" variant="secondary"><RefreshCw className="h-4 w-4" />{t("刷新列表")}</Button>
-          ) : <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
-            <Plus className="h-4 w-4" />
-            {t("新增")}{label}
-          </Button>}
-        </div>
-      </div>
-      <div className="segmented">
-        {contextKindOptions.map((option) => (
-          <button
-            className={activeKind === option.kind ? "active" : ""}
-            key={option.kind}
-            onClick={() => setActiveKind(option.kind)}
-            type="button"
-          >
-            <span>{option.label}</span>
-            <small>{option.kind === "skill" ? (skillInventory ? (isSuccessStatus(skillInventory.status) ? skillInventory.skills.length : "?") : "…") : contextEntriesByKind(entries, option.kind).length}</small>
-          </button>
-        ))}
-      </div>
-      <div className="relay-context-summary">
-        {activeKind === "skill" ? <>{t("本地与内置 Skills 由 Codex 从目录发现。")}{skillInventory ? <span className="break-all"> {skillInventory.codexSkillsDir}</span> : null}</> : <>{t("当前共有")} {visibleEntries.length} {t("个")}{label}{t("；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。")}</>}
-      </div>
-      <div className="relay-context-list">
-        {activeKind === "skill" ? (
-          !skillInventory ? <div className="empty">{t("正在读取 Skills…")}</div>
-          : !isSuccessStatus(skillInventory.status) ? <div className="empty">{skillInventory.message}</div>
-          : skillInventory.skills.length ? skillInventory.skills.map((skill) => (
-            <div className="relay-context-row" key={`local-skill-${skill.id}`}>
-              <div><strong className="context-title">{skill.name || skill.id}</strong><div className="text-xs">{skill.description}</div></div>
-              <span>{skill.bundled ? t("内置") : t("本地")}{!skill.enabled ? ` · ${t("已停用")}` : ""}</span>
-            </div>
-          )) : <div className="empty">{t("Skills 目录中暂无技能。")}</div>
-        ) : visibleEntries.length ? (
-          visibleEntries.map((entry) => (
-            <div className="relay-context-row" key={`${entry.kind}-${entry.id}`}>
-              <strong className="context-title">{entry.title || entry.id}</strong>
-              <div className="relay-context-actions">
-                <button
-                  aria-checked={entry.enabled}
-                  aria-label={`contextEnabledSwitch-${entry.kind}-${entry.id}`}
-                  className={`context-enabled-switch ${entry.enabled ? "active" : ""}`}
-                  onClick={() => void toggleContextEntryEnabled(entry)}
-                  role="switch"
-                  title={entry.enabled ? t("禁用此扩展项") : t("启用此扩展项")}
-                  type="button"
-                >
-                  <span className="context-switch-track" aria-hidden="true">
-                    <span className="context-switch-thumb" />
-                  </span>
-                </button>
-                <Button onClick={() => setEditor({ kind: entry.kind, entry })} size="icon" title={t("编辑扩展项")} variant="ghost">
-                  <Edit3 className="h-4 w-4" />
-                </Button>
-                <Button
-                  className="relay-context-delete"
-                  onClick={() => void deleteEntry(entry)}
-                  size="icon"
-                  title={t("删除扩展项")}
-                  variant="ghost"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="empty">{t("暂无")}{label}{t("，可以从通用配置文件或这里新增。")}</div>
-        )}
-      </div>
-      {importOpen ? (
-        <McpJsonImporter actions={actions} onCancel={() => setImportOpen(false)} onImport={importJson} />
-      ) : null}
-      {editor ? (
-        <ContextEntryEditor
-          entry={editor.entry}
-          kind={editor.kind}
-          onCancel={() => setEditor(null)}
-          onSave={(kind, id, tomlBody) => void saveEntry(kind, id, tomlBody)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function McpJsonImporter({
-  actions,
-  onCancel,
-  onImport,
-}: {
-  actions: Actions;
-  onCancel: () => void;
-  onImport: (json: string) => void;
-}) {
-  const [json, setJson] = useState("");
-  const [preview, setPreview] = useState<McpImportPreviewResult | null>(null);
-
-  const runPreview = async () => {
-    const result = await actions.previewMcpServersJson(json);
-    setPreview(result && isSuccessStatus(result.status) ? result : null);
-  };
-
-  return (
-    <div aria-modal="true" className="modal-backdrop" role="dialog">
-      <div className="modal-card context-modal">
-        <div className="modal-head">
-          <div>
-            <h2>{t("导入 MCP JSON")}</h2>
-            <p className="modal-message">{t("支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。")}</p>
-          </div>
-          <button aria-label={t("关闭窗口")} className="toast-close" onClick={onCancel} type="button">×</button>
-        </div>
-        <Field label={t("MCP 配置 JSON")}>
-          <Textarea
-            className="context-editor-textarea"
-            value={json}
-            onChange={(event) => {
-              setJson(event.currentTarget.value);
-              setPreview(null);
-            }}
-            placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'}
-            spellCheck={false}
-          />
-        </Field>
-        {preview ? (
-          <div className="relay-context-summary">
-            <div>{tf("将导入 {0} 个：{1}", [preview.entries.length, preview.entries.map((item) => item.id).join("、")])}</div>
-            {preview.warnings.map((warning) => <div key={warning}>{warning}</div>)}
-          </div>
-        ) : null}
-        <Toolbar>
-          <Button disabled={!json.trim()} onClick={() => void runPreview()} size="sm" variant="secondary">{t("预览")}</Button>
-          <Button disabled={!preview} onClick={() => onImport(json)} size="sm">
-            <Download className="h-4 w-4" />
-            {t("确认导入")}
-          </Button>
-          <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
-        </Toolbar>
-      </div>
-    </div>
-  );
-}
-
-function ContextEntryEditor({
-  kind,
-  entry,
-  onCancel,
-  onSave,
-}: {
-  kind: ContextKind;
-  entry?: CodexContextEntry;
-  onCancel: () => void;
-  onSave: (kind: ContextKind, id: string, tomlBody: string) => void;
-}) {
-  const [draftKind, setDraftKind] = useState<ContextKind>(entry?.kind ?? kind);
-  const [id, setId] = useState(entry?.id ?? "");
-  const [tomlBody, setTomlBody] = useState(entry?.tomlBody ?? "");
-  const canSave = id.trim().length > 0;
-
-  return (
-    <div className="context-editor">
-      <div className="context-editor-fields">
-        <Field label={t("类型")}>
-          <AppSelect
-            disabled={!!entry}
-            value={draftKind}
-            onChange={(value) => setDraftKind(value)}
-            options={contextKindOptions.map((option) => ({ value: option.kind, label: option.label }))}
-          />
-        </Field>
-        <Field label="ID">
-          <Input
-            disabled={!!entry}
-            value={id}
-            onChange={(event) => setId(event.currentTarget.value.trim())}
-            placeholder={t("例如 context7")}
-          />
-        </Field>
-      </div>
-      <Field label={t("TOML 配置体")}>
-        <Textarea
-          className="context-editor-textarea"
-          value={tomlBody}
-          onChange={(event) => setTomlBody(event.currentTarget.value)}
-          placeholder={t("只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]")}
-          spellCheck={false}
-        />
-      </Field>
-      <Toolbar>
-        <Button disabled={!canSave} onClick={() => onSave(draftKind, id.trim(), tomlBody)} size="sm">
-          <Save className="h-4 w-4" />
-          {t("保存扩展项")}
-        </Button>
-        <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
-      </Toolbar>
-    </div>
-  );
-}
-
 function SyncedTextarea({
   value,
   onValueChange,
@@ -14083,11 +13517,14 @@ function UpdateDialog({ update, progress, downloaded = false, onClose, onSkipVer
  * 右下角的提示卡：左侧状态色条 + 图标，按成功 / 警告 / 失败 / 信息分色。
  * 鼠标停在卡片上时暂停倒计时；失败提示停留更久，并可一键复制详情。
  */
+type NoticeAction = { label: string; run: () => void };
+type NoticeState = { title: string; message: string; status?: Status; action?: NoticeAction };
+
 function NoticeDialog({
   notice,
   onClose,
 }: {
-  notice: { title: string; message: string; status?: Status };
+  notice: NoticeState;
   onClose: () => void;
 }) {
   const tone = noticeTone(notice.status);
@@ -14127,6 +13564,11 @@ function NoticeDialog({
         <div className="toast-body">
           <h2>{notice.title}</h2>
           {notice.message ? <p>{notice.message}</p> : null}
+          {notice.action ? (
+            <button className="toast-action" onClick={() => { notice.action?.run(); onClose(); }} type="button">
+              {notice.action.label}
+            </button>
+          ) : null}
           {tone === "error" && notice.message ? (
             <button className="toast-action" onClick={copyDetails} type="button">
               {copied ? <CheckCircle2 aria-hidden="true" /> : <Copy aria-hidden="true" />}
@@ -14137,39 +13579,6 @@ function NoticeDialog({
         <button aria-label={t("关闭提示")} className="toast-dismiss" onClick={onClose} type="button">
           <X aria-hidden="true" />
         </button>
-      </div>
-    </div>
-  );
-}
-
-function ConfirmDialog({
-  confirm,
-  onConfirm,
-  onCancel,
-}: {
-  confirm: { title: string; message: string; confirmText: string; cancelText: string };
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card confirm-modal">
-        <div className="modal-head">
-          <div>
-            <h2>{confirm.title}</h2>
-          </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
-        </div>
-        <div className="confirm-modal-body">
-          <p className="modal-message">{confirm.message}</p>
-        </div>
-        <Toolbar className="confirm-modal-actions">
-          <Button onClick={onConfirm}>
-            <Trash2 className="h-4 w-4" />
-            {confirm.confirmText}
-          </Button>
-          <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
-        </Toolbar>
       </div>
     </div>
   );
@@ -14409,14 +13818,6 @@ function TaskProgressBox({ progress, title, completedTitle = t("上次修复结�
       </div> : null}
       <small>{progress.message}</small>
     </div>
-  );
-}
-
-function Panel({ children, fill = false, className = "", id }: { children: React.ReactNode; fill?: boolean; className?: string; id?: string }) {
-  return (
-    <Card className={`panel ${fill ? "fill" : ""} ${className}`} id={id}>
-      {children}
-    </Card>
   );
 }
 
@@ -15452,15 +14853,6 @@ function SettingRow({ title, description, detail, stacked = false, children }: {
   );
 }
 
-function CardHead({ title, detail }: { title: string; detail: string }) {
-  return (
-    <CardHeader className="panel-head">
-      <CardTitle>{title}</CardTitle>
-      <CardDescription>{detail}</CardDescription>
-    </CardHeader>
-  );
-}
-
 function Toolbar({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`toolbar ${className}`.trim()}>{children}</div>;
 }
@@ -16372,16 +15764,6 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
   return subtitles[route];
 }
 
-const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: string }> = [
-  { kind: "mcp", label: "MCP", tableName: "mcp_servers" },
-  { kind: "skill", label: "Skills", tableName: "skills" },
-  { kind: "plugin", get label() { return t("插件"); }, tableName: "plugins" },
-];
-
-function contextKindLabel(kind: ContextKind) {
-  return contextKindOptions.find((option) => option.kind === kind)?.label ?? t("扩展项");
-}
-
 function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
   const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");
   return {
@@ -16425,18 +15807,6 @@ function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry):
 
 function contextEntriesForProfile(settings: BackendSettings, profile: RelayProfile): CodexContextEntries {
   return filterContextEntriesBySelection(contextEntriesFromSettings(settings), profile.contextSelection);
-}
-
-function mergeContextEntries(primary: CodexContextEntries, secondary: CodexContextEntries): CodexContextEntries {
-  return {
-    mcpServers: mergeContextEntryList(primary.mcpServers, secondary.mcpServers),
-    skills: mergeContextEntryList(primary.skills, secondary.skills),
-    plugins: mergeContextEntryList(primary.plugins, secondary.plugins),
-  };
-}
-
-function mergeContextEntryList(primary: CodexContextEntry[], secondary: CodexContextEntry[]): CodexContextEntry[] {
-  return dedupeContextEntryList([...primary, ...secondary]);
 }
 
 function filterContextEntriesBySelection(entries: CodexContextEntries, selection: RelayContextSelection): CodexContextEntries {
@@ -16506,12 +15876,6 @@ function tomlAssignmentKey(line: string): string | undefined {
 
 function tomlAssignmentKeys(contents: string): string[] {
   return contents.split(/\r?\n/).map(tomlAssignmentKey).filter((key): key is string => Boolean(key));
-}
-
-function syncLiveConfigContextState(liveConfigContents: string, settings: BackendSettings): string {
-  const entries = contextEntriesFromSettings(settings);
-  const withoutManaged = stripContextEntriesFromConfig(liveConfigContents, entries);
-  return joinTomlSectionsRootFirst([withoutManaged, selectedContextConfigToml(entries)]);
 }
 
 function relayCombinedCommonConfig(settings: BackendSettings): string {
@@ -16648,36 +16012,6 @@ function dedupeTomlRootLines(rootParts: string[]): string[] {
 
   const normalized = kept.reverse().join("\n").trim();
   return normalized ? [normalized] : [];
-}
-
-function contextSelectionIds(selection: RelayContextSelection, kind: ContextKind): string[] {
-  if (kind === "mcp") return selection.mcpServers;
-  if (kind === "skill") return selection.skills;
-  return selection.plugins;
-}
-
-function setContextSelectionId(selection: RelayContextSelection, kind: ContextKind, id: string, checked: boolean): RelayContextSelection {
-  const next = {
-    mcpServers: [...selection.mcpServers],
-    skills: [...selection.skills],
-    plugins: [...selection.plugins],
-  };
-  const list = contextSelectionIds(next, kind);
-  const normalizedId = id.trim();
-  const exists = list.includes(normalizedId);
-  if (checked && normalizedId && !exists) list.push(normalizedId);
-  if (!checked && exists) list.splice(list.indexOf(normalizedId), 1);
-  return next;
-}
-
-function removeContextSelectionFromSettings(settings: BackendSettings, kind: ContextKind, id: string): BackendSettings {
-  return {
-    ...settings,
-    relayProfiles: settings.relayProfiles.map((profile) => ({
-      ...profile,
-      contextSelection: setContextSelectionId(profile.contextSelection, kind, id, false),
-    })),
-  };
 }
 
 function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {

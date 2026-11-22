@@ -455,3 +455,165 @@ fn thread_names_fall_back_to_thread_title_without_session_index() {
     let page = pager.list_page_with_thread_names(home, &paths, 0, 10);
     assert_eq!(page.sessions[0].title, "你好");
 }
+
+fn threads_with_projects(path: &Path) -> Connection {
+    let db = Connection::open(path).unwrap();
+    db.execute_batch("CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT, cwd TEXT, model_provider TEXT, archived INTEGER, rollout_path TEXT, updated_at_ms INTEGER)").unwrap();
+    db
+}
+
+fn insert_project(db: &Connection, id: &str, title: &str, cwd: &str, archived: bool, updated: i64) {
+    db.execute(
+        "INSERT INTO threads VALUES (?1, ?2, ?3, 'openai', ?4, '', ?5)",
+        params![id, title, cwd, archived as i64, updated],
+    )
+    .unwrap();
+}
+
+#[test]
+fn filters_by_archive_state_and_project_before_paging_and_counts_whole_projects() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    let paths = [home.join("state_5.sqlite")];
+    let db = threads_with_projects(&paths[0]);
+    insert_project(&db, "a1", "alpha one", "/work/alpha", false, 60);
+    insert_project(&db, "b1", "beta one", "/work/beta/", false, 50);
+    insert_project(&db, "a2", "alpha two", "/work/alpha", true, 40);
+    insert_project(&db, "a3", "alpha three", r"/Users/huangmo/Desktop/CodexPlusPlus/.temp_files_62e7951d/C/work/alpha", false, 30);
+    insert_project(&db, "b2", "beta two", "/work/beta", false, 20);
+    insert_project(&db, "a4", "alpha four", "/work/alpha/", false, 10);
+    drop(db);
+    let mut pager = LocalSessionPager::default();
+
+    // 不筛选：项目计数覆盖全部会话，不只是这一页。
+    let page = pager.list_page_with_thread_names(home, &paths, 0, 2);
+    assert_eq!(ids(&page), ["a1", "b1"]);
+    assert_eq!(page.total_count, 6);
+    assert_eq!(
+        page.projects,
+        [
+            ("/work/alpha".to_string(), 3),
+            ("/work/beta".to_string(), 2),
+            ("/Users/huangmo/Desktop/CodexPlusPlus/.temp_files_62e7951d/C/work/alpha".to_string(), 1)
+        ]
+    );
+
+    let active = LocalSessionFilter {
+        archived: Some(false),
+        ..Default::default()
+    };
+    let page = pager.list_filtered_page_with_thread_names(home, &paths, &active, 2, 2);
+    assert_eq!(ids(&page), ["a3", "b2"]);
+    assert_eq!(page.total_count, 5);
+    assert!(page.has_more);
+
+    let archived = LocalSessionFilter {
+        archived: Some(true),
+        ..Default::default()
+    };
+    let page = pager.list_filtered_page_with_thread_names(home, &paths, &archived, 0, 10);
+    assert_eq!(ids(&page), ["a2"]);
+    assert!(page.sessions[0].archived);
+    assert_eq!(page.projects, [("/work/alpha".to_string(), 1)]);
+
+    let project = LocalSessionFilter {
+        cwd: Some(r"\work\alpha\".to_string()),
+        archived: Some(false),
+        ..Default::default()
+    };
+    let page = pager.list_filtered_page_with_thread_names(home, &paths, &project, 0, 10);
+    assert_eq!(ids(&page), ["a1", "a4"]);
+    assert_eq!(page.total_count, 2);
+}
+
+#[test]
+fn search_matches_every_word_across_all_pages_and_uses_sidebar_names() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    let paths = [home.join("state_5.sqlite")];
+    let db = threads_with_projects(&paths[0]);
+    for index in 0..120 {
+        insert_project(
+            &db,
+            &format!("s{index:03}"),
+            &format!("task {index}"),
+            if index % 2 == 0 { "/work/even" } else { "/work/odd" },
+            false,
+            1_000 - index,
+        );
+    }
+    drop(db);
+    std::fs::write(
+        home.join("session_index.jsonl"),
+        r#"{"id":"s110","thread_name":"Deploy Fix"}"#,
+    )
+    .unwrap();
+    let mut pager = LocalSessionPager::default();
+
+    // 第三页之后的会话也能搜到；侧栏线程名参与匹配，大小写不敏感，多个词都要命中。
+    let filter = LocalSessionFilter {
+        query: "deploy  FIX even".to_string(),
+        ..Default::default()
+    };
+    let page = pager.list_filtered_page_with_thread_names(home, &paths, &filter, 0, 50);
+    assert_eq!(ids(&page), ["s110"]);
+    assert_eq!(page.sessions[0].title, "Deploy Fix");
+    assert_eq!(page.total_count, 1);
+    assert_eq!(page.projects, [("/work/even".to_string(), 1)]);
+
+    let filter = LocalSessionFilter {
+        query: "work/odd".to_string(),
+        ..Default::default()
+    };
+    let page = pager.list_filtered_page_with_thread_names(home, &paths, &filter, 50, 50);
+    assert_eq!(page.total_count, 60);
+    assert_eq!(page.sessions.len(), 10);
+    assert!(!page.has_more);
+    assert_eq!(page.sessions[0].id, "s101");
+
+    let filter = LocalSessionFilter {
+        query: "no-such-session".to_string(),
+        ..Default::default()
+    };
+    let page = pager.list_filtered_page_with_thread_names(home, &paths, &filter, 0, 50);
+    assert_eq!(page.total_count, 0);
+    assert!(page.sessions.is_empty());
+    assert!(page.projects.is_empty());
+}
+
+#[test]
+fn project_path_identity_matches_frontend_grouping() {
+    assert_eq!(
+        normalized_project_path(r"C:\Projects\Foo\\"),
+        "C:/Projects/Foo"
+    );
+    assert_eq!(normalized_project_path("/Projects/Foo///"), "/Projects/Foo");
+    // Windows 长路径前缀不进入项目身份（#2791）。
+    assert_eq!(
+        normalized_project_path(r"\\?\C:\Projects\Foo\"),
+        "C:/Projects/Foo"
+    );
+    assert_eq!(
+        normalized_project_path(r"\\?\UNC\server\share\Foo"),
+        normalized_project_path(r"\\server\share\Foo")
+    );
+    assert_eq!(normalized_project_path(r"\\?\C:\"), "C:");
+    assert_eq!(
+        normalized_project_path(r"\\?\UNC\srv\share\Foo"),
+        "//srv/share/Foo"
+    );
+    assert_eq!(
+        normalized_project_path(r"\\?\Volume{abc}\Foo"),
+        "//?/Volume{abc}/Foo"
+    );
+    // 盘符大小写是同一个目录（#2937），其余部分保留大小写和空格。
+    assert_eq!(normalized_project_path(r"c:\Projects\Foo"), "C:/Projects/Foo");
+    assert_ne!(
+        normalized_project_path("/Projects/Foo"),
+        normalized_project_path("/Projects/foo")
+    );
+    assert_ne!(
+        normalized_project_path("/Projects/Foo"),
+        normalized_project_path(" /Projects/Foo")
+    );
+}
