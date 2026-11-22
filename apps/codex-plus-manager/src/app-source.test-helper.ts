@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import ts from "typescript";
 
 /**
  * 管理器主界面原来全在 App.tsx 里，现在按页面拆成了多个文件（App 只管外壳和路由分发）。
@@ -17,8 +18,24 @@ export const APP_SOURCE_FILES = [
   "WeixinPage.tsx",
   "ExtensionsPage.tsx",
   "SessionRepairPanel.tsx",
+  "SettingsScreens.tsx",
 ] as const;
 
 export function readAppSource(): string {
   return APP_SOURCE_FILES.map((name) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8")).join("\n");
+}
+
+/** 按名字取主界面某个顶层声明（函数、变量、类型）的源码，不管它拆到了哪个文件；找不到时返回空串。 */
+export function appDeclarationSource(name: string): string {
+  for (const file of APP_SOURCE_FILES) {
+    const text = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    for (const statement of source.statements) {
+      const names = ts.isVariableStatement(statement)
+        ? statement.declarationList.declarations.map((declaration) => declaration.name.getText(source))
+        : "name" in statement && statement.name && ts.isIdentifier(statement.name as ts.Node) ? [(statement.name as ts.Identifier).text] : [];
+      if (names.includes(name)) return statement.getText(source);
+    }
+  }
+  return "";
 }

@@ -58,7 +58,7 @@ import {
   type GatewayPayload,
 } from "./gateway-model.ts";
 import type { ProviderPreset } from "./presets.ts";
-import { readAppSource } from "./app-source.test-helper.ts";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 
 const app = readAppSource();
 const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
@@ -678,7 +678,7 @@ test("全应用不用原生下拉框，统一用 AppSelect", () => {
     const source = readFileSync(new URL(file, dir), "utf8");
     assert.doesNotMatch(source, /<select[\s>]/, file);
   }
-  const shared = app.slice(app.indexOf("function SharedServiceSettings("), app.indexOf("function ProxySettingsScreen("));
+  const shared = appDeclarationSource("SharedServiceSettings");
   assert.match(shared, /<AppSelect/);
 });
 
