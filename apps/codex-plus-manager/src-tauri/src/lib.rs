@@ -44,6 +44,8 @@ const SHUTDOWN_WATCHDOG: u64 = 10;
 const TRAY_MENU_SHOW: &str = "tray_show_main";
 const TRAY_MENU_QUIT: &str = "tray_quit_app";
 const MANAGER_NAVIGATION_EVENT: &str = "manager-navigation-requested";
+/// 网页链接存下待确认的供应商导入 / 一键换肤后通知界面读取。
+const PENDING_IMPORT_CHANGED_EVENT: &str = "manager-pending-import-changed";
 
 pub(crate) fn app_is_exiting() -> bool {
     APP_EXITING.load(Ordering::SeqCst)
@@ -754,6 +756,8 @@ pub fn run() {
                     for url in urls {
                         if handle_dream_skin_url(url.as_str()) || handle_provider_import_url(url.as_str()) {
                             show_main_window(app_handle);
+                            // 界面收到后读一次待确认导入 / 一键换肤并弹确认框（不再轮询）。
+                            let _ = app_handle.emit(PENDING_IMPORT_CHANGED_EVENT, ());
                         }
                     }
                 }
@@ -777,8 +781,9 @@ pub fn run() {
     }
 }
 
-/// 网页导入链接（codexplusplus://v1/import/provider?…）：存为待确认导入，界面轮询到后弹出确认框。
-/// Windows 从启动参数传进来，macOS 由系统的「打开 URL」事件送达（应用已在运行时也走这里）。
+/// 网页导入链接（codexplusplus://v1/import/provider?…）：存为待确认导入，界面读到后弹出确认框。
+/// Windows 从启动参数传进来（新进程存好后唤起已有窗口，界面在窗口获得焦点时读取），
+/// macOS 由系统的「打开 URL」事件送达（应用已在运行时也走这里，随后发 `PENDING_IMPORT_CHANGED_EVENT`）。
 pub fn handle_provider_import_url(url: &str) -> bool {
     if !url.starts_with("codexplusplus://") {
         return false;

@@ -53,7 +53,7 @@ test("Lite controls edit one selected model and preserve the rest of an imported
   assert.equal(synchronizeModelMetadataLiteSupport('{"models":[{"slug":"one"},{"slug":"one"}]}', "one", "supported"), null);
 });
 
-test("language switches notify React without reload or storing drafts", () => {
+test("language switches notify React without reload or storing drafts", async () => {
   const source = readFileSync(new URL("./i18n.ts", import.meta.url), "utf8");
   const saved = new Map(); let reloads = 0; let calls = 0;
   const exports: Record<string, any> = {};
@@ -62,10 +62,11 @@ test("language switches notify React without reload or storing drafts", () => {
   vm.runInContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, context);
   const unsubscribe = exports.subscribeLanguage(() => { calls++; });
   assert.equal(exports.t("概览"), "概览");
-  exports.setLanguage("en"); assert.equal(exports.t("概览"), "Overview");
-  exports.setLanguage("en"); assert.equal(calls, 1);
-  exports.setLanguage("zh"); assert.equal(exports.t("概览"), "概览");
-  unsubscribe(); exports.setLanguage("en"); assert.equal(calls, 2);
+  // 英文词典按需加载：切换先等词典到了再通知界面。
+  await exports.setLanguage("en"); assert.equal(exports.t("概览"), "Overview");
+  await exports.setLanguage("en"); assert.equal(calls, 1);
+  await exports.setLanguage("zh"); assert.equal(exports.t("概览"), "概览");
+  unsubscribe(); await exports.setLanguage("en"); assert.equal(calls, 2);
   assert.equal(reloads, 0);
   assert.deepEqual([...saved.keys()], ["codex-plus-lang"]);
   const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");

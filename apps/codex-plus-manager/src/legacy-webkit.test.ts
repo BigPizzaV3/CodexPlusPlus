@@ -72,7 +72,10 @@ test("启动兜底：API 补丁最先执行；渲染出错有错误边界；模�
   assert.equal(firstImport, 'import "./legacy-webkit";');
   assert.match(main, /class StartupErrorBoundary extends Component/);
   assert.match(main, /static getDerivedStateFromError\(/);
-  assert.match(main, /<StartupErrorBoundary>\n\s*\{window\.location\.hash === "#tray-panel" \? <TrayPanel \/> : window\.location\.hash === "#cu-pip" \? <CuPipWindow \/> : <App \/>\}\n\s*<\/StartupErrorBoundary>/);
+  // 各窗口界面按需加载，加载完包在错误边界里渲染；分块加载失败也交给错误边界显示，不留黑屏。
+  assert.match(main, /<StartupErrorBoundary>\n\s*<Root \/>\n\s*<\/StartupErrorBoundary>/);
+  assert.match(main, /<StartupErrorBoundary>\n\s*<LoadFailure error=\{error\} \/>\n\s*<\/StartupErrorBoundary>/);
+  assert.doesNotMatch(main, /^import \{ (App|TrayPanel|CuPipWindow) \}/m);
 
   const html = readSource("../index.html");
   const inline = html.indexOf("<script>");

@@ -217,7 +217,7 @@ describe("dream skin theme helpers", () => {
     const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
     const commands = await readFile(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
     const restoreStart = app.indexOf("const restoreDreamSkin = async () =>");
-    const restoreEnd = app.indexOf("const actions = useMemo", restoreStart);
+    const restoreEnd = app.indexOf("const actionCallbacks = useStableCallbacks", restoreStart);
     const restoreHandler = app.slice(restoreStart, restoreEnd);
     const commandStart = commands.indexOf("pub async fn restore_dream_skin");
     const commandEnd = commands.indexOf("pub fn reset_dream_skin_theme", commandStart);

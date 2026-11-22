@@ -397,3 +397,19 @@ test("Codex 检查采用等待期间父层刷新的增强配置，开启后可�
     f.unmount();
   }
 });
+
+test("入门清单收起时只在挂上时读一次配置，展开后才每 5 秒重读", async () => {
+  const f = harness();
+  (f.props as Record<string, unknown>).defaultExpanded = false;
+  await load(f);
+  const before = f.requests.length;
+  f.poll();
+  assert.equal(f.requests.length, before, "收起时不轮询 relay_status");
+  const toggle = children(f.render()).find((element) => element.type === "button" && element.props["aria-label"] === "展开入门清单");
+  assert.ok(toggle);
+  toggle.props.onClick();
+  f.render();
+  f.poll();
+  assert.equal(f.requests.length, before + 1, "展开后轮询");
+  assert.equal(f.requests.at(-1)?.command, "relay_status");
+});

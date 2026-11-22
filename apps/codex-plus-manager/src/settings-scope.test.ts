@@ -37,7 +37,7 @@ test("整体设置只放应用级选项，Agent 设置承担工具级选项", ()
 test("Codex 设置与整体设置都进齿轮的设置模式，不占 Agent 的页签", () => {
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"agentSettings"/);
-  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance",/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings",/);
 
   const globalNavigation = text.slice(text.indexOf("const globalNavigationRoutes"), text.indexOf("const defaultSettings"));
   assert.match(globalNavigation, /"settings"/);
@@ -56,8 +56,8 @@ test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Age
 
   const globalNavigation = text.slice(text.indexOf("const globalNavigationRoutes"), text.indexOf("const defaultSettings"));
   assert.match(globalNavigation, /"computerUse"/);
-  // 推荐内容并进了首页（侧栏第一项），「工具」组从 Computer Use 开始；网关自己一组。
-  assert.match(globalNavigation, /const toolNavigationRoutes: Route\[\] = \["computerUse", "agentCollaboration",/);
+  // Computer Use、Agent 协作、缓存清理都在设置模式里，⌘K 经设置分类搜到；网关自己一组。
+  assert.doesNotMatch(text, /toolNavigationRoutes/);
   assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
   const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
   assert.match(entries, /\{ key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta"/);
@@ -77,7 +77,7 @@ test("标题：设置模式用分类名，Agent 自己的页面和其余页面�
 
 test("只用增强功能：隐藏供应商页面，配置保存成功后才提交模式", () => {
   const helpers = text.slice(text.indexOf("const multiAgentRoutes"), text.indexOf("function agentFocusDescription"));
-  assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "relayEnvironment", "multiLaunch"\]\);/);
+  assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"\]\);/);
   assert.match(helpers, /providersHidden\(focus\) && providerRoutes\.has\(routeId\)/);
   // 侧栏、页签、命令面板都按同一条规则过滤。
   // 聚合网关整组按模式过滤，一项都不剩时连标题一起隐藏。

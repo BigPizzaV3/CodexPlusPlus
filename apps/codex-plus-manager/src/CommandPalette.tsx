@@ -43,6 +43,7 @@ export function CommandPalette({ open, commands, onClose }: { open: boolean; com
         <div className="palette-input">
           <Search aria-hidden="true" className="h-4 w-4" />
           <input
+            aria-label={t("跳到页面、Agent 或执行操作…")}
             onChange={(event) => { setQuery(event.currentTarget.value); setHighlight(0); }}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") { event.preventDefault(); setHighlight((value) => Math.min(results.length - 1, value + 1)); }

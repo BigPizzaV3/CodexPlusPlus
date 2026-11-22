@@ -183,7 +183,7 @@ test("「点击托盘图标弹出快捷面板」从网关设置移到整体设�
   const start = app.indexOf("function GlobalSettingsScreen(");
   const globalSettings = app.slice(start, app.indexOf("\nfunction ", start + 10));
   assert.match(globalSettings, /点击托盘图标弹出快捷面板/);
-  assert.match(app, /invoke<boolean>\("set_tray_panel_enabled"/);
+  assert.match(globalSettings, /useBackendToggle\("tray_panel_enabled", "set_tray_panel_enabled"\)/);
   const lib = read("../src-tauri/src/lib.rs");
   assert.match(lib, /tray_panel::tray_panel_enabled,/);
   assert.match(lib, /tray_panel::set_tray_panel_enabled,/);
@@ -205,7 +205,8 @@ test("轻量模式（#2677）：面板发请求前先让后端按需重建主窗
   const start = app.indexOf("function GlobalSettingsScreen(");
   const globalSettings = app.slice(start, app.indexOf("\nfunction ", start + 10));
   assert.match(globalSettings, /关闭窗口后释放界面内存/);
-  assert.match(app, /invoke<boolean>\("set_lightweight_mode_enabled"/);
+  assert.match(globalSettings, /useBackendToggle\("lightweight_mode_enabled", "set_lightweight_mode_enabled"\)/);
+  assert.match(app, /setEnabled\(await invoke<boolean>\(writeCommand, \{ enabled: !enabled \}\)\);/);
   const lib = read("../src-tauri/src/lib.rs");
   assert.match(lib, /lightweight::main_window_prepare,/);
   assert.match(lib, /lightweight::set_lightweight_mode_enabled,/);

@@ -1,0 +1,13 @@
+{
+  "identifier": "tray-and-preview",
+  "description": "The tray quick panel (tray-panel) and the Computer Use floating preview (cu-pip). They only call app commands, listen to / emit events and drag the window by its header (double-click on a drag region also goes through internal-toggle-maximize). No dialog plugin and no other core window APIs.",
+  "windows": [
+    "tray-panel",
+    "cu-pip"
+  ],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize"
+  ]
+}

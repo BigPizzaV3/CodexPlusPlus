@@ -7,14 +7,20 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf
 
 test("悬浮预览窗口用同一个前端，按 #cu-pip 渲染预览组件", () => {
   const main = read("./main.tsx");
-  assert.match(main, /window\.location\.hash === "#cu-pip" \? <CuPipWindow \/> : <App \/>/);
+  // 按窗口按需加载：预览窗口只加载 CuPipWindow，不解析整个管理器。
+  assert.match(main, /if \(hash === "#cu-pip"\) return import\("\.\/CuPipWindow"\)\.then\(\(module\) => module\.CuPipWindow\);/);
+  assert.match(main, /return import\("\.\/App"\)\.then\(\(module\) => module\.App\);/);
   const rust = read("../src-tauri/src/cu_pip.rs");
   assert.match(rust, /WebviewUrl::App\("\/index\.html#cu-pip"\.into\(\)\)/);
 });
 
-test("预览窗口在权限配置里，否则它调不了命令、收不到帧", () => {
-  const capability = JSON.parse(read("../src-tauri/capabilities/default.json")) as { windows: string[] };
-  assert.ok(capability.windows.includes("cu-pip"));
+test("预览窗口和托盘面板有自己的权限配置：只给事件和拖动，不给对话框等主窗口的权限", () => {
+  const capability = JSON.parse(read("../src-tauri/capabilities/tray-and-preview.json")) as { windows: string[]; permissions: string[] };
+  assert.deepEqual(capability.windows.sort(), ["cu-pip", "tray-panel"]);
+  assert.ok(capability.permissions.includes("core:event:default"), "收不到帧、发不了面板请求");
+  assert.ok(!capability.permissions.some((permission) => permission.startsWith("dialog:") || permission === "core:default"));
+  const main = JSON.parse(read("../src-tauri/capabilities/default.json")) as { windows: string[] };
+  assert.deepEqual(main.windows, ["main"]);
 });
 
 test("预览窗口不抢焦点：创建时不聚焦，显示走不激活的置顶", () => {
@@ -43,7 +49,7 @@ test("预览窗口标明 Codex++ Computer Use", () => {
 
 test("预览窗口能拖动：标题栏是拖动区，权限里有 start-dragging，非前台时第一下点击也生效", () => {
   assert.match(read("./CuPipWindow.tsx"), /className="cu-pip-head" data-tauri-drag-region/);
-  const capability = JSON.parse(read("../src-tauri/capabilities/default.json")) as { permissions: string[] };
+  const capability = JSON.parse(read("../src-tauri/capabilities/tray-and-preview.json")) as { permissions: string[] };
   assert.ok(capability.permissions.includes("core:window:allow-start-dragging"));
   assert.match(read("../src-tauri/src/cu_pip.rs"), /\.accept_first_mouse\(true\)/);
 });
