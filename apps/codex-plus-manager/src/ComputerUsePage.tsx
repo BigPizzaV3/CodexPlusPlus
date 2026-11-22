@@ -10,7 +10,7 @@ import { Menu, MenuItem } from "./ManagementPages";
 import { TopbarActions } from "./TopbarActions";
 import { HubTopology } from "./HubOverview";
 import { APP_LOGO_URL, Switch } from "./gateway-ui";
-import { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxRow, CxSection } from "./cx-layout";
 import type { HubLink } from "./hub-overview-model";
 import { t, tf } from "./i18n";
 import { enhancementPlatformFromUserAgent } from "./enhancement-catalog";
