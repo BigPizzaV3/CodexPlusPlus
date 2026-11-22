@@ -9386,16 +9386,18 @@ function HomeScreen({
     { route: "settings", label: t("设置"), detail: t("主题、更新、日志与诊断"), icon: Settings },
   ];
 
-  // 自动接管紧挨着 Codex 那一行：打开后从 Dock / 启动台直接开 Codex 也有增强，不必再从这里点启动。
-  // Windows 不支持，不显示。关掉 Codex++ 就没人监听，所以没开登录自启时在这一行提醒并给开关。
+  // 自动接管紧挨着 Codex 那一行：打开后自己直接开 Codex 也有增强，不必再从这里点启动。
+  // 关掉 Codex++ 就没人监听，所以没开登录自启时在这一行提醒并给开关。
   const takeover = autoTakeoverView(autoTakeover);
   const takeoverNeedsLogin = autoTakeoverOn === true && watcherEnabled === false;
-  const takeoverRow = enhancementPlatform === "windows" ? null : (
+  const takeoverRow = (
     <CxRow
       badges={autoTakeoverOn ? <StatusBadge status={takeover.status} label={takeover.label} /> : null}
       detail={autoTakeoverOn
         ? [takeover.detail, takeoverNeedsLogin ? t("Codex++ 没有设为登录时打开，退出 Codex++ 后不会接管。") : ""].filter(Boolean).join(" ")
-        : t("打开后，直接打开 Codex（Dock、启动台）也会自动接管并注入增强，不用再从 Codex++ 启动。")}
+        : enhancementPlatform === "windows"
+          ? t("打开后，直接打开 Codex（开始菜单、任务栏）也会自动接管并注入增强，不用再从 Codex++ 启动。")
+          : t("打开后，直接打开 Codex（Dock、启动台）也会自动接管并注入增强，不用再从 Codex++ 启动。")}
       icon={<CxStatusIcon tone={autoTakeoverOn ? (takeover.status === "ok" ? "ok" : takeover.status === "failed" ? "danger" : "warn") : "off"}><Plug /></CxStatusIcon>}
       key="codex-auto-takeover"
       title={t("自动接管官方 App")}
@@ -9781,7 +9783,7 @@ function autoTakeoverView(state: AutoTakeoverResult | null): { status: string; l
   const attached = state.lastReason === "already_attached";
   const detail = reasonText(state.lastError) || state.lastError
     || (state.pausedInstance ? t("本次已跳过自动接管，重启官方 App 后恢复。") : "")
-    || (!state.platformSupported ? t("自动接管目前只支持 macOS 和 Linux。") : "")
+    || (!state.platformSupported ? t("当前系统不支持自动接管。") : "")
     || reasonText(state.lastReason)
     || [
       attached ? t("官方 App 已接管") : `${t("官方 App")} ${state.appRunning ? t("运行中") : t("未运行")}`,

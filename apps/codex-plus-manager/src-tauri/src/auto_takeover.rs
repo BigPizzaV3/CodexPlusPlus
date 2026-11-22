@@ -13,7 +13,7 @@
 //! - 宽限期：`open` 返回到页面可注入之间有 2.5~3.4 秒空窗，没有宽限期会自杀式重启。
 //! - 串行化：复用管理器进程内的 `LAUNCH_IN_PROGRESS`，不与用户点「启动」抢跑。
 //! - 多开：`osascript quit` 按应用名发事件，会把用户正在用的多开实例一起退出。
-//! - 平台：仅 macOS；Windows 走 AUMID 激活，语义完全不同。
+//! - 平台：macOS、Linux、Windows（`PLATFORM_SUPPORTED`）。
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -50,6 +50,10 @@ const EXIT_GRACE: Duration = Duration::from_secs(15);
 const EXIT_FORCE_GRACE: Duration = Duration::from_secs(5);
 /// 退出轮询间隔（macOS 实测 100ms 足够）。
 const EXIT_POLL: Duration = Duration::from_millis(100);
+
+/// 支持自动接管的平台。状态快照、判据输入、日志都只读这一个，
+/// 各写各的曾经让 Windows 上「界面说不支持、后台却在接管」（#2573）。
+const PLATFORM_SUPPORTED: bool = cfg!(any(target_os = "macos", windows, target_os = "linux"));
 
 /// 「疑似有人在用」的会话事件流新鲜度阈值。
 const USER_ACTIVE_WINDOW: Duration = Duration::from_secs(20);
@@ -115,7 +119,7 @@ fn inner() -> &'static Mutex<Inner> {
     INNER.get_or_init(|| {
         Mutex::new(Inner {
             state: "disabled",
-            platform_supported: cfg!(any(target_os = "macos", target_os = "linux")),
+            platform_supported: PLATFORM_SUPPORTED,
             ..Inner::default()
         })
     })
@@ -225,7 +229,7 @@ pub fn take_over_now() -> Result<(), String> {
         Err(error) => return Err(error),
     };
     if !inputs.platform_supported {
-        return Err("自动接管目前只支持 macOS 和 Linux。".to_string());
+        return Err("当前系统不支持自动接管。".to_string());
     }
     if inputs.session.is_degraded() {
         return Err("当前会话注入已降级，请先重试注入。".to_string());
@@ -288,7 +292,7 @@ fn active_policy() -> ActivePolicy {
 fn supervisor_loop() {
     log_event(
         "takeover.probe_decision",
-        json!({ "decision": "start", "platformSupported": cfg!(target_os = "macos") }),
+        json!({ "decision": "start", "platformSupported": PLATFORM_SUPPORTED }),
     );
     while !STOP.load(Ordering::Acquire) {
         let tick_started = Instant::now();
@@ -436,11 +440,7 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
             state.paused_instance.clone(),
         )
     });
-    // 与 `Inner::default()` 和 `payload()` 保持同一判定：自动接管只在 macOS 启用。
-    // 此前这里单独用 `any(macos, windows)`，Windows 上守护线程确实会运行，
-    // 而 UI 读到的 platform_supported 却是 false，用户勾选开关后表现为
-    // 「反复拉起白色窗口、界面却显示不支持」（#2573）。
-    let platform_supported = cfg!(any(target_os = "macos", target_os = "linux"));
+    let platform_supported = PLATFORM_SUPPORTED;
     let enabled = is_enabled();
     let session_snapshot = codex_plus_launcher::session_snapshot();
     let latest = StatusStore::default().load_latest().ok().flatten();
@@ -666,6 +666,9 @@ fn quiesce_desktop_app(app_dir: &Path, instance: &InstanceKey) {
             outcome = "still_running";
         }
     }
+    if outcome == "exited" {
+        codex_plus_core::auto_takeover::reap_leftover_children(app_dir, instance);
+    }
     log_event(
         "takeover.exit_result",
         json!({ "pid": instance.pid, "outcome": outcome, "forced": forced }),
@@ -844,7 +847,7 @@ mod tests {
         let payload = payload();
         assert_eq!(
             payload.platform_supported,
-            cfg!(any(target_os = "macos", target_os = "linux"))
+            cfg!(any(target_os = "macos", windows, target_os = "linux"))
         );
     }
 

@@ -16,7 +16,8 @@
 //!    activate 不重注入。这种状态必须显式暴露，不能显示成「已接管」。
 //! 4. **多开**：`osascript quit` 按应用名发事件，会把用户正在用的多开实例一起退出，
 //!    必须先跳过。
-//! 5. **平台**：Windows 走 AUMID 激活，语义完全不同，非 macOS 一律 `Skip`。
+//! 5. **平台**：macOS、Linux、Windows 支持，其它平台一律 `Skip`。Windows 上旧实例退出后
+//!    要收掉它留下的 crashpad（#2573 的白色小窗），见 `reap_leftover_children`。
 
 use std::path::Path;
 use std::time::Duration;
@@ -169,16 +170,16 @@ pub fn has_other_desktop_instance(
         // 主实例 = 同名同路径且**不是** Electron 子进程。调试端口相同的那个是
         // 「我们正在管的实例」，也不算多开。
         let debug_port_pids = crate::watcher::find_codex_processes_for_debug_port(exclude_port);
-        let main_pids = processes
-            .iter()
-            .filter(|process| {
-                windows_executable_matches(process, &expected)
-                    && windows_is_electron_child(process) != Some(true)
-            })
-            .map(|process| process.process_id)
-            .collect::<Vec<_>>();
-        return main_pids.iter().any(|process_id| {
-            !debug_port_pids.contains(process_id) && Some(*process_id) != current_pid
+        return processes.iter().any(|process| {
+            windows_executable_matches(process, &expected)
+                && windows_is_electron_child(process) != Some(true)
+                && counts_as_other_instance(
+                    process.process_id,
+                    crate::windows_integration::process_command_line(process.process_id)
+                        .is_some_and(|line| line.contains("--remote-debugging-port")),
+                    &debug_port_pids,
+                    current_pid,
+                )
         });
     }
     #[cfg(target_os = "linux")]
@@ -218,7 +219,7 @@ pub fn has_other_desktop_instance(
 /// - 当前评估的实例本身也不算——**除非**它自带了别的调试端口：那是多开实例、
 ///   截图/调试用的隔离实例，或别的工具拉起的，不是用户裸启动的。接管它要先
 ///   `osascript quit`，而那会按应用名把所有实例一起退出。
-#[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "macos", windows, target_os = "linux")), allow(dead_code))]
 fn counts_as_other_instance(
     pid: u32,
     has_debug_port: bool,
@@ -553,10 +554,66 @@ fn request_windows_exit(instance: &InstanceKey, graceful: bool) -> bool {
     accepted
 }
 
+/// 旧实例退出后，收掉它留下的 Electron 子进程（只 Windows 有事做）。
+///
+/// #2573 实测：`WM_CLOSE` 让主进程退了，crashpad 却留了下来（父进程链
+/// crashpad → crashpad → 旧主进程），它的 `crashpad_SessionEndWatcher` 窗口随后
+/// 变成一个可见的白色小窗。只动「同目录同名、带 `--type=`、父进程链追得到旧主进程」的，
+/// 新实例此时还没拉起，不会误伤。
+#[allow(unused_variables)]
+pub fn reap_leftover_children(app_dir: &Path, instance: &InstanceKey) {
+    #[cfg(windows)]
+    {
+        let expected = crate::app_paths::build_codex_executable(app_dir);
+        let processes = crate::windows_integration::enumerate_processes();
+        let parents = processes
+            .iter()
+            .map(|process| (process.process_id, process.parent_process_id))
+            .collect::<Vec<_>>();
+        let descendants = descendants_of(instance.pid, &parents);
+        let leftovers = processes
+            .iter()
+            .filter(|process| {
+                descendants.contains(&process.process_id)
+                    && windows_executable_matches(process, &expected)
+                    && windows_is_electron_child(process) == Some(true)
+            })
+            .map(|process| process.process_id)
+            .collect::<Vec<_>>();
+        if leftovers.is_empty() {
+            return;
+        }
+        for pid in &leftovers {
+            let _ = crate::windows_integration::close_process_tree(*pid, true);
+        }
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "takeover.reaped_leftover_children",
+            serde_json::json!({ "pid": instance.pid, "children": leftovers }),
+        );
+    }
+}
+
+/// `root` 的所有后代（按 (pid, 父 pid) 表逐层找）。父进程退了以后，Windows 上
+/// 子进程记下的父 pid 不会变，所以旧主进程退出后仍能顺着链找到它的遗留子进程。
+#[cfg(any(windows, test))]
+fn descendants_of(root: u32, parents: &[(u32, u32)]) -> Vec<u32> {
+    let mut found = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(parent) = frontier.pop() {
+        for &(pid, ppid) in parents {
+            if ppid == parent && pid != root && !found.contains(&pid) {
+                found.push(pid);
+                frontier.push(pid);
+            }
+        }
+    }
+    found
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct TakeoverInputs {
     pub enabled: bool,
-    /// 仅 macOS 为 true；其它平台恒 `Skip`。
+    /// macOS、Linux、Windows 为 true；其它平台恒 `Skip`。
     pub platform_supported: bool,
     pub session: SessionSnapshot,
     pub app: AppProbe,
@@ -795,6 +852,18 @@ mod tests {
         assert!(!counts_as_other_instance(20, true, &[20], Some(10)));
         // 另一个进程：算。
         assert!(counts_as_other_instance(20, false, &[], Some(10)));
+    }
+
+    /// #2573 的父进程链：crashpad(3) → crashpad(2) → 旧主进程(1)；4 是无关进程。
+    #[test]
+    fn descendants_follow_the_whole_parent_chain() {
+        let parents = [(2, 1), (3, 2), (4, 9), (5, 3)];
+        let mut found = descendants_of(1, &parents);
+        found.sort();
+        assert_eq!(found, vec![2, 3, 5]);
+        assert!(descendants_of(7, &parents).is_empty());
+        // 成环（pid 复用的极端情况）也要能停下。
+        assert_eq!(descendants_of(1, &[(2, 1), (1, 2)]), vec![2]);
     }
 
     fn running_instance() -> AppProbe {
