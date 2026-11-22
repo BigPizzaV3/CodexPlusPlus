@@ -434,7 +434,7 @@ fn relay_context_management_is_global_not_supplier_scoped() {
     assert!(app_tsx.contains("id: \"context\""));
     assert!(app_tsx.contains("function ContextScreen"));
     assert!(app_tsx.contains("route === \"context\""));
-    assert!(app_tsx.contains("if (next === \"context\")"));
+    assert!(app_tsx.contains("case \"context\":"));
     assert!(app_tsx.contains("selectedContextConfigToml(entries)"));
     assert!(app_tsx.contains("toggleContextEntryEnabled"));
     assert!(app_tsx.contains("relayFiles={relayFiles}"));
