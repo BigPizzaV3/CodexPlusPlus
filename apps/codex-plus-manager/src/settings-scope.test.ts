@@ -56,8 +56,8 @@ test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Age
 
   const globalNavigation = text.slice(text.indexOf("const globalNavigationRoutes"), text.indexOf("const defaultSettings"));
   assert.match(globalNavigation, /"computerUse"/);
-  // 推荐内容并进了首页（侧栏第一项），「工具」组从 Computer Use 开始；网关自己一组。
-  assert.match(globalNavigation, /const toolNavigationRoutes: Route\[\] = \["computerUse", "agentCollaboration",/);
+  // Computer Use、Agent 协作、缓存清理都在设置模式里，⌘K 经设置分类搜到；网关自己一组。
+  assert.doesNotMatch(text, /toolNavigationRoutes/);
   assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
   const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
   assert.match(entries, /\{ key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta"/);

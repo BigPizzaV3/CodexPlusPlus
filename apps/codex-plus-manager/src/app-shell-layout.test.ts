@@ -31,7 +31,7 @@ test("只保留一条侧栏，旧的图标栏和 Agent 子侧栏都已移除", (
 test("侧栏网关一组的「总览」进入网关总览，底部不再重复一张网关状态卡；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
   const sidebar = functionSource("AppSidebar");
   assert.doesNotMatch(sidebar, /className=\{`cx-side-card[^`]*`\} data-tour="hub"/);
-  assert.match(sidebar, /\{ key: "hub", route: "hub", label: t\("总览"\), icon: Waypoints, match: \["hub"\], tour: "hub" \}/);
+  assert.match(sidebar, /\{ key: "hub", route: "hub", label: t\("网关总览"\), icon: Waypoints, match: \["hub"\], tour: "hub" \}/);
   assert.match(sidebar, /useGatewayPayload\(/);
   // 供应商日常在 Codex 里管：没有 Agent 接入网关时，网关一组、接入方式的状态点和「接入 Agent」都不显示；停在网关页上时网关一组照常显示。
   // 网关数据第一次读回来之前用上次记下的结果，网关一组不会晚一拍才冒出来。
@@ -399,7 +399,8 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   assert.match(home, /viaGateway \|\| enhanceOnly \|\| !gatewayInUse \? <ChevronRight/);
   assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
   // 常用入口给的是 Codex 自己的供应商页，不是网关的供应商池；Codex 的页面先切到 Codex 再打开。
-  assert.match(home, /\{ route: "relay", label: t\("Codex 供应商"\)[^\n]*agent: "codex" \}/);
+  // 和页签同名（一页一个名字）。
+  assert.match(home, /\{ route: "relay", label: t\("连接与供应商"\)[^\n]*agent: "codex" \}/);
   assert.doesNotMatch(home, /route: "gatewayProviders"/);
   assert.match(home, /item\.agent \? onOpenAgent\(item\.agent, item\.route\) : onNavigate\(item\.route\)/);
   assert.match(app, /onOpenAgent=\{\(agent, destination\) => void switchTool\(agent, destination \?\? agentEntryRoute\(agent\)\)\}/);

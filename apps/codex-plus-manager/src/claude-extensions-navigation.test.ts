@@ -41,7 +41,7 @@ function functionSource(name: string) {
 
 const navigationNames = [
   "routes", "routeTool", "globalNavigationRoutes", "gatewayNavigationRoutes", "managementNavigationRoutes",
-  "navAliasRoute", "toolNavigationRoutes", "multiAgentRoutes", "providerRoutes", "routeVisible", "visibleRoutes",
+  "navAliasRoute", "multiAgentRoutes", "providerRoutes", "routeVisible", "visibleRoutes",
   "settingsModeRoutes", "customizeRoutes",
 ];
 const navigationSource = navigationNames.map((name) => `const ${declaration(name).getText(app)};`).join("\n");

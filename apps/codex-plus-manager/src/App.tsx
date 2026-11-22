@@ -1525,17 +1525,19 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: string;
   // 远程控制：在浏览器或手机上操控 Codex 的会话。和「微信连接」同是「在手机上用 Codex」，挂在侧栏 Codex 下面、紧跟微信连接。
   { id: "remoteControl", get label() { return t("远程控制"); }, icon: Smartphone, tool: "codex" },
   // 网关：任意 Agent 经 Codex++ 接入任意供应商，与具体 Agent 无关，是应用级页面。
-  { id: "hub", get label() { return t("总览"); }, icon: Waypoints },
+  // 侧栏、页面标题、⌘K 都叫「网关总览」（英文和 Agent 的「概览」区分开）。
+  { id: "hub", get label() { return t("网关总览"); }, icon: Waypoints },
   // 先有供应商，再接 Agent；路由是进阶设置，放在 Agent 接入之后。
   { id: "gatewayProviders", get label() { return t("供应商池"); }, icon: Server },
   { id: "gateway", get label() { return t("Agent 接入"); }, icon: Plug },
   { id: "gatewayRouting", get label() { return t("路由"); }, icon: Split },
   { id: "gatewayUsage", get label() { return t("用量"); }, icon: BarChart3 },
   { id: "gatewaySettings", get label() { return t("网关设置"); }, icon: SlidersHorizontal },
-  { id: "settings", get label() { return t("整体设置"); }, icon: Settings },
+  // 和侧栏底部齿轮同名；页面标题按选中的分类显示（通用、配置文件…）。
+  { id: "settings", get label() { return t("设置"); }, icon: Settings },
   // Agent 专属设置：目前只有 Codex 有专属选项（启动参数等）。
   // Claude / Grok 没有独立设置项，原来那页只有一个跳回各自主页的按钮，所以不再给它们显示。
-  { id: "agentSettings", get label() { return t("设置"); }, icon: Settings, tool: "codex" },
+  { id: "agentSettings", get label() { return t("Codex 设置"); }, icon: Settings, tool: "codex" },
   { id: "requestLog", get label() { return t("请求日志"); }, icon: List },
   // 拓展贡献的管理器页面（codexpp.json 的 manager.nav）：侧栏入口按拓展列出，这里只是它们共用的路由。
   { id: "extension", get label() { return t("拓展页面"); }, icon: AppWindow },
@@ -1570,8 +1572,6 @@ const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", 
 const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "sessions", "context", "skills"];
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
-/** 侧栏「工具」分组：服务所有 Agent，但与供应商无关。关于、整体设置放在侧栏底部。 */
-const toolNavigationRoutes: Route[] = ["computerUse", "agentCollaboration", "agentCache"];
 /**
  * 只在管理其他 Agent 时才有用的页面：只管理 Codex 时不进侧栏和命令面板。
  * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
@@ -4694,7 +4694,24 @@ export function App() {
   for (const tool of shownTools.filter((entry) => entry.switchable)) {
     agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
   }
-  [...toolNavigationRoutes, "settings" as Route].forEach((routeId) => pushCommand(routeCommand(routeId, t("工具"), () => void navigate(routeId))));
+  // 设置的各个分类（含缓存清理、Computer Use 等设置模式里的页面）都能搜到：「更新」「日志」「配置体检」……
+  // 网关设置已在「网关」一组里，不重复列。
+  const paletteRoutes = new Set(paletteCommands.map((command) => command.id.slice(command.id.indexOf(":") + 1)));
+  for (const entry of settingsNavEntries(agentFocus, shownTools.some((tool) => tool.id === "codex" && tool.switchable))) {
+    if (entry.route !== "settings" && paletteRoutes.has(entry.route)) continue;
+    const Icon = entry.icon;
+    paletteCommands.push({
+      id: `settings:${entry.key}`,
+      group: t("设置"),
+      label: entry.label,
+      keywords: `settings ${entry.route} ${entry.key} ${entry.keywords ?? ""}`,
+      icon: <Icon className="h-4 w-4" />,
+      run: () => {
+        if (entry.sections) setSettingsSections(entry.sections);
+        void navigate(entry.route);
+      },
+    });
+  }
   extensionPages.filter((page) => page.nav).forEach((page) => paletteCommands.push({
     id: `extension:${page.key}`,
     group: t("拓展"),
@@ -4727,8 +4744,6 @@ export function App() {
       ? settingsEntries.find((entry) => entry.key === settingsEntryKey)?.label ?? routeTitle(route)
       : customizeRoutes.includes(route)
         ? t("MCP 与 Skills")
-        : route === "hub"
-          ? t("聚合网关")
         : onAgentPage
           ? routeTitle(route)
           : soloAgent && route === "gateway"
@@ -9409,7 +9424,7 @@ function HomeScreen({
     { route: "userScripts", label: t("万物皆拓展"), detail: t("给 Codex、Claude 加功能的脚本"), icon: Blocks },
     { route: "context", label: t("MCP 与 Skills"), detail: t("一处管理所有 Agent 的 MCP 和 Skill"), icon: Network },
     { route: "sessions", label: t("会话"), detail: t("找回、继续各 Agent 的本地会话"), icon: MessagesSquare },
-    { route: "relay", label: t("Codex 供应商"), detail: t("切换 Codex 的供应商与连接方式"), icon: Cable, agent: "codex" },
+    { route: "relay", label: t("连接与供应商"), detail: t("切换 Codex 的供应商与连接方式"), icon: Cable, agent: "codex" },
     { route: "gatewayUsage", label: t("用量"), detail: t("调用次数、Token 与费用"), icon: BarChart3 },
     { route: "settings", label: t("设置"), detail: t("主题、更新、日志与诊断"), icon: Settings },
   ];
@@ -15645,7 +15660,7 @@ function AppSidebar({
     { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
   ];
   const gatewayEntries: SideEntry[] = [
-    { key: "hub", route: "hub", label: t("总览"), icon: Waypoints, match: ["hub"], tour: "hub" },
+    { key: "hub", route: "hub", label: t("网关总览"), icon: Waypoints, match: ["hub"], tour: "hub" },
     { key: "providers", route: "gatewayProviders", label: t("供应商池"), icon: Server, match: ["gatewayProviders"], tour: "nav-gatewayProviders" },
     { key: "gateway", route: "gateway", label: soloAgent ? tf("{0} 接入", [agentName(soloAgent)]) : t("Agent 接入"), icon: Plug, match: ["gateway"], tour: "nav-gateway" },
     { key: "routing", route: "gatewayRouting", label: t("路由"), icon: Split, match: ["gatewayRouting"] },
