@@ -84,6 +84,7 @@ var codexPlusProviderEditing = (() => {
     relaySessionProviderFromConfig: () => relaySessionProviderFromConfig,
     relaySessionProviderValidation: () => relaySessionProviderValidation,
     relaySettingsValidation: () => relaySettingsValidation,
+    relaySettingsValidationForSave: () => relaySettingsValidationForSave,
     relaySettingsWithDraft: () => relaySettingsWithDraft,
     removeCodexExperimentalBearerToken: () => removeCodexExperimentalBearerToken,
     removeRelayProfile: () => removeRelayProfile,
@@ -990,6 +991,20 @@ ${key} = ${value}`]);
       if (sessionProviderError) return sessionProviderError;
     }
     return relayModelRoutesSettingsValidation(settings);
+  }
+  function relaySettingsValidationForSave(settings, editingId) {
+    const named = (profileId, message) => {
+      if (profileId === editingId) return message;
+      const other = settings.relayProfiles.find((profile) => profile.id === profileId);
+      return tf("供应商「{0}」配置有误：{1}", [other?.name || t("未命名供应商"), message]);
+    };
+    for (const profile of settings.relayProfiles) {
+      const sessionProviderError = relaySessionProviderValidation(profile);
+      if (sessionProviderError) return named(profile.id, sessionProviderError);
+    }
+    const routeIssue = findRelayModelRouteIssue(settings.relayProfiles, settings.relayProfiles);
+    const routeMessage = relayModelRouteIssueMessage(routeIssue);
+    return routeIssue && routeMessage ? named(routeIssue.sourceRelayId, routeMessage) : null;
   }
   function relaySessionProviderValidation(profile) {
     if (relaySessionProvider(profile) === "openai" && profile.protocol !== "responses") {

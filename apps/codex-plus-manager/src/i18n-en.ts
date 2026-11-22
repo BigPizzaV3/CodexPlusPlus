@@ -1810,6 +1810,7 @@ export const EN_PLAIN: Record<string, string> = {
   "读取图片失败，请重新选择": "Failed to read the image. Choose it again.",
   "图片、文字和配色等高级编辑项": "Advanced image, text and color settings",
   "有未保存修改": "Unsaved changes",
+  "有未保存的修改，确定放弃吗？": "You have unsaved changes. Discard them?",
   "按需展开": "Expand when needed",
   "主题有未保存修改": "Theme has unsaved changes",
   "保存修改后继续，或放弃修改。": "Save your changes to continue, or discard them.",
@@ -4335,6 +4336,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已新增供应商「{0}」，填好模型列表后点「应用到 Grok」。":
     "Added provider \"{0}\"; fill in its model list and click Apply to Grok.",
   "供应商「{0}」已保存。": "Provider \"{0}\" saved.",
+  "供应商「{0}」配置有误：{1}": "Provider \"{0}\" has a configuration error: {1}",
   "删除 Grok 模型「{0}」？": "Delete Grok model \"{0}\"?",
   "模型「{0}」的上下文窗口必须是大于 0 的整数。": "The context window for model \"{0}\" must be a positive integer.",
   "作者：{0} · {1}": "Author: {0} · {1}",

@@ -342,7 +342,7 @@ import {
   relayProfileSwitchValidation,
   relayModelRoutesValidation,
   relayModelRoutesSettingsValidation,
-  relaySettingsValidation,
+  relaySettingsValidationForSave,
   relaySessionProviderValidation,
   relayModelRouteIssueMessage,
   relaySettingsWithDraft,
@@ -7428,7 +7428,8 @@ function RelayScreen({
   /** 打开网关的供应商池。 */
   onOpenGateway?: () => void;
 }) {
-  const normalized = normalizeSettings(form);
+  // normalizeSettings 要解析共享 TOML、规整每个供应商，不随每次渲染重算。
+  const normalized = useMemo(() => normalizeSettings(form), [form]);
   const takenOverByGateway = normalized.activeRelayId === CODEX_GATEWAY_RELAY_ID;
   // 直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可以一键复制进去。
   const poolLink = useCodexPoolLink(actions, normalized.relayProfiles.map((profile) => profile.id));
@@ -8013,7 +8014,8 @@ function CodexMultiLaunchScreen({
   onOpenRelay: () => void;
   actions: Actions;
 }) {
-  const normalized = normalizeSettings(form);
+  // normalizeSettings 要解析共享 TOML、规整每个供应商，不随每次渲染重算。
+  const normalized = useMemo(() => normalizeSettings(form), [form]);
   // #2801：Codex 被网关接管、或「配置切换」关闭时，旧版供应商页的列表整块隐藏，
   // 多开里这些供应商（多是早年从 cc-switch 导入的）就没地方编辑、删除了，这里直接给入口。
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
@@ -10586,6 +10588,21 @@ function withModelRowSortId(row: ModelWindowRow, sortId?: string): SortableModel
   return { ...row, sortId: sortId ?? `model-row-${++nextModelRowSortId}` };
 }
 
+/** 把编辑中的模型行写回草稿（保存、诊断、未保存判断共用同一份序列化）。 */
+function relayDraftWithModelRows(draft: RelayProfile, rows: ModelWindowRow[]): RelayProfile {
+  const serializedRows = serializeModelWindowRows(rows);
+  const validSlugs = serializedRows.modelList.split("\n").map((slug) => slug.trim()).filter(Boolean);
+  return {
+    ...draft,
+    modelList: serializedRows.modelList,
+    modelWindows: serializedRows.modelWindows,
+    modelAutoCompact: serializedRows.modelAutoCompact,
+    modelMetadata: retainModelMetadataForSlugs(draft.modelMetadata, validSlugs),
+    customHeaders: serializeRelayHeaders(draft.customHeaders || []),
+    modelVlm: serializedRows.modelVlm,
+  };
+}
+
 function RelayProfileDetail({
   profile,
   relayFiles,
@@ -10653,48 +10670,47 @@ function RelayProfileDetail({
     setDraft(nextDraft);
     const switchedProfile = lastDetailProfileIdRef.current !== profile.id;
     lastDetailProfileIdRef.current = profile.id;
+    const nextRows = modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact)
+      .map((row) => withModelRowSortId(row));
+    // 未保存判断的基线：用载入后的草稿按同样方式序列化，刚打开时不会误报「有未保存修改」。
+    baselineDraftRef.current = JSON.stringify(relayDraftWithModelRows(nextDraft, nextRows));
     if (switchedProfile || !unsavedRowEditsRef.current) {
-      setModelWindowRows(modelWindowRowsFromProfile(nextDraft.modelList, nextDraft.modelWindows || "", nextDraft.modelVlm, nextDraft.modelAutoCompact)
-        .map((row) => withModelRowSortId(row)));
+      setModelWindowRows(nextRows);
     }
     // 依赖里刻意不放 profile.modelMetadata / 原始 relayFiles：元数据改动是本编辑器自己触发的
     // （删行会清该模型元数据），把它当依赖会让「删行 → 清元数据 → 重建行」把删掉的行加回来。
   }, [profile.id, profile.modelList, profile.modelWindows, profile.modelAutoCompact, profile.modelVlm, profileUsesLiveFiles, isActive, isNew, liveConfigContents, liveAuthContents]);
-  const validationSettings = relaySettingsWithDraft(form, profile.id, draft, isNew);
-  const validationError = relaySessionProviderValidation(draft)
+  // 每次按键都会重算：relaySettingsWithDraft 要解析 TOML，模型行要序列化，按依赖缓存。
+  const validationSettings = useMemo(() => relaySettingsWithDraft(form, profile.id, draft, isNew), [form, profile.id, draft, isNew]);
+  const validationError = useMemo(() => relaySessionProviderValidation(draft)
     ?? (isAggregateRelayProfile(draft)
       ? aggregateRelayProfileValidation(draft)
-      : relayModelRoutesSettingsValidation(validationSettings));
-  const modelRowsError = modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows));
-  const customHeadersError = relayHeadersValidationMessage(profile.customHeaders || []);
-  const draftWithModelRows = () => {
-    const serializedRows = serializeModelWindowRows(modelWindowRows);
-    const validSlugs = serializedRows.modelList.split("\n").map((slug) => slug.trim()).filter(Boolean);
-    return {
-      ...draft,
-      modelList: serializedRows.modelList,
-      modelWindows: serializedRows.modelWindows,
-      modelAutoCompact: serializedRows.modelAutoCompact,
-      modelMetadata: retainModelMetadataForSlugs(draft.modelMetadata, validSlugs),
-      customHeaders: serializeRelayHeaders(draft.customHeaders || []),
-      modelVlm: serializedRows.modelVlm,
-    };
-  };
-  const currentModelState = draftWithModelRows();
-  const persistedModelState = {
+      : relayModelRoutesSettingsValidation(validationSettings)), [draft, validationSettings]);
+  const modelRowsError = useMemo(() => modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows)), [modelWindowRows]);
+  // 请求头写错（名字非法、值里有换行）也挡住保存，和模型行错误一样就地写出原因。
+  const headersError = useMemo(() => relayHeadersValidationMessage(draft.customHeaders || []), [draft.customHeaders]);
+  const blockingIssue = validationError || modelRowsError || headersError;
+  const currentDraft = useMemo(() => relayDraftWithModelRows(draft, modelWindowRows), [draft, modelWindowRows]);
+  const draftWithModelRows = () => currentDraft;
+  // 「有未保存修改」：整份草稿（名称、地址、Key、协议、请求头、文件……）和打开时的基线比，
+  // 不只比模型行；基线在载入 / 外部更新草稿时重设。
+  const baselineDraftRef = useRef<string | null>(null);
+  const currentDraftJson = useMemo(() => JSON.stringify(currentDraft), [currentDraft]);
+  if (baselineDraftRef.current === null) baselineDraftRef.current = currentDraftJson;
+  const hasUnsavedChanges = currentDraftJson !== baselineDraftRef.current;
+  const hasUnsavedModelChanges = useMemo(() => JSON.stringify({
+    modelList: currentDraft.modelList,
+    modelWindows: currentDraft.modelWindows,
+    modelAutoCompact: currentDraft.modelAutoCompact,
+    modelMetadata: currentDraft.modelMetadata,
+    modelVlm: currentDraft.modelVlm,
+  }) !== JSON.stringify({
     modelList: profile.modelList || "",
     modelWindows: profile.modelWindows || "",
     modelAutoCompact: profile.modelAutoCompact || "",
     modelMetadata: profile.modelMetadata || "",
     modelVlm: profile.modelVlm || "",
-  };
-  const hasUnsavedModelChanges = JSON.stringify({
-    modelList: currentModelState.modelList,
-    modelWindows: currentModelState.modelWindows,
-    modelAutoCompact: currentModelState.modelAutoCompact,
-    modelMetadata: currentModelState.modelMetadata,
-    modelVlm: currentModelState.modelVlm,
-  }) !== JSON.stringify(persistedModelState);
+  }), [currentDraft, profile.modelList, profile.modelWindows, profile.modelAutoCompact, profile.modelMetadata, profile.modelVlm]);
   // 交给上面的行编辑守卫：有未保存行改动时，外部变化不覆盖模型行。
   unsavedRowEditsRef.current = hasUnsavedModelChanges;
   const saveDraft = async () => {
@@ -10704,7 +10720,6 @@ function RelayProfileDetail({
       void actions.showMessage(t("保存供应商"), t("先选择聚合类型（模型聚合 / 故障转移）再保存。"), "failed");
       return;
     }
-    const blockingIssue = validationError || modelRowsError;
     if (blockingIssue) {
       void actions.showMessage(t("保存供应商"), blockingIssue, "failed");
       return;
@@ -10716,8 +10731,12 @@ function RelayProfileDetail({
       const next = normalizeSettings(isNew
         ? addRelayProfile(form, normalizedDraft)
         : updateRelayProfile(form, profile.id, normalizedDraft));
-      const settingsValidationError = relaySettingsValidation(next);
-      if (settingsValidationError) return;
+      // 校验的是保存后的整份设置：别的供应商有问题也存不了，弹出原因并点名是哪一个，不再静默不动。
+      const settingsValidationError = relaySettingsValidationForSave(next, normalizedDraft.id);
+      if (settingsValidationError) {
+        void actions.showMessage(t("保存供应商"), settingsValidationError, "failed");
+        return;
+      }
       const activeLiveBaseUrl = codexBaseUrlFromConfig(
         relayFiles?.configContents ?? profile.configContents,
       );
@@ -10748,7 +10767,7 @@ function RelayProfileDetail({
     }
   };
   const switchDraft = () => {
-    if (isNew || validationError || modelRowsError) return;
+    if (isNew || blockingIssue) return;
     const draftWithWindows = draftWithModelRows();
     const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
     const previousActiveRelayId = form.activeRelayId;
@@ -10788,18 +10807,18 @@ function RelayProfileDetail({
       <div className="relay-detail-header">
         <div className="relay-editor-heading">
           <Button aria-label={t("返回列表")} onClick={() => void (async () => {
-            if (hasUnsavedModelChanges && !(await appConfirm(t("有未保存的模型修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true }))) return;
+            if (hasUnsavedChanges && !(await appConfirm(t("有未保存的修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true }))) return;
             onBack();
           })()} size="icon" title={t("返回列表")} type="button" variant="ghost">
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="relay-editor-heading-copy">
             <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
-            <span>{hasUnsavedModelChanges ? `${detailStatus} · ${t("有未保存修改")}` : detailStatus}</span>
-            {validationError || modelRowsError ? (
+            <span>{hasUnsavedChanges ? `${detailStatus} · ${t("有未保存修改")}` : detailStatus}</span>
+            {blockingIssue ? (
               // 就地写出「为什么存不了」：按钮不再禁用，这里也给人一眼能看到的原因。
               <span className="relay-editor-validation" role="alert">
-                {validationError || modelRowsError}
+                {blockingIssue}
               </span>
             ) : null}
           </div>
@@ -10829,7 +10848,7 @@ function RelayProfileDetail({
             // 配置有误时也让人点：点一下把原因弹出来，比一个点不动的按钮清楚。
             disabled={savingDraft}
             onClick={() => void saveDraft()}
-            title={aggregateModeRequired ? t("先选择类型") : validationError || modelRowsError || t("保存")}
+            title={aggregateModeRequired ? t("先选择类型") : blockingIssue || t("保存")}
             type="button"
           >
             <Save className="h-4 w-4" />
