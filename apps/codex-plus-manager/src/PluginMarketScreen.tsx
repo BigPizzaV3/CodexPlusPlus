@@ -50,7 +50,8 @@ function PluginIcon({ plugin }: { plugin: MarketPlugin }) {
   );
 }
 
-export function PluginMarketScreen() {
+/** onOpenExtensions：Codex 插件和 Codex++ 拓展是两回事，页头一行指向「万物皆拓展」。 */
+export function PluginMarketScreen({ onOpenExtensions }: { onOpenExtensions?: () => void } = {}) {
   // 只有完整库一个来源；旧公开库已并入它。
   const source: MarketSource = "full";
   const [catalogs, setCatalogs] = useState<MarketCatalogs>({});
@@ -286,6 +287,12 @@ export function PluginMarketScreen() {
           {market ? tf("安装 Codex 官方插件目录里的插件，CLI 和 Codex App 都能用。目录是 {0} 的快照。", [market.updatedAt || t("未知日期")])
             : loading ? t("正在读取插件清单…") : t("尚未加载插件清单。")}
         </p>
+        {onOpenExtensions ? (
+          <p className="cx-aggregate-note plugin-market-crosslink">
+            <span>{t("这里是 Codex 插件（官方目录）；Codex++ 自己的拓展在「万物皆拓展」里。")}</span>
+            <button className="cx-link" onClick={onOpenExtensions} type="button">{t("打开万物皆拓展")}</button>
+          </p>
+        ) : null}
       </div>
 
       {progress ? (

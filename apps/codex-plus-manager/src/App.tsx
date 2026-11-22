@@ -1508,7 +1508,8 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
   // Codex / Claude 共用拓展管理入口；tool 保留 codex，让 Codex 下的顶栏继续提供重启。
   { id: "userScripts", get label() { return t("万物皆拓展"); }, icon: FileCode2, tool: "codex", tools: ["codex", "claude"] },
-  { id: "pluginMarket", get label() { return t("插件市场"); }, icon: Store, tool: "codex" },
+  // Codex 官方插件目录（和 Codex++ 自己的「万物皆拓展」是两回事）。
+  { id: "pluginMarket", get label() { return t("Codex 插件"); }, icon: Store, tool: "codex" },
   // 旧入口：并进了首页（拓展深链仍可能用到这条路由）。
   { id: "recommendations", get label() { return t("推荐内容"); }, icon: ExternalLink },
   // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
@@ -5015,8 +5016,8 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
-          {route === "pluginMarket" ? <PluginMarketScreen /> : null}
+          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
+          {route === "pluginMarket" ? <PluginMarketScreen onOpenExtensions={() => void navigate("userScripts")} /> : null}
           {route === "home" ? (
             <HomeScreen
               ads={ads}
@@ -8689,7 +8690,7 @@ function EnhancementSettingControl({
   );
 }
 
-function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, onOpenRescue, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenClaude: () => void; actions: Actions }) {
+function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, onOpenRescue, onOpenPluginMarket, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions }) {
   const codexHost = host === "codex";
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
@@ -8824,6 +8825,12 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
         </Menu>
       </TopbarActions>
       <ExtensionsHero host={host} focus={focus} onHostChange={onHostChange} />
+      {codexHost && onOpenPluginMarket ? (
+        <p className="cx-aggregate-note ext-crosslink">
+          <span>{t("这里是 Codex++ 拓展；Codex 官方目录里的插件在「Codex 插件」页。")}</span>
+          <button className="cx-link" onClick={onOpenPluginMarket} type="button">{t("打开 Codex 插件")}</button>
+        </p>
+      ) : null}
       <CxToolbar onQuery={setSearch} placeholder={codexHost ? t("搜索拓展：名称、作者、描述或标签") : t("搜索适配 Claude 的拓展")} query={search}>
         {codexHost ? <ExtensionCreatorCard /> : null}
       </CxToolbar>
@@ -16441,8 +16448,8 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
     weixin: t("通过个人微信连接本机 Codex 会话"),
     enhance: t("Codex 打不开或显示异常时用：增强总开关、独立模式补丁、本地拓展与恢复默认皮肤"),
     dreamSkin: t("Codex 打不开或显示异常时用：增强总开关、独立模式补丁、本地拓展与恢复默认皮肤"),
-    userScripts: t("万物皆拓展：内置、市场和自己做的拓展"),
-    pluginMarket: t("检索插件，按需下载并安装到 Codex"),
+    userScripts: t("Codex++ 拓展：内置、精选、社区和自己做的拓展"),
+    pluginMarket: t("Codex 官方插件目录：检索插件，按需下载并安装到 Codex"),
     recommendations: t("来自 Codex++ 广告源的推荐，点卡片在浏览器里打开"),
     agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
     agentCollaboration: t("连接 Codex、DeepSeek Harness、Claude Code 与 Google Antigravity，派发任务并查看结果。"),

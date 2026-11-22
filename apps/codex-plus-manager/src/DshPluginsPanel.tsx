@@ -225,12 +225,12 @@ export function DshPluginsPanel({ search = "" }: { search?: string } = {}) {
             </button>
           </div>
           {snapshot && !snapshot.toolchain.npm ? <div className="dsh-plugins-hint">{t("未找到 npm：只能导入本地目录，或不需要额外依赖的 git 仓库。")}</div> : null}
-          {/* 从插件市场索引挑：不常用，收进折叠区。 */}
+          {/* 从 dsh 插件索引挑：不常用，收进折叠区。 */}
           <details className="dsh-index" open={Boolean(market?.length) || undefined}>
-            <summary>{t("从插件市场索引导入")}</summary>
+            <summary>{t("从 dsh 插件索引导入")}</summary>
             <div className="dsh-plugins-import">
               <Input
-                aria-label={t("插件市场索引地址")}
+                aria-label={t("dsh 插件索引地址")}
                 disabled={busy !== null}
                 onChange={(event) => setIndexUrl(event.currentTarget.value)}
                 onKeyDown={(event) => {
