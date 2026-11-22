@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3700
+      "lines": 3705
     },
     {
       "name": "20-menu.js",
@@ -248,7 +248,7 @@
     {
       "name": "96-dream-skin-page.js",
       "description": "Codex++ 设置页的「皮肤」分区：主题库、社区、市场、编辑与恢复",
-      "lines": 561
+      "lines": 626
     },
     {
       "name": "96-builtin-extensions.js",

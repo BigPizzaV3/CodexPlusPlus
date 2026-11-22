@@ -1433,6 +1433,16 @@ pub struct BackendSettings {
     pub codex_app_dream_skin_theme_config: DreamSkinThemeConfig,
     #[serde(rename = "codexAppDreamSkinImagePath", default)]
     pub codex_app_dream_skin_image_path: String,
+    /// 皮肤面板透出壁纸的百分比（0–100，#3233）。是用户偏好，不写进主题包：
+    /// 注入时作为 `userTransparency` 并进交给上游渲染器的主题配置。
+    /// None 表示跟随主题（主题配色自带透明度就用它，否则上游默认透出 30%）。
+    #[serde(
+        rename = "codexAppDreamSkinUserTransparency",
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_dream_skin_user_transparency"
+    )]
+    pub codex_app_dream_skin_user_transparency: Option<u8>,
     #[serde(rename = "codexGoalsEnabled", default)]
     pub codex_goals_enabled: bool,
     #[serde(rename = "weixinConnectEnabled", default)]
@@ -1675,6 +1685,7 @@ impl Default for BackendSettings {
             codex_app_dream_skin_theme: default_dream_skin_theme(),
             codex_app_dream_skin_theme_config: DreamSkinThemeConfig::default(),
             codex_app_dream_skin_image_path: String::new(),
+            codex_app_dream_skin_user_transparency: None,
             codex_goals_enabled: false,
             weixin_connect_enabled: false,
             weixin_connect_base_url: default_weixin_connect_base_url(),
@@ -2388,6 +2399,20 @@ where
     Ok(Option::<String>::deserialize(deserializer)?
         .map(|value| normalize_dream_skin_theme(&value))
         .unwrap_or_else(default_dream_skin_theme))
+}
+
+/// 皮肤「壁纸透出」偏好：数字取整并限制在 0–100；null 或不是数字都算跟随主题（None）。
+pub fn normalize_dream_skin_user_transparency(value: &Value) -> Option<u8> {
+    let number = value.as_f64().filter(|number| number.is_finite())?;
+    Some(number.round().clamp(0.0, 100.0) as u8)
+}
+
+/// 手改坏的值不能让整份设置读不出来：读不懂就当跟随主题。
+fn deserialize_dream_skin_user_transparency<'de, D>(deserializer: D) -> Result<Option<u8>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(normalize_dream_skin_user_transparency(&Value::deserialize(deserializer)?))
 }
 
 fn deserialize_stepwise_max_items<'de, D>(deserializer: D) -> Result<u8, D::Error>
@@ -3353,6 +3378,21 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             "codexAppDreamSkinImagePath".to_string(),
             Value::String(value.trim().to_string()),
         );
+    }
+    // null 清回「跟随主题」；数字按 0–100 归一；其它值不动原设置。
+    match source.get("codexAppDreamSkinUserTransparency") {
+        Some(Value::Null) => {
+            target.remove("codexAppDreamSkinUserTransparency");
+        }
+        Some(value) => {
+            if let Some(percent) = normalize_dream_skin_user_transparency(value) {
+                target.insert(
+                    "codexAppDreamSkinUserTransparency".to_string(),
+                    Value::from(percent),
+                );
+            }
+        }
+        None => {}
     }
     if let Some(value) = source.get("codexGoalsEnabled").and_then(Value::as_bool) {
         target.insert("codexGoalsEnabled".to_string(), Value::Bool(value));

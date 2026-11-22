@@ -7,6 +7,8 @@
 //! - `preview {key}`：主题库里某个主题的预览图（data URL）；路径由服务端按 key 找，页面给不了路径
 //! - `activate {key}`：打开皮肤并应用这个主题（同管理器「应用所选主题」：先存开关，再激活）
 //! - `restore`：关掉皮肤、恢复 Codex 原始外观
+//! - `transparency {value}`：「壁纸透出」偏好（0–100，null = 跟随主题，#3233）。存在 Codex++ 设置里、
+//!   不写进主题包，注入时并进主题配置交给上游渲染器；皮肤开着就当场实时重应用，不用重启 Codex
 //! - `load {key}` / `save {config, media?}`：自定义主题；`media` 是页面选的文件内容，
 //!   服务端落到自己的上传目录再交给保存函数——页面提交的本地路径一律不认
 //! - `create {media}` / `import {media}`：从图片或视频新建主题、导入主题包（同样只收文件内容）
@@ -44,6 +46,7 @@ pub async fn bridge_request(payload: Value) -> anyhow::Result<Value> {
             let result = commands::restore_dream_skin(runtime_request(debug_port, helper_port)).await;
             with_overview(serde_json::to_value(result)?)
         }
+        "transparency" => set_transparency(payload.get("value")).await?,
         "load" => match draft_for_key(&text("key")) {
             Ok(draft) => json!({ "status": "ok", "message": "", "config": draft.config, "builtin": draft.builtin }),
             Err(error) => json!({ "status": "failed", "message": format!("读取主题失败：{error}") }),
@@ -88,7 +91,7 @@ pub async fn bridge_request(payload: Value) -> anyhow::Result<Value> {
         other => anyhow::bail!("不支持的皮肤操作：{other}"),
     };
     // 开关、当前主题都存在设置里：让管理器界面跟着刷新。
-    if matches!(action, "activate" | "restore" | "save" | "rename" | "delete") {
+    if matches!(action, "activate" | "restore" | "save" | "rename" | "delete" | "transparency") {
         codex_plus_core::settings::notify_external_settings_change();
     }
     Ok(value)
@@ -161,6 +164,9 @@ fn overview() -> Value {
         "paused": settings.codex_app_dream_skin_paused,
         "enhancementsEnabled": settings.enhancements_enabled,
         "activeName": settings.codex_app_dream_skin_theme_config.name,
+        "userTransparency": settings.codex_app_dream_skin_user_transparency,
+        // 只有 dream-skin 引擎认这个偏好；雪境、玻璃视界、赛博主题等引擎不读它。
+        "transparencySupported": codex_plus_core::assets::dream_skin_target_engine(&settings) == "dream-skin",
         "themes": themes,
     })
 }
@@ -169,7 +175,7 @@ fn overview() -> Value {
 fn with_overview(mut value: Value) -> Value {
     let fresh = overview();
     if let (Some(target), Some(source)) = (value.as_object_mut(), fresh.as_object()) {
-        for key in ["enabled", "paused", "enhancementsEnabled", "activeName", "themes"] {
+        for key in ["enabled", "paused", "enhancementsEnabled", "activeName", "userTransparency", "transparencySupported", "themes"] {
             target.insert(key.to_string(), source[key].clone());
         }
     }
@@ -248,6 +254,39 @@ async fn activate(key: &str) -> anyhow::Result<Value> {
         "message": result.message,
         "savedForNextLaunch": result.payload.saved_for_next_launch,
     })))
+}
+
+/// 「壁纸透出」：存进设置；皮肤正在用就实时重应用（只换了主题配置里的偏好，引擎和样式不变，
+/// 不会有别的主题样式残留，所以不像换主题那样要求重启）。实时应用失败时已保存、下次启动生效。
+async fn set_transparency(value: Option<&Value>) -> anyhow::Result<Value> {
+    let value = transparency_patch_value(value)?;
+    let settings = SettingsStore::default().update(json!({ "codexAppDreamSkinUserTransparency": value }))?;
+    let live = settings.enhancements_enabled
+        && settings.codex_app_dream_skin_enabled
+        && !settings.codex_app_dream_skin_paused;
+    if !live {
+        return Ok(with_overview(json!({ "status": "ok", "message": "已保存，打开皮肤后生效。" })));
+    }
+    let (debug_port, helper_port) = launch_ports();
+    let result = match codex_plus_core::dream_skin_runtime::apply_dream_skin_live(debug_port, helper_port).await {
+        Ok(_) => json!({ "status": "ok", "message": "" }),
+        Err(error) => json!({
+            "status": "pending_restart",
+            "message": format!("已保存，重启 Codex 后生效；当前无法实时应用：{error}"),
+            "savedForNextLaunch": true,
+        }),
+    };
+    Ok(with_overview(result))
+}
+
+/// 页面给的值：没给或 null 是跟随主题；数字取整收进 0–100；别的一律拒绝。
+fn transparency_patch_value(value: Option<&Value>) -> anyhow::Result<Value> {
+    match value {
+        None | Some(Value::Null) => Ok(Value::Null),
+        Some(raw) => codex_plus_core::settings::normalize_dream_skin_user_transparency(raw)
+            .map(Value::from)
+            .ok_or_else(|| anyhow::anyhow!("壁纸透出必须是 0–100 的数字")),
+    }
 }
 
 /// 保存自定义主题：媒体只认页面上传的文件内容，没传就沿用主题库里这个主题现有的媒体
@@ -358,6 +397,17 @@ mod tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"png-bytes");
         drop(upload);
         assert!(!path.exists() && !path.parent().unwrap().exists(), "用完连上传目录一起删掉");
+    }
+
+    #[test]
+    fn transparency_patch_accepts_numbers_and_follow_theme_only() {
+        assert_eq!(transparency_patch_value(None).unwrap(), Value::Null);
+        assert_eq!(transparency_patch_value(Some(&Value::Null)).unwrap(), Value::Null);
+        assert_eq!(transparency_patch_value(Some(&json!(42))).unwrap(), json!(42));
+        assert_eq!(transparency_patch_value(Some(&json!(12.4))).unwrap(), json!(12));
+        assert_eq!(transparency_patch_value(Some(&json!(180))).unwrap(), json!(100));
+        assert!(transparency_patch_value(Some(&json!("30"))).is_err());
+        assert!(transparency_patch_value(Some(&json!({ "value": 30 }))).is_err());
     }
 
     #[test]
