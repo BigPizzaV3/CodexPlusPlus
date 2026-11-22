@@ -2967,10 +2967,6 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   margin-left: auto;
 }
 
-.shell .gw-route-group-controls > * {
-  min-width: 132px;
-}
-
 .shell .gw-route-members {
   display: grid;
   margin: 0;
