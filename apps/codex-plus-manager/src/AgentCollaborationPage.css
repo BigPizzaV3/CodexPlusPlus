@@ -81,8 +81,7 @@
 .agent-collaboration-output-error pre { border-color:hsl(var(--status-warning)/.35); }
 
 /* 提示条 */
-.agent-collaboration-error { padding:9px 12px; border-radius:8px; font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
-.agent-collaboration-error { color:hsl(var(--status-warning)); border:1px solid hsl(var(--status-warning)/.3); background:hsl(var(--status-warning)/.07); }
+.agent-collaboration-error { padding:9px 12px; border-radius:8px; font-size:12px; line-height:1.6; overflow-wrap:anywhere; color:hsl(var(--status-warning)); border:1px solid hsl(var(--status-warning)/.3); background:hsl(var(--status-warning)/.07); }
 .agent-collaboration-section>.agent-collaboration-error { margin-top:10px; }
 .agent-collaboration-loading { display:flex; align-items:center; gap:8px; color:hsl(var(--muted-foreground)); font-size:12px; }
 .agent-collaboration-mcp-configs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:12px; }
