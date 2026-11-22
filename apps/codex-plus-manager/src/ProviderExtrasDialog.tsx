@@ -227,7 +227,7 @@ export function ProviderExtrasDialog({
               ))}
             </div>
             {proxyMode === "custom" ? (
-              <Input autoFocus className="pf-mono" onChange={(event) => setProxy(event.currentTarget.value)} placeholder="http://127.0.0.1:7890" spellCheck={false} value={proxy} />
+              <Input autoFocus className="pf-mono" data-autofocus onChange={(event) => setProxy(event.currentTarget.value)} placeholder="http://127.0.0.1:7890" spellCheck={false} value={proxy} />
             ) : (
               <p className="pf-hint">
                 {proxyMode === "direct"

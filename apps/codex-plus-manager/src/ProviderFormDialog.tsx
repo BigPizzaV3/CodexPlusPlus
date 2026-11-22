@@ -218,6 +218,7 @@ export function ProviderFormDialog({
                   <Input
                     autoComplete="off"
                     autoFocus={index === 0 && Boolean(preset && !preset.defaultKey)}
+                    data-autofocus={index === 0 && Boolean(preset && !preset.defaultKey) ? true : undefined}
                     className="pf-mono"
                     onChange={(event) => {
                       // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏

@@ -1614,7 +1614,7 @@ function SubscriptionLoginDialog({
             </div>
           ) : null}
           {method === "paste" ? (
-            <textarea autoFocus className="gw-textarea" onChange={(event) => setInput(event.currentTarget.value)} placeholder={t("粘贴 token、Cookie 或导出的登录文件内容")} rows={4} value={input} />
+            <textarea autoFocus className="gw-textarea" data-autofocus onChange={(event) => setInput(event.currentTarget.value)} placeholder={t("粘贴 token、Cookie 或导出的登录文件内容")} rows={4} value={input} />
           ) : null}
         </div>
         <footer>
