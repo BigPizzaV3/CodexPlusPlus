@@ -2780,7 +2780,16 @@ pub struct DeletedSession {
 
 /// 删除 Claude Code（含 Claude Desktop 里的）/ Grok 的一个本地会话：移进废纸篓，可以找回。Codex 的会话走 `delete_local_session`。
 #[tauri::command]
-pub fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedSession> {
+pub async fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedSession> {
+    // 移动文件、检查 Desktop 进程都是阻塞操作，放到后台线程。
+    tauri::async_runtime::spawn_blocking(move || delete_agent_session_blocking(agent, id))
+        .await
+        .unwrap_or_else(|error| {
+            failed(&format!("删除失败：{error}"), DeletedSession::default())
+        })
+}
+
+fn delete_agent_session_blocking(agent: String, id: String) -> CommandResult<DeletedSession> {
     use codex_plus_core::gateway::sessions;
     let trash = sessions::default_trash_dir();
     let desktop = agent == "claude" && id.starts_with("local_");

@@ -36,6 +36,7 @@ pub use session_relocate::{
     SessionRelocationRoot, apply_session_relocation, plan_session_relocation,
 };
 pub use storage::{
-    LocalSession, LocalSessionPage, LocalSessionPager, SQLiteStorageAdapter, delete_local_from_paths,
+    LocalSession, LocalSessionFilter, LocalSessionPage, LocalSessionPager, SQLiteStorageAdapter,
+    delete_local_from_paths, normalized_project_path,
     local_session_titles,
 };

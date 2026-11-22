@@ -12,7 +12,9 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 mod session_paging;
-pub use session_paging::{LocalSessionPage, LocalSessionPager};
+pub use session_paging::{
+    LocalSessionFilter, LocalSessionPage, LocalSessionPager, normalized_project_path,
+};
 
 /// 按线程/会话 id 批量查询标题（只读、best-effort，供请求日志等展示用）。
 ///
