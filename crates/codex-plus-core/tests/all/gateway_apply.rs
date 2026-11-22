@@ -609,11 +609,19 @@ fn codex_catalog_keeps_single_provider_qualified_default_grouped_once() {
     let models = catalog["models"].as_array().unwrap();
     let matching: Vec<_> = models.iter().filter(|item| {
         matches!(item["slug"].as_str(), Some("deepseek/deepseek-v4-pro" | "deepseek-v4-pro"))
+            && item["visibility"] == "list"
     }).collect();
     assert_eq!(matching.len(), 1, "{matching:?}");
     assert_eq!(matching[0]["slug"], "deepseek/deepseek-v4-pro");
     assert_eq!(matching[0]["codex_plus_group_id"], "deepseek");
     assert_eq!(matching[0]["codex_plus_group"], "DeepSeek");
+    // 裸名另有一份隐藏条目：选择器里不重复，spawn_agent 指定裸名也认得（#3179）。
+    let alias = models
+        .iter()
+        .find(|item| item["slug"] == "deepseek-v4-pro")
+        .expect("bare alias in catalog");
+    assert_eq!(alias["visibility"], "hide");
+    assert_eq!(alias["codex_plus_group_id"], "deepseek");
 }
 
 #[test]
@@ -678,8 +686,10 @@ fn codex_catalog_preserves_selected_and_legacy_default_models() {
 
         let catalog = codex_catalog(ctx);
         let models = catalog["models"].as_array().unwrap();
+        // 隐藏条目（固定默认模型的裸名别名，#3179）不进 /v1/models，只比对选择器里看得到的。
         let slugs: Vec<_> = models
             .iter()
+            .filter(|entry| entry["visibility"] == "list")
             .map(|entry| entry["slug"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(slugs, expected, "{model}, selection={with_selection}");
@@ -689,7 +699,7 @@ fn codex_catalog_preserves_selected_and_legacy_default_models() {
                 matches!(
                     entry["slug"].as_str(),
                     Some("deepseek/deepseek-v4-pro" | "deepseek-v4-pro")
-                )
+                ) && entry["visibility"] == "list"
             })
             .collect();
         assert_eq!(matching.len(), 1, "{model}, selection={with_selection}");

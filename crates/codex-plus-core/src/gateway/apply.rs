@@ -213,7 +213,14 @@ fn agent_gateway_model_list(
 ) -> String {
     // 池里所有能用的模型和模型组都进 Agent 的模型列表；Codex 按供应商分组显示，多家都有的模型每家各列一份。
     let models = if *agent == ToolId::Codex {
-        route::codex_binding_models(gateway, binding)
+        let mut models = route::codex_binding_models(gateway, binding);
+        // 固定默认模型的裸名别名（#3179）：只进 Codex 目录（元数据里标成隐藏），spawn_agent 指定裸名才认得。
+        if let Some(alias) = route::codex_pinned_default_alias(gateway, binding)
+            && !models.iter().any(|model| model.eq_ignore_ascii_case(&alias))
+        {
+            models.push(alias);
+        }
+        models
     } else {
         route::binding_exposed_models(gateway, binding)
     };
@@ -542,6 +549,7 @@ fn codex_model_metadata(
 ) -> String {
     let relays = route::binding_pool_relays(gateway, binding);
     let mut member_catalogs: Vec<Option<Vec<Value>>> = vec![None; relays.len()];
+    let pinned_alias = route::codex_pinned_default_alias(gateway, binding);
     let mut metadata = Map::new();
     for (model, _) in crate::tools::grok::parse_grok_model_list(model_list) {
         if let Some(id) = model
@@ -810,6 +818,13 @@ fn codex_model_metadata(
         // 属主上游不认 tool_search 时关掉（#2871）。
         if crate::relay_config::upstream_rejects_tool_search(relay) {
             fields.insert("supports_search_tool".into(), json!(false));
+        }
+        // 固定默认模型的裸名别名（#3179）：只给 spawn_agent 等按名字查目录的地方认，选择器里不重复显示。
+        if pinned_alias
+            .as_deref()
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(&model))
+        {
+            fields.insert("visibility".into(), json!("hide"));
         }
         metadata.insert(model, Value::Object(fields));
     }
