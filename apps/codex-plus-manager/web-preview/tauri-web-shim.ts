@@ -571,12 +571,19 @@ const demoMarketPlugin = (id: string, description: string, extra: Record<string,
 const demoPluginMarket = {
   status: "ok", message: "", source: "full", repository: "demo/plugins", total: 6, cached: true, updatedAt: "2026-10-08",
   plugins: [
-    demoMarketPlugin("01 Superdesign", "Superdesign adds a design skill to ChatGPT for web UI, presentations, and graphics.", { version: "0.6.0", bytes: 230_900 }),
-    demoMarketPlugin("12ui Design", "Create distinctive interfaces with 12ui design skills and hosted design APIs.", { version: "0.2.65", bytes: 108_400 }),
-    demoMarketPlugin("1Password", "Use the local 1Password MCP server to manage 1Password Developer Environments and local .env mounts from Codex.", { version: "0.2.0", bytes: 42_500, installed: true, requiresAuth: true, hasMcp: true }),
-    demoMarketPlugin("6X6", "Essential answers first, with focused detail on request.", { version: "1.0.2", bytes: 64_700 }),
-    demoMarketPlugin("Accurate Translation", "Translate text and files locally without metered translation API tokens.", { requiresAuth: true, hasApps: true }),
-    demoMarketPlugin("Actively", "Win more deals with Actively by directly accessing your always-on personal sales assistant."),
+    demoMarketPlugin("01 Superdesign", "Superdesign adds a design skill to ChatGPT for web UI, presentations, and graphics.", { version: "0.6.0", bytes: 230_900, category: "Creativity", shortDescription: "Design web UI and slides" }),
+    demoMarketPlugin("12ui Design", "Create distinctive interfaces with 12ui design skills and hosted design APIs.", { version: "0.2.65", bytes: 108_400, category: "Creativity" }),
+    demoMarketPlugin("1Password", "Use the local 1Password MCP server to manage 1Password Developer Environments and local .env mounts from Codex.", { version: "0.2.0", bytes: 42_500, installed: true, requiresAuth: true, hasMcp: true, category: "Developer Tools", shortDescription: "Manage developer environments" }),
+    demoMarketPlugin("6X6", "Essential answers first, with focused detail on request.", { version: "1.0.2", bytes: 64_700, category: "Productivity" }),
+    demoMarketPlugin("Accurate Translation", "Translate text and files locally without metered translation API tokens.", { requiresAuth: true, hasApps: true, category: "Productivity" }),
+    demoMarketPlugin("Actively", "Win more deals with Actively by directly accessing your always-on personal sales assistant.", { category: "Sales" }),
+  ],
+  sections: [
+    { slug: "featured", title: { en: "Featured", zh: "热门" }, curated: true, plugins: ["01 Superdesign", "1Password"] },
+    { slug: "productivity", title: { en: "Productivity", zh: "效率" }, curated: false, plugins: ["6X6", "Accurate Translation"] },
+    { slug: "creativity", title: { en: "Creativity", zh: "创意" }, curated: false, plugins: ["01 Superdesign", "12ui Design"] },
+    { slug: "developer-tools", title: { en: "Developer Tools", zh: "开发者工具" }, curated: false, plugins: ["1Password"] },
+    { slug: "other", title: { en: "Other", zh: "其他" }, curated: false, plugins: [] },
   ],
 };
 
@@ -954,4 +961,8 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
 
 export function convertFileSrc(path: string): string {
   return path;
+}
+
+export function isTauri(): boolean {
+  return false;
 }

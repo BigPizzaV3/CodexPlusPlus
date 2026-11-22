@@ -1,207 +1,207 @@
-.plugin-market-screen {
+/* ── 插件市场：照 Codex 插件页排版 ──
+   顶部页签 + 搜索，下面按官方目录分组，每组两列的行（图标、名称、一句话简介、右边一个操作）。
+   选择器都带 .shell：正式版里 styles.css 在组件样式之后加载，同权重的 .panel { padding: 0 } 之类会盖掉这里。 */
+.shell .plugin-market-head {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
+}
+.shell .plugin-market-head .cx-filters {
+  flex-wrap: wrap;
+}
+.shell .plugin-market-head .cx-filters-trailing {
+  flex: none;
+  width: min(320px, 100%);
+}
+.shell .plugin-market-head .cx-toolbar {
+  width: 100%;
+}
+.shell .plugin-market-summary {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+.shell .plugin-market-feedback {
+  overflow-wrap: anywhere;
+}
+.shell .plugin-market-error {
+  color: hsl(var(--status-error));
+}
+.shell .plugin-market-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.plugin-market-card-heading,
-.plugin-market-controls,
-.plugin-market-card-actions,
-.plugin-market-pagination {
+.shell .plugin-market-shelves {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+}
+.shell .plugin-market-shelf {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.shell .plugin-market-shelf > h2 {
   display: flex;
   align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: hsl(var(--foreground));
+  font-size: 16px;
+  font-weight: 600;
+}
+.shell .plugin-market-shelf > h2 > button:not(.cx-icon-button) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+/* 返回按钮的图标和下面的行左对齐。 */
+.shell .plugin-market-shelf > h2 > .cx-icon-button {
+  margin-left: -8px;
+}
+.shell .plugin-market-shelf > h2 svg {
+  width: 16px;
+  height: 16px;
+  color: hsl(var(--muted-foreground));
+}
+.shell .plugin-market-shelf > h2 > button:not(.cx-icon-button):hover svg {
+  color: hsl(var(--foreground));
+}
+.shell .plugin-market-shelf-count {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.shell .plugin-market-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+  gap: 0 40px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.shell .plugin-market-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+}
+.shell .plugin-market-row-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.shell .plugin-market-row-main:hover strong {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.shell .plugin-market-icon {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
+  color: hsl(var(--muted-foreground));
+}
+.shell .plugin-market-icon svg {
+  width: 20px;
+  height: 20px;
+}
+.shell .plugin-market-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.shell.dark .plugin-market-icon img[data-variant="light"],
+.shell:not(.dark) .plugin-market-icon img[data-variant="dark"] {
+  display: none;
+}
+.shell .plugin-market-row-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+.shell .plugin-market-row-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.shell .plugin-market-row-title strong {
+  min-width: 0;
+  overflow: hidden;
+  color: hsl(var(--foreground));
+  font-size: 14px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell .plugin-market-row-key {
+  display: inline-flex;
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+.shell .plugin-market-row-key svg {
+  width: 13px;
+  height: 13px;
+}
+.shell .plugin-market-row-description {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shell .plugin-market-row-action {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  color: hsl(var(--muted-foreground));
+}
+.shell .plugin-market-row-action svg {
+  width: 18px;
+  height: 18px;
+}
+.shell .plugin-market-row-installed {
+  color: hsl(var(--status-success));
+}
+
+.shell .plugin-market-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   gap: 12px;
 }
 
-.plugin-market-card-actions {
-  justify-content: space-between;
-}
-
-.plugin-market-card-heading > div {
-  min-width: 0;
-  flex: 1;
-}
-
-.plugin-market-controls { flex-wrap: wrap; gap: 10px; }
-
-.plugin-market-summary,
-.plugin-market-metadata {
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-}
-
-.plugin-market-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 1 180px;
-  min-width: 180px;
-}
-
-.plugin-market-search > svg {
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-  color: hsl(var(--muted-foreground));
-}
-
-.plugin-market-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-
-.plugin-market-filter select {
-  min-height: 32px;
-  border: 1px solid hsl(var(--input));
-  border-radius: 8px;
-  background: hsl(var(--card));
-  color: hsl(var(--foreground));
-  padding: 4px 10px;
-}
-
-.plugin-market-filter select:focus-visible {
-  outline: 2px solid hsl(var(--ring));
-  outline-offset: 2px;
-}
-
-.plugin-market-summary {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin: 12px 0 0;
-}
-
-.plugin-market-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
-  gap: 14px;
-}
-
-.plugin-market-card {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  height: 250px;
-  overflow: hidden;
-}
-
-.plugin-market-card > :first-child {
-  padding: 16px 16px 8px;
-}
-
-.plugin-market-card > :last-child {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 1;
-  padding: 0 16px 16px;
-}
-
-.plugin-market-card h3,
-.plugin-market-description {
-  overflow-wrap: anywhere;
-}
-
-.plugin-market-card-heading {
-  align-items: flex-start;
-  margin-bottom: 6px;
-}
-
-.plugin-market-package {
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-  color: hsl(var(--primary));
-}
-
-.plugin-market-card h3 {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  line-height: 1.4;
-  font-size: 14px;
-}
-
-.plugin-market-description {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-  line-height: 1.55;
-  min-height: 4.65em;
-  max-height: 4.65em;
-  font-size: 12.5px;
-}
-
-.plugin-market-tags,
-.plugin-market-status,
-.plugin-market-metadata {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  overflow-wrap: anywhere;
-}
-
-.plugin-market-status {
-  min-height: 22px;
-}
-
-.plugin-market-status svg {
-  width: 12px;
-  height: 12px;
-  margin-right: 4px;
-}
-
-.plugin-market-metadata {
-  gap: 6px 12px;
-  justify-content: space-between;
-}
-
-.plugin-market-card-actions {
-  margin-top: auto;
-}
-
-.plugin-market-feedback {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 12px 16px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 10px;
-  background: hsl(var(--muted));
-  overflow-wrap: anywhere;
-}
-
-.plugin-market-feedback svg {
-  width: 16px;
-  height: 16px;
-  flex-shrink: 0;
-}
-
-.plugin-market-error {
-  color: hsl(var(--status-error));
-  border-color: hsl(var(--status-error) / 0.35);
-}
-
-.plugin-market-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  min-height: 170px;
-  color: hsl(var(--muted-foreground));
-}
-
-.plugin-market-pagination {
-  justify-content: center;
-}
-
-.plugin-market-detail-dialog {
+.shell .plugin-market-detail-dialog {
   width: min(600px, calc(100vw - 48px));
   max-height: min(720px, 85vh);
   margin: auto;
@@ -213,40 +213,44 @@
   color: hsl(var(--foreground));
   box-shadow: var(--shadow-xl);
 }
-
-.plugin-market-detail-dialog::backdrop {
+.shell .plugin-market-detail-dialog::backdrop {
   background: hsl(var(--shadow-color) / 0.68);
 }
-
-.plugin-market-detail-heading {
+.shell .plugin-market-detail-heading {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
+  align-items: center;
+  gap: 14px;
   position: sticky;
   top: 0;
-  padding-bottom: 14px;
+  padding-bottom: 16px;
   background: hsl(var(--card));
 }
-
-.plugin-market-detail-heading h2 {
+.shell .plugin-market-detail-title {
+  display: flex;
   min-width: 0;
-  margin: 4px 0 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+.shell .plugin-market-detail-title h2 {
+  margin: 0;
   font-size: 18px;
   font-weight: 600;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }
-
-.plugin-market-detail-description {
+.shell .plugin-market-detail-title span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+}
+.shell .plugin-market-detail-description {
   margin: 0 0 22px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font-size: 13px;
   line-height: 1.7;
 }
-
-.plugin-market-detail-metadata {
+.shell .plugin-market-detail-metadata {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -255,152 +259,43 @@
   border-top: 1px solid hsl(var(--border));
   font-size: 12px;
 }
-
-.plugin-market-detail-metadata > div {
+.shell .plugin-market-detail-metadata > div {
   display: grid;
   grid-template-columns: 76px minmax(0, 1fr);
   gap: 12px;
 }
-
-.plugin-market-detail-metadata dt { color: hsl(var(--muted-foreground)); }
-.plugin-market-detail-metadata dd { margin: 0; overflow-wrap: anywhere; }
-
-.plugin-market-spinner {
-  animation: plugin-market-spin 1s linear infinite;
+.shell .plugin-market-detail-metadata dt {
+  color: hsl(var(--muted-foreground));
+}
+.shell .plugin-market-detail-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.shell .plugin-market-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.shell .plugin-market-detail-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.shell .plugin-market-detail-actions:empty {
+  display: none;
+}
+/* 卸载是破坏性操作，悬停时用危险色提示（#2701）。 */
+.shell .plugin-market-uninstall:hover:not(:disabled) {
+  color: hsl(var(--destructive));
 }
 
+.shell .plugin-market-spinner {
+  animation: plugin-market-spin 1s linear infinite;
+}
 @keyframes plugin-market-spin {
   to { transform: rotate(360deg); }
 }
-
 @media (prefers-reduced-motion: reduce) {
-  .plugin-market-spinner { animation: none; }
-}
-
-@media (max-width: 720px) {
-  .plugin-market-controls { gap: 8px; }
-  .plugin-market-search { order: 1; flex-basis: 100%; }
-}
-
-/* ── 紧凑布局：一条工具条 + 筛选胶囊，轻卡片（无边框底色卡、两行说明、底部一行操作） ──
-   选择器都带 .shell：正式版里 styles.css 在组件样式之后加载，同权重的 .panel { padding: 0 } 会把卡片内边距清零。 */
-.shell .plugin-market-toolbar {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-.shell .plugin-market-toolbar .plugin-market-summary {
-  margin: 0;
-  font-size: 12px;
-}
-.shell .plugin-market-feedback {
-  display: block;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-}
-.shell .plugin-market-loading {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-.shell .plugin-market-grid {
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
-  gap: 12px;
-}
-.shell .plugin-market-card {
-  display: flex;
-  height: auto;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 16px;
-  border-radius: var(--cx-radius);
-  background: hsl(var(--card));
-}
-.shell .plugin-market-card > .plugin-market-card-main {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 6px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.shell .plugin-market-card > .plugin-market-card-main:hover strong {
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-.shell .plugin-market-card .plugin-market-card-heading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 0;
-  min-width: 0;
-}
-.shell .plugin-market-card-heading strong {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  color: hsl(var(--foreground));
-  font-size: 13.5px;
-  font-weight: 500;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.shell .plugin-market-card .plugin-market-package {
-  width: 16px;
-  height: 16px;
-  color: hsl(var(--muted-foreground));
-}
-.shell .plugin-market-card .cx-badge svg {
-  width: 12px;
-  height: 12px;
-}
-.shell .plugin-market-card .plugin-market-description {
-  min-height: calc(2 * 1.55em);
-  max-height: calc(2 * 1.55em);
-  color: hsl(var(--muted-foreground));
-  font-size: 12.5px;
-  -webkit-line-clamp: 2;
-}
-.shell .plugin-market-card > .plugin-market-card-foot {
-  display: flex;
-  flex: none;
-  flex-direction: row;
-  padding: 0;
-  align-items: center;
-  gap: 8px;
-  margin-top: auto;
-}
-.shell .plugin-market-card-foot .plugin-market-metadata {
-  display: flex;
-  flex: 1;
-  flex-wrap: nowrap;
-  justify-content: flex-start;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  gap: 10px;
-  margin: 0;
-  color: hsl(var(--muted-foreground));
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
-}
-.shell .plugin-market-card-foot .plugin-market-card-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 4px;
-  margin: 0;
-}
-.shell .plugin-market-card-actions .cx-secondary {
-  height: 28px;
-}
-/* 卸载是破坏性操作，悬停时用危险色提示（#2701）。 */
-.shell .plugin-market-card-actions .plugin-market-uninstall:hover:not(:disabled) {
-  color: hsl(var(--destructive));
+  .shell .plugin-market-spinner { animation: none; }
 }

@@ -1374,7 +1374,6 @@
     const tab = overlay.querySelector(".codex-plus-modal-content")?.dataset?.codexPlusActiveTab;
     if (tab === codexPlusExtensionsTab) return "extensions";
     if (tab === codexPlusSponsorTab) return "sponsor";
-    if (tab === codexPlusPluginMarketTab) return "plugin-market";
     if (tab === codexPlusProviderTab) return "provider";
     if (tab === codexPlusRemoteControlTab) return "remote";
     if (tab === codexPlusWeixinConnectTab) return "weixin";

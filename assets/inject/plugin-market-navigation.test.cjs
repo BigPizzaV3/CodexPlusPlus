@@ -200,3 +200,19 @@ test("native rail mutations schedule reconciliation while owned fallback writes 
   native.remove();
   assert.equal(f.context.shouldScheduleScan([{ target: f.nav, addedNodes: [], removedNodes: [native] }]), true);
 });
+
+test("only the native Plugins entry remains: old buttons are cleaned up, the adapter is kept and third parties get no market routes", () => {
+  const extensionApi = fragment("91-extension-api.js");
+  const manifest = JSON.parse(fragment("manifest.json"));
+  assert.doesNotMatch(navigation, /id: codexPlusRailPluginMarketId, label: "Codex 插件市场"/);
+  assert.doesNotMatch(navigation, /\[codexPlusRailPluginMarketId, "plugin-market"\]/);
+  assert.doesNotMatch(navigation, /installCodexPlusPluginMarketSidebarNavigation\(/);
+  assert.match(entryNavigation, /document\.getElementById\(codexPlusRailPluginMarketId\)\?\.remove\(\)/);
+  assert.match(entryNavigation, /document\.getElementById\(codexPlusSidebarPluginMarketId\)\?\.remove\(\)/);
+  assert.match(adapter, /function codexPlusNativePluginNavigationEntry\(/);
+  assert.match(adapter, /function openCodexPlusNativePluginMarket\(/);
+  assert.match(adapter, /native\.click\(\)/);
+  assert.doesNotMatch(extensionApi, /["']\/plugin-market\/(?:install|list|install-status)["']/);
+  // Codex 里装插件走原生插件页（62 的适配层）；以前那个自己画的插件市场页已删掉。
+  assert.ok(!manifest.fragments.some((item) => item.name === "61-plugin-market-ui.js"));
+});

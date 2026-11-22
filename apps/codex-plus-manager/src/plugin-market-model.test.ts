@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { applyPluginInstallation, filterMarketPlugins, mergePluginMarketCatalog, pluginMarketConnector, pluginMarketPage, PluginMarketRequests, type MarketCatalogs, type MarketPlugin, type MarketResult } from "./plugin-market-model.ts";
+import { applyPluginInstallation, filterMarketPlugins, mergePluginMarketCatalog, pluginMarketConnector, pluginMarketPage, pluginMarketShelves, PluginMarketRequests, type MarketCatalogs, type MarketPlugin, type MarketResult, type MarketSection } from "./plugin-market-model.ts";
 
 function plugin(id: string, overrides: Partial<MarketPlugin> = {}): MarketPlugin {
   return {
@@ -29,18 +29,47 @@ test("search matches multiple terms across plugin metadata without changing entr
   assert.equal(entries[0].installed, false);
 });
 
-test("installation, update and authorization filters remain independent", () => {
+test("installed and update filters combine with the search", () => {
   const entries = [
     plugin("new"),
     plugin("installed", { installed: true, installedVersion: "1.0" }),
     plugin("outdated", { installed: true, installedVersion: "0.9", updateAvailable: true }),
-    plugin("authorization", { requiresAuth: true }),
   ];
-  assert.deepEqual(filterMarketPlugins(entries, "", "available").map((entry) => entry.id), ["new", "authorization"]);
   assert.deepEqual(filterMarketPlugins(entries, "", "installed").map((entry) => entry.id), ["installed", "outdated"]);
   assert.deepEqual(filterMarketPlugins(entries, "", "updates").map((entry) => entry.id), ["outdated"]);
-  assert.deepEqual(filterMarketPlugins(entries, "", "auth").map((entry) => entry.id), ["authorization"]);
-  assert.deepEqual(filterMarketPlugins(entries, "outdated", "available"), []);
+  assert.deepEqual(filterMarketPlugins(entries, "new", "installed"), []);
+  assert.deepEqual(filterMarketPlugins([plugin("short", { shortDescription: "Read Slack" })], "slack", "all").map((entry) => entry.id), ["short"]);
+});
+
+test("shelves follow the official directory like the Codex plugins page", () => {
+  const entries = [
+    plugin("slack", { category: "Communication" }),
+    plugin("figma", { category: "Creativity" }),
+    plugin("canva", { category: "Creativity" }),
+    plugin("stray", { category: "Developer Tools" }),
+    plugin("odd", { category: "Something Else" }),
+    plugin("bare"),
+  ];
+  const sections: MarketSection[] = [
+    { slug: "featured", title: { en: "Featured", zh: "热门" }, curated: true, plugins: ["figma", "missing"] },
+    { slug: "communication", title: { en: "Communication", zh: "沟通" }, curated: false, plugins: ["slack", "figma"] },
+    { slug: "creativity", title: { en: "Creativity", zh: "创意" }, curated: false, plugins: ["canva", "figma"] },
+    { slug: "developer-tools", title: { en: "Developer Tools", zh: "开发者工具" }, curated: false, plugins: [] },
+    { slug: "other", title: { en: "Other", zh: "其他" }, curated: false, plugins: [] },
+  ];
+  const shelves = pluginMarketShelves(entries, sections, "zh");
+  // 合集照列，分类里一个插件只在第一个列到它的分类；没列到的按包里的分类，认不出的和没分类的进「其他」。
+  assert.deepEqual(shelves.map((shelf) => [shelf.title, shelf.plugins.map((entry) => entry.id)]), [
+    ["热门", ["figma"]],
+    ["沟通", ["slack", "figma"]],
+    ["创意", ["canva"]],
+    ["开发者工具", ["stray"]],
+    ["其他", ["odd", "bare"]],
+  ]);
+  assert.equal(pluginMarketShelves(entries, sections, "en")[0].title, "Featured");
+  // 目录里没有「其他」时补一组；旧索引没有分组时不分组。
+  assert.deepEqual(pluginMarketShelves(entries, sections.slice(0, 2), "zh").map((shelf) => [shelf.slug, shelf.plugins.length]), [["featured", 1], ["communication", 2], ["other", 4]]);
+  assert.deepEqual(pluginMarketShelves(entries, [], "zh"), []);
 });
 
 test("50-entry pages clamp after a search or installation removes rows", () => {
@@ -156,12 +185,14 @@ test("uninstall result clears installed state only for the exact source and id (
   assert.equal(next.full?.plugins[0].installed, true);
 });
 
-test("manager plugin cards offer an in-app confirmed uninstall for installed plugins (#2701)", () => {
+test("manager plugin details offer an in-app confirmed uninstall for installed plugins (#2701)", () => {
   const source = readFileSync(new URL("./PluginMarketScreen.tsx", import.meta.url), "utf8");
   assert.match(source, /invoke<InstallResult>\("uninstall_plugin_market_item"/);
   assert.match(source, /await appConfirm\(/);
   assert.doesNotMatch(source, /window\.confirm\(|[^.\w]confirm\(/);
-  assert.match(source, /plugin\.installed \? \(\s*<Button aria-label=\{tf\("卸载插件 \{0\}"/);
+  assert.match(source, /detailPlugin\.installed \? \(\s*<button aria-label=\{tf\("卸载插件 \{0\}"[^>]*onClick=\{\(\) => fromDetails\(uninstall, detailPlugin\)\}/);
+  // 详情弹窗在顶层，先关掉再弹确认框，确认框才不会被它盖住。
+  assert.match(source, /const fromDetails = [^;]*\{\s*detailDialog\.current\?\.close\(\);\s*void action\(plugin\);/);
 });
 
 test("connector kind tells where the plugin's connector signs in; old indexes only know it has one", () => {
