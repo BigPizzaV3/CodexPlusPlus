@@ -4372,7 +4372,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "{0} 的占用构成": "{0} usage breakdown",
   "将永久删除 {0} 个缓存文件（逻辑大小 {1}）。\n涉及应用：{2}\n\n请先退出相关 AI 应用及 CLI。只处理超过 24 小时未修改的文件，包含已选择的日志。\n\n此操作不可撤销。是否继续？": "Permanently delete {0} cache files (logical size {1}).\nApps: {2}\n\nQuit the relevant AI apps and CLIs first. Only files last modified over 24 hours ago are eligible, including selected logs.\n\nThis cannot be undone. Continue?",
   "已扫描 {0}，可清理 {1}；已选择 {2} 个文件 / {3}。": "Scanned {0}, eligible {1}; selected {2} files / {3}.",
-  "已删除 {0} 个文件（逻辑大小 {1}），跳过 {2} 个，失败 {3} 个。请重新扫描查看剩余占用。": "Deleted {0} files (logical size {1}), skipped {2}, failed {3}. Scan again to see remaining usage.",
+  "已删除 {0} 个文件（逻辑大小 {1}），跳过 {2} 个，失败 {3} 个。": "Deleted {0} files (logical size {1}), skipped {2}, failed {3}.",
   "占用 {0} · 可清理 {1} / {2} 个文件 · 跳过 {3} 个": "Size {0} · Eligible {1} / {2} files · Skipped {3}",
   // 模型元数据来源徽标（metadataSourceTags 下发，经 tf() 渲染，不能放 EN_PLAIN）
   "匹配：{0}": "Matched: {0}",
