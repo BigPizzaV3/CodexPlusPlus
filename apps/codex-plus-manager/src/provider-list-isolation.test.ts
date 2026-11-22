@@ -4,7 +4,7 @@ import {test} from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import {normalizeAggregateDefaultRelayId,normalizeAggregateMembers} from "./aggregate-members.ts";
-import { readAppSource } from "./app-source.test-helper.ts";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 const text=readAppSource() + "\n" + readFileSync(new URL("./relay-profile-editing.ts", import.meta.url), "utf8");
 const app=ts.createSourceFile("App.tsx",text,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
 const names=["RelayProfileList","removeRelayProfile","relayProfileDeleteIssue","duplicateRelayProfile","reorderRelayProfiles","normalizeAggregateConfig"];
@@ -23,7 +23,7 @@ const ctx=vm.createContext({
 vm.runInContext(code,ctx);
 const fixture=():any=>({activeRelayId:"agg",relayProfiles:[{id:"default",relayMode:"pureApi"},{id:"member",relayMode:"pureApi"},{id:"unused",relayMode:"pureApi"},{id:"agg",relayMode:"aggregate",aggregate:{members:[{profileId:"member",weight:1},{profileId:"unused",weight:1}],routes:[]}}]});
 test("provider page passes complete settings to mutations and filters only visible cards",()=>{
-  const parent=text.slice(text.indexOf("  const saveRelaySettings ="),text.indexOf("function multiLaunchSupported("));
+  const parent=appDeclarationSource("RelayScreen");
   const list=parent.slice(parent.indexOf("<RelayProfileList"),parent.indexOf("/>",parent.indexOf("<RelayProfileList")));
   assert.match(list,/form=\{normalized\}/);assert.match(list,/visibleProfiles=\{visibleProfiles\}/);
   assert.match(list,/onFormChange=\{saveRelaySettings\}/);assert.match(list,/onReorder=\{reorderRelaySettings\}/);
