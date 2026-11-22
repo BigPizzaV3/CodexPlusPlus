@@ -5,8 +5,9 @@ import vm from "node:vm";
 import { MANAGER_DATA_SOURCES, managerDataRequest, managerExtensionPages, managerNavPages, managerPageOverrides } from "./extension-manager-pages.ts";
 import { handleManagerRequest, MANAGER_PANEL_BOOTSTRAP, type ManagerBridgeDeps } from "./extension-manager-bridge.ts";
 import { isRouteAlias } from "./route-aliases.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const app = readAppSource();
 const rust = readFileSync(new URL("../../../crates/codex-plus-core/src/user_scripts.rs", import.meta.url), "utf8");
 
 /** Rust 侧 `pub const NAME: &[&str] = &[...]` 里的字符串。 */

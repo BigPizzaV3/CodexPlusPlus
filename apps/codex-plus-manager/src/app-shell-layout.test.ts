@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 // 源码契约与 checkout 行尾无关，统一后仍保留全部结构与空白断言。
 function readSource(path: string) {
   return readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 }
 
-const text = readSource("./App.tsx");
+const text = readAppSource();
 const styles = readSource("./styles.css");
 const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 

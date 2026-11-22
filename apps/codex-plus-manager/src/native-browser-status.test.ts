@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import vm from "node:vm";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 // 原生浏览器状态只在 Codex 的 Codex++ 设置页里显示（46-service-settings.js），文案也只有那一份。
 const codexSettingsSource = () => readFile(new URL("../../../assets/inject/renderer-inject/46-service-settings.js", import.meta.url), "utf8");
@@ -98,7 +99,7 @@ test("patch diagnostics describe only patch state, not browser availability", as
 });
 
 test("consent precedes enabling in Codex, default is off, and status is read-only", async () => {
-  const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   const page = await codexCatalogPage();
   assert.match(app, /codexAppNativeBrowserRequireIdentification: false/);
   // 开启前在 Codex 设置页里确认，取消就不写。

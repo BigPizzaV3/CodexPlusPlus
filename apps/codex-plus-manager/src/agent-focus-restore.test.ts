@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { readFile } from "node:fs/promises";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 /**
  * #2902：使用模式在页面本地存储之外再存进设置文件，本地存储丢了（例如管理员身份启动时 WebView 数据目录不同）
@@ -15,7 +16,7 @@ it("选择模式时同时备份进设置文件，启动时本地缺失就从设�
   assert.match(store, /export function saveAgentFocus\(mode: FocusMode\) \{\n\s*writeLocal\(mode\);\n\s*backupAgentFocus\(mode\);/);
   // 只补不覆盖：本地已有有效选择时以本地为准。
   assert.match(store, /if \(typeof window === "undefined" \|\| !shouldAskAgentFocus\(readStored\(\)\)\) return false;/);
-  const app = await read("./App.tsx");
+  const app = readAppSource();
   assert.match(app, /if \(restoreAgentFocusFromSettings\(savedAgentFocus\)\) \{\n\s*setAgentFocusOpen\(false\);/);
   assert.match(app, /backupAgentFocus\(agentFocus\);/);
   const lib = await read("../src-tauri/src/lib.rs");
@@ -23,7 +24,7 @@ it("选择模式时同时备份进设置文件，启动时本地缺失就从设�
 });
 
 it("启动时先读设置文件再决定弹不弹问卷，「稍后设置」也记住（#2936）", async () => {
-  const app = await read("./App.tsx");
+  const app = readAppSource();
   // 初始不弹，交给 resolveAgentFocusPrompt 读完设置文件再定；判定期间入门清单也不出。
   assert.match(app, /const \[agentFocusOpen, setAgentFocusOpen\] = useState\(false\);/);
   assert.match(app, /const \[agentFocusChecking, setAgentFocusChecking\] = useState\(needAgentFocusPrompt\);/);

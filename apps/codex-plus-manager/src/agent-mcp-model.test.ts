@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { bodyEnabledState, editedEnabledState, mcpCount, mcpOn, mcpPresent, mergeMcpRows } from "./agent-mcp-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const entry = (id: string, enabled = true, tomlBody = `command = "${id}"\n`) => ({ id, enabled, tomlBody });
 
@@ -69,7 +70,7 @@ test("#3115：保存时 Codex 以编辑器里改过的启停为准，不再一�
 
 test("#3115：「切换时保留」在连接页对直连和网关都可见，不再藏在直连供应商编辑里", async () => {
   const { readFileSync } = await import("node:fs");
-  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   assert.equal(app.match(/relayPreserveNonproviderSettings: event\.currentTarget\.checked/g)?.length, 1);
   const row = app.indexOf('className="cx-preserve-row"');
   assert.ok(row > 0);

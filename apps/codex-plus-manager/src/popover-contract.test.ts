@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 // Windows 检出（core.autocrlf）下源码是 CRLF，多行契约断言必须先把换行归一化，
 // 否则同一份代码在 macOS 绿、在 Windows CI 红。
 const readText = async (name: string) =>
   (await readFile(new URL(name, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
-const app = await readText("./App.tsx");
+const app = readAppSource();
 const hookSource = await readText("./use-popover-layer.ts");
 const styles = await readText("./styles.css");
 // AppSelect 抽成了独立模块，全应用共用。

@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
 import ts from "typescript";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 // 独立运行真实页面函数和事件处理器，替换 hooks/IPC；不启动本机 Claude 或探测 PATH。
-const app = ts.createSourceFile("App.tsx", readFileSync(new URL("./App.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const app = ts.createSourceFile("App.tsx", readAppSource(), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = app.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "ClaudeLocalizationScreen");
 assert.ok(component);
 const transpile = (text: string) => ts.transpileModule(text, {

@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const styles = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const app = readAppSource();
 const catalog = JSON.parse(readFileSync(new URL("../../../crates/codex-plus-core/assets/enhancement-settings.json", import.meta.url), "utf8")) as {
   groups: Array<{ id: string; title: string }>;
   items: Array<{ key: string; group: string }>;

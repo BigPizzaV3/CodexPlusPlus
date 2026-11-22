@@ -18,6 +18,7 @@ import {
   TRAY_TAB_STORAGE_KEY,
   TRAY_TABS,
 } from "./tray-panel-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -170,7 +171,7 @@ test("托盘面板改成多页签：网关只是一个页签，记住页签，�
   assert.match(panel, /emit\(TRAY_REQUEST_EVENT/);
   // 面板自己不调切换供应商 / 启动 Codex 的命令，免得绕过主窗口的校验与冲突弹窗。
   assert.doesNotMatch(panel, /"switch_relay_profile"|"launch_codex_plus"|"restart_codex_plus"|"stop_codex_plus"/);
-  const app = read("./App.tsx");
+  const app = readAppSource();
   assert.match(app, /listen<unknown>\(TRAY_REQUEST_EVENT/);
   assert.match(app, /emit\(TRAY_RESULT_EVENT, result\)/);
   assert.doesNotMatch(panel, /ProvidersTab|switchRelay/);
@@ -179,7 +180,7 @@ test("托盘面板改成多页签：网关只是一个页签，记住页签，�
 test("「点击托盘图标弹出快捷面板」从网关设置移到整体设置，仍存 gateway.json 的 trayPanel", () => {
   const gatewayPage = read("./GatewayPage.tsx");
   assert.doesNotMatch(gatewayPage, /点击托盘图标弹出快捷面板|save_gateway_tray_panel/);
-  const app = read("./App.tsx");
+  const app = readAppSource();
   const start = app.indexOf("function GlobalSettingsScreen(");
   const globalSettings = app.slice(start, app.indexOf("\nfunction ", start + 10));
   assert.match(globalSettings, /点击托盘图标弹出快捷面板/);
@@ -198,7 +199,7 @@ test("轻量模式（#2677）：面板发请求前先让后端按需重建主窗
   // 两处发请求（启动类操作、打开某页）都先等主窗口就绪再发。
   assert.equal(request.match(/await prepareMainWindow\(\);\r?\n\s+await emit\(TRAY_REQUEST_EVENT/g)?.length, 2);
   assert.match(panel, /invoke<boolean>\("main_window_prepare"\)/);
-  const app = read("./App.tsx");
+  const app = readAppSource();
   assert.match(app, /stopListening = unlisten;\r?\n\s+\/\/.*\r?\n\s+void emit\(MAIN_WINDOW_READY_EVENT\)/);
   // 面板请求没做完时不释放主窗口。
   assert.match(app, /if \(trayRequestsInFlight\.current === 0\) void invoke\("main_window_release_when_hidden"\)/);

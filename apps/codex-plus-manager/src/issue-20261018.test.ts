@@ -6,6 +6,7 @@ import ts from "typescript";
 import { parseModelMetadataMap, synchronizeModelMetadataLiteSupport } from "./model-metadata.ts";
 import { reasoningParameterMode, setModelReasoningParameterMode } from "./model-reasoning.ts";
 import { pureApiImageGenerationEnabled, requestCompatibilityEnabled, settingsRequireLocalHelper, stripImageGenerationToolEnabled } from "./model-routes.ts";
+import { APP_SOURCE_FILES, readAppSource } from "./app-source.test-helper.ts";
 
 test("reasoning modes retain level drafts, round trip and require the helper only when opted in", () => {
   const original = JSON.stringify({ model: { custom: "kept", supported_reasoning_levels: [{ effort: "high" }] }, other: { custom: true } });
@@ -69,9 +70,10 @@ test("language switches notify React without reload or storing drafts", async ()
   unsubscribe(); await exports.setLanguage("en"); assert.equal(calls, 2);
   assert.equal(reloads, 0);
   assert.deepEqual([...saved.keys()], ["codex-plus-lang"]);
-  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   assert.match(app, /useSyncExternalStore\(subscribeLanguage, getLanguage, getLanguage\)/);
-  for (const name of ["App.tsx", "components/ProviderPresetSelector.tsx"]) {
+  for (const name of [...APP_SOURCE_FILES, "components/ProviderPresetSelector.tsx"]) {
+    const isApp = name !== "components/ProviderPresetSelector.tsx";
     const file = ts.createSourceFile(name, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node) => {
       if (ts.isCallExpression(node) && node.expression.getText(file) === "t") {
@@ -79,8 +81,8 @@ test("language switches notify React without reload or storing drafts", async ()
         while (p && !ts.isSourceFile(p)) { if (ts.isFunctionLike(p)) { lazy = true; break; } p = p.parent; }
         // 默认供应商名称是配置数据，保持创建时快照；导航/提示标签才需动态翻译。
         const defaultName = node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "默认中转";
-        if (name === "App.tsx" && defaultName) assert.ok(ts.isPropertyAssignment(node.parent), "配置名称不能变成动态 getter");
-        const dataSnapshot = name === "App.tsx" && ts.isPropertyAssignment(node.parent)
+        if (isApp && defaultName) assert.ok(ts.isPropertyAssignment(node.parent), "配置名称不能变成动态 getter");
+        const dataSnapshot = isApp && ts.isPropertyAssignment(node.parent)
           && node.parent.name.getText(file) === "name" && defaultName;
         assert.equal(lazy || dataSnapshot, true, `${name} contains a frozen UI label`);
       }

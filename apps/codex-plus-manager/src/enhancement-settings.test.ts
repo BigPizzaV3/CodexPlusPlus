@@ -13,8 +13,9 @@ import {
   type EnhancementPlatform,
 } from "./enhancement-catalog.ts";
 import { EN_PLAIN } from "./i18n-en.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const appSource = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+const appSource = readAppSource();
 const app = ts.createSourceFile("App.tsx", appSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 function descendants(node: ts.Node): ts.Node[] {

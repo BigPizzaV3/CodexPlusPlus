@@ -3,8 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const text = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+const text = readAppSource();
 const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const relay = app.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "RelayScreen");
 assert.ok(relay && ts.isFunctionDeclaration(relay) && relay.body);

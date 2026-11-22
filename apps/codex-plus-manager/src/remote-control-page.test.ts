@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 /**
  * 「远程控制」页：前端只调一条 `remote_control_request`，按 action 分发；
@@ -9,7 +10,7 @@ import { readFile } from "node:fs/promises";
 const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 
 test("远程控制页挂在侧栏 Codex 下面、紧跟「微信连接」，⌘K 仍能搜到，并在路由表中渲染", async () => {
-  const app = await read("./App.tsx");
+  const app = readAppSource();
   assert.match(app, /\| "remoteControl" \|/, "Route 类型里要有 remoteControl");
   // 属于 Codex：只在 Codex 的子项里出现，切到别的 Agent 时不跟过去。
   assert.match(app, /\{ id: "remoteControl", get label\(\) \{ return t\("远程控制"\); \}, icon: Smartphone, tool: "codex" \}/);

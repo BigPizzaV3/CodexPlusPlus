@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { it } from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 it("广告请求持续未完成时，侧栏工具列表、设置等本地加载照常完成并释放隐藏窗口", async () => {
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = readAppSource();
   const effect = source.slice(source.indexOf("    void refreshTools(true);"));
   const startup = effect.slice(0, effect.indexOf("  }, []);"));
   const events: string[] = [];

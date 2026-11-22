@@ -3,10 +3,11 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
 import { EN_PLAIN } from "./i18n-en.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const catalog = JSON.parse(read("../../../crates/codex-plus-core/assets/enhancement-settings.json"));
-const app = read("./App.tsx");
+const app = readAppSource();
 const settingsPage = read("../../../assets/inject/renderer-inject/40-backend-settings.js");
 const serviceTier = read("../../../assets/inject/renderer-inject/30-service-tier.js");
 

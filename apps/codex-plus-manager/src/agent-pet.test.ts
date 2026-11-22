@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { createContext, runInContext } from "node:vm";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 /**
  * Agent 桌宠是官方拓展包（assets/extensions/agent-pet）：Codex 里的运行时（pet.js）、设置界面（settings.js，
@@ -12,7 +13,7 @@ const fragment = packageFile("pet.js");
 const settingsSource = packageFile("settings.js");
 const main = packageFile("main.js");
 const manifest = JSON.parse(packageFile("codexpp.json"));
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const app = readAppSource();
 const injectFragment = (name: string) => readFileSync(new URL(`../../../assets/inject/renderer-inject/${name}`, import.meta.url), "utf8");
 
 type PetSettings = Record<string, any>;

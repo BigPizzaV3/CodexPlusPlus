@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
 import { UpdateNotifications } from "./update-notification.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const source = readAppSource();
 const file = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 function handler(name: string, dependencies: Record<string, unknown>): (...args: any[]) => Promise<void> {

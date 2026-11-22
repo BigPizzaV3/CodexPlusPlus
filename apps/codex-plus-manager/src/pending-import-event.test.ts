@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { it } from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const read = async (path: string) => (await readFile(new URL(path, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
 it("网页导入 / 一键换肤待确认项靠事件和窗口唤起读取，不再定时轮询磁盘", async () => {
-  const app = await read("./App.tsx");
+  const app = readAppSource();
   const lib = await read("../src-tauri/src/lib.rs");
   // 前后端事件名一致。
   const eventName = /const PENDING_IMPORT_CHANGED_EVENT: &str = "([^"]+)";/.exec(lib)?.[1];
@@ -22,7 +23,7 @@ it("网页导入 / 一键换肤待确认项靠事件和窗口唤起读取，不�
 });
 
 it("App 级轮询走 usePolling（窗口不可见暂停），数据没变沿用旧引用；聚焦刷新概览有节流", async () => {
-  const app = await read("./App.tsx");
+  const app = readAppSource();
   assert.match(app, /usePolling\(async \(\) => \{\n\s*const result = await invoke<AutoTakeoverResult>\("load_auto_takeover_state"\);\n\s*if \(autoTakeoverPollingRef\.current\) setAutoTakeoverState\(\(previous\) => keepIfSame\(previous, result\)\);\n\s*\}, 3000, \{ enabled: autoTakeoverPolling \}\);/);
   assert.match(app, /usePolling\(\(\) => refreshMultiLaunchInstances\(true\), 3_000, \{ enabled: route === "multiLaunch" \}\);/);
   assert.match(app, /setMultiLaunchInstances\(\(previous\) => keepIfSame\(previous, instances\)\);/);
@@ -41,7 +42,7 @@ it("顶栏操作按钮在 layout effect 里找挂载点，切页时不晚一帧"
 });
 
 it("Codex 概览的请求日志只读一次（仪表板读、概览算统计），刷新按钮连仪表板一起重读", async () => {
-  const app = await read("./App.tsx");
+  const app = readAppSource();
   const dashboard = await read("./AgentDashboard.tsx");
   const overview = app.slice(app.indexOf("function OverviewScreen("), app.indexOf("\nfunction ", app.indexOf("function OverviewScreen(") + 10));
   assert.doesNotMatch(overview, /load_request_logs/);

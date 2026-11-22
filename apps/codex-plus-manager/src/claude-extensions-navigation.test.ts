@@ -13,8 +13,9 @@ import {
   type ExtensionHost,
 } from "./extension-host-model.ts";
 import { defaultMarketSort, parseMarketTime, sortMarketScripts } from "./script-market-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const text = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const text = readAppSource();
 const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 function declaration(name: string): ts.VariableDeclaration {

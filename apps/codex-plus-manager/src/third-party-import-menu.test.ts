@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 // Windows 检出（core.autocrlf）下源码是 CRLF，多行断言必须先归一化换行。
 const readText = async (name: string) =>
   (await readFile(new URL(name, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
-const app = await readText("./App.tsx");
+const app = readAppSource();
 const styles = await readText("./styles.css");
 
 /**

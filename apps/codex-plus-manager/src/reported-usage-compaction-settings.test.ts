@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import vm from "node:vm";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const source = read("../../../assets/inject/renderer-inject/10-style.js");
@@ -55,7 +56,7 @@ test("reported usage compaction has one default-off App and CLI builtin setting 
   assert.match(item.description, /旧会话首次响应前.*原估算/);
   const builtins = read("../../../assets/inject/renderer-inject/96-builtin-extensions.js");
   assert.match(builtins, /\{ id: "reported-usage-compaction", name: "按上报用量判断压缩（实验）" \}/);
-  const app = read("./App.tsx");
+  const app = readAppSource();
   assert.match(app, /codexAppReportedUsageCompaction: boolean;/);
   assert.match(app, /codexAppReportedUsageCompaction: false,/);
 });

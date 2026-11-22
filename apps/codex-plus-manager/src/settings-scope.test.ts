@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const text = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const text = readAppSource();
 const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
 function functionSource(name: string) {

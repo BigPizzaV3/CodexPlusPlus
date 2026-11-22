@@ -4810,7 +4810,7 @@ fn manager_ui_exposes_pure_api_relay_mode_button() {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("core crate should live under crates/codex-plus-core");
-    let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
+    let source = read_manager_app_source(repo);
     let commands =
         std::fs::read_to_string(repo.join("apps/codex-plus-manager/src-tauri/src/lib.rs")).unwrap();
 
@@ -4828,7 +4828,7 @@ fn manager_ui_omits_plugin_auto_expand() {
         .parent()
         .and_then(std::path::Path::parent)
         .expect("core crate should live under crates/codex-plus-core");
-    let source = std::fs::read_to_string(repo.join("apps/codex-plus-manager/src/App.tsx")).unwrap();
+    let source = read_manager_app_source(repo);
 
     assert!(!source.contains("codexAppPluginAutoExpand"));
     assert!(!source.contains("插件列表全量展示"));
@@ -6456,4 +6456,22 @@ fn injection_script_preserves_native_menu_placement_without_language_rewrites() 
     assert!(!script.contains("codexMenuLocalizationMap"));
     assert!(!script.contains("function localizeCodexMenus"));
     assert!(!script.contains("localizeCodexMenus();"));
+}
+
+/// 管理器主界面按页面拆成了多个文件，清单登记在 `src/app-source.test-helper.ts` 的 `APP_SOURCE_FILES`；
+/// 这里按清单读出来拼在一起。
+fn read_manager_app_source(repo: &std::path::Path) -> String {
+    let src = repo.join("apps/codex-plus-manager/src");
+    let helper = std::fs::read_to_string(src.join("app-source.test-helper.ts")).unwrap();
+    let list = helper
+        .split_once("APP_SOURCE_FILES = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| list)
+        .expect("APP_SOURCE_FILES list");
+    list.split('"')
+        .skip(1)
+        .step_by(2)
+        .map(|name| std::fs::read_to_string(src.join(name)).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
 }

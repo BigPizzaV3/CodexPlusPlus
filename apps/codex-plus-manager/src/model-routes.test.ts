@@ -10,6 +10,7 @@ import {
   type RelayModelRouteProfile,
   type RelayModelRouteSettings,
 } from "./model-routes.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 function profile(id: string, patch: Partial<RelayModelRouteProfile> = {}): RelayModelRouteProfile {
   return {
@@ -39,7 +40,7 @@ function settings(
 }
 
 test("model route inputs keep focus while editing and label the example placeholder", async () => {
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = readAppSource();
 
   assert.match(source, /key=\{`model-route-\$\{index\}`\}/);
   assert.doesNotMatch(source, /key=\{`\$\{route\.model\}-\$\{index\}`\}/);

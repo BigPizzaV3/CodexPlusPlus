@@ -16,6 +16,7 @@ import {
   type GatewayPayload,
 } from "./gateway-model.ts";
 import { hubAgents, hubFeed, hubPoolState } from "./hub-overview-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const read = (name: string) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
 
@@ -313,7 +314,7 @@ test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思
 });
 
 test("用量与请求日志并成一页：两个页签各是一条路由，统计表点一行跳到请求并筛选", () => {
-  const app = read("App.tsx");
+  const app = readAppSource();
   assert.match(app, /route === "gatewayUsage" \|\| route === "requestLog" \? <UsageTabs onChange=\{\(next\) => void navigate\(next\)\} value=\{route\} \/> : null/);
   assert.match(app, /match: \["gatewayUsage", "requestLog"\]/, "在请求页签时侧栏「用量」也是选中");
   assert.match(app, /useEffect\(\(\) => onOpenRequestLog\(\(focus\) => \{/);
@@ -347,14 +348,14 @@ test("统计里点「未知」供应商：请求页按「无供应商」筛，�
 
   const usage = read("GatewayUsage.tsx");
   assert.match(usage, /\{ relayUnknown: true, relayLabel: t\("未知"\), range \}/, "空 key 的供应商行点击带「未知」标记");
-  const app = read("App.tsx");
+  const app = readAppSource();
   assert.match(app, /useState<RelayFilter \| null>\(\(\) => relayFilterFromFocus\(initialFocus\)\)/);
   assert.match(app, /\.\.\.relayFilterArgs\(relayFilter\),/, "「未知」要把 relayUnknown 传给 load_request_logs");
   assert.doesNotMatch(app, /relayId: relayFilter\?\.id \?\? null/, "不能再用 relayFilter?.id 拼参数，空 id 会变成不筛");
 });
 
 test("启动落在首页（赞助商推荐），不落在上次那个 Agent 的概览", () => {
-  const app = read("App.tsx");
+  const app = readAppSource();
   const body = app.slice(app.indexOf("function loadInitialRoute(): Route {"), app.indexOf("function initialTourOpen"));
   assert.match(body, /return "home";\r?\n\}/);
   assert.doesNotMatch(body, /return "overview"/);

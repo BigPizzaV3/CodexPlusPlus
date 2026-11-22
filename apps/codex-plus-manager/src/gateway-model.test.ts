@@ -58,8 +58,9 @@ import {
   type GatewayPayload,
 } from "./gateway-model.ts";
 import type { ProviderPreset } from "./presets.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const app = readAppSource();
 const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
 function payload(): GatewayPayload {

@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { it } from "node:test";
 import { isRouteAlias, resolveRouteAlias, ROUTE_ALIASES } from "./route-aliases.ts";
+import { APP_SOURCE_FILES, readAppSource } from "./app-source.test-helper.ts";
 
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const app = readAppSource().replace(/\r\n/g, "\n");
 
 it("旧路由 id 换成现在的页面，其余原样返回", () => {
   assert.equal(resolveRouteAlias("maintenance"), "agentSettings");
@@ -58,7 +59,7 @@ it("各窗口按需加载自己的界面；英文词典只在用英文时加载�
   assert.match(i18n, /^import type \* as EnglishPack from "\.\/i18n-en";$/m);
   assert.match(i18n, /if \(language === "en" && !EN\) EN = await import\("\.\/i18n-en"\);/);
   // 其他源码不能再静态引入英文词典，否则又打进主包。
-  for (const name of ["App.tsx", "TrayPanel.tsx", "CuPipWindow.tsx", "main.tsx"]) {
+  for (const name of [...APP_SOURCE_FILES, "TrayPanel.tsx", "CuPipWindow.tsx", "main.tsx"]) {
     assert.doesNotMatch(readFileSync(new URL(`./${name}`, import.meta.url), "utf8"), /from "(@|\.)\/i18n-en"/, name);
   }
   // 样式仍在入口一次引入，保持原来的层叠顺序：组件样式在 styles.css、cursor-ui.css 之前。

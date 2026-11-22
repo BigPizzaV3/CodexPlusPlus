@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 /**
  * 「自动接管官方 App」的接线契约。
@@ -15,7 +16,7 @@ import test from "node:test";
  */
 
 const root = path.resolve(import.meta.dirname, "..");
-const appSource = readFileSync(path.join(root, "src/App.tsx"), "utf8");
+const appSource = readAppSource();
 const libSource = readFileSync(
   path.join(root, "src-tauri/src/lib.rs"),
   "utf8",

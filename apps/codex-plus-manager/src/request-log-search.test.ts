@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8").replaceAll("\r\n", "\n");
+const app = readAppSource().replaceAll("\r\n", "\n");
 const start = "  const filtered = useMemo(() => {\n";
 const end = "\n  }, [entries, filter, query, sessionFilter, agentScope, displayNames]);";
 const begin = app.indexOf(start);

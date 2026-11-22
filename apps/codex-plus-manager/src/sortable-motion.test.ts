@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const source = readAppSource();
 
 test("直连供应商拖动时跟手，松手后有位移动画", () => {
   const card = source.slice(source.indexOf("function SortableRelayProfileCard("), source.indexOf("function RelayProfileDetail("));
