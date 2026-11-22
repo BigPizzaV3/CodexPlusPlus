@@ -155,6 +155,7 @@ import { noticeDuration, noticeTone } from "./notice-model";
 import { agentTabGroups, agentTarget, pageVisibleForTool } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
 import { keepIfSame, usePolling } from "./use-polling";
+import { useStableCallbacks } from "./use-stable-callbacks";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
 import { OnboardingSetup } from "./OnboardingSetup";
@@ -3788,15 +3789,30 @@ export function App() {
     showNotice(t("纯 API 模式"), t("已切换到纯 API。"), "ok");
   };
 
+  // 同步占住切换：切换前的校验和快照回填是异步的，state 要到下一次渲染才更新，连点两下会发起两次切换。
+  const relaySwitchingRef = useRef(false);
   const switchRelayProfile = async (
     next: BackendSettings,
     previousActiveRelayId = settingsForm.activeRelayId,
     liveConflictResolution?: LiveConflictResolution,
   ): Promise<boolean> => {
-    if (relaySwitching) {
+    if (relaySwitchingRef.current) {
       showNotice(t("供应商切换中"), t("上一次切换还没有完成，请稍后再试。"), "failed");
       return false;
     }
+    relaySwitchingRef.current = true;
+    try {
+      return await performRelaySwitch(next, previousActiveRelayId, liveConflictResolution);
+    } finally {
+      relaySwitchingRef.current = false;
+    }
+  };
+
+  const performRelaySwitch = async (
+    next: BackendSettings,
+    previousActiveRelayId: string,
+    liveConflictResolution?: LiveConflictResolution,
+  ): Promise<boolean> => {
     let switchSettings = normalizeSettings(next);
     if (!switchSettings.relayProfilesEnabled) {
       showNotice(t("供应商配置已关闭"), t("当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。"), "failed");
@@ -3904,7 +3920,7 @@ export function App() {
       choice: choice ?? "cancel",
     });
     if (!choice) return false;
-    return switchRelayProfile(next, previousActiveRelayId, choice);
+    return performRelaySwitch(next, previousActiveRelayId, choice);
   };
 
   const snapshotActiveRelayFilesBeforeSwitch = async (
@@ -4292,15 +4308,12 @@ export function App() {
     if (isSuccessStatus(result.status)) setDreamSkinRestartPending(true);
   };
 
-  const actions = useMemo(
-    () => ({
+  // 页面拿到的操作：方法引用整个生命周期不变、调用时总读最新 state（以前是依赖列表很长的 useMemo，
+  // 漏了 relaySwitching 等值，切换供应商期间按钮仍可点）；会变的数据单独列出，变了才换新对象。
+  const actionCallbacks = useStableCallbacks({
       refreshCurrent: () => navigate(route),
       launch,
       launchMultiInstance,
-      multiLaunchPending,
-      multiLaunchInstances,
-      multiLaunchInstancesLoading,
-      multiLaunchActionPending,
       refreshMultiLaunchInstances,
       restartMultiLaunchInstance,
       stopMultiLaunchInstance,
@@ -4415,7 +4428,6 @@ export function App() {
       diagnoseRelayProfile,
       fetchRelayProfileModels,
       switchRelayProfile,
-      relaySwitching,
       switchOfficialMode,
       switchPureApiMode,
       refreshLogs,
@@ -4441,8 +4453,17 @@ export function App() {
       pauseAutoTakeover: () => runAutoTakeoverCommand("pause_auto_takeover_for_instance"),
       toggleTheme: () => setThemePreference(toggledThemePreference(theme)),
       setThemePreference,
+  });
+  const actions: Actions = useMemo(
+    () => ({
+      ...actionCallbacks,
+      multiLaunchPending,
+      multiLaunchInstances,
+      multiLaunchInstancesLoading,
+      multiLaunchActionPending,
+      relaySwitching,
     }),
-    [route, launchForm, settingsForm, settings, overview, update, updateInstallProgress.active, logs, diagnostics, theme, relayFiles, localSessions, selectedProviderSyncTarget, envConflicts, relayEnvironment, ccsProviders, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, getLanguage()],
+    [actionCallbacks, multiLaunchPending, multiLaunchInstances, multiLaunchInstancesLoading, multiLaunchActionPending, relaySwitching],
   );
   // 拓展贡献的管理器页面：侧栏入口与对内置页面的顶替（见 extension-manager-pages.ts）。
   const extensionPages = useMemo(() => managerExtensionPages(settings?.user_scripts), [settings?.user_scripts]);
