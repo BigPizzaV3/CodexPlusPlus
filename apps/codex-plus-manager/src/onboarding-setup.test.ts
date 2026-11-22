@@ -3,8 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import * as focusModel from "./agent-focus-model.ts";
-import * as gatewayModel from "./gateway-model.ts";
+import type { AgentFocus } from "./agent-focus-model.ts";
 import * as setupModel from "./onboarding-setup-model.ts";
 
 const source = ts.transpileModule(readFileSync(new URL("./OnboardingSetup.tsx", import.meta.url), "utf8"), {
@@ -20,37 +19,22 @@ function deferred<T>() {
 }
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function fixture(): gatewayModel.GatewayPayload & { status: string; message: string } {
-  return {
-    status: "ok", message: "",
-    gateway: {
-      version: 1, keyPolicy: { mode: "sticky" }, restoreOnExit: false,
-      bindings: {
-        codex: { ...gatewayModel.blankBinding(), enabled: true, model: "chat" },
-        claude: { ...gatewayModel.blankBinding(), enabled: true, model: "chat" },
-      },
-    },
-    port: 57321, helperRunning: true,
-    pool: [{ id: "test", name: "Test", baseUrl: "https://test.invalid", protocol: "responses", official: false, models: ["chat", "other"], keyCount: 0 }],
-    groups: [],
-    agents: [
-      { agent: "codex", name: "Codex", enabled: true, baseUrl: "http://127.0.0.1:57321", defaultModel: "chat", models: ["chat"] },
-      { agent: "claude", name: "Claude Code", enabled: true, baseUrl: "http://127.0.0.1:57321", defaultModel: "chat", models: ["chat"] },
-    ],
-    health: { keys: [], providers: [] },
-    codexProviders: [], claudeProviders: [], grokProfiles: [],
-  };
+function profile(overrides: Partial<setupModel.SetupRelayProfile> = {}): setupModel.SetupRelayProfile {
+  return { id: "relay", name: "Relay", relayMode: "pureApi", officialMixApiKey: false, baseUrl: "https://relay.invalid/v1", apiKey: "sk-test", noAuth: false, ...overrides };
 }
+function relaySettings(active = profile()): setupModel.SetupRelaySettings {
+  return { relayProfilesEnabled: true, activeRelayId: active.id, relayProfiles: [active] };
+}
+const configured = { status: "ok", message: "", authenticated: false, configured: true };
 
-/** 保留真实组件与状态模型，只替换 React 调度、桌面命令和子弹窗边界。 */
-function harness(focus: focusModel.AgentFocus = "codex") {
+/** 保留真实组件与状态模型，只替换 React 调度和桌面命令。 */
+function harness(focus: AgentFocus = "codex") {
   const hooks: any[] = [];
   const cleanups = new Map<number, () => void>();
   const effects: Array<() => void> = [];
   const timeouts = new Map<number, () => void>();
   const intervals = new Map<number, () => void>();
-  const subscribers = new Set<(payload: gatewayModel.GatewayPayload) => void>();
-  const requests: Array<{ command: string; result: ReturnType<typeof deferred<any>> }> = [];
+  const requests: Array<{ command: string; args?: any; result: ReturnType<typeof deferred<any>> }> = [];
   const checks: Array<ReturnType<typeof deferred<boolean>>> = [];
   const launches: Array<ReturnType<typeof deferred<boolean>>> = [];
   const notices: Array<{ title: string; message: string; status?: string }> = [];
@@ -59,7 +43,6 @@ function harness(focus: focusModel.AgentFocus = "codex") {
   let cursor = 0;
   let changed = false;
   let timerId = 0;
-  let generation = 0;
   const sameDeps = (previous: unknown[] | undefined, deps: unknown[]) =>
     previous?.length === deps.length && previous.every((value, index) => Object.is(value, deps[index]));
   const react = {
@@ -93,37 +76,19 @@ function harness(focus: focusModel.AgentFocus = "codex") {
       });
     },
   };
-  const publish = (payload: gatewayModel.GatewayPayload) => {
-    generation += 1;
-    for (const subscriber of subscribers) subscriber(payload);
-  };
   const jsx = (type: string, props: Record<string, any>) => ({ type, props });
   const modules: Record<string, unknown> = {
     react,
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
-    "@tauri-apps/api/core": { invoke: (command: string) => {
+    "@tauri-apps/api/core": { invoke: (command: string, args?: any) => {
       const result = deferred<any>();
-      requests.push({ command, result });
+      requests.push({ command, args, result });
       return result.promise;
     } },
     "lucide-react": Object.fromEntries(["ArrowRight", "Check", "ChevronDown", "ChevronUp", "CircleHelp", "Loader2", "Play", "Plus", "RefreshCw", "Settings2", "X", "Zap"].map((name) => [name, name])),
     "@/components/ui/button": { Button: "Button" },
     "./AppSelect": { AppSelect: "AppSelect" },
     "./HubOverview": { AgentGlyph: "AgentGlyph" },
-    "./GatewayAgents": { AgentConnectDialog: "AgentConnectDialog" },
-    "./GatewayProviders": { ProviderAdder: "ProviderAdder" },
-    "./ProviderTestDialog": { ProviderTestDialog: "ProviderTestDialog" },
-    "./gateway-model": gatewayModel,
-    "./gateway-store": {
-      gatewayGeneration: () => generation,
-      publishGatewayPayload: publish,
-      subscribeGatewayPayload: (subscriber: (payload: gatewayModel.GatewayPayload) => void) => {
-        subscribers.add(subscriber);
-        return () => subscribers.delete(subscriber);
-      },
-    },
-    "./gateway-ui": { makeRun: () => () => assert.fail("当前测试不保存供应商或绑定") },
-    "./agent-focus-model": focusModel,
     "./onboarding-setup-model": setupModel,
     "./i18n": { t: (text: string) => text, tf: (text: string, args: unknown[]) => text.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])) },
     "./OnboardingSetup.css": {},
@@ -143,19 +108,21 @@ function harness(focus: focusModel.AgentFocus = "codex") {
       return modules[name];
     },
   });
+  const added: number[] = [];
   const props = {
-    focus, codexInstalled: true as boolean | null, codexRunning: false, launchPending: false,
+    focus, relaySettings: relaySettings() as setupModel.SetupRelaySettings | null, codexInstalled: true as boolean | null, codexRunning: false, launchPending: false,
     codexEnhancementsEnabled: true,
     notify: async (title: string, message: string, status?: string) => { notices.push({ title, message, status }); },
     onChangeMode: () => {},
     onDismiss: (completed: boolean) => { dismissed.push(completed); },
     onTour: () => {},
     onNavigate: (target: string, agent?: string) => { navigation.push({ target, agent }); },
+    onAddProvider: () => { added.push(1); },
     onCheckCodex: () => { const request = deferred<boolean>(); checks.push(request); return request.promise; },
     onLaunch: () => { const request = deferred<boolean>(); launches.push(request); return request.promise; },
   };
   return {
-    requests, checks, launches, notices, dismissed, navigation, props, publish,
+    requests, checks, launches, notices, dismissed, navigation, added, props,
     render: () => {
       for (let attempt = 0; attempt < 20; attempt++) {
         cursor = 0;
@@ -198,27 +165,26 @@ function select(tree: Element, label: string): Element {
   assert.ok(found, label);
   return found;
 }
-function probeDialog(tree: Element): Element {
-  const found = children(tree).find((element) => element.type === "ProviderTestDialog");
-  assert.ok(found, "应打开具体供应商测试弹窗");
-  return found;
-}
-async function load(f: ReturnType<typeof harness>) {
+async function load(f: ReturnType<typeof harness>, status: unknown = configured) {
   f.render();
-  assert.equal(f.requests[0].command, "load_gateway");
-  f.requests[0].result.resolve(fixture());
+  assert.equal(f.requests[0].command, "relay_status");
+  f.requests[0].result.resolve(status);
   await flush();
   return f.render();
 }
-function openProbe(f: ReturnType<typeof harness>) {
-  button(f.render(), "测试模型请求").props.onClick();
-  return probeDialog(f.render());
+/** 点「测试模型请求」，返回这次 test_relay_profile 请求。 */
+function startTest(f: ReturnType<typeof harness>, label = "测试模型请求") {
+  const before = f.requests.length;
+  button(f.render(), label).props.onClick();
+  const request = f.requests[before];
+  assert.equal(request?.command, "test_relay_profile");
+  return request;
 }
 
 test("入门配置读取失败可重试，失败或缺失数据不算已配置", async () => {
-  for (const response of ["throw", { status: "failed" }, { status: "ok", pool: [], agents: [] }]) {
+  for (const response of ["throw", { status: "failed" }, { status: "ok", message: "" }]) {
     const f = harness();
-    assert.equal(button(f.render(), "添加供应商").props.disabled, true);
+    assert.match(text(f.render()), /正在读取配置/);
     if (response === "throw") f.requests[0].result.reject(new Error("fixture unavailable"));
     else f.requests[0].result.resolve(response);
     await flush();
@@ -227,12 +193,13 @@ test("入门配置读取失败可重试，失败或缺失数据不算已配置",
     assert.equal(button(tree, "测试模型请求").props.disabled, true);
     button(tree, "重试").props.onClick();
     assert.equal(f.requests.length, 2);
-    f.requests[1].result.resolve(fixture());
+    f.requests[1].result.resolve(configured);
     await flush();
     tree = f.render();
     assert.doesNotMatch(text(tree), /配置读取失败/);
+    assert.match(text(tree), /当前供应商：Relay · 纯 API/);
     assert.equal(button(tree, "测试模型请求").props.disabled, false);
-    assert.equal(button(tree, "启动 Codex 并完成").props.disabled, true, "仅加载配置不等于测试成功");
+    assert.equal(button(tree, "启动 Codex 并完成").props.disabled, true, "仅读到配置不等于测试成功");
     f.unmount();
     assert.equal(f.timerCount(), 0);
   }
@@ -249,33 +216,58 @@ test("超慢读取期间轮询保持单飞，超时允许重试并忽略旧请�
   button(tree, "重试").props.onClick();
   f.poll();
   assert.equal(f.requests.length, 2);
-  f.requests[1].result.resolve(fixture());
+  f.requests[1].result.resolve(configured);
   await flush();
   f.render();
-  f.requests[0].result.resolve({ ...fixture(), pool: [] });
+  f.requests[0].result.resolve({ ...configured, configured: false });
   await flush();
   tree = f.render();
-  assert.equal(button(tree, "测试模型请求").props.disabled, false, "旧空池不能覆盖已重试读到的配置");
+  assert.equal(button(tree, "测试模型请求").props.disabled, false, "旧的未配置状态不能覆盖重试读到的状态");
   f.unmount();
   assert.equal(f.timerCount(), 0);
 });
 
-test("供应商探测明确失败不允许完成，只有成功且启动确认成功才完成", async () => {
+test("没登录 ChatGPT 时不能测试，入口通往添加供应商和连接与供应商", async () => {
+  const f = harness("all");
+  f.props.relaySettings = relaySettings(profile({ id: "default", relayMode: "official", baseUrl: "", apiKey: "" }));
+  let tree = await load(f, { ...configured, configured: false });
+  assert.equal(children(tree).some((element) => element.type === "AppSelect"), false, "非增强模式只配置 Codex");
+  assert.match(text(tree), /Codex 还没登录 ChatGPT/);
+  assert.equal(button(tree, "测试模型请求").props.disabled, true);
+  button(tree, "添加供应商").props.onClick();
+  button(tree, "连接与供应商").props.onClick();
+  assert.deepEqual(f.added, [1]);
+  assert.deepEqual(f.navigation, [{ target: "relay", agent: "codex" }]);
+  f.poll();
+  f.requests[1].result.resolve({ ...configured, authenticated: true, configured: false });
+  await flush();
+  tree = f.render();
+  assert.match(text(tree), /当前供应商：Relay · 官方登录/, "在 Codex 里登录后轮询即可就绪");
+  assert.equal(button(tree, "测试模型请求").props.disabled, false);
+  f.props.relaySettings = { ...relaySettings(), relayProfilesEnabled: false };
+  assert.match(text(f.render()), /供应商配置切换已关闭/);
+  f.unmount();
+});
+
+test("测试明确失败不允许完成，只有成功且启动确认成功才完成", async () => {
   const f = harness();
   await load(f);
-  const dialog = openProbe(f);
-  assert.equal(dialog.props.initialModel, "chat");
-  assert.equal(dialog.props.lockModel, true);
-  dialog.props.onResult({ ok: false });
+  const first = startTest(f);
+  assert.equal(first.args.profile.id, "relay");
+  assert.equal(button(f.render(), "测试模型请求").props.disabled, true, "测试中不能重复发起");
+  first.result.resolve({ status: "failed", message: "HTTP 401" });
+  await flush();
   let tree = f.render();
+  assert.match(text(tree), /HTTP 401/);
   assert.equal(button(tree, "启动 Codex 并完成").props.disabled, true);
   button(tree, "启动 Codex 并完成").props.onClick();
   assert.equal(f.launches.length, 0);
-  probeDialog(tree).props.onResult({ ok: true });
+  startTest(f).result.resolve({ status: "warning", message: "incomplete" });
+  await flush();
   tree = f.render();
+  assert.match(text(tree), /模型请求测试通过/, "协议有效但未完整结束也算通过");
   assert.equal(button(tree, "启动 Codex 并完成").props.disabled, false);
-  probeDialog(tree).props.onClose();
-  button(f.render(), "启动 Codex 并完成").props.onClick();
+  button(tree, "启动 Codex 并完成").props.onClick();
   assert.deepEqual(f.dismissed, []);
   f.launches[0].resolve(false);
   await flush();
@@ -287,66 +279,56 @@ test("供应商探测明确失败不允许完成，只有成功且启动确认�
   f.unmount();
 });
 
-test("成功后在测试弹窗再测会立即撤销验证，取消或失败不能沿用旧成功", async () => {
+test("成功后再测会立即撤销验证，失败或抛错不能沿用旧成功", async () => {
   const f = harness();
   await load(f);
-  openProbe(f).props.onResult({ ok: true });
-  let tree = f.render();
-  assert.equal(button(tree, "启动 Codex 并完成").props.disabled, false);
-  probeDialog(tree).props.onStart();
-  tree = f.render();
-  assert.equal(button(tree, "启动 Codex 并完成").props.disabled, true);
-  probeDialog(tree).props.onClose();
-  assert.equal(button(f.render(), "启动 Codex 并完成").props.disabled, true, "取消新测试也不能恢复旧成功");
-  openProbe(f).props.onResult({ ok: true });
-  probeDialog(f.render()).props.onClose();
-  button(f.render(), "重新测试模型请求").props.onClick();
-  tree = f.render();
-  assert.equal(button(tree, "启动 Codex 并完成").props.disabled, true);
-  probeDialog(tree).props.onResult({ ok: false });
-  assert.equal(button(f.render(), "启动 Codex 并完成").props.disabled, true);
-  f.unmount();
-});
-
-test("切换 Agent 撤销已有验证，正在测试的旧 Agent 结果不作用于新 Agent", async () => {
-  const f = harness("all");
-  await load(f);
-  const oldDialog = openProbe(f);
-  oldDialog.props.onResult({ ok: true });
-  let tree = f.render();
-  assert.equal(button(tree, "启动 Codex 并完成").props.disabled, false);
-  select(tree, "本次配置的 Agent").props.onChange("claude");
-  tree = f.render();
-  assert.equal(button(tree, "完成配置").props.disabled, true);
-  assert.equal(children(tree).some((element) => element.type === "ProviderTestDialog"), false);
-  oldDialog.props.onResult({ ok: true });
-  assert.equal(button(f.render(), "完成配置").props.disabled, true, "旧弹窗晚到不能验证当前 Agent");
-  select(f.render(), "本次配置的 Agent").props.onChange("codex");
-  assert.equal(button(f.render(), "启动 Codex 并完成").props.disabled, true, "切回也需要重新验证");
-  f.unmount();
-});
-
-test("关键配置变化关闭旧测试并撤销验证，改回原配置不会复活旧结果", async () => {
-  const f = harness();
-  await load(f);
-  openProbe(f).props.onResult({ ok: true });
+  startTest(f).result.resolve({ status: "ok", message: "" });
+  await flush();
   assert.equal(button(f.render(), "启动 Codex 并完成").props.disabled, false);
-  const next = fixture();
-  next.pool[0].baseUrl = "https://changed.invalid";
-  f.publish(next);
-  let tree = f.render();
-  assert.equal(button(tree, "启动 Codex 并完成").props.disabled, true);
-  assert.equal(children(tree).some((element) => element.type === "ProviderTestDialog"), false);
-  f.publish(fixture());
-  tree = f.render();
+  const again = startTest(f, "重新测试模型请求");
+  assert.equal(button(f.render(), "启动 Codex 并完成").props.disabled, true);
+  again.result.reject("network down");
+  await flush();
+  const tree = f.render();
+  assert.match(text(tree), /测试失败：network down/);
   assert.equal(button(tree, "启动 Codex 并完成").props.disabled, true);
   f.unmount();
 });
 
+test("供应商变化撤销验证，进行中的旧测试结果不作用于新配置，改回也不复活", async () => {
+  const f = harness();
+  await load(f);
+  startTest(f).result.resolve({ status: "ok", message: "" });
+  await flush();
+  assert.equal(button(f.render(), "启动 Codex 并完成").props.disabled, false);
+  const original = f.props.relaySettings;
+  f.props.relaySettings = relaySettings(profile({ apiKey: "sk-changed" }));
+  assert.equal(button(f.render(), "启动 Codex 并完成").props.disabled, true);
+  const pending = startTest(f);
+  f.props.relaySettings = original;
+  f.render();
+  pending.result.resolve({ status: "ok", message: "" });
+  await flush();
+  const tree = f.render();
+  assert.equal(button(tree, "启动 Codex 并完成").props.disabled, true, "旧配置的测试晚到也不能验证当前配置");
+  assert.equal(button(tree, "测试模型请求").props.disabled, false, "配置变化后可以重新测试");
+  f.unmount();
+});
+
+test("聚合供应商不做单条请求测试，配置写入后即可完成", async () => {
+  const f = harness();
+  f.props.relaySettings = relaySettings(profile({ relayMode: "aggregate" }));
+  const tree = await load(f);
+  assert.equal(children(tree).some((element) => ["button", "Button"].includes(element.type) && text(element) === "测试模型请求"), false);
+  assert.match(text(tree), /逐个测试成员/);
+  assert.equal(button(tree, "启动 Codex 并完成").props.disabled, false);
+  f.unmount();
+});
 test("Codex 检查失败或抛错不完成，重复点击只执行一次且可以重试", async () => {
   for (const failure of ["false", "throw"]) {
     const f = harness("enhance");
-    await load(f);
+    f.render();
+    assert.equal(f.requests.length, 0, "增强模式不读取 Codex 连接状态");
     const check = button(f.render(), "检查安装与配置");
     check.props.onClick();
     check.props.onClick();
@@ -371,7 +353,7 @@ test("Codex 检查失败或抛错不完成，重复点击只执行一次且可�
 
 test("检查返回成功仍需最新应用状态就绪，旧 Agent 的检查结果不能跨选择生效", async () => {
   const f = harness("enhance");
-  await load(f);
+  f.render();
   button(f.render(), "检查安装与配置").props.onClick();
   f.props.codexInstalled = false;
   f.checks[0].resolve(true);
@@ -392,7 +374,7 @@ test("Codex 检查采用等待期间父层刷新的增强配置，开启后可�
   for (const enabled of [true, false]) {
     const f = harness("enhance");
     f.props.codexEnhancementsEnabled = !enabled;
-    await load(f);
+    f.render();
     button(f.render(), "检查安装与配置").props.onClick();
     assert.equal(f.checks.length, 1);
     f.props.codexEnhancementsEnabled = enabled;

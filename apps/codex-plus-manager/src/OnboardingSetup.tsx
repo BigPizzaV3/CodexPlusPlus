@@ -4,30 +4,29 @@ import { ArrowRight, Check, ChevronDown, ChevronUp, CircleHelp, Loader2, Play, P
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "./AppSelect";
 import { AgentGlyph } from "./HubOverview";
-import { AgentConnectDialog } from "./GatewayAgents";
-import { ProviderAdder } from "./GatewayProviders";
-import { ProviderTestDialog } from "./ProviderTestDialog";
-import { agentName, groupDisplayName, maskAccountName, type GatewayPayload, type GatewayResult } from "./gateway-model";
-import { gatewayGeneration, publishGatewayPayload, subscribeGatewayPayload } from "./gateway-store";
-import { makeRun, type Notify } from "./gateway-ui";
-import { agentVisible, type AgentFocus } from "./agent-focus-model";
-import { probeMatches, setupGatewayState } from "./onboarding-setup-model";
+import type { Notify } from "./gateway-ui";
+import type { AgentFocus } from "./agent-focus-model";
+import { setupDirectState, type SetupDirectMode, type SetupRelaySettings, type SetupRelayStatus } from "./onboarding-setup-model";
 import { t, tf } from "./i18n";
 import "./OnboardingSetup.css";
 
-type Destination = "gateway" | "gatewayProviders" | "agentSettings" | "enhance" | "userScripts" | "claude" | "overview";
+type Destination = "relay" | "agentSettings" | "enhance" | "userScripts" | "claude" | "overview";
 type ClaudeSetupStatus = {
   status: string; message: string; supported: boolean; sourceApp: string;
   prepared: boolean; needsRebuild: boolean; nodeAvailable: boolean;
   localization: boolean; voiceInput: boolean; extensions: boolean; computerUse: boolean; computerUseSupported: boolean;
 };
-type VerifiedProbe = { fingerprint: string; candidateId: string; ok: boolean };
+type RelayTestResult = { status: string; message: string };
+/** 一次供应商测试的结果，只对发起时的那份配置有效。 */
+type VerifiedTest = { fingerprint: string; ok: boolean; message: string };
 
 export function OnboardingSetup({
-  focus, codexInstalled, codexRunning, launchPending, codexEnhancementsEnabled,
-  notify, onChangeMode, onDismiss, onTour, onNavigate, onCheckCodex, onLaunch, defaultExpanded = true,
+  focus, relaySettings, codexInstalled, codexRunning, launchPending, codexEnhancementsEnabled,
+  notify, onChangeMode, onDismiss, onTour, onNavigate, onAddProvider, onCheckCodex, onLaunch, defaultExpanded = true,
 }: {
   focus: AgentFocus;
+  /** 已保存的设置：当前直连供应商和配置切换开关。 */
+  relaySettings: SetupRelaySettings | null;
   codexInstalled: boolean | null;
   codexRunning: boolean;
   launchPending: boolean;
@@ -37,6 +36,7 @@ export function OnboardingSetup({
   onDismiss: (completed: boolean) => void;
   onTour: () => void;
   onNavigate: (target: Destination, agent?: string) => void;
+  onAddProvider: () => void;
   onCheckCodex: () => Promise<boolean>;
   onLaunch: () => Promise<boolean>;
   /** 放在侧栏底部时默认收成一张进度卡，点开再展开清单。 */
@@ -45,14 +45,10 @@ export function OnboardingSetup({
   const enhance = focus === "enhance";
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [selectedAgent, setSelectedAgent] = useState("codex");
-  const [payload, setPayload] = useState<GatewayPayload | null>(null);
+  const [status, setStatus] = useState<SetupRelayStatus | null>(null);
   const [loadError, setLoadError] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [adding, setAdding] = useState<"provider" | "agent" | null>(null);
-  const [candidateId, setCandidateId] = useState("");
-  const [testing, setTesting] = useState<{ candidateId: string; fingerprint: string } | null>(null);
-  const [verified, setVerified] = useState<VerifiedProbe | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [verified, setVerified] = useState<VerifiedTest | null>(null);
   const [claude, setClaude] = useState<ClaudeSetupStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [checkedEnhancement, setCheckedEnhancement] = useState("");
@@ -61,102 +57,100 @@ export function OnboardingSetup({
   const loadingRequest = useRef(false);
   const loadTimeout = useRef<number | undefined>(undefined);
   const checkSequence = useRef(0);
+  const testSequence = useRef(0);
   const pending = useRef(false);
 
   const refresh = useCallback(async () => {
     if (loadingRequest.current) return;
     loadingRequest.current = true;
     const sequence = ++loadSequence.current;
-    const generation = gatewayGeneration();
     const timeout = window.setTimeout(() => {
       if (!mounted.current || sequence !== loadSequence.current) return;
       loadSequence.current += 1;
       loadingRequest.current = false;
       setLoadError(t("配置读取超时，请重试。"));
-      setLoading(false);
     }, 15_000);
     loadTimeout.current = timeout;
     try {
-      const result = await invoke<GatewayResult>("load_gateway");
-      if (!mounted.current || sequence !== loadSequence.current || generation !== gatewayGeneration()) return;
-      if (result.status !== "ok" || !result.gateway || !Array.isArray(result.pool) || !Array.isArray(result.agents)) {
+      const result = await invoke<SetupRelayStatus & { status: string }>("relay_status");
+      if (!mounted.current || sequence !== loadSequence.current) return;
+      if (result.status !== "ok" || typeof result.authenticated !== "boolean" || typeof result.configured !== "boolean") {
         setLoadError(t("配置读取失败，请重试。"));
         return;
       }
       setLoadError("");
-      publishGatewayPayload(result);
+      setStatus((current) => current?.authenticated === result.authenticated && current.configured === result.configured
+        ? current
+        : { authenticated: result.authenticated, configured: result.configured });
     } catch {
       if (mounted.current && sequence === loadSequence.current) setLoadError(t("配置读取失败，请重试。"));
     } finally {
       window.clearTimeout(timeout);
       if (sequence === loadSequence.current) {
         loadingRequest.current = false;
-        if (mounted.current) setLoading(false);
       }
     }
   }, []);
 
   useEffect(() => {
     mounted.current = true;
-    const unsubscribe = subscribeGatewayPayload((next) => {
-      setPayload(next);
-      setLoadError("");
-      setLoading(false);
-    });
-    void refresh();
-    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 5000);
+    // 在 Codex 里登录或换供应商会改 auth.json / config.toml，展开期间每 5 秒重读一次。增强模式用不到。
+    const timer = enhance ? undefined : window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 5000);
+    if (!enhance) void refresh();
     return () => {
       mounted.current = false;
       checkSequence.current += 1;
       loadSequence.current += 1;
+      testSequence.current += 1;
       loadingRequest.current = false;
-      unsubscribe();
       window.clearInterval(timer);
       window.clearTimeout(loadTimeout.current);
     };
-  }, [refresh]);
+  }, [refresh, enhance]);
 
-  const agents = enhance
-    ? [{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude" }]
-    : (payload?.agents ?? []).filter((agent) => agentVisible(focus, agent.agent)).map((agent) => ({ value: agent.agent, label: agent.name }));
-  const agentId = focus === "codex" ? "codex" : selectedAgent;
-  const gateway = setupGatewayState(focus, payload, agentId);
-  const previousConfiguration = useRef(gateway.fingerprint);
+  // 增强模式可以选 Codex 或 Claude；其余模式的清单只配置 Codex 的直连供应商。
+  const agentId = enhance ? selectedAgent : "codex";
+  const direct = setupDirectState(relaySettings, status);
+  // 配置一变，旧测试结果和进行中的测试都作废；改回原配置也不复活。
+  const previousConfiguration = useRef(direct.fingerprint);
   useEffect(() => {
-    if (previousConfiguration.current !== gateway.fingerprint) {
-      previousConfiguration.current = gateway.fingerprint;
+    if (previousConfiguration.current !== direct.fingerprint) {
+      previousConfiguration.current = direct.fingerprint;
+      testSequence.current += 1;
       setVerified(null);
-      setTesting(null);
+      setTesting(false);
     }
-  }, [gateway.fingerprint]);
-  const candidate = gateway.candidates.find((item) => item.id === candidateId) ?? gateway.candidates[0];
-  const tested = !loadError && probeMatches(gateway, verified);
-  const activeTest = testing?.fingerprint === gateway.fingerprint
-    ? gateway.candidates.find((item) => item.id === testing.candidateId)
-    : undefined;
-  const testProvider = activeTest ? payload?.pool.find((item) => item.id === activeTest.providerId) : undefined;
-  useEffect(() => {
-    if (testing && (!activeTest || loadError)) {
-      setTesting(null);
-      setVerified(null);
-    }
-  }, [testing, activeTest, loadError]);
+  }, [direct.fingerprint]);
+  const tested = !loadError && direct.ready && verified?.ok === true && verified.fingerprint === direct.fingerprint;
   const claudeReady = Boolean(claude?.status === "ok" && claude.supported && claude.sourceApp
     && claude.prepared && !claude.needsRebuild && claude.nodeAvailable
     && (claude.localization || claude.voiceInput || claude.extensions || (claude.computerUse && claude.computerUseSupported)));
   const enhancementReady = agentId === "codex" ? codexInstalled === true && codexEnhancementsEnabled : claudeReady;
   const enhancementKey = JSON.stringify([agentId, codexInstalled, codexEnhancementsEnabled, claudeReady]);
   const enhancementChecked = enhancementReady && checkedEnhancement === enhancementKey;
-  const configured = enhance ? enhancementReady : gateway.bindingReady && !loadError;
-  const ready = enhance ? enhancementChecked : configured && tested;
-  const run = makeRun(setBusy, publishGatewayPayload, notify);
+  const configured = enhance ? enhancementReady : direct.ready && !loadError;
+  const ready = enhance ? enhancementChecked : configured && (direct.testable ? tested : true);
   const changeAgent = (next: string) => {
     checkSequence.current += 1;
     setSelectedAgent(next);
-    setVerified(null);
-    setTesting(null);
     setCheckedEnhancement("");
-    setCandidateId("");
+  };
+  const testProfile = async () => {
+    if (!direct.profile || !configured || testing) return;
+    const sequence = ++testSequence.current;
+    const fingerprint = direct.fingerprint;
+    setTesting(true);
+    setVerified(null);
+    try {
+      // 真实发一条短请求（hi），结果绑定发起时的配置。
+      const result = await invoke<RelayTestResult>("test_relay_profile", { profile: direct.profile });
+      if (!mounted.current || sequence !== testSequence.current) return;
+      setVerified({ fingerprint, ok: result.status !== "failed", message: result.message });
+    } catch (cause) {
+      if (mounted.current && sequence === testSequence.current) setVerified({ fingerprint, ok: false, message: tf("测试失败：{0}", [String(cause)]) });
+    } finally {
+      if (mounted.current && sequence === testSequence.current) setTesting(false);
+    }
   };
   const checkEnhancement = async () => {
     if (pending.current) return;
@@ -207,15 +201,20 @@ export function OnboardingSetup({
       pending.current = false;
     }
   };
-  const bindingIssue = {
+  const directIssue = {
     loading: t("正在读取配置…"),
-    agent_missing: t("请选择要接入的 Agent。"),
-    no_providers: t("添加供应商或登录订阅，并配置一个聊天模型。"),
-    not_connected: t("接入 Agent 并选择默认模型。"),
-    drift: t("Agent 配置已被其他工具更改，请重新确认接入。"),
-    helper_stopped: t("网关未运行，请检查接入设置。"),
-    no_model: t("请为 Agent 选择默认模型。"),
-    unroutable: t("默认模型没有可用供应商，请检查模型和供应商范围。"),
+    switching_off: t("供应商配置切换已关闭，Codex++ 不会改动 Codex 的连接。在「连接与供应商」里打开。"),
+    no_profile: t("还没有供应商。添加一个，或在 Codex 里登录 ChatGPT。"),
+    not_logged_in: t("Codex 还没登录 ChatGPT。在 Codex 里登录，或添加一个 API 供应商并设为当前。"),
+    api_missing: t("当前供应商还没填混入 API 的 Base URL / Key。"),
+    not_configured: t("当前供应商的配置没有完整写入 Codex，请检查 Base URL 和 API Key。"),
+  };
+  const modeLabel: Record<SetupDirectMode, string> = {
+    official: t("官方登录"),
+    mixedApi: t("官方登录 + API"),
+    pureApi: t("纯 API"),
+    aggregate: t("聚合供应商"),
+    gateway: t("经聚合网关"),
   };
 
   // 三步里完成了几步：侧栏进度卡上的「1/3」和进度环。
@@ -243,7 +242,7 @@ export function OnboardingSetup({
       {/* 收起时：一个按钮直达下一步（参照 Cursor 侧栏的 Getting Started）。都验证过就直接完成。 */}
       {!expanded ? (
         <button className="setup-next" disabled={launchPending} onClick={() => (ready ? void finish() : setExpanded(true))} type="button">
-          {ready ? (agentId === "codex" ? t("启动 Codex 并完成") : t("完成配置")) : configured ? t("验证并开始") : enhance ? t("完成增强配置") : t("添加供应商并接入")}
+          {ready ? (agentId === "codex" ? t("启动 Codex 并完成") : t("完成配置")) : configured ? t("验证并开始") : enhance ? t("完成增强配置") : t("配置 Codex 连接")}
         </button>
       ) : null}
       {expanded ? (
@@ -256,7 +255,7 @@ export function OnboardingSetup({
                 <span>{t(focus === "enhance" ? "只用增强功能" : focus === "codex" ? "只管理 Codex" : "全部功能")}</span>
                 <button className="setup-text-action" disabled={launchPending || checking} onClick={onChangeMode} type="button">{t("修改")}</button>
               </div>
-              {focus !== "codex" && agents.length ? <AppSelect ariaLabel={t("本次配置的 Agent")} disabled={checking || launchPending} onChange={changeAgent} options={agents} size="sm" value={agentId} /> : <span className="setup-agent"><AgentGlyph agent="codex" />Codex</span>}
+              {enhance ? <AppSelect ariaLabel={t("本次配置的 Agent")} disabled={checking || launchPending} onChange={changeAgent} options={[{ value: "codex", label: "Codex" }, { value: "claude", label: "Claude" }]} size="sm" value={agentId} /> : <span className="setup-agent"><AgentGlyph agent="codex" />Codex</span>}
             </div>
           </div>
           <div className="setup-step">
@@ -273,12 +272,12 @@ export function OnboardingSetup({
                 </>
               ) : (
                 <>
-                  <p role={loadError ? "alert" : undefined}>{loadError || (gateway.issue ? bindingIssue[gateway.issue] : tf("{0} 已接入 · {1}", [agentName(agentId), groupDisplayName(payload, gateway.model) ?? gateway.model]))}</p>
+                  <p role={loadError ? "alert" : undefined}>{loadError || (direct.issue ? directIssue[direct.issue] : tf("当前供应商：{0} · {1}", [direct.profile?.name || t("未命名供应商"), modeLabel[direct.mode]]))}</p>
                   <div className="setup-actions">
-                    {loadError ? <Button onClick={() => { setLoading(true); void refresh(); }} size="sm" variant="secondary"><RefreshCw size={13} />{t("重试")}</Button> : (
+                    {loadError ? <Button onClick={() => void refresh()} size="sm" variant="secondary"><RefreshCw size={13} />{t("重试")}</Button> : (
                       <>
-                        <Button disabled={loading || busy !== null} onClick={() => setAdding("provider")} size="sm" variant="secondary"><Plus size={13} />{t("添加供应商")}</Button>
-                        <Button disabled={loading || !gateway.providersConfigured || busy !== null} onClick={() => setAdding("agent")} size="sm" variant="ghost">{t("接入与模型")}<ArrowRight size={13} /></Button>
+                        <Button disabled={launchPending} onClick={onAddProvider} size="sm" variant="secondary"><Plus size={13} />{t("添加供应商")}</Button>
+                        <Button disabled={launchPending} onClick={() => onNavigate("relay", "codex")} size="sm" variant="ghost">{t("连接与供应商")}<ArrowRight size={13} /></Button>
                       </>
                     )}
                   </div>
@@ -292,33 +291,22 @@ export function OnboardingSetup({
               <strong>{t("验证并开始")}</strong>
               {enhance ? (
                 <Button disabled={checking || launchPending} onClick={() => void checkEnhancement()} size="sm" variant="secondary">{checking ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}{t("检查安装与配置")}</Button>
-              ) : (
+              ) : direct.testable ? (
                 <>
-                  {gateway.candidates.length > 1 ? <AppSelect ariaLabel={t("测试供应商与模型")} disabled={Boolean(testing)} onChange={(next) => { setCandidateId(next); setVerified(null); }} options={gateway.candidates.map((item) => ({ value: item.id, label: `${maskAccountName(item.providerName)} · ${item.model}` }))} size="sm" value={candidate?.id ?? ""} /> : null}
-                  <Button disabled={!configured || !candidate} onClick={() => { if (candidate) { setVerified(null); setTesting({ candidateId: candidate.id, fingerprint: gateway.fingerprint }); } }} size="sm" variant="secondary"><Zap size={13} />{tested ? t("重新测试模型请求") : t("测试模型请求")}</Button>
-                  <p>{tested ? t("所选供应商的模型请求测试通过。") : t("手动发送一条短请求，可能产生少量用量。")}</p>
-                  {gateway.multipleTargets ? <p>{t("这里只验证所选供应商与模型，不代表整个模型组。")}</p> : null}
+                  <Button disabled={!configured || testing} onClick={() => void testProfile()} size="sm" variant="secondary">{testing ? <Loader2 size={13} className="animate-spin" /> : <Zap size={13} />}{tested ? t("重新测试模型请求") : t("测试模型请求")}</Button>
+                  {verified && !verified.ok && verified.fingerprint === direct.fingerprint
+                    ? <p role="alert">{verified.message}</p>
+                    : <p>{tested ? t("当前供应商的模型请求测试通过。") : t("手动发送一条短请求，可能产生少量用量。")}</p>}
                 </>
+              ) : (
+                <p>{t("聚合供应商会在多个成员间轮转，请在「连接与供应商」里逐个测试成员。")}</p>
               )}
               <Button disabled={!ready || launchPending || (agentId === "codex" && codexInstalled !== true)} onClick={() => void finish()} size="sm"><Play size={13} />{launchPending ? t("正在启动…") : agentId === "codex" ? codexRunning ? t("重启 Codex 并完成") : t("启动 Codex 并完成") : t("完成配置")}</Button>
-              {agentId !== "codex" ? <p>{enhance ? t("完成后可在增强设置中启动应用。") : t("完成后，在 Agent 中发起一次对话即可使用。")}</p> : null}
+              {agentId !== "codex" ? <p>{t("完成后可在增强设置中启动应用。")}</p> : null}
               {agentId === "codex" && codexInstalled === false ? <button className="setup-text-action" onClick={() => onNavigate("agentSettings", "codex")} type="button">{t("未找到 Codex，打开安装设置")}</button> : null}
             </div>
           </div>
         </div>
-      ) : null}
-      {adding === "provider" ? <ProviderAdder busy={busy} notify={notify} onClose={() => { setAdding(null); void refresh(); }} payload={payload} run={run} /> : null}
-      {adding === "agent" ? <AgentConnectDialog busy={busy} notify={notify} onClose={() => { setAdding(null); void refresh(); }} onManage={() => setAdding("provider")} payload={payload} run={run} /> : null}
-      {testing && activeTest && testProvider ? (
-        <ProviderTestDialog
-          entry={testProvider}
-          initialModel={activeTest.model}
-          lockModel
-          keyId={null}
-          onClose={() => setTesting(null)}
-          onStart={() => setVerified(null)}
-          onResult={(result) => setVerified({ ...testing, ok: result.ok === true })}
-        />
       ) : null}
     </section>
   );

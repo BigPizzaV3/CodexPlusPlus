@@ -50,3 +50,15 @@ test("只用增强功能时去掉网关、供应商池、Agent 接入三步，�
   assert.match(steps[0].body, /供应商仍由你自己的工具管理/);
   assert.equal(steps[0].args, undefined);
 });
+
+test("还没有 Agent 接入网关（侧栏没有网关一组）时也去掉那三步，欢迎卡不讲网关，Agent 一步说明从哪里改用", () => {
+  // 顺序跟着侧栏：Agent 增强在聚合网关前面。
+  assert.deepEqual(TOUR_STEPS.map((step) => step.id), ["welcome", "management", "agents", "hub", "providers", "agents-connect", "palette", "settings"]);
+  for (const solo of [null, "Codex"]) {
+    const steps = tourSteps(solo, false, false);
+    assert.deepEqual(steps.map((step) => step.id), ["welcome", "management", "agents", "palette", "settings"]);
+    assert.doesNotMatch(steps[0].body, /网关/);
+  }
+  assert.match(tourSteps(null, false, false).find((step) => step.id === "agents")!.body, /「连接与供应商」里改用聚合网关/);
+  assert.deepEqual(tourSteps("Codex", false, false)[0].args, ["Codex"]);
+});

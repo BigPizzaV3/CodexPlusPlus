@@ -93,6 +93,8 @@ function harness() {
     "./onboarding-model": model,
     "./agent-focus-model": focusModel,
     "./gateway-model": { agentName: (agent: string) => agent },
+    // 有 Agent 接入网关：走完整的导览步骤。
+    "./gateway-store": { useGatewayPayload: () => ({ agents: [{ agent: "codex", enabled: true }] }) },
     "./use-escape-layer": { useEscapeLayer: (_enabled: boolean, close: () => void) => { escape = close; } },
     "./use-modal-focus": { useModalFocus: () => {} },
     "./OnboardingTour.css": {},
