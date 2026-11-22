@@ -217,6 +217,9 @@
   overflow:hidden;
 }
 .mg-session-selected-count { margin-right:4px; font-size:12px; color:hsl(var(--foreground)); white-space:nowrap; }
+/* 删除这类不可逆操作的按钮：红色描边浅底，不用品牌渐变。 */
+.mg-button.mg-danger-button { color:hsl(var(--destructive)); border-color:hsl(var(--destructive)/.3); background:hsl(var(--destructive)/.07); }
+.mg-button.mg-danger-button:not(:disabled):hover { background:hsl(var(--destructive)/.15); }
 .mg-session-page .mg-session-danger { color:hsl(var(--destructive)); border-color:hsl(var(--destructive)/.3); background:hsl(var(--destructive)/.07); }
 .mg-session-page .mg-session-danger:not(:disabled):hover { background:hsl(var(--destructive)/.15); }
 @media (max-width:760px) {

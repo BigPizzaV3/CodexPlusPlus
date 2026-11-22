@@ -3974,6 +3974,47 @@ export const EN_PLAIN: Record<string, string> = {
   "删除前已备份，可以撤销。": "A backup was made before deleting, so you can undo.",
   "撤销": "Undo",
   "会话读取失败": "Could not read sessions",
+  "传输类型": "Transport",
+  "保存目标": "Save to",
+  "保留自定义字段，保存时由 Codex 配置解析器校验。": "Custom fields are kept and checked by the Codex config parser when saving.",
+  "值": "Value",
+  "其他配置字段": "Other config fields",
+  "删除服务器": "Delete server",
+  "刷新本机配置": "Reload local config",
+  "启动命令": "Command",
+  "命令参数": "Arguments",
+  "唯一标识，添加后不可更改。": "Unique ID; cannot be changed after adding.",
+  "复制配置": "Copy config",
+  "将导入：": "Will import: ",
+  "已复制。": "Copied.",
+  "插件配置": "Plugin config",
+  "搜索名称、命令或 URL": "Search names, commands or URLs",
+  "新建 MCP 服务器": "New MCP server",
+  "新建插件": "New plugin",
+  "服务器": "server",
+  "服务器 ID": "Server ID",
+  "正在解析…": "Parsing…",
+  "正在读取各 Agent 的 MCP 配置…": "Reading each agent's MCP config…",
+  "每行一个参数。": "One argument per line.",
+  "添加 MCP 服务器": "Add MCP server",
+  "添加一个 Codex 插件配置": "Add a Codex plugin config",
+  "添加一个 Codex 插件配置。": "Add a Codex plugin config.",
+  "添加一个服务器，或粘贴现有的 mcpServers JSON 导入。": "Add a server, or paste an existing mcpServers JSON to import.",
+  "添加一个自定义 MCP 服务器，选择写入哪些 Agent": "Add a custom MCP server and choose which agents get it",
+  "添加字段": "Add field",
+  "添加插件": "Add plugin",
+  "添加服务器": "Add server",
+  "移除字段": "Remove field",
+  "管理插件配置": "Manage plugin configs",
+  "粘贴 mcpServers、servers 或单个服务器配置。": "Paste mcpServers, servers or a single server config.",
+  "编辑 MCP 服务器": "Edit MCP server",
+  "表单": "Form",
+  "返回 MCP": "Back to MCP",
+  "还没有 MCP 服务器": "No MCP servers yet",
+  "还没有插件": "No plugins yet",
+  "部分 Agent 的 MCP 配置读取失败": "Some agents' MCP configs could not be read",
+  "配置内容": "Config",
+  "键名": "Key",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -4681,6 +4722,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "显示前 {0} 个，共 {1} 个；搜索可以找到其余会话。": "Showing the first {0} of {1}; search to find the rest.",
   "归档选中的 {0} 个会话？只改本地归档状态，不删除对话文件，之后可以取消归档。": "Archive {0} selected session(s)? This only changes the local archive state; conversation files are kept and you can unarchive later.",
   "取消归档选中的 {0} 个会话？它们会回到未归档列表。": "Unarchive {0} selected session(s)? They return to the unarchived list.",
+  "没有匹配的{0}": "No matching {0}",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated
@@ -4876,6 +4918,7 @@ export const EN_BACKEND: Record<string, string> = {
   "没有未确认的重置操作。": "There is no unconfirmed reset operation.",
   "已从备份恢复删除的会话。": "Restored the deleted sessions from backup.",
   "找不到 Codex 会话数据库，无法撤销删除。": "Cannot undo: the Codex session database was not found.",
+  "MCP&插件已保存并同步。": "MCP & plugins saved and synced.",
 };
 
 // Pattern-based backend translations: [regex, replacement template].
@@ -5017,4 +5060,6 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^已取消归档 (\d+) 个会话。$/, "Unarchived $1 session(s)."],
   [/^已归档 (\d+) 个，失败 (\d+) 个：(.+)$/, "Archived $1, $2 failed: $3"],
   [/^已取消归档 (\d+) 个，失败 (\d+) 个：(.+)$/, "Unarchived $1, $2 failed: $3"],
+  [/^保存MCP&插件后台任务失败：(.+)$/, "Saving MCP & plugins failed in the background: $1"],
+  [/^同步 live MCP&插件后台任务失败：(.+)$/, "Syncing live MCP & plugins failed in the background: $1"],
 ];

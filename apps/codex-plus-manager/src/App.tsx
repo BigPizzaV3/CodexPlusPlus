@@ -917,11 +917,18 @@ type RequestLogsResult = {
   oldestMs?: number | null;
 };
 
-type SettingsResult = CommandResult<{
+type SettingsResult = CommandResult<SettingsPayload>;
+type SettingsPayload = {
   revision: string;
   settings: BackendSettings;
   settings_path: string;
   user_scripts: UserScriptInventory;
+};
+
+/** apply_context_entry：saved 是保存后的设置，liveEntries 是同步后 live config.toml 里的条目（失败的那一步之后为 null）。 */
+type AppliedContextEntryResult = CommandResult<{
+  saved: SettingsPayload | null;
+  liveEntries: CodexContextEntries | null;
 }>;
 
 type WeixinConnectStatusResult = CommandResult<{
@@ -3694,40 +3701,20 @@ export function App() {
     }
   };
 
-  const upsertContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string) => {
-    const result = await run(() =>
-      call<ContextEntriesResult>("upsert_context_entry", {
-        request: { settings: next, kind, id, tomlBody },
-      }),
-    );
-    if (!result) return null;
-    let normalized = normalizeSettings(result.settings);
-    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (saveResult) {
-      setSettings(saveResult);
-      normalized = normalizeSettings(saveResult.settings);
+  /**
+   * MCP 页的开关 / 编辑 / 删除：一次后端调用完成改公共配置、保存设置、同步 live config.toml
+   * （原来是三次串行往返）。tomlBody 为 null 表示删除。返回是否全部成功。
+   */
+  const applyContextEntry = async (next: BackendSettings, kind: ContextKind, id: string, tomlBody: string | null) => {
+    const result = await run(() => call<AppliedContextEntryResult>("apply_context_entry", { request: { settings: next, kind, id, tomlBody } }));
+    if (!result) return false;
+    if (result.saved) {
+      setSettings({ status: "ok", message: result.message, ...result.saved });
+      setSettingsForm(normalizeSettings(result.saved.settings));
     }
-    setSettingsForm(normalized);
+    if (result.liveEntries) setLiveContextEntries(result.liveEntries);
     if (!isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result);
-    return normalized;
-  };
-
-  const deleteContextEntry = async (next: BackendSettings, kind: ContextKind, id: string) => {
-    const result = await run(() =>
-      call<ContextEntriesResult>("delete_context_entry", {
-        request: { settings: next, kind, id },
-      }),
-    );
-    if (!result) return null;
-    let normalized = normalizeSettings(result.settings);
-    const saveResult = await run(() => call<SettingsResult>("save_settings", { settings: normalized }));
-    if (saveResult) {
-      setSettings(saveResult);
-      normalized = normalizeSettings(saveResult.settings);
-    }
-    setSettingsForm(normalized);
-    if (!isSuccessStatus(result.status)) showResultNotice(t("MCP&插件"), result);
-    return normalized;
+    return isSuccessStatus(result.status);
   };
 
   const previewMcpServersJson = async (json: string) => {
@@ -4397,8 +4384,7 @@ export function App() {
       applyPureApiInjection,
       clearRelayInjection,
       saveRelayFile,
-      upsertContextEntry,
-      deleteContextEntry,
+      applyContextEntry,
       previewMcpServersJson,
       importMcpServersJson,
       extractRelayCommonConfig,
@@ -4627,6 +4613,11 @@ export function App() {
   // 没勾选的 Agent 不进侧栏和命令面板；只影响显示，它的配置和网关接入照旧。
   const shownTools = toolEntries.filter((entry) => agentVisible(agentFocus, entry.id));
   const soloAgent = singleAgent(agentFocus);
+  // MCP 页的条目：设置里的条目叠上 live config.toml 的启停状态。只在两者变化时重算，免得每次渲染都给 McpPage 一个新数组。
+  const mcpPageEntries = useMemo(() => {
+    const entries = contextEntriesWithLiveEntries(settingsForm, liveContextEntries);
+    return [...contextEntriesByKind(entries, "mcp"), ...contextEntriesByKind(entries, "plugin")];
+  }, [settingsForm, liveContextEntries]);
   // 选中的页签对应的 Agent 被隐藏了（换了使用模式）时退回 Codex。
   const shownSessionTab: SessionTab = soloAgent === "codex" || (sessionTab !== "all" && !agentVisible(agentFocus, sessionTab)) ? "codex" : sessionTab;
   // 侧栏聚焦的 Agent 被隐藏了：换到第一个还显示的 Agent，免得停在一个看不见的 Agent 的页面上。
@@ -4957,20 +4948,10 @@ export function App() {
           ) : null}
           {route === "context" ? (
             <McpPage
-              entries={[...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "mcp"), ...contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "plugin")]}
-              onSave={async (kind, id, body) => {
-                const next = await actions.upsertContextEntry(settingsForm, kind, id, body);
-                if (!next) return false;
-                const synced = await actions.syncLiveContextEntries(next, true);
-                return Boolean(synced && isSuccessStatus(synced.status));
-              }}
-              onDelete={async (entry) => {
-                const next = await actions.deleteContextEntry(settingsForm, entry.kind, entry.id);
-                if (!next) return false;
-                const synced = await actions.syncLiveContextEntries(next, true);
-                return Boolean(synced && isSuccessStatus(synced.status));
-              }}
-              onRefresh={async () => { await actions.refreshLiveContextEntries(); await actions.refreshRelayFiles(); }}
+              entries={mcpPageEntries}
+              onSave={(kind, id, body) => actions.applyContextEntry(settingsForm, kind, id, body)}
+              onDelete={(entry) => actions.applyContextEntry(settingsForm, entry.kind, entry.id, null)}
+              onRefresh={async () => { await Promise.all([actions.refreshLiveContextEntries(), actions.refreshRelayFiles()]); }}
               onImport={async (json) => {
                 const next = await actions.importMcpServersJson(settingsForm, json);
                 if (!next) return false;
@@ -5407,13 +5388,7 @@ type Actions = {
   applyPureApiInjection: () => Promise<boolean>;
   clearRelayInjection: () => Promise<boolean>;
   saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
-  upsertContextEntry: (
-    settings: BackendSettings,
-    kind: ContextKind,
-    id: string,
-    tomlBody: string,
-  ) => Promise<BackendSettings | null>;
-  deleteContextEntry: (settings: BackendSettings, kind: ContextKind, id: string) => Promise<BackendSettings | null>;
+  applyContextEntry: (settings: BackendSettings, kind: ContextKind, id: string, tomlBody: string | null) => Promise<boolean>;
   previewMcpServersJson: (json: string) => Promise<McpImportPreviewResult | null>;
   importMcpServersJson: (settings: BackendSettings, json: string) => Promise<BackendSettings | null>;
   extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
