@@ -302,8 +302,8 @@ export function CommunityExtensionsPanel({
         <Switch label={t("显示社区拓展")} on={enabled} onToggle={() => void setEnabled(!enabled)} />
       </CxBanner>
       {listing?.message ? <div className={`community-ext-notice${listing.stale ? " is-error" : ""}`}>{listing.message}</div> : null}
-      {error ? <div className="community-ext-notice is-error">{error}</div> : null}
-      {notice ? <div className="community-ext-notice">{notice}</div> : null}
+      {error ? <div className="community-ext-notice is-error" role="alert">{error}</div> : null}
+      {notice ? <div className="community-ext-notice" role="status">{notice}</div> : null}
       {enabled && installed.length ? (
         <CxSection aside={refreshed} count={installed.length} title={t("已安装")}>
           <CxCard>{installed.map(row)}</CxCard>

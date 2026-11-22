@@ -9,7 +9,8 @@ export type ExtensionCardStatus = { text: string; title?: string; highlight?: bo
 /** 拓展头像：图标或作者头像，读不到时退回名字首字。 */
 function ExtensionIcon({ src, name }: { src?: string; name: string }) {
   const [failed, setFailed] = useState(false);
-  if (src && !failed) return <img alt="" className="ext-row-avatar" onError={() => setFailed(true)} src={src} />;
+  // 社区列表一次会有几十个 GitHub 头像：懒加载、异步解码，不带 Referer。
+  if (src && !failed) return <img alt="" className="ext-row-avatar" decoding="async" loading="lazy" onError={() => setFailed(true)} referrerPolicy="no-referrer" src={src} />;
   return <span aria-hidden className="ext-row-letter">{(name.trim()[0] ?? "?").toUpperCase()}</span>;
 }
 

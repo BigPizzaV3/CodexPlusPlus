@@ -4087,6 +4087,7 @@ export const EN_PLAIN: Record<string, string> = {
   "更换访问令牌？": "Replace the access token?",
   "浏览器访问": "Browser access",
   // Computer Use、拓展弹窗、dsh 插件等页面
+  "复制失败，请重试。": "Copy failed. Try again.",
   "继承 Codex 默认模型": "Inherit Codex default model",
   "CLAUDE_CONFIG_DIR 指向的目录（里面有 .claude.json）": "The folder CLAUDE_CONFIG_DIR points to (it holds .claude.json)",
   "包含 claude_desktop_config.json 的目录": "The folder that holds claude_desktop_config.json",

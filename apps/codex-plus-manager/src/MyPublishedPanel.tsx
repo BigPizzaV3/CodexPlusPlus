@@ -125,8 +125,8 @@ export function MyPublishedPanel({ onOpenUrl, search = "" }: { onOpenUrl: (url: 
   };
   return (
     <>
-      {error ? <div className="community-ext-notice is-error">{error}</div> : null}
-      {notice ? <div className="community-ext-notice">{notice}</div> : null}
+      {error ? <div className="community-ext-notice is-error" role="alert">{error}</div> : null}
+      {notice ? <div className="community-ext-notice" role="status">{notice}</div> : null}
       <CxSection
         aside={
           <button aria-label={t("刷新")} className="mg-icon-button" disabled={loading || busy !== ""} onClick={() => void load()} title={t("刷新")} type="button">
