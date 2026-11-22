@@ -27,7 +27,9 @@ it("启动时先读设置文件再决定弹不弹问卷，「稍后设置」也�
   // 初始不弹，交给 resolveAgentFocusPrompt 读完设置文件再定；判定期间入门清单也不出。
   assert.match(app, /const \[agentFocusOpen, setAgentFocusOpen\] = useState\(false\);/);
   assert.match(app, /const \[agentFocusChecking, setAgentFocusChecking\] = useState\(needAgentFocusPrompt\);/);
-  assert.match(app, /void resolveAgentFocusPrompt\(async \(\) => \{\n\s*\/\/[^\n]*\n\s*const result = await invoke<SettingsResult>\("load_settings"\);\n\s*return isSuccessStatus\(result\.status\) \? result\.settings\.managerAgentFocus : undefined;/);
+  // 判定等启动流程最先发出的那次设置读取，不再单独多读一次。
+  assert.match(app, /const settingsLoad = refreshSettings\(true\);/);
+  assert.match(app, /void resolveAgentFocusPrompt\(async \(\) => \(await settingsLoad\)\?\.managerAgentFocus\)/);
   assert.match(app, /if \(ask\) setAgentFocusOpen\(true\);\n\s*setAgentFocusChecking\(false\);/);
   assert.match(app, /setupOpen && !agentFocusOpen && !agentFocusChecking \?/);
   // 第一次问就点「稍后设置」：按全部功能记下（本地 + 设置文件），下次不再追问。

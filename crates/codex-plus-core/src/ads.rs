@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_AD_LIST_URLS: [&str; 3] = [
     "https://ads.codexpp.cc/ads.json",
@@ -80,6 +80,11 @@ pub async fn fetch_ad_list() -> anyhow::Result<Value> {
     fetch_ad_list_from_urls(&DEFAULT_AD_LIST_URLS).await
 }
 
+/// 广告清单是可有可无的推荐内容：连接 3 秒、整体 8 秒没回就换下一个地址，
+/// 网络不通时不能把首页推荐一直挂着（以前不设超时，被墙时一等就是很久）。
+const AD_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const AD_TOTAL_TIMEOUT: Duration = Duration::from_secs(8);
+
 pub fn cache_busted_ad_url(url: &str, version: u128) -> String {
     let separator = if url.contains('?') { '&' } else { '?' };
     format!("{url}{separator}v={version}")
@@ -89,7 +94,11 @@ pub async fn fetch_ad_list_from_urls<S>(urls: &[S]) -> anyhow::Result<Value>
 where
     S: AsRef<str>,
 {
-    let client = crate::http_client::proxied_client("CodexPlusPlus")?;
+    let client = crate::http_client::proxied_client_with_timeouts(
+        "CodexPlusPlus",
+        AD_CONNECT_TIMEOUT,
+        AD_TOTAL_TIMEOUT,
+    )?;
     let cache_bust = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())

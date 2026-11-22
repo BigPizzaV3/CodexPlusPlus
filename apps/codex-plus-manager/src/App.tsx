@@ -1830,23 +1830,8 @@ export function App() {
   // 问卷等设置文件读回来再决定弹不弹（#2936）：本地存储为空不等于没选过，设置文件里可能记着。
   const [agentFocusOpen, setAgentFocusOpen] = useState(false);
   // 判定期间入门清单也先不出，免得它先闪一下再被问卷盖住。
+  // 由启动流程在设置读回来后判定一次（见下方启动 effect）。
   const [agentFocusChecking, setAgentFocusChecking] = useState(needAgentFocusPrompt);
-  useEffect(() => {
-    if (!agentFocusChecking) return;
-    let disposed = false;
-    void resolveAgentFocusPrompt(async () => {
-      // 单独读一次设置：常规的设置加载排在网络请求之后，要等好几秒。
-      const result = await invoke<SettingsResult>("load_settings");
-      return isSuccessStatus(result.status) ? result.settings.managerAgentFocus : undefined;
-    }).then((ask) => {
-      if (disposed) return;
-      if (ask) setAgentFocusOpen(true);
-      setAgentFocusChecking(false);
-    });
-    return () => { disposed = true; };
-    // 只在启动时判定一次。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
   const cancelAgentFocus = useCallback(() => {
     setAgentFocusOpen(false);
     if (!agentFocus) {
@@ -3990,6 +3975,25 @@ export function App() {
     // 工具栏只依赖本地配置，不能排在广告等网络请求之后。
     // 切换语言会重载窗口，串行等待会让三个 Agent 图标长时间消失。
     void refreshTools(true);
+    // 本地加载互不依赖，一起发出；设置最先发，使用模式问卷等它读回来再决定弹不弹。
+    const settingsLoad = refreshSettings(true);
+    if (agentFocusChecking) {
+      // 本地存储为空不等于没选过，设置文件里可能记着（#2936）。
+      void resolveAgentFocusPrompt(async () => (await settingsLoad)?.managerAgentFocus).then((ask) => {
+        if (ask) setAgentFocusOpen(true);
+        setAgentFocusChecking(false);
+      });
+    }
+    // 启动落在首页，首页就是赞助商推荐，所以启动就拉一次；它是网络请求，不挡后面的本地加载。
+    void refreshAds(true);
+    const localLoads = Promise.all([
+      settingsLoad,
+      refreshOverview(true),
+      refreshEnvConflicts(true),
+      refreshProviderSyncTargets(true),
+      refreshPendingProviderImport(true),
+      refreshPendingDreamSkinCommunity(),
+    ]);
     void (async () => {
       const startup = await run(() => call<StartupResult>("startup_options"));
       const handledNavigation = await consumePendingManagerNavigation();
@@ -4000,18 +4004,12 @@ export function App() {
       } else {
         void checkUpdate(true);
       }
-      await refreshOverview(true);
-      // 启动落在首页，首页就是赞助商推荐，所以启动就拉一次。
-      await refreshAds(true);
-      if (!handledNavigation) await refreshSettings(true);
-      await refreshRelay(true);
-      await refreshEnvConflicts(true);
-      await refreshProviderSyncTargets(true);
-      await refreshPendingProviderImport(true);
-      await refreshPendingDreamSkinCommunity();
+      await localLoads;
       // 登录启动或为快捷面板请求在后台重建时窗口是隐藏的：启动流程走完后按轻量模式释放（#2677）。
       releaseMainWindowWhenHidden();
     })();
+    // 只在挂载时跑一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
