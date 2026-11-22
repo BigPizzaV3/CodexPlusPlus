@@ -20,3 +20,16 @@ it("网页导入 / 一键换肤待确认项靠事件和窗口唤起读取，不�
   // 旧的 1.2 秒轮询已删除。
   assert.doesNotMatch(app, /\}, 1200\);/);
 });
+
+it("App 级轮询走 usePolling（窗口不可见暂停），数据没变沿用旧引用；聚焦刷新概览有节流", async () => {
+  const app = await read("./App.tsx");
+  assert.match(app, /usePolling\(async \(\) => \{\n\s*const result = await invoke<AutoTakeoverResult>\("load_auto_takeover_state"\);\n\s*if \(autoTakeoverPollingRef\.current\) setAutoTakeoverState\(\(previous\) => keepIfSame\(previous, result\)\);\n\s*\}, 3000, \{ enabled: autoTakeoverPolling \}\);/);
+  assert.match(app, /usePolling\(\(\) => refreshMultiLaunchInstances\(true\), 3_000, \{ enabled: route === "multiLaunch" \}\);/);
+  assert.match(app, /setMultiLaunchInstances\(\(previous\) => keepIfSame\(previous, instances\)\);/);
+  assert.match(app, /usePolling\(\(\) => refreshSessionIndexRepairReport\(\(\) => routeRef\.current === "sessions"\), 15_000, \{ enabled: route === "sessions" \}\);/);
+  assert.match(app, /setWeixinStatus\(\(previous\) => keepIfSame\(previous, result\)\);\n\s*\}, 2_000, \{ enabled: route === "weixin", immediate: false \}\);/);
+  assert.match(app, /if \(now - lastRefreshAt < FOCUS_REFRESH_MIN_INTERVAL_MS\) return;/);
+  // App 里不再有裸 setInterval 轮询这些命令。
+  assert.doesNotMatch(app, /window\.setInterval\(load, 3000\)/);
+  assert.doesNotMatch(app, /window\.setInterval\(\(\) => void refreshWeixinStatus/);
+});

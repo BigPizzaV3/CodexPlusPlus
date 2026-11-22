@@ -154,6 +154,7 @@ import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
 import { agentTabGroups, agentTarget, pageVisibleForTool } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
+import { keepIfSame, usePolling } from "./use-polling";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
 import { OnboardingSetup } from "./OnboardingSetup";
@@ -1475,6 +1476,8 @@ type Theme = "dark" | "light";
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 /** 后端存下网页导入 / 一键换肤待确认项后发出（`src-tauri/src/lib.rs`）。 */
 const PENDING_IMPORT_CHANGED_EVENT = "manager-pending-import-changed";
+/** 窗口聚焦触发的概览刷新最短间隔。 */
+const FOCUS_REFRESH_MIN_INTERVAL_MS = 5_000;
 
 /**
  * 导航项归属。
@@ -1770,6 +1773,9 @@ export function App() {
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
   const theme: Theme = resolveTheme(themePreference, systemDark);
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  // 轮询、事件回调里读当前页用（闭包里的 route 可能是旧的）。
+  const routeRef = useRef(route);
+  routeRef.current = route;
   /** 合并后的「设置」页里要滚到的分组（原来跳「关于」的地方滚到版本与更新、日志）。 */
   const [settingsFocus, setSettingsFocus] = useState<string | null>(() => initialSettingsFocus());
   /** 设置模式里整体设置页当前显示的卡片（一个分类一页）；深链到某张卡片时换到它所在的分类。 */
@@ -2621,20 +2627,21 @@ export function App() {
   // 首页的「Codex++ 没开机自启」提示要用到 watcher，进首页时顺带读一次。
   const autoTakeoverOn = Boolean(settings?.settings.codexAppAutoTakeover);
   const autoTakeoverVisible = route === "home" || route === "agentSettings";
+  const autoTakeoverPolling = autoTakeoverVisible && autoTakeoverOn;
+  // 关掉开关或离开页面后，还在路上的那一轮结果不再写回（关开关时状态已清空）。
+  const autoTakeoverPollingRef = useRef(autoTakeoverPolling);
+  autoTakeoverPollingRef.current = autoTakeoverPolling;
+  // 状态没变时沿用旧对象，免得每 3 秒整个 App 重渲染；窗口不可见时暂停。
+  usePolling(async () => {
+    const result = await invoke<AutoTakeoverResult>("load_auto_takeover_state");
+    if (autoTakeoverPollingRef.current) setAutoTakeoverState((previous) => keepIfSame(previous, result));
+  }, 3000, { enabled: autoTakeoverPolling });
   useEffect(() => {
-    if (!autoTakeoverVisible || !autoTakeoverOn) return;
+    if (route !== "home" || !autoTakeoverOn) return;
     let cancelled = false;
-    const load = () => void invoke<AutoTakeoverResult>("load_auto_takeover_state")
-      .then((result) => { if (!cancelled) setAutoTakeoverState(result); })
-      .catch(() => {});
-    load();
-    if (route === "home") void invoke<WatcherResult>("load_watcher_state").then((result) => { if (!cancelled) setWatcher(result); }).catch(() => {});
-    const timer = window.setInterval(load, 3000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [autoTakeoverVisible, autoTakeoverOn, route]);
+    void invoke<WatcherResult>("load_watcher_state").then((result) => { if (!cancelled) setWatcher(result); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [autoTakeoverOn, route]);
 
   const navigate = async (target: Route) => {
     // 安装维护并进了 Codex 设置页；关于并进了设置页（滚到版本与更新）。
@@ -2783,11 +2790,11 @@ export function App() {
       if (result) {
         // 失败实例必须留在列表里：多开在 Windows 上起不来时，
         // 界面要给出「启动失败 + 原因」，只留运行中的会让它彻底消失。
-        setMultiLaunchInstances(
-          Array.isArray(result.instances)
-            ? result.instances.filter(multiLaunchInstanceVisible)
-            : [],
-        );
+        const instances = Array.isArray(result.instances)
+          ? result.instances.filter(multiLaunchInstanceVisible)
+          : [];
+        // 每 3 秒轮询一次：列表没变时沿用旧数组，免得整个 App 重渲染。
+        setMultiLaunchInstances((previous) => keepIfSame(previous, instances));
         if (!silent && !isSuccessStatus(result.status)) showNotice(t("当前运行实例"), result.message, result.status);
       }
       return result;
@@ -3429,7 +3436,7 @@ export function App() {
         setSessionIndexRepairReportError(null);
         setSessionIndexRepairReport((previous) => {
           if ((previous?.checkedAtMs ?? 0) > (result.report?.checkedAtMs ?? 0)) return previous;
-          return result.report;
+          return keepIfSame(previous, result.report);
         });
       } else if (isCurrent() && !isSuccessStatus(result.status)) {
         setSessionIndexRepairReportError(result.message || t("读取会话索引修复报告失败"));
@@ -4119,32 +4126,9 @@ export function App() {
     return () => { disposed = true; };
   }, [route, recoveryRefreshRequest]);
 
-  useEffect(() => {
-    if (route !== "sessions") return;
-    let disposed = false;
-    const refresh = () => void refreshSessionIndexRepairReport(() => !disposed);
-    refresh();
-    const timer = window.setInterval(refresh, 15_000);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [route]);
-
-  useEffect(() => {
-    if (route !== "multiLaunch") return;
-    let disposed = false;
-    const refresh = () => {
-      if (disposed) return;
-      void refreshMultiLaunchInstances(true);
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 3_000);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-    };
-  }, [route]);
+  // 会话页的索引修复报告、多开页的实例列表：只在对应页面、窗口可见时轮询，数据没变不重渲染。
+  usePolling(() => refreshSessionIndexRepairReport(() => routeRef.current === "sessions"), 15_000, { enabled: route === "sessions" });
+  usePolling(() => refreshMultiLaunchInstances(true), 3_000, { enabled: route === "multiLaunch" });
 
   useEffect(() => {
     if (getLanguage() === "en") {
@@ -4206,11 +4190,11 @@ export function App() {
     };
   }, [weixinQr?.qrStatus, weixinQr?.qrContent]);
 
-  useEffect(() => {
-    if (route !== "weixin") return;
-    const timer = window.setInterval(() => void refreshWeixinStatus(true), 2_000);
-    return () => window.clearInterval(timer);
-  }, [route]);
+  // 微信页轮询连接状态：静默读，失败不弹提示（等下一轮），状态没变不重渲染。
+  usePolling(async () => {
+    const result = await invoke<WeixinConnectStatusResult>("weixin_connect_status");
+    setWeixinStatus((previous) => keepIfSame(previous, result));
+  }, 2_000, { enabled: route === "weixin", immediate: false });
 
   useEffect(() => watchSystemTheme(setSystemDark), []);
 
@@ -4223,7 +4207,14 @@ export function App() {
   }, [themePreference]);
 
   useEffect(() => {
-    const refresh = () => { void refreshOverview(true); };
+    // 来回切窗口时每次聚焦都会触发：5 秒内只刷新一次概览。
+    let lastRefreshAt = 0;
+    const refresh = () => {
+      const now = Date.now();
+      if (now - lastRefreshAt < FOCUS_REFRESH_MIN_INTERVAL_MS) return;
+      lastRefreshAt = now;
+      void refreshOverview(true);
+    };
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, []);
