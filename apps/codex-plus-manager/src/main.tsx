@@ -43,8 +43,9 @@ import { applyManagerDisplay } from "./DisplaySettings";
      Fontsource packages ship woff2 files that Vite bundles into dist/.
      CSS @font-face declarations are injected at build time.
      界面字体已对齐 DSH：改走系统字体栈（--font-sans），不再打包 Inter；
-     这里只保留 DSH 代码字体栈里排第二的 JetBrains Mono 作等宽回退。      */
-import "@fontsource/jetbrains-mono";
+     这里只保留 DSH 代码字体栈里排第二的 JetBrains Mono 作等宽回退，且只要拉丁字符 400 字重：
+     其他字符集（西里尔、希腊、越南）和字重交给后面的系统等宽字体。      */
+import "@fontsource/jetbrains-mono/latin-400.css";
 
 /**
  * 启动兜底：渲染期抛错时 React 会卸掉整棵树，窗口只剩深色底，看起来就是「黑屏」（#2753）。
