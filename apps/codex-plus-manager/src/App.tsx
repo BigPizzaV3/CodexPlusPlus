@@ -2671,7 +2671,8 @@ export function App() {
         loads.push(refreshRelayFiles(true), refreshLiveContextEntries(true));
         break;
       case "weixin":
-        loads.push(refreshWeixinStatus(true), refreshLocalSessions(true, sessionsOffset));
+        // 微信页从最近的会话里挑，读第一页。
+        loads.push(refreshWeixinStatus(true), refreshLocalSessions(true));
         break;
       case "userScripts":
         loads.push((async () => {
