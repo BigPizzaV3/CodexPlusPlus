@@ -33,3 +33,9 @@ it("App 级轮询走 usePolling（窗口不可见暂停），数据没变沿用�
   assert.doesNotMatch(app, /window\.setInterval\(load, 3000\)/);
   assert.doesNotMatch(app, /window\.setInterval\(\(\) => void refreshWeixinStatus/);
 });
+
+it("顶栏操作按钮在 layout effect 里找挂载点，切页时不晚一帧", async () => {
+  const source = await read("./TopbarActions.tsx");
+  assert.match(source, /useLayoutEffect\(\(\) => \{\n\s*setSlot\(document\.querySelector\("\[data-topbar-actions\]"\)\);/);
+  assert.doesNotMatch(source, /\buseEffect\b/);
+});
