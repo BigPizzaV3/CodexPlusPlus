@@ -15555,9 +15555,12 @@ function AppSidebar({
   const languageLabel = getLanguage() === "en" ? t("切换到中文") : t("切换到英文");
   const themeLabel = theme === "dark" ? t("切换到浅色") : t("切换到深色");
   const connectedAgents = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
-  // 供应商日常在 Codex 里管：没有 Agent 接入网关时，网关一组、状态卡和接入方式的状态点都不显示。
-  const gatewayInUse = connectedAgents.size > 0;
-  const gatewayState = gateway?.helperRunning ? tf("网关运行中 · 端口 {0}", [gateway.port]) : t("网关未运行");
+  // 供应商日常在 Codex 里管：没有 Agent 接入网关时，网关一组和接入方式的状态点都不显示。
+  // 网关数据要等第一次读回来：在那之前用上次记下的结果，免得网关用户每次启动都看到这一组晚一拍才冒出来。
+  const gatewayInUse = gateway ? connectedAgents.size > 0 : loadCachedGatewayInUse();
+  useEffect(() => {
+    if (gateway) storeCachedGatewayInUse(gatewayInUse);
+  }, [gateway, gatewayInUse]);
   const openSettings = (entryRoute: Route, sections?: string[]) => (onOpenSettings ? onOpenSettings(entryRoute, sections) : onNavigate(entryRoute));
 
   if (settingsMode) {
@@ -15839,7 +15842,8 @@ function AppSidebar({
         ) : null}
       </nav>
 
-      {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；否则有 Agent 接入网关时是网关状态；有新版本时换成更新提示。 */}
+      {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；有新版本时是更新提示。
+          网关状态不再单独占一张卡：有 Agent 接入时侧栏已经有「聚合网关」一组，它的「总览」就是同一个入口。 */}
       {setupCard}
       {pendingUpdateVersion ? (
         <button className="cx-side-card" onClick={onOpenUpdate} type="button">
@@ -15848,15 +15852,7 @@ function AppSidebar({
             {pendingUpdateReady ? t("点击安装") : pendingUpdateProgress !== null ? (pendingUpdateProgress >= 0 ? `${Math.round(pendingUpdateProgress)}%` : t("下载中…")) : t("查看更新")}
           </span>
         </button>
-      ) : enhanceOnly || setupCard || !gatewayInUse ? null : (
-        <button className={`cx-side-card ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
-          <span className="cx-side-card-title">
-            <i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />
-            {gatewayState}
-          </span>
-          <span className="cx-side-card-meta">{tf("{0} 个 Agent 已接入", [connectedAgents.size])}</span>
-        </button>
-      )}
+      ) : null}
       <footer className="cx-side-foot">
         <img alt="" className="cx-side-logo" draggable={false} src={APP_LOGO_URL} />
         <span className="cx-side-version">{version ? `Codex++ ${version}` : "Codex++"}</span>
@@ -15873,6 +15869,23 @@ function AppSidebar({
       </footer>
     </aside>
   );
+}
+
+/** 上次读到的「有没有 Agent 经网关接入」，侧栏在网关数据读回来之前先按它显示。 */
+const GATEWAY_IN_USE_STORAGE_KEY = "codex-plus-gateway-in-use";
+function loadCachedGatewayInUse(): boolean {
+  try {
+    return window.localStorage.getItem(GATEWAY_IN_USE_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function storeCachedGatewayInUse(inUse: boolean) {
+  try {
+    if (loadCachedGatewayInUse() !== inUse) window.localStorage.setItem(GATEWAY_IN_USE_STORAGE_KEY, inUse ? "1" : "0");
+  } catch {
+    // 存不了只影响下次启动时那一拍。
+  }
 }
 
 /** 拓展页面的侧栏图标（清单 manager.icon）：只认这几个名字，其余用默认图标。 */
