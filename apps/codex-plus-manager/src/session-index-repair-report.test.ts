@@ -10,7 +10,8 @@ test("session index repair report keeps abort and truncation notices outside iss
   assert.match(source, /warnings\?: string\[\];/);
 
   const reportStart = source.indexOf("{sessionIndexRepairReport ? (");
-  const reportEnd = source.indexOf("function SessionsScreen", reportStart);
+  // 报告在 SessionRepairPanel 里，它后面紧跟首页组件的说明注释。
+  const reportEnd = source.indexOf("/// 首页", reportStart);
   const report = source.slice(reportStart, reportEnd);
 
   const abortNotice = report.indexOf('role="alert"');

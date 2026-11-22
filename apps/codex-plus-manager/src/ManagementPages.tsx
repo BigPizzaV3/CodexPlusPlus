@@ -4,14 +4,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Edit3, ExternalLink, Folder, History, MoreHorizontal, Plus, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
+import { BookOpen, MoreHorizontal, Plus, RefreshCw, Server, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AppSelect } from "./AppSelect";
-import { matchesManagementQuery, sessionGroups, skillRepoKey, type ManagedSession } from "./management-model";
+import { matchesManagementQuery } from "./management-model";
 import { TopbarActions } from "./TopbarActions";
 import { AgentGlyph } from "./HubOverview";
-import { MCP_AGENTS, editedEnabledState, mcpCount, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
+import { MCP_AGENTS, editedEnabledState, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
 import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
@@ -33,9 +33,6 @@ function IconAction({ children, onClick, label, disabled }: { children: ReactNod
  */
 export function PageHeader({ actions }: { icon?: ReactNode; title?: string; actions?: ReactNode }) {
   return <TopbarActions>{actions}</TopbarActions>;
-}
-export function SearchField({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
-  return <div className="mg-search"><Search size={15} /><input aria-label={placeholder} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />{value && <IconAction label={t("清除搜索")} onClick={() => onChange("")}><X size={13} /></IconAction>}</div>;
 }
 export function Menu({ label = t("更多操作"), children }: { label?: string; children: ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -111,18 +108,7 @@ export function ManagementDrawer({ title, onClose, children, footer, modal, dism
   }, []);
   return <div className={"mg-drawer-backdrop" + (modal ? " mg-modal-backdrop" : "")} onMouseDown={(e) => { if (dismissOnBackdrop && e.target === e.currentTarget) onClose(); }}><section className={"mg-drawer" + (modal ? ` mg-modal mg-modal-${modal}` : "")} role="dialog" aria-modal="true" aria-label={title} ref={ref}><header><h2>{title}</h2><IconAction label={t("关闭窗口")} onClick={onClose}><X size={18} /></IconAction></header><div className="mg-drawer-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>;
 }
-function Empty({ title, detail, children }: { title: string; detail?: string; children?: ReactNode }) {
-  return <div className="mg-empty"><h2>{title}</h2>{detail && <p>{detail}</p>}<div>{children}</div></div>;
-}
 const agentLabel = (agent: McpAgentId) => (agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : "Grok");
-/** 矩阵列头：Agent 图标 + 名称 + 在用数量；悬停显示它的配置文件位置。 */
-export function AgentColumn({ agent, count, title }: { agent: McpAgentId; count: number; title?: string }) {
-  return <div className="mg-column mg-agent-column" title={title ? `${agentLabel(agent)} · ${title}` : agentLabel(agent)}><AgentGlyph agent={agent} /><span>{agentLabel(agent)}</span><small>{count}</small></div>;
-}
-/** 矩阵里的一格勾选；`hint` 覆盖悬停说明（例如「未安装」「只读」）。 */
-export function MatrixCell({ name, enabled, disabled, onToggle, agent = "codex", hint }: { name: string; enabled: boolean; disabled?: boolean; onToggle: () => void; agent?: McpAgentId; hint?: string }) {
-  return <button className="mg-cell" type="button" aria-pressed={enabled} aria-label={`${name} · ${agentLabel(agent)}：${enabled ? t("已启用") : t("已停用")}`} title={hint ? `${agentLabel(agent)}：${hint}` : `${name} · ${agentLabel(agent)}`} disabled={disabled} onClick={onToggle}><span data-on={enabled}>{enabled && <Check size={12} strokeWidth={3} />}</span></button>;
-}
 /** 行内的一个 Agent 开关胶囊：图标 + 名字，开了是实心。悬停显示它的配置文件位置。 */
 export function AgentToggle({ name, enabled, disabled, onToggle, agent, title, hint, statusUnknown }: { name: string; enabled: boolean; disabled?: boolean; onToggle: () => void; agent: McpAgentId; title?: string; hint?: string; statusUnknown?: boolean }) {
   return <button className="cx-agent-toggle" type="button" aria-pressed={statusUnknown ? undefined : enabled} aria-label={`${name} · ${agentLabel(agent)}：${statusUnknown ? t("状态未知") : enabled ? t("已启用") : t("已停用")}`} title={hint ? `${agentLabel(agent)}：${hint}` : title ? `${agentLabel(agent)} · ${title}` : agentLabel(agent)} disabled={disabled} onClick={(event) => { event.stopPropagation(); onToggle(); }}><AgentGlyph agent={agent} /><span>{agentLabel(agent)}</span></button>;

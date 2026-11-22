@@ -32,7 +32,6 @@ import {
   CircleHelp,
   Copy,
   Download,
-  Edit3,
   GripVertical,
   Info,
   ScrollText,
@@ -106,7 +105,7 @@ import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, use
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -118,7 +117,6 @@ import {
   dedupeContextEntryList,
   parseContextEntries,
   selectedContextConfigToml,
-  setContextEntryEnabled,
   splitContextConfigText,
   stripContextEntriesFromConfig,
   type CodexContextEntries,
@@ -1092,11 +1090,6 @@ type CcsProvidersResult = CommandResult<{
   configuredDbPath: string;
   fallbackReason?: string | null;
   providers: CcsProviderImport[];
-}>;
-
-type SkillInventoryResult = CommandResult<{
-  skills: Array<{ id: string; name: string; description: string; enabled: boolean; bundled: boolean }>;
-  codexSkillsDir: string;
 }>;
 
 type ProviderImportRequest = {
@@ -9126,214 +9119,6 @@ function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionIndexRep
   </details>;
 }
 
-function SessionsScreen({
-  settings,
-  form,
-  sessions,
-  providerSyncProgress,
-  sessionIndexRepairActive,
-  sessionIndexRepairReport,
-  sessionIndexRepairReportError,
-  providerSyncTargets,
-  selectedProviderSyncTarget,
-  onFormChange,
-  actions,
-}: {
-  settings: SettingsResult | null;
-  form: BackendSettings;
-  sessions: LocalSessionsResult | null;
-  providerSyncProgress: ProviderSyncProgress;
-  sessionIndexRepairActive: boolean;
-  sessionIndexRepairReport: SessionIndexRepairReport | null;
-  sessionIndexRepairReportError: string | null;
-  providerSyncTargets: ProviderSyncTargetsResult | null;
-  selectedProviderSyncTarget: string;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const items = sessions?.sessions ?? [];
-  const pageOffset = sessions?.offset ?? 0;
-  const pageSize = sessions?.limit ?? 50;
-  const currentPage = Math.floor(pageOffset / pageSize) + 1;
-  const hasPreviousPage = pageOffset > 0;
-  const hasNextPage = sessions?.hasMore === true;
-  const activeCount = items.filter((item) => !item.archived).length;
-  const archivedCount = items.length - activeCount;
-  const totalCount = sessions?.totalCount ?? items.length;
-  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(() => new Set());
-  const [selectionMode, setSelectionMode] = useState(false);
-  const [bulkDeleting, setBulkDeleting] = useState(false);
-  const selectedSessions = useMemo(() => items.filter((session) => selectedSessionIds.has(session.id)), [items, selectedSessionIds]);
-  const selectedCount = selectedSessions.length;
-  const allSelected = items.length > 0 && selectedCount === items.length;
-  const providerTargets = providerSyncTargets?.targets ?? [];
-  const selectedProviderTarget = providerTargets.find(
-    (target) => target.id === selectedProviderSyncTarget,
-  );
-  const canRepairProviderSessions = selectedProviderTarget
-    ? isProviderSyncTargetSelectable(selectedProviderTarget)
-    : false;
-
-  useEffect(() => {
-    const itemIds = new Set(items.map((session) => session.id));
-    setSelectedSessionIds((current) => {
-      const next = new Set(Array.from(current).filter((id) => itemIds.has(id)));
-      return next.size === current.size ? current : next;
-    });
-  }, [items]);
-
-  const toggleSessionSelection = (sessionId: string, checked: boolean) => {
-    setSelectedSessionIds((current) => {
-      const next = new Set(current);
-      if (checked) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      return next;
-    });
-  };
-
-  const selectAllSessions = () => {
-    setSelectionMode(true);
-    setSelectedSessionIds(new Set(items.map((session) => session.id)));
-  };
-
-  const clearSelectedSessions = () => setSelectedSessionIds(new Set());
-
-  const deleteSelectedSessions = async () => {
-    if (!selectionMode) {
-      setSelectionMode(true);
-      return;
-    }
-    setBulkDeleting(true);
-    try {
-      await actions.deleteLocalSessions(selectedSessions);
-    } finally {
-      setBulkDeleting(false);
-    }
-  };
-
-  return (
-    <>
-      <Panel className="sessions-overview-panel">
-        <CardHead title={t("会话管理")} detail={t("读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件")} />
-        <CardContent className="sessions-overview-content">
-          <div className="session-summary-bar">
-            <div>
-              <span>{t("会话总数")}</span>
-              <strong>{tf("{0} 个", [totalCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页会话")}</span>
-              <strong>{tf("{0} 个", [items.length])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页未归档")}</span>
-              <strong>{tf("{0} 个", [activeCount])}</strong>
-            </div>
-            <div>
-              <span>{t("当前页已归档")}</span>
-              <strong>{tf("{0} 个", [archivedCount])}</strong>
-            </div>
-            <div className="session-summary-path">
-              <span>{t("数据库")}</span>
-              <code>{sessions?.dbPath ?? "~/.codex/sqlite/*.db"}</code>
-            </div>
-          </div>
-
-          <SessionRepairPanel dirty={false} form={form} providerSyncProgress={providerSyncProgress} sessionIndexRepairActive={sessionIndexRepairActive} sessionIndexRepairReport={sessionIndexRepairReport} sessionIndexRepairReportError={sessionIndexRepairReportError} providerSyncTargets={providerSyncTargets} selectedProviderSyncTarget={selectedProviderSyncTarget} onFormChange={onFormChange} actions={actions} />
-        </CardContent>
-      </Panel>
-      <Panel className="sessions-list-panel">
-        <CardHead
-          title={t("本地会话")}
-          detail={sessions ? tf("第 {0} 页，每页最多 {1} 条，按更新时间倒序显示", [currentPage, pageSize]) : t("点击刷新会话读取本地数据库")}
-        />
-        <CardContent className="session-list-content">
-          {items.length ? (
-            <>
-              <div className="session-list-toolbar">
-                <span className="session-selection-summary">{t("已选择")} {selectedCount} / {items.length} {t("个会话")}</span>
-                <div className="session-selection-actions">
-                  <Button disabled={allSelected || bulkDeleting} onClick={selectAllSessions} size="sm" variant="outline">
-                    {t("全选当前列表")}
-                  </Button>
-                  <Button disabled={!selectedCount || bulkDeleting} onClick={clearSelectedSessions} size="sm" variant="outline">
-                    {t("清空选择")}
-                  </Button>
-                  <Button disabled={(selectionMode && !selectedCount) || bulkDeleting} onClick={() => void deleteSelectedSessions()} size="sm" variant="outline">
-                    {selectionMode ? <Trash2 className="h-4 w-4" /> : null}
-                    {selectionMode ? (bulkDeleting ? t("正在删除…") : t("删除已选")) : t("多选")}
-                  </Button>
-                </div>
-              </div>
-              <div className="session-list">
-                {items.map((session) => {
-                  const selected = selectedSessionIds.has(session.id);
-                  return (
-                    <div className="session-row" data-selection-mode={selectionMode} data-selected={selected} key={session.id}>
-                      {selectionMode ? (
-                        <label className="session-select" title={t("选择会话")}>
-                          <input
-                            aria-label={tf("选择会话 {0}", [session.title || session.id])}
-                            checked={selected}
-                            onChange={(event) => toggleSessionSelection(session.id, event.currentTarget.checked)}
-                            type="checkbox"
-                          />
-                        </label>
-                      ) : null}
-                      <div className="session-main">
-                        <strong>{session.title || t("未命名会话")}</strong>
-                        <span>{session.id}</span>
-                        <small>{session.cwd || t("未记录项目路径")}</small>
-                      </div>
-                      <div className="session-meta">
-                        <Badge status={session.archived ? "archived" : "ok"} />
-                        <span>{session.modelProvider || t("provider 未记录")}</span>
-                        <span>{formatTime(session.updatedAtMs ?? 0)}</span>
-                      </div>
-                      <Button className="session-delete-button" variant="outline" onClick={() => void actions.deleteLocalSession(session)}>
-                        <Trash2 className="h-4 w-4" />
-                        {t("删除")}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="session-pagination">
-                <Button
-                  aria-label={t("上一页")}
-                  disabled={!hasPreviousPage || bulkDeleting}
-                  onClick={() => void actions.refreshLocalSessions(true, Math.max(0, pageOffset - pageSize))}
-                  size="icon"
-                  title={t("上一页")}
-                  variant="outline"
-                >
-                  <ArrowLeft className="h-4 w-4" />
-                </Button>
-                <span>{tf("第 {0} 页", [currentPage])}</span>
-                <Button
-                  aria-label={t("下一页")}
-                  disabled={!hasNextPage || bulkDeleting}
-                  onClick={() => void actions.refreshLocalSessions(true, pageOffset + pageSize)}
-                  size="icon"
-                  title={t("下一页")}
-                  variant="outline"
-                >
-                  <ArrowRight className="h-4 w-4" />
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="empty">{t("未读取到本地会话，或当前 SQLite 会话库不存在。")}</div>
-          )}
-        </CardContent>
-      </Panel>
-    </>
-  );
-}
-
 /// 首页：整个程序的落脚页。上面是各 Agent 与网关的状态，中间是精选推荐和其他赞助商，最下面是常用入口。
 ///
 /// 推荐：置顶位全部做大卡片，排成一行均分宽度；推荐池里的赞助商全部列出，两列小卡片，紧跟在精选下面。
@@ -10871,35 +10656,6 @@ function RelayProfileDetail({
         />
       ) : null}
     </div>
-  );
-}
-
-function ContextScreen({
-  form,
-  liveEntries,
-  relayFiles,
-  onFormChange,
-  actions,
-}: {
-  form: BackendSettings;
-  liveEntries: CodexContextEntries | null;
-  relayFiles: RelayFilesResult | null;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  return (
-    <Panel fill>
-      <CardHead title={t("Codex MCP&插件")} detail={t("独立管理 Codex 的 MCP 服务器与插件；切换任意供应商都会带上。")} />
-      <CardContent>
-        <RelayContextManager
-          form={normalizeSettings(form)}
-          liveEntries={liveEntries}
-          relayFiles={relayFiles}
-          onFormChange={onFormChange}
-          actions={actions}
-        />
-      </CardContent>
-    </Panel>
   );
 }
 
@@ -13303,295 +13059,6 @@ function AggregateRelayProfileEditor({
   );
 }
 
-function RelayContextManager({
-  form,
-  liveEntries,
-  relayFiles,
-  onFormChange,
-  actions,
-}: {
-  form: BackendSettings;
-  liveEntries: CodexContextEntries | null;
-  relayFiles: RelayFilesResult | null;
-  onFormChange: (value: BackendSettings) => void;
-  actions: Actions;
-}) {
-  const entries = contextEntriesWithLiveEntries(form, liveEntries);
-  const [activeKind, setActiveKind] = useState<ContextKind>("mcp");
-  const [editor, setEditor] = useState<{ kind: ContextKind; entry?: CodexContextEntry } | null>(null);
-  const [importOpen, setImportOpen] = useState(false);
-  const [skillInventory, setSkillInventory] = useState<SkillInventoryResult | null>(null);
-  const refreshSkillInventory = async () => {
-    try {
-      setSkillInventory(await invoke<SkillInventoryResult>("list_installed_skills"));
-    } catch (error) {
-      setSkillInventory({ status: "failed", message: stringifyError(error), skills: [], codexSkillsDir: "" });
-      await actions.showMessage("Skills", stringifyError(error), "failed");
-    }
-  };
-  useEffect(() => { void refreshSkillInventory(); }, []);
-  const visibleEntries = contextEntriesByKind(entries, activeKind);
-  const label = contextKindLabel(activeKind);
-
-  const syncContextEntries = async (next: BackendSettings) => {
-    const syncResult = await actions.syncLiveContextEntries(next, true);
-    if (!syncResult || !isSuccessStatus(syncResult.status)) return false;
-    await actions.refreshRelayFiles();
-    return true;
-  };
-
-  const saveEntry = async (kind: ContextKind, id: string, tomlBody: string) => {
-    const next = await actions.upsertContextEntry(form, kind, id, tomlBody);
-    if (!next) return;
-    onFormChange(next);
-    if (!(await syncContextEntries(next))) return;
-    setEditor(null);
-  };
-
-  const toggleContextEntryEnabled = async (entry: CodexContextEntry) => {
-    const nextBody = setContextEntryEnabled(entry.tomlBody, !entry.enabled);
-    const next = await actions.upsertContextEntry(form, entry.kind, entry.id, nextBody);
-    if (!next) return;
-    onFormChange(next);
-    await syncContextEntries(next);
-  };
-
-  const deleteEntry = async (entry: CodexContextEntry) => {
-    const next = await actions.deleteContextEntry(form, entry.kind, entry.id);
-    if (!next) return;
-    onFormChange(next);
-    await syncContextEntries(next);
-  };
-
-  const importJson = async (json: string) => {
-    const next = await actions.importMcpServersJson(form, json);
-    if (!next) return;
-    onFormChange(next);
-    if (!(await syncContextEntries(next))) return;
-    setImportOpen(false);
-  };
-
-  return (
-    <div className="relay-context-panel">
-      <div className="relay-context-head">
-        <div>
-          <strong>{t("Codex MCP&插件")}</strong>
-          <span>{t("MCP 与插件作为全局配置独立管理，切换任意供应商都会合并。")}</span>
-        </div>
-        <div className="relay-context-head-actions">
-          {activeKind === "mcp" ? (
-            <Button
-              onClick={() => {
-                setEditor(null);
-                setImportOpen(true);
-              }}
-              size="sm"
-              variant="secondary"
-            >
-              <Download className="h-4 w-4" />
-              {t("导入 JSON")}
-            </Button>
-          ) : null}
-          {activeKind === "skill" ? (
-            <Button onClick={() => void refreshSkillInventory()} size="sm" variant="secondary"><RefreshCw className="h-4 w-4" />{t("刷新列表")}</Button>
-          ) : <Button onClick={() => setEditor({ kind: activeKind })} size="sm" variant="secondary">
-            <Plus className="h-4 w-4" />
-            {t("新增")}{label}
-          </Button>}
-        </div>
-      </div>
-      <div className="segmented">
-        {contextKindOptions.map((option) => (
-          <button
-            className={activeKind === option.kind ? "active" : ""}
-            key={option.kind}
-            onClick={() => setActiveKind(option.kind)}
-            type="button"
-          >
-            <span>{option.label}</span>
-            <small>{option.kind === "skill" ? (skillInventory ? (isSuccessStatus(skillInventory.status) ? skillInventory.skills.length : "?") : "…") : contextEntriesByKind(entries, option.kind).length}</small>
-          </button>
-        ))}
-      </div>
-      <div className="relay-context-summary">
-        {activeKind === "skill" ? <>{t("本地与内置 Skills 由 Codex 从目录发现。")}{skillInventory ? <span className="break-all"> {skillInventory.codexSkillsDir}</span> : null}</> : <>{t("当前共有")} {visibleEntries.length} {t("个")}{label}{t("；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。")}</>}
-      </div>
-      <div className="relay-context-list">
-        {activeKind === "skill" ? (
-          !skillInventory ? <div className="empty">{t("正在读取 Skills…")}</div>
-          : !isSuccessStatus(skillInventory.status) ? <div className="empty">{skillInventory.message}</div>
-          : skillInventory.skills.length ? skillInventory.skills.map((skill) => (
-            <div className="relay-context-row" key={`local-skill-${skill.id}`}>
-              <div><strong className="context-title">{skill.name || skill.id}</strong><div className="text-xs">{skill.description}</div></div>
-              <span>{skill.bundled ? t("内置") : t("本地")}{!skill.enabled ? ` · ${t("已停用")}` : ""}</span>
-            </div>
-          )) : <div className="empty">{t("Skills 目录中暂无技能。")}</div>
-        ) : visibleEntries.length ? (
-          visibleEntries.map((entry) => (
-            <div className="relay-context-row" key={`${entry.kind}-${entry.id}`}>
-              <strong className="context-title">{entry.title || entry.id}</strong>
-              <div className="relay-context-actions">
-                <button
-                  aria-checked={entry.enabled}
-                  aria-label={`contextEnabledSwitch-${entry.kind}-${entry.id}`}
-                  className={`context-enabled-switch ${entry.enabled ? "active" : ""}`}
-                  onClick={() => void toggleContextEntryEnabled(entry)}
-                  role="switch"
-                  title={entry.enabled ? t("禁用此扩展项") : t("启用此扩展项")}
-                  type="button"
-                >
-                  <span className="context-switch-track" aria-hidden="true">
-                    <span className="context-switch-thumb" />
-                  </span>
-                </button>
-                <Button onClick={() => setEditor({ kind: entry.kind, entry })} size="icon" title={t("编辑扩展项")} variant="ghost">
-                  <Edit3 className="h-4 w-4" />
-                </Button>
-                <Button
-                  className="relay-context-delete"
-                  onClick={() => void deleteEntry(entry)}
-                  size="icon"
-                  title={t("删除扩展项")}
-                  variant="ghost"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="empty">{t("暂无")}{label}{t("，可以从通用配置文件或这里新增。")}</div>
-        )}
-      </div>
-      {importOpen ? (
-        <McpJsonImporter actions={actions} onCancel={() => setImportOpen(false)} onImport={importJson} />
-      ) : null}
-      {editor ? (
-        <ContextEntryEditor
-          entry={editor.entry}
-          kind={editor.kind}
-          onCancel={() => setEditor(null)}
-          onSave={(kind, id, tomlBody) => void saveEntry(kind, id, tomlBody)}
-        />
-      ) : null}
-    </div>
-  );
-}
-
-function McpJsonImporter({
-  actions,
-  onCancel,
-  onImport,
-}: {
-  actions: Actions;
-  onCancel: () => void;
-  onImport: (json: string) => void;
-}) {
-  const [json, setJson] = useState("");
-  const [preview, setPreview] = useState<McpImportPreviewResult | null>(null);
-
-  const runPreview = async () => {
-    const result = await actions.previewMcpServersJson(json);
-    setPreview(result && isSuccessStatus(result.status) ? result : null);
-  };
-
-  return (
-    <div aria-modal="true" className="modal-backdrop" role="dialog">
-      <div className="modal-card context-modal">
-        <div className="modal-head">
-          <div>
-            <h2>{t("导入 MCP JSON")}</h2>
-            <p className="modal-message">{t("支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。")}</p>
-          </div>
-          <button aria-label={t("关闭窗口")} className="toast-close" onClick={onCancel} type="button">×</button>
-        </div>
-        <Field label={t("MCP 配置 JSON")}>
-          <Textarea
-            className="context-editor-textarea"
-            value={json}
-            onChange={(event) => {
-              setJson(event.currentTarget.value);
-              setPreview(null);
-            }}
-            placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'}
-            spellCheck={false}
-          />
-        </Field>
-        {preview ? (
-          <div className="relay-context-summary">
-            <div>{tf("将导入 {0} 个：{1}", [preview.entries.length, preview.entries.map((item) => item.id).join("、")])}</div>
-            {preview.warnings.map((warning) => <div key={warning}>{warning}</div>)}
-          </div>
-        ) : null}
-        <Toolbar>
-          <Button disabled={!json.trim()} onClick={() => void runPreview()} size="sm" variant="secondary">{t("预览")}</Button>
-          <Button disabled={!preview} onClick={() => onImport(json)} size="sm">
-            <Download className="h-4 w-4" />
-            {t("确认导入")}
-          </Button>
-          <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
-        </Toolbar>
-      </div>
-    </div>
-  );
-}
-
-function ContextEntryEditor({
-  kind,
-  entry,
-  onCancel,
-  onSave,
-}: {
-  kind: ContextKind;
-  entry?: CodexContextEntry;
-  onCancel: () => void;
-  onSave: (kind: ContextKind, id: string, tomlBody: string) => void;
-}) {
-  const [draftKind, setDraftKind] = useState<ContextKind>(entry?.kind ?? kind);
-  const [id, setId] = useState(entry?.id ?? "");
-  const [tomlBody, setTomlBody] = useState(entry?.tomlBody ?? "");
-  const canSave = id.trim().length > 0;
-
-  return (
-    <div className="context-editor">
-      <div className="context-editor-fields">
-        <Field label={t("类型")}>
-          <AppSelect
-            disabled={!!entry}
-            value={draftKind}
-            onChange={(value) => setDraftKind(value)}
-            options={contextKindOptions.map((option) => ({ value: option.kind, label: option.label }))}
-          />
-        </Field>
-        <Field label="ID">
-          <Input
-            disabled={!!entry}
-            value={id}
-            onChange={(event) => setId(event.currentTarget.value.trim())}
-            placeholder={t("例如 context7")}
-          />
-        </Field>
-      </div>
-      <Field label={t("TOML 配置体")}>
-        <Textarea
-          className="context-editor-textarea"
-          value={tomlBody}
-          onChange={(event) => setTomlBody(event.currentTarget.value)}
-          placeholder={t("只填写表头下面的内容，例如：\ncommand = \"npx\"\nargs = [\"-y\", \"@upstash/context7-mcp\"]")}
-          spellCheck={false}
-        />
-      </Field>
-      <Toolbar>
-        <Button disabled={!canSave} onClick={() => onSave(draftKind, id.trim(), tomlBody)} size="sm">
-          <Save className="h-4 w-4" />
-          {t("保存扩展项")}
-        </Button>
-        <Button onClick={onCancel} size="sm" variant="secondary">{t("取消")}</Button>
-      </Toolbar>
-    </div>
-  );
-}
-
 function SyncedTextarea({
   value,
   onValueChange,
@@ -14410,14 +13877,6 @@ function TaskProgressBox({ progress, title, completedTitle = t("上次修复结�
       </div> : null}
       <small>{progress.message}</small>
     </div>
-  );
-}
-
-function Panel({ children, fill = false, className = "", id }: { children: React.ReactNode; fill?: boolean; className?: string; id?: string }) {
-  return (
-    <Card className={`panel ${fill ? "fill" : ""} ${className}`} id={id}>
-      {children}
-    </Card>
   );
 }
 
@@ -15521,15 +14980,6 @@ function HealthTile({ item }: { item: ReturnType<typeof healthItems>[number] }) 
   );
 }
 
-function CardHead({ title, detail }: { title: string; detail: string }) {
-  return (
-    <CardHeader className="panel-head">
-      <CardTitle>{title}</CardTitle>
-      <CardDescription>{detail}</CardDescription>
-    </CardHeader>
-  );
-}
-
 function Toolbar({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return <div className={`toolbar ${className}`.trim()}>{children}</div>;
 }
@@ -16465,16 +15915,6 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
   return subtitles[route];
 }
 
-const contextKindOptions: Array<{ kind: ContextKind; label: string; tableName: string }> = [
-  { kind: "mcp", label: "MCP", tableName: "mcp_servers" },
-  { kind: "skill", label: "Skills", tableName: "skills" },
-  { kind: "plugin", get label() { return t("插件"); }, tableName: "plugins" },
-];
-
-function contextKindLabel(kind: ContextKind) {
-  return contextKindOptions.find((option) => option.kind === kind)?.label ?? t("扩展项");
-}
-
 function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
   const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");
   return {
@@ -16518,18 +15958,6 @@ function withLiveEntryState(entry: CodexContextEntry, live?: CodexContextEntry):
 
 function contextEntriesForProfile(settings: BackendSettings, profile: RelayProfile): CodexContextEntries {
   return filterContextEntriesBySelection(contextEntriesFromSettings(settings), profile.contextSelection);
-}
-
-function mergeContextEntries(primary: CodexContextEntries, secondary: CodexContextEntries): CodexContextEntries {
-  return {
-    mcpServers: mergeContextEntryList(primary.mcpServers, secondary.mcpServers),
-    skills: mergeContextEntryList(primary.skills, secondary.skills),
-    plugins: mergeContextEntryList(primary.plugins, secondary.plugins),
-  };
-}
-
-function mergeContextEntryList(primary: CodexContextEntry[], secondary: CodexContextEntry[]): CodexContextEntry[] {
-  return dedupeContextEntryList([...primary, ...secondary]);
 }
 
 function filterContextEntriesBySelection(entries: CodexContextEntries, selection: RelayContextSelection): CodexContextEntries {
@@ -16599,12 +16027,6 @@ function tomlAssignmentKey(line: string): string | undefined {
 
 function tomlAssignmentKeys(contents: string): string[] {
   return contents.split(/\r?\n/).map(tomlAssignmentKey).filter((key): key is string => Boolean(key));
-}
-
-function syncLiveConfigContextState(liveConfigContents: string, settings: BackendSettings): string {
-  const entries = contextEntriesFromSettings(settings);
-  const withoutManaged = stripContextEntriesFromConfig(liveConfigContents, entries);
-  return joinTomlSectionsRootFirst([withoutManaged, selectedContextConfigToml(entries)]);
 }
 
 function relayCombinedCommonConfig(settings: BackendSettings): string {
@@ -16741,36 +16163,6 @@ function dedupeTomlRootLines(rootParts: string[]): string[] {
 
   const normalized = kept.reverse().join("\n").trim();
   return normalized ? [normalized] : [];
-}
-
-function contextSelectionIds(selection: RelayContextSelection, kind: ContextKind): string[] {
-  if (kind === "mcp") return selection.mcpServers;
-  if (kind === "skill") return selection.skills;
-  return selection.plugins;
-}
-
-function setContextSelectionId(selection: RelayContextSelection, kind: ContextKind, id: string, checked: boolean): RelayContextSelection {
-  const next = {
-    mcpServers: [...selection.mcpServers],
-    skills: [...selection.skills],
-    plugins: [...selection.plugins],
-  };
-  const list = contextSelectionIds(next, kind);
-  const normalizedId = id.trim();
-  const exists = list.includes(normalizedId);
-  if (checked && normalizedId && !exists) list.push(normalizedId);
-  if (!checked && exists) list.splice(list.indexOf(normalizedId), 1);
-  return next;
-}
-
-function removeContextSelectionFromSettings(settings: BackendSettings, kind: ContextKind, id: string): BackendSettings {
-  return {
-    ...settings,
-    relayProfiles: settings.relayProfiles.map((profile) => ({
-      ...profile,
-      contextSelection: setContextSelectionId(profile.contextSelection, kind, id, false),
-    })),
-  };
 }
 
 function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {

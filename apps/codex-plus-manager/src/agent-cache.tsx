@@ -3,7 +3,7 @@ import { appConfirm } from "./app-dialog";
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Trash2 } from "lucide-react";
 import { t, tf } from "./i18n";
-import { cacheApps, cacheCleanupSummary, cacheKindTotals, cacheSelection, selectableCacheGroups, type CacheGroup } from "./agent-cache-model";
+import { cacheApps, cacheCleanupSummary, cacheSelection, selectableCacheGroups, type CacheGroup } from "./agent-cache-model";
 import { APP_LOGO_URL } from "./gateway-ui";
 import { AgentGlyph } from "./HubOverview";
 import { TopbarActions } from "./TopbarActions";
