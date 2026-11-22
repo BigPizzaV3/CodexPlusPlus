@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { it } from "node:test";
-import { readAppSource } from "./app-source.test-helper.ts";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 
 const read = async (path: string) => (await readFile(new URL(path, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
@@ -44,7 +44,7 @@ it("顶栏操作按钮在 layout effect 里找挂载点，切页时不晚一帧"
 it("Codex 概览的请求日志只读一次（仪表板读、概览算统计），刷新按钮连仪表板一起重读", async () => {
   const app = readAppSource();
   const dashboard = await read("./AgentDashboard.tsx");
-  const overview = app.slice(app.indexOf("function OverviewScreen("), app.indexOf("\nfunction ", app.indexOf("function OverviewScreen(") + 10));
+  const overview = appDeclarationSource("OverviewScreen");
   assert.doesNotMatch(overview, /load_request_logs/);
   assert.match(overview, /onRequestLogs=\{summarizeCodexRequests\}/);
   assert.match(overview, /refreshKey=\{dashboardRefresh\}/);
