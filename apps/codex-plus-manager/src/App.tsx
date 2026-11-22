@@ -2160,8 +2160,9 @@ export function App() {
     },
   });
 
-  const refreshScriptMarket = async (silent = false, preserveRuntime = false) => {
-    const result = await run(() => call<ScriptMarketResult>("refresh_script_market"));
+  /// force 只在「刷新列表」时为 true：后端跳过清单缓存重新下载；其余时候用缓存。
+  const refreshScriptMarket = async (silent = false, preserveRuntime = false, force = false) => {
+    const result = await run(() => call<ScriptMarketResult>("refresh_script_market", { force }));
     if (result) {
       setScriptMarket(result);
       setSettings((current) => (current ? {
@@ -5400,7 +5401,7 @@ type Actions = {
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshAds: () => Promise<void>;
-  refreshScriptMarket: (silent?: boolean, preserveRuntime?: boolean) => Promise<void>;
+  refreshScriptMarket: (silent?: boolean, preserveRuntime?: boolean, force?: boolean) => Promise<void>;
   refreshUserScriptInventory: () => Promise<SettingsResult | null>;
   reloadUserScripts: () => Promise<void>;
   installMarketScript: (id: string) => Promise<void>;
@@ -8817,7 +8818,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
         </button>}
         {/* 不常用的整体开关收进三点菜单；关着时页面顶部会有一条提示带「启用」。 */}
         <Menu label={t("更多操作")}>
-          <MenuItem onClick={() => void (async () => { await actions.refreshScriptMarket(); await actions.refreshCurrent(); })()}>{t("刷新列表")}</MenuItem>
+          <MenuItem onClick={() => void (async () => { await actions.refreshScriptMarket(false, false, true); await actions.refreshCurrent(); })()}>{t("刷新列表")}</MenuItem>
           <MenuItem checked={localEnabled} disabled={!inventory} onClick={() => void actions.setUserScriptsEnabled(!localEnabled, host)}>{switchLabel}</MenuItem>
           {codexHost ? <MenuItem checked={skipNextStart} disabled={!inventory} onClick={() => void actions.setUserScriptsSkipNextStart(!skipNextStart)}>{t("下次启动跳过拓展")}</MenuItem> : null}
           {/* 这两个整体开关在「启动急救」页里也有一份（Codex 打不开时从那里一起处理）。 */}
