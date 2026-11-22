@@ -38,6 +38,8 @@ async function runtime() {
       sample: codexPlusHooksEditorSampleInput,
       interpret: codexPlusHooksEditorInterpret,
       listHooks: codexPlusHooksEditorListHooks,
+      mismatch: codexPlusHooksEditorHomeMismatch,
+      mismatchMessage: codexPlusHooksEditorHomeMismatchMessage,
       keyPrefix: codexPlusHooksEditorKeyPrefix,
       events: codexPlusHooksEditorEvents,
       extension: codexPlusHooksEditorExtension,
@@ -58,6 +60,8 @@ async function runtime() {
     sample(event: string, options?: { cwd?: string; matcher?: string }): string;
     interpret(event: string, result: Record<string, unknown>): { tone: string; lines: string[] };
     listHooks(client: unknown, cwds: string[]): Promise<{ hooks: Map<string, Record<string, unknown>>; warnings: string[] }>;
+    mismatch(files: Array<Record<string, unknown> | null>, listed: Map<string, Record<string, unknown>>): number;
+    mismatchMessage(helperHome: string, count: number): string;
     keyPrefix(file: Record<string, unknown> | null, hooks: Array<{ sourcePath?: string }>): string;
     events: Array<{ name: string }>;
     extension(ctx: unknown): void;
@@ -326,4 +330,23 @@ it("key 前缀以 hooks/list 的 sourcePath 为准；没有时用户层取规范
   assert.equal(api.keyPrefix(project, []), "/tmp/p/.codex/hooks.json");
   assert.equal(api.keyPrefix(project, [{ sourcePath: "/x" }, { sourcePath: "/private/tmp/p/.codex/hooks.json" }]), "/private/tmp/p/.codex/hooks.json");
   assert.equal(api.keyPrefix(null, []), "");
+});
+
+it("#3235：用户层 hook 在 app-server 里一条都看不到时，判定为两份 CODEX_HOME 并提示", async () => {
+  const api = await runtime();
+  const user = { scope: "user", path: P, canonicalPath: P, exists: true, text: JSON.stringify(sampleDoc()) };
+  // sampleDoc 有 3 条 handler，app-server 一条都没回 → 提示。
+  assert.equal(api.mismatch([user], new Map()), 3);
+  // app-server 回出了用户层文件里的 hook：两边同源，不提示。
+  assert.equal(api.mismatch([user], new Map([["k", { sourcePath: P }]])), 0);
+  // app-server 在另一份 home（WSL 侧）下回出自己的 hook：仍然提示。
+  assert.equal(api.mismatch([user], new Map([["k", { sourcePath: "/home/u/.codex/hooks.json" }]])), 3);
+  // 用户层文件不存在 / 没有 hook 时，空列表是真实结果，不提示。
+  assert.equal(api.mismatch([{ scope: "user", path: P, exists: false, text: "" }], new Map()), 0);
+  assert.equal(api.mismatch([{ scope: "user", path: P, exists: true, text: '{"hooks":{}}' }], new Map()), 0);
+  assert.equal(api.mismatch([{ scope: "user", path: P, exists: true, text: "不是 JSON" }], new Map()), 0);
+  const message = api.mismatchMessage("D:\\Codex", 3);
+  assert.match(message, /3 条 hook/);
+  assert.match(message, /WSL/);
+  assert.match(message, /D:\\Codex/);
 });

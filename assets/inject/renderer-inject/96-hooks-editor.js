@@ -414,6 +414,44 @@
     return { hooks, warnings };
   }
 
+  /** 数一份 hooks 文档里的 handler 总数（提示用户层 hook 条数用）。 */
+  function codexPlusHooksEditorHandlerCount(doc) {
+    let count = 0;
+    for (const groups of Object.values(doc?.hooks || {})) {
+      for (const group of Array.isArray(groups) ? groups : []) {
+        count += Array.isArray(group?.hooks) ? group.hooks.length : 0;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * issue #3235：工作位置选 WSL 时 app-server 在 WSL 里运行，读的是 WSL 侧 ~/.codex；
+   * Codex++ 管理的用户层 hooks.json 在 Windows 侧 CODEX_HOME，hooks/list 因此一条都不回。
+   * 这不是 hook 丢了，不能静默空列表：Windows 侧用户层有 hook 而 app-server 一条都看不到时，
+   * 判定为两份 CODEX_HOME，返回用户层 hook 条数供提示。app-server 只要回出任何指向用户层
+   * 文件的 hook（sourcePath 与用户层文件路径一致），就证明两边同源，不提示。
+   */
+  function codexPlusHooksEditorHomeMismatch(files, listed) {
+    const userFile = (Array.isArray(files) ? files : []).find((file) => file?.scope === "user");
+    if (!userFile?.exists || !userFile.text) return 0;
+    const parsed = codexPlusHooksEditorParse(userFile.text);
+    if (parsed.error || !parsed.doc) return 0;
+    const count = codexPlusHooksEditorHandlerCount(parsed.doc);
+    if (!count) return 0;
+    for (const hook of listed instanceof Map ? listed.values() : []) {
+      const source = typeof hook?.sourcePath === "string" ? hook.sourcePath : "";
+      if (source && (source === userFile.path || source === userFile.canonicalPath)) return 0;
+    }
+    return count;
+  }
+
+  function codexPlusHooksEditorHomeMismatchMessage(helperHome, count) {
+    return `Codex++ 用户层 hooks.json 里有 ${count} 条 hook，但当前 app-server 一条都看不到。`
+      + ` 工作位置为 WSL 时 app-server 使用 WSL 内的 ~/.codex，与 Codex++ 管理的 ${helperHome || "Windows 侧 CODEX_HOME"} 不是同一份 CODEX_HOME。`
+      + ` 可在 WSL 中把 ~/.codex 软链到共享目录（例如 /mnt/<盘>/Codex），或在此工作位置单独配置 hooks。`;
+  }
+
   async function codexPlusHooksEditorReadState(client) {
     const result = await client.sendRequest("config/read", {});
     const state = result?.config?.hooks?.state;
@@ -699,6 +737,15 @@
       ]);
       state.listed = hooks;
       state.warnings = warnings;
+      // issue #3235：WSL 工作位置下 app-server 用的是 WSL 侧 CODEX_HOME，用户层 hook 会
+      // 静默消失。这里明确提示两份配置不同并引导共享/单独配置，而不是给一个空列表。
+      const mismatchHooks = codexPlusHooksEditorHomeMismatch(state.files, state.listed);
+      if (mismatchHooks) {
+        state.warnings.unshift(codexPlusHooksEditorHomeMismatchMessage(state.codexHome, mismatchHooks));
+        if (typeof sendCodexPlusDiagnostic === "function") {
+          sendCodexPlusDiagnostic("hooks_editor_app_server_home_mismatch", { hookCount: mismatchHooks });
+        }
+      }
       state.hookState = hookState;
     };
 

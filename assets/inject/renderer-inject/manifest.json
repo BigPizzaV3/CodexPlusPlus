@@ -228,7 +228,7 @@
     {
       "name": "96-hooks-editor.js",
       "description": "内置拓展 Hooks 编辑器：hooks.json 的模板新建、编辑、启停、信任与试运行",
-      "lines": 1217
+      "lines": 1264
     },
     {
       "name": "96-shell-command.js",
