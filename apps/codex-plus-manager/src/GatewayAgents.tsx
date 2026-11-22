@@ -1,5 +1,5 @@
 /** 本地网关 · 智能体：每个 Agent 一行，接入后供应商池里的模型都出现在它自己的模型列表里，也可以在这里直接选。 */
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, RotateCcw, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
@@ -39,15 +39,16 @@ import {
   toggleFavoriteModel,
   type GatewayResult,
   type OwnModels,
+  shortProviderName,
 } from "./gateway-model";
 import { AppSelect } from "./AppSelect";
-import { shortProviderName } from "./GatewayModelMatrix";
-import { GatewayNavContext, publishGatewayPayload } from "./gateway-store";
+import { GatewayNavContext, publishGatewayPayload, takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
+import { useModalShell } from "./use-modal-shell";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
-import { AGENT_ICONS, AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
+import { AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, moveOptionFocus, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
 /** Codex 行的启动 / 停止：和侧栏 `cx-side-run` 用的同一份 App 状态（`App` 里只建一份，两处共用）。 */
 export type CodexRunControls = {
@@ -81,6 +82,7 @@ export function AgentsView({
   onManage,
   onOpenCodexProviderSettings,
   codexRun,
+  embedded = false,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -90,15 +92,27 @@ export function AgentsView({
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：不传（比如总览里的接入弹窗）就不显示那个键。 */
   codexRun?: CodexRunControls;
+  /** 嵌在别的页面的弹窗里：展开状态不和「Agent 接入」页共用。 */
+  embedded?: boolean;
 }) {
   // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
   const focus = useAgentFocus();
   const solo = singleAgent(focus);
   const agents = visibleAgents(focus, payload?.agents ?? []);
-  const [expanded, setExpanded] = useState<string | null>(solo);
+  // 展开的那一行、「未接入」折叠状态在切换页签后保留；嵌在弹窗里时不和页面共用。
+  // 从总览点某个 Agent 跳过来：展开那一行并滚到它（没接入的先展开「未接入」）。
+  const [jumped] = useState(() => (embedded ? null : takeGatewayJump("agent")));
+  const [expanded, setExpanded] = useGatewayViewState<string | null>(embedded ? null : "agents.expanded", solo, jumped ?? undefined);
   const connected = agents.filter((agent) => agent.enabled);
   const others = agents.filter((agent) => !agent.enabled);
-  const [othersOpen, setOthersOpen] = useState<boolean | null>(null);
+  const [othersOpen, setOthersOpen] = useGatewayViewState<boolean | null>(
+    embedded ? null : "agents.othersOpen",
+    null,
+    jumped && others.some((agent) => agent.agent === jumped) ? true : undefined,
+  );
+  useEffect(() => {
+    if (jumped) document.querySelector(`[data-agent-row="${CSS.escape(jumped)}"]`)?.scrollIntoView({ block: "center" });
+  }, [jumped]);
   const othersShown = othersOpen ?? connected.length === 0;
   const row = (agent: GatewayAgentView) => (
     <AgentRow
@@ -161,17 +175,18 @@ export function AgentConnectDialog({
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   onClose: () => void;
 }) {
-  // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。
-  useEscapeLayer(true, onClose);
+  // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。每次改动立即保存，没有未保存的状态。
+  const titleId = useId();
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
   return (
-    <div className="gw-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div aria-label={t("接入 Agent")} className="gw-modal gw-agent-modal" role="dialog">
+    <div className="gw-modal-backdrop" {...backdropProps}>
+      <div {...dialogProps} className="gw-modal gw-agent-modal">
         <header>
-          <strong>{t("接入 Agent")}</strong>
+          <strong id={titleId}>{t("接入 Agent")}</strong>
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body gw-agent-modal-body">
-          <AgentsView busy={busy} notify={notify} onManage={onManage} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
+          <AgentsView busy={busy} embedded notify={notify} onManage={onManage} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
         </div>
       </div>
     </div>
@@ -317,7 +332,7 @@ function AgentRow({
     : "";
 
   return (
-    <div className="gw-agent" data-expanded={expanded}>
+    <div className="gw-agent" data-agent-row={agent.agent} data-expanded={expanded}>
       {/* 已接入时整行点击展开详情，模型下拉和开关各管各的。 */}
       <div
         className="gw-agent-row cx-row"
@@ -874,7 +889,8 @@ export function Floating({
   useEscapeLayer(open, onClose);
   if (!open || !position) return null;
   return createPortal(
-    <div className={`gw-popover gw-portal ${className}`} ref={panelRef} style={position}>
+    // 挂在 body 上、在弹窗外：标成模态浮层，外层弹窗的焦点圈在它打开时让出焦点（不然点进搜索框会被拉回弹窗）。
+    <div aria-modal="true" className={`gw-popover gw-portal ${className}`} ref={panelRef} role="dialog" style={position}>
       {children}
     </div>,
     document.body,
@@ -1009,7 +1025,16 @@ export function ModelList({
       <div className="gw-mp-top">
         <label className="gw-mp-search">
           <Search className="h-4 w-4" />
-          <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
+          <input
+            autoFocus
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              // ↓ 从搜索框进到列表的第一个模型。
+              if (event.key === "ArrowDown" && listRef.current && moveOptionFocus(listRef.current, "Home")) event.preventDefault();
+            }}
+            placeholder={t("筛选，或输入任意模型 ID…")}
+            value={query}
+          />
           <em>{customCount ? tf("{0} 个自定义候选", [customCount]) : tf("{0} 个", [total])}</em>
         </label>
         <div className="gw-mp-filters" onFocus={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}>
@@ -1023,10 +1048,10 @@ export function ModelList({
           ))}
         </div>
       </div>
-      <div className="gw-mp-list" ref={listRef}>
+      <div className="gw-mp-list" onKeyDown={(event) => { if (moveOptionFocus(event.currentTarget, event.key)) event.preventDefault(); }} ref={listRef}>
         {displaySections.length === 0 ? (
           <div className="gw-empty">
-            {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("供应商池是空的，先到「供应商」里添加。")}
+            {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("供应商池是空的，先在「供应商池」里添加供应商。")}
           </div>
         ) : null}
         {displaySections.map((section) => {
@@ -1056,7 +1081,7 @@ export function ModelList({
                 <button className="gw-mp-manage" onClick={nav.openModelGroups} type="button">{t("管理")}</button>
               ) : null}
             </div>
-            {expanded ? section.items.map((item) => {
+            {expanded ? <div aria-label={section.key === "group" || section.key === "custom" || section.key === "auto" || section.key === "current" ? t(section.title) : section.title} role="listbox">{section.items.map((item) => {
               const selected = isSelected(item);
               const favorite = isFavoriteModel(favorites, item.model, payload);
               const candidate = item.providerModel ?? (item.custom ? item.model : "");
@@ -1099,7 +1124,7 @@ export function ModelList({
                   {selected ? <Check className="gw-mp-check h-4 w-4" /> : null}
                 </div>
               );
-            }) : null}
+            })}</div> : null}
           </section>
           );
         })}

@@ -1,31 +1,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { modelSlug, pickerOutcome, pickerRows, syncOutcome, type ModelSyncPreview } from "./provider-sync-model.ts";
+import { modelSlug, pickerOutcome, pickerRows, upstreamDiff } from "./provider-sync-model.ts";
 
 const read = (name: string) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
 
-const preview: ModelSyncPreview = {
-  upstream: ["a", "b", "new-1", "new-2"],
-  current: ["b", "a", "old", "older"],
-  defaultModel: "b",
-  added: ["new-1", "new-2"],
-  removed: ["old", "older"],
-};
-
-test("同步预览按勾选算结果：只删勾选移除的、只加勾选新增的，比对忽略大小写和 [1M] 后缀（#2785）", () => {
+test("从上游同步的差异按弹窗里当前的列表算，比对忽略大小写和 [1M] 后缀，上游重名只算一次（#2785）", () => {
   assert.equal(modelSlug(" Claude-Opus-4-6[1M] "), "claude-opus-4-6");
-  // 默认：下架的全部勾选移除，新增的一个不勾。
-  const initial = syncOutcome(preview, new Set(preview.removed), new Set());
-  assert.deepEqual(initial.models, ["b", "a"]);
-  assert.equal(initial.defaultModel, "b");
-  assert.equal(initial.defaultReplaced, false);
-  // 取消勾选 older 保留它，只勾 new-2。
-  const picked = syncOutcome(preview, new Set(["old"]), new Set(["new-2"]));
-  assert.deepEqual(picked.models, ["b", "a", "older", "new-2"]);
-  // 默认模型在移除之列：换成列表第一个，并提示。
-  const gone = syncOutcome({ ...preview, current: ["old", "a"], defaultModel: "old", removed: ["old"] }, new Set(["old"]), new Set());
-  assert.deepEqual(gone, { models: ["a"], defaultModel: "a", defaultReplaced: true });
+  assert.deepEqual(upstreamDiff(["b", "A", "big[1M]", "old"], ["a", "B", "BIG", "new-1", "new-1", "NEW-2"]), {
+    added: ["new-1", "NEW-2"],
+    removed: ["old"],
+  });
 });
 
 test("编辑弹窗「从上游获取」的勾选列表：已有的默认勾上、取消即移除，新增的默认不勾（#2785）", () => {
@@ -54,16 +39,17 @@ test("编辑弹窗不论上游模型多少都弹勾选列表，不再直接全�
   assert.match(picker, /t\("全不选新增"\)/);
 });
 
-test("同步预览弹窗：先拉预览、不写入；下架的默认勾选移除，新增的默认不勾、可搜索、全选 / 全不选", () => {
-  const dialog = read("ProviderSyncDialog.tsx");
+test("模型弹窗里的「从上游同步」：先拉预览、不写入；下架的默认勾选移除，新增的默认不勾、可搜索、全选 / 全不选", () => {
+  const dialog = read("ProviderModelsDialog.tsx");
   assert.match(dialog, /invoke<PreviewResult>\("preview_gateway_provider_models_sync", \{ id: entry\.id \}\)/);
-  assert.match(dialog, /setRemove\(new Set\(preview\.removed\)\);\r?\n\s*setAdd\(new Set\(\)\);/);
+  assert.match(dialog, /setRemove\(new Set\(diff\.removed\)\);\r?\n\s*setAdd\(new Set\(\)\);/);
   assert.match(dialog, /t\("全选"\)/);
   assert.match(dialog, /t\("全不选"\)/);
   assert.match(dialog, /tf\("默认模型 \{0\} 将被移除，改用 \{1\}。"/);
   assert.match(dialog, /if \(event\.key === "Enter"\) event\.preventDefault\(\);/, "搜索框回车不提交");
-  assert.match(dialog, /useEscapeLayer\(true, onCancel\)/);
-  assert.match(dialog, /className="gw-modal-backdrop gw-portal"/);
+  assert.match(dialog, /tf\("只显示前 \{0\} 个，共 \{1\} 个；用搜索缩小范围。"/, "超过 500 个时写明只显示了前 500 个");
+  assert.match(dialog, /className="gw-modal-backdrop gw-portal" \{\.\.\.backdropProps\}/);
+  assert.doesNotMatch(dialog, /check_gateway_provider_models/, "三个拉上游模型的入口只剩表单的 fetch_provider_models 和这里的预览");
 });
 
 test("编辑弹窗里可以打开上下文窗口弹窗（复用详情的弹窗），新添加时不显示", () => {

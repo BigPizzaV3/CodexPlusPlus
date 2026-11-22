@@ -120,12 +120,6 @@
   flex: none;
 }
 
-:root .shell .ext-row-chevron {
-  width: 16px;
-  height: 16px;
-  color: hsl(var(--muted-foreground));
-}
-
 /* 行内展开（拓展设置、管理面板、dsh 插件明细）：跟在行下面，缩进到文字列。 */
 :root .shell .cx-row-expand {
   padding: 4px 16px 16px 56px;
@@ -319,6 +313,13 @@
   color: hsl(var(--muted-foreground));
 }
 
+/* 「匹配仓库」带文字，和旁边的图标按钮同高。 */
+:root .shell .mg-skills-page .cx-filters-trailing .cx-skill-match {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
 /* ── 会话 ────────────────────────────────────────────────────── */
 
 /* 多 Agent 会话列表外面还包着网关页的容器：在会话页里收到和其他页同宽，去掉内层滚动的留白。 */
@@ -418,6 +419,13 @@
   color: hsl(var(--foreground));
 }
 
+/* 「全部」页签只显示前 300 个时的说明。 */
+:root .shell .cx-session-limit {
+  margin: 0 0 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
 /* 「按项目 / 按时间」：工具条里的两段小切换。 */
 :root .shell .cx-session-mode {
   display: inline-flex;
@@ -473,7 +481,7 @@
   flex: 1 1 auto;
 }
 
-:root .shell .cx-session-selection .mg-session-danger:not(:disabled) {
+:root .shell .cx-session-selection .mg-danger-button:not(:disabled) {
   border-color: hsl(var(--status-error) / 0.45);
   color: hsl(var(--status-error));
 }

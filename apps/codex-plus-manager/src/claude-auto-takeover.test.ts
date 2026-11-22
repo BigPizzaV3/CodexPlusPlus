@@ -7,6 +7,7 @@ import {
   summarizeClaudeAutoTakeover,
   type ClaudeAutoTakeoverPayload,
 } from "./claude-auto-takeover-model.ts";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 
 /**
  * 「Claude Desktop 自动接管」的状态折算与接线契约（照 auto-takeover.test.ts 的思路）。
@@ -15,7 +16,8 @@ import {
 
 const root = path.resolve(import.meta.dirname, "..");
 const read = (file: string) => readFileSync(path.join(root, file), "utf8");
-const appSource = read("src/App.tsx");
+// 主界面拆成了多个文件，按拼起来的全文 / 按声明名取源码。
+const appSource = readAppSource();
 const componentSource = read("src/ClaudeAutoTakeover.tsx");
 const libSource = read("src-tauri/src/lib.rs");
 const commandsSource = read("src-tauri/src/commands.rs");
@@ -124,10 +126,10 @@ test("payload fields stay aligned with the Rust struct", () => {
 });
 
 test("the row sits under the Claude row on home and in the full-mode launch settings", () => {
-  const home = appSource.slice(appSource.indexOf("function HomeScreen("), appSource.indexOf("function MaintenanceScreen("));
+  const home = appDeclarationSource("HomeScreen");
   assert.match(home, /tool\.id === "claude"\s*\? \[row, <ClaudeAutoTakeoverRow key="claude-auto-takeover" loginReminder [\s\S]*?showIcon \/>\]/, "首页 Claude 行后面要紧跟自动接管行");
   assert.match(home, /onEnableLogin=\{\(\) => actions\.setWatcherEnabled\(true\)\}/, "没开登录自启时首页要能直接打开");
-  const screen = appSource.slice(appSource.indexOf("function ClaudeLocalizationScreen("));
+  const screen = appDeclarationSource("ClaudeLocalizationScreen");
   const launchSettings = screen.slice(screen.indexOf('title={t("启动设置")}'));
   assert.match(launchSettings, /\{claudeLaunch === "full" \? <ClaudeAutoTakeoverRow \/> : null\}/, "Desktop 增强页只在完整功能模式下显示");
   // 只在可见时轮询：组件挂着才起定时器，开关开着才轮询。

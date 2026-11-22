@@ -73,7 +73,7 @@ function harness(initial: model.AgentFocus = null) {
     "lucide-react": Object.fromEntries(["Check", "LayoutGrid", "LoaderCircle", "RefreshCw", "Sparkles"].map((name) => [name, name])),
     "./i18n": { t: (text: string) => text, tf: (text: string, args: string[]) => text.replace(/\{(\d+)\}/g, (_, index) => args[Number(index)]) },
     "./agent-focus-model": model,
-    "./HubOverview": { AgentGlyph: "AgentGlyph" },
+    "./hub-shared": { AgentGlyph: "AgentGlyph" },
     "./use-escape-layer": { useEscapeLayer: (_active: boolean, close: () => void) => { escape = close; } },
     "./use-modal-focus": { useModalFocus: () => {} },
     "./OnboardingTour.css": {},

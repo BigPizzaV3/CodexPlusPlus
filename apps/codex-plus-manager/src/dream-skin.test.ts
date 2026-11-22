@@ -6,6 +6,7 @@ import {
   defaultDreamSkinTheme,
   normalizeDreamSkinTheme,
 } from "./dream-skin.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 describe("dream skin theme helpers", () => {
   it("uses the Codex-Dream-Skin theme.json defaults", () => {
@@ -32,7 +33,7 @@ describe("dream skin theme helpers", () => {
 
   it("keeps only the rescue entry and the dreamskin:// confirmation in the manager", async () => {
     // 皮肤界面已移到 Codex 里（Codex++ → 设置 → 皮肤）；管理器不再列主题、激活主题。
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const app = readAppSource();
 
     assert.doesNotMatch(app, /"list_dream_skin_themes"/);
     assert.doesNotMatch(app, /"activate_dream_skin_theme"/);
@@ -193,7 +194,7 @@ describe("dream skin theme helpers", () => {
   });
 
   it("visibly credits the source project and exposes complete controls", async () => {
-    const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const source = readAppSource();
     const page = await readFile(new URL("../../../assets/inject/renderer-inject/96-dream-skin-page.js", import.meta.url), "utf8");
 
     // 管理器的皮肤急救页保留来源说明。
@@ -208,16 +209,16 @@ describe("dream skin theme helpers", () => {
   });
 
   it("uses the current launcher debug port for live skin operations", async () => {
-    const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const source = readAppSource();
 
     assert.match(source, /overview\?\.latest_launch\?\.debug_port\s*\?\?/);
   });
 
   it("restores the original appearance as pending without reloading or restarting Codex", async () => {
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const app = readAppSource();
     const commands = await readFile(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
     const restoreStart = app.indexOf("const restoreDreamSkin = async () =>");
-    const restoreEnd = app.indexOf("const actions = useMemo", restoreStart);
+    const restoreEnd = app.indexOf("const actionCallbacks = useStableCallbacks", restoreStart);
     const restoreHandler = app.slice(restoreStart, restoreEnd);
     const commandStart = commands.indexOf("pub async fn restore_dream_skin");
     const commandEnd = commands.indexOf("pub fn reset_dream_skin_theme", commandStart);
@@ -229,7 +230,7 @@ describe("dream skin theme helpers", () => {
     // 恢复只记为待应用；急救页给出「重启 Codex」按钮，由用户决定何时重启。
     assert.match(restoreHandler, /setDreamSkinRestartPending\(true\)/);
     assert.doesNotMatch(restoreHandler, /window\.confirm|await restart\(\)/);
-    assert.match(app, /restartPending=\{dreamSkinRestartPending\}/);
+    assert.match(app, /skinRestartPending=\{dreamSkinRestartPending\}/);
     assert.doesNotMatch(restoreCommand, /reload_dream_skin_live/);
     assert.match(restoreCommand, /pending_restart\(false, false\)/);
   });

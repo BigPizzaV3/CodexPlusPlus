@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
-import type { RelayProfile } from "./App.tsx";
+import type { RelayProfile } from "./app-types.ts";
 import {
   buildModelWindows,
   modelWindowRowsFromProfile,

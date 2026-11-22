@@ -6,6 +6,7 @@ import ts from "typescript";
 import { parseModelMetadataDocument } from "./model-metadata.ts";
 import { isProviderSyncTargetSelectable } from "./provider-sync-target.ts";
 import { enhancementItem } from "./enhancement-catalog.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 test("metadata rejects invalid final critical types and retains empty instructions", () => {
   for (const metadata of [{ base_instructions: null }, { supports_parallel_tool_calls: "true" }]) {
@@ -28,7 +29,7 @@ test("authoritative model groups merge non-adjacent IDs and separate identical n
 });
 
 test("active ProjectSessionPage owns repair panel and enabled actions call existing callbacks", () => {
-  const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = readAppSource();
   const app = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const panels: ts.JsxSelfClosingElement[] = [];
   const walk = (node: ts.Node) => { if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(app) === "ProjectSessionPage") panels.push(node); ts.forEachChild(node, walk); };
@@ -57,7 +58,7 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
     providerSyncItem: enhancementItem("providerSyncEnabled"),
     sessionIndexRepairItem: enhancementItem("sessionIndexRepairEnabled"),
   });
-  vm.runInContext(ts.transpileModule(fn.getText(app), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  vm.runInContext(ts.transpileModule(fn.getText(app).replace(/^export /, ""), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
   let synced = 0; let repaired = 0; let saved = 0; let recovered = 0;
   const targets: string[] = []; const drafts: any[] = [];
   const props = { dirty: true, form: { providerSyncEnabled: false }, providerSyncProgress: { active: false, percent: 0 }, sessionIndexRepairActive: false,
@@ -119,7 +120,7 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
 });
 
 test("all full saves require their own revision and conflicts preserve the caller draft", async () => {
-  const source = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = readAppSource();
   const app = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let initializer = "";
   const find = (node: ts.Node) => {

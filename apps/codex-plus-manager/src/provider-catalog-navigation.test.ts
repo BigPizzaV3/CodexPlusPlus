@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 // Windows 检出（core.autocrlf）下源码是 CRLF，先归一化换行。
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const app = readAppSource().replace(/\r\n/g, "\n");
 
 /** RelayScreen 里渲染 ProviderCatalogScreen 的那段 JSX。 */
 function catalogUsage() {

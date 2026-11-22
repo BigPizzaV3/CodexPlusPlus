@@ -1639,25 +1639,6 @@ pub fn save_gateway_provider_windows(
     )
 }
 
-/// 用存下的凭据重新拉一个供应商的模型，和现有列表比较（不改列表，只记下差异供界面提示）。
-#[tauri::command]
-pub async fn check_gateway_provider_models(
-    id: String,
-) -> CommandResult<Option<model_sync::ModelDiff>> {
-    match model_sync::check_provider(&GatewayStore::default(), &id).await {
-        Ok(diff) => ok(
-            &format!(
-                "上游有 {} 个模型：新增 {} 个，已下架 {} 个。",
-                diff.upstream.len(),
-                diff.added.len(),
-                diff.removed.len()
-            ),
-            Some(diff),
-        ),
-        Err(error) => failed(&format!("获取模型列表失败：{error:#}"), None),
-    }
-}
-
 /// 供应商详情里「从上游同步」的第一步（#2785）：拉上游模型，返回和现有列表的差异供用户勾选，
 /// 不改任何数据。拉取失败或上游返回空列表时报错。
 #[tauri::command]
@@ -2671,12 +2652,21 @@ mod tests {
 }
 
 /// 用量汇总。`range`：`today` / `7d` / `30d` / `all`。
+/// 用量页、托盘和 Agent 概览都会轮询：读用量文件放到阻塞线程池里，不卡界面线程。
 #[tauri::command]
-pub fn load_gateway_usage(
+pub async fn load_gateway_usage(
     range: String,
 ) -> CommandResult<Option<codex_plus_core::gateway::usage::UsageSummary>> {
+    tauri::async_runtime::spawn_blocking(move || load_gateway_usage_blocking(&range))
+        .await
+        .unwrap_or_else(|error| failed(&format!("读取用量失败：{error}"), None))
+}
+
+fn load_gateway_usage_blocking(
+    range: &str,
+) -> CommandResult<Option<codex_plus_core::gateway::usage::UsageSummary>> {
     use codex_plus_core::gateway::usage::{UsageStore, local_day};
-    let days = match range.as_str() {
+    let days = match range {
         "today" => Some(1),
         "7d" => Some(7),
         "all" => None,
@@ -2792,7 +2782,16 @@ pub struct DeletedSession {
 
 /// 删除 Claude Code（含 Claude Desktop 里的）/ Grok 的一个本地会话：移进废纸篓，可以找回。Codex 的会话走 `delete_local_session`。
 #[tauri::command]
-pub fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedSession> {
+pub async fn delete_agent_session(agent: String, id: String) -> CommandResult<DeletedSession> {
+    // 移动文件、检查 Desktop 进程都是阻塞操作，放到后台线程。
+    tauri::async_runtime::spawn_blocking(move || delete_agent_session_blocking(agent, id))
+        .await
+        .unwrap_or_else(|error| {
+            failed(&format!("删除失败：{error}"), DeletedSession::default())
+        })
+}
+
+fn delete_agent_session_blocking(agent: String, id: String) -> CommandResult<DeletedSession> {
     use codex_plus_core::gateway::sessions;
     let trash = sessions::default_trash_dir();
     let desktop = agent == "claude" && id.starts_with("local_");

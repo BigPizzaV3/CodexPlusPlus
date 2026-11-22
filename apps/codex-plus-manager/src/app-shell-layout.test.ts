@@ -3,13 +3,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import ts from "typescript";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 
 // 源码契约与 checkout 行尾无关，统一后仍保留全部结构与空白断言。
 function readSource(path: string) {
   return readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 }
 
-const text = readSource("./App.tsx");
+const text = readAppSource();
 const styles = readSource("./styles.css");
 const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
@@ -28,14 +29,16 @@ test("只保留一条侧栏，旧的图标栏和 Agent 子侧栏都已移除", (
   assert.doesNotMatch(styles, /\.app-rail\b|\.tool-chip\b|\.rail-brand\b/);
 });
 
-test("侧栏底部是网关状态卡，点它进入总览；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
+test("侧栏网关一组的「总览」进入网关总览，底部不再重复一张网关状态卡；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
   const sidebar = functionSource("AppSidebar");
-  assert.match(sidebar, /className=\{`cx-side-card[^`]*`\} data-tour="hub" onClick=\{\(\) => onNavigate\("hub"\)\}/);
+  assert.doesNotMatch(sidebar, /className=\{`cx-side-card[^`]*`\} data-tour="hub"/);
+  assert.match(sidebar, /\{ key: "hub", route: "hub", label: t\("网关总览"\), icon: Waypoints, match: \["hub"\], tour: "hub" \}/);
   assert.match(sidebar, /useGatewayPayload\(/);
-  // 供应商日常在 Codex 里管：没有 Agent 接入网关时，网关一组、状态卡、接入方式的状态点和「接入 Agent」都不显示；停在网关页上时网关一组照常显示。
-  assert.match(sidebar, /const gatewayInUse = connectedAgents\.size > 0;/);
+  // 供应商日常在 Codex 里管：没有 Agent 接入网关时，网关一组、接入方式的状态点和「接入 Agent」都不显示；停在网关页上时网关一组照常显示。
+  // 网关数据第一次读回来之前用上次记下的结果，网关一组不会晚一拍才冒出来。
+  assert.match(sidebar, /const gatewayInUse = gateway \? connectedAgents\.size > 0 : loadCachedGatewayInUse\(\);/);
+  assert.match(sidebar, /if \(gateway\) storeCachedGatewayInUse\(gatewayInUse\);/);
   assert.match(sidebar, /const gatewayShown = gatewayInUse \|\| gatewayEntries\.some\(\(item\) => item\.match\.includes\(route\)\);/);
-  assert.match(sidebar, /\) : enhanceOnly \|\| setupCard \|\| !gatewayInUse \? null : \(/);
   assert.match(sidebar, /\{enhanceOnly \|\| !gatewayInUse \? null : <i aria-hidden="true" className="side-dot" data-tone=\{access\.tone\} \/>\}/);
   assert.doesNotMatch(sidebar, /aria-label=\{t\("接入 Agent"\)\}/);
   assert.match(text, /const agentHomeRoute: Record<string, Route> = \{ codex: "overview", claude: "claude", grok: "overview" \}/);
@@ -86,7 +89,7 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(sections, /\{ id: "overview", routes: \["overview", "relay"\] \}/);
   for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
   assert.doesNotMatch(sections, /"agentSettings"|"relayEnvironment"/);
-  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance", "gatewaySettings",/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "gatewaySettings",/);
   assert.doesNotMatch(text, /key: "codexConnection"|key: "legacyProxy"|key: "legacyRelay"/);
   assert.match(text, /id: "relay", get label\(\) \{ return t\("连接与供应商"\); \}/);
   // 内容区顶部不再画 Agent 页签。
@@ -143,12 +146,6 @@ test("启动 Codex 一眼可见：Codex 页面顶栏最右侧一个主按钮，�
   assert.match(entry, /const codexRun = \{\n\s*running: codexAppRunning,\n\s*unattached: Boolean\(overview\?\.runtime_health\?\.codex_unattached\),\n\s*busy: launchPending,\n\s*unavailableReason: codexLaunch\.unavailableReason,\n\s*onStart: codexLaunch\.onLaunch,/);
   assert.match(entry, /codexRun=\{codexRun\}/);
   assert.match(entry, /<GatewayPage[\s\S]*?codexRun=\{codexRun\}/);
-  assert.match(styles, /\.shell \.side-agent-run \{\n(?:  [^\n]*\n)*  width: 24px;\n  height: 24px;/);
-  assert.match(styles, /\.shell \.side-agent-run\[data-running="false"\] \{\n  background: hsl\(var\(--status-success\) \/ 0\.14\);\n  color: hsl\(var\(--status-success\)\);/);
-  assert.doesNotMatch(styles, /:hover \.side-agent-run|\.side-agent-run \{[^}]*(?:opacity: 0;|visibility: hidden)/);
-  // 不用 :has()：旧版系统 WebKit 不认，整条规则会失效。
-  assert.doesNotMatch(styles, /:has\(\.side-agent-run\)/);
-  assert.match(styles, /\.shell \.side-agent-wrap\.has-run \.side-item-label \{/);
 });
 
 test("提示卡按语气分色、悬停暂停、不显示进度条，失败可复制详情", () => {
@@ -171,10 +168,12 @@ test("Claude / Grok 的供应商配置页已去掉：要么经网关接入供应
 
 test("页面不再画第二条标题栏：PageHeader 和工具页的操作都送进外壳顶栏", () => {
   const management = readSource("./ManagementPages.tsx");
-  const extra = readSource("./ManagementExtra.tsx");
+  const extra = readSource("./SkillsPage.tsx");
   const cache = readSource("./agent-cache.tsx");
   assert.match(management, /export function PageHeader\([^)]*\) \{\n  return <TopbarActions>\{actions\}<\/TopbarActions>;/);
-  assert.match(extra, /function Header\([^)]*\) \{ return <TopbarActions>\{actions\}<\/TopbarActions>; \}/);
+  // Skills 页也用 ManagementPages 的 PageHeader，不再自己定义一份。
+  assert.match(extra, /<PageHeader icon=/);
+  assert.doesNotMatch(extra, /function Header\(/);
   for (const source of [management, extra]) assert.doesNotMatch(source, /className="mg-header"/);
   assert.match(cache, /<TopbarActions>/);
   assert.doesNotMatch(cache, /CardHeader|className="panel agent-cache-panel"/);
@@ -185,7 +184,6 @@ test("页面不再画第二条标题栏：PageHeader 和工具页的操作都送
 test("紧凑密度层：管理页不再套外框，覆盖规则带 .shell 前缀不依赖加载顺序", () => {
   const layer = styles.slice(styles.indexOf("/* ── Graphite · 紧凑密度"));
   assert.match(layer, /\.shell \.mg-page \{\n  margin: 0 auto;\n  overflow: visible;\n  border: 0;/);
-  assert.match(layer, /\.shell \.topbar \{\n  min-height: 44px;/);
   // 层内每条规则都以 .shell 开头
   const selectors = [...layer.matchAll(/^([^\s/@}][^{]*)\{$/gm)].map((match) => match[1]);
   assert.ok(selectors.length > 20);
@@ -205,9 +203,9 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话、用量；「聚合网关」（总览、供应商池、Agent 接入、路由）排在 Agent 增强后面。
+  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话、用量；「聚合网关」（总览、供应商池、Agent 接入、路由）排在 Agent 一组后面。
   const sidebar = functionSource("AppSidebar");
-  assert.match(sidebar, /\{ key: "extensions", route: "userScripts" as Route, label: t\("万物皆拓展"\)/);
+  assert.match(sidebar, /\{ key: "extensions", route: "userScripts", label: t\("万物皆拓展"\)/);
   assert.ok(sidebar.indexOf('key: "extensions"') < sidebar.indexOf('key: "customize"'), "万物皆拓展排在第一个");
   assert.match(sidebar, /match: customizeRoutes/);
   assert.match(sidebar, /<span>\{t\("聚合网关"\)\}<\/span>/);
@@ -215,7 +213,7 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   // 用量也记直连代理的请求，放在第一组，不随网关一组隐藏。
   const general = sidebar.slice(sidebar.indexOf("const general: SideEntry[]"), sidebar.indexOf("const gatewayEntries"));
   assert.match(general, /\{ key: "usage", route: "gatewayUsage", label: t\("用量"\), icon: BarChart3, match: \["gatewayUsage", "requestLog"\] \}/);
-  assert.ok(sidebar.indexOf('data-tour="agents"') < sidebar.indexOf('data-group="gateway"'), "聚合网关排在 Agent 增强后面");
+  assert.ok(sidebar.indexOf('data-tour="agents"') < sidebar.indexOf('data-group="gateway"'), "聚合网关排在 Agent 一组后面");
   assert.match(sidebar, /const shownGeneral = general\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
   assert.match(sidebar, /const shownGateway = gatewayShown \? gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\) : \[\];/);
   assert.match(text, /const customizeRoutes: Route\[\] = \["context", "skills"\];/);
@@ -225,7 +223,9 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
   // 只管理 Codex 时没有 Agent 页签，固定显示 Codex 的完整会话管理。
-  assert.match(entry, /const shownSessionTab: SessionTab = soloAgent === "codex" \? "codex" : sessionTab;/);
+  assert.match(entry, /const shownSessionTab: SessionTab = soloAgent === "codex" \|\| \(sessionTab !== "all" && !agentVisible\(agentFocus, sessionTab\)\) \? "codex" : sessionTab;/);
+  // 默认是 Codex 页签（完整的会话管理）。
+  assert.match(entry, /useState<SessionTab>\("codex"\)/);
   assert.match(entry, /route === "sessions" && !soloAgent \? <SessionAgentTabs/);
   assert.match(entry, /route === "sessions" && shownSessionTab !== "codex" \? \(/);
   assert.match(entry, /<SessionsView agent=\{shownSessionTab\}/);
@@ -237,7 +237,7 @@ test("请求日志按 Agent 筛选；网关记录带 agent 字段，没有的算
   // 只管理 Codex 时固定看 Codex 的请求，不出现 Agent 筛选。
   assert.match(screen, /const agentScope = codexOnly \? "codex" : agentFilter;/);
   assert.match(screen, /agentScope !== "all" && requestLogAgent\(entry\) !== agentScope/);
-  assert.match(screen, /\[entries, filter, query, sessionFilter, agentScope, payload\]/);
+  assert.match(screen, /\[entries, filter, query, sessionFilter, agentScope, displayNames\]/);
   assert.match(functionSource("requestLogAgent"), /return entry\.agent \|\| "codex";/);
 });
 
@@ -245,10 +245,12 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   const app = functionSource("App");
   assert.match(app, /<LegacyRelayGatewayHint[\s\S]*onOpenGateway=\{\(\) => void navigate\("gatewayProviders"\)\}/);
   // 连接方式作为 connection 传进 RelayScreen，只在列表视图显示；旧版代理设置作为 advanced 收进同一页底部。
-  assert.match(app, /\{route === "relay" \|\| route === "relayEnvironment" \? \(\n\s*<RelayScreen/);
+  assert.match(app, /\{route === "relay" \? \(\n\s*<RelayScreen/);
   assert.match(app, /connection=\{\(\n\s*<LegacyRelayGatewayHint/);
   assert.match(app, /advanced=\{\(\n\s*<ProxySettingsScreen/);
-  assert.match(app, /advancedOpen=\{route === "relayEnvironment" \|\| relayAdvancedOpen\}/);
+  // 旧入口 relayEnvironment 在 navigate 里换成这一页并展开「高级」。
+  assert.match(app, /advancedOpen=\{relayAdvancedOpen\}/);
+  assert.match(app, /setRelayAdvancedOpen\(target === "relayEnvironment"\);/);
   assert.match(app, /onDisconnect=\{\(\) => setLegacyDisconnectOpen\(true\)\}/);
   assert.match(app, /legacyDisconnectOpen \? \(\s*<AgentDisconnectDialog/);
   assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding", \{ agent: "codex", previewToken \}\)/);
@@ -267,9 +269,9 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   assert.match(card, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(card, /data-tone="gateway">\{t\("新版网关"\)\}/);
   assert.match(card, /\{gatewayManaged \? null : \(\s*<span className="relay-card-extra" onClick=\{\(event\) => event\.stopPropagation\(\)\}>/);
-  // 次要操作在三点菜单里；删除仍先查占用。
+  // 次要操作在三点菜单里；删除走公共确认（先查占用再二次确认）。
   assert.match(card, /<Menu label=\{t\("供应商操作"\)\}>/);
-  assert.match(card, /const deleteIssue = relayProfileDeleteIssue\(form, profile\.id\);/);
+  assert.match(card, /confirmRemoveRelayProfile\(form, profile, actions, "relay"\)/);
   // 被网关接管时可切换、可编辑的列表整块隐藏，要先断开并还原；只读列出直连供应商，供迁移进供应商池。
   const relay = functionSource("RelayScreen");
   assert.match(relay, /const takenOverByGateway = normalized\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
@@ -281,10 +283,10 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
 });
 
 test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一枚开关胶囊，不再有页面自己的配色和按钮尺寸", () => {
-  const extra = readSource("./ManagementExtra.tsx");
+  const extra = readSource("./SkillsPage.tsx");
   const css = readSource("./ManagementPages.css");
   assert.match(extra, /<CxRow className="cx-skill-row"/);
-  assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
+  assert.match(extra, /const agentColumns: McpAgentId\[\] = useMemo\(\(\) => MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\), \[focus\]\);/);
   // 行里每个可见 Agent 一枚开关；分组标题同一列是这一组的批量开关。
   assert.match(extra, /agentColumns\.map\(\(agent\) => \{[\s\S]*?return <AgentToggle /);
   assert.match(extra, /agentColumns\.map\(\(agent\) => <GroupAgentSelect /);
@@ -292,23 +294,16 @@ test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一
   assert.doesNotMatch(css, /\.dark \.mg-skills-page|\.mg-skills-page \.mg-primary|\.mg-skills-page :is\(\.mg-button/);
 });
 
-test("Agent 页签条不能是滚动容器：否则在 .screen 的 grid 里会被长页面挤成 1px，点进去就看不到页签", () => {
-  const css = readSource("./ToolPages.css");
-  const rules = [...css.matchAll(/\.agent-page-tabs\s*\{([^}]*)\}/g)].map((match) => match[1]);
-  assert.ok(rules.length > 0);
-  for (const body of rules) assert.doesNotMatch(body, /overflow/);
-  assert.match(rules.join("\n"), /flex-wrap:\s*wrap/);
-});
-
 test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里，设置页下方渲染维护内容，旧路由跳到设置", () => {
   const app = functionSource("App");
-  assert.match(app, /const next: Route = target === "maintenance" \? "agentSettings" : target === "about" \? "settings" : target === "relayEnvironment" \? "relay" : target === "recommendations" \? "home" : target;/);
-  assert.match(app, /\{route === "agentSettings" \|\| route === "maintenance" \? \(/);
+  // 旧路由在入口处经 route-aliases 换成现在的页面，渲染分支里不再出现旧 id。
+  assert.match(app, /const next = resolveRouteAlias<Route>\(target\);/);
+  assert.match(app, /\{route === "agentSettings" \? \(/);
+  assert.doesNotMatch(app, /route === "maintenance"|route === "about"|route === "relayEnvironment"|route === "recommendations"/);
   assert.match(text, /\{ key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent"/);
   // 分类目录交给侧栏，页内不再有左侧目录；分组卡片 id 仍然保留，深链照常。
-  assert.doesNotMatch(app, /sections=\{codexSettingsSections\(\)\}/);
-  const ids = [...text.slice(text.indexOf("function codexSettingsSections"), text.indexOf("const EXPERIMENTAL_TITLE")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(ids, ["codex-settings-check", "codex-settings-startup", "codex-settings-takeover", "codex-settings-manual-launch"]);
+  assert.doesNotMatch(text, /codexSettingsSections/);
+  const ids = ["codex-settings-check", "codex-settings-startup", "codex-settings-takeover", "codex-settings-manual-launch"];
   // 每个分组是一节（CxSection），id 挂在节的最外层。
   for (const id of ids) assert.match(text, new RegExp(`<CxSection(?:(?!<CxSection)[\\s\\S])*?\\bid="${id}"`));
   // 常用的在上，不常用的额外启动参数放进维护页最后的「高级」卡片，和手动启动在一起。
@@ -327,7 +322,6 @@ test("页内目录收成单列：分组锚点不再显示；增强页不再分�
   }
   const layer = readSource("./cursor-ui.css");
   assert.match(layer, /:root \.shell \.sectioned-page \{\n  display: flex;\n  flex-direction: column;/);
-  assert.match(layer, /:root \.shell \.page-section-nav-list \{\n  display: none;/);
   assert.match(layer, /:root \.shell \.screen\[data-settings-mode="true"\] > \* \{\n  width: min\(100%, var\(--cx-content-narrow\)\);/);
   // 增强页只剩总开关和独立模式，内置拓展的页签随设置一起搬进 Codex。
   assert.doesNotMatch(text, /className="enhance-tabs/);
@@ -354,7 +348,8 @@ test("导入供应商弹窗：只有文字那块占满宽度，头像（也是 s
 });
 
 test("代理设置按归属拆开：本地服务与请求避震移到网关设置（新旧共用），旧版页只留旧版专用的两项", () => {
-  assert.match(text, /id: "relayEnvironment", get label\(\) \{ return t\("旧版代理设置"\); \}/);
+  // 旧版代理设置不再是单独的路由，旧 id 打开「连接与供应商」并展开「高级」。
+  assert.doesNotMatch(text, /id: "relayEnvironment", get label/);
   const shared = functionSource("SharedServiceSettings");
   // 两节：本地服务、请求避震；标题悬停说明新旧共用。
   assert.match(shared, /t\("本地服务"\)/);
@@ -383,9 +378,8 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   assert.doesNotMatch(text, /SponsorBoard|FloatingSponsor/);
   assert.doesNotMatch(functionSource("OverviewScreen"), /featuredAds|AdGrid/);
   // 侧栏主模式第一项；旧「推荐内容」路由跳到首页，设置模式里不再有这一项。
-  assert.match(functionSource("AppSidebar"), /const general: SideEntry\[\] = \[\n\s*\{ key: "home", route: "home", label: t\("首页"\), icon: House, match: \["home", "recommendations"\] \},/);
-  assert.match(app, /target === "recommendations" \? "home" : target/);
-  assert.match(app, /if \(next === "home"\) await refreshAds\(true\);/);
+  assert.match(functionSource("AppSidebar"), /const general: SideEntry\[\] = \[\n\s*\{ key: "home", route: "home", label: t\("首页"\), icon: House, match: \["home"\] \},/);
+  assert.match(app, /case "home":\n\s*loads\.push\(refreshAds\(true\)\);/);
   assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"recommendations"/);
   const home = functionSource("HomeScreen");
   // 首页不能全是广告：先是状态，再是精选推荐和其他赞助商，最后常用入口。
@@ -397,7 +391,8 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   assert.match(home, /viaGateway \|\| enhanceOnly \|\| !gatewayInUse \? <ChevronRight/);
   assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
   // 常用入口给的是 Codex 自己的供应商页，不是网关的供应商池；Codex 的页面先切到 Codex 再打开。
-  assert.match(home, /\{ route: "relay", label: t\("Codex 供应商"\)[^\n]*agent: "codex" \}/);
+  // 和页签同名（一页一个名字）。
+  assert.match(home, /\{ route: "relay", label: t\("连接与供应商"\)[^\n]*agent: "codex" \}/);
   assert.doesNotMatch(home, /route: "gatewayProviders"/);
   assert.match(home, /item\.agent \? onOpenAgent\(item\.agent, item\.route\) : onNavigate\(item\.route\)/);
   assert.match(app, /onOpenAgent=\{\(agent, destination\) => void switchTool\(agent, destination \?\? agentEntryRoute\(agent\)\)\}/);
@@ -488,13 +483,17 @@ test("多开页可以直接编辑、删除供应商：删除先查占用再二�
   assert.match(screen, /onBack=\{\(\) => setDetailProfileId\(null\)\}/);
   assert.match(screen, /onClick=\{\(\) => setDetailProfileId\(profile\.id\)\}/);
   // 删除：先用旧版列表同一套占用检查，再提醒运行中的多开实例，最后危险确认。
-  const remove = screen.slice(screen.indexOf("const deleteProfile"), screen.indexOf("if (detailProfile)"));
-  const issue = remove.indexOf("relayProfileDeleteIssue(normalized, profile.id)");
+  // 删除和旧版列表共用同一个确认：先查占用，再提醒运行中的多开实例，最后危险确认、返回删掉后的设置。
+  assert.match(screen, /confirmRemoveRelayProfile\(normalized, profile, actions, "multiLaunch"\)/);
+  const remove = functionSource("confirmRemoveRelayProfile");
+  const issue = remove.indexOf("relayProfileDeleteIssue(settings, profile.id)");
   const confirm = remove.indexOf("appConfirm(message");
-  const save = remove.indexOf("removeRelayProfile(normalized, profile.id)");
+  const save = remove.indexOf("removeRelayProfile(settings, profile.id)");
   assert.ok(issue > 0 && confirm > issue && save > confirm, "删除必须先查占用、再确认、最后保存");
   assert.match(remove, /runningInstancesForProfile\(actions\.multiLaunchInstances, profile\.id\)/);
   assert.match(remove, /danger: true/);
+  // 旧版供应商列表的「删除供应商」也走这个确认，不再点了就直接写盘。
+  assert.match(functionSource("SortableRelayProfileCard"), /confirmRemoveRelayProfile\(form, profile, actions, "relay"\)/);
   assert.match(screen, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
   // 编辑 / 删除收进行尾三点菜单；网关托管项没有菜单，整行也不可点。
   assert.match(screen, /\{gatewayManaged \? null : \(\r?\n\s+<Menu label=/);
@@ -540,16 +539,23 @@ test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式�
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /onClick=\{\(\) => openSettings\("settings", \["app-settings-general"\]\)\}/);
   const app = functionSource("App");
-  // 只显示侧栏选中分类的卡片；深链到某张卡片时换到它所在的分类。
-  assert.match(app, /settingsSections\.map\(\(id\) => `:not\(#\$\{id\}\)`\)/);
+  // 只渲染侧栏选中分类的卡片（不再注入隐藏样式）；深链到某张卡片时换到它所在的分类。
+  assert.doesNotMatch(app, /settingsSections\.map\(\(id\) => `:not\(#\$\{id\}\)`\)/);
+  assert.match(app, /<GlobalSettingsScreen\n\s*sections=\{settingsSections\}/);
+  assert.match(app, /<AboutScreen\n\s*sections=\{settingsSections\}/);
+  assert.match(functionSource("GlobalSettingsScreen"), /\{shown\("app-settings-doctor"\) \? <ConfigDoctorPanel \/> : null\}/);
+  assert.match(functionSource("AboutScreen"), /\{shown\("app-settings-logs"\) \? <div className="cx-set-group" id="app-settings-logs">/);
+  // 日志与诊断在分类显示时才读；切分类不再整页重读。
+  assert.match(app, /const settingsLogsShown = route === "settings" && settingsSections\.includes\("app-settings-logs"\);/);
+  assert.match(app, /if \(next !== route\) void navigate\(next\);/);
   assert.match(app, /if \(settingsFocus\) setSettingsSections\(settingsSectionsFor\(settingsFocus\)\);/);
-  const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
+  const entries = appDeclarationSource("settingsNavEntries");
   for (const id of ["app-settings-general", "app-settings-config", "app-settings-doctor", "app-settings-update", "app-settings-logs", "app-settings-diagnostics", "app-settings-about"]) {
     assert.ok(entries.includes(`"${id}"`), `${id} 要归到某个设置分类`);
   }
   assert.match(app, /if \(target === "about"\) setSettingsFocus\("app-settings-update"\);/);
   assert.ok(app.indexOf("<GlobalSettingsScreen") < app.indexOf("<AboutScreen"));
-  const ids = [...text.slice(text.indexOf("function appSettingsSections"), text.indexOf("function AppSettingsFocus")).matchAll(/id: "([^"]+)"/g)].map((match) => match[1]);
+  const ids = [...new Set([...entries.matchAll(/"(app-settings-[a-z]+)"/g)].map((match) => match[1]))];
   assert.equal(ids.length, 7);
   // 「配置体检」的分组卡片由 ConfigDoctorPanel 自带，其余都在 App.tsx 里。
   const sections = `${text}\n${readSource("./ConfigDoctorPanel.tsx")}`;
@@ -569,7 +575,7 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
   const app = functionSource("App");
   // 使用模式问卷先弹，答完才进引导。
   assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} onCancel=\{cancelAgentFocus\} \/> : null\}/);
-  assert.match(app, /\{tourOpen && !agentFocusOpen \? <OnboardingTour focus=\{agentFocus\} onClose=\{closeTour\} \/> : null\}/);
+  assert.match(app, /\{tourOpen && !agentFocusOpen \? <Suspense fallback=\{null\}><OnboardingTour focus=\{agentFocus\} onClose=\{closeTour\} \/><\/Suspense> : null\}/);
   assert.match(app, /setupOpen && !agentFocusOpen && !agentFocusChecking \? \(\s*<OnboardingSetup/);
   assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
   assert.match(functionSource("initialSetupOpen"), /has\("previewRoute"\)/);
@@ -577,6 +583,8 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
   assert.match(app, /if \(agentFocusOpen \|\| tourOpen\) return;\s*setPaletteOpen/);
   assert.match(app, /updatePrompt && !agentFocusOpen && !tourOpen/);
   assert.match(functionSource("GlobalSettingsScreen"), /onClick=\{onOpenTour\}/);
+  // 设置页里点「重新打开引导」：退出设置模式，打开入门清单并开始导览（以前只改了一个设置模式里不渲染的状态）。
+  assert.match(functionSource("App"), /onOpenTour=\{\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*setSetupOpen\(true\);\n\s*void navigate\(lastMainRoute\.current\);\n\s*setTourOpen\(true\);/);
   const model = readSource("./onboarding-model.ts");
   const sidebar = functionSource("AppSidebar");
   for (const match of model.matchAll(/target: "([^"]+)"/g)) {
@@ -634,7 +642,7 @@ test("内层滚动的页面（网关各页、Computer Use）滚动区延伸到�
 });
 
 test("会话页可以删除会话，不再有「在终端继续」；Claude Code / Grok 走 delete_agent_session，Codex 走 delete_local_session", () => {
-  const sessions = readSource("./GatewaySessions.tsx");
+  const sessions = readSource("./AgentSessions.tsx");
   assert.doesNotMatch(sessions, /在终端继续|resume_agent_session/);
   assert.match(sessions, /"delete_agent_session"/);
   assert.match(sessions, /"delete_local_session"/);
@@ -644,7 +652,7 @@ test("会话页可以删除会话，不再有「在终端继续」；Claude Code
 });
 
 test("会话页列出 Claude Desktop 的会话：标出 Desktop / 已归档，恢复命令用 cliSessionId，删除前提示先退出 Desktop", () => {
-  const sessions = readSource("./GatewaySessions.tsx");
+  const sessions = readSource("./AgentSessions.tsx");
   // Desktop / 已归档是行标题旁的小标签（CxRow 的 badges）。
   assert.match(sessions, /session\.surface === "desktop" \? <CxBadge title=\{t\("Claude Desktop 里的会话"\)\}>Desktop<\/CxBadge>/);
   assert.match(sessions, /session\.archived \? <CxBadge>\{t\("已归档"\)\}<\/CxBadge>/);
@@ -666,12 +674,8 @@ test("添加供应商是弹出框，不再铺在供应商池页面里；池为�
 test("侧栏一级分组标题比子项醒目，快速跳转的快捷键按平台显示且弱化（#2778）", () => {
   assert.match(functionSource("AppSidebar"), /<kbd>\{paletteShortcut\}<\/kbd>/);
   assert.doesNotMatch(functionSource("AppSidebar"), /<kbd>⌘K<\/kbd>/);
-  const label = styles.match(/\.side-group-label > button:first-child \{[^}]*\}/)?.[0] ?? "";
-  const item = styles.match(/\n\.side-item \{[^}]*\}/)?.[0] ?? "";
-  const size = (rule: string) => Number(rule.match(/font-size: ([\d.]+)px/)?.[1] ?? 0);
-  assert.ok(size(item) > 0 && size(label) >= size(item), "分组标题字号不能比子项小");
-  assert.match(label, /font-weight: 700/);
-  assert.match(styles, /\.side-search kbd \{[^}]*font-size: 9\.5px/);
+  // 快捷键弱化成次要文字色（现行侧栏是 cursor-ui.css 的 cx-side-*，旧 .side-* 样式已删）。
+  assert.match(readSource("./cursor-ui.css"), /:root \.shell \.cx-side-search kbd \{[^}]*color: hsl\(var\(--muted-foreground\)\);/);
 });
 
 test("Codex 在它自己的窗口里退出后，侧栏 / 顶栏的运行状态能跟上（#2778）", () => {

@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Check, LayoutGrid, LoaderCircle, RefreshCw, Sparkles } from "lucide-react";
 import { t, tf } from "./i18n";
 import { FOCUS_MODES, type AgentFocus, type FocusMode } from "./agent-focus-model";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 import type { GatewayResult } from "./gateway-model";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalFocus } from "./use-modal-focus";

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const root = path.resolve(import.meta.dirname, "../../..");
 const fragments = path.join(root, "assets/inject/renderer-inject");
@@ -160,7 +161,7 @@ test("hidden windows and unavailable native APIs return content-free diagnostic 
 });
 
 test("the default-off recovery switch is exposed in the Codex settings page and uses the backend mapping", () => {
-  const app = readFileSync(path.join(root, "apps/codex-plus-manager/src/App.tsx"), "utf8");
+  const app = readAppSource();
   const styles = readFileSync(path.join(fragments, "10-style.js"), "utf8");
   const backend = readFileSync(path.join(fragments, "40-backend-settings.js"), "utf8");
   const catalog = JSON.parse(readFileSync(path.join(root, "crates/codex-plus-core/assets/enhancement-settings.json"), "utf8"));

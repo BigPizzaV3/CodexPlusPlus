@@ -11,18 +11,7 @@
 .agent-collaboration-content .mg-field textarea { height:auto; min-height:88px; padding:8px 9px; resize:vertical; line-height:1.6; }
 .agent-collaboration-content :is(input,textarea,select):disabled { opacity:.55; cursor:not-allowed; }
 
-/* 开关：启用协作、启用某个 Agent 用开关样式的复选框 */
-.agent-collaboration-enable input[type=checkbox],
-.agent-collaboration-agent-title input[type=checkbox] { position:relative; width:30px; height:18px; flex:none; border-radius:99px; background:hsl(var(--switch-track)); cursor:pointer; appearance:none; transition:background-color var(--motion-fast) var(--motion-ease); }
-.agent-collaboration-enable input[type=checkbox]::after,
-.agent-collaboration-agent-title input[type=checkbox]::after { content:""; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:50%; background:hsl(var(--switch-thumb)); box-shadow:0 1px 2px hsl(var(--shadow-color)/.4); transition:transform var(--motion-fast) var(--motion-ease); }
-.agent-collaboration-enable input[type=checkbox]:checked,
-.agent-collaboration-agent-title input[type=checkbox]:checked { background:hsl(var(--primary)); }
-.agent-collaboration-enable input[type=checkbox]:checked::after,
-.agent-collaboration-agent-title input[type=checkbox]:checked::after { transform:translateX(12px); }
-
 /* 说明：一句话 + 三个示例说法 */
-.agent-collaboration-intro { display:flex; flex-direction:column; gap:8px; font-size:13px; line-height:1.6; }
 .agent-collaboration-examples { display:flex; flex-wrap:wrap; gap:6px; font-size:12px; }
 .agent-collaboration-examples>span { padding:4px 9px; border:1px solid hsl(var(--border)); border-radius:6px; background:hsl(var(--surface-sunken)); color:hsl(var(--foreground)/.9); }
 .agent-collaboration-hint { color:hsl(var(--muted-foreground)); font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
@@ -34,47 +23,8 @@
 .agent-collaboration-section-head h2 { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; line-height:1.4; }
 .agent-collaboration-section-head p { color:hsl(var(--muted-foreground)); font-size:12px; line-height:1.55; overflow-wrap:anywhere; }
 .agent-collaboration-section>.agent-collaboration-hint { margin-top:10px; }
-
-.agent-collaboration-enable { display:flex; align-items:center; gap:12px; margin:0 -16px 14px; padding:0 16px 12px; border-bottom:1px solid hsl(var(--border)); cursor:pointer; }
-.agent-collaboration-enable>span:first-of-type { display:flex; flex-direction:column; gap:2px; }
-.agent-collaboration-enable strong { font-size:12.5px; font-weight:600; }
-.agent-collaboration-enable small { font-size:11.5px; color:hsl(var(--muted-foreground)); }
-.agent-collaboration-enable .mg-badge { margin-left:auto; }
 .agent-collaboration-default { display:grid; grid-template-columns:minmax(160px,240px) minmax(120px,200px) minmax(0,1fr); align-items:end; gap:12px; margin-bottom:14px; }
 .agent-collaboration-default>.agent-collaboration-hint { align-self:center; }
-
-/* 三个子 Agent */
-.agent-collaboration-agents { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
-.agent-collaboration-agent { display:flex; min-width:0; flex-direction:column; gap:10px; padding:12px; border:1px solid hsl(var(--border)); border-radius:9px; background:hsl(var(--surface-sunken)/.6); }
-.agent-collaboration-agent-title { display:flex; align-items:center; gap:9px; font-size:12.5px; cursor:pointer; }
-.agent-collaboration-agent-title strong { font-weight:600; }
-.agent-collaboration-agent .mg-field { font-size:11.5px; }
-.agent-collaboration-agent .mg-field>span { color:hsl(var(--muted-foreground)); font-size:11.5px; }
-.agent-collaboration-agent .mg-field small { color:hsl(var(--muted-foreground)); font-size:11px; line-height:1.5; }
-.agent-collaboration-agent-state { font-size:11.5px; color:hsl(var(--muted-foreground)); }
-.agent-collaboration-agent-state code { display:block; margin-top:4px; font-size:10.5px; overflow-wrap:anywhere; }
-.agent-collaboration-agent-state[data-unavailable=true] { color:hsl(var(--status-warning)); }
-.agent-collaboration-agent-note { color:hsl(var(--muted-foreground)); font-size:11px; line-height:1.55; }
-.agent-collaboration-auth { display:flex; align-items:flex-start; gap:8px; font-size:12px; line-height:1.55; cursor:pointer; }
-.agent-collaboration-auth input { margin-top:2px; flex-shrink:0; }
-
-/* 接入状态 */
-.agent-collaboration-section-head>.agent-collaboration-integration-actions { display:flex; max-width:100%; flex-shrink:1; flex-direction:row; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
-.agent-collaboration-integration-state,
-.agent-collaboration-runtime-state { display:flex; align-items:flex-start; flex-direction:column; gap:4px; padding:10px 12px; border:1px solid hsl(var(--border)); border-radius:8px; background:hsl(var(--surface-sunken)/.6); font-size:12px; line-height:1.6; }
-.agent-collaboration-runtime-state { margin-top:10px; gap:6px; }
-.agent-collaboration-integration-state strong,
-.agent-collaboration-runtime-state strong { font-weight:600; }
-.agent-collaboration-integration-state span,
-.agent-collaboration-runtime-state>span { color:hsl(var(--muted-foreground)); overflow-wrap:anywhere; }
-.agent-collaboration-runtime-state>small { color:hsl(var(--muted-foreground)); font-size:11px; }
-.agent-collaboration-integration-state[data-status=connected],
-.agent-collaboration-runtime-state[data-status=ready] { border-color:hsl(var(--status-success)/.3); background:hsl(var(--status-success)/.06); }
-.agent-collaboration-integration-state[data-status=conflict],
-.agent-collaboration-runtime-state[data-status=error] { border-color:hsl(var(--status-warning)/.35); background:hsl(var(--status-warning)/.06); }
-.agent-collaboration-runtime-steps { display:flex; flex-wrap:wrap; gap:5px; }
-.agent-collaboration-runtime-steps>span { padding:1px 7px; border:1px solid hsl(var(--border)); border-radius:5px; color:hsl(var(--muted-foreground)); font-size:11px; }
-.agent-collaboration-runtime-steps>span[data-complete=true] { color:hsl(var(--status-success)); border-color:hsl(var(--status-success)/.3); }
 
 /* 折叠区 */
 .agent-collaboration-manual { margin-top:12px; padding-top:12px; border-top:1px solid hsl(var(--border)); }
@@ -88,7 +38,6 @@
 .agent-collaboration-debug-body { display:flex; min-width:0; flex-direction:column; gap:12px; padding:0 12px 12px; }
 .agent-collaboration-debug-body .agent-collaboration-section { background:hsl(var(--surface-sunken)/.5); }
 .agent-collaboration-debug-body>.agent-collaboration-hint { padding:0 4px; }
-.agent-collaboration-footnote { color:hsl(var(--muted-foreground)/.8); font-size:11.5px; }
 
 /* 调试任务 */
 .agent-collaboration-form { display:flex; flex-direction:column; gap:12px; }
@@ -132,10 +81,8 @@
 .agent-collaboration-output-error pre { border-color:hsl(var(--status-warning)/.35); }
 
 /* 提示条 */
-.agent-collaboration-error,.agent-collaboration-notice { padding:9px 12px; border-radius:8px; font-size:12px; line-height:1.6; overflow-wrap:anywhere; }
-.agent-collaboration-error { color:hsl(var(--status-warning)); border:1px solid hsl(var(--status-warning)/.3); background:hsl(var(--status-warning)/.07); }
-.agent-collaboration-notice { color:hsl(var(--foreground)); border:1px solid hsl(var(--status-success)/.3); background:hsl(var(--status-success)/.07); }
-.agent-collaboration-section>.agent-collaboration-error,.agent-collaboration-section>.agent-collaboration-notice { margin-top:10px; }
+.agent-collaboration-error { padding:9px 12px; border-radius:8px; font-size:12px; line-height:1.6; overflow-wrap:anywhere; color:hsl(var(--status-warning)); border:1px solid hsl(var(--status-warning)/.3); background:hsl(var(--status-warning)/.07); }
+.agent-collaboration-section>.agent-collaboration-error { margin-top:10px; }
 .agent-collaboration-loading { display:flex; align-items:center; gap:8px; color:hsl(var(--muted-foreground)); font-size:12px; }
 .agent-collaboration-mcp-configs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:12px; }
 .agent-collaboration-mcp-configs>.agent-collaboration-hint,.agent-collaboration-mcp-command { grid-column:1/-1; }
@@ -147,7 +94,7 @@
 .agent-collaboration-spin { animation:agent-collaboration-spin 1s linear infinite; }
 @keyframes agent-collaboration-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) { .agent-collaboration-spin { animation:none; } }
-@media(max-width:1000px) { .agent-collaboration-agents { grid-template-columns:1fr; } .agent-collaboration-default { grid-template-columns:minmax(160px,240px) minmax(120px,200px); } .agent-collaboration-default>.agent-collaboration-hint { grid-column:1/-1; } }
+@media(max-width:1000px) { .agent-collaboration-default { grid-template-columns:minmax(160px,240px) minmax(120px,200px); } .agent-collaboration-default>.agent-collaboration-hint { grid-column:1/-1; } }
 @media(max-width:760px) { .agent-collaboration-section-head { flex-wrap:wrap; } .agent-collaboration-default,.agent-collaboration-form-row,.agent-collaboration-task-workspace,.agent-collaboration-mcp-configs { grid-template-columns:1fr; } .agent-collaboration-task-list { max-height:240px; border-right:0; border-bottom:1px solid hsl(var(--border)); } .agent-collaboration-continuation,.agent-collaboration-form-footer { align-items:flex-start; flex-direction:column; } }
 
 /* 下拉（AppSelect）与同一行的输入框同高 */

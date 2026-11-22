@@ -15,7 +15,7 @@ import type {
   RelayProfile,
   RelayProtocol,
   RelaySessionProvider,
-} from "./App";
+} from "./app-types";
 import { t, tf } from "@/i18n";
 import { aggregateMemberCandidates, isAggregateProfile, normalizeAggregateDefaultRelayId, normalizeAggregateMembers } from "./aggregate-members";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
@@ -769,6 +769,25 @@ export function relaySettingsValidation(settings: BackendSettings): string | nul
     if (sessionProviderError) return sessionProviderError;
   }
   return relayModelRoutesSettingsValidation(settings);
+}
+
+/**
+ * 保存某个供应商时的整份设置校验：和 relaySettingsValidation 查的一样，
+ * 但出问题的是别的供应商时点名是哪一个，免得以为是正在编辑的这个有错。
+ */
+export function relaySettingsValidationForSave(settings: BackendSettings, editingId: string): string | null {
+  const named = (profileId: string, message: string) => {
+    if (profileId === editingId) return message;
+    const other = settings.relayProfiles.find((profile) => profile.id === profileId);
+    return tf("供应商「{0}」配置有误：{1}", [other?.name || t("未命名供应商"), message]);
+  };
+  for (const profile of settings.relayProfiles) {
+    const sessionProviderError = relaySessionProviderValidation(profile);
+    if (sessionProviderError) return named(profile.id, sessionProviderError);
+  }
+  const routeIssue = findRelayModelRouteIssue(settings.relayProfiles, settings.relayProfiles);
+  const routeMessage = relayModelRouteIssueMessage(routeIssue);
+  return routeIssue && routeMessage ? named(routeIssue.sourceRelayId, routeMessage) : null;
 }
 
 export function relaySessionProviderValidation(profile: RelayProfile): string | null {

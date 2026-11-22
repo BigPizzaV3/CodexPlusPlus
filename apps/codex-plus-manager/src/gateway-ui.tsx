@@ -1,7 +1,7 @@
 /** 本地网关页各标签共用的小组件与类型。 */
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { KeyRound, Shuffle, Waypoints } from "lucide-react";
+import { KeyRound, RefreshCw, Shuffle, Waypoints } from "lucide-react";
 import { t, tf } from "./i18n";
 import {
   agentName,
@@ -16,6 +16,8 @@ import {
   type ModelView,
   type ProviderQuota,
 } from "./gateway-model";
+import { CxCard, CxEmpty } from "./cx-layout";
+import { refreshGateway } from "./gateway-store";
 import { BRAND_ICON_URLS } from "./provider-brand-icons";
 import { brandIconIsColor, brandIconKey } from "./provider-brands";
 import { providerAvatarText } from "./provider-name";
@@ -299,4 +301,43 @@ export function AutoTag({ view }: { view: ModelView }) {
     return <em className="gw-auto-tag" title={t("请重新选择默认模型")}>{t(label)}</em>;
   }
   return view.auto ? <em className="gw-auto-tag" title={view.sub}>{t("自动")}</em> : null;
+}
+
+/** 网关状态读不出来、手里还没有任何数据时的空状态：写明原因、给个重试，不再一直显示「正在读取…」。 */
+export function GatewayLoadError({ error }: { error: string }) {
+  const [retrying, setRetrying] = useState(false);
+  const retry = () => {
+    setRetrying(true);
+    void refreshGateway()
+      .catch(() => undefined)
+      .finally(() => setRetrying(false));
+  };
+  return (
+    <CxCard className="gw-load-error">
+      <CxEmpty detail={maskAccountText(error)} title={t("读取网关状态失败")}>
+        <button className="cx-secondary" disabled={retrying} onClick={retry} type="button">
+          <RefreshCw className={retrying ? "animate-spin" : undefined} />
+          {t("重试")}
+        </button>
+      </CxEmpty>
+    </CxCard>
+  );
+}
+
+/**
+ * 列表框（role="listbox"）里的方向键：上下移到前一个 / 后一个选项，Home / End 到头尾；跳过不可选的。
+ * 挂在包住一个或几个列表框的容器上（模型选择器按供应商分段，每段一个列表框，方向键跨段走）。返回是否处理了这个键。
+ */
+export function moveOptionFocus(container: HTMLElement, key: string): boolean {
+  if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Home" && key !== "End") return false;
+  const options = [...container.querySelectorAll<HTMLElement>('[role="option"]:not([aria-disabled="true"])')];
+  if (!options.length) return false;
+  const index = options.indexOf(document.activeElement as HTMLElement);
+  const next = key === "Home" ? 0
+    : key === "End" ? options.length - 1
+      : key === "ArrowDown" ? (index < 0 ? 0 : Math.min(options.length - 1, index + 1))
+        : (index < 0 ? options.length - 1 : Math.max(0, index - 1));
+  options[next].focus();
+  options[next].scrollIntoView({ block: "nearest" });
+  return true;
 }

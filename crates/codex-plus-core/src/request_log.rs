@@ -477,6 +477,26 @@ pub struct RequestLogPage {
     pub more: bool,
     /// 日志文件里最早一条的开始时间：日志按大小滚动，更早的请求只留在用量统计里。
     pub oldest_ms: Option<u64>,
+    /// 文件里最后一条记录的位置，下一轮拿它增量读；空文件时没有。
+    pub cursor: Option<RequestLogCursor>,
+}
+
+/// 增量读请求日志的游标：文件里最后读到的那一行的起始字节和它的请求 id。
+/// 下次从这一行读起，先核对还是不是同一条记录——日志被清空或按大小裁剪后对不上，就整页重读。
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestLogCursor {
+    pub offset: u64,
+    pub id: String,
+}
+
+/// 游标之后新写入的请求日志（已按条件筛过）。
+#[derive(Clone, Debug, Default)]
+pub struct RequestLogDelta {
+    /// 新完成的请求 + 现在仍在进行的请求，按开始时间倒序。
+    pub entries: Vec<RequestLogEntry>,
+    /// 新的游标；没有新记录时和传入的相同。
+    pub cursor: RequestLogCursor,
 }
 
 /// 读取符合条件的最近 `limit` 条请求日志（含正在进行的请求）。
@@ -507,8 +527,11 @@ pub fn read_request_log_page_at(
     };
     let mut page = RequestLogPage::default();
     let mut entries = VecDeque::with_capacity(limit.min(1024));
-    for line in contents.lines() {
-        let line = line.trim();
+    let mut offset = 0u64;
+    for raw in contents.split_inclusive('\n') {
+        let start = offset;
+        offset += raw.len() as u64;
+        let line = raw.trim();
         if line.is_empty() {
             continue;
         }
@@ -518,6 +541,7 @@ pub fn read_request_log_page_at(
         if page.oldest_ms.is_none() {
             page.oldest_ms = Some(entry.started_at_ms.max(1));
         }
+        page.cursor = Some(RequestLogCursor { offset: start, id: entry.id.clone() });
         if !filter.matches(&entry) {
             continue;
         }
@@ -529,6 +553,74 @@ pub fn read_request_log_page_at(
     }
     page.entries = entries.into_iter().rev().collect();
     Ok(page)
+}
+
+/// 只读游标之后新写入的请求日志（含正在进行的请求），给请求日志页的自动刷新用：
+/// 不再每轮把整个日志读一遍、解析一遍。游标对不上时返回 `None`，调用方改为整页重读。
+pub fn read_request_logs_after(
+    filter: &RequestLogFilter,
+    cursor: &RequestLogCursor,
+) -> std::io::Result<Option<RequestLogDelta>> {
+    let Some(mut delta) = read_request_logs_after_at(&request_log_path(), filter, cursor)? else {
+        return Ok(None);
+    };
+    delta
+        .entries
+        .extend(running_requests().into_iter().filter(|entry| filter.matches(entry)));
+    delta.entries.sort_by_key(|entry| std::cmp::Reverse(entry.started_at_ms));
+    Ok(Some(delta))
+}
+
+pub fn read_request_logs_after_at(
+    path: &Path,
+    filter: &RequestLogFilter,
+    cursor: &RequestLogCursor,
+) -> std::io::Result<Option<RequestLogDelta>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let guard = lock_request_log()?;
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if file.metadata()?.len() <= cursor.offset {
+        return Ok(None);
+    }
+    file.seek(SeekFrom::Start(cursor.offset))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    drop(guard);
+    let mut chunks = bytes.split_inclusive(|byte| *byte == b'\n');
+    // 游标那一行必须还是同一条记录，否则日志被清空或裁剪过，偏移已经不作数。
+    let first = chunks.next().unwrap_or_default();
+    let first_offset = first.len() as u64;
+    match serde_json::from_slice::<RequestLogEntry>(first.trim_ascii()) {
+        Ok(entry) if entry.id == cursor.id => {}
+        _ => return Ok(None),
+    }
+    let mut delta = RequestLogDelta { entries: Vec::new(), cursor: cursor.clone() };
+    let mut offset = cursor.offset + first_offset;
+    for chunk in chunks {
+        let start = offset;
+        offset += chunk.len() as u64;
+        // 写入方整行加锁追加，这里仍只认带换行的完整行，半行留到下一轮。
+        if !chunk.ends_with(b"\n") {
+            break;
+        }
+        let line = chunk.trim_ascii();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(entry) = serde_json::from_slice::<RequestLogEntry>(line) else {
+            continue;
+        };
+        delta.cursor = RequestLogCursor { offset: start, id: entry.id.clone() };
+        if filter.matches(&entry) {
+            delta.entries.push(entry);
+        }
+    }
+    delta.entries.reverse();
+    Ok(Some(delta))
 }
 
 pub fn read_request_logs_at(path: &Path, limit: usize) -> std::io::Result<Vec<RequestLogEntry>> {
@@ -905,6 +997,51 @@ mod tests {
         assert_eq!(ids(&limited), vec!["e3", "e2"]);
         assert!(limited.more, "符合条件的不止这些");
         assert_eq!(limited.oldest_ms, Some(1_000), "最早一条按整个文件算");
+    }
+
+    #[test]
+    fn delta_reads_only_lines_after_cursor_and_resets_when_log_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("request-log.jsonl");
+        let ids = |entries: &[RequestLogEntry]| entries.iter().map(|entry| entry.id.clone()).collect::<Vec<_>>();
+        let row = |id: &str, started: u64, relay: &str| {
+            let mut row = entry(id);
+            row.started_at_ms = started;
+            row.relay_id = relay.to_string();
+            row
+        };
+        append_request_log_at(&path, &row("e0", 1_000, "relay-a")).unwrap();
+        append_request_log_at(&path, &row("e1", 2_000, "relay-b")).unwrap();
+        let page = read_request_log_page_at(&path, 10, &RequestLogFilter::default()).unwrap();
+        let cursor = page.cursor.clone().expect("非空日志要给游标");
+        assert_eq!(cursor.id, "e1", "游标指向文件里最后一条");
+
+        // 没有新记录：空结果、游标不变。
+        let idle = read_request_logs_after_at(&path, &RequestLogFilter::default(), &cursor).unwrap().unwrap();
+        assert!(idle.entries.is_empty());
+        assert_eq!(idle.cursor, cursor);
+
+        // 新写入的按条件筛；长请求开始得早、写得晚，也照样读到；游标跟到最后一行（不论是否符合条件）。
+        append_request_log_at(&path, &row("e2", 3_000, "relay-a")).unwrap();
+        append_request_log_at(&path, &row("e3", 500, "relay-a")).unwrap();
+        append_request_log_at(&path, &row("e4", 4_000, "relay-b")).unwrap();
+        let relay_a = RequestLogFilter { relay_id: Some("relay-a".to_string()), ..Default::default() };
+        let delta = read_request_logs_after_at(&path, &relay_a, &cursor).unwrap().unwrap();
+        assert_eq!(ids(&delta.entries), vec!["e3", "e2"], "新写入的倒序返回，供应商条件照常生效");
+        assert_eq!(delta.cursor.id, "e4");
+        let full = read_request_log_page_at(&path, 10, &RequestLogFilter::default()).unwrap();
+        assert_eq!(full.cursor.as_ref(), Some(&delta.cursor), "增量游标和整页读的一致");
+
+        // 日志被清空或改写过：游标对不上，要求整页重读。
+        clear_request_logs_at(&path).unwrap();
+        assert!(read_request_logs_after_at(&path, &RequestLogFilter::default(), &delta.cursor).unwrap().is_none());
+        for index in 0..6 {
+            append_request_log_at(&path, &row(&format!("n{index}"), 10_000 + index, "relay-a")).unwrap();
+        }
+        assert!(
+            read_request_logs_after_at(&path, &RequestLogFilter::default(), &delta.cursor).unwrap().is_none(),
+            "同一偏移上换成了别的记录"
+        );
     }
 
     #[test]

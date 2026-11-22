@@ -3,17 +3,19 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appConfirm } from "./app-dialog";
-import { AlertTriangle, AppWindow, Check, CheckCircle2, FolderOpen, Globe, Loader2, MonitorSmartphone, MousePointerClick, Play, Plug, Plus, RefreshCw, ShieldCheck, Unplug, X } from "lucide-react";
+import { AlertTriangle, AppWindow, Check, CheckCircle2, FolderOpen, Globe, Loader2, MousePointerClick, Play, Plug, Plus, RefreshCw, ShieldCheck, Unplug, X } from "lucide-react";
 import { ComputerUsePreview } from "./ComputerUsePreview";
 import { AppSelect } from "./AppSelect";
-import { Menu, MenuItem, PageHeader } from "./ManagementPages";
+import { Menu, MenuItem } from "./ManagementPages";
+import { TopbarActions } from "./TopbarActions";
 import { HubTopology } from "./HubOverview";
 import { APP_LOGO_URL, Switch } from "./gateway-ui";
-import { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxRow, CxSection } from "./cx-layout";
 import type { HubLink } from "./hub-overview-model";
 import { t, tf } from "./i18n";
 import { enhancementPlatformFromUserAgent } from "./enhancement-catalog";
 import { announceBackendSettingsChanged } from "./settings-events";
+import { errorText } from "./lib/utils";
 import "./ComputerUsePage.css";
 
 type CuTargetId = "claudeCode" | "claudeDesktop" | "codex" | "dsh" | "zcode" | "workBuddy" | "devin";
@@ -91,7 +93,6 @@ const targetFallback: Record<CuTargetId, { label: string; configPath: string }> 
   workBuddy: { label: "WorkBuddy AI", configPath: "~/.workbuddy-ai/mcp.json" },
   devin: { label: "Devin", configPath: "~/.config/devin/mcp_config.json" },
 };
-const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const hasValue = (value?: string) => Boolean(value && value.trim());
 // 配置路径通常很长，保留首尾两段比整体省略更能看清是哪个客户端。
 const elidePath = (value: string, limit = 52) => {
@@ -127,9 +128,20 @@ function stateLabel(state: CuTargetState): string {
     default: return t("未接入");
   }
 }
+/**
+ * 句子里要嵌 <code> 等节点时用：整句按 tf 的模板翻译，再把 {0}、{1}… 换成节点，避免把一句话拆成几段分别翻译。
+ */
+function tfNodes(key: string, nodes: ReactNode[]): ReactNode[] {
+  const template = tf(key, nodes.map((_, index) => `{${index}}`));
+  return template.split(/(\{\d+\})/).map((part, index) => {
+    const slot = /^\{(\d+)\}$/.exec(part);
+    return slot ? <span key={index}>{nodes[Number(slot[1])]}</span> : part;
+  });
+}
+
 function failureText(check: CuCheck): string {
   switch (check.failureKind) {
-    case "unsupported_platform": return t("Computer Use 暂不支持 Windows");
+    case "unsupported_platform": return t("Computer Use 仅支持 macOS");
     case "runtime_missing": return t("没找到 ChatGPT.app，请先安装 Codex 桌面版");
     case "untrusted_parent": return t("Computer Use 拒绝了本次调用：ChatGPT.app 版本不兼容，请更新后再试");
     case "permission_required": return t("请在系统设置里给 ChatGPT 授予辅助功能/屏幕录制权限");
@@ -147,15 +159,14 @@ export function ComputerUsePage() {
   return computerUseSupported ? <ComputerUseMacPage /> : <ComputerUseUnsupported />;
 }
 
-/** 非 macOS 平台只给出明确的「暂不支持」说明，不去探测运行时，避免误报「找不到 ChatGPT」。 */
+/** 非 macOS 平台只给出明确的「仅支持 macOS」说明，不去探测运行时，避免误报「找不到 ChatGPT」。 */
 function ComputerUseUnsupported() {
   return <div className="mg-page cu-page">
-    <PageHeader icon={<MonitorSmartphone size={20} strokeWidth={1.5} />} title="Computer Use" />
     <div className="cu-content">
       <div className="cu-runtime-missing" role="status" data-reason="unsupported-platform">
         <AlertTriangle size={16} />
         <div>
-          <strong>{t("Computer Use 暂不支持 Windows")}</strong>
+          <strong>{t("Computer Use 仅支持 macOS")}</strong>
           <p>{t("Computer Use 接入目前只支持 macOS：它依赖 macOS 版 ChatGPT.app 自带的 Computer Use 服务，当前平台还没有可接入的运行时。")}</p>
         </div>
       </div>
@@ -195,144 +206,92 @@ function ComputerUseMacPage() {
     }
   }, []);
 
-  const changeApprovalMode = async (mode: CuApprovalMode) => {
-    if (lock.current) return;
-    lock.current = true;
-    setBusy("approval");
-    setActionError("");
-    setNotice("");
-    try {
-      const result = await invoke<CuResult>("computer_use_approval_set", { mode });
-      if (!mounted.current) return;
-      if (result.status === "ok") {
-        announceSettingsChanged();
-        setNotice(result.message || t("审批策略已保存。"));
-        await loadApproval();
-      } else {
-        setActionError(result.message || t("保存审批策略失败。"));
-      }
-    } catch (reason) {
-      if (mounted.current) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
-  };
-
-  const changeCuMode = async (mode: CuMode) => {
-    if (lock.current || approval?.cuMode === mode) return;
-    lock.current = true;
-    setBusy("cuMode");
-    setActionError("");
-    try {
-      const result = await invoke<CuResult>("computer_use_mode_set", { mode });
-      if (!mounted.current) return;
-      if (result.status === "ok") {
-        announceSettingsChanged();
-        setNotice(result.message || t("操作方式已保存；对新开的客户端会话生效。"));
-        await loadApproval();
-      } else {
-        setActionError(result.message || t("保存操作方式失败。"));
-      }
-    } catch (reason) {
-      if (mounted.current) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
-  };
-
-  const changePip = async (enabled: boolean) => {
-    if (lock.current) return;
-    lock.current = true;
-    setBusy("pip");
-    setActionError("");
-    try {
-      const result = await invoke<CuResult>("computer_use_pip_set", { enabled });
-      if (!mounted.current) return;
-      if (result.status === "ok") {
-        announceSettingsChanged();
-        setNotice(result.message || (enabled ? t("已开启悬浮预览。") : t("已关闭悬浮预览。")));
-        await loadApproval();
-      } else {
-        setActionError(result.message || t("保存失败，请重试。"));
-      }
-    } catch (reason) {
-      if (mounted.current) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
-  };
-
-  const forgetApproval = async (app: string) => {
-    if (lock.current) return;
-    lock.current = true;
-    setBusy(`forget:${app}`);
-    try {
-      const result = await invoke<CuResult>("computer_use_approval_forget", { app });
-      if (mounted.current && result.status === "ok") {
-        setNotice(result.message || t("已撤销。"));
-        await loadApproval();
-      }
-    } catch (reason) {
-      if (mounted.current) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
-  };
-
-  const clearApprovals = async () => {
-    if (lock.current) return;
-    lock.current = true;
-    setBusy("approval:clear");
-    try {
-      const result = await invoke<CuResult>("computer_use_approval_clear");
-      if (mounted.current && result.status === "ok") {
-        setNotice(result.message || t("已清空。"));
-        await loadApproval();
-      }
-    } catch (reason) {
-      if (mounted.current) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
-  };
-
-  const loadStatus = useCallback(async () => {
+  /**
+   * 页面上的操作一次只跑一个：上锁、记下 busy、清掉上一条提示，出错写进操作失败提示。
+   * `alive()` 判断结果还该不该写进界面（组件已卸载或被更新的检测顶掉时丢弃）。
+   */
+  const runExclusive = useCallback(async (label: string, task: (alive: () => boolean) => Promise<void>) => {
     if (lock.current) return;
     lock.current = true;
     const stamp = ++epoch.current;
-    setBusy("refresh");
-    setReadError("");
+    const alive = () => mounted.current && epoch.current === stamp;
+    setBusy(label);
     setActionError("");
     setNotice("");
     try {
-      const next = await invoke<CuStatus>("computer_use_status");
-      if (!mounted.current || epoch.current !== stamp) return;
-      setStatus(next);
-      if (next.status !== "ok") setReadError(next.message || t("检测失败，请重试。"));
+      await task(alive);
     } catch (reason) {
-      if (mounted.current && epoch.current === stamp) setReadError(errorText(reason));
+      if (alive()) setActionError(errorText(reason));
     } finally {
-      if (mounted.current && epoch.current === stamp) {
+      if (alive()) {
         lock.current = false;
         setBusy("");
       }
     }
   }, []);
+
+  /** 保存本页的一个开关：成功后通知主界面同步设置版本号并重读审批状态。 */
+  const saveSetting = (label: string, command: string, args: Record<string, unknown>, success: string, failure: string) =>
+    runExclusive(label, async (alive) => {
+      const result = await invoke<CuResult>(command, args);
+      if (!alive()) return;
+      if (result.status === "ok") {
+        announceSettingsChanged();
+        setNotice(result.message || success);
+        await loadApproval();
+      } else {
+        setActionError(result.message || failure);
+      }
+    });
+
+  const changeApprovalMode = (mode: CuApprovalMode) =>
+    saveSetting("approval", "computer_use_approval_set", { mode }, t("审批策略已保存。"), t("保存审批策略失败。"));
+
+  const changeCuMode = async (mode: CuMode) => {
+    if (approval?.cuMode === mode) return;
+    await saveSetting("cuMode", "computer_use_mode_set", { mode }, t("操作方式已保存；对新开的客户端会话生效。"), t("保存操作方式失败。"));
+  };
+
+  const changePip = (enabled: boolean) =>
+    saveSetting("pip", "computer_use_pip_set", { enabled }, enabled ? t("已开启悬浮预览。") : t("已关闭悬浮预览。"), t("保存失败，请重试。"));
+
+  const forgetApproval = (app: string) => runExclusive(`forget:${app}`, async (alive) => {
+    const result = await invoke<CuResult>("computer_use_approval_forget", { app });
+    if (alive() && result.status === "ok") {
+      setNotice(result.message || t("已撤销。"));
+      await loadApproval();
+    }
+  });
+
+  // 清空会连 Codex 里的「始终允许」一起清掉，先确认。
+  const clearApprovals = async () => {
+    if (lock.current) return;
+    const confirmed = await appConfirm(t("Codex 里的「始终允许」也会一起清掉，之后每个应用都会重新询问。"), {
+      title: t("清空全部审批记录？"),
+      confirmText: t("全部清空"),
+      danger: true,
+    });
+    if (!confirmed || !mounted.current) return;
+    await runExclusive("approval:clear", async (alive) => {
+      const result = await invoke<CuResult>("computer_use_approval_clear");
+      if (alive() && result.status === "ok") {
+        setNotice(result.message || t("已清空。"));
+        await loadApproval();
+      }
+    });
+  };
+
+  const loadStatus = useCallback(() => runExclusive("refresh", async (alive) => {
+    setReadError("");
+    try {
+      const next = await invoke<CuStatus>("computer_use_status");
+      if (!alive()) return;
+      setStatus(next);
+      if (next.status !== "ok") setReadError(next.message || t("检测失败，请重试。"));
+    } catch (reason) {
+      if (alive()) setReadError(errorText(reason));
+    }
+  }), [runExclusive]);
 
   useEffect(() => {
     mounted.current = true;
@@ -348,43 +307,22 @@ function ComputerUseMacPage() {
     };
   }, [loadStatus]);
 
-  const openChatGpt = async () => {
-    if (lock.current) return;
-    lock.current = true;
-    const stamp = ++epoch.current;
-    setBusy("open");
-    setActionError("");
-    setNotice("");
-    try {
-      const result = await invoke<CuResult>("computer_use_open_app");
-      if (!mounted.current || epoch.current !== stamp) return;
-      if (result.status === "ok") setNotice(t("已请求打开 ChatGPT.app。"));
-      else setActionError(result.message || t("打开 ChatGPT.app 失败。"));
-    } catch (reason) {
-      if (mounted.current && epoch.current === stamp) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current && epoch.current === stamp) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
-  };
+  const openChatGpt = () => runExclusive("open", async (alive) => {
+    const result = await invoke<CuResult>("computer_use_open_app");
+    if (!alive()) return;
+    if (result.status === "ok") setNotice(t("已请求打开 ChatGPT.app。"));
+    else setActionError(result.message || t("打开 ChatGPT.app 失败。"));
+  });
 
   /** `target` 是内置目标 id 或自定义目标的 `custom-…` id。 */
-  const mutateTarget = async (target: string, action: "install" | "uninstall") => {
-    if (lock.current) return;
-    lock.current = true;
-    const stamp = ++epoch.current;
+  const mutateTarget = (target: string, action: "install" | "uninstall") => {
     const custom = status?.customTargets?.find((item) => item.id === target);
     const label = custom
-      ? `${custom.label} · ${t("自定义")}`
+      ? tf("{0} · 自定义", [custom.label])
       : status?.targets?.[target as CuTargetId]?.label || targetFallback[target as CuTargetId]?.label || target;
-    setBusy(`${action}:${target}`);
-    setActionError("");
-    setNotice("");
-    try {
+    return runExclusive(`${action}:${target}`, async (alive) => {
       const result = await invoke<CuMutation>(action === "install" ? "computer_use_install" : "computer_use_uninstall", { target });
-      if (!mounted.current || epoch.current !== stamp) return;
+      if (!alive()) return;
       if (result.targets || result.customTargets) {
         setStatus((current) => (current ? {
           ...current,
@@ -393,7 +331,7 @@ function ComputerUseMacPage() {
         } : current));
       }
       if (result.status === "ok") {
-        setNotice(action === "install" ? `${label} · ${t("已接入，重启客户端后加载工具")}` : `${label} · ${t("已移除")}`);
+        setNotice(action === "install" ? tf("{0} · 已接入，重启客户端后加载工具", [label]) : tf("{0} · 已移除", [label]));
         setBackups((current) => {
           const next = { ...current };
           if (action === "install" && result.backupPath) next[target] = result.backupPath;
@@ -403,14 +341,7 @@ function ComputerUseMacPage() {
       } else {
         setActionError(result.message || t("操作失败，请重试。"));
       }
-    } catch (reason) {
-      if (mounted.current && epoch.current === stamp) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current && epoch.current === stamp) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
+    });
   };
 
   const pickCustomDir = async () => {
@@ -423,15 +354,10 @@ function ComputerUseMacPage() {
   };
 
   const addCustomTarget = async () => {
-    if (lock.current || !newPath.trim()) return;
-    lock.current = true;
-    const stamp = ++epoch.current;
-    setBusy("custom:add");
-    setActionError("");
-    setNotice("");
-    try {
+    if (!newPath.trim()) return;
+    await runExclusive("custom:add", async (alive) => {
       const result = await invoke<CuStatus>("computer_use_custom_add", { kind: newKind, path: newPath.trim(), name: newName.trim() });
-      if (!mounted.current || epoch.current !== stamp) return;
+      if (!alive()) return;
       if (result.status === "ok") {
         setStatus(result);
         setNewPath("");
@@ -440,14 +366,7 @@ function ComputerUseMacPage() {
       } else {
         setActionError(result.message || t("添加失败，请重试。"));
       }
-    } catch (reason) {
-      if (mounted.current && epoch.current === stamp) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current && epoch.current === stamp) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
+    });
   };
 
   /** 改名只改显示名，不动客户端配置；名字清空表示恢复默认显示（客户端类型名）。 */
@@ -459,14 +378,9 @@ function ComputerUseMacPage() {
       setRenaming(null);
       return;
     }
-    lock.current = true;
-    const stamp = ++epoch.current;
-    setBusy(`custom:rename:${id}`);
-    setActionError("");
-    setNotice("");
-    try {
+    await runExclusive(`custom:rename:${id}`, async (alive) => {
       const result = await invoke<CuStatus>("computer_use_custom_rename", { id, name: draft.trim() });
-      if (!mounted.current || epoch.current !== stamp) return;
+      if (!alive()) return;
       if (result.status === "ok") {
         setStatus(result);
         setRenaming(null);
@@ -474,31 +388,19 @@ function ComputerUseMacPage() {
       } else {
         setActionError(result.message || t("改名失败，请重试。"));
       }
-    } catch (reason) {
-      if (mounted.current && epoch.current === stamp) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current && epoch.current === stamp) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
+    });
   };
 
   const removeCustomTarget = async (target: CuCustomTarget) => {
     if (lock.current) return;
     const confirmed = await appConfirm(
-      `${t("删除后会先移除写入")} ${target.configPath} ${t("的 Codex++ 条目（别人写的不动），再从列表里去掉。")}`,
+      tf("删除后会先移除写入 {0} 的 Codex++ 条目（别人写的不动），再从列表里去掉。", [target.configPath]),
       { title: t("删除自定义目标"), confirmText: t("删除"), danger: true },
     );
     if (!confirmed || !mounted.current) return;
-    lock.current = true;
-    const stamp = ++epoch.current;
-    setBusy(`custom:remove:${target.id}`);
-    setActionError("");
-    setNotice("");
-    try {
+    await runExclusive(`custom:remove:${target.id}`, async (alive) => {
       const result = await invoke<CuStatus>("computer_use_custom_remove", { id: target.id });
-      if (!mounted.current || epoch.current !== stamp) return;
+      if (!alive()) return;
       if (result.status === "ok") {
         setStatus(result);
         setBackups((current) => {
@@ -510,36 +412,13 @@ function ComputerUseMacPage() {
       } else {
         setActionError(result.message || t("删除失败，请重试。"));
       }
-    } catch (reason) {
-      if (mounted.current && epoch.current === stamp) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current && epoch.current === stamp) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
+    });
   };
 
-  const runCheck = async () => {
-    if (lock.current) return;
-    lock.current = true;
-    const stamp = ++epoch.current;
-    setBusy("check");
-    setActionError("");
-    setNotice("");
-    try {
-      const result = await invoke<CuCheck>("computer_use_check");
-      if (!mounted.current || epoch.current !== stamp) return;
-      setCheck(result);
-    } catch (reason) {
-      if (mounted.current && epoch.current === stamp) setActionError(errorText(reason));
-    } finally {
-      if (mounted.current && epoch.current === stamp) {
-        lock.current = false;
-        setBusy("");
-      }
-    }
-  };
+  const runCheck = () => runExclusive("check", async (alive) => {
+    const result = await invoke<CuCheck>("computer_use_check");
+    if (alive()) setCheck(result);
+  });
 
   const locked = Boolean(busy);
   const loading = busy === "refresh" && !status;
@@ -748,12 +627,12 @@ function ComputerUseMacPage() {
       key={id}
       badges={<>
         {/* 起了名字时标签补上客户端类型，否则只看名字分不出是哪种客户端。 */}
-        {custom ? <CxBadge>{custom.name ? `${targetFallback[custom.kind]?.label ?? custom.kind} · ${t("自定义")}` : t("自定义")}</CxBadge> : null}
+        {custom ? <CxBadge>{custom.name ? tf("{0} · 自定义", [targetFallback[custom.kind]?.label ?? custom.kind]) : t("自定义")}</CxBadge> : null}
         <CxBadge tone={status ? tone : "neutral"}>{status ? stateLabel(state) : t("未检测")}</CxBadge>
       </>}
       detail={<code className="cx-set-path" title={configPath}>{elidePath(configPath, 72)}</code>}
       title={title}
-      tooltip={[message, backup ? `${t("已备份到")} ${backup}` : ""].filter(Boolean).join("\n") || undefined}
+      tooltip={[message, backup ? tf("已备份到 {0}", [backup]) : ""].filter(Boolean).join("\n") || undefined}
     >
       {installable(state)
         ? <button className="cx-secondary" type="button" disabled={locked || !status || !found} title={status && !found ? t("先安装并打开一次 ChatGPT 后再接入") : undefined} onClick={() => void mutateTarget(id, "install")}>
@@ -771,15 +650,15 @@ function ComputerUseMacPage() {
   const lastClientWarn = approval?.mode === "claude" && approval?.lastClient?.elicitation === false;
 
   return <div className="mg-page cu-page cx-cu-page">
-    <PageHeader icon={<MonitorSmartphone size={20} strokeWidth={1.5} />} title="Computer Use" actions={
+    <TopbarActions>
       <button className="cx-secondary" type="button" onClick={() => void loadStatus()} disabled={locked} title={t("重新检测本机运行时与接入状态")}>
         <RefreshCw size={14} className={busy === "refresh" ? "cu-spin" : ""} />{busy === "refresh" ? t("检测中…") : t("重新检测")}
       </button>
-    } />
+    </TopbarActions>
     <div className="cu-content" aria-busy={loading}>
       {/* 页面顶部最多一条提示：出错 > 运行时缺失 > 刚完成的操作。 */}
       {readError || actionError
-        ? <div role="alert"><CxBanner icon={<AlertTriangle />} title={readError ? `${t("读取状态失败：")}${readError}` : `${t("操作失败：")}${actionError}`} tone="warn" /></div>
+        ? <div role="alert"><CxBanner icon={<AlertTriangle />} title={readError ? tf("读取状态失败：{0}", [readError]) : tf("操作失败：{0}", [actionError])} tone="warn" /></div>
         : status && !found
           // 运行时缺失会让所有分页都不可用，放在分页之外，在哪一页都看得到。
           ? <div role="status"><CxBanner icon={<AlertTriangle />} title={t("没找到 ChatGPT.app")} detail={status.configHint || t("请先安装 Codex 桌面版，安装后点「重新检测」。")} tone="warn">
@@ -868,16 +747,19 @@ function ComputerUseMacPage() {
                 badges={<CxBadge tone={approval.lastClient.elicitation ? "ok" : lastClientWarn ? "warn" : "neutral"}>{approval.lastClient.elicitation ? t("支持审批卡") : t("不支持审批卡")}</CxBadge>}
                 detail={<code className="cx-set-path">{[approval.lastClient.name, approval.lastClient.version].filter(Boolean).join(" ") || t("未知")}</code>}
                 title={t("最近连接的客户端")}
-                tooltip={approval.lastClient.elicitation
-                  ? t("，支持审批卡。")
-                  : approval.mode === "claude"
-                    ? t("，未声明审批卡能力（elicitation）。在这个客户端里「弹卡确认」会退回为自动放行，不会弹卡。")
-                    : t("，未声明审批卡能力（elicitation）；如果切到「弹卡确认」，在这个客户端里会退回为自动放行。")}
+                tooltip={(() => {
+                  const client = approval.lastClient.name || t("这个客户端");
+                  return approval.lastClient.elicitation
+                    ? tf("{0} 支持审批卡。", [client])
+                    : approval.mode === "claude"
+                      ? tf("{0} 未声明审批卡能力（elicitation）。在这个客户端里「弹卡确认」会退回为自动放行，不会弹卡。", [client])
+                      : tf("{0} 未声明审批卡能力（elicitation）；如果切到「弹卡确认」，在这个客户端里会退回为自动放行。", [client]);
+                })()}
               /> : null}
               {approval?.turnHooks ? <CxRow
                 badges={<CxBadge tone={approval.turnHooks.installed ? "ok" : "warn"}>{approval.turnHooks.installed ? t("已安装") : t("未安装")}</CxBadge>}
                 detail={approval.turnHooks.installed
-                  ? t("浏览器回合钩子已装好：") + (approval.turnHooks.events ?? []).join(" / ") + t("，回合结束时自动关闭未标记的标签页。")
+                  ? tf("浏览器回合钩子已装好：{0}，回合结束时自动关闭未标记的标签页。", [(approval.turnHooks.events ?? []).join(" / ")])
                   : t("未安装浏览器回合钩子。安装 Claude Code 接入后，回合结束时未标记的标签页不会自动关闭，会越堆越多。")}
                 title={t("浏览器回合钩子")}
               /> : null}
@@ -963,7 +845,7 @@ function ComputerUseMacPage() {
               <CxRow title={t("耗时")}><span className="cx-set-value">{typeof check.durationMs === "number" ? `${check.durationMs} ms` : "—"}</span></CxRow>
             </> : null}
           </CxCard>
-          <p className="cx-set-note">{t("接入后需要重启对应客户端（Claude Code 会话、DeepSeek Harness、ZCode、WorkBuddy、Devin）才会加载工具，工具名以")}<code>mcp__codex-plus-cu__</code>{t("与")}<code>mcp__codex-plus-browser__</code>{t("前缀出现在工具列表中。")}</p>
+          <p className="cx-set-note">{tfNodes("接入后需要重启对应客户端（Claude Code 会话、DeepSeek Harness、ZCode、WorkBuddy、Devin）才会加载工具，工具名以 {0} 与 {1} 前缀出现在工具列表中。", [<code>mcp__codex-plus-cu__</code>, <code>mcp__codex-plus-browser__</code>])}</p>
         </CxSection>
       </>}
     </div>

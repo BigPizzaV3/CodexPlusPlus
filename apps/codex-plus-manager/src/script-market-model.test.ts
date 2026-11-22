@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { defaultMarketSort, localScriptState, parseMarketTime, relativeAge, sortMarketScripts } from "./script-market-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const script = (name: string, updatedAt = "") => ({ name, updatedAt });
 
@@ -90,7 +91,7 @@ test("local script state merges the user switch with the runtime load status", (
 });
 
 test("local script rows no longer render the switch label and raw status as two columns", () => {
-  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   const row = app.slice(app.indexOf("function ScriptRow("), app.indexOf("function AdGrid("));
   assert.ok(row.includes("extensionStateForHost("), "ScriptRow should derive one merged state for the selected host");
   assert.ok(!row.includes("{script.status}"), "raw loaded/disabled column should be gone");

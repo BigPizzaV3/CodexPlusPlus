@@ -50,7 +50,8 @@ function PluginIcon({ plugin }: { plugin: MarketPlugin }) {
   );
 }
 
-export function PluginMarketScreen() {
+/** onOpenExtensions：Codex 插件和 Codex++ 拓展是两回事，页头一行指向「万物皆拓展」。 */
+export function PluginMarketScreen({ onOpenExtensions }: { onOpenExtensions?: () => void } = {}) {
   // 只有完整库一个来源；旧公开库已并入它。
   const source: MarketSource = "full";
   const [catalogs, setCatalogs] = useState<MarketCatalogs>({});
@@ -209,10 +210,15 @@ export function PluginMarketScreen() {
     }
   };
   const busy = !!installing || !!uninstalling;
-  const filterItems: Array<{ id: MarketFilter; label: string }> = [
+  // 各筛选的数量只随插件列表变，不必每次输入搜索词都把整份列表再过一遍。
+  const filterCounts = useMemo(() => market ? {
+    installed: filterMarketPlugins(plugins, "", "installed").length,
+    updates: filterMarketPlugins(plugins, "", "updates").length,
+  } : null, [market, plugins]);
+  const filterItems: Array<{ id: MarketFilter; label: string; count?: number }> = [
     { id: "all", label: t("全部插件") },
-    { id: "installed", label: t("已安装") },
-    { id: "updates", label: t("有更新") },
+    { id: "installed", label: t("已安装"), count: filterCounts?.installed },
+    { id: "updates", label: t("有更新"), count: filterCounts?.updates },
   ];
   // 顶部最多一条提示：进行中的安装 / 卸载 > 加载错误 > 上一次操作的结果。
   const progress = installing ? tf("正在下载并安装 {0}…", [installing.displayName || installing.name])
@@ -270,7 +276,7 @@ export function PluginMarketScreen() {
       {/* 和 Codex 插件页一样：左边页签，右边搜索 + 刷新；下面一行说明目录从哪来。 */}
       <div className="plugin-market-head">
         <CxFilters
-          items={filterItems.map((item) => ({ ...item, count: market && item.id !== "all" ? filterMarketPlugins(plugins, "", item.id).length : undefined }))}
+          items={filterItems}
           label={t("筛选插件")}
           onChange={setFilter}
           trailing={(
@@ -286,6 +292,12 @@ export function PluginMarketScreen() {
           {market ? tf("安装 Codex 官方插件目录里的插件，CLI 和 Codex App 都能用。目录是 {0} 的快照。", [market.updatedAt || t("未知日期")])
             : loading ? t("正在读取插件清单…") : t("尚未加载插件清单。")}
         </p>
+        {onOpenExtensions ? (
+          <p className="cx-aggregate-note plugin-market-crosslink">
+            <span>{t("这里是 Codex 插件（官方目录）；Codex++ 自己的拓展在「万物皆拓展」里。")}</span>
+            <button className="cx-link" onClick={onOpenExtensions} type="button">{t("打开万物皆拓展")}</button>
+          </p>
+        ) : null}
       </div>
 
       {progress ? (

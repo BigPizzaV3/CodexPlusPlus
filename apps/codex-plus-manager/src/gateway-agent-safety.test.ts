@@ -6,6 +6,7 @@ import ts from "typescript";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel, disconnectFileLabel, disconnectPreviewReady, fullSwitchReady } from "./gateway-agent-safety.ts";
 import { disabledGroup } from "./gateway-model.ts";
 import type { GatewayAgentDiagnostics, GatewayAgentView, GatewayDisconnectPreview } from "./gateway-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const agent = (state?: GatewayAgentDiagnostics["state"]): GatewayAgentView => ({
   agent: "opencode", name: "OpenCode", enabled: true, baseUrl: "http://127.0.0.1:57321/gw/opencode",
@@ -46,7 +47,7 @@ test("供应商配置总开关关闭时只阻止 Codex 重新接入，旧 payloa
   assert.match(agents, /reconnectAllowed \? \([\s\S]*?重新接入[\s\S]*?: \([\s\S]*?供应商配置切换已关闭[\s\S]*?onOpenCodexProviderSettings/);
   assert.match(agents, /const reconnect = \(\) =>\s*run\(`save:\$\{agent\.agent\}`, "save_gateway_binding", \{ agent: agent\.agent, binding: bindingFromDraft\(draft, binding\), reconnect: true \}/);
   assert.match(agents, /run\(`save:\$\{agent\.agent\}`, "save_gateway_binding", \{ agent: agent\.agent, binding: bindingFromDraft\(next, binding, item\) \}/);
-  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   assert.match(app, /onOpenCodexProviderSettings=\{\(addDirectProvider\) => \{[\s\S]*?switchTool\("codex", "relay"\)/);
   assert.match(app, /takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(/);
 });
@@ -441,6 +442,6 @@ test("没法逐项预览的 Codex 断开：只在后端给了完整切换目标�
   const dialog = readFileSync(new URL("./AgentDisconnectDialog.tsx", import.meta.url), "utf8");
   // 改用自带模型时不走完整切换；调用方没给 onFullSwitch 时也不给这条路。
   assert.match(dialog, /const fullSwitch = !ownModel && onFullSwitch && fullSwitchReady\(preview, agent\.agent\) \? preview : null;/);
-  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding_full_switch", \{ agent: "codex", previewToken \}\)/);
 });

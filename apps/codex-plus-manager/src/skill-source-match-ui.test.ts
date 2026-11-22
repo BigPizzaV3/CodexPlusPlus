@@ -57,7 +57,7 @@ test("batch discovery exposes local evidence and submits only preview-bound choi
           repoPath: "skills/alpha", remoteName: "Alpha", exact: true, localHash: "hidden-local",
           snapshot: "hidden-snapshot", remoteHash: "hidden-remote" }] };
     },
-    AppSelect: "AppSelect", ManagementDrawer: "ManagementDrawer", Pause: "Pause", Play: "Play", Plus: "Plus", RefreshCw: "RefreshCw", Search: "Search",
+    AppSelect: "AppSelect", SkillRepoUrlInput: "SkillRepoUrlInput", ManagementDrawer: "ManagementDrawer", Pause: "Pause", Play: "Play", Plus: "Plus", RefreshCw: "RefreshCw", Search: "Search",
     discardSkillSourceScan, getSkillSourceScan, keyOfRepo,
   };
   vm.createContext(context);
@@ -148,7 +148,7 @@ test("single-skill matching binds each installation to the selected repository p
           { localId: "alpha", localName: "alpha", repoKey: "owner/repo@main",
             repoPath: ".codex/skills/alpha", remoteName: "alpha", exact: false, localPaths: ["C:/agents/other"] }] };
     },
-    AppSelect: "AppSelect", ManagementDrawer: "ManagementDrawer", Pause: "Pause", Play: "Play", Plus: "Plus", RefreshCw: "RefreshCw", Search: "Search",
+    AppSelect: "AppSelect", SkillRepoUrlInput: "SkillRepoUrlInput", ManagementDrawer: "ManagementDrawer", Pause: "Pause", Play: "Play", Plus: "Plus", RefreshCw: "RefreshCw", Search: "Search",
     discardSkillSourceScan, getSkillSourceScan, keyOfRepo,
   };
   vm.createContext(context);
@@ -252,7 +252,7 @@ test("background scanning can be paused for a manual association and restarted a
       started.push(args.repoKey);
       return new Promise((resolve) => pending.push(resolve));
     },
-    AppSelect: "AppSelect", ManagementDrawer: "ManagementDrawer", Pause: "Pause", Play: "Play", Plus: "Plus", RefreshCw: "RefreshCw", Search: "Search",
+    AppSelect: "AppSelect", SkillRepoUrlInput: "SkillRepoUrlInput", ManagementDrawer: "ManagementDrawer", Pause: "Pause", Play: "Play", Plus: "Plus", RefreshCw: "RefreshCw", Search: "Search",
     discardSkillSourceScan, getSkillSourceScan, keyOfRepo,
   };
   vm.createContext(context);

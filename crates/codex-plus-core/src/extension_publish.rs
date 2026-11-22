@@ -444,6 +444,26 @@ struct StepLog<'a> {
     on_progress: &'a dyn Fn(&StepEvent),
 }
 
+/// 远端仓库已经有这个版本的 tag：前端据 `errorCode: "version_taken"` 提示把版本号 +1，不靠匹配错误文案。
+#[derive(Debug)]
+struct VersionTaken {
+    repo: String,
+    tag: String,
+}
+
+impl std::fmt::Display for VersionTaken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} 已经有 {}，先把版本号 +1 再发布", self.repo, self.tag)
+    }
+}
+
+impl std::error::Error for VersionTaken {}
+
+/// 发布失败时给前端的结构化错误码；没有专门处理的错误返回 None。
+fn publish_error_code(error: &anyhow::Error) -> Option<&'static str> {
+    error.downcast_ref::<VersionTaken>().map(|_| "version_taken")
+}
+
 impl StepLog<'_> {
     /// 跑一步并记下结果，原样返回：失败时调用方用 `?` 停下。
     fn run(&mut self, name: &str, action: impl FnOnce() -> anyhow::Result<String>) -> anyhow::Result<String> {
@@ -530,7 +550,13 @@ impl Publisher {
                 "url": format!("https://github.com/{repo}"),
                 "steps": steps,
             }),
-            Err(error) => json!({ "ok": false, "error": format!("{error:#}"), "steps": steps }),
+            Err(error) => {
+                let mut value = json!({ "ok": false, "error": format!("{error:#}"), "steps": steps });
+                if let Some(code) = publish_error_code(&error) {
+                    value["errorCode"] = json!(code);
+                }
+                value
+            }
         }
     }
 
@@ -572,7 +598,7 @@ impl Publisher {
                 return Ok(format!("{repo} 还不存在，将新建"));
             }
             if self.gh(&["api", &format!("repos/{repo}/git/ref/tags/{tag}")]).is_ok() {
-                bail!("{repo} 已经有 {tag}，先把版本号 +1 再发布");
+                return Err(VersionTaken { repo: repo.clone(), tag: tag.clone() }.into());
             }
             Ok(format!("{repo} 已存在，发布 {tag}"))
         })?;

@@ -429,14 +429,8 @@
   height: 14px;
 }
 
-:root .shell .cx-side-card-meta,
 :root .shell .cx-side-card-action {
-  padding-left: 14px;
-  color: hsl(var(--muted-foreground));
   font-size: 11.5px;
-}
-
-:root .shell .cx-side-card-action {
   padding-left: 22px;
   color: hsl(var(--foreground) / 0.8);
 }
@@ -566,13 +560,6 @@
   stroke-width: 1.7;
 }
 
-:root .shell .agent-page-tabs-sep {
-  width: 1px;
-  height: 18px;
-  margin: 0 4px;
-  background: hsl(var(--border));
-}
-
 /* ── 卡片 ─────────────────────────────────────────────────────── */
 
 :root .shell .panel {
@@ -585,25 +572,6 @@
 :root .shell .panel:hover {
   border: 0;
   box-shadow: none;
-}
-
-:root .shell .panel-head {
-  align-items: baseline;
-  padding: 14px 16px 6px;
-  border-bottom: 0;
-}
-
-:root .shell .panel-head h3,
-:root .shell .panel-head .card-title {
-  color: hsl(var(--muted-foreground));
-  font-size: 12.5px;
-  font-weight: 500;
-  letter-spacing: 0;
-}
-
-:root .shell .panel-head p {
-  color: hsl(var(--muted-foreground) / 0.85);
-  font-size: 11.5px;
 }
 
 /* ── 设置行 ───────────────────────────────────────────────────── */
@@ -689,76 +657,9 @@
   gap: 16px;
 }
 
-:root .shell .sectioned-page > .page-section-nav {
-  position: static;
-  display: flex;
-  width: auto;
-  flex-direction: row;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-
-:root .shell .page-section-nav-list {
-  display: none;
-}
-
 :root .shell .sectioned-body {
   width: 100%;
   max-width: none;
-}
-
-/* Agent 胶囊只放文字，图标留给侧栏。 */
-:root .shell .agent-page-tabs button svg {
-  display: none;
-}
-
-/* 万物皆拓展页头：一句理念 + 一排能力标签，宿主切换在右侧。 */
-:root .shell .extensions-hero {
-  display: flex;
-  flex-direction: row;
-  flex-wrap: nowrap;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-:root .shell .extensions-hero-text {
-  display: flex;
-  min-width: 0;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: 10px;
-}
-
-:root .shell .extensions-hero-lead {
-  max-width: 720px;
-  margin: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 13px;
-  line-height: 1.6;
-}
-
-:root .shell .extensions-hero-capabilities {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-:root .shell .extensions-hero-capabilities li {
-  padding: 2px 9px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 999px;
-  background: transparent;
-  color: hsl(var(--foreground) / 0.72);
-  font-size: 11.5px;
 }
 
 /* 分段控件：与胶囊同一套灰阶。 */
@@ -781,7 +682,6 @@
   background: transparent;
 }
 
-:root .shell .mg-cell > span[data-on="true"],
 :root .shell .mg-switch.is-on {
   border-color: transparent;
   background: hsl(var(--switch-on));
@@ -796,42 +696,8 @@
   box-shadow: none;
 }
 
-:root .shell .mg-matrix,
-:root .shell .mg-skill-list,
-:root .shell .mg-session-list {
-  border: 0;
-  border-radius: var(--cx-radius);
-  background: hsl(var(--card));
-  box-shadow: none;
-}
-
-:root .shell :is(.mg-matrix-head, .mg-skill-head) {
-  background: transparent;
-  color: hsl(var(--muted-foreground));
-}
-
-:root .shell :is(.mg-matrix-row, .mg-skill-row, .mg-session-row):hover {
-  background: hsl(var(--accent) / 0.4);
-}
-
-:root .shell .mg-group-head {
-  border-inline-start: 0;
-  background: transparent;
-}
-
-:root .shell .mg-inline-action,
 :root .shell .mg-link-button {
   color: hsl(var(--foreground) / 0.85);
-}
-
-:root .shell .mg-inline-action {
-  border-color: hsl(var(--input));
-  background: transparent;
-}
-
-:root .shell .extensions-hero > .extension-host-switch {
-  flex: none;
-  margin: 0;
 }
 
 /* ── 页面骨架（cx-layout.tsx） ───────────────────────────────── */

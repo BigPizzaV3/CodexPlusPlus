@@ -3,15 +3,17 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
 import ts from "typescript";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 // 独立运行真实页面函数和事件处理器，替换 hooks/IPC；不启动本机 Claude 或探测 PATH。
-const app = ts.createSourceFile("App.tsx", readFileSync(new URL("./App.tsx", import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const app = ts.createSourceFile("App.tsx", readAppSource(), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const component = app.statements.find((node): node is ts.FunctionDeclaration => ts.isFunctionDeclaration(node) && node.name?.text === "ClaudeLocalizationScreen");
 assert.ok(component);
 const transpile = (text: string) => ts.transpileModule(text, {
   compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const source = transpile(component.getText(app));
+// 页面拆到 ClaudeDesktopPage.tsx 后带 `export`，放进 vm 前去掉。
+const source = transpile(component.getText(app).replace(/^export /, ""));
 
 // 页面用到的两个纯格式函数也直接取 App.tsx 里的真实实现（不复制一份，改了实现这边会跟着变）。
 function functionSource(file: ts.SourceFile, name: string) {
@@ -955,4 +957,12 @@ test("启动模式选补丁副本：副本块直接显示在 Desktop 增强页�
   } finally {
     enhanceDelivery.value = "full";
   }
+});
+
+test("汉化、语音输入、Computer Use 三个开关共用 setClaudeFlag，不再各写一份", () => {
+  const body = component.getText(app);
+  assert.equal(body.match(/statusGeneration\.current\+\+;\n\s*setBusy\(key\)/g)?.length, 1);
+  assert.match(body, /const toggleLocalization = \(enabled: boolean\) => setClaudeFlag\("localization", "claude_localization_set_localization", enabled\);/);
+  assert.match(body, /const toggleVoiceInput = \(enabled: boolean\) => setClaudeFlag\("voiceInput", "claude_localization_set_voice_input", enabled\);/);
+  assert.match(body, /const toggleComputerUse = \(enabled: boolean\) => setClaudeFlag\("computerUse", "claude_localization_set_computer_use", enabled\);/);
 });

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, Copy, FolderOpen, Info, Loader2, Plug, RefreshCw, Upload } from "lucide-react";
+import { Check, ChevronDown, Copy, FolderOpen, Info, Loader2, Plug, RefreshCw, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { appConfirm } from "./app-dialog";
@@ -188,7 +188,7 @@ export function DshPluginsPanel({ search = "" }: { search?: string } = {}) {
         </CxBanner>
       ) : null}
 
-      {notice ? <div className={`dsh-plugins-notice is-${notice.tone}`}>{notice.text}</div> : null}
+      {notice ? <div className={`dsh-plugins-notice is-${notice.tone}`} role={notice.tone === "error" ? "alert" : "status"}>{notice.text}</div> : null}
 
       <CxSection
         aside={integration?.registered ? <span title={t("改动在新开 Codex 对话后生效")}>{tf("已接入 Codex · {0} 个工具", [toolTotal])}</span> : null}
@@ -225,12 +225,12 @@ export function DshPluginsPanel({ search = "" }: { search?: string } = {}) {
             </button>
           </div>
           {snapshot && !snapshot.toolchain.npm ? <div className="dsh-plugins-hint">{t("未找到 npm：只能导入本地目录，或不需要额外依赖的 git 仓库。")}</div> : null}
-          {/* 从插件市场索引挑：不常用，收进折叠区。 */}
+          {/* 从 dsh 插件索引挑：不常用，收进折叠区。 */}
           <details className="dsh-index" open={Boolean(market?.length) || undefined}>
-            <summary>{t("从插件市场索引导入")}</summary>
+            <summary>{t("从 dsh 插件索引导入")}</summary>
             <div className="dsh-plugins-import">
               <Input
-                aria-label={t("插件市场索引地址")}
+                aria-label={t("dsh 插件索引地址")}
                 disabled={busy !== null}
                 onChange={(event) => setIndexUrl(event.currentTarget.value)}
                 onKeyDown={(event) => {
@@ -309,9 +309,17 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
     if (confirmed) await onRun(key("remove"), "remove", { id: plugin.id });
   };
 
+  // 复制后按钮上给个反馈；剪贴板不可用时（没有焦点、权限被拒）提示失败，不再抛出未处理的拒绝。
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle");
   const copyMcp = async () => {
     if (!plugin.mcpJson) return;
-    await navigator.clipboard.writeText(plugin.mcpJson);
+    try {
+      await navigator.clipboard.writeText(plugin.mcpJson);
+      setCopyState("copied");
+    } catch {
+      setCopyState("failed");
+    }
+    window.setTimeout(() => setCopyState("idle"), 1500);
   };
 
   const skillCount = report.skills?.length ?? 0;
@@ -450,10 +458,10 @@ function DshPluginCard({ plugin, busy, onRun }: { plugin: DshPlugin; busy: strin
           ) : null}
           {plugin.mcpJson ? (
             <div className="dsh-plugin-skills">
-              <span>{t("包里有 MCP 配置，复制后可在「MCP」页用 JSON 导入。")}</span>
+              <span role="status">{copyState === "failed" ? t("复制失败，请重试。") : t("包里有 MCP 配置，复制后可在「MCP」页用 JSON 导入。")}</span>
               <button className="cx-secondary" onClick={() => void copyMcp()} type="button">
-                <Copy />
-                {t("复制 MCP JSON")}
+                {copyState === "copied" ? <Check /> : <Copy />}
+                {copyState === "copied" ? t("已复制") : t("复制 MCP JSON")}
               </button>
             </div>
           ) : null}

@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const app = readAppSource();
 
 test("pending provider import is confirmed and dismissed with the fingerprint shown in the dialog", () => {
   const confirm = app.slice(app.indexOf("const confirmPendingProviderImport = async"), app.indexOf("const dismissPendingProviderImport = async"));

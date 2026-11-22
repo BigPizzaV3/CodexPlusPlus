@@ -2,7 +2,8 @@ import { Children, useEffect, useState, type ReactNode } from "react";
 import { BadgeCheck, Download, Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxSection } from "./cx-layout";
 import { MenuItem } from "./ManagementPages";
-import { InstallDialog, errorText, request, type Prepared } from "./CommunityExtensionsPanel";
+import { InstallDialog, request, type Prepared } from "./CommunityExtensionsPanel";
+import { errorText } from "./lib/utils";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CurationReviewDialog, curationRequest, useCurationStatus, type CuratedUpdate } from "./ExtensionCuration";
 import { t, tf } from "./i18n";
@@ -179,8 +180,8 @@ export function CuratedPackagesSection({
       {blockedInstalled.length ? (
         <CxBanner icon={<ShieldAlert />} title={t("已安装的拓展被下架")} tone="warn" detail={tf("这些已安装的拓展已被 Codex++ 下架，建议在「本地拓展」里停用：{0}", [blockedInstalled.map((item) => `${item.id}（${item.repo}）`).join("、")])} />
       ) : null}
-      {error ? <div className="community-ext-notice is-error">{error}</div> : null}
-      {notice ? <div className="community-ext-notice">{notice}</div> : null}
+      {error ? <div className="community-ext-notice is-error" role="alert">{error}</div> : null}
+      {notice ? <div className="community-ext-notice" role="status">{notice}</div> : null}
       {installedCount ? (
         <CxSection count={installedCount} title={t("已安装")}>
           <CxCard>

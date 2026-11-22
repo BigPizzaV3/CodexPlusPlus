@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 /**
  * 「任务面板」在 Codex App 左侧图标栏里（47-task-board-page.js），不在管理器里。
@@ -163,7 +164,7 @@ test("页面经 /task-board 调 core 的同一份分发；路由不开放给拓�
 });
 
 test("管理器里不再有任务面板页面", async () => {
-  const app = await read("./App.tsx");
+  const app = readAppSource();
   assert.doesNotMatch(app, /taskBoard|TaskBoardPage/);
   const lib = await read("../src-tauri/src/lib.rs");
   assert.doesNotMatch(lib, /task_board/);

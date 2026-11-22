@@ -178,13 +178,13 @@ export function ConfigDoctorPanel() {
             </div>
             {state && draft.source === "current" ? (
               <div className="config-doctor-source-note">
-                <span className="config-doctor-source-line">{currentNote.label}</span>
+                <span className="config-doctor-source-line">{t(currentNote.label)}</span>
                 {currentNote.hint ? <p className="config-doctor-source-warn">{t(currentNote.hint)}</p> : null}
               </div>
             ) : null}
             {state && draft.source === "local" ? (
               <div className="config-doctor-source-note">
-                <span className="config-doctor-source-line">{localNote.label}</span>
+                <span className="config-doctor-source-line">{t(localNote.label)}</span>
                 {localNote.found ? null : (
                   <button className="cx-secondary" onClick={() => void openDocs(ollamaDocsUrl(presets))} type="button">
                     {t("Ollama 文档")}
@@ -341,7 +341,7 @@ export function ConfigDoctorPanel() {
           <CxCard className="config-doctor-ai" key={report.ai.status}>
             <CxRow
               badges={<CxBadge tone={aiView.tone === "danger" ? "danger" : aiView.tone === "ok" ? "ok" : "neutral"}>{t("AI 解释")}</CxBadge>}
-              detail={aiView.facts.length ? `${aiView.detail}${aiView.detail ? " · " : ""}${aiView.facts.join(" · ")}` : aiView.detail || undefined}
+              detail={aiView.facts.length ? `${t(aiView.detail)}${aiView.detail ? " · " : ""}${aiView.facts.join(" · ")}` : t(aiView.detail) || undefined}
               icon={<CxStatusIcon tone={aiView.tone === "ok" ? "ok" : aiView.tone === "danger" ? "danger" : "off"}><Sparkles /></CxStatusIcon>}
               title={t(aiView.label)}
             >

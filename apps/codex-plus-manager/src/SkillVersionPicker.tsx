@@ -4,7 +4,7 @@ import { FolderOpen, Trash2 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ManagementDrawer } from "./ManagementPages";
 import { appConfirm } from "./app-dialog";
-import { t } from "./i18n";
+import { t, tf } from "./i18n";
 
 export type LocalSkillVersion = { root: string; path: string; modifiedAtMs: number | null; revision: string | null; comparisonError: string | null; linked: boolean; managed: boolean };
 export type VersionTask = { id: string; mode: "archive" | "enable" | "resolve" | "local"; agent?: string } | { id: string; mode: "export"; backup: string };
@@ -41,11 +41,11 @@ export function SkillVersionPicker({ task, roots, onRun, onClose }: { task: Vers
   return <ManagementDrawer title={title} dismissOnBackdrop={false} onClose={busy ? () => {} : onClose}>
     <strong>{task.id}</strong>
     {error && <p role="alert">{error}</p>}{loading && <p role="status">{t("正在读取…")}</p>}
-    {task.mode === "export" ? <div className="mg-version-list">{Object.entries(roots).map(([agent, directory]) => <button type="button" key={agent} disabled={busy} onClick={() => void apply({ kind: "export", backup: task.backup, directory })}><strong>{names[agent] || agent}</strong><small>{directory}</small></button>)}
+    {task.mode === "export" ? <div className="mg-version-list">{Object.entries(roots).map(([agent, directory]) => <button type="button" key={agent} disabled={busy} onClick={() => void apply({ kind: "export", backup: task.backup, directory })}><strong>{t(names[agent] || agent)}</strong><small>{directory}</small></button>)}
       <button type="button" disabled={busy} onClick={async () => { try { const directory = await open({ directory: true, multiple: false }); if (directory) await apply({ kind: "export", backup: task.backup, directory }); } catch (e) { setError(String(e)); } }}><FolderOpen size={15}/>{t("选择其他目录")}</button></div>
     : <div className="mg-version-list">{versions.filter((v) => v.root !== "source").map((v) => <button type="button" key={v.root} className={v.comparisonError ? "mg-version-unavailable" : undefined} disabled={busy || !!v.comparisonError || task.mode === "resolve" && incomplete || (task.mode === "local" || task.mode === "archive") && v.linked} onClick={() => void select(v)}>
       <strong>{t(names[v.root] || v.root)}</strong>{v.modifiedAtMs !== null && <time>{new Date(v.modifiedAtMs).toLocaleString()}</time>}<small>{v.path}</small>
-      {v.comparisonError && <small role="alert">{t("无法比较")}：{t(v.comparisonError)}</small>}{task.mode === "archive" && <Trash2 size={14}/>}</button>)}
+      {v.comparisonError && <small role="alert">{tf("无法比较：{0}", [t(v.comparisonError)])}</small>}{task.mode === "archive" && <Trash2 size={14}/>}</button>)}
       {task.mode === "resolve" && incomplete && <p role="alert">{t("部分安装位置无法比较，请先处理后重试。")}</p>}
       {task.mode === "resolve" && <button type="button" disabled={busy || loading || !!error || incomplete} onClick={async () => {
         const physical = versions.filter(v => v.root !== "source" && !v.linked && v.managed);

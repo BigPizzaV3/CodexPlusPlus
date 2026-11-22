@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFile } from "node:fs/promises";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 /**
  * 「远程控制」页：前端只调一条 `remote_control_request`，按 action 分发；
@@ -9,16 +10,15 @@ import { readFile } from "node:fs/promises";
 const read = (path: string) => readFile(new URL(path, import.meta.url), "utf8");
 
 test("远程控制页挂在侧栏 Codex 下面、紧跟「微信连接」，⌘K 仍能搜到，并在路由表中渲染", async () => {
-  const app = await read("./App.tsx");
+  const app = readAppSource();
   assert.match(app, /\| "remoteControl" \|/, "Route 类型里要有 remoteControl");
   // 属于 Codex：只在 Codex 的子项里出现，切到别的 Agent 时不跟过去。
-  assert.match(app, /\{ id: "remoteControl", get label\(\) \{ return t\("远程控制"\); \}, icon: Smartphone, badge: "实验", tool: "codex" \}/);
+  assert.match(app, /\{ id: "remoteControl", get label\(\) \{ return t\("远程控制"\); \}, icon: Smartphone, tool: "codex" \}/);
   // 侧栏 Codex 子项来自 navigationSections：放在「微信连接」后面（两者都是「在手机上用 Codex」）。
   const sections = app.slice(app.indexOf("const navigationSections"), app.indexOf("const routeTool"));
   assert.match(sections, /"weixin", "remoteControl"/);
   // 不再是全局页：打开它时 Codex 那一行保持展开，子项选中态才看得见；也不再在「工具」里重复出现。
   assert.doesNotMatch(app, /const globalNavigationRoutes: Route\[\] = \[[^\]]*"remoteControl"[^\]]*\];/);
-  assert.doesNotMatch(app, /const toolNavigationRoutes: Route\[\] = \[[^\]]*"remoteControl"[^\]]*\];/);
   // ⌘K：Codex 的全部子页面（agentRoutes）都会进命令面板。
   assert.match(app, /agentRoutes\(tool\.id\)\.forEach\(\(routeId\) => pushCommand\(routeCommand\(routeId, tool\.name,/);
   assert.match(app, /\{route === "remoteControl" \? <RemoteControlPage \/> : null\}/);
@@ -66,6 +66,9 @@ test("配对与设备管理：带参数的动作传对参数名，移除设备�
   assert.match(core, /"setDeviceRole" => set_device_role\(arg\("id"\)\?, arg\("role"\)\?\)/);
   assert.match(core, /"revokeDevice" => revoke_device\(arg\("id"\)\?\)/);
   assert.match(page, /await appConfirm\(t\("移除后这台设备立刻无法访问/, "移除设备前确认");
+  // 更换令牌会让已打开的网页全部失效：先确认（danger），确认后才发 resetToken。
+  assert.match(page, /const resetToken = async \(\) => \{\n\s*const confirmed = await appConfirm\([\s\S]*?danger: true,[\s\S]*?if \(confirmed\) void run\("resetToken"\);/);
+  assert.match(page, /onClick=\{\(\) => void resetToken\(\)\}/);
 });
 
 test("Codex 左侧图标栏的「远程控制」入口：登记进所有写死内置 id 的地方，页面经 /remote-control 调同一份分发", async () => {

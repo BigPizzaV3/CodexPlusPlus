@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ArrowRight, Check, ChevronDown, ChevronUp, CircleHelp, Loader2, Play, Plus, RefreshCw, Settings2, X, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "./AppSelect";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 import type { Notify } from "./gateway-ui";
 import type { AgentFocus } from "./agent-focus-model";
 import { setupDirectState, type SetupDirectMode, type SetupRelaySettings, type SetupRelayStatus } from "./onboarding-setup-model";
@@ -94,8 +94,7 @@ export function OnboardingSetup({
 
   useEffect(() => {
     mounted.current = true;
-    // 在 Codex 里登录或换供应商会改 auth.json / config.toml，展开期间每 5 秒重读一次。增强模式用不到。
-    const timer = enhance ? undefined : window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 5000);
+    // 收起时的进度卡也要知道配好没有：挂上时读一次。增强模式用不到。
     if (!enhance) void refresh();
     return () => {
       mounted.current = false;
@@ -103,10 +102,16 @@ export function OnboardingSetup({
       loadSequence.current += 1;
       testSequence.current += 1;
       loadingRequest.current = false;
-      window.clearInterval(timer);
       window.clearTimeout(loadTimeout.current);
     };
   }, [refresh, enhance]);
+
+  useEffect(() => {
+    // 在 Codex 里登录或换供应商会改 auth.json / config.toml：只在展开期间每 5 秒重读一次（窗口可见时）。
+    if (enhance || !expanded) return;
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void refresh(); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [refresh, enhance, expanded]);
 
   // 增强模式可以选 Codex 或 Claude；其余模式的清单只配置 Codex 的直连供应商。
   const agentId = enhance ? selectedAgent : "codex";

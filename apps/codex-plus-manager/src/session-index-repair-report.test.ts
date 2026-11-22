@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { historyRecoveryStatusLabel } from "./history-recovery-report.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 test("session index repair report keeps abort and truncation notices outside issue details", async () => {
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = readAppSource();
   assert.match(source, /issuesTruncated\?: number;/);
   assert.match(source, /abortedReason\?: string \| null;/);
   assert.match(source, /warnings\?: string\[\];/);
 
-  const reportStart = source.indexOf("{sessionIndexRepairReport ? (");
-  const reportEnd = source.indexOf("function SessionsScreen", reportStart);
-  const report = source.slice(reportStart, reportEnd);
+  // 报告在 SessionRepairPanel 里，它是 SessionRepairPanel.tsx 的最后一个声明，报告一直到文件末尾。
+  const panel = await readFile(new URL("./SessionRepairPanel.tsx", import.meta.url), "utf8");
+  const reportStart = panel.indexOf("{sessionIndexRepairReport ? (");
+  const reportEnd = panel.length;
+  const report = panel.slice(reportStart, reportEnd);
 
   const abortNotice = report.indexOf('role="alert"');
   const warningNotice = report.indexOf("{sessionIndexRepairReport.warnings?.map");
@@ -36,7 +39,7 @@ test("frontend recovery reports distinguish pending and every terminal result wi
   ] as const) {
     assert.equal(historyRecoveryStatusLabel({ status, loadedPages: 3, metadataPages: 2 }), expected);
   }
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = readAppSource();
   const start = source.indexOf("{sessionIndexRepairReport.frontendRecovery ? (");
   const end = source.indexOf(") : null}", start);
   const report = source.slice(start, end);

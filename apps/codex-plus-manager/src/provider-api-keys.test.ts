@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { apiKeyPreview, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys } from "./provider-api-keys.ts";
-import type { RelayProfile } from "./App.tsx";
+import type { RelayProfile } from "./app-types.ts";
 
 test("旧单 Key 自动迁移为默认命名 Key", () => {
   assert.deepEqual(normalizeRelayApiKeys({ apiKey: "sk-legacy" }), {

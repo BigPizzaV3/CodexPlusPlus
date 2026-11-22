@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 
 /**
  * 「自动接管官方 App」的接线契约。
@@ -15,7 +16,7 @@ import test from "node:test";
  */
 
 const root = path.resolve(import.meta.dirname, "..");
-const appSource = readFileSync(path.join(root, "src/App.tsx"), "utf8");
+const appSource = readAppSource();
 const libSource = readFileSync(
   path.join(root, "src-tauri/src/lib.rs"),
   "utf8",
@@ -104,7 +105,7 @@ test("auto-takeover status fields stay aligned with the Rust payload", () => {
 
 test("auto-takeover switch is on the home screen, right under the Codex row", () => {
   // 只放在设置页太深，用户找不到，还以为必须从 Codex++ 启动 Codex。
-  const home = appSource.slice(appSource.indexOf("function HomeScreen("), appSource.indexOf("function MaintenanceScreen("));
+  const home = appDeclarationSource("HomeScreen");
   assert.match(home, /const takeoverRow = [\s\S]*?actions\.setAutoTakeover\(/, "首页必须有自动接管开关");
   assert.match(home, /<\/CxRow>,\s*takeoverRow,\s*\]/, "开关行必须紧跟在 Codex 那一行后面");
   assert.match(home, /actions\.setWatcherEnabled\(true\)/, "没开登录自启时首页要能直接打开");

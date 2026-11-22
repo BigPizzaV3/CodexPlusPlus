@@ -16,6 +16,7 @@ import {
   type GatewayPayload,
 } from "./gateway-model.ts";
 import { hubAgents, hubFeed, hubPoolState } from "./hub-overview-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const read = (name: string) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
 
@@ -188,12 +189,10 @@ test("总览：读取中、空池、全部关闭分开显示；最近请求没�
   assert.equal(hubAgents(null, { running: true, providerName: "ChatGPT · me@example.com" })[0].detail, "ChatGPT · m***@example.com");
 
   const hub = read("HubOverview.tsx");
-  assert.match(hub, /poolState === "loading" \? <p className="hub-empty">\{t\("读取中…"\)\}<\/p>/);
+  assert.match(hub, /poolState === "loading" \? <p className="hub-empty">\{error \? t\("读取失败"\) : t\("读取中…"\)\}<\/p>/);
+  assert.match(hub, /\{!payload && error \? <GatewayLoadError error=\{error\} \/> : null\}/, "读不到网关状态时给重试，不再一直读取中");
   assert.match(hub, /poolState === "allOff"/);
   assert.match(hub, /\? t\("正在读取网关状态…"\)/);
-  const matrix = read("GatewayModelMatrix.tsx");
-  assert.match(matrix, /\{!payload \? <div className="gw-empty">\{t\("正在读取…"\)\}<\/div> : null\}/);
-  assert.match(matrix, /payload\.pool\.length \? t\("供应商都已关闭"\)/);
   assert.match(read("GatewayPage.tsx"), /\{!payload \? <div className="gw-card gw-empty">\{t\("正在读取…"\)\}<\/div> : null\}/);
 });
 
@@ -201,7 +200,6 @@ test("路由说明的失败原因按标记翻译，不再按「是不是汉字�
   const hub = read("HubOverview.tsx");
   assert.doesNotMatch(hub, /一-龥/);
   assert.match(hub, /typeof arg === "object" \? t\(arg\.zh\) : arg/);
-  assert.match(read("GatewayModelMatrix.tsx"), /\.join\(t\("、"\)\)/);
   assert.match(read("GatewayProviders.tsx"), /\$\{keyLabel\(entry\.keys, key\.keyId\)\}\$\{t\("："\)\}/);
 });
 
@@ -231,14 +229,13 @@ test("用量页快速切换范围：只认最后一次读取的结果", () => {
 
 test("网关页改了数据立刻推给侧栏和总览", () => {
   const page = read("GatewayPage.tsx");
-  assert.match(page, /publishGatewayPayload\(result\);/);
+  assert.match(page, /makeRun\(setBusy, publishGatewayPayload, notify\)/);
   assert.match(read("HubOverview.tsx"), /export \{ useGatewayPayload \};/);
   assert.match(read("gateway-store.ts"), /export function publishGatewayPayload/);
 });
 
-test("轮询时不重复算：调度表 useMemo、筛选条 useMemo、组编辑器的空排除列表是常量", () => {
+test("轮询时不重复算：筛选条 useMemo、组编辑器的空排除列表是常量", () => {
   const page = read("GatewayPage.tsx");
-  assert.match(read("GatewayModelMatrix.tsx"), /const rows = useMemo\(\(\) => modelDispatch\(payload\), \[payload\]\);/);
   assert.match(page, /exclude=\{NO_EXCLUDE\}/);
   assert.doesNotMatch(page, /exclude=\{\[\]\}/);
   assert.match(read("GatewayAgents.tsx"), /const filters = useMemo\(/);
@@ -317,14 +314,15 @@ test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思
 });
 
 test("用量与请求日志并成一页：两个页签各是一条路由，统计表点一行跳到请求并筛选", () => {
-  const app = read("App.tsx");
+  const app = readAppSource();
   assert.match(app, /route === "gatewayUsage" \|\| route === "requestLog" \? <UsageTabs onChange=\{\(next\) => void navigate\(next\)\} value=\{route\} \/> : null/);
   assert.match(app, /match: \["gatewayUsage", "requestLog"\]/, "在请求页签时侧栏「用量」也是选中");
   assert.match(app, /useEffect\(\(\) => onOpenRequestLog\(\(focus\) => \{/);
   assert.match(read("GatewayUsage.tsx"), /onClick=\{\(\) => openRequestLog\(split === "agent"/);
   assert.match(read("GatewayUsage.tsx"), /\{ relayId: group\.key, relayLabel: maskAccountName\(group\.label\), range \}/, "按供应商 id 精确筛，时间段跟着统计页");
   assert.match(read("GatewayUsage.tsx"), /\{ model: group\.key, range \}/);
-  assert.match(app, /invoke<RequestLogsResult>\("load_request_logs", filterRef\.current\)/, "时间段、供应商、模型在后端筛，先截 300 条再筛会漏");
+  assert.match(app, /const args = silent && cursorRef\.current \? \{ \.\.\.filterRef\.current, cursor: cursorRef\.current \} : filterRef\.current;/, "时间段、供应商、模型在后端筛，先截 300 条再筛会漏；自动刷新带游标只读新增");
+  assert.match(app, /invoke<RequestLogsResult>\("load_request_logs", args\)/);
   assert.match(app, /entry\.statusCode \|\| \(entry\.success \? "OK" : "ERR"\)/);
   assert.match(read("GatewayPage.tsx"), /<TopbarActions>\{tab === "usage" \? null : refreshButton\}<\/TopbarActions>/, "用量页签只留一个刷新");
 });
@@ -350,14 +348,14 @@ test("统计里点「未知」供应商：请求页按「无供应商」筛，�
 
   const usage = read("GatewayUsage.tsx");
   assert.match(usage, /\{ relayUnknown: true, relayLabel: t\("未知"\), range \}/, "空 key 的供应商行点击带「未知」标记");
-  const app = read("App.tsx");
+  const app = readAppSource();
   assert.match(app, /useState<RelayFilter \| null>\(\(\) => relayFilterFromFocus\(initialFocus\)\)/);
   assert.match(app, /\.\.\.relayFilterArgs\(relayFilter\),/, "「未知」要把 relayUnknown 传给 load_request_logs");
   assert.doesNotMatch(app, /relayId: relayFilter\?\.id \?\? null/, "不能再用 relayFilter?.id 拼参数，空 id 会变成不筛");
 });
 
 test("启动落在首页（赞助商推荐），不落在上次那个 Agent 的概览", () => {
-  const app = read("App.tsx");
+  const app = readAppSource();
   const body = app.slice(app.indexOf("function loadInitialRoute(): Route {"), app.indexOf("function initialTourOpen"));
   assert.match(body, /return "home";\r?\n\}/);
   assert.doesNotMatch(body, /return "overview"/);
@@ -366,11 +364,66 @@ test("启动落在首页（赞助商推荐），不落在上次那个 Agent 的�
 test("保存之后才回来的轮询结果作废；新手引导的 Esc 走 Esc 栈", () => {
   const store = read("gateway-store.ts");
   assert.match(store, /generation \+= 1;/, "推新数据时版本加一");
-  assert.match(store, /started !== generation/, "共享数据的轮询丢掉旧答复");
+  assert.match(store, /if \(started === generation\) \{/, "共享数据的轮询丢掉旧答复");
   const page = read("GatewayPage.tsx");
-  assert.equal((page.match(/started === gatewayGeneration\(\)/g) ?? []).length, 2, "网关页的回前台刷新和路由页轮询都丢旧答复");
+  assert.doesNotMatch(page, /invoke<GatewayResult>\("load_gateway"\)/, "网关页不再自己读：回前台刷新和路由页轮询都走共享存储（丢旧答复见 gateway-store.test.ts）");
+  assert.match(page, /refreshGateway\(\)/);
   const tour = read("OnboardingTour.tsx");
   assert.match(tour, /useEscapeLayer\(true, \(\) => onClose\(false\)\)/);
   assert.doesNotMatch(tour, /event\.key === "Escape"/, "不再自己监听 Esc");
 });
 
+
+test("更换 token 先确认（危险操作），写明谁要跟着改；换完给「复制新 token」", () => {
+  const page = read("GatewayPage.tsx");
+  const rotate = page.slice(page.indexOf("const rotate = async"), page.indexOf("const keyRotationHint"));
+  assert.match(rotate, /await appConfirm\(/);
+  assert.match(rotate, /danger: true/);
+  assert.match(rotate, /手动填过旧 token 的地方/);
+  assert.ok(rotate.indexOf("if (!ok) return;") < rotate.indexOf("\"rotate_gateway_token\""), "确认之后才调用");
+  assert.match(page, /onClick=\{\(\) => void rotate\(agent\.agent, agent\.name\)\}/);
+  assert.match(page, /rotated === agent\.agent && binding\?\.token/);
+});
+
+test("网关弹窗走 useModalShell：标题作无障碍名称，组编辑器改过后关闭先确认；挂在 body 上的浮层不被外层焦点圈拉走", () => {
+  const page = read("GatewayPage.tsx");
+  const editor = page.slice(page.indexOf("function GroupEditor("));
+  assert.match(editor, /const dirty = pattern\.trim\(\) !== "" \|\| JSON\.stringify\(\[name, mode, sticky, members, imageInputModel\]\) !== initial;/);
+  assert.match(editor, /<strong id=\{titleId\}>/);
+  assert.match(editor, /onClick=\{\(\) => void requestClose\(\)\} size="sm" type="button" variant="ghost">\{t\("取消"\)\}/);
+  assert.match(editor, /<Input autoFocus data-autofocus /, "焦点圈先落到名称输入框，不是右上角的关闭");
+  const providers = read("GatewayProviders.tsx");
+  for (const name of ["function ProviderCatalog(", "function ImportDialog(", "function DeviceCodeDialog("]) {
+    const body = providers.slice(providers.indexOf(name), providers.indexOf("\n}\n", providers.indexOf(name)));
+    assert.match(body, /<strong id=\{titleId\}>/, name);
+    assert.match(body, /\{\.\.\.dialogProps\}/, name);
+  }
+  assert.match(read("GatewayAgents.tsx"), /<div aria-modal="true" className=\{`gw-popover gw-portal \$\{className\}`\} ref=\{panelRef\} role="dialog"/);
+});
+
+test("路由页成员状态按数据算一次，组卡片按内容判断重渲染；请求流没变不换新数组", () => {
+  const page = read("GatewayPage.tsx");
+  assert.match(page, /const views = useMemo\(\s*\(\) => memberViews\(payload,/);
+  assert.match(page, /const GroupCard = memo\(function GroupCard\(/);
+  assert.match(page, /\}, sameGroupCard\);/);
+  const member = page.slice(page.indexOf("function RouteMember("), page.indexOf("const body = ("));
+  assert.doesNotMatch(member, /memberTarget\(|dispatchStatus\(|speedOf\(/, "成员行不再自己扫池子");
+  assert.match(read("RequestFlow.tsx"), /setEntries\(\(previous\) => keepIfSame\(previous, next\)\);/);
+});
+
+test("网关设置不再把说明原样再放一份悬停提示；模型选择器、批量添加是真正的列表框，方向键能走", () => {
+  const page = read("GatewayPage.tsx");
+  for (const hint of ["keyRotationHint", "restoreHint", "suffixHint", "websocketHint", "discoveryHint"]) {
+    assert.doesNotMatch(page, new RegExp(`tooltip=\\{${hint}\\}`), hint);
+  }
+  assert.equal(page.match(/默认让子智能体继承父回合的模型和供应商/g)?.length, 1);
+  assert.match(read("i18n-en.ts"), /"添加直连供应商": "Add direct provider",/);
+  const ui = read("gateway-ui.tsx");
+  assert.match(ui, /export function moveOptionFocus\(container: HTMLElement, key: string\): boolean/);
+  const agents = read("GatewayAgents.tsx");
+  assert.match(agents, /role="listbox">\{section\.items\.map/);
+  assert.match(agents, /className="gw-mp-list" onKeyDown=\{\(event\) => \{ if \(moveOptionFocus\(event\.currentTarget, event\.key\)\) event\.preventDefault\(\); \}\}/);
+  const batch = page.slice(page.indexOf("function BatchMemberPicker("), page.indexOf("function GroupEditor("));
+  assert.match(batch, /role="listbox"/);
+  assert.match(batch, /moveOptionFocus\(listRef\.current, "Home"\)/);
+});

@@ -7,8 +7,8 @@ import ts from "typescript";
 type Element = { type: any; props: Record<string, any>; children: any[] };
 
 test("each Agent installation associates its own repository path", () => {
-  const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-  const file = ts.createSourceFile("ManagementExtra.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const source = readFileSync(new URL("./SkillDrawers.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("SkillDrawers.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const nodes = file.statements.filter((node) => ts.isFunctionDeclaration(node)
     && (node.name?.text === "repoFromKey" || node.name?.text === "SkillDetailDrawer"));
   const code = ts.transpileModule(nodes.map((node) => node.getText(file)).join("\n"), {
@@ -17,7 +17,7 @@ test("each Agent installation associates its own repository path", () => {
   const selected: Array<[string, Record<string, string>]> = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "本地",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "本地",
     skillChannelLabel: () => "本地安装", SkillFileTimes: "SkillFileTimes", CloudDownload: "CloudDownload",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Edit3: "Edit3", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight", Trash2: "Trash2",
   };

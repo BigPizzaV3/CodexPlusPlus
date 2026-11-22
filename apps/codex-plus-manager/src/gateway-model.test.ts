@@ -58,8 +58,9 @@ import {
   type GatewayPayload,
 } from "./gateway-model.ts";
 import type { ProviderPreset } from "./presets.ts";
+import { appDeclarationSource, readAppSource } from "./app-source.test-helper.ts";
 
-const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const app = readAppSource();
 const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
 
 function payload(): GatewayPayload {
@@ -125,7 +126,7 @@ test("校验：池里要有能用的供应商，模型要能路由，窗口格�
   assert.equal(validateDraft({ ...base, model: "group/daily" }, data), null);
   assert.equal(validateDraft({ ...base, model: "deepseek/deepseek-v5" }, data), null);
   assert.equal(validateDraft({ ...base, model: "nope" }, data), "供应商池里没有这个模型");
-  assert.equal(validateDraft({ ...base, poolExclude: ["deepseek", "glm", "bare"] }, data), "供应商池是空的，先到「供应商」里添加");
+  assert.equal(validateDraft({ ...base, poolExclude: ["deepseek", "glm", "bare"] }, data), "供应商池是空的，先在「供应商池」里添加供应商");
   assert.equal(validateDraft({ ...base, contextWindow: "12" }, data), "上下文窗口格式不对，例如 200000、200k 或 1M");
 });
 
@@ -138,7 +139,7 @@ test("保留已停用的绑定组时，让后端按新的供应商池验证回�
   assert.equal(validateDraft(draft, data, "group/daily"), null);
   assert.equal(validateDraft(draft, data), "供应商池里没有这个模型", "新绑定不能选择停用组");
   assert.equal(validateDraft(draft, data, "group/other"), "供应商池里没有这个模型", "更换成停用组不能绕过校验");
-  assert.equal(validateDraft({ ...draft, poolExclude: ["deepseek", "glm", "bare"] }, data, "group/daily"), "供应商池是空的，先到「供应商」里添加");
+  assert.equal(validateDraft({ ...draft, poolExclude: ["deepseek", "glm", "bare"] }, data, "group/daily"), "供应商池是空的，先在「供应商池」里添加供应商");
   assert.equal(validateDraft({ ...draft, contextWindow: "12" }, data, "group/daily"), "上下文窗口格式不对，例如 200000、200k 或 1M");
 });
 
@@ -150,7 +151,7 @@ test("保留不可用的默认供应商时允许修改详情，新选择仍需�
   assert.equal(validateDraft(draft, data, draft.model, selection), null);
   assert.equal(validateDraft(draft, data), "供应商池里没有这个模型");
   assert.equal(validateDraft({ ...draft, model: "missing/model" }, data, draft.model, selection), "供应商池里没有这个模型");
-  assert.equal(validateDraft({ ...draft, poolExclude: ["glm", "bare"] }, data, draft.model, selection), "供应商池是空的，先到「供应商」里添加");
+  assert.equal(validateDraft({ ...draft, poolExclude: ["glm", "bare"] }, data, draft.model, selection), "供应商池是空的，先在「供应商池」里添加供应商");
   data.pool[0].enabled = true;
   assert.equal(validateDraft({ ...draft, poolExclude: ["deepseek"] }, data, draft.model, selection), null);
 });
@@ -677,7 +678,7 @@ test("全应用不用原生下拉框，统一用 AppSelect", () => {
     const source = readFileSync(new URL(file, dir), "utf8");
     assert.doesNotMatch(source, /<select[\s>]/, file);
   }
-  const shared = app.slice(app.indexOf("function SharedServiceSettings("), app.indexOf("function ProxySettingsScreen("));
+  const shared = appDeclarationSource("SharedServiceSettings");
   assert.match(shared, /<AppSelect/);
 });
 

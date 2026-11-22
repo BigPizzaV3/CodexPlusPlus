@@ -7,8 +7,9 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { readAppSource } from "./app-source.test-helper.ts";
 
-const appSource = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+const appSource = readAppSource();
 const stylesSource = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
 
 test("工具切换按钮不再渲染运行中小绿点", () => {

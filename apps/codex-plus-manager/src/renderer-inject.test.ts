@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { readFile, readdir } from "node:fs/promises";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 describe("session more menu lifecycle", () => {
   async function runtime() {
@@ -2633,7 +2634,7 @@ it("opens Stepwise service settings in the Codex++ settings page, not the manage
 
 describe("Stepwise generation mode contracts", () => {
   it("exposes automatic and manual generation in the Codex settings page", async () => {
-    const app = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+    const app = readAppSource();
     const renderer = await readFile(
       new URL("../../../assets/inject/renderer-inject.js", import.meta.url),
       "utf8",

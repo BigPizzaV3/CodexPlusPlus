@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 import { normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys } from "./provider-api-keys.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 test("编辑命名 Key 同步选择、列表和既有 API 字段", async () => {
-  const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+  const source = readAppSource();
   const file = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let code = "";
   const visit = (node: ts.Node) => {

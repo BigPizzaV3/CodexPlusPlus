@@ -626,7 +626,37 @@ pub struct LocalSessionsPayload {
     pub offset: usize,
     pub limit: usize,
     pub has_more: bool,
+    /// 筛选后的会话总数。
     pub total_count: usize,
+    /// 筛选结果里每个项目的会话数（不受分页影响），按项目分组时显示整个项目的数量。
+    pub projects: Vec<LocalSessionProjectCount>,
+    /// 本页对应的搜索词和归档筛选，界面据此判断结果是不是当前条件的。
+    pub query: String,
+    pub archived: Option<bool>,
+}
+
+impl LocalSessionsPayload {
+    fn empty(offset: usize, limit: usize) -> Self {
+        Self {
+            db_path: String::new(),
+            db_paths: Vec::new(),
+            sessions: Vec::new(),
+            offset,
+            limit,
+            has_more: false,
+            total_count: 0,
+            projects: Vec::new(),
+            query: String::new(),
+            archived: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSessionProjectCount {
+    pub path: String,
+    pub count: usize,
 }
 
 const DEFAULT_LOCAL_SESSIONS_PAGE_SIZE: usize = 50;
@@ -643,6 +673,15 @@ pub struct ListLocalSessionsRequest {
     pub offset: usize,
     #[serde(default = "default_local_sessions_page_size")]
     pub limit: usize,
+    /// 搜索词：标题、目录、会话 ID、供应商里每个词都出现才算命中。在全部会话里搜，不只是当前页。
+    #[serde(default)]
+    pub query: String,
+    /// 只看某个项目目录下的会话。
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// `true` 只看已归档，`false` 只看未归档，不传看全部。
+    #[serde(default)]
+    pub archived: Option<bool>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -660,6 +699,32 @@ pub struct DeleteLocalSessionRequest {
     pub title: String,
     #[serde(default)]
     pub db_path: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteLocalSessionsRequest {
+    #[serde(default)]
+    pub sessions: Vec<DeleteLocalSessionRequest>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeletedLocalSession {
+    pub session_id: String,
+    pub title: String,
+    pub deleted: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteLocalSessionsPayload {
+    pub results: Vec<DeletedLocalSession>,
+    pub succeeded: usize,
+    pub failed: usize,
+    /// 这次删除的全部备份，交给 `undo_delete_local_sessions` 一次恢复；没有可恢复的备份时为空。
+    pub undo_token: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -3299,7 +3364,8 @@ pub fn run_auto_takeover_launch(request: LaunchRequest) -> Result<(), String> {
     codex_plus_launcher::start(launch_options).map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn load_auto_takeover_state() -> CommandResult<crate::auto_takeover::AutoTakeoverPayload> {
     ok("自动接管状态已加载。", crate::auto_takeover::payload())
 }
@@ -4607,7 +4673,8 @@ pub async fn weixin_connect_projects(
         .map_err(|error| format!("读取微信连接项目失败：{error:#}"))
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn weixin_connect_status() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
     let status = weixin_status()
         .lock()
@@ -4965,7 +5032,8 @@ pub async fn native_browser_status() -> NativeBrowserDiagnostics {
     }
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn load_settings() -> CommandResult<SettingsPayload> {
     let Ok(_guard) = relay_switch_mutex().lock() else {
         return failed(
@@ -5202,7 +5270,8 @@ pub async fn install_dream_skin_community_theme(
     }
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn load_pending_dream_skin_community() -> CommandResult<PendingDreamSkinCommunityPayload> {
     match codex_plus_core::dream_skin_community::load_pending_community_link() {
         Ok(version_id) => ok(
@@ -5780,7 +5849,8 @@ pub fn import_ccs_providers(
     }
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn load_pending_provider_import() -> CommandResult<PendingProviderImportPayload> {
     match codex_plus_core::provider_import::load_pending_provider_import_with_fingerprint() {
         Ok(pending) => ok(
@@ -5863,15 +5933,7 @@ pub async fn list_local_sessions(
         Ok(result) => result,
         Err(error) => failed(
             &format!("会话查询后台任务失败：{error}"),
-            LocalSessionsPayload {
-                db_path: String::new(),
-                db_paths: Vec::new(),
-                sessions: Vec::new(),
-                offset,
-                limit,
-                has_more: false,
-                total_count: 0,
-            },
+            LocalSessionsPayload::empty(offset, limit),
         ),
     }
 }
@@ -5886,116 +5948,40 @@ pub async fn list_project_sessions(
         Ok(result) => result,
         Err(error) => failed(
             &format!("项目会话查询后台任务失败：{error}"),
-            LocalSessionsPayload {
-                db_path: String::new(),
-                db_paths: Vec::new(),
-                sessions: Vec::new(),
-                offset: 0,
-                limit: 1,
-                has_more: false,
-                total_count: 0,
-            },
+            LocalSessionsPayload::empty(0, 1),
         ),
     }
 }
 
-fn normalized_project_path(path: &str) -> String {
-    // 与前端 normalizeProjectPath 一致：统一分隔符和末尾斜杠，保留大小写及路径中的空格；
-    // 去掉 Windows 长路径前缀（\\?\C:\ → C:/，\\?\UNC\srv\share → //srv/share），
-    // 否则同一项目带不带前缀会被当成两个目录（#2791）。
-    let path = path.replace('\\', "/");
-    let path = path.trim_end_matches('/');
-    for prefix in ["//?/", "//./"] {
-        let Some(rest) = path.strip_prefix(prefix) else {
-            continue;
-        };
-        if rest
-            .get(..4)
-            .is_some_and(|head| head.eq_ignore_ascii_case("UNC/"))
-        {
-            return format!("//{}", &rest[4..]);
-        }
-        let bytes = rest.as_bytes();
-        if bytes.len() >= 2
-            && bytes[0].is_ascii_alphabetic()
-            && bytes[1] == b':'
-            && (bytes.len() == 2 || bytes[2] == b'/')
-        {
-            return rest.to_string();
-        }
-    }
-    path.to_string()
-}
-
-fn list_project_sessions_blocking(cwd: String) -> CommandResult<LocalSessionsPayload> {
-    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-    let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
-    static PROJECT_PAGER: std::sync::OnceLock<
-        std::sync::Mutex<codex_plus_data::LocalSessionPager>,
-    > = std::sync::OnceLock::new();
-    let page = match PROJECT_PAGER.get_or_init(Default::default).lock() {
-        Ok(mut pager) => pager.list_page_with_thread_names(&home, &db_paths, 0, usize::MAX),
-        Err(_) => codex_plus_data::LocalSessionPage {
-            errors: vec!["项目会话查询缓存不可用，请重启管理窗口。".to_string()],
-            ..Default::default()
-        },
-    };
-    let target = normalized_project_path(&cwd);
-    let sessions = page
-        .sessions
-        .into_iter()
-        .filter(|session| normalized_project_path(&session.cwd) == target)
-        .collect::<Vec<_>>();
-    let payload = LocalSessionsPayload {
-        db_path: db_paths
-            .first()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_default(),
-        db_paths: db_paths
-            .iter()
-            .map(|path| path.to_string_lossy().to_string())
-            .collect(),
-        limit: sessions.len().max(1),
-        total_count: sessions.len(),
-        sessions,
-        offset: 0,
-        has_more: false,
-    };
-    if page.errors.is_empty() {
-        ok(
-            &format!("已读取项目全部 {} 个会话。", payload.total_count),
-            payload,
-        )
-    } else {
-        failed(
-            &format!("读取项目会话时出现部分错误：{}", page.errors.join("; ")),
-            payload,
-        )
-    }
-}
-
-fn list_local_sessions_blocking(
-    request: Option<ListLocalSessionsRequest>,
-) -> CommandResult<LocalSessionsPayload> {
-    let request = request.unwrap_or(ListLocalSessionsRequest {
-        offset: 0,
-        limit: DEFAULT_LOCAL_SESSIONS_PAGE_SIZE,
-    });
-    let offset = request.offset;
-    let limit = request.limit.clamp(1, MAX_LOCAL_SESSIONS_PAGE_SIZE);
-    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-    let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+/// 会话列表和「全选项目」共用一个分页器：索引按库文件指纹缓存，两边都不用重建。
+fn local_session_page(
+    home: &Path,
+    db_paths: &[PathBuf],
+    filter: &codex_plus_data::LocalSessionFilter,
+    offset: usize,
+    limit: usize,
+) -> codex_plus_data::LocalSessionPage {
     static PAGER: std::sync::OnceLock<std::sync::Mutex<codex_plus_data::LocalSessionPager>> =
         std::sync::OnceLock::new();
-    let pager = PAGER.get_or_init(Default::default);
-    let page = match pager.lock() {
-        Ok(mut pager) => pager.list_page_with_thread_names(&home, &db_paths, offset, limit),
+    match PAGER.get_or_init(Default::default).lock() {
+        Ok(mut pager) => {
+            pager.list_filtered_page_with_thread_names(home, db_paths, filter, offset, limit)
+        }
         Err(_) => codex_plus_data::LocalSessionPage {
             errors: vec!["会话查询缓存不可用，请重启管理窗口。".to_string()],
             ..Default::default()
         },
-    };
-    let payload = LocalSessionsPayload {
+    }
+}
+
+fn local_sessions_payload(
+    db_paths: &[PathBuf],
+    page: codex_plus_data::LocalSessionPage,
+    filter: &codex_plus_data::LocalSessionFilter,
+    offset: usize,
+    limit: usize,
+) -> LocalSessionsPayload {
+    LocalSessionsPayload {
         db_path: db_paths
             .first()
             .map(|path| path.to_string_lossy().to_string())
@@ -6009,9 +5995,64 @@ fn list_local_sessions_blocking(
         limit,
         has_more: page.has_more,
         total_count: page.total_count,
+        projects: page
+            .projects
+            .into_iter()
+            .map(|(path, count)| LocalSessionProjectCount { path, count })
+            .collect(),
+        query: filter.query.clone(),
+        archived: filter.archived,
+    }
+}
+
+fn list_project_sessions_blocking(cwd: String) -> CommandResult<LocalSessionsPayload> {
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+    let filter = codex_plus_data::LocalSessionFilter {
+        cwd: Some(cwd),
+        ..Default::default()
     };
+    let page = local_session_page(&home, &db_paths, &filter, 0, usize::MAX);
+    let errors = page.errors.clone();
+    let mut payload = local_sessions_payload(&db_paths, page, &filter, 0, 1);
+    payload.limit = payload.sessions.len().max(1);
+    if errors.is_empty() {
+        ok(
+            &format!("已读取项目全部 {} 个会话。", payload.total_count),
+            payload,
+        )
+    } else {
+        failed(
+            &format!("读取项目会话时出现部分错误：{}", errors.join("; ")),
+            payload,
+        )
+    }
+}
+
+fn list_local_sessions_blocking(
+    request: Option<ListLocalSessionsRequest>,
+) -> CommandResult<LocalSessionsPayload> {
+    let request = request.unwrap_or(ListLocalSessionsRequest {
+        offset: 0,
+        limit: DEFAULT_LOCAL_SESSIONS_PAGE_SIZE,
+        query: String::new(),
+        cwd: None,
+        archived: None,
+    });
+    let offset = request.offset;
+    let limit = request.limit.clamp(1, MAX_LOCAL_SESSIONS_PAGE_SIZE);
+    let filter = codex_plus_data::LocalSessionFilter {
+        query: request.query.trim().to_string(),
+        cwd: request.cwd.filter(|cwd| !cwd.trim().is_empty()),
+        archived: request.archived,
+    };
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+    let page = local_session_page(&home, &db_paths, &filter, offset, limit);
+    let errors = page.errors.clone();
+    let payload = local_sessions_payload(&db_paths, page, &filter, offset, limit);
     let page_number = (offset / limit).saturating_add(1);
-    if page.errors.is_empty() {
+    if errors.is_empty() {
         ok(
             &format!(
                 "已读取第 {page_number} 页，共 {} 个本地会话。",
@@ -6021,14 +6062,190 @@ fn list_local_sessions_blocking(
         )
     } else {
         failed(
-            &format!("读取部分本地会话失败：{}", page.errors.join("; ")),
+            &format!("读取部分本地会话失败：{}", errors.join("; ")),
             payload,
         )
     }
 }
 
+/// 删除一个 Codex 会话（先备份，结果里带撤销用的 token）。在后台线程执行，不卡界面。
 #[tauri::command]
-pub fn delete_local_session(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
+pub async fn delete_local_session(
+    request: DeleteLocalSessionRequest,
+) -> CommandResult<DeleteResult> {
+    let session_id = request.session_id.clone();
+    match tauri::async_runtime::spawn_blocking(move || delete_local_session_blocking(request)).await
+    {
+        Ok(result) => result,
+        Err(error) => failed_delete_result(
+            format!("删除会话后台任务失败：{error}"),
+            session_id,
+            None,
+        ),
+    }
+}
+
+fn failed_delete_result(
+    message: String,
+    session_id: String,
+    undo_token: Option<String>,
+) -> CommandResult<DeleteResult> {
+    failed(
+        &message,
+        DeleteResult {
+            status: codex_plus_core::models::DeleteStatus::Failed,
+            session_id,
+            message: message.clone(),
+            undo_token,
+            backup_path: None,
+        },
+    )
+}
+
+/// 一次删除多个 Codex 会话：逐个删除并备份，汇总成一条结果；所有备份合成一个撤销 token。
+#[tauri::command]
+pub async fn delete_local_sessions(
+    request: DeleteLocalSessionsRequest,
+) -> CommandResult<DeleteLocalSessionsPayload> {
+    match tauri::async_runtime::spawn_blocking(move || delete_local_sessions_blocking(request))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => failed(
+            &format!("批量删除后台任务失败：{error}"),
+            DeleteLocalSessionsPayload {
+                results: Vec::new(),
+                succeeded: 0,
+                failed: 0,
+                undo_token: None,
+            },
+        ),
+    }
+}
+
+fn delete_local_sessions_blocking(
+    request: DeleteLocalSessionsRequest,
+) -> CommandResult<DeleteLocalSessionsPayload> {
+    let mut seen = std::collections::HashSet::new();
+    let mut results = Vec::new();
+    let mut tokens = Vec::new();
+    for session in request.sessions {
+        if !seen.insert(session.session_id.trim().to_string()) {
+            continue;
+        }
+        let title = if session.title.trim().is_empty() {
+            session.session_id.clone()
+        } else {
+            session.title.clone()
+        };
+        let result = delete_local_session_blocking(session);
+        if let Some(token) = result.payload.undo_token.as_deref() {
+            tokens.extend(
+                serde_json::from_str::<Vec<String>>(token)
+                    .unwrap_or_else(|_| vec![token.to_string()]),
+            );
+        }
+        results.push(DeletedLocalSession {
+            session_id: result.payload.session_id.clone(),
+            title,
+            deleted: result.status == "ok",
+            message: result.message,
+        });
+    }
+    let succeeded = results.iter().filter(|item| item.deleted).count();
+    let failed_count = results.len() - succeeded;
+    let undo_token = match tokens.len() {
+        0 => None,
+        1 => tokens.pop(),
+        _ => Some(json!(tokens).to_string()),
+    };
+    let message = if failed_count == 0 {
+        format!("已删除 {succeeded} 个会话。")
+    } else {
+        format!(
+            "已删除 {succeeded} 个，失败 {failed_count} 个：{}",
+            results
+                .iter()
+                .filter(|item| !item.deleted)
+                .take(3)
+                .map(|item| format!("{}（{}）", item.title, item.message))
+                .collect::<Vec<_>>()
+                .join("；")
+        )
+    };
+    let status = if succeeded > 0 || failed_count == 0 {
+        "ok"
+    } else {
+        "failed"
+    };
+    CommandResult {
+        status: status.to_string(),
+        message,
+        payload: DeleteLocalSessionsPayload {
+            results,
+            succeeded,
+            failed: failed_count,
+            undo_token,
+        },
+    }
+}
+
+/// 撤销刚才的删除：按删除结果里的 token 从备份恢复会话记录、rollout 文件和侧栏索引。
+#[tauri::command]
+pub async fn undo_delete_local_sessions(token: String) -> CommandResult<DeleteResult> {
+    let fallback = token.clone();
+    match tauri::async_runtime::spawn_blocking(move || undo_delete_local_sessions_blocking(&token))
+        .await
+    {
+        Ok(result) => result,
+        Err(error) => failed_delete_result(
+            format!("撤销删除后台任务失败：{error}"),
+            String::new(),
+            Some(fallback),
+        ),
+    }
+}
+
+fn undo_delete_local_sessions_blocking(token: &str) -> CommandResult<DeleteResult> {
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+    let Some(primary) = db_paths.first().cloned() else {
+        return failed_delete_result(
+            "找不到 Codex 会话数据库，无法撤销删除。".to_string(),
+            String::new(),
+            Some(token.to_string()),
+        );
+    };
+    let adapter = codex_plus_data::SQLiteStorageAdapter::new(
+        primary,
+        codex_plus_data::BackupStore::new(
+            codex_plus_core::paths::default_app_state_dir().join("backups"),
+        ),
+    )
+    .with_allowed_db_paths(db_paths)
+    .with_codex_home(&home);
+    let mut result = adapter.undo(token);
+    log_manager_event(
+        "manager.undo_delete_local_sessions",
+        json!({ "status": format!("{:?}", result.status), "message": result.message }),
+    );
+    let undone = matches!(
+        result.status,
+        codex_plus_core::models::DeleteStatus::Undone
+    );
+    result.message = if undone {
+        "已从备份恢复删除的会话。".to_string()
+    } else {
+        format!("撤销删除失败：{}", result.message)
+    };
+    CommandResult {
+        status: if undone { "ok" } else { "failed" }.to_string(),
+        message: result.message.clone(),
+        payload: result,
+    }
+}
+
+fn delete_local_session_blocking(request: DeleteLocalSessionRequest) -> CommandResult<DeleteResult> {
     let session_id = request.session_id.trim();
     if session_id.is_empty() {
         return failed(
@@ -7120,9 +7337,11 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
     }
 }
 
+/// 读拓展市场清单。`force` 省略或为 false 时用内存缓存（进页面、装完拓展后刷新都走这条），
+/// 只有用户点「刷新列表」才传 true 重新下载。
 #[tauri::command]
-pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
-    match script_market::cached_market_manifest(true).await {
+pub async fn refresh_script_market(force: Option<bool>) -> CommandResult<ScriptMarketPayload> {
+    match script_market::cached_market_manifest(force.unwrap_or(false)).await {
         Ok(manifest) => ok(
             "脚本市场已刷新。",
             script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),
@@ -9058,12 +9277,38 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
     )
 }
 
+/// 一次读出多个供应商的独立代理（「Codex 连接 → 高级」里的供应商列表用），不再每个供应商单独请求一次。
+#[tauri::command]
+pub fn load_relay_proxies(profile_ids: Vec<String>) -> CommandResult<Value> {
+    let proxies: serde_json::Map<String, Value> = profile_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .map(|id| {
+            (
+                id.to_string(),
+                json!({
+                    "proxyUrl": codex_plus_core::relay_proxy::proxy_for_profile(id).unwrap_or_default(),
+                    "configured": codex_plus_core::relay_proxy::configured_proxy_for_profile(id).is_some()
+                }),
+            )
+        })
+        .collect();
+    ok("供应商代理已读取。", json!({ "proxies": proxies }))
+}
+
+// 下面两个读请求日志的命令都被页面定时轮询：放到阻塞线程池里做，读文件、查会话库期间不卡界面线程。
 /// 实时请求流：托盘「流量」页签和总览拓扑图的光点动画每秒轮询它。
 /// 只读日志末尾和进行中的请求，不补会话标题和费用，保持轻量。
 #[tauri::command]
-pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
+pub async fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
     let limit = limit.unwrap_or(30).clamp(1, 200);
-    match codex_plus_core::request_log::read_recent_request_logs(limit) {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::request_log::read_recent_request_logs(limit)
+    })
+    .await
+    .unwrap_or_else(|error| Err(std::io::Error::other(error.to_string())));
+    match result {
         Ok(entries) => ok(
             &format!("已读取 {} 条请求。", entries.len()),
             json!({ "entries": entries }),
@@ -9075,14 +9320,38 @@ pub fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
     }
 }
 
+/// 读请求日志。带上次返回的 `cursor` 时只读之后新写入的记录（自动刷新用），
+/// 返回 `incremental: true`，前端把新记录并进已有列表；游标对不上（清空、裁剪过）时照常整页返回。
 #[tauri::command]
-pub fn load_request_logs(
+pub async fn load_request_logs(
     limit: Option<usize>,
     since_ms: Option<u64>,
     agent: Option<String>,
     relay_id: Option<String>,
     relay_unknown: Option<bool>,
     model: Option<String>,
+    cursor: Option<codex_plus_core::request_log::RequestLogCursor>,
+) -> CommandResult<Value> {
+    tauri::async_runtime::spawn_blocking(move || {
+        load_request_logs_blocking(limit, since_ms, agent, relay_id, relay_unknown, model, cursor)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        failed(
+            &format!("读取请求日志失败：{error}"),
+            json!({ "entries": [] }),
+        )
+    })
+}
+
+fn load_request_logs_blocking(
+    limit: Option<usize>,
+    since_ms: Option<u64>,
+    agent: Option<String>,
+    relay_id: Option<String>,
+    relay_unknown: Option<bool>,
+    model: Option<String>,
+    cursor: Option<codex_plus_core::request_log::RequestLogCursor>,
 ) -> CommandResult<Value> {
     let limit = limit.unwrap_or(200).clamp(1, 1000);
     let present = |value: Option<String>| value.filter(|value| !value.trim().is_empty());
@@ -9093,49 +9362,31 @@ pub fn load_request_logs(
         relay_unknown: relay_unknown.unwrap_or(false),
         model: present(model),
     };
+    if let Some(cursor) = cursor {
+        match codex_plus_core::request_log::read_request_logs_after(&filter, &cursor) {
+            Ok(Some(delta)) => {
+                let entries = decorate_request_log_entries(&delta.entries);
+                return ok(
+                    &format!("已读取 {} 条新请求日志。", entries.len()),
+                    json!({ "entries": entries, "incremental": true, "cursor": delta.cursor }),
+                );
+            }
+            // 游标失效：落到下面整页重读。
+            Ok(None) => {}
+            Err(error) => {
+                return failed(
+                    &format!("读取请求日志失败：{error}"),
+                    json!({ "entries": [] }),
+                );
+            }
+        }
+    }
     match codex_plus_core::request_log::read_request_log_page(limit, &filter) {
         Ok(page) => {
-            let entries = page.entries;
-            // 费用按供应商里现在填的价格估算，和用量统计一致。
-            let gateway = codex_plus_core::gateway::store::GatewayStore::default()
-                .load()
-                .unwrap_or_default();
-            // 会话标题来自 Codex 本地会话库，只用于展示；查不到时前端退回短 id。
-            let thread_ids: Vec<String> = entries
-                .iter()
-                .filter_map(|entry| entry.thread_id.clone())
-                .collect();
-            let titles = if thread_ids.is_empty() {
-                std::collections::HashMap::new()
-            } else {
-                let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
-                let db_paths =
-                    codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
-                codex_plus_data::local_session_titles(&db_paths, &thread_ids)
-            };
-            let entries: Vec<Value> = entries
-                .iter()
-                .map(|entry| {
-                    let mut value = serde_json::to_value(entry).unwrap_or_else(|_| json!({}));
-                    if let Some(title) = entry
-                        .thread_id
-                        .as_ref()
-                        .and_then(|thread_id| titles.get(thread_id))
-                        && let Some(object) = value.as_object_mut()
-                    {
-                        object.insert("threadTitle".to_string(), json!(title));
-                    }
-                    if let Some(cost) = codex_plus_core::gateway::usage::entry_cost(entry, &gateway)
-                        && let Some(object) = value.as_object_mut()
-                    {
-                        object.insert("cost".to_string(), json!(cost));
-                    }
-                    value
-                })
-                .collect();
+            let entries = decorate_request_log_entries(&page.entries);
             ok(
                 &format!("已读取 {} 条请求日志。", entries.len()),
-                json!({ "entries": entries, "more": page.more, "oldestMs": page.oldest_ms }),
+                json!({ "entries": entries, "more": page.more, "oldestMs": page.oldest_ms, "cursor": page.cursor }),
             )
         }
         Err(error) => failed(
@@ -9143,6 +9394,51 @@ pub fn load_request_logs(
             json!({ "entries": [] }),
         ),
     }
+}
+
+/// 给请求日志补上展示用的会话标题和估算费用；没有记录时不读网关配置、不开会话库。
+fn decorate_request_log_entries(
+    entries: &[codex_plus_core::request_log::RequestLogEntry],
+) -> Vec<Value> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+    // 费用按供应商里现在填的价格估算，和用量统计一致。
+    let gateway = codex_plus_core::gateway::store::GatewayStore::default()
+        .load()
+        .unwrap_or_default();
+    // 会话标题来自 Codex 本地会话库，只用于展示；查不到时前端退回短 id。
+    let thread_ids: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| entry.thread_id.clone())
+        .collect();
+    let titles = if thread_ids.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        let db_paths = codex_plus_core::codex_sqlite::codex_session_db_paths_from_home(&home);
+        codex_plus_data::local_session_titles(&db_paths, &thread_ids)
+    };
+    entries
+        .iter()
+        .map(|entry| {
+            let mut value = serde_json::to_value(entry).unwrap_or_else(|_| json!({}));
+            if let Some(title) = entry
+                .thread_id
+                .as_ref()
+                .and_then(|thread_id| titles.get(thread_id))
+                && let Some(object) = value.as_object_mut()
+            {
+                object.insert("threadTitle".to_string(), json!(title));
+            }
+            if let Some(cost) = codex_plus_core::gateway::usage::entry_cost(entry, &gateway)
+                && let Some(object) = value.as_object_mut()
+            {
+                object.insert("cost".to_string(), json!(cost));
+            }
+            value
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -10098,8 +10394,28 @@ pub fn read_live_context_entries() -> CommandResult<LiveContextEntriesPayload> {
     }
 }
 
+/// 纯文本换算，但设置可能很大，放到后台线程，不占主线程。
 #[tauri::command]
-pub fn upsert_context_entry(request: ContextEntryRequest) -> CommandResult<ContextEntriesPayload> {
+pub async fn upsert_context_entry(
+    request: ContextEntryRequest,
+) -> CommandResult<ContextEntriesPayload> {
+    let fallback = request.settings.clone();
+    tauri::async_runtime::spawn_blocking(move || upsert_context_entry_blocking(request))
+        .await
+        .unwrap_or_else(|error| {
+            failed(
+                &format!("保存MCP&插件后台任务失败：{error}"),
+                ContextEntriesPayload {
+                    settings: fallback,
+                    entries: empty_context_entries(),
+                },
+            )
+        })
+}
+
+fn upsert_context_entry_blocking(
+    request: ContextEntryRequest,
+) -> CommandResult<ContextEntriesPayload> {
     let mut settings = request.settings;
     match codex_plus_core::relay_config::upsert_context_entry_in_common_config(
         &settings.relay_context_config_contents,
@@ -10276,8 +10592,24 @@ pub fn import_mcp_servers_json(request: McpImportRequest) -> CommandResult<Conte
     result
 }
 
+/// 读写 live config.toml 并先做备份，放到后台线程执行。
 #[tauri::command]
-pub fn sync_live_context_entries(
+pub async fn sync_live_context_entries(
+    request: ContextSettingsRequest,
+) -> CommandResult<LiveContextEntriesPayload> {
+    tauri::async_runtime::spawn_blocking(move || sync_live_context_entries_blocking(request))
+        .await
+        .unwrap_or_else(|error| {
+            failed(
+                &format!("同步 live MCP&插件后台任务失败：{error}"),
+                LiveContextEntriesPayload {
+                    entries: empty_context_entries(),
+                },
+            )
+        })
+}
+
+fn sync_live_context_entries_blocking(
     request: ContextSettingsRequest,
 ) -> CommandResult<LiveContextEntriesPayload> {
     let home = codex_plus_core::relay_config::default_codex_home_dir();
@@ -10366,6 +10698,98 @@ pub fn sync_live_context_entries(
                 entries: empty_context_entries(),
             },
         ),
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyContextEntryRequest {
+    pub settings: BackendSettings,
+    pub kind: String,
+    pub id: String,
+    /// 新的表体；为 None 表示删除这一条。
+    #[serde(default)]
+    pub toml_body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppliedContextEntryPayload {
+    /// 保存后的设置；改动没能写进设置时为 None。
+    pub saved: Option<SettingsPayload>,
+    /// 同步后 live config.toml 里的条目；没同步成功时为 None。
+    pub live_entries: Option<codex_plus_core::relay_config::CodexContextEntries>,
+}
+
+/// MCP 页的一次开关 / 编辑 / 删除：改公共配置 → 保存设置 → 同步到 live config.toml，
+/// 一次往返在后台线程里做完（原来前端要串行调三个命令）。
+#[tauri::command]
+pub async fn apply_context_entry(
+    request: ApplyContextEntryRequest,
+) -> CommandResult<AppliedContextEntryPayload> {
+    tauri::async_runtime::spawn_blocking(move || apply_context_entry_blocking(request))
+        .await
+        .unwrap_or_else(|error| {
+            failed(
+                &format!("保存MCP&插件后台任务失败：{error}"),
+                AppliedContextEntryPayload {
+                    saved: None,
+                    live_entries: None,
+                },
+            )
+        })
+}
+
+fn apply_context_entry_blocking(
+    request: ApplyContextEntryRequest,
+) -> CommandResult<AppliedContextEntryPayload> {
+    let changed = match request.toml_body {
+        Some(toml_body) => upsert_context_entry_blocking(ContextEntryRequest {
+            settings: request.settings,
+            kind: request.kind,
+            id: request.id,
+            toml_body,
+        }),
+        None => delete_context_entry(ContextDeleteRequest {
+            settings: request.settings,
+            kind: request.kind,
+            id: request.id,
+        }),
+    };
+    if changed.status != "ok" {
+        return failed(
+            &changed.message,
+            AppliedContextEntryPayload {
+                saved: None,
+                live_entries: None,
+            },
+        );
+    }
+    let saved = save_settings(changed.payload.settings, None);
+    if saved.status != "ok" {
+        return failed(
+            &saved.message,
+            AppliedContextEntryPayload {
+                saved: Some(saved.payload),
+                live_entries: None,
+            },
+        );
+    }
+    let synced = sync_live_context_entries_blocking(ContextSettingsRequest {
+        settings: saved.payload.settings.clone(),
+    });
+    let synced_ok = synced.status == "ok";
+    CommandResult {
+        status: synced.status,
+        message: if synced_ok {
+            "MCP&插件已保存并同步。".to_string()
+        } else {
+            synced.message
+        },
+        payload: AppliedContextEntryPayload {
+            saved: Some(saved.payload),
+            live_entries: synced_ok.then_some(synced.payload.entries),
+        },
     }
 }
 
@@ -13614,7 +14038,7 @@ base_url = "https://example.invalid/v1"
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
         }
-        let result = delete_local_session(DeleteLocalSessionRequest {
+        let result = delete_local_session_blocking(DeleteLocalSessionRequest {
             session_id: "t1".to_string(),
             title: "Active Thread".to_string(),
             db_path: Some(stale_db.to_string_lossy().to_string()),
@@ -13640,37 +14064,6 @@ base_url = "https://example.invalid/v1"
                 })
                 .unwrap(),
             0
-        );
-    }
-
-    #[test]
-    fn project_path_identity_matches_frontend_grouping() {
-        assert_eq!(
-            normalized_project_path(r"C:\Projects\Foo\\"),
-            "C:/Projects/Foo"
-        );
-        assert_eq!(normalized_project_path("/Projects/Foo///"), "/Projects/Foo");
-        // Windows 长路径前缀不进入项目身份（#2791）。
-        assert_eq!(
-            normalized_project_path(r"\\?\C:\Projects\Foo\"),
-            "C:/Projects/Foo"
-        );
-        assert_eq!(
-            normalized_project_path(r"\\?\UNC\server\share\Foo"),
-            normalized_project_path(r"\\server\share\Foo")
-        );
-        assert_eq!(normalized_project_path(r"\\?\C:\"), "C:");
-        assert_eq!(
-            normalized_project_path(r"\\?\Volume{abc}\Foo"),
-            "//?/Volume{abc}/Foo"
-        );
-        assert_ne!(
-            normalized_project_path("/Projects/Foo"),
-            normalized_project_path("/Projects/foo")
-        );
-        assert_ne!(
-            normalized_project_path("/Projects/Foo"),
-            normalized_project_path(" /Projects/Foo")
         );
     }
 
@@ -13753,6 +14146,9 @@ base_url = "https://example.invalid/v1"
         let first_page = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
             offset: 0,
             limit: 2,
+            query: String::new(),
+            cwd: None,
+            archived: None,
         }));
         assert_eq!(first_page.payload.sessions.len(), 2);
         assert_eq!(first_page.payload.sessions[0].id, "t2");
@@ -13763,6 +14159,9 @@ base_url = "https://example.invalid/v1"
         let second_page = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
             offset: 2,
             limit: 2,
+            query: String::new(),
+            cwd: None,
+            archived: None,
         }));
         restore_codex_home(previous_codex_home);
 
@@ -13789,10 +14188,16 @@ base_url = "https://example.invalid/v1"
             tauri::async_runtime::block_on(list_local_sessions(Some(ListLocalSessionsRequest {
                 offset: 0,
                 limit: 0,
+                query: String::new(),
+                cwd: None,
+                archived: None,
             })));
         let beyond = list_local_sessions_blocking(Some(ListLocalSessionsRequest {
             offset: usize::MAX,
             limit: usize::MAX,
+            query: String::new(),
+            cwd: None,
+            archived: None,
         }));
         restore_codex_home(previous_codex_home);
         assert_eq!(first.status, "failed");
@@ -13893,7 +14298,7 @@ base_url = "https://example.invalid/v1"
         unsafe {
             std::env::set_var("CODEX_HOME", &codex_home);
         }
-        let result = delete_local_session(DeleteLocalSessionRequest {
+        let result = delete_local_session_blocking(DeleteLocalSessionRequest {
             session_id: "t1".to_string(),
             title: "Legacy Copy".to_string(),
             db_path: Some(legacy_db.to_string_lossy().to_string()),
@@ -13903,6 +14308,101 @@ base_url = "https://example.invalid/v1"
         assert_eq!(result.status, "ok");
         assert_eq!(thread_count(&current_db, "t1"), 0);
         assert_eq!(thread_count(&legacy_db, "t1"), 0);
+    }
+
+    #[test]
+    fn batch_delete_reports_each_session_and_one_token_undoes_them_all() {
+        let _codex_home_guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let codex_home = temp.path().join("codex-home");
+        let sqlite_dir = codex_home.join("sqlite");
+        std::fs::create_dir_all(&sqlite_dir).unwrap();
+        let db = sqlite_dir.join("state_5.sqlite");
+        create_minimal_thread_db(&db, "keep", "Keep", 300);
+        let connection = rusqlite::Connection::open(&db).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO threads VALUES ('b1', '', 'Batch one', 200);\
+                 INSERT INTO threads VALUES ('b2', '', 'Batch two', 100);",
+            )
+            .unwrap();
+        drop(connection);
+
+        unsafe {
+            std::env::set_var("CODEX_HOME", &codex_home);
+        }
+        let request = |id: &str| DeleteLocalSessionRequest {
+            session_id: id.to_string(),
+            title: String::new(),
+            db_path: Some(db.to_string_lossy().to_string()),
+        };
+        let deleted = delete_local_sessions_blocking(DeleteLocalSessionsRequest {
+            sessions: vec![request("b1"), request("b2"), request("b1"), request("missing")],
+        });
+        let after_delete = (thread_count(&db, "b1"), thread_count(&db, "b2"));
+        let undone = deleted
+            .payload
+            .undo_token
+            .as_deref()
+            .map(undo_delete_local_sessions_blocking);
+        restore_codex_home(previous_codex_home);
+
+        // 重复的 ID 只删一次；删不到的单独记失败，不影响其它会话。
+        assert_eq!(deleted.status, "ok");
+        assert_eq!(deleted.payload.results.len(), 3);
+        assert_eq!(deleted.payload.succeeded, 2);
+        assert_eq!(deleted.payload.failed, 1);
+        assert!(!deleted.payload.results[2].deleted);
+        assert_eq!(after_delete, (0, 0));
+        assert_eq!(thread_count(&db, "keep"), 1);
+        let undone = undone.expect("批量删除应返回撤销 token");
+        assert_eq!(undone.status, "ok", "{}", undone.message);
+        assert_eq!(thread_count(&db, "b1"), 1);
+        assert_eq!(thread_count(&db, "b2"), 1);
+    }
+
+    #[test]
+    fn list_local_sessions_filters_archived_and_searches_beyond_the_first_page() {
+        let _codex_home_guard = lock_codex_home_for_test();
+        let temp = tempfile::tempdir().unwrap();
+        let previous_codex_home = std::env::var_os("CODEX_HOME");
+        let home = temp.path().join("codex-home");
+        let sqlite = home.join("sqlite");
+        std::fs::create_dir_all(&sqlite).unwrap();
+        let db = rusqlite::Connection::open(sqlite.join("state_5.sqlite")).unwrap();
+        db.execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT, title TEXT, cwd TEXT, archived INTEGER, updated_at_ms INTEGER);\
+             INSERT INTO threads VALUES ('new', '', 'Newest', '/work/a', 0, 30);\
+             INSERT INTO threads VALUES ('old', '', 'Archived', '/work/a', 1, 20);\
+             INSERT INTO threads VALUES ('far', '', 'Needle', '/work/b', 0, 10);",
+        )
+        .unwrap();
+        drop(db);
+        unsafe {
+            std::env::set_var("CODEX_HOME", &home);
+        }
+        let request = |query: &str, archived: Option<bool>| ListLocalSessionsRequest {
+            offset: 0,
+            limit: 1,
+            query: query.to_string(),
+            cwd: None,
+            archived,
+        };
+        let active = list_local_sessions_blocking(Some(request("", Some(false))));
+        let archived = list_local_sessions_blocking(Some(request("", Some(true))));
+        let search = list_local_sessions_blocking(Some(request("  needle ", None)));
+        restore_codex_home(previous_codex_home);
+
+        assert_eq!(active.payload.total_count, 2);
+        assert!(active.payload.has_more);
+        assert_eq!(active.payload.archived, Some(false));
+        assert_eq!(active.payload.projects.len(), 2);
+        assert_eq!(archived.payload.total_count, 1);
+        assert_eq!(archived.payload.sessions[0].id, "old");
+        assert_eq!(search.payload.total_count, 1);
+        assert_eq!(search.payload.sessions[0].id, "far");
+        assert_eq!(search.payload.query, "needle");
     }
 
     fn create_minimal_thread_db(path: &Path, id: &str, title: &str, updated_at_ms: i64) {
@@ -14428,7 +14928,7 @@ model_reasoning_effort = "high"
     #[test]
     fn context_entry_commands_update_settings_payload() {
         let settings = BackendSettings::default();
-        let upsert = upsert_context_entry(ContextEntryRequest {
+        let upsert = upsert_context_entry_blocking(ContextEntryRequest {
             settings: settings.clone(),
             kind: "mcp".to_string(),
             id: "context7".to_string(),

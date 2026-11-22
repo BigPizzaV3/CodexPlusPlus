@@ -84,6 +84,7 @@ var codexPlusProviderEditing = (() => {
     relaySessionProviderFromConfig: () => relaySessionProviderFromConfig,
     relaySessionProviderValidation: () => relaySessionProviderValidation,
     relaySettingsValidation: () => relaySettingsValidation,
+    relaySettingsValidationForSave: () => relaySettingsValidationForSave,
     relaySettingsWithDraft: () => relaySettingsWithDraft,
     removeCodexExperimentalBearerToken: () => removeCodexExperimentalBearerToken,
     removeRelayProfile: () => removeRelayProfile,
@@ -991,6 +992,20 @@ ${key} = ${value}`]);
     }
     return relayModelRoutesSettingsValidation(settings);
   }
+  function relaySettingsValidationForSave(settings, editingId) {
+    const named = (profileId, message) => {
+      if (profileId === editingId) return message;
+      const other = settings.relayProfiles.find((profile) => profile.id === profileId);
+      return tf("供应商「{0}」配置有误：{1}", [other?.name || t("未命名供应商"), message]);
+    };
+    for (const profile of settings.relayProfiles) {
+      const sessionProviderError = relaySessionProviderValidation(profile);
+      if (sessionProviderError) return named(profile.id, sessionProviderError);
+    }
+    const routeIssue = findRelayModelRouteIssue(settings.relayProfiles, settings.relayProfiles);
+    const routeMessage = relayModelRouteIssueMessage(routeIssue);
+    return routeIssue && routeMessage ? named(routeIssue.sourceRelayId, routeMessage) : null;
+  }
   function relaySessionProviderValidation(profile) {
     if (relaySessionProvider(profile) === "openai" && profile.protocol !== "responses") {
       return t("OpenAI 会话身份仅支持 Responses API；Chat Completions 不支持 ChatGPT Remote 的远程压缩。请切换协议或改回 Custom。");
@@ -1744,6 +1759,7 @@ ${key} = ${value}`]);
     servingProviders: () => servingProviders,
     shortDate: () => shortDate,
     shortPath: () => shortPath,
+    shortProviderName: () => shortProviderName,
     skippedAgents: () => skippedAgents,
     slugify: () => slugify,
     speedOf: () => speedOf,
@@ -2220,7 +2236,7 @@ ${key} = ${value}`]);
   }
   function validateDraft(draft, payload, retainedModel, retainedSelection) {
     if (payload) {
-      if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先到「供应商」里添加";
+      if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先在「供应商池」里添加供应商";
       const model = draft.model.trim();
       const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
       const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);
@@ -2977,6 +2993,9 @@ ${key} = ${value}`]);
   var EMAIL_PATTERN = /(^|[^A-Za-z0-9._%+*-])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
   function maskEmailsIn(text) {
     return text.replace(EMAIL_PATTERN, (_match, lead, email) => lead + maskEmail(email));
+  }
+  function shortProviderName(name) {
+    return name.split("·")[0].trim() || name;
   }
   function maskAccountName(name) {
     const masked = maskEmailsIn(name);

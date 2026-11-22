@@ -5,33 +5,6 @@
   gap: 16px;
 }
 
-.hub-intro p {
-  margin: 0;
-  color: hsl(var(--muted-foreground));
-}
-
-.hub-card {
-  border: 1px solid hsl(var(--border));
-  border-radius: 12px;
-  background: hsl(var(--card));
-  min-width: 0;
-}
-
-.hub-card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 14px 16px 6px;
-}
-
-.hub-card-head h3 {
-  flex: 1;
-  margin: 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-  font-weight: 600;
-}
-
 .hub-link {
   display: inline-flex;
   align-items: center;
@@ -356,8 +329,7 @@
   font-size: 10.5px;
 }
 
-.hub-core dd,
-.hub-stats dd {
+.hub-core dd {
   margin: 0;
   font-family: var(--font-mono);
   font-size: 15px;
@@ -377,12 +349,6 @@
 }
 
 /* ── 下方两栏 ── */
-
-.hub-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
-  gap: 16px;
-}
 
 /* 总览「最近请求」：真实请求列表，行内容的样式在 RequestFlow.css。 */
 .hub-flow-list {
@@ -482,69 +448,6 @@
   background: hsl(var(--status-error));
 }
 
-.hub-stats {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px 18px;
-  margin: 0;
-  padding: 6px 16px 0;
-}
-
-.hub-stats dt {
-  color: hsl(var(--muted-foreground) / 0.8);
-  font-size: 11px;
-}
-
-.hub-stats dd {
-  font-size: 19px;
-  letter-spacing: -0.02em;
-}
-
-.hub-stats-wide {
-  grid-column: 1 / -1;
-}
-
-.hub-split {
-  display: flex;
-  gap: 2px;
-  height: 8px;
-  margin: 16px 16px 0;
-  overflow: hidden;
-  border-radius: 99px;
-}
-
-.hub-split i,
-.hub-legend i {
-  background: hsl(var(--muted-foreground) / 0.5);
-}
-
-.hub-split i[data-agent="claude"],
-.hub-legend i[data-agent="claude"] {
-  background: hsl(var(--brand-accent));
-}
-
-.hub-split i[data-agent="grok"],
-.hub-legend i[data-agent="grok"] {
-  background: hsl(var(--brand-accent-2));
-}
-
-.hub-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  padding: 8px 16px 16px;
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-}
-
-.hub-legend i {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  margin-right: 5px;
-  border-radius: 2px;
-}
-
 @media (max-width: 1080px) {
   .hub-topology {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -561,9 +464,6 @@
     display: none;
   }
 
-  .hub-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 
 /* 供应商池空着、直连模式里有供应商时的导入入口：比「添加供应商」醒目一点。 */

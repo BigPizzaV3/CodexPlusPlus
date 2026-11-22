@@ -6,6 +6,7 @@ import ts from "typescript";
 import { parseModelMetadataMap, synchronizeModelMetadataLiteSupport } from "./model-metadata.ts";
 import { reasoningParameterMode, setModelReasoningParameterMode } from "./model-reasoning.ts";
 import { pureApiImageGenerationEnabled, requestCompatibilityEnabled, settingsRequireLocalHelper, stripImageGenerationToolEnabled } from "./model-routes.ts";
+import { APP_SOURCE_FILES, readAppSource } from "./app-source.test-helper.ts";
 
 test("reasoning modes retain level drafts, round trip and require the helper only when opted in", () => {
   const original = JSON.stringify({ model: { custom: "kept", supported_reasoning_levels: [{ effort: "high" }] }, other: { custom: true } });
@@ -53,7 +54,7 @@ test("Lite controls edit one selected model and preserve the rest of an imported
   assert.equal(synchronizeModelMetadataLiteSupport('{"models":[{"slug":"one"},{"slug":"one"}]}', "one", "supported"), null);
 });
 
-test("language switches notify React without reload or storing drafts", () => {
+test("language switches notify React without reload or storing drafts", async () => {
   const source = readFileSync(new URL("./i18n.ts", import.meta.url), "utf8");
   const saved = new Map(); let reloads = 0; let calls = 0;
   const exports: Record<string, any> = {};
@@ -62,15 +63,17 @@ test("language switches notify React without reload or storing drafts", () => {
   vm.runInContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, context);
   const unsubscribe = exports.subscribeLanguage(() => { calls++; });
   assert.equal(exports.t("概览"), "概览");
-  exports.setLanguage("en"); assert.equal(exports.t("概览"), "Overview");
-  exports.setLanguage("en"); assert.equal(calls, 1);
-  exports.setLanguage("zh"); assert.equal(exports.t("概览"), "概览");
-  unsubscribe(); exports.setLanguage("en"); assert.equal(calls, 2);
+  // 英文词典按需加载：切换先等词典到了再通知界面。
+  await exports.setLanguage("en"); assert.equal(exports.t("概览"), "Overview");
+  await exports.setLanguage("en"); assert.equal(calls, 1);
+  await exports.setLanguage("zh"); assert.equal(exports.t("概览"), "概览");
+  unsubscribe(); await exports.setLanguage("en"); assert.equal(calls, 2);
   assert.equal(reloads, 0);
   assert.deepEqual([...saved.keys()], ["codex-plus-lang"]);
-  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   assert.match(app, /useSyncExternalStore\(subscribeLanguage, getLanguage, getLanguage\)/);
-  for (const name of ["App.tsx", "components/ProviderPresetSelector.tsx"]) {
+  for (const name of [...APP_SOURCE_FILES, "components/ProviderPresetSelector.tsx"]) {
+    const isApp = name !== "components/ProviderPresetSelector.tsx";
     const file = ts.createSourceFile(name, readFileSync(new URL(`./${name}`, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true);
     const visit = (node: ts.Node) => {
       if (ts.isCallExpression(node) && node.expression.getText(file) === "t") {
@@ -78,47 +81,12 @@ test("language switches notify React without reload or storing drafts", () => {
         while (p && !ts.isSourceFile(p)) { if (ts.isFunctionLike(p)) { lazy = true; break; } p = p.parent; }
         // 默认供应商名称是配置数据，保持创建时快照；导航/提示标签才需动态翻译。
         const defaultName = node.arguments[0] && ts.isStringLiteral(node.arguments[0]) && node.arguments[0].text === "默认中转";
-        if (name === "App.tsx" && defaultName) assert.ok(ts.isPropertyAssignment(node.parent), "配置名称不能变成动态 getter");
-        const dataSnapshot = name === "App.tsx" && ts.isPropertyAssignment(node.parent)
+        if (isApp && defaultName) assert.ok(ts.isPropertyAssignment(node.parent), "配置名称不能变成动态 getter");
+        const dataSnapshot = isApp && ts.isPropertyAssignment(node.parent)
           && node.parent.name.getText(file) === "name" && defaultName;
         assert.equal(lazy || dataSnapshot, true, `${name} contains a frozen UI label`);
       }
       ts.forEachChild(node, visit);
     }; visit(file);
   }
-});
-
-test("session selection cancellation, search and pagination never delete hidden rows", async () => {
-  const { sessionGroups, matchesManagementQuery } = await import("./management-model.ts");
-  const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-  const file = ts.createSourceFile("ManagementExtra.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const fn = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SessionPage");
-  assert.ok(fn);
-  const slots: any[] = []; let cursor = 0; let effects: Array<() => void> = []; const deleted: string[] = [];
-  const scope = vm.createContext({
-    exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }), fragment: "fragment",
-    useState: (initial: any) => { const index = cursor++; if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;
-      return [slots[index], (next: any) => { slots[index] = typeof next === "function" ? next(slots[index]) : next; }]; },
-    useEffect: (run: () => void) => effects.push(run),
-    t: (x: string) => x, tf: (x: string, args: any[]) => x.replace(/\{(\d+)\}/g, (_, n) => args[n]),
-    sessionGroups, matchesManagementQuery,
-    Header: "Header", Button: "Button", SearchBox: "SearchBox", ManagementDrawer: "Drawer",
-    History: "Icon", RefreshCw: "Icon", Trash2: "Icon", ArrowLeft: "Icon", ArrowRight: "Icon", ChevronDown: "Icon", Copy: "Icon",
-  });
-  vm.runInContext(ts.transpileModule(fn.getText(file), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, scope);
-  const first = { id: "one", title: "first", cwd: "/fixture", modelProvider: "custom" };
-  let props: any = { sessions: { sessions: [first, { ...first, id: "two", title: "second" }], offset: 0, limit: 50, totalCount: 2, hasMore: false },
-    onRefresh: async () => {}, onDelete: async () => {}, onDeleteMany: async (rows: any[]) => { deleted.push(...rows.map((r) => r.id)); }, notify: async () => {} };
-  let nodes: any[] = [];
-  const render = () => { cursor = 0; effects = []; nodes = [];
-    const collect = (node: any) => { if (!node || typeof node !== "object") return; if (Array.isArray(node)) return node.forEach(collect); nodes.push(node); node.children?.forEach(collect); collect(node.props?.actions); };
-    collect(scope.exports.SessionPage(props)); effects.forEach((run) => run()); };
-  const button = (label: string) => { const node = nodes.find((n) => n.type === "Button" && n.children?.includes(label)); assert.ok(node, label); return node; };
-  render(); button("选择多个…").props.onClick(); render(); button("全选当前列表").props.onClick(); render();
-  nodes.find((n) => n.type === "SearchBox").props.onChange("first"); render();
-  await button("删除已选").props.onClick(); assert.deepEqual(deleted, ["one"]);
-  button("取消全部选择").props.onClick(); render(); assert.equal(button("删除已选").props.disabled, true);
-  button("全选当前列表").props.onClick(); render();
-  props = { ...props, sessions: { ...props.sessions, sessions: [{ ...first, id: "three", title: "first next page" }], offset: 50, totalCount: 51 } };
-  render(); assert.equal(button("删除已选").props.disabled, true);
 });

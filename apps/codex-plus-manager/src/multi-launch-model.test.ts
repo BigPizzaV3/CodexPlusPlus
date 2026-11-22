@@ -13,6 +13,7 @@ import {
   runningInstancesForProfile,
   type MultiLaunchInstance,
 } from "./multi-launch-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const instance = (patch: Partial<MultiLaunchInstance> = {}): MultiLaunchInstance => ({
   instanceId: "deepseek",
@@ -135,7 +136,7 @@ describe("Codex 多开运行实例模型", () => {
 });
 
 describe("多开页主 Codex 的停止和重启接到真实入口", () => {
-  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
 
   it("主行置灰并说明侧栏停止、顶部重启，处理函数不会把 main 交给多开 RPC", () => {

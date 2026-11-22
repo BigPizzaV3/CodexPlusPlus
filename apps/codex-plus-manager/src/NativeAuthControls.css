@@ -113,6 +113,15 @@
 .subscription-policy input[type="number"] {
   width: 100px;
 }
-.subscription-policy .subscription-permission {
-  justify-content: flex-start;
+/* 下拉里换了账号还没应用时出现的「应用」按钮：图标加文字。 */
+.native-auth-current .native-auth-apply {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.native-auth-current .native-auth-apply > svg {
+  width: 14px;
+  height: 14px;
 }

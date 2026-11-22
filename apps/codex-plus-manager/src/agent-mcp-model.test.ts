@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { bodyEnabledState, editedEnabledState, mcpCount, mcpOn, mcpPresent, mergeMcpRows } from "./agent-mcp-model.ts";
+import { readAppSource } from "./app-source.test-helper.ts";
 
 const entry = (id: string, enabled = true, tomlBody = `command = "${id}"\n`) => ({ id, enabled, tomlBody });
 
@@ -32,7 +33,11 @@ test("MCP 页按 Agent 三列管理，Claude / Grok 走后端命令且命令已�
   // 按使用模式去掉隐藏的 Agent 列（只管理 Codex 时只剩 Codex），隐藏的 Agent 也不读配置。
   assert.match(page, /const shownAgents = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
   assert.match(page, /const agents: McpAgentId\[\] = kind === "mcp" \? shownAgents : \["codex"\];/);
-  assert.match(page, /for \(const agent of \(\["claude", "grok"\] as const\)\.filter\(\(item\) => agentVisible\(focus, item\)\)\)/);
+  // 可见 Agent 的配置并行读取，读完之前页面显示读取中而不是「还没有 MCP 服务器」。
+  assert.match(page, /const agents = \(\["claude", "grok"\] as const\)\.filter\(\(item\) => agentVisible\(focus, item\)\);\n\s*const results = await Promise\.all\(agents\.map\(/);
+  assert.match(page, /kind === "mcp" && agentsLoading\n?\s*\? <CxEmpty title=\{t\("正在读取各 Agent 的 MCP 配置…"\)\} \/>/);
+  // 删除确认用危险样式，不用品牌主色。
+  assert.match(page, /<Action danger disabled=\{busy\}[\s\S]*?>\{t\("确认删除"\)\}<\/Action>/);
   assert.match(page, /invoke<Result & \{ config\?: AgentMcpConfig; backupPath\?: string \}>\("save_agent_mcp"/);
   assert.match(page, /const base = enabledBody\(body, true\);/, "编辑时先统一成启用，避免写到 Claude 被当成移除");
   for (const command of ["agent_mcp_commands::load_agent_mcp", "agent_mcp_commands::save_agent_mcp"]) assert.ok(lib.includes(command), command);
@@ -65,7 +70,7 @@ test("#3115：保存时 Codex 以编辑器里改过的启停为准，不再一�
 
 test("#3115：「切换时保留」在连接页对直连和网关都可见，不再藏在直连供应商编辑里", async () => {
   const { readFileSync } = await import("node:fs");
-  const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
+  const app = readAppSource();
   assert.equal(app.match(/relayPreserveNonproviderSettings: event\.currentTarget\.checked/g)?.length, 1);
   const row = app.indexOf('className="cx-preserve-row"');
   assert.ok(row > 0);

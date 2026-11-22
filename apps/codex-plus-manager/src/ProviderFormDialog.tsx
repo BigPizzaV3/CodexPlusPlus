@@ -1,6 +1,6 @@
 /** 网关「添加 / 编辑供应商」弹窗：连接（名称、协议、地址、多个 Key）、模型（从上游获取后勾选）、价格（按公开价格表自动填）；
  * 编辑时还能从这里打开上下文窗口弹窗。 */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Pencil, Plus, RefreshCw, Search, Star, X } from "lucide-react";
@@ -21,6 +21,8 @@ import {
 } from "./gateway-model";
 import { Avatar } from "./gateway-ui";
 import { useEscapeLayer } from "./use-escape-layer";
+import { useModalShell } from "./use-modal-shell";
+import { CompatToggles } from "./CompatToggles";
 import { lookupPublicPrices } from "./ProviderExtrasDialog";
 import {
   addModel,
@@ -40,7 +42,11 @@ import { SubscriptionPolicyFields } from "./SubscriptionPolicyFields";
 import { RelayHeaderRows } from "./RelayHeaderRows";
 import { providerHeaderInputs } from "./relay-headers";
 
-export type ProviderFormState = { mode: "preset"; preset: GatewayPreset } | { mode: "custom" } | { mode: "edit"; entry: GatewayPoolEntry };
+export type ProviderFormState =
+  | { mode: "preset"; preset: GatewayPreset }
+  | { mode: "custom" }
+  /** focus：从详情里「请求头」的编辑进来时，打开就滚到请求头一节。 */
+  | { mode: "edit"; entry: GatewayPoolEntry; focus?: "headers" };
 
 type Result = { status: string; message: string };
 const PROTOCOLS: Array<{ id: GatewayProtocol; label: string }> = [
@@ -92,8 +98,21 @@ export function ProviderFormDialog({
   const headerCount = (draft.customHeaders ?? []).filter((row) => row.key.trim()).length;
   const canFetch = (subscriptionEditing || (Boolean(draft.baseUrl.trim()) && (Boolean(firstKey) || editing))) && !fetching;
 
-  // Esc 栈：「从上游获取」的勾选列表开着时 Esc 先收起列表。
-  useEscapeLayer(true, onCancel);
+  // 弹窗外壳：Esc 走全局栈（「从上游获取」的勾选列表开着时 Esc 先收起列表）；改过再关先确认，
+  // 不丢粘贴好的 Key 和挑好的模型。自动查到的价格不算改动。
+  const titleId = useId();
+  const [initialDraft] = useState(() => JSON.stringify({ ...draft, modelPrices: undefined }));
+  const dirty = JSON.stringify({ ...draft, modelPrices: undefined }) !== initialDraft || picker !== null || modelInput.trim() !== "";
+  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
+  // 从详情「请求头」一行进来：直接滚到请求头一节并聚焦第一个输入框。
+  const headersRef = useRef<HTMLElement>(null);
+  const focusHeaders = form.mode === "edit" && form.focus === "headers";
+  useEffect(() => {
+    if (!focusHeaders) return;
+    const section = headersRef.current;
+    section?.scrollIntoView({ block: "start" });
+    section?.querySelector<HTMLInputElement>("input")?.focus();
+  }, [focusHeaders]);
 
   const lookupPrices = async (list: string[], baseUrl: string) => {
     const found = await lookupPublicPrices(baseUrl, list);
@@ -145,8 +164,9 @@ export function ProviderFormDialog({
   const keyHint = editing ? (savedKeys.length ? t("在供应商详情的「Key」一行里单独替换、删除或添加") : t("留空表示不改")) : preset?.defaultKey ? t("本机服务不校验 Key，保留默认值即可") : t("多个自动轮换");
 
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
+        {...dialogProps}
         className="pf-modal"
         onSubmit={(event) => {
           event.preventDefault();
@@ -156,10 +176,10 @@ export function ProviderFormDialog({
         <header className="pf-head">
           {preset || editing ? <Avatar baseUrl={draft.baseUrl} name={preset?.name ?? draft.name} /> : <span className="gw-avatar gw-avatar-plus"><Plus className="h-4 w-4" /></span>}
           <div>
-            <strong>{title}</strong>
+            <strong id={titleId}>{title}</strong>
             <small>{subtitle}</small>
           </div>
-          <button aria-label={t("关闭")} className="pf-icon" onClick={onCancel} type="button"><X /></button>
+          <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
 
         <div className="pf-body">
@@ -198,6 +218,7 @@ export function ProviderFormDialog({
                   <Input
                     autoComplete="off"
                     autoFocus={index === 0 && Boolean(preset && !preset.defaultKey)}
+                    data-autofocus={index === 0 && Boolean(preset && !preset.defaultKey) ? true : undefined}
                     className="pf-mono"
                     onChange={(event) => {
                       // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏
@@ -289,55 +310,12 @@ export function ProviderFormDialog({
           {draft.protocol === "responses" ? (
             <section className="pf-section">
               <h4>{t("兼容")}</h4>
-              <label className="pf-switch">
-                <input
-                  checked={draft.stripImageGenerationTool === true}
-                  onChange={(event) => update({ stripImageGenerationTool: event.currentTarget.checked })}
-                  type="checkbox"
-                />
-                <span>
-                  <strong>{t("移除请求里的托管生图工具（image_generation）")}</strong>
-                  <small>{t("Codex 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发给这个供应商前从 tools 里去掉它（及指向它的 tool_choice）。默认关闭。")}</small>
-                </span>
-              </label>
-              <label className="pf-switch">
-                <input
-                  checked={draft.stripResponsesImageDetail === true}
-                  onChange={(event) => update({ stripResponsesImageDetail: event.currentTarget.checked })}
-                  type="checkbox"
-                />
-                <span>
-                  <strong>{t("移除 Responses 图片 detail 字段")}</strong>
-                  <small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail。默认关闭。")}</small>
-                </span>
-              </label>
-              <label className="pf-switch">
-                <input
-                  checked={draft.stripResponsesOutputEncryptedContent === true}
-                  onChange={(event) => update({ stripResponsesOutputEncryptedContent: event.currentTarget.checked })}
-                  type="checkbox"
-                />
-                <span>
-                  <strong>{t("不发送 output.encrypted_content")}</strong>
-                  <small>{t("严格 Responses 上游可能只接受 reasoning.encrypted_content，遇到 output.encrypted_content 会整条返回 400。开启后只删除这一项，Kimi 地址或模型名仍会自动处理。默认关闭。")}</small>
-                </span>
-              </label>
-              <label className="pf-switch">
-                <input
-                  checked={draft.disableToolSearch === true}
-                  onChange={(event) => update({ disableToolSearch: event.currentTarget.checked })}
-                  type="checkbox"
-                />
-                <span>
-                  <strong>{t("不发送 tool_search")}</strong>
-                  <small>{t("上游不认 Codex 的 tool_search 工具（实际聊天会返回 400）时开启：模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。默认关闭。")}</small>
-                </span>
-              </label>
+              <CompatToggles onChange={(patch) => update(patch)} values={draft} variant="gateway" />
             </section>
           ) : null}
           {/* 自定义请求头（#3075）：和直连模式「高级兼容选项」里的同一套编辑行与规则；订阅账号的请求头由 Codex++ 自己定，不开放。 */}
           {!subscriptionEditing ? (
-            <section className="pf-section">
+            <section className="pf-section" ref={headersRef}>
               <h4>{t("自定义请求头")}{headerCount ? <em>{headerCount}</em> : null}</h4>
               <div className="relay-custom-headers">
                 <RelayHeaderRows onChange={(customHeaders) => update({ customHeaders })} rows={draft.customHeaders ?? []} />
@@ -353,7 +331,7 @@ export function ProviderFormDialog({
         {agentPicks ? <div className="pf-agents">{agentPicks}</div> : null}
         <footer className="pf-foot">
           <span className="pf-error">{validation ? t(validation) : ""}</span>
-          <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+          <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
           <Button disabled={busy !== null || Boolean(validation)} size="sm" type="submit">{busy ? t("保存中") : editing ? t("保存") : t("添加到供应商池")}</Button>
         </footer>
       </form>
@@ -361,6 +339,9 @@ export function ProviderFormDialog({
     document.body,
   );
 }
+
+/** 「从上游获取」的勾选列表最多画这么多行，多的靠搜索。 */
+const PICKER_LIMIT = 500;
 
 type PickerState = { rows: PickerRow[]; selected: Set<string>; query: string; fetched: number };
 
@@ -410,7 +391,7 @@ function ModelPicker({
         <button className="pf-link" disabled={!visibleNew.some((model) => picker.selected.has(model))} onClick={() => setPicker({ ...picker, selected: new Set([...picker.selected].filter((model) => !visibleNew.includes(model))) })} title={t("取消勾选搜索结果里新增的模型，已在列表里的不动")} type="button">{t("全不选新增")}</button>
       </div>
       <div className="pf-picker-list">
-        {visible.slice(0, 500).map((row) => {
+        {visible.slice(0, PICKER_LIMIT).map((row) => {
           const label = tag(row);
           return (
             <label data-in-list={row.inList} key={row.model}>
@@ -421,6 +402,9 @@ function ModelPicker({
           );
         })}
         {!visible.length ? <span className="pf-picker-empty">{t("没有匹配的模型")}</span> : null}
+        {visible.length > PICKER_LIMIT ? (
+          <span className="pf-picker-empty">{tf("只显示前 {0} 个，共 {1} 个；用搜索缩小范围。", [PICKER_LIMIT, visible.length])}</span>
+        ) : null}
       </div>
       <div className="pf-picker-foot">
         <span className="pf-sync-summary">{tf("新增 {0} · 移除 {1}", [outcome.added, outcome.removed])}</span>
