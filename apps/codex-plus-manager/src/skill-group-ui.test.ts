@@ -17,9 +17,11 @@ const file = ts.createSourceFile("SkillsPage.tsx", source, ts.ScriptTarget.Lates
 // 抽屉和来源标签等工具函数在 SkillDrawers.tsx。
 const drawerSource = readFileSync(new URL("./SkillDrawers.tsx", import.meta.url), "utf8");
 const drawerFile = ts.createSourceFile("SkillDrawers.tsx", drawerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const page = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillsPage");
-assert.ok(page);
-const code = ts.transpileModule(page.getText(file), {
+// 页面函数连同它的数据 hook、行组件一起放进沙箱执行。
+const pageFunctions = ["useSkillsData", "SkillRowView", "SkillsPage"].map((name) => file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name));
+assert.ok(pageFunctions.every(Boolean));
+const page = pageFunctions.at(-1)!;
+const code = ts.transpileModule(pageFunctions.map((node) => node!.getText(file)).join("\n") + "\nvar SkillRow = SkillRowView;", {
   compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const cacheListener = file.statements.find((node) => ts.isExpressionStatement(node)
@@ -47,9 +49,12 @@ const backupListCode = "var FolderOpen = 'FolderOpen';\n" + ts.transpileModule(b
 const skill = (id: string, repoKey: string, bundled = false): FixtureSkill => ({ id, name: id, description: "", repoKey,
   installed: true, enabled: false, bundled, updateAvailable: false, agents: [], managed: true });
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
+// 顶栏刷新按钮：已安装页签是「刷新已安装」，发现页签是「刷新目录」。
+const isRefresh = (node: Element) => node.type === "Button" && node.children.some((child) => child === "刷新目录" || child === "刷新已安装");
+const isRefreshing = (node: Element) => node.type === "Button" && node.children.some((child) => child === "刷新目录中" || child === "刷新中…");
 
 test("legacy cc-switch markers do not claim a verified upstream source", () => {
-  const context = { t: (value: string) => value, LOCAL_IMPORT_REPO_KEY: "local" };
+  const context = { t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), LOCAL_IMPORT_REPO_KEY: "local" };
   vm.createContext(context);
   vm.runInContext(sourceLabelCode, context);
   const label = (context as any).sourceLabel;
@@ -63,7 +68,7 @@ test("legacy cc-switch markers do not claim a verified upstream source", () => {
 
 test("backup list shows the backup location separately from its restore destination", () => {
   const context = { jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, Button: "Button", Trash2: "Trash2", SkillFileTimes: "SkillFileTimes" };
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), Button: "Button", Trash2: "Trash2", SkillFileTimes: "SkillFileTimes" };
   vm.createContext(context);
   const render = vm.runInContext(`${backupListCode}\nSkillBackupList`, context);
   const selected: string[] = [];
@@ -78,8 +83,9 @@ test("backup list shows the backup location separately from its restore destinat
     node.children?.forEach(collect);
   };
   collect(root);
-  assert.ok(nodes.some((node) => node.type === "small" && node.children.includes("C:/backups/alpha")));
-  assert.ok(nodes.some((node) => node.type === "small" && node.children.includes("C:/skills/alpha")));
+  // 「备份位置：…」「恢复位置：…」各占一行，冒号在翻译模板里。
+  assert.ok(nodes.some((node) => node.type === "small" && node.children.some((child: unknown) => String(child).includes("C:/backups/alpha"))));
+  assert.ok(nodes.some((node) => node.type === "small" && node.children.some((child: unknown) => String(child).includes("C:/skills/alpha"))));
   assert.equal(nodes.find((node) => node.type === "SkillFileTimes")?.props.backupId, "backup");
   nodes.find((node) => node.type === "button" && node.props.title === "删除备份")!.props.onClick();
   assert.deepEqual(selected, ["backup"]);
@@ -87,7 +93,7 @@ test("backup list shows the backup location separately from its restore destinat
 
 test("an incomplete update backup remains deletable but cannot be restored", () => {
   const context = { jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, Button: "Button", Trash2: "Trash2", SkillFileTimes: "SkillFileTimes" };
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), Button: "Button", Trash2: "Trash2", SkillFileTimes: "SkillFileTimes" };
   vm.createContext(context);
   const render = vm.runInContext(`${backupListCode}\nSkillBackupList`, context);
   const root = render({ backups: [{ id: "backup", skillId: "alpha", name: "alpha", backedUpAt: "today",
@@ -116,7 +122,7 @@ test("grouped details keep source matching and updates tied to their locations",
   const updates: string[][] = [];
   const context: Record<string, any> = {
     jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }), fragment: "fragment",
-    t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: (item: { installChannel: string }) => item.installChannel,
+    t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: (item: { installChannel: string }) => item.installChannel,
     repoFromKey: (value: string) => value.includes("/") ? {} : null, skillIdentityKey,
   };
   for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList", "SkillFileTimes", "FolderOpen"]) context[name] = name;
@@ -152,7 +158,7 @@ test("grouped details keep source matching and updates tied to their locations",
 test("conflicting managed installs can associate their explicit source directory", () => {
   const context: Record<string, any> = {
     jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }), fragment: "fragment",
-    t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "local",
+    t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "local",
     repoFromKey: () => null, skillIdentityKey,
   };
   for (const name of ["ManagementDrawer", "Button", "ImpeccableVersions", "CloudDownload", "Search", "ArrowRight", "ExternalLink", "SkillBackupList", "SkillFileTimes", "FolderOpen"]) context[name] = name;
@@ -289,6 +295,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
       throw new Error(`Unexpected command: ${command}`);
     },
     ok: (result: { status: string }) => result.status === "ok", SKILL_GROUP_STORAGE_KEY: "codex-plus-plus.skill-groups.v1",
+    SKILL_GROUP_PAGE: 50, SYNC_COPIES_HINT: "把各 Agent 中内容一致的 Skill 同步到 Codex++ 保存的副本中。旧副本会先备份，不会从 GitHub 下载更新。",
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
     aggregateSkillGroupItems, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
     applySkillBundleGroups, skillBundleExportGroups, skillBundleSelections,
@@ -302,8 +309,8 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, skillBatchRegistry: registry, skillPageCache: cache,
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async (message: string) => hooks.confirm ? hooks.confirm(message) : true,
   };
-  for (const name of ["PageHeader", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
-    "SkillDetailDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillBackupsDrawer", "SkillInPlaceUpdateDrawer", "SkillDuplicatesDrawer", "SkillBundleExportDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
+  for (const name of ["PageHeader", "Button", "memo", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
+    "SkillDetailDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillBackupsDrawer", "SkillInPlaceUpdateDrawer", "SkillDuplicatesDrawer", "SkillBundleExportDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ArrowDownAZ", "ArrowDownZA", "GitBranch", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   if (!shared?.cache) vm.runInContext(cacheListenerCode, context);
   vm.runInContext(code, context);
@@ -311,6 +318,8 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     if (!node || typeof node !== "object") return;
     if (Array.isArray(node)) { node.forEach((item) => collect(item, result)); return; }
     result.push(node);
+    // 页面里的函数组件（SkillRow）就地展开：它不用 hook，直接调用拿到渲染结果。
+    if (typeof node.type === "function") { collect(node.type({ ...node.props, children: node.children }), result); return; }
     if (node.type === "SortableSkillGroup") collect(node.children[0]("handle"), result);
     else node.children?.forEach((item: any) => collect(item, result));
     // 骨架组件把一部分内容放在属性里：页面操作、筛选条尾部按钮、行标题旁的小标签与说明。
@@ -355,7 +364,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     if (!head.props["aria-expanded"]) { head.props.onClick(); render(); }
     const children: Element[] = [];
     collect(group(groupKey).children[0]("handle"), children);
-    const row = children.find((node) => node.type === "CxRow" && node.props.className === "cx-skill-row" && node.props.key === skillIdentityKey({ repoKey, id, ...identity }));
+    const row = children.find((node) => node.type === context.SkillRow && node.props.key === skillIdentityKey({ repoKey, id, ...identity }));
     assert.ok(row);
     const result: Element[] = [];
     collect(row, result);
@@ -426,7 +435,7 @@ test("switching to discovery during the first local scan cannot bypass installed
   ui.hooks.list = () => new Promise(resolve => { finishLocal = resolve; });
   ui.render();
   ui.selectTab("发现");
-  assert.equal(ui.find(node => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  assert.equal(ui.find(node => isRefreshing(node)).props.disabled, true);
   assert.equal(ui.find(node => node.props.className === "cx-skill-groups").props["aria-busy"], true);
   assert.deepEqual(ui.calls, ["list_installed_skills"]);
   finishLocal(structuredClone(ui.server));
@@ -556,10 +565,10 @@ test("quick page switches reuse recent scans, while a manual refresh runs immedi
   reopened.render(); await tick(); reopened.render();
   assert.ok(reopened.order().includes("repo:a/repo"));
   assert.deepEqual(reopened.calls, []);
-  reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  reopened.find((node) => isRefresh(node)).props.onClick();
   await tick();
   assert.deepEqual(reopened.calls, ["list_installed_skills"]);
-  reopened.selectTab("发现"); reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick(); await tick();
+  reopened.selectTab("发现"); reopened.find((node) => isRefresh(node)).props.onClick(); await tick();
   assert.deepEqual(reopened.calls, ["list_installed_skills", "refresh_skill_catalog"]);
   reopened.unmount();
 });
@@ -573,26 +582,26 @@ test("catalog refresh shows progress without confusing a local scan, and clears 
     else finishCatalog = resolve;
   });
   ui.render(); ui.render();
-  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  assert.equal(ui.find((node) => isRefreshing(node)).props.disabled, true);
   finishLocal(structuredClone(ui.server));
   await tick(); ui.render();
-  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.equal(ui.find((node) => isRefresh(node)).props.disabled, false);
   assert.equal(ui.find((node) => node.props.className === "cx-skill-groups").props["aria-busy"], false);
   ui.selectTab("发现");
-  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  assert.equal(ui.find((node) => isRefreshing(node)).props.disabled, true);
   finishCatalog(structuredClone(ui.server));
   await tick(); ui.render();
-  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.equal(ui.find((node) => isRefresh(node)).props.disabled, false);
 
   let failRefresh!: (error: Error) => void;
   ui.selectTab("发现");
   ui.hooks.list = () => new Promise((_resolve, reject) => { failRefresh = reject; });
-  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  ui.find((node) => isRefresh(node)).props.onClick();
   ui.render();
-  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  assert.equal(ui.find((node) => isRefreshing(node)).props.disabled, true);
   failRefresh(new Error("catalog unavailable"));
   await tick(); ui.render();
-  assert.equal(ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.equal(ui.find((node) => isRefresh(node)).props.disabled, false);
   assert.ok(ui.notices.some((notice) => notice.message.includes("catalog unavailable")));
   ui.unmount();
 });
@@ -603,18 +612,18 @@ test("a catalog refresh remains visible when reopening the page", async () => {
   let finishRefresh!: (result: FixtureServer) => void;
   first.selectTab("发现");
   first.hooks.list = () => new Promise((resolve) => { finishRefresh = resolve; });
-  first.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  first.find((node) => isRefresh(node)).props.onClick();
   first.unmount();
 
   const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
   reopened.render();
-  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.equal(reopened.find((node) => isRefresh(node)).props.disabled, false);
   reopened.selectTab("发现");
-  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录中")).props.disabled, true);
+  assert.equal(reopened.find((node) => isRefreshing(node)).props.disabled, true);
   assert.deepEqual(reopened.calls, []);
   finishRefresh(structuredClone(first.server));
   await tick(); reopened.render();
-  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.equal(reopened.find((node) => isRefresh(node)).props.disabled, false);
   reopened.unmount();
 });
 
@@ -624,18 +633,18 @@ test("a refresh settling before mount effects does not leave its progress stuck"
   let finishRefresh!: (result: FixtureServer) => void;
   first.selectTab("发现");
   first.hooks.list = () => new Promise((resolve) => { finishRefresh = resolve; });
-  first.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  first.find((node) => isRefresh(node)).props.onClick();
   first.unmount();
 
   const reopened = createHarness("{}", { server: first.server, registry: first.registry, cache: first.cache });
   reopened.render(false);
-  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.equal(reopened.find((node) => isRefresh(node)).props.disabled, false);
   finishRefresh(structuredClone(first.server));
   await tick();
   reopened.flushEffects();
   await tick(); reopened.render();
   reopened.selectTab("发现");
-  assert.equal(reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.disabled, false);
+  assert.equal(reopened.find((node) => isRefresh(node)).props.disabled, false);
   reopened.unmount();
 });
 
@@ -648,7 +657,7 @@ test("installed skills can refresh while first discovery is pending without star
   ui.render(); await tick(); ui.render();
   assert.deepEqual(ui.calls, ["list_installed_skills", "refresh_skill_catalog"]);
   ui.server.skills = [skill("new", "new/repo@main")];
-  const refresh = ui.find(node => node.type === "Button" && node.children.includes("刷新目录"));
+  const refresh = ui.find(node => isRefresh(node));
   assert.equal(refresh.props.disabled, false);
   refresh.props.onClick();
   await tick(); ui.render();
@@ -873,7 +882,7 @@ test("installed groups default closed and preserve interactions as new groups lo
   ui.find((node) => node.type === "button" && node.props["aria-label"] === "全部展开").props.onClick(); ui.render();
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
   ui.server.skills.push(skill("later", "later/repo@main"));
-  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  ui.find((node) => isRefresh(node)).props.onClick();
   await tick(); ui.render();
   assert.equal(ui.groupHead("repo:a/repo").props["aria-expanded"], true);
   assert.equal(ui.groupHead("repo:later/repo").props["aria-expanded"], false);
@@ -1261,7 +1270,7 @@ test("conflicting same-name locations remain separate and cannot perform id-base
   assert.ok(secondRow.some((node) => node.props.title === "C:/codex/same/SKILL.md"));
   for (const row of [firstRow, secondRow]) {
     assert.ok(row.find((node) => node.type === "AgentToggle" && node.props.agent === "codex")?.props.disabled);
-    assert.equal(row.find((node) => node.type === "MenuItem" && node.children.includes("重新关联来源"))?.props.disabled, false);
+    assert.equal(row.find((node) => node.type === "MenuItem" && node.children.includes("安装位置与来源"))?.props.disabled, false);
     assert.ok(row.some((node) => node.type === "MenuItem" && node.children.includes("卸载")));
     assert.equal(row.some((node) => node.type === "Button" && node.children.includes("更新")), false);
   }
@@ -1337,7 +1346,7 @@ test("a grouped independent instance opens source matching for its exact path", 
   ui.server.skills = [original, other];
   ui.render(); await tick(); ui.render();
   const menu = ui.rowElements("user", "", "impeccable", original)
-    .find((node) => node.type === "MenuItem" && node.children.includes("重新关联来源"));
+    .find((node) => node.type === "MenuItem" && node.children.includes("安装位置与来源"));
   assert.ok(menu);
   assert.equal(menu.props.disabled, false);
   menu.props.onClick(); ui.render();
@@ -1370,7 +1379,7 @@ test("the detail repository link opens matching for the physical location or man
     const detail = ui.find((node) => node.type === "SkillDetailDrawer");
     const context: Record<string, any> = {
       jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }), fragment: "fragment",
-      t: (value: string) => value, repoUrl: (value: FixtureSkill) => value.repoKey ? "https://github.com/owner/repo" : "",
+      t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: (value: FixtureSkill) => value.repoKey ? "https://github.com/owner/repo" : "",
       sourceLabel: () => "", skillChannelLabel: () => "本地安装", repoFromKey: (value: string) => value ? {} : null,
       skillIdentityKey,
     };
@@ -1569,7 +1578,7 @@ test("a saved assignment follows its physical skill through conflict and resolut
   const conflicted = { ...original, repoKey: "", conflict: "内容不同" };
   const other = { ...conflicted, instanceKey: "same:C:/codex/same" };
   ui.server.skills = [conflicted, other];
-  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  ui.find((node) => isRefresh(node)).props.onClick();
   await tick(); ui.render(); ui.render();
   assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey), [original.instanceKey]);
   assert.deepEqual(ui.group("user").props.group.items.map((item: FixtureSkill) => item.instanceKey), [other.instanceKey]);
@@ -1577,7 +1586,7 @@ test("a saved assignment follows its physical skill through conflict and resolut
   ui.render();
 
   ui.server.skills = [{ ...skill("same", "owner/repo@main"), instanceKey: other.instanceKey }];
-  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  ui.find((node) => isRefresh(node)).props.onClick();
   await tick(); ui.render(); ui.render();
   assert.deepEqual(ui.group("custom:Manual").props.group.items.map((item: FixtureSkill) => item.instanceKey), [other.instanceKey]);
   ui.unmount();
@@ -1625,7 +1634,7 @@ test("backups remain accessible without a skill and while its instances conflict
 
   const conflict = { ...skill("same", ""), instanceKey: "same:C:/agents/same", conflict: "内容不同" };
   ui.server.skills = [conflict, { ...conflict, instanceKey: "same:C:/codex/same" }];
-  ui.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  ui.find((node) => isRefresh(node)).props.onClick();
   await tick(); ui.render();
   ui.rowElements("user", "", "same", conflict).find((node) => node.type === "CxRow")!.props.onClick();
   ui.render();
@@ -1674,7 +1683,7 @@ test("queued updates survive remount and invalidate an older list response", asy
   let oldList!: (value: FixtureServer) => void;
   reopened.selectTab("发现");
   reopened.hooks.list = (command) => command === "refresh_skill_catalog" ? new Promise((resolve) => { oldList = resolve; }) : Promise.resolve(structuredClone(ui.server));
-  reopened.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  reopened.find((node) => isRefresh(node)).props.onClick();
   await tick();
   assert.equal(typeof oldList, "function");
   reopened.selectTab("已安装");
@@ -1947,7 +1956,7 @@ test("configured empty repositories hide in installed view but remain sortable i
   assert.equal(restored.group("repo:a/empty").props.group.items.length, 0);
   assert.equal(restored.group("repo:z/empty").props.group.items.length, 0);
   restored.server.repos = restored.server.repos.filter((repo) => repo.owner !== "z");
-  restored.find((node) => node.type === "Button" && node.children.includes("刷新目录")).props.onClick();
+  restored.find((node) => isRefresh(node)).props.onClick();
   await tick(); restored.render();
   assert.ok(!restored.order().includes("repo:z/empty"));
   assert.ok(restored.order().includes("repo:a/empty"));
@@ -2176,5 +2185,50 @@ test("migration package (#2852): export sends the selected groups, import restor
   assert.deepEqual(ui.group("custom:Moved").props.group.items.map((item: FixtureSkill) => item.id), ["beta"]);
   assert.deepEqual(ui.group("custom:Work").props.group.items.map((item: FixtureSkill) => item.id), ["zeta"]);
   assert.equal(ui.notices.at(-1)?.status, "ok");
+  ui.unmount();
+});
+
+test("sub-drawers opened from a skill's details return to those details when closed", async () => {
+  const ui = createHarness();
+  ui.server.skills = [{ ...skill("alpha", ""), managed: false, originalDir: "C:/agents/alpha",
+    locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", originalPath: "C:/agents/alpha", selectable: true, rootKind: "shared", managed: false, enabled: true }] }];
+  ui.render(); await tick(); ui.render();
+  ui.rowElements("user", "", "alpha").find((node) => node.type === "CxRow")!.props.onClick(); ui.render();
+  ui.find((node) => node.type === "SkillDetailDrawer").props.onMatch("C:/agents/alpha"); ui.render();
+  const drawer = ui.find((node) => node.type === "SkillSourceMatchDrawer");
+  assert.throws(() => ui.find((node) => node.type === "SkillDetailDrawer"), "子抽屉打开时详情先收起");
+  drawer.props.onClose(); ui.render();
+  assert.equal(ui.find((node) => node.type === "SkillDetailDrawer").props.skill.id, "alpha", "关上后回到同一个 Skill 的详情");
+  // 直接关掉详情后，不会再被「回到详情」带回来。
+  ui.find((node) => node.type === "SkillDetailDrawer").props.onClose(); ui.render();
+  assert.throws(() => ui.find((node) => node.type === "SkillDetailDrawer"));
+  ui.unmount();
+});
+
+test("empty inventory, no-match search and long groups each get their own state", async () => {
+  const empty = createHarness();
+  empty.server.skills = [];
+  empty.render(); await tick(); empty.render();
+  const emptyCard = empty.find((node) => node.type === "CxEmpty");
+  assert.equal(emptyCard.props.title, "还没有安装 Skill");
+  const emptyActions: Element[] = [];
+  for (const child of emptyCard.children.flat()) if (child && typeof child === "object") emptyActions.push(child);
+  assert.deepEqual(emptyActions.map((node) => node.children.at(-1)), ["管理仓库", "从本地目录导入"]);
+  empty.unmount();
+
+  const ui = createHarness();
+  ui.server.skills = Array.from({ length: 60 }, (_, index) => skill(`s${String(index).padStart(2, "0")}`, "big/repo@main"));
+  ui.render(); await tick(); ui.render();
+  ui.groupHead("repo:big/repo").props.onClick(); ui.render();
+  const rows = () => { const children: Element[] = []; const collect = (node: any) => {
+    if (!node || typeof node !== "object") return; if (Array.isArray(node)) { node.forEach(collect); return; }
+    children.push(node); node.children?.forEach(collect);
+  }; collect(ui.group("repo:big/repo").children[0]("handle")); return children; };
+  // 一组先画 50 行，其余点「再显示」。
+  assert.equal(rows().filter((node) => typeof node.type === "function").length, 50);
+  rows().find((node) => node.type === "button" && node.children.includes("再显示 10 个"))!.props.onClick(); ui.render();
+  assert.equal(rows().filter((node) => typeof node.type === "function").length, 60);
+  ui.search("no-such-skill");
+  assert.equal(ui.find((node) => node.type === "CxEmpty").props.title, "没有匹配的 Skill");
   ui.unmount();
 });

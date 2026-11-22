@@ -1,11 +1,11 @@
 /** 「全局管理 · Skills」：已安装 / 发现两个视图，按来源或自定义分组，每行各 Agent 一枚开关。抽屉在 SkillDrawers.tsx。 */
-import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, BookOpen, ChevronDown, ChevronsDown, ChevronsUp, CloudDownload, FolderPlus, GripVertical, Link, RefreshCw, Search, X } from "lucide-react";
+import { ArrowDownAZ, ArrowDownUp, ArrowDownZA, BookOpen, ChevronDown, ChevronsDown, ChevronsUp, CloudDownload, FolderPlus, GitBranch, GripVertical, Link, RefreshCw, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, skillRepoKey } from "./management-model";
@@ -69,56 +69,121 @@ function GroupAgentSelect({ group, agent, busy, operations, count, prepareSkill,
     <AgentGlyph agent={agent} /><span>{name}</span>
   </button>;
 }
-export function SkillsPage({ notify }: { notify: Notify }) {
+/** 每组先显示的行数；其余点「再显示」展开，长目录（发现页、搜索结果）不必一次画出全部行。 */
+const SKILL_GROUP_PAGE = 50;
+const SYNC_COPIES_HINT = "把各 Agent 中内容一致的 Skill 同步到 Codex++ 保存的副本中。旧副本会先备份，不会从 GitHub 下载更新。";
+
+/** 行里的操作；页面传进来的对象引用不变，行组件只在自己的数据变化时重画。 */
+type SkillRowActions = {
+  openDetails: (skill: Skill, locations?: boolean) => void;
+  openRepo: (repoKey: string) => void;
+  setVersionTask: (task: VersionTask) => void;
+  assignGroup: (skill: Skill, group: string) => void;
+  install: (skill: Skill) => void;
+  update: (skill: Skill, inPlace: boolean) => void;
+  syncCopies: (skill: Skill) => Promise<boolean>;
+  run: (command: string, args: Record<string, unknown>) => Promise<boolean>;
+};
+
+/**
+ * 一个 Skill 一行（参照 MCP 页 / Cursor 的 Customize）：右侧是各 Agent 的开关胶囊；
+ * 详情、分组、卸载收进行末的三点菜单。`conflict` / `guarded` / `codexToggleSafe` 由页面按全部数据算好传进来。
+ */
+function SkillRowView({ skill: s, busy, update, conflict, guarded, codexToggleSafe, agentColumns, batchOperations, customGroupNames, assignment, agentSkillsDirs, actions }: {
+  skill: Skill; busy: boolean; update?: ReturnType<SkillBatchRegistry["getUpdates"]>[number]; conflict: boolean; guarded: boolean; codexToggleSafe: boolean;
+  agentColumns: McpAgentId[]; batchOperations: PendingSkillBatchOperation[]; customGroupNames: string[]; assignment: string;
+  agentSkillsDirs?: Record<string, string>; actions: SkillRowActions;
+}) {
+  const inPlaceUpdate = Boolean(s.originalDir && s.updateOwner !== "manager");
+  // 与分组更新（updateTargets）一致：共享位置、未授权渠道的 Skill 后端会拒绝，不显示必然失败的按钮。
+  const managerUpdate = (!s.originalDir && !(s.updateOwner === "" && s.installChannel)) || s.updateOwner === "manager";
+  const canUpdate = inPlaceUpdate || (managerUpdate && !s.locations?.some((location) => location.rootKind === "shared"));
+  const needsSync = s.managedSourceStatus === "needs-sync";
+  const syncCopiesHint = t(SYNC_COPIES_HINT);
+  const statusError = skillCodexStatusError(s);
+  const detail = conflict && s.locations?.length ? s.locations.map((location) => location.manifestPath).join(" · ") : s.description || t("暂无描述");
+  // 共享原件由其他 Agent 共用，受控副本需通过重复预览处理。
+  const canUninstall = s.installed && !s.bundled && !guarded && !s.locations?.some((location) => location.rootKind === "shared")
+    && (s.managed || skillAgents(s).includes("codex") || s.agents === undefined);
+  const on = s.installed && agentColumns.some((agent) => (agent !== "codex" || !statusError) && skillAgents(s).includes(agent));
+  return <CxRow className="cx-skill-row"
+    icon={<CxStatusIcon tone={on ? "ok" : "off"}><BookOpen /></CxStatusIcon>}
+    title={s.name || s.id}
+    badges={<>
+      <small className="cx-skill-source" title={s.repoKey === "cc-switch" ? sourceLabel(s) : s.repoKey || sourceLabel(s)}>{sourceLabel(s)}</small>
+      {statusError && <CxBadge tone="warn">{t("Codex 状态未知")}</CxBadge>}
+      {conflict && !s.displayInstances ? <CxBadge tone="warn">{t(s.conflictKind === "equal-independent" ? "多个独立安装" : "同名冲突")}</CxBadge> : s.updateAvailable ? <CxBadge tone="warn">{t("可更新")}</CxBadge> : null}
+    </>}
+    detail={<span title={detail}>{detail}</span>}
+    onClick={() => actions.openDetails(s)}>
+    {needsSync && <Button title={syncCopiesHint} disabled={busy || !!update} onClick={() => void actions.syncCopies(s)}>{t("同步工作副本")}</Button>}
+    {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button disabled={guarded} onClick={() => actions.install(s)}>{t("安装")}</Button> : s.installed && s.updateAvailable && !guarded && canUpdate ? <Button onClick={() => actions.update(s, inPlaceUpdate)}>{t("更新")}</Button> : null}
+    <div className="cx-agent-toggles" role="group" aria-label={t("启用到 Agent")}>
+      {agentColumns.map((agent) => {
+        const safeDisable = guarded && s.conflictKind === "managed-modified"
+          && s.safeDisableAgents?.includes(agent) && skillAgents(s).includes(agent);
+        const safeCodex = guarded && agent === "codex" && codexToggleSafe;
+        const backupModifiedCopy = safeDisable && agent !== "codex";
+        const batchSuccess = batchOperations.find((operation) => operation.agent === agent && operation.successfulSkillIds?.includes(s.id));
+        return <AgentToggle agent={agent} key={agent} name={s.name || s.id}
+          enabled={s.installed && !(agent === "codex" && statusError) && (batchSuccess ? batchSuccess.enabled : skillAgents(s).includes(agent))}
+          statusUnknown={agent === "codex" && !!statusError}
+          disabled={busy || !s.installed || s.bundled || (agent === "codex" && !!statusError) || (guarded && skillAgents(s).includes(agent) && !safeDisable && !safeCodex) || skillBatchHasPending(batchOperations, [s], agent)}
+          title={agentSkillsDirs?.[agent]}
+          hint={agent === "codex" && statusError ? tf("状态未知：{0}", [statusError]) : backupModifiedCopy ? t("停用并备份已修改的受控副本") : (safeCodex || (safeDisable && agent === "codex")) ? t("只修改 Codex 的技能启用状态") : conflict ? s.conflict || t("同名 Skill 内容存在冲突") : guarded ? t("请按安装位置管理") : !s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : undefined}
+          onToggle={async () => {
+            if (needsSync && !skillAgents(s).includes(agent)) {
+              if (await actions.syncCopies(s)) await actions.run("set_skill_enabled_for", {agent, id: s.id, enabled: true});
+              return;
+            }
+            if ((guarded || s.managedSourceStatus === "different") && !safeCodex && !skillAgents(s).includes(agent)) { actions.setVersionTask({ id: s.id, mode: "enable", agent }); return; }
+            if (backupModifiedCopy && !(await appConfirm(t("此受控副本已修改，停用时将移入备份。"), {
+              title: t("停用并备份"), confirmText: t("停用并备份"),
+            }))) return;
+            await actions.run("set_skill_enabled_for", { agent, id: s.id, enabled: backupModifiedCopy ? false : !skillAgents(s).includes(agent) });
+          }} />;
+      })}
+    </div>
+    <Menu>
+      <MenuItem onClick={() => actions.openDetails(s)}>{t("查看详情")}</MenuItem>
+      <MenuItem disabled={!s.installed || s.bundled} onClick={() => actions.openDetails(s, true)}>{t("安装位置与来源")}</MenuItem>
+      <MenuItem onClick={() => actions.openRepo(s.repoKey)}>{t("管理仓库")}</MenuItem>
+      {needsSync && <MenuItem title={syncCopiesHint} disabled={busy} onClick={() => void actions.syncCopies(s)}>{t("同步工作副本")}</MenuItem>}
+      {s.installed && !s.bundled && (guarded || s.managedSourceStatus === "different") && <MenuItem onClick={() => actions.setVersionTask({ id: s.id, mode: "resolve" })}>{t("解决冲突")}</MenuItem>}
+      {!s.bundled && (!s.conflict || s.instanceKey) && customGroupNames.length ? <>
+        <div className="mg-menu-label">{t("分组")}</div>
+        <MenuItem checked={!assignment} onClick={() => actions.assignGroup(s, "")}>{t("按来源")}</MenuItem>
+        {customGroupNames.map((group) => <MenuItem checked={assignment === customSkillGroupKey(group)} key={group} onClick={() => actions.assignGroup(s, group)}>{group}</MenuItem>)}
+      </> : null}
+      <MenuItem danger disabled={!s.installed || s.bundled || busy || Boolean(update)} onClick={async () => {
+        if (!canUninstall) { actions.setVersionTask({ id: s.id, mode: "archive" }); return; }
+        if (await appConfirm(`${t("卸载并备份此 Skill？")}\n${s.name || s.id}`, { title: t("卸载"), danger: true })) await actions.run("uninstall_skill", { id: s.id });
+      }}>{t("卸载")}</MenuItem>
+    </Menu>
+  </CxRow>;
+}
+const SkillRow = memo(SkillRowView);
+
+/**
+ * Skills 数据的读取与缓存：先读本地已安装清单并画出来，再在后台刷新仓库目录（发现）。
+ * 离开页面再回来先用上次的结果（skillPageCache），30 秒内不重复扫描本地；后台操作结束后重读本地。
+ * 返回的 dataRequest / applyCurrentPayload 供页面上的写操作按请求序号丢弃过期结果。
+ */
+function useSkillsData(notify: Notify) {
   const [dataState, setDataState] = useState<{ version: number; value: SkillPayload | null }>(() => ({ version: 0, value: skillPageCache.value }));
   const data = dataState.value;
   useEffect(() => { skillPageCache.value = data; }, [data]);
-  const [tab, setTab] = useState<"discover" | "installed">("installed");
-  const [query, setQuery] = useState("");
-  const [busy, setBusy] = useState(false);
-  const batchOperations = useSyncExternalStore(skillBatchRegistry.subscribe, skillBatchRegistry.getSnapshot, skillBatchRegistry.getSnapshot);
-  const updates = useSyncExternalStore(skillBatchRegistry.subscribeUpdates, skillBatchRegistry.getUpdates, skillBatchRegistry.getUpdates);
-  const updateFailures = useSyncExternalStore(skillBatchRegistry.subscribeFailures, skillBatchRegistry.getFailures, skillBatchRegistry.getFailures);
   const batchOwner = useRef(Symbol("skills-page"));
   const mounted = useRef(false);
   const loadingRequests = useRef(0);
   const catalogRequests = useRef(0);
   const dataRequest = useRef(0);
   const localReload = useRef<{ pending: Promise<void> | null; dirty: boolean }>({ pending: null, dirty: false });
-  const [repoOpen, setRepoOpen] = useState(false);
-  const [detail, setDetail] = useState<Skill | null>(null);
-  const [showLocations, setShowLocations] = useState(false);
-  const [versionTask, setVersionTask] = useState<VersionTask | null>(null);
-  const [detailDates, setDetailDates] = useState<{ id: string; dates: Record<string, number>; errors: Record<string, string> } | null>(null);
-  const exportBackup = (backup: SkillBackup) => setVersionTask({ id: backup.skillId, mode: "export", backup: backup.id });
-  const [matchTarget, setMatchTarget] = useState<({ id?: string; localPath?: string } & SkillMatchContext) | null>(null);
-  const [duplicatesOpen, setDuplicatesOpen] = useState(false);
-  const [backupsOpen, setBackupsOpen] = useState(false);
-  const [bundleExportOpen, setBundleExportOpen] = useState(false);
-  const [updateTarget, setUpdateTarget] = useState<{ id: string; repoKey: string; localPath?: string } | null>(null);
-  const [repoSelection, setRepoSelection] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [initialLocalLoaded, setInitialLocalLoaded] = useState(false);
   const [refreshingCatalog, setRefreshingCatalog] = useState(() => !!skillPageCache.catalogPending);
-  // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
-  const focus = useAgentFocus();
-  const agentColumns: McpAgentId[] = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
-  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [storedGroups] = useState(() => readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY)));
-  const [customGroupNames, setCustomGroupNames] = useState<string[]>(storedGroups.names);
-  const [customGroupAssignments, setCustomGroupAssignments] = useState<Record<string, string>>(storedGroups.assignments);
-  const [assignmentsByIdentity, setAssignmentsByIdentity] = useState<Record<string, string>>(storedGroups.assignmentsByIdentity);
-  const [groupOrder, setGroupOrder] = useState<string[]>(storedGroups.order);
-  const [groupSortDirection, setGroupSortDirection] = useState<SkillGroupSortDirection | null>(storedGroups.sortDirection);
-  const [groupAliases] = useState<Record<string, string>>(storedGroups.aliases);
-  useEffect(() => {
-    const stored = readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY));
-    localStorage.setItem(SKILL_GROUP_STORAGE_KEY, JSON.stringify({ ...stored, names: customGroupNames, assignments: customGroupAssignments, assignmentsByIdentity, order: groupOrder, sortDirection: groupSortDirection }));
-  }, [customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection]);
-  const groupSensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
+  // 读取失败的原因：手上还没有任何数据时页面显示它和「重试」，不混进「没有匹配的 Skill」。
+  const [loadError, setLoadError] = useState("");
   const requestPayload = (command: string) => {
     const local = command === "list_installed_skills";
     const pendingKey = local ? "localPending" : "catalogPending";
@@ -159,9 +224,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
             const result = await requestPayload("list_installed_skills");
             if (!mounted.current) return;
             if (request === dataRequest.current) applyCurrentPayload(request, result);
+            setLoadError(ok(result) ? "" : result.message);
             if (!ok(result)) await notify("Skills", result.message, "failed");
           } catch (error) {
-            if (mounted.current) await notify("Skills", String(error), "failed");
+            if (mounted.current) { setLoadError(String(error)); await notify("Skills", String(error), "failed"); }
           }
         } while (state.dirty && mounted.current);
       } finally {
@@ -209,9 +275,10 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       } else {
         startTransition(() => applyCurrentPayload(request, r, !local));
       }
+      if (mounted.current) setLoadError(ok(r) ? "" : r.message);
       if (mounted.current && !ok(r)) await notify("Skills", r.message, "failed");
     } catch (e) {
-      if (mounted.current) await notify("Skills", String(e), "failed");
+      if (mounted.current) { setLoadError(String(e)); await notify("Skills", String(e), "failed"); }
     } finally {
       if (local) {
         loadingRequests.current--;
@@ -252,9 +319,63 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   useEffect(() => skillBatchRegistry.subscribeSettled((owner, batchProgress) => {
     if (mounted.current && owner !== batchOwner.current && !batchProgress) return reloadLocal();
   }), []);
+  return { data, setDataState, batchOwner, mounted, dataRequest, loading, refreshingCatalog, loadError, load, reloadLocal, applyCurrentPayload };
+}
+
+export function SkillsPage({ notify }: { notify: Notify }) {
+  const { data, setDataState, batchOwner, mounted, dataRequest, loading, refreshingCatalog, loadError, load, reloadLocal, applyCurrentPayload } = useSkillsData(notify);
+  const [tab, setTab] = useState<"discover" | "installed">("installed");
+  const [query, setQuery] = useState("");
+  const [busy, setBusy] = useState(false);
+  const batchOperations = useSyncExternalStore(skillBatchRegistry.subscribe, skillBatchRegistry.getSnapshot, skillBatchRegistry.getSnapshot);
+  const updates = useSyncExternalStore(skillBatchRegistry.subscribeUpdates, skillBatchRegistry.getUpdates, skillBatchRegistry.getUpdates);
+  const updateFailures = useSyncExternalStore(skillBatchRegistry.subscribeFailures, skillBatchRegistry.getFailures, skillBatchRegistry.getFailures);
+  const [repoOpen, setRepoOpen] = useState(false);
+  const [detail, setDetail] = useState<Skill | null>(null);
+  const [showLocations, setShowLocations] = useState(false);
+  const [versionTask, setVersionTask] = useState<VersionTask | null>(null);
+  const [detailDates, setDetailDates] = useState<{ id: string; dates: Record<string, number>; errors: Record<string, string> } | null>(null);
+  const exportBackup = (backup: SkillBackup) => setVersionTask({ id: backup.skillId, mode: "export", backup: backup.id });
+  const [matchTarget, setMatchTarget] = useState<({ id?: string; localPath?: string } & SkillMatchContext) | null>(null);
+  const [duplicatesOpen, setDuplicatesOpen] = useState(false);
+  const [backupsOpen, setBackupsOpen] = useState(false);
+  const [bundleExportOpen, setBundleExportOpen] = useState(false);
+  const [updateTarget, setUpdateTarget] = useState<{ id: string; repoKey: string; localPath?: string } | null>(null);
+  const [repoSelection, setRepoSelection] = useState<string | null>(null);
+  // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
+  const focus = useAgentFocus();
+  const agentColumns: McpAgentId[] = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+  // 每组展开了多少行（默认 SKILL_GROUP_PAGE）。
+  const [rowLimits, setRowLimits] = useState<Record<string, number>>({});
+  const [storedGroups] = useState(() => readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY)));
+  const [customGroupNames, setCustomGroupNames] = useState<string[]>(storedGroups.names);
+  const [customGroupAssignments, setCustomGroupAssignments] = useState<Record<string, string>>(storedGroups.assignments);
+  const [assignmentsByIdentity, setAssignmentsByIdentity] = useState<Record<string, string>>(storedGroups.assignmentsByIdentity);
+  const [groupOrder, setGroupOrder] = useState<string[]>(storedGroups.order);
+  const [groupSortDirection, setGroupSortDirection] = useState<SkillGroupSortDirection | null>(storedGroups.sortDirection);
+  const [groupAliases] = useState<Record<string, string>>(storedGroups.aliases);
+  useEffect(() => {
+    const stored = readSkillGroupStorage(localStorage.getItem(SKILL_GROUP_STORAGE_KEY));
+    localStorage.setItem(SKILL_GROUP_STORAGE_KEY, JSON.stringify({ ...stored, names: customGroupNames, assignments: customGroupAssignments, assignmentsByIdentity, order: groupOrder, sortDirection: groupSortDirection }));
+  }, [customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection]);
+  const groupSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
   const openDetails = (skill: Skill, locations = false) => {
     setDetail(skill); setShowLocations(locations);
     void load("list_installed_skills", true);
+  };
+  // 从详情打开的子抽屉（关联来源、更新预览、仓库、受控源）关上后回到这个 Skill 的详情，不丢掉用户正在看的东西。
+  const [returnDetail, setReturnDetail] = useState<{ skill: Skill; locations: boolean } | null>(null);
+  const leaveDetail = () => {
+    if (detail) setReturnDetail({ skill: detail, locations: showLocations });
+    setDetail(null);
+  };
+  const backToDetail = () => {
+    if (!returnDetail) return;
+    setDetail(returnDetail.skill); setShowLocations(returnDetail.locations); setReturnDetail(null);
   };
   const run = async (command: string, args: Record<string, unknown>) => {
     const uninstallId = command === "uninstall_skill" && typeof args.id === "string" ? args.id : null;
@@ -588,8 +709,6 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   useEffect(() => {
     setAssignmentsByIdentity((old) => migrateSkillInstanceAssignments(old, customGroupAssignments, knownSkills, customGroupNames));
   }, [knownSkills, customGroupAssignments, customGroupNames]);
-  const items = useMemo(() => knownSkills
-    .filter((s) => (tab === "installed" ? s.installed : !s.installed || s.bundled)), [knownSkills, tab]);
   const knownRepositories = useMemo(() => data?.repos || [], [data]);
   const builtinGroupLabel = t("内置");
   const userGroupLabel = t("用户");
@@ -601,16 +720,17 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     return groupSortDirection ? sortSkillGroupsByName(result, groupSortDirection) : result;
   }, [knownSkills, knownRepositories, customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection, groupAliases, builtinGroupLabel, userGroupLabel, localGroupLabel]);
   const bundleGroups = useMemo(() => skillBundleExportGroups(allGroups), [allGroups]);
+  // 当前视图的分组：在 allGroups 上按页签和搜索词筛选，不再把全部 Skill 再分组、合并一遍。
+  // 只依赖 deferredQuery，输入时先更新输入框，列表在空闲时再跟上。
   const groups = useMemo(() => {
-    const result = groupSkills(items, knownSkills, customGroupNames, customGroupAssignments, groupOrder,
-      { builtin: builtinGroupLabel, user: userGroupLabel, source: sourceLabel }, !query.trim(), groupAliases, assignmentsByIdentity, knownRepositories)
-      .map((group) => ({ ...group, items: aggregateSkillGroupItems(group.items).filter((skill) =>
-        (skill.displayInstances || [skill]).some((item) => matchesManagementQuery(
-          [item.id, item.name, item.description, item.repoKey, sourceLabel(item), ...(item.locations || []).map((location) => location.manifestPath)], deferredQuery))) }))
+    const searching = Boolean(deferredQuery.trim());
+    const inTab = (skill: Skill) => (tab === "installed" ? skill.installed : !skill.installed || skill.bundled);
+    return allGroups.map((group) => ({ ...group, items: group.items.filter((skill) => inTab(skill)
+      && (skill.displayInstances || [skill]).some((item) => matchesManagementQuery(
+        [item.id, item.name, item.description, item.repoKey, sourceLabel(item), ...(item.locations || []).map((location) => location.manifestPath)], deferredQuery))) }))
       .filter((group) => (tab !== "installed" || group.kind !== "repo" || group.items.length > 0)
-        && (!query.trim() || group.items.length));
-    return groupSortDirection ? sortSkillGroupsByName(result, groupSortDirection) : result;
-  }, [items, knownSkills, knownRepositories, customGroupNames, customGroupAssignments, assignmentsByIdentity, groupOrder, groupSortDirection, groupAliases, builtinGroupLabel, userGroupLabel, localGroupLabel, query, deferredQuery, tab]);
+        && (!searching || group.items.length));
+  }, [allGroups, deferredQuery, tab]);
   const openUrl = async (url: string) => {
     try { await invoke("open_external_url", { url }); }
     catch (e) { await notify("Skills", String(e), "failed"); }
@@ -661,100 +781,74 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     setGroupOrder(moveSkillGroup(allGroups, String(active.id), String(over.id)));
     setGroupSortDirection(null);
   };
-  const agentCount = (agent: McpAgentId) => new Set((data?.skills || []).filter((s) =>
-    s.installed && (agent !== "codex" || !skillCodexStatusError(s)) && skillAgents(s).includes(agent)).map((s) => s.id)).size;
-  // 参照 MCP 页（Cursor 的 Customize）：每个 Skill 一行，右侧是各 Agent 的开关胶囊；分组是卡片外的小标题，
-  // 标题右侧同一列位置是这一组的批量开关。详情、分组、卸载收进行末的三点菜单。
-  const renderSkillRow = (s: Skill) => {
-    const update = s.bundled ? undefined : updates.find((item) => item.id === s.id);
-    const inPlaceUpdate = Boolean(s.originalDir && s.updateOwner !== "manager");
-    // 与分组更新（updateTargets）一致：共享位置、未授权渠道的 Skill 后端会拒绝，不显示必然失败的按钮。
-    const managerUpdate = (!s.originalDir && !(s.updateOwner === "" && s.installChannel)) || s.updateOwner === "manager";
-    const canUpdate = inPlaceUpdate || (managerUpdate && !s.locations?.some((location) => location.rootKind === "shared"));
-    const conflict = Boolean(s.conflict) || conflictIds.has(s.id);
-    const guarded = conflict || guardedIds.has(s.id);
-    const needsSync = s.managedSourceStatus === "needs-sync";
-    const syncCopiesHint = t("把各 Agent 中内容一致的 Skill 同步到 Codex++ 保存的副本中。旧副本会先备份，不会从 GitHub 下载更新。");
-    const syncCopies = async () => {
-      if (!await appConfirm(syncCopiesHint, { title: t("同步工作副本") })) return false;
+  // 每个 Agent 已启用的 Skill 数只在数据变化时数一次（分组批量开关的悬停说明用），不再每组每次渲染都扫全部 Skill。
+  const agentCounts = useMemo(() => {
+    const counts = {} as Record<McpAgentId, number>;
+    for (const agent of MCP_AGENTS) counts[agent] = new Set((data?.skills || []).filter((s) =>
+      s.installed && (agent !== "codex" || !skillCodexStatusError(s)) && skillAgents(s).includes(agent)).map((s) => s.id)).size;
+    return counts;
+  }, [data]);
+  // 行里的操作都经由这个引用调用最新的实现：传给 SkillRow 的 actions 对象本身不变，memo 才能生效。
+  const rowActionImpl = useRef<SkillRowActions | null>(null);
+  rowActionImpl.current = {
+    openDetails,
+    openRepo,
+    setVersionTask,
+    assignGroup: assignSkillGroup,
+    install: (skill) => { queueUpdate("install_skill", { repoKey: skill.repoKey, id: skill.id }); },
+    update: (skill, inPlace) => {
+      if (inPlace) setUpdateTarget({ id: skill.id, repoKey: skill.repoKey, localPath: skill.originalDir || undefined });
+      else queueUpdate("update_skill", { repoKey: skill.repoKey, id: skill.id });
+    },
+    syncCopies: async (skill) => {
+      if (!await appConfirm(t(SYNC_COPIES_HINT), { title: t("同步工作副本") })) return false;
       try {
-        const rows = await invoke<LocalSkillVersion[]>("list_skill_versions", {id: s.id});
+        const rows = await invoke<LocalSkillVersion[]>("list_skill_versions", {id: skill.id});
         if (rows.some((v) => v.comparisonError)) throw new Error(t("部分安装位置无法比较，请先处理后重试。"));
-        return await run("manage_skill_version", {action: {kind: "syncCopies", id: s.id, revisions: Object.fromEntries(rows.map(v => [v.root, v.revision]))}});
+        return await run("manage_skill_version", {action: {kind: "syncCopies", id: skill.id, revisions: Object.fromEntries(rows.map(v => [v.root, v.revision]))}});
       } catch (e) { await notify("Skills", String(e), "failed"); return false; }
-    };
-    const statusError = skillCodexStatusError(s);
-    const detail = conflict && s.locations?.length ? s.locations.map((location) => location.manifestPath).join(" · ") : s.description || t("暂无描述");
-    // 共享原件由其他 Agent 共用，受控副本需通过重复预览处理。
-    const canUninstall = s.installed && !s.bundled && !guarded && !s.locations?.some((location) => location.rootKind === "shared")
-      && (s.managed || skillAgents(s).includes("codex") || s.agents === undefined);
-    const assignment = skillGroupAssignment(s, customGroupNames, customGroupAssignments, assignmentsByIdentity);
-    const on = s.installed && agentColumns.some((agent) => (agent !== "codex" || !statusError) && skillAgents(s).includes(agent));
-    return <CxRow className="cx-skill-row" key={skillIdentityKey(s)}
-      icon={<CxStatusIcon tone={on ? "ok" : "off"}><BookOpen /></CxStatusIcon>}
-      title={s.name || s.id}
-      badges={<>
-        <small className="cx-skill-source" title={s.repoKey === "cc-switch" ? sourceLabel(s) : s.repoKey || sourceLabel(s)}>{sourceLabel(s)}</small>
-        {statusError && <CxBadge tone="warn">{t("Codex 状态未知")}</CxBadge>}
-        {conflict && !s.displayInstances ? <CxBadge tone="warn">{t(s.conflictKind === "equal-independent" ? "多个独立安装" : "同名冲突")}</CxBadge> : s.updateAvailable ? <CxBadge tone="warn">{t("可更新")}</CxBadge> : null}
-      </>}
-      detail={<span title={detail}>{detail}</span>}
-      onClick={() => openDetails(s)}>
-      {needsSync && <Button title={syncCopiesHint} disabled={busy || !!update} onClick={() => void syncCopies()}>{t("同步工作副本")}</Button>}
-      {update ? <span title={update.repoKey !== s.repoKey ? t("同 ID 操作中") : undefined}><Button disabled onClick={() => {}}>{t(update.command === "uninstall_skill" ? "卸载排队中" : update.repoKey !== s.repoKey ? "同 ID 操作中" : update.state === "queued" ? "排队中" : update.command === "install_skill" ? "安装中" : "更新中")}</Button></span> : !s.installed && !s.bundled ? <Button disabled={guarded} onClick={() => { queueUpdate("install_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("安装")}</Button> : s.installed && s.updateAvailable && !guarded && canUpdate ? <Button onClick={() => { if (inPlaceUpdate) setUpdateTarget({ id: s.id, repoKey: s.repoKey, localPath: s.originalDir || undefined }); else queueUpdate("update_skill", { repoKey: s.repoKey, id: s.id }); }}>{t("更新")}</Button> : null}
-      <div className="cx-agent-toggles" role="group" aria-label={t("启用到 Agent")}>
-        {agentColumns.map((agent) => {
-          const safeDisable = guarded && s.conflictKind === "managed-modified"
-            && s.safeDisableAgents?.includes(agent) && skillAgents(s).includes(agent);
-          const safeCodex = guarded && agent === "codex" && canToggleCodex(s);
-          const backupModifiedCopy = safeDisable && agent !== "codex";
-          const batchSuccess = batchOperations.find((operation) => operation.agent === agent && operation.successfulSkillIds?.includes(s.id));
-          return <AgentToggle agent={agent} key={agent} name={s.name || s.id}
-            enabled={s.installed && !(agent === "codex" && statusError) && (batchSuccess ? batchSuccess.enabled : skillAgents(s).includes(agent))}
-            statusUnknown={agent === "codex" && !!statusError}
-            disabled={busy || !s.installed || s.bundled || (agent === "codex" && !!statusError) || (guarded && skillAgents(s).includes(agent) && !safeDisable && !safeCodex) || skillBatchHasPending(batchOperations, [s], agent)}
-            title={data?.agentSkillsDirs?.[agent]}
-            hint={agent === "codex" && statusError ? `${t("状态未知")}：${statusError}` : backupModifiedCopy ? t("停用并备份已修改的受控副本") : (safeCodex || (safeDisable && agent === "codex")) ? t("只修改 Codex 的技能启用状态") : conflict ? s.conflict || t("同名 Skill 内容存在冲突") : guarded ? t("请按安装位置管理") : !s.installed ? t("未安装") : s.bundled ? t("Codex 自带，只读") : undefined}
-            onToggle={async () => {
-              if (needsSync && !skillAgents(s).includes(agent)) {
-                if (await syncCopies()) await run("set_skill_enabled_for", {agent, id: s.id, enabled: true});
-                return;
-              }
-              if ((guarded || s.managedSourceStatus === "different") && !safeCodex && !skillAgents(s).includes(agent)) { setVersionTask({ id: s.id, mode: "enable", agent }); return; }
-              if (backupModifiedCopy && !(await appConfirm(t("此受控副本已修改，停用时将移入备份。"), {
-                title: t("停用并备份"), confirmText: t("停用并备份"),
-              }))) return;
-              await run("set_skill_enabled_for", { agent, id: s.id, enabled: backupModifiedCopy ? false : !skillAgents(s).includes(agent) });
-            }} />;
-        })}
-      </div>
-      <Menu>
-        <MenuItem onClick={() => openDetails(s)}>{t("查看详情")}</MenuItem>
-        <MenuItem disabled={!s.installed || s.bundled} onClick={() => openDetails(s, true)}>{t("重新关联来源")}</MenuItem>
-        <MenuItem onClick={() => openRepo(s.repoKey)}>{t("管理仓库")}</MenuItem>
-        {needsSync && <MenuItem title={syncCopiesHint} disabled={busy} onClick={() => void syncCopies()}>{t("同步工作副本")}</MenuItem>}
-        {s.installed && !s.bundled && (guarded || s.managedSourceStatus === "different") && <MenuItem onClick={() => setVersionTask({ id: s.id, mode: "resolve" })}>{t("解决冲突")}</MenuItem>}
-        {!s.bundled && (!s.conflict || s.instanceKey) && customGroupNames.length ? <>
-          <div className="mg-menu-label">{t("分组")}</div>
-          <MenuItem checked={!assignment} onClick={() => assignSkillGroup(s, "")}>{t("按来源")}</MenuItem>
-          {customGroupNames.map((group) => <MenuItem checked={assignment === customSkillGroupKey(group)} key={group} onClick={() => assignSkillGroup(s, group)}>{group}</MenuItem>)}
-        </> : null}
-        <MenuItem danger disabled={!s.installed || s.bundled || busy || Boolean(update)} onClick={async () => {
-          if (!canUninstall) { setVersionTask({ id: s.id, mode: "archive" }); return; }
-          if (await appConfirm(`${t("卸载并备份此 Skill？")}\n${s.name || s.id}`, { title: t("卸载"), danger: true })) await run("uninstall_skill", { id: s.id });
-        }}>{t("卸载")}</MenuItem>
-      </Menu>
-    </CxRow>;
+    },
+    run,
   };
+  const rowActions = useMemo<SkillRowActions>(() => ({
+    openDetails: (...args) => rowActionImpl.current!.openDetails(...args),
+    openRepo: (...args) => rowActionImpl.current!.openRepo(...args),
+    setVersionTask: (...args) => rowActionImpl.current!.setVersionTask(...args),
+    assignGroup: (...args) => rowActionImpl.current!.assignGroup(...args),
+    install: (...args) => rowActionImpl.current!.install(...args),
+    update: (...args) => rowActionImpl.current!.update(...args),
+    syncCopies: (...args) => rowActionImpl.current!.syncCopies(...args),
+    run: (...args) => rowActionImpl.current!.run(...args),
+  }), []);
   const discoverCount = (data?.skills || []).filter((s) => !s.installed || s.bundled).length;
   const installedCount = aggregateSkillGroupItems((data?.skills || []).filter((s) => s.installed)).length;
   const pageLoading = tab === "installed" ? loading : refreshingCatalog || (!data && loading);
   const sortLabel = `${t("按名称排序")} (${groupSortDirection === "asc" ? "A-Z" : groupSortDirection === "desc" ? "Z-A" : "A-Z / Z-A"})`;
   const currentDetail = detail ? allGroups.flatMap((group) => group.items).find((skill) => skillIdentityKey(skill) === skillIdentityKey(detail))
     || (detail.installed || guardedIds.has(detail.id) ? null : detail) : null;
+  // 详情「更新」一节的直接更新：和行里的「更新」按钮同一条件，只给由 Codex++ 管理更新的 Skill（原位维护的走预览）。
+  const detailQueueUpdate = Boolean(currentDetail && currentDetail.installed && !currentDetail.bundled && currentDetail.updateAvailable
+    && !currentDetail.conflict && !conflictIds.has(currentDetail.id) && !guardedIds.has(currentDetail.id)
+    && !(currentDetail.originalDir && currentDetail.updateOwner !== "manager")
+    && ((!currentDetail.originalDir && !(currentDetail.updateOwner === "" && currentDetail.installChannel)) || currentDetail.updateOwner === "manager")
+    && !currentDetail.locations?.some((location) => location.rootKind === "shared")
+    && !updates.some((item) => item.id === currentDetail.id));
+  // 空状态分开说：读取中、读取失败、搜索无结果、还没有 Skill，各配合适的按钮。
+  const visibleCount = groups.reduce((sum, group) => sum + group.items.length, 0);
+  const readFailed = !data ? Boolean(loadError) : !data.inventoryOk && !data.skills.length;
+  const refreshCommand = tab === "installed" ? "list_installed_skills" : "refresh_skill_catalog";
+  const openRepoWorkspace = () => { setRepoOpen(true); void load("list_installed_skills", true); };
+  const emptyState = visibleCount ? null
+    : !data && pageLoading ? <CxEmpty title={t("正在读取 Skills…")} />
+    : readFailed ? <CxEmpty title={t("Skills 读取失败")} detail={loadError || data?.message}><Button onClick={() => void load(refreshCommand)} disabled={pageLoading}>{t("重试")}</Button></CxEmpty>
+    : deferredQuery.trim() ? <CxEmpty title={t("没有匹配的 Skill")} detail={tab === "installed" ? t("只搜索了已安装的 Skill，可以到「发现」里找。") : undefined}><Button onClick={() => setQuery("")}>{t("清除搜索")}</Button></CxEmpty>
+    : pageLoading ? <CxEmpty title={t("正在扫描…")} />
+    : tab === "installed"
+      ? <CxEmpty title={t("还没有安装 Skill")} detail={t("从仓库安装，或导入本地已有的 Skill 目录。")}><Button primary onClick={openRepoWorkspace}>{t("管理仓库")}</Button><Button onClick={() => void importLocalSkills()} disabled={busy}>{t("从本地目录导入")}</Button></CxEmpty>
+      : <CxEmpty title={t("还没有可安装的 Skill")} detail={t("添加 Skill 仓库后，仓库里的 Skill 会出现在这里。")}><Button primary onClick={openRepoWorkspace}>{t("管理仓库")}</Button></CxEmpty>;
   return <div className="mg-page cx-page mg-skills-page">
     <PageHeader icon={<BookOpen size={20}/>} title="Skills" actions={<>
-      <Button onClick={() => void load(tab === "installed" ? "list_installed_skills" : "refresh_skill_catalog")} disabled={busy || pageLoading}><RefreshCw size={14}/>{t(pageLoading ? "刷新目录中" : "刷新目录")}</Button>
+      <Button onClick={() => void load(refreshCommand)} disabled={busy || pageLoading}><RefreshCw size={14}/>{tab === "installed" ? t(pageLoading ? "刷新中…" : "刷新已安装") : t(pageLoading ? "刷新目录中" : "刷新目录")}</Button>
       <Menu>
         <MenuItem onClick={() => void importLocalSkills()} disabled={busy}>{t("从本地目录导入")}</MenuItem>
         <MenuItem onClick={() => void run("import_ccs_skills", {})} disabled={busy}>{t("从 cc-switch 导入")}</MenuItem>
@@ -765,13 +859,13 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       </Menu>
     </>} />
     <CxToolbar query={query} onQuery={setQuery} placeholder={t("搜索 Skills 或仓库")}>
-      <button type="button" className="cx-primary" onClick={() => { setRepoOpen(true); void load("list_installed_skills", true); }}><Link size={15}/>{t("管理仓库")}</button>
+      <button type="button" className="cx-primary" onClick={openRepoWorkspace}><Link size={15}/>{t("管理仓库")}</button>
     </CxToolbar>
     <CxFilters label="Skills" value={tab} onChange={(next) => { setTab(next); if (next === "installed" && tab !== next) void load("list_installed_skills", true); }}
       items={[{ id: "installed", label: t("已安装"), count: installedCount }, { id: "discover", label: t("发现"), count: discoverCount }]}
       trailing={<>
-        <button type="button" className="mg-icon-button" title={t("匹配仓库")} aria-label={t("匹配仓库")}
-          disabled={busy || !data} onClick={() => setMatchTarget({})}><Search size={16}/></button>
+        <button type="button" className="cx-secondary cx-skill-match" title={t("为本地 Skill 找到对应的 GitHub 仓库来源")} aria-label={t("匹配仓库")}
+          disabled={busy || !data} onClick={() => setMatchTarget({})}><GitBranch size={14} aria-hidden="true"/>{t("匹配仓库")}</button>
         <button type="button" className="mg-icon-button" title={t("新建分组")} aria-label={t("新建分组")}
           onClick={createCustomGroup}><FolderPlus size={16}/></button>
         <button type="button" className="mg-icon-button" disabled={busy || !data}
@@ -794,10 +888,13 @@ export function SkillsPage({ notify }: { notify: Notify }) {
     </CxBanner>}
     {data?.repoErrors?.length ? <CxBanner tone="warn" icon={<Link />} title={t(data.inventoryOk && data.backupsOk ? "部分仓库读取失败" : "Skill 数据读取失败")} detail={<span className="cx-skill-repo-errors">{data.repoErrors.map((e) => <span key={e}>{e}</span>)}</span>} /> : null}
     <div className="cx-skill-groups" aria-busy={pageLoading} data-columns={agentColumns.length}>
-      {!groups.length ? <CxCard><CxEmpty title={pageLoading ? t("正在扫描…") : t("没有匹配的 Skill")} /></CxCard> :
+      {emptyState ? <CxCard>{emptyState}</CxCard> : null}
+      {groups.length ?
         <DndContext sensors={groupSensors} collisionDetection={closestCenter} onDragEnd={handleGroupDragEnd}>
           <SortableContext items={groups.map((group) => group.key)} strategy={verticalListSortingStrategy}>{groups.map((group) => {
-        const collapsed = !expandedGroups.has(group.key) && !query.trim();
+        const collapsed = !expandedGroups.has(group.key) && !deferredQuery.trim();
+        const shownItems = group.items.slice(0, rowLimits[group.key] ?? SKILL_GROUP_PAGE);
+        const hiddenRows = group.items.length - shownItems.length;
         const allGroupItems = allGroups.find((item) => item.key === group.key)?.items || group.items;
         const updateTargets = allGroupItems.filter((skill) => skill.installed && !skill.bundled && !guardedIds.has(skill.id) && !skill.conflict
           && (!skill.originalDir || skill.updateOwner === "manager") && !(skill.updateOwner === "" && skill.installChannel)
@@ -820,7 +917,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
                 {agentColumns.map((agent) => <GroupAgentSelect group={group} agent={agent} key={agent}
                   busy={busy || skillBatchHasPending(batchOperations, allGroupItems, agent)} operations={batchOperations}
                   prepareSkill={batchSkill}
-                  count={agentCount(agent)}
+                  count={agentCounts[agent]}
                   onChange={(enabled) => { void runBatch(group, agent, enabled).catch((error) => notify("Skills", String(error), "failed")); }}/>)}
               </div>
               {group.kind === "custom" ? <Menu label={tf("{0} 的更多操作", [group.label])}>
@@ -830,11 +927,19 @@ export function SkillsPage({ notify }: { notify: Notify }) {
             </div>
           </header>
           {/* 空分组只留标题（数量 0），不再画一张空卡片。 */}
-          {!collapsed && group.items.length ? <CxCard>{group.items.map(renderSkillRow)}</CxCard> : null}
+          {!collapsed && group.items.length ? <CxCard>
+            {shownItems.map((s) => <SkillRow key={skillIdentityKey(s)} skill={s} busy={busy} actions={rowActions} agentColumns={agentColumns}
+              update={s.bundled ? undefined : updates.find((item) => item.id === s.id)}
+              conflict={Boolean(s.conflict) || conflictIds.has(s.id)} guarded={Boolean(s.conflict) || conflictIds.has(s.id) || guardedIds.has(s.id)}
+              codexToggleSafe={canToggleCodex(s)} batchOperations={batchOperations} customGroupNames={customGroupNames}
+              assignment={skillGroupAssignment(s, customGroupNames, customGroupAssignments, assignmentsByIdentity)}
+              agentSkillsDirs={data?.agentSkillsDirs} />)}
+            {hiddenRows > 0 ? <button type="button" className="cx-session-more" onClick={() => setRowLimits((old) => ({ ...old, [group.key]: shownItems.length + SKILL_GROUP_PAGE }))}>{tf("再显示 {0} 个", [hiddenRows])}</button> : null}
+          </CxCard> : null}
         </>}</SortableSkillGroup>;
-      })}</SortableContext></DndContext>}
+      })}</SortableContext></DndContext> : null}
     </div>
-    {repoOpen && <SkillRepoDrawer repos={data?.repos || []} catalog={data?.repositorySkills || []} counts={data?.repoCounts || {}} initialKey={repoSelection} busy={busy} updates={updates} conflictIds={guardedIds} onClose={() => setRepoOpen(false)} onSave={saveRepo} onDelete={(r) => void deleteRepo(r)} onInspect={inspectRepo} onOpenUrl={(url) => void openUrl(url)} onOpenSkill={setDetail} onRun={(command, args) => { queueUpdate(command, args); }} />}
+    {repoOpen && <SkillRepoDrawer repos={data?.repos || []} catalog={data?.repositorySkills || []} counts={data?.repoCounts || {}} initialKey={repoSelection} busy={busy} updates={updates} conflictIds={guardedIds} onClose={() => { setRepoOpen(false); backToDetail(); }} onSave={saveRepo} onDelete={(r) => void deleteRepo(r)} onInspect={inspectRepo} onOpenUrl={(url) => void openUrl(url)} onOpenSkill={setDetail} onRun={(command, args) => { queueUpdate(command, args); }} />}
     {currentDetail && <SkillDetailDrawer skill={conflictIds.has(currentDetail.id) && !currentDetail.conflict ? { ...currentDetail, conflict: t("同名 Skill 内容存在冲突，请先确认各安装位置。") } : currentDetail}
       dates={detailDates?.id === currentDetail.id ? detailDates.dates : undefined} comparisonErrors={detailDates?.id === currentDetail.id ? detailDates.errors : undefined}
       onExpand={() => { const id = currentDetail.id;
@@ -845,23 +950,25 @@ export function SkillsPage({ notify }: { notify: Notify }) {
       showLocations={showLocations} onArchive={() => setVersionTask({ id: currentDetail.id, mode: "archive" })} onExport={exportBackup}
       onLocal={() => setVersionTask({ id: currentDetail.id, mode: "local" })}
       count={data?.repoCounts?.[currentDetail.repoKey]} backups={(data?.backups || []).filter((backup) => backup.skillId === currentDetail.id)} busy={busy}
-      onClose={() => setDetail(null)} onOpenUrl={(url) => void openUrl(url)} onOpenRepo={() => repoOpen ? setDetail(null) : openRepo(currentDetail.repoKey)}
-      onManageSource={() => { setDetail(null); setDuplicatesOpen(true); }}
-      onMatch={(localPath, context) => { setDetail(null); setMatchTarget({ id: currentDetail.id, localPath: localPath || (currentDetail.conflictKind === "independent" ? currentDetail.originalDir || undefined : undefined), ...context }); }}
+      onClose={() => { setDetail(null); setReturnDetail(null); }} onOpenUrl={(url) => void openUrl(url)}
+      onOpenRepo={() => { if (repoOpen) setDetail(null); else { leaveDetail(); openRepo(currentDetail.repoKey); } }}
+      onManageSource={() => { leaveDetail(); setDuplicatesOpen(true); }}
+      onMatch={(localPath, context) => { leaveDetail(); setMatchTarget({ id: currentDetail.id, localPath: localPath || (currentDetail.conflictKind === "independent" ? currentDetail.originalDir || undefined : undefined), ...context }); }}
       onRestore={(backup) => void restoreBackup(backup)}
       onDeleteBackup={(backup) => void deleteBackup(backup)}
-      onUpdate={(repoKey, localPath) => { setUpdateTarget({ id: currentDetail.id, repoKey, localPath }); setDetail(null); }}
+      onUpdate={(repoKey, localPath) => { setUpdateTarget({ id: currentDetail.id, repoKey, localPath }); leaveDetail(); }}
+      onQueueUpdate={detailQueueUpdate ? () => queueUpdate("update_skill", { repoKey: currentDetail.repoKey, id: currentDetail.id }) : undefined}
       />}
     {matchTarget && <SkillSourceMatchDrawer repos={data?.repos || []} id={matchTarget.id} localPath={matchTarget.localPath}
       agentLabel={matchTarget.agentLabel} currentRepoKey={matchTarget.currentRepoKey} currentRepoPath={matchTarget.currentRepoPath}
       localSkillIds={knownSkills.filter((skill) => skill.installed && !skill.bundled
         && (!skill.repoPath || !skill.repoKey.includes("/"))).map((skill) => skill.id)}
-      onClose={() => setMatchTarget(null)} onAddRepo={addMatchingRepo} onApply={applySourceMatches}/>}
-    {duplicatesOpen && <SkillDuplicatesDrawer onClose={() => setDuplicatesOpen(false)} onArchive={(previewId, id, kind) => run("archive_skill_duplicate", { previewId, id, kind })}/>}
+      onClose={() => { setMatchTarget(null); backToDetail(); }} onAddRepo={addMatchingRepo} onApply={applySourceMatches}/>}
+    {duplicatesOpen && <SkillDuplicatesDrawer onClose={() => { setDuplicatesOpen(false); backToDetail(); }} onArchive={(previewId, id, kind) => run("archive_skill_duplicate", { previewId, id, kind })}/>}
     {bundleExportOpen && <SkillBundleExportDrawer groups={bundleGroups} busy={busy} onClose={() => setBundleExportOpen(false)} onExport={(selected) => void exportSkillBundle(selected)}/>}
     {backupsOpen && <SkillBackupsDrawer backups={data?.backups || []} busy={busy} onClose={() => setBackupsOpen(false)} onRestore={(backup) => void restoreBackup(backup)} onDelete={(backup) => void deleteBackup(backup)} onExport={exportBackup}/>}
     {versionTask && <SkillVersionPicker task={versionTask} roots={{ ...data?.agentSkillsDirs, ...(data?.codexSkillsDir && { codex: data.codexSkillsDir }) }} onClose={() => setVersionTask(null)} onRun={(action) => run("manage_skill_version", { action })}/>}
-    {updateTarget && <SkillInPlaceUpdateDrawer id={updateTarget.id} repoKey={updateTarget.repoKey} localPath={updateTarget.localPath} onClose={() => setUpdateTarget(null)} onExecute={(previewId) => run("execute_skill_in_place_update", { previewId })}/>}
+    {updateTarget && <SkillInPlaceUpdateDrawer id={updateTarget.id} repoKey={updateTarget.repoKey} localPath={updateTarget.localPath} onClose={() => { setUpdateTarget(null); backToDetail(); }} onExecute={(previewId) => run("execute_skill_in_place_update", { previewId })}/>}
   </div>;
 }
 

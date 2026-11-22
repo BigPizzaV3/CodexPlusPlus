@@ -21,7 +21,7 @@ test("Skills version management and sync messages have English translations", ()
     const tree = ts.createSourceFile(file, readFileSync(new URL(file, import.meta.url), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
     if (file === "SkillVersionPicker.tsx") visit(tree);
     else for (const node of tree.statements) {
-      if (ts.isFunctionDeclaration(node) && ["SkillsPage", "SkillDetailDrawer", "SkillBackupList", "SkillBackupsDrawer", "sourceLabel"].includes(node.name?.text || "")) visit(node);
+      if (ts.isFunctionDeclaration(node) && ["SkillsPage", "useSkillsData", "SkillRowView", "GroupAgentSelect", "SortableSkillGroup", "SkillRepoDrawer", "SkillDetailDrawer", "SkillBackupList", "SkillBackupsDrawer", "sourceLabel", "skillChannelLabel"].includes(node.name?.text || "")) visit(node);
     }
   }
   const missing: string[] = [];

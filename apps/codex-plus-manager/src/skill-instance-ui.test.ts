@@ -31,7 +31,7 @@ test("independent installations retain their own source and actions", () => {
   const updates: Array<[string, string]> = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: (skill: { repoKey: string }) => skill.repoKey ? "https://github.com/example/repo" : "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: (skill: { repoKey: string }) => skill.repoKey ? "https://github.com/example/repo" : "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", CloudDownload: "CloudDownload", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight", SkillFileTimes: "SkillFileTimes",
   };
   vm.createContext(context);
@@ -65,13 +65,14 @@ test("independent installations retain their own source and actions", () => {
   assert.ok(sourceField >= 0);
   assert.equal(elements[sourceField + 1].type, "dd");
   assert.ok(elements[sourceField + 1].children.includes("本地"));
-  assert.ok(first.some((item) => item.children.includes("one/repo@main / skills/alpha")));
-  assert.ok(second.some((item) => item.children.includes("本地")));
+  // 「上游来源：…」「来源：…」的冒号在翻译模板里，按文字包含判断。
+  assert.ok(first.some((item) => item.children.some((child: unknown) => String(child).includes("one/repo@main / skills/alpha"))));
+  assert.ok(second.some((item) => item.children.some((child: unknown) => String(child) === "来源：本地")));
   first.find((item) => item.type === "Button" && item.children.includes("重新关联此安装位置"))!.props.onClick();
   second.find((item) => item.type === "Button" && item.children.includes("关联此安装位置"))!.props.onClick();
   first.find((item) => item.type === "Button" && item.children.includes("预览此位置更新"))!.props.onClick();
   assert.equal(second.some((item) => item.type === "Button" && item.children.includes("预览此位置更新")), false);
-  assert.ok(legacy.some((item) => item.children.includes("本地")));
+  assert.ok(legacy.some((item) => item.children.some((child: unknown) => String(child) === "来源：本地")));
   assert.equal(legacy.some((item) => item.type === "Button" && item.children.includes("预览此位置更新")), false);
   assert.deepEqual(matched, ["C:/agents/alpha", "C:/claude/alpha"]);
   assert.deepEqual(updates, [["one/repo@main", "C:/agents/alpha"]]);
@@ -90,7 +91,7 @@ test("a selectable physical installation associates its exact path with or witho
   const matched: string[] = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value,
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])),
     repoUrl: (skill: { repoKey: string }) => skill.repoKey ? "https://github.com/owner/repo" : "",
     sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes",
@@ -129,7 +130,7 @@ test("multiple association targets stay tied to their locations", () => {
   const matched: string[] = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
@@ -157,7 +158,7 @@ test("Agent locations that share a source expose one association target", () => 
   const matched: string[] = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3",
   };
   vm.createContext(context);
@@ -181,7 +182,7 @@ test("a managed Agent copy points to the shared original alongside an independen
   const matched: string[] = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", CloudDownload: "CloudDownload",
   };
   vm.createContext(context);
@@ -213,7 +214,7 @@ test("a managed Agent copy points to the shared original alongside an independen
 test("the detail view displays the reason for an unknown location status", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search",
   };
   vm.createContext(context);
@@ -235,7 +236,7 @@ test("the detail view displays the reason for an unknown location status", () =>
 test("a conflicting unclaimed managed source has a path and file dates without an association action", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
@@ -257,7 +258,7 @@ test("a conflicting unclaimed managed source has a path and file dates without a
 test("details display a comparison error at its installation without inventing a modification date", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes",
   };
   vm.createContext(context);
@@ -269,7 +270,7 @@ test("details display a comparison error at its installation without inventing a
     dates: {}, comparisonErrors: { claude: "nested link" }, backups: [], busy: false,
   }));
   const location = elements.find(item => item.type === "dd" && item.children.includes("C:/claude/alpha/SKILL.md"))!;
-  assert.ok(collect(location).some(item => item.props.role === "alert" && item.children.includes("nested link")));
+  assert.ok(collect(location).some(item => item.props.role === "alert" && item.children.includes("无法比较：nested link")));
   assert.equal(collect(location).some(item => item.type === "time"), false);
 });
 
@@ -277,7 +278,7 @@ test("a managed source directory is visible without a conflict", () => {
   const matched: Array<string | undefined> = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
@@ -306,7 +307,7 @@ test("an unused managed source reports its status without a name conflict", () =
   let opened = false;
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
@@ -330,7 +331,7 @@ test("an unused managed source reports its status without a name conflict", () =
 test("different agent variants describe the managed source without hiding real conflicts", () => {
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), repoUrl: () => "", sourceLabel: () => "", skillChannelLabel: () => "本地安装",
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
@@ -366,7 +367,7 @@ test("update preview separates managed copies, following paths and skipped locat
   let elements: Element[] = [];
   const context: Record<string, any> = {
     exports: {}, jsx: (type: any, props: any, ...children: any[]) => ({ type, props: props || {}, children }),
-    fragment: "fragment", t: (value: string) => value, ManagementDrawer: "ManagementDrawer", RefreshCw: "RefreshCw",
+    fragment: "fragment", t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_: string, index: string) => String(args[Number(index)])), ManagementDrawer: "ManagementDrawer", RefreshCw: "RefreshCw",
     useState: (initial: any) => {
       const index = cursor++;
       if (!(index in slots)) slots[index] = typeof initial === "function" ? initial() : initial;

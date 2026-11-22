@@ -319,6 +319,13 @@
   color: hsl(var(--muted-foreground));
 }
 
+/* 「匹配仓库」带文字，和旁边的图标按钮同高。 */
+:root .shell .mg-skills-page .cx-filters-trailing .cx-skill-match {
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12.5px;
+}
+
 /* ── 会话 ────────────────────────────────────────────────────── */
 
 /* 多 Agent 会话列表外面还包着网关页的容器：在会话页里收到和其他页同宽，去掉内层滚动的留白。 */

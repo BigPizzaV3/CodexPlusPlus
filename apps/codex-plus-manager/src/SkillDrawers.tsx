@@ -1,7 +1,7 @@
 /** Skills 页的抽屉与共用的类型、工具函数：仓库管理、备份列表、Skill 详情。页面本身在 SkillsPage.tsx。 */
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, CloudDownload, Edit3, ExternalLink, FolderOpen, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
-import { t } from "./i18n";
+import { t, tf } from "./i18n";
 import { matchesManagementQuery, skillRepoKey } from "./management-model";
 import { Field, ManagementDrawer, PageButton as Button, SearchBox } from "./ManagementPages";
 import "./ManagementPages.css";
@@ -199,8 +199,8 @@ export function SkillBackupList({ backups, busy, onRestore, onDelete, onExport }
   return <>{backups.map((backup) => <div key={backup.id} className="mg-source-row">
     <div><strong>{backup.name || backup.skillId}</strong><small>{backup.backedUpAt}</small></div>
     <div><small>{backup.purpose === "duplicate" ? t("重复副本归档") : backup.purpose === "managed-source" ? t("受控源归档") : backup.purpose === "disabled" ? t("停用副本备份") : backup.purpose === "update" ? t("更新前备份") : t("技能备份")}</small>
-      <small>{t("备份位置")}：{backup.backupPath || t("未知")}</small>
-      <small>{t("恢复位置")}：{backup.restorePath || t("未记录")}</small>
+      <small>{tf("备份位置：{0}", [backup.backupPath || t("未知")])}</small>
+      <small>{tf("恢复位置：{0}", [backup.restorePath || t("未记录")])}</small>
       {backup.missing ? <small className="mg-warning">{t("备份文件已丢失")}</small> : <SkillFileTimes id={backup.skillId} backupId={backup.id}/>}
       {backup.restoreBlockedReason && <small className="mg-warning">{backup.restoreBlockedReason}</small>}
       <div className="mg-row-actions"><Button disabled={busy || !!backup.missing || !!backup.restoreBlockedReason} onClick={() => onRestore(backup)}>{t("恢复")}</Button>
@@ -216,7 +216,13 @@ export function SkillBackupsDrawer({ backups, busy, onClose, onRestore, onDelete
     {backups.length ? <SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDelete} onExport={onExport}/> : <p className="mg-muted">{t("暂无 Skill 备份。")}</p>}
   </ManagementDrawer>;
 }
-export function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onManageSource, onExport, onArchive, onLocal, showLocations, dates, comparisonErrors, onExpand }: {
+/**
+ * Skill 详情是这个 Skill 的操作中心：概览（来源、介绍）、安装位置（各 Agent 的路径和关联）、备份、更新。
+ * 从这里打开的关联来源、更新预览、仓库、受控源抽屉关上后会回到这里（由页面负责）。
+ */
+export function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpenUrl, onOpenRepo, onMatch, onRestore, onDeleteBackup, onUpdate, onQueueUpdate, onManageSource, onExport, onArchive, onLocal, showLocations, dates, comparisonErrors, onExpand }: {
+  /** 由 Codex++ 管理更新的 Skill：直接排队更新（原位维护的走 onUpdate 预览）。不能更新时不传。 */
+  onQueueUpdate?: () => void;
   dates?: Record<string, number>; comparisonErrors?: Record<string, string>; onExpand: () => void;
   showLocations: boolean; onLocal: () => void; onArchive: () => void; onExport: (backup: SkillBackup) => void;
   skill: Skill; count?: number; backups: SkillBackup[]; busy: boolean; onClose: () => void; onOpenUrl: (url: string) => void;
@@ -244,7 +250,6 @@ export function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpen
     {skill.managedSourceStatus === "needs-sync" && <p className="mg-notice">{t("本地安装内容一致。请先同步工作副本，再更新或启用到其他 Agent。")}</p>}
     <dl className="mg-detail">
       <dt>{t(!skill.displayInstances && !url && !skill.bundled ? "来源" : "上游来源")}</dt><dd>{skill.displayInstances ? t("按安装位置查看") : url ? <button className="mg-link-button mg-skill-repo-link" type="button" onClick={onOpenRepo}>{sourceLabel(skill)}{count === undefined ? "" : ` · ${count} Skills`}<ArrowRight size={13}/></button> : skill.bundled ? t("内置") : t("本地")}{associatedOriginal && <small> · {t("仅关联所选安装位置")}</small>}</dd>
-      {!skill.displayInstances && <><dt>{t("更新方式")}</dt><dd>{channel} · {owner}</dd></>}
       <dt>{t("仓库路径")}</dt><dd>{skill.repoPath || "—"}{matchAtRepoPath && <button type="button" className="mg-icon-button" title={matchLabel} aria-label={matchLabel}
         disabled={busy} onClick={() => onMatch(matchTargets.values().next().value, { currentRepoKey: skill.repoKey, currentRepoPath: skill.repoPath })}><Edit3 size={14}/></button>}</dd>
       <dt>{t("介绍")}</dt><dd>{skill.description || t("暂无描述")}</dd>
@@ -262,11 +267,11 @@ export function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpen
           (item.selectable && item.originalPath ? item.originalPath : item.associationPath) === associationPath).length > 1;
         return [<dt key={`${location.manifestPath}:label`}>{rootLabel[location.rootKind] || location.rootKind}</dt>, <dd key={`${location.manifestPath}:value`}>{location.manifestPath}<br/>{location.managed ? t("Codex++ 受控") : t("本地安装")} · {location.statusError ? t("状态未知") : location.enabled ? t("已启用") : t("未启用")}
           {dates?.[location.rootKind] !== undefined && <small>{t("最近修改")} · <time>{new Date(dates[location.rootKind]).toLocaleString()}</time></small>}<SkillFileTimes id={skill.id} rootKind={location.rootKind}/>
-          {comparisonErrors?.[location.rootKind] && <small role="alert">{t("无法比较")}：{t(comparisonErrors[location.rootKind])}</small>}
+          {comparisonErrors?.[location.rootKind] && <small role="alert">{tf("无法比较：{0}", [t(comparisonErrors[location.rootKind])])}</small>}
           {location.statusError && <><br/><span role="alert">{location.statusError}</span></>}
-          {instance && <><br/>{t("安装渠道")}：{skillChannelLabel(instance)}</>}
-          {(instance || associationPath) && <><br/>{t(hasRepo ? "上游来源" : "来源")}：{hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("本地")}
-            {hasRepo && <><br/>{t("更新方式")}：{locationOwner === "in_place" ? t("Codex++ 原位维护") : locationOwner === "manager" ? t("Codex++ 管理") : t("未接管")}</>}
+          {instance && <><br/>{tf("安装渠道：{0}", [skillChannelLabel(instance)])}</>}
+          {(instance || associationPath) && <><br/>{tf(hasRepo ? "上游来源：{0}" : "来源：{0}", [hasRepo ? `${locationRepo}${locationRepoPath ? ` / ${locationRepoPath}` : ""}` : t("本地")])}
+            {hasRepo && <><br/>{tf("更新方式：{0}", [locationOwner === "in_place" ? t("Codex++ 原位维护") : locationOwner === "manager" ? t("Codex++ 管理") : t("未接管")])}</>}
             {sharedAssociation && <><br/><small>{t("此来源由多个安装位置共用")}</small></>}
             {associationPath && !matchAtRepoPath && <div className="mg-row-actions"><Button disabled={busy} onClick={() => onMatch(associationPath, {
               agentLabel: rootLabel[location.rootKind] || location.rootKind, currentRepoKey: locationRepo, currentRepoPath: locationRepoPath,
@@ -284,12 +289,17 @@ export function SkillDetailDrawer({ skill, count, backups, busy, onClose, onOpen
           {skill.managedSourceStatus === "different" && (skill.displayInstances && !skill.conflict
             ? <small>{t("受控源与部分 Agent 的独立安装内容不同")}</small>
             : <small className="mg-warning">{t("未被目录链接引用，内容与安装位置不同；启用到其他 Agent 前需处理")}</small>)}
-          {skill.managedSourceStatus === "unknown" && <small className="mg-warning">{t("无法比较受控源")}：{skill.managedSourceError}</small>}</dd>
+          {skill.managedSourceStatus === "unknown" && <small className="mg-warning">{tf("无法比较受控源：{0}", [skill.managedSourceError || ""])}</small>}</dd>
       </dl>}
       {backups.length ? <SkillBackupList backups={backups} busy={busy} onRestore={onRestore} onDelete={onDeleteBackup} onExport={onExport}/> : !managedSourcePath && <p className="mg-muted">{t("暂无 Skill 备份。")}</p>}</details>
-    {previewUpdate && <div className="mg-row-actions">
-      <Button disabled={busy} onClick={() => onUpdate(skill.repoKey, skill.originalDir || undefined)}><CloudDownload size={14}/>{t("预览原位更新")}</Button>
-    </div>}
+    {!skill.bundled && (previewUpdate || onQueueUpdate || !skill.displayInstances) ? <details className="mg-version-section" open={skill.updateAvailable || previewUpdate || undefined}>
+      <summary>{t("更新")}{skill.updateAvailable ? <small>{t("可更新")}</small> : null}</summary>
+      {!skill.displayInstances && <dl className="mg-detail"><dt>{t("更新方式")}</dt><dd>{channel} · {owner}</dd></dl>}
+      {previewUpdate || onQueueUpdate ? <div className="mg-row-actions">
+        {previewUpdate && <Button disabled={busy} onClick={() => onUpdate(skill.repoKey, skill.originalDir || undefined)}><CloudDownload size={14}/>{t("预览原位更新")}</Button>}
+        {onQueueUpdate && <Button disabled={busy} onClick={onQueueUpdate}><CloudDownload size={14}/>{t("更新")}</Button>}
+      </div> : <p className="mg-muted">{skill.updateAvailable ? t("这个 Skill 的更新需要按安装位置处理。") : t("没有可用的更新。")}</p>}
+    </details> : null}
     </div>
   </ManagementDrawer>;
 }
