@@ -10,7 +10,7 @@ import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection, CxStatu
 import { AppSelect } from "./AppSelect";
 import { matchesManagementQuery } from "./management-model";
 import { TopbarActions } from "./TopbarActions";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 import { MCP_AGENTS, editedEnabledState, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
 import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";

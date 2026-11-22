@@ -12,7 +12,7 @@ import { MyPublishedPanel } from "./MyPublishedPanel";
 import { AppSelect } from "./AppSelect";
 import { ExtensionConfigForm } from "./extension-config-form";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
 import { agentVisible, type AgentFocus } from "./agent-focus-model";
 import { defaultMarketSort, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";

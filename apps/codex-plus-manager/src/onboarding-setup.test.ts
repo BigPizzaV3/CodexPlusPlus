@@ -88,7 +88,7 @@ function harness(focus: AgentFocus = "codex") {
     "lucide-react": Object.fromEntries(["ArrowRight", "Check", "ChevronDown", "ChevronUp", "CircleHelp", "Loader2", "Play", "Plus", "RefreshCw", "Settings2", "X", "Zap"].map((name) => [name, name])),
     "@/components/ui/button": { Button: "Button" },
     "./AppSelect": { AppSelect: "AppSelect" },
-    "./HubOverview": { AgentGlyph: "AgentGlyph" },
+    "./hub-shared": { AgentGlyph: "AgentGlyph" },
     "./onboarding-setup-model": setupModel,
     "./i18n": { t: (text: string) => text, tf: (text: string, args: unknown[]) => text.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])) },
     "./OnboardingSetup.css": {},

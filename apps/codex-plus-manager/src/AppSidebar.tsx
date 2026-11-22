@@ -41,7 +41,7 @@ import {
 } from "lucide-react";
 import { managerNavPages, type ManagerExtensionPage, type ManagerNavGroup } from "./extension-manager-pages";
 import { Fragment, useEffect, useState, type ReactNode } from "react";
-import { AgentGlyph, useGatewayPayload } from "./HubOverview";
+import { AgentGlyph, useGatewayPayload } from "./hub-shared";
 import { paletteShortcut } from "./command-palette-model";
 import { agentName } from "./gateway-model";
 import { agentTabGroups, pageVisibleForTool } from "./page-groups";

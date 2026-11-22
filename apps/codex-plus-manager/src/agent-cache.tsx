@@ -7,7 +7,7 @@ import { cacheApps, cacheCleanupSummary, cacheSelection, selectableCacheGroups, 
 import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { APP_LOGO_URL } from "./gateway-ui";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection, CxStats } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";

@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Input } from "@/components/ui/input";
 import { Switch } from "./gateway-ui";
 import { AppSelect } from "./AppSelect";
-import { useGatewayPayload } from "./HubOverview";
+import { useGatewayPayload } from "./hub-shared";
 import { groupDisplayName } from "./gateway-model";
 import { remoteControlRequest } from "./RemoteControlPage";
 import { Menu, MenuItem } from "./ManagementPages";

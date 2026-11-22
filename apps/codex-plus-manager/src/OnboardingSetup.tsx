@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ArrowRight, Check, ChevronDown, ChevronUp, CircleHelp, Loader2, Play, Plus, RefreshCw, Settings2, X, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AppSelect } from "./AppSelect";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 import type { Notify } from "./gateway-ui";
 import type { AgentFocus } from "./agent-focus-model";
 import { setupDirectState, type SetupDirectMode, type SetupRelaySettings, type SetupRelayStatus } from "./onboarding-setup-model";

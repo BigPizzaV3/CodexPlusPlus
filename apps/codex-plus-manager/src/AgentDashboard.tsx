@@ -9,7 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { ArrowUpRight, CheckCircle2, Loader2, Play, XCircle } from "lucide-react";
 import { t, tf } from "./i18n";
 import { agentAccessState, agentUsageStats, recentAgentRequests, type DashboardRequest } from "./agent-dashboard-model";
-import { AgentGlyph, useGatewayPayload } from "./HubOverview";
+import { AgentGlyph, useGatewayPayload } from "./hub-shared";
 import { formatElapsed, formatTokens, groupDisplayName, modelDisplay, relativeTime, shortPath, type AgentSessionView, type UsageSummary } from "./gateway-model";
 import { providersHidden } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";

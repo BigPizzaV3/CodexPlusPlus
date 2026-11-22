@@ -11,7 +11,7 @@ import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, skillRepoKey } from "./management-model";
 import { AgentToggle, Menu, MenuItem, PageButton as Button, PageHeader } from "./ManagementPages";
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxStatusIcon, CxToolbar } from "./cx-layout";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
 import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";

@@ -55,7 +55,7 @@ import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
 import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 
 type Tab = "agents" | "providers" | "routing" | "usage" | "gateway";
 export type GatewayTab = Tab;

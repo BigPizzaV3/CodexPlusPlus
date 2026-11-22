@@ -17,7 +17,7 @@ import {
   MessagesSquare,
   type LucideIcon,
 } from "lucide-react";
-import { AgentGlyph, useGatewayPayload, useTodayUsage } from "./HubOverview";
+import { AgentGlyph, useGatewayPayload, useTodayUsage } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
 import { providersHidden, type AgentFocus } from "./agent-focus-model";
 import { t, tf } from "@/i18n";

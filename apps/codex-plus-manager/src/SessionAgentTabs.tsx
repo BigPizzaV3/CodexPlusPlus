@@ -2,7 +2,7 @@
  *  Codex 页签显示完整的会话管理（删除、归档、修复），其余显示多 Agent 会话列表（复制恢复命令、删除）。 */
 import { t } from "./i18n";
 import type { SessionAgent } from "./gateway-model";
-import { AgentGlyph } from "./HubOverview";
+import { AgentGlyph } from "./hub-shared";
 import { agentVisible } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 

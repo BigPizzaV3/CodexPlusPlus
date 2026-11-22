@@ -46,7 +46,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "./gateway-ui";
 import { AppSelect } from "./AppSelect";
-import { useGatewayPayload } from "./HubOverview";
+import { useGatewayPayload } from "./hub-shared";
 import { publishGatewayPayload } from "./gateway-store";
 import { importCandidates, type ImportCandidate, type GatewayResult } from "./gateway-model";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";

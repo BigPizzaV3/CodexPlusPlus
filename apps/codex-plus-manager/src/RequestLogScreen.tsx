@@ -5,7 +5,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Switch } from "./gateway-ui";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { appConfirm } from "./app-dialog";
-import { AgentGlyph, useGatewayPayload } from "./HubOverview";
+import { AgentGlyph, useGatewayPayload } from "./hub-shared";
 import {
   agentName,
   groupDisplayName,

@@ -1,8 +1,7 @@
 import { flowProviderSlot } from "./flow-provider-colors";
 import "./flow-provider-colors.css";
 /** 网关总览：今日数字一排；任意 Agent → Codex++ → 任意供应商的三列拓扑；最近请求列表。 */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight, ChevronDown, Plus } from "lucide-react";
 import { t, tf } from "./i18n";
 import {
@@ -17,8 +16,10 @@ import {
   type UsageSummary,
 } from "./gateway-model";
 import { hubAgents, hubLinks, hubPoolState, hubProviders, hubTotals, routeRecordsByEntry, successRate, type CodexSummary, type HubLink } from "./hub-overview-model";
-import { AGENT_ICONS, APP_LOGO_URL, Avatar, GatewayLoadError, KeyCount, MemberStatusLabel, agentIconIsColor, makeRun, type Notify, type Run } from "./gateway-ui";
+import { APP_LOGO_URL, Avatar, GatewayLoadError, KeyCount, MemberStatusLabel, makeRun, type Notify, type Run } from "./gateway-ui";
 import { gatewayJump, publishGatewayPayload, useGatewayPayload, useGatewayState } from "./gateway-store";
+// 今日用量与 Agent 图标在 hub-shared.tsx：常驻的页面也要用，不必为它们加载整个网关总览。
+import { AgentGlyph, useTodayUsage } from "./hub-shared";
 import { AgentConnectDialog } from "./GatewayAgents";
 import { busyLinks, liveFlowRoutes, flowRoutePosition, flowAgent, pulseHops, type FlowEntry, type LiveFlowRoute } from "./request-flow-model";
 import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
@@ -33,40 +34,9 @@ const LIVE_REFRESH_MS = 3000;
 const FLOW_REFRESH_MS = 1500;
 /** 「最近请求」列出的条数；更多的去请求日志看。 */
 const FEED_LIMIT = 10;
-const USAGE_REFRESH_MS = 30_000;
 
 /** 侧栏状态卡、总览、网关页共用的网关数据在 gateway-store 里；这里转出 hook，保持原来的引用路径。 */
 export { useGatewayPayload };
-
-/** 今日用量（总览统计、首页网关一行共用），定时刷新。 */
-export function useTodayUsage(): UsageSummary | null {
-  const [summary, setSummary] = useState<UsageSummary | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const load = () =>
-      invoke<{ status: string } & Partial<UsageSummary>>("load_gateway_usage", { range: "today" })
-        .then((result) => {
-          if (!cancelled && result.status === "ok" && result.totals) setSummary(result as UsageSummary);
-        })
-        .catch(() => undefined);
-    void load();
-    const timer = window.setInterval(load, USAGE_REFRESH_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
-  return summary;
-}
-
-/** 单色品牌图标用 mask 着色，深浅主题下都跟随文字颜色。 */
-export function AgentGlyph({ agent, className = "" }: { agent: string; className?: string }) {
-  const url = AGENT_ICONS[agent];
-  if (url && agentIconIsColor(agent)) return <img alt="" className={`hub-agent-glyph hub-agent-glyph-plain ${className}`} data-agent-icon={agent} src={url} />;
-  // 没有打包图标的通用 Agent：名字首字母，不画空的遮罩方块。
-  if (!url) return <i aria-hidden="true" className={`hub-agent-glyph hub-agent-glyph-plain gw-agent-letter ${className}`}>{(agentName(agent).trim()[0] ?? "?").toUpperCase()}</i>;
-  return <i aria-hidden="true" className={`hub-agent-glyph ${className}`} style={url ? ({ "--hub-icon": `url("${url}")` } as CSSProperties) : undefined} />;
-}
 
 export function HubOverview({
   codex,

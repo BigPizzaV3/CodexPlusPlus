@@ -3,7 +3,7 @@ import { CheckCircle2, ChevronDown, Plus, RefreshCw, RotateCcw, Tag } from "luci
 import { useState } from "react";
 import { summarizeRecentRequests, type RecentRequestSummary } from "./overview-model";
 import { AppSelect } from "./AppSelect";
-import { useGatewayPayload } from "./HubOverview";
+import { useGatewayPayload } from "./hub-shared";
 import { groupDisplayName } from "./gateway-model";
 import { AgentDashboard, type DashboardAgent, type DashboardRequestLogs, type DashboardStat, type DashboardStatus } from "./AgentDashboard";
 import { t, tf } from "@/i18n";
