@@ -192,9 +192,6 @@ test("总览：读取中、空池、全部关闭分开显示；最近请求没�
   assert.match(hub, /\{!payload && error \? <GatewayLoadError error=\{error\} \/> : null\}/, "读不到网关状态时给重试，不再一直读取中");
   assert.match(hub, /poolState === "allOff"/);
   assert.match(hub, /\? t\("正在读取网关状态…"\)/);
-  const matrix = read("GatewayModelMatrix.tsx");
-  assert.match(matrix, /\{!payload \? <div className="gw-empty">\{t\("正在读取…"\)\}<\/div> : null\}/);
-  assert.match(matrix, /payload\.pool\.length \? t\("供应商都已关闭"\)/);
   assert.match(read("GatewayPage.tsx"), /\{!payload \? <div className="gw-card gw-empty">\{t\("正在读取…"\)\}<\/div> : null\}/);
 });
 
@@ -202,7 +199,6 @@ test("路由说明的失败原因按标记翻译，不再按「是不是汉字�
   const hub = read("HubOverview.tsx");
   assert.doesNotMatch(hub, /一-龥/);
   assert.match(hub, /typeof arg === "object" \? t\(arg\.zh\) : arg/);
-  assert.match(read("GatewayModelMatrix.tsx"), /\.join\(t\("、"\)\)/);
   assert.match(read("GatewayProviders.tsx"), /\$\{keyLabel\(entry\.keys, key\.keyId\)\}\$\{t\("："\)\}/);
 });
 
@@ -237,9 +233,8 @@ test("网关页改了数据立刻推给侧栏和总览", () => {
   assert.match(read("gateway-store.ts"), /export function publishGatewayPayload/);
 });
 
-test("轮询时不重复算：调度表 useMemo、筛选条 useMemo、组编辑器的空排除列表是常量", () => {
+test("轮询时不重复算：筛选条 useMemo、组编辑器的空排除列表是常量", () => {
   const page = read("GatewayPage.tsx");
-  assert.match(read("GatewayModelMatrix.tsx"), /const rows = useMemo\(\(\) => modelDispatch\(payload\), \[payload\]\);/);
   assert.match(page, /exclude=\{NO_EXCLUDE\}/);
   assert.doesNotMatch(page, /exclude=\{\[\]\}/);
   assert.match(read("GatewayAgents.tsx"), /const filters = useMemo\(/);

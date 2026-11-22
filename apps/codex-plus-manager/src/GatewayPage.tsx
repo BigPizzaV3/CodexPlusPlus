@@ -9,7 +9,6 @@ import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import {
   glanceAgents,
-  agentName,
   appendGroupMembers,
   batchMemberRows,
   type BatchMemberRow,
@@ -20,38 +19,31 @@ import {
   groupStickyDescription,
   groupStickyLabel,
   isPattern,
-  memberLabel,
   parseWeight,
   dispatchStatus,
-  modelDispatch,
   modelDisplay,
   patternMatches,
   prettyModelName,
   speedOf,
   type GatewayGroupEntry,
   type GatewayPayload,
-  type GatewayResult,
   type GroupMember,
   type GroupMode,
   type GroupSticky,
-  agentPoolProviders,
   maskAccountName,
-  type DispatchRow,
-  type MemberStatus,
   memberTarget,
   type AutoGroupEntry,
   type GatewayPortInfo,
   MAX_GATEWAY_PORT,
   MIN_GATEWAY_PORT,
   parseGatewayPort,
+  shortProviderName,
 } from "./gateway-model";
 import { AgentsView, Floating, ModelList, type CodexRunControls } from "./GatewayAgents";
 import { AppSelect } from "./AppSelect";
 import { ProvidersView } from "./GatewayProviders";
-import { SessionsView } from "./GatewaySessions";
 import { UsageView } from "./GatewayUsage";
 import { Avatar, GatewayLoadError, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
-import { shortProviderName } from "./GatewayModelMatrix";
 import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
@@ -62,10 +54,8 @@ import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
 import { AgentGlyph } from "./HubOverview";
 
-type Tab = "agents" | "sessions" | "providers" | "routing" | "usage" | "gateway";
+type Tab = "agents" | "providers" | "routing" | "usage" | "gateway";
 export type GatewayTab = Tab;
-
-const memo: { tab: Tab } = { tab: "agents" };
 
 /** 组编辑器的模型选择不排除任何供应商；模块级常量，避免每次渲染都换新数组让列表重算。 */
 const NO_EXCLUDE: string[] = [];
@@ -75,37 +65,24 @@ const LIVE_REFRESH_MS = 2500;
 /** 其它页签的刷新间隔（和侧栏一样，不额外加读取）。 */
 const IDLE_REFRESH_MS = 10_000;
 
-/**
- * 传入 `tab` 时由外层侧栏决定当前页签（不再显示页内标签条），页内跳转通过 `onTabChange` 交还外层；
- * 不传时保持原来的自管页签。
- */
+/** 当前页签由外层侧栏决定（每个页签是一条路由），页内跳转通过 `onTabChange` 交还外层。 */
 export function GatewayPage({
   notify,
-  tab: controlledTab,
+  tab,
   onTabChange,
   extraSettings,
   onOpenCodexProviderSettings,
   codexRun,
 }: {
   notify: Notify;
-  tab?: Tab;
-  onTabChange?: (tab: Tab) => void;
+  tab: Tab;
+  onTabChange: (tab: Tab) => void;
   /** 「网关设置」末尾附加的内容：主窗口传进来的新旧共用本地服务设置。 */
   extraSettings?: ReactNode;
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：主窗口传进来才显示，不传就只留模型选择与接入开关。 */
   codexRun?: CodexRunControls;
 }) {
-  const [ownTab, setTabState] = useState<Tab>(memo.tab);
-  const tab = controlledTab ?? ownTab;
-  const setTab = (next: Tab) => {
-    if (controlledTab) {
-      onTabChange?.(next);
-      return;
-    }
-    memo.tab = next;
-    setTabState(next);
-  };
   // 数据来自共享存储（整个窗口一个轮询）：订阅额度在后台预取，供应商、路由页要及时收到首次查询和授权后的结果，
   // 所以这两页要的间隔短；其它页签跟侧栏一样。别处改了网关数据（如模型下拉里收藏）也会同步过来。
   const { payload, error } = useGatewayState(tab === "routing" || tab === "providers" ? LIVE_REFRESH_MS : IDLE_REFRESH_MS);
@@ -139,18 +116,8 @@ export function GatewayPage({
   // 一份数据都还没读到就失败了：各页签显示原因和重试，不再一直「正在读取…」（用量页签读自己的数据，不受影响）。
   const loadFailed = !payload && error !== null && tab !== "usage";
 
-  // 与侧栏同序：供应商 → Agent → 路由。
-  const tabs: Array<{ id: Tab; label: string }> = [
-    { id: "providers", label: t("供应商") },
-    { id: "agents", label: t("智能体") },
-    { id: "routing", label: t("路由") },
-    { id: "sessions", label: t("会话") },
-    { id: "usage", label: t("用量") },
-    { id: "gateway", label: t("网关") },
-  ];
-
   // 模型下拉里「我的组」旁的「管理」→ 路由页。
-  const nav = { openModelGroups: () => setTab("routing") };
+  const nav = { openModelGroups: () => onTabChange("routing") };
 
   const refreshButton = (
     <button aria-label={t("刷新")} className="gw-icon-button" disabled={busy !== null || refreshing} onClick={() => void refresh()} title={t("刷新")} type="button">
@@ -160,23 +127,9 @@ export function GatewayPage({
 
   return (
     <div className="mg-page gateway-page">
-      {/* 页面标题由外层框架显示，这里只放分段标签和刷新。 */}
-      {controlledTab ? (
-        // 由外层侧栏控制时不显示页内工具条，刷新按钮放进外壳顶栏。
-        // 用量页签有自己的刷新（读用量和余额），这里的只刷新网关状态，放在一起会让人以为刷新了用量。
-        <TopbarActions>{tab === "usage" ? null : refreshButton}</TopbarActions>
-      ) : (
-        <div className="gw-toolbar">
-          <nav aria-label={t("本地网关")} className="gw-tabs" role="tablist">
-            {tabs.map((item) => (
-              <button aria-selected={tab === item.id} data-active={tab === item.id} key={item.id} onClick={() => setTab(item.id)} role="tab" type="button">
-                {item.label}
-              </button>
-            ))}
-          </nav>
-          {refreshButton}
-        </div>
-      )}
+      {/* 页面标题由外层框架显示，刷新按钮放进外壳顶栏。
+          用量页签有自己的刷新（读用量和余额），这里的只刷新网关状态，放在一起会让人以为刷新了用量。 */}
+      <TopbarActions>{tab === "usage" ? null : refreshButton}</TopbarActions>
       <GatewayNavContext.Provider value={nav}>
       <div className="mg-content gw-content">
         {payload && !payload.helperRunning && payload.agents.some((agent) => agent.enabled) ? (
@@ -186,8 +139,7 @@ export function GatewayPage({
           </p>
         ) : null}
         {loadFailed && error ? <GatewayLoadError error={error} /> : null}
-        {tab === "agents" && !loadFailed ? <AgentsView busy={busy} codexRun={codexRun} notify={notify} onManage={() => setTab("providers")} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} /> : null}
-        {tab === "sessions" ? <SessionsView notify={notify} /> : null}
+        {tab === "agents" && !loadFailed ? <AgentsView busy={busy} codexRun={codexRun} notify={notify} onManage={() => onTabChange("providers")} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} /> : null}
         {tab === "providers" && !loadFailed ? <ProvidersView busy={busy} notify={notify} payload={payload} run={run} /> : null}
         {tab === "routing" && !loadFailed ? <RoutingView busy={busy} payload={payload} run={run} /> : null}
         {tab === "usage" ? <UsageView busy={busy} notify={notify} payload={payload} run={run} /> : null}

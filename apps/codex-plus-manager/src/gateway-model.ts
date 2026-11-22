@@ -1726,6 +1726,11 @@ function maskEmailsIn(text: string): string {
   return text.replace(EMAIL_PATTERN, (_match, lead: string, email: string) => lead + maskEmail(email));
 }
 
+/** 供应商名的短写法：`·` 前那段（「ChatGPT Pro · 邮箱」→「ChatGPT Pro」），完整名放在悬停提示里。 */
+export function shortProviderName(name: string): string {
+  return name.split("·")[0].trim() || name;
+}
+
 /**
  * 订阅账号的显示名打码：「ChatGPT Pro · me@example.com」「Copilot · octocat」这类名字里的账号部分只露头尾，
  * 名字里出现的邮箱也一样。只在显示时处理，存储的名字不变；普通供应商名不受影响。

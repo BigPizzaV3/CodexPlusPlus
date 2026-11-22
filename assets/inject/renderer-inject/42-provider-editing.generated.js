@@ -1744,6 +1744,7 @@ ${key} = ${value}`]);
     servingProviders: () => servingProviders,
     shortDate: () => shortDate,
     shortPath: () => shortPath,
+    shortProviderName: () => shortProviderName,
     skippedAgents: () => skippedAgents,
     slugify: () => slugify,
     speedOf: () => speedOf,
@@ -2977,6 +2978,9 @@ ${key} = ${value}`]);
   var EMAIL_PATTERN = /(^|[^A-Za-z0-9._%+*-])([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g;
   function maskEmailsIn(text) {
     return text.replace(EMAIL_PATTERN, (_match, lead, email) => lead + maskEmail(email));
+  }
+  function shortProviderName(name) {
+    return name.split("·")[0].trim() || name;
   }
   function maskAccountName(name) {
     const masked = maskEmailsIn(name);

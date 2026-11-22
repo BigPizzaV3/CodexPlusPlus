@@ -1596,8 +1596,7 @@ const gatewayTabByRoute: Partial<Record<Route, GatewayTab>> = {
   gatewayUsage: "usage",
   gatewaySettings: "gateway",
 };
-// 网关里的「会话」已并进全局管理的「会话」页。
-const gatewayRouteByTab = { ...Object.fromEntries(Object.entries(gatewayTabByRoute).map(([route, tab]) => [tab, route])), sessions: "sessions" } as Record<GatewayTab, Route>;
+const gatewayRouteByTab = Object.fromEntries(Object.entries(gatewayTabByRoute).map(([route, tab]) => [tab, route])) as Record<GatewayTab, Route>;
 /**
  * 每个 Agent 在侧栏里的落脚页：点 Agent 名字先到这里。
  * Claude Code / Grok 的供应商不再在 Codex++ 里单独配置：要么经网关接入供应商池（「Agent 接入」），

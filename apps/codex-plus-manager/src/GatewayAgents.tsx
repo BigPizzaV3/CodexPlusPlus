@@ -39,15 +39,15 @@ import {
   toggleFavoriteModel,
   type GatewayResult,
   type OwnModels,
+  shortProviderName,
 } from "./gateway-model";
 import { AppSelect } from "./AppSelect";
-import { shortProviderName } from "./GatewayModelMatrix";
 import { GatewayNavContext, publishGatewayPayload, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
-import { AGENT_ICONS, AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
+import { AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
 /** Codex 行的启动 / 停止：和侧栏 `cx-side-run` 用的同一份 App 状态（`App` 里只建一份，两处共用）。 */
 export type CodexRunControls = {

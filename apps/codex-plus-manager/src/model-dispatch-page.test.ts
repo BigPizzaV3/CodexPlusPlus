@@ -25,7 +25,6 @@ test("界面不再出现「路由组」，统一叫模型组", () => {
 
 test("路由页：「我的组」和「自动组」两段卡片，卡片上直接改路由方式、会话固定、隐藏成员，手动模式点成员锁定", () => {
   const page = read("GatewayPage.tsx");
-  assert.match(page, /\{ id: "routing", label: t\("路由"\) \}/);
   assert.match(read("App.tsx"), /id: "gatewayRouting", get label\(\) \{ return t\("路由"\); \}/);
   assert.doesNotMatch(page, /RouteDiagram|RouteCard|routeNarrative|DispatchTable|<ModelMatrix/);
   assert.match(page, /\{t\("我的组"\)\}/);
