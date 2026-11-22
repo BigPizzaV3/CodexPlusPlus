@@ -418,6 +418,13 @@
   color: hsl(var(--foreground));
 }
 
+/* 「全部」页签只显示前 300 个时的说明。 */
+:root .shell .cx-session-limit {
+  margin: 0 0 8px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
 /* 「按项目 / 按时间」：工具条里的两段小切换。 */
 :root .shell .cx-session-mode {
   display: inline-flex;

@@ -3,6 +3,17 @@ export type ManagedSession = {
   id: string; title: string; cwd: string; modelProvider: string; archived: boolean;
   updatedAtMs: number | null; rolloutPath: string; dbPath: string;
 };
+/** 会话页的筛选：搜索词在后端全部会话里匹配；archived 为 null 表示归档和未归档都看。 */
+export type LocalSessionFilter = { query: string; archived: boolean | null };
+export type SessionProjectCount = { path: string; count: number };
+export type SessionArchiveView = "active" | "archived" | "all";
+export function sessionArchiveFilter(view: SessionArchiveView): boolean | null {
+  return view === "active" ? false : view === "archived" ? true : null;
+}
+export function sessionArchiveView(archived: boolean | null | undefined): SessionArchiveView {
+  return archived === false ? "active" : archived === true ? "archived" : "all";
+}
+/** 所有会话列表共用的搜索：每个词都要出现在任一字段里，不区分大小写。 */
 export function matchesManagementQuery(values: string[], query: string): boolean {
   const terms = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
   const text = values.join(" ").toLocaleLowerCase();
@@ -21,17 +32,32 @@ export function normalizeProjectPath(cwd: string): string {
   // 盘符统一大写：VS Code 里起的 Claude Code 等会把 cwd 记成 `c:\…`，和 Codex 的 `C:\…` 是同一个目录（#2937）。
   return /^[a-z]:(?:\/|$)/.test(plain) ? plain[0].toUpperCase() + plain.slice(1) : plain;
 }
-export function sessionGroups(sessions: ManagedSession[], mode: "project" | "time", now = Date.now()) {
+/**
+ * 按项目或按时间分组。`label` 在按时间分组和「未知目录」时是待翻译的中文文案（`translatable` 为 true），
+ * 项目名原样显示；`total` 是整个项目在筛选结果里的会话数（传了 `projects` 才有），分页只截当前页。
+ */
+export function sessionGroups(sessions: ManagedSession[], mode: "project" | "time", now = Date.now(), projects: SessionProjectCount[] = []) {
   const sorted = [...sessions].sort((a, b) => (b.updatedAtMs ?? 0) - (a.updatedAtMs ?? 0));
   const today = new Date(now); today.setHours(0, 0, 0, 0);
   const yesterday = new Date(today); yesterday.setDate(yesterday.getDate() - 1);
   const week = new Date(today); week.setDate(week.getDate() - ((week.getDay() + 6) % 7));
-  const groups = new Map<string, { key: string; label: string; path: string; sessions: ManagedSession[] }>();
+  const totals = new Map(projects.map((project) => [project.path, project.count]));
+  const groups = new Map<string, { key: string; label: string; translatable: boolean; path: string; total?: number; sessions: ManagedSession[] }>();
   for (const session of sorted) {
     const path = normalizeProjectPath(session.cwd);
     const timestamp = session.updatedAtMs ?? 0;
     const key = mode === "project" ? path : timestamp >= +today ? "today" : timestamp >= +yesterday ? "yesterday" : timestamp >= +week ? "week" : "earlier";
-    if (!groups.has(key)) groups.set(key, { key, label: mode === "project" ? path.split("/").at(-1) || "未知目录" : ({ today: "今天", yesterday: "昨天", week: "本周", earlier: "更早" }[key] || "更早"), path: mode === "project" ? path : "", sessions: [] });
+    if (!groups.has(key)) {
+      const name = mode === "project" ? path.split("/").at(-1) || "" : "";
+      groups.set(key, {
+        key,
+        label: mode === "project" ? name || "未知目录" : ({ today: "今天", yesterday: "昨天", week: "本周", earlier: "更早" }[key] || "更早"),
+        translatable: mode !== "project" || !name,
+        path: mode === "project" ? path : "",
+        total: mode === "project" ? totals.get(path) : undefined,
+        sessions: [],
+      });
+    }
     groups.get(key)!.sessions.push(session);
   }
   return [...groups.values()];

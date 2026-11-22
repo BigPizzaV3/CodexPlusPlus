@@ -48,7 +48,7 @@ import {
 import { AgentsView, Floating, ModelList, type CodexRunControls } from "./GatewayAgents";
 import { AppSelect } from "./AppSelect";
 import { ProvidersView } from "./GatewayProviders";
-import { SessionsView } from "./GatewaySessions";
+import { SessionsView } from "./AgentSessions";
 import { UsageView } from "./GatewayUsage";
 import { Avatar, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
 import { shortProviderName } from "./GatewayModelMatrix";

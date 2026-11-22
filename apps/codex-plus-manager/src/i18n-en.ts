@@ -3951,6 +3951,29 @@ export const EN_PLAIN: Record<string, string> = {
   "放弃并重新开始": "Abandon and start over",
   "放弃上次未确认的重置操作，下次使用发起新的请求": "Abandon the unconfirmed reset operation; the next use sends a new request",
   "放弃后，上次未确认的重置操作不再重试，下次使用会发起新的请求。若上次其实已经生效，可能会再扣一张重置卡。建议先刷新额度确认上次是否已重置。": "After abandoning, the unconfirmed reset operation will not be retried and the next use sends a new request. If the previous attempt actually went through, another voucher may be used. Refresh the quota first to check whether it was reset.",
+  "剪贴板不可用": "Clipboard is unavailable",
+  "未知时间": "Unknown time",
+  "正在读取会话…": "Loading sessions…",
+  "已在全部会话里搜索标题、目录和会话 ID。": "Searched titles, folders and session IDs across all sessions.",
+  "没有已归档的会话": "No archived sessions",
+  "查看未归档": "Show unarchived",
+  "在 Codex 里开始对话后，会话会出现在这里。": "Sessions appear here after you start a conversation in Codex.",
+  "在 Agent 里开始对话后，会话会出现在这里。": "Sessions appear here after you start a conversation in an agent.",
+  "搜索标题、目录或会话 ID": "Search titles, folders or session IDs",
+  "归档状态": "Archive state",
+  "未归档": "Unarchived",
+  "按项目": "By project",
+  "按时间": "By time",
+  "选择多个…": "Select multiple…",
+  "取消归档已选": "Unarchive selected",
+  "取消归档": "Unarchive",
+  "复制会话 ID": "Copy session ID",
+  "项目目录": "Project folder",
+  "模型供应商": "Model provider",
+  "撤销删除": "Undo delete",
+  "删除前已备份，可以撤销。": "A backup was made before deleting, so you can undo.",
+  "撤销": "Undo",
+  "会话读取失败": "Could not read sessions",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -4649,6 +4672,15 @@ export const EN_TEMPLATE: Record<string, string> = {
   "最近一张 {0} 到期": "Next expires {0}",
   "获得 {0}": "Granted {0}",
   "到期 {0}": "Expires {0}",
+  "复制恢复命令：{0}": "Copy resume command: {0}",
+  "删除会话：{0}": "Delete session: {0}",
+  "本页 {0} 个，这个项目共 {1} 个": "{0} on this page, {1} in this project",
+  "重新定位目录：{0}": "Relocate folder: {0}",
+  "选择会话：{0}": "Select session: {0}",
+  "已删除「{0}」": "Deleted \"{0}\"",
+  "显示前 {0} 个，共 {1} 个；搜索可以找到其余会话。": "Showing the first {0} of {1}; search to find the rest.",
+  "归档选中的 {0} 个会话？只改本地归档状态，不删除对话文件，之后可以取消归档。": "Archive {0} selected session(s)? This only changes the local archive state; conversation files are kept and you can unarchive later.",
+  "取消归档选中的 {0} 个会话？它们会回到未归档列表。": "Unarchive {0} selected session(s)? They return to the unarchived list.",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated
@@ -4842,6 +4874,8 @@ export const EN_BACKEND: Record<string, string> = {
   "重置结果未确认：请保留同一请求标识，先刷新额度再决定是否重试。": "Reset outcome unconfirmed: keep the same request id and refresh the quota before deciding whether to retry.",
   "已放弃上次未确认的重置操作，下次使用会发起新的请求。": "Abandoned the unconfirmed reset operation; the next use sends a new request.",
   "没有未确认的重置操作。": "There is no unconfirmed reset operation.",
+  "已从备份恢复删除的会话。": "Restored the deleted sessions from backup.",
+  "找不到 Codex 会话数据库，无法撤销删除。": "Cannot undo: the Codex session database was not found.",
 };
 
 // Pattern-based backend translations: [regex, replacement template].
@@ -4976,4 +5010,11 @@ export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
   [/^服务端拒绝了这次重置（HTTP (\d+)），没有扣卡，可以重新发起。$/, "The server rejected this reset (HTTP $1); no voucher was used. You can start a new one."],
   [/^使用重置卡失败：(.+)$/, "Failed to use reset voucher: $1"],
   [/^放弃重置操作失败：(.+)$/, "Failed to abandon reset operation: $1"],
+  [/^已删除 (\d+) 个会话。$/, "Deleted $1 session(s)."],
+  [/^已删除 (\d+) 个，失败 (\d+) 个：(.+)$/, "Deleted $1, $2 failed: $3"],
+  [/^撤销删除失败：(.+)$/, "Undo failed: $1"],
+  [/^已归档 (\d+) 个会话。$/, "Archived $1 session(s)."],
+  [/^已取消归档 (\d+) 个会话。$/, "Unarchived $1 session(s)."],
+  [/^已归档 (\d+) 个，失败 (\d+) 个：(.+)$/, "Archived $1, $2 failed: $3"],
+  [/^已取消归档 (\d+) 个，失败 (\d+) 个：(.+)$/, "Unarchived $1, $2 failed: $3"],
 ];

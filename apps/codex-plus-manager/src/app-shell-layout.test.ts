@@ -222,7 +222,9 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
   // 只管理 Codex 时没有 Agent 页签，固定显示 Codex 的完整会话管理。
-  assert.match(entry, /const shownSessionTab: SessionTab = soloAgent === "codex" \? "codex" : sessionTab;/);
+  assert.match(entry, /const shownSessionTab: SessionTab = soloAgent === "codex" \|\| \(sessionTab !== "all" && !agentVisible\(agentFocus, sessionTab\)\) \? "codex" : sessionTab;/);
+  // 默认是 Codex 页签（完整的会话管理）。
+  assert.match(entry, /useState<SessionTab>\("codex"\)/);
   assert.match(entry, /route === "sessions" && !soloAgent \? <SessionAgentTabs/);
   assert.match(entry, /route === "sessions" && shownSessionTab !== "codex" \? \(/);
   assert.match(entry, /<SessionsView agent=\{shownSessionTab\}/);
@@ -631,7 +633,7 @@ test("内层滚动的页面（网关各页、Computer Use）滚动区延伸到�
 });
 
 test("会话页可以删除会话，不再有「在终端继续」；Claude Code / Grok 走 delete_agent_session，Codex 走 delete_local_session", () => {
-  const sessions = readSource("./GatewaySessions.tsx");
+  const sessions = readSource("./AgentSessions.tsx");
   assert.doesNotMatch(sessions, /在终端继续|resume_agent_session/);
   assert.match(sessions, /"delete_agent_session"/);
   assert.match(sessions, /"delete_local_session"/);
@@ -641,7 +643,7 @@ test("会话页可以删除会话，不再有「在终端继续」；Claude Code
 });
 
 test("会话页列出 Claude Desktop 的会话：标出 Desktop / 已归档，恢复命令用 cliSessionId，删除前提示先退出 Desktop", () => {
-  const sessions = readSource("./GatewaySessions.tsx");
+  const sessions = readSource("./AgentSessions.tsx");
   // Desktop / 已归档是行标题旁的小标签（CxRow 的 badges）。
   assert.match(sessions, /session\.surface === "desktop" \? <CxBadge title=\{t\("Claude Desktop 里的会话"\)\}>Desktop<\/CxBadge>/);
   assert.match(sessions, /session\.archived \? <CxBadge>\{t\("已归档"\)\}<\/CxBadge>/);

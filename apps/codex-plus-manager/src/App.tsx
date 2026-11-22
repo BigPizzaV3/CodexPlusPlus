@@ -145,7 +145,7 @@ import { publishGatewayPayload } from "./gateway-store";
 import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "./log-view-model";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
-import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
+import { SessionsView, sessionDeleteSucceeded } from "./AgentSessions";
 import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, relayFilterFromFocus, relayFilterArgs, type RelayFilter, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
@@ -174,6 +174,7 @@ import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } 
 import { McpPage, Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { SkillsPage } from "./ManagementExtra";
 import { ProjectSessionPage } from "./ProjectSessionPage";
+import type { LocalSessionFilter, SessionProjectCount } from "./management-model";
 import { managerNavigationDestination, type ManagerNavigationIntent } from "./enhancement-navigation";
 import {
   builtinSettingValue,
@@ -1000,7 +1001,20 @@ type LocalSessionsResult = CommandResult<{
   offset: number;
   limit: number;
   hasMore: boolean;
+  /** 筛选后的会话总数。 */
   totalCount: number;
+  /** 筛选结果里每个项目的会话数（不受分页影响）。 */
+  projects: SessionProjectCount[];
+  /** 这一页对应的搜索词和归档筛选。 */
+  query: string;
+  archived: boolean | null;
+}>;
+
+type DeleteLocalSessionsResult = CommandResult<{
+  results: Array<{ sessionId: string; title: string; deleted: boolean; message: string }>;
+  succeeded: number;
+  failed: number;
+  undoToken: string | null;
 }>;
 
 type DeleteLocalSessionResult = CommandResult<{
@@ -1769,14 +1783,7 @@ export function App() {
   const [relayAdvancedOpen, setRelayAdvancedOpen] = useState(false);
   /** 进设置模式前停的页面：侧栏「返回」回到这里。 */
   const lastMainRoute = useRef<Route>("hub");
-  const [notice, setNotice] = useState<{ title: string; message: string; status?: Status } | null>(null);
-  const [confirmDialog, setConfirmDialog] = useState<{
-    title: string;
-    message: string;
-    confirmText: string;
-    cancelText: string;
-    resolve: (confirmed: boolean) => void;
-  } | null>(null);
+  const [notice, setNotice] = useState<NoticeState | null>(null);
   const [liveConflictDialog, setLiveConflictDialog] = useState<{
     profileName: string;
     resolve: (choice: LiveConflictResolution | null) => void;
@@ -1870,7 +1877,8 @@ export function App() {
     setTourOpen(false);
   }, []);
   // 「会话」页默认看所有 Agent；切到 Codex 页签才是带删除 / 归档 / 修复的完整会话管理。
-  const [sessionTab, setSessionTab] = useState<SessionTab>("all");
+  // 会话页默认看 Codex 的完整会话管理（删除、归档、移动、撤销都在这里）。
+  const [sessionTab, setSessionTab] = useState<SessionTab>("codex");
   const [recoveryRefreshRequest, setRecoveryRefreshRequest] = useState(0);
   /** 请求日志打开时的 Agent 过滤（从 Agent 概览跳过去时设置，用一次就清掉）。 */
   const [requestLogAgentFilter, setRequestLogAgentFilter] = useState<"all" | "codex" | "claude" | "grok">("all");
@@ -2369,13 +2377,19 @@ export function App() {
     }
   };
 
-  const refreshLocalSessions = async (silent = false, offset = 0): Promise<LocalSessionsResult | null> => {
+  /** 会话页的搜索词和归档筛选；导航、删除后的刷新沿用最近一次的条件。 */
+  const localSessionFilter = useRef<LocalSessionFilter>({ query: "", archived: false });
+  const refreshLocalSessions = async (silent = false, offset = 0, filter?: LocalSessionFilter): Promise<LocalSessionsResult | null> => {
+    if (filter) localSessionFilter.current = filter;
+    const { query, archived } = localSessionFilter.current;
     const result = await run(() =>
       call<LocalSessionsResult>("list_local_sessions", {
-        request: { offset, limit: 50 },
+        request: { offset, limit: 50, query, archived },
       }),
     );
     if (result) {
+      // 期间又换了筛选条件：这次结果已经过时，交给后发的请求。
+      if (localSessionFilter.current.query !== query || localSessionFilter.current.archived !== archived) return result;
       if (!result.sessions.length && result.offset > 0) {
         return refreshLocalSessions(silent, Math.max(0, result.offset - result.limit));
       }
@@ -2401,16 +2415,15 @@ export function App() {
       request: { sessionId: session.id, title: session.title, dbPath: session.dbPath },
     });
 
-  const confirmSessionDelete = (title: string, message: string) =>
-    new Promise<boolean>((resolve) => {
-      setConfirmDialog({
-        title,
-        message,
-        confirmText: t("确认删除"),
-        cancelText: t("取消"),
-        resolve,
-      });
-    });
+  /** 删除后提示里的「撤销」：按删除结果里的 token 从备份恢复。 */
+  const undoDeleteLocalSessions = async (token: string) => {
+    const result = await run(() => call<DeleteLocalSessionResult>("undo_delete_local_sessions", { token }));
+    if (!result) return;
+    showNotice(t("撤销删除"), result.message, result.status === "undone" ? "ok" : "failed");
+    await refreshLocalSessions(true, localSessions?.offset ?? 0);
+  };
+  const undoDeleteAction = (token: string | null | undefined): NoticeAction | undefined =>
+    token ? { label: t("撤销"), run: () => void undoDeleteLocalSessions(token) } : undefined;
 
   const refreshPendingDreamSkinCommunity = async () => {
     const result = await run(() => call<PendingDreamSkinCommunityResult>("load_pending_dream_skin_community"));
@@ -2467,14 +2480,19 @@ export function App() {
 
   const deleteLocalSession = async (session: LocalSession) => {
     const title = session.title || session.id;
-    const confirmed = await confirmSessionDelete(t("删除会话"), tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [title]));
+    const confirmed = await appConfirm(tf("删除会话“{0}”？此操作会删除本地数据库记录和 rollout 文件，并创建备份。", [title]), {
+      title: t("删除会话"),
+      confirmText: t("删除"),
+      danger: true,
+    });
     if (!confirmed) return false;
     const result = await run(() => requestDeleteLocalSession(session));
+    const deleted = !!result && sessionDeleteSucceeded(result.status);
     if (result) {
-      showResultNotice(t("会话删除"), result);
+      showNotice(t("会话删除"), result.message, deleted ? "ok" : "failed", deleted ? undoDeleteAction(result.undo_token) : undefined);
       await refreshLocalSessions(true, localSessions?.offset ?? 0);
     }
-    return !!result && sessionDeleteSucceeded(result.status);
+    return deleted;
   };
 
   const deleteLocalSessions = async (sessions: LocalSession[]) => {
@@ -2488,32 +2506,16 @@ export function App() {
       .map((session) => `- ${truncateSessionDeletePreview(session.title || session.id)}`)
       .join("\n");
     const extraCount = uniqueSessions.length > 6 ? tf("\n...以及另外 {0} 个会话", [uniqueSessions.length - 6]) : "";
-    const confirmed = await confirmSessionDelete(
-      t("批量删除会话"),
+    const confirmed = await appConfirm(
       tf("删除选中的 {0} 个会话？此操作会删除本地数据库记录和 rollout 文件，并为每个会话创建备份。\n\n{1}{2}", [uniqueSessions.length, preview, extraCount]),
+      { title: t("批量删除会话"), confirmText: t("删除"), danger: true },
     );
     if (!confirmed) return false;
-
-    let succeeded = 0;
-    const failed: string[] = [];
-    for (const session of uniqueSessions) {
-      const result = await run(() => requestDeleteLocalSession(session));
-      if (result && sessionDeleteSucceeded(result.status)) {
-        succeeded += 1;
-      } else {
-        failed.push(session.title || session.id);
-      }
-    }
-
-    if (failed.length) {
-      showNotice(
-        t("批量删除会话"),
-        tf("已删除 {0} 个，失败 {1} 个：{2}", [succeeded, failed.length, failed.slice(0, 3).map(truncateSessionDeletePreview).join(t("、"))]),
-        succeeded ? "ok" : "failed",
-      );
-    } else {
-      showNotice(t("批量删除会话"), tf("已删除 {0} 个会话。", [succeeded]), "ok");
-    }
+    // 一次调用在后台逐个删除，不会每删一个就往返一次、卡住窗口；所有备份合成一个撤销 token。
+    const result = await run(() => call<DeleteLocalSessionsResult>("delete_local_sessions", {
+      request: { sessions: uniqueSessions.map((session) => ({ sessionId: session.id, title: session.title, dbPath: session.dbPath })) },
+    }));
+    if (result) showNotice(t("批量删除会话"), result.message, result.status, result.succeeded ? undoDeleteAction(result.undoToken) : undefined);
     await refreshLocalSessions(true, localSessions?.offset ?? 0);
     return true;
   };
@@ -2521,9 +2523,11 @@ export function App() {
   const archiveLocalSessions = async (sessions: LocalSession[], archived = true) => {
     const uniqueSessions = Array.from(new Map(sessions.map((session) => [session.id, session])).values());
     if (!uniqueSessions.length) return false;
-    const confirmed = await confirmSessionDelete(
-      archived ? t("归档会话") : t("取消归档会话"),
-      tf("{0} 个会话？这只更新本地归档状态，不删除 rollout 文件。", [uniqueSessions.length]),
+    const confirmed = await appConfirm(
+      archived
+        ? tf("归档选中的 {0} 个会话？只改本地归档状态，不删除对话文件，之后可以取消归档。", [uniqueSessions.length])
+        : tf("取消归档选中的 {0} 个会话？它们会回到未归档列表。", [uniqueSessions.length]),
+      { title: archived ? t("归档会话") : t("取消归档会话"), confirmText: archived ? t("归档") : t("取消归档") },
     );
     if (!confirmed) return false;
     const result = await run(() => call<CommandResult<{ succeeded: number; failed: number }>>("archive_local_sessions", {
@@ -3950,8 +3954,8 @@ export function App() {
     }
   };
 
-  const showNotice = (title: string, message: string, status?: Status) => {
-    setNotice({ title, message: t(message), status });
+  const showNotice = (title: string, message: string, status?: Status, action?: NoticeAction) => {
+    setNotice({ title, message: t(message), status, action });
   };
 
   const exitManagerApp = async () => {
@@ -4623,7 +4627,8 @@ export function App() {
   // 没勾选的 Agent 不进侧栏和命令面板；只影响显示，它的配置和网关接入照旧。
   const shownTools = toolEntries.filter((entry) => agentVisible(agentFocus, entry.id));
   const soloAgent = singleAgent(agentFocus);
-  const shownSessionTab: SessionTab = soloAgent === "codex" ? "codex" : sessionTab;
+  // 选中的页签对应的 Agent 被隐藏了（换了使用模式）时退回 Codex。
+  const shownSessionTab: SessionTab = soloAgent === "codex" || (sessionTab !== "all" && !agentVisible(agentFocus, sessionTab)) ? "codex" : sessionTab;
   // 侧栏聚焦的 Agent 被隐藏了：换到第一个还显示的 Agent，免得停在一个看不见的 Agent 的页面上。
   const fallbackTool = shownTools.find((entry) => entry.switchable)?.id;
   useEffect(() => {
@@ -4926,7 +4931,7 @@ export function App() {
           {route === "sessions" && shownSessionTab === "codex" ? (
             <ProjectSessionPage
               sessions={localSessions}
-              onRefresh={async (offset) => { await actions.refreshLocalSessions(false, offset ?? 0); }}
+              onRefresh={(offset, filter) => actions.refreshLocalSessions(false, offset ?? 0, filter)}
               onDelete={actions.deleteLocalSession}
               onDeleteMany={actions.deleteLocalSessions}
               onArchiveMany={actions.archiveLocalSessions}
@@ -5166,19 +5171,6 @@ export function App() {
         />
       ) : null}
       <AppDialogHost />
-      {confirmDialog ? (
-        <ConfirmDialog
-          confirm={confirmDialog}
-          onCancel={() => {
-            confirmDialog.resolve(false);
-            setConfirmDialog(null);
-          }}
-          onConfirm={() => {
-            confirmDialog.resolve(true);
-            setConfirmDialog(null);
-          }}
-        />
-      ) : null}
       {liveConflictDialog ? (
         <LiveConflictDialog
           profileName={liveConflictDialog.profileName}
@@ -5404,7 +5396,7 @@ type Actions = {
   setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean }) => Promise<boolean>;
   showExtensionNotice: (title: string, message: string) => void;
   deleteUserScript: (key: string) => Promise<void>;
-  refreshLocalSessions: (silent?: boolean, offset?: number) => Promise<LocalSessionsResult | null>;
+  refreshLocalSessions: (silent?: boolean, offset?: number, filter?: LocalSessionFilter) => Promise<LocalSessionsResult | null>;
   listProjectSessions: (cwd: string) => Promise<LocalSession[]>;
   // 返回是否真正执行（用户取消时为 false），调用方据此决定是否清空选择。
   deleteLocalSession: (session: LocalSession) => Promise<boolean>;
@@ -13551,11 +13543,14 @@ function UpdateDialog({ update, progress, downloaded = false, onClose, onSkipVer
  * 右下角的提示卡：左侧状态色条 + 图标，按成功 / 警告 / 失败 / 信息分色。
  * 鼠标停在卡片上时暂停倒计时；失败提示停留更久，并可一键复制详情。
  */
+type NoticeAction = { label: string; run: () => void };
+type NoticeState = { title: string; message: string; status?: Status; action?: NoticeAction };
+
 function NoticeDialog({
   notice,
   onClose,
 }: {
-  notice: { title: string; message: string; status?: Status };
+  notice: NoticeState;
   onClose: () => void;
 }) {
   const tone = noticeTone(notice.status);
@@ -13595,6 +13590,11 @@ function NoticeDialog({
         <div className="toast-body">
           <h2>{notice.title}</h2>
           {notice.message ? <p>{notice.message}</p> : null}
+          {notice.action ? (
+            <button className="toast-action" onClick={() => { notice.action?.run(); onClose(); }} type="button">
+              {notice.action.label}
+            </button>
+          ) : null}
           {tone === "error" && notice.message ? (
             <button className="toast-action" onClick={copyDetails} type="button">
               {copied ? <CheckCircle2 aria-hidden="true" /> : <Copy aria-hidden="true" />}
@@ -13605,39 +13605,6 @@ function NoticeDialog({
         <button aria-label={t("关闭提示")} className="toast-dismiss" onClick={onClose} type="button">
           <X aria-hidden="true" />
         </button>
-      </div>
-    </div>
-  );
-}
-
-function ConfirmDialog({
-  confirm,
-  onConfirm,
-  onCancel,
-}: {
-  confirm: { title: string; message: string; confirmText: string; cancelText: string };
-  onConfirm: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card confirm-modal">
-        <div className="modal-head">
-          <div>
-            <h2>{confirm.title}</h2>
-          </div>
-          <button className="toast-close" onClick={onCancel} type="button">×</button>
-        </div>
-        <div className="confirm-modal-body">
-          <p className="modal-message">{confirm.message}</p>
-        </div>
-        <Toolbar className="confirm-modal-actions">
-          <Button onClick={onConfirm}>
-            <Trash2 className="h-4 w-4" />
-            {confirm.confirmText}
-          </Button>
-          <Button onClick={onCancel} variant="secondary">{confirm.cancelText}</Button>
-        </Toolbar>
       </div>
     </div>
   );

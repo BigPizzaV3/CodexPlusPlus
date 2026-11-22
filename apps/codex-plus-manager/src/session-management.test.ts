@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { matchesManagementQuery, normalizeProjectPath, sessionGroups, type ManagedSession } from "./management-model.ts";
+import { matchesManagementQuery, normalizeProjectPath, sessionArchiveFilter, sessionGroups, type ManagedSession } from "./management-model.ts";
+import { relativeTime } from "./gateway-model.ts";
 
 type Tree = { type: string; props: Record<string, any>; children: unknown[] };
 const source = readFileSync(new URL("./ProjectSessionPage.tsx", import.meta.url), "utf8");
@@ -40,7 +41,7 @@ function fixture(overrides: Record<string, any> = {}) {
     ? type({ ...props, children: children.length === 1 ? children[0] : children })
     : { type, props: props ?? {}, children };
   const context = vm.createContext({
-    jsx, fragment: "fragment", matchesManagementQuery, sessionGroups,
+    jsx, fragment: "fragment", matchesManagementQuery, sessionGroups, sessionArchiveFilter, relativeTime,
     t: (value: string) => value,
     tf: (value: string, args: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index: string) => String(args[Number(index)])),
     useState: (initial: any) => {
@@ -49,12 +50,15 @@ function fixture(overrides: Record<string, any> = {}) {
       return [slots[index], (value: any) => { slots[index] = typeof value === "function" ? value(slots[index]) : value; }];
     },
     useMemo: (create: () => unknown) => create(),
+    useEffect: () => {},
+    useRef: (current: unknown) => ({ current }),
     Archive: "Archive", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", ChevronDown: "ChevronDown", Copy: "Copy", History: "History", Info: "Info",
     RefreshCw: "RefreshCw", Search: "Search", Trash2: "Trash2", Check: "Check", ManagementDrawer: "ManagementDrawer",
     FolderInput: "FolderInput", FolderSymlink: "FolderSymlink", SessionRelocateDrawer: "SessionRelocateDrawer",
     // 骨架组件（cx-layout）与顶栏挂载点在这里只当普通节点；搜索框是 CxToolbar 的 onQuery。
-    TopbarActions: "TopbarActions", CxToolbar: "CxToolbar", CxCard: "CxCard", CxEmpty: "CxEmpty", CxRow: "CxRow",
-    setTimeout,
+    TopbarActions: "TopbarActions", CxToolbar: "CxToolbar", CxCard: "CxCard", CxEmpty: "CxEmpty", CxRow: "CxRow", CxBadge: "CxBadge", CxBanner: "CxBanner",
+    ArchiveRestore: "ArchiveRestore", Loader2: "Loader2", SEARCH_DEBOUNCE_MS: 300,
+    setTimeout, clearTimeout, navigator: { clipboard: { writeText: async () => {} } },
   });
   vm.runInContext(code, context);
   let props = {
@@ -244,4 +248,69 @@ test("盘符大小写统一成大写，c:\\ 与 C:\\ 归为同一个项目（#29
   const groups = sessionGroups([session("claude", "c:\\Work\\app"), session("codex", "C:\\Work\\app")], "project");
   assert.equal(groups.length, 1);
   assert.equal(groups[0].path, "C:/Work/app");
+});
+
+test("search and archive filters go to the backend: search is debounced, the archive view switches bulk actions", async () => {
+  const calls: Array<[number | undefined, unknown]> = []; const archived: Array<[string[], boolean]> = [];
+  const f = fixture({
+    onRefresh: async (offset?: number, filter?: unknown) => { calls.push([offset, filter ? JSON.parse(JSON.stringify(filter)) : undefined]); },
+    onArchiveMany: async (rows: ManagedSession[], archive: boolean) => { archived.push([Array.from(rows, (row) => row.id), archive]); return true; },
+  });
+  let tree = f.render();
+  const toolbar = nodes(tree).find((node) => node.type === "CxToolbar")!;
+  toolbar.props.onQuery("al"); toolbar.props.onQuery("alpha  ");
+  assert.deepEqual(calls, [], "输入时不立即请求");
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.deepEqual(calls, [[0, { query: "alpha", archived: false }]], "停止输入后只按最后的词请求一次");
+
+  tree = f.render();
+  button(tree, "已归档").props.onClick();
+  assert.deepEqual(calls.at(-1), [0, { query: "alpha", archived: true }]);
+  tree = f.render({ sessions: { sessions: [{ ...session("old", "/projects/alpha"), archived: true }], totalCount: 1, hasMore: false, offset: 0, limit: 2, archived: true } });
+  assert.ok(nodes(tree).some((node) => node.type === "CxRow" && text(node.props.badges) === "已归档"));
+  button(tree, "选择多个…").props.onClick(); tree = f.render();
+  assert.equal(nodes(tree).some((node) => node.type === "button" && text(node) === "归档已选"), false);
+  button(tree, "全选当前列表").props.onClick(); tree = f.render();
+  button(tree, "取消归档已选").props.onClick();
+  await flushActions();
+  assert.deepEqual(archived, [[["old"], false]]);
+});
+
+test("project headings show the whole project's count when the page holds only part of it", () => {
+  const f = fixture({ sessions: {
+    sessions: [session("first", "/projects/alpha"), session("second", "/projects/beta")], totalCount: 9, hasMore: true, offset: 0, limit: 2,
+    projects: [{ path: "/projects/alpha", count: 7 }, { path: "/projects/beta", count: 1 }],
+  } });
+  const counts = nodes(f.render()).filter((node) => node.props.className === "cx-section-count").map(text);
+  assert.deepEqual(counts, ["1 / 7", "1"]);
+});
+
+test("loading, empty and no-match states are distinct; deleting the open session closes its details", async () => {
+  const emptyTitle = (tree: Tree) => nodes(tree).find((node) => node.type === "CxEmpty")?.props.title;
+  assert.equal(emptyTitle(fixture({ sessions: null }).render()), "正在读取会话…");
+  const empty = fixture({ sessions: { sessions: [], totalCount: 0, hasMore: false, offset: 0, limit: 2 } });
+  assert.equal(emptyTitle(empty.render()), "还没有会话");
+  const toolbar = nodes(empty.render()).find((node) => node.type === "CxToolbar")!;
+  toolbar.props.onQuery("zzz");
+  assert.equal(emptyTitle(empty.render()), "没有匹配的会话");
+  button(empty.render(), "清除搜索");
+
+  const f = fixture();
+  let tree = f.render();
+  nodes(tree).find((node) => node.type === "CxRow")!.props.onClick();
+  tree = f.render();
+  const drawer = nodes(tree).find((node) => node.type === "ManagementDrawer")!;
+  assert.ok(drawer);
+  const footer = nodes(drawer.props.footer);
+  footer.find((node) => node.type === "button" && text(node) === "删除会话")!.props.onClick();
+  await flushActions();
+  assert.equal(nodes(f.render()).find((node) => node.type === "ManagementDrawer"), undefined);
+});
+
+test("time groups carry translatable labels; project names are shown as-is", () => {
+  const now = new Date(2026, 10, 22, 12).getTime();
+  const groups = sessionGroups([{ ...session("a", ""), updatedAtMs: now }, { ...session("b", "/x/app"), updatedAtMs: now }], "project", now);
+  assert.deepEqual(groups.map((group) => [group.label, group.translatable]), [["未知目录", true], ["app", false]]);
+  const byTime = sessionGroups([{ ...session("a", ""), updatedAtMs: now }], "time", now);
+  assert.deepEqual(byTime.map((group) => [group.label, group.translatable]), [["今天", true]]);
 });
