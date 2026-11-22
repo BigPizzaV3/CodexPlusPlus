@@ -14,6 +14,7 @@ import type { HubLink } from "./hub-overview-model";
 import { t, tf } from "./i18n";
 import { enhancementPlatformFromUserAgent } from "./enhancement-catalog";
 import { announceBackendSettingsChanged } from "./settings-events";
+import { errorText } from "./lib/utils";
 import "./ComputerUsePage.css";
 
 type CuTargetId = "claudeCode" | "claudeDesktop" | "codex" | "dsh" | "zcode" | "workBuddy" | "devin";
@@ -91,7 +92,6 @@ const targetFallback: Record<CuTargetId, { label: string; configPath: string }> 
   workBuddy: { label: "WorkBuddy AI", configPath: "~/.workbuddy-ai/mcp.json" },
   devin: { label: "Devin", configPath: "~/.config/devin/mcp_config.json" },
 };
-const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const hasValue = (value?: string) => Boolean(value && value.trim());
 // 配置路径通常很长，保留首尾两段比整体省略更能看清是哪个客户端。
 const elidePath = (value: string, limit = 52) => {

@@ -7,7 +7,7 @@ import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CxBadge, CxCard, CxEmpty, CxSection } from "./cx-layout";
 import { MenuItem } from "./ManagementPages";
 import { useEscapeLayer } from "./use-escape-layer";
-import { errorText } from "./CommunityExtensionsPanel";
+import { errorText } from "./lib/utils";
 import "./CommunityExtensionsPanel.css";
 
 // 与 crates/codex-plus-core/src/extension_publish.rs 的 list_published 对应。

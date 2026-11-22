@@ -8,6 +8,7 @@ import { Switch } from "./gateway-ui";
 import { t, tf } from "./i18n";
 import { ExtensionCard } from "./ExtensionCard";
 import { CurationReviewDialog, useCurationStatus } from "./ExtensionCuration";
+import { errorText } from "./lib/utils";
 import "./CommunityExtensionsPanel.css";
 
 // 与 crates/codex-plus-core/src/extension_discovery.rs 对应。
@@ -73,10 +74,6 @@ export type CommunitySort = "stars" | "updated" | "name";
 
 export function request<T>(action: string, payload?: unknown): Promise<T> {
   return invoke<T>("extension_community_request", { action, payload: payload ?? null });
-}
-
-export function errorText(error: unknown): string {
-  return typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
 }
 
 function engineWarning(engine: Entry["engine"]): string {

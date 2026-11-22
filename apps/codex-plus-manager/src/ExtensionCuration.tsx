@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { errorText, permissionLines, type Prepared } from "./CommunityExtensionsPanel";
+import { permissionLines, type Prepared } from "./CommunityExtensionsPanel";
+import { errorText } from "./lib/utils";
 import { t, tf } from "./i18n";
 
 // 与 src-tauri/src/extension_curation_commands.rs 对应。

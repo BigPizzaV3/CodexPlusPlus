@@ -5,6 +5,7 @@ import { CheckCircle2, ExternalLink, Loader2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
+import { errorText } from "./lib/utils";
 
 // 与 crates/codex-plus-core/src/extension_publish.rs 的 CheckReport / publish 结果对应。
 type Report = {
@@ -32,10 +33,6 @@ type License = "mit" | "apache-2.0" | "none";
 
 function request<T>(action: string, payload: unknown): Promise<T> {
   return invoke<T>("extension_publish_request", { action, payload });
-}
-
-function errorText(error: unknown): string {
-  return typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
 }
 
 /** 本地拓展包「发布到 GitHub」：检查 → 选仓库名与许可证 → 发布，逐步显示 gh / git 的输出。 */

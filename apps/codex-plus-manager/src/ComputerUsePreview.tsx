@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Loader2, MonitorPlay, RefreshCw, ShieldAlert, Square } from "lucide-react";
 import { t } from "./i18n";
 import { AppSelect } from "./AppSelect";
+import { errorText } from "./lib/utils";
 
 /// 与 Rust 侧 `window_capture::CaptureWindow` 对齐
 type PreviewWindow = {
@@ -33,12 +34,6 @@ type EndEvent = { reason: string };
 /// 预览用的缩放与帧率：0.5 倍时单帧约 45 KB、12 fps 已经很顺，且不抢 CU 自己的算力。
 const PREVIEW_SCALE = 0.5;
 const PREVIEW_FPS = 12;
-
-function errorText(reason: unknown): string {
-  if (typeof reason === "string") return reason;
-  if (reason instanceof Error) return reason.message;
-  return String(reason);
-}
 
 function describe(win: PreviewWindow): string {
   const name = win.app_name || win.bundle_id || `pid ${win.pid}`;
