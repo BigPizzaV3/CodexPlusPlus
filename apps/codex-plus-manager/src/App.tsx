@@ -5158,7 +5158,13 @@ export function App() {
                 <AppSettingsFocus focus={settingsFocus} onDone={() => setSettingsFocus(null)} />
                 <GlobalSettingsScreen
                   sections={settingsSections}
-                  onOpenTour={() => setSetupOpen(true)}
+                  onOpenTour={() => {
+                    // 入门清单和导览指的都是主侧栏里的入口，设置模式的侧栏里没有：先回到进设置前的页面，
+                    // 再打开入门清单并开始导览，点了马上能看到。
+                    setSetupOpen(true);
+                    void navigate(lastMainRoute.current);
+                    setTourOpen(true);
+                  }}
                   agentFocus={agentFocus}
                   onOpenAgentFocus={() => setAgentFocusOpen(true)}
                   dirty={settingsDirty}

@@ -585,6 +585,8 @@ test("首次入门清单与可选导览分开；模式确认后显示清单，�
   assert.match(app, /if \(agentFocusOpen \|\| tourOpen\) return;\s*setPaletteOpen/);
   assert.match(app, /updatePrompt && !agentFocusOpen && !tourOpen/);
   assert.match(functionSource("GlobalSettingsScreen"), /onClick=\{onOpenTour\}/);
+  // 设置页里点「重新打开引导」：退出设置模式，打开入门清单并开始导览（以前只改了一个设置模式里不渲染的状态）。
+  assert.match(functionSource("App"), /onOpenTour=\{\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*setSetupOpen\(true\);\n\s*void navigate\(lastMainRoute\.current\);\n\s*setTourOpen\(true\);/);
   const model = readSource("./onboarding-model.ts");
   const sidebar = functionSource("AppSidebar");
   for (const match of model.matchAll(/target: "([^"]+)"/g)) {
