@@ -1455,6 +1455,16 @@
       }
       .${codexPlusPageClass} .codex-plus-modal-content { border-color: transparent; }
       /*
+       * 新外壳下原生页面只有面板一个底色：positionCodexPlusPage 量到面板颜色时打 surface 标记，
+       * 页面底、内容区、左栏、顶部页签栏和底部状态栏统一用它（内联的主题变量要用 !important 才压得住）。
+       * 梦皮壁纸模式的规则选择器更具体，仍由它把这些变量改成透明。
+       */
+      .${codexPlusPageClass}[data-codex-plus-surface="native"] {
+        --codex-plus-bg-primary: var(--codex-plus-shell-surface) !important;
+        --codex-plus-settings-page-bg: var(--codex-plus-shell-surface) !important;
+        --codex-plus-nav-bg: var(--codex-plus-shell-surface) !important;
+      }
+      /*
        * 梦皮（Dream Skin）壁纸模式（#3152）：原生设置页在梦皮下是一层半透明遮罩叠在壁纸上，
        * 我们的页面却是实色底，整块盖住壁纸。页面是盖在内容区上的独立 fixed 层，底下不是同一页，
        * 不能直接透明；这里照梦皮给原生设置页的画法，在页面根节点自己画「遮罩 + 壁纸」，

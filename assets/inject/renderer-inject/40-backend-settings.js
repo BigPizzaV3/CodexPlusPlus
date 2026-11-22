@@ -1380,7 +1380,11 @@
     // overlay 若仍从标题栏下沿开始，上面就露出一条「侧栏那段发灰、面板那段发黑、拐角落在侧栏右边」的
     // 原生底色——用户截图圈出的「顶上多出来一块黑的」就是它。这种外壳下改成和原生面板一样从标题栏
     // 顶边铺起，由 CSS 把标题栏抬到 overlay 之上，内容整体下移标题栏的高度，按钮和拖动都照旧。
-    const titlebar = pageSurface ? null : document.querySelector("[data-app-shell-titlebar]");
+    // 外壳里常同时挂着两个标题栏，前一个是 0×0 的空壳，要取真正有尺寸的那个。
+    const titlebar = pageSurface
+      ? null
+      : Array.from(document.querySelectorAll("[data-app-shell-titlebar]"))
+        .find((node) => node.getBoundingClientRect().height > 0);
     const titlebarRect = titlebar?.getBoundingClientRect?.();
     const backing = titlebarRect && titlebarRect.height > 0
       ? document.querySelector("[data-app-shell-surface-backing]")
@@ -1442,6 +1446,17 @@
     overlay.style.setProperty("--codex-plus-page-radius", `${layoutRadius}px`);
     if (underTitlebar) overlay.style.setProperty("--codex-plus-page-radius-end", "0px");
     else overlay.style.removeProperty("--codex-plus-page-radius-end");
+    // 新外壳的原生页面整块就是面板一个底色（侧栏收起时连图标栏底下都是它）。
+    // 我们的页面底、左栏、顶栏统一取面板的实际颜色，不再用比它深的正文令牌和比它浅的侧栏令牌。
+    // 面板被皮肤画成透明时不取，免得页面透出底下的原生内容。
+    const surface = underTitlebar ? getComputedStyle(backing).backgroundColor : "";
+    if (surface && !/^transparent$|,\s*0\)$|\/\s*0\)$/.test(surface)) {
+      overlay.style.setProperty("--codex-plus-shell-surface", surface);
+      overlay.dataset.codexPlusSurface = "native";
+    } else {
+      overlay.style.removeProperty("--codex-plus-shell-surface");
+      delete overlay.dataset.codexPlusSurface;
+    }
     if (window.__codexPlusPageLayoutObserver &&
         (window.__codexPlusPageLayoutTargets?.main !== main ||
          window.__codexPlusPageLayoutTargets?.sidebar !== sidebar ||
