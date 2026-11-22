@@ -171,6 +171,33 @@ fn compiles_safe_css_into_controlled_cascade() {
 }
 
 #[test]
+fn dialog_backdrop_filter_skips_anchored_popover_hosts() {
+    // #3228：悬浮卡片的 0×0 popover 宿主带 backdrop-filter 会让卡片落到窗口左上角。
+    let compiled = compile_safe_css(
+        "[data-ds-part=\"dialog\"] { border-radius: 22px; backdrop-filter: blur(10px); }\n\
+         [data-ds-part=\"sidebar\"] { backdrop-filter: blur(8px); }",
+    )
+    .unwrap();
+    let guarded = "  [data-ds-part=\"dialog\"]:not([popover]:not([data-anchor-positioning])) {\n    \
+                   backdrop-filter: blur(10px) !important;\n  }\n";
+
+    assert!(compiled.contains(guarded), "{compiled}");
+    assert_eq!(compiled.matches("backdrop-filter: blur(10px)").count(), 1);
+    assert!(compiled.contains(
+        "  [data-ds-part=\"dialog\"] {\n    border-radius: 22px !important;\n  }\n"
+    ));
+    assert!(compiled.contains("backdrop-filter: blur(8px) !important;"));
+
+    let only_blur =
+        compile_safe_css("[data-ds-part=\"dialog\"]:hover { backdrop-filter: blur(6px); }")
+            .unwrap();
+    assert!(!only_blur.contains("[data-ds-part=\"dialog\"]:hover {"));
+    assert!(only_blur.contains(
+        "[data-ds-part=\"dialog\"]:hover:not([popover]:not([data-anchor-positioning])) {"
+    ));
+}
+
+#[test]
 fn safe_css_matches_the_dreamskin_value_policy() {
     for css in [
         "[data-ds-part=\"main\"], [data-ds-part=\"sidebar\"] { color: #fff; }",
