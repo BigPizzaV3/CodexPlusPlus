@@ -3943,6 +3943,9 @@ export const EN_PLAIN: Record<string, string> = {
   "未配置独立代理，沿用系统代理": "No proxy set; uses the system proxy",
   "留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。随「保存供应商」一起保存。": "Leave empty to use the system proxy. Only affects model fetching, tests and requests for this provider. Saved with \"Save provider\".",
   "点「编辑」到供应商编辑页里改，随「保存供应商」一起保存；当前供应商会重新应用，重启 Codex 后作用于会话请求。": "Click Edit to change it on the provider's page; it is saved with \"Save provider\". The current provider is re-applied, and session requests use it after restarting Codex.",
+  "无需转换": "No conversion",
+  "选择还没生效，点「应用」后才会写入 Codex 的登录凭证。": "Not applied yet. Click Apply to write it to Codex's login credentials.",
+  "填 1 到 86400 之间的整数，离开输入框时不合法的会还原。": "Enter a whole number from 1 to 86400. Invalid values are reverted when you leave the field.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.

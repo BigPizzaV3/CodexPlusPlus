@@ -7894,7 +7894,7 @@ function RelayScreen({
           <CxFilters
             items={(["direct", "modelAggregation", "routing", "failover"] as ProviderViewKind[]).map((view) => ({
               id: view,
-              label: <span title={viewTip[view]}>{view === "direct" ? t("直连") : view === "modelAggregation" ? t("模型聚合") : view === "routing" ? t("需协议转换") : t("故障转移")}</span>,
+              label: <span title={viewTip[view]}>{/* 「直连」和分区标题「直连供应商」撞名：按是否要协议转换来叫，和「需协议转换」对照。 */}{view === "direct" ? t("无需转换") : view === "modelAggregation" ? t("模型聚合") : view === "routing" ? t("需协议转换") : t("故障转移")}</span>,
               count: viewCount(view),
             }))}
             label={t("供应商配置模式")}

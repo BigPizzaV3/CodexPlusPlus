@@ -339,6 +339,9 @@ export function ProviderFormDialog({
   );
 }
 
+/** 「从上游获取」的勾选列表最多画这么多行，多的靠搜索。 */
+const PICKER_LIMIT = 500;
+
 type PickerState = { rows: PickerRow[]; selected: Set<string>; query: string; fetched: number };
 
 /** 「从上游获取」的勾选列表：先列已在列表里的（默认勾上，取消勾选表示移除；上游没有的标出来），
@@ -387,7 +390,7 @@ function ModelPicker({
         <button className="pf-link" disabled={!visibleNew.some((model) => picker.selected.has(model))} onClick={() => setPicker({ ...picker, selected: new Set([...picker.selected].filter((model) => !visibleNew.includes(model))) })} title={t("取消勾选搜索结果里新增的模型，已在列表里的不动")} type="button">{t("全不选新增")}</button>
       </div>
       <div className="pf-picker-list">
-        {visible.slice(0, 500).map((row) => {
+        {visible.slice(0, PICKER_LIMIT).map((row) => {
           const label = tag(row);
           return (
             <label data-in-list={row.inList} key={row.model}>
@@ -398,6 +401,9 @@ function ModelPicker({
           );
         })}
         {!visible.length ? <span className="pf-picker-empty">{t("没有匹配的模型")}</span> : null}
+        {visible.length > PICKER_LIMIT ? (
+          <span className="pf-picker-empty">{tf("只显示前 {0} 个，共 {1} 个；用搜索缩小范围。", [PICKER_LIMIT, visible.length])}</span>
+        ) : null}
       </div>
       <div className="pf-picker-foot">
         <span className="pf-sync-summary">{tf("新增 {0} · 移除 {1}", [outcome.added, outcome.removed])}</span>

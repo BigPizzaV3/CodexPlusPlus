@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { t, tf } from "./i18n";
 import { QuotaWindows } from "./gateway-ui";
 import type { ProviderQuota } from "./gateway-model";
@@ -15,6 +16,10 @@ export function SubscriptionPolicyFields({ value, onChange, quota, disabled = fa
   const update = (patch: Partial<SubscriptionPolicy>) => onChange({ ...policy, ...patch });
   const actual = quota?.windows.flatMap((window) => window.windowMinutes === null ? [] : [String(window.windowMinutes)]) ?? [];
   const windows = [...new Set(quota?.windowsComplete ? actual : [...actual, ...Object.keys(policy.windowUsedPercentLimits)])];
+  // 用量有效期按文字编辑：删空、先打一半都允许，合法（1~86400 的整数）时才写回，失焦时不合法就还原。
+  const [ageText, setAgeText] = useState(String(policy.maxAgeSeconds));
+  useEffect(() => setAgeText(String(policy.maxAgeSeconds)), [policy.maxAgeSeconds]);
+  const ageValid = (text: string) => /^\d+$/.test(text.trim()) && Number(text) >= 1 && Number(text) <= 86400;
   return (
     <section className="pf-section">
       <h4>{t("ChatGPT 订阅额度")}</h4>
@@ -47,7 +52,21 @@ export function SubscriptionPolicyFields({ value, onChange, quota, disabled = fa
         </label>
         <label>
           <span>{t("用量有效期（秒）")}</span>
-          <input disabled={disabled} max={86400} min={1} onChange={(event) => { const number = Number(event.currentTarget.value); if (Number.isInteger(number) && number >= 1 && number <= 86400) update({ maxAgeSeconds: number }); }} type="number" value={policy.maxAgeSeconds} />
+          <input
+            aria-invalid={ageValid(ageText) ? undefined : true}
+            aria-label={t("用量有效期（秒）")}
+            disabled={disabled}
+            inputMode="numeric"
+            onBlur={() => { if (!ageValid(ageText)) setAgeText(String(policy.maxAgeSeconds)); }}
+            onChange={(event) => {
+              const text = event.currentTarget.value;
+              setAgeText(text);
+              if (ageValid(text)) update({ maxAgeSeconds: Number(text) });
+            }}
+            type="text"
+            value={ageText}
+          />
+          {ageValid(ageText) ? null : <small className="pf-error">{t("填 1 到 86400 之间的整数，离开输入框时不合法的会还原。")}</small>}
         </label>
       </div>
       <p className="pf-hint">{t("上限按官方累计已用比例计算，100 或留空表示不设上限。同一真实账号的供应商共享官方额度，原生客户端等其他来源的使用也计入。")}</p>
