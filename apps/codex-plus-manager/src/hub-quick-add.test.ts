@@ -27,3 +27,13 @@ test("总览里点某家供应商：带上落地位置跳到供应商池，那�
   assert.match(providers, /takeGatewayJump\("provider"\)/);
   assert.match(providers, /scrollIntoView\(\{ block: "center" \}\)/);
 });
+
+test("总览里点某个 Agent：到「Agent 接入」展开它那一行；不在网关列表里的才去它自己的页面", () => {
+  const hub = read("HubOverview.tsx");
+  assert.match(hub, /gatewayJump\.agent = id;\s*onNavigate\("gateway"\);/);
+  assert.match(hub, /onOpen=\{\(\) => openAgent\(agent\.id\)\}/);
+  const agents = read("GatewayAgents.tsx");
+  assert.match(agents, /const \[jumped\] = useState\(\(\) => \(embedded \? null : takeGatewayJump\("agent"\)\)\);/);
+  assert.match(agents, /useGatewayViewState<string \| null>\(embedded \? null : "agents\.expanded", solo, jumped \?\? undefined\)/);
+  assert.match(agents, /data-agent-row=\{agent\.agent\}/);
+});

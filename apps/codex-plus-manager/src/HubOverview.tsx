@@ -111,6 +111,15 @@ export function HubOverview({
   const [busy, setBusy] = useState<string | null>(null);
   const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
   const poolState = hubPoolState(payload);
+  // 点拓扑里的某个 Agent：留在网关里，到「Agent 接入」并展开它那一行；不在网关列表里的才去它自己的页面。
+  const openAgent = (id: string) => {
+    if (!payload?.agents.some((agent) => agent.agent === id)) {
+      onOpenAgent(id);
+      return;
+    }
+    gatewayJump.agent = id;
+    onNavigate("gateway");
+  };
   // 点拓扑里的某家供应商：到供应商池并展开、滚到那一家。
   const openProvider = (id: string) => {
     gatewayJump.provider = id;
@@ -136,7 +145,7 @@ export function HubOverview({
           <div className="hub-col">
             <div className="hub-col-head"><span>{t("Agent")}</span><span>{t("请求")}</span></div>
             {agents.map((agent) => (
-              <AgentNode agent={agent} key={agent.id} onOpen={() => onOpenAgent(agent.id)} />
+              <AgentNode agent={agent} key={agent.id} onOpen={() => openAgent(agent.id)} />
             ))}
             {solo ? null : (
               <button className="hub-node hub-node-ghost" onClick={() => setAdding("agent")} type="button">

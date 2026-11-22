@@ -42,7 +42,7 @@ import {
   shortProviderName,
 } from "./gateway-model";
 import { AppSelect } from "./AppSelect";
-import { GatewayNavContext, publishGatewayPayload, useGatewayViewState } from "./gateway-store";
+import { GatewayNavContext, publishGatewayPayload, takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalShell } from "./use-modal-shell";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
@@ -100,10 +100,19 @@ export function AgentsView({
   const solo = singleAgent(focus);
   const agents = visibleAgents(focus, payload?.agents ?? []);
   // 展开的那一行、「未接入」折叠状态在切换页签后保留；嵌在弹窗里时不和页面共用。
-  const [expanded, setExpanded] = useGatewayViewState<string | null>(embedded ? null : "agents.expanded", solo);
+  // 从总览点某个 Agent 跳过来：展开那一行并滚到它（没接入的先展开「未接入」）。
+  const [jumped] = useState(() => (embedded ? null : takeGatewayJump("agent")));
+  const [expanded, setExpanded] = useGatewayViewState<string | null>(embedded ? null : "agents.expanded", solo, jumped ?? undefined);
   const connected = agents.filter((agent) => agent.enabled);
   const others = agents.filter((agent) => !agent.enabled);
-  const [othersOpen, setOthersOpen] = useGatewayViewState<boolean | null>(embedded ? null : "agents.othersOpen", null);
+  const [othersOpen, setOthersOpen] = useGatewayViewState<boolean | null>(
+    embedded ? null : "agents.othersOpen",
+    null,
+    jumped && others.some((agent) => agent.agent === jumped) ? true : undefined,
+  );
+  useEffect(() => {
+    if (jumped) document.querySelector(`[data-agent-row="${CSS.escape(jumped)}"]`)?.scrollIntoView({ block: "center" });
+  }, [jumped]);
   const othersShown = othersOpen ?? connected.length === 0;
   const row = (agent: GatewayAgentView) => (
     <AgentRow
@@ -323,7 +332,7 @@ function AgentRow({
     : "";
 
   return (
-    <div className="gw-agent" data-expanded={expanded}>
+    <div className="gw-agent" data-agent-row={agent.agent} data-expanded={expanded}>
       {/* 已接入时整行点击展开详情，模型下拉和开关各管各的。 */}
       <div
         className="gw-agent-row cx-row"
