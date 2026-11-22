@@ -1,4 +1,10 @@
   /**
+   * 原生悬浮侧栏开合用的弹簧（motion 的 spring，bounce 0.1）按同一条曲线采样成 linear()；
+   * 原生打开 0.3s、收起 0.2s，卡片淡入淡出，同时横移 1.5 个 --spacing。
+   */
+  const codexPlusSidebarPeekEase = "linear(0, 0.07, 0.218, 0.383, 0.537, 0.666, 0.768, 0.844, 0.899, 0.937, 0.962, 0.979, 0.989, 0.995, 0.999, 1 75%, 1)";
+
+  /**
    * 装上 / 换掉样式表。版本 = 手写版本号前缀 + 样式全文的哈希：改了任何 CSS，重新注入（不刷新页面）时
    * 都会换成新样式表。以前只比手写版本号，改样式忘了 +1 时新 JS 配旧样式，新界面全没样式。
    * 样式全文与哈希每次注入只算一次（挂在函数上）：installStyle 在每轮轻量扫描里都会调。
@@ -1518,17 +1524,17 @@
         background: var(--app-shell-sidebar-popover-background, var(--codex-plus-nav-bg)) !important;
         box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
         opacity: 0;
-        transform: translateX(-12px);
+        transform: translateX(calc(var(--spacing, 4px) * -1.5));
         visibility: hidden;
         pointer-events: none;
-        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+        transition: opacity .2s ${codexPlusSidebarPeekEase}, transform .2s ${codexPlusSidebarPeekEase}, visibility 0s linear .2s;
       }
       .${codexPlusPageClass}[data-codex-plus-sidebar="floating"][data-codex-plus-nav-peek="true"] .codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav {
         opacity: 1;
         transform: none;
         visibility: visible;
         pointer-events: auto;
-        transition: opacity .3s ease, transform .3s ease;
+        transition: opacity .3s ${codexPlusSidebarPeekEase}, transform .3s ${codexPlusSidebarPeekEase};
       }
       /*
        * 别的入口（没打开的页面，或者正在看原生页面时）浮出的独立卡片（showCodexPlusRailPeek）：
@@ -1545,10 +1551,10 @@
         box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
         color: var(--codex-plus-text);
         opacity: 0;
-        transform: translateX(-12px);
+        transform: translateX(calc(var(--spacing, 4px) * -1.5));
         visibility: hidden;
         pointer-events: none;
-        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+        transition: opacity .2s ${codexPlusSidebarPeekEase}, transform .2s ${codexPlusSidebarPeekEase}, visibility 0s linear .2s;
         -webkit-app-region: no-drag;
       }
       .codex-plus-rail-peek[data-open="true"] {
@@ -1556,7 +1562,7 @@
         transform: none;
         visibility: visible;
         pointer-events: auto;
-        transition: opacity .3s ease, transform .3s ease;
+        transition: opacity .3s ${codexPlusSidebarPeekEase}, transform .3s ${codexPlusSidebarPeekEase};
       }
       .codex-plus-rail-peek-content { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
       .codex-plus-rail-peek .codex-plus-page-nav {

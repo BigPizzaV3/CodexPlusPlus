@@ -756,6 +756,12 @@
     if (window.__codexPlusExtensionFailures.length > 100) window.__codexPlusExtensionFailures.shift();
   }
   /**
+   * 原生悬浮侧栏开合用的弹簧（motion 的 spring，bounce 0.1）按同一条曲线采样成 linear()；
+   * 原生打开 0.3s、收起 0.2s，卡片淡入淡出，同时横移 1.5 个 --spacing。
+   */
+  const codexPlusSidebarPeekEase = "linear(0, 0.07, 0.218, 0.383, 0.537, 0.666, 0.768, 0.844, 0.899, 0.937, 0.962, 0.979, 0.989, 0.995, 0.999, 1 75%, 1)";
+
+  /**
    * 装上 / 换掉样式表。版本 = 手写版本号前缀 + 样式全文的哈希：改了任何 CSS，重新注入（不刷新页面）时
    * 都会换成新样式表。以前只比手写版本号，改样式忘了 +1 时新 JS 配旧样式，新界面全没样式。
    * 样式全文与哈希每次注入只算一次（挂在函数上）：installStyle 在每轮轻量扫描里都会调。
@@ -2275,17 +2281,17 @@
         background: var(--app-shell-sidebar-popover-background, var(--codex-plus-nav-bg)) !important;
         box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
         opacity: 0;
-        transform: translateX(-12px);
+        transform: translateX(calc(var(--spacing, 4px) * -1.5));
         visibility: hidden;
         pointer-events: none;
-        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+        transition: opacity .2s ${codexPlusSidebarPeekEase}, transform .2s ${codexPlusSidebarPeekEase}, visibility 0s linear .2s;
       }
       .${codexPlusPageClass}[data-codex-plus-sidebar="floating"][data-codex-plus-nav-peek="true"] .codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav {
         opacity: 1;
         transform: none;
         visibility: visible;
         pointer-events: auto;
-        transition: opacity .3s ease, transform .3s ease;
+        transition: opacity .3s ${codexPlusSidebarPeekEase}, transform .3s ${codexPlusSidebarPeekEase};
       }
       /*
        * 别的入口（没打开的页面，或者正在看原生页面时）浮出的独立卡片（showCodexPlusRailPeek）：
@@ -2302,10 +2308,10 @@
         box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
         color: var(--codex-plus-text);
         opacity: 0;
-        transform: translateX(-12px);
+        transform: translateX(calc(var(--spacing, 4px) * -1.5));
         visibility: hidden;
         pointer-events: none;
-        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+        transition: opacity .2s ${codexPlusSidebarPeekEase}, transform .2s ${codexPlusSidebarPeekEase}, visibility 0s linear .2s;
         -webkit-app-region: no-drag;
       }
       .codex-plus-rail-peek[data-open="true"] {
@@ -2313,7 +2319,7 @@
         transform: none;
         visibility: visible;
         pointer-events: auto;
-        transition: opacity .3s ease, transform .3s ease;
+        transition: opacity .3s ${codexPlusSidebarPeekEase}, transform .3s ${codexPlusSidebarPeekEase};
       }
       .codex-plus-rail-peek-content { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
       .codex-plus-rail-peek .codex-plus-page-nav {
@@ -9158,15 +9164,24 @@
       const card = overlay?.querySelector(".codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav");
       return card ? { overlay, card } : null;
     };
-    const apply = (next) => {
+    // 原生悬浮卡片开着（收起动画没走完也算）：卡片上带着 popover 底色。
+    const nativePeekOpen = () => Boolean(document.querySelector('[data-sidebar-navigation-root][class*="sidebar-popover-background"]'));
+    // 原生在入口之间换卡片只换内容、不重播开合动画：卡片已经浮着（我们的或原生的）时换成我们的另一张就直接换（snap）。
+    // 只有从无到有、从有到无才淡入淡出。
+    const apply = (next, snap) => {
       timer = null;
       const page = pageCard();
       if (next === "page" && !page) next = null;
-      if (next !== null && next !== "page" && !showCodexPlusRailPeek(next)) next = null;
-      if (next === null || next === "page") hideCodexPlusRailPeek();
+      if (next !== null && next !== "page" && !showCodexPlusRailPeek(next, true, snap)) next = null;
+      if (next === null || next === "page") hideCodexPlusRailPeek(snap);
       if (page) {
+        if (snap) page.card.style.transition = "none";
         if (next === "page") page.overlay.dataset.codexPlusNavPeek = "true";
         else delete page.overlay.dataset.codexPlusNavPeek;
+        if (snap) {
+          void page.card.offsetWidth;
+          page.card.style.removeProperty("transition");
+        }
       }
       shown = next;
     };
@@ -9192,11 +9207,12 @@
       if (timer && next === pending) return;
       clearTimeout(timer);
       pending = next;
-      // 原生入口之间换卡片是立刻的；移到原生入口上时原生卡片马上出来，我们的也马上让开。
+      // 卡片浮着时换入口是立刻的。移到原生入口上时我们的马上收；原生卡片要等一下才出来（从无到有，带动画），我们的照常淡出，不留空档。
+      const swapping = next !== null && (shown !== null || nativePeekOpen());
       const delay = next === null
         ? (target?.closest(codexPlusRailDestinationSelector) ? 0 : 250)
-        : (shown !== null || page?.card.contains(target) ? 0 : 120);
-      timer = setTimeout(() => apply(next), delay);
+        : (swapping || page?.card.contains(target) ? 0 : 120);
+      timer = setTimeout(() => apply(next, swapping), delay);
     };
     document.addEventListener("pointermove", window.__codexPlusNavPeekHandler, true);
     document.addEventListener("pointerout", window.__codexPlusNavPeekHandler, true);
@@ -9293,8 +9309,11 @@
     return renderCodexPlusSettingsNavItems(root);
   }
 
-  /** 浮出入口的独立卡片，位置照原生悬浮侧栏：图标栏右边起，上下左各留 4px，宽 = 原生侧栏宽 − 4。 */
-  function showCodexPlusRailPeek(railId, load = true) {
+  /**
+   * 浮出入口的独立卡片，位置照原生悬浮侧栏：图标栏右边起，上下左各留 4px，宽 = 原生侧栏宽 − 4。
+   * snap：从另一张浮着的卡片换过来，直接出现，不淡入。
+   */
+  function showCodexPlusRailPeek(railId, load = true, snap = false) {
     const spec = codexPlusRailPeekSpec(railId, load);
     const rail = document.querySelector(codexPlusRailSelector)?.getBoundingClientRect();
     if (!spec || !rail || rail.width <= 0) return false;
@@ -9337,7 +9356,12 @@
     if (peek.dataset.open !== "true") {
       // 先按收起的样子排一次，打开才有淡入。
       void peek.offsetWidth;
+      if (snap) peek.style.transition = "none";
       peek.dataset.open = "true";
+      if (snap) {
+        void peek.offsetWidth;
+        peek.style.removeProperty("transition");
+      }
     }
     return true;
   }
