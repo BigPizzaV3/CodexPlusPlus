@@ -165,6 +165,186 @@ fn local_component_corrections_change_proof_without_replaying_consumption() {
 }
 
 #[test]
+fn local_exclusive_cache_usage_preserves_last_and_cumulative_counts() {
+    let parse = |value: Value| {
+        let raw = Tokens::parse(&value).unwrap();
+        raw.normalize_cache_input(CacheAccounting::parse(&value, raw), None, None)
+    };
+    let before = parse(json!({
+        "input_tokens": 32_489, "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0, "output_tokens": 285, "total_tokens": 32_774
+    }));
+    let total = parse(json!({
+        "input_tokens": 43_781, "cached_input_tokens": 32_486,
+        "cache_write_input_tokens": 0, "output_tokens": 590, "total_tokens": 76_857
+    }));
+    let last = parse(json!({
+        "input_tokens": 11_292, "cached_input_tokens": 32_486,
+        "cache_write_input_tokens": 0, "output_tokens": 305,
+        "reasoning_output_tokens": 10, "total_tokens": 44_083
+    }));
+    assert_eq!(last.input_tokens, 43_778);
+    assert_eq!(last.cached_input_tokens, 32_486);
+    assert_eq!(last.total_tokens, 44_083);
+    assert!(last.cached_known);
+    assert_eq!(last.reasoning_output_tokens, Some(10));
+    let delta = total.usage_delta(Some(before), Some(last));
+    assert_eq!(delta.input_tokens, last.input_tokens);
+    assert_eq!(delta.output_tokens, last.output_tokens);
+    assert_eq!(delta.cached_input_tokens, last.cached_input_tokens);
+    assert_eq!(delta.total_tokens, last.total_tokens);
+    assert!(delta.cached_known);
+    assert_eq!(total.usage_delta(Some(total), Some(last)).total_tokens, 0);
+}
+
+#[test]
+fn local_exclusive_cache_usage_counts_write_once_and_keeps_read_separate() {
+    for (input, cached, written, output) in [(10, 5, 3, 2), (0, 40, 10, 5)] {
+        let inclusive_input = input + cached + written;
+        let value = json!({
+            "input_tokens": input, "cached_input_tokens": cached,
+            "cache_write_input_tokens": written, "output_tokens": output,
+            "reasoning_output_tokens": 1, "total_tokens": inclusive_input + output
+        });
+        let raw = Tokens::parse(&value).unwrap();
+        let parsed = raw.normalize_cache_input(CacheAccounting::parse(&value, raw), None, None);
+        assert_eq!(parsed.input_tokens, inclusive_input);
+        assert_eq!(parsed.cached_input_tokens, cached);
+        assert_eq!(parsed.total_tokens, inclusive_input + output);
+        assert_eq!(parsed.reasoning_output_tokens, Some(1));
+        assert!(parsed.cached_known);
+    }
+}
+
+#[test]
+fn local_cache_usage_requires_a_complete_consistent_exclusive_equation() {
+    for value in [
+        json!({"input_tokens": 100, "cached_input_tokens": 80,
+            "cache_write_input_tokens": 20, "output_tokens": 10, "total_tokens": 110}),
+        json!({"input_tokens": 100, "cached_input_tokens": 80,
+            "cache_write_input_tokens": 20, "output_tokens": 10, "total_tokens": 500}),
+        json!({"input_tokens": 100, "cached_input_tokens": 80,
+            "cache_write_input_tokens": 20, "output_tokens": 10}),
+        json!({"input_tokens": 100, "cached_input_tokens": 80,
+            "output_tokens": 10, "total_tokens": 190}),
+    ] {
+        let raw = Tokens::parse(&value).unwrap();
+        let parsed = raw.normalize_cache_input(CacheAccounting::parse(&value, raw), None, None);
+        assert_eq!(parsed.input_tokens, 100);
+        assert_eq!(parsed.cached_input_tokens, 80);
+        assert_eq!(parsed.total_tokens, 110);
+        assert!(parsed.cached_known);
+    }
+    let missing_cache = Tokens::parse(&json!({
+        "input_tokens": 100, "cache_write_input_tokens": 20,
+        "output_tokens": 10, "total_tokens": 210
+    }))
+    .unwrap();
+    assert_eq!(missing_cache.input_tokens, 100);
+    assert!(!missing_cache.cached_known);
+    let overflow = Tokens::parse(&json!({
+        "input_tokens": u64::MAX, "cached_input_tokens": 1,
+        "cache_write_input_tokens": 0, "output_tokens": 1, "total_tokens": 1
+    }))
+    .unwrap();
+    assert_eq!(overflow.input_tokens, u64::MAX);
+}
+
+#[test]
+fn local_mixed_cache_input_keeps_each_model_delta_and_deduplicates_repeated_counts() {
+    for (first_exclusive, missing_last) in [(true, false), (false, false), (true, true)] {
+        let mut fixture = Fixture::new();
+        let mut cumulative = [0; 5];
+        let mut expected = Vec::new();
+        let mut rows = Vec::new();
+        for (index, exclusive) in [first_exclusive, !first_exclusive, first_exclusive]
+            .into_iter()
+            .enumerate()
+        {
+            let usage = if exclusive {
+                [10, 40, 3, 5, 58]
+            } else {
+                [100, 80, 4, 10, 110]
+            };
+            let normalized = if exclusive {
+                Tokens::new(53, 40, 5)
+            } else {
+                Tokens::new(100, 80, 10)
+            };
+            let source = if exclusive {
+                ("model-b", "supplier-b")
+            } else {
+                ("model-a", "supplier-a")
+            };
+            expected.push((source, normalized));
+            let at = 1_000 + index as i64 * 2_000;
+            for (total, part) in cumulative.iter_mut().zip(usage) {
+                *total += part;
+            }
+            let counts = |[input, cached, written, output, total]: [u64; 5]| {
+                json!({
+                    "input_tokens": input, "cached_input_tokens": cached, "cache_write_input_tokens": written,
+                    "output_tokens": output, "total_tokens": total,
+                })
+            };
+            let mut row = fixture.usage(at, index as u64);
+            row["payload"]["info"] = json!({
+                "total_token_usage": counts(cumulative),
+                "last_token_usage": if index == 1 && missing_last { Value::Null } else { counts(usage) }
+            });
+            let mut context = fixture.context(at - 1, source.0);
+            context["payload"]["model_provider"] = json!(source.1);
+            rows.push(context);
+            rows.push(row.clone());
+            row["timestamp"] = json!(fixture.at(at + 1));
+            rows.push(row);
+        }
+        fixture.write_segment("rollout-a.jsonl", rows);
+        let snapshot = fixture.snapshot();
+        assert_eq!(snapshot.events.len(), expected.len());
+        for (event, ((model, provider), counts)) in snapshot.events.iter().zip(expected) {
+            assert_eq!(
+                (&*event.model, &*event.provider, event.delta),
+                (model, provider, counts)
+            );
+        }
+    }
+}
+
+#[test]
+fn local_partial_cache_omission_requires_independent_counts() {
+    let last = CacheAccounting {
+        input: 100,
+        read: 80,
+        write: 0,
+        output: 10,
+        total: 110,
+    };
+    let mut value = json!({
+        "input_tokens": 110, "cached_input_tokens": 120, "cache_write_input_tokens": 0,
+        "output_tokens": 15, "total_tokens": 165
+    });
+    let raw = Tokens::parse(&value).unwrap();
+    let cumulative = CacheAccounting::parse(&value, raw);
+    assert_eq!(raw.normalize_cache_input(cumulative, None, None), raw);
+    assert_eq!(
+        raw.normalize_cache_input(cumulative, None, Some(last)),
+        Tokens::new(150, 120, 15)
+    );
+    for total in [90, 125, 140, 166, 246, u64::MAX] {
+        value["total_tokens"] = json!(total);
+        let cumulative = CacheAccounting::parse(&value, raw);
+        assert_eq!(raw.normalize_cache_input(cumulative, None, Some(last)), raw);
+    }
+    value["total_tokens"] = json!(165);
+    value["cache_write_input_tokens"] = Value::Null;
+    assert_eq!(
+        raw.normalize_cache_input(CacheAccounting::parse(&value, raw), None, Some(last)),
+        raw
+    );
+}
+
+#[test]
 fn local_out_of_range_components_are_not_clamped_into_known_counts() {
     let parsed = Tokens::parse(&json!({
         "input_tokens": 100, "cached_input_tokens": 101,
@@ -632,9 +812,18 @@ fn local_competing_last_values_are_incomplete_in_both_orders() {
 #[test]
 fn local_original_event_id_retains_legacy_provider_evidence() {
     let mut fixture = Fixture::new();
-    let row = fixture.usage(1_000, 1);
-    let total = Tokens::parse(&row["payload"]["info"]["total_token_usage"]).unwrap();
-    let last = Tokens::parse(&row["payload"]["info"]["last_token_usage"]);
+    let mut row = fixture.usage(1_000, 1);
+    let reported = json!({
+        "input_tokens": 10, "cached_input_tokens": 40, "cache_write_input_tokens": 0,
+        "output_tokens": 5, "total_tokens": 55,
+    });
+    row["payload"]["info"] = json!({
+        "total_token_usage": reported, "last_token_usage": reported,
+    });
+    let raw = json!({
+        "inputTokens":10, "cachedInputTokens":10, "outputTokens":5,
+        "totalTokens":15, "reasoningOutputTokens":null,
+    });
     let timestamp = DateTime::parse_from_rfc3339(row["timestamp"].as_str().unwrap())
         .unwrap()
         .with_timezone(&chrono::Utc)
@@ -642,11 +831,12 @@ fn local_original_event_id_retains_legacy_provider_evidence() {
     let mut hash = Sha256::new();
     hash.update(SESSION.as_bytes());
     hash.update(timestamp.as_bytes());
-    hash.update(serde_json::to_vec(&json!([total, last])).unwrap());
+    hash.update(serde_json::to_vec(&json!([raw, raw])).unwrap());
     let legacy_id: [u8; 32] = hash.finalize().into();
     fixture.write_segment("rollout-a.jsonl", vec![row]);
     let initial = fixture.snapshot();
     assert_eq!(initial.events[0].id, legacy_id);
+    assert_eq!(initial.events[0].delta, Tokens::new(50, 40, 5));
     let mut record = evidence(&initial.events[0], "model-a");
     record["eventId"] = json!(
         legacy_id
@@ -655,11 +845,23 @@ fn local_original_event_id_retains_legacy_provider_evidence() {
             .collect::<String>()
     );
     fixture.write_evidence(vec![record]);
+    let mut inherited_conflict = initial.events[0].clone();
+    inherited_conflict.inherited = true;
+    inherited_conflict.count_uncertain = true;
+    let mut old_cache = native_endpoints::Cache::default();
+    assert!(old_cache.observe_count_conflicts(&mut [inherited_conflict], true));
+    fixture
+        .index
+        .provider_cache
+        .save_native(&old_cache.verified)
+        .unwrap();
     reopen_index(&mut fixture);
     let restored = fixture.snapshot();
     assert_eq!(restored.events[0].id, legacy_id);
     assert_eq!(restored.events[0].provider, "supplier-a");
     assert_eq!(restored.provider_evidence["appliedEvents"], 1);
+    assert_eq!(restored.unobserved_count_conflicts, 0);
+    assert_eq!(snapshot_response(&restored)["complete"], true);
 }
 
 #[test]

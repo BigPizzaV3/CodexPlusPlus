@@ -1,5 +1,5 @@
 //! 共享后台索引：正文留在后台，只向拓展提供用量和已完成工具回执。
-use super::{Aggregate, Query, Record, Tokens, file_identity};
+use super::{Aggregate, CacheAccounting, Query, Record, Tokens, file_identity};
 use chrono::{DateTime, Duration as Days, Local, NaiveDate};
 use serde::Deserialize;
 use serde_json::{Value, json, value::RawValue};
@@ -916,7 +916,7 @@ impl RequestEvidenceCache {
         let mut missing_names = HashSet::new();
         for (event, evidence) in events.iter_mut().zip(&event_keys) {
             // 请求日志没有轮次身份，不能把旧证明复用于拆分后的碰撞事件。
-            if self.collision_families.contains(&event.original_id()) {
+            if self.collision_families.contains(&event.original_id) {
                 continue;
             }
             if event.context_conflicts.any() {
@@ -1166,6 +1166,7 @@ struct LegacyIdentity {
 #[derive(Clone, PartialEq, Eq)]
 struct UsageEvent {
     id: [u8; 32],
+    original_id: [u8; 32],
     session: String,
     turn: String,
     model: String,
@@ -1260,14 +1261,6 @@ fn merge_context_value(
 }
 
 impl UsageEvent {
-    fn original_id(&self) -> [u8; 32] {
-        let mut digest = Sha256::new();
-        digest.update(self.session.as_bytes());
-        digest.update(self.timestamp.as_bytes());
-        digest.update(serde_json::to_vec(&json!([self.total, self.last])).unwrap_or_default());
-        digest.finalize().into()
-    }
-
     fn update_membership_digest(&self, digest: &mut Sha256) {
         digest.update(self.id);
         for count in [
@@ -1437,6 +1430,7 @@ struct FileState {
     model_unavailable: bool,
     turn: String,
     previous: Option<Tokens>,
+    previous_cache_accounting: Option<CacheAccounting>,
     invalid_counts: bool,
     identity_conflict: bool,
     continuation: bool,
@@ -2172,7 +2166,7 @@ impl Index {
             .flat_map(|state| &state.events)
         {
             let family = turns
-                .entry(event.original_id())
+                .entry(event.original_id)
                 .or_insert_with(|| (event.inherited, HashSet::new(), 0));
             if !family.0 && event.inherited {
                 continue;
@@ -2209,7 +2203,7 @@ impl Index {
             }
         };
         for event in self.files.values_mut().flat_map(|state| &mut state.events) {
-            let original = event.original_id();
+            let original = event.original_id;
             event.id = if self.collision_families.contains(&original) && !event.turn.is_empty() {
                 let mut digest = Sha256::new();
                 digest.update(b"usage-turn-collision-v1\0");
@@ -3269,7 +3263,9 @@ impl FileState {
             return;
         }
         let info = &payload["info"];
-        let Some(total) = Tokens::parse(&info["total_token_usage"]) else {
+        let raw_cumulative = &info["total_token_usage"];
+        let raw_request = &info["last_token_usage"];
+        let Some(raw_total) = Tokens::parse(raw_cumulative) else {
             if info.is_object()
                 && (!info["total_token_usage"].is_null() || !info["last_token_usage"].is_null())
             {
@@ -3278,7 +3274,15 @@ impl FileState {
             }
             return;
         };
-        let last = Tokens::parse(&info["last_token_usage"]);
+        let raw_last = Tokens::parse(raw_request);
+        let cumulative = CacheAccounting::parse(raw_cumulative, raw_total);
+        let last_usage = raw_last.and_then(|last| CacheAccounting::parse(raw_request, last));
+        let total = raw_total.normalize_cache_input(
+            cumulative,
+            self.previous_cache_accounting.zip(self.previous),
+            last_usage,
+        );
+        let last = raw_last.map(|last| last.normalize_cache_input(last_usage, None, None));
         let has_file_baseline = self.previous.is_some();
         let count_uncertain = last.is_none()
             && self
@@ -3286,6 +3290,7 @@ impl FileState {
                 .is_some_and(|before| total.requires_last_after(before));
         let delta = total.usage_delta(self.previous, last);
         self.previous = Some(total);
+        self.previous_cache_accounting = cumulative;
         if date < cutoff {
             return;
         }
@@ -3317,27 +3322,30 @@ impl FileState {
                 self.role.clone(),
             )
         };
-        let mut digest = Sha256::new();
-        digest.update(owner.as_bytes());
-        digest.update(timestamp.as_bytes());
-        digest.update(serde_json::to_vec(&json!([total, last])).unwrap_or_default());
+        // 补证与冲突缓存用旧口径生成的 ID；归一后的数量只参与记账。
+        let identity = serde_json::to_vec(&json!([raw_total, raw_last])).unwrap_or_default();
+        let id_for = |session: &str| -> [u8; 32] {
+            let mut digest = Sha256::new();
+            digest.update(session.as_bytes());
+            digest.update(timestamp.as_bytes());
+            digest.update(&identity);
+            digest.finalize().into()
+        };
+        let id = id_for(&owner);
         let legacy_identity =
             self.legacy_header
                 .as_ref()
                 .filter(|_| !inherited)
                 .map(|(session, role)| {
-                    let mut digest = Sha256::new();
-                    digest.update(session.as_bytes());
-                    digest.update(timestamp.as_bytes());
-                    digest.update(serde_json::to_vec(&json!([total, last])).unwrap_or_default());
                     Box::new(LegacyIdentity {
-                        id: digest.finalize().into(),
+                        id: id_for(session),
                         session: session.clone(),
                         role: role.clone(),
                     })
                 });
         self.events.push(UsageEvent {
-            id: digest.finalize().into(),
+            id,
+            original_id: id,
             session: owner,
             turn,
             model,

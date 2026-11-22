@@ -51,7 +51,7 @@ mod actual_attribution {
             assert_eq!(events[0].provider, "supplier-b", "model={model}");
             assert_eq!(events[0].model, "actual-b", "model={model}");
             assert_eq!(events[0].id, original.id);
-            assert_eq!(events[0].original_id(), original.original_id());
+            assert_eq!(events[0].original_id, original.original_id);
             assert_eq!(events[0].total, original.total);
             assert_eq!(events[0].delta, original.delta);
             assert_eq!(
