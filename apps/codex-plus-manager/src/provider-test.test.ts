@@ -57,7 +57,7 @@ test("供应商测试：按失败分类给排查提示，认证失败时说明�
 test("供应商测试：详情底栏有测试按钮，Key 列表每个 Key 可单独测，按标识调用、可取消", () => {
   const providers = read("./GatewayProviders.tsx");
   assert.match(providers, /onClick=\{\(\) => setTestKey\(null\)\}[\s\S]{0,200}<Zap className="h-3\.5 w-3\.5" \/>\s*\{t\("测试"\)\}/);
-  assert.match(providers, /<ProviderTestDialog entry=\{entry\} keyId=\{testKey\} onEditSubscription=\{onEdit\} onClose=\{\(\) => setTestKey\(undefined\)\} \/>/);
+  assert.match(providers, /<ProviderTestDialog entry=\{entry\} keyId=\{testKey\} onEditSubscription=\{\(\) => onEdit\(\)\} onClose=\{\(\) => setTestKey\(undefined\)\} \/>/);
   const keys = read("./ProviderKeyList.tsx");
   assert.match(keys, /aria-label=\{tf\("测试 Key \{0\}", \[key\.masked\]\)\}/);
   assert.match(keys, /onClick=\{\(\) => onTest\(key\.id\)\}/, "按标识测，不碰 Key 原文");

@@ -160,3 +160,23 @@ export function setModelReasoningLevelsForSlug(
   else delete map[key];
   return serializeModelMetadataMap(map);
 }
+
+/** 从上游同步来的一个模型的思考档位（`apply_gateway_provider_reasoning_sync` 的 pick）。 */
+export type ReasoningSyncPick = { model: string; levels: string[]; defaultLevel: string | null };
+
+/**
+ * 上游给的档位填进模型资料（供应商思考等级弹窗的「从上游同步」）：
+ * 上游给了默认档（且在档位里）就用它，没给就保留原来的默认档（不在新档位里则去掉），和后端写入的口径一致。
+ */
+export function fillUpstreamReasoning(metadata: string, picks: ReasoningSyncPick[]): string {
+  let next = metadata;
+  for (const pick of picks) {
+    const levels = normalizeReasoningLevels(pick.levels);
+    if (!levels.length) continue;
+    const current = parseModelMetadataMap(next)[modelMetadataKey(pick.model)];
+    const kept = typeof current?.default_reasoning_level === "string" ? current.default_reasoning_level : null;
+    const defaultLevel = pick.defaultLevel && levels.includes(pick.defaultLevel) ? pick.defaultLevel : kept && levels.includes(kept) ? kept : null;
+    next = setModelReasoningLevelsForSlug(next, pick.model, levels, defaultLevel);
+  }
+  return next;
+}

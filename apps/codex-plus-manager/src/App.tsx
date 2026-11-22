@@ -281,6 +281,7 @@ import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
+import { CompatToggles } from "./CompatToggles";
 import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
 import { usePolling } from "./use-polling";
 import { sessionProviderForProtocol } from "./relay-session";
@@ -12732,22 +12733,7 @@ function RelayProfileEditor({
                     <input type="checkbox" checked={profile.strictResponsesReasoning === true} onChange={(event) => updateDraft({ strictResponsesReasoning: event.currentTarget.checked })} />
                     <span><strong>{t("严格 Responses 推理历史兼容")}</strong><small>{t("仅当目标上游接受当前账号的加密历史时启用。混合推理只发送可识别的加密信封；占位或无效密文会明确报错。本地记录不变。")}</small></span><ToggleVisual />
                   </label>
-                  <label className="switch-row compact relay-switch-row relay-field-strip-image-generation">
-                    <input type="checkbox" checked={profile.stripImageGenerationTool === true} onChange={(event) => updateDraft({ stripImageGenerationTool: event.currentTarget.checked })} />
-                    <span><strong>{t("移除请求里的托管生图工具（image_generation）")}</strong><small>{t("Codex App 每次请求都会带上托管生图工具，不支持生图的中转会整条请求返回 403 或报错。开启后转发前从 tools 里去掉它（及指向它的 tool_choice），请求改走本地代理；Codex 里将无法调用内置生图。默认关闭。")}</small></span><ToggleVisual />
-                  </label>
-                  <label className="switch-row compact relay-switch-row relay-field-strip-responses-image-detail">
-                    <input type="checkbox" checked={profile.stripResponsesImageDetail === true} onChange={(event) => updateDraft({ stripResponsesImageDetail: event.currentTarget.checked })} />
-                    <span><strong>{t("移除 Responses 图片 detail 字段")}</strong><small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail，请求改走本地代理。默认关闭。")}</small></span><ToggleVisual />
-                  </label>
-                  <label className="switch-row compact relay-switch-row relay-field-strip-responses-output-encrypted-content">
-                    <input type="checkbox" checked={profile.stripResponsesOutputEncryptedContent === true} onChange={(event) => updateDraft({ stripResponsesOutputEncryptedContent: event.currentTarget.checked })} />
-                    <span><strong>{t("不发送 output.encrypted_content（上游不支持时开启）")}</strong><small>{t("部分严格 Responses 上游不接受 Codex 请求 include 里的 output.encrypted_content，会整条返回 400。开启后只删除这一项，保留 reasoning.encrypted_content 和其他项，请求改走本地代理。Kimi 地址或模型名会自动处理。默认关闭。")}</small></span><ToggleVisual />
-                  </label>
-                  <label className="switch-row compact relay-switch-row relay-field-disable-tool-search">
-                    <input type="checkbox" checked={profile.disableToolSearch === true} onChange={(event) => updateDraft({ disableToolSearch: event.currentTarget.checked })} />
-                    <span><strong>{t("不发送 tool_search（上游不支持时开启）")}</strong><small>{t("部分第三方 Responses 上游不认 Codex 的托管工具 tool_search，供应商测试能通过，但实际聊天会返回 400（tool type \"tool_search\" is not supported）。开启后模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。Kimi 官方地址会自动处理。重启 Codex 后生效。默认关闭。")}</small></span><ToggleVisual />
-                  </label>
+                  <CompatToggles onChange={(patch) => updateDraft(patch)} values={profile} variant="direct" />
                 </> : null}
                 {showApiFields && profile.relayMode === "pureApi" ? (
                   <label className="switch-row compact relay-switch-row relay-field-pure-api-image-generation">

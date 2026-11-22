@@ -852,9 +852,29 @@
   max-height: 240px;
 }
 
-/* 从上游同步上下文窗口 / 思考等级（#2807）：一行是「模型 旧值 → 新值 来源 字段」，窄时换行。 */
-.gw-portal .pf-meta-sync-modal .pf-picker-list {
-  max-height: 320px;
+/* 窗口 / 思考等级弹窗里的「从上游同步」（#2807）：一行是「模型 旧值 → 新值 来源 字段」，窄时换行。 */
+.gw-portal .pf-meta-sync-panel .pf-picker-list {
+  max-height: 240px;
+}
+
+/* 从上游填入、还没保存的行：左侧一道强调色，一眼看出哪些是同步来的。 */
+.gw-portal .pf-window-row[data-upstream="true"],
+.gw-portal .pf-reasoning-row[data-upstream="true"] {
+  box-shadow: inset 2px 0 0 hsl(var(--primary));
+  background: hsl(var(--primary) / 0.06);
+}
+
+.gw-portal .pf-meta-sync-ignored-fold summary {
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+/* 模型多时表格上方的搜索框 */
+.gw-portal .pf-table-search {
+  height: 30px;
+  margin-bottom: 8px;
+  font-size: 12px;
 }
 
 .gw-portal .pf-meta-sync-list label {

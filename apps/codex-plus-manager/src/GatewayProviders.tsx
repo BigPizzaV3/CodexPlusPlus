@@ -2,7 +2,7 @@
  *
  * 与直连模式完全独立：这里的增删改只动 gateway.json；「导入…」是把直连模式的供应商复制一份过来。
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
@@ -69,17 +69,15 @@ import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaWindows, Switch, t
 import { AccountQuotaDetails, ProviderQuotaTimeline } from "./ProviderQuotaPanel";
 import { ProviderFormDialog, type ProviderFormState } from "./ProviderFormDialog";
 import { ProviderExtrasDialog, ProviderLimitsDialog, ProviderNewApiAccessDialog, keyLimitSummary, priceSummary } from "./ProviderExtrasDialog";
-import { ProviderWindowsDialog, windowSummary, withUnlistedWindows } from "./ProviderWindowsDialog";
+import { ProviderWindowsDialog, windowSummary, withUnlistedWindows, type WindowSyncPick } from "./ProviderWindowsDialog";
 import { withUnlistedAutoCompact } from "./gateway-auto-compact-model";
-import { ProviderReasoningDialog, reasoningSummary } from "./ProviderReasoningDialog";
-import { ProviderModelsDialog } from "./ProviderModelsDialog";
-import { ProviderSyncDialog } from "./ProviderSyncDialog";
-import { ProviderMetaSyncDialog } from "./ProviderMetaSyncDialog";
-import type { MetaSyncKind } from "./provider-meta-sync-model";
+import { ProviderReasoningDialog, reasoningSummary, type ReasoningSyncPick } from "./ProviderReasoningDialog";
+import { ProviderModelsDialog, type ModelSyncPicks } from "./ProviderModelsDialog";
 import { ProviderKeyList } from "./ProviderKeyList";
 import { ProviderTestDialog } from "./ProviderTestDialog";
 import { gatewayJump } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
+import { useModalShell } from "./use-modal-shell";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { useSponsorPresets } from "./sponsor-store";
@@ -333,7 +331,7 @@ export function ProvidersView({
       entry={entry}
       expanded={expanded === entry.id}
       key={entry.id}
-      onEdit={() => setForm({ mode: "edit", entry })}
+      onEdit={(focus) => setForm({ mode: "edit", entry, focus })}
       loggingIn={Boolean(entry.account) && loginPending === entry.account}
       onRelogin={() => void login(entry.account as AccountKind)}
       onToggleExpand={() => setExpanded(expanded === entry.id ? null : entry.id)}
@@ -767,7 +765,8 @@ function PoolRow({
   expanded: boolean;
   dragging: boolean;
   onToggleExpand: () => void;
-  onEdit: () => void;
+  /** 打开编辑弹窗；「headers」时直接滚到请求头一节。 */
+  onEdit: (focus?: "headers") => void;
   onRelogin: () => void;
   /** 这个账号类型正在登录（浏览器 / 设备码），按钮显示进行中。 */
   loggingIn: boolean;
@@ -799,41 +798,39 @@ function PoolRow({
   // 价格、代理各开各的弹窗。
   const [extrasOpen, setExtrasOpen] = useState<"price" | "proxy" | null>(null);
   const [limitsOpen, setLimitsOpen] = useState(false);
-  const [modelsOpen, setModelsOpen] = useState(false);
-  const [windowsOpen, setWindowsOpen] = useState(false);
+  // 模型弹窗：「edit」直接编辑，「sync」打开就从上游同步（「从上游同步」按钮和「+N 新模型」都走这个）。
+  const [modelsOpen, setModelsOpen] = useState<"edit" | "sync" | null>(null);
+  // 窗口 / 思考等级弹窗：「sync」时打开就展开「从上游同步」。
+  const [windowsOpen, setWindowsOpen] = useState<"edit" | "sync" | null>(null);
   // 生图模型单独一行，「模型」里只列能聊天的。
   const imageModels = entry.imageModels ?? [];
   const chatModels = entry.models.filter((model) => !imageModels.some((image) => image.toLowerCase() === model.toLowerCase()));
   const [allModels, setAllModels] = useState(false);
   const modelsCollapsible = chatModels.length > MODEL_CHIP_COLLAPSE;
   const shownModels = modelsCollapsible && !allModels ? chatModels.slice(0, MODEL_CHIP_PREVIEW) : chatModels;
-  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState<"edit" | "sync" | null>(null);
   // 「测试」弹窗：null 时用当前选中的 Key，给了标识就只用那个 Key；undefined 表示没打开。
   const [testKey, setTestKey] = useState<string | null | undefined>(undefined);
   const reasoning = reasoningSummary(entry);
-  const saveReasoning = async (modelMetadata: string) => {
-    if (await run(`reasoning:${entry.id}`, "save_gateway_provider_metadata", { id: entry.id, modelMetadata }, t("保存思考等级"))) setReasoningOpen(false);
+  // 从上游同步上下文窗口 / 思考等级（#2807）在两个弹窗里：填入后随保存写入；
+  // 保存时仍是上游值的再按同步写一遍，记成「同步来的」，下次同步才默认跟着上游更新。订阅账号的模型接口不带这些资料。
+  const metaSyncable = !entry.account && entry.models.length > 0;
+  const saveReasoning = async (modelMetadata: string, synced: ReasoningSyncPick[]) => {
+    if (!(await run(`reasoning:${entry.id}`, "save_gateway_provider_metadata", { id: entry.id, modelMetadata }, t("保存思考等级")))) return;
+    if (synced.length) await run(`reasoning-sync:${entry.id}`, "apply_gateway_provider_reasoning_sync", { id: entry.id, picks: synced }, t("从上游同步思考等级"), true);
+    setReasoningOpen(null);
   };
   const windows = windowSummary(entry);
-  const saveWindows = async (modelWindows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }) => {
-    if (await run(`windows:${entry.id}`, "save_gateway_provider_windows", { id: entry.id, windows: modelWindows, fallback, autoCompact }, t("保存上下文窗口"))) setWindowsOpen(false);
-  };
-  // 从上游同步上下文窗口 / 思考等级（#2807）：先列差异，勾选后才写入。订阅账号的模型接口不带这些资料。
-  const [metaSync, setMetaSync] = useState<MetaSyncKind | null>(null);
-  const metaSyncable = !entry.account && entry.models.length > 0;
-  const applyWindowsSync = async (picks: Array<{ model: string; window: number }>) => {
-    if (await run(`windows-sync:${entry.id}`, "apply_gateway_provider_windows_sync", { id: entry.id, picks }, t("从上游同步上下文窗口"))) setMetaSync(null);
-  };
-  const applyReasoningSync = async (picks: Array<{ model: string; levels: string[]; defaultLevel: string | null }>) => {
-    if (await run(`reasoning-sync:${entry.id}`, "apply_gateway_provider_reasoning_sync", { id: entry.id, picks }, t("从上游同步思考等级"))) setMetaSync(null);
+  const saveWindows = async (modelWindows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }, synced: WindowSyncPick[]) => {
+    if (!(await run(`windows:${entry.id}`, "save_gateway_provider_windows", { id: entry.id, windows: modelWindows, fallback, autoCompact }, t("保存上下文窗口")))) return;
+    if (synced.length) await run(`windows-sync:${entry.id}`, "apply_gateway_provider_windows_sync", { id: entry.id, picks: synced }, t("从上游同步上下文窗口"), true);
+    setWindowsOpen(null);
   };
   const newModels = entry.upstreamNew?.length ?? 0;
-  const [syncOpen, setSyncOpen] = useState(false);
-  const applySync = async (remove: string[], add: string[]) => {
-    if (await run(`sync-models:${entry.id}`, "apply_gateway_provider_models_sync", { id: entry.id, remove, add }, t("从上游同步"))) setSyncOpen(false);
-  };
-  const saveModels = async (models: string[], defaultModel: string) => {
-    if (await run(`models:${entry.id}`, "save_gateway_provider_models", { id: entry.id, models, defaultModel }, t("保存模型列表"))) setModelsOpen(false);
+  const saveModels = async (models: string[], defaultModel: string, sync: ModelSyncPicks | null) => {
+    // 同步勾选的改动先按同步写（被删模型的价格、窗口、思考等级一并清掉），再写最终列表和默认模型。
+    if (sync && !(await run(`sync-models:${entry.id}`, "apply_gateway_provider_models_sync", { id: entry.id, remove: sync.remove, add: sync.add }, t("从上游同步"), true))) return;
+    if (await run(`models:${entry.id}`, "save_gateway_provider_models", { id: entry.id, models, defaultModel }, t("保存模型列表"))) setModelsOpen(null);
   };
   const price = priceSummary(entry);
   // 订阅账号和 OpenCode Go、Command Code 等 API Key 套餐能查额度（#3084）；后端给标志，首次查询前就显示这一行。
@@ -882,7 +879,7 @@ function PoolRow({
         </div>
         <span className="gw-pool-status">
           {newModels ? (
-            <button className="gw-new-models" onClick={() => setModelsOpen(true)} title={t("后台检查发现上游有新模型，点开查看")} type="button">
+            <button className="gw-new-models" onClick={() => setModelsOpen("sync")} title={t("后台检查发现上游有新模型，点开查看")} type="button">
               {tf("+{0} 新模型", [newModels])}
             </button>
           ) : null}
@@ -906,7 +903,7 @@ function PoolRow({
             <button
               aria-label={tf("编辑 {0}", [maskAccountName(entry.name)])}
               className="gw-icon-button gw-pool-edit"
-              onClick={onEdit}
+              onClick={() => onEdit()}
               title={entry.account === "chatgpt" ? t("编辑订阅额度策略") : t("编辑名称、地址、协议与模型")}
               type="button"
             >
@@ -939,12 +936,12 @@ function PoolRow({
               ) : null}
             </div>
             <span className="gw-detail-actions">
-              <EditIcon disabled={busy !== null} label={t("编辑模型列表")} onClick={() => setModelsOpen(true)} />
-              {/* 从上游同步（#2785）：先拉上游列出差异，勾选要删、要加的再写入；拉取失败不改列表。 */}
+              <EditIcon disabled={busy !== null} label={t("编辑模型列表")} onClick={() => setModelsOpen("edit")} />
+              {/* 从上游同步（#2785）：打开模型弹窗就拉上游、列出差异，勾选要删、要加的再保存；拉取失败不改列表。 */}
               <button
                 className="gw-text-button gw-sync-button"
                 disabled={busy !== null}
-                onClick={() => setSyncOpen(true)}
+                onClick={() => setModelsOpen("sync")}
                 title={t("用已保存的 Key 或登录拉取上游模型，先列出差异，勾选后再改列表")}
                 type="button"
               >
@@ -1024,7 +1021,7 @@ function PoolRow({
               <div className="gw-detail-value">
                 {t("按官方窗口限制")}
               </div>
-              <span className="gw-detail-actions"><EditIcon disabled={busy !== null} label={t("编辑订阅额度策略")} onClick={onEdit} /></span>
+              <span className="gw-detail-actions"><EditIcon disabled={busy !== null} label={t("编辑订阅额度策略")} onClick={() => onEdit()} /></span>
             </div>
           ) : null}
           {/* 价格、窗口、思考等级、代理、限速不常改：收进「更多设置」，展开详情先看到模型、Key、额度。 */}
@@ -1060,12 +1057,12 @@ function PoolRow({
               <span className={windows ? undefined : "gw-muted"}>{windows || t("未填写，用模型自带资料")}</span>
             </div>
             <span className="gw-detail-actions">
-              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑上下文窗口")} onClick={() => setWindowsOpen(true)} />
+              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑上下文窗口")} onClick={() => setWindowsOpen("edit")} />
               {metaSyncable ? (
                 <MetaSyncButton
                   busy={busy}
                   busyKey={`windows-sync:${entry.id}`}
-                  onClick={() => setMetaSync("windows")}
+                  onClick={() => setWindowsOpen("sync")}
                   title={t("读取上游 /models 返回的上下文窗口，先列出差异，勾选后再写入")}
                 />
               ) : null}
@@ -1077,12 +1074,12 @@ function PoolRow({
               <span className={reasoning ? undefined : "gw-muted"}>{reasoning || t("按内置资料")}</span>
             </div>
             <span className="gw-detail-actions">
-              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑思考等级")} onClick={() => setReasoningOpen(true)} />
+              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑思考等级")} onClick={() => setReasoningOpen("edit")} />
               {metaSyncable ? (
                 <MetaSyncButton
                   busy={busy}
                   busyKey={`reasoning-sync:${entry.id}`}
-                  onClick={() => setMetaSync("reasoning")}
+                  onClick={() => setReasoningOpen("sync")}
                   title={t("读取上游 /models 返回的思考等级，先列出差异，勾选后再写入")}
                 />
               ) : null}
@@ -1116,7 +1113,7 @@ function PoolRow({
                 {headersSummary ? <code className="gw-chip" title={t("测试连接、获取模型和实际请求都会带上")}>{headersSummary}</code> : <span className="gw-muted">{t("未设置")}</span>}
               </div>
               <span className="gw-detail-actions">
-                <EditIcon disabled={busy !== null} label={t("编辑自定义请求头")} onClick={onEdit} />
+                <EditIcon disabled={busy !== null} label={t("编辑自定义请求头")} onClick={() => onEdit("headers")} />
               </span>
             </div>
           ) : null}
@@ -1150,28 +1147,35 @@ function PoolRow({
           </div>
         </div>
       ) : null}
-      {testKey !== undefined ? <ProviderTestDialog entry={entry} keyId={testKey} onEditSubscription={onEdit} onClose={() => setTestKey(undefined)} /> : null}
-      {metaSync ? (
-        <ProviderMetaSyncDialog
+      {testKey !== undefined ? <ProviderTestDialog entry={entry} keyId={testKey} onEditSubscription={() => onEdit()} onClose={() => setTestKey(undefined)} /> : null}
+      {modelsOpen ? (
+        <ProviderModelsDialog
           busy={busy !== null}
           entry={entry}
-          kind={metaSync}
-          onApplyReasoning={(picks) => void applyReasoningSync(picks)}
-          onApplyWindows={(picks) => void applyWindowsSync(picks)}
-          onCancel={() => setMetaSync(null)}
+          onCancel={() => setModelsOpen(null)}
+          onSave={(models, defaultModel, sync) => void saveModels(models, defaultModel, sync)}
+          syncOnOpen={modelsOpen === "sync"}
         />
       ) : null}
-      {syncOpen ? (
-        <ProviderSyncDialog busy={busy !== null} entry={entry} onApply={(remove, add) => void applySync(remove, add)} onCancel={() => setSyncOpen(false)} />
-      ) : null}
-      {modelsOpen ? (
-        <ProviderModelsDialog busy={busy !== null} entry={entry} onCancel={() => setModelsOpen(false)} onSave={(models, defaultModel) => void saveModels(models, defaultModel)} />
-      ) : null}
       {reasoningOpen ? (
-        <ProviderReasoningDialog busy={busy !== null} entry={entry} onCancel={() => setReasoningOpen(false)} onSave={(modelMetadata) => void saveReasoning(modelMetadata)} />
+        <ProviderReasoningDialog
+          busy={busy !== null}
+          entry={entry}
+          onCancel={() => setReasoningOpen(null)}
+          onSave={(modelMetadata, synced) => void saveReasoning(modelMetadata, synced)}
+          syncOnOpen={reasoningOpen === "sync"}
+          upstreamSync={metaSyncable}
+        />
       ) : null}
       {windowsOpen ? (
-        <ProviderWindowsDialog busy={busy !== null} entry={entry} onCancel={() => setWindowsOpen(false)} onSave={(modelWindows, fallback, autoCompact) => void saveWindows(modelWindows, fallback, autoCompact)} />
+        <ProviderWindowsDialog
+          busy={busy !== null}
+          entry={entry}
+          onCancel={() => setWindowsOpen(null)}
+          onSave={(modelWindows, fallback, autoCompact, synced) => void saveWindows(modelWindows, fallback, autoCompact, synced)}
+          syncOnOpen={windowsOpen === "sync"}
+          upstreamSync={metaSyncable}
+        />
       ) : null}
       {accessOpen ? (
         <ProviderNewApiAccessDialog
@@ -1198,7 +1202,7 @@ function PoolRow({
   );
 }
 
-/** 详情里「上下文窗口」「思考等级」的「从上游同步」（#2807）。 */
+/** 详情里「上下文窗口」「思考等级」的「从上游同步」（#2807）：打开对应弹窗并展开同步面板。 */
 function MetaSyncButton({ busy, busyKey, title, onClick }: { busy: string | null; busyKey: string; title: string; onClick: () => void }) {
   return (
     <button className="gw-text-button gw-sync-button" disabled={busy !== null} onClick={onClick} title={title} type="button">
@@ -1583,16 +1587,18 @@ function SubscriptionLoginDialog({
   onCancel: () => void;
   onStart: (method: SubscriptionLoginMethod, input: string) => void;
 }) {
-  useEscapeLayer(true, onCancel);
   const [method, setMethod] = useState<SubscriptionLoginMethod>(item.methods[0] ?? "browser");
   const [input, setInput] = useState("");
   const ready = method !== "paste" || input.trim().length > 0;
+  const titleId = useId();
+  // 粘贴了 token / Cookie 再误点遮罩或 Esc：先确认，不丢。
+  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLDivElement>({ onClose: onCancel, dirty: input.trim() !== "", labelledBy: titleId });
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
-      <div className="gw-modal gw-device-modal" role="dialog" aria-label={tf("登录 {0}", [item.name])}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
+      <div {...dialogProps} className="gw-modal gw-device-modal">
         <header>
-          <strong>{tf("登录 {0}", [item.name])}</strong>
-          <button aria-label={t("关闭")} className="gw-icon-button" onClick={onCancel} type="button"><X className="h-4 w-4" /></button>
+          <strong id={titleId}>{tf("登录 {0}", [item.name])}</strong>
+          <button aria-label={t("关闭")} className="gw-icon-button" onClick={() => void requestClose()} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body">
           {item.note ? <p className="gw-muted">{t(item.note)}</p> : null}
@@ -1613,7 +1619,7 @@ function SubscriptionLoginDialog({
         </div>
         <footer>
           <span className="gw-error" />
-          <button className="gw-soft-button" onClick={onCancel} type="button">{t("取消")}</button>
+          <button className="gw-soft-button" onClick={() => void requestClose()} type="button">{t("取消")}</button>
           <button className="gw-primary-button" disabled={!ready} onClick={() => onStart(method, input.trim())} type="button">{t("开始登录")}</button>
         </footer>
       </div>

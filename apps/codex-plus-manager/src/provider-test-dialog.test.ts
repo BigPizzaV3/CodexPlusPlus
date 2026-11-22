@@ -68,6 +68,7 @@ function harness(options: { initialModel?: string; lockModel?: boolean; models?:
         if (!(index in hooks)) hooks[index] = { current: initialValue };
         return hooks[index];
       },
+      useId: () => "provider-test-title",
       useEffect: (effect: () => void | (() => void), deps: unknown[]) => {
         const index = cursor++;
         if (hooks[index]?.length === deps.length && hooks[index].every((value: unknown, i: number) => Object.is(value, deps[i]))) return;
@@ -97,7 +98,11 @@ function harness(options: { initialModel?: string; lockModel?: boolean; models?:
     "./AppSelect": { AppSelect: "AppSelect" },
     "./gateway-model": { maskAccountName: (value: string) => value, maskAccountText, subscriptionBlockReason },
     "./gateway-ui": { Avatar: "Avatar" },
-    "./use-escape-layer": { useEscapeLayer: (_active: boolean, close: () => void) => { escape = close; } },
+    // 弹窗外壳：Esc 走 useModalShell 的 onClose。
+    "./use-modal-shell": { useModalShell: ({ onClose }: { onClose: () => void }) => {
+      escape = onClose;
+      return { backdropProps: {}, dialogProps: {}, requestClose: async () => onClose() };
+    } },
     "./provider-test": probeModel,
     "./ProviderFormDialog.css": {},
   };

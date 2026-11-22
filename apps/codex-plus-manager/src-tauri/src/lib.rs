@@ -494,7 +494,6 @@ pub fn run() {
             gateway_commands::consume_gateway_reset_card,
             gateway_commands::abandon_gateway_reset_operation,
             gateway_commands::delete_gateway_provider,
-            gateway_commands::check_gateway_provider_models,
             gateway_commands::preview_gateway_provider_models_sync,
             gateway_commands::apply_gateway_provider_models_sync,
             gateway_commands::preview_gateway_provider_meta_sync,

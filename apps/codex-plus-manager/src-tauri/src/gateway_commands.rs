@@ -1633,25 +1633,6 @@ pub fn save_gateway_provider_windows(
     )
 }
 
-/// 用存下的凭据重新拉一个供应商的模型，和现有列表比较（不改列表，只记下差异供界面提示）。
-#[tauri::command]
-pub async fn check_gateway_provider_models(
-    id: String,
-) -> CommandResult<Option<model_sync::ModelDiff>> {
-    match model_sync::check_provider(&GatewayStore::default(), &id).await {
-        Ok(diff) => ok(
-            &format!(
-                "上游有 {} 个模型：新增 {} 个，已下架 {} 个。",
-                diff.upstream.len(),
-                diff.added.len(),
-                diff.removed.len()
-            ),
-            Some(diff),
-        ),
-        Err(error) => failed(&format!("获取模型列表失败：{error:#}"), None),
-    }
-}
-
 /// 供应商详情里「从上游同步」的第一步（#2785）：拉上游模型，返回和现有列表的差异供用户勾选，
 /// 不改任何数据。拉取失败或上游返回空列表时报错。
 #[tauri::command]

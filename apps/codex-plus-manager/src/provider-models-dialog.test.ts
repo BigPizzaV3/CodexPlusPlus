@@ -4,16 +4,18 @@ import test from "node:test";
 
 const read = (name: string) => readFileSync(new URL(`./${name}`, import.meta.url), "utf8");
 
-test("模型列表可以手动编辑、从上游刷新，后台发现的新模型直接带进弹窗", () => {
+test("模型列表可以手动编辑、从上游同步，后台发现的差异直接带进弹窗；「+N 新模型」和「从上游同步」打开同一个弹窗", () => {
   const dialog = read("ProviderModelsDialog.tsx");
-  assert.match(dialog, /invoke<CheckResult>\("check_gateway_provider_models", \{ id: entry\.id \}\)/);
-  assert.match(dialog, /useState<string\[\]>\(entry\.upstreamNew \?\? \[\]\)/);
+  assert.match(dialog, /const added = entry\.upstreamNew \?\? \[\];/);
+  assert.match(dialog, /if \(syncOnOpen\) void load\(\);/);
   const providers = read("GatewayProviders.tsx");
   assert.match(providers, /"save_gateway_provider_models", \{ id: entry\.id, models, defaultModel \}/);
-  assert.match(providers, /setModelsOpen\(true\)/);
-  // 详情里「编辑」旁的「从上游同步」先打开预览弹窗，勾选后才写入（#2785）。
-  assert.match(providers, /onClick=\{\(\) => setSyncOpen\(true\)\}/);
-  assert.match(providers, /"apply_gateway_provider_models_sync", \{ id: entry\.id, remove, add \}, t\("从上游同步"\)\)/);
+  assert.match(providers, /onClick=\{\(\) => setModelsOpen\("edit"\)\}/);
+  // 「+N 新模型」和详情里的「从上游同步」都打开模型弹窗并立刻拉上游（#2785）；没有单独的同步弹窗了。
+  assert.equal(providers.match(/onClick=\{\(\) => setModelsOpen\("sync"\)\}/g)?.length, 2);
+  assert.doesNotMatch(providers, /ProviderSyncDialog/);
+  // 勾选的同步改动先按同步写（清掉被删模型的价格、窗口、思考等级），再写最终列表。
+  assert.match(providers, /"apply_gateway_provider_models_sync", \{ id: entry\.id, remove: sync\.remove, add: sync\.add \}, t\("从上游同步"\), true\)/);
   assert.match(providers, /\{t\("从上游同步"\)\}/);
   assert.doesNotMatch(providers, /fetch_gateway_provider_models/);
   assert.doesNotMatch(providers, /只属于网关，直连模式里看不到/);
