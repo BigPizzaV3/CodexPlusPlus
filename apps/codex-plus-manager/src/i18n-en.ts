@@ -4405,6 +4405,8 @@ export const EN_TEMPLATE: Record<string, string> = {
 // at the display layer (showNotice wraps message with t()). Exact-match first,
 // then pattern-based for messages that embed dynamic values.
 export const EN_BACKEND: Record<string, string> = {
+  // claude-local（ClaudeMom 仓库，git 依赖）返回的后端消息
+  "请先完全退出 Claude 再同步会话": "Quit Claude completely before syncing sessions",
   "Codex 仍在运行，请完全退出 Codex 后再移动会话。": "Codex is still running. Quit Codex completely before moving sessions.",
   "不能另存到受控源、备份或共享目录，请选择 Agent 安装目录或其他目录": "Cannot save into a managed source, backup or shared directory. Choose an agent's installation folder or another folder.",
   "无法解析 Skill 管理目录": "Cannot resolve the skill management directory",
