@@ -637,6 +637,7 @@ pub fn run() {
             commands::set_watcher_start_codex,
             commands::set_watcher_start_codex_on_open,
             commands::load_relay_proxy,
+            commands::load_relay_proxies,
             commands::set_relay_proxy,
             commands::load_relay_feature,
             commands::set_relay_feature,

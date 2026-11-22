@@ -8870,6 +8870,26 @@ pub fn load_relay_proxy(profile_id: String) -> CommandResult<Value> {
     )
 }
 
+/// 一次读出多个供应商的独立代理（「Codex 连接 → 高级」里的供应商列表用），不再每个供应商单独请求一次。
+#[tauri::command]
+pub fn load_relay_proxies(profile_ids: Vec<String>) -> CommandResult<Value> {
+    let proxies: serde_json::Map<String, Value> = profile_ids
+        .iter()
+        .map(|id| id.trim())
+        .filter(|id| !id.is_empty())
+        .map(|id| {
+            (
+                id.to_string(),
+                json!({
+                    "proxyUrl": codex_plus_core::relay_proxy::proxy_for_profile(id).unwrap_or_default(),
+                    "configured": codex_plus_core::relay_proxy::configured_proxy_for_profile(id).is_some()
+                }),
+            )
+        })
+        .collect();
+    ok("供应商代理已读取。", json!({ "proxies": proxies }))
+}
+
 // 下面两个读请求日志的命令都被页面定时轮询：放到阻塞线程池里做，读文件、查会话库期间不卡界面线程。
 /// 实时请求流：托盘「流量」页签和总览拓扑图的光点动画每秒轮询它。
 /// 只读日志末尾和进行中的请求，不补会话标题和费用，保持轻量。

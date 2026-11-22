@@ -491,7 +491,6 @@ export const EN_PLAIN: Record<string, string> = {
   "新旧两套共用，统一在「设置 → 网关」里改。": "Shared by both paths; change it under Settings → Gateway.",
   "本地服务与请求避震": "Local service and retry shield",
   "用供应商池里的模型：多 Key 轮换、按模型路由、出错自动换下一家": "Uses models from the provider pool: multi-key rotation, routing by model, automatic failover",
-  "留空使用系统代理，例如 http://127.0.0.1:7890": "Leave empty for the system proxy, e.g. http://127.0.0.1:7890",
   "直连供应商": "Direct providers",
   "直连分页只显示 Responses 直连且未配置模型路由的供应商；其他供应商在其余分页，配置不会丢失。": "This tab only shows Responses providers without model routing; other providers are on the other tabs and nothing is lost.",
   "网关的供应商池里已经有它，所有接入网关的 Agent 都能用": "Already in the gateway provider pool; every gateway agent can use it",
@@ -2473,15 +2472,10 @@ export const EN_PLAIN: Record<string, string> = {
     "Codex++ writes the local proxy address into config.toml; restart Codex after switching providers or changing the protocol.",
   "为单个供应商单独指定 HTTP 代理；留空表示沿用系统代理":
     "Set a dedicated HTTP proxy for one provider; leave empty to use the system proxy",
-  "已配置独立代理": "Dedicated proxy configured",
-  "未配置独立代理": "No dedicated proxy",
   "例如 http://127.0.0.1:7890，留空表示使用系统代理":
     "e.g. http://127.0.0.1:7890; leave empty to use the system proxy",
-  "{0} 的独立代理": "Dedicated proxy for {0}",
   "保存中…": "Saving…",
   "还没有可配置独立代理的供应商。": "No providers available for a dedicated proxy yet.",
-  "保存后需重新应用该供应商并重启 Codex，独立代理才会作用于会话请求。":
-    "After saving, re-apply the provider and restart Codex for the dedicated proxy to take effect on conversation requests.",
   "这个工具目前没有独立设置项": "This tool has no settings of its own yet",
   "该工具的配置在它自己的页签里管理；上面的基础设置对所有工具通用。":
     "This tool is configured on its own tab; the basic settings above apply to every tool.",
@@ -2588,7 +2582,6 @@ export const EN_PLAIN: Record<string, string> = {
   "内置、手动安装、市场安装和对话生成的拓展；可在这里启停，单文件脚本可删除": "Built-in, manually installed, market and chat-made extensions; toggle them here, single-file scripts can be deleted",
   "万物皆拓展：内置、市场和自己做的拓展": "Everything is an extension: built-in, market and your own",
   "供应商独立代理": "Provider-specific proxy",
-  "留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。": "Leave empty to use the system proxy; this affects model fetching, tests, and requests for the current provider only.",
   "前缀稳定层": "Prompt prefix stabilizer",
   "按供应商稳定可选历史块的顺序并移除成对 image_resize_notice；默认关闭，适合已确认上游支持的缓存场景。": "Stabilizes selected historical block ordering per provider and removes paired image_resize_notice blocks; off by default for upstreams with confirmed cache support.",
   "全部折叠": "Collapse all",
@@ -3946,6 +3939,10 @@ export const EN_PLAIN: Record<string, string> = {
   "部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail。": "Some Responses upstreams don't recognize OpenAI's input_image.detail and only return a generic parameter error. When enabled, detail is removed from image blocks in messages and tool output before forwarding.",
   "部分严格 Responses 上游不接受 Codex 请求 include 里的 output.encrypted_content，会整条返回 400。开启后只删除这一项，保留 reasoning.encrypted_content 和其他项；Kimi 地址或模型名会自动处理。": "Some strict Responses upstreams reject output.encrypted_content in Codex's request include and return 400 for the whole request. When enabled, only this entry is removed; reasoning.encrypted_content and other entries are kept. Kimi addresses and model names are handled automatically.",
   "部分第三方 Responses 上游不认 Codex 的托管工具 tool_search，供应商测试能通过，但实际聊天会返回 400（tool type \"tool_search\" is not supported）。开启后模型目录关闭 supports_search_tool，Codex 改为直接列出 MCP 工具。": "Some third-party Responses upstreams don't recognize Codex's hosted tool_search tool; the provider test passes but real chats return 400 (tool type \"tool_search\" is not supported). When enabled, the model catalog sets supports_search_tool to false and Codex lists MCP tools directly.",
+  "已配置独立代理（来自环境变量）": "Proxy set (from an environment variable)",
+  "未配置独立代理，沿用系统代理": "No proxy set; uses the system proxy",
+  "留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。随「保存供应商」一起保存。": "Leave empty to use the system proxy. Only affects model fetching, tests and requests for this provider. Saved with \"Save provider\".",
+  "点「编辑」到供应商编辑页里改，随「保存供应商」一起保存；当前供应商会重新应用，重启 Codex 后作用于会话请求。": "Click Edit to change it on the provider's page; it is saved with \"Save provider\". The current provider is re-applied, and session requests use it after restarting Codex.",
 };
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
@@ -4643,6 +4640,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   "已填入 {0} 项，下方高亮的就是；点「保存」才会写入。": "Filled in {0} items (highlighted below); nothing is written until you click Save.",
   "填入 {0} 项": "Fill in {0}",
   "已忽略的上游字段 {0} 个（数值不合理或认不出的，不会写入）": "{0} upstream fields ignored (implausible or unrecognized values are not written)",
+  "编辑 {0} 的独立代理": "Edit the proxy for {0}",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated

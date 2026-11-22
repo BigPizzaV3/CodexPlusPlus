@@ -102,7 +102,7 @@ import { PRESETS, type ProviderPreset } from "./presets";
 import { setSponsorAds, useSponsorPresets } from "./sponsor-store";
 import { createPortal } from "react-dom";
 import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -148,7 +148,7 @@ import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./GatewaySessions";
-import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, relayFilterFromFocus, relayFilterArgs, type RelayFilter, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, relayFilterFromFocus, relayFilterArgs, proxyAddressError, type RelayFilter, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
@@ -282,6 +282,7 @@ import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./Rel
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { CompatToggles } from "./CompatToggles";
+import { errorText } from "@/lib/utils";
 import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
 import { usePolling } from "./use-polling";
 import { sessionProviderForProtocol } from "./relay-session";
@@ -6422,6 +6423,9 @@ function SharedServiceSettings({
   );
 }
 
+/** 「Codex 连接」页把「打开某个供应商的编辑页并跳到某项设置」交给嵌在页底「高级」里的列表用。 */
+const RelayProfileLinkContext = createContext<((profileId: string, section: "proxy") => void) | null>(null);
+
 function ProxySettingsScreen({
   dirty,
   form,
@@ -6442,67 +6446,25 @@ function ProxySettingsScreen({
     [form.relayProfiles],
   );
   const proxyProfileKey = proxyProfiles.map((profile) => profile.id).join("|");
-  const [proxyUrls, setProxyUrls] = useState<Record<string, string>>({});
-  // 已保存的值：输入与它一致时「保存」置灰，十几行供应商里一眼看出哪行改过。
-  const [savedProxyUrls, setSavedProxyUrls] = useState<Record<string, string>>({});
-  const [proxyConfigured, setProxyConfigured] = useState<Record<string, boolean>>({});
-  const [proxyBusyId, setProxyBusyId] = useState<string | null>(null);
-
+  // 每个供应商的独立代理只在这里列出来，一次读完；改代理去供应商编辑页（随「保存供应商」一起写），这里不再单独编辑。
+  const [proxies, setProxies] = useState<Record<string, { proxyUrl?: string; configured?: boolean }>>({});
+  const openRelayProfile = useContext(RelayProfileLinkContext);
   useEffect(() => {
     let cancelled = false;
     const ids = proxyProfileKey ? proxyProfileKey.split("|") : [];
-    void Promise.all(
-      ids.map(async (id) => {
-        try {
-          const result = await invoke<{ status: string; proxyUrl?: string; configured?: boolean }>(
-            "load_relay_proxy",
-            { profileId: id },
-          );
-          return { id, url: result.status === "ok" ? result.proxyUrl ?? "" : "", configured: result.configured === true };
-        } catch {
-          return { id, url: "", configured: false };
-        }
-      }),
-    ).then((entries) => {
-      if (cancelled) return;
-      const urls: Record<string, string> = {};
-      const configured: Record<string, boolean> = {};
-      entries.forEach((entry) => {
-        urls[entry.id] = entry.url;
-        configured[entry.id] = entry.configured;
-      });
-      setProxyUrls(urls);
-      setSavedProxyUrls(urls);
-      setProxyConfigured(configured);
-    });
+    if (!ids.length) {
+      setProxies({});
+      return;
+    }
+    void invoke<{ status: string; proxies?: Record<string, { proxyUrl?: string; configured?: boolean }> }>("load_relay_proxies", { profileIds: ids })
+      .then((result) => {
+        if (!cancelled && result.status === "ok") setProxies(result.proxies ?? {});
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
   }, [proxyProfileKey]);
-
-  const saveProviderProxy = async (profile: RelayProfile) => {
-    const profileId = profile.id;
-    setProxyBusyId(profileId);
-    try {
-      const result = await invoke<{
-        status: string;
-        message: string;
-        proxyUrl?: string;
-        configured?: boolean;
-      }>("set_relay_proxy", { profileId, proxyUrl: proxyUrls[profileId] ?? "" });
-      if (result.status === "ok") {
-        setProxyUrls((current) => ({ ...current, [profileId]: result.proxyUrl ?? "" }));
-        setSavedProxyUrls((current) => ({ ...current, [profileId]: result.proxyUrl ?? "" }));
-        setProxyConfigured((current) => ({ ...current, [profileId]: result.configured === true }));
-      }
-      await actions.showMessage(t("供应商独立代理"), result.message, result.status === "ok" ? "ok" : "failed");
-    } catch (error) {
-      await actions.showMessage(t("供应商独立代理"), String(error), "failed");
-    } finally {
-      setProxyBusyId(null);
-    }
-  };
-
 
   // 嵌在「Codex 连接」页底部的「高级」折叠区里：每项一行，说明一行，长说明放悬停。
   return (
@@ -6532,38 +6494,30 @@ function ProxySettingsScreen({
 
       <div className="cx-codex-proxy-head" title={t("为旧版的单个供应商单独指定 HTTP 代理；留空表示沿用系统代理。网关供应商的代理在供应商池里编辑供应商时设置。")}>
         <strong>{t("供应商独立代理（旧版供应商）")}</strong>
-        <small>{t("保存后需重新应用该供应商并重启 Codex，独立代理才会作用于会话请求。")}</small>
+        <small>{t("点「编辑」到供应商编辑页里改，随「保存供应商」一起保存；当前供应商会重新应用，重启 Codex 后作用于会话请求。")}</small>
       </div>
-      {proxyProfiles.length ? proxyProfiles.map((profile) => (
-        <CxRow
-          detail={proxyConfigured[profile.id] ? t("已配置独立代理") : t("未配置独立代理")}
-          key={profile.id}
-          title={profile.name || t("未命名供应商")}
-        >
-          <Input
-            aria-label={tf("{0} 的独立代理", [profile.name || t("未命名供应商")])}
-            className="cx-codex-proxy-input"
-            placeholder={t("留空使用系统代理，例如 http://127.0.0.1:7890")}
-            value={proxyUrls[profile.id] ?? ""}
-            onChange={(event) => {
-              // 先取值再进 updater：updater 延迟执行时 currentTarget 已为 null，会抛错白屏（#2705）
-              const value = event.currentTarget.value;
-              setProxyUrls((current) => ({ ...current, [profile.id]: value }));
-            }}
-          />
-          <button
-            className="cx-secondary"
-            disabled={
-              proxyBusyId === profile.id ||
-              (proxyUrls[profile.id] ?? "").trim() === (savedProxyUrls[profile.id] ?? "").trim()
-            }
-            onClick={() => void saveProviderProxy(profile)}
-            type="button"
+      {proxyProfiles.length ? proxyProfiles.map((profile) => {
+        const proxy = proxies[profile.id];
+        const url = (proxy?.proxyUrl ?? "").trim();
+        return (
+          <CxRow
+            detail={url || (proxy?.configured ? t("已配置独立代理（来自环境变量）") : t("未配置独立代理，沿用系统代理"))}
+            key={profile.id}
+            title={profile.name || t("未命名供应商")}
           >
-            {proxyBusyId === profile.id ? t("保存中…") : t("保存")}
-          </button>
-        </CxRow>
-      )) : (
+            {openRelayProfile ? (
+              <button
+                aria-label={tf("编辑 {0} 的独立代理", [profile.name || t("未命名供应商")])}
+                className="cx-secondary"
+                onClick={() => openRelayProfile(profile.id, "proxy")}
+                type="button"
+              >
+                {t("编辑")}
+              </button>
+            ) : null}
+          </CxRow>
+        );
+            }) : (
         <CxRow detail={t("还没有可配置独立代理的供应商。")} muted title={t("供应商独立代理（旧版供应商）")} />
       )}
       </>
@@ -7629,8 +7583,16 @@ function RelayScreen({
     const next = syncLegacyRelayFields({ ...normalized, activeRelayId: profileId });
     void actions.switchRelayProfile(next, normalized.activeRelayId);
   };
+  // 「高级」里的供应商代理列表点进来时直接跳到代理输入框。
+  const [detailSection, setDetailSection] = useState<"proxy" | null>(null);
+  const openRelayProfileSection = useCallback((profileId: string, section: "proxy") => {
+    setNewProfileDraft(null);
+    setDetailSection(section);
+    setDetailProfileId(profileId);
+  }, []);
   const editRelayProfile = async (profileId: string) => {
     setNewProfileDraft(null);
+    setDetailSection(null);
     setDetailProfileId(
       normalized.relayProfiles.some((item) => item.id === profileId) ? profileId : null,
     );
@@ -7694,6 +7656,7 @@ function RelayScreen({
         form={normalized}
         isNew={isNewProfile}
         initialAggregateMode={isNewProfile ? newAggregateMode : null}
+        initialSection={isNewProfile ? null : detailSection}
         // 从目录页选模板进来时目录页状态还开着：返回只清掉草稿，回到目录页继续挑。
         onBack={() => {
           setNewProfileDraft(null);
@@ -8026,7 +7989,9 @@ function RelayScreen({
                 <ToggleVisual />
               </label>
             </CxRow>
-            {advanced}
+            <RelayProfileLinkContext.Provider value={openRelayProfileSection}>
+              {advanced}
+            </RelayProfileLinkContext.Provider>
           </details>
         </CxCard>
       </CxSection>
@@ -10674,6 +10639,7 @@ function RelayProfileDetail({
   form,
   isNew = false,
   initialAggregateMode = null,
+  initialSection = null,
   onBack,
   onFormChange,
   onSaved,
@@ -10684,6 +10650,8 @@ function RelayProfileDetail({
   form: BackendSettings;
   isNew?: boolean;
   initialAggregateMode?: AggregateMode | null;
+  /** 打开时直接跳到的设置（「Codex 连接 → 高级」里点某个供应商的独立代理进来）。 */
+  initialSection?: "proxy" | null;
   onBack: () => void;
   onFormChange: (value: BackendSettings) => Promise<BackendSettings | null>;
   onSaved?: () => void;
@@ -10695,6 +10663,60 @@ function RelayProfileDetail({
     modelWindowRowsFromProfile(profile.modelList, profile.modelWindows || "", profile.modelVlm, profile.modelAutoCompact)
       .map((row) => withModelRowSortId(row)),
   );
+  // 供应商独立代理、前缀稳定层按供应商 id 存在设置之外，也算进草稿：改了随「保存供应商」一起写，不再各自立即保存。
+  const [proxyUrl, setProxyUrl] = useState("");
+  const [savedProxy, setSavedProxy] = useState<{ url: string; configured: boolean }>({ url: "", configured: false });
+  const [promptPrefix, setPromptPrefix] = useState(false);
+  const [savedPromptPrefix, setSavedPromptPrefix] = useState(false);
+  const extrasTouchedRef = useRef({ proxy: false, prefix: false });
+  useEffect(() => {
+    let cancelled = false;
+    extrasTouchedRef.current = { proxy: false, prefix: false };
+    setProxyUrl("");
+    setSavedProxy({ url: "", configured: false });
+    setPromptPrefix(false);
+    setSavedPromptPrefix(false);
+    setIndependentProxyConfigured(profile.id, false);
+    void invoke<{ status: string; proxyUrl?: string; configured?: boolean }>("load_relay_proxy", { profileId: profile.id })
+      .then((result) => {
+        if (cancelled || result.status !== "ok") return;
+        const url = result.proxyUrl || "";
+        const configured = result.configured ?? Boolean(url.trim());
+        setIndependentProxyConfigured(profile.id, configured);
+        setSavedProxy({ url, configured });
+        // 读回来之前已经开始改了：不覆盖用户的输入。
+        if (!extrasTouchedRef.current.proxy) setProxyUrl(url);
+      })
+      .catch(() => {});
+    void invoke<{ stabilizePromptPrefix?: boolean }>("load_relay_feature", { profileId: profile.id })
+      .then((result) => {
+        if (cancelled) return;
+        const enabled = result.stabilizePromptPrefix === true;
+        setSavedPromptPrefix(enabled);
+        if (!extrasTouchedRef.current.prefix) setPromptPrefix(enabled);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [profile.id]);
+  const changeProxyUrl = (value: string) => {
+    extrasTouchedRef.current.proxy = true;
+    setProxyUrl(value);
+  };
+  const changePromptPrefix = (value: boolean) => {
+    extrasTouchedRef.current.prefix = true;
+    setPromptPrefix(value);
+  };
+  const proxyChanged = !isAggregateRelayProfile(draft) && proxyUrl.trim() !== savedProxy.url.trim();
+  const promptPrefixChanged = !isAggregateRelayProfile(draft) && promptPrefix !== savedPromptPrefix;
+  const proxyProblem = isAggregateRelayProfile(draft) ? null : proxyAddressError(proxyUrl);
+  const proxyError = proxyProblem ? t(proxyProblem) : null;
+  // 从「高级」里的供应商代理列表进来：展开「请求」分区并聚焦代理输入框。
+  useEffect(() => {
+    if (initialSection !== "proxy") return;
+    const root = detailBodyRef.current;
+    jumpToRelaySection(root, "requests");
+    requestAnimationFrame(() => root?.querySelector<HTMLInputElement>(".relay-field-proxy input")?.focus());
+  }, [initialSection, profile.id]);
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
@@ -10754,7 +10776,7 @@ function RelayProfileDetail({
   const modelRowsError = useMemo(() => modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows)), [modelWindowRows]);
   // 请求头写错（名字非法、值里有换行）也挡住保存，和模型行错误一样就地写出原因。
   const headersError = useMemo(() => relayHeadersValidationMessage(draft.customHeaders || []), [draft.customHeaders]);
-  const blockingIssue = validationError || modelRowsError || headersError;
+  const blockingIssue = validationError || modelRowsError || headersError || proxyError;
   const currentDraft = useMemo(() => relayDraftWithModelRows(draft, modelWindowRows), [draft, modelWindowRows]);
   const draftWithModelRows = () => currentDraft;
   // 「有未保存修改」：整份草稿（名称、地址、Key、协议、请求头、文件……）和打开时的基线比，
@@ -10762,7 +10784,7 @@ function RelayProfileDetail({
   const baselineDraftRef = useRef<string | null>(null);
   const currentDraftJson = useMemo(() => JSON.stringify(currentDraft), [currentDraft]);
   if (baselineDraftRef.current === null) baselineDraftRef.current = currentDraftJson;
-  const hasUnsavedChanges = currentDraftJson !== baselineDraftRef.current;
+  const hasUnsavedChanges = currentDraftJson !== baselineDraftRef.current || proxyChanged || promptPrefixChanged;
   const hasUnsavedModelChanges = useMemo(() => JSON.stringify({
     modelList: currentDraft.modelList,
     modelWindows: currentDraft.modelWindows,
@@ -10790,8 +10812,14 @@ function RelayProfileDetail({
       return;
     }
     setSavingDraft(true);
+    // 代理决定这个供应商是否经本地代理转发：先按改后的代理重算配置文件，写入失败或取消时还原。
+    const proxyConfiguredNow = Boolean(proxyUrl.trim()) || (savedProxy.configured && !savedProxy.url.trim());
+    if (proxyChanged) setIndependentProxyConfigured(profile.id, proxyConfiguredNow);
+    let proxySaved = !proxyChanged;
     try {
-      const draftWithWindows = draftWithModelRows();
+      const draftWithWindows = proxyChanged && !isAggregateRelayProfile(draftWithModelRows())
+        ? applyRelayProfilePatchToFiles(draftWithModelRows(), { baseUrl: draftWithModelRows().baseUrl }, { allowGenerateFiles: isNew })
+        : draftWithModelRows();
       const normalizedDraft = isAggregateRelayProfile(draftWithWindows) ? normalizeAggregateRelayProfile(draftWithWindows, form) : deriveRelayProfileFromFiles(draftWithWindows);
       const next = normalizeSettings(isNew
         ? addRelayProfile(form, normalizedDraft)
@@ -10813,6 +10841,27 @@ function RelayProfileDetail({
       if (requiresRestart && !(await appConfirm(t("此请求设置需要启动本地协议代理。保存后将立即重启 Codex，使设置安全生效。是否继续？"), { title: t("需要重启 Codex"), confirmText: t("保存并重启") }))) {
         return;
       }
+      // 代理、前缀稳定层单独存：先写它们，失败就停下，不留一半。
+      if (proxyChanged) {
+        const result = await invoke<{ status: string; message: string; proxyUrl?: string; configured?: boolean }>("set_relay_proxy", { profileId: normalizedDraft.id, proxyUrl });
+        if (result.status !== "ok") {
+          void actions.showMessage(t("供应商独立代理"), t(result.message), "failed");
+          return;
+        }
+        proxySaved = true;
+        const url = result.proxyUrl ?? proxyUrl.trim();
+        const configured = result.configured ?? Boolean(url);
+        setIndependentProxyConfigured(normalizedDraft.id, configured);
+        setSavedProxy({ url, configured });
+      }
+      if (promptPrefixChanged) {
+        const result = await invoke<{ status: string; message: string }>("set_relay_feature", { profileId: normalizedDraft.id, stabilizePromptPrefix: promptPrefix });
+        if (result.status !== "ok") {
+          void actions.showMessage(t("前缀稳定层"), t(result.message), "failed");
+          return;
+        }
+        setSavedPromptPrefix(promptPrefix);
+      }
       const savedSettings = await onFormChange(next);
       if (!savedSettings) return;
       if (requiresRestart) {
@@ -10827,7 +10876,11 @@ function RelayProfileDetail({
         await actions.switchRelayProfile(savedSettings, savedSettings.activeRelayId);
       }
       onSaved?.();
+    } catch (error) {
+      void actions.showMessage(t("保存供应商"), errorText(error), "failed");
     } finally {
+      // 没写成代理（校验没过、取消重启、写入失败）：把按新代理算的状态还原。
+      if (!proxySaved) setIndependentProxyConfigured(profile.id, savedProxy.configured);
       setSavingDraft(false);
     }
   };
@@ -10939,6 +10992,8 @@ function RelayProfileDetail({
             profile={draft}
             form={form}
             isNew={isNew}
+            proxy={{ value: proxyUrl, error: proxyError, onChange: changeProxyUrl }}
+            promptPrefix={{ value: promptPrefix, onChange: changePromptPrefix }}
             onProfileChange={setDraft}
             actions={actions}
             modelWindowRows={modelWindowRows}
@@ -11102,6 +11157,8 @@ function RelayProfileEditor({
   profile,
   form,
   isNew = false,
+  proxy,
+  promptPrefix,
   onProfileChange,
   actions,
   modelWindowRows,
@@ -11110,23 +11167,21 @@ function RelayProfileEditor({
   profile: RelayProfile;
   form: BackendSettings;
   isNew?: boolean;
+  /** 供应商独立代理：草稿的一部分，随「保存供应商」写入。 */
+  proxy: { value: string; error: string | null; onChange: (value: string) => void };
+  /** 前缀稳定层开关：同上。 */
+  promptPrefix: { value: boolean; onChange: (value: boolean) => void };
   onProfileChange: (value: RelayProfile) => void;
   actions: Actions;
   modelWindowRows: SortableModelWindowRow[];
   setModelWindowRows: (value: SortableModelWindowRow[]) => void;
 }) {
   const [vlmTestOpen, setVlmTestOpen] = useState(false);
-  const [relayProxyUrl, setRelayProxyUrl] = useState("");
-  const [relayProxyBusy, setRelayProxyBusy] = useState(false);
-  const relayProxyProfileRef = useRef(profile);
-  relayProxyProfileRef.current = profile;
-  const relayProxyRevisionRef = useRef(0);
-  const [stabilizePromptPrefix, setStabilizePromptPrefix] = useState(false);
   // 「高级兼容选项」分组：null = 用户没手动开合过，按是否有开启项决定。
   const [compatOpen, setCompatOpen] = useState<boolean | null>(null);
   const compatEnabledCount = [
     profile.standardOpenaiProtocol,
-    stabilizePromptPrefix,
+    promptPrefix.value,
     profile.webSearchHistoryCompat,
     profile.localCompactionPromptAtEnd === true,
     profile.trustUpstreamCatalogLite === true,
@@ -11137,71 +11192,7 @@ function RelayProfileEditor({
     profile.disableToolSearch === true,
     profile.pureApiImageGeneration === true,
   ].filter(Boolean).length;
-  const [stabilizePromptPrefixBusy, setStabilizePromptPrefixBusy] = useState(false);
   const useCommonConfig = profile.useCommonConfig !== false;
-  useEffect(() => {
-    let cancelled = false;
-    const revision = ++relayProxyRevisionRef.current;
-    setRelayProxyUrl("");
-    setIndependentProxyConfigured(profile.id, false);
-    void invoke<{ status: string; proxyUrl?: string; configured?: boolean }>("load_relay_proxy", { profileId: profile.id })
-      .then((result) => {
-        if (!cancelled && revision === relayProxyRevisionRef.current && result.status === "ok") {
-          setIndependentProxyConfigured(profile.id, result.configured ?? Boolean(result.proxyUrl?.trim()));
-          setRelayProxyUrl(result.proxyUrl || "");
-        }
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [profile.id]);
-  useEffect(() => {
-    let cancelled = false;
-    setStabilizePromptPrefix(false);
-    void invoke<{ stabilizePromptPrefix?: boolean }>("load_relay_feature", { profileId: profile.id })
-      .then((result) => { if (!cancelled) setStabilizePromptPrefix(result.stabilizePromptPrefix === true); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [profile.id]);
-  const saveRelayProxy = async () => {
-    const profileId = profile.id;
-    ++relayProxyRevisionRef.current;
-    setRelayProxyBusy(true);
-    try {
-      const result = await invoke<{ status: string; message: string; configured?: boolean }>("set_relay_proxy", {
-        profileId,
-        proxyUrl: relayProxyUrl,
-      });
-      if (result.status === "ok") {
-        setIndependentProxyConfigured(profileId, result.configured ?? Boolean(relayProxyUrl.trim()));
-        const current = relayProxyProfileRef.current;
-        if (current.id === profileId) {
-          // 保存响应返回时从最新草稿重算，保留期间编辑的其它字段。
-          onProfileChange(applyRelayProfilePatchToFiles(current, { baseUrl: current.baseUrl }, { allowGenerateFiles: isNew }));
-        }
-      }
-      await actions.showMessage(t("供应商独立代理"), result.message, result.status === "ok" ? "ok" : "failed");
-    } catch (error) {
-      await actions.showMessage(t("供应商独立代理"), String(error), "failed");
-    } finally {
-      setRelayProxyBusy(false);
-    }
-  };
-  const saveStabilizePromptPrefix = async (enabled: boolean) => {
-    setStabilizePromptPrefix(enabled);
-    setStabilizePromptPrefixBusy(true);
-    try {
-      const result = await invoke<{ status: string; message: string }>("set_relay_feature", {
-        profileId: profile.id,
-        stabilizePromptPrefix: enabled,
-      });
-      await actions.showMessage(t("前缀稳定层"), result.message, result.status === "ok" ? "ok" : "failed");
-    } catch (error) {
-      setStabilizePromptPrefix(!enabled);
-      await actions.showMessage(t("前缀稳定层"), String(error), "failed");
-    } finally {
-      setStabilizePromptPrefixBusy(false);
-    }
-  };
   const [activeImportDraft, setActiveImportDraft] = useState<ActiveImportDraft | null>(null);
   const [metadataImportError, setMetadataImportError] = useState("");
   const [builtinMatch, setBuiltinMatch] = useState<BuiltinModelMetadataMatch | null>(null);
@@ -12616,17 +12607,14 @@ function RelayProfileEditor({
             ) : null}
             {showApiFields ? (
               <Field className="relay-field-proxy" label={t("供应商独立代理")}>
-                <div className="relay-inline-field">
-                  <Input
-                    value={relayProxyUrl}
-                    onChange={(event) => setRelayProxyUrl(event.currentTarget.value)}
-                    placeholder="http://127.0.0.1:7890"
-                  />
-                  <Button disabled={relayProxyBusy} onClick={() => void saveRelayProxy()} size="sm" type="button" variant="secondary">
-                    {t("保存")}
-                  </Button>
-                </div>
-                <span className="hint-line">{t("留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。")}</span>
+                <Input
+                  aria-invalid={proxy.error ? true : undefined}
+                  value={proxy.value}
+                  onChange={(event) => proxy.onChange(event.currentTarget.value)}
+                  placeholder="http://127.0.0.1:7890"
+                />
+                <span className="hint-line">{t("留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。随「保存供应商」一起保存。")}</span>
+                {proxy.error ? <span className="hint-line relay-custom-headers-error">{proxy.error}</span> : null}
               </Field>
             ) : null}
             {showApiFields ? (
@@ -12669,9 +12657,8 @@ function RelayProfileEditor({
                 {showApiFields ? (
                   <label className="switch-row compact relay-switch-row">
                     <input
-                      checked={stabilizePromptPrefix}
-                      disabled={stabilizePromptPrefixBusy}
-                      onChange={(event) => void saveStabilizePromptPrefix(event.currentTarget.checked)}
+                      checked={promptPrefix.value}
+                      onChange={(event) => promptPrefix.onChange(event.currentTarget.checked)}
                       type="checkbox"
                     />
                     <span><strong>{t("前缀稳定层")}</strong><small>{t("按供应商稳定可选历史块的顺序并移除成对 image_resize_notice；默认关闭，适合已确认上游支持的缓存场景。")}</small></span>
