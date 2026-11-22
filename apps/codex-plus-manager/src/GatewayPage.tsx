@@ -1,5 +1,5 @@
 /** 本地网关：让 Claude Code、Grok 经 Codex++ 使用统一的供应商池，支持多 Key 轮换与模型组。 */
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
@@ -27,7 +27,10 @@ import {
   speedOf,
   type GatewayGroupEntry,
   type GatewayPayload,
+  type GatewayPoolEntry,
   type GroupMember,
+  type MemberStatus,
+  type ModelView,
   type GroupMode,
   type GroupSticky,
   maskAccountName,
@@ -171,6 +174,19 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
   // 自动组默认折叠（多家都有的模型一多就是一长串）；自己还没建组、或正在搜索时直接展开。
   const [autosOpen, setAutosOpen] = useGatewayViewState<boolean | null>("routing.autosOpen", null);
   const autosShown = autosOpen ?? ((payload?.groups ?? []).length === 0 || Boolean(needle));
+  // 「某 Agent 刚用过」过一阵要消失：数据没变时每分钟也重算一次成员状态。
+  const [minute, setMinute] = useState(() => Math.floor(Date.now() / 60_000));
+  useEffect(() => {
+    const timer = window.setInterval(() => setMinute(Math.floor(Date.now() / 60_000)), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  // 成员的供应商、显示名、状态、耗时每份数据只算一次（打字搜索、展开折叠不重算），卡片按它判断要不要重渲染。
+  const views = useMemo(
+    () => memberViews(payload, [...(payload?.groups ?? []), ...(payload?.autoGroups ?? [])]),
+    // minute 只用来触发重算。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [payload, minute],
+  );
 
   const saveMine = (group: GatewayGroupEntry, patch: Partial<GatewayGroupEntry>) => {
     const next = { ...group, ...patch };
@@ -235,7 +251,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
           onDelete={() => void remove(group)}
           onEdit={() => setEditing(group)}
           onToggleEnabled={() => void run(`group:${group.id}`, "set_gateway_group_enabled", { id: group.id, enabled: Boolean(group.disabled) }, t("保存组"), true)}
-          payload={payload}
+          views={views}
         />
       ))}
 
@@ -271,7 +287,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
             onChange={(patch) => saveAuto(group, patch)}
             onToggleEnabled={() => void run(`auto:${group.id}`, "set_gateway_auto_group_enabled", { model: group.name, enabled: group.hidden }, t("保存自动组"), true)}
             onReset={group.customized ? () => void run(`auto:${group.id}`, "save_gateway_auto_group", { model: group.name, settings: {} }, t("恢复默认"), true) : undefined}
-            payload={payload}
+            views={views}
           />
         ))
         : null}
@@ -295,20 +311,52 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
   );
 }
 
-/** 一张组卡片：标题（名字、Agent 里怎么选它）、路由方式、会话固定、成员列表（状态、额度、耗时）、隐藏成员。 */
-function GroupCard({
-  group,
-  payload,
-  busy,
-  auto = false,
-  onChange,
-  onEdit,
-  onDelete,
-  onToggleEnabled,
-  onReset,
-}: {
+/** 组成员（和图像输入模型）在路由页上要显示的东西；`key` 是它们的指纹，卡片据此判断有没有变。 */
+type MemberView = {
+  target: { entry: GatewayPoolEntry; model: string } | null;
+  view: ModelView;
+  status: MemberStatus | null;
+  speed: number | null;
+  key: string;
+};
+
+/** 一次算好所有组用到的模型：每个成员只扫一遍供应商池、健康和活动数据。 */
+function memberViews(payload: GatewayPayload | null, groups: GatewayGroupEntry[]): Map<string, MemberView> {
+  const views = new Map<string, MemberView>();
+  const add = (model: string) => {
+    if (!model || views.has(model)) return;
+    const target = memberTarget(payload, model);
+    const view = modelDisplay(payload, model);
+    const status = target ? dispatchStatus(payload, target.entry.id, target.model) : null;
+    const speed = target ? speedOf(payload, target.entry.id, target.model) : null;
+    const key = JSON.stringify([target ? [target.entry.id, target.entry.name, target.entry.baseUrl, target.entry.quota ?? null, target.model] : null, view, status, speed]);
+    views.set(model, { target, view, status, speed, key });
+  };
+  for (const group of groups) {
+    for (const member of group.members) add(member.model);
+    add(group.imageInputModel ?? "");
+  }
+  return views;
+}
+
+const EMPTY_VIEW: ModelView = { title: "", sub: "", group: false };
+
+function viewOf(views: Map<string, MemberView>, model: string): MemberView {
+  return views.get(model) ?? { target: null, view: { ...EMPTY_VIEW, title: model }, status: null, speed: null, key: "" };
+}
+
+/** 卡片只在组本身、它用到的成员状态或 busy 变了时重渲染（回调每次都是新的，但只依赖组和 run，不比较）。 */
+function sameGroupCard(previous: GroupCardProps, next: GroupCardProps): boolean {
+  if (previous.busy !== next.busy || previous.auto !== next.auto || Boolean(previous.onReset) !== Boolean(next.onReset)) return false;
+  if (previous.group !== next.group && JSON.stringify(previous.group) !== JSON.stringify(next.group)) return false;
+  if (previous.views === next.views) return true;
+  const models = [...next.group.members.map((member) => member.model), next.group.imageInputModel ?? ""];
+  return models.every((model) => previous.views.get(model)?.key === next.views.get(model)?.key);
+}
+
+type GroupCardProps = {
   group: GatewayGroupEntry;
-  payload: GatewayPayload | null;
+  views: Map<string, MemberView>;
   busy: string | null;
   auto?: boolean;
   onChange: (patch: Partial<GatewayGroupEntry>) => void;
@@ -316,7 +364,20 @@ function GroupCard({
   onDelete?: () => void;
   onToggleEnabled: () => void;
   onReset?: () => void;
-}) {
+};
+
+/** 一张组卡片：标题（名字、Agent 里怎么选它）、路由方式、会话固定、成员列表（状态、额度、耗时）、隐藏成员。 */
+const GroupCard = memo(function GroupCard({
+  group,
+  views,
+  busy,
+  auto = false,
+  onChange,
+  onEdit,
+  onDelete,
+  onToggleEnabled,
+  onReset,
+}: GroupCardProps) {
   const manual = group.mode === "manual";
   const picked = manual ? (group.members.find((member) => member.model.toLowerCase() === (group.pick ?? "").toLowerCase()) ?? group.members[0])?.model : "";
   const disabled = busy !== null;
@@ -329,7 +390,7 @@ function GroupCard({
           <code className="gw-chip" title={auto ? t("Agent 里选这个名字就走这个组") : t("模型组")}>{auto ? group.name : `${GROUP_MODEL_PREFIX}${group.name}`}</code>
           {auto ? <span className="gw-pill gw-pill-outline">{t("自动")}</span> : null}
           {!auto && group.imageInputModel ? (
-            <span className="gw-pill gw-pill-outline" title={tf("请求里带图片时改发给 {0}", [modelDisplay(payload, group.imageInputModel).title])}>{t("图像输入")}</span>
+            <span className="gw-pill gw-pill-outline" title={tf("请求里带图片时改发给 {0}", [viewOf(views, group.imageInputModel).view.title])}>{t("图像输入")}</span>
           ) : null}
         </div>
         <div className="gw-route-group-controls">
@@ -374,15 +435,15 @@ function GroupCard({
             member={member}
             mode={group.mode}
             onPick={() => onChange({ pick: member.model })}
-            payload={payload}
             picked={picked === member.model}
+            view={viewOf(views, member.model)}
           />
         ))}
         {group.members.length === 0 ? <li className="gw-route-member-empty">{t("没有成员")}</li> : null}
       </ol>
     </section>
   );
-}
+}, sameGroupCard);
 
 /** 组里的一个成员：先后 / 手动选中、供应商与模型、状态、额度、平均耗时。 */
 function RouteMember({
@@ -391,7 +452,7 @@ function RouteMember({
   mode,
   manual,
   picked,
-  payload,
+  view: { target, view, status, speed },
   disabled,
   onPick,
 }: {
@@ -400,14 +461,10 @@ function RouteMember({
   mode: GroupMode;
   manual: boolean;
   picked: boolean;
-  payload: GatewayPayload | null;
+  view: MemberView;
   disabled: boolean;
   onPick: () => void;
 }) {
-  const target = memberTarget(payload, member.model);
-  const view = modelDisplay(payload, member.model);
-  const status = target ? dispatchStatus(payload, target.entry.id, target.model) : null;
-  const speed = target ? speedOf(payload, target.entry.id, target.model) : null;
   const quota = target?.entry.quota ?? null;
   const body = (
     <>

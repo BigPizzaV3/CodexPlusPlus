@@ -398,3 +398,13 @@ test("网关弹窗走 useModalShell：标题作无障碍名称，组编辑器改
   }
   assert.match(read("GatewayAgents.tsx"), /<div aria-modal="true" className=\{`gw-popover gw-portal \$\{className\}`\} ref=\{panelRef\} role="dialog"/);
 });
+
+test("路由页成员状态按数据算一次，组卡片按内容判断重渲染；请求流没变不换新数组", () => {
+  const page = read("GatewayPage.tsx");
+  assert.match(page, /const views = useMemo\(\s*\(\) => memberViews\(payload,/);
+  assert.match(page, /const GroupCard = memo\(function GroupCard\(/);
+  assert.match(page, /\}, sameGroupCard\);/);
+  const member = page.slice(page.indexOf("function RouteMember("), page.indexOf("const body = ("));
+  assert.doesNotMatch(member, /memberTarget\(|dispatchStatus\(|speedOf\(/, "成员行不再自己扫池子");
+  assert.match(read("RequestFlow.tsx"), /setEntries\(\(previous\) => keepIfSame\(previous, next\)\);/);
+});

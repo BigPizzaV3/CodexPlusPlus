@@ -5,6 +5,7 @@ import "./flow-provider-colors.css";
  * 光点动画画在 HubTopology 上（HubOverview.tsx），这里只读取请求列表。
  */
 import { useEffect, useState } from "react";
+import { keepIfSame } from "./use-polling";
 import { invoke } from "@tauri-apps/api/core";
 import { t, tf } from "./i18n";
 import { agentName, formatElapsed, formatTokens, groupDisplayName, maskAccountName, relativeTime, type GatewayPayload } from "./gateway-model";
@@ -29,7 +30,8 @@ export function useRequestFlow(intervalMs: number, limit = 30): { entries: FlowE
           const result = await invoke<{ entries?: FlowEntry[] }>("load_request_flow", { limit });
           if (cancelled) return;
           const next = result.entries ?? [];
-          setEntries(next);
+          // 列表没变（没有新请求、状态也没动）就沿用旧数组，总览不用每 1.5 秒整页重渲染。
+          setEntries((previous) => keepIfSame(previous, next));
           setLoaded(true);
         } catch {
           // 读不到时保持上一轮的列表。
