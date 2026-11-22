@@ -227,13 +227,18 @@ pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
         if rule
             .declarations
             .iter()
-            .any(|(property, _)| !is_shell_layout_property(property))
+            .any(|(property, _)| {
+                !is_shell_layout_property(property)
+                    && !is_dialog_backdrop_filter(rule.part, property)
+            })
         {
             compiled.push_str("  ");
             compiled.push_str(rule.selector);
             compiled.push_str(" {\n");
             for (property, value) in &rule.declarations {
-                if is_shell_layout_property(property) {
+                if is_shell_layout_property(property)
+                    || is_dialog_backdrop_filter(rule.part, property)
+                {
                     continue;
                 }
                 compiled.push_str("    ");
@@ -253,6 +258,16 @@ pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
             compiled.push_str("  }\n");
         }
 
+        if let Some((_, value)) = rule
+            .declarations
+            .iter()
+            .find(|(property, _)| is_dialog_backdrop_filter(rule.part, property))
+        {
+            compiled.push_str(&format!(
+                "  {}{DIALOG_BACKDROP_FILTER_GUARD} {{\n    backdrop-filter: {value} !important;\n  }}\n",
+                rule.selector
+            ));
+        }
         if rule.part == "home-hero"
             && let Some((_, value)) = rule
                 .declarations
@@ -333,6 +348,17 @@ pub fn compile_safe_css(css: &str) -> anyhow::Result<String> {
         compiled.push_str("}\n");
     }
     Ok(compiled)
+}
+
+// Codex 26.1117 的会话悬浮卡片把 role="dialog" 放在一个 0×0、贴在窗口左上角的
+// popover 宿主上，卡片本体是其中 position: fixed 的锚点定位子元素。宿主一旦带
+// backdrop-filter 就会成为子元素的包含块，锚点失效，卡片落到窗口左上角（#3228）。
+// 因此 dialog 的 backdrop-filter 不给“自身不做锚点定位的 popover 宿主”，
+// 普通弹窗和自身锚点定位的 popover 仍保留模糊效果。
+const DIALOG_BACKDROP_FILTER_GUARD: &str = ":not([popover]:not([data-anchor-positioning]))";
+
+fn is_dialog_backdrop_filter(part: &str, property: &str) -> bool {
+    part == "dialog" && property == "backdrop-filter"
 }
 
 fn is_shell_layout_property(property: &str) -> bool {

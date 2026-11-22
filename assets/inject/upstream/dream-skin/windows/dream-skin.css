@@ -1734,9 +1734,10 @@ html[data-dream-skin="active"][data-dream-upload-alpha="true"]
   --color-text-tertiary: var(--ds-text);
 }
 /* These three native popup families can overlap conversation text. Blur the
-   backdrop of the painted popup, retaining the uploaded background alpha. */
+   backdrop of the painted popup, retaining the uploaded background alpha.
+   悬浮卡片的 0×0 popover 宿主不加模糊，否则其锚点定位的卡片会落到窗口左上角（#3228）。 */
 html[data-dream-skin="active"][data-dream-upload-alpha="true"]
-  :is([role="menu"], [data-ds-part="dialog"], [data-composer-overlay-floating-ui="true"] > :has(> [data-mention-list-scroll-area])) {
+  :is([role="menu"], [data-ds-part="dialog"]:not([popover]:not([data-anchor-positioning])), [data-composer-overlay-floating-ui="true"] > :has(> [data-mention-list-scroll-area])) {
   backdrop-filter: blur(24px) !important;
 }
 html[data-dream-skin="active"] [data-markdown-copy="code-block"] > [data-markdown-copy="exclude"] {
