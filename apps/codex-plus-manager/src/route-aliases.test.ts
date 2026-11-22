@@ -49,3 +49,19 @@ it("⌘K 能搜到设置的各个分类（更新、日志、配置体检…）�
   assert.match(en, /"网关总览": "Gateway overview"/);
   assert.match(en, /"概览": "Overview"/);
 });
+
+it("各窗口按需加载自己的界面；英文词典只在用英文时加载，渲染前等它到", () => {
+  const main = readFileSync(new URL("./main.tsx", import.meta.url), "utf8");
+  assert.match(main, /if \(hash === "#tray-panel"\) return import\("\.\/TrayPanel"\)/);
+  assert.match(main, /Promise\.all\(\[loadWindowRoot\(hash\), loadLanguagePack\(\)\]\)/);
+  const i18n = readFileSync(new URL("./i18n.ts", import.meta.url), "utf8");
+  assert.match(i18n, /^import type \* as EnglishPack from "\.\/i18n-en";$/m);
+  assert.match(i18n, /if \(language === "en" && !EN\) EN = await import\("\.\/i18n-en"\);/);
+  // 其他源码不能再静态引入英文词典，否则又打进主包。
+  for (const name of ["App.tsx", "TrayPanel.tsx", "CuPipWindow.tsx", "main.tsx"]) {
+    assert.doesNotMatch(readFileSync(new URL(`./${name}`, import.meta.url), "utf8"), /from "(@|\.)\/i18n-en"/, name);
+  }
+  // 样式仍在入口一次引入，保持原来的层叠顺序：组件样式在 styles.css、cursor-ui.css 之前。
+  const order = ["./TrayPanel.css", "./styles.css", "./cursor-ui.css"].map((name) => main.indexOf(`import "${name}";`));
+  assert.ok(order.every((index, position) => index > 0 && (position === 0 || index > order[position - 1])), String(order));
+});

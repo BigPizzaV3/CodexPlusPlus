@@ -7,7 +7,9 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf
 
 test("悬浮预览窗口用同一个前端，按 #cu-pip 渲染预览组件", () => {
   const main = read("./main.tsx");
-  assert.match(main, /window\.location\.hash === "#cu-pip" \? <CuPipWindow \/> : <App \/>/);
+  // 按窗口按需加载：预览窗口只加载 CuPipWindow，不解析整个管理器。
+  assert.match(main, /if \(hash === "#cu-pip"\) return import\("\.\/CuPipWindow"\)\.then\(\(module\) => module\.CuPipWindow\);/);
+  assert.match(main, /return import\("\.\/App"\)\.then\(\(module\) => module\.App\);/);
   const rust = read("../src-tauri/src/cu_pip.rs");
   assert.match(rust, /WebviewUrl::App\("\/index\.html#cu-pip"\.into\(\)\)/);
 });

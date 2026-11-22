@@ -1,11 +1,32 @@
 // 旧版系统 WebKit 的 API 兜底必须最先执行（#2753），见 legacy-webkit.ts。
 import "./legacy-webkit";
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, type ComponentType, type ErrorInfo, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { App } from "./App";
-import { CuPipWindow } from "./CuPipWindow";
-import { TrayPanel } from "./TrayPanel";
+import { loadLanguagePack } from "./i18n";
 import { applyMacTitlebarClass } from "./mac-titlebar";
+/* 各窗口的界面按需加载（见文末）；样式仍在这里一次引入，并保持原来的层叠顺序：
+   以前 App / 悬浮预览 / 托盘面板是静态引入的，它们各自引的样式排在 styles.css 前面。
+   拆成按需加载后要在这里按原顺序先列出来，否则这些样式会跑到 cursor-ui.css 后面去，压掉覆盖规则。 */
+import "./flow-provider-colors.css";
+import "./RequestFlow.css";
+import "./ProviderQuotaPanel.css";
+import "./ProviderFormDialog.css";
+import "./NativeAuthControls.css";
+import "./HubOverview.css";
+import "./ManagementPages.css";
+import "./ToolPages.css";
+import "./AgentCollaborationPage.css";
+import "./DshPluginsPanel.css";
+import "./ConfigDoctorPanel.css";
+import "./CommunityExtensionsPanel.css";
+import "./GatewayPage.css";
+import "./OnboardingTour.css";
+import "./OnboardingSetup.css";
+import "./ComputerUsePage.css";
+import "./PluginMarketScreen.css";
+import "./SkillSourceMatchDrawer.css";
+import "./CuPipWindow.css";
+import "./TrayPanel.css";
 import "./styles.css";
 // Cursor 风格层必须最后加载，压过前面的组件样式。
 import "./cursor-ui.css";
@@ -62,20 +83,47 @@ class StartupErrorBoundary extends Component<{ children: ReactNode }, { error: E
   }
 }
 
+/** 按需加载失败（例如构建产物缺了分块）时交给 StartupErrorBoundary 显示原因。 */
+function LoadFailure({ error }: { error: unknown }): never {
+  throw error instanceof Error ? error : new Error(String(error));
+}
+
+/**
+ * 同一个前端也用于 Computer Use 的悬浮预览窗口（`#cu-pip`）和托盘快捷面板（`#tray-panel`）。
+ * 按窗口只加载自己的界面：托盘面板常驻在后台，不用再解析整个管理器。
+ */
+function loadWindowRoot(hash: string): Promise<ComponentType> {
+  if (hash === "#tray-panel") return import("./TrayPanel").then((module) => module.TrayPanel);
+  if (hash === "#cu-pip") return import("./CuPipWindow").then((module) => module.CuPipWindow);
+  return import("./App").then((module) => module.App);
+}
+
 const app = document.getElementById("app");
 
 if (app instanceof HTMLElement) {
+  const hash = window.location.hash;
   // 只有主窗口去掉了系统标题栏；托盘面板、悬浮预览本来就没有标题栏。
-  if (window.location.hash !== "#tray-panel" && window.location.hash !== "#cu-pip") {
+  if (hash !== "#tray-panel" && hash !== "#cu-pip") {
     applyMacTitlebarClass();
     const display = loadDisplayPreferences();
     document.documentElement.dataset.managerDensity = display.density;
     if (display.zoom !== 100) void applyManagerDisplay(display).catch(() => {});
   }
-  // 同一个前端也用于 Computer Use 的悬浮预览窗口（`#cu-pip`）和托盘快捷面板（`#tray-panel`）。
-  createRoot(app).render(
-    <StartupErrorBoundary>
-      {window.location.hash === "#tray-panel" ? <TrayPanel /> : window.location.hash === "#cu-pip" ? <CuPipWindow /> : <App />}
-    </StartupErrorBoundary>,
-  );
+  const root = createRoot(app);
+  // 英文词典和窗口界面一起加载，都到了再渲染第一帧（不会先闪一下中文）。
+  Promise.all([loadWindowRoot(hash), loadLanguagePack()])
+    .then(([Root]) => {
+      root.render(
+        <StartupErrorBoundary>
+          <Root />
+        </StartupErrorBoundary>,
+      );
+    })
+    .catch((error: unknown) => {
+      root.render(
+        <StartupErrorBoundary>
+          <LoadFailure error={error} />
+        </StartupErrorBoundary>,
+      );
+    });
 }
