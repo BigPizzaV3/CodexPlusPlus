@@ -7,6 +7,9 @@ import { readFileSync } from "node:fs";
  */
 export const APP_SOURCE_FILES = [
   "App.tsx",
+  "app-types.ts",
+  "app-shared.tsx",
+  "routes.ts",
 ] as const;
 
 export function readAppSource(): string {

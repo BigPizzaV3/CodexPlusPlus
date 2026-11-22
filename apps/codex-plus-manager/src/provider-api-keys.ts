@@ -1,4 +1,4 @@
-import type { RelayProfile } from "./App";
+import type { RelayProfile } from "./app-types";
 
 export type RelayApiKey = { id: string; name: string; apiKey: string };
 

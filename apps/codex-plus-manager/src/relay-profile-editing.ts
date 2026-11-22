@@ -15,7 +15,7 @@ import type {
   RelayProfile,
   RelayProtocol,
   RelaySessionProvider,
-} from "./App";
+} from "./app-types";
 import { t, tf } from "@/i18n";
 import { aggregateMemberCandidates, isAggregateProfile, normalizeAggregateDefaultRelayId, normalizeAggregateMembers } from "./aggregate-members";
 import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";

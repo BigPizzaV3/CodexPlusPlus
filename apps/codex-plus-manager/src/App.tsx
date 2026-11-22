@@ -20,8 +20,6 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
   ArrowRight,
-  ArrowRightLeft,
-  Bell,
   Blocks,
   Cable,
   BookOpen,
@@ -29,7 +27,6 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  CircleHelp,
   Copy,
   Download,
   GripVertical,
@@ -38,13 +35,10 @@ import {
   Github,
   GitBranch,
   ExternalLink,
-  LifeBuoy,
   KeyRound,
   Layers3,
   Languages,
-  LayoutGrid,
   House,
-  LayoutDashboard,
   List,
   Loader2,
   Palette,
@@ -55,10 +49,8 @@ import {
   FolderOpen,
   Moon,
   MousePointerClick,
-  Smartphone,
   PawPrint,
   Network,
-  Power,
   PowerOff,
   Plus,
   RefreshCw,
@@ -72,16 +64,13 @@ import {
   ShieldCheck,
   ShieldAlert,
   Square,
-  Star,
   Store,
   Stethoscope,
   Sun,
-  TestTube,
   Trash2,
   Wrench,
   ArrowUp,
   AppWindow,
-  Bug,
   Server,
   Tag,
   Waypoints,
@@ -100,12 +89,10 @@ import { createPresetPatch } from "@/components/ProviderPresetSelector";
 import { PRESETS, type ProviderPreset } from "./presets";
 import { setSponsorAds, useSponsorPresets } from "./sponsor-store";
 import { createPortal } from "react-dom";
-import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
+import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup } from "./extension-manager-pages";
 import { createContext, Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
-
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -115,7 +102,6 @@ import { mergeRotatedAuthContents, rebaseSettingsEdits } from "./settings-rebase
 import {
   contextEntriesByKind,
   dedupeContextEntryList,
-  parseContextEntries,
   selectedContextConfigToml,
   splitContextConfigText,
   stripContextEntriesFromConfig,
@@ -129,32 +115,59 @@ import { DshPluginsPanel } from "./DshPluginsPanel";
 import { ConfigDoctorPanel } from "./ConfigDoctorPanel";
 import { CommunityExtensionsPanel, type CommunitySort } from "./CommunityExtensionsPanel";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
-import { CuratedPackagesSection, type BlockedInstall, type CuratedPackage } from "./CuratedPackages";
+import { CuratedPackagesSection } from "./CuratedPackages";
 import { ExtensionPublishDialog } from "./ExtensionPublishDialog";
 import { MyPublishedPanel } from "./MyPublishedPanel";
-import { AgentIcon, SectionLabel, Switch } from "./gateway-ui";
+import { AgentIcon, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { DisplaySettings } from "./DisplaySettings";
-import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
+import { ExtensionConfigForm } from "./extension-config-form";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
-import { AppDialogHost, appAlert, appConfirm } from "./app-dialog";
-import { GatewayPage, type GatewayTab } from "./GatewayPage";
+import { AppDialogHost, appConfirm } from "./app-dialog";
+import { GatewayPage } from "./GatewayPage";
 import { AgentGlyph, HubOverview, useGatewayPayload, useTodayUsage } from "./HubOverview";
 import { publishGatewayPayload } from "./gateway-store";
 import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "./log-view-model";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { paletteShortcut } from "./command-palette-model";
 import { SessionsView, sessionDeleteSucceeded } from "./AgentSessions";
-import { agentName, groupDisplayName, formatQueueWait, formatRequestCost, formatTokens, maskAccountName, queueWaitMs, QUEUE_REASON_PREFIX, foreignCompactionDropped, FOREIGN_COMPACTION_DROPPED_REASON, compactionNote, parseCompactionNote, type CompactionNote, usageRangeStart, relayFilterFromFocus, relayFilterArgs, proxyAddressError, type RelayFilter, importCandidates, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type ImportCandidate, type GatewayResult, type UsageCost, type UsageRange } from "./gateway-model";
+import {
+  agentName,
+  groupDisplayName,
+  formatQueueWait,
+  formatRequestCost,
+  formatTokens,
+  maskAccountName,
+  queueWaitMs,
+  QUEUE_REASON_PREFIX,
+  foreignCompactionDropped,
+  FOREIGN_COMPACTION_DROPPED_REASON,
+  compactionNote,
+  parseCompactionNote,
+  type CompactionNote,
+  usageRangeStart,
+  relayFilterFromFocus,
+  relayFilterArgs,
+  proxyAddressError,
+  type RelayFilter,
+  importCandidates,
+  draftFromBinding,
+  bindingFromDraft,
+  validateDraft,
+  type GatewayPayload,
+  type ImportCandidate,
+  type GatewayResult,
+  type UsageRange,
+} from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { noticeDuration, noticeTone } from "./notice-model";
-import { agentTabGroups, agentTarget, pageVisibleForTool } from "./page-groups";
+import { agentTabGroups, pageVisibleForTool } from "./page-groups";
 import { TopbarActions } from "./TopbarActions";
 import { keepIfSame, usePolling } from "./use-polling";
 import { useStableCallbacks } from "./use-stable-callbacks";
-import { isRouteAlias, resolveRouteAlias, type RouteAlias } from "./route-aliases";
+import { isRouteAlias, resolveRouteAlias } from "./route-aliases";
 import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingTour } from "./OnboardingTour";
 import { OnboardingSetup } from "./OnboardingSetup";
@@ -177,24 +190,17 @@ import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } 
 import { McpPage, Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { SkillsPage } from "./SkillsPage";
 import { ProjectSessionPage } from "./ProjectSessionPage";
-import type { LocalSessionFilter, SessionProjectCount } from "./management-model";
+import type { LocalSessionFilter } from "./management-model";
 import { managerNavigationDestination, type ManagerNavigationIntent } from "./enhancement-navigation";
 import {
   builtinSettingValue,
   enhancementItem,
-  enhancementPlatformFromUserAgent,
   isEnhancementItemMasterGated,
   managerBuiltinCards,
   managerStandaloneGroup,
   type EnhancementSettingItem,
 } from "./enhancement-catalog";
 import { DEFAULT_AUTO_COMPACT_PERCENT, autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
-import { defaultWhaleBalanceSettings, normalizeWhaleBalanceSettings, type WhaleBalanceSettings } from "./whale-settings";
-import {
-  defaultDictationSettings,
-  normalizeDictationSettings,
-  type DictationSettings,
-} from "./dictation-settings";
 import {
   builtinEntryToImportDocument,
   builtinRowBackfillValue,
@@ -233,28 +239,13 @@ import {
   type BuiltinModelMetadataMatch,
   type ImportedModelMetadata,
 } from "./model-metadata";
-import {
-  independentProxyEnabled,
-  setIndependentProxyConfigured,
-  requestCompatibilityEnabled,
-  stripImageGenerationToolEnabled,
-  stripResponsesImageDetailEnabled,
-  stripResponsesOutputEncryptedContentEnabled,
-  pureApiImageGenerationEnabled,
-  findRelayModelRouteIssue,
-  modelRouteSaveRequiresRestart,
-  normalizeRelayModelRoutes,
-  webSearchHistoryCompatEnabled,
-  PROTOCOL_PROXY_BASE_URL,
-  type RelayModelRoute,
-} from "./model-routes";
+import { setIndependentProxyConfigured, modelRouteSaveRequiresRestart, normalizeRelayModelRoutes, type RelayModelRoute } from "./model-routes";
 import {
   mergeModelWindowRows,
   modelWindowRowsFromProfile,
   modelWindowRowsValidationError,
   serializeModelWindowRows,
   reorderModelWindowRows,
-  type ImageHandling,
   type ModelWindowRowsValidationIssue,
   type ModelWindowRow,
 } from "./model-windows";
@@ -268,30 +259,22 @@ import {
   resolveModelReasoningLevels,
   setModelReasoningLevelsForSlug,
 } from "./model-reasoning";
-import { clampAggregateRoutePriority, normalizeAggregateRoutes, validateAggregateRoutes } from "./aggregate-routes";
-import {
-  aggregateMemberCandidates,
-  normalizeAggregateMembers,
-  isAggregateProfile,
-  isOfficialLoginMemberProfile,
-  normalizeAggregateDefaultRelayId,
-} from "./aggregate-members";
+import { clampAggregateRoutePriority } from "./aggregate-routes";
+import { aggregateMemberCandidates, isOfficialLoginMemberProfile } from "./aggregate-members";
 import { relayAuthForLiveDraft, shouldBackfillRelayProfileBeforeSwitch } from "./relay-live-files";
 import { NativeAuthControl, SavedAuthAccountField } from "./NativeAuthControls";
 import { RelayHeaderRows } from "./RelayHeaderRows";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
-import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
+import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { CompatToggles } from "./CompatToggles";
 import { errorText } from "@/lib/utils";
 import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
 import { useModalShell } from "./use-modal-shell";
-import { sessionProviderForProtocol } from "./relay-session";
-import { historyRecoveryStatusLabel, type FrontendRecoveryReport } from "./history-recovery-report";
+import { historyRecoveryStatusLabel } from "./history-recovery-report";
 import { usePopoverLayer } from "./use-popover-layer";
 import { resolveAnchoredMenuLayout, type AnchoredMenuLayout } from "./popover-layer";
-import { providerAvatarText, resolveProviderName } from "./provider-name";
 import {
   providerSyncStreamPercent,
   resolveProviderSyncCompletion,
@@ -299,72 +282,26 @@ import {
 } from "./provider-sync-flow";
 import { isProviderSyncTargetSelectable, preferredProviderSyncTarget } from "./provider-sync-target";
 import { resolveLaunchStatus, launchCompletionNotice } from "./launch-status";
-import {
-  defaultDreamSkinTheme,
-  normalizeDreamSkinTheme,
-  type DreamSkinCommunityResult,
-  type DreamSkinRuntimeResult,
-  type DreamSkinThemeConfig,
-} from "./dream-skin";
+import type { DreamSkinCommunityResult, DreamSkinRuntimeResult } from "./dream-skin";
 import { subscribeLanguage, getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import {
-  withGeneratedRelayFiles,
-  buildRelayConfigToml,
-  buildRelayAuthJson,
-  buildOfficialRelayAuthJson,
   deriveRelayProfileFromFiles,
   applyRelayProfilePatchToFiles,
-  codexModelFromConfig,
   parseModelSuffix,
   codexBaseUrlFromConfig,
-  codexExperimentalBearerTokenFromConfig,
-  codexProviderStringFromConfig,
-  codexApiKeyFromAuth,
-  codexTopLevelIntFromConfig,
-  rootTomlStringValue,
-  tomlStructureMask,
-  tomlSectionName,
-  tomlQuotedValue,
-  tomlDottedKeyPath,
-  tomlKeyPathName,
-  codexProviderSectionName,
-  tomlKeyAssignment,
-  tomlInlineComment,
-  tomlStringAssignmentValue,
-  setAuthOpenAiApiKey,
-  setRootTomlStringKey,
-  setManagedOpenAiBaseUrl,
-  setRootTomlIntKey,
-  setRootTomlLine,
-  codexRequiresOpenAiAuthFromConfig,
-  setCodexProviderStringKey,
-  setCodexExperimentalBearerToken,
-  removeCodexExperimentalBearerToken,
-  ensureCodexProviderDefaults,
-  setTomlSectionBoolKey,
-  setTomlSectionStringKey,
-  setTomlSectionRawKey,
-  removeTomlSectionKey,
   relayProfileSwitchValidation,
-  relayModelRoutesValidation,
   relayModelRoutesSettingsValidation,
   relaySettingsValidationForSave,
   relaySessionProviderValidation,
-  relayModelRouteIssueMessage,
   relaySettingsWithDraft,
   relayProfileUsesLiveFiles,
-  authJsonHasOpenAiApiKey,
-  tomlString,
   syncLegacyRelayFields,
-  normalizeAggregateProfilesFromRelayProfiles,
   updateRelayProfile,
   createRelayProfile,
   createAggregateRelayProfile,
   addRelayProfile,
   duplicateRelayProfile,
   reorderRelayProfiles,
-  removeRelayProfile,
-  relayProfileDeleteIssue,
   aggregateStrategyOptions,
   isAggregateRelayProfile,
   relayProviderView,
@@ -376,24 +313,11 @@ import {
   aggregateStrategyHelp,
   aggregateRelayProfileValidation,
   ensureTrailingNewline,
-  removeRootTomlKey,
-  joinTomlSections,
-  splitTomlRootAndTables,
   normalizeRelaySessionProvider,
-  relaySessionProviderFromConfig,
   relaySessionProvider,
-  CHAT_UPSTREAM_BASE_URL_KEY,
   activeRelayProfile,
   configureRelayProfileEditing,
-  emptyContextSelection,
-  normalizeContextSelection,
-  normalizeRelayMode,
-  normalizeRelayProtocol,
-  normalizeAnthropicAuthHeader,
-  normalizeAnthropicThinkingMode,
   normalizeAnthropicMaxTokens,
-  hydrateAggregateRelayProfile,
-  normalizeRelayProfile,
   type ProviderViewKind,
 } from "./relay-profile-editing";
 import { vlmTestTranslation } from "./vlm-test-translation";
@@ -422,9 +346,140 @@ import {
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { Puzzle } from "lucide-react";
 import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
+import type {
+  Actions,
+  AdItem,
+  AdsResult,
+  AggregateMode,
+  AutoSaveOutcome,
+  AutoTakeoverResult,
+  BackendSettings,
+  BuiltinExtension,
+  CcsProvidersResult,
+  ClaudeBashTimeoutSettings,
+  ClaudeLocalConfig,
+  ClaudeLocalizationStatus,
+  ClaudeLocalStatus,
+  ClaudeTemplateVersion,
+  CommandResult,
+  DiagnosticsResult,
+  EnvConflict,
+  EnvConflictsResult,
+  ExtractRelayCommonConfigResult,
+  LiveConflictResolution,
+  LiveContextEntriesResult,
+  LocalSession,
+  LocalSessionsResult,
+  LogsResult,
+  McpImportPreviewResult,
+  MultiLaunchInstancesResult,
+  NoticeAction,
+  NoticeState,
+  OverviewResult,
+  ProviderDoctorResult,
+  ProviderImportRequest,
+  ProviderSyncPayload,
+  ProviderSyncProgress,
+  ProviderSyncTargetOption,
+  ProviderSyncTargetSource,
+  ProviderSyncTargetsResult,
+  RelayAggregateConfig,
+  RelayAggregateRoute,
+  RelayContextSelection,
+  RelayEditorMode,
+  RelayEnvironmentResult,
+  RelayFilesResult,
+  RelayProfile,
+  RequestLogEntry,
+  ScriptMarketItem,
+  ScriptMarketResult,
+  SessionIndexCleanupCandidate,
+  SessionIndexRepairReport,
+  SettingsPayload,
+  SettingsResult,
+  SshRemoteLoopbackNoticeData,
+  Status,
+  TaskProgress,
+  Theme,
+  ToolEntry,
+  UpdateDownloadState,
+  UpdateResult,
+  UserScriptInventory,
+  WatcherResult,
+  WeixinConnectStatusResult,
+  WeixinQrResult,
+} from "./app-types";
+import {
+  APP_LOGO_URL,
+  AutoSaveStatus,
+  autoTakeoverView,
+  clampNumber,
+  claudeLocalizationMemo,
+  claudeLocalMemo,
+  CODEX_GATEWAY_RELAY_ID,
+  codexGatewayModelCount,
+  confirmRemoveRelayProfile,
+  contextEntriesFromSettings,
+  contextSelectionForAllEntries,
+  defaultSettings,
+  enhancementPlatform,
+  formatProgressPercent,
+  formatTime,
+  healthItems,
+  isSuccessStatus,
+  joinTomlSectionsRootFirst,
+  Metric,
+  multiLaunchSupported,
+  normalizeRetryStatusCodes,
+  normalizeSettings,
+  providerInitial,
+  relayEditorMode,
+  relayProfileConfigBrief,
+  relayProfileModeLabel,
+  relayProfileTagTone,
+  relayProtocolLabel,
+  relayProtocolShortLabel,
+  requestLogAgent,
+  SettingRow,
+  SettingsAutoSave,
+  StatusBadge,
+  statusClass,
+  statusLabel,
+  stringifyError,
+  TaskProgressBox,
+  ToggleVisual,
+  tomlRootKeyFromLine,
+  Toolbar,
+  useEnhanceAutoSave,
+} from "./app-shared";
+import {
+  agentEntryRoute,
+  agentHomeRoute,
+  agentRoutes,
+  customizeRoutes,
+  gatewayNavigationRoutes,
+  gatewayRouteByTab,
+  gatewayTabByRoute,
+  globalNavigationRoutes,
+  hiddenSidebarTools,
+  isKnownRoute,
+  lastAgentRoute,
+  managementNavigationRoutes,
+  navAliasRoute,
+  navigationSections,
+  type Route,
+  routes,
+  routeSubtitle,
+  type RouteTarget,
+  routeTitle,
+  routeTool,
+  routeVisible,
+  settingsModeRoutes,
+  type ToolId,
+  visibleActiveTool,
+  visibleRoutes,
+} from "./routes";
 
-/// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
-const enhancementPlatform = enhancementPlatformFromUserAgent(navigator.userAgent);
 /// 会话维护页的两条开关与 Codex 设置页共用清单里的文案（#2846 拆开后分别显示）。
 const providerSyncItem = enhancementItem("providerSyncEnabled");
 const sessionIndexRepairItem = enhancementItem("sessionIndexRepairEnabled");
@@ -432,8 +487,6 @@ const sessionIndexRepairItem = enhancementItem("sessionIndexRepairEnabled");
 /// 多开启动后轮询「就绪/失败」结论的节奏：worker 最长等 90 秒就绪，这里给到 2 分钟。
 const MULTI_LAUNCH_POLL_INTERVAL_MS = 3000;
 const MULTI_LAUNCH_POLL_TIMEOUT_MS = 120_000;
-
-type Status = "ok" | "failed" | "not_implemented" | "not_checked" | string;
 
 function modelWindowRowsValidationMessage(issue: ModelWindowRowsValidationIssue | null): string | null {
   if (!issue) return null;
@@ -444,54 +497,10 @@ function modelWindowRowsValidationMessage(issue: ModelWindowRowsValidationIssue 
   return tf("模型 {0} 的自动压缩百分比无效；请输入 0 到 100 之间、最多 6 位小数的十进制数。", [issue.model]);
 }
 
-type CommandResult<T> = T & {
-  status: Status;
-  message: string;
-};
-
 type PendingDreamSkinCommunityResult = CommandResult<{ versionId: string }>;
 
 /// activate_installed_dream_skin_theme（dream_skin_bridge.rs）的结果：需要重启 Codex 才完整切换时 savedForNextLaunch 为 true。
 type DreamSkinInstalledThemeActivationResult = CommandResult<{ savedForNextLaunch?: boolean }>;
-
-type PathState = {
-  status: string;
-  path: string | null;
-};
-
-type LaunchStatus = {
-  status: string;
-  message: string;
-  /** 阶段；侧栏「停止 Codex」写的是 user_stopped，用来和意外退出区分。 */
-  phase?: string | null;
-  started_at_ms: number;
-  debug_port: number | null;
-  helper_port: number | null;
-  codex_app: string | null;
-  aumid: string | null;
-};
-
-type RuntimeServiceState = { status: string; address: string | null; message: string };
-
-type OverviewResult = CommandResult<{
-  codex_app: PathState;
-  codex_version: string | null;
-  silent_shortcut: PathState;
-  management_shortcut: PathState;
-  latest_launch: LaunchStatus | null;
-  runtime_health: {
-    codex_app: RuntimeServiceState;
-    local_server: RuntimeServiceState;
-    debugger: RuntimeServiceState;
-    protocol_conversion_enabled: boolean | null;
-    /** Codex 在运行但不是经 Codex++ 启动的（外部启动、增强脚本未挂载）；旧后端没有这个字段。 */
-    codex_unattached?: boolean;
-  };
-  current_version: string;
-  update_status: string;
-  settings_path: string;
-  logs_path: string;
-}>;
 
 type LaunchCommandResult = CommandResult<{
   launchStartedAtMs?: number;
@@ -512,407 +521,13 @@ type MultiLaunchResult = CommandResult<{
   appPath?: string;
 }>;
 
-type MultiLaunchInstancesResult = CommandResult<{
-  instances: MultiLaunchInstance[];
-}>;
-
-/** 顶层的 `codexAppWhaleBalance*` 是大肥鱼（Agent 桌宠类型之一）的余额配置。 */
-export type BackendSettings = WhaleBalanceSettings & {
-  revision?: string;
-  /** 旧版内置桌宠的设置（与 Rust `agent_pet` 对应）。桌宠已改成拓展、设置在拓展配置里，这里只原样带回给后端。 */
-  agentPet?: unknown;
-  codexAppPath: string;
-  /** 自动接管官方 App（与 Rust `codex_app_auto_takeover` 对应）。 */
-  codexAppAutoTakeover: boolean;
-  codexAppAutoTakeoverWhenActive: string;
-  claudeAppExtensions?: boolean;
-  claudeDesktopLocal?: ClaudeLocalConfig;
-  codexExtraArgs: string[];
-  dictation: DictationSettings;
-  providerSyncEnabled: boolean;
-  /** 「启动前修复会话索引」与 providerSyncEnabled 分开（#2846）：只补投影、不改会话归属。 */
-  sessionIndexRepairEnabled?: boolean;
-  /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
-  managerAgentFocus?: string;
-  threadModelFollowSwitchEnabled?: boolean;
-  /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
-  keepProjectsWithoutAccount?: boolean;
-  nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
-  /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
-  updateAutoCheck?: boolean;
-  /** 检查到新版本时在后台下好安装包，但不安装；点「安装」才安装。默认开。 */
-  updateAutoDownload?: boolean;
-  /** 更新提示里「跳过此版本」记下的版本（#1272）。 */
-  updateSkippedVersion?: string;
-  ccsDbPath: string;
-  providerSyncSavedProviders: string[];
-  providerSyncManualProviders: string[];
-  providerSyncLastSelectedProvider: string;
-  relayProfilesEnabled: boolean;
-  localConfigProviderImported: boolean;
-  enhancementsEnabled: boolean;
-  codexAppStandaloneQuotaUnlock: boolean;
-  codexAppPluginMarketplaceUnlock: boolean;
-  codexAppModelWhitelistUnlock: boolean;
-  codexAppSessionDelete: boolean;
-  codexAppSessionDeleteSkipConfirm: boolean;
-  codexAppSideChatSave: boolean;
-  codexAppMarkdownExport: boolean;
-  codexAppUsageStatusLine: boolean;
-  usageHistoryEnabled: boolean;
-  codexAppProxyRequestStatus: boolean;
-  codexAppPasteFix: boolean;
-  codexAppPromptArgs: boolean;
-  codexAppForceChineseLocale: boolean;
-  codexAppThreadIdBadge: boolean;
-  codexAppConversationView: boolean;
-  codexAppThreadScrollRestore: boolean;
-  codexAppHistoryTurnRecovery: boolean;
-  codexAppNativeMenuPlacement: boolean;
-  codexAppNativeBrowserRequireIdentification: boolean;
-  codexAppNativeFastUnlock: boolean;
-  /** 原生输入预测（实验）：自定义 API 的本机对话使用 Codex 自带的灰字预测与 Tab 接受，默认关。 */
-  codexAppNativePredictions: boolean;
-  /** 第三方模型回答完自动折叠过程（本地代理补阶段标记），默认关。 */
-  codexAppThirdPartyReasoningCollapse: boolean;
-  /** 拿不到远程功能开关（国内网络）时补开「替我审批」入口（#2817），默认关。 */
-  codexAppOfflineAutoReview: boolean;
-  /** Statsig 界面增强：隐藏升级推销、放宽网络超时、补开记忆，默认关。 */
-  codexAppStatsigOverrides: boolean;
-  /** Statsig 开关逐项覆盖（Codex 页面 Feature Lab 里改）：开关 ID → "on" / "off" / "native"。管理器只原样保留。 */
-  codexAppStatsigGateOverrides?: Record<string, "on" | "off" | "native">;
-  /** Codex App 和 CLI 已经经过本地代理的请求按上报用量判断压缩，默认关。 */
-  codexAppReportedUsageCompaction: boolean;
-  /** 纯 API Key 模式启动 Codex 前把 Work 视图写回 Codex，避开 Work browser access 报错。 */
-  codexAppDisableWorkView: boolean;
-  codexAppPetRealMouseLook: boolean;
-  codexAppActivityOverlayRight: boolean;
-  /** 协议代理内部自动重试（与 Rust `protocol_proxy_auto_retry` 对应）。 */
-  protocolProxyAutoRetry: boolean;
-  protocolProxyAutoRetryMaxAttempts: number;
-  protocolProxyAutoRetryIntervalSeconds: number;
-  /** 命中这些上游 HTTP 状态码时由代理退避重发；空数组表示不重试。与 Rust `protocol_proxy_auto_retry_status_codes` 对应。 */
-  protocolProxyAutoRetryStatusCodes: number[];
-  protocolProxyAutoRetryMode: "streaming" | "streaming-legacy" | "buffered";
-  /** 流式避震下首段可见输出后到提交的延迟（毫秒）；0 表示一出现可见输出立即提交。与 Rust `protocol_proxy_auto_retry_commit_delay_ms` 对应。 */
-  protocolProxyAutoRetryCommitDelayMs: number;
-  /** 把不在当前供应商模型列表里的请求模型（Codex 后台任务的 gpt-* / codex-auto-review）改写为该供应商默认模型。与 Rust `protocol_proxy_map_unlisted_models` 对应。 */
-  protocolProxyMapUnlistedModels: boolean;
-  /** 本地协议代理单次请求体上限（MiB，32~512，默认 128）。与 Rust `helper_max_request_body_mib` 对应。 */
-  helperMaxRequestBodyMib: number;
-  codexAppCapacityAutoRetry: boolean;
-  codexAppTurnRewind: boolean;
-  codexAppStepwiseEnabled: boolean;
-  codexAppAnswerOutlineEnabled: boolean;
-  codexAppStepwiseDirectSend: boolean;
-  codexAppStepwiseProtocol: StepwiseProtocol;
-  codexAppStepwiseGenerationMode: StepwiseGenerationMode;
-  codexAppStepwiseBaseUrl: string;
-  codexAppStepwiseApiKey: string;
-  codexAppStepwiseApiKeyEnv: string;
-  codexAppStepwiseModel: string;
-  codexAppStepwiseMaxItems: number;
-  codexAppStepwiseMaxInputChars: number;
-  codexAppStepwiseMaxOutputTokens: number;
-  codexAppStepwiseTimeoutMs: number;
-  codexAppDreamSkinEnabled: boolean;
-  codexAppDreamSkinPaused: boolean;
-  codexAppDreamSkinTheme: string;
-  codexAppDreamSkinThemeConfig: DreamSkinThemeConfig;
-  codexAppDreamSkinImagePath: string;
-  codexGoalsEnabled: boolean;
-  weixinConnectEnabled: boolean;
-  weixinConnectBaseUrl: string;
-  weixinConnectToken: string;
-  weixinConnectAccountId: string;
-  weixinConnectAllowFrom: string;
-  weixinConnectAllowOutboundAttachments: boolean;
-  weixinConnectRouteTag: string;
-  weixinConnectWorkDir: string;
-  weixinConnectModel: string;
-  weixinConnectReasoningEffort: string;
-  weixinConnectProjectId: string;
-  weixinConnectSandbox: "read-only" | "workspace-write" | "danger-full-access";
-  weixinConnectCodexPath: string;
-  weixinConnectLinkedUserId: string;
-  weixinConnectDefaultMode: "jiajia" | "direct";
-  weixinConnectPushToWeixin: boolean;
-  relayBaseUrl: string;
-  relayApiKey: string;
-  relayProfiles: RelayProfile[];
-  aggregateRelayProfiles: AggregateRelayProfile[];
-  activeAggregateRelayId: string;
-  relayCommonConfigContents: string;
-  relayPreserveNonproviderSettings: boolean;
-  relayContextConfigContents: string;
-  activeRelayId: string;
-  relayTestModel: string;
-  /** 按工具分区的配置镜像，键为工具 id（codex / grok / …）。 */
-  tools?: Record<string, ToolShard>;
-  /** 侧栏当前聚焦的工具。只影响管理器的展示，不影响 Codex 的启动配置。 */
-  activeTool?: string;
-};
-
-/** settings.json 里单个工具的配置分片。Codex 分片由后端从扁平字段镜像生成。 */
-type ToolShard = {
-  relayProfiles?: RelayProfile[];
-  activeRelayId?: string;
-  aggregateRelayProfiles?: AggregateRelayProfile[];
-  activeAggregateRelayId?: string;
-  relayCommonConfigContents?: string;
-  relayContextConfigContents?: string;
-  relayTestModel?: string;
-};
-
-type ToolEntry = {
-  id: string;
-  name: string;
-  homeDir: string;
-  switchable: boolean;
-  active: boolean;
-  activeRelayName: string | null;
-  relayCount: number;
-};
-
 type ToolsResult = {
   status: string;
   message: string;
   tools: ToolEntry[];
   activeTool: string;
 };
-
-
-export type RelayProfile = {
-  id: string;
-  name: string;
-  model: string;
-  baseUrl: string;
-  upstreamBaseUrl: string;
-  apiKey: string;
-  apiKeys?: RelayApiKey[];
-  activeApiKeyId?: string;
-  protocol: RelayProtocol;
-  relayMode: RelayMode;
-  sessionProvider?: RelaySessionProvider;
-  officialMixApiKey: boolean;
-  inactiveMixedApi?: Pick<RelayProfile, "configContents" | "upstreamBaseUrl" | "modelRoutes">;
-  officialAccountRef?: string;
-  hideOfficialUsageAlert: boolean;
-  testModel: string;
-  configContents: string;
-  authContents: string;
-  useCommonConfig: boolean;
-  contextSelection: RelayContextSelection;
-  contextSelectionInitialized: boolean;
-  contextWindow: string;
-  autoCompactLimit: string;
-  modelList: string;
-  modelWindows: string;
-  modelAutoCompact: string;
-  modelMetadata: string;
-  modelVlm: string;
-  vlmApiKey: string;
-  vlmModel: string;
-  vlmBaseUrl: string;
-  userAgent: string;
-  autoReviewModel?: string;
-  /** Multi-Agent 子代理协议（#2683）：空串=自动，v1/v2=供应商级显式选择（目录每模型兜底）。 */
-  multiAgent?: string;
-  customHeaders: { key: string; value: string }[];
-  sub2apiEnabled: boolean;
-  sub2apiMultiplier: string;
-  noAuth: boolean;
-  modelRoutes?: RelayModelRoute[];
-  standardOpenaiProtocol: boolean;
-  webSearchHistoryCompat: boolean;
-  localCompactionPromptAtEnd?: boolean;
-  trustUpstreamCatalogLite?: boolean;
-  strictResponsesReasoning?: boolean;
-  /** #228：转发前移除托管生图工具（image_generation），默认关闭。 */
-  stripImageGenerationTool?: boolean;
-  /** #2870：转发前移除 Responses 图片 `detail`，默认关闭。 */
-  stripResponsesImageDetail?: boolean;
-  /** 转发前移除 Responses `include` 里的 `output.encrypted_content`，默认关闭。 */
-  stripResponsesOutputEncryptedContent?: boolean;
-  /** #2868：不向上游发送 tool_search，默认关闭。 */
-  disableToolSearch?: boolean;
-  /** #1433：纯 API 下让 Codex 注册原生生图工具，生图请求经本地代理发给本供应商，默认关闭。 */
-  pureApiImageGeneration?: boolean;
-  /** Anthropic 上游的认证字段：`x-api-key`（默认）或 `authorization`。 */
-  anthropicAuthHeader?: string;
-  /** Anthropic 的 `max_tokens` 兜底值，0/缺省表示用内置 8192；填了则优先于请求值。 */
-  anthropicMaxTokens?: number;
-  /** 注入 Anthropic 提示缓存断点，默认开启。 */
-  anthropicPromptCache?: boolean;
-  /** 伪装 Claude Code 客户端（仅网关限制「只能通过 Claude Code 使用」时需要）。 */
-  anthropicImpersonateClaudeCode?: boolean;
-  /** 思考模式：空/auto、adaptive（等级透传）、budget（经典预算）、off。 */
-  anthropicThinkingMode?: string;
-  aggregate?: RelayAggregateConfig | null;
-};
-
-export type RelayAggregateStrategy = "failover" | "conversationRoundRobin" | "requestRoundRobin" | "weightedRoundRobin";
-export type AggregateMode = "provider" | "model";
-type RelayAggregateMember = {
-  profileId: string;
-  weight: number;
-};
-type RelayAggregateRoute = {
-  pattern: string;
-  profileId: string;
-  priority: number;
-};
-export type RelayAggregateConfig = {
-  strategy: RelayAggregateStrategy;
-  members: RelayAggregateMember[];
-  routes?: RelayAggregateRoute[];
-  modelAggregationEnabled?: boolean;
-  /** 默认供应商：解析不到成员的普通模型请求交给该成员转发；空串表示未设置。 */
-  defaultRelayId?: string;
-  /** 把默认成员的官方登录同步进 Codex（写 auth.json 的 tokens 段）。默认关。 */
-  syncDefaultMemberLogin?: boolean;
-  /** 审批成员（#2703）：codex-auto-review 只发给它，模型取它的「自动审批模型」；空串表示未设置。 */
-  autoReviewRelayId?: string;
-};
-type AggregateRelayMember = {
-  relayId: string;
-  weight: number;
-};
-export type AggregateRelayProfile = {
-  id: string;
-  name: string;
-  sessionProvider?: RelaySessionProvider;
-  modelAggregationEnabled?: boolean;
-  strategy: RelayAggregateStrategy;
-  members: AggregateRelayMember[];
-  routes?: { pattern: string; relayId: string; priority: number }[];
-  defaultRelayId?: string;
-  /** 把默认成员的官方登录同步进 Codex（auth.json 的 tokens 段）。默认关。 */
-  syncDefaultMemberLogin?: boolean;
-  /** 审批成员（#2703），空串表示未设置。 */
-  autoReviewRelayId?: string;
-};
-
-export type RelayContextSelection = {
-  mcpServers: string[];
-  skills: string[];
-  plugins: string[];
-};
-
-export type RelayProtocol = "responses" | "chatCompletions" | "anthropicMessages";
-type StepwiseProtocol = "auto" | "chat_completions" | "responses" | "anthropic_messages";
-type StepwiseGenerationMode = "auto" | "manual";
-export type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";
-export type RelaySessionProvider = "custom" | "openai";
-type RelayEditorMode = "official" | "mixedApi" | "pureApi";
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
-
-
-type BuiltinExtension = {
-  id: string;
-  key: string;
-  name: string;
-  description: string;
-  group?: string;
-  enabled: boolean;
-  replacedBy?: string | null;
-  /** 启停读写的设置字段；没有时启停记在用户脚本配置里。 */
-  setting?: string | null;
-  params?: string[];
-  restartRequired?: boolean;
-  replaceable?: boolean;
-};
-
-type UserScriptInventory = {
-  enabled?: boolean;
-  claude_enabled?: boolean;
-  skip_next_start?: boolean;
-  builtins?: BuiltinExtension[];
-  scripts?: Array<{
-    key: string;
-    name: string;
-    source: string;
-    kind?: "script" | "package";
-    package?: {
-      id: string; version: string; description: string; engine: number; routes: string[]; hookEvents?: string[]; tools?: string[];
-      configSchema?: ExtensionConfigField[]; config?: Record<string, unknown>; backend?: boolean;
-      gatewayRequest?: number; gatewayResponse?: number; gatewayError?: number; services?: string[];
-      providers?: Array<{ id: string; name: string; models: string[] }>;
-      toolPipeline?: { preExecute?: number; execute?: number; postExecute?: number }; skippedAssets?: string[];
-      locales?: Record<string, { title?: string | null; description?: string | null }>;
-      http?: boolean; schedules?: Array<{ method: string; everyMinutes?: number | null; at?: string | null }>;
-      codex?: { skills?: string[]; agents?: string[]; mcpServers?: string[]; instructions?: boolean; prompts?: string[]; resources?: string[] };
-      claudeDesktop?: Record<string, unknown> | null;
-      /** 管理器面板（codexpp.json 的 manager）：可以进侧栏（nav）、顶替内置页面（replaces）、读只读数据（data）。 */
-      managerPage?: ManagerPageSummary | null;
-      /** 拓展自己的设置页（codexpp.json 的 settings.page），「设置」打开它而不是通用表单。 */
-      settingsPage?: boolean;
-    } | null;
-    enabled: boolean;
-    claude_enabled?: boolean | null;
-    status: string;
-    error: string;
-    market_id?: string;
-    version?: string;
-    installed?: boolean;
-    source_url?: string;
-    homepage?: string;
-  }>;
-};
-
-type RequestLogUsage = {
-  inputTokens: number;
-  outputTokens: number;
-  cachedTokens?: number;
-  reasoningTokens?: number;
-};
-
-type RequestLogAttemptDetail = {
-  attempt: number;
-  code?: string | null;
-  message?: string | null;
-  delayMs?: number | null;
-};
-
-type RequestLogEntry = {
-  id: string;
-  /** 网关模式下发起请求的 Agent（claude / grok）；Codex 直连代理的记录为空。 */
-  agent?: string | null;
-  timestampMs: number;
-  startedAtMs: number;
-  durationMs: number;
-  method: string;
-  path: string;
-  statusCode: number;
-  success: boolean;
-  stream: boolean;
-  model: string;
-  upstreamModel: string;
-  relayId: string;
-  relayName: string;
-  wireApi: string;
-  /** Codex 会话/线程 id（来自请求头；旧日志没有该字段）。 */
-  threadId?: string | null;
-  /** 会话标题（后端按 threadId 从 Codex 本地会话库补齐；可能缺失）。 */
-  threadTitle?: string | null;
-  attempts: number;
-  autoRetries: number;
-  retryReasons?: string[];
-  /** 每次自动重试前的失败尝试摘要；旧日志没有该字段。 */
-  attemptDetails?: RequestLogAttemptDetail[] | null;
-  /** 请求进行中时为 running；旧日志没有该字段。 */
-  state?: string | null;
-  /** 首字耗时（毫秒）。 */
-  firstTokenMs?: number | null;
-  /** 运行中按流式增量粗估的输出 token。 */
-  estimatedOutputTokens?: number | null;
-  error?: string | null;
-  streamOutcome?: string | null;
-  usage?: RequestLogUsage | null;
-  cacheHitRatio?: number | null;
-  /** 按供应商里填的价格估算的费用（后端读日志时补上；没填价格时没有）。 */
-  cost?: UsageCost | null;
-};
 
 type RequestLogsResult = {
   status: Status;
@@ -928,37 +543,10 @@ type RequestLogsResult = {
   incremental?: boolean;
 };
 
-type SettingsResult = CommandResult<SettingsPayload>;
-type SettingsPayload = {
-  revision: string;
-  settings: BackendSettings;
-  settings_path: string;
-  user_scripts: UserScriptInventory;
-};
-
 /** apply_context_entry：saved 是保存后的设置，liveEntries 是同步后 live config.toml 里的条目（失败的那一步之后为 null）。 */
 type AppliedContextEntryResult = CommandResult<{
   saved: SettingsPayload | null;
   liveEntries: CodexContextEntries | null;
-}>;
-
-type WeixinConnectStatusResult = CommandResult<{
-  state: string;
-  message: string;
-  accountId: string;
-  hasToken: boolean;
-  lastPeerId: string;
-  lastMessageAtMs: number;
-  processedMessages: number;
-}>;
-
-type WeixinQrResult = CommandResult<{
-  qrStatus: string;
-  qrContent: string;
-  qrSvg: string;
-  accountId: string;
-  linkedUserId: string;
-  hasToken: boolean;
 }>;
 
 type WeixinConnectCatalog = {
@@ -994,40 +582,6 @@ type RelayResult = CommandResult<{
 
 type RelayPayload = Omit<RelayResult, "status" | "message">;
 
-type RelayFilesResult = CommandResult<{
-  configPath: string;
-  authPath: string;
-  configContents: string;
-  authContents: string;
-}>;
-
-type LocalSession = {
-  id: string;
-  title: string;
-  cwd: string;
-  modelProvider: string;
-  archived: boolean;
-  updatedAtMs: number | null;
-  rolloutPath: string;
-  dbPath: string;
-};
-
-type LocalSessionsResult = CommandResult<{
-  dbPath: string;
-  dbPaths: string[];
-  sessions: LocalSession[];
-  offset: number;
-  limit: number;
-  hasMore: boolean;
-  /** 筛选后的会话总数。 */
-  totalCount: number;
-  /** 筛选结果里每个项目的会话数（不受分页影响）。 */
-  projects: SessionProjectCount[];
-  /** 这一页对应的搜索词和归档筛选。 */
-  query: string;
-  archived: boolean | null;
-}>;
-
 type DeleteLocalSessionsResult = CommandResult<{
   results: Array<{ sessionId: string; title: string; deleted: boolean; message: string }>;
   succeeded: number;
@@ -1048,20 +602,6 @@ type ContextEntriesResult = CommandResult<{
   entries: CodexContextEntries;
 }>;
 
-type McpImportPreviewResult = CommandResult<{
-  entries: Array<{ id: string; tomlBody: string }>;
-  warnings: string[];
-}>;
-
-type LiveContextEntriesResult = CommandResult<{
-  entries: CodexContextEntries;
-}>;
-
-type ExtractRelayCommonConfigResult = CommandResult<{
-  commonConfigContents: string;
-  profileConfigContents: string;
-}>;
-
 type RelaySwitchResult = CommandResult<{
   settings: BackendSettings;
   settingsPath: string;
@@ -1070,9 +610,6 @@ type RelaySwitchResult = CommandResult<{
   /** 实时配置 endpoint 被外部改过而停下时才有（#2666）。 */
   liveConflict?: { profileId: string; profileName: string };
 }>;
-
-/** 冲突弹窗里的两种继续方式，对应后端 LiveConflictResolution。 */
-type LiveConflictResolution = "importAsNewProfile" | "discardLiveChanges";
 
 type SettingsBackfillResult = CommandResult<{
   settings: BackendSettings;
@@ -1092,50 +629,6 @@ type RelayProfileModelsResult = CommandResult<{
   endpoint: string;
 }>;
 
-type ProviderDoctorCheck = {
-  id: string;
-  title: string;
-  status: Status;
-  detail: string;
-};
-
-type ProviderDoctorResult = CommandResult<{
-  profileName: string;
-  model: string;
-  summary: string;
-  recommendation: string;
-  checks: ProviderDoctorCheck[];
-}>;
-
-type CcsProviderImport = {
-  sourceId: string;
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  protocol: RelayProtocol;
-  configContents: string;
-  authContents: string;
-};
-
-type CcsProvidersResult = CommandResult<{
-  dbPath: string;
-  configuredDbPath: string;
-  fallbackReason?: string | null;
-  providers: CcsProviderImport[];
-}>;
-
-type ProviderImportRequest = {
-  name: string;
-  baseUrl: string;
-  apiKey: string;
-  wireApi: string;
-  relayMode: string;
-  configContents: string;
-  authContents: string;
-  /** 空为直连模式供应商；"pool" 为网关供应商池。 */
-  target?: string;
-};
-
 type PendingProviderImportResult = CommandResult<{
   pending: ProviderImportRequest | null;
   /** pending 文件内容的指纹，确认 / 取消时带回。 */
@@ -1148,41 +641,6 @@ function pendingProviderImportFromResult(result: { pending: ProviderImportReques
   return result.pending ? { request: result.pending, fingerprint: result.fingerprint ?? "" } : null;
 }
 
-type EnvConflict = {
-  name: string;
-  source: "process" | "user" | string;
-  valuePresent: boolean;
-};
-
-// 本机回环中转地址遇上 Codex 的 SSH 远端连接（issue #1195），后端只读检测。
-type SshRemoteLoopbackNoticeData = {
-  loopbackEndpoints: Array<{ key: string; url: string; port: number }>;
-  ports: number[];
-  remotes: Array<{ label: string; forwardCommand: string; sshConfigLines: string[] }>;
-};
-
-type EnvConflictsResult = CommandResult<{
-  conflicts: EnvConflict[];
-  sshRemoteLoopback?: SshRemoteLoopbackNoticeData | null;
-}>;
-
-type RelayEnvironmentResult = CommandResult<{
-  clashVergeTun: {
-    enabled: boolean;
-    configPath: string | null;
-  };
-  proxyEnvironment: {
-    variables: Array<{
-      name: string;
-      source: "process" | "user" | "system" | string;
-    }>;
-  };
-  codexEnvFile: {
-    exists: boolean;
-    path: string;
-  };
-}>;
-
 type RemoveEnvConflictsResult = CommandResult<{
   removed: Array<{
     name: string;
@@ -1193,40 +651,6 @@ type RemoveEnvConflictsResult = CommandResult<{
   remaining: EnvConflict[];
 }>;
 
-type ProviderSyncPayload = {
-  syncStatus?: string;
-  syncMessage?: string;
-  recoveryJournalPath?: string | null;
-  recoveryAvailable?: boolean;
-  recoveryErrors?: string[];
-  databaseOutcomes?: Array<{ database: string; attemptedRows: number; restoredRows: number; remainingRows: number }>;
-  targetProvider?: string;
-  changedSessionFiles?: number;
-  skippedLockedRolloutFiles?: string[];
-  sqliteRowsUpdated?: number;
-  sqliteProviderRowsUpdated?: number;
-  sqliteUserEventRowsUpdated?: number;
-  sqliteCwdRowsUpdated?: number;
-  sqliteCatalogRowsInserted?: number;
-  sqliteCatalogRowsRemoved?: number;
-  updatedWorkspaceRoots?: number;
-  prunedSessionIndexEntries?: number;
-  encryptedContentWarning?: string | null;
-  repairAudit?: {
-    catalogOnlySessions: number;
-    catalogOnlyWithCurrentRollout: number;
-    catalogOnlyWithBackupDatabase: number;
-    catalogOnlyWithoutRecoverySource: number;
-  };
-  backupDir?: string | null;
-};
-
-type SessionIndexCleanupCandidate = {
-  id: string;
-  threadName: string;
-  updatedAt: string;
-};
-
 type SessionIndexCleanupPreviewPayload = {
   snapshotSha256: string;
   candidates: SessionIndexCleanupCandidate[];
@@ -1235,40 +659,6 @@ type SessionIndexCleanupPreviewPayload = {
 type SessionIndexCleanupApplyPayload = {
   prunedEntries?: number;
   backupDir?: string | null;
-};
-
-type ProviderSyncTargetSource = "config" | "rollout" | "sqlite" | "manual";
-
-type ProviderSyncTargetOption = {
-  id: string;
-  sources: ProviderSyncTargetSource[];
-  isCurrentProvider: boolean;
-  isManual: boolean;
-  isSaved: boolean;
-  isResolvable: boolean;
-  unavailableReason: string | null;
-};
-
-type ProviderSyncTargetsPayload = {
-  currentProvider: string;
-  targets: ProviderSyncTargetOption[];
-};
-
-type ProviderSyncTargetsResult = CommandResult<ProviderSyncTargetsPayload>;
-
-type ProviderSyncProgress = {
-  active: boolean;
-  percent: number;
-  message: string;
-  result: CommandResult<ProviderSyncPayload> | null;
-};
-
-type TaskProgress = {
-  active: boolean;
-  percent: number;
-  message: string;
-  indeterminate?: boolean;
-  failed?: boolean;
 };
 
 type UpdateStage = "downloading" | "writing" | "launching";
@@ -1281,143 +671,9 @@ type UpdateProgressEvent = {
   elapsedMs: number;
 };
 
-type SessionIndexRepairReport = {
-  frontendRecovery?: FrontendRecoveryReport | null;
-  scannedFiles: number;
-  cachedFiles: number;
-  repairedItems: number;
-  alreadyPresent: number;
-  skippedItems: number;
-  deferredItems?: number;
-  issues: string[];
-  issuesTruncated?: number;
-  abortedReason?: string | null;
-  warnings?: string[];
-  backupPath: string | null;
-  elapsedMs: number;
-  checkedAtMs?: number;
-  pendingDetails?: {
-    threadId: string | null;
-    turnId: string | null;
-    reason: string;
-    state: "waiting" | "blocked";
-    firstSeenAtMs: number;
-    lastCheckedAtMs: number;
-    checks: number;
-  }[];
-};
-
-type LogsResult = CommandResult<{
-  path: string;
-  text: string;
-  lines: number;
-  truncated: boolean;
-  fileSize: number;
-}>;
-
-type DiagnosticsResult = CommandResult<{
-  report: string;
-}>;
-
-type WatcherResult = CommandResult<{
-  enabled: boolean;
-  disabled_flag: string;
-  start_minimized: boolean;
-  start_codex: boolean;
-  start_codex_on_open: boolean;
-}>;
-
-// 与 Rust 侧 `auto_takeover::AutoTakeoverPayload`（rename_all = "camelCase"）逐字段对齐。
-// 少一个字段的表现是「状态行永远空白」，所以两边要一起改。
-type AutoTakeoverResult = CommandResult<{
-  state: string;
-  enabled: boolean;
-  platformSupported: boolean;
-  activePolicy: string;
-  lastTakeoverAtMs?: number | null;
-  lastReason?: string | null;
-  lastError?: string | null;
-  actualDebugPort?: number | null;
-  appRunning?: boolean | null;
-  sessionOwned: boolean;
-  sessionStatus?: string | null;
-  restartsLastHour: number;
-  restartsTotal: number;
-  pausedInstance?: string | null;
-  running: boolean;
-}>;
-
 type InstallResult = CommandResult<{
   silent_shortcut: { installed: boolean; path: string | null };
   management_shortcut: { installed: boolean; path: string | null };
-}>;
-
-type UpdateResult = CommandResult<{
-  currentVersion: string;
-  latestVersion?: string | null;
-  releaseSummary?: string;
-  assetName?: string | null;
-  assetUrl?: string | null;
-  updateAvailable?: boolean;
-  /** 安装包已经在后台下好（「有可用更新时自动下载」），点「安装」直接安装。 */
-  downloaded?: boolean;
-  installedPath?: string;
-  progress?: number;
-}>;
-
-/** 后台下载更新的状态：只下载、不安装。 */
-type UpdateDownloadState = { version: string; state: "downloading" | "ready" | "failed"; percent: number | null; message?: string };
-
-type AdItem = {
-  id?: string;
-  type: "sponsor" | "normal" | string;
-  title: string;
-  description: string;
-  url: string;
-  image?: string;
-  highlights?: string[];
-  expires_at?: string;
-};
-
-type AdsResult = CommandResult<{
-  version: number;
-  ads: AdItem[];
-  /// 兼容旧数据和旧管理端消费者的首条置顶赞助位。
-  topAd?: AdItem;
-  /// 独立置顶赞助位列表，供概览横幅轮播。
-  topAds?: AdItem[];
-}>;
-
-type ScriptMarketItem = {
-  id: string;
-  name: string;
-  description: string;
-  version: string;
-  author: string;
-  tags: string[];
-  homepage: string;
-  script_url: string;
-  /// 可选图标地址，清单多数条目没有。
-  icon?: string;
-  /// 该脚本最近更新时间（ISO），清单逐条提供；老清单没有时为空（#2781）。
-  updatedAt?: string;
-  installed: boolean;
-  installedVersion: string;
-  updateAvailable: boolean;
-};
-
-type ScriptMarketResult = CommandResult<{
-  market: {
-    status: string;
-    message: string;
-    indexUrl: string;
-    updatedAt: string;
-    scripts: ScriptMarketItem[];
-    /** 精选拓展包（含官方），锁定到审核过的提交。老版本后端没有这个字段。 */
-    packages?: CuratedPackage[];
-    blockedInstalled?: BlockedInstall[];
-  };
-  user_scripts: UserScriptInventory;
 }>;
 
 function providerSyncProgressMessage(result: CommandResult<ProviderSyncPayload>): string {
@@ -1488,307 +744,19 @@ type StartupResult = CommandResult<{
   showUpdate: boolean;
 }>;
 
-/** 左侧 Agent 切换栏的工具标识。后端 `list_tools` 返回同名字符串。 */
-type ToolId = string;
-
-/** Codex++ 自己的 logo：与应用图标（src-tauri/icons/icon.png）同一张图。 */
-const APP_LOGO_URL = new URL("./assets/codex-plus-logo.png", import.meta.url).href;
-
-type Route = "home" | "overview" | "relay" | "multiLaunch" | "claude" | "claudePatch" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "agentCollaboration" | "computerUse" | "remoteControl" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "settings" | "agentSettings" | "extension";
-/** 进来的路由可以是旧 id（见 route-aliases.ts），由 `navigate` 换成现在的页面。 */
-type RouteTarget = Route | RouteAlias;
-const isKnownRoute = (target: string): target is Route => routes.some((item) => item.id === target);
-type Theme = "dark" | "light";
-
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
 /** 后端存下网页导入 / 一键换肤待确认项后发出（`src-tauri/src/lib.rs`）。 */
 const PENDING_IMPORT_CHANGED_EVENT = "manager-pending-import-changed";
 /** 窗口聚焦触发的概览刷新最短间隔。 */
 const FOCUS_REFRESH_MIN_INTERVAL_MS = 5_000;
-
-/**
- * 导航项归属。
- *
- * - `"codex"` / `"grok"`：这一页只属于某个工具，切到别的工具时隐藏。
- *   绝大部分功能（会话、MCP、皮肤、脚本市场、安装维护…）都是 Codex 专属的。
- * - `tools`：共享页面的可见 Agent；保留 `tool` 供原有顶栏行为使用。
- * - 不写 `tool` / `tools`：与工具无关的应用级页面（设置、关于），任何工具下都显示。
- *
- * 新增页面时**必须**想清楚归属：默认可见会让 Codex 专属功能在 Grok 下露出来。
- */
-const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: string; tools?: readonly string[] }> = [
-  // 首页：整个程序的落脚页，专门放赞助商推荐（原「推荐内容」页并进来）。
-  { id: "home", get label() { return t("首页"); }, icon: House },
-  // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
-  { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
-  // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
-  { id: "relay", get label() { return t("连接与供应商"); }, icon: Cable, tool: "codex" },
-  { id: "multiLaunch", get label() { return t("多开"); }, icon: Layers3, tool: "codex" },
-  // 增强针对的是 Claude Desktop（汉化、Cowork 时限等），名字写明，免得和 Claude Code 命令行的概览混在一起（#2913）。
-  { id: "claude", get label() { return t("Desktop 增强"); }, icon: Languages, tool: "claude" },
-  // 补丁 Desktop：专门给「改过代码的 Desktop 副本」用（制作/更新/检查/启动增强版副本），
-  // 完整功能模式留在「Desktop 增强」页，两页同一个组件按 mode 分渲染。
-  { id: "claudePatch", get label() { return t("补丁 Desktop"); }, icon: PackageOpen, tool: "claude" },
-  // 请求日志、会话、MCP、Skills 管理所有 Agent，不属于某一个 Agent。
-  { id: "sessions", get label() { return t("会话"); }, icon: MessagesSquare },
-  { id: "context", label: "MCP", icon: Network },
-  { id: "skills", label: "Skills", icon: BookOpen },
-  { id: "weixin", get label() { return t("微信连接"); }, icon: ScanLine, tool: "codex" },
-  // 启动急救：增强总开关、独立模式补丁、本地拓展总开关、下次启动跳过拓展、恢复默认皮肤都在这一页。
-  { id: "enhance", get label() { return t("启动急救"); }, icon: LifeBuoy, tool: "codex" },
-  // 旧入口：皮肤急救并进了「启动急救」页（dreamskin:// 确认与深链仍可能用到这条路由）。
-  { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
-  // Codex / Claude 共用拓展管理入口；tool 保留 codex，让 Codex 下的顶栏继续提供重启。
-  { id: "userScripts", get label() { return t("万物皆拓展"); }, icon: FileCode2, tool: "codex", tools: ["codex", "claude"] },
-  // Codex 官方插件目录（和 Codex++ 自己的「万物皆拓展」是两回事）。
-  { id: "pluginMarket", get label() { return t("Codex 插件"); }, icon: Store, tool: "codex" },
-  // 缓存清理覆盖多个 AI 应用，属于应用级页面，在各工具下均可访问。
-  { id: "agentCache", get label() { return t("AI Agent 缓存清理"); }, icon: Trash2 },
-  // 跨客户端协作属于应用级能力，各工具下共用同一组任务。
-  { id: "agentCollaboration", get label() { return t("Agent 协作"); }, icon: GitBranch },
-  { id: "computerUse", get label() { return t("Computer Use"); }, icon: MousePointerClick },
-  // 远程控制：在浏览器或手机上操控 Codex 的会话。和「微信连接」同是「在手机上用 Codex」，挂在侧栏 Codex 下面、紧跟微信连接。
-  { id: "remoteControl", get label() { return t("远程控制"); }, icon: Smartphone, tool: "codex" },
-  // 网关：任意 Agent 经 Codex++ 接入任意供应商，与具体 Agent 无关，是应用级页面。
-  // 侧栏、页面标题、⌘K 都叫「网关总览」（英文和 Agent 的「概览」区分开）。
-  { id: "hub", get label() { return t("网关总览"); }, icon: Waypoints },
-  // 先有供应商，再接 Agent；路由是进阶设置，放在 Agent 接入之后。
-  { id: "gatewayProviders", get label() { return t("供应商池"); }, icon: Server },
-  { id: "gateway", get label() { return t("Agent 接入"); }, icon: Plug },
-  { id: "gatewayRouting", get label() { return t("路由"); }, icon: Split },
-  { id: "gatewayUsage", get label() { return t("用量"); }, icon: BarChart3 },
-  { id: "gatewaySettings", get label() { return t("网关设置"); }, icon: SlidersHorizontal },
-  // 和侧栏底部齿轮同名；页面标题按选中的分类显示（通用、配置文件…）。
-  { id: "settings", get label() { return t("设置"); }, icon: Settings },
-  // Agent 专属设置：目前只有 Codex 有专属选项（启动参数等）。
-  // Claude / Grok 没有独立设置项，原来那页只有一个跳回各自主页的按钮，所以不再给它们显示。
-  { id: "agentSettings", get label() { return t("Codex 设置"); }, icon: Settings, tool: "codex" },
-  { id: "requestLog", get label() { return t("请求日志"); }, icon: List },
-  // 拓展贡献的管理器页面（codexpp.json 的 manager.nav）：侧栏入口按拓展列出，这里只是它们共用的路由。
-  { id: "extension", get label() { return t("拓展页面"); }, icon: AppWindow },
-];
-
-/**
- * Agent 的页面分组：侧栏只列 Agent，点开后它的全部页面都在内容区顶部的页签里，分组之间用细线隔开。
- * 每个页面仍按 `routes` 里的 `tool` 归属过滤；只有一个页面的 Agent 不显示页签。
- */
-const navigationSections: Array<{ id: string; routes: Route[] }> = [
-  // 「连接与供应商」紧跟概览：直连模式的老用户每天在这里切供应商，想改用网关也从这里开始。
-  { id: "overview", routes: ["overview", "relay"] },
-  { id: "enhance", routes: ["claude", "claudePatch", "enhance", "pluginMarket", "weixin", "remoteControl", "multiLaunch"] },
-  // Codex 设置（含安装维护）在齿轮的设置模式里，不再占 Agent 的页签。
-];
-const routeTool = (routeId: Route) => routes.find((candidate) => candidate.id === routeId)?.tool;
-/** 某个 Agent 能看到的全部页面，按页签顺序。 */
-const agentRoutes = (toolId: ToolId) => agentTabGroups(navigationSections, routeTool, toolId).flatMap((entry) => entry.routes);
-/** 每个 Agent 上次打开的页面：在侧栏点 Agent 时回到那里。 */
-const lastAgentRoute = new Map<string, Route>();
-
-/**
- * 与具体 Agent 无关的应用级页面：网关、工具、关于、整体设置。打开它们时侧栏里没有 Agent 处于选中态。
- * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
- * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
- */
-const globalNavigationRoutes: Route[] = ["home", "extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentCollaboration", "agentCache", "settings"];
-/** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
-// 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
-const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
-/** 侧栏「全局管理」分组：万物皆拓展置顶，其后是用量、会话、MCP、Skills。 */
-const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "sessions", "context", "skills"];
-/** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
-const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
-/**
- * 只在管理其他 Agent 时才有用的页面：只管理 Codex 时不进侧栏和命令面板。
- * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
- */
-const multiAgentRoutes = new Set<Route>(["agentCollaboration", "computerUse"]);
-/**
- * 和供应商有关的页面：只用增强功能（供应商交给别的工具）时全部隐藏。
- * 网关一整组、用量与请求日志、旧版供应商配置 / 代理设置，以及按供应商多开。
- */
-const providerRoutes = new Set<Route>(["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"]);
-/** 当前使用模式下这一页是否显示：侧栏、页签、命令面板都按它过滤，停在隐藏页面上时自动离开。 */
-const routeVisible = (focus: AgentFocus, routeId: Route) =>
-  !(singleAgent(focus) && multiAgentRoutes.has(routeId)) && !(providersHidden(focus) && providerRoutes.has(routeId));
-const visibleRoutes = (focus: AgentFocus, list: Route[]) => list.filter((routeId) => routeVisible(focus, routeId));
 /** 设置页里「使用模式」一行的说明。 */
 function agentFocusDescription(focus: AgentFocus): string {
   if (focus === "codex") return t("只管理 Codex：隐藏其他 Agent 的界面，已有网关连接保持不变。");
   if (focus === "enhance") return t("只用增强功能：隐藏供应商、网关和用量，关闭旧版供应商配置切换。已有网关连接仍会运行并管理对应配置。");
   return t("全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 或只用增强功能的话，可以切换模式隐藏用不到的内容。");
 }
-/** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
-const gatewayTabByRoute: Partial<Record<Route, GatewayTab>> = {
-  gateway: "agents",
-  gatewayProviders: "providers",
-  gatewayRouting: "routing",
-  gatewayUsage: "usage",
-  gatewaySettings: "gateway",
-};
-const gatewayRouteByTab = Object.fromEntries(Object.entries(gatewayTabByRoute).map(([route, tab]) => [tab, route])) as Record<GatewayTab, Route>;
-/**
- * 每个 Agent 在侧栏里的落脚页：点 Agent 名字先到这里。
- * Claude Code / Grok 的供应商不再在 Codex++ 里单独配置：要么经网关接入供应商池（「Agent 接入」），
- * 要么不接入、照它自己的配置文件直连。
- */
-const agentHomeRoute: Record<string, Route> = { codex: "overview", claude: "claude", grok: "overview" };
-/**
- * 侧栏 Agent 列表里不显示的工具。Grok 在 Codex++ 里没有专属的增强页面，只经网关接入，
- * 在「Agent 接入」里管理；请求日志、MCP 等跨 Agent 的页面照常支持它。
- */
-const hiddenSidebarTools = new Set<string>(["grok"]);
-/** 上次停在被隐藏的工具上时回到 Codex，免得侧栏没有任何 Agent 处于选中态。 */
-const visibleActiveTool = (toolId: string | null | undefined) =>
-  toolId && !hiddenSidebarTools.has(toolId) ? toolId : "codex";
 /** 轻量检查 Codex 进程是否还在的间隔（只在管理器窗口可见时查）。 */
 const codexRunningPollMs = 5_000;
-const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "overview");
-
-const defaultSettings: BackendSettings = {
-  ...defaultWhaleBalanceSettings(),
-  codexAppPath: "",
-  codexAppAutoTakeover: false,
-  codexAppAutoTakeoverWhenActive: "defer",
-  claudeDesktopLocal: { enabled: false, model: "", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
-  codexExtraArgs: [],
-  dictation: defaultDictationSettings(),
-  providerSyncEnabled: false,
-  sessionIndexRepairEnabled: true,
-  threadModelFollowSwitchEnabled: false,
-  keepProjectsWithoutAccount: false,
-  updateAutoCheck: true,
-  updateAutoDownload: true,
-  updateSkippedVersion: "",
-  ccsDbPath: "",
-  providerSyncSavedProviders: [],
-  providerSyncManualProviders: [],
-  providerSyncLastSelectedProvider: "",
-  relayProfilesEnabled: true,
-  localConfigProviderImported: false,
-  enhancementsEnabled: true,
-  codexAppStandaloneQuotaUnlock: false,
-  codexAppPluginMarketplaceUnlock: true,
-  codexAppModelWhitelistUnlock: true,
-  codexAppSessionDelete: true,
-  codexAppSessionDeleteSkipConfirm: false,
-  codexAppSideChatSave: false,
-  codexAppMarkdownExport: true,
-  codexAppUsageStatusLine: true,
-  usageHistoryEnabled: false,
-  codexAppProxyRequestStatus: true,
-  codexAppPasteFix: false,
-  codexAppPromptArgs: true,
-  codexAppForceChineseLocale: false,
-  codexAppThreadIdBadge: false,
-  codexAppConversationView: false,
-  codexAppThreadScrollRestore: true,
-  codexAppHistoryTurnRecovery: false,
-  codexAppNativeMenuPlacement: true,
-  codexAppNativeBrowserRequireIdentification: false,
-  codexAppNativeFastUnlock: false,
-  codexAppNativePredictions: false,
-  codexAppThirdPartyReasoningCollapse: false,
-  codexAppOfflineAutoReview: false,
-  codexAppStatsigOverrides: false,
-  codexAppStatsigGateOverrides: {},
-  codexAppReportedUsageCompaction: false,
-  codexAppDisableWorkView: false,
-  codexAppPetRealMouseLook: false,
-  codexAppActivityOverlayRight: false,
-  protocolProxyAutoRetry: true,
-  protocolProxyAutoRetryMaxAttempts: 5,
-  protocolProxyAutoRetryIntervalSeconds: 2,
-  protocolProxyAutoRetryStatusCodes: [],
-  protocolProxyAutoRetryMode: "streaming",
-  protocolProxyAutoRetryCommitDelayMs: 1000,
-  protocolProxyMapUnlistedModels: false,
-  helperMaxRequestBodyMib: 128,
-  codexAppCapacityAutoRetry: false,
-  codexAppTurnRewind: false,
-  codexAppStepwiseEnabled: false,
-  codexAppAnswerOutlineEnabled: false,
-  codexAppStepwiseDirectSend: false,
-  codexAppStepwiseProtocol: "chat_completions",
-  codexAppStepwiseGenerationMode: "auto",
-  codexAppStepwiseBaseUrl: "",
-  codexAppStepwiseApiKey: "",
-  codexAppStepwiseApiKeyEnv: "CODEX_STEPWISE_API_KEY",
-  codexAppStepwiseModel: "",
-  codexAppStepwiseMaxItems: 4,
-  codexAppStepwiseMaxInputChars: 6000,
-  codexAppStepwiseMaxOutputTokens: 500,
-  codexAppStepwiseTimeoutMs: 8000,
-  codexAppDreamSkinEnabled: false,
-  codexAppDreamSkinPaused: false,
-  codexAppDreamSkinTheme: "pink",
-  codexAppDreamSkinThemeConfig: defaultDreamSkinTheme(),
-  codexAppDreamSkinImagePath: "",
-  codexGoalsEnabled: false,
-  weixinConnectEnabled: false,
-  weixinConnectBaseUrl: "https://ilinkai.weixin.qq.com",
-  weixinConnectToken: "",
-  weixinConnectAccountId: "",
-  weixinConnectAllowFrom: "",
-  weixinConnectAllowOutboundAttachments: false,
-  weixinConnectRouteTag: "",
-  weixinConnectWorkDir: "",
-  weixinConnectModel: "",
-  weixinConnectReasoningEffort: "",
-  weixinConnectProjectId: "",
-  weixinConnectSandbox: "read-only",
-  weixinConnectCodexPath: "",
-  weixinConnectLinkedUserId: "",
-  weixinConnectDefaultMode: "jiajia",
-  weixinConnectPushToWeixin: false,
-  relayBaseUrl: "",
-  relayApiKey: "",
-  relayProfiles: [
-    {
-      id: "default",
-      name: t("默认中转"),
-      model: "",
-      baseUrl: "",
-      upstreamBaseUrl: "",
-      apiKey: "",
-      protocol: "responses",
-      relayMode: "official",
-      officialMixApiKey: false,
-      hideOfficialUsageAlert: false,
-      testModel: "",
-      configContents: "",
-      authContents: "",
-      useCommonConfig: true,
-      contextSelection: emptyContextSelection(),
-      contextSelectionInitialized: true,
-      contextWindow: "",
-      autoCompactLimit: "",
-      modelList: "",
-      modelWindows: "",
-      modelAutoCompact: "",
-      modelMetadata: "",
-      modelVlm: "",
-      vlmApiKey: "",
-      vlmModel: "",
-      vlmBaseUrl: "",
-      userAgent: "",
-      customHeaders: [],
-      sub2apiEnabled: false,
-      noAuth: false,
-      sub2apiMultiplier: "",
-      standardOpenaiProtocol: false,
-      webSearchHistoryCompat: false,
-    },
-  ],
-  relayCommonConfigContents: "",
-  relayPreserveNonproviderSettings: false,
-  relayContextConfigContents: "",
-  activeRelayId: "default",
-  aggregateRelayProfiles: [],
-  activeAggregateRelayId: "",
-  relayTestModel: "gpt-5.4-mini",
-  tools: {},
-  activeTool: "codex",
-};
 
 export function App() {
   useSyncExternalStore(subscribeLanguage, getLanguage, getLanguage);
@@ -5368,105 +4336,6 @@ function ModelReasoningLevelsCell({
   );
 }
 
-type AutoSaveOutcome = { status: "saved" } | { status: "invalid" | "failed"; message: string };
-
-type Actions = {
-  refreshCurrent: () => Promise<void>;
-  launch: () => Promise<boolean>;
-  launchMultiInstance: (profile: RelayProfile) => Promise<void>;
-  multiLaunchPending: string | null;
-  multiLaunchInstances: MultiLaunchInstance[];
-  multiLaunchInstancesLoading: boolean;
-  multiLaunchActionPending: string | null;
-  refreshMultiLaunchInstances: (silent?: boolean) => Promise<MultiLaunchInstancesResult | null>;
-  restartMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
-  stopMultiLaunchInstance: (instance: MultiLaunchInstance) => Promise<void>;
-  restart: (syncActiveRelay?: boolean) => Promise<boolean>;
-  stopCodex: () => Promise<boolean>;
-  repairShortcuts: () => Promise<void>;
-  checkUpdate: () => Promise<void>;
-  performUpdate: () => Promise<void>;
-  saveSettings: () => Promise<void>;
-  saveSettingsValue: (settings: BackendSettings, silent?: boolean) => Promise<BackendSettings | null>;
-  autoSaveSettings: (settings: BackendSettings) => Promise<AutoSaveOutcome>;
-  /// 乐观写入表单（不落盘）：拖拽排序松手时先让列表立即重排，落位动画才连贯。
-  previewSettingsForm: (settings: BackendSettings) => void;
-  refreshSettings: (silent?: boolean) => Promise<BackendSettings | null>;
-  resetSettings: () => Promise<void>;
-  exportSettings: () => Promise<void>;
-  importSettings: () => Promise<void>;
-  chooseSettingsPath: () => Promise<void>;
-  resetSettingsPath: () => Promise<void>;
-  chooseCodexAppPath: (mode: "folder" | "file") => Promise<void>;
-  clearCodexAppPath: () => Promise<void>;
-  restoreDreamSkin: () => Promise<void>;
-  saveManualCodexAppPath: () => Promise<void>;
-  syncProvidersNow: () => Promise<void>;
-  recoverProviderSync: () => Promise<void>;
-  repairSessionIndex: () => Promise<void>;
-  refreshProviderSyncTargets: (silent?: boolean) => Promise<ProviderSyncTargetsResult | null>;
-  setProviderSyncTarget: (provider: string) => void;
-  refreshRelayFiles: () => Promise<RelayFilesResult | null>;
-  refreshEnvConflicts: (silent?: boolean) => Promise<EnvConflictsResult | null>;
-  refreshRelayEnvironment: (silent?: boolean) => Promise<RelayEnvironmentResult | null>;
-  removeEnvConflicts: (names: string[]) => Promise<void>;
-  refreshCcsProviders: (silent?: boolean) => Promise<CcsProvidersResult | null>;
-  importCcsProviders: (bindings?: Record<string, string>) => Promise<void>;
-  refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
-  syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
-  refreshAds: () => Promise<void>;
-  refreshScriptMarket: (silent?: boolean, preserveRuntime?: boolean, force?: boolean) => Promise<void>;
-  refreshUserScriptInventory: () => Promise<SettingsResult | null>;
-  reloadUserScripts: () => Promise<void>;
-  installMarketScript: (id: string) => Promise<void>;
-  setUserScriptsEnabled: (enabled: boolean, host?: ExtensionHost) => Promise<void>;
-  setUserScriptsSkipNextStart: (skip: boolean) => Promise<void>;
-  setUserScriptEnabled: (key: string, enabled: boolean, host?: ExtensionHost) => Promise<void>;
-  setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean }) => Promise<boolean>;
-  showExtensionNotice: (title: string, message: string) => void;
-  deleteUserScript: (key: string) => Promise<void>;
-  refreshLocalSessions: (silent?: boolean, offset?: number, filter?: LocalSessionFilter) => Promise<LocalSessionsResult | null>;
-  listProjectSessions: (cwd: string) => Promise<LocalSession[]>;
-  // 返回是否真正执行（用户取消时为 false），调用方据此决定是否清空选择。
-  deleteLocalSession: (session: LocalSession) => Promise<boolean>;
-  deleteLocalSessions: (sessions: LocalSession[]) => Promise<boolean>;
-  archiveLocalSessions: (sessions: LocalSession[], archived?: boolean) => Promise<boolean>;
-  openExternalUrl: (url: string) => Promise<void>;
-  applyRelayInjection: () => Promise<boolean>;
-  applyPureApiInjection: () => Promise<boolean>;
-  clearRelayInjection: () => Promise<boolean>;
-  saveRelayFile: (kind: "config" | "auth", contents: string, silent?: boolean) => Promise<void>;
-  applyContextEntry: (settings: BackendSettings, kind: ContextKind, id: string, tomlBody: string | null) => Promise<boolean>;
-  previewMcpServersJson: (json: string) => Promise<McpImportPreviewResult | null>;
-  importMcpServersJson: (settings: BackendSettings, json: string) => Promise<BackendSettings | null>;
-  extractRelayCommonConfig: (configContents: string) => Promise<ExtractRelayCommonConfigResult | null>;
-  testRelayProfile: (profile: RelayProfile) => Promise<void>;
-  diagnoseRelayProfile: (profile: RelayProfile) => Promise<ProviderDoctorResult | null>;
-  fetchRelayProfileModels: (profile: RelayProfile) => Promise<string[] | null>;
-  switchRelayProfile: (settings: BackendSettings, previousActiveRelayId?: string) => Promise<boolean>;
-  relaySwitching: boolean;
-  switchOfficialMode: () => Promise<void>;
-  switchPureApiMode: () => Promise<void>;
-  refreshLogs: () => Promise<void>;
-  clearLogs: () => Promise<void>;
-  refreshDiagnostics: () => Promise<void>;
-  showMessage: (title: string, message: string, status?: Status) => Promise<void>;
-  copyLogs: () => Promise<void>;
-  copyDiagnostics: () => Promise<void>;
-  goLogs: () => Promise<void>;
-  setWatcherEnabled: (enabled: boolean) => Promise<void>;
-  setWatcherStartMinimized: (minimized: boolean) => Promise<void>;
-  setWatcherStartCodex: (startCodex: boolean) => Promise<void>;
-  setWatcherStartCodexOnOpen: (enabled: boolean) => Promise<void>;
-  setAutoTakeover: (enabled: boolean) => Promise<void>;
-  refreshAutoTakeover: () => Promise<void>;
-  takeOverNow: () => Promise<void>;
-  pauseAutoTakeover: () => Promise<void>;
-  toggleTheme: () => void;
-  setThemePreference: (preference: ThemePreference) => void;
-  checkHealth: () => Promise<void>;
-};
-
 function SearchablePathPicker({
   value,
   options,
@@ -6618,11 +5487,6 @@ function requestLogRetryReasons(entry: RequestLogEntry): string {
     .join("、");
 }
 
-/** 请求来自哪个 Agent：网关记录带 agent 字段，Codex 直连代理的记录没有。 */
-function requestLogAgent(entry: RequestLogEntry): string {
-  return entry.agent || "codex";
-}
-
 /** 生图请求（网关记成 imageGenerations / imageEdits）：列表里标「生图」，运行中显示「生成中」而不是「流式中」。 */
 function isImageRequest(entry: { wireApi?: string }): boolean {
   return (entry.wireApi ?? "").startsWith("image");
@@ -7230,13 +6094,6 @@ function RelayEnvironmentScreen({ result, actions }: { result: RelayEnvironmentR
 
 /** 直连用户点过「不再提示」：不再提醒把直连供应商加入网关供应商池。 */
 const DIRECT_POOL_NUDGE_KEY = "codex-plus-plus.direct-pool-nudge-dismissed";
-
-/** Codex 接入网关时，网关在直连模式的供应商列表里放的托管供应商（core 的 `CODEX_GATEWAY_RELAY_ID`）。 */
-const CODEX_GATEWAY_RELAY_ID = "codex-plus-gateway";
-
-function codexGatewayModelCount(profile: RelayProfile | undefined): number {
-  return (profile?.modelList ?? "").split("\n").filter((line) => line.trim()).length;
-}
 
 /** 托管的网关供应商带 openai 会话身份：Codex 保留 ChatGPT 官方登录，请求经本地代理进网关。 */
 function codexGatewayKeepsLogin(profile: RelayProfile | undefined): boolean {
@@ -7998,39 +6855,6 @@ function RelayScreen({
   );
 }
 
-function multiLaunchSupported(profile: RelayProfile): boolean {
-  return !isAggregateRelayProfile(profile)
-    && (profile.protocol === "responses" || profile.protocol === "chatCompletions")
-    && !(profile.modelRoutes ?? []).some((route) => route.model.trim() || route.targetRelayId.trim());
-}
-
-/**
- * 删除直连供应商的统一确认（旧版供应商列表、多开页共用）：
- * 先查占用（当前正在使用、聚合配置的默认 / 最后成员直接说明原因），再提醒运行中的多开实例，最后危险确认。
- * 确认后返回删掉它的新设置，取消或不能删时返回 null。
- */
-async function confirmRemoveRelayProfile(
-  settings: BackendSettings,
-  profile: RelayProfile,
-  actions: Actions,
-  from: "relay" | "multiLaunch",
-): Promise<BackendSettings | null> {
-  const name = profile.name || t("未命名供应商");
-  const deleteIssue = relayProfileDeleteIssue(settings, profile.id);
-  if (deleteIssue) {
-    await actions.showMessage(t("删除供应商"), deleteIssue, "failed");
-    return null;
-  }
-  const running = runningInstancesForProfile(actions.multiLaunchInstances, profile.id);
-  const message = running.length
-    ? tf("删除供应商「{0}」？它还有 {1} 个多开实例在运行，删除后实例不会被结束，但之后不能再用它启动。", [name, running.length])
-    : from === "multiLaunch"
-      ? tf("删除供应商「{0}」？删除后不能再用它启动多开实例，旧版供应商列表里也会一并移除。", [name])
-      : tf("删除供应商「{0}」？它的 API Key、模型列表和配置文件会一并删除，不能撤销。", [name]);
-  if (!(await appConfirm(message, { title: t("删除供应商"), confirmText: t("删除"), danger: true }))) return null;
-  return removeRelayProfile(settings, profile.id);
-}
-
 function CodexMultiLaunchScreen({
   form,
   relayFiles,
@@ -8417,97 +7241,6 @@ function envConflictSourceLabel(source: string): string {
   if (source === "process") return t("当前进程");
   if (source === "user") return t("用户环境");
   return source || t("环境变量");
-}
-
-const ENHANCE_AUTO_SAVE_DELAY_MS = 500;
-
-type AutoSaveState =
-  | { state: "idle" | "pending" | "saving" | "saved" }
-  | { state: "invalid" | "failed"; message: string; retry: () => void };
-
-/// 增强页的自动保存。
-///
-/// - 防抖：同一轮连续改动只存一次；
-/// - 同一时间只有一个保存在途，期间的改动等它回来后再存（App 会同步版本号并触发下一轮）；
-/// - 离开页面时还有没存的改动就立即补存一次，不丢草稿。
-function useEnhanceAutoSave(
-  dirty: boolean,
-  form: BackendSettings,
-  save: (settings: BackendSettings) => Promise<AutoSaveOutcome>,
-): AutoSaveState {
-  const [status, setStatus] = useState<AutoSaveState>({ state: "idle" });
-  const savingRef = useRef(false);
-  const latest = useRef({ dirty, form, save });
-  latest.current = { dirty, form, save };
-
-  const flush = useCallback(async () => {
-    if (savingRef.current) return;
-    const { dirty: pending, form: snapshot, save: persist } = latest.current;
-    if (!pending) return;
-    savingRef.current = true;
-    setStatus({ state: "saving" });
-    const outcome = await persist(snapshot);
-    savingRef.current = false;
-    setStatus(outcome.status === "saved"
-      ? { state: "saved" }
-      : { state: outcome.status, message: outcome.message, retry: () => void flush() });
-  }, []);
-
-  useEffect(() => {
-    if (!dirty) return;
-    setStatus((current) => (current.state === "saving" || current.state === "invalid" ? current : { state: "pending" }));
-    const timer = window.setTimeout(() => void flush(), ENHANCE_AUTO_SAVE_DELAY_MS);
-    return () => window.clearTimeout(timer);
-  }, [dirty, form, flush]);
-
-  useEffect(() => () => {
-    if (latest.current.dirty && !savingRef.current) void latest.current.save(latest.current.form);
-  }, []);
-
-  return status;
-}
-
-function AutoSaveStatus({ state }: { state: AutoSaveState }) {
-  if (state.state === "invalid" || state.state === "failed") {
-    return (
-      <>
-        <span className="is-error" role="alert" title={state.message}>
-          {state.state === "invalid" ? tf("未保存：{0}", [t(state.message)]) : tf("自动保存失败：{0}", [t(state.message)])}
-        </span>
-        {state.state === "failed" ? (
-          <Button onClick={state.retry} size="sm" variant="secondary">
-            <RefreshCw className="h-4 w-4" />
-            {t("重试")}
-          </Button>
-        ) : null}
-      </>
-    );
-  }
-  const label = state.state === "saving" ? t("正在保存…")
-    : state.state === "pending" ? t("即将自动保存…")
-      : t("改动会自动保存");
-  return (
-    <span className={state.state === "saved" || state.state === "idle" ? "" : "is-dirty"} role="status">
-      {state.state === "saved" ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
-      {state.state === "saved" ? t("已自动保存") : label}
-    </span>
-  );
-}
-
-/// 设置表单的自动保存：改动后稍等片刻写入，替代原来的「保存设置」按钮。
-/// 做成组件而不是在各页面里直接调用 hook，方便在列表、面板等位置按需插入。
-function SettingsAutoSave({ dirty, form, actions, className = "" }: {
-  dirty: boolean;
-  form: BackendSettings;
-  actions: Actions;
-  className?: string;
-}) {
-  const state = useEnhanceAutoSave(dirty, form, actions.autoSaveSettings);
-  return (
-    <div className={`enhance-save-actions settings-autosave ${className}`}>
-      <AutoSaveStatus state={state} />
-    </div>
-  );
 }
 
 /// 「启动急救」页：把所有能让 Codex 恢复启动 / 恢复正常显示的开关放在一处——
@@ -9611,46 +8344,6 @@ function MaintenanceScreen({
       </CxSection>
     </>
   );
-}
-
-/**
- * 自动接管的状态标签与一行说明（首页和设置页共用）。
- * 说明里需要注意的情况优先：出错、本次跳过、平台不支持、为什么还没接管；都没有才显示官方 App、端口、上次接管。
- * `lastReason` / 降级时的 `lastError` 是 Rust 判据的英文原因码（`auto_takeover::decide`），这里翻成人话。
- */
-function autoTakeoverView(state: AutoTakeoverResult | null): { status: string; label: string; detail: string } {
-  const reasons: Record<string, string> = {
-    multi_instance: t("有另一个 Codex 实例在运行（多开或带调试端口启动的）；接管要先退出 Codex，会把它一起关掉，所以先不接管。"),
-    user_active: t("Codex 正在执行任务，等它空闲后再接管；也可以点「立即接管」。"),
-    probe_unknown: t("无法确认官方 App 状态，已保守跳过。"),
-    backoff: t("上次接管没有成功，稍后自动重试。"),
-    restart_budget_exhausted: t("一小时内接管次数已达上限，已停止自动重试。"),
-    injection_ready_failed: t("上次注入没有成功，重启 Codex 可以重新注入。"),
-    takeover: t("正在接管：退出官方 App 后带参数重开。"),
-  };
-  const reasonText = (code?: string | null) => (code ? reasons[code] ?? "" : "");
-  if (!state) return { status: "off", label: t("未运行"), detail: "" };
-  const attached = state.lastReason === "already_attached";
-  const detail = reasonText(state.lastError) || state.lastError
-    || (state.pausedInstance ? t("本次已跳过自动接管，重启官方 App 后恢复。") : "")
-    || (!state.platformSupported ? t("当前系统不支持自动接管。") : "")
-    || reasonText(state.lastReason)
-    || [
-      attached ? t("官方 App 已接管") : `${t("官方 App")} ${state.appRunning ? t("运行中") : t("未运行")}`,
-      state.actualDebugPort ? `${t("调试端口")} ${state.actualDebugPort}` : "",
-      state.lastTakeoverAtMs ? tf("上次接管：{0}", [new Date(state.lastTakeoverAtMs).toLocaleString()]) : "",
-    ].filter(Boolean).join(" · ");
-  if (state.state === "degraded") return { status: "failed", label: t("已降级"), detail };
-  if (state.state === "taking_over") return { status: "warning", label: t("接管中"), detail };
-  if (state.state === "paused") return { status: "warning", label: t("本次跳过"), detail };
-  return state.running ? { status: "ok", label: t("监听中"), detail } : { status: "off", label: t("未运行"), detail };
-}
-
-/// 状态小标签：沿用 statusLabel / statusClass 的文案与分级，换成 CxBadge 的四种色调。
-function StatusBadge({ status = "unknown", label }: { status?: string; label?: string }) {
-  const level = statusClass(status);
-  const tone = level === "good" ? "ok" : level === "bad" ? "danger" : level === "idle" ? "neutral" : "warn";
-  return <CxBadge tone={tone}>{label ?? statusLabel(status)}</CxBadge>;
 }
 
 function AboutScreen({
@@ -13442,14 +12135,6 @@ function AppSettingsFocus({ focus, onDone }: { focus: string | null; onDone: () 
 const EXPERIMENTAL_TITLE = /\s*(?:（实验性?）|\(experimental\))$/i;
 const RESTART_HINT = /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i;
 
-function ToggleVisual() {
-  return (
-    <span aria-hidden="true" className="toggle-switch-visual">
-      <span className="toggle-switch-thumb" />
-    </span>
-  );
-}
-
 function formatBytes(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB"];
@@ -13460,11 +12145,6 @@ function formatBytes(bytes: number) {
     index += 1;
   }
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
-}
-
-function formatProgressPercent(value: number): string {
-  if (!Number.isFinite(value)) return "0.00";
-  return Math.min(100, Math.max(0, value)).toFixed(2);
 }
 
 function UpdateDialog({ update, progress, downloaded = false, onClose, onSkipVersion, onMuteToday, onUpdate, onOpenUrl }: {
@@ -13512,13 +12192,6 @@ function UpdateDialog({ update, progress, downloaded = false, onClose, onSkipVer
     </dialog>
   );
 }
-
-/**
- * 右下角的提示卡：左侧状态色条 + 图标，按成功 / 警告 / 失败 / 信息分色。
- * 鼠标停在卡片上时暂停倒计时；失败提示停留更久，并可一键复制详情。
- */
-type NoticeAction = { label: string; run: () => void };
-type NoticeState = { title: string; message: string; status?: Status; action?: NoticeAction };
 
 function NoticeDialog({
   notice,
@@ -13795,99 +12468,6 @@ function DreamSkinInstallProgress({ label = t("正在下载、校验并安装主
   );
 }
 
-function TaskProgressBox({ progress, title, completedTitle = t("上次修复结果") }: { progress: TaskProgress; title: string; completedTitle?: string }) {
-  if (!progress.active && progress.percent <= 0 && !progress.failed) return null;
-  return (
-    <div className="provider-sync-progress task-progress" data-active={progress.active}>
-      <div className="provider-sync-progress-head">
-        <strong>{progress.active ? title : completedTitle}</strong>
-        <span>{progress.indeterminate || progress.failed ? null : `${formatProgressPercent(progress.percent)}%`}</span>
-      </div>
-      {!progress.failed ? <div
-        aria-valuemax={100}
-        aria-valuemin={0}
-        aria-valuenow={progress.indeterminate ? undefined : progress.percent}
-        className="provider-sync-progress-bar"
-        data-indeterminate={progress.indeterminate ? "true" : undefined}
-        role="progressbar"
-      >
-        <div
-          className="provider-sync-progress-fill"
-          style={progress.indeterminate ? undefined : { width: `${progress.percent}%` }}
-        />
-      </div> : null}
-      <small>{progress.message}</small>
-    </div>
-  );
-}
-
-type ClaudeBashTimeoutSettings = {
-  enabled: boolean;
-  defaultEnabled: boolean;
-  defaultSeconds: number;
-  maxEnabled: boolean;
-  maxSeconds: number;
-};
-
-type ClaudeLocalConfig = {
-  enabled: boolean;
-  model: string;
-  localization: boolean;
-  voiceInput: boolean;
-  computerUse: boolean;
-  backgroundMode: boolean;
-  /** 无视 Claude 对后台模式的 macOS 版本上限（默认关）。 */
-  forceBackgroundMode?: boolean;
-  displayName?: string;
-  email?: string;
-  plan?: string;
-  sessionSync?: boolean;
-  listAllModels?: boolean;
-  hideUnroutedModels?: boolean;
-  /** Code 页签是否和命令行共用 ~/.claude；不写按默认（共用）。 */
-  codeShareHome?: boolean;
-  /** 启动前把命令行建的会话加进 Desktop 的会话列表；不写按默认（开）。 */
-  importCliSessions?: boolean;
-  /** Cowork 总开关；不写按默认（开）。 */
-  cowork?: boolean;
-  /** 合并式主页（Claude 的实验布局）；不写按默认（关）。 */
-  hubHome?: boolean;
-  /** 界面用哪个录制版本（build id）；空串按最新的。 */
-  template?: string;
-};
-
-/** 内嵌的一个录制版本；builtAt 是该版本前端的构建时间（秒）。 */
-type ClaudeTemplateVersion = { build: string; builtAt?: number | null };
-
-type ClaudeLocalStatus = {
-  supported: boolean;
-  sourceApp: string;
-  version: string;
-  claudeRunning: boolean;
-  running: boolean;
-  /** Claude 仍挂在本机代理上（代理进程可能已经退了）：这种半开状态也要能按「停止」收尾。 */
-  localProcess?: boolean;
-  connected: boolean;
-  port?: number | null;
-  caReady: boolean;
-  caTrusted: boolean;
-  /** 系统级根证书（Cowork 虚拟机用）：只有 Windows 支持。 */
-  caMachineSupported?: boolean;
-  caMachineTrusted?: boolean;
-  /** 内嵌的录制版本，新的在前。 */
-  templates?: ClaudeTemplateVersion[];
-  nodeAvailable: boolean;
-  dictationReady: boolean;
-  config: ClaudeLocalConfig;
-  models: string[];
-  /** 当前默认模型实际下发的上下文窗口（供应商声明值）；null / 缺省表示未声明，Claude 按 200k 处理。 */
-  contextWindow?: number | null;
-  /** 因为窗口比默认模型小、没有列给 Claude 的模型。 */
-  hiddenModels?: string[];
-  warning?: string | null;
-  needsRestart: boolean;
-};
-
 /** Claude 在供应商没有声明窗口时自己用的默认上下文窗口。 */
 const CLAUDE_DEFAULT_CONTEXT_WINDOW = 200_000;
 
@@ -13922,48 +12502,6 @@ function sameClaudeRunState(
     && current.nodeAvailable === next.nodeAvailable
     && current.config?.enabled === next.config?.enabled;
 }
-
-/** 隐藏模型列表最多列 5 个，其余用「等」收尾。 */
-const claudeLocalMemo: {
-  status: CommandResult<ClaudeLocalStatus> | null;
-  autoDetected: boolean;
-} = { status: null, autoDetected: false };
-
-type ClaudeLocalizationStatus = {
-  supported: boolean;
-  sourceApp: string;
-  copyApp: string;
-  sourceVersion: string;
-  copyVersion: string;
-  prepared: boolean;
-  needsRebuild: boolean;
-  running: boolean;
-  nodeAvailable: boolean;
-  pythonAvailable: boolean;
-  shellLocale: string | null;
-  catalogEntries: number;
-  voiceInput: boolean;
-  localization: boolean;
-  extensions: boolean;
-  computerUse: boolean;
-  /** 当前平台能否真正应用 Computer Use；Windows 为 false（#2673）。 */
-  computerUseSupported: boolean;
-  bashTimeout: ClaudeBashTimeoutSettings;
-  bashTimeoutWarning?: string | null;
-  bashTimeoutPending?: boolean;
-};
-
-/**
- * Claude 增强页跨挂载的记忆：Codex++ 运行期间只在第一次进入时自动检测一次，
- * 之后再进来直接显示上次结果，需要时手动点「检测 Claude」刷新。
- *
- * 检测已在后台线程跑、带 15 秒超时，未安装 Claude 时直接早退（#2539 的死机不会再现），
- * 所以首次进入自动检测是安全的；但每次切回来都重新探测进程和运行时没有必要。
- */
-const claudeLocalizationMemo: {
-  status: CommandResult<ClaudeLocalizationStatus> | null;
-  autoDetected: boolean;
-} = { status: null, autoDetected: false };
 
 /**
  * Claude Desktop 页。
@@ -14833,30 +13371,6 @@ function ClaudeLocalizationScreen(
   );
 }
 
-/// 设置行：左边标题 + 一句短说明，右边控件；长说明放进悬停提示（`detail`）。
-/// `stacked` 时控件放到说明下方，给状态码编辑、多行输入这类宽控件用。
-function SettingRow({ title, description, detail, stacked = false, children }: {
-  title: ReactNode;
-  description?: ReactNode;
-  detail?: string;
-  stacked?: boolean;
-  children?: ReactNode;
-}) {
-  return (
-    <div className={`setting-row${stacked ? " setting-row-stacked" : ""}`} title={detail}>
-      <div className="setting-row-copy">
-        <strong>{title}</strong>
-        {description ? <span title={detail ?? (typeof description === "string" ? description : undefined)}>{description}</span> : null}
-      </div>
-      {children ? <div className="setting-row-control">{children}</div> : null}
-    </div>
-  );
-}
-
-function Toolbar({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`toolbar ${className}`.trim()}>{children}</div>;
-}
-
 
 
 /**
@@ -14890,11 +13404,6 @@ function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): Setting
   ];
   return entries.filter((entry) => routeVisible(focus, entry.route) && (entry.key !== "codex" || codexAvailable));
 }
-
-/** 进入设置模式的路由：侧栏切成设置目录。 */
-const settingsModeRoutes = new Set<Route>(["settings", "agentSettings", "gatewaySettings", "agentCache", "computerUse", "agentCollaboration"]);
-/** 「MCP 与 Skills」一页：两个胶囊切换。万物皆拓展是侧栏第一个入口，不放在这里。 */
-const customizeRoutes: Route[] = ["context", "skills"];
 /** 设置分类当前是哪一个：整体设置页按显示的卡片判断，其余按路由。 */
 function activeSettingsEntry(entries: SettingsNavEntry[], route: Route, settingsSections: string[]) {
   if (route === "settings") return entries.find((entry) => entry.route === "settings" && entry.sections?.[0] === settingsSections[0])?.key ?? "general";
@@ -15366,15 +13875,6 @@ function Badge({ status }: { status: string }) {
   return <UiBadge className={statusClass(status)} variant="secondary">{statusLabel(status)}</UiBadge>;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
 /// 本地脚本合并状态的文案与悬停说明。
 function localScriptStateLabel(state: LocalScriptState, host: ExtensionHost = "codex"): { label: string; hint: string } {
   if (host === "claude") {
@@ -15723,56 +14223,6 @@ function isExpiredAd(ad: AdItem) {
   return Number.isFinite(expiresAt) && expiresAt < Date.now();
 }
 
-function routeTitle(route: Route) {
-  return routes.find((item) => item.id === route)?.label ?? t("概览");
-}
-
-/** 页面副标题；只管理 Codex（soloAgent）时网关两页不讲「任意 Agent」。 */
-function routeSubtitle(route: Route, soloAgent: string | null = null) {
-  if (soloAgent && route === "hub") return tf("{0} 经 Codex++ 接入任意供应商：走哪家、是否健康，一屏看全", [agentName(soloAgent)]);
-  if (soloAgent && route === "gateway") return tf("让 {0} 经 Codex++ 网关接入供应商池，并选它默认用的模型", [agentName(soloAgent)]);
-  const subtitles: Record<Route, string> = {
-    home: t("赞助商推荐：支持 Codex++ 的服务"),
-    overview: t("检查问题、启动与快速修复"),
-    relay: t("管理 API 供应商、协议、Key 与配置文件"),
-    multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
-    claude: t("启动原版 Claude Desktop，选择 3p 或完整功能模式"),
-    claudePatch: t("制作、更新与启动改过代码的 Desktop 副本；原件与 app.asar 不动"),
-    requestLog: t("所有 Agent 经 Codex++ 的请求：状态、模型、重试、token 用量与缓存命中"),
-    sessions: t("Codex、Claude Code、Grok 的本地会话放在一起：在终端继续，Codex 会话还能删除、归档与修复"),
-    context: t("同时管理 Codex、Claude Code、Grok 的 MCP 服务器：每列一个 Agent，打开即写入它的配置"),
-    skills: t("从 GitHub 仓库安装 Skill，按 Agent 启用到 Codex、Claude Code 或 Grok"),
-    weixin: t("通过个人微信连接本机 Codex 会话"),
-    enhance: t("Codex 打不开或显示异常时用：增强总开关、独立模式补丁、本地拓展与恢复默认皮肤"),
-    dreamSkin: t("Codex 打不开或显示异常时用：增强总开关、独立模式补丁、本地拓展与恢复默认皮肤"),
-    userScripts: t("Codex++ 拓展：内置、精选、社区和自己做的拓展"),
-    pluginMarket: t("Codex 官方插件目录：检索插件，按需下载并安装到 Codex"),
-    agentCache: t("扫描 Codex、Claude 与 Codex++ 的已知缓存目录，由你选择清理项目。"),
-    agentCollaboration: t("连接 Codex、DeepSeek Harness、Claude Code 与 Google Antigravity，派发任务并查看结果。"),
-    computerUse: t("复用 ChatGPT.app 的 Computer Use 与 Chrome 控制，通过 MCP 接给 Claude Code、Claude Desktop、DeepSeek Harness、ZCode、WorkBuddy 与 Devin。"),
-    remoteControl: t("在浏览器里查看和操控 Codex 桌面的会话：发消息、停止、审批命令、回答提问"),
-    hub: t("任意 Agent 经 Codex++ 接入任意供应商：谁在用、走哪家、是否健康，一屏看全"),
-    gateway: t("选择哪些 Agent 经 Codex++ 网关接入，以及它们默认用哪个模型"),
-    gatewayProviders: t("所有接入的 Agent 共用的供应商池，支持多 Key 轮换"),
-    gatewayRouting: t("多家都有的模型怎么分、你建的组怎么走：路由方式、会话固定、出错换谁"),
-    gatewayUsage: t("调用统计与每条请求：按 Agent、供应商与模型汇总 token、缓存与费用"),
-    gatewaySettings: t("监听地址、Key 轮换方式与退出时的恢复策略"),
-    settings: t("主题、配置文件、版本更新与日志诊断，不随 Agent 变化"),
-    agentSettings: t("当前 Agent 的专属设置"),
-    extension: t("由拓展提供的页面"),
-  };
-  return subtitles[route];
-}
-
-function contextEntriesFromSettings(settings: BackendSettings): CodexContextEntries {
-  const commonConfig = normalizeDuplicateTomlTables(settings.relayContextConfigContents || "");
-  return {
-    mcpServers: parseContextEntries(commonConfig, "mcp", "mcp_servers"),
-    skills: parseContextEntries(commonConfig, "skill", "skills"),
-    plugins: parseContextEntries(commonConfig, "plugin", "plugins"),
-  };
-}
-
 function contextEntriesWithLiveEntries(settings: BackendSettings, liveEntries: CodexContextEntries | null): CodexContextEntries {
   const commonEntries = contextEntriesFromSettings(settings);
   if (!liveEntries) return commonEntries;
@@ -15925,14 +14375,6 @@ function commonConfigAnchors(commonConfig: string): { rootKeys: Set<string>; tab
   return { rootKeys, tableHeaders };
 }
 
-function tomlRootKeyFromLine(line: string): string | null {
-  if (!line || line.startsWith("#")) return null;
-  const index = line.indexOf("=");
-  if (index < 0) return null;
-  const key = line.slice(0, index).trim();
-  return key || null;
-}
-
 function applyContextLimitPreview(configContents: string, profile: RelayProfile): string {
   const replacements: Array<[string, string]> = [
     ["model_context_window", profile.contextWindow],
@@ -15961,115 +14403,10 @@ function applyContextLimitPreview(configContents: string, profile: RelayProfile)
   return ensureTrailingNewline(lines.join("\n").trimEnd());
 }
 
-function joinTomlSectionsRootFirst(sections: string[]): string {
-  const rootParts: string[] = [];
-  const tableParts: string[] = [];
-
-  for (const section of sections) {
-    const { root, tables } = splitTomlRootAndTables(section);
-    if (root.trim()) rootParts.push(root.trim());
-    if (tables.trim()) tableParts.push(tables.trim());
-  }
-
-  return normalizeDuplicateTomlTables(joinTomlSections([...dedupeTomlRootLines(rootParts), ...tableParts]));
-}
-
-function normalizeDuplicateTomlTables(contents: string): string {
-  const seenHeaders = new Set<string>();
-  const kept: string[] = [];
-  let skipping = false;
-
-  for (const line of contents.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (/^\[[^\]]+\]$/.test(trimmed)) {
-      skipping = seenHeaders.has(trimmed);
-      seenHeaders.add(trimmed);
-      if (skipping) continue;
-    }
-    if (!skipping) kept.push(line);
-  }
-
-  return ensureTrailingNewline(kept.join("\n").trimEnd());
-}
-
-function dedupeTomlRootLines(rootParts: string[]): string[] {
-  const rootLines = rootParts
-    .join("\n")
-    .split(/\r?\n/)
-    .map((line) => line.trimEnd());
-  const rootSeen = new Set<string>();
-  const kept: string[] = [];
-
-  for (let index = rootLines.length - 1; index >= 0; index -= 1) {
-    const line = rootLines[index];
-    const key = tomlRootKeyFromLine(line.trim());
-    if (key) {
-      if (rootSeen.has(key)) continue;
-      rootSeen.add(key);
-    }
-    kept.push(line);
-  }
-
-  const normalized = kept.reverse().join("\n").trim();
-  return normalized ? [normalized] : [];
-}
-
-function contextSelectionForAllEntries(settings: BackendSettings): RelayContextSelection {
-  const entries = contextEntriesFromSettings(settings);
-  return {
-    mcpServers: entries.mcpServers.map((entry) => entry.id),
-    skills: entries.skills.map((entry) => entry.id),
-    plugins: entries.plugins.map((entry) => entry.id),
-  };
-}
-
 function relayProfileEditorStatus(profile: RelayProfile, form: BackendSettings, isNew: boolean) {
   if (isNew) return t("新建供应商需要先保存到列表");
   if (!form.relayProfilesEnabled) return t("供应商配置总开关已关闭；当前只保存配置，不写入 Codex live 文件");
   return profile.id === form.activeRelayId ? t("当前正在使用") : t("编辑后保存列表，再切换模式时会使用新配置");
-}
-
-/// 供应商头像上的两个字，规则见 provider-name.ts 的 providerAvatarText。
-function providerInitial(name: string) {
-  return providerAvatarText(name, t("供"));
-}
-
-function statusLabel(status: string) {
-  const labels: Record<string, string> = {
-    found: t("已找到"),
-    missing: t("缺失"),
-    installed: t("已安装"),
-    ok: t("正常"),
-    running: t("运行中"),
-    running_degraded: t("运行中（增强等待中）"),
-    degraded: t("已降级"),
-    starting: t("启动中"),
-    failed: t("失败"),
-    archived: t("已归档"),
-    accepted: t("已受理"),
-    not_checked: t("未检查"),
-    not_implemented: t("未实现"),
-    disabled: t("已禁用"),
-    stopped: t("未运行"),
-    waiting: t("等待启动"),
-    off: t("未启用"),
-    connected: t("已连接"),
-    disconnected: t("未连接"),
-    unattached: t("未挂载"),
-    unknown: t("未知"),
-  };
-  return labels[status] ?? status;
-}
-
-function statusClass(status: string) {
-  if (["found", "installed", "ok", "running", "running_degraded", "connected"].includes(status)) return "good";
-  if (status === "waiting" || status === "off") return "idle";
-  if (["failed", "missing"].includes(status)) return "bad";
-  return "warn";
-}
-
-function isSuccessStatus(status?: Status) {
-  return status === "ok" || status === "accepted";
 }
 
 /// 后端「降级但流程可继续」的状态。目前用于回填跳过（live config.toml 语法
@@ -16083,176 +14420,6 @@ function truncateSessionDeletePreview(value: string) {
   return normalized.length > 20 ? `${normalized.slice(0, 20)}...` : normalized;
 }
 
-/// 概览健康检查的各项。每项带自己的图标；本地服务器与协议转换拆成两项：
-/// 协议转换跑在本地服务器里，但两者状态独立（服务器在跑、转换没开是常态）。
-function healthItems(overview: OverviewResult | null): Array<{ title: string; status: string; ok: boolean; detail: string; icon: LucideIcon; action?: "restart" }> {
-  const conversionEnabled = overview?.runtime_health?.protocol_conversion_enabled;
-  const serviceItem = (title: string, state: RuntimeServiceState | undefined, icon: LucideIcon) => ({
-    title,
-    status: state?.status ?? "not_checked",
-    ok: ["running", "connected", "disabled"].includes(state?.status ?? ""),
-    detail: state ? [state.address, t(state.message)].filter(Boolean).join(" · ") : t("等待状态检查"),
-    icon,
-  });
-  // 协议转换没开不是问题：直连 Responses 的供应商本来就不需要，显示为中性的「未启用」。
-  const conversionHealth = {
-    title: t("协议转换"),
-    status: typeof conversionEnabled !== "boolean" ? "not_checked" : conversionEnabled ? "ok" : "off",
-    ok: typeof conversionEnabled === "boolean",
-    detail: typeof conversionEnabled !== "boolean"
-      ? t("等待状态检查")
-      : conversionEnabled
-        ? t("Chat Completions / Anthropic 请求经本地服务器转成 Responses")
-        : t("当前供应商直连 Responses，不需要转换"),
-    icon: ArrowRightLeft,
-  };
-  // 调试连接依赖 Codex 在运行：Codex 没启动时连不上是预期内的，显示为中性的「等待启动」而不是警告。
-  const debuggerState = overview?.runtime_health?.debugger;
-  const codexRunning = overview?.runtime_health?.codex_app?.status === "running";
-  // Codex 从 Dock / Finder 等外部启动时没带调试端口，增强脚本挂不上：提示原因，并给「重启并挂载」。
-  const debuggerHealth = overview?.runtime_health?.codex_unattached
-    ? {
-      title: t("调试连接状态"),
-      status: "unattached",
-      ok: false,
-      detail: t("Codex 不是经 Codex++ 启动的，增强脚本没有挂载；重启 Codex 即可挂载"),
-      icon: Bug,
-      action: "restart" as const,
-    }
-    : debuggerState && debuggerState.status !== "connected" && !codexRunning
-    ? {
-      title: t("调试连接状态"),
-      status: "waiting",
-      ok: true,
-      detail: [debuggerState.address, t("Codex 未运行，启动后自动连接")].filter(Boolean).join(" · "),
-      icon: Bug,
-    }
-    : serviceItem(t("调试连接状态"), debuggerState, Bug);
-  return [
-    {
-      title: t("Codex 应用"),
-      status: overview?.codex_app.status ?? "not_checked",
-      ok: overview?.codex_app.status === "found",
-      detail: overview?.codex_app.path || t("尚未检查 Codex 应用路径。"),
-      icon: AppWindow,
-    },
-    serviceItem(t("本地服务器状态"), overview?.runtime_health?.local_server, Server),
-    conversionHealth,
-    debuggerHealth,
-  ];
-}
-
-
-function normalizeSettings(settings: BackendSettings): BackendSettings {
-  const backendAggregates = new Map(
-    (settings.aggregateRelayProfiles ?? []).map((aggregate) => [aggregate.id, aggregate] as const),
-  );
-  const splitCommon = splitContextConfigText(settings.relayCommonConfigContents || "");
-  const relayCommonConfigContents = splitCommon.common;
-  const relayContextConfigContents = joinTomlSectionsRootFirst([
-    settings.relayContextConfigContents || "",
-    splitCommon.context,
-  ]);
-  const defaultContextSelection = contextSelectionForAllEntries({
-    ...settings,
-    relayCommonConfigContents,
-    relayContextConfigContents,
-  });
-  const profiles =
-    settings.relayProfiles?.length
-      ? settings.relayProfiles.map((profile) =>
-          normalizeRelayProfile(hydrateAggregateRelayProfile(profile, backendAggregates.get(profile.id)), defaultContextSelection),
-        )
-      : [
-          {
-            id: settings.activeRelayId || "default",
-            name: t("默认中转"),
-            model: "",
-            baseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
-            upstreamBaseUrl: settings.relayBaseUrl || defaultSettings.relayBaseUrl,
-            apiKey: settings.relayApiKey || "",
-            protocol: "responses" as RelayProtocol,
-            relayMode: "official" as RelayMode,
-            sessionProvider: "custom" as RelaySessionProvider,
-            officialMixApiKey: false,
-            hideOfficialUsageAlert: false,
-            testModel: "",
-            configContents: "",
-            authContents: "",
-            useCommonConfig: true,
-            contextSelection: defaultContextSelection,
-            contextSelectionInitialized: true,
-            contextWindow: "",
-            autoCompactLimit: "",
-            modelList: "",
-            modelWindows: "",
-            modelAutoCompact: "",
-            modelMetadata: "",
-            modelVlm: "",
-            vlmApiKey: "",
-            vlmModel: "",
-            vlmBaseUrl: "",
-            userAgent: "",
-            customHeaders: [],
-            sub2apiEnabled: false,
-            noAuth: false,
-            sub2apiMultiplier: "",
-            standardOpenaiProtocol: false,
-            webSearchHistoryCompat: false,
-          },
-        ];
-  const activeRelayId = profiles.some((profile) => profile.id === settings.activeRelayId)
-    ? settings.activeRelayId
-    : profiles[0]?.id || "default";
-  return syncLegacyRelayFields({
-    ...defaultSettings,
-    ...settings,
-    usageHistoryEnabled: settings.usageHistoryEnabled === true,
-    ...normalizeWhaleBalanceSettings(settings),
-    ccsDbPath: (settings.ccsDbPath || "").trim(),
-    weixinConnectReasoningEffort: (settings.weixinConnectReasoningEffort || "").trim(),
-    weixinConnectProjectId: (settings.weixinConnectProjectId || "").trim(),
-    dictation: normalizeDictationSettings(settings.dictation),
-    relayProfilesEnabled: settings.relayProfilesEnabled !== false,
-    protocolProxyAutoRetry: settings.protocolProxyAutoRetry !== false,
-    // 默认关闭（opt-in），只有显式开启才生效。
-    protocolProxyMapUnlistedModels: settings.protocolProxyMapUnlistedModels === true,
-    protocolProxyAutoRetryMaxAttempts: clampNumber(settings.protocolProxyAutoRetryMaxAttempts ?? 5, 0, 20),
-    protocolProxyAutoRetryMode:
-      settings.protocolProxyAutoRetryMode === "buffered"
-        ? "buffered"
-        : settings.protocolProxyAutoRetryMode === "streaming-legacy"
-          ? "streaming-legacy"
-          : "streaming",
-    protocolProxyAutoRetryCommitDelayMs: clampNumber(settings.protocolProxyAutoRetryCommitDelayMs ?? 1000, 0, 10000),
-    protocolProxyAutoRetryIntervalSeconds: clampNumber(settings.protocolProxyAutoRetryIntervalSeconds ?? 2, 0, 30),
-    protocolProxyAutoRetryStatusCodes: normalizeRetryStatusCodes(settings.protocolProxyAutoRetryStatusCodes),
-    helperMaxRequestBodyMib: clampNumber(settings.helperMaxRequestBodyMib ?? 128, 32, 512),
-    codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,
-    codexAppDreamSkinThemeConfig: normalizeDreamSkinTheme(settings.codexAppDreamSkinThemeConfig),
-    codexAppDreamSkinImagePath: (settings.codexAppDreamSkinImagePath || "").trim(),
-    codexAppStepwiseProtocol: normalizeStepwiseProtocol(settings.codexAppStepwiseProtocol),
-    weixinConnectAllowOutboundAttachments: settings.weixinConnectAllowOutboundAttachments === true,
-    codexAppStepwiseGenerationMode: normalizeStepwiseGenerationMode(settings.codexAppStepwiseGenerationMode),
-    codexAppStepwiseMaxItems: clampNumber(settings.codexAppStepwiseMaxItems ?? 4, 0, 6),
-    codexAppStepwiseMaxInputChars: clampNumber(settings.codexAppStepwiseMaxInputChars || 6000, 1000, 24000),
-    codexAppStepwiseMaxOutputTokens: clampNumber(settings.codexAppStepwiseMaxOutputTokens || 500, 100, 4000),
-    codexAppStepwiseTimeoutMs: clampNumber(settings.codexAppStepwiseTimeoutMs || 8000, 1000, 60000),
-    relayCommonConfigContents,
-    relayContextConfigContents,
-    relayProfiles: profiles,
-    activeRelayId,
-  });
-}
-
-function normalizeStepwiseProtocol(value: StepwiseProtocol | undefined): StepwiseProtocol {
-  return value === "auto"
-    || value === "responses"
-    || value === "anthropic_messages"
-    ? value
-    : "chat_completions";
-}
-
 function backendSettingsEqual(left: BackendSettings, right: BackendSettings): boolean {
   const { revision: _leftRevision, ...leftValues } = normalizeSettings(left);
   const { revision: _rightRevision, ...rightValues } = normalizeSettings(right);
@@ -16261,24 +14428,6 @@ function backendSettingsEqual(left: BackendSettings, right: BackendSettings): bo
 
 /** 「填入常用」：限流与常见的服务端/网关瞬时错误。 */
 const COMMON_RETRY_STATUS_CODES = [429, 500, 502, 503, 504];
-
-/** 与 Rust `normalize_protocol_proxy_auto_retry_status_codes` 保持一致：400~599、去重升序、最多 20 个。 */
-function normalizeRetryStatusCodes(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  const codes = value
-    .map(Number)
-    .filter((status) => Number.isInteger(status) && status >= 400 && status <= 599);
-  return Array.from(new Set(codes)).sort((a, b) => a - b).slice(0, 20);
-}
-
-function clampNumber(value: number, min: number, max: number): number {
-  if (!Number.isFinite(value)) return min;
-  return Math.min(max, Math.max(min, Math.round(value)));
-}
-
-function normalizeStepwiseGenerationMode(value: StepwiseGenerationMode | undefined): StepwiseGenerationMode {
-  return value === "manual" ? "manual" : "auto";
-}
 
 function parsePort(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
@@ -16291,26 +14440,6 @@ function codexExtraArgsToInput(args: string[] | undefined) {
 
 function inputToCodexExtraArgs(value: string) {
   return value === "" ? [] : value.split(/\r?\n/);
-}
-
-/// 列表标签用的短协议名：卡片空间小，「转 Responses」留在编辑页里说明。
-function relayProtocolShortLabel(protocol: RelayProtocol): string {
-  if (protocol === "chatCompletions") return "Chat Completions";
-  if (protocol === "anthropicMessages") return "Anthropic";
-  return "Responses";
-}
-
-/// 接入方式标签的配色分组。
-function relayProfileTagTone(profile: RelayProfile): string {
-  if (isAggregateRelayProfile(profile)) return "aggregate";
-  if (profile.relayMode === "official") return profile.officialMixApiKey ? "mixed" : "official";
-  return "api";
-}
-
-function relayProtocolLabel(protocol: RelayProtocol): string {
-  if (protocol === "chatCompletions") return t("Chat Completions 转 Responses");
-  if (protocol === "anthropicMessages") return t("Anthropic Messages 转 Responses");
-  return "Responses API";
 }
 
 /// 网址只显示主机名；解析不了就原样返回。
@@ -16329,25 +14458,6 @@ function ccsProviderSummary(result: CcsProvidersResult | null): string {
   if (!isSuccessStatus(result.status)) return result.message || t("读取 cc-switch 供应商失败。");
   const count = result.providers.length;
   return count ? tf("发现 {0} 个 Codex 供应商", [count]) : t("未发现可导入供应商");
-}
-
-function relayModeLabel(mode: RelayMode): string {
-  if (mode === "aggregate") return t("聚合供应商");
-  if (mode === "pureApi") return t("纯 API");
-  return t("官方登录");
-}
-
-function relayEditorMode(profile: Pick<RelayProfile, "relayMode" | "officialMixApiKey">): RelayEditorMode {
-  if (profile.relayMode === "pureApi") return "pureApi";
-  if (profile.relayMode === "mixedApi" || profile.officialMixApiKey) return "mixedApi";
-  return "official";
-}
-
-function relayProfileModeLabel(profile: Pick<RelayProfile, "relayMode" | "officialMixApiKey" | "aggregate">): string {
-  if (profile.relayMode === "aggregate") {
-    return profile.aggregate?.modelAggregationEnabled === true ? t("模型聚合") : t("故障转移");
-  }
-  return relayEditorMode(profile) === "mixedApi" ? t("官方登录 + API") : relayModeLabel(profile.relayMode);
 }
 
 function providerImportWireApiLabel(value: string): string {
@@ -16374,19 +14484,6 @@ function maskSecret(value: string): string {
   if (!trimmed) return t("未填写");
   if (trimmed.length <= 10) return `${trimmed.slice(0, 2)}…${trimmed.slice(-2)}`;
   return `${trimmed.slice(0, 6)}…${trimmed.slice(-4)}`;
-}
-
-function relayProfileConfigBrief(profile: RelayProfile): string {
-  if (isAggregateRelayProfile(profile)) {
-    const aggregate = normalizeAggregateConfig(profile.aggregate, []);
-    // 模型聚合与轮转策略无关，卡片上不显示「失败切换」这类策略文案。
-    if (aggregate.modelAggregationEnabled === true) {
-      return tf("模型固定绑定 · {0} 个成员", [aggregate.members.length]);
-    }
-    return tf("{0} · {1} 个成员", [aggregateStrategyLabel(aggregate.strategy), aggregate.members.length]);
-  }
-  if (profile.relayMode === "official") return profile.officialMixApiKey ? t("混入 API Key") : t("不写 API 文件");
-  return profile.baseUrl || t("未填写 URL");
 }
 
 function relayProfileModeHelp(profile: RelayProfile): string {
@@ -16420,16 +14517,6 @@ function relayProfileSwitchCommand(profile: RelayProfile): "clear_relay_injectio
 function numberOrDefault(value: string, fallback: number) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : fallback;
-}
-
-function formatTime(value: number) {
-  if (!value) return "-";
-  return new Date(value).toLocaleString("zh-CN");
-}
-
-function stringifyError(error: unknown) {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 /** 截图 / 预览用的 `?previewRoute=`（可以是旧 id）。 */

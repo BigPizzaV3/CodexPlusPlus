@@ -37,7 +37,8 @@ function functionSource(name: string) {
     (statement): statement is ts.FunctionDeclaration => ts.isFunctionDeclaration(statement) && statement.name?.text === name,
   );
   assert.ok(node, name);
-  return node.getText(app);
+  // 拆分后跨文件用到的函数带 `export`，这里只把它们放进 vm 里当普通函数用。
+  return node.getText(app).replace(/^export /, "");
 }
 
 const navigationNames = [
