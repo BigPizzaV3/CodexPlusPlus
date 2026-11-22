@@ -168,10 +168,12 @@ test("Claude / Grok 的供应商配置页已去掉：要么经网关接入供应
 
 test("页面不再画第二条标题栏：PageHeader 和工具页的操作都送进外壳顶栏", () => {
   const management = readSource("./ManagementPages.tsx");
-  const extra = readSource("./ManagementExtra.tsx");
+  const extra = readSource("./SkillsPage.tsx");
   const cache = readSource("./agent-cache.tsx");
   assert.match(management, /export function PageHeader\([^)]*\) \{\n  return <TopbarActions>\{actions\}<\/TopbarActions>;/);
-  assert.match(extra, /function Header\([^)]*\) \{ return <TopbarActions>\{actions\}<\/TopbarActions>; \}/);
+  // Skills 页也用 ManagementPages 的 PageHeader，不再自己定义一份。
+  assert.match(extra, /<PageHeader icon=/);
+  assert.doesNotMatch(extra, /function Header\(/);
   for (const source of [management, extra]) assert.doesNotMatch(source, /className="mg-header"/);
   assert.match(cache, /<TopbarActions>/);
   assert.doesNotMatch(cache, /CardHeader|className="panel agent-cache-panel"/);
@@ -280,7 +282,7 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
 });
 
 test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一枚开关胶囊，不再有页面自己的配色和按钮尺寸", () => {
-  const extra = readSource("./ManagementExtra.tsx");
+  const extra = readSource("./SkillsPage.tsx");
   const css = readSource("./ManagementPages.css");
   assert.match(extra, /<CxRow className="cx-skill-row"/);
   assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);

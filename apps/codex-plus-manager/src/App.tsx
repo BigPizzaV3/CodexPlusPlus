@@ -172,7 +172,7 @@ import { extensionEnabledForHost, extensionsForHost, extensionStateForHost, type
 import { ReleaseNotes } from "./ReleaseNotes";
 import { UPDATE_CHECK_INTERVAL_MS, UpdateNotifications, updatePreferencesFrom } from "./update-notification";
 import { McpPage, Menu, MenuItem, PageHeader } from "./ManagementPages";
-import { SkillsPage } from "./ManagementExtra";
+import { SkillsPage } from "./SkillsPage";
 import { ProjectSessionPage } from "./ProjectSessionPage";
 import type { LocalSessionFilter, SessionProjectCount } from "./management-model";
 import { managerNavigationDestination, type ManagerNavigationIntent } from "./enhancement-navigation";

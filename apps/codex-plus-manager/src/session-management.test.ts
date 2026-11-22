@@ -58,6 +58,8 @@ function fixture(overrides: Record<string, any> = {}) {
     // 骨架组件（cx-layout）与顶栏挂载点在这里只当普通节点；搜索框是 CxToolbar 的 onQuery。
     TopbarActions: "TopbarActions", CxToolbar: "CxToolbar", CxCard: "CxCard", CxEmpty: "CxEmpty", CxRow: "CxRow", CxBadge: "CxBadge", CxBanner: "CxBanner",
     ArchiveRestore: "ArchiveRestore", Loader2: "Loader2", SEARCH_DEBOUNCE_MS: 300,
+    // 共用的 PageButton（从 ManagementPages 以 Button 导入）：渲染成普通 button。
+    Button: ({ children, primary: _primary, danger: _danger, ...props }: Record<string, any>) => jsx("button", props, children),
     setTimeout, clearTimeout, navigator: { clipboard: { writeText: async () => {} } },
   });
   vm.runInContext(code, context);

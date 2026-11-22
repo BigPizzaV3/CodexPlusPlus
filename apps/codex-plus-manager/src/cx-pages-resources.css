@@ -480,7 +480,7 @@
   flex: 1 1 auto;
 }
 
-:root .shell .cx-session-selection .mg-session-danger:not(:disabled) {
+:root .shell .cx-session-selection .mg-danger-button:not(:disabled) {
   border-color: hsl(var(--status-error) / 0.45);
   color: hsl(var(--status-error));
 }

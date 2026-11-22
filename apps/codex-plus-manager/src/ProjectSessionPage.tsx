@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Archive, ArchiveRestore, ArrowLeft, ArrowRight, Check, ChevronDown, Copy, FolderInput, FolderSymlink, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { t, tf } from "./i18n";
 import { matchesManagementQuery, sessionArchiveFilter, sessionGroups, type LocalSessionFilter, type ManagedSession, type SessionArchiveView, type SessionProjectCount } from "./management-model";
 import { relativeTime } from "./gateway-model";
-import { ManagementDrawer } from "./ManagementPages";
+import { ManagementDrawer, PageButton as Button } from "./ManagementPages";
 import { SessionRelocateDrawer, type SessionRelocationRequest } from "./SessionRelocateDrawer";
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxToolbar } from "./cx-layout";
 import { TopbarActions } from "./TopbarActions";
@@ -16,10 +16,6 @@ type SessionPageData = {
 /** 停止输入多久后才去后端搜索。 */
 const SEARCH_DEBOUNCE_MS = 300;
 
-/** 默认是抽屉里的普通按钮；页面上传 `cx-secondary` / `cx-primary`。 */
-function Button({ children, className = "mg-button", danger, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { danger?: boolean }) {
-  return <button type="button" className={`${className} ${danger ? "mg-session-danger" : ""}`.trim()} {...props}>{children}</button>;
-}
 
 /** 复制后按钮短暂变成对勾；复制失败时记下是哪一个，由调用方显示提示。 */
 export function useCopyFeedback() {
@@ -260,8 +256,8 @@ export function ProjectSessionPage({
     {repairPanel}
     {relocation ? <SessionRelocateDrawer request={relocation} onClose={() => setRelocation(null)} onDone={(message, ok) => void relocated(message, ok)} /> : null}
     {detail ? <ManagementDrawer title={detail.title || t("未命名会话")} onClose={() => setDetail(null)} footer={<>
-      <Button onClick={() => void copy(`id:${detail.id}`, detail.id)}>{copied === `id:${detail.id}` ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}{copied === `id:${detail.id}` ? t("已复制") : copyFailed === `id:${detail.id}` ? t("复制失败") : t("复制会话 ID")}</Button>
-      <Button danger onClick={() => void deleteOne(detail)}><Trash2 size={14} aria-hidden="true" />{t("删除会话")}</Button>
+      <Button className="mg-button" onClick={() => void copy(`id:${detail.id}`, detail.id)}>{copied === `id:${detail.id}` ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}{copied === `id:${detail.id}` ? t("已复制") : copyFailed === `id:${detail.id}` ? t("复制失败") : t("复制会话 ID")}</Button>
+      <Button className="mg-button" danger onClick={() => void deleteOne(detail)}><Trash2 size={14} aria-hidden="true" />{t("删除会话")}</Button>
     </>}><dl className="mg-detail"><dt>{t("会话 ID")}</dt><dd>{detail.id}</dd><dt>{t("项目目录")}</dt><dd>{detail.cwd || "—"}</dd><dt>{t("模型供应商")}</dt><dd>{detail.modelProvider || "Codex"}</dd><dt>{t("状态")}</dt><dd>{detail.archived ? t("已归档") : t("未归档")}</dd><dt>{t("数据库")}</dt><dd>{detail.dbPath || "—"}</dd></dl></ManagementDrawer> : null}
   </div>;
 }

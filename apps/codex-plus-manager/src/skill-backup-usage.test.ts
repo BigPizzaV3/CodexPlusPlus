@@ -133,8 +133,8 @@ test("backup usage scans on opening and manual refresh, and labels incomplete re
 });
 
 test("clearing a missing backup sends missing-only intent after confirmation", async () => {
-  const managementSource = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-  const managementFile = ts.createSourceFile("ManagementExtra.tsx", managementSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const managementSource = readFileSync(new URL("./SkillsPage.tsx", import.meta.url), "utf8");
+  const managementFile = ts.createSourceFile("SkillsPage.tsx", managementSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   let initializer: ts.Expression | undefined;
   const visit = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) && node.name.getText(managementFile) === "deleteBackup") initializer = node.initializer;
@@ -165,8 +165,8 @@ test("clearing a missing backup sends missing-only intent after confirmation", a
 });
 
 test("a missing backup can be cleared but cannot be restored", () => {
-  const managementSource = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-  const managementFile = ts.createSourceFile("ManagementExtra.tsx", managementSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const managementSource = readFileSync(new URL("./SkillDrawers.tsx", import.meta.url), "utf8");
+  const managementFile = ts.createSourceFile("SkillDrawers.tsx", managementSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const component = managementFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillBackupList");
   assert.ok(component);
   const compiled = ts.transpileModule(`${component.getText(managementFile)}\nexports.render = SkillBackupList;`, {

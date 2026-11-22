@@ -12,8 +12,11 @@ type FixtureRepo = { owner: string; name: string; branch: string; subdir: string
 type FixtureBackup = { id: string; skillId: string; name: string; backedUpAt: string; backupPath?: string | null; restorePath?: string | null; purpose?: string | null; restoreBlockedReason?: string | null; deleteWarning?: string | null };
 type FixtureServer = { status: string; message: string; skills: FixtureSkill[]; inventoryOk: boolean; repos: FixtureRepo[]; repositorySkills: FixtureSkill[]; repoCounts: Record<string, number>; repoErrors: string[]; skillsDir: string; codexSkillsDir: string; backups: FixtureBackup[]; backupsOk: boolean };
 
-const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-const file = ts.createSourceFile("ManagementExtra.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const source = readFileSync(new URL("./SkillsPage.tsx", import.meta.url), "utf8");
+const file = ts.createSourceFile("SkillsPage.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+// 抽屉和来源标签等工具函数在 SkillDrawers.tsx。
+const drawerSource = readFileSync(new URL("./SkillDrawers.tsx", import.meta.url), "utf8");
+const drawerFile = ts.createSourceFile("SkillDrawers.tsx", drawerSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 const page = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillsPage");
 assert.ok(page);
 const code = ts.transpileModule(page.getText(file), {
@@ -25,19 +28,19 @@ assert.ok(cacheListener);
 const cacheListenerCode = ts.transpileModule(cacheListener.getText(file), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const sourceLabelNode = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "sourceLabel");
+const sourceLabelNode = drawerFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "sourceLabel");
 assert.ok(sourceLabelNode);
-const sourceLabelCode = ts.transpileModule(sourceLabelNode.getText(file), {
+const sourceLabelCode = ts.transpileModule(sourceLabelNode.getText(drawerFile).replace(/^export /, ""), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const detailNode = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillDetailDrawer");
+const detailNode = drawerFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillDetailDrawer");
 assert.ok(detailNode);
-const detailCode = "var Trash2 = 'Trash2';\n" + ts.transpileModule(detailNode.getText(file), {
+const detailCode = "var Trash2 = 'Trash2';\n" + ts.transpileModule(detailNode.getText(drawerFile).replace(/^export /, ""), {
   compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const backupListNode = file.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillBackupList");
+const backupListNode = drawerFile.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "SkillBackupList");
 assert.ok(backupListNode);
-const backupListCode = "var FolderOpen = 'FolderOpen';\n" + ts.transpileModule(backupListNode.getText(file), {
+const backupListCode = "var FolderOpen = 'FolderOpen';\n" + ts.transpileModule(backupListNode.getText(drawerFile).replace(/^export /, ""), {
   compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 },
 }).outputText;
 
@@ -299,7 +302,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, skillBatchRegistry: registry, skillPageCache: cache,
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async (message: string) => hooks.confirm ? hooks.confirm(message) : true,
   };
-  for (const name of ["Header", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
+  for (const name of ["PageHeader", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
     "SkillDetailDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillBackupsDrawer", "SkillInPlaceUpdateDrawer", "SkillDuplicatesDrawer", "SkillBundleExportDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   if (!shared?.cache) vm.runInContext(cacheListenerCode, context);

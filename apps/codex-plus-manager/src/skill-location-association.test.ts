@@ -7,8 +7,8 @@ import ts from "typescript";
 type Element = { type: any; props: Record<string, any>; children: any[] };
 
 test("each Agent installation associates its own repository path", () => {
-  const source = readFileSync(new URL("./ManagementExtra.tsx", import.meta.url), "utf8");
-  const file = ts.createSourceFile("ManagementExtra.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const source = readFileSync(new URL("./SkillDrawers.tsx", import.meta.url), "utf8");
+  const file = ts.createSourceFile("SkillDrawers.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const nodes = file.statements.filter((node) => ts.isFunctionDeclaration(node)
     && (node.name?.text === "repoFromKey" || node.name?.text === "SkillDetailDrawer"));
   const code = ts.transpileModule(nodes.map((node) => node.getText(file)).join("\n"), {

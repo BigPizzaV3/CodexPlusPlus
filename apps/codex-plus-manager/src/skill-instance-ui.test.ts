@@ -35,8 +35,8 @@ test("independent installations retain their own source and actions", () => {
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", CloudDownload: "CloudDownload", ExternalLink: "ExternalLink", ArrowRight: "ArrowRight", SkillFileTimes: "SkillFileTimes",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const skill = {
     id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
     conflict: "多个独立安装", conflictKind: "equal-independent",
@@ -97,8 +97,8 @@ test("a selectable physical installation associates its exact path with or witho
     ArrowRight: "ArrowRight", ExternalLink: "ExternalLink", Edit3: "Edit3",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   for (const [repoKey, label] of [
     ["", "关联 GitHub 仓库"],
     ["owner/repo@main", "修改 GitHub 仓库关联"],
@@ -133,8 +133,8 @@ test("multiple association targets stay tied to their locations", () => {
     ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const elements = collect(context.SkillDetailDrawer({
     skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
       managedSourceDir: "C:/managed/alpha", locations: [
@@ -161,8 +161,8 @@ test("Agent locations that share a source expose one association target", () => 
     ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const elements = collect(context.SkillDetailDrawer({
     skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
       locations: ["shared", "claude"].map((rootKind) => ({
@@ -185,8 +185,8 @@ test("a managed Agent copy points to the shared original alongside an independen
     ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes", CloudDownload: "CloudDownload",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const shared = { repoKey: "owner/repo@main", repoPath: ".agents/skills/alpha", locations: [
     { manifestPath: "C:/shared/alpha/SKILL.md", originalPath: "C:/shared/alpha", selectable: true,
       rootKind: "shared", managed: false, enabled: true },
@@ -217,8 +217,8 @@ test("the detail view displays the reason for an unknown location status", () =>
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const elements = collect(context.SkillDetailDrawer({
     skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
       locations: [{ manifestPath: "C:/agents/alpha/SKILL.md", rootKind: "shared", managed: false,
@@ -239,8 +239,8 @@ test("a conflicting unclaimed managed source has a path and file dates without a
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const elements = collect(context.SkillDetailDrawer({
     skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
       conflict: "内容不同", conflictKind: "independent", managedSourceDir: "C:/managed/alpha",
@@ -261,8 +261,8 @@ test("details display a comparison error at its installation without inventing a
     ManagementDrawer: "ManagementDrawer", Button: "Button", SkillFileTimes: "SkillFileTimes",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const elements = collect(context.SkillDetailDrawer({
     skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
       locations: [{ manifestPath: "C:/claude/alpha/SKILL.md", rootKind: "claude", managed: false, enabled: true }] },
@@ -281,8 +281,8 @@ test("a managed source directory is visible without a conflict", () => {
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const elements = collect(context.SkillDetailDrawer({
     skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
       managedSourceDir: "C:/managed/alpha", locations: [
@@ -310,8 +310,8 @@ test("an unused managed source reports its status without a name conflict", () =
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", Edit3: "Edit3", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const elements = collect(context.SkillDetailDrawer({
     skill: { id: "alpha", name: "Alpha", repoKey: "", description: "", installed: true, bundled: false,
       managedSourceDir: "C:/managed/alpha", managedSourceStatus: "different",
@@ -334,8 +334,8 @@ test("different agent variants describe the managed source without hiding real c
     ManagementDrawer: "ManagementDrawer", Button: "Button", Search: "Search", SkillFileTimes: "SkillFileTimes", FolderOpen: "FolderOpen",
   };
   vm.createContext(context);
-  vm.runInContext(component("./ManagementExtra.tsx", "repoFromKey"), context);
-  vm.runInContext(component("./ManagementExtra.tsx", "SkillDetailDrawer"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "repoFromKey"), context);
+  vm.runInContext(component("./SkillDrawers.tsx", "SkillDetailDrawer"), context);
   const locations = [
     { manifestPath: "C:/codex/alpha/SKILL.md", rootKind: "codex", managed: true, enabled: true },
     { manifestPath: "C:/claude/alpha/SKILL.md", rootKind: "claude", managed: false, enabled: true },

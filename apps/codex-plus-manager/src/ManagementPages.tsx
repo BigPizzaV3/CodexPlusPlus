@@ -1,10 +1,10 @@
 /** 页面结构、尺寸参考 cc-switch v7 (MIT), Jason Young / farion1231。
  * https://github.com/farion1231/cc-switch — Codex 写入使用本仓库的原有后端。
  */
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { BookOpen, MoreHorizontal, Plus, RefreshCw, Server, TriangleAlert, Upload, X } from "lucide-react";
+import { BookOpen, MoreHorizontal, Plus, RefreshCw, Search, Server, TriangleAlert, Upload, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AppSelect } from "./AppSelect";
@@ -24,6 +24,18 @@ const succeeded = (result: Result) => result.status === "ok";
 /** 弹窗底部的按钮：`primary` 是主操作，`danger` 是删除这类不可逆操作（红色，不用品牌色）。 */
 export function Action({ children, onClick, disabled, primary = false, danger = false, title }: { children: ReactNode; onClick: () => void; disabled?: boolean; primary?: boolean; danger?: boolean; title?: string }) {
   return <button type="button" className={`mg-button ${danger ? "mg-danger-button" : primary ? "mg-primary" : ""}`.trim()} onClick={onClick} disabled={disabled} title={title}>{children}</button>;
+}
+/**
+ * 管理页（会话、MCP、Skills）共用的按钮：默认 `cx-secondary`，`primary` 是 `cx-primary`；
+ * `className` 整体替换样式（抽屉底部用 `mg-button`）；`danger` 加上删除这类操作的红色样式。
+ */
+export function PageButton({ children, primary, danger, className, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { primary?: boolean; danger?: boolean }) {
+  const base = className ?? (primary ? "cx-primary" : "cx-secondary");
+  return <button type="button" className={danger ? `${base} mg-danger-button` : base} {...props}>{children}</button>;
+}
+/** 抽屉里的小搜索框（页面顶部的搜索用 CxToolbar）；有内容时带清除按钮。 */
+export function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
+  return <div className="mg-search"><Search size={14} aria-hidden="true" /><input aria-label={placeholder} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />{value && <IconAction label={t("清除搜索")} onClick={() => onChange("")}><X size={13} /></IconAction>}</div>;
 }
 function IconAction({ children, onClick, label, disabled }: { children: ReactNode; onClick: () => void; label: string; disabled?: boolean }) {
   return <button type="button" className="mg-icon-button" onClick={onClick} aria-label={label} title={label} disabled={disabled}>{children}</button>;
@@ -276,7 +288,7 @@ function mcpSummary(body: string) {
 type Pair = { key: string; value: string };
 type McpForm = { transport: "stdio" | "http"; command: string; args: string[]; env: Pair[]; cwd: string; url: string; httpHeaders: Pair[]; bearerToken: string; startupTimeoutSec: string; enabled: boolean; extraToml: string };
 const emptyMcp = (): McpForm => ({ transport: "stdio", command: "", args: [], env: [], cwd: "", url: "", httpHeaders: [], bearerToken: "", startupTimeoutSec: "", enabled: true, extraToml: "" });
-function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { return <label className="mg-field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>; }
+export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) { return <label className="mg-field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>; }
 function PairEditor({ label, pairs, onChange }: { label: string; pairs: Pair[]; onChange: (pairs: Pair[]) => void }) {
   return <section className="mg-field"><div className="mg-field-heading"><span>{label}</span><IconAction label={t("添加字段")} onClick={() => onChange([...pairs, { key: "", value: "" }])}><Plus size={15} /></IconAction></div>{pairs.map((pair, index) => <div className="mg-pair" key={index}><input aria-label={`${label} ${t("键名")} ${index + 1}`} placeholder="KEY" value={pair.key} onChange={(e) => onChange(pairs.map((p, i) => i === index ? { ...p, key: e.target.value } : p))} /><input aria-label={`${label} ${t("值")} ${index + 1}`} placeholder={t("值")} value={pair.value} onChange={(e) => onChange(pairs.map((p, i) => i === index ? { ...p, value: e.target.value } : p))} /><IconAction label={t("移除字段")} onClick={() => onChange(pairs.filter((_, i) => i !== index))}><X size={14} /></IconAction></div>)}</section>;
 }
