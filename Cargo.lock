@@ -510,8 +510,8 @@ dependencies = [
 
 [[package]]
 name = "claude-local"
-version = "0.1.12"
-source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=26fd340280b738004c0931c048239081f7f1fac4#26fd340280b738004c0931c048239081f7f1fac4"
+version = "0.1.14"
+source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=e341a973307052d557f3e78e167b7caa220db827#e341a973307052d557f3e78e167b7caa220db827"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -526,6 +526,7 @@ dependencies = [
  "url",
  "uuid",
  "windows 0.58.0",
+ "zip",
 ]
 
 [[package]]

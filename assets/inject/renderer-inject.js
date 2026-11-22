@@ -15362,6 +15362,8 @@ ${key} = ${value}`]);
       ...plain("codex", payload?.codexProviders),
       ...(payload?.codexAggregates ?? []).map((item) => ({ source: "aggregate", id: item.id, name: item.name, imported: item.imported })),
       ...plain("claude", payload?.claudeProviders),
+      ...plain("ccswitch", payload?.ccSwitchClaude),
+      ...plain("claudemom", payload?.claudeMomProfiles),
       ...plain("grok", payload?.grokProfiles),
       ...plain("opencode", payload?.opencodeKeys)
     ];

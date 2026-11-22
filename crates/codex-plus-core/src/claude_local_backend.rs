@@ -58,6 +58,77 @@ pub fn reap_stale_proxy(root: &Path) {
     claude_local::reap_stale_proxy(root);
 }
 
+/// 完整功能模式现在起不起得来上游：`None` 表示可用，否则是给人看的原因。
+/// 自动接管退出用户的 Claude 之前先问这一句，免得退了却启动不了（只读，不起网关、不写绑定）。
+pub fn upstream_problem() -> Option<String> {
+    ensure_host();
+    let config = match CodexPlusHost.load_config() {
+        Ok(config) => config,
+        Err(error) => return Some(format!("{error:#}")),
+    };
+    match CodexPlusHost.preview_upstream(&config) {
+        Ok(upstream) if upstream.ready() => None,
+        Ok(_) => Some("还没有可用的上游：先配置上游并选一个默认模型".to_string()),
+        Err(error) => Some(format!("{error:#}")),
+    }
+}
+
+/// 页面扩展（注入 Claude 页面的 js / css 包，格式与 ClaudeMom 相同，装在 Codex++ 的状态目录里）。
+/// 完整功能模式由本地服务插进页面；补丁副本在启动时由主进程 hook 注入（见 claude_localization）。
+pub use claude_local::extensions::{ExtensionInfo as PageExtensionInfo, Imported as PageExtensionImported, PageAsset};
+
+pub fn page_extensions() -> Vec<PageExtensionInfo> {
+    ensure_host();
+    claude_local::extensions::list()
+}
+
+pub fn set_page_extension_enabled(id: &str, enabled: bool) -> Result<Vec<PageExtensionInfo>> {
+    ensure_host();
+    claude_local::extensions::set_enabled(id, enabled)
+}
+
+pub fn import_page_extension(source: &Path) -> Result<PageExtensionImported> {
+    ensure_host();
+    claude_local::extensions::import(source)
+}
+
+pub fn remove_page_extension(id: &str) -> Result<String> {
+    ensure_host();
+    claude_local::extensions::remove(id)
+}
+
+pub fn open_page_extension_folder() -> Result<()> {
+    ensure_host();
+    claude_local::extensions::open_folder()
+}
+
+pub fn page_extension_assets() -> Vec<PageAsset> {
+    ensure_host();
+    claude_local::extensions::enabled_assets()
+}
+
+/// 补丁副本里经环境变量生效的增强：Claude Code 的 Bash 时限，以及 Codex++ 的 Claude 拓展插件。
+/// Cowork 的 Bash 时限要改主进程代码，只有副本做得到，这里不管。
+fn enhancement_env(
+    settings: &crate::settings::BackendSettings,
+    plugin: impl FnOnce() -> Result<PathBuf>,
+) -> Result<Vec<(String, String)>> {
+    let mut env: Vec<(String, String)> = settings
+        .claude_app_bash_timeout
+        .environment()
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), value))
+        .collect();
+    if settings.claude_app_extensions {
+        let dirs = crate::claude_localization::merged_plugin_dirs(
+            std::env::var_os("CLAUDE_CODE_PLUGIN_DIRS").as_deref(),
+            &plugin()?,
+        )?;
+        env.push(("CLAUDE_CODE_PLUGIN_DIRS".to_string(), dirs.to_string_lossy().into_owned()));
+    }
+    Ok(env)
+}
+
 struct CodexPlusHost;
 
 impl Host for CodexPlusHost {
@@ -92,7 +163,12 @@ impl Host for CodexPlusHost {
         let port = crate::protocol_proxy::ensure_protocol_proxy_port_available();
         crate::resident_helper::ensure_resident_helper(port)?;
         let (gateway, binding) = bind_gateway(&GatewayStore::default(), config)?;
-        Ok(upstream_for(&gateway, &binding, config, port))
+        let mut upstream = upstream_for(&gateway, &binding, config, port);
+        // 补丁副本里靠环境变量生效的两项，完整功能模式启动时也带上。
+        upstream.extra_env.extend(enhancement_env(&SettingsStore::default().load()?, || {
+            crate::extension_claude::prepare_managed_plugin()
+        })?);
+        Ok(upstream)
     }
 
     /// 与拆分前一致：可用模型、交给 Claude 的窗口、选中的模型变了才要重启（令牌、端口不算）。
@@ -816,5 +892,24 @@ mod tests {
             &Some("openai/small-model".to_string()),
         );
         assert_ne!(initial, changed_model, "「Agent 接入」换了模型也要重启代理");
+    }
+
+    /// 完整功能模式补上副本里经环境变量生效的两项：开关关着时什么都不加，也不生成插件。
+    #[test]
+    fn full_mode_carries_bash_timeout_and_claude_extensions_env() {
+        let mut settings = crate::settings::BackendSettings::default();
+        let untouched = enhancement_env(&settings, || panic!("拓展关着时不该生成插件")).unwrap();
+        assert!(untouched.is_empty());
+
+        let plugin = tempfile::tempdir().unwrap();
+        settings.claude_app_bash_timeout.enabled = true;
+        settings.claude_app_bash_timeout.default_seconds = 300;
+        settings.claude_app_bash_timeout.max_enabled = false;
+        settings.claude_app_extensions = true;
+        let env = enhancement_env(&settings, || Ok(plugin.path().to_path_buf())).unwrap();
+        assert_eq!(env[0], ("BASH_DEFAULT_TIMEOUT_MS".to_string(), "300000".to_string()));
+        assert!(!env.iter().any(|(name, _)| name == "BASH_MAX_TIMEOUT_MS"));
+        let dirs = &env.iter().find(|(name, _)| name == "CLAUDE_CODE_PLUGIN_DIRS").unwrap().1;
+        assert!(std::env::split_paths(dirs).any(|path| path == plugin.path()));
     }
 }

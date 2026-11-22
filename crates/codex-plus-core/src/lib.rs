@@ -16,11 +16,14 @@ pub mod builtin_takeover;
 pub mod bundled_extensions;
 pub mod ccs_import;
 pub mod cdp;
+pub mod claude_auto_takeover;
 #[cfg(any(target_os = "windows", test))]
 mod claude_ion_asar;
 pub mod claude_hooks;
 pub mod claude_local_backend;
 pub mod claude_localization;
+pub mod claude_page_market;
+pub mod claude_provider_sources;
 pub mod codex_app_state;
 pub mod codex_cli_version;
 pub mod config_doctor;

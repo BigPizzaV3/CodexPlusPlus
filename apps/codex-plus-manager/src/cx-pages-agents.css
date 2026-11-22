@@ -701,3 +701,10 @@
 :root .shell .weixin-autosave [role="status"] {
   display: none;
 }
+
+/* Desktop 增强页「供应商」标题右侧的导入 / 添加两个按钮 */
+:root .shell .claude-providers-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

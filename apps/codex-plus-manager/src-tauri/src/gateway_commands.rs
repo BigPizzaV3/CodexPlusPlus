@@ -188,6 +188,10 @@ pub struct GatewayPayload {
     /// 能在网关里登录的私有接口订阅（Cursor、Kiro 等）。
     pub subscriptions: Vec<codex_plus_core::gateway::subscriptions::SubscriptionView>,
     pub claude_providers: Vec<GatewaySourceEntry>,
+    /// CC Switch 里的 Claude / Claude Desktop 供应商（Anthropic 或 OpenAI Chat 格式），可以复制进网关。
+    pub cc_switch_claude: Vec<GatewaySourceEntry>,
+    /// ClaudeMom 的上游，可以复制进网关。
+    pub claude_mom_profiles: Vec<GatewaySourceEntry>,
     pub grok_profiles: Vec<GatewaySourceEntry>,
     /// OpenCode 自己保存的 OpenCode Go / Zen Key（不含 Key 本身）。
     pub opencode_keys: Vec<GatewaySourceEntry>,
@@ -502,6 +506,8 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         codex_providers,
         subscriptions: codex_plus_core::gateway::subscriptions::views(),
         claude_providers,
+        cc_switch_claude: source_entries(codex_plus_core::claude_provider_sources::cc_switch_entries()),
+        claude_mom_profiles: source_entries(codex_plus_core::claude_provider_sources::claude_mom_entries()),
         grok_profiles,
         opencode_keys: codex_plus_core::gateway::opencode::load_stored_keys()
             .into_iter()
@@ -2214,9 +2220,15 @@ pub async fn import_gateway_providers(
     }
 }
 
-/// 从直连模式复制一项进池：`codex` / `claude` / `grok`。
+fn source_entries(entries: Vec<codex_plus_core::claude_provider_sources::SourceEntry>) -> Vec<GatewaySourceEntry> {
+    entries.into_iter().map(|entry| GatewaySourceEntry { id: entry.id, name: entry.name }).collect()
+}
+
+/// 从直连模式复制一项进池：`codex` / `claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商。
 fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow::Result<String> {
     let relay = match source {
+        "ccswitch" => codex_plus_core::claude_provider_sources::cc_switch_relay(id)?,
+        "claudemom" => codex_plus_core::claude_provider_sources::claude_mom_relay(id)?,
         "codex" => apply::copy_codex_provider(&SettingsStore::default().load()?, id)?,
         "claude" => {
             let provider = claude::load(&ClaudeContext::default_paths())?

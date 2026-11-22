@@ -3,6 +3,7 @@ mod extension_creator_commands;
 mod agent_launch_commands;
 mod agent_mcp_commands;
 mod auto_takeover;
+mod claude_auto_takeover;
 pub mod commands;
 mod computer_use_commands;
 mod config_doctor_commands;
@@ -377,6 +378,8 @@ pub fn run() {
             gateway_commands::start_model_watch();
             // 自动接管官方 App（默认关闭）：设置里开着才起守护线程。
             auto_takeover::start_supervisor();
+            // Claude 自动接管（默认关闭，只在完整功能模式下动作）：同上，开着才起守护线程。
+            claude_auto_takeover::start_supervisor();
             if let Err(error) = global_dictation::apply_config() {
                 let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
                     "dictation.global_hotkey_start_failed",
@@ -426,6 +429,16 @@ pub fn run() {
             commands::claude_localization_set_localization,
             commands::claude_localization_set_computer_use,
             commands::claude_localization_set_bash_timeout,
+            commands::claude_enhance_status,
+            commands::claude_enhance_set_delivery,
+            commands::claude_enhance_set_bash_timeout,
+            commands::claude_page_extensions,
+            commands::claude_page_extension_enable,
+            commands::claude_page_extension_import,
+            commands::claude_page_extension_remove,
+            commands::claude_page_extension_open_folder,
+            commands::claude_page_extension_market,
+            commands::claude_page_extension_install,
             computer_use_commands::computer_use_status,
             computer_use_commands::computer_use_install,
             computer_use_commands::computer_use_uninstall,
@@ -646,6 +659,11 @@ pub fn run() {
             commands::load_auto_takeover_state,
             commands::take_over_codex_now,
             commands::pause_auto_takeover_for_instance,
+            // Claude 自动接管：同样只能靠这里注册（契约测试会守）。
+            commands::load_claude_auto_takeover_state,
+            commands::set_claude_auto_takeover,
+            commands::take_over_claude_now,
+            commands::pause_claude_auto_takeover_for_instance,
             commands::read_latest_logs,
             commands::clear_logs,
             commands::scan_agent_cache,
@@ -724,6 +742,7 @@ pub fn run() {
                 record_shutdown_entry("app.exit_requested", detail);
                 if start_shutdown {
                     auto_takeover::stop_supervisor();
+                    claude_auto_takeover::stop_supervisor();
                     let app = app_handle.clone();
                     tauri::async_runtime::spawn_blocking(move || {
                         // 退出前先等待自有 CLI 任务清理，避免进程退出后遗留执行器。

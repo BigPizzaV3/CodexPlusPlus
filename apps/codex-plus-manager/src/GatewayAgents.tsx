@@ -1204,6 +1204,55 @@ async function persistFavorites(models: string[]) {
 }
 
 /** Agent 行右侧的模型下拉。 */
+/**
+ * 只有模型选择器的一个 Agent：别的页面（Desktop 增强页）用来选这个 Agent 的默认模型，和「Agent 接入」那一行同一个下拉、同一套保存。
+ * 选完即接入（与 Agent 接入页一致）；Agent 自带的模型不在这里切（那要先断开还原，去 Agent 接入页做）。
+ */
+export function AgentModelPicker({ agentId, payload, busy, run, notify }: {
+  agentId: GatewayAgentId;
+  payload: GatewayPayload | null;
+  busy: string | null;
+  run: Run;
+  notify: Notify;
+}) {
+  const agent = payload?.agents.find((item) => item.agent === agentId);
+  const binding = payload?.gateway.bindings[agentId];
+  const [draft, setDraft] = useState<BindingDraft>(() => draftFromBinding(binding));
+  const [open, setOpen] = useState(false);
+  const bindingKey = JSON.stringify(binding ?? null);
+  useEffect(() => {
+    setDraft(draftFromBinding(binding));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bindingKey]);
+  if (!agent) return null;
+  const connected = agent.enabled;
+  const pick = async (item: PickerItem) => {
+    setOpen(false);
+    const next = { ...draft, model: item.providerModel ?? item.model };
+    const error = validateDraft(next, payload, connected ? binding?.model : undefined, null);
+    if (error) {
+      void notify(t("还不能接入"), t(error), "warning");
+      return;
+    }
+    setDraft(next);
+    const saved = await run(`save:${agentId}`, "save_gateway_binding", { agent: agentId, binding: bindingFromDraft(next, binding, item) }, t("保存网关绑定"), connected);
+    if (!saved) setDraft(draft);
+  };
+  return (
+    <ModelPicker
+      agent={agent}
+      connected={connected}
+      draft={draft}
+      onDisconnect={() => setOpen(false)}
+      onOpenChange={(next) => { if (busy === null || !next) setOpen(next); }}
+      onPick={(item) => void pick(item)}
+      onPickOwn={() => setOpen(false)}
+      open={open}
+      payload={payload}
+    />
+  );
+}
+
 function ModelPicker({
   agent,
   payload,

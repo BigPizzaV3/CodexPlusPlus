@@ -1219,6 +1219,10 @@ pub struct BackendSettings {
     /// 原版 Claude 的本地兼容服务，与增强副本的开关独立，默认不接管启动。
     #[serde(rename = "claudeDesktopLocal", default)]
     pub claude_desktop_local: ClaudeLocalSettings,
+    /// Claude Desktop 自动接管（默认关闭）：启动模式是完整功能模式时，用户自己打开的官方 Claude
+    /// 会被退出、再经本地服务重开。3p 模式和补丁副本不接管，见 `claude_auto_takeover`。
+    #[serde(rename = "claudeAppAutoTakeover", default)]
+    pub claude_app_auto_takeover: bool,
     // 默认开启：只在受管副本的页面里加一个语音入口，识别走 Codex++ 自己的听写服务，
     // 不改官方应用、不动输入框已有内容；关掉只是没有入口，已运行的副本需重启才生效。
     #[serde(rename = "claudeAppVoiceInput", default = "default_true")]
@@ -1236,6 +1240,10 @@ pub struct BackendSettings {
     pub claude_app_computer_use: bool,
     #[serde(rename = "claudeAppBashTimeout", default)]
     pub claude_app_bash_timeout: ClaudeBashTimeoutSettings,
+    /// Claude 增强的生效方式：`full`（完整功能模式，本地服务注入）或 `copy`（补丁副本，启动时注入）。
+    /// 没写过时按现状推断，见 `claude_localization::enhance_delivery`。
+    #[serde(rename = "claudeEnhanceDelivery", default, skip_serializing_if = "Option::is_none")]
+    pub claude_enhance_delivery: Option<String>,
     /// Codex++ Computer Use 的审批策略。
     ///
     /// - `auto`（默认）：代理就地放行，只留痕。适合信任调用方、只想少弹窗的场景。
@@ -1627,11 +1635,13 @@ impl Default for BackendSettings {
             usage_history_enabled: false,
             codex_app_proxy_request_status: true,
             claude_desktop_local: ClaudeLocalSettings::default(),
+            claude_app_auto_takeover: false,
             claude_app_voice_input: true,
             claude_app_localization: true,
             claude_app_extensions: false,
             claude_app_computer_use: false,
             claude_app_bash_timeout: ClaudeBashTimeoutSettings::default(),
+            claude_enhance_delivery: None,
             computer_use_approval: default_computer_use_approval(),
             computer_use_mode: default_computer_use_mode(),
             computer_use_pip: true,
@@ -2980,6 +2990,7 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         target.insert("dictation".to_string(), Value::Object(dictation));
     }
     merge_bool_setting(target, source, "claudeAppExtensions");
+    merge_bool_setting(target, source, "claudeAppAutoTakeover");
     merge_bool_setting(target, source, "relayPreserveNonproviderSettings");
     target.remove("codexAppPluginAutoExpand");
     target.remove("computerUseGuardEnabled");
@@ -6403,6 +6414,25 @@ experimental_bearer_token = "sk-existing""#
         let reloaded = store.load().unwrap();
         assert!(reloaded.codex_app_auto_takeover);
         assert_eq!(reloaded.codex_app_auto_takeover_when_active, "immediate");
+    }
+
+    // Claude 的自动接管开关：默认关闭，老配置缺键按关闭，经 update 能写进同一份 settings.json。
+    #[test]
+    fn claude_auto_takeover_setting_is_off_by_default_and_round_trips() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = SettingsStore::new(temp.path().join("settings.json"));
+        assert!(!BackendSettings::default().claude_app_auto_takeover);
+        store.save(&BackendSettings::default()).unwrap();
+        let mut raw: Value = serde_json::from_slice(&std::fs::read(temp.path().join("settings.json")).unwrap()).unwrap();
+        raw.as_object_mut().unwrap().remove("claudeAppAutoTakeover");
+        let legacy: BackendSettings = serde_json::from_value(raw).unwrap();
+        assert!(!legacy.claude_app_auto_takeover, "缺键时必须按关闭处理");
+
+        let updated = store.update(json!({ "claudeAppAutoTakeover": true })).unwrap();
+        assert!(updated.claude_app_auto_takeover);
+        assert!(store.load().unwrap().claude_app_auto_takeover);
+        // 不影响 Codex 的开关。
+        assert!(!store.load().unwrap().codex_app_auto_takeover);
     }
 
     #[test]

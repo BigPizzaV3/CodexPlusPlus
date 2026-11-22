@@ -73,6 +73,7 @@ function harness() {
     agentName: (value: string) => value,
     singleAgent, providersHidden, pageVisibleForTool,
     useGatewayPayload: () => null,
+    useClaudeEnhance: () => null,
     useState: () => [[], () => {}],
     loadCollapsedGroups: () => [],
     getLanguage: () => "zh",
@@ -172,7 +173,8 @@ function extensionHarness() {
   let cursor = 0;
   const calls: Array<[string, ...unknown[]]> = [];
   const context = vm.createContext({
-    ...Object.fromEntries([...icons, ...componentNames].map((name) => [name, name])),
+    ...Object.fromEntries([...icons, ...componentNames, "ClaudePageExtensions"].map((name) => [name, name])),
+    useClaudeEnhance: () => null,
     React: {
       Fragment: "Fragment",
       createElement: (type: Element["type"], props: object | null, ...children: unknown[]) => ({ type, props: { ...props, children } }),
@@ -300,20 +302,32 @@ test("拓展页宿主切换遵守只管理 Codex 模式（只有一个宿主时�
 
 test("Claude 页只显示已声明适配的本地包，并按 Claude 开关排序", () => {
   const h = extensionHarness();
-  const nodes = elements(h.render("UserScriptsScreen", extensionScreenProps(h, "claude")));
+  const props = extensionScreenProps(h, "claude");
+  // Claude 下先显示页面扩展（格式和市场与 ClaudeMom 相同）；一排胶囊由它出，第三个是 Claude Code 拓展。
+  let nodes = elements(h.render("UserScriptsScreen", props));
+  const page = nodes.find((node) => node.type === "ClaudePageExtensions");
+  assert.ok(page);
+  assert.equal(page.props.pane, "installed");
+  assert.equal(page.props.codeCount, 2);
+  assert.equal(nodes.some((node) => node.type === h.context.ScriptRow), false);
+  assert.equal(nodes.some((node) => node.type === "CxFilters"), false, "不再有第二排胶囊");
+  page.props.onPaneChange("code");
+  nodes = elements(h.render("UserScriptsScreen", props));
+  assert.equal(nodes.find((node) => node.type === "ClaudePageExtensions")?.props.pane, "code", "胶囊那排还在");
   const rows = nodes.filter((node) => node.type === h.context.ScriptRow);
   assert.deepEqual(rows.map((node) => node.props.script.key), ["user:claude-on", "user:claude-off"]);
   assert.ok(rows.every((node) => node.props.host === "claude" && node.props.globalEnabled === true));
   // 「已启用」「未启用」两节按 Claude 开关分组，数量就是原来摘要里的「已启用 N 个」。
   const sections = nodes.filter((node) => node.type === "CxSection").map((node) => [node.props.title, node.props.count]);
   assert.deepEqual(sections, [["已启用", 1], ["未启用", 1]]);
-  for (const component of ["ExtensionCreatorCard", "CuratedPackagesSection", "CommunityExtensionsPanel", "MyPublishedPanel", "DshPluginsPanel", "BuiltinExtensionsSummary", "CxFilters"]) {
+  for (const component of ["ExtensionCreatorCard", "CuratedPackagesSection", "CommunityExtensionsPanel", "MyPublishedPanel", "DshPluginsPanel", "BuiltinExtensionsSummary"]) {
     assert.equal(nodes.some((node) => node.type === component), false, component);
   }
   assert.equal(nodes.some((node) => node.type === "MenuItem" && elementText(node) === "下次启动跳过拓展"), false);
   assert.equal(nodes.some((node) => node.props.role === "tab"), false);
   assert.equal(nodes.some((node) => node.type === "button" && elementText(node).includes("热重载拓展")), false);
-  const open = nodes.find((node) => node.type === "button" && elementText(node).includes("Claude 补丁版"));
+  // 生效方式没读到时按完整功能模式，按钮去 Desktop 增强页；补丁副本时叫「Claude 补丁版」。
+  const open = nodes.find((node) => node.type === "button" && elementText(node).includes("Desktop 增强"));
   assert.ok(open);
   open.props.onClick();
   assert.deepEqual(h.calls, [["openClaude"]]);
@@ -606,6 +620,8 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppComputerUse: true,
     claudeAppBashTimeout: 900000,
     claudeDesktopLocal: { enabled: true, model: "claude-test", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
+    // Claude 自动接管的开关由 set_claude_auto_takeover 单独写入。
+    claudeAppAutoTakeover: true,
     // #2937：记下使用模式也由后端单独写入，表单要跟上，否则下一次整份保存会写回旧值。
     managerAgentFocus: "enhance",
     nativeAuthSelection: { mode: "account", accountRef: "fixture-b" },
@@ -621,6 +637,7 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
     claudeAppComputerUse: false,
     claudeAppBashTimeout: 60000,
     claudeDesktopLocal: { enabled: false, model: "", localization: true, voiceInput: false, computerUse: false, backgroundMode: false },
+    claudeAppAutoTakeover: false,
     managerAgentFocus: "",
     nativeAuthSelection: { mode: "account", accountRef: "fixture-a" },
     theme: "unsaved-theme",

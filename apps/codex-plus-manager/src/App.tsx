@@ -137,6 +137,10 @@ import { MyPublishedPanel } from "./MyPublishedPanel";
 import { AgentIcon, SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
+import { ClaudePageExtensions } from "./ClaudePageExtensions";
+import { ClaudeProviders } from "./ClaudeProviders";
+import { ClaudeAutoTakeoverRow } from "./ClaudeAutoTakeover";
+import { patchClaudeEnhance, saveClaudeBashTimeout, setClaudeDelivery, useClaudeEnhance, type ClaudeDelivery } from "./claude-enhance";
 import { DisplaySettings } from "./DisplaySettings";
 import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
@@ -519,6 +523,8 @@ export type BackendSettings = WhaleBalanceSettings & {
   /** 自动接管官方 App（与 Rust `codex_app_auto_takeover` 对应）。 */
   codexAppAutoTakeover: boolean;
   codexAppAutoTakeoverWhenActive: string;
+  /** Claude Desktop 自动接管（与 Rust `claude_app_auto_takeover` 对应，只在完整功能模式下动作）。 */
+  claudeAppAutoTakeover: boolean;
   claudeAppExtensions?: boolean;
   claudeDesktopLocal?: ClaudeLocalConfig;
   codexExtraArgs: string[];
@@ -1621,6 +1627,7 @@ const defaultSettings: BackendSettings = {
   codexAppPath: "",
   codexAppAutoTakeover: false,
   codexAppAutoTakeoverWhenActive: "defer",
+  claudeAppAutoTakeover: false,
   claudeDesktopLocal: { enabled: false, model: "", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
   codexExtraArgs: [],
   dictation: defaultDictationSettings(),
@@ -2109,6 +2116,8 @@ export function App() {
         for (const key of [
           "computerUseMode", "computerUseApproval", "computerUsePip",
           "claudeAppVoiceInput", "claudeAppLocalization", "claudeAppExtensions", "claudeAppComputerUse", "claudeAppBashTimeout", "claudeDesktopLocal",
+          // Claude 自动接管的开关也是后端单独写的（set_claude_auto_takeover）。
+          "claudeAppAutoTakeover",
           // 使用模式也要带上：表单留着旧值，下一次整份保存会把刚记下的模式写回去。
           "managerAgentFocus",
           "nativeAuthSelection",
@@ -4913,6 +4922,8 @@ export function App() {
           ) : null}
           {route === "claude" ? (
             <ClaudeLocalizationScreen
+              notify={actions.showMessage}
+              onNavigate={(next) => void navigate(next)}
               onLocalStatus={(status) => {
                 // 页面里启动 / 停止后，侧栏 Claude 行的播放键立刻跟着变，不用轮询。
                 claudeLocalMemo.status = status;
@@ -4920,7 +4931,7 @@ export function App() {
               }}
             />
           ) : null}
-          {route === "claudePatch" ? <ClaudeLocalizationScreen mode="patch" /> : null}
+          {route === "claudePatch" ? <ClaudeLocalizationScreen mode="patch" onNavigate={(next) => void navigate(next)} /> : null}
           {/* 只管理 Codex 时没有 Agent 页签，直接是 Codex 的完整会话管理。 */}
           {route === "sessions" && !soloAgent ? <SessionAgentTabs onChange={setSessionTab} value={sessionTab} /> : null}
           {route === "sessions" && shownSessionTab !== "codex" ? (
@@ -8711,7 +8722,10 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
   const [search, setSearch] = useState("");
   const [communitySort, setCommunitySort] = useState<CommunitySort>("stars");
   const [codexPane, setPane] = useState<"market" | "community" | "local" | "mine" | "dsh">("market");
-  const pane = codexHost ? codexPane : "local";
+  // Claude 下分两类：注入 Claude 页面的页面扩展（格式和扩展市场与 ClaudeMom 相同），和声明适配 Claude Code 的 Codex++ 拓展。
+  const [claudePane, setClaudePane] = useState<"installed" | "market" | "code">("installed");
+  const claudeEnhance = useClaudeEnhance();
+  const pane = codexHost ? codexPane : claudePane === "code" ? "local" : "page";
   // 直接打开本页（命令面板、深链）时市场可能还没读过，自动读一次，不再要用户点「刷新」。
   useEffect(() => {
     if (codexHost && !market) void actions.refreshScriptMarket();
@@ -8812,7 +8826,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
           {t("热重载拓展")}
         </button> : <button className="cx-secondary" onClick={onOpenClaude} type="button">
           <AppWindow />
-          {t("Claude 补丁版")}
+          {t("Desktop 增强")}
         </button>}
         {/* 不常用的整体开关收进三点菜单；关着时页面顶部会有一条提示带「启用」。 */}
         <Menu label={t("更多操作")}>
@@ -8827,7 +8841,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
         {codexHost ? <ExtensionCreatorCard /> : null}
       </CxToolbar>
       {/* 顶部最多一条状态提示：整体关闭优先，其次是「下次启动跳过」。 */}
-      {inventory && !localEnabled ? (
+      {pane === "page" ? null : inventory && !localEnabled ? (
         <CxBanner
           detail={codexHost ? t("拓展开着，但「启用本地拓展」整体开关关着，暂不注入") : t("重启 Claude 补丁版后应用")}
           icon={<PowerOff />}
@@ -8841,8 +8855,19 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
           <button className="cx-secondary" onClick={() => void actions.setUserScriptsSkipNextStart(false)} type="button">{t("取消跳过")}</button>
         </CxBanner>
       ) : null}
-      {codexHost ? <CxFilters items={panes} label={t("拓展")} onChange={setPane} trailing={sortControl} value={pane} /> : null}
-      {pane === "market" ? (
+      {codexHost ? <CxFilters items={panes} label={t("拓展")} onChange={setPane} trailing={sortControl} value={codexPane} /> : (
+        // 和 Codex 一样一排胶囊：页面扩展的已安装 / 扩展市场，加上 Claude Code 拓展；页面扩展组件自己管这排胶囊和列表。
+        <ClaudePageExtensions
+          codeCount={scripts.length}
+          delivery={claudeEnhance?.delivery ?? null}
+          notify={(title, message, status) => void actions.showMessage(title, message, status === "ok" ? "ok" : "failed")}
+          onOpenUrl={(url) => void actions.openExternalUrl(url)}
+          onPaneChange={setClaudePane}
+          pane={claudePane}
+          search={search}
+        />
+      )}
+      {pane === "page" ? null : pane === "market" ? (
         <CuratedPackagesSection
           blockedInstalled={market?.market.blockedInstalled ?? []}
           emptyText={market?.status === "failed" ? market.message : t("正在读取拓展市场…")}
@@ -9445,7 +9470,7 @@ function HomeScreen({
         takeoverRow,
       ];
     }
-    return (
+    const row = (
       <CxRow
         detail={viaGateway ? t("已经通过 Codex++ 网关接入") : gatewayInUse ? t("未接入网关") : t("直连")}
         icon={<CxStatusIcon tone={viaGateway ? "ok" : "off"}><AgentGlyph agent={tool.id} className="home-agent-glyph" /></CxStatusIcon>}
@@ -9458,6 +9483,10 @@ function HomeScreen({
         )}
       </CxRow>
     );
+    // Claude 那一行下面跟它的自动接管（只在完整功能模式下动作），和 Codex 行一样。
+    return tool.id === "claude"
+      ? [row, <ClaudeAutoTakeoverRow key="claude-auto-takeover" loginReminder onEnableLogin={() => actions.setWatcherEnabled(true)} showIcon />]
+      : row;
   };
 
   const gatewayDetail = gateway?.helperRunning
@@ -14574,19 +14603,34 @@ const claudeLocalizationMemo: {
  *   Bash 时限）；不渲染本地状态那部分，副本块常开。
  */
 function ClaudeLocalizationScreen(
-  { mode = "local", onLocalStatus }: {
+  { mode = "local", onLocalStatus, onNavigate, notify }: {
     mode?: "local" | "patch";
+    /** 供应商那一块的操作结果提示（App 的 showMessage）；不传就不显示供应商那一块。 */
+    notify?: (title: string, message: string, status?: Status) => Promise<void>;
     /** 每次读到新的原版本地状态（检测、启动、停止、配置）时交给 App，侧栏的播放键要跟着变。 */
     onLocalStatus?: (status: CommandResult<ClaudeLocalStatus>) => void;
+    /** 两种生效方式之间互相跳转（Desktop 增强 ↔ 补丁 Desktop）。 */
+    onNavigate?: (route: Route) => void;
   } = {},
 ) {
   const patchOnly = mode === "patch";
+  const enhance = useClaudeEnhance();
+  const delivery = enhance?.delivery ?? null;
+  const [deliveryBusy, setDeliveryBusy] = useState(false);
+  const chooseDelivery = async (next: ClaudeDelivery) => {
+    if (deliveryBusy || next === delivery) return true;
+    setDeliveryBusy(true);
+    try { await setClaudeDelivery(next); return true; }
+    catch (cause) { if (mounted.current) setLocalError(stringifyError(cause)); return false; }
+    finally { if (mounted.current) setDeliveryBusy(false); }
+  };
   const [status, setStatus] = useState<CommandResult<ClaudeLocalizationStatus> | null>(claudeLocalizationMemo.status);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  /** 补丁页里副本块恒开；「Desktop 增强」页收起时就不轮询副本状态，避免白跑检测。 */
-  const advancedShown = patchOnly || advancedOpen;
+  /** 补丁页里副本块恒开；启动模式选了补丁副本时，Desktop 增强页直接把副本块搬进来；其余情况不轮询副本状态，避免白跑检测。 */
+  const copyInline = !patchOnly && delivery === "copy";
+  const advancedShown = patchOnly || advancedOpen || copyInline;
   const [localStatus, setLocalStatus] = useState<CommandResult<ClaudeLocalStatus> | null>(claudeLocalMemo.status);
   const [localBusy, setLocalBusy] = useState<string | null>(claudeLocalMemo.autoDetected ? null : "detect");
   const [localError, setLocalError] = useState<string | null>(null);
@@ -14836,6 +14880,7 @@ function ClaudeLocalizationScreen(
         );
         if (result.status !== "ok") throw new Error(result.message);
         confirmed = result.bashTimeout;
+        patchClaudeEnhance({ bashTimeout: result.bashTimeout });
         claudeLocalizationMemo.status = result;
         if (mounted.current) setStatus(result);
         if (!bashTimeoutQueued.current) accept(result);
@@ -14927,6 +14972,13 @@ function ClaudeLocalizationScreen(
         : t("制作补丁版");
   const prepareHint = t("首次制作会创建独立副本并执行完整性校验；官方应用、登录态和 app.asar 不会被改写。macOS 可能需要钥匙串授权，Windows 会使用独立副本启动。");
   const local = localStatus;
+  const claudeLaunch: "3p" | "full" | "copy" = delivery === "copy" ? "copy" : local?.config.enabled ? "full" : "3p";
+  const chooseClaudeLaunch = async (next: string) => {
+    if (next === "copy") { await chooseDelivery("copy"); return; }
+    // 从补丁副本换回原版启动：先把生效方式改回完整功能模式（3p 不注入，生效方式的值不影响它）。
+    if (delivery === "copy" && !(await chooseDelivery("full"))) return;
+    if (local && local.config.enabled !== (next === "full")) await configureLocal({ ...local.config, enabled: next === "full" });
+  };
   const localState = !local ? t("未检测")
     : local.connected ? t("本地模式已连接")
       : local.claudeRunning ? (local.config.enabled ? t("原版运行，未连接本地服务") : t("原版已运行"))
@@ -14948,21 +15000,33 @@ function ClaudeLocalizationScreen(
     <div className="claude-localization-page cx-page">
       {!patchOnly && topbarSlot
         ? createPortal(
-            <Button
-              disabled={localDisabled || !canLaunchOriginal}
-              onClick={() => void localAction("launch")}
-              title={t("启动原版 Claude Desktop")}
-            >
-              <Rocket className="h-4 w-4" />
-              {localBusy === "launch" ? t("启动中…") : t("启动 Claude")}
-            </Button>,
+            claudeLaunch === "copy" ? (
+              <Button
+                disabled={busy !== null || localBusy !== null || !canLaunch}
+                onClick={() => void launchEnhanced()}
+                title={needsPrepare ? t("制作副本并启动补丁版") : t("启动补丁版")}
+              >
+                <Rocket className="h-4 w-4" />
+                {busy === "launch" ? t("启动中…") : busy === "prepare" ? t("制作中…") : t("启动补丁版")}
+              </Button>
+            ) : (
+              <Button
+                disabled={localDisabled || !canLaunchOriginal}
+                onClick={() => void localAction("launch")}
+                title={t("启动原版 Claude Desktop")}
+              >
+                <Rocket className="h-4 w-4" />
+                {localBusy === "launch" ? t("启动中…") : t("启动 Claude")}
+              </Button>
+            ),
             topbarSlot,
           )
         : null}
       {!patchOnly && localError ? <div className="claude-l10n-error" role="alert">{localError}</div> : null}
-      {!patchOnly && local?.warning ? <div className="claude-l10n-warning" role="status">{local.warning}</div> : null}
-      {!patchOnly && local?.needsRestart ? <p className="claude-l10n-hint" role="status">{t("设置已保存，完全退出 Claude 后重新启动。")}</p> : null}
-      {!patchOnly ? <CxCard className="claude-l10n-hero">
+      {/* 本地服务的提示（没有可用模型、待重启）只和原版启动有关，补丁副本时不显示。 */}
+      {!patchOnly && claudeLaunch !== "copy" && local?.warning ? <div className="claude-l10n-warning" role="status">{local.warning}</div> : null}
+      {!patchOnly && claudeLaunch !== "copy" && local?.needsRestart ? <p className="claude-l10n-hint" role="status">{t("设置已保存，完全退出 Claude 后重新启动。")}</p> : null}
+      {!patchOnly && !copyInline ? <CxCard className="claude-l10n-hero">
         <CxRow
           badges={<CxBadge tone={localTone}>{localBusy === "detect" ? t("检测中…") : localState}</CxBadge>}
           detail={localDetail}
@@ -14981,25 +15045,33 @@ function ClaudeLocalizationScreen(
           </div>
         </CxRow>
       </CxCard> : null}
+      {/* 供应商：Claude 用哪些、默认哪个模型，加 / 导入供应商。补丁副本走 Claude 自己的登录，不经网关，不显示。 */}
+      {!patchOnly && claudeLaunch !== "copy" && notify ? <ClaudeProviders notify={notify} /> : null}
       {/* 窗口比默认模型小的模型不会列给 Claude（Claude 按默认模型的窗口压所有模型）；说清楚它们去哪了。 */}
       {!patchOnly ? <CxSection className="claude-local-settings" title={t("启动设置")}>
         <CxCard>
-          <CxRow detail={t("从这里启动后生效；已打开的 Claude 需完全退出重开。")} title={t("启动模式")}>
+          {/* 一个下拉管启动方式，也就定了增强怎么生效：3p 不注入，完整功能模式经本地服务注入官方 Claude，补丁副本在副本里注入。 */}
+          <CxRow
+            detail={claudeLaunch === "copy"
+              ? t("启动改过代码的副本，汉化、听写、页面扩展在副本里注入；官方 Claude 不动。")
+              : claudeLaunch === "full"
+                ? t("经本地服务启动官方 Claude，汉化、听写、页面扩展都由它注入。已打开的 Claude 需完全退出重开。")
+                : t("用安装包自带的界面直连网关，不注入汉化、听写和页面扩展。已打开的 Claude 需完全退出重开。")}
+            title={t("启动模式")}
+          >
             <AppSelect
               ariaLabel={t("启动模式")}
-              disabled={localDisabled || !local?.supported}
-              onChange={(next) => {
-                if (local) void configureLocal({ ...local.config, enabled: next === "full" });
-              }}
+              disabled={localDisabled || deliveryBusy || !local?.supported}
+              onChange={(next) => void chooseClaudeLaunch(next)}
               options={[
                 { value: "3p", label: t("3p 模式") },
                 { value: "full", label: t("完整功能模式") },
+                { value: "copy", label: t("补丁副本") },
               ]}
-              value={local?.config.enabled ? "full" : "3p"}
+              value={claudeLaunch}
             />
           </CxRow>
-          {/* 模型跟着「Agent 接入」里的 Claude Desktop 绑定走：这里只说明，不放第二个入口。 */}
-          <CxRow detail={t("模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。")} title={t("默认模型")} />
+          {claudeLaunch !== "copy" ? <>
           <CxRow
             detail={t("默认只列窗口不小于默认模型的模型（Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）；打开后池里的聊天模型全列出来，代价是切到小窗口模型可能超上限。")}
             title={t("列出全部模型")}
@@ -15138,8 +15210,11 @@ function ClaudeLocalizationScreen(
               <button className="cx-secondary" disabled={localDisabled || !local?.supported || local?.claudeRunning} onClick={() => void localAction("sync_sessions")} title={t("立即同步")} type="button">{t("立即同步")}</button>
             </div>
           </CxRow>
+          {/* 自动接管只在完整功能模式下动作，所以只在这个模式下显示（首页 Claude 行下面也有一份）。 */}
+          {claudeLaunch === "full" ? <ClaudeAutoTakeoverRow /> : null}
+          </> : null}
         </CxCard>
-        {local?.config.enabled ? (
+        {claudeLaunch === "full" && local ? (
           <>
             <CxCard>
               <CxRow badges={<CxBadge tone={local.caTrusted ? "ok" : "neutral"}>{local.caTrusted ? t("已信任") : local.caReady ? t("未信任") : t("未准备")}</CxBadge>} title={t("本地证书")}>
@@ -15222,11 +15297,22 @@ function ClaudeLocalizationScreen(
                 </label>
               ))}
             </CxCard>
+            {enhance ? <FullModeBashTimeout timeout={enhance.bashTimeout} /> : null}
           </>
         ) : null}
       </CxSection> : null}
-      {patchOnly || advancedOpen ? <section className={`claude-local-advanced${patchOnly ? " claude-local-advanced-page" : ""}`}>
+      {advancedShown ? <section className={`claude-local-advanced${patchOnly || copyInline ? " claude-local-advanced-page" : ""}`}>
         <fieldset className="claude-local-advanced-body" disabled={localBusy !== null}>
+      {patchOnly && delivery === "full" ? (
+        <CxBanner
+          detail={t("现在的生效方式是完整功能模式：汉化、听写、页面扩展由本地服务注入官方 Claude，用不到补丁版。要改用补丁版，先把生效方式换过来。")}
+          icon={<PackageOpen />}
+          title={t("补丁副本没在用")}
+          tone="warn"
+        >
+          <button className="cx-secondary" disabled={deliveryBusy} onClick={() => void chooseDelivery("copy")} type="button">{t("改用补丁副本")}</button>
+        </CxBanner>
+      ) : null}
       {/* 顶部最多几条一次性的提示：检测中 / 未安装、错误、Bash 时限确认、制作进度。 */}
       {!s ? (
         <p className="claude-l10n-hint">
@@ -15272,9 +15358,9 @@ function ClaudeLocalizationScreen(
         >
           {/* 增强副本仅在这里手动制作和启动；检查与重新检测收进菜单。 */}
           <div className="claude-l10n-actions">
-            <button className="cx-secondary" disabled={busy !== null || localBusy !== null || !canLaunch} onClick={() => void launchEnhanced()} title={needsPrepare ? t("制作副本并启动补丁版") : t("启动补丁版")} type="button">
+            {patchOnly ? <button className="cx-secondary" disabled={busy !== null || localBusy !== null || !canLaunch} onClick={() => void launchEnhanced()} title={needsPrepare ? t("制作副本并启动补丁版") : t("启动补丁版")} type="button">
               <Rocket />{busy === "launch" ? t("启动中…") : busy === "prepare" ? t("制作中…") : t("启动补丁版")}
-            </button>
+            </button> : null}
             {needsPrepare || !s ? (
               <button className="cx-secondary" disabled={busy !== null || !s?.supported} onClick={() => void act("prepare")} title={prepareHint} type="button">
                 <PackageOpen />
@@ -15461,6 +15547,77 @@ function ClaudeLocalizationScreen(
         </fieldset>
       </section> : null}
     </div>
+  );
+}
+
+/** 完整功能模式下的 Bash 时限：Claude Code 那部分经环境变量生效；Cowork 那部分置灰，只有补丁副本能改。 */
+function FullModeBashTimeout({ timeout }: { timeout: ClaudeBashTimeoutSettings }) {
+  const [draft, setDraft] = useState(timeout);
+  const [text, setText] = useState<{ defaultSeconds?: string; maxSeconds?: string }>({});
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { setDraft(timeout); }, [timeout]);
+  const save = async (next: ClaudeBashTimeoutSettings) => {
+    setDraft(next); setSaving(true); setError(null);
+    try {
+      const state = await saveClaudeBashTimeout(next);
+      if (state && claudeLocalizationMemo.status?.status === "ok") {
+        claudeLocalizationMemo.status = { ...claudeLocalizationMemo.status, bashTimeout: state.bashTimeout };
+      }
+    } catch (cause) { setDraft(timeout); setError(stringifyError(cause)); }
+    finally { setSaving(false); }
+  };
+  const seconds = (key: "defaultSeconds" | "maxSeconds", enabledKey: "defaultEnabled" | "maxEnabled", label: string) => (
+    <div className="claude-bash-timeout-value">
+      <label className="switch-row compact claude-bash-timeout-toggle">
+        <input aria-label={label} checked={draft[enabledKey]} disabled={saving} onChange={(event) => void save({ ...draft, [enabledKey]: event.currentTarget.checked })} type="checkbox" />
+        <span><strong>{label}</strong></span>
+        <ToggleVisual />
+      </label>
+      <Input
+        aria-label={tf("{0}（秒）", [label])}
+        disabled={saving || !draft[enabledKey]}
+        max={2147423}
+        min={1}
+        onBlur={() => { setText((current) => ({ ...current, [key]: undefined })); void save(draft); }}
+        onChange={(event) => {
+          const value = event.currentTarget.value;
+          setText((current) => ({ ...current, [key]: value }));
+          setDraft((current) => ({ ...current, [key]: clampNumber(Number(value), 1, 2147423) }));
+        }}
+        onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }}
+        type="number"
+        value={text[key] ?? draft[key]}
+      />
+      <span>{t("秒")}</span>
+    </div>
+  );
+  return (
+    <CxCard className="claude-l10n-feature-grid">
+      {error ? <div className="claude-l10n-error" role="alert">{error}</div> : null}
+      <label className="switch-row compact claude-bash-timeout-master">
+        <input aria-label={t("解锁 Bash 时间限制")} checked={draft.enabled} disabled={saving} onChange={(event) => void save({ ...draft, enabled: event.currentTarget.checked })} type="checkbox" />
+        <span>
+          <strong>{t("解锁 Bash 时间限制")}</strong>
+          <small>{t("改 Claude Code 里 Bash 的默认等待和最长等待时间，重新启动 Claude 后生效。")}</small>
+        </span>
+        <ToggleVisual />
+      </label>
+      {draft.enabled ? (
+        <div className="claude-bash-timeout-editor">
+          {seconds("defaultSeconds", "defaultEnabled", t("默认等待时间"))}
+          {seconds("maxSeconds", "maxEnabled", t("最大等待时间"))}
+        </div>
+      ) : null}
+      <label className="switch-row compact" title={t("Cowork 的 Bash 时限写在 Claude 主进程代码里，只有补丁副本能在启动时改；完整功能模式下保持 Claude 原生时限。")}>
+        <input aria-label={t("Cowork 的 Bash 时限")} checked={false} disabled type="checkbox" />
+        <span>
+          <strong>{t("Cowork 的 Bash 时限")}</strong>
+          <small><CxBadge>{t("仅副本")}</CxBadge> {t("要改主进程代码，完整功能模式做不到")}</small>
+        </span>
+        <ToggleVisual />
+      </label>
+    </CxCard>
   );
 }
 
@@ -15697,6 +15854,8 @@ function AppSidebar({
   onExitSettings?: () => void;
 }) {
   const gateway = useGatewayPayload(10_000);
+  // 增强生效方式决定 Claude 下显示哪个入口、播放键启动哪个：补丁副本时「补丁 Desktop」才出现在侧栏。
+  const claudeDelivery = useClaudeEnhance()?.delivery ?? null;
   const [settingsQuery, setSettingsQuery] = useState("");
   // 收起了页面列表的 Agent：再点一次当前 Agent 收起 / 展开它下面的页面（#2913）。切到别的 Agent 时清掉。
   const [collapsedAgent, setCollapsedAgent] = useState<string | null>(null);
@@ -15922,7 +16081,18 @@ function AppSidebar({
                     </button>
                   );
                 })() : null}
-                {tool.id === "claude" ? (() => {
+                {tool.id === "claude" && claudeDelivery === "copy" && !claudeRun.running ? (
+                  // 启动模式是补丁副本：播放键去 Desktop 增强页启动补丁版（要先检测、可能要制作副本），不再启动原版。
+                  <button
+                    aria-label={t("启动补丁版")}
+                    className="cx-side-run"
+                    onClick={() => onNavigate("claude")}
+                    title={t("到 Desktop 增强页启动补丁版")}
+                    type="button"
+                  >
+                    <Play aria-hidden="true" />
+                  </button>
+                ) : tool.id === "claude" ? (() => {
                   // Claude Desktop 本地模式：和 Codex 行同一套播放键，启动 / 停止本地服务。
                   const label = claudeRun.running ? t("停止本地服务") : t("启动 Claude");
                   return (
@@ -15944,7 +16114,9 @@ function AppSidebar({
               {/* 当前 Agent 的页面：缩进列在它那一行下面（参照 Cursor 侧栏里仓库下面的会话列表），不再占内容区顶部一排胶囊。 */}
 {expanded ? (() => {
             const pages = agentTabGroups(navigationSections, routeTool, activeTool)
-              .flatMap((entry) => visibleRoutes(focus, entry.routes));
+              .flatMap((entry) => visibleRoutes(focus, entry.routes))
+              // 「补丁 Desktop」的内容在启动模式选补丁副本时直接显示在 Desktop 增强页，侧栏不再单列（⌘K 仍能进；停在那页时照常显示）。
+              .filter((routeId) => routeId !== "claudePatch" || route === "claudePatch");
             if (pages.length < 2) return null;
             return (
               <div className="cx-side-subnav" role="group" aria-label={t("Agent 页面")}>
@@ -16115,7 +16287,7 @@ function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionH
       <p className="ext-hero-lead" title={host === "codex" ? `${t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")}\n${extensionCapabilities.map((label) => t(label)).join(" · ")}` : undefined}>
         {host === "codex"
           ? t("界面、命令、工具、钩子、模型请求都能由拓展接管；在 Codex 对话里说一句就能造一个。")
-          : t("给 Claude 补丁版装拓展：只显示声明了适配 Claude 的拓展。")}
+          : t("往 Claude 页面里加 js / css 的页面扩展，格式和扩展市场与 ClaudeMom 相同；也能给 Claude Code 装适配它的 Codex++ 拓展。")}
       </p>
       {hosts.length > 1 ? (
         <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>

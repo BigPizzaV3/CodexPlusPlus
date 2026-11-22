@@ -23,6 +23,53 @@ const DIR = __dirname;
 const LOG = path.join(DIR, 'hook.log');
 const SHIM_FILE = path.join(DIR, 'page-shim.js');
 const DICTATION_FILE = path.join(DIR, 'page-dictation.js');
+/** 启用中的页面扩展（Codex++ 启动副本前写，见 claude_localization.rs 的 write_page_extensions）。 */
+const PAGE_EXTENSIONS_FILE = path.join(DIR, 'page-extensions.json');
+
+/**
+ * 页面扩展的注入脚本，一个文件一段：某个扩展出错也只坏它自己。
+ *
+ * 完整功能模式下本地服务把扩展插在页面 <head> 里、官方脚本之前；这里在新文档创建时注入，
+ * 那时还没有 <head>，所以等 <head> 出现再执行，效果与那边一致。只进顶层页面，同一页面只跑一次。
+ */
+function pageExtensionSources() {
+  let assets;
+  try {
+    assets = JSON.parse(fs.readFileSync(PAGE_EXTENSIONS_FILE, 'utf8'));
+  } catch (e) {
+    return [];
+  }
+  if (!Array.isArray(assets)) return [];
+  return assets
+    .filter((asset) => asset && typeof asset.id === 'string' && typeof asset.file === 'string' && typeof asset.body === 'string')
+    .map((asset) => {
+      const tag = JSON.stringify(asset.id + '/' + asset.file);
+      const body = asset.style
+        ? "const node = document.createElement('style'); node.setAttribute('data-codex-plus-page-ext', " + tag + '); ' +
+          'node.textContent = ' + JSON.stringify(asset.body) + '; document.head.appendChild(node);'
+        : asset.body;
+      return '(() => {\n' +
+        '  if (window.top !== window) return;\n' +
+        '  const done = (window.__codexPlusPageExtensions = window.__codexPlusPageExtensions || {});\n' +
+        '  if (done[' + tag + ']) return;\n' +
+        '  done[' + tag + '] = true;\n' +
+        '  const run = () => {\n' +
+        '    try {\n' +
+        '      (function () {\n' + body + '\n      }).call(window);\n' +
+        '    } catch (error) {\n' +
+        "      console.error('[Codex++ 页面扩展] ' + " + tag + ', error);\n' +
+        '    }\n' +
+        '  };\n' +
+        '  if (document.head) return run();\n' +
+        '  const observer = new MutationObserver(() => {\n' +
+        '    if (!document.head) return;\n' +
+        '    observer.disconnect();\n' +
+        '    run();\n' +
+        '  });\n' +
+        '  observer.observe(document, { childList: true, subtree: true });\n' +
+        '})();';
+    });
+}
 
 /**
  * Codex++ launcher 写的听写凭据：helper 端口 + 能力令牌。
@@ -303,6 +350,8 @@ function install() {
     SHIM = '';
     log('localization disabled by settings');
   }
+  const EXTENSIONS = pageExtensionSources();
+  if (EXTENSIONS.length) log('page extensions: ' + EXTENSIONS.length + ' file(s)');
 
   const HOST = /(^|\.)claude\.(ai|com)$/;
   const hostOf = (url) => {
@@ -438,6 +487,12 @@ function install() {
           ARMED.delete(wc);
           log('arm failed: ' + (e && e.message));
         });
+      // 页面扩展各自一段，和汉化 / 听写分开：哪段注册失败都不连累别的。已加载的页面同样补跑一次（有幂等守卫）。
+      for (const source of EXTENSIONS) {
+        dbg.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source })
+          .then(() => dbg.sendCommand('Runtime.evaluate', { expression: source }))
+          .catch((e) => log('page extension failed: ' + (e && e.message)));
+      }
     } catch (e) {
       log('arm error: ' + (e && e.message));
     }

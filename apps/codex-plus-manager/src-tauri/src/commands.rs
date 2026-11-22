@@ -272,6 +272,145 @@ pub async fn claude_localization_set_bash_timeout(
     }
 }
 
+/// Claude 增强的轻量状态：生效方式和两种方式共用的设置。不探测副本和进程，切页面时随便读。
+fn claude_enhance_payload() -> anyhow::Result<Value> {
+    let settings = codex_plus_core::settings::SettingsStore::default().load()?;
+    Ok(json!({
+        "delivery": codex_plus_core::claude_localization::enhance_delivery(&settings),
+        "bashTimeout": settings.claude_app_bash_timeout,
+        "claudeExtensions": settings.claude_app_extensions,
+    }))
+}
+
+fn claude_enhance_result(message: &str, result: anyhow::Result<Value>) -> CommandResult<Value> {
+    match result {
+        Ok(payload) => ok(message, payload),
+        Err(error) => failed(&format!("{error:#}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_enhance_status() -> CommandResult<Value> {
+    claude_enhance_result("Claude 增强状态已读取。", claude_enhance_payload())
+}
+
+#[tauri::command]
+pub async fn claude_enhance_set_delivery(mode: String) -> CommandResult<Value> {
+    let result = codex_plus_core::claude_localization::set_enhance_delivery(&mode)
+        .and_then(|_| claude_enhance_payload());
+    claude_enhance_result("生效方式已保存。", result)
+}
+
+/// 只存设置、不探测副本：完整功能模式页改 Bash 时限用（副本页仍走 claude_localization_set_bash_timeout）。
+#[tauri::command]
+pub async fn claude_enhance_set_bash_timeout(
+    mut timeout: codex_plus_core::settings::ClaudeBashTimeoutSettings,
+) -> CommandResult<Value> {
+    let result = (|| {
+        timeout.normalize();
+        let store = codex_plus_core::settings::SettingsStore::default();
+        let mut settings = store.load()?;
+        settings.claude_app_bash_timeout = timeout;
+        store.save(&settings)?;
+        claude_enhance_payload()
+    })();
+    claude_enhance_result("Bash 时间限制已保存，重新启动 Claude 后生效。", result)
+}
+
+fn page_extensions_payload() -> Value {
+    json!({ "extensions": codex_plus_core::claude_local_backend::page_extensions() })
+}
+
+#[tauri::command]
+pub async fn claude_page_extensions() -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(page_extensions_payload).await {
+        Ok(payload) => ok("页面扩展已读取。", payload),
+        Err(error) => failed(&format!("读取页面扩展失败：{error}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_page_extension_enable(id: String, enabled: bool) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        codex_plus_core::claude_local_backend::set_page_extension_enabled(&id, enabled)
+    })
+    .await
+    {
+        Ok(Ok(list)) => ok(
+            if enabled { "扩展已启用，刷新 Claude 页面后生效。" } else { "扩展已停用，刷新 Claude 页面后生效。" },
+            json!({ "extensions": list }),
+        ),
+        Ok(Err(error)) => failed(&format!("{error:#}"), page_extensions_payload()),
+        Err(error) => failed(&format!("设置扩展失败：{error}"), page_extensions_payload()),
+    }
+}
+
+/// 新装的扩展默认启用；更新（同 id 换版本）保留原来的开关。
+fn enable_new_install(imported: &codex_plus_core::claude_local_backend::PageExtensionImported) -> anyhow::Result<String> {
+    let manifest = &imported.manifest;
+    match &imported.replaced {
+        Some(old) => Ok(format!("「{}」已从 {old} 更新到 {}。", manifest.name, manifest.version)),
+        None => {
+            codex_plus_core::claude_local_backend::set_page_extension_enabled(&manifest.id, true)?;
+            Ok(format!("「{}」已安装并启用，刷新 Claude 页面后生效。", manifest.name))
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn claude_page_extension_import(path: String) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || {
+        let imported = codex_plus_core::claude_local_backend::import_page_extension(std::path::Path::new(&path))?;
+        enable_new_install(&imported)
+    })
+    .await
+    {
+        Ok(Ok(message)) => ok(&message, page_extensions_payload()),
+        Ok(Err(error)) => failed(&format!("{error:#}"), page_extensions_payload()),
+        Err(error) => failed(&format!("导入扩展失败：{error}"), page_extensions_payload()),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_page_extension_remove(id: String) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || codex_plus_core::claude_local_backend::remove_page_extension(&id)).await {
+        Ok(Ok(name)) => ok(&format!("「{name}」已删除。"), page_extensions_payload()),
+        Ok(Err(error)) => failed(&format!("{error:#}"), page_extensions_payload()),
+        Err(error) => failed(&format!("删除扩展失败：{error}"), page_extensions_payload()),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_page_extension_open_folder() -> CommandResult<Value> {
+    match codex_plus_core::claude_local_backend::open_page_extension_folder() {
+        Ok(()) => ok("已打开扩展文件夹。", json!({})),
+        Err(error) => failed(&format!("{error:#}"), json!({})),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_page_extension_market() -> CommandResult<Value> {
+    match codex_plus_core::claude_page_market::fetch().await {
+        Ok(entries) => ok("扩展市场已读取。", json!({ "entries": entries })),
+        Err(error) => failed(&format!("{error:#}"), json!({ "entries": [] })),
+    }
+}
+
+#[tauri::command]
+pub async fn claude_page_extension_install(
+    entry: codex_plus_core::claude_page_market::MarketEntry,
+) -> CommandResult<Value> {
+    let result = async {
+        let imported = codex_plus_core::claude_page_market::install(&entry).await?;
+        tauri::async_runtime::spawn_blocking(move || enable_new_install(&imported)).await?
+    }
+    .await;
+    match result {
+        Ok(message) => ok(&message, page_extensions_payload()),
+        Err(error) => failed(&format!("{error:#}"), page_extensions_payload()),
+    }
+}
+
 #[tauri::command]
 pub async fn scan_agent_cache() -> CommandResult<Value> {
     let result = tauri::async_runtime::spawn_blocking(|| -> anyhow::Result<Value> {
@@ -3185,6 +3324,54 @@ pub fn pause_auto_takeover_for_instance() -> CommandResult<crate::auto_takeover:
     }
 }
 
+type ClaudeAutoTakeoverResult = CommandResult<crate::claude_auto_takeover::ClaudeAutoTakeoverPayload>;
+
+/// Claude 自动接管的几个命令都要探测进程（pgrep / ps），放到阻塞线程里跑，不占主线程。
+async fn claude_auto_takeover_command(
+    success: &'static str,
+    action: impl FnOnce() -> Result<(), String> + Send + 'static,
+) -> ClaudeAutoTakeoverResult {
+    let result = tauri::async_runtime::spawn_blocking(action)
+        .await
+        .unwrap_or_else(|error| Err(format!("Claude 自动接管操作失败：{error}")));
+    let payload = tauri::async_runtime::spawn_blocking(crate::claude_auto_takeover::payload)
+        .await
+        .unwrap_or_else(|_| crate::claude_auto_takeover::payload());
+    match result {
+        Ok(()) => ok(success, payload),
+        Err(message) => failed(&message, payload),
+    }
+}
+
+#[tauri::command]
+pub async fn load_claude_auto_takeover_state() -> ClaudeAutoTakeoverResult {
+    claude_auto_takeover_command("Claude 自动接管状态已加载。", || Ok(())).await
+}
+
+/// 开关单独写 settings.json（前端随后广播设置已变，App 只合并这个键），保存后立刻生效。
+#[tauri::command]
+pub async fn set_claude_auto_takeover(enabled: bool) -> ClaudeAutoTakeoverResult {
+    claude_auto_takeover_command(
+        if enabled { "Claude 自动接管已开启。" } else { "Claude 自动接管已关闭。" },
+        move || crate::claude_auto_takeover::set_enabled(enabled),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn take_over_claude_now() -> ClaudeAutoTakeoverResult {
+    claude_auto_takeover_command("已发起接管。", crate::claude_auto_takeover::take_over_now).await
+}
+
+#[tauri::command]
+pub async fn pause_claude_auto_takeover_for_instance() -> ClaudeAutoTakeoverResult {
+    claude_auto_takeover_command(
+        "本次不再自动接管，重开 Claude 后恢复。",
+        crate::claude_auto_takeover::pause_until_next_instance,
+    )
+    .await
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum RestartDisposition {
     LaunchOnly,
@@ -4931,6 +5118,7 @@ pub fn save_settings(
             }
             // 自动接管是常驻行为，保存后立刻生效，不必重启管理器。
             crate::auto_takeover::apply_enabled(settings.codex_app_auto_takeover);
+            crate::claude_auto_takeover::apply_enabled(settings.claude_app_auto_takeover);
             // 请求体上限是运行期策略：保存后立刻让正在运行的本地代理按新上限收请求，
             // 不必重启 Codex++/Codex。等待下一次 helper 启动的路径也会读到同一设置。
             codex_plus_core::launcher::set_http_body_limit_bytes(

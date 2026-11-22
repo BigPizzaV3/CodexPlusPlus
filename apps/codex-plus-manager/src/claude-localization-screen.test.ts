@@ -44,6 +44,8 @@ const localReady = {
   config: { enabled: false, model: "claude-test", localization: true, voiceInput: true, computerUse: false, backgroundMode: false },
   models: ["claude-test", "gpt-test"], warning: null, needsRestart: false,
 };
+/** 增强生效方式（claude-enhance 的全局状态）：默认按完整功能模式，个别用例改成补丁副本。 */
+const enhanceDelivery = { value: "full" as "full" | "copy" };
 /** memo 对应模块级的 claudeLocalizationMemo：传同一个对象模拟「Codex++ 运行期间再次进入页面」。 */
 function harness(
   memo: Memo = { status: null, autoDetected: false },
@@ -53,11 +55,13 @@ function harness(
     openAdvanced?: boolean;
     mode?: "local" | "patch";
     onLocalStatus?: (status: unknown) => void;
+    notify?: (title: string, message: string, status?: string) => Promise<void>;
   } = {},
 ) {
   const props = {
     ...(options.mode ? { mode: options.mode } : {}),
     ...(options.onLocalStatus ? { onLocalStatus: options.onLocalStatus } : {}),
+    ...(options.notify ? { notify: options.notify } : {}),
   };
   const renderArgs = Object.keys(props).length > 0 ? props : undefined;
   const hooks: any[] = [];
@@ -82,7 +86,7 @@ function harness(
   };
   const context = vm.createContext({
     React: { Fragment: "Fragment", createElement: (type: string, props: object, ...children: unknown[]) => ({ type, props: { ...props, children } }) },
-    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Plug", "Rocket", "ShieldCheck", "Menu", "MenuItem", "Square", "ChevronRight", "AppSelect"].map((name) => [name, name])),
+    ...Object.fromEntries(["Panel", "CardHead", "CardContent", "Button", "Input", "Info", "RefreshCw", "ToggleVisual", "PackageOpen", "Play", "Plug", "Rocket", "ShieldCheck", "Menu", "MenuItem", "Square", "ChevronRight", "AppSelect", "ClaudeAutoTakeoverRow"].map((name) => [name, name])),
     // 页面骨架组件（cx-layout）按名字渲染成占位元素。
     AgentCx: new Proxy({}, { get: (_target, name) => String(name) }),
     t: (text: string) => text,
@@ -104,6 +108,13 @@ function harness(
     document: { querySelector: (selector: string) => (selector === "[data-topbar-actions]" ? topbarSlot : null) },
     createPortal: (child: unknown, target: typeof topbarSlot) => { target.portal = child; return null; },
     stringifyError: String,
+    // 增强生效方式：这些用例都按完整功能模式跑（与没做过副本时的默认推断一致）。
+    useClaudeEnhance: () => ({ delivery: enhanceDelivery.value, bashTimeout: { enabled: false, defaultEnabled: true, defaultSeconds: 120, maxEnabled: true, maxSeconds: 1800 }, claudeExtensions: false }),
+    setClaudeDelivery: () => Promise.resolve(null),
+    patchClaudeEnhance: () => {},
+    FullModeBashTimeout: "FullModeBashTimeout",
+    ClaudeProviders: "ClaudeProviders",
+    CxBanner: "CxBanner",
     // Computer Use 接入状态不计入设置操作；同时记录 Bash 保存的参数和失败结果。
     invoke: (command: string, ...args: unknown[]) => command === "computer_use_status"
       ? Promise.resolve(cuStatus)
@@ -650,15 +661,20 @@ test("会话同步：开关默认关闭，切换走 configure，立即同步走 
   assert.equal((screen.calls[1].args[0] as { action: string }).action, "sync_sessions");
 });
 
-test("默认模型不在这一页选：只留一句说明，不放下拉也不放跳转", () => {
+test("默认模型和供应商在「供应商」那一块选：启动设置里不再有默认模型，也不放跳转", () => {
+  const notify = async () => {};
   const screen = harness(undefined, {}, {
     localMemo: { status: { ...localReady, config: { ...localReady.config, enabled: true } }, autoDetected: true },
     openAdvanced: false,
+    notify,
   });
   const page = screen.render();
   assert.equal(findElements(page, "AppSelect").some((item) => item.props.ariaLabel === "Claude 默认模型"), false, "不再有默认模型下拉");
   assert.equal(findElements(page, "AppSelect").some((item) => item.props.ariaLabel === "启动模式"), true, "启动模式那一行还在");
-  assert.match(text(page), /模型在「Agent 接入」里的 Claude Desktop 行选择，改完需要重新启动本地服务。/);
+  assert.doesNotMatch(text(page), /模型在「Agent 接入」里的 Claude Desktop 行选择/);
+  const providers = findElements(page, "ClaudeProviders");
+  assert.equal(providers.length, 1, "供应商那一块在页面里");
+  assert.equal(providers[0].props.notify, notify);
   assert.equal(buttons(page).some((button) => text(button).includes("去「Agent 接入」")), false, "不给跳转按钮");
   // 模型字段还留在配置类型里（后端旧值兜底），页面只是不再让人在这里改。
   assert.equal(screen.calls.length, 0, "页面不写配置");
@@ -914,4 +930,29 @@ test("页面里启动 / 停止后把本地状态交给 App，侧栏的播放键�
   screen.calls[1].resolve({ status: "failed", message: "停止失败" });
   await tick();
   assert.equal(seen.length, 1, "失败不覆盖 App 里的状态");
+});
+
+test("启动模式选补丁副本：副本块直接显示在 Desktop 增强页，页头启动补丁版，不再跳到另一页", async () => {
+  enhanceDelivery.value = "copy";
+  try {
+    const memo: Memo = { status: ready, autoDetected: true };
+    const screen = harness(memo, {}, { localMemo: { status: localReady, autoDetected: true }, openAdvanced: false });
+    screen.render();
+    const page = screen.render();
+    const mode = findElements(page, "AppSelect").find((item) => item.props.ariaLabel === "启动模式")!;
+    assert.equal(mode.props.value, "copy");
+    assert.deepEqual(Array.from(mode.props.options, (option: { value: string }) => option.value), ["3p", "full", "copy"]);
+    assert.doesNotMatch(text(page), /检测原版 Claude/, "原版那张状态卡收起");
+    assert.doesNotMatch(text(page), /去补丁 Desktop/);
+    assert.match(text(page), /补丁版 Claude/);
+    assert.match(text(page), /补丁项/);
+    // 页头的启动键就是补丁版的启动；副本卡片里不再重复一个。
+    assert.equal(buttons(screen.topbar()).map(text).join(""), "启动补丁版");
+    assert.equal(buttons(page).filter((button) => text(button) === "启动补丁版").length, 0);
+    buttons(screen.topbar())[0].props.onClick();
+    assert.equal(screen.calls[0].command, "claude_localization_action");
+    assert.equal(JSON.stringify(screen.calls[0].args[0]), JSON.stringify({ action: "launch" }));
+  } finally {
+    enhanceDelivery.value = "full";
+  }
 });

@@ -66,7 +66,10 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(sidebar, /aria-label=\{label\}/);
   assert.match(sidebar, /onClick=\{unattached \? codexRun\.onRestart : codexRun\.running \? codexRun\.onStop : codexRun\.onStart\}/);
   // Claude 行同样有播放 / 停止（Claude Desktop 本地模式），视觉与 Codex 行一致。
-  assert.match(sidebar, /\{tool\.id === "claude" \? \(\(\) => \{/);
+  assert.match(sidebar, /\) : tool\.id === "claude" \? \(\(\) => \{/);
+  // 启动模式是补丁副本时，播放键去 Desktop 增强页启动补丁版。
+  assert.match(sidebar, /\{tool\.id === "claude" && claudeDelivery === "copy" && !claudeRun\.running \? \(/);
+  assert.match(sidebar, /onClick=\{\(\) => onNavigate\("claude"\)\}/);
   assert.match(sidebar, /const label = claudeRun\.running \? t\("停止本地服务"\) : t\("启动 Claude"\);/);
   assert.match(sidebar, /onClick=\{claudeRun\.running \? claudeRun\.onStop : claudeRun\.onStart\}/);
   assert.match(sidebar, /title=\{claudeRun\.busy \? t\("处理中…"\) : claudeRun\.running \? t\("停止本地服务"\) : claudeRun\.unavailableReason \?\? t\("启动 Claude"\)\}/);
@@ -76,7 +79,7 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   const lib = readSource("../src-tauri/src/lib.rs");
   assert.match(lib, /commands::stop_codex_plus,/);
   // 侧栏里当前 Agent 下面缩进列出它的页面（概览 / 增强 / 皮肤 / 插件市场 / 微信 / 多开），仍按页面的 tool 归属和使用模式过滤。
-  assert.match(sidebar, /\.flatMap\(\(entry\) => visibleRoutes\(focus, entry\.routes\)\);\n\s*if \(pages\.length < 2\) return null;/);
+  assert.match(sidebar, /\.flatMap\(\(entry\) => visibleRoutes\(focus, entry\.routes\)\)\n[^\n]*\n\s*\.filter\(\(routeId\) => routeId !== "claudePatch" \|\| route === "claudePatch"\);\n\s*if \(pages\.length < 2\) return null;/);
   // 「连接与供应商」（原旧版供应商配置 + 旧版代理设置）紧跟概览，是 Codex 自己的页面：直连用户每天在这里切供应商，
   // 不藏进设置；Codex 设置（启动参数、维护）在设置模式里。
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));

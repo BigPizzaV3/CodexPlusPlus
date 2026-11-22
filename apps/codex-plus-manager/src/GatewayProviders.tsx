@@ -684,6 +684,7 @@ export function ProviderAdder({
   notify,
   onClose,
   startWith = "catalog",
+  includeAgents = [],
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -692,9 +693,11 @@ export function ProviderAdder({
   onClose: () => void;
   /** 「import」：引导卡片点进来，直接打开从直连模式导入。 */
   startWith?: "catalog" | "import";
+  /** 不管「添加供应商时自动加入」怎么设都预先勾上的 Agent（从 Claude 页添加时勾上 Claude Desktop）。 */
+  includeAgents?: GatewayAgentId[];
 }) {
-  // 这次添加给哪些 Agent 用：按各 Agent 的「添加供应商时自动加入」预选。
-  const [picked, setPicked] = useState<GatewayAgentId[]>(() => defaultProviderAgents(payload));
+  // 这次添加给哪些 Agent 用：按各 Agent 的「添加供应商时自动加入」预选，再加上调用方指定的。
+  const [picked, setPicked] = useState<GatewayAgentId[]>(() => [...new Set([...defaultProviderAgents(payload), ...includeAgents])]);
   const skipAgents = skippedAgents(payload, picked);
   const [catalogOpen, setCatalogOpen] = useState(startWith === "catalog");
   const [importOnly, setImportOnly] = useState(startWith === "import");
@@ -1448,6 +1451,10 @@ function ImportDialog({
       }
       case "claude":
         return t("Anthropic 协议，原样转发");
+      case "ccswitch":
+        return t("CC Switch 里的 Claude 供应商，复制一份进网关");
+      case "claudemom":
+        return t("ClaudeMom 的上游，Anthropic 协议");
       case "grok":
         return t("Grok 页里配置的供应商");
       default:
@@ -1458,6 +1465,8 @@ function ImportDialog({
     { key: "codex", title: t("Codex 的供应商") },
     { key: "aggregate", title: t("模型组（来自 Codex 的聚合供应商）") },
     { key: "claude", title: t("Claude Code 的供应商") },
+    { key: "ccswitch", title: t("CC Switch 里的 Claude 供应商") },
+    { key: "claudemom", title: t("ClaudeMom 的上游") },
     { key: "grok", title: t("Grok 的供应商") },
     { key: "opencode", title: t("OpenCode 里保存的 Key") },
   ];

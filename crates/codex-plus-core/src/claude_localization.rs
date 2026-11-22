@@ -914,6 +914,57 @@ pub fn set_computer_use(enabled: bool) -> Result<ClaudeLocalizationStatus> {
     status()
 }
 
+/// Claude 增强的生效方式。
+pub const DELIVERY_FULL: &str = "full";
+pub const DELIVERY_COPY: &str = "copy";
+
+/// 当前的生效方式。没选过时按现状推断：做过补丁副本、又没开完整功能模式的，是在用副本；其余按完整功能模式。
+pub fn enhance_delivery(settings: &crate::settings::BackendSettings) -> &'static str {
+    enhance_delivery_at(&runtime_dir(), settings)
+}
+
+fn enhance_delivery_at(root: &Path, settings: &crate::settings::BackendSettings) -> &'static str {
+    match settings.claude_enhance_delivery.as_deref() {
+        Some(DELIVERY_COPY) => DELIVERY_COPY,
+        Some(DELIVERY_FULL) => DELIVERY_FULL,
+        _ if root.join("prepared.json").is_file() && !settings.claude_desktop_local.enabled => DELIVERY_COPY,
+        _ => DELIVERY_FULL,
+    }
+}
+
+pub fn set_enhance_delivery(mode: &str) -> Result<&'static str> {
+    let mode = match mode {
+        DELIVERY_FULL => DELIVERY_FULL,
+        DELIVERY_COPY => DELIVERY_COPY,
+        _ => bail!("未知的生效方式"),
+    };
+    let store = crate::settings::SettingsStore::default();
+    let mut settings = store.load()?;
+    settings.claude_enhance_delivery = Some(mode.to_string());
+    store.save(&settings)?;
+    Ok(mode)
+}
+
+/// 页面扩展交给副本的主进程 hook：启用中的扩展文件按注入顺序写成一份清单，hook.js 逐个注入页面。
+/// 没有启用的就删掉清单，免得副本拿到上次的。
+const PAGE_EXTENSIONS_FILE: &str = "page-extensions.json";
+
+fn write_page_extensions(root: &Path, assets: &[crate::claude_local_backend::PageAsset]) -> Result<()> {
+    let path = root.join(PAGE_EXTENSIONS_FILE);
+    if assets.is_empty() {
+        return match fs::remove_file(&path) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+            _ => Ok(()),
+        };
+    }
+    let list: Vec<Value> = assets
+        .iter()
+        .map(|asset| json!({ "id": asset.id, "file": asset.file, "style": asset.style, "body": asset.body }))
+        .collect();
+    fs::write(path, serde_json::to_vec(&list)?)?;
+    Ok(())
+}
+
 fn bash_timeout_settings() -> crate::settings::ClaudeBashTimeoutSettings {
     crate::settings::SettingsStore::default()
         .load()
@@ -1034,7 +1085,7 @@ fn hidden_script_command(program: &Path) -> Command {
     command
 }
 
-fn merged_plugin_dirs(existing: Option<&std::ffi::OsStr>, plugin: &Path) -> Result<std::ffi::OsString> {
+pub(crate) fn merged_plugin_dirs(existing: Option<&std::ffi::OsStr>, plugin: &Path) -> Result<std::ffi::OsString> {
     ensure!(plugin.is_absolute(), "Claude 拓展插件路径必须是绝对路径");
     let mut paths: Vec<PathBuf> = existing
         .map(std::env::split_paths)
@@ -1316,6 +1367,7 @@ pub fn perform_with_progress(
                         .to_string(),
                 }
             };
+            write_page_extensions(&root, &crate::claude_local_backend::page_extension_assets())?;
             let script = if cfg!(target_os = "windows") { "inject-cn.ps1" } else { "inject-cn.js" };
             if let Err(error) = run_script(&launcher, script, &source, &copy, &[if cfg!(windows) { "-Locale" } else { "--locale" }, locale.as_str()], &|_, _| {}) {
                 // 启动失败后只在应用未运行时还原本次外壳语言，避免与 Claude 写盘竞争。
@@ -1366,6 +1418,40 @@ mod tests {
             vec![plugin],
         );
         assert!(merged_plugin_dirs(None, Path::new("relative-plugin")).is_err());
+    }
+
+    /// 没选过生效方式时按现状推断；选过就按选的。
+    #[test]
+    fn enhance_delivery_follows_choice_then_existing_setup() {
+        let root = tempfile::tempdir().unwrap();
+        let mut settings = crate::settings::BackendSettings::default();
+        assert_eq!(enhance_delivery_at(root.path(), &settings), DELIVERY_FULL);
+        fs::write(root.path().join("prepared.json"), "{}").unwrap();
+        assert_eq!(enhance_delivery_at(root.path(), &settings), DELIVERY_COPY, "做过副本、没开完整功能模式");
+        settings.claude_desktop_local.enabled = true;
+        assert_eq!(enhance_delivery_at(root.path(), &settings), DELIVERY_FULL);
+        settings.claude_enhance_delivery = Some(DELIVERY_COPY.into());
+        assert_eq!(enhance_delivery_at(root.path(), &settings), DELIVERY_COPY);
+        settings.claude_enhance_delivery = Some("bogus".into());
+        assert_eq!(enhance_delivery_at(root.path(), &settings), DELIVERY_FULL);
+    }
+
+    /// 副本的页面扩展清单：有启用的就按顺序写出，全关了就删掉旧清单。
+    #[test]
+    fn page_extensions_manifest_is_written_and_cleared() {
+        let root = tempfile::tempdir().unwrap();
+        let asset = crate::claude_local_backend::PageAsset {
+            id: "wide-chat".into(),
+            file: "wide-chat.js".into(),
+            style: false,
+            body: "window.x = 1;".into(),
+        };
+        write_page_extensions(root.path(), &[asset]).unwrap();
+        let written: Value = serde_json::from_slice(&fs::read(root.path().join(PAGE_EXTENSIONS_FILE)).unwrap()).unwrap();
+        assert_eq!(written, json!([{ "id": "wide-chat", "file": "wide-chat.js", "style": false, "body": "window.x = 1;" }]));
+        write_page_extensions(root.path(), &[]).unwrap();
+        assert!(!root.path().join(PAGE_EXTENSIONS_FILE).exists());
+        write_page_extensions(root.path(), &[]).unwrap();
     }
 
     /// Windows 上 Claude 的 config.json 带 UTF-8 BOM 时也能读、能汉化（#2728）。
