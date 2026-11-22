@@ -281,7 +281,8 @@ pub(crate) fn group_listed_for_binding(gateway: &GatewaySettings, binding: &Agen
 }
 
 /// Codex 的模型列表：每家供应商的模型都列在它自己名下，Codex 选择器里按供应商分组时每组都完整。
-/// - 只有一家提供的模型：通常用裸模型名；固定到该供应商的默认模型沿用带前缀的名称；
+/// - 只有一家提供的模型：通常用裸模型名；固定到该供应商的默认模型沿用带前缀的名称
+///   （Codex 模型目录里另有一份隐藏的裸名，见 [`codex_pinned_default_alias`]）；
 /// - 多家都提供的模型：每家各列一份 `<供应商 id>/<模型>`（固定发给那一家）；打开「多家自动切换」
 ///   （`auto_models`）时再单独列一份裸模型名：按池顺序依次尝试各家，出错换下一家；
 /// - 最后是有成员的模型组。
@@ -355,6 +356,29 @@ pub fn codex_binding_models(gateway: &GatewaySettings, binding: &AgentBinding) -
         (index != default_block, index)
     });
     models
+}
+
+/// 默认模型固定成 `<供应商 id>/<模型>`、这个模型又只有那一家提供时，列表里用带前缀的名称顶替了裸名
+/// （见 [`codex_pool_blocks`]）。裸名照样路由到那一家，可 Codex 的 spawn_agent 只认目录里有的名字，
+/// 指定裸名会报 Unknown model（#3179）：返回这个裸名，Codex 模型目录里另列一份隐藏条目
+/// （不进选择器、不重复显示，也不进 `/v1/models`）。
+/// 绑定里自己声明过这个裸名时它本来就公开列着，不算别名。
+pub fn codex_pinned_default_alias(gateway: &GatewaySettings, binding: &AgentBinding) -> Option<String> {
+    let relays = binding_pool_relays(gateway, binding);
+    let (relay, upstream) = qualified_in(&relays, &binding_default_model(gateway, binding))?;
+    let model = chat_models(relay)
+        .into_iter()
+        .find(|model| model.eq_ignore_ascii_case(&upstream))?;
+    (serving_count(&relays, &model) == 1
+        && !binding
+            .declared_models()
+            .iter()
+            .any(|declared| declared.eq_ignore_ascii_case(&model))
+        && !is_disabled_group_model(gateway, &model)
+        && !unlisted_members(gateway).contains(&model.to_ascii_lowercase())
+        && !unavailable_registered_model(gateway, binding, &model)
+        && model_is_routable(gateway, binding, &model))
+    .then_some(model)
 }
 
 /// Codex 模型列表按分组切成的几块：每家一块、多家自动切换一块、模型组一块（空块不要）。
@@ -3472,6 +3496,45 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn codex_pinned_single_provider_default_keeps_a_hidden_bare_alias() {
+        // #3179：默认模型固定成「从某家下选」的 `kimi/kimi-k3`，kimi-k3 只有 kimi 一家提供。
+        let gateway = gateway("kimi/kimi-k3");
+        let mut binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        // 选择器那份列表照旧只有带前缀的名称，不重复显示。
+        let pool = codex_pool_models(&gateway, &binding);
+        assert!(pool.iter().any(|model| model == "kimi/kimi-k3"));
+        assert!(!pool.iter().any(|model| model == "kimi-k3"));
+        // /v1/models 也不变。
+        assert!(!codex_binding_models(&gateway, &binding).iter().any(|model| model == "kimi-k3"));
+        // Codex 目录里另有裸名，spawn_agent 指定 kimi-k3 才认得；路由不变，仍发给 kimi。
+        assert_eq!(codex_pinned_default_alias(&gateway, &binding).as_deref(), Some("kimi-k3"));
+        let catalog = crate::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+        let listed: Vec<String> = catalog
+            .model_list
+            .lines()
+            .map(|line| crate::model_suffix::parse_model_suffix(line).0)
+            .collect();
+        assert_eq!(listed[0], "kimi/kimi-k3");
+        assert_eq!(listed.iter().filter(|model| *model == "kimi-k3").count(), 1);
+        assert!(model_is_routable(&gateway, &binding, "kimi-k3"));
+        assert_eq!(routed(&gateway, "kimi-k3"), vec![pair("kimi", "kimi-k3")]);
+        // 目录里裸名那份隐藏，带前缀的那份照常显示。
+        let metadata: serde_json::Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+        assert_eq!(metadata["kimi-k3"]["visibility"], "hide");
+        assert_eq!(metadata["kimi-k3"]["codex_plus_group_id"], "kimi");
+        assert!(metadata["kimi/kimi-k3"].get("visibility").is_none());
+
+        // 多家都有的模型、或默认模型本来就是裸名时没有别名。
+        binding.model = "ds/deepseek-v4-pro".into();
+        assert_eq!(codex_pinned_default_alias(&gateway, &binding), None);
+        binding.model = "kimi-k3".into();
+        assert_eq!(codex_pinned_default_alias(&gateway, &binding), None);
+        let catalog = crate::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+        let metadata: serde_json::Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+        assert!(metadata["kimi-k3"].get("visibility").is_none());
     }
 
     #[test]
