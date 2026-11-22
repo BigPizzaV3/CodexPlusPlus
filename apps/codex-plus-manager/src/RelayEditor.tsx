@@ -157,6 +157,7 @@ import type {
   RelayEditorMode,
   RelayFilesResult,
   RelayProfile,
+  SettingsResult,
 } from "./app-types";
 import {
   CODEX_GATEWAY_RELAY_ID,
@@ -3081,6 +3082,59 @@ function SyncedTextarea({
       }}
       spellCheck={false}
     />
+  );
+}
+
+export function RelayCommonConfigScreen({ onSave, onBack }: {
+  onSave: (original: string, contents: string) => Promise<SettingsResult | null>;
+  onBack: () => void;
+}) {
+  const [contents, setContents] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<BackendSettings>("read_relay_common_config").then(settings => {
+      if (!cancelled) setContents(settings.relayCommonConfigContents ?? "");
+    }).catch(error => { if (!cancelled) setLoadError(errorText(error)); });
+    return () => { cancelled = true; };
+  }, []);
+  const save = async () => {
+    if (contents === null || draft === null || saving) return;
+    setSaving(true);
+    try {
+      const result = await onSave(contents, draft);
+      if (result) {
+        setContents(result.settings.relayCommonConfigContents ?? "");
+        setDraft(null);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <section className="screen management-screen">
+      <header className="cx-page-head" data-tauri-drag-region="deep">
+        <div className="cx-page-title"><h1>{t("通用配置文件")}</h1></div>
+        <div className="topbar-actions">
+          {contents !== null ? <Button type="button" disabled={draft === null || saving} onClick={() => void save()}>
+            <Save className="h-4 w-4" />
+            {t("保存")}
+          </Button> : null}
+          <Button variant="ghost" onClick={onBack}>{t("返回列表")}</Button>
+        </div>
+      </header>
+      {contents !== null
+        ? <fieldset className="min-w-0" disabled={saving}>
+            <SyncedTextarea
+              className="relay-file-textarea"
+              value={draft ?? contents}
+              onValueChange={text => setDraft(text === contents ? null : text)}
+            />
+          </fieldset>
+        : <p role={loadError ? "alert" : "status"}>{loadError ?? t("正在读取…")}</p>}
+    </section>
   );
 }
 

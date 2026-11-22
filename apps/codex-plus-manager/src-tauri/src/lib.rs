@@ -526,6 +526,7 @@ pub fn run() {
             gateway_commands::reveal_gateway_agent_config,
             gateway_commands::read_agent_config,
             gateway_commands::save_agent_config,
+            gateway_commands::read_relay_common_config,
             gateway_commands::load_gateway_usage,
             gateway_commands::clear_gateway_usage,
             gateway_commands::load_gateway_balances,

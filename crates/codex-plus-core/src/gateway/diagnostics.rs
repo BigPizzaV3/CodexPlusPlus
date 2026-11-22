@@ -450,11 +450,9 @@ fn generic(
         };
         let projected = change.after.as_deref().unwrap_or_default();
         let values = match change.format {
-            FileFormat::Json | FileFormat::Json5 => {
-                files::content_value(change.format, Some(projected))
-                    .ok()
-                    .zip(files::content_value(change.format, Some(&current)).ok())
-            }
+            FileFormat::Json => files::parse_jsonc(projected)
+                .ok()
+                .zip(files::parse_jsonc(&current).ok()),
             FileFormat::Toml => restore::toml_value(Some(projected))
                 .ok()
                 .zip(restore::toml_value(Some(&current)).ok()),

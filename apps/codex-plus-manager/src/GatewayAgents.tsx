@@ -7,7 +7,7 @@ import { t, tf } from "./i18n";
 import { appConfirm } from "./app-dialog";
 import { modelSlugFromRowName } from "./model-metadata";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
-import { AgentConfigButton } from "./AgentConfigEditor";
+import { AgentConfigButton, OpenAgentConfig } from "./AgentConfigEditor";
 import { agentDiagnosticPresentation, canReconnectAgent, diagnosticErrorLabel, diagnosticEvidenceLabel } from "./gateway-agent-safety";
 import {
   agentModels,
@@ -196,6 +196,7 @@ export function AgentConnectDialog({
   // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。每次改动立即保存，没有未保存的状态。
   const titleId = useId();
   const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
+  const openConfig = useContext(OpenAgentConfig);
   return (
     <div className="gw-modal-backdrop" {...backdropProps}>
       <div {...dialogProps} className="gw-modal gw-agent-modal">
@@ -204,7 +205,12 @@ export function AgentConnectDialog({
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body gw-agent-modal-body">
-          <AgentsView busy={busy} embedded notify={notify} onManage={onManage} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
+          <OpenAgentConfig.Provider value={openConfig && (target => {
+            if (target.agent === "codex") onClose();
+            openConfig(target);
+          })}>
+            <AgentsView busy={busy} embedded notify={notify} onManage={onManage} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
+          </OpenAgentConfig.Provider>
         </div>
       </div>
     </div>

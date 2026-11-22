@@ -9,18 +9,20 @@ import { useModalFocus } from "./use-modal-focus";
 type ConfigView = { source: string; inputFormat: string; contents: string; editable: boolean };
 
 export type ConfigTarget = { agent: string; name: string };
-export const OpenAgentConfig = createContext<((target: ConfigTarget, navigate: boolean) => void) | null>(null);
+export const OpenAgentConfig = createContext<((target: ConfigTarget) => void) | null>(null);
 
-export function AgentConfigButton({ agent, name, navigate = false }: ConfigTarget & { navigate?: boolean }) {
+export function AgentConfigButton({ agent, name }: ConfigTarget) {
   const open = useContext(OpenAgentConfig);
   return (
-    <Button size="sm" type="button" variant="ghost" onClick={() => open?.({ agent, name }, navigate)}>
+    <Button size="sm" type="button" variant="ghost" onClick={() => open?.({ agent, name })}>
       {agent === "codex" ? t("编辑通用配置") : t("编辑配置")}
     </Button>
   );
 }
 
-export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & { onClose: () => void }) {
+export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & {
+  onClose: () => void;
+}) {
   const [view, setView] = useState<ConfigView | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
@@ -60,7 +62,8 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & { onC
           <p>{t("配置来源")}：<code>{view.source}</code></p>
           {view.editable ? <>
             <label htmlFor={editorId}>{tf("输入格式：{0}", [view.inputFormat])}</label>
-            <textarea id={editorId} className="relay-file-textarea" rows={12} spellCheck={false} disabled={saving} value={draft} onChange={event => setDraft(event.currentTarget.value)} />
+            <textarea id={editorId} className="relay-file-textarea" rows={12} spellCheck={false} disabled={saving}
+              value={draft} onChange={event => setDraft(event.currentTarget.value)} />
           </> : <p>{t("配置只读")}</p>}
         </> : null}
         {error ? <p role="alert" className="gw-disconnect-error">{error}</p> : null}

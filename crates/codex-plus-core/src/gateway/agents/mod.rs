@@ -17,7 +17,6 @@ pub mod catalog_core;
 pub mod catalog_tools;
 pub mod connect;
 pub mod editor;
-mod editor_format;
 pub mod env;
 pub mod files;
 mod jsonc_edit;
@@ -96,10 +95,58 @@ impl Wiring {
     }
 }
 
+#[derive(Clone, Copy)]
+pub enum PreferenceKind {
+    Text,
+    Bool,
+    PositiveNumber,
+    AutoUpdate,
+}
+
+/// 编辑器的字段白名单。section 为 None 时，字段位于草稿对应的根对象。
+#[derive(Clone, Copy)]
+pub enum Preferences {
+    ReadOnly,
+    Editable {
+        section: Option<&'static str>,
+        fields: &'static [(&'static str, PreferenceKind)],
+    },
+}
+
+impl Preferences {
+    const PI: Self = Self::Editable {
+        section: None,
+        fields: &[
+            ("theme", PreferenceKind::Text),
+            ("hideThinkingBlock", PreferenceKind::Bool),
+        ],
+    };
+    const OPENCODE: Self = Self::Editable {
+        section: None,
+        fields: &[("autoupdate", PreferenceKind::AutoUpdate)],
+    };
+    const GEMINI: Self = Self::Editable {
+        section: Some("ui"),
+        fields: &[
+            ("theme", PreferenceKind::Text),
+            ("hideBanner", PreferenceKind::Bool),
+        ],
+    };
+    const VSCODE: Self = Self::Editable {
+        section: None,
+        fields: &[
+            ("editor.fontSize", PreferenceKind::PositiveNumber),
+            ("editor.minimap.enabled", PreferenceKind::Bool),
+        ],
+    };
+}
+
 /// 一个通用 Agent 的规格。
 pub struct AgentSpec {
     /// 网关路径与绑定的键：`/gw/<id>`，只用小写字母、数字和 `-`。
     pub id: &'static str,
+    /// 未确认可编辑的适配器必须显式登记为只读。
+    pub preferences: Preferences,
     pub name: &'static str,
     /// 探测版本用的命令（`<命令> --version`）；没有命令行的为空。
     pub binary: &'static str,

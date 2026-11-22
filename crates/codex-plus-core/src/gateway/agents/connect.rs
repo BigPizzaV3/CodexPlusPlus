@@ -111,7 +111,7 @@ pub fn restore(ctx: &ApplyContext, spec: &AgentSpec) -> anyhow::Result<()> {
                 current.as_deref(),
             )?
         } else {
-            restored_config_text(spec, record, current.as_deref())?
+            files::restored_text(record, current.as_deref())?
         };
         if restored != current {
             files::write_file(file, restored.as_deref())?;
@@ -119,20 +119,6 @@ pub fn restore(ctx: &ApplyContext, spec: &AgentSpec) -> anyhow::Result<()> {
     }
     stash::remove_stash(&path);
     Ok(())
-}
-
-pub(in crate::gateway) fn restored_config_text(
-    spec: &AgentSpec,
-    record: &files::StashedFile,
-    current: Option<&str>,
-) -> anyhow::Result<Option<String>> {
-    // 旧版 OpenClaw 存档标为 JSON，但接入后用户可能已改用 JSON5 语法。
-    if spec.id == "openclaw" && record.format == files::FileFormat::Json {
-        let mut record = record.clone();
-        record.format = files::FileFormat::Json5;
-        return files::restored_text(&record, current);
-    }
-    files::restored_text(record, current)
 }
 
 /// 配置已被别的工具改走时的断开：不碰 Agent 的文件，只丢掉存档。
@@ -326,11 +312,9 @@ mod tests {
                 for change in set.changes().unwrap() {
                     let text = change.after.as_deref().unwrap();
                     let value = match change.format {
-                        files::FileFormat::Json
-                        | files::FileFormat::Json5
-                        | files::FileFormat::Toml => {
-                            Some(files::content_value(change.format, Some(text)).unwrap())
-                        }
+                        files::FileFormat::Json | files::FileFormat::Toml => Some(
+                            files::content_value(change.format, Some(text)).unwrap(),
+                        ),
                         files::FileFormat::Raw
                             if change.path.extension().is_some_and(|ext| ext == "json") =>
                         {

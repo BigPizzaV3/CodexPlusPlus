@@ -1,10 +1,10 @@
-//! 通用 Agent 的配置文件读写：JSON（容忍注释与尾逗号）、TOML、YAML、`.env`。
+//! 通用 Agent 的配置文件读写：JSON（容忍注释与尾逗号）、TOML、YAML（按顶层键整块改）、`.env`。
 //!
 //! 写配置分两步：各 Agent 的写入函数在 [`FileSet`] 上改内存里的文档，框架再统一落盘，
 //! 同时记下每个文件接入前的原文和这次改到的键（见 [`crate::gateway::restore`]），断开时只把这些键改回去。
 //!
-//! YAML 默认按顶层原文块读写和还原，不要求整份配置能表示为 JSON。
-//! Hermes 单独校验 YAML 映射，只接管并还原登记的二级键。
+//! YAML 没有可用的解析库：只支持「顶层键」这一级，`set` 整块替换一个顶层键（值由 [`yaml_block`] 生成），
+//! 其余行（含注释）原样保留。各 Agent 的 YAML 写入都落在自己独占的顶层键上，或整块重写那一个键。
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use super::editor_format::Format;
 use crate::gateway::restore::{self as stash, ChangedKey, FileStash, KeyPath};
 
 /// 配置文件的格式。
@@ -22,8 +21,6 @@ use crate::gateway::restore::{self as stash, ChangedKey, FileStash, KeyPath};
 #[serde(rename_all = "camelCase")]
 pub enum FileFormat {
     Json,
-    /// 保留 OpenClaw 配置中的 JSON5 语法。
-    Json5,
     Toml,
     Yaml,
     Env,
@@ -33,7 +30,6 @@ pub enum FileFormat {
 
 enum Doc {
     Json(Value),
-    Json5(Value),
     Toml(toml_edit::DocumentMut),
     Yaml(YamlDoc),
     Env(EnvDoc),
@@ -55,8 +51,6 @@ pub struct FileSet {
 /// 一个改动过的文件：接入前 / 后的全文。
 #[derive(Debug, Clone)]
 pub struct FileChange {
-    /// 网关接管的 YAML 子键路径，用于断开时保留同级的用户设置。
-    pub yaml_paths: Vec<KeyPath>,
     pub path: PathBuf,
     pub format: FileFormat,
     pub before: Option<String>,
@@ -101,13 +95,6 @@ impl FileSet {
         Ok(value.as_object_mut().expect("刚换成对象"))
     }
 
-    pub(super) fn json5(&mut self, path: &Path) -> anyhow::Result<&mut Map<String, Value>> {
-        let Doc::Json5(value) = &mut self.entry(path, FileFormat::Json5)?.doc else {
-            unreachable!()
-        };
-        value.as_object_mut().context("JSON5 配置根节点必须是对象")
-    }
-
     pub fn toml(&mut self, path: &Path) -> anyhow::Result<&mut toml_edit::DocumentMut> {
         let entry = self.entry(path, FileFormat::Toml)?;
         let Doc::Toml(doc) = &mut entry.doc else {
@@ -150,9 +137,8 @@ impl FileSet {
                 (None, None) => true,
                 (Some(before), Some(after)) => {
                     before == after
-                        || (!matches!(&entry.doc, Doc::Yaml(doc) if !doc.owned_paths.is_empty())
-                            && content_value(entry.format, Some(before))?
-                                == content_value(entry.format, Some(after))?)
+                        || content_value(entry.format, Some(before))?
+                            == content_value(entry.format, Some(after))?
                 }
                 _ => false,
             };
@@ -160,10 +146,6 @@ impl FileSet {
                 continue;
             }
             out.push(FileChange {
-                yaml_paths: match &entry.doc {
-                    Doc::Yaml(doc) => doc.owned_paths.clone(),
-                    _ => Vec::new(),
-                },
                 path: path.clone(),
                 format: entry.format,
                 before: entry.before.clone(),
@@ -177,7 +159,6 @@ impl FileSet {
 fn parse(format: FileFormat, text: Option<&str>) -> anyhow::Result<Doc> {
     Ok(match format {
         FileFormat::Json => Doc::Json(parse_jsonc(text.unwrap_or_default())?),
-        FileFormat::Json5 => Doc::Json5(content_value(format, text)?),
         FileFormat::Toml => Doc::Toml(
             text.unwrap_or_default()
                 .parse::<toml_edit::DocumentMut>()
@@ -194,7 +175,6 @@ fn parse(format: FileFormat, text: Option<&str>) -> anyhow::Result<Doc> {
 fn render(doc: &Doc, before: Option<&str>) -> anyhow::Result<Option<String>> {
     Ok(match doc {
         Doc::Json(value) => Some(super::jsonc_edit::render(before, value)?),
-        Doc::Json5(value) => Some(render_json5(before, value)?),
         Doc::Toml(doc) => Some(doc.to_string()),
         Doc::Yaml(doc) => Some(doc.render()),
         Doc::Env(doc) => Some(doc.render()),
@@ -206,9 +186,6 @@ fn render(doc: &Doc, before: Option<&str>) -> anyhow::Result<Option<String>> {
 pub fn content_value(format: FileFormat, text: Option<&str>) -> anyhow::Result<Value> {
     Ok(match format {
         FileFormat::Json => parse_jsonc(text.unwrap_or_default())?,
-        FileFormat::Json5 => {
-            Format::Json5.read(text.filter(|text| !text.trim().is_empty()).unwrap_or("{}"))?
-        }
         FileFormat::Toml => stash::toml_value(text)?,
         FileFormat::Yaml => YamlDoc::parse(text.unwrap_or_default()).as_value(),
         FileFormat::Env => EnvDoc::parse(text.unwrap_or_default()).as_value(),
@@ -323,42 +300,12 @@ pub fn object_entry<'a>(map: &'a mut Map<String, Value>, key: &str) -> &'a mut M
 /// YAML 文档：按顶层键切块，块内原文保留。
 #[derive(Debug, Clone, Default)]
 pub struct YamlDoc {
-    pub(super) owned_paths: Vec<KeyPath>,
     /// 第一个顶层键之前的内容（注释、`---`）。
     head: String,
     blocks: Vec<(String, String)>,
 }
 
 impl YamlDoc {
-    pub(super) fn mapping(text: &str) -> anyhow::Result<Value> {
-        if text
-            .lines()
-            .all(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
-        {
-            return Ok(Value::Object(Map::new()));
-        }
-        let value = Format::Yaml.read(text)?;
-        anyhow::ensure!(value.is_object(), "YAML 配置根节点必须是映射");
-        Ok(value)
-    }
-
-    pub(super) fn patch_mapping(source: &str, expected: &Value) -> anyhow::Result<Self> {
-        let text = if source
-            .lines()
-            .all(|line| line.trim().is_empty() || line.trim_start().starts_with('#'))
-        {
-            let separator = if source.is_empty() || source.ends_with('\n') {
-                ""
-            } else {
-                "\n"
-            };
-            format!("{source}{separator}{}", serde_saphyr::to_string(expected)?)
-        } else {
-            Format::Yaml.patch(source, expected)?
-        };
-        Ok(Self::parse(&text))
-    }
-
     pub fn parse(text: &str) -> Self {
         let mut doc = YamlDoc::default();
         for line in text.split_inclusive('\n') {
@@ -695,8 +642,7 @@ impl AgentStash {
                 written_hash: None,
                 preserve_current_format: false,
             });
-        if matches!(change.format, FileFormat::Json | FileFormat::Json5) {
-            file.format = change.format;
+        if change.format == FileFormat::Json {
             if existed
                 && !file.written_hash.as_ref().is_some_and(|written| {
                     change.before.as_deref().is_some_and(|text| text_hash(text) == *written)
@@ -713,26 +659,6 @@ impl AgentStash {
                     path: Vec::new(),
                     written: None,
                 });
-            }
-            return Ok(());
-        }
-        if !change.yaml_paths.is_empty() {
-            // 旧版已接管整个顶层块。刷新时保留它的还原范围，不混用两种存档路径。
-            let legacy = file.stash.changed.iter().any(|key| key.path.len() == 1);
-            if !legacy {
-                if existed && file.written_hash != change.before.as_deref().map(text_hash) {
-                    file.preserve_current_format = true;
-                }
-                file.written_hash = change.after.as_deref().map(text_hash);
-            }
-            for path in &change.yaml_paths {
-                let path = if legacy { &path[..1] } else { path.as_slice() };
-                if !file.stash.changed.iter().any(|known| known.path == path) {
-                    file.stash.changed.push(ChangedKey {
-                        path: path.to_vec(),
-                        written: None,
-                    });
-                }
             }
             return Ok(());
         }
@@ -763,16 +689,9 @@ pub fn restored_text(
     let before = file.stash.before.as_deref();
     match file.format {
         FileFormat::Raw => Ok(before.map(str::to_string)),
-        FileFormat::Json | FileFormat::Json5 => {
-            let clean = |text: &str| -> anyhow::Result<String> {
-                if file.format == FileFormat::Json5 {
-                    Ok(content_value(file.format, Some(text))?.to_string())
-                } else {
-                    Ok(strip_jsonc(text))
-                }
-            };
-            let current_clean = current.map(clean).transpose()?;
-            let before_clean = before.map(clean).transpose()?;
+        FileFormat::Json => {
+            let current_clean = current.map(strip_jsonc);
+            let before_clean = before.map(strip_jsonc);
             let restored = stash::restore_json(
                 before_clean.as_deref(),
                 current_clean.as_deref(),
@@ -789,57 +708,10 @@ pub fn restored_text(
                 return Ok(before.map(str::to_string));
             }
             let desired = parse_jsonc(restored.as_deref().unwrap_or("{}"))?;
-            if file.format == FileFormat::Json5 {
-                render_json5(current, &desired).map(Some)
-            } else {
-                super::jsonc_edit::render(current, &desired).map(Some)
-            }
+            super::jsonc_edit::render(current, &desired).map(Some)
         }
         FileFormat::Toml => stash::restore_toml(before, current, &file.stash.paths()),
         FileFormat::Yaml => {
-            if file.stash.changed.iter().any(|key| key.path.len() == 2) {
-                if !file.preserve_current_format
-                    && current.is_some_and(|text| {
-                        file.written_hash
-                            .as_ref()
-                            .is_some_and(|hash| *hash == text_hash(text))
-                    })
-                {
-                    return Ok(before.map(str::to_owned));
-                }
-                let original = YamlDoc::mapping(before.unwrap_or_default())?;
-                let source = current.unwrap_or_default();
-                let live = YamlDoc::mapping(source)?;
-                let mut desired = live.clone();
-                for key in &file.stash.changed {
-                    let [parent, child] = key.path.as_slice() else {
-                        bail!("不支持的 YAML 存档路径")
-                    };
-                    let previous = original.get(parent).and_then(|map| map.get(child));
-                    if previous.is_none() && desired.get(parent).is_none() {
-                        continue;
-                    }
-                    let map = desired
-                        .as_object_mut()
-                        .expect("已校验映射")
-                        .entry(parent)
-                        .or_insert_with(|| Value::Object(Map::new()))
-                        .as_object_mut()
-                        .context("网关字段的父节点已不是 YAML 映射，无法安全还原")?;
-                    if let Some(value) = previous {
-                        map.insert(child.clone(), value.clone());
-                    } else {
-                        map.remove(child);
-                    }
-                    if map.is_empty() && original.get(parent).is_none() {
-                        desired.as_object_mut().unwrap().remove(parent);
-                    }
-                }
-                if desired == live {
-                    return Ok(current.map(str::to_owned));
-                }
-                return Ok(Some(YamlDoc::patch_mapping(source, &desired)?.render()));
-            }
             let before_doc = YamlDoc::parse(before.unwrap_or_default());
             let mut doc = YamlDoc::parse(current.unwrap_or_default());
             for path in file.stash.paths() {
@@ -872,16 +744,6 @@ pub fn restored_text(
     }
 }
 
-fn render_json5(before: Option<&str>, desired: &Value) -> anyhow::Result<String> {
-    let Some(text) = before.filter(|text| !text.trim().is_empty()) else {
-        return super::jsonc_edit::render(None, desired);
-    };
-    if super::jsonc_edit::read_preferences(text).is_ok() {
-        return super::jsonc_edit::render(Some(text), desired);
-    }
-    Format::Json5.patch(text, desired)
-}
-
 fn text_hash(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.as_bytes()))
 }
@@ -901,33 +763,6 @@ pub fn write_file(path: &Path, contents: Option<&str>) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn json5_writes_preserve_escapes_and_large_integers() {
-        for source in [
-            r#"{"other":"A\uD83D\uDE00B","count":18446744073709551615}"#,
-            r#"{other:'A\uD83D\uDE00B',count:18446744073709551615,}"#,
-        ] {
-            let mut expected = Format::Json5.read(source).unwrap();
-            assert_eq!(expected["other"], "A😀B");
-            assert_eq!(expected["count"], u64::MAX);
-            expected["locale"] =
-                Format::Json5.read(r#"{locale:'\x66r'}"#).unwrap()["locale"].clone();
-            assert_eq!(expected["locale"], "fr");
-            let rendered = render_json5(Some(source), &expected).unwrap();
-            assert!(rendered.contains(r#"A\uD83D\uDE00B"#));
-            assert!(rendered.contains("18446744073709551615"));
-            assert_eq!(Format::Json5.read(&rendered).unwrap(), expected);
-        }
-        for source in [
-            "{bad:0x}",
-            "{bad:NaN}",
-            "{bad:Infinity}",
-            r#"{name:1,'\x6eame':2}"#,
-        ] {
-            assert!(Format::Json5.read(source).is_err(), "{source}");
-        }
-    }
 
     #[test]
     fn jsonc_comments_and_trailing_commas() {
@@ -974,7 +809,6 @@ mod tests {
         doc.set("C", "3");
         let change = FileChange {
             path: PathBuf::from("/x/.env"),
-            yaml_paths: Vec::new(),
             format: FileFormat::Env,
             before: Some(before.to_string()),
             after: Some(doc.render()),
@@ -1000,7 +834,6 @@ mod tests {
         let after = serde_json::to_string_pretty(&value).unwrap();
         let change = FileChange {
             path: PathBuf::from("/x/a.json"),
-            yaml_paths: Vec::new(),
             format: FileFormat::Json,
             before: Some(before.to_string()),
             after: Some(after.clone()),
@@ -1018,7 +851,6 @@ mod tests {
     fn new_file_restores_to_absent() {
         let change = FileChange {
             path: PathBuf::from("/x/new.json"),
-            yaml_paths: Vec::new(),
             format: FileFormat::Json,
             before: None,
             after: Some("{\"gw\":1}".to_string()),

@@ -15,7 +15,8 @@ use serde_json::{Map, Value, json};
 use crate::gateway::agents::catalog_core::{opencode_provider, output_limit};
 use crate::gateway::agents::files::{parse_jsonc, strip_jsonc, yaml_block};
 use crate::gateway::agents::{
-    AgentEnv, AgentSpec, AgentWire, FileSet, Os, PROVIDER_ID, PROVIDER_NAME, Wiring, object_entry,
+    AgentEnv, AgentSpec, AgentWire, FileSet, Os, PROVIDER_ID, PROVIDER_NAME, PreferenceKind,
+    Preferences, Wiring, object_entry,
 };
 
 pub static SPECS: &[AgentSpec] = &[
@@ -113,7 +114,7 @@ fn find_binary(env: &AgentEnv, binary: &str, extra: &[&str]) -> Option<PathBuf> 
 }
 
 /// 进程在运行（按可执行文件名）。只在真实环境、且是本机系统时查。
-pub(super) fn process_running(env: &AgentEnv, name: &str) -> bool {
+fn process_running(env: &AgentEnv, name: &str) -> bool {
     if !is_live(env) || env.os != Os::current() {
         return false;
     }
@@ -410,6 +411,7 @@ fn desktop_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
 
 pub const CLAUDE_DESKTOP: AgentSpec = AgentSpec {
     id: "claude-desktop",
+    preferences: Preferences::ReadOnly,
     name: "Claude Desktop",
     binary: "",
     wire: AgentWire::Anthropic,
@@ -438,6 +440,7 @@ fn desktop_local_write(
 
 pub static CLAUDE_DESKTOP_LOCAL: AgentSpec = AgentSpec {
     id: "claude-desktop-local",
+    preferences: Preferences::ReadOnly,
     name: "Claude Desktop 本地模式",
     binary: "",
     wire: AgentWire::Anthropic,
@@ -499,6 +502,13 @@ fn zed_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Resu
 
 pub const ZED: AgentSpec = AgentSpec {
     id: "zed",
+    preferences: Preferences::Editable {
+        section: None,
+        fields: &[
+            ("ui_font_size", PreferenceKind::PositiveNumber),
+            ("buffer_font_size", PreferenceKind::PositiveNumber),
+        ],
+    },
     name: "Zed",
     binary: "zed",
     wire: AgentWire::Chat,
@@ -805,6 +815,7 @@ fn vscode_write(
 
 pub const VSCODE: AgentSpec = AgentSpec {
     id: "vscode",
+    preferences: Preferences::VSCODE,
     name: "VS Code Chat",
     binary: "code",
     wire: AgentWire::Chat,
@@ -816,6 +827,7 @@ pub const VSCODE: AgentSpec = AgentSpec {
 
 pub const VSCODE_INSIDERS: AgentSpec = AgentSpec {
     id: "vscode-insiders",
+    preferences: Preferences::VSCODE,
     name: "VS Code Insiders Chat",
     binary: "code-insiders",
     wire: AgentWire::Chat,
@@ -827,6 +839,7 @@ pub const VSCODE_INSIDERS: AgentSpec = AgentSpec {
 
 pub const VSCODIUM: AgentSpec = AgentSpec {
     id: "vscodium",
+    preferences: Preferences::VSCODE,
     name: "VSCodium Chat",
     binary: "codium",
     wire: AgentWire::Chat,
@@ -903,6 +916,7 @@ fn zoo_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Resu
 
 pub const ZOO_CODE: AgentSpec = AgentSpec {
     id: "zoo-code",
+    preferences: Preferences::ReadOnly,
     name: "Zoo Code",
     binary: "",
     wire: AgentWire::Chat,
@@ -919,7 +933,7 @@ fn air_dir(env: &AgentEnv) -> PathBuf {
     env.app_config().join("JetBrains").join("Air")
 }
 
-pub(super) fn air_opencode_config(env: &AgentEnv) -> PathBuf {
+fn air_opencode_config(env: &AgentEnv) -> PathBuf {
     air_dir(env).join("codexplus-opencode.json")
 }
 
@@ -960,6 +974,7 @@ fn air_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Resu
 
 pub const JETBRAINS_AIR: AgentSpec = AgentSpec {
     id: "jetbrains-air",
+    preferences: Preferences::ReadOnly,
     name: "JetBrains Air",
     binary: "",
     wire: AgentWire::Chat,
@@ -1054,6 +1069,7 @@ fn copilot_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
 
 pub const COPILOT_JETBRAINS: AgentSpec = AgentSpec {
     id: "copilot-jetbrains",
+    preferences: Preferences::ReadOnly,
     name: "Copilot (JetBrains)",
     binary: "",
     wire: AgentWire::Chat,
@@ -1103,6 +1119,7 @@ fn pencil_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::R
 
 pub const PENCIL: AgentSpec = AgentSpec {
     id: "pencil",
+    preferences: Preferences::ReadOnly,
     name: "Pencil",
     binary: "",
     wire: AgentWire::Chat,
@@ -1170,6 +1187,7 @@ fn openpencil_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyho
 
 pub const OPENPENCIL: AgentSpec = AgentSpec {
     id: "openpencil",
+    preferences: Preferences::ReadOnly,
     name: "OpenPencil",
     binary: "",
     wire: AgentWire::Chat,
@@ -1354,6 +1372,7 @@ fn raycast_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
 
 pub const RAYCAST: AgentSpec = AgentSpec {
     id: "raycast",
+    preferences: Preferences::ReadOnly,
     name: "Raycast",
     binary: "",
     wire: AgentWire::Chat,
@@ -1445,6 +1464,7 @@ fn t3_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Resul
 
 pub const T3_CODE: AgentSpec = AgentSpec {
     id: "t3code",
+    preferences: Preferences::ReadOnly,
     name: "T3 Code",
     binary: "",
     wire: AgentWire::Anthropic,
@@ -1555,6 +1575,7 @@ fn astrbot_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
 
 pub const ASTRBOT: AgentSpec = AgentSpec {
     id: "astrbot",
+    preferences: Preferences::ReadOnly,
     name: "AstrBot",
     binary: "astrbot",
     wire: AgentWire::Chat,
@@ -1609,7 +1630,7 @@ fn openclaw_path(env: &AgentEnv) -> PathBuf {
 }
 
 fn openclaw_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Result<()> {
-    let root = set.json5(&openclaw_path(env))?;
+    let root = set.json(&openclaw_path(env))?;
     let provider = object_entry(
         object_entry(object_entry(root, "models"), "providers"),
         PROVIDER_ID,
@@ -1678,6 +1699,7 @@ fn openclaw_write(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow:
 
 pub const OPENCLAW: AgentSpec = AgentSpec {
     id: "openclaw",
+    preferences: Preferences::ReadOnly,
     name: "OpenClaw",
     binary: "openclaw",
     wire: AgentWire::Chat,
