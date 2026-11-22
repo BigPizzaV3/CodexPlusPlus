@@ -407,17 +407,6 @@
   font-size: 11px;
 }
 
-.pf-select {
-  height: 26px;
-  padding: 0 6px;
-  border: 1px solid hsl(var(--input));
-  border-radius: 7px;
-  background: hsl(var(--surface-sunken));
-  color: hsl(var(--foreground));
-  font: inherit;
-  font-size: 12px;
-}
-
 .pf-foot {
   display: flex;
   align-items: center;
@@ -502,49 +491,6 @@
 
 .gw-portal .pf-section h4 .pf-currency + .pf-action {
   margin-left: 0;
-}
-
-/* 模型列表弹窗：上游新增 / 已下架 */
-.gw-portal .pf-model-diff {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 5px;
-  padding: 7px 8px;
-  border: 1px dashed hsl(var(--border));
-  border-radius: 8px;
-  color: hsl(var(--muted-foreground));
-  font-size: 11.5px;
-}
-
-.gw-portal .pf-model-diff > span {
-  margin-right: 4px;
-}
-
-.gw-portal .pf-chip-new {
-  gap: 3px;
-  padding: 0 7px 0 4px;
-  border-style: dashed;
-  background: transparent;
-  color: hsl(var(--foreground));
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  cursor: pointer;
-}
-
-.gw-portal .pf-chip-new svg {
-  width: 11px;
-  height: 11px;
-}
-
-.gw-portal .pf-text-action {
-  margin-left: auto;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: hsl(var(--primary));
-  font-size: 11.5px;
-  cursor: pointer;
 }
 
 .gw-portal .pf-chip[data-gone="true"] > span {
