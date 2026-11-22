@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw } from "lucide-react";
 import { t, tf } from "./i18n";
+import { errorText } from "@/lib/utils";
 import {
   changeRows,
   currentSourceLabel,
@@ -47,7 +48,7 @@ export function ProviderMetaSyncPanel({
       setPicked(defaultPicked(preview, kind));
       setLoaded({ state: "ready", preview });
     } catch (error) {
-      setLoaded({ state: "error", message: String(error) });
+      setLoaded({ state: "error", message: t(errorText(error)) });
     }
   };
 

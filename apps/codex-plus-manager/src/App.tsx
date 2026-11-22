@@ -102,7 +102,7 @@ import { PRESETS, type ProviderPreset } from "./presets";
 import { setSponsorAds, useSponsorPresets } from "./sponsor-store";
 import { createPortal } from "react-dom";
 import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
-import { createContext, Fragment, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { createContext, Fragment, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -285,6 +285,7 @@ import { CompatToggles } from "./CompatToggles";
 import { errorText } from "@/lib/utils";
 import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
 import { usePolling } from "./use-polling";
+import { useModalShell } from "./use-modal-shell";
 import { sessionProviderForProtocol } from "./relay-session";
 import { historyRecoveryStatusLabel, type FrontendRecoveryReport } from "./history-recovery-report";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -3780,7 +3781,7 @@ export function App() {
 
   const diagnoseRelayProfile = async (profile: RelayProfile) => {
     const result = await run(() => call<ProviderDoctorResult>("diagnose_relay_profile", { profile }));
-    if (result) showNotice("Provider Doctor", result.message, result.status);
+    // 结果在诊断弹窗里逐项展示，不再另弹一条提示。
     return result ?? null;
   };
 
@@ -6896,10 +6897,10 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         }
         setError("");
       } else {
-        setError(result.message || t("读取请求日志失败。"));
+        setError(result.message ? t(result.message) : t("读取请求日志失败。"));
       }
     } catch (cause) {
-      setError(String(cause));
+      setError(t(errorText(cause)));
     } finally {
       setLoading(false);
     }
@@ -6918,10 +6919,10 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
     setClearing(true);
     try {
       const result = await invoke<{ status: Status; message: string }>("clear_request_logs");
-      if (result.status !== "ok") setError(result.message);
+      if (result.status !== "ok") setError(t(result.message));
       await load(true);
     } catch (cause) {
-      setError(String(cause));
+      setError(t(errorText(cause)));
     } finally {
       setClearing(false);
     }
@@ -13821,12 +13822,15 @@ function ProviderDoctorModal({
   const steps = providerDoctorSteps(result, running);
   const doneCount = steps.filter((step) => step.state === "ok" || step.state === "warning" || step.state === "failed").length;
   const progress = Math.round((doneCount / steps.length) * 100);
+  const titleId = useId();
+  // Esc、点遮罩关闭（诊断中 onClose 自己不关）；焦点圈在弹窗里。
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true">
-      <div className="modal-card provider-doctor-modal">
+    <div className="modal-backdrop" {...backdropProps}>
+      <div {...dialogProps} className="modal-card provider-doctor-modal">
         <div className="modal-head">
           <div>
-            <h2>Provider Doctor</h2>
+            <h2 id={titleId}>{t("诊断供应商")}</h2>
             <p>{running ? t("正在诊断供应商，请稍候。") : result?.summary ?? t("诊断已完成。")}</p>
           </div>
           <UiBadge variant={result && !isSuccessStatus(result.status) ? "outline" : "secondary"}>

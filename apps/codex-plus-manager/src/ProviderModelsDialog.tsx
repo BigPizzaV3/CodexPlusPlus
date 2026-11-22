@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Search, Star, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { t, tf } from "./i18n";
+import { errorText } from "@/lib/utils";
 import { maskAccountName, splitModels, type GatewayPoolEntry } from "./gateway-model";
 import { Avatar } from "./gateway-ui";
 import { filterModels, sameModel, upstreamDiff, type ModelSyncPreview, type UpstreamDiff } from "./provider-sync-model";
@@ -70,7 +71,7 @@ export function ProviderModelsDialog({
       setAdd(new Set());
       setSync({ state: "ready", diff, upstreamCount: result.upstream.length });
     } catch (error) {
-      setSync({ state: "error", message: String(error) });
+      setSync({ state: "error", message: t(errorText(error)) });
     }
   };
   useEffect(() => {
