@@ -429,7 +429,7 @@
 }
 
 :root .shell .request-log-page .request-log-entry:hover,
-:root .shell .request-log-page .request-log-entry[aria-expanded="true"] {
+:root .shell .request-log-page .request-log-entry[data-expanded="true"] {
   background: hsl(var(--accent) / 0.35);
 }
 

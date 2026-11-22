@@ -102,7 +102,7 @@ import { PRESETS, type ProviderPreset } from "./presets";
 import { setSponsorAds, useSponsorPresets } from "./sponsor-store";
 import { createPortal } from "react-dom";
 import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -281,6 +281,8 @@ import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
+import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
+import { usePolling } from "./use-polling";
 import { sessionProviderForProtocol } from "./relay-session";
 import { historyRecoveryStatusLabel, type FrontendRecoveryReport } from "./history-recovery-report";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -916,6 +918,10 @@ type RequestLogsResult = {
   more?: boolean;
   /** 日志文件里最早一条的开始时间（日志按大小滚动）。 */
   oldestMs?: number | null;
+  /** 文件里最后读到的位置：下一轮带上它只读新写入的记录。 */
+  cursor?: RequestLogCursor | null;
+  /** 带游标读到的增量：entries 只是新完成的 + 进行中的，要并进已有列表。 */
+  incremental?: boolean;
 };
 
 type SettingsResult = CommandResult<{
@@ -6575,7 +6581,7 @@ function formatRequestLogTime(timestampMs: number) {
     date.getFullYear() === now.getFullYear()
     && date.getMonth() === now.getMonth()
     && date.getDate() === now.getDate();
-  const time = date.toLocaleTimeString("zh-CN", { hour12: false });
+  const time = date.toLocaleTimeString(getLanguage() === "en" ? "en-US" : "zh-CN", { hour12: false });
   return sameDay ? time : `${date.getMonth() + 1}/${date.getDate()} ${time}`;
 }
 
@@ -6670,6 +6676,7 @@ function isImageRequest(entry: { wireApi?: string }): boolean {
 }
 
 const REQUEST_LOG_LIMIT = 300;
+const REQUEST_LOG_POLL_MS = 2000;
 
 /** 失败请求在列表里直接显示的错误摘要：上游返回 JSON 时取里面的 message，否则取第一行。 */
 function requestLogErrorSummary(error: string): string {
@@ -6683,6 +6690,184 @@ function requestLogErrorSummary(error: string): string {
   }
   return text.split("\n")[0] ?? text;
 }
+
+type RequestLogRowProps = {
+  entry: RequestLogEntry;
+  /** 模型名、上游模型名的展示名（分组别名），父组件按 entries 缓存好传进来。 */
+  model: string;
+  upstream: string;
+  expanded: boolean;
+  /** 只有进行中的行用得到（算已用时）；其它行传 0，免得每秒跟着重渲染。 */
+  nowMs: number;
+  onToggle: (id: string) => void;
+};
+
+/** 请求日志的一行（含展开的明细）。按 props 记忆：自动刷新时只有变了的行（进行中、新来的）才重渲染。 */
+const RequestLogRow = memo(function RequestLogRow({ entry, model, upstream, expanded, nowMs, onToggle }: RequestLogRowProps) {
+  const running = entry.state === "running";
+  const detailId = `request-log-detail-${entry.id}`;
+  return (
+    <>
+      <div
+        className={`request-log-row request-log-entry ${running ? "running" : entry.success ? "ok" : "bad"}`}
+        data-expanded={expanded || undefined}
+        onClick={() => onToggle(entry.id)}
+        role="row"
+      >
+        <span role="cell">
+          {/* 展开 / 收起靠第一格的按钮（能用键盘聚焦、带 aria-expanded）；点整行也一样。 */}
+          <button
+            aria-controls={expanded ? detailId : undefined}
+            aria-expanded={expanded}
+            className="request-log-toggle"
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggle(entry.id);
+            }}
+            type="button"
+          >
+            {formatRequestLogTime(entry.startedAtMs || entry.timestampMs)}
+          </button>
+        </span>
+        {running ? (
+          <span className="request-log-status running" role="cell">
+            {t("运行中")}
+          </span>
+        ) : (
+          <span
+            className={`request-log-status ${entry.success ? "ok" : "bad"}`}
+            role="cell"
+            title={entry.error ?? ""}
+          >
+            {entry.statusCode || (entry.success ? "OK" : "ERR")}
+            {!entry.success ? (
+              <small className="request-log-stream-failed">
+                {entry.stream ? t("流失败") : t("失败")}
+              </small>
+            ) : null}
+          </span>
+        )}
+        <span className="request-log-ellipsis request-log-source" role="cell" title={`${agentName(requestLogAgent(entry))} · ${maskAccountName(entry.relayName)}`}>
+          <AgentGlyph agent={requestLogAgent(entry)} />
+          {maskAccountName(entry.relayName) || "-"}
+        </span>
+        <span className="request-log-ellipsis" role="cell" title={entry.upstreamModel ? `${model} → ${upstream}` : model}>
+          {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
+          {model || "-"}
+          {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
+            <small> → {upstream}</small>
+          ) : null}
+        </span>
+        <span
+          className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) || compactionNote(entry.retryReasons)?.kind === "fallback" ? "request-log-retry" : "request-log-muted"}
+          role="cell"
+          title={requestLogRetryReasons(entry)}
+        >
+          {requestLogRetryLabel(entry)}
+        </span>
+        {!running && !entry.success && entry.error ? (
+          // 失败的请求没有 token 和费用：这几列直接显示错误原因。
+          <span className="request-log-error-cell" role="cell" title={entry.error}>{requestLogErrorSummary(entry.error)}</span>
+        ) : (
+          <>
+            <span className="request-log-muted" role="cell" title={running ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
+              {running ? (isImageRequest(entry) ? t("生成中") : t("流式中")) : formatRequestLogTokens(entry.usage?.inputTokens)}
+            </span>
+            <span
+              className="request-log-muted"
+              role="cell"
+              title={running
+                ? t("按流式增量估算，完成后会更新为准确值")
+                : ""}
+            >
+              {running
+                ? entry.estimatedOutputTokens
+                  ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
+                  : (isImageRequest(entry) ? t("生成中") : t("流式中"))
+                : formatRequestLogTokens(entry.usage?.outputTokens)}
+            </span>
+            <span role="cell">
+              {running ? (
+                <span className="request-log-muted">{(isImageRequest(entry) ? t("生成中") : t("流式中"))}</span>
+              ) : entry.usage?.cachedTokens ? (
+                <>
+                  {formatRequestLogTokens(entry.usage.cachedTokens)}
+                  <small>
+                    {" · "}
+                    {formatRequestLogCacheHitRatio(
+                      entry.usage.inputTokens,
+                      entry.usage.cachedTokens,
+                      entry.cacheHitRatio,
+                    )}
+                  </small>
+                </>
+              ) : "-"}
+            </span>
+            <span className="request-log-muted" role="cell">{entry.cost ? formatRequestCost(entry.cost) : "-"}</span>
+          </>
+        )}
+        <span className="request-log-duration" role="cell">
+          {formatRequestLogDuration(
+            running
+              ? Math.max(0, nowMs - entry.startedAtMs)
+              : entry.durationMs,
+          )}
+          {running ? (
+            <small>{t("进行中")}</small>
+          ) : entry.firstTokenMs != null ? (
+            <small>{tf("首字 {0}", [formatRequestLogDuration(entry.firstTokenMs)])}</small>
+          ) : null}
+        </span>
+      </div>
+      {expanded ? (
+        <div role="row">
+          <div className="request-log-detail" id={detailId} role="cell">
+            <dl>
+              <div><dt>{t("请求 ID")}</dt><dd><code>{entry.id}</code></dd></div>
+              <div>
+                <dt>{t("会话 ID")}</dt>
+                <dd>
+                  {entry.threadTitle ? <strong className="request-log-session-title">{entry.threadTitle}</strong> : null}
+                  <code>{entry.threadId || "-"}</code>
+                </dd>
+              </div>
+              <div><dt>{t("路径")}</dt><dd><code>{entry.method} {entry.path}</code></dd></div>
+              <div><dt>{t("上游协议")}</dt><dd>{entry.wireApi || "-"}</dd></div>
+              <div><dt>{t("上游模型")}</dt><dd>{upstream || "-"}</dd></div>
+              <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (running ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
+              <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
+              <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
+              <div><dt>{t("重试原因")}</dt><dd>{requestLogRetryReasons(entry) || "-"}</dd></div>
+              {entry.attemptDetails?.length ? (
+                <div className="request-log-attempts">
+                  <dt>{t("尝试明细")}</dt>
+                  <dd>
+                    <ul>
+                      {entry.attemptDetails.map((detail) => (
+                        <li key={`${detail.attempt}-${detail.code ?? ""}`}>
+                          <strong>{tf("第 {0} 次", [detail.attempt])}</strong>
+                          <code>{detail.code || "-"}</code>
+                          {detail.delayMs != null ? (
+                            <small>{tf("退避 {0}", [formatRequestLogDuration(detail.delayMs)])}</small>
+                          ) : null}
+                          {detail.message ? <small title={detail.message}>{detail.message}</small> : null}
+                        </li>
+                      ))}
+                    </ul>
+                  </dd>
+                </div>
+              ) : null}
+              <div><dt>{t("流式")}</dt><dd>{entry.stream ? "SSE" : "JSON"}</dd></div>
+              <div><dt>{t("流结果")}</dt><dd>{entry.streamOutcome || "-"}</dd></div>
+              <div><dt>{t("推理 tokens")}</dt><dd>{formatRequestLogTokens(entry.usage?.reasoningTokens)}</dd></div>
+              <div><dt>{t("错误")}</dt><dd>{entry.error || "-"}</dd></div>
+            </dl>
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+});
 
 function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeInitialAgent }: { initialAgent?: "all" | "codex" | "claude" | "grok"; initialFocus?: RequestLogFocus; onConsumeInitialAgent?: () => void }) {
   const payload = useGatewayPayload(10_000);
@@ -6728,16 +6913,32 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   const filterRef = useRef(filterArgs);
   filterRef.current = filterArgs;
   const latestLoad = useRef(0);
+  // 自动刷新只读上次之后新写入的记录（后端按游标增量读），不再每轮把整个日志读一遍、整表重渲染。
+  const cursorRef = useRef<RequestLogCursor | null>(null);
+  const entriesRef = useRef(entries);
+  entriesRef.current = entries;
   const load = async (silent = false) => {
     const id = ++latestLoad.current;
-    if (!silent) setLoading(true);
+    // 手动刷新、换筛选条件时整页重读：旧游标对应的是旧条件下的列表。
+    if (!silent) {
+      setLoading(true);
+      cursorRef.current = null;
+    }
+    const args = silent && cursorRef.current ? { ...filterRef.current, cursor: cursorRef.current } : filterRef.current;
     try {
-      const result = await invoke<RequestLogsResult>("load_request_logs", filterRef.current);
+      const result = await invoke<RequestLogsResult>("load_request_logs", args);
       if (id !== latestLoad.current) return;
       if (result.status === "ok") {
-        setEntries(result.entries ?? []);
-        setMore(Boolean(result.more));
-        setOldestMs(result.oldestMs ?? null);
+        cursorRef.current = result.cursor ?? null;
+        if (result.incremental) {
+          const merged = mergeRequestLogDelta(entriesRef.current, result.entries ?? [], REQUEST_LOG_LIMIT, filterRef.current.sinceMs);
+          if (merged.entries !== entriesRef.current) setEntries(merged.entries);
+          if (merged.truncated) setMore(true);
+        } else {
+          setEntries((prev) => reuseRequestLogEntries(prev, result.entries ?? []));
+          setMore(Boolean(result.more));
+          setOldestMs(result.oldestMs ?? null);
+        }
         setError("");
       } else {
         setError(result.message || t("读取请求日志失败。"));
@@ -6754,13 +6955,8 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range, agentScope, filterArgs.relayId, filterArgs.relayUnknown, modelFilter]);
 
-  useEffect(() => {
-    if (!autoRefresh) return;
-    const timer = window.setInterval(() => {
-      if (!document.hidden) void load(true);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [autoRefresh]);
+  // 每 2 秒增量读一次；窗口不可见时暂停，回到前台立刻补一轮。
+  usePolling(() => load(true), REQUEST_LOG_POLL_MS, { enabled: autoRefresh, immediate: false });
 
   const clearLogs = async () => {
     if (!(await appConfirm(t("清空全部请求日志？此操作不可撤销。"), { title: t("清空请求日志"), confirmText: t("清空"), danger: true }))) return;
@@ -6810,6 +7006,19 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   // 筛的时间段（或点进来的那一项）比日志里最早的一条还早：日志里看到的比统计少。
   const partial = oldestMs !== null && (sinceMs ?? 0) < oldestMs && (range !== "all" || relayFilter !== null || modelFilter !== "");
 
+  // 模型展示名（分组别名）按 entries 和网关数据算一次，行组件和搜索都用它，不再每行每次渲染线性查找。
+  const displayNames = useMemo(() => {
+    const names = new Map<string, { model: string; upstream: string }>();
+    for (const entry of entries) {
+      names.set(entry.id, {
+        model: groupDisplayName(payload, entry.model) ?? entry.model,
+        upstream: groupDisplayName(payload, entry.upstreamModel) ?? entry.upstreamModel,
+      });
+    }
+    return names;
+  }, [entries, payload]);
+  const toggleExpanded = useCallback((id: string) => setExpanded((current) => (current === id ? null : id)), []);
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     return entries.filter((entry) => {
@@ -6829,8 +7038,8 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
       return [
         entry.model,
         entry.upstreamModel,
-        groupDisplayName(payload, entry.model),
-        groupDisplayName(payload, entry.upstreamModel),
+        displayNames.get(entry.id)?.model,
+        displayNames.get(entry.id)?.upstream,
         entry.relayName,
         entry.path,
         entry.threadId ?? "",
@@ -6842,7 +7051,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         .toLowerCase()
         .includes(needle);
     });
-  }, [entries, filter, query, sessionFilter, agentScope, payload]);
+  }, [entries, filter, query, sessionFilter, agentScope, displayNames]);
 
   // 工具条：搜索 + 自动刷新开关（关掉时旁边出现手动刷新）+ 三点菜单（清空日志，确认框保留）；
   // 下面一行：状态胶囊在左，Agent / 时间 / 会话三个下拉在右；表格一张卡，占满剩下的高度。
@@ -6856,7 +7065,7 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
   return (
     <div className="request-log-panel request-log-page cx-page">
       <CxToolbar onQuery={setQuery} placeholder={t("搜索模型 / 供应商 / 路径 / 错误 / 状态码")} query={query}>
-        <span className="request-log-auto" title={t("每秒读取一次新请求")}>
+        <span className="request-log-auto" title={t("每 2 秒读取一次新请求")}>
           <Switch label={t("自动刷新")} on={autoRefresh} onToggle={() => setAutoRefresh(!autoRefresh)} />
           <span>{t("自动刷新")}</span>
         </span>
@@ -6955,162 +7164,29 @@ function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onConsumeIn
         ) : filtered.length ? (
             <div className="request-log-table" role="table" aria-label={t("请求日志")}>
               <div className="request-log-row request-log-head" role="row">
-                <span>{t("时间")}</span>
-                <span>{t("状态")}</span>
-                <span>{t("来源")}</span>
-                <span>{t("模型")}</span>
-                <span>{t("重试")}</span>
-                <span>{t("输入")}</span>
-                <span>{t("输出")}</span>
-                <span>{t("缓存")}</span>
-                <span>{t("费用")}</span>
-                <span>{t("耗时")}</span>
+                <span role="columnheader">{t("时间")}</span>
+                <span role="columnheader">{t("状态")}</span>
+                <span role="columnheader">{t("来源")}</span>
+                <span role="columnheader">{t("模型")}</span>
+                <span role="columnheader">{t("重试")}</span>
+                <span role="columnheader">{t("输入")}</span>
+                <span role="columnheader">{t("输出")}</span>
+                <span role="columnheader">{t("缓存")}</span>
+                <span role="columnheader">{t("费用")}</span>
+                <span role="columnheader">{t("耗时")}</span>
               </div>
               {filtered.map((entry) => {
-                const model = groupDisplayName(payload, entry.model) ?? entry.model;
-                const upstream = groupDisplayName(payload, entry.upstreamModel) ?? entry.upstreamModel;
+                const names = displayNames.get(entry.id);
                 return (
-                <Fragment key={entry.id}>
-                  <button
-                    aria-expanded={expanded === entry.id}
-                    className={`request-log-row request-log-entry ${entry.state === "running" ? "running" : entry.success ? "ok" : "bad"}`}
-                    onClick={() => setExpanded(expanded === entry.id ? null : entry.id)}
-                    role="row"
-                    type="button"
-                  >
-                    <span>{formatRequestLogTime(entry.startedAtMs || entry.timestampMs)}</span>
-                    {entry.state === "running" ? (
-                      <span className="request-log-status running">
-                        {t("运行中")}
-                      </span>
-                    ) : (
-                      <span
-                        className={`request-log-status ${entry.success ? "ok" : "bad"}`}
-                        title={entry.error ?? ""}
-                      >
-                        {entry.statusCode || (entry.success ? "OK" : "ERR")}
-                        {!entry.success ? (
-                          <small className="request-log-stream-failed">
-                            {entry.stream ? t("流失败") : t("失败")}
-                          </small>
-                        ) : null}
-                      </span>
-                    )}
-                    <span className="request-log-ellipsis request-log-source" title={`${agentName(requestLogAgent(entry))} · ${maskAccountName(entry.relayName)}`}>
-                      <AgentGlyph agent={requestLogAgent(entry)} />
-                      {maskAccountName(entry.relayName) || "-"}
-                    </span>
-                    <span className="request-log-ellipsis" title={entry.upstreamModel ? `${model} → ${upstream}` : model}>
-                      {isImageRequest(entry) ? <em className="request-log-kind">{t("生图")}</em> : null}
-                      {model || "-"}
-                      {entry.upstreamModel && entry.upstreamModel !== entry.model ? (
-                        <small> → {upstream}</small>
-                      ) : null}
-                    </span>
-                    <span
-                      className={entry.autoRetries > 0 || queueWaitMs(entry.retryReasons) !== null || foreignCompactionDropped(entry.retryReasons) || compactionNote(entry.retryReasons)?.kind === "fallback" ? "request-log-retry" : "request-log-muted"}
-                      title={requestLogRetryReasons(entry)}
-                    >
-                      {requestLogRetryLabel(entry)}
-                    </span>
-                    {entry.state !== "running" && !entry.success && entry.error ? (
-                      // 失败的请求没有 token 和费用：这几列直接显示错误原因。
-                      <span className="request-log-error-cell" title={entry.error}>{requestLogErrorSummary(entry.error)}</span>
-                    ) : (
-                      <>
-                        <span className="request-log-muted" title={entry.state === "running" ? t("token 用量由上游在请求完成时返回，流式过程中无法准确统计") : ""}>
-                          {entry.state === "running" ? (isImageRequest(entry) ? t("生成中") : t("流式中")) : formatRequestLogTokens(entry.usage?.inputTokens)}
-                        </span>
-                        <span
-                          className="request-log-muted"
-                          title={entry.state === "running"
-                            ? t("按流式增量估算，完成后会更新为准确值")
-                            : ""}
-                        >
-                          {entry.state === "running"
-                            ? entry.estimatedOutputTokens
-                              ? `~${formatRequestLogTokens(entry.estimatedOutputTokens)}`
-                              : (isImageRequest(entry) ? t("生成中") : t("流式中"))
-                            : formatRequestLogTokens(entry.usage?.outputTokens)}
-                        </span>
-                        <span>
-                          {entry.state === "running" ? (
-                            <span className="request-log-muted">{(isImageRequest(entry) ? t("生成中") : t("流式中"))}</span>
-                          ) : entry.usage?.cachedTokens ? (
-                            <>
-                              {formatRequestLogTokens(entry.usage.cachedTokens)}
-                              <small>
-                                {" · "}
-                                {formatRequestLogCacheHitRatio(
-                                  entry.usage.inputTokens,
-                                  entry.usage.cachedTokens,
-                                  entry.cacheHitRatio,
-                                )}
-                              </small>
-                            </>
-                          ) : "-"}
-                        </span>
-                        <span className="request-log-muted">{entry.cost ? formatRequestCost(entry.cost) : "-"}</span>
-                      </>
-                    )}
-                    <span className="request-log-duration">
-                      {formatRequestLogDuration(
-                        entry.state === "running"
-                          ? Math.max(0, nowMs - entry.startedAtMs)
-                          : entry.durationMs,
-                      )}
-                      {entry.state === "running" ? (
-                        <small>{t("进行中")}</small>
-                      ) : entry.firstTokenMs != null ? (
-                        <small>{tf("首字 {0}", [formatRequestLogDuration(entry.firstTokenMs)])}</small>
-                      ) : null}
-                    </span>
-                  </button>
-                  {expanded === entry.id ? (
-                    <div className="request-log-detail">
-                      <dl>
-                        <div><dt>{t("请求 ID")}</dt><dd><code>{entry.id}</code></dd></div>
-                        <div>
-                          <dt>{t("会话 ID")}</dt>
-                          <dd>
-                            {entry.threadTitle ? <strong className="request-log-session-title">{entry.threadTitle}</strong> : null}
-                            <code>{entry.threadId || "-"}</code>
-                          </dd>
-                        </div>
-                        <div><dt>{t("路径")}</dt><dd><code>{entry.method} {entry.path}</code></dd></div>
-                        <div><dt>{t("上游协议")}</dt><dd>{entry.wireApi || "-"}</dd></div>
-                        <div><dt>{t("上游模型")}</dt><dd>{upstream || "-"}</dd></div>
-                        <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (entry.state === "running" ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
-                        <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
-                        <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
-                        <div><dt>{t("重试原因")}</dt><dd>{requestLogRetryReasons(entry) || "-"}</dd></div>
-                        {entry.attemptDetails?.length ? (
-                          <div className="request-log-attempts">
-                            <dt>{t("尝试明细")}</dt>
-                            <dd>
-                              <ul>
-                                {entry.attemptDetails.map((detail) => (
-                                  <li key={`${detail.attempt}-${detail.code ?? ""}`}>
-                                    <strong>{tf("第 {0} 次", [detail.attempt])}</strong>
-                                    <code>{detail.code || "-"}</code>
-                                    {detail.delayMs != null ? (
-                                      <small>{tf("退避 {0}", [formatRequestLogDuration(detail.delayMs)])}</small>
-                                    ) : null}
-                                    {detail.message ? <small title={detail.message}>{detail.message}</small> : null}
-                                  </li>
-                                ))}
-                              </ul>
-                            </dd>
-                          </div>
-                        ) : null}
-                        <div><dt>{t("流式")}</dt><dd>{entry.stream ? "SSE" : "JSON"}</dd></div>
-                        <div><dt>{t("流结果")}</dt><dd>{entry.streamOutcome || "-"}</dd></div>
-                        <div><dt>{t("推理 tokens")}</dt><dd>{formatRequestLogTokens(entry.usage?.reasoningTokens)}</dd></div>
-                        <div><dt>{t("错误")}</dt><dd>{entry.error || "-"}</dd></div>
-                      </dl>
-                    </div>
-                  ) : null}
-                </Fragment>
+                  <RequestLogRow
+                    entry={entry}
+                    expanded={expanded === entry.id}
+                    key={entry.id}
+                    model={names?.model ?? entry.model}
+                    nowMs={entry.state === "running" ? nowMs : 0}
+                    onToggle={toggleExpanded}
+                    upstream={names?.upstream ?? entry.upstreamModel}
+                  />
                 );
               })}
             </div>

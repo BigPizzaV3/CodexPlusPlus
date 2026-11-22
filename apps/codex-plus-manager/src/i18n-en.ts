@@ -215,7 +215,7 @@ export const EN_PLAIN: Record<string, string> = {
   "允许拓展读取的本机数据。默认都关闭，按需打开。": "Local data extensions may read. All off by default; turn on only what you need.",
   "允许拓展按需读取本机用量元数据。关闭时会清空已记录的用量历史。": "Allow extensions to read local usage metadata on demand. Turning it off clears the recorded usage history.",
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面
-  "每秒读取一次新请求": "Reads new requests every second",
+  "每 2 秒读取一次新请求": "Reads new requests every 2 seconds",
   "还没有请求日志": "No request logs yet",
   "在 Codex 或已接入网关的 Agent 里发起一次对话后即可看到。": "Start a conversation in Codex or a connected agent to see it here.",
   "按供应商价格估算": "From provider prices",
