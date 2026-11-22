@@ -1473,6 +1473,8 @@ type Route = "home" | "overview" | "relay" | "multiLaunch" | "claude" | "claudeP
 type Theme = "dark" | "light";
 
 const MANAGER_NAVIGATION_EVENT = "manager-navigation-requested";
+/** 后端存下网页导入 / 一键换肤待确认项后发出（`src-tauri/src/lib.rs`）。 */
+const PENDING_IMPORT_CHANGED_EVENT = "manager-pending-import-changed";
 
 /**
  * 导航项归属。
@@ -4036,7 +4038,11 @@ export function App() {
     let disposed = false;
     let stopListening: (() => void) | undefined;
     void listen(MANAGER_NAVIGATION_EVENT, () => {
-      if (!disposed) void consumePendingManagerNavigation();
+      if (disposed) return;
+      void consumePendingManagerNavigation();
+      // 窗口被唤起或获得焦点：顺带读一次待确认的网页导入 / 一键换肤。
+      void refreshPendingProviderImport(true);
+      void refreshPendingDreamSkinCommunity();
     }).then((unlisten) => {
       if (disposed) {
         unlisten();
@@ -4150,12 +4156,23 @@ export function App() {
     }
   }, []);
 
+  // 网页导入 / 一键换肤链接存下后后端发事件（macOS「打开 URL」）；Windows 由新进程存好后唤起本窗口，
+  // 窗口获得焦点时后端发导航事件（见上面的监听），两种情况都在这里读一次，不再定时轮询磁盘。
   useEffect(() => {
-    const timer = window.setInterval(() => {
+    let disposed = false;
+    let stopListening: (() => void) | undefined;
+    void listen(PENDING_IMPORT_CHANGED_EVENT, () => {
+      if (disposed) return;
       void refreshPendingProviderImport(true);
       void refreshPendingDreamSkinCommunity();
-    }, 1200);
-    return () => window.clearInterval(timer);
+    }).then((unlisten) => {
+      if (disposed) unlisten();
+      else stopListening = unlisten;
+    });
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
   }, []);
 
   useEffect(() => {

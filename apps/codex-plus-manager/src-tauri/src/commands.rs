@@ -3160,7 +3160,8 @@ pub fn run_auto_takeover_launch(request: LaunchRequest) -> Result<(), String> {
     codex_plus_launcher::start(launch_options).map_err(|error| error.to_string())
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn load_auto_takeover_state() -> CommandResult<crate::auto_takeover::AutoTakeoverPayload> {
     ok("自动接管状态已加载。", crate::auto_takeover::payload())
 }
@@ -4420,7 +4421,8 @@ pub async fn weixin_connect_projects(
         .map_err(|error| format!("读取微信连接项目失败：{error:#}"))
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn weixin_connect_status() -> CommandResult<codex_plus_core::connect::WeixinConnectStatus> {
     let status = weixin_status()
         .lock()
@@ -4778,7 +4780,8 @@ pub async fn native_browser_status() -> NativeBrowserDiagnostics {
     }
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn load_settings() -> CommandResult<SettingsPayload> {
     let Ok(_guard) = relay_switch_mutex().lock() else {
         return failed(
@@ -5014,7 +5017,8 @@ pub async fn install_dream_skin_community_theme(
     }
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn load_pending_dream_skin_community() -> CommandResult<PendingDreamSkinCommunityPayload> {
     match codex_plus_core::dream_skin_community::load_pending_community_link() {
         Ok(version_id) => ok(
@@ -5592,7 +5596,8 @@ pub fn import_ccs_providers(
     }
 }
 
-#[tauri::command]
+// 界面会轮询 / 聚焦时读：不占主线程。
+#[tauri::command(async)]
 pub fn load_pending_provider_import() -> CommandResult<PendingProviderImportPayload> {
     match codex_plus_core::provider_import::load_pending_provider_import_with_fingerprint() {
         Ok(pending) => ok(
