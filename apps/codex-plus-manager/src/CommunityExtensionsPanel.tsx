@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Download, Loader2, RefreshCw, ShieldAlert, ShieldCheck, Star } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { t, tf } from "./i18n";
 import { ExtensionCard } from "./ExtensionCard";
 import { CurationReviewDialog, useCurationStatus } from "./ExtensionCuration";
 import { errorText } from "./lib/utils";
+import { useModalShell } from "./use-modal-shell";
 import "./CommunityExtensionsPanel.css";
 
 // 与 crates/codex-plus-core/src/extension_discovery.rs 对应。
@@ -349,12 +350,17 @@ export function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Pre
   const lines = permissionLines(prepared.permissions);
   // 精选 / 官方拓展审核过，不用危险样式吓人；社区拓展保持红色确认。
   const reviewed = prepared.channel === "official" || prepared.channel === "curated";
+  // 已装的官方 / 精选版本不能被社区里同 id 的拓展替换：后端会拒绝（extension_discovery.rs），这里只给「关闭」。
+  const blocked = Boolean(prepared.conflict && prepared.conflict.source === "github" && prepared.conflict.channel
+    && prepared.conflict.channel !== "community" && prepared.channel === "community");
+  const titleId = useId();
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose: onCancel, labelledBy: titleId });
   return (
-    <div aria-modal="true" className="modal-backdrop app-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }} role="dialog">
-      <div className="modal-card confirm-modal app-dialog community-ext-dialog" data-danger={reviewed ? undefined : true}>
+    <div className="modal-backdrop app-dialog-backdrop" {...backdropProps}>
+      <div className="modal-card confirm-modal app-dialog community-ext-dialog" data-danger={reviewed || blocked ? undefined : true} {...dialogProps}>
         <div className="modal-head">
           <div>
-            <h2>{tf("安装 {0}", [prepared.name])}</h2>
+            <h2 id={titleId}>{tf("安装 {0}", [prepared.name])}</h2>
           </div>
           <button aria-label={t("关闭")} className="toast-close" onClick={onCancel} type="button">×</button>
         </div>
@@ -384,23 +390,31 @@ export function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Pre
           )}
           {prepared.conflict ? (
             <p className="community-ext-dialog-warning">
-              {prepared.conflict.source === "github" && prepared.conflict.channel && prepared.conflict.channel !== "community" && prepared.channel === "community"
+              {blocked
                 ? tf("本机已装 {0} 的{1}版本 {2}，社区里的同 id 拓展不能替换它。", [prepared.conflict.repo ?? "", prepared.conflict.channel === "official" ? t("官方") : t("精选"), prepared.id])
                 : prepared.conflict.source === "github"
                 ? tf("本机已有来自 {0} 的同名拓展 {1}，安装会替换它（旧版本移到备份目录）。", [prepared.conflict.repo ?? "", prepared.id])
                 : tf("本机已有手动或对话生成的同名拓展 {0}，安装会替换它（旧版本移到备份目录）。", [prepared.id])}
             </p>
           ) : null}
-          <label className="community-ext-dialog-enable">
-            <input checked={enable} onChange={(event) => setEnable(event.currentTarget.checked)} type="checkbox" />
-            {t("安装后立即启用")}
-          </label>
+          {blocked ? null : (
+            <label className="community-ext-dialog-enable">
+              <input checked={enable} onChange={(event) => setEnable(event.currentTarget.checked)} type="checkbox" />
+              {t("安装后立即启用")}
+            </label>
+          )}
         </div>
         <div className="app-dialog-actions">
-          <Button onClick={onCancel} variant="secondary">{t("取消")}</Button>
-          <Button className={reviewed ? undefined : "app-dialog-danger"} onClick={() => onInstall(enable)}>
-            {prepared.conflict ? t("替换并安装") : t("安装")}
-          </Button>
+          {blocked ? (
+            <Button onClick={onCancel} variant="secondary">{t("关闭")}</Button>
+          ) : (
+            <>
+              <Button onClick={onCancel} variant="secondary">{t("取消")}</Button>
+              <Button className={reviewed ? undefined : "app-dialog-danger"} onClick={() => onInstall(enable)}>
+                {prepared.conflict ? t("替换并安装") : t("安装")}
+              </Button>
+            </>
+          )}
         </div>
       </div>
     </div>

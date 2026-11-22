@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { CheckCircle2, ExternalLink, Loader2, XCircle } from "lucide-react";
@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import { errorText } from "./lib/utils";
+import { useModalShell } from "./use-modal-shell";
 
 // 与 crates/codex-plus-core/src/extension_publish.rs 的 CheckReport / publish 结果对应。
 type Report = {
@@ -91,12 +92,15 @@ export function ExtensionPublishDialog({ id, onClose, onOpenUrl }: { id: string;
   const steps: LiveStep[] = result ? result.steps.map((item) => ({ step: item.step, state: item.ok ? "ok" : "error", output: item.output })) : liveSteps;
   const versionTaken = result?.error?.includes("已经有 v") ?? false;
   const canPublish = !!report && report.errors.length === 0 && report.gh.ready && !busy && !result?.ok;
+  const titleId = useId();
+  // 检查或发布进行中不让 Esc / 点遮罩关掉，和禁用的关闭按钮一致。
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose: () => { if (!busy) onClose(); }, labelledBy: titleId });
   return (
-    <div aria-modal="true" className="modal-backdrop app-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }} role="dialog">
-      <div className="modal-card confirm-modal app-dialog community-ext-dialog extension-publish-dialog">
+    <div className="modal-backdrop app-dialog-backdrop" {...backdropProps}>
+      <div className="modal-card confirm-modal app-dialog community-ext-dialog extension-publish-dialog" {...dialogProps}>
         <div className="modal-head">
           <div>
-            <h2>{report?.publishedRepo ? t("发布新版本") : t("发布到 GitHub")}</h2>
+            <h2 id={titleId}>{report?.publishedRepo ? t("发布新版本") : t("发布到 GitHub")}</h2>
           </div>
           <button aria-label={t("关闭")} className="toast-close" disabled={busy} onClick={onClose} type="button">×</button>
         </div>
