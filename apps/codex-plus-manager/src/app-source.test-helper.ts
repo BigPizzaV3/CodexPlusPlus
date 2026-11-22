@@ -20,6 +20,7 @@ export const APP_SOURCE_FILES = [
   "SessionRepairPanel.tsx",
   "SettingsScreens.tsx",
   "HomeScreen.tsx",
+  "OverviewScreen.tsx",
 ] as const;
 
 export function readAppSource(): string {
