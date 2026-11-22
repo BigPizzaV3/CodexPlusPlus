@@ -14,6 +14,7 @@ export const APP_SOURCE_FILES = [
   "RequestLogScreen.tsx",
   "MultiLaunchScreen.tsx",
   "ClaudeDesktopPage.tsx",
+  "WeixinPage.tsx",
 ] as const;
 
 export function readAppSource(): string {
