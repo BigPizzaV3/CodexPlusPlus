@@ -1127,6 +1127,7 @@ export const EN_PLAIN: Record<string, string> = {
   "换一个新的本地 token，旧 token 立即失效": "Issue a new local token; the old one stops working immediately",
   "更换 token": "Rotate token",
   "复制新 token": "Copy new token",
+  "添加直连供应商": "Add direct provider",
   "未知模型名": "Unknown model names",
   "未配置模型": "No models configured",
   "Codex++ 网关当前没有运行，走网关的 Agent 会连不上。请重新保存一次绑定或重启 Codex++。": "The Codex++ gateway is not running, so agents routed through it cannot connect. Save a binding again or restart Codex++.",

@@ -323,3 +323,21 @@ export function GatewayLoadError({ error }: { error: string }) {
     </CxCard>
   );
 }
+
+/**
+ * 列表框（role="listbox"）里的方向键：上下移到前一个 / 后一个选项，Home / End 到头尾；跳过不可选的。
+ * 挂在包住一个或几个列表框的容器上（模型选择器按供应商分段，每段一个列表框，方向键跨段走）。返回是否处理了这个键。
+ */
+export function moveOptionFocus(container: HTMLElement, key: string): boolean {
+  if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Home" && key !== "End") return false;
+  const options = [...container.querySelectorAll<HTMLElement>('[role="option"]:not([aria-disabled="true"])')];
+  if (!options.length) return false;
+  const index = options.indexOf(document.activeElement as HTMLElement);
+  const next = key === "Home" ? 0
+    : key === "End" ? options.length - 1
+      : key === "ArrowDown" ? (index < 0 ? 0 : Math.min(options.length - 1, index + 1))
+        : (index < 0 ? options.length - 1 : Math.max(0, index - 1));
+  options[next].focus();
+  options[next].scrollIntoView({ block: "nearest" });
+  return true;
+}

@@ -408,3 +408,20 @@ test("路由页成员状态按数据算一次，组卡片按内容判断重渲�
   assert.doesNotMatch(member, /memberTarget\(|dispatchStatus\(|speedOf\(/, "成员行不再自己扫池子");
   assert.match(read("RequestFlow.tsx"), /setEntries\(\(previous\) => keepIfSame\(previous, next\)\);/);
 });
+
+test("网关设置不再把说明原样再放一份悬停提示；模型选择器、批量添加是真正的列表框，方向键能走", () => {
+  const page = read("GatewayPage.tsx");
+  for (const hint of ["keyRotationHint", "restoreHint", "suffixHint", "websocketHint", "discoveryHint"]) {
+    assert.doesNotMatch(page, new RegExp(`tooltip=\\{${hint}\\}`), hint);
+  }
+  assert.equal(page.match(/默认让子智能体继承父回合的模型和供应商/g)?.length, 1);
+  assert.match(read("i18n-en.ts"), /"添加直连供应商": "Add direct provider",/);
+  const ui = read("gateway-ui.tsx");
+  assert.match(ui, /export function moveOptionFocus\(container: HTMLElement, key: string\): boolean/);
+  const agents = read("GatewayAgents.tsx");
+  assert.match(agents, /role="listbox">\{section\.items\.map/);
+  assert.match(agents, /className="gw-mp-list" onKeyDown=\{\(event\) => \{ if \(moveOptionFocus\(event\.currentTarget, event\.key\)\) event\.preventDefault\(\); \}\}/);
+  const batch = page.slice(page.indexOf("function BatchMemberPicker("), page.indexOf("function GroupEditor("));
+  assert.match(batch, /role="listbox"/);
+  assert.match(batch, /moveOptionFocus\(listRef\.current, "Home"\)/);
+});

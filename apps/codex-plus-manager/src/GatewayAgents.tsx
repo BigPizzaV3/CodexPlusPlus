@@ -48,7 +48,7 @@ import { useModalShell } from "./use-modal-shell";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
-import { AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
+import { AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, moveOptionFocus, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
 /** Codex 行的启动 / 停止：和侧栏 `cx-side-run` 用的同一份 App 状态（`App` 里只建一份，两处共用）。 */
 export type CodexRunControls = {
@@ -1025,7 +1025,16 @@ export function ModelList({
       <div className="gw-mp-top">
         <label className="gw-mp-search">
           <Search className="h-4 w-4" />
-          <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选，或输入任意模型 ID…")} value={query} />
+          <input
+            autoFocus
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              // ↓ 从搜索框进到列表的第一个模型。
+              if (event.key === "ArrowDown" && listRef.current && moveOptionFocus(listRef.current, "Home")) event.preventDefault();
+            }}
+            placeholder={t("筛选，或输入任意模型 ID…")}
+            value={query}
+          />
           <em>{customCount ? tf("{0} 个自定义候选", [customCount]) : tf("{0} 个", [total])}</em>
         </label>
         <div className="gw-mp-filters" onFocus={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}>
@@ -1039,7 +1048,7 @@ export function ModelList({
           ))}
         </div>
       </div>
-      <div className="gw-mp-list" ref={listRef}>
+      <div className="gw-mp-list" onKeyDown={(event) => { if (moveOptionFocus(event.currentTarget, event.key)) event.preventDefault(); }} ref={listRef}>
         {displaySections.length === 0 ? (
           <div className="gw-empty">
             {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("供应商池是空的，先在「供应商池」里添加供应商。")}
@@ -1072,7 +1081,7 @@ export function ModelList({
                 <button className="gw-mp-manage" onClick={nav.openModelGroups} type="button">{t("管理")}</button>
               ) : null}
             </div>
-            {expanded ? section.items.map((item) => {
+            {expanded ? <div aria-label={section.key === "group" || section.key === "custom" || section.key === "auto" || section.key === "current" ? t(section.title) : section.title} role="listbox">{section.items.map((item) => {
               const selected = isSelected(item);
               const favorite = isFavoriteModel(favorites, item.model, payload);
               const candidate = item.providerModel ?? (item.custom ? item.model : "");
@@ -1115,7 +1124,7 @@ export function ModelList({
                   {selected ? <Check className="gw-mp-check h-4 w-4" /> : null}
                 </div>
               );
-            }) : null}
+            })}</div> : null}
           </section>
           );
         })}

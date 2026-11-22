@@ -46,7 +46,7 @@ import { AgentsView, Floating, ModelList, type CodexRunControls } from "./Gatewa
 import { AppSelect } from "./AppSelect";
 import { ProvidersView } from "./GatewayProviders";
 import { UsageView } from "./GatewayUsage";
-import { Avatar, GatewayLoadError, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
+import { Avatar, GatewayLoadError, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, moveOptionFocus, type Notify, type Run } from "./gateway-ui";
 import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState, useGatewayViewState } from "./gateway-store";
 import { useModalShell } from "./use-modal-shell";
@@ -522,6 +522,7 @@ function BatchMemberPicker({ payload, members, onAdd }: { payload: GatewayPayloa
   const [model, setModel] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const rows = useMemo(() => batchMemberRows(payload, members), [payload, members]);
+  const listRef = useRef<HTMLDivElement>(null);
   const current = model === null ? null : rows.find((row) => row.model === model) ?? null;
 
   if (current) {
@@ -597,11 +598,26 @@ function BatchMemberPicker({ payload, members, onAdd }: { payload: GatewayPayloa
       <div className="gw-mp-top">
         <label className="gw-mp-search">
           <Search className="h-4 w-4" />
-          <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选模型或供应商…")} value={query} />
+          <input
+            autoFocus
+            onChange={(event) => setQuery(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              // ↓ 从搜索框进到列表的第一个模型。
+              if (event.key === "ArrowDown" && listRef.current && moveOptionFocus(listRef.current, "Home")) event.preventDefault();
+            }}
+            placeholder={t("筛选模型或供应商…")}
+            value={query}
+          />
           <em>{tf("{0} 个", [visible.length])}</em>
         </label>
       </div>
-      <div className="gw-mp-list">
+      <div
+        aria-label={t("按模型批量添加")}
+        className="gw-mp-list"
+        onKeyDown={(event) => { if (moveOptionFocus(event.currentTarget, event.key)) event.preventDefault(); }}
+        ref={listRef}
+        role="listbox"
+      >
         {visible.length === 0 ? (
           <div className="gw-empty">{rows.length ? t("没有匹配的模型") : t("供应商池是空的，先在「供应商池」里添加供应商。")}</div>
         ) : null}
@@ -1070,7 +1086,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
       <CxSection title={t("网关选项")}>
         <CxCard>
           <GatewayPortRow notify={notify} />
-          <CxRow detail={keyRotationHint} title={t("多 Key 轮换")} tooltip={keyRotationHint}>
+          <CxRow detail={keyRotationHint} title={t("多 Key 轮换")}>
             <AppSelect
               className="cx-set-select"
               disabled={busy !== null}
@@ -1084,10 +1100,10 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
               value={mode}
             />
           </CxRow>
-          <CxRow detail={restoreHint} title={t("退出 Codex++ 时恢复直连")} tooltip={restoreHint}>
+          <CxRow detail={restoreHint} title={t("退出 Codex++ 时恢复直连")}>
             <Switch pending={busy !== null} label={t("退出 Codex++ 时恢复直连")} on={restoreOnExit} onToggle={() => saveOptions(mode, !restoreOnExit)} />
           </CxRow>
-          <CxRow detail={suffixHint} title={t("模型名后带供应商")} tooltip={suffixHint}>
+          <CxRow detail={suffixHint} title={t("模型名后带供应商")}>
             <Switch
               pending={busy !== null}
               label={t("模型名后带供应商")}
@@ -1095,7 +1111,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
               onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
             />
           </CxRow>
-          <CxRow detail={websocketHint} title={t("Codex 用 WebSocket 连接")} tooltip={websocketHint}>
+          <CxRow detail={websocketHint} title={t("Codex 用 WebSocket 连接")}>
             <Switch
               pending={busy !== null}
               label={t("Codex 用 WebSocket 连接")}
@@ -1103,7 +1119,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
               onToggle={() => void run("responses-websocket", "save_gateway_responses_websocket", { enabled: !responsesWebsocket }, t("保存网关选项"), true)}
             />
           </CxRow>
-          <CxRow detail={discoveryHint} title={t("发现本机已登录的订阅账号")} tooltip={discoveryHint}>
+          <CxRow detail={discoveryHint} title={t("发现本机已登录的订阅账号")}>
             <Switch
               pending={busy !== null}
               label={t("发现本机已登录的订阅账号")}
@@ -1114,7 +1130,6 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
           <CxRow
             detail={t("默认让子智能体继承父回合的模型和供应商，避免被悄悄换到别家；打开后按 Codex 实际请求的模型发送，例如 code review 指定了别的模型。")}
             title={t("子智能体使用自己请求的模型")}
-            tooltip={t("默认让子智能体继承父回合的模型和供应商，避免被悄悄换到别家；打开后按 Codex 实际请求的模型发送，例如 code review 指定了别的模型。")}
           >
             <Switch
               pending={busy !== null}
