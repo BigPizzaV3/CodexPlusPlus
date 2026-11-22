@@ -66,6 +66,9 @@ test("配对与设备管理：带参数的动作传对参数名，移除设备�
   assert.match(core, /"setDeviceRole" => set_device_role\(arg\("id"\)\?, arg\("role"\)\?\)/);
   assert.match(core, /"revokeDevice" => revoke_device\(arg\("id"\)\?\)/);
   assert.match(page, /await appConfirm\(t\("移除后这台设备立刻无法访问/, "移除设备前确认");
+  // 更换令牌会让已打开的网页全部失效：先确认（danger），确认后才发 resetToken。
+  assert.match(page, /const resetToken = async \(\) => \{\n\s*const confirmed = await appConfirm\([\s\S]*?danger: true,[\s\S]*?if \(confirmed\) void run\("resetToken"\);/);
+  assert.match(page, /onClick=\{\(\) => void resetToken\(\)\}/);
 });
 
 test("Codex 左侧图标栏的「远程控制」入口：登记进所有写死内置 id 的地方，页面经 /remote-control 调同一份分发", async () => {

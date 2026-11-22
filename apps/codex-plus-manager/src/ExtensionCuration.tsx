@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CheckCircle2, ExternalLink, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { errorText, permissionLines, type Prepared } from "./CommunityExtensionsPanel";
+import { permissionLines, type Prepared } from "./CommunityExtensionsPanel";
+import { errorText } from "./lib/utils";
+import { useModalShell } from "./use-modal-shell";
 import { t, tf } from "./i18n";
 
 // 与 src-tauri/src/extension_curation_commands.rs 对应。
@@ -97,12 +99,15 @@ export function CurationReviewDialog({ repo, onClose, onApproved, onOpenUrl }: {
   // 版本没变时，只有改了官方标记才有东西可提交。
   const flagChanged = !!review?.current && review.canBeOfficial && official !== review.current.official;
   const blocked = !!review && (review.inspection.secrets.length > 0 || review.inspection.problems.length > 0);
+  const titleId = useId();
+  // 下载或提交进行中不让 Esc / 点遮罩关掉（关闭按钮也是禁用的）；只有还没拿到审核结果时可以随时关。
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose: () => { if (!(busy && review)) close(); }, labelledBy: titleId });
   return (
-    <div aria-modal="true" className="modal-backdrop app-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) close(); }} role="dialog">
-      <div className="modal-card confirm-modal app-dialog community-ext-dialog curation-dialog">
+    <div className="modal-backdrop app-dialog-backdrop" {...backdropProps}>
+      <div className="modal-card confirm-modal app-dialog community-ext-dialog curation-dialog" {...dialogProps}>
         <div className="modal-head">
           <div>
-            <h2>{review ? (isUpdate ? tf("审核更新：{0}", [review.name]) : tf("审核：{0}", [review.name])) : t("审核拓展")}</h2>
+            <h2 id={titleId}>{review ? (isUpdate ? tf("审核更新：{0}", [review.name]) : tf("审核：{0}", [review.name])) : t("审核拓展")}</h2>
           </div>
           <button aria-label={t("关闭")} className="toast-close" disabled={busy && !!review} onClick={close} type="button">×</button>
         </div>

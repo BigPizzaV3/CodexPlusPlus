@@ -170,6 +170,8 @@ fn publishes_end_to_end_against_a_local_remote() {
     let again = publisher.publish(&manager, "word-count", &options);
     assert_eq!(again["ok"], false);
     assert!(again["error"].as_str().unwrap().contains("已经有 v1.0.0"), "{again:#}");
+    // 前端按结构化错误码提示「版本号 +1」，不匹配错误文案。
+    assert_eq!(again["errorCode"], "version_taken", "{again:#}");
 
     // 升版本后再发：走「取回仓库」，不再新建；进度逐步推送，每步先 running 再 ok。
     bump_version(&manager, "word-count", "patch").unwrap();

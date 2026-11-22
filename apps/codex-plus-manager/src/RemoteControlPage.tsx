@@ -5,10 +5,11 @@ import { AlertTriangle, Copy, ExternalLink, KeyRound, QrCode, Smartphone, Trash2
 import { AppSelect } from "./AppSelect";
 import { ChatRobotSettings } from "./ChatRobotSettings";
 import { appConfirm } from "./app-dialog";
-import { PageHeader } from "./ManagementPages";
 import { Switch } from "./gateway-ui";
 import { CxBadge, CxBanner, CxCard, CxRow, CxSection } from "./cx-layout";
-import { t } from "./i18n";
+import { t, tf } from "./i18n";
+import { errorText } from "./lib/utils";
+import { keepIfSame, usePolling } from "./use-polling";
 
 export type DeviceRole = "view" | "message" | "full";
 
@@ -90,8 +91,8 @@ function relativeTime(seconds?: number | null) {
   if (!seconds) return t("从未");
   const diff = Date.now() / 1000 - seconds;
   if (diff < 90) return t("刚刚");
-  if (diff < 3600) return `${Math.floor(diff / 60)} ${t("分钟前")}`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)} ${t("小时前")}`;
+  if (diff < 3600) return tf("{0} 分钟前", [Math.floor(diff / 60)]);
+  if (diff < 86400) return tf("{0} 小时前", [Math.floor(diff / 3600)]);
   return new Date(seconds * 1000).toLocaleDateString();
 }
 
@@ -111,7 +112,7 @@ export function RemoteControlPage() {
     try {
       setStatus(await remoteControlRequest(action, args));
     } catch (reason) {
-      setError(String(reason));
+      setError(errorText(reason));
       try {
         setStatus(await remoteControlRequest("status"));
       } catch {}
@@ -124,23 +125,19 @@ export function RemoteControlPage() {
     void run("status");
   }, [run]);
 
-  // 配对进行中：轮询状态，手机配上后立刻出现在设备列表里；倒计时到期自动收起二维码。
+  // 配对进行中：每 2 秒读一次状态，手机配上后立刻出现在设备列表里（窗口不可见时暂停）；
+  // 倒计时单独每秒走一格，到期自动收起二维码。
   const pairing = status?.pairing ?? null;
-  useEffect(() => {
-    if (!pairing) return;
-    const timer = setInterval(async () => {
-      setNow(Date.now() / 1000);
-      try {
-        setStatus(await remoteControlRequest("status"));
-      } catch {}
-    }, 2000);
-    return () => clearInterval(timer);
-  }, [pairing?.code]);
+  usePolling(async () => {
+    const next = await remoteControlRequest("status");
+    setStatus((current) => keepIfSame(current, next));
+  }, 2000, { enabled: Boolean(pairing), immediate: false });
+  usePolling(() => setNow(Date.now() / 1000), 1000, { enabled: Boolean(pairing) });
 
   const devices = status?.devices ?? [];
   useEffect(() => {
     if (deviceCount.current != null && devices.length > deviceCount.current) {
-      setNotice(`${t("已配对")}：${devices[devices.length - 1]?.name ?? ""}`);
+      setNotice(tf("已配对：{0}", [devices[devices.length - 1]?.name ?? ""]));
       setTimeout(() => setNotice(null), 4000);
     }
     deviceCount.current = devices.length;
@@ -150,7 +147,12 @@ export function RemoteControlPage() {
   const lan = status?.lan;
   const copy = async () => {
     if (!url) return;
-    await navigator.clipboard.writeText(url);
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch (reason) {
+      setError(tf("复制失败：{0}", [errorText(reason)]));
+      return;
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -159,12 +161,21 @@ export function RemoteControlPage() {
     try {
       await invoke("open_external_url", { url });
     } catch (reason) {
-      setError(String(reason));
+      setError(errorText(reason));
     }
+  };
+  // 更换令牌会让所有已打开的网页立刻失效，先确认。
+  const resetToken = async () => {
+    const confirmed = await appConfirm(t("之前打开的页面会立刻失效，需要用新链接重新打开。"), {
+      title: t("更换访问令牌？"),
+      confirmText: t("更换"),
+      danger: true,
+    });
+    if (confirmed) void run("resetToken");
   };
   const revoke = async (device: RemoteDevice) => {
     const confirmed = await appConfirm(t("移除后这台设备立刻无法访问，要再用需重新配对。"), {
-      title: `${t("移除设备")}「${device.name}」`,
+      title: tf("移除设备「{0}」", [device.name]),
       confirmText: t("移除"),
       danger: true,
     });
@@ -174,12 +185,12 @@ export function RemoteControlPage() {
 
   return (
     <div className="remote-control-page">
-      <PageHeader icon={<Smartphone size={20} strokeWidth={1.5} />} title={t("远程控制")} />
       {error || status?.error || lan?.error ? (
         <div role="alert"><CxBanner icon={<AlertTriangle />} title={error ?? status?.error ?? lan?.error ?? ""} tone="warn" /></div>
       ) : null}
       {notice ? <div role="status"><CxBanner icon={<Smartphone />} title={notice} tone="ok" /></div> : null}
-      <CxSection title={t("远程控制")} aside={<CxBadge tone="warn">{t("实验")}</CxBadge>}>
+      {/* 页面标题和「实验」标记已在顶栏，这一节只叫「浏览器访问」。 */}
+      <CxSection title={t("浏览器访问")}>
         <CxCard>
           <CxRow
             title={t("启用远程控制")}
@@ -213,7 +224,7 @@ export function RemoteControlPage() {
               title={t("更换令牌")}
               detail={t("之前打开的页面会立刻失效，需要用新链接重新打开。")}
             >
-              <button className="mg-button" type="button" disabled={busy} onClick={() => void run("resetToken")}>
+              <button className="mg-button" type="button" disabled={busy} onClick={() => void resetToken()}>
                 <KeyRound size={14} />{t("更换")}
               </button>
             </CxRow>
@@ -226,7 +237,7 @@ export function RemoteControlPage() {
             <CxRow
               title={t("允许局域网访问")}
               detail={t("同一 Wi-Fi 或同一 Tailscale 网络里的设备经 HTTPS 访问，只有配对过的设备能用。")}
-              badges={lan?.running ? <CxBadge tone="ok">{`${t("端口")} ${lan.port}`}</CxBadge> : null}
+              badges={lan?.running ? <CxBadge tone="ok">{tf("端口 {0}", [lan.port])}</CxBadge> : null}
             >
               <Switch
                 label={t("允许局域网访问")}
@@ -301,14 +312,16 @@ export function RemoteControlPage() {
         </CxSection>
       ) : null}
       {devices.length ? (
-        <CxSection title={`${t("已配对设备")} (${devices.length})`}>
+        <CxSection count={devices.length} title={t("已配对设备")}>
           <CxCard>
             {devices.map((device) => (
               <CxRow
                 key={device.id}
                 icon={<Smartphone size={16} />}
                 title={device.name}
-                detail={`${t("最近活动")} ${relativeTime(device.lastSeenAt)}${device.lastAddress ? ` · ${device.lastAddress}` : ""}`}
+                detail={device.lastAddress
+                  ? tf("最近活动 {0} · {1}", [relativeTime(device.lastSeenAt), device.lastAddress])
+                  : tf("最近活动 {0}", [relativeTime(device.lastSeenAt)])}
               >
                 <RoleSelect value={device.role} disabled={busy} onChange={(role) => void run("setDeviceRole", { id: device.id, role })} />
                 <button className="mg-button" type="button" disabled={busy} onClick={() => void revoke(device)}>

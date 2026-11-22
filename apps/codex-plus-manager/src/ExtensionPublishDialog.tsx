@@ -1,10 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { CheckCircle2, ExternalLink, Loader2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
+import { errorText } from "./lib/utils";
+import { useModalShell } from "./use-modal-shell";
 
 // 与 crates/codex-plus-core/src/extension_publish.rs 的 CheckReport / publish 结果对应。
 type Report = {
@@ -27,15 +29,12 @@ type Step = { step: string; ok: boolean; output: string };
 // 后端每步开始发 running、结束发 ok / error（extension_publish_commands.rs 的 PUBLISH_PROGRESS_EVENT）。
 type StepEvent = { index: number; step: string; state: "running" | "ok" | "error"; output: string };
 type LiveStep = { step: string; state: StepEvent["state"]; output: string };
-type PublishResult = { ok: boolean; repo?: string; url?: string; version?: string; error?: string; steps: Step[] };
+/** errorCode：后端给的结构化错误码，目前只有 version_taken（远端已有这个版本的 tag）。 */
+type PublishResult = { ok: boolean; repo?: string; url?: string; version?: string; error?: string; errorCode?: string; steps: Step[] };
 type License = "mit" | "apache-2.0" | "none";
 
 function request<T>(action: string, payload: unknown): Promise<T> {
   return invoke<T>("extension_publish_request", { action, payload });
-}
-
-function errorText(error: unknown): string {
-  return typeof error === "string" ? error : error instanceof Error ? error.message : String(error);
 }
 
 /** 本地拓展包「发布到 GitHub」：检查 → 选仓库名与许可证 → 发布，逐步显示 gh / git 的输出。 */
@@ -92,14 +91,17 @@ export function ExtensionPublishDialog({ id, onClose, onOpenUrl }: { id: string;
 
   // 发布中显示推送来的进度；结束后以返回结果为准（事件丢了也不影响最终显示）。
   const steps: LiveStep[] = result ? result.steps.map((item) => ({ step: item.step, state: item.ok ? "ok" : "error", output: item.output })) : liveSteps;
-  const versionTaken = result?.error?.includes("已经有 v") ?? false;
+  const versionTaken = result?.errorCode === "version_taken";
   const canPublish = !!report && report.errors.length === 0 && report.gh.ready && !busy && !result?.ok;
+  const titleId = useId();
+  // 检查或发布进行中不让 Esc / 点遮罩关掉，和禁用的关闭按钮一致。
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose: () => { if (!busy) onClose(); }, labelledBy: titleId });
   return (
-    <div aria-modal="true" className="modal-backdrop app-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }} role="dialog">
-      <div className="modal-card confirm-modal app-dialog community-ext-dialog extension-publish-dialog">
+    <div className="modal-backdrop app-dialog-backdrop" {...backdropProps}>
+      <div className="modal-card confirm-modal app-dialog community-ext-dialog extension-publish-dialog" {...dialogProps}>
         <div className="modal-head">
           <div>
-            <h2>{report?.publishedRepo ? t("发布新版本") : t("发布到 GitHub")}</h2>
+            <h2 id={titleId}>{report?.publishedRepo ? t("发布新版本") : t("发布到 GitHub")}</h2>
           </div>
           <button aria-label={t("关闭")} className="toast-close" disabled={busy} onClick={onClose} type="button">×</button>
         </div>

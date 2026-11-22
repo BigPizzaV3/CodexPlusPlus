@@ -177,8 +177,10 @@ test("enhancement switches come only from the settings catalog", () => {
   const catalogStrings = new Set(enhancementCatalogStrings());
   for (const name of ENHANCEMENT_COMPONENTS) {
     const node = component(name);
+    // 启动急救页另有两个不属于设置清单的本地拓展整体开关（立即生效，不走设置表单）。
     assert.deepEqual(elements(node).filter((element) => element.tagName.getText(app) === "FeatureToggle"
-      && /^t\("/.test(attribute(element, "title") ?? "")).map((element) => attribute(element, "title")), [], `${name} has a hard-coded switch`);
+      && /^t\("/.test(attribute(element, "title") ?? "")).map((element) => attribute(element, "title")),
+    name === "EnhanceScreen" ? ['t("启用本地拓展")', 't("下次启动跳过拓展")'] : [], `${name} has a hard-coded switch`);
     const literals = descendants(node).filter(ts.isCallExpression)
       .filter((call) => call.expression.getText(app) === "t" && call.arguments[0] && ts.isStringLiteral(call.arguments[0]))
       .map((call) => (call.arguments[0] as ts.StringLiteral).text)
@@ -363,4 +365,19 @@ test("native Fast unlock is the only Fast enhancement toggle and keeps the provi
   assert.deepEqual(enhancementCatalog.items.filter((item) => /Fast/.test(item.title)).map((item) => item.key), ["codexAppNativeFastUnlock"]);
   assert.ok(!enhancementCatalog.items.some((item) => item.key === "codexAppServiceTierControls"));
   assert.match(appSource, /codexAppNativeFastUnlock: false,/);
+});
+
+test("启动急救页集中所有能让 Codex 恢复启动的开关，皮肤急救不再单独占页签", () => {
+  const enhance = component("EnhanceScreen");
+  const calls = descendants(enhance).filter(ts.isCallExpression).map((node) => node.expression.getText(app));
+  for (const name of ["actions.setUserScriptsEnabled", "actions.setUserScriptsSkipNextStart", "actions.restoreDreamSkin"]) {
+    assert.ok(calls.includes(name), name);
+  }
+  assert.ok(!app.statements.some((node) => ts.isFunctionDeclaration(node) && node.name?.text === "DreamSkinRescueScreen"));
+  const sections = appSource.slice(appSource.indexOf("const navigationSections"), appSource.indexOf("const routeTool"));
+  assert.doesNotMatch(sections, /"dreamSkin"/, "皮肤急救并进启动急救页，不再单独占页签");
+  // 旧 dreamSkin 路由（深链、网页一键换肤）仍落到启动急救页。
+  assert.match(appSource, /route === "enhance" \|\| route === "dreamSkin" \? \(\n\s*<EnhanceScreen/);
+  const confirm = appSource.slice(appSource.indexOf("const confirmPendingDreamSkinCommunity"), appSource.indexOf("const dismissPendingDreamSkinCommunity"));
+  assert.match(confirm, /setRoute\("enhance"\)/);
 });

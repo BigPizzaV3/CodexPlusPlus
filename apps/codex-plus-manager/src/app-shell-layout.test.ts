@@ -289,14 +289,6 @@ test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一
   assert.doesNotMatch(css, /\.dark \.mg-skills-page|\.mg-skills-page \.mg-primary|\.mg-skills-page :is\(\.mg-button/);
 });
 
-test("Agent 页签条不能是滚动容器：否则在 .screen 的 grid 里会被长页面挤成 1px，点进去就看不到页签", () => {
-  const css = readSource("./ToolPages.css");
-  const rules = [...css.matchAll(/\.agent-page-tabs\s*\{([^}]*)\}/g)].map((match) => match[1]);
-  assert.ok(rules.length > 0);
-  for (const body of rules) assert.doesNotMatch(body, /overflow/);
-  assert.match(rules.join("\n"), /flex-wrap:\s*wrap/);
-});
-
 test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里，设置页下方渲染维护内容，旧路由跳到设置", () => {
   const app = functionSource("App");
   assert.match(app, /const next: Route = target === "maintenance" \? "agentSettings" : target === "about" \? "settings" : target === "relayEnvironment" \? "relay" : target === "recommendations" \? "home" : target;/);

@@ -6932,9 +6932,11 @@ pub async fn load_ads() -> CommandResult<AdsPayload> {
     }
 }
 
+/// 读拓展市场清单。`force` 省略或为 false 时用内存缓存（进页面、装完拓展后刷新都走这条），
+/// 只有用户点「刷新列表」才传 true 重新下载。
 #[tauri::command]
-pub async fn refresh_script_market() -> CommandResult<ScriptMarketPayload> {
-    match script_market::cached_market_manifest(true).await {
+pub async fn refresh_script_market(force: Option<bool>) -> CommandResult<ScriptMarketPayload> {
+    match script_market::cached_market_manifest(force.unwrap_or(false)).await {
         Ok(manifest) => ok(
             "脚本市场已刷新。",
             script_market_payload_from_manifest(&manifest, "ok", "脚本市场已刷新。"),

@@ -915,3 +915,11 @@ test("页面里启动 / 停止后把本地状态交给 App，侧栏的播放键�
   await tick();
   assert.equal(seen.length, 1, "失败不覆盖 App 里的状态");
 });
+
+test("汉化、语音输入、Computer Use 三个开关共用 setClaudeFlag，不再各写一份", () => {
+  const body = component.getText(app);
+  assert.equal(body.match(/statusGeneration\.current\+\+;\n\s*setBusy\(key\)/g)?.length, 1);
+  assert.match(body, /const toggleLocalization = \(enabled: boolean\) => setClaudeFlag\("localization", "claude_localization_set_localization", enabled\);/);
+  assert.match(body, /const toggleVoiceInput = \(enabled: boolean\) => setClaudeFlag\("voiceInput", "claude_localization_set_voice_input", enabled\);/);
+  assert.match(body, /const toggleComputerUse = \(enabled: boolean\) => setClaudeFlag\("computerUse", "claude_localization_set_computer_use", enabled\);/);
+});

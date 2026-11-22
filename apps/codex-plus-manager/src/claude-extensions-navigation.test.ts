@@ -227,7 +227,7 @@ function extensionScreenProps(h: ReturnType<typeof extensionHarness>, host: Exte
     host,
     onHostChange: (next: ExtensionHost) => h.calls.push(["host", next]),
     onOpenClaude: () => h.calls.push(["openClaude"]),
-    onOpenBuiltins: () => h.calls.push(["openBuiltins"]),
+    onOpenRescue: () => h.calls.push(["openRescue"]),
     actions: h.actions,
     settings: {
       user_scripts: {
@@ -666,4 +666,18 @@ test("后台设置变更事件同步 Claude 和 Computer Use 字段及 revision�
   assert.deepEqual(draft, originalDraft);
   cleanup();
   assert.equal(listeners.size, 0);
+});
+
+test("「刷新列表」强制重新下载市场清单，其余刷新走缓存", async () => {
+  const h = extensionHarness();
+  const nodes = elements(h.render("UserScriptsScreen", extensionScreenProps(h, "codex")));
+  const refresh = nodes.find((node) => node.type === "MenuItem" && elementText(node) === "刷新列表");
+  assert.ok(refresh);
+  refresh.props.onClick();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(h.calls, [["refreshScriptMarket", false, false, true], ["refreshCurrent"]]);
+  // 后端：force 省略时为 false（用缓存）。
+  const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+  assert.match(commands, /pub async fn refresh_script_market\(force: Option<bool>\)[^{]*\{\s*match script_market::cached_market_manifest\(force\.unwrap_or\(false\)\)/);
+  assert.match(text, /call<ScriptMarketResult>\("refresh_script_market", \{ force \}\)/);
 });

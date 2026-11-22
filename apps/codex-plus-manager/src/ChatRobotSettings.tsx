@@ -4,7 +4,7 @@ import { AppSelect } from "./AppSelect";
 import { CxBanner, CxCard, CxRow, CxSection } from "./cx-layout";
 import { Switch } from "./gateway-ui";
 import { appConfirm } from "./app-dialog";
-import { t } from "./i18n";
+import { t, tf } from "./i18n";
 
 type Provider = "dingtalk" | "feishu";
 type Network = "lan" | "tailscale" | "none";
@@ -62,7 +62,7 @@ function RobotForm({ provider, status, busy, run }: {
           placeholder={status.hasWebhook ? t("已保存，留空保留") : "https://…"} value={webhook} onChange={event => setWebhook(event.target.value)} />
       </CxRow>
       <CxRow title={t("机器人签名密钥")} detail={t("使用加签的机器人请填写密钥。更换 Webhook 时同时填写新机器人的密钥。") }>
-        <input aria-label={`${name} ${t("机器人签名密钥")}`} type="password" autoComplete="off" spellCheck={false} disabled={busy || clearSecret}
+        <input aria-label={tf("{0} 机器人签名密钥", [name])} type="password" autoComplete="off" spellCheck={false} disabled={busy || clearSecret}
           placeholder={status.hasSecret ? t("已保存，留空保留") : t("可选")} value={secret} onChange={event => setSecret(event.target.value)} />
         {status.hasSecret && <label><input type="checkbox" checked={clearSecret} disabled={busy} onChange={event => { setClearSecret(event.target.checked); setSecret(""); }} /> {t("清除签名")}</label>}
       </CxRow>

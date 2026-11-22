@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { AppWindow, X } from "lucide-react";
-import { t } from "./i18n";
+import { t, tf } from "./i18n";
 import "./CuPipWindow.css";
 
 type PipTarget = { pid?: number; appName?: string; title?: string; kind?: string };
@@ -38,7 +38,7 @@ export function CuPipWindow() {
         <span className="cu-pip-dot" aria-hidden="true" />
         <strong className="cu-pip-brand" data-tauri-drag-region>Codex++ Computer Use</strong>
         {name
-          ? <span className="cu-pip-app" data-tauri-drag-region title={`${t("正在操作")}：${target.title || name}`}>{name}</span>
+          ? <span className="cu-pip-app" data-tauri-drag-region title={tf("正在操作：{0}", [target.title || name])}>{name}</span>
           : null}
         <button type="button" title={jumpLabel} aria-label={jumpLabel} onClick={() => void invoke("cu_pip_activate")}>
           <AppWindow size={13} />

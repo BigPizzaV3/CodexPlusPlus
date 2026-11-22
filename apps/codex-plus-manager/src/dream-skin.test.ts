@@ -229,7 +229,7 @@ describe("dream skin theme helpers", () => {
     // 恢复只记为待应用；急救页给出「重启 Codex」按钮，由用户决定何时重启。
     assert.match(restoreHandler, /setDreamSkinRestartPending\(true\)/);
     assert.doesNotMatch(restoreHandler, /window\.confirm|await restart\(\)/);
-    assert.match(app, /restartPending=\{dreamSkinRestartPending\}/);
+    assert.match(app, /skinRestartPending=\{dreamSkinRestartPending\}/);
     assert.doesNotMatch(restoreCommand, /reload_dream_skin_live/);
     assert.match(restoreCommand, /pending_restart\(false, false\)/);
   });

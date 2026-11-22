@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ArchiveRestore, Check, Copy, EyeOff, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -6,8 +6,8 @@ import { t, tf } from "./i18n";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { CxBadge, CxCard, CxEmpty, CxSection } from "./cx-layout";
 import { MenuItem } from "./ManagementPages";
-import { useEscapeLayer } from "./use-escape-layer";
-import { errorText } from "./CommunityExtensionsPanel";
+import { errorText } from "./lib/utils";
+import { useModalShell } from "./use-modal-shell";
 import "./CommunityExtensionsPanel.css";
 
 // 与 crates/codex-plus-core/src/extension_publish.rs 的 list_published 对应。
@@ -125,8 +125,8 @@ export function MyPublishedPanel({ onOpenUrl, search = "" }: { onOpenUrl: (url: 
   };
   return (
     <>
-      {error ? <div className="community-ext-notice is-error">{error}</div> : null}
-      {notice ? <div className="community-ext-notice">{notice}</div> : null}
+      {error ? <div className="community-ext-notice is-error" role="alert">{error}</div> : null}
+      {notice ? <div className="community-ext-notice" role="status">{notice}</div> : null}
       <CxSection
         aside={
           <button aria-label={t("刷新")} className="mg-icon-button" disabled={loading || busy !== ""} onClick={() => void load()} title={t("刷新")} type="button">
@@ -164,10 +164,9 @@ export function MyPublishedPanel({ onOpenUrl, search = "" }: { onOpenUrl: (url: 
 function DeleteRepoDialog({ repo, onCancel, onConfirm }: { repo: string; onCancel: () => void; onConfirm: () => void }) {
   const [value, setValue] = useState("");
   const [copied, setCopied] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
   const matches = value.trim() === repo;
-  useEscapeLayer(true, onCancel);
-  useEffect(() => inputRef.current?.focus(), []);
+  const titleId = useId();
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose: onCancel, labelledBy: titleId });
   const copy = () => {
     void navigator.clipboard?.writeText(repo).then(() => {
       setCopied(true);
@@ -175,11 +174,11 @@ function DeleteRepoDialog({ repo, onCancel, onConfirm }: { repo: string; onCance
     }).catch(() => undefined);
   };
   return (
-    <div aria-modal="true" className="modal-backdrop app-dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }} role="dialog">
-      <div className="modal-card confirm-modal app-dialog" data-danger>
+    <div className="modal-backdrop app-dialog-backdrop" {...backdropProps}>
+      <div className="modal-card confirm-modal app-dialog" data-danger {...dialogProps}>
         <div className="modal-head">
           <div>
-            <h2>{t("删除 GitHub 仓库")}</h2>
+            <h2 id={titleId}>{t("删除 GitHub 仓库")}</h2>
           </div>
           <button aria-label={t("关闭")} className="toast-close" onClick={onCancel} type="button">×</button>
         </div>
@@ -194,6 +193,7 @@ function DeleteRepoDialog({ repo, onCancel, onConfirm }: { repo: string; onCance
           </div>
           <input
             className="app-dialog-input"
+            data-autofocus
             onChange={(event) => setValue(event.currentTarget.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && matches) {
@@ -202,7 +202,6 @@ function DeleteRepoDialog({ repo, onCancel, onConfirm }: { repo: string; onCance
               }
             }}
             placeholder={repo}
-            ref={inputRef}
             value={value}
           />
         </div>
