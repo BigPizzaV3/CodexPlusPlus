@@ -56,6 +56,47 @@ pub(crate) struct Tokens {
     cached_known: bool,
 }
 
+#[derive(Clone, Copy)]
+struct CacheAccounting {
+    input: u64,
+    read: u64,
+    write: u64,
+    output: u64,
+    total: u64,
+}
+
+impl CacheAccounting {
+    fn parse(value: &Value, raw: Tokens) -> Option<Self> {
+        Some(Self {
+            input: raw.input_tokens,
+            read: value["cached_input_tokens"].as_u64()?,
+            write: value["cache_write_input_tokens"].as_u64()?,
+            output: raw.output_tokens,
+            total: value["total_tokens"].as_u64()?,
+        })
+    }
+
+    fn checked_delta(self, before: Self) -> Option<Self> {
+        Some(Self {
+            input: self.input.checked_sub(before.input)?,
+            read: self.read.checked_sub(before.read)?,
+            write: self.write.checked_sub(before.write)?,
+            output: self.output.checked_sub(before.output)?,
+            total: self.total.checked_sub(before.total)?,
+        })
+    }
+
+    fn exact(self) -> bool {
+        self.read
+            .checked_add(self.write)
+            .zip(self.total.checked_sub(self.output))
+            .is_some_and(|(cache, input)| {
+                cache <= input
+                    && (Some(input) == self.input.checked_add(cache) || input == self.input)
+            })
+    }
+}
+
 impl Default for Tokens {
     fn default() -> Self {
         Self::new(0, 0, 0)
@@ -76,27 +117,55 @@ impl Tokens {
 
     pub(crate) fn parse(value: &Value) -> Option<Self> {
         let cached = value["cached_input_tokens"].as_u64();
-        let input = value["input_tokens"].as_u64()?;
-        let output = value["output_tokens"].as_u64()?;
-        // 部分原生记录的输入不含缓存；只在完整总数等式证明时统一为含缓存口径。
-        let input = match (
-            cached,
-            value["cache_write_input_tokens"].as_u64(),
-            value["total_tokens"].as_u64(),
-        ) {
-            (Some(cached), Some(written), Some(total)) => input
-                .checked_add(cached)
-                .and_then(|input| input.checked_add(written))
-                .filter(|input| input.checked_add(output) == Some(total))
-                .unwrap_or(input),
-            _ => input,
-        };
-        let mut tokens = Self::new(input, cached.unwrap_or(0), output);
+        let mut tokens = Self::new(
+            value["input_tokens"].as_u64()?,
+            cached.unwrap_or(0),
+            value["output_tokens"].as_u64()?,
+        );
         tokens.cached_known = cached.is_some_and(|count| count <= tokens.input_tokens);
         tokens.reasoning_output_tokens = value["reasoning_output_tokens"]
             .as_u64()
             .filter(|n| *n <= tokens.output_tokens);
         Some(tokens)
+    }
+
+    fn normalize_cache_input(
+        mut self,
+        value: Option<CacheAccounting>,
+        previous: Option<(CacheAccounting, Self)>,
+        last: Option<CacheAccounting>,
+    ) -> Self {
+        if let Some(value) = value
+            && let Some(cache) = value.read.checked_add(value.write)
+            && let Some(input) = value.total.checked_sub(value.output)
+            && let Some(omitted) = input.checked_sub(value.input)
+            && omitted > 0
+            && cache <= input
+            && omitted <= cache
+            && (omitted == cache
+                || previous.is_some_and(|(before, accounted)| {
+                    before.total.checked_sub(before.output) == Some(accounted.input_tokens)
+                        && ((value.input == before.input
+                            && value.output == before.output
+                            && value.total == before.total)
+                            || value
+                                .checked_delta(before)
+                                .is_some_and(CacheAccounting::exact))
+                })
+                || last.is_some_and(|last| {
+                    last.exact()
+                        && value
+                            .checked_delta(last)
+                            .is_some_and(CacheAccounting::exact)
+                }))
+        {
+            // 混合口径的累计值须由相邻差量，或完整末次用量及其剩余前缀，证明漏计缓存。
+            self.input_tokens = input;
+            self.total_tokens = value.total;
+            self.cached_input_tokens = value.read;
+            self.cached_known = true;
+        }
+        self
     }
 
     fn value(self) -> Value {

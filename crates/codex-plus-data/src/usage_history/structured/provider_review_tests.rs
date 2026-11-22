@@ -5,6 +5,7 @@ const SESSION: &str = "00000000-0000-4000-8000-000000000010";
 fn event(at: i64) -> UsageEvent {
     UsageEvent {
         id: [7; 32],
+        original_id: [7; 32],
         session: SESSION.into(),
         turn: "turn-a".into(),
         model: "model-a".into(),

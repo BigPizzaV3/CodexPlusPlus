@@ -1155,6 +1155,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             id: [71; 32],
+            original_id: [71; 32],
             session: "session".into(),
             turn: "turn".into(),
             model: "cpx-a/model".into(),
@@ -1428,6 +1429,7 @@ mod tests {
         };
         let event = UsageEvent {
             id: [7; 32],
+            original_id: [7; 32],
             session: key.session.clone(),
             turn: "turn".into(),
             model: key.model.clone(),
@@ -1492,6 +1494,7 @@ mod tests {
         };
         let event = UsageEvent {
             id: [8; 32],
+            original_id: [8; 32],
             session: key.session.clone(),
             turn: "turn".into(),
             model: key.model.clone(),
@@ -1590,6 +1593,7 @@ mod tests {
         };
         let event = UsageEvent {
             id: [9; 32],
+            original_id: [9; 32],
             session: key.session.clone(),
             turn: "turn".into(),
             model: key.model.clone(),
@@ -1653,6 +1657,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             id: [255; 32],
+            original_id: [255; 32],
             session: "session".into(),
             turn: "turn".into(),
             model: "model-a".into(),
@@ -1707,6 +1712,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             id: [10; 32],
+            original_id: [10; 32],
             session: "session".into(),
             turn: "turn".into(),
             model: "model-a".into(),
@@ -1780,6 +1786,7 @@ mod tests {
         };
         let event = UsageEvent {
             id: [7; 32],
+            original_id: [7; 32],
             session: key.session.clone(),
             turn: "turn".into(),
             model: key.model.clone(),
