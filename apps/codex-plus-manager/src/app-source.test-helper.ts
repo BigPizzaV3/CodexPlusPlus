@@ -21,6 +21,7 @@ export const APP_SOURCE_FILES = [
   "SettingsScreens.tsx",
   "HomeScreen.tsx",
   "OverviewScreen.tsx",
+  "AppDialogs.tsx",
 ] as const;
 
 export function readAppSource(): string {
