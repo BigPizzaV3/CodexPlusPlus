@@ -492,7 +492,7 @@ export const EN_PLAIN: Record<string, string> = {
   "搜索日志": "Search logs",
   "日志筛选": "Log filter",
   "在「Agent 接入」里选用": "Pick it under Agent access",
-  "Agent 增强": "Agent enhancements",
+  "Agent": "Agents",
   "Chat Completions 协议或配置了模型路由的供应商会显示在这里；其他供应商在其余分页。": "Providers using Chat Completions or model routing show up here; other providers are on the other tabs.",
   "Codex 的自动审查（codex-auto-review）与标题/摘要等后台任务固定使用 gpt-* 等内部模型名，不经选模；第三方上游没有这些名字，原样转发只会报「模型不存在」并可能反复消耗额度。开启后，不在当前供应商模型列表里的请求模型会改写为该供应商的默认模型再转发（#1183 / #1446 / #1457）；官方登录与聚合供应商不受影响，已配置「自动审批模型」时 codex-auto-review 仍按该配置改写。默认关闭：开启后手填但未写进模型列表的模型也会被改写，请先把要用的模型都加进列表。": "Codex background tasks such as auto-review (codex-auto-review) and title/summary generation always use internal model names like gpt-* without model selection. Third-party upstreams don't have these names, so forwarding them as-is only returns \"model not found\" and may keep consuming quota. When on, requested models not in the current provider's model list are rewritten to that provider's default model before forwarding (#1183 / #1446 / #1457). Official login and aggregate providers are unaffected; if an auto-approval model is configured, codex-auto-review still follows it. Off by default: when on, models you typed by hand but didn't add to the model list are rewritten too, so add every model you use to the list first.",
   "Codex 连接": "Codex connection",

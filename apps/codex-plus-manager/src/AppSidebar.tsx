@@ -283,7 +283,7 @@ export function AppSidebar({
   }
 
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
-  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话、用量；聚合网关排在 Agent 增强后面，只在有 Agent 接入网关时出现。
+  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话、用量；聚合网关排在 Agent 一组后面，只在有 Agent 接入网关时出现。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
   // 用量也记直连代理的请求，不算网关专属。
   const general: SideEntry[] = [
@@ -359,7 +359,7 @@ export function AppSidebar({
 
         <div className="cx-side-group" data-tour="agents">
           <div className="cx-side-heading">
-            <span>{t("Agent 增强")}</span>
+            <span>{t("Agent")}</span>
           </div>
           {/* 每个 Agent 一行；点一下切到它，回到上次看的页面（没有就是落脚页）。它的页面在内容区顶部的胶囊里。 */}
           {tools.map((tool) => {

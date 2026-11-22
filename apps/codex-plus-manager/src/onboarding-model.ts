@@ -16,7 +16,7 @@ export type TourStep = {
 export const TOUR_VERSION = 1;
 export const TOUR_STORAGE_KEY = "codex-plus-plus.onboarding";
 
-// 顺序跟着侧栏从上往下走：万物皆拓展 → Agent 增强 → 聚合网关（总览、供应商池、Agent 接入）→ 搜索 → 设置。
+// 顺序跟着侧栏从上往下走：万物皆拓展 → Agent → 聚合网关（总览、供应商池、Agent 接入）→ 搜索 → 设置。
 export const TOUR_STEPS: TourStep[] = [
   {
     id: "welcome",
@@ -32,7 +32,7 @@ export const TOUR_STEPS: TourStep[] = [
   {
     id: "agents",
     target: "agents",
-    title: "Agent 增强",
+    title: "Agent",
     body: "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……Codex 行的播放键可以启动或停止 Codex。",
   },
   {

@@ -200,7 +200,7 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话、用量；「聚合网关」（总览、供应商池、Agent 接入、路由）排在 Agent 增强后面。
+  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话、用量；「聚合网关」（总览、供应商池、Agent 接入、路由）排在 Agent 一组后面。
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /\{ key: "extensions", route: "userScripts", label: t\("万物皆拓展"\)/);
   assert.ok(sidebar.indexOf('key: "extensions"') < sidebar.indexOf('key: "customize"'), "万物皆拓展排在第一个");
@@ -210,7 +210,7 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   // 用量也记直连代理的请求，放在第一组，不随网关一组隐藏。
   const general = sidebar.slice(sidebar.indexOf("const general: SideEntry[]"), sidebar.indexOf("const gatewayEntries"));
   assert.match(general, /\{ key: "usage", route: "gatewayUsage", label: t\("用量"\), icon: BarChart3, match: \["gatewayUsage", "requestLog"\] \}/);
-  assert.ok(sidebar.indexOf('data-tour="agents"') < sidebar.indexOf('data-group="gateway"'), "聚合网关排在 Agent 增强后面");
+  assert.ok(sidebar.indexOf('data-tour="agents"') < sidebar.indexOf('data-group="gateway"'), "聚合网关排在 Agent 一组后面");
   assert.match(sidebar, /const shownGeneral = general\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
   assert.match(sidebar, /const shownGateway = gatewayShown \? gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\) : \[\];/);
   assert.match(text, /const customizeRoutes: Route\[\] = \["context", "skills"\];/);
