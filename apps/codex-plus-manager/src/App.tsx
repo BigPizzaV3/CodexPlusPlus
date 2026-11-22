@@ -7975,6 +7975,33 @@ function multiLaunchSupported(profile: RelayProfile): boolean {
     && !(profile.modelRoutes ?? []).some((route) => route.model.trim() || route.targetRelayId.trim());
 }
 
+/**
+ * 删除直连供应商的统一确认（旧版供应商列表、多开页共用）：
+ * 先查占用（当前正在使用、聚合配置的默认 / 最后成员直接说明原因），再提醒运行中的多开实例，最后危险确认。
+ * 确认后返回删掉它的新设置，取消或不能删时返回 null。
+ */
+async function confirmRemoveRelayProfile(
+  settings: BackendSettings,
+  profile: RelayProfile,
+  actions: Actions,
+  from: "relay" | "multiLaunch",
+): Promise<BackendSettings | null> {
+  const name = profile.name || t("未命名供应商");
+  const deleteIssue = relayProfileDeleteIssue(settings, profile.id);
+  if (deleteIssue) {
+    await actions.showMessage(t("删除供应商"), deleteIssue, "failed");
+    return null;
+  }
+  const running = runningInstancesForProfile(actions.multiLaunchInstances, profile.id);
+  const message = running.length
+    ? tf("删除供应商「{0}」？它还有 {1} 个多开实例在运行，删除后实例不会被结束，但之后不能再用它启动。", [name, running.length])
+    : from === "multiLaunch"
+      ? tf("删除供应商「{0}」？删除后不能再用它启动多开实例，旧版供应商列表里也会一并移除。", [name])
+      : tf("删除供应商「{0}」？它的 API Key、模型列表和配置文件会一并删除，不能撤销。", [name]);
+  if (!(await appConfirm(message, { title: t("删除供应商"), confirmText: t("删除"), danger: true }))) return null;
+  return removeRelayProfile(settings, profile.id);
+}
+
 function CodexMultiLaunchScreen({
   form,
   relayFiles,
@@ -7999,19 +8026,8 @@ function CodexMultiLaunchScreen({
     }
   }, [detailProfileId, normalized.relayProfiles]);
   const deleteProfile = async (profile: RelayProfile) => {
-    const name = profile.name || t("未命名供应商");
-    // 当前正在使用、或是聚合配置的默认 / 最后成员：和旧版列表一样直接说明原因，不弹确认。
-    const deleteIssue = relayProfileDeleteIssue(normalized, profile.id);
-    if (deleteIssue) {
-      await actions.showMessage(t("删除供应商"), deleteIssue, "failed");
-      return;
-    }
-    const running = runningInstancesForProfile(actions.multiLaunchInstances, profile.id);
-    const message = running.length
-      ? tf("删除供应商「{0}」？它还有 {1} 个多开实例在运行，删除后实例不会被结束，但之后不能再用它启动。", [name, running.length])
-      : tf("删除供应商「{0}」？删除后不能再用它启动多开实例，旧版供应商列表里也会一并移除。", [name]);
-    if (!(await appConfirm(message, { title: t("删除供应商"), confirmText: t("删除"), danger: true }))) return;
-    await actions.saveSettingsValue(removeRelayProfile(normalized, profile.id), true);
+    const next = await confirmRemoveRelayProfile(normalized, profile, actions, "multiLaunch");
+    if (next) await actions.saveSettingsValue(next, true);
   };
   if (detailProfile) {
     return (
@@ -10464,12 +10480,9 @@ function SortableRelayProfileCard({
               danger
               disabled={form.relayProfiles.length <= 1}
               onClick={() => {
-                const deleteIssue = relayProfileDeleteIssue(form, profile.id);
-                if (deleteIssue) {
-                  void actions.showMessage(t("删除供应商"), deleteIssue, "failed");
-                  return;
-                }
-                onFormChange(removeRelayProfile(form, profile.id));
+                void confirmRemoveRelayProfile(form, profile, actions, "relay").then((next) => {
+                  if (next) onFormChange(next);
+                });
               }}
             >
               {t("删除供应商")}

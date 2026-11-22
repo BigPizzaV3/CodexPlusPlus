@@ -264,9 +264,9 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   assert.match(card, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(card, /data-tone="gateway">\{t\("新版网关"\)\}/);
   assert.match(card, /\{gatewayManaged \? null : \(\s*<span className="relay-card-extra" onClick=\{\(event\) => event\.stopPropagation\(\)\}>/);
-  // 次要操作在三点菜单里；删除仍先查占用。
+  // 次要操作在三点菜单里；删除走公共确认（先查占用再二次确认）。
   assert.match(card, /<Menu label=\{t\("供应商操作"\)\}>/);
-  assert.match(card, /const deleteIssue = relayProfileDeleteIssue\(form, profile\.id\);/);
+  assert.match(card, /confirmRemoveRelayProfile\(form, profile, actions, "relay"\)/);
   // 被网关接管时可切换、可编辑的列表整块隐藏，要先断开并还原；只读列出直连供应商，供迁移进供应商池。
   const relay = functionSource("RelayScreen");
   assert.match(relay, /const takenOverByGateway = normalized\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
@@ -485,13 +485,17 @@ test("多开页可以直接编辑、删除供应商：删除先查占用再二�
   assert.match(screen, /onBack=\{\(\) => setDetailProfileId\(null\)\}/);
   assert.match(screen, /onClick=\{\(\) => setDetailProfileId\(profile\.id\)\}/);
   // 删除：先用旧版列表同一套占用检查，再提醒运行中的多开实例，最后危险确认。
-  const remove = screen.slice(screen.indexOf("const deleteProfile"), screen.indexOf("if (detailProfile)"));
-  const issue = remove.indexOf("relayProfileDeleteIssue(normalized, profile.id)");
+  // 删除和旧版列表共用同一个确认：先查占用，再提醒运行中的多开实例，最后危险确认、返回删掉后的设置。
+  assert.match(screen, /confirmRemoveRelayProfile\(normalized, profile, actions, "multiLaunch"\)/);
+  const remove = functionSource("confirmRemoveRelayProfile");
+  const issue = remove.indexOf("relayProfileDeleteIssue(settings, profile.id)");
   const confirm = remove.indexOf("appConfirm(message");
-  const save = remove.indexOf("removeRelayProfile(normalized, profile.id)");
+  const save = remove.indexOf("removeRelayProfile(settings, profile.id)");
   assert.ok(issue > 0 && confirm > issue && save > confirm, "删除必须先查占用、再确认、最后保存");
   assert.match(remove, /runningInstancesForProfile\(actions\.multiLaunchInstances, profile\.id\)/);
   assert.match(remove, /danger: true/);
+  // 旧版供应商列表的「删除供应商」也走这个确认，不再点了就直接写盘。
+  assert.match(functionSource("SortableRelayProfileCard"), /confirmRemoveRelayProfile\(form, profile, actions, "relay"\)/);
   assert.match(screen, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
   // 编辑 / 删除收进行尾三点菜单；网关托管项没有菜单，整行也不可点。
   assert.match(screen, /\{gatewayManaged \? null : \(\r?\n\s+<Menu label=/);

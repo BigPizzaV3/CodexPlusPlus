@@ -4589,6 +4589,7 @@ export const EN_TEMPLATE: Record<string, string> = {
   // 多开页：编辑 / 删除供应商（#2801）
   "删除供应商「{0}」？它还有 {1} 个多开实例在运行，删除后实例不会被结束，但之后不能再用它启动。": "Delete provider “{0}”? {1} multi-instance window(s) are still running with it. They won't be closed, but you won't be able to launch with this provider again.",
   "删除供应商「{0}」？删除后不能再用它启动多开实例，旧版供应商列表里也会一并移除。": "Delete provider “{0}”? You won't be able to launch instances with it, and it will also be removed from the legacy provider list.",
+  "删除供应商「{0}」？它的 API Key、模型列表和配置文件会一并删除，不能撤销。": "Delete provider “{0}”? Its API key, model list and config files are deleted too. This can't be undone.",
   "{0} 个实例运行中": "{0} running",
   "编辑供应商「{0}」": "Edit provider “{0}”",
   "删除供应商「{0}」": "Delete provider “{0}”",
