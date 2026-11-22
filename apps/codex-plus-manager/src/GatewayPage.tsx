@@ -967,6 +967,8 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
   const agentFocus = useAgentFocus();
   // 刚复制的那一行，图标短暂换成对勾。
   const [copied, setCopied] = useState<string | null>(null);
+  // 刚换过 token 的 Agent：那一行给个「复制新 token」，方便贴到手动填过 token 的地方。
+  const [rotated, setRotated] = useState<string | null>(null);
   if (!payload) return null;
   const mode = payload.gateway.keyPolicy.mode;
   const restoreOnExit = payload.gateway.restoreOnExit;
@@ -988,6 +990,15 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
       {copied === key ? <Check /> : <Copy />}
     </button>
   );
+  // 换 token 后旧的立刻失效：先确认，写明谁要跟着改。
+  const rotate = async (agent: string, name: string) => {
+    const ok = await appConfirm(
+      tf("旧 token 会立刻失效。{0} 的配置会自动换成新 token；手动填过旧 token 的地方（比如编辑器、脚本里的设置）要改成新的，正在运行的 {0} 可能要重启后才能继续。", [name]),
+      { title: tf("更换 {0} 的 token？", [name]), confirmText: t("更换 token"), danger: true },
+    );
+    if (!ok) return;
+    if (await run(`rotate:${agent}`, "rotate_gateway_token", { agent }, t("更换 token"))) setRotated(agent);
+  };
   const keyRotationHint = mode === "roundRobin" ? t("每个请求换下一个 Key，用量更平均，但上游缓存命中会变低。") : t("同一会话固定一个 Key，出错才换；保住上游的提示词缓存。");
   const restoreHint = restoreOnExit
     ? t("网关只在 Codex++ 运行时可用。退出时把 Agent 切回直连，下次启动再自动指回网关。")
@@ -1023,10 +1034,16 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
                 title={agent.name}
                 tooltip={agent.enabled ? t("已写入该 Agent 的配置") : t("开启后写入该 Agent 的配置")}
               >
+                {rotated === agent.agent && binding?.token ? (
+                  <button className="cx-secondary" onClick={() => copy(`token:${agent.agent}`, binding.token)} type="button">
+                    {copied === `token:${agent.agent}` ? <Check /> : <Copy />}
+                    {t("复制新 token")}
+                  </button>
+                ) : null}
                 {copyButton(agent.agent, agent.baseUrl)}
                 {binding?.token ? (
                   <Menu>
-                    <MenuItem disabled={busy !== null} onClick={() => void run(`rotate:${agent.agent}`, "rotate_gateway_token", { agent: agent.agent }, t("更换 token"))}>
+                    <MenuItem disabled={busy !== null} onClick={() => void rotate(agent.agent, agent.name)}>
                       {t("更换 token")}
                     </MenuItem>
                   </Menu>

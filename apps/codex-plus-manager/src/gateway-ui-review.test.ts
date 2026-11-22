@@ -376,3 +376,14 @@ test("保存之后才回来的轮询结果作废；新手引导的 Esc 走 Esc �
   assert.doesNotMatch(tour, /event\.key === "Escape"/, "不再自己监听 Esc");
 });
 
+
+test("更换 token 先确认（危险操作），写明谁要跟着改；换完给「复制新 token」", () => {
+  const page = read("GatewayPage.tsx");
+  const rotate = page.slice(page.indexOf("const rotate = async"), page.indexOf("const keyRotationHint"));
+  assert.match(rotate, /await appConfirm\(/);
+  assert.match(rotate, /danger: true/);
+  assert.match(rotate, /手动填过旧 token 的地方/);
+  assert.ok(rotate.indexOf("if (!ok) return;") < rotate.indexOf("\"rotate_gateway_token\""), "确认之后才调用");
+  assert.match(page, /onClick=\{\(\) => void rotate\(agent\.agent, agent\.name\)\}/);
+  assert.match(page, /rotated === agent\.agent && binding\?\.token/);
+});

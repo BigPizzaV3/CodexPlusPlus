@@ -1127,6 +1127,7 @@ export const EN_PLAIN: Record<string, string> = {
   "恢复直连": "Restore direct connection",
   "换一个新的本地 token，旧 token 立即失效": "Issue a new local token; the old one stops working immediately",
   "更换 token": "Rotate token",
+  "复制新 token": "Copy new token",
   "未知模型名": "Unknown model names",
   "未配置模型": "No models configured",
   "本地网关": "Local gateway",
@@ -3956,6 +3957,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "旧 token 会立刻失效。{0} 的配置会自动换成新 token；手动填过旧 token 的地方（比如编辑器、脚本里的设置）要改成新的，正在运行的 {0} 可能要重启后才能继续。": "The old token stops working right away. {0}'s config switches to the new token automatically, but anywhere you pasted the old token by hand (editor or script settings, for example) needs the new one, and a running {0} may need a restart.",
+  "更换 {0} 的 token？": "Rotate the token for {0}?",
   "当前主题：{0}": "Current theme: {0}",
   "{0} 个 Skill 失败": "{0} skill operation(s) failed",
   "已批量{0} {1} 个 Skill": "{0} {1} skill(s)",
