@@ -417,7 +417,6 @@
   const codexPlusRailTasksId = "codex-plus-rail-tasks";
   const codexPlusRailPluginMarketId = "codex-plus-rail-plugin-market";
   const codexPlusSidebarPluginMarketId = "codex-plus-sidebar-plugin-market";
-  const codexPlusPluginMarketTab = "plugin-market";
   const codexPlusRailSelector = "nav[data-app-navigation-rail]";
   const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
   const codexPlusExtensionsTab = "extensions";
@@ -755,6 +754,12 @@
     window.__codexPlusExtensionFailures.push({ script_key: scriptKey, message, at: Date.now() });
     if (window.__codexPlusExtensionFailures.length > 100) window.__codexPlusExtensionFailures.shift();
   }
+  /**
+   * 原生悬浮侧栏开合用的弹簧（motion 的 spring，bounce 0.1）按同一条曲线采样成 linear()；
+   * 原生打开 0.3s、收起 0.2s，卡片淡入淡出，同时横移 1.5 个 --spacing。
+   */
+  const codexPlusSidebarPeekEase = "linear(0, 0.07, 0.218, 0.383, 0.537, 0.666, 0.768, 0.844, 0.899, 0.937, 0.962, 0.979, 0.989, 0.995, 0.999, 1 75%, 1)";
+
   /**
    * 装上 / 换掉样式表。版本 = 手写版本号前缀 + 样式全文的哈希：改了任何 CSS，重新注入（不刷新页面）时
    * 都会换成新样式表。以前只比手写版本号，改样式忘了 +1 时新 JS 配旧样式，新界面全没样式。
@@ -1138,27 +1143,6 @@
         content: "›"; color: var(--color-token-text-tertiary, currentColor); font-weight: 400; transition: transform 0.15s ease-out;
       }
       html[data-codex-plus-plugin-categories] section[id^="plugins-"]:not([id^="plugins-marketplace-"], #plugins-created-by-you, #plugins-shared-with-you) > [data-slot="section-header"] > h2:not(:has(*)):hover::after { transform: translateX(2px); }
-      .codex-plus-plugin-sidebar { position: relative; flex: 0 0 auto; }
-      .codex-plus-plugin-sidebar .codex-plus-sidebar-nav-icon { width: 20px; height: 20px; flex: 0 0 20px; display: inline-flex; align-items: center; justify-content: center; }
-      .codex-plus-plugin-sidebar .codex-plus-sidebar-nav-icon svg { width: 19px; height: 19px; }
-      .codex-plus-plugin-sidebar-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; min-width: 0; }
-      .codex-plus-plugin-sidebar button[data-active="true"] { background: var(--codex-plus-bg-selected); color: var(--codex-plus-text); }
-      .codex-plus-plugin-market-panel { max-width: 1140px; width: 100%; margin: 0 auto; box-sizing: border-box; }
-      .codex-plus-plugin-intro { margin: 0 0 18px; color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 1.6; }
-      .codex-plus-plugin-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-bottom: 14px; }
-      .codex-plus-plugin-search { flex: 1 1 240px; min-width: 120px; border: 1px solid var(--codex-plus-border); border-radius: 8px; background: var(--codex-plus-bg-secondary); color: var(--codex-plus-text); padding: 9px 12px; font-size: 14px; }
-      .codex-plus-plugin-filter { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--codex-plus-text-secondary); }
-      .codex-plus-plugin-status { font-size: 12px; color: var(--codex-plus-text-secondary); white-space: pre-wrap; margin-bottom: 14px; }
-      .codex-plus-plugin-results { display: flex; flex-direction: column; gap: 10px; }
-      .codex-plus-plugin-card { display: flex; align-items: flex-start; gap: 18px; padding: 16px; border: 1px solid var(--codex-plus-border); border-radius: 10px; background: var(--codex-plus-bg-secondary); }
-      .codex-plus-plugin-card-info { flex: 1 1 auto; min-width: 0; }
-      .codex-plus-plugin-name { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
-      .codex-plus-plugin-id, .codex-plus-plugin-meta { color: var(--codex-plus-text-tertiary); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
-      .codex-plus-plugin-description { color: var(--codex-plus-text-secondary); font-size: 13px; line-height: 1.55; margin: 7px 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-      .codex-plus-plugin-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
-      .codex-plus-plugin-tags span { border-radius: 5px; padding: 2px 6px; background: var(--codex-plus-bg-selected); color: var(--codex-plus-text-secondary); font-size: 10px; overflow-wrap: anywhere; }
-      .codex-plus-plugin-install { flex: 0 0 auto; white-space: nowrap; }
-      .codex-plus-plugin-market-page button:disabled { opacity: .55; cursor: default; }
       /* 「供应商」页（43-provider-page.js）：左侧列表 + 右侧详情，13px 紧凑，沿用 --codex-plus-* 变量。 */
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="provider"] { background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="provider"] .codex-plus-modal-body { box-sizing: border-box; padding: 0; height: 100%; overflow: hidden; }
@@ -1336,12 +1320,6 @@
       .codex-plus-provider-detail > .codex-plus-provider-mode-bar, .codex-plus-provider-detail > .codex-plus-provider-note { box-sizing: border-box; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); }
       .codex-plus-provider-sidebar-header { padding: 4px 8px 10px; color: var(--codex-plus-text-secondary); font-weight: 500; letter-spacing: 0; }
       .codex-plus-provider-sidebar-header .codex-plus-action-button { min-height: 24px; padding: 0 8px; font-size: 12px; }
-      .codex-plus-plugin-job-message { font-size: 12px; color: var(--codex-plus-text-secondary); margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
-      .codex-plus-plugin-job-message[data-status="failed"] { color: var(--codex-plus-danger); }
-      .codex-plus-plugin-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; font-size: 12px; color: var(--codex-plus-text-secondary); }
-      .codex-plus-plugin-pagination > span { margin-right: auto; }
-      .codex-plus-plugin-empty { padding: 40px 16px; text-align: center; color: var(--codex-plus-text-secondary); }
-      @media (max-width: 600px) { .codex-plus-plugin-card { flex-direction: column; gap: 10px; } .codex-plus-plugin-install { align-self: flex-end; } }
       /*
        * 新版导航图标栏里的 Codex++ / 拓展 / 推荐内容入口：原生按钮只放图标，
        * 这里对齐它的尺寸。
@@ -2275,17 +2253,17 @@
         background: var(--app-shell-sidebar-popover-background, var(--codex-plus-nav-bg)) !important;
         box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
         opacity: 0;
-        transform: translateX(-12px);
+        transform: translateX(calc(var(--spacing, 4px) * -1.5));
         visibility: hidden;
         pointer-events: none;
-        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+        transition: opacity .2s ${codexPlusSidebarPeekEase}, transform .2s ${codexPlusSidebarPeekEase}, visibility 0s linear .2s;
       }
       .${codexPlusPageClass}[data-codex-plus-sidebar="floating"][data-codex-plus-nav-peek="true"] .codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav {
         opacity: 1;
         transform: none;
         visibility: visible;
         pointer-events: auto;
-        transition: opacity .3s ease, transform .3s ease;
+        transition: opacity .3s ${codexPlusSidebarPeekEase}, transform .3s ${codexPlusSidebarPeekEase};
       }
       /*
        * 别的入口（没打开的页面，或者正在看原生页面时）浮出的独立卡片（showCodexPlusRailPeek）：
@@ -2302,10 +2280,10 @@
         box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
         color: var(--codex-plus-text);
         opacity: 0;
-        transform: translateX(-12px);
+        transform: translateX(calc(var(--spacing, 4px) * -1.5));
         visibility: hidden;
         pointer-events: none;
-        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+        transition: opacity .2s ${codexPlusSidebarPeekEase}, transform .2s ${codexPlusSidebarPeekEase}, visibility 0s linear .2s;
         -webkit-app-region: no-drag;
       }
       .codex-plus-rail-peek[data-open="true"] {
@@ -2313,7 +2291,7 @@
         transform: none;
         visibility: visible;
         pointer-events: auto;
-        transition: opacity .3s ease, transform .3s ease;
+        transition: opacity .3s ${codexPlusSidebarPeekEase}, transform .3s ${codexPlusSidebarPeekEase};
       }
       .codex-plus-rail-peek-content { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
       .codex-plus-rail-peek .codex-plus-page-nav {
@@ -2759,6 +2737,11 @@
         background: var(--codex-plus-control-bg); color: var(--codex-plus-text); font: inherit; font-size: 13px; }
       .codex-plus-skin-input:focus { outline: none; border-color: var(--codex-plus-focus, #2563eb); }
       .codex-plus-skin-number { width: 64px; text-align: right; }
+      /* 「壁纸透出」滑块：跟随主题时淡显，拖动即改成自定义值。 */
+      .codex-plus-skin-range { width: 160px; max-width: 100%; accent-color: var(--codex-plus-text); cursor: pointer; }
+      .codex-plus-skin-range[data-follow="true"] { opacity: .45; }
+      .codex-plus-skin-range:disabled { opacity: .35; cursor: default; }
+      .codex-plus-skin-range-value { min-width: 56px; color: var(--codex-plus-text-secondary); font-size: 12px; font-variant-numeric: tabular-nums; }
       .codex-plus-skin-color { display: inline-flex; align-items: center; gap: 8px; }
       .codex-plus-skin-color .codex-plus-skin-input { width: 140px; font-family: var(--codex-plus-font-mono, ui-monospace, Menlo, monospace); font-size: 12px; }
       .codex-plus-skin-swatch { width: 20px; height: 20px; border: 1px solid var(--codex-plus-control-border); border-radius: 5px; }
@@ -8924,7 +8907,6 @@
     const tab = overlay.querySelector(".codex-plus-modal-content")?.dataset?.codexPlusActiveTab;
     if (tab === codexPlusExtensionsTab) return "extensions";
     if (tab === codexPlusSponsorTab) return "sponsor";
-    if (tab === codexPlusPluginMarketTab) return "plugin-market";
     if (tab === codexPlusProviderTab) return "provider";
     if (tab === codexPlusRemoteControlTab) return "remote";
     if (tab === codexPlusWeixinConnectTab) return "weixin";
@@ -9158,15 +9140,24 @@
       const card = overlay?.querySelector(".codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav");
       return card ? { overlay, card } : null;
     };
-    const apply = (next) => {
+    // 原生悬浮卡片开着（收起动画没走完也算）：卡片上带着 popover 底色。
+    const nativePeekOpen = () => Boolean(document.querySelector('[data-sidebar-navigation-root][class*="sidebar-popover-background"]'));
+    // 原生在入口之间换卡片只换内容、不重播开合动画：卡片已经浮着（我们的或原生的）时换成我们的另一张就直接换（snap）。
+    // 只有从无到有、从有到无才淡入淡出。
+    const apply = (next, snap) => {
       timer = null;
       const page = pageCard();
       if (next === "page" && !page) next = null;
-      if (next !== null && next !== "page" && !showCodexPlusRailPeek(next)) next = null;
-      if (next === null || next === "page") hideCodexPlusRailPeek();
+      if (next !== null && next !== "page" && !showCodexPlusRailPeek(next, true, snap)) next = null;
+      if (next === null || next === "page") hideCodexPlusRailPeek(snap);
       if (page) {
+        if (snap) page.card.style.transition = "none";
         if (next === "page") page.overlay.dataset.codexPlusNavPeek = "true";
         else delete page.overlay.dataset.codexPlusNavPeek;
+        if (snap) {
+          void page.card.offsetWidth;
+          page.card.style.removeProperty("transition");
+        }
       }
       shown = next;
     };
@@ -9192,11 +9183,12 @@
       if (timer && next === pending) return;
       clearTimeout(timer);
       pending = next;
-      // 原生入口之间换卡片是立刻的；移到原生入口上时原生卡片马上出来，我们的也马上让开。
+      // 卡片浮着时换入口是立刻的。移到原生入口上时我们的马上收；原生卡片要等一下才出来（从无到有，带动画），我们的照常淡出，不留空档。
+      const swapping = next !== null && (shown !== null || nativePeekOpen());
       const delay = next === null
         ? (target?.closest(codexPlusRailDestinationSelector) ? 0 : 250)
-        : (shown !== null || page?.card.contains(target) ? 0 : 120);
-      timer = setTimeout(() => apply(next), delay);
+        : (swapping || page?.card.contains(target) ? 0 : 120);
+      timer = setTimeout(() => apply(next, swapping), delay);
     };
     document.addEventListener("pointermove", window.__codexPlusNavPeekHandler, true);
     document.addEventListener("pointerout", window.__codexPlusNavPeekHandler, true);
@@ -9293,8 +9285,11 @@
     return renderCodexPlusSettingsNavItems(root);
   }
 
-  /** 浮出入口的独立卡片，位置照原生悬浮侧栏：图标栏右边起，上下左各留 4px，宽 = 原生侧栏宽 − 4。 */
-  function showCodexPlusRailPeek(railId, load = true) {
+  /**
+   * 浮出入口的独立卡片，位置照原生悬浮侧栏：图标栏右边起，上下左各留 4px，宽 = 原生侧栏宽 − 4。
+   * snap：从另一张浮着的卡片换过来，直接出现，不淡入。
+   */
+  function showCodexPlusRailPeek(railId, load = true, snap = false) {
     const spec = codexPlusRailPeekSpec(railId, load);
     const rail = document.querySelector(codexPlusRailSelector)?.getBoundingClientRect();
     if (!spec || !rail || rail.width <= 0) return false;
@@ -9337,7 +9332,12 @@
     if (peek.dataset.open !== "true") {
       // 先按收起的样子排一次，打开才有淡入。
       void peek.offsetWidth;
+      if (snap) peek.style.transition = "none";
       peek.dataset.open = "true";
+      if (snap) {
+        void peek.offsetWidth;
+        peek.style.removeProperty("transition");
+      }
     }
     return true;
   }
@@ -22368,287 +22368,6 @@ ${key} = ${value}`]);
   async function getCodexGlobalState(key) {
     const result = await codexStateCall("get-global-state", { params: { key } });
     return result && Object.prototype.hasOwnProperty.call(result, "value") ? result.value : result;
-  }
-  /**
-   * 独立插件市场只加载索引；安装由 launcher 下载所选插件并写入本地安装目录。
-   * 不调用 Codex 的 plugin/install，避免在浏览目录时触发服务连接或 OAuth。
-   * 状态存数据，页面每次打开重建；请求结果通过来源/序号校验后才刷新当前页面。
-   */
-  const codexPlusPluginMarketState = window.__codexPlusPluginMarketState || {
-    source: "full", query: "", installedOnly: false, page: 1,
-    catalogs: {}, jobs: {},
-  };
-  window.__codexPlusPluginMarketState = codexPlusPluginMarketState;
-  Object.values(codexPlusPluginMarketState.jobs).forEach((job) => {
-    clearTimeout(job.timer);
-    job.timer = null;
-  });
-  const codexPlusPluginMarketPageSize = 50;
-
-  function codexPlusPluginMarketCatalog(source = codexPlusPluginMarketState.source) {
-    if (!codexPlusPluginMarketState.catalogs[source]) {
-      codexPlusPluginMarketState.catalogs[source] = {
-        plugins: [], loaded: false, loading: false, message: "", revision: 0, cached: false,
-      };
-    }
-    return codexPlusPluginMarketState.catalogs[source];
-  }
-
-  function codexPlusPluginMarketPanel() {
-    return document.querySelector('[data-codex-plugin-market-panel="true"]');
-  }
-
-  function codexPlusPluginMarketFilteredPlugins() {
-    const state = codexPlusPluginMarketState;
-    const query = state.query.trim().toLocaleLowerCase();
-    return codexPlusPluginMarketCatalog().plugins.filter((plugin) => {
-      if (state.installedOnly && !plugin.installed) return false;
-      if (!query) return true;
-      const text = [plugin.displayName, plugin.name, plugin.description, ...(Array.isArray(plugin.tags) ? plugin.tags : [])].join(" ").toLocaleLowerCase();
-      return text.includes(query);
-    });
-  }
-
-  function codexPlusPluginMarketBytes(bytes) {
-    const value = Number(bytes);
-    if (!Number.isFinite(value) || value <= 0) return "";
-    if (value < 1024 * 1024) return `${Math.ceil(value / 1024)} KB`;
-    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
-  function codexPlusPluginMarketStage(stage) {
-    return ({ queued: "等待下载", downloading: "下载中", extracting: "解压中", installing: "安装中", validating: "校验中", complete: "安装完成" })[stage] || "正在安装";
-  }
-
-  function codexPlusPluginMarketCard(plugin, source) {
-    const job = codexPlusPluginMarketState.jobs[`${source}:${plugin.id}`];
-    const busy = job?.busy === true;
-    const installed = plugin.installed === true;
-    const label = busy ? `${codexPlusPluginMarketStage(job.stage)}…` : plugin.updateAvailable ? "更新" : installed ? "已安装" : "下载安装";
-    const meta = [plugin.version ? `v${plugin.version}` : "", plugin.author || "", codexPlusPluginMarketBytes(plugin.bytes), Number(plugin.skills) > 0 ? `${plugin.skills} 个技能` : ""].filter(Boolean).join(" · ");
-    const tags = (Array.isArray(plugin.tags) ? plugin.tags : []).slice(0, 4);
-    return `<article class="codex-plus-plugin-card" role="listitem">
-      <div class="codex-plus-plugin-card-info">
-        <div class="codex-plus-plugin-name">${escapeHtml(plugin.displayName || plugin.name || plugin.id)}</div>
-        <div class="codex-plus-plugin-id">${escapeHtml(plugin.name || plugin.id)}</div>
-        <div class="codex-plus-plugin-description">${escapeHtml(plugin.description || "暂无介绍")}</div>
-        <div class="codex-plus-plugin-meta">${escapeHtml(meta)}</div>
-        <div class="codex-plus-plugin-tags">${tags.map((tag) => `<span>${escapeHtml(String(tag))}</span>`).join("")}${plugin.requiresAuth ? "<span>需要服务授权</span>" : ""}${plugin.license ? `<span>${escapeHtml(plugin.license)}</span>` : ""}</div>
-        ${job?.message ? `<div class="codex-plus-plugin-job-message" data-status="${job.failed ? "failed" : "ok"}">${escapeHtml(job.message)}</div>` : ""}
-      </div>
-      <button type="button" class="codex-plus-button codex-plus-plugin-install" data-codex-plugin-install="${escapeHtml(plugin.id)}" aria-label="${escapeHtml(`${label} ${plugin.displayName || plugin.name || plugin.id}`)}" ${busy || (installed && !plugin.updateAvailable) ? "disabled" : ""}>${label}</button>
-    </article>`;
-  }
-
-  function renderCodexPlusPluginMarket() {
-    const panel = codexPlusPluginMarketPanel();
-    if (!panel) return;
-    const state = codexPlusPluginMarketState;
-    const catalog = codexPlusPluginMarketCatalog();
-    const filtered = codexPlusPluginMarketFilteredPlugins();
-    const pages = Math.max(1, Math.ceil(filtered.length / codexPlusPluginMarketPageSize));
-    state.page = Math.max(1, Math.min(pages, state.page));
-    const refresh = panel.querySelector("[data-codex-plugin-refresh]");
-    if (refresh) refresh.disabled = catalog.loading;
-    const status = panel.querySelector("[data-codex-plugin-market-status]");
-    if (status) status.textContent = catalog.loading ? "正在加载插件目录…" : catalog.message || `${catalog.plugins.length.toLocaleString()} 个插件${catalog.cached ? " · 使用缓存目录" : ""}`;
-    const results = panel.querySelector("[data-codex-plugin-results]");
-    if (results) results.innerHTML = filtered.length
-      ? filtered.slice((state.page - 1) * codexPlusPluginMarketPageSize, state.page * codexPlusPluginMarketPageSize).map((plugin) => codexPlusPluginMarketCard(plugin, state.source)).join("")
-      : `<div class="codex-plus-plugin-empty">${catalog.loading ? "正在加载…" : !catalog.loaded ? "目录尚未加载，请刷新重试。" : catalog.plugins.length ? "没有找到符合条件的插件。" : "此来源暂无可显示的插件。"}</div>`;
-    const count = panel.querySelector("[data-codex-plugin-result-count]");
-    if (count) count.textContent = `${filtered.length.toLocaleString()} 个结果 · 第 ${state.page} / ${pages} 页`;
-    const previous = panel.querySelector('[data-codex-plugin-page="previous"]');
-    const next = panel.querySelector('[data-codex-plugin-page="next"]');
-    if (previous) previous.disabled = state.page <= 1;
-    if (next) next.disabled = state.page >= pages;
-  }
-
-  async function loadCodexPlusPluginMarket(source, refresh = false) {
-    const catalog = codexPlusPluginMarketCatalog(source);
-    if (catalog.loading || (catalog.loaded && !refresh)) {
-      renderCodexPlusPluginMarket();
-      return;
-    }
-    const revision = ++catalog.revision;
-    catalog.loading = true;
-    catalog.message = "";
-    renderCodexPlusPluginMarket();
-    let result;
-    try {
-      result = await postJson("/plugin-market/list", { source, refresh });
-    } catch (error) {
-      result = { status: "failed", message: error?.message || "插件目录加载失败" };
-    }
-    if (catalog.revision !== revision) return;
-    catalog.loading = false;
-    if (Array.isArray(result?.plugins)) {
-      catalog.plugins = result.plugins.filter((plugin) => plugin && typeof plugin.id === "string");
-      catalog.loaded = true;
-      catalog.cached = result.cached === true;
-      catalog.message = result.message || "";
-    } else {
-      catalog.message = result?.message || "插件目录加载失败，请刷新重试。";
-    }
-    // 切换来源后，旧请求只更新自己的数据；当前页面始终按当前来源重绘。
-    if (codexPlusPluginMarketState.source === source) renderCodexPlusPluginMarket();
-  }
-
-  function updateCodexPlusPluginMarketInstalled(source, plugin) {
-    if (!plugin || typeof plugin.id !== "string") return;
-    const catalog = codexPlusPluginMarketCatalog(source);
-    // 安装以 source + id 隔离，另一来源即使同 id 也不能被标为已安装。
-    // 丢弃此前发出的本来源清单请求，避免旧 installed 状态覆盖新结果。
-    catalog.revision += 1;
-    catalog.loading = false;
-    catalog.plugins = catalog.plugins.map((item) => {
-      if (item.id !== plugin.id) return item;
-      const installedVersion = plugin.installedVersion || plugin.version || item.version;
-      return { ...item, installed: true, installedVersion, updateAvailable: Boolean(item.version && installedVersion && item.version !== installedVersion) };
-    });
-  }
-
-  function scheduleCodexPlusPluginMarketInstallPoll(source, id, delay = 1200) {
-    const job = codexPlusPluginMarketState.jobs[`${source}:${id}`];
-    if (!job?.busy || job.polling || job.timer || !codexPlusPluginMarketPanel()) return;
-    job.timer = setTimeout(() => {
-      job.timer = null;
-      void pollCodexPlusPluginMarketInstall(source, id);
-    }, delay);
-  }
-
-  async function pollCodexPlusPluginMarketInstall(source, id) {
-    const job = codexPlusPluginMarketState.jobs[`${source}:${id}`];
-    if (!job?.busy || job.polling) return;
-    job.polling = true;
-    let result;
-    try {
-      result = await postJson("/plugin-market/install-status", { source, id });
-    } catch (error) {
-      result = { timeout: true, message: error?.message || "正在等待安装状态" };
-    }
-    job.polling = false;
-    if (result?.busy === true) {
-      job.stage = result.stage || job.stage;
-      job.message = result.message || "";
-    } else if (result?.busy === false) {
-      const completed = result.status === "ok" && result.stage === "complete"
-        && (result.plugin || (typeof result.installedVersion === "string" && result.installedVersion.length > 0));
-      job.busy = false;
-      job.failed = !completed;
-      job.message = result.message || (job.failed ? "安装未完成，请重试。" : "安装完成，重启 Codex 后加载插件。");
-      if (completed) updateCodexPlusPluginMarketInstalled(source, result.plugin || { id, installedVersion: result.installedVersion });
-    } else {
-      // 桥接超时不能重新发起安装；持续查询原任务，防止并发写同一插件。
-      job.message = result?.message || "正在等待安装状态，可稍后重新打开此页查看。";
-    }
-    renderCodexPlusPluginMarket();
-    scheduleCodexPlusPluginMarketInstallPoll(source, id, result?.timeout ? 4000 : 1200);
-  }
-
-  async function installCodexPlusPluginMarketPlugin(source, id) {
-    const key = `${source}:${id}`;
-    if (codexPlusPluginMarketState.jobs[key]?.busy) return;
-    const plugin = codexPlusPluginMarketCatalog(source).plugins.find((item) => item.id === id);
-    if (!plugin || (plugin.installed && !plugin.updateAvailable)) return;
-    const job = { busy: true, stage: "downloading", message: "正在下载所选插件…", failed: false, timer: null, polling: false };
-    codexPlusPluginMarketState.jobs[key] = job;
-    renderCodexPlusPluginMarket();
-    let result;
-    try {
-      result = await postJson("/plugin-market/install", { source, id });
-    } catch (error) {
-      result = { timeout: true, message: error?.message || "正在等待安装结果" };
-    }
-    if (result?.status === "ok" && result?.plugin && result?.busy !== true) {
-      job.busy = false;
-      job.message = result.message || "安装完成，重启 Codex 后加载插件。";
-      updateCodexPlusPluginMarketInstalled(source, result.plugin);
-    } else if (result?.status === "failed" && !result?.timeout && result?.busy !== true && !/超时|timeout/i.test(result.message || "")) {
-      job.busy = false;
-      job.failed = true;
-      job.message = result.message || "安装失败";
-    } else {
-      job.stage = result?.stage || job.stage;
-      job.message = result?.message || "正在等待下载完成…";
-      scheduleCodexPlusPluginMarketInstallPoll(source, id);
-    }
-    renderCodexPlusPluginMarket();
-  }
-
-  function openCodexPlusPluginMarket() {
-    closeCodexPlusPage();
-    document.querySelectorAll('.codex-plus-modal-overlay, [data-codex-plus-dialog="true"]').forEach((node) => node.remove());
-    const overlay = document.createElement("div");
-    overlay.className = `${codexPlusPageClass} codex-plus-plugin-market-page`;
-    overlay.dataset.codexPlusPage = "true";
-    markCodexPlusExtensionNode(overlay, "builtin-plugin-market");
-    applyCodexPlusTheme(overlay);
-    applyCodexPlusZoom(overlay);
-    const state = codexPlusPluginMarketState;
-    overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="Codex 插件市场" data-codex-plus-active-tab="${codexPlusPluginMarketTab}">
-      <div class="codex-plus-modal-header"><div class="codex-plus-modal-title">Codex 插件市场</div></div>
-      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-plugin-market-panel" data-codex-plugin-market-panel="true">
-        <p class="codex-plus-plugin-intro">检索插件目录，选中后下载并安装。目录浏览仅获取索引，插件文件按需下载。</p>
-        <div class="codex-plus-plugin-toolbar">
-          <button type="button" class="codex-plus-button" data-codex-plugin-refresh="true">刷新目录</button>
-        </div>
-        <div class="codex-plus-plugin-toolbar"><input type="search" class="codex-plus-plugin-search" data-codex-plugin-query="true" aria-label="搜索插件" placeholder="搜索插件名称、简介或标签" value="${escapeHtml(state.query)}"><label class="codex-plus-plugin-filter"><input type="checkbox" data-codex-plugin-installed="true" ${state.installedOnly ? "checked" : ""}>仅已安装</label></div>
-        <div class="codex-plus-plugin-status" data-codex-plugin-market-status="true" role="status" aria-live="polite"></div>
-        <div class="codex-plus-plugin-results" data-codex-plugin-results="true" role="list" aria-label="插件结果"></div>
-        <div class="codex-plus-plugin-pagination"><span data-codex-plugin-result-count="true"></span><button type="button" class="codex-plus-button" data-codex-plugin-page="previous">上一页</button><button type="button" class="codex-plus-button" data-codex-plugin-page="next">下一页</button></div>
-      </div></div></div>`;
-    overlay.addEventListener("input", (event) => {
-      if (!event.target?.matches?.("[data-codex-plugin-query]")) return;
-      state.query = event.target.value;
-      state.page = 1;
-      renderCodexPlusPluginMarket();
-    });
-    overlay.addEventListener("change", (event) => {
-      if (!event.target?.matches?.("[data-codex-plugin-installed]")) return;
-      state.installedOnly = event.target.checked;
-      state.page = 1;
-      renderCodexPlusPluginMarket();
-    });
-    overlay.addEventListener("click", (event) => {
-      const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      if (target?.closest("[data-codex-plugin-refresh]")) {
-        void loadCodexPlusPluginMarket(state.source, true);
-        return;
-      }
-      const install = target?.closest("[data-codex-plugin-install]");
-      if (install && !install.disabled) {
-        void installCodexPlusPluginMarketPlugin(state.source, install.dataset.codexPluginInstall);
-        return;
-      }
-      const page = target?.closest("[data-codex-plugin-page]");
-      if (page && !page.disabled) {
-        state.page += page.dataset.codexPluginPage === "next" ? 1 : -1;
-        renderCodexPlusPluginMarket();
-        overlay.querySelector(".codex-plus-modal-body")?.scrollTo?.({ top: 0 });
-      }
-    });
-    document.body.appendChild(overlay);
-    positionCodexPlusPage(overlay);
-    document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {
-      node.removeAttribute("data-codex-plus-ext-rail-active");
-      const button = node.querySelector("button") || node;
-      button.dataset.active = "false";
-      button.removeAttribute("data-selected");
-      button.removeAttribute("aria-current");
-    });
-    setCodexPlusSidebarNavActive(true, "plugin-market");
-    // 拓展页面可能留下捕获旧 overlay 的 resize 回调，重开后必须改为查询当前 DOM。
-    window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
-    window.__codexPlusPageResizeHandler = () => positionCodexPlusPage(document.querySelector(`.${codexPlusPageClass}`));
-    window.addEventListener("resize", window.__codexPlusPageResizeHandler);
-    renderCodexPlusPluginMarket();
-    void loadCodexPlusPluginMarket(state.source);
-    Object.entries(state.jobs).forEach(([key, job]) => {
-      if (!job.busy) return;
-      const colon = key.indexOf(":");
-      scheduleCodexPlusPluginMarketInstallPoll(key.slice(0, colon), key.slice(colon + 1));
-    });
   }
   /**
    * 复用原生插件页面：仅接管带独立索引标记的详情与安装，其他插件仍走原接口。
@@ -40733,6 +40452,9 @@ ${key} = ${value}`]);
    * 页面拿不到也不提交本地路径：预览图按 key 由服务端读成 data URL；新建主题、导入主题包、
    * 换素材都是把选中的文件内容传过去，由服务端落到自己的上传目录再交给核心函数校验。
    * 换成不同主题时皮肤样式要重启 Codex 才完整切换（与管理器一致），这时给出「重启 Codex」。
+   *
+   * 「壁纸透出」（#3233）是本机偏好，存在 Codex++ 设置里、不写进主题包；服务端注入时作为
+   * userTransparency 并进主题配置交给上游渲染器，皮肤开着就当场实时重应用。
    */
   const codexPlusSkinState = {
     data: null,
@@ -40747,7 +40469,12 @@ ${key} = ${value}`]);
     pendingRestart: false,
     checks: null,
     root: null,
+    // 「壁纸透出」提交中 / 提交中又改了的下一个值（{ value }）：松手才提交，连按方向键只发最后一个。
+    transparencyBusy: false,
+    transparencyQueued: null,
   };
+  /** 「跟随主题」时滑块停的位置：上游渲染器给没写透明度的主题的默认透出。 */
+  const codexPlusSkinTransparencyFallback = 30;
 
   const codexPlusSkinColorFields = [
     ["background", "背景色"], ["panel", "面板色"], ["panelAlt", "次级面板色"], ["accent", "强调色"], ["accentAlt", "次级强调色"],
@@ -40839,6 +40566,34 @@ ${key} = ${value}`]);
       codexPlusSkinState.pendingRestart = true;
       codexPlusSkinRender();
     }
+  }
+
+  /** 设置里的「壁纸透出」：0–100 的整数，其它（含未设）都是跟随主题（null）。 */
+  function codexPlusSkinTransparencyValue(value) {
+    return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.min(100, Math.round(value))) : null;
+  }
+
+  function codexPlusSkinTransparencyText(value) {
+    return value === null ? "跟随主题" : `${value}%`;
+  }
+
+  /** 提交「壁纸透出」（null = 跟随主题）。提交中再改只记下最新值，这一次回来后接着发。 */
+  async function codexPlusSkinSetTransparency(value) {
+    const state = codexPlusSkinState;
+    state.transparencyQueued = { value: codexPlusSkinTransparencyValue(value) };
+    if (state.transparencyBusy) return;
+    state.transparencyBusy = true;
+    let result = null;
+    while (state.transparencyQueued) {
+      const next = state.transparencyQueued.value;
+      state.transparencyQueued = null;
+      result = await codexPlusSkinRequest("transparency", { value: next });
+    }
+    state.transparencyBusy = false;
+    codexPlusSkinMerge(result);
+    if (result?.status === "pending_restart") state.pendingRestart = true;
+    codexPlusSkinSetStatus(result?.message || (result?.status === "ok" ? "" : "保存壁纸透出失败"), codexPlusSkinTone(result));
+    codexPlusSkinRender();
   }
 
   async function codexPlusSkinLoadCatalog(kind) {
@@ -41075,6 +40830,23 @@ ${key} = ${value}`]);
       `<button type="button" role="radio" aria-checked="${String(id === value)}" data-skin-choice="${field}" data-value="${escapeHtml(id)}">${escapeHtml(text)}</button>`).join("")}</div>`;
   }
 
+  /** 「壁纸透出」行：滑块 + 当前值 + 「跟随主题」。当前主题的引擎不认这个偏好时禁用。 */
+  function codexPlusSkinTransparencyRow() {
+    const data = codexPlusSkinState.data || {};
+    const value = codexPlusSkinTransparencyValue(data.userTransparency);
+    const follow = value === null;
+    const supported = data.transparencySupported !== false;
+    const text = codexPlusSkinTransparencyText(value);
+    const description = supported
+      ? "侧栏、主区和输入框的底色透出多少壁纸（0% 不透，100% 全透）。「跟随主题」用主题配色自带的透明度，没写的透出 30%。只存在本机设置里，不写进主题包。"
+      : "当前主题使用的皮肤引擎不支持调节壁纸透出。";
+    return codexPlusSkinRow("壁纸透出", escapeHtml(description), `<span class="codex-plus-skin-inline">
+        <input type="range" class="codex-plus-skin-range" min="0" max="100" step="1" value="${follow ? codexPlusSkinTransparencyFallback : value}" data-skin-transparency data-follow="${String(follow)}" aria-label="壁纸透出" aria-valuetext="${escapeHtml(text)}" ${supported ? "" : "disabled"}>
+        <span class="codex-plus-skin-range-value" data-skin-transparency-value>${escapeHtml(text)}</span>
+        ${follow || !supported ? "" : '<button type="button" class="codex-plus-action-button" data-skin-action="transparency-follow">跟随主题</button>'}
+      </span>`);
+  }
+
   function codexPlusSkinEditor() {
     const editing = codexPlusSkinState.editing;
     if (!editing) return "";
@@ -41156,6 +40928,7 @@ ${key} = ${value}`]);
       ${banner}
       <div class="codex-plus-settings-card">
         ${codexPlusSkinRow("启用皮肤", stateText, `<button type="button" class="codex-plus-toggle" role="switch" aria-label="启用皮肤" aria-checked="${String(enabled)}" data-enabled="${String(enabled)}" data-pending="${String(Boolean(state.busy))}" data-skin-action="toggle" ${state.busy ? "disabled" : ""}><span></span></button>`)}
+        ${codexPlusSkinTransparencyRow()}
         ${codexPlusSkinRow("恢复 Codex 原始外观", "关掉皮肤并清掉当前窗口里的皮肤，主题库不受影响。", codexPlusSkinButton("restore", "恢复", "", "restore"))}
         ${codexPlusSkinRow("检查运行状态", checks, codexPlusSkinButton("check", "检查", "", "status"))}
       </div>
@@ -41169,6 +40942,15 @@ ${key} = ${value}`]);
   /** 编辑区的输入：就地写回草稿不重绘（重绘会丢焦点），色块跟着变。 */
   function codexPlusSkinHandleInput(event) {
     const target = event.target;
+    // 拖动「壁纸透出」只改旁边的数字，不重绘（重绘会打断拖动）；松手的 change 才提交。
+    if (target?.dataset && "skinTransparency" in target.dataset) {
+      const text = codexPlusSkinTransparencyText(codexPlusSkinTransparencyValue(Number(target.value)));
+      target.dataset.follow = "false";
+      target.setAttribute("aria-valuetext", text);
+      const label = target.parentElement?.querySelector("[data-skin-transparency-value]");
+      if (label) label.textContent = text;
+      return;
+    }
     const editing = codexPlusSkinState.editing;
     const field = target?.dataset?.skinField;
     if (!editing || !field) return;
@@ -41199,6 +40981,7 @@ ${key} = ${value}`]);
 
   async function codexPlusSkinHandleChange(event) {
     const target = event.target;
+    if (target?.dataset && "skinTransparency" in target.dataset) return codexPlusSkinSetTransparency(Number(target.value));
     const kind = target?.dataset?.skinFile;
     if (!kind) return;
     const file = target.files?.[0];
@@ -41238,6 +41021,7 @@ ${key} = ${value}`]);
       }
       case "restore": return codexPlusSkinRestore();
       case "check": return codexPlusSkinCheck();
+      case "transparency-follow": return codexPlusSkinSetTransparency(null);
       case "restart": {
         const result = await codexPlusSkinRun("restart", "restart", {});
         if (result?.status === "accepted" || result?.status === "ok") codexPlusSkinSetStatus("正在重启 Codex…", "ok");

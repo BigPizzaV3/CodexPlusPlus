@@ -334,13 +334,13 @@ test("页内目录收成单列：分组锚点不再显示；增强页不再分�
   assert.match(toggle, /RESTART_HINT\.test\(detail\)/);
 });
 
-test("插件市场紧凑布局的规则带 .shell 前缀：正式版 styles.css 后加载，同权重的 .panel { padding: 0 } 会清掉卡片内边距", () => {
-  const css = readSource("./PluginMarketScreen.css");
-  const block = css.slice(css.lastIndexOf("/*", css.indexOf("紧凑布局"))).replace(/\/\*[\s\S]*?\*\//g, "");
-  const selectors = [...block.matchAll(/(?:^|\})\s*([^{}]+?)\s*\{/g)].map((match) => match[1].trim()).filter(Boolean);
-  assert.ok(selectors.length > 10);
-  for (const group of selectors) for (const selector of group.split(",")) assert.match(selector.trim(), /^\.shell /, selector);
-  assert.match(block, /\.shell \.plugin-market-card \{[^}]*padding:\s*14px 16px/);
+test("插件市场的规则都带 .shell 前缀：正式版 styles.css 后加载，同权重的 .panel { padding: 0 } 会盖掉它们", () => {
+  const css = readSource("./PluginMarketScreen.css").replace(/\/\*[\s\S]*?\*\//g, "").replace(/@keyframes[^{]*\{[^{}]*\{[^}]*\}\s*\}/g, "");
+  const selectors = [...css.matchAll(/(?:^|[{}])\s*([^{}@]+?)\s*\{/g)].map((match) => match[1].trim()).filter(Boolean);
+  assert.ok(selectors.length > 20);
+  for (const group of selectors) for (const selector of group.split(",")) assert.match(selector.trim(), /^\.shell[ .:]/, selector);
+  // 有深色版图标的只显示和外壳主题对应的那张。
+  assert.match(css, /\.shell\.dark \.plugin-market-icon img\[data-variant="light"\],\s*\.shell:not\(\.dark\) \.plugin-market-icon img\[data-variant="dark"\] \{\s*display: none;/);
 });
 
 test("导入供应商弹窗：只有文字那块占满宽度，头像（也是 span）保持固定尺寸", () => {

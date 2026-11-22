@@ -147,7 +147,15 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   class Element {}
   const node = <T extends object>(value: T) => Object.setPrototypeOf(value, Element.prototype) as T;
   const cardItem = node({ closest: () => null });
-  const card = { contains: (target: unknown) => target === cardItem };
+  const cardTransitions: string[] = [];
+  const card = {
+    contains: (target: unknown) => target === cardItem,
+    offsetWidth: 284,
+    style: {
+      set transition(value: string) { cardTransitions.push(`${value}:${overlay.dataset.codexPlusNavPeek ?? "closed"}`); },
+      removeProperty: (name: string) => cardTransitions.push(`-${name}:${overlay.dataset.codexPlusNavPeek ?? "closed"}`),
+    },
+  };
   const railButton = (id: string, current: boolean) => {
     const button: Record<string, unknown> = node({
       parentElement: { id },
@@ -164,9 +172,15 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   const peekItem = node({ closest: () => null });
   const peek = { dataset: {} as Record<string, string>, contains: (target: unknown) => target === peekItem };
   const shown: string[] = [];
+  const snaps: boolean[] = [];
+  let nativeOpen = false;
   const overlay = { dataset: {} as Record<string, string>, querySelector: () => card };
   const document = {
-    querySelector: (selector: string) => (selector === '.codex-plus-page-overlay[data-codex-plus-sidebar="floating"]' ? overlay : null),
+    querySelector: (selector: string) => {
+      if (selector === '.codex-plus-page-overlay[data-codex-plus-sidebar="floating"]') return overlay;
+      if (selector === '[data-sidebar-navigation-root][class*="sidebar-popover-background"]' && nativeOpen) return {};
+      return null;
+    },
     getElementById: (id: string) => (id === "codex-plus-rail-peek" && peek.dataset.open ? peek : null),
     addEventListener: (type: string, listener: (event: Record<string, unknown>) => void) => listeners.set(type, listener),
     removeEventListener: (type: string) => listeners.delete(type),
@@ -186,9 +200,10 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
     window,
     Element,
     () => floating,
-    (id: string) => {
+    (id: string, _load: boolean, snap: boolean) => {
       if (id === "codex-plus-rail-provider") return false;
       shown.push(id);
+      snaps.push(snap);
       peek.dataset.open = "true";
       return true;
     },
@@ -201,6 +216,7 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   assert.equal(overlay.dataset.codexPlusNavPeek, undefined, "a short delay before it slides out, like the native peek");
   await wait(160);
   assert.equal(overlay.dataset.codexPlusNavPeek, "true", "hovering the current page's rail entry shows the page's own left column");
+  assert.deepEqual(cardTransitions, [], "showing from nothing keeps the slide-and-fade transition");
   move(cardItem, 150);
   await wait(300);
   assert.equal(overlay.dataset.codexPlusNavPeek, "true", "the card stays while the pointer is on it");
@@ -209,6 +225,8 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   assert.deepEqual(shown, ["codex-plus-rail-weixin"], "another entry swaps in its own card at once, like the native rail");
   assert.equal(peek.dataset.open, "true");
   assert.equal(overlay.dataset.codexPlusNavPeek, undefined, "the page's column steps aside");
+  assert.deepEqual(snaps, [true], "swapping from one floating card to another is instant, like the native rail");
+  assert.deepEqual(cardTransitions, ["none:true", "-transition:closed"], "the page's column leaves without its fade when another card takes its place");
   move(peekItem, 150);
   await wait(300);
   assert.equal(peek.dataset.open, "true", "the entry's card stays while the pointer is on it");
@@ -224,10 +242,22 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   listeners.get("pointerout")!({ type: "pointerout", target: elsewhere, relatedTarget: null, clientX: 2 });
   await wait(300);
   assert.equal(overlay.dataset.codexPlusNavPeek, undefined, "leaving the window hides it");
+  move(otherEntry, 26);
+  await wait(160);
+  assert.deepEqual(snaps.slice(1), [false], "from nothing the entry's card fades and slides in");
+  move(elsewhere, 300);
+  await wait(300);
+  nativeOpen = true;
+  move(otherEntry, 26);
+  await wait(20);
+  assert.deepEqual(snaps.slice(2), [true], "coming from the native card it swaps in at once, as native entries do");
+  nativeOpen = false;
+  move(elsewhere, 300);
+  await wait(300);
   floating = false;
   move(otherEntry, 26);
   await wait(160);
-  assert.deepEqual(shown, ["codex-plus-rail-weixin"], "with the sidebar open, hovering the rail floats nothing, like native");
+  assert.equal(shown.length, 3, "with the sidebar open, hovering the rail floats nothing, like native");
 });
 
 it("retargets the layout observer when the host replaces its main or rail", () => {

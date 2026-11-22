@@ -3,7 +3,7 @@
     {
       "name": "00-prelude.js",
       "description": "IIFE 开头、环境守卫、平台探测与常量",
-      "lines": 566
+      "lines": 565
     },
     {
       "name": "01-registry.js",
@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3784
+      "lines": 3768
     },
     {
       "name": "20-menu.js",
@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 3337
+      "lines": 3354
     },
     {
       "name": "41-extension-detail.js",
@@ -109,11 +109,6 @@
       "name": "60-plugin-marketplace.js",
       "description": "插件市场请求/响应补丁、本地兜底与合并",
       "lines": 2046
-    },
-    {
-      "name": "61-plugin-market-ui.js",
-      "description": "独立 Codex 插件市场、索引检索与按需单包安装",
-      "lines": 281
     },
     {
       "name": "62-plugin-market-adapter.js",
@@ -248,7 +243,7 @@
     {
       "name": "96-dream-skin-page.js",
       "description": "Codex++ 设置页的「皮肤」分区：主题库、社区、市场、编辑与恢复",
-      "lines": 561
+      "lines": 626
     },
     {
       "name": "96-builtin-extensions.js",

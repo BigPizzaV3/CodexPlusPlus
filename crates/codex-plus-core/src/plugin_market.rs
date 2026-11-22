@@ -540,6 +540,8 @@ fn plugin_payload(
     let record = installed_record(home, source, plugin, state);
     let local = record.map(|(_, installed)| installed);
     let mut result = serde_json::to_value(plugin).unwrap_or_else(|_| json!({}));
+    result["iconUrl"] = json!(native_icon(&plugin.icon_url).unwrap_or_default());
+    result["iconUrlDark"] = json!(native_icon(&plugin.icon_url_dark).unwrap_or_default());
     result["installed"] = json!(local.is_some());
     result["marketplaceName"] = json!(match record {
         Some((owner, installed)) => plugin_market_name(owner, &installed.id),
@@ -573,6 +575,7 @@ pub async fn list_plugins(home: &Path, source: &str, refresh: bool) -> anyhow::R
         "updatedAt": index.updated_at,
         "total": plugins.len(),
         "plugins": plugins,
+        "sections": native_sections(&index),
         "cached": cached,
     }))
 }
@@ -2570,6 +2573,13 @@ mod tests {
         let plain = interface("plain");
         assert_eq!(plain["shortDescription"], "sample plugin");
         assert!(plain["logoUrl"].is_null() && plain["logoUrlDark"].is_null());
+
+        // 管理器的插件页拿同一份分组和图标排版。
+        let market = list_plugins(&home, "full", false).await.unwrap();
+        assert_eq!(market["sections"], payload["codexPlusSections"]);
+        assert_eq!(market["plugins"][0]["iconUrl"], "https://files.example.com/content?id=1&sig=ab");
+        assert_eq!(market["plugins"][1]["iconUrl"], "");
+        assert_eq!(market["plugins"][1]["iconUrlDark"], "");
     }
 
     #[tokio::test]

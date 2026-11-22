@@ -1,7 +1,7 @@
 /** 页面结构、尺寸参考 cc-switch v7 (MIT), Jason Young / farion1231。
  * https://github.com/farion1231/cc-switch — Codex 写入使用本仓库的原有后端。
  */
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { ArrowLeft, ArrowRight, BookOpen, Check, ChevronDown, Copy, Download, Edit3, ExternalLink, Folder, History, MoreHorizontal, Plus, RefreshCw, Search, Server, Trash2, X } from "lucide-react";
@@ -49,9 +49,12 @@ export function Menu({ label = t("更多操作"), children }: { label?: string; 
     const up = window.innerHeight - box.bottom < 260 && box.top > window.innerHeight - box.bottom;
     setPosition({ top: up ? box.top - 4 : box.bottom + 4, right: Math.max(8, window.innerWidth - box.right), up });
   };
+  // 绘制前先定好位：没有内联坐标时菜单按 .mg-menu 的 absolute right:0 top:34px 落在窗口右上角，会闪一帧。
+  useLayoutEffect(() => {
+    if (open) place();
+  }, [open]);
   useEffect(() => {
     if (!open) return;
-    place();
     const close = (e: MouseEvent) => {
       const target = e.target as Node;
       if (!ref.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
@@ -84,7 +87,8 @@ export function Menu({ label = t("更多操作"), children }: { label?: string; 
 export function MenuItem({ children, onClick, disabled, danger, checked, title }: { children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; checked?: boolean; title?: string }) {
   return <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className={danger ? "mg-danger" : ""} disabled={disabled} onClick={onClick} title={title}>{children}</button>;
 }
-export function ManagementDrawer({ title, onClose, children, footer, wide = false, dismissOnBackdrop = true }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; wide?: boolean; dismissOnBackdrop?: boolean }) {
+/** 默认从右侧滑出；`modal` 改成居中弹窗：`confirm` 是确认框宽度，`form` 是表单宽度，`workspace` 是带侧栏的大弹窗。 */
+export function ManagementDrawer({ title, onClose, children, footer, modal, dismissOnBackdrop = true }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; modal?: "confirm" | "form" | "workspace"; dismissOnBackdrop?: boolean }) {
   const ref = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose); closeRef.current = onClose;
   useEffect(() => {
@@ -105,7 +109,7 @@ export function ManagementDrawer({ title, onClose, children, footer, wide = fals
     document.addEventListener("keydown", keyboard);
     return () => { document.removeEventListener("keydown", keyboard); previous?.focus({ preventScroll: true }); };
   }, []);
-  return <div className="mg-drawer-backdrop" onMouseDown={(e) => { if (dismissOnBackdrop && e.target === e.currentTarget) onClose(); }}><section className={"mg-drawer" + (wide ? " mg-drawer-wide" : "")} role="dialog" aria-modal="true" aria-label={title} ref={ref}><header><h2>{title}</h2><IconAction label={t("关闭窗口")} onClick={onClose}><X size={18} /></IconAction></header><div className="mg-drawer-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>;
+  return <div className={"mg-drawer-backdrop" + (modal ? " mg-modal-backdrop" : "")} onMouseDown={(e) => { if (dismissOnBackdrop && e.target === e.currentTarget) onClose(); }}><section className={"mg-drawer" + (modal ? ` mg-modal mg-modal-${modal}` : "")} role="dialog" aria-modal="true" aria-label={title} ref={ref}><header><h2>{title}</h2><IconAction label={t("关闭窗口")} onClick={onClose}><X size={18} /></IconAction></header><div className="mg-drawer-body">{children}</div>{footer && <footer>{footer}</footer>}</section></div>;
 }
 function Empty({ title, detail, children }: { title: string; detail?: string; children?: ReactNode }) {
   return <div className="mg-empty"><h2>{title}</h2>{detail && <p>{detail}</p>}<div>{children}</div></div>;
@@ -246,7 +250,7 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
       })}
       notify={notify} busy={busy} />}
     {importing && <McpImport onClose={() => { if (!busy) setImporting(false); }} onImport={(json) => write(async () => { const saved = await onImport(json); if (saved) setImporting(false); return saved; })} busy={busy} />}
-    {deleteTarget && <ManagementDrawer title={t("删除服务器")} onClose={() => { if (!busy) setDeleteTarget(null); }} footer={<><Action onClick={() => setDeleteTarget(null)} disabled={busy}>{t("取消")}</Action><Action primary disabled={busy} onClick={() => void write(async () => { for (const agent of mcpPresent(deleteTarget)) { if (!(await writeAgent(agent, deleteTarget.id, null))) return false; } setDeleteTarget(null); return true; })}>{t("确认删除")}</Action></>}><p>{t("删除后会从这些 Agent 的配置中移除：")}{mcpPresent(deleteTarget).map(agentLabel).join("、")}</p><strong>{deleteTarget.id}</strong></ManagementDrawer>}
+    {deleteTarget && <ManagementDrawer modal="confirm" title={t("删除服务器")} onClose={() => { if (!busy) setDeleteTarget(null); }} footer={<><Action onClick={() => setDeleteTarget(null)} disabled={busy}>{t("取消")}</Action><Action primary disabled={busy} onClick={() => void write(async () => { for (const agent of mcpPresent(deleteTarget)) { if (!(await writeAgent(agent, deleteTarget.id, null))) return false; } setDeleteTarget(null); return true; })}>{t("确认删除")}</Action></>}><strong className="mg-confirm-target">{deleteTarget.id}</strong><p className="mg-confirm-text">{t("删除后会从这些 Agent 的配置中移除：")}{mcpPresent(deleteTarget).map(agentLabel).join("、")}</p></ManagementDrawer>}
   </div>;
 }
 function enabledBody(body: string, enabled: boolean) {
@@ -307,23 +311,30 @@ function McpEditor({ entry, kind, present, agents, onClose, onSave, notify, busy
       await onSave(id.trim(), next, targets);
     } catch (e) { setError(String(e)); await notify("MCP", String(e), "failed"); } finally { setSaving(false); }
   };
-  return <ManagementDrawer title={entry ? t("编辑 MCP 服务器") : t("添加 MCP 服务器")} onClose={() => { if (!saving) onClose(); }} footer={<><Action onClick={onClose} disabled={saving || busy}>{t("取消")}</Action><Action primary disabled={!id.trim() || !targets.length || saving || busy || loading} onClick={() => void save()}>{saving || busy ? t("保存中…") : t("保存")}</Action></>}>
-    <Field label={t("服务器 ID")} hint={t("唯一标识，添加后不可更改。") }><input value={id} disabled={Boolean(entry)} onChange={(e) => setId(e.target.value)} placeholder="context7" /></Field>
-    {kind === "mcp" && <div className="mg-tabs"><button type="button" data-active={mode === "form"} disabled={loading || saving} onClick={() => void switchMode("form")}>{t("表单")}</button><button type="button" data-active={mode === "toml"} disabled={loading || saving} onClick={() => void switchMode("toml")}>TOML</button></div>}
+  return <ManagementDrawer modal="form" dismissOnBackdrop={false} title={entry ? t("编辑 MCP 服务器") : t("添加 MCP 服务器")} onClose={() => { if (!saving) onClose(); }} footer={<><Action onClick={onClose} disabled={saving || busy}>{t("取消")}</Action><Action primary disabled={!id.trim() || !targets.length || saving || busy || loading} onClick={() => void save()}>{saving || busy ? t("保存中…") : t("保存")}</Action></>}>
+    <div className="mg-mcp-head"><Field label={t("服务器 ID")} hint={t("唯一标识，添加后不可更改。") }><input value={id} disabled={Boolean(entry)} onChange={(e) => setId(e.target.value)} placeholder="context7" /></Field>
+      {kind === "mcp" && <div className="mg-tabs"><button type="button" data-active={mode === "form"} disabled={loading || saving} onClick={() => void switchMode("form")}>{t("表单")}</button><button type="button" data-active={mode === "toml"} disabled={loading || saving} onClick={() => void switchMode("toml")}>TOML</button></div>}</div>
     {loading ? <p role="status">{t("正在读取配置…")}</p> : mode === "toml" ? <Field label={t("配置内容")} hint={t("保留自定义字段，保存时由 Codex 配置解析器校验。") }><textarea className="mg-code" value={body} onChange={(e) => setBody(e.target.value)} spellCheck={false} rows={16} /></Field> : <>
-      <section className="mg-field"><span>{t("传输类型")}</span><AppSelect ariaLabel={t("传输类型")} onChange={(next) => update({ transport: next })} options={[{ value: "stdio", label: "stdio" }, { value: "http", label: "HTTP / SSE" }] as { value: McpForm["transport"]; label: string }[]} value={form.transport} /></section>
-      {form.transport === "stdio" ? <><Field label={t("启动命令")}><input value={form.command} onChange={(e) => update({ command: e.target.value })} placeholder="npx" /></Field><section className="mg-field"><Action disabled={checkingCommand || saving || busy || !form.command.trim()} onClick={() => void checkCommand()}>{checkingCommand ? t("正在检查…") : t("检查启动路径")}</Action>
-        {commandCheck && <div role="status" className="mg-notice"><p>{t(commandCheck.message)}</p>{commandCheck.replacementCommand && <><code>{commandCheck.replacementCommand}</code><Action onClick={() => update({ command: commandCheck.replacementCommand! })}>{t("将新入口放入草稿")}</Action><small>{t("检查不会重启 MCP；确认草稿后再保存。")}</small></>}</div>}</section><Field label={t("命令参数")} hint={t("每行一个参数。") }><textarea rows={3} value={form.args.join("\n")} onChange={(e) => update({ args: e.target.value.split("\n") })} placeholder={'-y\n@upstash/context7-mcp'} /></Field><PairEditor label={t("环境变量")} pairs={form.env} onChange={(env) => update({ env })} /><Field label={t("工作目录")}><input value={form.cwd} onChange={(e) => update({ cwd: e.target.value })} placeholder={t("可选")} /></Field></> : <><Field label="URL"><input value={form.url} onChange={(e) => update({ url: e.target.value })} placeholder="https://example.com/mcp" /></Field><PairEditor label="HTTP Headers" pairs={form.httpHeaders} onChange={(httpHeaders) => update({ httpHeaders })} /><Field label="Bearer Token"><input type="password" value={form.bearerToken} onChange={(e) => update({ bearerToken: e.target.value })} /></Field></>}
-      <Field label={t("启动超时（秒）")}><input inputMode="decimal" value={form.startupTimeoutSec} onChange={(e) => update({ startupTimeoutSec: e.target.value })} placeholder={t("默认")} /></Field>
+      <div className="mg-mcp-row mg-mcp-transport"><section className="mg-field"><span>{t("传输类型")}</span><AppSelect ariaLabel={t("传输类型")} onChange={(next) => update({ transport: next })} options={[{ value: "stdio", label: "stdio" }, { value: "http", label: "HTTP / SSE" }] as { value: McpForm["transport"]; label: string }[]} value={form.transport} /></section>
+        {form.transport === "stdio" ? <Field label={t("启动命令")}><div className="mg-input-action"><input value={form.command} onChange={(e) => update({ command: e.target.value })} placeholder="npx" /><Action disabled={checkingCommand || saving || busy || !form.command.trim()} onClick={() => void checkCommand()}>{checkingCommand ? t("正在检查…") : t("检查启动路径")}</Action></div></Field> : <Field label="URL"><input value={form.url} onChange={(e) => update({ url: e.target.value })} placeholder="https://example.com/mcp" /></Field>}</div>
+      {form.transport === "stdio" ? <>
+        {commandCheck && <div role="status" className="mg-notice"><p>{t(commandCheck.message)}</p>{commandCheck.replacementCommand && <><code>{commandCheck.replacementCommand}</code><Action onClick={() => update({ command: commandCheck.replacementCommand! })}>{t("将新入口放入草稿")}</Action><small>{t("检查不会重启 MCP；确认草稿后再保存。")}</small></>}</div>}
+        <Field label={t("命令参数")} hint={t("每行一个参数。") }><textarea className="mg-code" rows={3} value={form.args.join("\n")} onChange={(e) => update({ args: e.target.value.split("\n") })} placeholder={'-y\n@upstash/context7-mcp'} /></Field>
+        <PairEditor label={t("环境变量")} pairs={form.env} onChange={(env) => update({ env })} />
+        <div className="mg-mcp-row"><Field label={t("工作目录")}><input value={form.cwd} onChange={(e) => update({ cwd: e.target.value })} placeholder={t("可选")} /></Field><Field label={t("启动超时（秒）")}><input inputMode="decimal" value={form.startupTimeoutSec} onChange={(e) => update({ startupTimeoutSec: e.target.value })} placeholder={t("默认")} /></Field></div>
+      </> : <>
+        <PairEditor label="HTTP Headers" pairs={form.httpHeaders} onChange={(httpHeaders) => update({ httpHeaders })} />
+        <div className="mg-mcp-row"><Field label="Bearer Token"><input type="password" value={form.bearerToken} onChange={(e) => update({ bearerToken: e.target.value })} /></Field><Field label={t("启动超时（秒）")}><input inputMode="decimal" value={form.startupTimeoutSec} onChange={(e) => update({ startupTimeoutSec: e.target.value })} placeholder={t("默认")} /></Field></div>
+      </>}
+      {form.extraToml && <details><summary>{t("其他配置字段")}</summary><textarea className="mg-code" value={form.extraToml} onChange={(e) => update({ extraToml: e.target.value })} rows={5} /></details>}
       <div className="mg-write-to"><span>{t("保存目标")}</span>
         {present ? <strong>{present.map(agentLabel).join("、")}</strong> : <div className="mg-target-list">{agents.map((agent) => <label className="mg-check-line" key={agent}><input checked={targets.includes(agent)} onChange={(e) => { const checked = e.target.checked; setTargets((old) => checked ? [...old, agent] : old.filter((item) => item !== agent)); }} type="checkbox" /><AgentGlyph agent={agent} />{agentLabel(agent)}</label>)}</div>}
         <small>{present ? t("会同步写入已有这台服务器的所有 Agent；启停请在列表行操作。") : t("保存后立即写入勾选的 Agent，写前自动备份原配置。")}</small></div>
-      {form.extraToml && <details><summary>{t("其他配置字段")}</summary><textarea className="mg-code" value={form.extraToml} onChange={(e) => update({ extraToml: e.target.value })} rows={5} /></details>}
     </>}{error && <p role="alert" className="mg-error">{error}</p>}
   </ManagementDrawer>;
 }
 function McpImport({ onClose, onImport, busy }: { onClose: () => void; onImport: (json: string) => Promise<boolean>; busy: boolean }) {
   const [json, setJson] = useState(""); const [preview, setPreview] = useState<(Result & { entries: { id: string; tomlBody: string }[]; warnings: string[] }) | null>(null); const [checking, setChecking] = useState(false); const [error, setError] = useState("");
   const check = async () => { setChecking(true); setError(""); try { const result = await invoke<NonNullable<typeof preview>>("preview_mcp_servers_json", { json }); setPreview(succeeded(result) ? result : null); if (!succeeded(result)) setError(result.message); } catch (e) { setError(String(e)); } finally { setChecking(false); } };
-  return <ManagementDrawer title={t("导入 MCP JSON")} onClose={onClose} footer={<><Action onClick={() => void check()} disabled={!json.trim() || checking || busy}>{checking ? t("正在解析…") : t("预览")}</Action><Action onClick={() => void onImport(json)} disabled={!preview || busy} primary>{t("确认导入")}</Action></>}><p className="mg-muted">{t("粘贴 mcpServers、servers 或单个服务器配置。")}</p><Field label={t("MCP 配置 JSON")}><textarea rows={18} className="mg-code" spellCheck={false} value={json} onChange={(e) => { setJson(e.target.value); setPreview(null); }} placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'} /></Field>{preview && <div className="mg-notice"><strong>{t("将导入：")}{preview.entries.map((e) => e.id).join("、")}</strong>{preview.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}{error && <p role="alert" className="mg-error">{error}</p>}</ManagementDrawer>;
+  return <ManagementDrawer modal="form" dismissOnBackdrop={false} title={t("导入 MCP JSON")} onClose={onClose} footer={<><Action onClick={() => void check()} disabled={!json.trim() || checking || busy}>{checking ? t("正在解析…") : t("预览")}</Action><Action onClick={() => void onImport(json)} disabled={!preview || busy} primary>{t("确认导入")}</Action></>}><p className="mg-muted">{t("粘贴 mcpServers、servers 或单个服务器配置。")}</p><Field label={t("MCP 配置 JSON")}><textarea rows={18} className="mg-code" spellCheck={false} value={json} onChange={(e) => { setJson(e.target.value); setPreview(null); }} placeholder={'{\n  "mcpServers": {\n    "context7": {\n      "command": "npx",\n      "args": ["-y", "@upstash/context7-mcp"]\n    }\n  }\n}'} /></Field>{preview && <div className="mg-notice"><strong>{t("将导入：")}{preview.entries.map((e) => e.id).join("、")}</strong>{preview.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}{error && <p role="alert" className="mg-error">{error}</p>}</ManagementDrawer>;
 }

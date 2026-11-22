@@ -663,3 +663,59 @@ fn dream_skin_api_bootstrap_marks_parts_without_rescanning_on_streaming() {
         "observer must filter mutation records before marking"
     );
 }
+
+// #3233：「壁纸透出」存在 Codex++ 设置里，默认不设（跟随主题），手改坏了也不能让设置读不出来。
+#[test]
+fn dream_skin_user_transparency_defaults_unset_and_normalizes() {
+    let settings = BackendSettings::default();
+    assert_eq!(settings.codex_app_dream_skin_user_transparency, None);
+    assert!(
+        serde_json::to_value(&settings).unwrap().get("codexAppDreamSkinUserTransparency").is_none(),
+        "没设时不往 settings.json 写这个键"
+    );
+    for (raw, expected) in [
+        (serde_json::json!(40), Some(40)),
+        (serde_json::json!(37.6), Some(38)),
+        (serde_json::json!(150), Some(100)),
+        (serde_json::json!(-5), Some(0)),
+        (serde_json::json!(null), None),
+        (serde_json::json!("50"), None),
+    ] {
+        let parsed: BackendSettings =
+            serde_json::from_value(serde_json::json!({ "codexAppDreamSkinUserTransparency": raw })).unwrap();
+        assert_eq!(parsed.codex_app_dream_skin_user_transparency, expected, "{raw}");
+    }
+}
+
+#[test]
+fn dream_skin_user_transparency_updates_and_clears_through_settings_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("settings.json");
+    let store = SettingsStore::new(path.clone());
+    let saved = || -> serde_json::Value { serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap() };
+
+    let settings = store.update(serde_json::json!({ "codexAppDreamSkinUserTransparency": 45 })).unwrap();
+    assert_eq!(settings.codex_app_dream_skin_user_transparency, Some(45));
+    assert_eq!(saved()["codexAppDreamSkinUserTransparency"], 45);
+    // 不是数字的补丁不动原值；越界数字按 0–100 收。
+    store.update(serde_json::json!({ "codexAppDreamSkinUserTransparency": "abc" })).unwrap();
+    assert_eq!(store.load().unwrap().codex_app_dream_skin_user_transparency, Some(45));
+    store.update(serde_json::json!({ "codexAppDreamSkinUserTransparency": 400 })).unwrap();
+    assert_eq!(store.load().unwrap().codex_app_dream_skin_user_transparency, Some(100));
+    // 别的设置改动不碰它；完整表单保存原样带着它。
+    store.update(serde_json::json!({ "codexAppDreamSkinPaused": true })).unwrap();
+    let mut loaded = store.load().unwrap();
+    assert_eq!(loaded.codex_app_dream_skin_user_transparency, Some(100));
+    loaded.codex_app_dream_skin_paused = false;
+    store.save(&loaded).unwrap();
+    assert_eq!(store.load().unwrap().codex_app_dream_skin_user_transparency, Some(100));
+    // null 清回跟随主题，键从文件里去掉；完整保存 None 也一样清掉，不会被当成未知字段补回。
+    store.update(serde_json::json!({ "codexAppDreamSkinUserTransparency": null })).unwrap();
+    assert_eq!(store.load().unwrap().codex_app_dream_skin_user_transparency, None);
+    assert!(saved().get("codexAppDreamSkinUserTransparency").is_none());
+    store.update(serde_json::json!({ "codexAppDreamSkinUserTransparency": 20 })).unwrap();
+    let mut loaded = store.load().unwrap();
+    loaded.codex_app_dream_skin_user_transparency = None;
+    store.save(&loaded).unwrap();
+    assert!(saved().get("codexAppDreamSkinUserTransparency").is_none());
+}
