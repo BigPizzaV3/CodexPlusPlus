@@ -647,8 +647,8 @@ pub fn is_wake_gap(
     let mono_jumped = mono_gap.is_some_and(|gap| gap > threshold);
     let wall_jumped = match wall_gap {
         Some(Ok(gap)) => gap > threshold,
-        // 墙钟倒拨（校时）：宁可当成唤醒给一段宽限，也不要漏检。
-        Some(Err(_)) => true,
+        // 墙钟倒拨：几毫秒的 NTP 校时不算，大幅回拨才当作唤醒给一段宽限。
+        Some(Err(back)) => back.duration() > threshold,
         None => false,
     };
     mono_jumped || wall_jumped
@@ -952,14 +952,14 @@ mod tests {
         ));
         // 首次 tick（无历史）：不算唤醒。
         assert!(!is_wake_gap(None, None, threshold));
-        // 墙钟倒拨（NTP 校时）：保守当唤醒给宽限。
-        assert!(is_wake_gap(
-            Some(Duration::from_secs(2)),
+        // 墙钟倒拨：大幅回拨当唤醒给宽限，几毫秒的 NTP 校时不算。
+        let back = |by: Duration| {
             Some(Err(std::time::UNIX_EPOCH
-                .duration_since(std::time::SystemTime::now() + Duration::from_secs(1_000))
-                .unwrap_err())),
-            threshold,
-        ));
+                .duration_since(std::time::UNIX_EPOCH + by)
+                .unwrap_err()))
+        };
+        assert!(is_wake_gap(Some(Duration::from_secs(2)), back(Duration::from_secs(1_000)), threshold));
+        assert!(!is_wake_gap(Some(Duration::from_secs(2)), back(Duration::from_millis(5)), threshold));
     }
 
     #[test]

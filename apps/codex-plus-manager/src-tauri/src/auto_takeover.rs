@@ -97,10 +97,10 @@ struct Inner {
     our_launch_at: Option<Instant>,
     /// 最近一次系统唤醒（睡眠/唤醒后给 CDP 恢复宽限）。
     last_wake_at: Option<Instant>,
-    /// 上一次 tick 的单调时钟，用来识别挂起（睡眠后 Instant 会跳）。
+    /// 上一次 tick 的单调时钟：在睡眠期间也走字的平台上，唤醒后会留下间隙。
     last_tick: Option<Instant>,
     /// 上一次 tick 的墙钟：macOS 的 `Instant` 睡眠期间不走字（#3188），
-    /// 长睡眠后唤醒来不出单调间隙，必须靠墙钟补检。
+    /// 长睡眠后唤醒留不下单调间隙，必须靠墙钟补检。
     last_tick_wall: Option<std::time::SystemTime>,
     /// 守护线程启动时刻，用于启动静默期。
     started_at: Option<Instant>,
@@ -300,7 +300,7 @@ fn supervisor_loop() {
 
 /// 一次探测 + 决策。返回下一次 tick 的间隔。
 fn tick() -> Duration {
-    // 睡眠/唤醒检测：挂起期间 Instant 会跳跃，这里把它当作「刚唤醒」，
+    // 睡眠/唤醒检测：两次 tick 间单调时钟或墙钟跳过阈值，就当作「刚唤醒」，
     // 给 CDP 一段恢复宽限，避免唤醒瞬间误重启。
     let now = Instant::now();
     let now_wall = std::time::SystemTime::now();
