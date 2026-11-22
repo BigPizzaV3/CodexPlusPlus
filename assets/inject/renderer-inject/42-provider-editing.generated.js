@@ -2221,7 +2221,7 @@ ${key} = ${value}`]);
   }
   function validateDraft(draft, payload, retainedModel, retainedSelection) {
     if (payload) {
-      if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先到「供应商」里添加";
+      if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先在「供应商池」里添加供应商";
       const model = draft.model.trim();
       const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
       const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);

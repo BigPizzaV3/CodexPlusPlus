@@ -135,7 +135,7 @@ export function GatewayPage({
         {payload && !payload.helperRunning && payload.agents.some((agent) => agent.enabled) ? (
           <p className="gw-alert" role="alert">
             <AlertTriangle className="h-4 w-4" />
-            <span>{t("本地网关当前没有运行，走网关的 Agent 会连不上。请重新保存一次绑定或重启 Codex++。")}</span>
+            <span>{t("Codex++ 网关当前没有运行，走网关的 Agent 会连不上。请重新保存一次绑定或重启 Codex++。")}</span>
           </p>
         ) : null}
         {loadFailed && error ? <GatewayLoadError error={error} /> : null}
@@ -546,7 +546,7 @@ function BatchMemberPicker({ payload, members, onAdd }: { payload: GatewayPayloa
       </div>
       <div className="gw-mp-list">
         {visible.length === 0 ? (
-          <div className="gw-empty">{rows.length ? t("没有匹配的模型") : t("供应商池是空的，先到「供应商」里添加。")}</div>
+          <div className="gw-empty">{rows.length ? t("没有匹配的模型") : t("供应商池是空的，先在「供应商池」里添加供应商。")}</div>
         ) : null}
         {visible.map((row) => {
           const added = row.candidates.filter((candidate) => candidate.added).length;
@@ -871,11 +871,11 @@ function GatewayPortRow({ notify }: { notify: Notify }) {
     try {
       const result = await invoke<GatewayPortResult>("save_gateway_port", { port: parsed });
       if (result.status !== "ok") {
-        await notify(t("保存本地网关端口失败"), result.message, "failed");
+        await notify(t("保存网关端口失败"), result.message, "failed");
         return;
       }
       accept(result);
-      await notify(t("本地网关端口已保存"), t("完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「智能体」页重新接入一次。"), "ok");
+      await notify(t("网关端口已保存"), t("完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「Agent 接入」里重新接入一次。"), "ok");
     } catch (error) {
       await notify(t("调用失败"), String(error), "failed");
     } finally {
@@ -893,12 +893,12 @@ function GatewayPortRow({ notify }: { notify: Notify }) {
     <CxRow
       badges={info.restartRequired ? <CxBadge tone="warn">{t("待重启")}</CxBadge> : null}
       detail={detail}
-      title={t("本地网关端口")}
+      title={t("网关端口")}
       tooltip={t("Agent 配置里写的是这个端口。保存时会检测端口是否被占用；旧端口会被记住，旧配置里的地址仍认作 Codex++ 的地址。")}
     >
       <Input
         aria-invalid={invalid || undefined}
-        aria-label={t("本地网关端口")}
+        aria-label={t("网关端口")}
         className="cx-set-input-port"
         disabled={envLocked || saving}
         inputMode="numeric"

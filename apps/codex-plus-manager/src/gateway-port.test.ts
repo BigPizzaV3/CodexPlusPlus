@@ -43,7 +43,7 @@ test("后端命令已登记，payload 是结构体", () => {
 });
 
 test("端口一行的文案都有英文", () => {
-  for (const key of ["本地网关端口", "待重启", "本地网关端口已保存", "保存本地网关端口失败"]) assert.ok(EN_PLAIN[key], key);
+  for (const key of ["网关端口", "待重启", "网关端口已保存", "保存网关端口失败"]) assert.ok(EN_PLAIN[key], key);
   for (const key of [
     "已由环境变量 CODEX_PLUS_PROTOCOL_PROXY_PORT 指定为 {0}，这里不能修改。",
     "端口要在 {0}–{1} 之间。",

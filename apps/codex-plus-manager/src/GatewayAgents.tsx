@@ -1033,7 +1033,7 @@ export function ModelList({
       <div className="gw-mp-list" ref={listRef}>
         {displaySections.length === 0 ? (
           <div className="gw-empty">
-            {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("供应商池是空的，先到「供应商」里添加。")}
+            {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("供应商池是空的，先在「供应商池」里添加供应商。")}
           </div>
         ) : null}
         {displaySections.map((section) => {

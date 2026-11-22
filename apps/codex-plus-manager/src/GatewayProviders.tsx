@@ -647,7 +647,7 @@ function LocalLoginsCard({ found, busy, pending, onImport, onDismiss }: { found:
   return (
     <div className="gw-local-logins">
       <div className="gw-local-logins-line">
-        <button aria-expanded={open} className="gw-pool-off-toggle gw-local-logins-toggle" onClick={() => setOpen(!open)} title={t("来自这些官方客户端的登录文件，导入时复制一份登录凭据进网关。不想看到这条提示，可以在「网关」页关掉「发现本机已登录的订阅账号」。")} type="button">
+        <button aria-expanded={open} className="gw-pool-off-toggle gw-local-logins-toggle" onClick={() => setOpen(!open)} title={t("来自这些官方客户端的登录文件，导入时复制一份登录凭据进网关。不想看到这条提示，可以在「网关设置」里关掉「发现本机已登录的订阅账号」。")} type="button">
           <ChevronRight className="h-3.5 w-3.5" />
           {tf("发现 {0} 个本机已登录的订阅账号：{1}", [found.length, names])}
           <span className="gw-local-logins-action">{t("导入")}</span>

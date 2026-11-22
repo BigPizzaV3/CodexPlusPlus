@@ -639,7 +639,7 @@ export function modelRoutable(payload: GatewayPayload | null, model: string, exc
 /** 表单校验：返回错误文案（中文原文，界面再翻译），没问题返回 null。 */
 export function validateDraft(draft: BindingDraft, payload: GatewayPayload | null, retainedModel?: string, retainedSelection?: DefaultModelSelection | null): string | null {
   if (payload) {
-    if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先到「供应商」里添加";
+    if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先在「供应商池」里添加供应商";
     const model = draft.model.trim();
     const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
     const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);
