@@ -58,7 +58,7 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
     providerSyncItem: enhancementItem("providerSyncEnabled"),
     sessionIndexRepairItem: enhancementItem("sessionIndexRepairEnabled"),
   });
-  vm.runInContext(ts.transpileModule(fn.getText(app), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
+  vm.runInContext(ts.transpileModule(fn.getText(app).replace(/^export /, ""), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
   let synced = 0; let repaired = 0; let saved = 0; let recovered = 0;
   const targets: string[] = []; const drafts: any[] = [];
   const props = { dirty: true, form: { providerSyncEnabled: false }, providerSyncProgress: { active: false, percent: 0 }, sessionIndexRepairActive: false,

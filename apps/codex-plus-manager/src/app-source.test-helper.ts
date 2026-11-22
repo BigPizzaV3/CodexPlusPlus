@@ -16,6 +16,7 @@ export const APP_SOURCE_FILES = [
   "ClaudeDesktopPage.tsx",
   "WeixinPage.tsx",
   "ExtensionsPage.tsx",
+  "SessionRepairPanel.tsx",
 ] as const;
 
 export function readAppSource(): string {

@@ -10,10 +10,11 @@ test("session index repair report keeps abort and truncation notices outside iss
   assert.match(source, /abortedReason\?: string \| null;/);
   assert.match(source, /warnings\?: string\[\];/);
 
-  const reportStart = source.indexOf("{sessionIndexRepairReport ? (");
-  // 报告在 SessionRepairPanel 里，它后面紧跟首页组件的说明注释。
-  const reportEnd = source.indexOf("/// 首页", reportStart);
-  const report = source.slice(reportStart, reportEnd);
+  // 报告在 SessionRepairPanel 里，它是 SessionRepairPanel.tsx 的最后一个声明，报告一直到文件末尾。
+  const panel = await readFile(new URL("./SessionRepairPanel.tsx", import.meta.url), "utf8");
+  const reportStart = panel.indexOf("{sessionIndexRepairReport ? (");
+  const reportEnd = panel.length;
+  const report = panel.slice(reportStart, reportEnd);
 
   const abortNotice = report.indexOf('role="alert"');
   const warningNotice = report.indexOf("{sessionIndexRepairReport.warnings?.map");
