@@ -288,7 +288,9 @@ it("replaces version 31 styles with bounded panel geometry and keeps reinjection
   assert.match(pageRules, /height: calc\(100vh \/ var\(--codex-plus-zoom, 1\) - var\(--codex-plus-page-top, 0px\) - var\(--codex-plus-page-bottom, 0px\)\)/);
   // 标题栏抬到页面之上（仍低于弹窗）；让出的那条不声明 no-drag，窗口照样能拖。
   assert.match(existing!.textContent!, /\[data-app-shell-titlebar\] \{\s*z-index: 2147482001 !important;/);
-  assert.match(existing!.textContent!, /\[data-codex-plus-titlebar="inset"\] > \.codex-plus-modal-content \{\s*-webkit-app-region: none;/);
+  // Chromium 把写出来的 none 算成 no-drag（会盖掉标题栏拖动区），必须用 initial。
+  assert.match(existing!.textContent!, /\[data-codex-plus-titlebar="inset"\] > \.codex-plus-modal-content \{\s*-webkit-app-region: initial;/);
+  assert.doesNotMatch(existing!.textContent!, /-webkit-app-region: none/);
   // 侧栏展开：有左栏的页面整块透明、左栏对齐原生侧栏，原生会话列表与页面内容藏起来，标题栏照常显示。
   assert.match(existing!.textContent!, /\[data-codex-plus-sidebar="open"\]:has\(:is\(\.codex-plus-page-nav, \.codex-plus-provider-sidebar, \.codex-plus-task-sidebar\)\) \{\s*border-radius: 0 !important;\s*background: transparent !important;/);
   assert.match(existing!.textContent!, /\[data-codex-plus-sidebar="open"\] :is\(\.codex-plus-page-nav, \.codex-plus-provider-sidebar, \.codex-plus-task-sidebar\) \{[^}]*width: var\(--codex-plus-native-sidebar-width\) !important;/);

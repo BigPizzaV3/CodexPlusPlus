@@ -719,13 +719,14 @@
        * 只比页面高一级，仍在我们的弹窗、提示之下。
        * 页面内容让出标题栏的高度；让出的那条不能再声明 no-drag，否则会盖掉标题栏的拖动区，
        * 页面开着时就拖不动窗口了，所以 no-drag 只给内容区里的元素。
+       * 清掉要写 initial：Chromium 把写出来的 none 也算成 no-drag，只有 initial / unset 才真是「不声明」。
        */
       html[data-codex-plus-page-open] [data-app-shell-titlebar] {
         z-index: 2147482001 !important;
       }
       .${codexPlusPageClass}[data-codex-plus-titlebar="inset"],
       .${codexPlusPageClass}[data-codex-plus-titlebar="inset"] > .codex-plus-modal-content {
-        -webkit-app-region: none;
+        -webkit-app-region: initial;
       }
       .${codexPlusPageClass}[data-codex-plus-titlebar="inset"] > .codex-plus-modal-content {
         box-sizing: border-box;
