@@ -38,3 +38,24 @@ test("社区拓展不能替换已装的官方 / 精选版本时，安装确认�
   const backend = read("../../../crates/codex-plus-core/src/extension_discovery.rs");
   assert.match(backend, /if channel == CHANNEL_COMMUNITY \{\s*if let Some\(existing\) = state\.installs\.get\(&id\)\.filter\(\|record\| record\.channel != CHANNEL_COMMUNITY\)/);
 });
+
+test("「版本已存在」按后端的 errorCode 判断，不匹配中文错误文案", () => {
+  const body = functionSource(read("./ExtensionPublishDialog.tsx"), "ExtensionPublishDialog");
+  assert.match(body, /const versionTaken = result\?\.errorCode === "version_taken";/);
+  assert.doesNotMatch(body, /已经有 v/);
+  const backend = read("../../../crates/codex-plus-core/src/extension_publish.rs");
+  assert.match(backend, /error\.downcast_ref::<VersionTaken>\(\)\.map\(\|_\| "version_taken"\)/);
+});
+
+test("拓展列表的小细节：头像懒加载、提示行带 role、dsh 复制有反馈", () => {
+  assert.match(read("./ExtensionCard.tsx"), /<img alt="" className="ext-row-avatar" decoding="async" loading="lazy" onError=\{\(\) => setFailed\(true\)\} referrerPolicy="no-referrer" src=\{src\} \/>/);
+  for (const file of ["./CommunityExtensionsPanel.tsx", "./CuratedPackages.tsx", "./MyPublishedPanel.tsx"]) {
+    const source = read(file);
+    assert.match(source, /className="community-ext-notice is-error" role="alert"/, file);
+    assert.match(source, /className="community-ext-notice" role="status"/, file);
+  }
+  const dsh = functionSource(read("./DshPluginsPanel.tsx"), "DshPluginCard");
+  assert.match(dsh, /try \{\n\s*await navigator\.clipboard\.writeText\(plugin\.mcpJson\);\n\s*setCopyState\("copied"\);\n\s*\} catch \{\n\s*setCopyState\("failed"\);/);
+  // 筛选数量按插件列表记忆，不随搜索词重算。
+  assert.match(read("./PluginMarketScreen.tsx"), /const filterCounts = useMemo\(/);
+});

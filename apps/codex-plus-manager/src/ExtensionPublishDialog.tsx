@@ -29,7 +29,8 @@ type Step = { step: string; ok: boolean; output: string };
 // 后端每步开始发 running、结束发 ok / error（extension_publish_commands.rs 的 PUBLISH_PROGRESS_EVENT）。
 type StepEvent = { index: number; step: string; state: "running" | "ok" | "error"; output: string };
 type LiveStep = { step: string; state: StepEvent["state"]; output: string };
-type PublishResult = { ok: boolean; repo?: string; url?: string; version?: string; error?: string; steps: Step[] };
+/** errorCode：后端给的结构化错误码，目前只有 version_taken（远端已有这个版本的 tag）。 */
+type PublishResult = { ok: boolean; repo?: string; url?: string; version?: string; error?: string; errorCode?: string; steps: Step[] };
 type License = "mit" | "apache-2.0" | "none";
 
 function request<T>(action: string, payload: unknown): Promise<T> {
@@ -90,7 +91,7 @@ export function ExtensionPublishDialog({ id, onClose, onOpenUrl }: { id: string;
 
   // 发布中显示推送来的进度；结束后以返回结果为准（事件丢了也不影响最终显示）。
   const steps: LiveStep[] = result ? result.steps.map((item) => ({ step: item.step, state: item.ok ? "ok" : "error", output: item.output })) : liveSteps;
-  const versionTaken = result?.error?.includes("已经有 v") ?? false;
+  const versionTaken = result?.errorCode === "version_taken";
   const canPublish = !!report && report.errors.length === 0 && report.gh.ready && !busy && !result?.ok;
   const titleId = useId();
   // 检查或发布进行中不让 Esc / 点遮罩关掉，和禁用的关闭按钮一致。
