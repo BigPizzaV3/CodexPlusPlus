@@ -24,3 +24,12 @@ main > video[data-codex-plus-ext="dream-skin-video"] {
   opacity: .58;
   pointer-events: none;
 }
+
+/* 上游内置皮肤在上传透明度时给 [data-ds-part="dialog"] 加 backdrop-filter。
+   Codex 26.1117 的会话悬浮卡片把 role="dialog" 放在 0×0 的 popover 宿主上，
+   宿主带滤镜会成为锚点定位卡片的包含块，卡片落到窗口左上角（#3228）。
+   上游文件按字节锁定，这里用更高的优先级把宿主上的模糊去掉。 */
+html[data-dream-skin="active"][data-dream-upload-alpha="true"]
+  [data-ds-part="dialog"][popover]:not([data-anchor-positioning]) {
+  backdrop-filter: none !important;
+}
