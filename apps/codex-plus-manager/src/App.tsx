@@ -39,7 +39,7 @@ import {
   Github,
   GitBranch,
   ExternalLink,
-  Hammer,
+  LifeBuoy,
   KeyRound,
   Layers3,
   Languages,
@@ -1502,7 +1502,9 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
   { id: "context", label: "MCP", icon: Network },
   { id: "skills", label: "Skills", icon: BookOpen },
   { id: "weixin", get label() { return t("微信连接"); }, icon: ScanLine, tool: "codex" },
-  { id: "enhance", get label() { return t("内置拓展"); }, icon: Hammer, tool: "codex" },
+  // 启动急救：增强总开关、独立模式补丁、本地拓展总开关、下次启动跳过拓展、恢复默认皮肤都在这一页。
+  { id: "enhance", get label() { return t("启动急救"); }, icon: LifeBuoy, tool: "codex" },
+  // 旧入口：皮肤急救并进了「启动急救」页（dreamskin:// 确认与深链仍可能用到这条路由）。
   { id: "dreamSkin", get label() { return t("皮肤管理"); }, icon: Palette, tool: "codex" },
   // Codex / Claude 共用拓展管理入口；tool 保留 codex，让 Codex 下的顶栏继续提供重启。
   { id: "userScripts", get label() { return t("万物皆拓展"); }, icon: FileCode2, tool: "codex", tools: ["codex", "claude"] },
@@ -1544,7 +1546,7 @@ const routes: Array<{ id: Route; label: string; icon: LucideIcon; badge?: string
 const navigationSections: Array<{ id: string; routes: Route[] }> = [
   // 「连接与供应商」紧跟概览：直连模式的老用户每天在这里切供应商，想改用网关也从这里开始。
   { id: "overview", routes: ["overview", "relay"] },
-  { id: "enhance", routes: ["claude", "claudePatch", "enhance", "dreamSkin", "pluginMarket", "weixin", "remoteControl", "multiLaunch"] },
+  { id: "enhance", routes: ["claude", "claudePatch", "enhance", "pluginMarket", "weixin", "remoteControl", "multiLaunch"] },
   // Codex 设置（含安装维护）在齿轮的设置模式里，不再占 Agent 的页签。
 ];
 const routeTool = (routeId: Route) => routes.find((candidate) => candidate.id === routeId)?.tool;
@@ -2437,7 +2439,7 @@ export function App() {
       showResultNotice(t("DreamSkin 社区"), result);
       if (!isSuccessStatus(result.status)) return;
       setPendingDreamSkinCommunity("");
-      setRoute("dreamSkin");
+      setRoute("enhance");
       const themeId = result.installedThemeId?.trim();
       if (themeId) {
         const activation = await run(() => call<DreamSkinInstalledThemeActivationResult>(
@@ -5001,23 +5003,19 @@ export function App() {
               onCopyQr={(url) => void copyText(url, t("微信登录链接已复制。"))}
             />
           ) : null}
-          {route === "enhance" ? (
+          {/* 旧的 dreamSkin 路由（皮肤急救）并进了「启动急救」页；navigate 会把它改写成 enhance，这里兜底。 */}
+          {route === "enhance" || route === "dreamSkin" ? (
             <EnhanceScreen
               dirty={settingsDirty}
               form={settingsForm}
               onFormChange={setSettingsForm}
-              actions={actions}
-            />
-          ) : null}
-          {route === "dreamSkin" ? (
-            <DreamSkinRescueScreen
-              form={settingsForm}
+              settings={settings}
               launchPending={launchPending}
-              restartPending={dreamSkinRestartPending}
+              skinRestartPending={dreamSkinRestartPending}
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenBuiltins={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} focus={agentFocus} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
           {route === "pluginMarket" ? <PluginMarketScreen /> : null}
           {route === "home" ? (
             <HomeScreen
@@ -8464,21 +8462,29 @@ function SettingsAutoSave({ dirty, form, actions, className = "" }: {
   );
 }
 
-/// 管理器里的「Codex 增强」页只留两样：增强总开关（关掉后 Codex 不再注入，没法在 Codex 里再打开），
-/// 以及总开关关掉后仍生效的独立模式补丁（应急）。其余内置拓展的开关、语音输入与下一步建议的
-/// 服务配置都只在 Codex 里的 Codex++ 设置页里改。
+/// 「启动急救」页：把所有能让 Codex 恢复启动 / 恢复正常显示的开关放在一处——
+/// 增强总开关（关掉后 Codex 不再注入，没法在 Codex 里再打开）、总开关关掉后仍生效的独立模式补丁、
+/// 本地拓展总开关与「下次启动跳过拓展」、恢复默认皮肤。其余内置拓展的开关、语音输入与下一步建议的
+/// 服务配置都只在 Codex 里的 Codex++ 设置页里改。旧的 dreamSkin 路由也落到这一页。
 function EnhanceScreen({
   dirty,
   form,
   onFormChange: applyForm,
+  settings,
+  launchPending,
+  skinRestartPending,
   actions,
 }: {
   dirty: boolean;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
+  settings: SettingsResult | null;
+  launchPending: boolean;
+  /** 恢复默认皮肤（或网页一键换肤）已保存，重启 Codex 才完整生效。 */
+  skinRestartPending: boolean;
   actions: Actions;
 }) {
-  const { CxBanner, CxCard } = AgentCx;
+  const { CxBadge, CxBanner, CxCard, CxRow, CxSection, CxStatusIcon } = AgentCx;
   const standaloneGroup = managerStandaloneGroup();
   const standaloneCards = useMemo(() => managerBuiltinCards(managerStandaloneGroup().id, enhancementPlatform), []);
   // 说明里写了要重启 Codex 的开关：改动时记下改之前的值，页面顶部汇总成一条「重启 Codex 生效」。
@@ -8496,11 +8502,30 @@ function EnhanceScreen({
   };
   const restartPending = restartItems.filter((item) => restartOriginal.current.has(item.key)
     && restartOriginal.current.get(item.key) !== builtinSettingValue(form, item.key));
+  // 皮肤的待重启状态在 App 里（重启后清掉）；「稍后」只在本页收起这一项。
+  const [skinDismissed, setSkinDismissed] = useState(false);
+  const skinPending = skinRestartPending && !skinDismissed;
+  const restartLabels = [
+    ...restartPending.map((item) => t(item.title).replace(EXPERIMENTAL_TITLE, "")),
+    ...(skinPending ? [t("恢复默认皮肤")] : []),
+  ];
   const [, setRestartDismissed] = useState(0);
-  const clearRestartPending = () => { restartOriginal.current.clear(); setRestartDismissed((value) => value + 1); };
+  const clearRestartPending = () => { restartOriginal.current.clear(); setSkinDismissed(true); setRestartDismissed((value) => value + 1); };
   const autoSave = useEnhanceAutoSave(dirty, form, actions.autoSaveSettings);
   const masterEnabled = form.enhancementsEnabled;
   const masterItem = enhancementItem("enhancementsEnabled");
+  const inventory = settings?.user_scripts;
+  const localEnabled = inventory?.enabled !== false;
+  const skipNextStart = Boolean(inventory?.skip_next_start);
+  const skinActive = masterEnabled && form.codexAppDreamSkinEnabled && !form.codexAppDreamSkinPaused;
+  const skinState = !masterEnabled
+    ? t("增强总开关已关闭")
+    : !form.codexAppDreamSkinEnabled
+      ? t("皮肤未启用")
+      : form.codexAppDreamSkinPaused
+        ? t("已恢复原始外观")
+        : t("皮肤已启用");
+  const themeName = form.codexAppDreamSkinThemeConfig?.name?.trim() || t("未记录");
   return (
     <div className="settings-page enhance-page sectioned-page cx-enhance-page">
       <div className="cx-enhance-bar" id="enhance-page-controls">
@@ -8520,17 +8545,17 @@ function EnhanceScreen({
         </label>
       </div>
       <div className="sectioned-body cx-enhance-body">
-      {restartPending.length ? (
+      {restartLabels.length ? (
         <CxBanner
-          detail={restartPending.map((item) => t(item.title).replace(EXPERIMENTAL_TITLE, "")).join("、")}
+          detail={restartLabels.join("、")}
           icon={<RotateCcw />}
-          title={tf("{0} 项改动重启 Codex 后生效", [restartPending.length])}
+          title={tf("{0} 项改动重启 Codex 后生效", [restartLabels.length])}
           tone="warn"
         >
           <button className="cx-secondary" onClick={clearRestartPending} type="button">{t("稍后")}</button>
           <button
             className="cx-primary"
-            disabled={restartBusy}
+            disabled={restartBusy || launchPending}
             onClick={() => void (async () => {
               setRestartBusy(true);
               try {
@@ -8554,8 +8579,8 @@ function EnhanceScreen({
       <CxCard>
         <div className="feature-toggle cx-enhance-moved" data-enhance-moved="codex">
           <span>
-            <strong>{t("内置拓展在 Codex 里设置")}</strong>
-            <small>{t("各项内置拓展的开关、语音输入与下一步建议的服务配置都在 Codex 左侧栏的「Codex++」设置页里。这里只保留增强总开关和独立模式补丁。")}</small>
+            <strong>{t("Codex 打不开或显示异常时在这里处理")}</strong>
+            <small>{t("这里只放能让 Codex 恢复启动的开关：增强总开关、独立模式补丁、本地拓展和皮肤。各项内置拓展的开关、语音输入与下一步建议的服务配置在 Codex 左侧栏的「Codex++」设置页里。")}</small>
           </span>
         </div>
       </CxCard>
@@ -8564,6 +8589,50 @@ function EnhanceScreen({
           <EnhancementSettingControl key={card.id} item={card.item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
         ) : null))}
       </FeatureGroup>
+      {/* 本地拓展的整体开关立即生效（不走设置表单的自动保存），和「万物皆拓展」页的三点菜单是同一份状态。 */}
+      <CxSection className="cx-feature-group" id="enhance-group-extensions" title={t("本地拓展")}>
+        <CxCard className="cx-feature-card">
+          <FeatureToggle
+            checked={localEnabled}
+            detail={t("关掉后 Codex 不再注入任何本地拓展；各拓展的启停设置不会改变")}
+            disabled={!inventory}
+            onChange={(value) => void actions.setUserScriptsEnabled(value, "codex")}
+            title={t("启用本地拓展")}
+          />
+          <FeatureToggle
+            checked={skipNextStart}
+            detail={t("拓展导致黑屏或卡死时，下一次启动先跳过拓展；各拓展的启停设置不会改变")}
+            disabled={!inventory}
+            onChange={(value) => void actions.setUserScriptsSkipNextStart(value)}
+            title={t("下次启动跳过拓展")}
+          />
+        </CxCard>
+      </CxSection>
+      {/* 皮肤的界面已移到 Codex 里（Codex++ → 设置 → 皮肤，见 96-dream-skin-page.js），这里只留恢复默认皮肤。 */}
+      <CxSection className="enhance-skin-section" id="enhance-group-skin" title={t("皮肤")}>
+        <CxCard>
+          <CxRow
+            badges={<CxBadge tone={skinActive ? "ok" : "neutral"}>{skinState}</CxBadge>}
+            detail={<span role="status">{tf("当前主题：{0}", [themeName])}</span>}
+            icon={<CxStatusIcon tone={skinActive ? "ok" : "off"}><Palette /></CxStatusIcon>}
+            title={t("当前皮肤")}
+            tooltip={t("皮肤已移到 Codex 里：打开 Codex 左侧的 Codex++ → 设置 → 皮肤，可以换主题、装社区和市场主题、编辑主题。")}
+          />
+          <CxRow
+            detail={t("皮肤让 Codex 显示异常或打不开时使用：关掉皮肤并清掉当前窗口里的皮肤，主题库不受影响；重启 Codex 后完整生效。")}
+            icon={<CxStatusIcon tone="warn"><RotateCcw /></CxStatusIcon>}
+            title={t("恢复默认皮肤")}
+          >
+            <button className="cx-secondary" onClick={() => { setSkinDismissed(false); void actions.restoreDreamSkin(); }} type="button">
+              <RotateCcw />
+              {t("恢复默认皮肤")}
+            </button>
+          </CxRow>
+        </CxCard>
+        <p className="dream-skin-about">
+          {t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}
+        </p>
+      </CxSection>
       </div>
     </div>
   );
@@ -8620,77 +8689,7 @@ function EnhancementSettingControl({
   );
 }
 
-/// 皮肤的界面已移到 Codex 里（Codex++ → 设置 → 皮肤，见 96-dream-skin-page.js）。
-/// 管理器只留急救入口：皮肤把 Codex 弄得显示异常或打不开时，在这里恢复默认皮肤。
-function DreamSkinRescueScreen({
-  form,
-  launchPending,
-  restartPending,
-  actions,
-}: {
-  form: BackendSettings;
-  launchPending: boolean;
-  /** 恢复默认皮肤（或网页一键换肤）已保存，重启 Codex 才完整生效。 */
-  restartPending: boolean;
-  actions: Actions;
-}) {
-  const { CxBadge, CxBanner, CxCard, CxRow, CxStatusIcon } = AgentCx;
-  const masterEnabled = form.enhancementsEnabled;
-  const skinActive = masterEnabled && form.codexAppDreamSkinEnabled && !form.codexAppDreamSkinPaused;
-  const stateLabel = !masterEnabled
-    ? t("增强总开关已关闭")
-    : !form.codexAppDreamSkinEnabled
-      ? t("皮肤未启用")
-      : form.codexAppDreamSkinPaused
-        ? t("已恢复原始外观")
-        : t("皮肤已启用");
-  const themeName = form.codexAppDreamSkinThemeConfig?.name?.trim() || t("未记录");
-
-  return (
-    <div className="cx-page dream-skin-page">
-      <CxBanner
-        icon={<Info />}
-        title={t("皮肤已移到 Codex 里：打开 Codex 左侧的 Codex++ → 设置 → 皮肤，可以换主题、装社区和市场主题、编辑主题。")}
-      />
-      {restartPending ? (
-        <CxBanner
-          detail={t("皮肤设置已保存，重启 Codex 后完整生效。")}
-          icon={<Rocket />}
-          title={t("需要重启 Codex")}
-          tone="warn"
-        >
-          <button className="cx-primary" disabled={launchPending} onClick={() => void actions.restart()} type="button">
-            <Rocket />
-            {t("重启 Codex")}
-          </button>
-        </CxBanner>
-      ) : null}
-      <CxCard>
-        <CxRow
-          badges={<CxBadge tone={skinActive ? "ok" : "neutral"}>{stateLabel}</CxBadge>}
-          detail={<span role="status">{tf("当前主题：{0}", [themeName])}</span>}
-          icon={<CxStatusIcon tone={skinActive ? "ok" : "off"}><Palette /></CxStatusIcon>}
-          title={t("当前皮肤")}
-        />
-        <CxRow
-          detail={t("皮肤让 Codex 显示异常或打不开时使用：关掉皮肤并清掉当前窗口里的皮肤，主题库不受影响；重启 Codex 后完整生效。")}
-          icon={<CxStatusIcon tone="warn"><RotateCcw /></CxStatusIcon>}
-          title={t("恢复默认皮肤")}
-        >
-          <button className="cx-secondary" onClick={() => void actions.restoreDreamSkin()} type="button">
-            <RotateCcw />
-            {t("恢复默认皮肤")}
-          </button>
-        </CxRow>
-      </CxCard>
-      <p className="dream-skin-about">
-        {t("项目来源：Fei-Away/Codex-Dream-Skin · 原作者 Fei-Away · MIT License · 第三方图片需自行确认授权")}
-      </p>
-    </div>
-  );
-}
-
-function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, onOpenBuiltins, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenBuiltins: () => void; onOpenClaude: () => void; actions: Actions }) {
+function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, onOpenRescue, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenClaude: () => void; actions: Actions }) {
   const codexHost = host === "codex";
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
@@ -8769,7 +8768,8 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
     { id: "community" as const, label: t("社区") },
     { id: "local" as const, label: t("本地"), count: scripts.length },
     { id: "mine" as const, label: t("我发布的") },
-    { id: "dsh" as const, label: t("dsh 插件") },
+    // dsh 插件不是又一个拓展来源，而是把 dsh 插件导入成 Codex 的 MCP / Skill。
+    { id: "dsh" as const, label: t("导入 dsh 插件") },
   ];
   const sortControl = pane === "market" ? (
     <AppSelect
@@ -8819,7 +8819,8 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
           <MenuItem onClick={() => void (async () => { await actions.refreshScriptMarket(); await actions.refreshCurrent(); })()}>{t("刷新列表")}</MenuItem>
           <MenuItem checked={localEnabled} disabled={!inventory} onClick={() => void actions.setUserScriptsEnabled(!localEnabled, host)}>{switchLabel}</MenuItem>
           {codexHost ? <MenuItem checked={skipNextStart} disabled={!inventory} onClick={() => void actions.setUserScriptsSkipNextStart(!skipNextStart)}>{t("下次启动跳过拓展")}</MenuItem> : null}
-          {codexHost && inventory?.builtins?.length ? <MenuItem onClick={onOpenBuiltins}>{t("管理内置拓展")}</MenuItem> : null}
+          {/* 这两个整体开关在「启动急救」页里也有一份（Codex 打不开时从那里一起处理）。 */}
+          {codexHost ? <MenuItem onClick={onOpenRescue}>{t("打开启动急救")}</MenuItem> : null}
         </Menu>
       </TopbarActions>
       <ExtensionsHero host={host} focus={focus} onHostChange={onHostChange} />
@@ -8881,7 +8882,7 @@ function UserScriptsScreen({ host, focus = null, onHostChange, settings, market,
               </CxEmpty>
             </CxCard>
           ) : null}
-          {codexHost && inventory?.builtins?.length ? <BuiltinExtensionsSummary builtins={inventory.builtins} onOpen={onOpenBuiltins} /> : null}
+          {codexHost && inventory?.builtins?.length ? <BuiltinExtensionsSummary builtins={inventory.builtins} /> : null}
         </>
       )}
     </div>
@@ -16188,9 +16189,9 @@ function localizedPackageText(
   return fallback;
 }
 
-/// 本地拓展列表底部的内置拓展入口：Codex++ 自带的功能都是内置拓展，开关与参数统一在 Codex 里的 Codex++ 设置页管理，
-/// 这里只给个数和被顶替的项，免得两处各有一套开关。
-function BuiltinExtensionsSummary({ builtins, onOpen }: { builtins: BuiltinExtension[]; onOpen: () => void }) {
+/// 本地拓展列表底部的内置拓展摘要：Codex++ 自带的功能都是内置拓展，开关与参数统一在 Codex 里的 Codex++ 设置页管理，
+/// 这里只给个数和被顶替的项（只读，不可点），免得两处各有一套开关。
+function BuiltinExtensionsSummary({ builtins }: { builtins: BuiltinExtension[] }) {
   const enabled = builtins.filter((builtin) => builtin.enabled && !builtin.replacedBy).length;
   const replaced = builtins.filter((builtin) => builtin.replacedBy);
   return (
@@ -16202,12 +16203,9 @@ function BuiltinExtensionsSummary({ builtins, onOpen }: { builtins: BuiltinExten
             ? tf("已被顶替：{0}", [replaced.map((builtin) => `${t(builtin.name)} → ${String(builtin.replacedBy).replace(/^user:/, "")}`).join("、")])
             : t("Codex++ 自带的功能，开关与参数在 Codex 里的「Codex++」设置页管理")}
           icon={<Blocks />}
-          onClick={onOpen}
           title={t("内置拓展")}
           tooltip={tf("Codex++ 自带的功能都是内置拓展：已启用 {0} / 共 {1} 项。可以被声明 replaces 的拓展顶替。", [String(enabled), String(builtins.length)])}
-        >
-          <ChevronRight className="ext-row-chevron" />
-        </CxRow>
+        />
       </CxCard>
     </CxSection>
   );
@@ -16441,8 +16439,8 @@ function routeSubtitle(route: Route, soloAgent: string | null = null) {
     context: t("同时管理 Codex、Claude Code、Grok 的 MCP 服务器：每列一个 Agent，打开即写入它的配置"),
     skills: t("从 GitHub 仓库安装 Skill，按 Agent 启用到 Codex、Claude Code 或 Grok"),
     weixin: t("通过个人微信连接本机 Codex 会话"),
-    enhance: t("管理常用功能、语音输入与下一步建议。"),
-    dreamSkin: t("皮肤已移到 Codex 里，这里只留恢复默认皮肤的急救入口"),
+    enhance: t("Codex 打不开或显示异常时用：增强总开关、独立模式补丁、本地拓展与恢复默认皮肤"),
+    dreamSkin: t("Codex 打不开或显示异常时用：增强总开关、独立模式补丁、本地拓展与恢复默认皮肤"),
     userScripts: t("万物皆拓展：内置、市场和自己做的拓展"),
     pluginMarket: t("检索插件，按需下载并安装到 Codex"),
     recommendations: t("来自 Codex++ 广告源的推荐，点卡片在浏览器里打开"),

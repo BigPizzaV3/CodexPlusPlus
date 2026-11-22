@@ -269,18 +269,10 @@
   gap: 4px;
 }
 
-/* ── 皮肤（DreamSkinRescueScreen：皮肤界面已移到 Codex 里，这里只留急救入口） ── */
+/* ── 启动急救页的「皮肤」分区（EnhanceScreen：皮肤界面已移到 Codex 里，这里只留恢复默认皮肤） ── */
 
-:root .shell .dream-skin-page.cx-page {
-  display: flex;
-}
-
-:root .shell .dream-skin-page.cx-page > * {
-  flex: none;
-}
-
-:root .shell .dream-skin-page .dream-skin-about {
-  margin: 0;
+:root .shell .enhance-skin-section .dream-skin-about {
+  margin: 8px 0 0;
   padding: 0 4px;
   color: hsl(var(--muted-foreground));
   font-size: 11.5px;

@@ -227,7 +227,7 @@ function extensionScreenProps(h: ReturnType<typeof extensionHarness>, host: Exte
     host,
     onHostChange: (next: ExtensionHost) => h.calls.push(["host", next]),
     onOpenClaude: () => h.calls.push(["openClaude"]),
-    onOpenBuiltins: () => h.calls.push(["openBuiltins"]),
+    onOpenRescue: () => h.calls.push(["openRescue"]),
     actions: h.actions,
     settings: {
       user_scripts: {
