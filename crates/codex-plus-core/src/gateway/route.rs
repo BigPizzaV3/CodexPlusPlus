@@ -1882,8 +1882,10 @@ fn resolve_plan_with(
             .filter(|_| !rate_limit_off)
             .map(GatewayProvider::key_limits)
             .unwrap_or_default();
+        // 带上上游模型：只因别的模型被限流而冷却的 Key 照常可用（#3229）。
         let order = key_pool::order_keys_detailed(
             &relay,
+            &upstream_model,
             gateway.key_policy.mode,
             conversation.as_deref(),
             now,

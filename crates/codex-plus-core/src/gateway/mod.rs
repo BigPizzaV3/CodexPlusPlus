@@ -52,6 +52,7 @@ pub mod pipeline;
 pub mod probe;
 pub mod provider_headers;
 pub mod quota;
+pub mod reset_credits;
 pub mod restore;
 pub mod route;
 pub mod server;

@@ -2068,18 +2068,32 @@ impl Subscription for Cursor {
         http: &reqwest::Client,
         credentials: &Value,
     ) -> anyhow::Result<Vec<String>> {
+        // 凭据不对照旧报错；接口失败时用 auto 兜底（记诊断日志）。
+        access_token(credentials)?;
+        match self.list_models(http, credentials).await {
+            Ok(models) => Ok(models),
+            Err(error) => Ok(crate::gateway::subscriptions::models_or_fallback(
+                self.id(),
+                Err(error),
+                || vec!["auto".to_string()],
+            )),
+        }
+    }
+
+    async fn list_models(
+        &self,
+        http: &reqwest::Client,
+        credentials: &Value,
+    ) -> anyhow::Result<Vec<String>> {
         let token = access_token(credentials)?;
-        match unary(
+        let value = unary(
             http,
             "agent.v1.AgentService/GetUsableModels",
             &token,
             &json!({}),
         )
-        .await
-        {
-            Ok(value) => Ok(parse_models(&value)),
-            Err(_) => Ok(vec!["auto".to_string()]),
-        }
+        .await?;
+        Ok(parse_models(&value))
     }
 
     async fn chat(

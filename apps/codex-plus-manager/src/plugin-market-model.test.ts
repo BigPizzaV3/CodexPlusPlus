@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { applyPluginInstallation, filterMarketPlugins, mergePluginMarketCatalog, pluginMarketPage, PluginMarketRequests, type MarketCatalogs, type MarketPlugin, type MarketResult } from "./plugin-market-model.ts";
+import { applyPluginInstallation, filterMarketPlugins, mergePluginMarketCatalog, pluginMarketConnector, pluginMarketPage, PluginMarketRequests, type MarketCatalogs, type MarketPlugin, type MarketResult } from "./plugin-market-model.ts";
 
 function plugin(id: string, overrides: Partial<MarketPlugin> = {}): MarketPlugin {
   return {
@@ -94,29 +94,13 @@ test("reading the first catalog cannot start a plugin installation", () => {
   assert.notEqual(requests.beginInstall(), null);
 });
 
-test("a source change invalidates older results and cannot clear the newer loading state", () => {
-  const requests = new PluginMarketRequests();
-  requests.activate();
-  const publicRequest = requests.beginCatalog()!;
-  requests.invalidateCatalog();
-  assert.equal(requests.isCurrentCatalog(publicRequest), false);
-  const fullRequest = requests.beginCatalog()!;
-  assert.equal(requests.finishCatalog(publicRequest), false);
-  assert.equal(requests.beginInstall(), null);
-  assert.equal(requests.isCurrentCatalog(fullRequest), true);
-  assert.equal(requests.finishCatalog(fullRequest), true);
-  assert.equal(requests.isCurrentCatalog(fullRequest), false);
-});
-
-test("installations serialize and prevent catalog refresh or source changes even before a repaint", () => {
+test("installations serialize and prevent catalog refresh even before a repaint", () => {
   const requests = new PluginMarketRequests();
   requests.activate();
   const first = requests.beginInstall()!;
   assert.equal(requests.beginInstall(), null);
   assert.equal(requests.beginCatalog(), null);
-  assert.equal(requests.canSelectSource(), false);
   assert.equal(requests.finishInstall(first), true);
-  assert.equal(requests.canSelectSource(), true);
   assert.equal(requests.finishInstall(first), false);
   const second = requests.beginInstall()!;
   assert.equal(requests.isCurrentInstall(first), false);
@@ -178,4 +162,13 @@ test("manager plugin cards offer an in-app confirmed uninstall for installed plu
   assert.match(source, /await appConfirm\(/);
   assert.doesNotMatch(source, /window\.confirm\(|[^.\w]confirm\(/);
   assert.match(source, /plugin\.installed \? \(\s*<Button aria-label=\{tf\("卸载插件 \{0\}"/);
+});
+
+test("connector kind tells where the plugin's connector signs in; old indexes only know it has one", () => {
+  assert.equal(pluginMarketConnector(plugin("plain")), "none");
+  assert.equal(pluginMarketConnector(plugin("old", { requiresAuth: true })), "unknown");
+  assert.equal(pluginMarketConnector(plugin("hosted", { requiresAuth: true, hasApps: true })), "hosted");
+  // 两种都带时能在本机登录 MCP，不算「只能靠 ChatGPT」。
+  assert.equal(pluginMarketConnector(plugin("both", { requiresAuth: true, hasApps: true, hasMcp: true })), "mcp");
+  assert.equal(pluginMarketConnector(plugin("mcp", { requiresAuth: true, hasMcp: true })), "mcp");
 });

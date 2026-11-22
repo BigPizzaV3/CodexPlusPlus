@@ -1160,6 +1160,8 @@ fn read_store(path: &Path) -> anyhow::Result<GatewaySettings> {
         if crate::relay_config::normalize_relay_profile_for_storage(&mut normalized).is_ok() {
             provider.relay = normalized;
         }
+        crate::gateway::opencode::normalize_deepseek_reasoning_metadata(&mut provider.relay);
+        crate::gateway::opencode::normalize_hy4_reasoning_metadata(&mut provider.relay);
         // 导入或手写 `[1M]` 带进上游配置的窗口，收进网关自己的按模型窗口。
         provider.adopt_relay_windows();
         // 发请求时只认网关自己的代理设置，不按 id 去查直连模式的代理表。

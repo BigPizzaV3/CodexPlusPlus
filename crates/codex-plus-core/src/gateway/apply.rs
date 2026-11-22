@@ -935,6 +935,20 @@ fn catalog_ui_fields(entry: &Value) -> Map<String, Value> {
             fields.insert(key.to_string(), value.clone());
         }
     }
+    // 网关层最终会生成一个指向本机代理的 RelayProfile，那里已经拿不到真实上游。
+    // 把 OpenCode Go HY4 已修正的身份指令和显式 omit 策略一路带进 model_metadata，
+    // 避免原生目录又回退到 GPT 模板或重新补出推理默认档；其它模型的行为不变。
+    if crate::gateway::opencode::has_opencode_go_hy4_identity(entry) {
+        for key in [
+            "codex_plus_reasoning_parameters",
+            "base_instructions",
+            "model_messages",
+        ] {
+            if let Some(value) = entry.get(key).filter(|value| !value.is_null()) {
+                fields.insert(key.to_string(), value.clone());
+            }
+        }
+    }
     fields
 }
 
@@ -1775,6 +1789,7 @@ fn write_codex(
                     .downcast_ref::<crate::relay_switch::LiveEndpointConflict>()
                     .is_some() =>
         {
+            // 实时 endpoint 被改过或缺失（#2666、#3222）：回填不了接入前的供应商，但不该挡住接入。
             // 先存接入前的原文（还没记改了哪些键：万一切换中途退出，还原时按已知的网关键兜底）。
             stash::save_stash(&codex_stash_path(ctx), &live)?;
             crate::relay_switch::switch_relay_profile_in_home_resolving_conflict(
@@ -3013,6 +3028,7 @@ pub fn copy_claude_provider(provider: &ClaudeProvider) -> anyhow::Result<RelayPr
         strip_image_generation_tool: None,
         subscription_policy: None,
         strip_responses_image_detail: None,
+        strip_responses_output_encrypted_content: None,
         disable_tool_search: None,
         custom_headers: None,
     }, Vec::new())?;
@@ -3071,6 +3087,7 @@ pub fn copy_grok_profile(
         strip_image_generation_tool: None,
         subscription_policy: None,
         strip_responses_image_detail: None,
+        strip_responses_output_encrypted_content: None,
         disable_tool_search: None,
         custom_headers: None,
     }, Vec::new())?;
@@ -3401,6 +3418,9 @@ pub struct ProviderInput {
     /// 转发前移除 Responses 图片 `detail`（#2870）；不传表示不改（编辑时保留原来的）。
     #[serde(default)]
     pub strip_responses_image_detail: Option<bool>,
+    /// 转发前移除顶层 `include` 里的 `output.encrypted_content`；不传表示不改。
+    #[serde(default)]
+    pub strip_responses_output_encrypted_content: Option<bool>,
     /// 不向该上游发送 `tool_search` 托管工具（#2868）；不传表示不改。
     #[serde(default)]
     pub disable_tool_search: Option<bool>,
@@ -3463,6 +3483,9 @@ fn build_relay(
     relay.relay_mode = RelayMode::PureApi;
     relay.strip_image_generation_tool = input.strip_image_generation_tool.unwrap_or(false);
     relay.strip_responses_image_detail = input.strip_responses_image_detail.unwrap_or(false);
+    relay.strip_responses_output_encrypted_content = input
+        .strip_responses_output_encrypted_content
+        .unwrap_or(false);
     relay.disable_tool_search = input.disable_tool_search.unwrap_or(false);
     // 存盘前的规范化会再按 relay_headers 校验一次。
     relay.custom_headers = custom_headers;
@@ -3650,6 +3673,9 @@ fn update_provider_in(
         if let Some(value) = input.strip_responses_image_detail {
             provider.relay.strip_responses_image_detail = value;
         }
+        if let Some(value) = input.strip_responses_output_encrypted_content {
+            provider.relay.strip_responses_output_encrypted_content = value;
+        }
         if let Some(value) = input.disable_tool_search {
             provider.relay.disable_tool_search = value;
         }
@@ -3713,6 +3739,11 @@ fn update_provider_in(
     // 没传「移除图片 detail」时沿用原来的选择。
     if input.strip_responses_image_detail.is_none() {
         relay.strip_responses_image_detail = provider.relay.strip_responses_image_detail;
+    }
+    // 没传「不发 output.encrypted_content」时沿用原来的选择。
+    if input.strip_responses_output_encrypted_content.is_none() {
+        relay.strip_responses_output_encrypted_content =
+            provider.relay.strip_responses_output_encrypted_content;
     }
     // 没传「不发 tool_search」时沿用原来的选择。
     if input.disable_tool_search.is_none() {
@@ -4660,6 +4691,57 @@ mod tests {
         assert!(!fields.contains_key("base_instructions"));
     }
 
+    #[test]
+    fn gpt62_fast_tiers_reach_the_gateway_catalog() {
+        let mut gateway = GatewaySettings::default();
+        gateway.providers.push(
+            serde_json::from_value(json!({
+                "relay": RelayProfile {
+                    id: "official".into(),
+                    relay_mode: RelayMode::Official,
+                    protocol: RelayProtocol::Responses,
+                    auth_contents: r#"{"auth_mode":"chatgpt","tokens":{"access_token":"fixture","account_id":"fixture"}}"#.into(),
+                    model: "gpt-6.2-astra".into(),
+                    model_list: "gpt-6.2-astra\ngpt-6.2-sol\ngpt-6.2-unknown".into(),
+                    ..RelayProfile::default()
+                }
+            }))
+            .unwrap(),
+        );
+        let binding = AgentBinding {
+            model: "gpt-6.2-astra".into(),
+            token: crate::gateway::store::new_client_token(&ToolId::Codex),
+            ..AgentBinding::default()
+        };
+        let catalog = |gateway: &GatewaySettings| {
+            let profile = codex_gateway_profile(gateway, &binding, 57390, false).unwrap();
+            serde_json::from_str::<Value>(&profile.model_metadata).unwrap()
+        };
+
+        let metadata = catalog(&gateway);
+        for slug in ["gpt-6.2-astra", "gpt-6.2-sol"] {
+            assert_eq!(metadata[slug]["service_tiers"][0]["id"], "priority");
+            assert_eq!(metadata[slug]["additional_speed_tiers"], json!(["fast"]));
+        }
+        assert_eq!(metadata["gpt-6.2-unknown"]["service_tiers"], json!([]));
+
+        gateway.providers[0].relay.model_metadata =
+            r#"{"gpt-6.2-sol":{"codex_plus_fast_support":"unsupported"}}"#.into();
+        let metadata = catalog(&gateway);
+        assert_eq!(metadata["gpt-6.2-astra"]["service_tiers"][0]["id"], "priority");
+        assert_eq!(metadata["gpt-6.2-sol"]["service_tiers"], json!([]));
+        assert_eq!(metadata["gpt-6.2-sol"]["additional_speed_tiers"], json!([]));
+
+        let relay = &mut gateway.providers[0].relay;
+        relay.model_metadata = r#"{"gpt-6.2-astra":{"service_tiers":[]}}"#.into();
+        assert_eq!(catalog(&gateway)["gpt-6.2-astra"]["additional_speed_tiers"], json!([]));
+
+        let relay = &mut gateway.providers[0].relay;
+        relay.relay_mode = RelayMode::PureApi;
+        relay.model_metadata.clear();
+        assert_eq!(catalog(&gateway)["gpt-6.2-astra"]["service_tiers"], json!([]));
+    }
+
     /// #2746：没登录时的托管供应商要被原生 Fast 认成本机 API 配置；登录后是 openai 身份，
     /// 交给原生的账号门控。
     #[test]
@@ -4681,6 +4763,7 @@ mod tests {
                 strip_image_generation_tool: None,
                 subscription_policy: None,
                 strip_responses_image_detail: None,
+                strip_responses_output_encrypted_content: None,
                 disable_tool_search: None,
                 custom_headers: None,
             },
@@ -4729,6 +4812,7 @@ mod tests {
                 strip_image_generation_tool: None,
                 subscription_policy: None,
                 strip_responses_image_detail: None,
+                strip_responses_output_encrypted_content: None,
                 disable_tool_search: None,
                 custom_headers: None,
             },

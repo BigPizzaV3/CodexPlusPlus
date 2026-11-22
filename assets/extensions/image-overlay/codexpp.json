@@ -1,8 +1,8 @@
 {
   "id": "image-overlay",
   "name": "背景图",
-  "version": "1.0.1",
-  "description": "在 Codex 窗口里铺一张本机图片作为背景，可调透明度与铺放方式。",
+  "version": "1.0.2",
+  "description": "在 Codex 主窗口使用本机背景图，可调透明度与铺放方式。适配侧栏、输入框、设置页、浏览器工具栏、图片查看器控件、提示卡片与弹出菜单。媒体内容保留原色，未识别的新控件沿用原生外观。",
   "engines": { "codexpp": 1 },
   "renderer": ["overlay.js", "main.js"],
   "permissions": {

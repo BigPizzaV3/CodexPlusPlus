@@ -664,7 +664,7 @@ pub fn prepare_thread_provider(
 
     let _guard = try_acquire_provider_sync_lifecycle_guard(Some(home))?;
     if let Some(path) = pending_recovery_journal(home) {
-        anyhow::bail!("Provider sync recovery is pending: {}", path.display());
+        anyhow::bail!("Provider sync recovery is pending: {}。请在 Codex++ 管理器的会话维护中点击「恢复未完成修复」，完成后重试当前会话。", path.display());
     }
     let config_path = home.join("config.toml");
     let snapshot = resolve_provider_sync_target_snapshot(&config_path, Some(target_provider))
@@ -1461,6 +1461,7 @@ where
             if before == plan.original_sha256 {
                 rollout_journal.push(crate::sync_journal::JournalRollout {
                     path: plan.path.clone(),
+                    recovery_path: None,
                     before_sha256: before,
                     after_sha256: writer.sha256_hex(),
                     original_meta_lines: plan.original_session_meta_lines.clone(),
@@ -4936,7 +4937,7 @@ fn restore_bulk_session_rewrite(change: &AppliedBulkSessionRewrite) -> anyhow::R
     codex_plus_core::settings::atomic_write_with(&change.plan.path, |file| {
         let mut writer = HashingWriter::new(BufWriter::new(file));
         let source_sha256 = stream_restore_rollout_session_meta_lines(
-            &change.plan.path,
+            BufReader::new(File::open(&change.plan.path)?),
             &change.plan.original_session_meta_lines,
             &mut writer,
         )?;
@@ -4958,12 +4959,49 @@ fn restore_bulk_session_rewrite(change: &AppliedBulkSessionRewrite) -> anyhow::R
 pub(crate) fn restore_recovery_rollout(
     change: &crate::sync_journal::JournalRollout,
 ) -> anyhow::Result<()> {
-    if sha256_file(&change.path)? == change.before_sha256 {
+    let path = change.recovery_path.as_deref().unwrap_or(&change.path);
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            anyhow::anyhow!("会话文件缺失，请找回 {} 或对应的 .jsonl.zst 后重试", change.path.display())
+        } else {
+            error.into()
+        }
+    })?;
+    anyhow::ensure!(metadata.is_file(), "journal rollout is not a regular file");
+    if path.extension().is_some_and(|extension| extension == "zst") {
+        let decoded_hash = || sha256_reader(zstd::stream::read::Decoder::new(File::open(path)?)?);
+        let current = decoded_hash()?;
+        if current == change.before_sha256 {
+            return Ok(());
+        }
+        anyhow::ensure!(current == change.after_sha256, "压缩会话内容与同步记录不符，保留原文件");
+        codex_plus_core::settings::atomic_write_with(path, |file| {
+            let reader = zstd::stream::read::Decoder::new(File::open(path)?)?;
+            let mut encoder = zstd::stream::write::Encoder::new(file, 0)?;
+            let mut writer = HashingWriter::new(&mut encoder);
+            let source = stream_restore_rollout_session_meta_lines(
+                BufReader::new(reader), &change.original_meta_lines, &mut writer,
+            )?;
+            if writer.sha256_hex() != change.before_sha256 {
+                return Err(std::io::Error::other("rollout rollback hash mismatch"));
+            }
+            encoder.finish()?;
+            if source != current || decoded_hash()? != current
+                || change.path.try_exists()? || !fs::symlink_metadata(path)?.is_file()
+            {
+                return Err(std::io::Error::other(BULK_SESSION_SOURCE_CHANGED_ERROR));
+            }
+            Ok(())
+        })?;
+        restore_file_mtime(path, change.original_mtime);
+        return Ok(());
+    }
+    if sha256_file(path)? == change.before_sha256 {
         return Ok(());
     }
     restore_bulk_session_rewrite(&AppliedBulkSessionRewrite {
         plan: BulkSessionRewritePlan {
-            path: change.path.clone(),
+            path: path.to_owned(),
             original_sha256: change.before_sha256.clone(),
             original_mtime: change.original_mtime,
             original_session_meta_lines: change.original_meta_lines.clone(),
@@ -4973,12 +5011,10 @@ pub(crate) fn restore_recovery_rollout(
 }
 
 fn stream_restore_rollout_session_meta_lines<W: Write>(
-    path: &Path,
+    mut reader: impl BufRead,
     original_session_meta_lines: &[String],
     writer: &mut W,
 ) -> std::io::Result<String> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
     let mut line = String::new();
     let mut hasher = Sha256::new();
     let mut originals = original_session_meta_lines.iter();
@@ -5022,7 +5058,10 @@ fn stream_restore_rollout_session_meta_lines<W: Write>(
 }
 
 fn sha256_file(path: &Path) -> std::io::Result<String> {
-    let mut reader = BufReader::new(File::open(path)?);
+    sha256_reader(BufReader::new(File::open(path)?))
+}
+
+fn sha256_reader(mut reader: impl Read) -> std::io::Result<String> {
     let mut buffer = [0_u8; 64 * 1024];
     let mut hasher = Sha256::new();
     loop {
@@ -6528,7 +6567,7 @@ fn timestamp_expr(columns: &HashSet<String>, ms_column: &str, seconds_column: &s
     }
 }
 
-fn global_state_snapshot(path: &Path) -> anyhow::Result<(Vec<u8>, Map<String, Value>)> {
+pub(crate) fn global_state_snapshot(path: &Path) -> anyhow::Result<(Vec<u8>, Map<String, Value>)> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

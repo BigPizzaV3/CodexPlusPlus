@@ -59,6 +59,23 @@ describe("供应商编辑函数打包（42 分片）", () => {
     assert.equal(api.relayProfileDeleteIssue(settings, "b"), null);
     assert.deepEqual(api.removeRelayProfile(settings, "b").relayProfiles.map((profile: any) => profile.id), ["a"]);
   });
+
+  it("网关接管期间保存直连档案，切回混合模式恢复原来的配置（#3190）", () => {
+    const api = loadEditing();
+    const gateway = api.normalizeRelayProfile(pureProfile("codex-plus-gateway", "https://gateway.test", "fixture"));
+    const mixed = api.normalizeRelayProfile({ ...pureProfile("direct", "https://original.test", "fixture"),
+      relayMode: "official", officialMixApiKey: true, authContents: "", modelRoutes: [] });
+    const settings = { activeRelayId: gateway.id, relayProfiles: [gateway], aggregateRelayProfiles: [], activeAggregateRelayId: "" };
+    const official = api.applyRelayProfilePatchToFiles(mixed, { officialMixApiKey: false });
+    assert.equal(official.configContents, "");
+    const saved = api.addRelayProfile(settings, official);
+    assert.equal(saved.activeRelayId, gateway.id);
+    const loaded = saved.relayProfiles.find((profile: any) => profile.id === mixed.id);
+    const restored = api.applyRelayProfilePatchToFiles({ ...loaded, upstreamBaseUrl: "", baseUrl: "", apiKey: "" }, { officialMixApiKey: true });
+    assert.equal(restored.configContents, mixed.configContents);
+    assert.equal(restored.upstreamBaseUrl, "https://original.test");
+    assert.equal(restored.inactiveMixedApi, undefined);
+  });
 });
 
 /** 在桩环境里执行 43 分片，拿到内部函数。 */

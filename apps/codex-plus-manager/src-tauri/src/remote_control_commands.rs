@@ -16,6 +16,25 @@ pub async fn remote_control_request(action: String, args: Option<Value>) -> Resu
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+pub async fn chat_robot_request(
+    window: tauri::WebviewWindow,
+    action: String,
+    provider: Option<rc::chat_notifications::Provider>,
+    update: Option<rc::chat_notifications::Update>,
+) -> Result<Value, String> {
+    use rc::chat_notifications as robots;
+    if window.label() != "main" { return Err("请从管理器主窗口操作".into()); }
+    let result = match (action.as_str(), provider) {
+        ("status", _) => robots::status(),
+        ("save", Some(provider)) => robots::configure(provider, Some(update.ok_or("缺少机器人配置")?)),
+        ("clear", Some(provider)) => robots::configure(provider, None),
+        ("test", Some(provider)) => robots::test(provider).await,
+        _ => return Err("不支持的机器人操作".into()),
+    };
+    result.map_err(|error| error.to_string())
+}
+
 /// 管理器启动时：标记服务由本进程托管（Codex 页面经 bridge 操作时据此放行），
 /// 开关打开就把服务拉起来（后台线程，不拖慢窗口出现）。
 pub fn start_from_saved_state_in_background() {

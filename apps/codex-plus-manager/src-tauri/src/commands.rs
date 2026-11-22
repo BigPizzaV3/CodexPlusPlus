@@ -3232,7 +3232,8 @@ fn restart_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
     // 早先用 `find_codex_processes_for_debug_port`，但它在非 macOS 上返回全部
     // Codex 进程：Windows 上只要有多开实例在跑，就会把「主 Codex 没开」误判成
     // 「已运行」，进而走进重启分支去停进程。
-    let app_running = codex_plus_core::cdp::endpoint_available(request.debug_port);
+    let app_running =
+        codex_plus_core::cdp::endpoint_available(running_debug_port(request.debug_port));
     if restart_disposition(request.sync_active_relay, app_running, cfg!(windows))
         == RestartDisposition::LaunchOnly
     {
@@ -3430,10 +3431,10 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<usize> {
         );
     }
     #[cfg(not(windows))]
-    let was_running = codex_plus_core::cdp::endpoint_available(request.debug_port)
-        || main_codex_running_without_debug_port();
+    let debug_port = running_debug_port(request.debug_port);
     #[cfg(not(windows))]
-    let debug_port = request.debug_port;
+    let was_running = codex_plus_core::cdp::endpoint_available(debug_port)
+        || main_codex_running_without_debug_port();
     #[cfg(target_os = "macos")]
     codex_plus_core::watcher::stop_main_codex_processes_and_wait(debug_port);
     #[cfg(not(any(windows, target_os = "macos")))]
@@ -3447,6 +3448,32 @@ fn stop_main_codex_process(request: &LaunchRequest) -> anyhow::Result<usize> {
     anyhow::ensure!(!main_codex_running_without_debug_port(), "Codex 进程尚未退出");
     #[cfg(not(windows))]
     Ok(usize::from(was_running))
+}
+
+/// 主 Codex 实际在用的调试端口。
+///
+/// 首选端口被别的程序占着时，启动器会给 Codex 换一个空闲端口（见
+/// `ports::select_packaged_codex_debug_port`）。这时按表单里的端口探测，会把正在运行的 Codex
+/// 当成「没开」：「重启」只启动不停止、复用旧会话，「停止」直接报没有在运行（#3191）。
+/// 本进程拉起的会话还活着时，以它的端口为准。
+fn running_debug_port(requested: u16) -> u16 {
+    let session = codex_plus_launcher::session_snapshot();
+    resolve_running_debug_port(
+        requested,
+        session.owned.then_some(session.debug_port).flatten(),
+        codex_plus_core::cdp::endpoint_available,
+    )
+}
+
+fn resolve_running_debug_port(
+    requested: u16,
+    owned: Option<u16>,
+    endpoint_available: impl Fn(u16) -> bool,
+) -> u16 {
+    match owned {
+        Some(port) if port != requested && endpoint_available(port) => port,
+        _ => requested,
+    }
 }
 
 /// 主 Codex 开着却没带调试端口：从 Dock / Finder 等外部启动，调试端口探测不到它。
@@ -3488,7 +3515,7 @@ fn stop_codex_plus_blocking(request: LaunchRequest) -> CommandResult<Value> {
         }),
     );
     if !cfg!(windows)
-        && !codex_plus_core::cdp::endpoint_available(request.debug_port)
+        && !codex_plus_core::cdp::endpoint_available(running_debug_port(request.debug_port))
         && !main_codex_running_without_debug_port()
     {
         return ok("Codex 没有在运行。", json!({}));
@@ -6248,6 +6275,107 @@ fn archive_one_local_session(path: &Path, session_id: &str, archived: bool) -> a
     Ok(())
 }
 
+#[derive(Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRelocationPreviewPayload {
+    #[serde(flatten)]
+    plan: codex_plus_data::SessionRelocationPlan,
+    /// 目标目录在本机是否存在。
+    target_exists: bool,
+    /// Codex 桌面端在运行时不能执行：它会覆盖全局状态，正在写的 rollout 也不能替换。
+    codex_running: bool,
+}
+
+fn session_relocation_target(request: &codex_plus_data::SessionRelocationRequest) -> &str {
+    match request {
+        codex_plus_data::SessionRelocationRequest::Remap { to, .. }
+        | codex_plus_data::SessionRelocationRequest::Move { to, .. } => to.trim(),
+    }
+}
+
+/// 预览会话目录重定位（#1085）：只读，列出会改到新目录的会话和跟着改的项目根路径。
+#[tauri::command]
+pub async fn preview_session_relocation(
+    request: codex_plus_data::SessionRelocationRequest,
+) -> CommandResult<SessionRelocationPreviewPayload> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+        match codex_plus_data::plan_session_relocation(&home, &request) {
+            Ok(plan) => ok(
+                &format!("将把 {} 个会话改到新目录。", plan.items.len()),
+                SessionRelocationPreviewPayload {
+                    plan,
+                    target_exists: Path::new(session_relocation_target(&request)).is_dir(),
+                    codex_running: !codex_plus_core::watcher::find_session_index_cleanup_blocking_processes()
+                        .is_empty(),
+                },
+            ),
+            Err(error) => failed(&format!("无法移动会话：{error:#}"), Default::default()),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| failed(&format!("预览会话移动失败：{error}"), Default::default()))
+}
+
+/// 执行会话目录重定位（#1085）：会话库、侧边栏目录库、rollout 和全局状态一起改，改动前的值写进备份目录。
+#[tauri::command]
+pub async fn apply_session_relocation(
+    request: codex_plus_data::SessionRelocationRequest,
+) -> CommandResult<codex_plus_data::SessionRelocationReport> {
+    tauri::async_runtime::spawn_blocking(move || apply_session_relocation_blocking(request))
+        .await
+        .unwrap_or_else(|error| failed(&format!("移动会话的后台任务失败：{error}"), Default::default()))
+}
+
+fn apply_session_relocation_blocking(
+    request: codex_plus_data::SessionRelocationRequest,
+) -> CommandResult<codex_plus_data::SessionRelocationReport> {
+    let running = codex_plus_core::watcher::find_session_index_cleanup_blocking_processes();
+    if !running.is_empty() {
+        return failed("Codex 仍在运行，请完全退出 Codex 后再移动会话。", Default::default());
+    }
+    let target = session_relocation_target(&request);
+    if !Path::new(target).is_dir() {
+        return failed(&format!("目标文件夹不存在：{target}"), Default::default());
+    }
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let backups = codex_plus_core::paths::default_app_state_dir().join("backups");
+    let report = match codex_plus_data::apply_session_relocation(&home, &request, &backups) {
+        Ok(report) => report,
+        Err(error) => return failed(&format!("移动会话失败：{error:#}"), Default::default()),
+    };
+    log_manager_event(
+        "manager.session_relocation.finish",
+        json!({
+            "moved": report.moved,
+            "rollouts_rewritten": report.rollouts_rewritten,
+            "rollouts_missing": report.rollouts_missing,
+            "project_roots_updated": report.project_roots_updated,
+            "failures": report.failures.len(),
+            "backup_dir": report.backup_dir,
+        }),
+    );
+    if report.moved == 0 && report.project_roots_updated == 0 && report.failures.is_empty() {
+        return ok("没有需要移动的会话。", report);
+    }
+    let mut message = format!("已把 {} 个会话改到新目录", report.moved);
+    if report.rollouts_missing > 0 {
+        message.push_str(&format!("（其中 {} 个找不到会话文件，只更新了索引）", report.rollouts_missing));
+    }
+    if report.project_roots_updated > 0 {
+        message.push_str(&format!("，更新了 {} 处项目根路径", report.project_roots_updated));
+    }
+    if let Some(backup) = &report.backup_dir {
+        message.push_str(&format!("。改动前的记录已备份到 {backup}"));
+    }
+    if report.failures.is_empty() {
+        ok(&format!("{message}。"), report)
+    } else {
+        let details = report.failures.iter().take(3).cloned().collect::<Vec<_>>().join("；");
+        failed(&format!("{message}；{} 项未完成：{details}", report.failures.len()), report)
+    }
+}
+
 /// 归一化「Codex 应用路径」。**无效路径一律丢弃，不落库。**
 ///
 /// 之前的写法是 normalize 成功才覆盖、失败就原样保留，于是误选的路径会被存进
@@ -7893,6 +8021,83 @@ fn import_local_skills_blocking(path: &str) -> CommandResult<SkillsPayload> {
             payload,
         )
     }
+}
+
+/// 把选中的 Skill 连同分组、各 Agent 的启用状态导出成迁移包（#2852）。
+#[tauri::command]
+pub async fn export_skill_bundle(
+    path: String,
+    skills: Vec<codex_plus_core::skills::SkillBundleSelection>,
+    groups: Vec<String>,
+) -> CommandResult<codex_plus_core::skills::SkillBundleExport> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let destination = std::path::PathBuf::from(path.trim());
+        match default_skills_manager().export_skill_bundle(&skills, &groups, &destination) {
+            Ok(outcome) if outcome.errors.is_empty() => ok(
+                &format!("已导出 {} 个 Skill：{}", outcome.exported.len(), destination.display()),
+                outcome,
+            ),
+            Ok(outcome) => failed(
+                &format!(
+                    "已导出 {} 个 Skill，{} 个未导出：{}",
+                    outcome.exported.len(),
+                    outcome.errors.len(),
+                    outcome.errors.join("；")
+                ),
+                outcome,
+            ),
+            Err(error) => failed(&format!("导出 Skill 迁移包失败：{error:#}"), Default::default()),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| failed(&format!("导出 Skill 迁移包失败：{error}"), Default::default()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillBundleImportPayload {
+    #[serde(flatten)]
+    skills: SkillsPayload,
+    bundle: codex_plus_core::skills::SkillBundleImport,
+}
+
+/// 导入 Skill 迁移包（#2852）。本机已有的同名 Skill 不覆盖文件；分组由界面按返回的清单恢复。
+#[tauri::command]
+pub async fn import_skill_bundle(path: String) -> CommandResult<SkillBundleImportPayload> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let manager = default_skills_manager();
+        let result = manager.import_skill_bundle(std::path::Path::new(path.trim()));
+        let skills = current_skills_payload(&manager);
+        match result {
+            Ok(bundle) => {
+                let summary = format!(
+                    "已导入 {} 个 Skill，{} 个本机已有（未覆盖文件）",
+                    bundle.imported.len(),
+                    bundle.existing.len()
+                );
+                if bundle.errors.is_empty() {
+                    ok(&format!("{summary}。"), SkillBundleImportPayload { skills, bundle })
+                } else {
+                    let message = format!("{summary}；{} 项失败：{}", bundle.errors.len(), bundle.errors.join("；"));
+                    failed(&message, SkillBundleImportPayload { skills, bundle })
+                }
+            }
+            Err(error) => failed(
+                &format!("导入 Skill 迁移包失败：{error:#}"),
+                SkillBundleImportPayload { skills, bundle: Default::default() },
+            ),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        failed(
+            &format!("导入 Skill 迁移包失败：{error}"),
+            SkillBundleImportPayload {
+                skills: current_skills_payload(&default_skills_manager()),
+                bundle: Default::default(),
+            },
+        )
+    })
 }
 
 #[tauri::command]
@@ -9878,9 +10083,7 @@ pub fn backfill_relay_profile_from_live(
             )
         }
         Err(error) => {
-            let live_conflict = error
-                .chain()
-                .any(|cause| cause.is::<codex_plus_core::relay_config::LiveEndpointChanged>());
+            let live_conflict = codex_plus_core::relay_config::is_live_endpoint_conflict(&error);
             log_manager_event(
                 "manager.backfill_relay_profile_from_live.failed",
                 json!({
@@ -11431,7 +11634,10 @@ fn diagnostics_report() -> String {
         "generatedAtMs": generated_at_ms,
         "version": codex_plus_core::version::VERSION,
         "overview": overview.payload,
-        "settings": settings,
+        // 报告会被整段贴进 issue：设置里的 Key、登录 token 一律打码（#3129）。
+        "settings": codex_plus_core::diagnostic_redaction::redact_report_value(
+            serde_json::to_value(&settings).unwrap_or_default()
+        ),
         "logs": {
             "diagnosticLogPath": codex_plus_core::paths::default_diagnostic_log_path(),
             "latestStatusPath": codex_plus_core::paths::default_latest_status_path()
@@ -12505,6 +12711,17 @@ base_url = "https://example.invalid/v1"
                 RestartDisposition::StopAndRestart
             );
         }
+    }
+
+    /// #3191：首选端口被别的程序占着、Codex 实际跑在备用端口时，重启和停止要认备用端口。
+    #[test]
+    fn running_port_follows_the_owned_session_when_it_moved_off_the_requested_port() {
+        let alive = |port: u16| port == 51234;
+        assert_eq!(resolve_running_debug_port(9229, Some(51234), alive), 51234);
+        // 本进程没有会话、会话就在首选端口、或会话端口已经不通：都按首选端口。
+        assert_eq!(resolve_running_debug_port(9229, None, alive), 9229);
+        assert_eq!(resolve_running_debug_port(9229, Some(9229), alive), 9229);
+        assert_eq!(resolve_running_debug_port(9229, Some(40000), alive), 9229);
     }
 
     #[test]

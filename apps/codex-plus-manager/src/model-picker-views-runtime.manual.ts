@@ -30,6 +30,7 @@ export async function launchPickerBrowser() {
   assert.ok(playwright, "Playwright is required; use an existing package via CODEX_PLUS_PLAYWRIGHT_MODULE.");
   return await playwright.chromium.launch({
     headless: true,
+    executablePath: process.env.CODEX_TEST_BROWSER_PATH,
     ...(process.platform === "win32" ? { channel: "msedge" } : {}),
   });
 }
@@ -307,6 +308,38 @@ export const pickerViewScenarios: Array<{
   name: string; baseline?: boolean; run: (fixture: any, browser: any) => Promise<void>;
 }> = [
   {
+    name: "list prices keep fixed colors and half-segment edges in a narrow panel",
+    async run({ page, inject }) {
+      await page.evaluate(() => {
+        const fixture = window as any;
+        fixture.__codexPlusModelPickerGroupsRuntime.releaseDom();
+        const quoted = fixture.codexModelCatalog.modelMetadata["fusheng/gpt-6.1-sol"];
+        quoted.codex_plus_price = { input: 2.6, output: 2.6 };
+        fixture.fixtureMountMenu();
+      });
+      await inject();
+      await switchToList(page);
+      await page.setViewportSize({width: 300, height: 460});
+      const row = page.locator('[data-fixture-model="fusheng/gpt-6.1-sol"]');
+      const meter = row.locator(".codex-plus-model-row-meter");
+      const segments: Array<{ fill: string; background: string; width: number }> = await meter.locator("i").evaluateAll((items: HTMLElement[]) => items.map(item => ({
+        fill: item.style.getPropertyValue("--codex-plus-segment-fill"),
+        background: getComputedStyle(item).backgroundImage,
+        width: item.getBoundingClientRect().width,
+      })));
+      assert.deepEqual(segments.map(item => item.fill), ["100%", "100%", "50%", "0%", "0%"]);
+      assert.ok(segments.every(item => item.width === 5 && item.background.startsWith("linear-gradient")));
+      assert.match(segments[2].background, /rgb\(184, 178, 149\) 50%, .* 50%\)/);
+      assert.match(await meter.getAttribute("title"), /2\.6/);
+      assert.equal(await page.locator("#native-default-row .native-check").isVisible(), false);
+      const icon = row.locator(".codex-plus-model-row-icon");
+      const before = await icon.boundingBox();
+      await row.evaluate((item: HTMLElement) => item.setAttribute("aria-checked", "true"));
+      assert.equal((await icon.boundingBox()).x, before.x);
+      assert.equal(await row.evaluate((item: HTMLElement) => getComputedStyle(item, "::before").content), '"✓"');
+    },
+  },
+  {
     name: "interleaved model groups and suppliers remain single groups in both views",
     async run({ page, inject }) {
       await page.evaluate(() => {
@@ -340,7 +373,7 @@ export const pickerViewScenarios: Array<{
       for (const [id, count] of [["codex-plus-gateway-groups", 5], ["codex-plus-gateway-auto", 5], ["provider-hanhe", 5], ["provider-fusheng", 5]] as const) {
         const group = page.locator(`[data-codex-plus-model-group-id="${id}"]`);
         assert.equal(await group.count(), 1);
-        assert.match(await group.innerText(), new RegExp(`${count} 个模型`));
+        assert.match(await group.innerText(), new RegExp(`${count} 个${id === "codex-plus-gateway-groups" ? "成员" : "模型"}`));
       }
       await switchToList(page);
       await page.getByRole("button", { name: VIEW_LABELS.expand, exact: true }).click();

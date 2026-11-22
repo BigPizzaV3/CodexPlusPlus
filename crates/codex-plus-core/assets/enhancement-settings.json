@@ -493,6 +493,12 @@
       "group": "chat"
     },
     {
+      "id": "daily-ui",
+      "title": "界面与日常操作",
+      "description": "在 Codex++ 设置页选择新任务模式、新项目目录和可见侧栏项目，收藏消息以便回看",
+      "group": "chat"
+    },
+    {
       "id": "session-title-hook",
       "title": "会话标题中间件",
       "description": "首轮结束后按拓展的 session/title 中间件改会话标题",

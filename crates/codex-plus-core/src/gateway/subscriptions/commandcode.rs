@@ -605,6 +605,41 @@ fn parse_models(value: &Value) -> Vec<(String, Option<Endpoint>)> {
         .collect()
 }
 
+/// 照实拉 `/models`（失败报错，不兜底），顺带记下各模型走哪个接口。
+async fn fetch_listed(
+    http: &reqwest::Client,
+    credentials: &Value,
+) -> anyhow::Result<Vec<(String, Option<Endpoint>)>> {
+    let key = api_key(credentials)?;
+    let mut request = http
+        .get(format!("{}/models", base()))
+        .header("accept", "application/json")
+        .timeout(Duration::from_secs(15));
+    // Go 的 key 没有 Provider API：不带 key 也能列。
+    if is_go(credentials) {
+        request = request.header("user-agent", "node");
+    } else {
+        request = request.bearer_auth(&key).header("x-api-key", &key);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|error| anyhow::anyhow!("无法连接 Command Code：{error}"))?;
+    let value = crate::gateway::subscriptions::oauth::read_json(response)
+        .await
+        .map_err(|error| error.context("Command Code 模型列表"))?;
+    let listed = parse_models(&value);
+    let mut map = endpoints()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for (id, endpoint) in &listed {
+        if let Some(endpoint) = endpoint {
+            map.insert(id.clone(), *endpoint);
+        }
+    }
+    Ok(listed)
+}
+
 fn plan_models(plan: &str, listed: Vec<(String, Option<Endpoint>)>) -> Vec<String> {
     listed
         .into_iter()
@@ -1389,45 +1424,32 @@ impl Subscription for CommandCode {
         http: &reqwest::Client,
         credentials: &Value,
     ) -> anyhow::Result<Vec<String>> {
-        let key = api_key(credentials)?;
+        api_key(credentials)?;
         let plan = plan_of(credentials);
-        let go = plan == "Go";
-        let mut request = http
-            .get(format!("{}/models", base()))
-            .header("accept", "application/json")
-            .timeout(Duration::from_secs(15));
-        // Go 的 key 没有 Provider API：不带 key 也能列。
-        if go {
-            request = request.header("user-agent", "node");
-        } else {
-            request = request.bearer_auth(&key).header("x-api-key", &key);
+        match fetch_listed(http, credentials).await {
+            Ok(listed) if !listed.is_empty() => Ok(plan_models(&plan, listed)),
+            // 拉不到或为空：按套餐用默认列表兜底（记诊断日志）。
+            fetched => Ok(crate::gateway::subscriptions::models_or_fallback(
+                self.id(),
+                fetched.map(|_| Vec::new()),
+                || {
+                    if plan == "Go" {
+                        GO_MODELS.iter().map(|(id, _)| id.to_string()).collect()
+                    } else {
+                        DEFAULT_MODELS.iter().map(|id| id.to_string()).collect()
+                    }
+                },
+            )),
         }
-        let listed = match request.send().await {
-            Ok(response) if response.status().is_success() => response
-                .json::<Value>()
-                .await
-                .map(|value| parse_models(&value))
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
-        if listed.is_empty() {
-            return Ok(if go {
-                GO_MODELS.iter().map(|(id, _)| id.to_string()).collect()
-            } else {
-                DEFAULT_MODELS.iter().map(|id| id.to_string()).collect()
-            });
-        }
-        {
-            let mut map = endpoints()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            for (id, endpoint) in &listed {
-                if let Some(endpoint) = endpoint {
-                    map.insert(id.clone(), *endpoint);
-                }
-            }
-        }
-        Ok(plan_models(&plan, listed))
+    }
+
+    async fn list_models(
+        &self,
+        http: &reqwest::Client,
+        credentials: &Value,
+    ) -> anyhow::Result<Vec<String>> {
+        let listed = fetch_listed(http, credentials).await?;
+        Ok(plan_models(&plan_of(credentials), listed))
     }
 
     async fn chat(

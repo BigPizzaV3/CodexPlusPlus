@@ -1918,6 +1918,45 @@ base_url = "https://open.bigmodel.cn/api/paas/v4"
     assert!(!live.contains("open.bigmodel.cn"));
 }
 
+/// 「不发送 output.encrypted_content」只在本地代理里执行（#3204）：打开后直连的 Responses 供应商
+/// 写进 config.toml 的地址必须是本地代理，否则开关不生效。关着时照旧直连上游。
+#[test]
+fn stripping_output_encrypted_content_routes_responses_profile_through_proxy() {
+    let live_config_with = |strip: bool| {
+        let temp = tempfile::tempdir().unwrap();
+        let profile = RelayProfile {
+            id: "relay-strict".to_string(),
+            model: "strict-model".to_string(),
+            base_url: "https://strict.example.test/v1".to_string(),
+            upstream_base_url: "https://strict.example.test/v1".to_string(),
+            api_key: "sk-test-redacted".to_string(),
+            protocol: RelayProtocol::Responses,
+            relay_mode: RelayMode::PureApi,
+            strip_responses_output_encrypted_content: strip,
+            config_contents: r#"model = "strict-model"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://strict.example.test/v1"
+"#
+            .to_string(),
+            auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+            ..RelayProfile::default()
+        };
+        apply_relay_profile_to_home_with_switch_rules_and_proxy_port(temp.path(), &profile, "", 61234)
+            .unwrap();
+        std::fs::read_to_string(temp.path().join("config.toml")).unwrap()
+    };
+
+    let proxied = live_config_with(true);
+    assert!(proxied.contains(r#"base_url = "http://127.0.0.1:61234/v1""#), "{proxied}");
+    let direct = live_config_with(false);
+    assert!(direct.contains(r#"base_url = "https://strict.example.test/v1""#), "{direct}");
+}
+
 #[test]
 fn official_mix_api_profile_does_not_generate_auth_api_key() {
     let mut profile = RelayProfile {
@@ -5437,6 +5476,93 @@ experimental_bearer_token = "sk-official-mix"
     assert!(config.contains(r#"experimental_bearer_token = "sk-official-mix""#));
     assert!(config.contains("requires_openai_auth = true"));
     assert!(config.contains(r#"openai_base_url = "http://127.0.0.1:57321/v1""#));
+}
+
+/// 造一份 ChatGPT 登录：`subject` + `account` 决定是哪个账号，`generation` 是第几代 token。
+fn chatgpt_login(subject: &str, account: &str, generation: &str, last_refresh: &str) -> String {
+    let claims = serde_json::json!({
+        "iss": "https://auth.openai.com",
+        "sub": subject,
+        "https://api.openai.com/auth": { "chatgpt_account_id": account },
+    });
+    let id_token = format!(
+        "{}.{}.sig-{generation}",
+        base64_url_no_pad(r#"{"alg":"none"}"#),
+        base64_url_no_pad(&claims.to_string())
+    );
+    serde_json::json!({
+        "auth_mode": "chatgpt",
+        "last_refresh": last_refresh,
+        "tokens": {
+            "id_token": id_token,
+            "access_token": format!("access-{generation}"),
+            "refresh_token": format!("refresh-{generation}"),
+            "account_id": account,
+        }
+    })
+    .to_string()
+}
+
+/// 回归（#3129）：几个供应商各存着同一账号的旧登录快照。切过去时不能把快照里已经轮换掉的
+/// refresh token 写回 live，否则 Codex 重开就要求重新登录。
+#[test]
+fn switching_to_official_profile_keeps_newer_live_login_of_the_same_account() {
+    let profile_with = |auth_contents: String| RelayProfile {
+        id: "official-mix".to_string(),
+        relay_mode: RelayMode::Official,
+        official_mix_api_key: true,
+        hide_official_usage_alert: false,
+        config_contents: r#"model = "gpt-5"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://relay.example/v1"
+experimental_bearer_token = "sk-official-mix"
+"#
+        .to_string(),
+        auth_contents,
+        ..RelayProfile::default()
+    };
+    let refresh_token_after = |live: Option<String>, snapshot: String| {
+        let temp = tempfile::tempdir().unwrap();
+        if let Some(live) = live {
+            std::fs::write(temp.path().join("auth.json"), live).unwrap();
+        }
+        apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile_with(snapshot), "").unwrap();
+        let auth: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(temp.path().join("auth.json")).unwrap()).unwrap();
+        assert!(auth.get("OPENAI_API_KEY").is_none(), "{auth}");
+        auth["tokens"]["refresh_token"].as_str().unwrap().to_string()
+    };
+    let stale_snapshot = || chatgpt_login("user-a", "acct-a", "old", "2026-10-26T08:00:00Z");
+
+    // 同一个账号：live 里是 Codex 刷新过的新一代，保留它。
+    let mut live: serde_json::Value =
+        serde_json::from_str(&chatgpt_login("user-a", "acct-a", "new", "2026-11-17T03:00:00Z")).unwrap();
+    live["OPENAI_API_KEY"] = serde_json::json!("sk-left-over");
+    assert_eq!(refresh_token_after(Some(live.to_string()), stale_snapshot()), "refresh-new");
+
+    // 同一个账号，但快照的刷新时间更晚（用户刚换上的）：用快照。
+    assert_eq!(
+        refresh_token_after(
+            Some(chatgpt_login("user-a", "acct-a", "new", "2026-10-01T00:00:00Z")),
+            stale_snapshot()
+        ),
+        "refresh-old"
+    );
+
+    // live 是另一个账号、同一用户的另一个工作区、或没有登录：以快照为准，和以前一样。
+    for live in [
+        Some(chatgpt_login("user-b", "acct-b", "new", "2026-11-17T03:00:00Z")),
+        Some(chatgpt_login("user-a", "acct-team", "new", "2026-11-17T03:00:00Z")),
+        Some(r#"{"OPENAI_API_KEY":"sk-pure-api"}"#.to_string()),
+        None,
+    ] {
+        assert_eq!(refresh_token_after(live, stale_snapshot()), "refresh-old");
+    }
 }
 
 #[test]
@@ -9060,6 +9186,73 @@ fn stale_codex_managed_mcp_in_snapshot_is_dropped_when_live_is_empty() {
     )
     .unwrap();
     assert!(!out.contains("node_repl"), "{out}");
+}
+
+/// 回归（#3016）：`[permissions.<名字>]` 权限档是用户自己维护的。切入的供应商模板里没有它、
+/// 或只有一份旧副本时，档不能整条消失或丢键，否则根上的 `default_permissions` 指向不存在的档。
+#[test]
+fn live_permission_profiles_survive_a_template_without_them() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        temp.path().join("config.toml"),
+        r#"default_permissions = "work"
+
+[permissions.work]
+approval_policy = "on-request"
+network_access = true
+
+[permissions.work.filesystem]
+writable_roots = ["/srv/work"]
+
+[permissions.readonly]
+approval_policy = "never"
+"#,
+    )
+    .unwrap();
+    // 模板（通用配置里的旧副本）只有 work 档的一个键，值和 live 不同；没有 readonly 档。
+    let template = r#"model = "gpt-5"
+default_permissions = "work"
+
+[permissions.work]
+network_access = false
+"#;
+
+    let out = codex_plus_core::relay_config::preserve_live_app_settings_for_test(temp.path(), template)
+        .unwrap();
+    let doc = out.parse::<toml_edit::DocumentMut>().unwrap();
+    let work = &doc["permissions"]["work"];
+    assert_eq!(work["network_access"].as_bool(), Some(false), "模板已有的键以模板为准：\n{out}");
+    assert_eq!(work["approval_policy"].as_str(), Some("on-request"), "缺的键从 live 补回：\n{out}");
+    assert_eq!(
+        work["filesystem"]["writable_roots"][0].as_str(),
+        Some("/srv/work"),
+        "缺的子表从 live 补回：\n{out}"
+    );
+    assert_eq!(
+        doc["permissions"]["readonly"]["approval_policy"].as_str(),
+        Some("never"),
+        "模板里没有的档整条补回：\n{out}"
+    );
+
+    // 模板完全没有 permissions 时同样补回，且不多出一行空的 `[permissions]`。
+    let out = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        temp.path(),
+        "model = \"gpt-5\"\ndefault_permissions = \"work\"\n",
+    )
+    .unwrap();
+    assert!(out.contains("[permissions.work]"), "{out}");
+    assert!(out.contains("[permissions.readonly]"), "{out}");
+    assert!(!out.lines().any(|line| line.trim() == "[permissions]"), "{out}");
+
+    // live 没有权限档时不凭空加表。
+    let empty = tempfile::tempdir().unwrap();
+    std::fs::write(empty.path().join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+    let out = codex_plus_core::relay_config::preserve_live_app_settings_for_test(
+        empty.path(),
+        "model = \"gpt-5\"\n",
+    )
+    .unwrap();
+    assert!(!out.contains("permissions"), "{out}");
 }
 
 /// 回归（#3115）：`[[skills.config]]` 是按 path / name 列条的数组，切换渠道时

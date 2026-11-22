@@ -70,14 +70,15 @@ function runtime() {
     "runCodexPlusExtensionCallback", "codexPlusRpcMiddlewareTimeoutMsOverride",
     `${source}\nreturn { decode: codexPlusRpcDecode, install: installCodexPlusRpcFrameInterceptor };`);
   const listeners = new Map();
-  const api = create(window, listeners, interceptors, (_name: string, value: any) => state.chain(value),
+  const install = (catalog?: Map<string, number>) => create(window, listeners, interceptors, (_name: string, value: any) => state.chain(value),
     (_key: string, message: string) => failures.push(message), (message: string) => toasts.push(message),
     () => state.enabled,
     async (method: string, params: any, hostId: string) => {
       calls.push({ method: "prepare", requestMethod: method, params, hostId });
       if (state.startFailure) throw new Error(state.startFailure);
-      return { ...params, config: { ...params.config, model_context_window: 262144,
-        model_auto_compact_token_limit: 235929 } };
+      const contextWindow = catalog?.get(params.collaborationMode.settings.model) ?? 262144;
+      return { ...params, config: { ...params.config, model_context_window: contextWindow,
+        model_auto_compact_token_limit: Math.floor(contextWindow * 0.9) } };
     },
     async (hostId: string) => {
       assert.equal(hostId, "local");
@@ -90,7 +91,9 @@ function runtime() {
       await sendRequest("thread/read", { threadId: params.threadId }, { timeoutMs: 5000 });
       await sendRequest("thread/resume", { threadId: params.threadId, excludeTurns: true }, { timeoutMs: 5000 });
       await sendRequest("thread/unsubscribe", { threadId: params.threadId }, { timeoutMs: 5000 });
-      await sendRequest("thread/resume", { threadId: params.threadId, config: { model_context_window: 262144 } });
+      const contextWindow = catalog?.get(params.collaborationMode.settings.model);
+      const config = contextWindow ? { model_context_window: contextWindow, model_auto_compact_token_limit: Math.floor(contextWindow * 0.9) } : { model_context_window: 262144 };
+      await sendRequest("thread/resume", { threadId: params.threadId, config });
     },
     () => state.gatewayEnabled,
     async (_method: string, params: any, _host: string, sendRequest: any) => {
@@ -100,6 +103,7 @@ function runtime() {
     },
     (_key: string, _name: string, run: () => any) => ({ ok: true, value: run() }),
     40);
+  const api = install();
   const settle = async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -108,7 +112,7 @@ function runtime() {
     target.postMessage(["push", ["pipeline", receiver, ["subscribe"], [{
       type: "notification", key: { hostId }, methods: [["turn/completed"]], listener: ["export", -3],
     }]]]);
-  return { api, window, port, sent, received, calls, state, toasts, failures, listeners, interceptors, subscribe, settle };
+  return { api, install, window, port, sent, received, calls, state, toasts, failures, listeners, interceptors, subscribe, settle };
 }
 
 function startFrame(receiver = -19): Frame {
@@ -130,6 +134,20 @@ function turnFrame(hostId: string | undefined = "local"): Frame {
 }
 
 describe("runtime context through host RPC", () => {
+  it("opens session maintenance from the pending journal notice only when clicked", async () => {
+    const notices: any[] = [];
+    const requests: any[] = [];
+    const notify = new Function("window", "showToast", "postJson", `${source}\nreturn codexPlusRpcRejectNotice;`)(
+      {}, (_message: string, options: any) => notices.push(options),
+      (route: string, payload: any) => { requests.push({ route, payload }); return { status: "ok" }; });
+    notify("普通错误");
+    assert.equal(notices[0].onAction, undefined);
+    notify("Provider sync recovery is pending: fixture");
+    assert.equal(notices[1].actionLabel, "打开会话维护");
+    assert.deepEqual(requests, []);
+    await notices[1].onAction();
+    assert.deepEqual(requests, [{ route: "/manager/open", payload: { page: "sessions" } }]);
+  });
   it("passes the original frame through when the gateway client cannot be found", async () => {
     const env = runtime();
     env.state.enabled = false;
@@ -381,10 +399,63 @@ describe("runtime context through host RPC", () => {
   it("upgrades an older interceptor without wrapping it", () => {
     const env = runtime();
     const original = env.window.__codexPlusRpcFrameInterceptor.original;
-    env.window.__codexPlusRpcFrameInterceptor.version = 18;
+    env.window.__codexPlusRpcFrameInterceptor.version = 19;
     env.api.install();
-    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 19);
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 21);
     assert.equal(env.window.__codexPlusRpcFrameInterceptor.original, original);
+  });
+
+  it("uses the reinjected catalog for both a new conversation and the same idle thread (#3206)", async () => {
+    const env = runtime();
+    const patched = env.window.MessagePort.prototype.postMessage;
+    env.subscribe("local");
+    const old = new Map([["supplier/model", 272000], ["supplier/other", 400000]]);
+    env.install(old);
+    const current = new Map(old);
+    env.install(current);
+    current.set("supplier/new", 1048576);
+    for (const [model, size] of [["supplier/model", 500000], ["supplier/model", 272000],
+      ["supplier/other", 400000], ["supplier/new", 1048576]] as const) {
+      current.set(model, size);
+      const start = startFrame();
+      start[1][3][0].collaborationMode.settings.model = model;
+      env.port.postMessage(start);
+      await env.settle();
+      const config = { model_context_window: size, model_auto_compact_token_limit: Math.floor(size * 0.9) };
+      assert.deepEqual(env.sent.at(-1)![1][3][0].config, { "features.web_search": false, ...config });
+      assert.equal(env.sent.at(-1)![1][3][1], start[1][3][1]);
+      const turn = turnFrame();
+      turn[2].start.request.collaborationMode.settings.model = model;
+      env.port.postMessage(turn);
+      await env.settle();
+      assert.deepEqual(env.calls.at(-1).params, { threadId: "thread", config });
+      assert.equal(env.sent.at(-1), turn);
+    }
+    assert.equal(env.window.MessagePort.prototype.postMessage, patched);
+  });
+
+  it("replans a queued start and turn against the catalog installed before the port drains", async () => {
+    const env = runtime();
+    env.install(new Map([["supplier/model", 272000]]));
+    env.subscribe("local");
+    let release!: () => void;
+    env.interceptors.set("codex/request", true);
+    env.state.chain = async (value) => {
+      if (value.method === "hooks/list") await new Promise<void>((resolve) => { release = resolve; });
+      return value;
+    };
+    env.port.postMessage(["push", ["pipeline", -19, ["sendRequest"], ["hooks/list", {}]]]);
+    await env.settle();
+    const turn = turnFrame();
+    env.port.postMessage(startFrame());
+    env.port.postMessage(turn);
+    env.install(new Map([["supplier/model", 500000]]));
+    release();
+    await env.settle();
+    const start = env.sent.find((frame) => frame[1]?.[2]?.[0] === "startConversation")!;
+    assert.equal(start[1][3][0].config.model_context_window, 500000);
+    assert.deepEqual(env.calls.at(-1).params.config, { model_context_window: 500000, model_auto_compact_token_limit: 450000 });
+    assert.deepEqual(env.sent.at(-1), turn);
   });
 
   it("skips remote, unknown, steer-only and disabled context turns synchronously", () => {

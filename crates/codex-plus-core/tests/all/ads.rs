@@ -167,51 +167,16 @@ fn builtin_sponsors_are_not_appended_to_remote_ads() {
 }
 
 #[test]
-fn normalizes_known_remote_sponsors_with_local_logos() {
+fn ad_images_come_only_from_the_remote_list() {
     let payload = normalize_ad_payload(json!({
         "version": 1,
         "ads": [
-            {
-                "id": "0029-token-bridge",
-                "type": "sponsor",
-                "title": "PackyCode",
-                "description": "远端推荐内容",
-                "url": "https://example.test/0029"
-            },
-            {
-                "id": "0055-token-bridge",
-                "type": "sponsor",
-                "title": "Token 云桥",
-                "description": "远端推荐内容",
-                "url": "https://example.test/0055"
-            },
             {
                 "id": "apikey-fun-ai-relay",
                 "type": "sponsor",
                 "title": "APIKEY.FUN",
                 "description": "远端推荐内容",
                 "url": "https://example.test/apikey"
-            },
-            {
-                "id": "rawchat-codex-relay",
-                "type": "sponsor",
-                "title": "RawChat",
-                "description": "远端推荐内容",
-                "url": "https://example.test/rawchat"
-            },
-            {
-                "id": "runapi-openrouter-alternative",
-                "type": "sponsor",
-                "title": "RunAPI",
-                "description": "远端推荐内容",
-                "url": "https://example.test/runapi"
-            },
-            {
-                "id": "baikewei-ai",
-                "type": "sponsor",
-                "title": "百可为AI",
-                "description": "远端推荐内容",
-                "url": "https://example.test/baikewei"
             },
             {
                 "id": "jojocode-codex-relay",
@@ -225,45 +190,8 @@ fn normalizes_known_remote_sponsors_with_local_logos() {
     }));
     let ads = payload["ads"].as_array().unwrap();
 
-    for id in [
-        "0029-token-bridge",
-        "apikey-fun-ai-relay",
-        "runapi-openrouter-alternative",
-    ] {
-        let ad = ads.iter().find(|ad| ad["id"] == json!(id)).unwrap();
-        assert!(
-            ad["image"]
-                .as_str()
-                .unwrap()
-                .starts_with("data:image/png;base64,"),
-            "{id}"
-        );
-    }
-    let baikewei = ads
-        .iter()
-        .find(|ad| ad["id"] == json!("baikewei-ai"))
-        .unwrap();
-    assert!(
-        baikewei["image"]
-            .as_str()
-            .unwrap()
-            .starts_with("data:image/jpeg;base64,")
-    );
-    for id in ["0055-token-bridge", "rawchat-codex-relay"] {
-        let ad = ads.iter().find(|ad| ad["id"] == json!(id)).unwrap();
-        assert!(
-            ad["image"]
-                .as_str()
-                .unwrap()
-                .starts_with("data:image/svg+xml;base64,"),
-            "{id}"
-        );
-    }
-    let jojocode = ads
-        .iter()
-        .find(|ad| ad["id"] == json!("jojocode-codex-relay"))
-        .unwrap();
-    assert_eq!(jojocode["image"], json!("https://example.test/logo.png"));
+    assert!(ads[0].get("image").is_none());
+    assert_eq!(ads[1]["image"], json!("https://example.test/logo.png"));
 }
 
 #[tokio::test]

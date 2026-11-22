@@ -2,6 +2,7 @@
 //!
 //! 一个供应商配了多个 Key（`RelayProfile.api_keys`）时，网关把每个 Key 展开成一个候选：
 //! 某个 Key 被限流（429）或额度耗尽就冷却它、换下一个；Key 失效（401）停用到 Key 本身被改掉；
+//! 限流（429）只冷却这个 Key 上被限流的那个上游模型，同一个 Key 的其它模型照常可用（#3229）；
 //! 上游连续 5xx 时熔断整个供应商一小段时间。用户还可以按供应商给每个 Key 设 RPM / 并发上限
 //! （主动限速，见文件后半部分），满了的 Key 先跳过、都满了排队，不等 429 再冷却。
 //!
@@ -248,12 +249,68 @@ fn reset_after_from_body(text: &str) -> Option<Duration> {
 
 #[derive(Debug, Clone, Default)]
 struct KeyHealth {
+    /// 整个 Key 的冷却：额度耗尽、官方登录 401，以及不知道上游模型时的 429。
     cooldown_until: Option<Instant>,
     /// 停用时 Key 的指纹；指纹变化（用户改了 Key）即解除。
     disabled_fingerprint: Option<u64>,
+    /// 不知道上游模型时连续 429 的次数（按模型的计数在 `models` 里）。
     consecutive_rate_limits: u32,
+    /// 按上游模型记的 429 冷却（#3229）：限流多半是「这个 Key 的这个模型」超限，
+    /// 不该连带同一个 Key 的其它模型一起被网关本地拦下。随 Key 的记录一起被重置 / 遗忘。
+    models: HashMap<String, ModelCooldown>,
     last_failure: Option<String>,
     last_failure_at_ms: Option<u64>,
+}
+
+/// 一个 Key 上某个上游模型的 429 冷却。
+#[derive(Debug, Clone, Default)]
+struct ModelCooldown {
+    cooldown_until: Option<Instant>,
+    consecutive_rate_limits: u32,
+}
+
+impl KeyHealth {
+    /// 用 `upstream_model` 请求这个 Key 还要冷却多久：整个 Key 的冷却与这个模型自己的冷却取较晚的。
+    /// `upstream_model` 为空时只看整个 Key 的冷却。
+    fn cooling_for(&self, upstream_model: &str, now: Instant) -> Option<Duration> {
+        let model = model_key(upstream_model);
+        let model_until = (!model.is_empty())
+            .then(|| self.models.get(&model))
+            .flatten()
+            .and_then(|entry| entry.cooldown_until);
+        [self.cooldown_until, model_until]
+            .into_iter()
+            .flatten()
+            .filter(|until| *until > now)
+            .max()
+            .map(|until| until - now)
+    }
+
+    /// 界面展示用：整个 Key 或任一模型还在冷却时，最晚多久后全部恢复。
+    fn longest_cooling(&self, now: Instant) -> Option<Duration> {
+        self.models
+            .values()
+            .filter_map(|entry| entry.cooldown_until)
+            .chain(self.cooldown_until)
+            .filter(|until| *until > now)
+            .max()
+            .map(|until| until - now)
+    }
+}
+
+/// 冷却表里模型的键：去掉首尾空白。
+fn model_key(upstream_model: &str) -> String {
+    upstream_model.trim().to_string()
+}
+
+/// 429 冷却多久：上游明确给了 Retry-After 就照办；没给时按连续次数指数退避，上限 10 分钟。
+fn rate_limit_backoff(retry_after: Option<Duration>, consecutive: u32) -> Duration {
+    retry_after.unwrap_or_else(|| {
+        let exponent = consecutive.saturating_sub(1).min(10);
+        RATE_LIMIT_BASE_COOLDOWN
+            .saturating_mul(1 << exponent)
+            .min(RATE_LIMIT_MAX_COOLDOWN)
+    })
 }
 
 #[derive(Debug, Clone, Default)]
@@ -373,7 +430,7 @@ pub fn order_keys_with(
     now: Instant,
     advance: bool,
 ) -> (Vec<KeyCandidate>, Option<Duration>) {
-    let order = order_keys_detailed(relay, mode, conversation, now, advance);
+    let order = order_keys_detailed(relay, "", mode, conversation, now, advance);
     (order.available, order.soonest)
 }
 
@@ -415,8 +472,12 @@ pub struct KeyOrder {
 }
 
 /// 同 [`order_keys_with`]，另外交回冷却 / 熔断中的 Key 及其原因。
+///
+/// `upstream_model` 是这次要发给这家的上游模型：只因别的模型被限流（429）而冷却的 Key 照常可用（#3229）。
+/// 为空时只看整个 Key 的冷却（[`order_keys`] / [`order_keys_with`] 就是这样）。
 pub fn order_keys_detailed(
     relay: &RelayProfile,
+    upstream_model: &str,
     mode: KeyRotationMode,
     conversation: Option<&str>,
     now: Instant,
@@ -441,10 +502,7 @@ pub fn order_keys_detailed(
             if health.disabled_fingerprint == Some(candidate.key.fingerprint) {
                 continue;
             }
-            if let Some(until) = health.cooldown_until
-                && until > now
-            {
-                let remaining = until - now;
+            if let Some(remaining) = health.cooling_for(upstream_model, now) {
                 if breaker.is_none() {
                     soonest = Some(soonest.map_or(remaining, |current| current.min(remaining)));
                 }
@@ -505,18 +563,25 @@ pub fn order_keys_detailed(
     }
 }
 
-/// 这个 Key 自己还要冷却多久；没在冷却返回 None（供应商熔断不算，见 [`WaitReason::Breaker`]）。
-pub fn cooling_remaining(key: &KeyRef, now: Instant) -> Option<Duration> {
+/// 用 `upstream_model` 请求这个 Key 还要冷却多久；没在冷却返回 None
+/// （供应商熔断不算，见 [`WaitReason::Breaker`]）。`upstream_model` 为空时只看整个 Key 的冷却。
+pub fn cooling_remaining(key: &KeyRef, upstream_model: &str, now: Instant) -> Option<Duration> {
     lock()
         .keys
         .get(&(key.relay_id.clone(), key.key_id.clone()))
-        .and_then(|health| health.cooldown_until)
-        .filter(|until| *until > now)
-        .map(|until| until - now)
+        .and_then(|health| health.cooling_for(upstream_model, now))
 }
 
 /// 记一次失败。返回是否应该换下一个候选。
-pub fn record_failure(key: &KeyRef, class: &FailureClass, now: Instant) -> bool {
+///
+/// 429 限流只冷却 `upstream_model` 这一个模型（#3229）；额度耗尽、官方登录 401 仍冷却整个 Key，
+/// Key 失效停用整个 Key。`upstream_model` 为空（不知道发的是哪个模型）时 429 也冷却整个 Key。
+pub fn record_failure(
+    key: &KeyRef,
+    upstream_model: &str,
+    class: &FailureClass,
+    now: Instant,
+) -> bool {
     let mut state = lock();
     let entry = state
         .keys
@@ -526,15 +591,18 @@ pub fn record_failure(key: &KeyRef, class: &FailureClass, now: Instant) -> bool 
     entry.last_failure_at_ms = Some(now_unix_ms());
     match class {
         FailureClass::RateLimited { retry_after } => {
-            entry.consecutive_rate_limits = entry.consecutive_rate_limits.saturating_add(1);
-            let backoff = retry_after.unwrap_or_else(|| {
-                let exponent = entry.consecutive_rate_limits.saturating_sub(1).min(10);
-                RATE_LIMIT_BASE_COOLDOWN
-                    .saturating_mul(1 << exponent)
-                    .min(RATE_LIMIT_MAX_COOLDOWN)
-            });
-            // 上游明确给了 Retry-After 就照办；没给时按指数退避，上限 10 分钟。
-            entry.cooldown_until = Some(now + backoff);
+            let model = model_key(upstream_model);
+            if model.is_empty() {
+                entry.consecutive_rate_limits = entry.consecutive_rate_limits.saturating_add(1);
+                let backoff = rate_limit_backoff(*retry_after, entry.consecutive_rate_limits);
+                entry.cooldown_until = Some(now + backoff);
+            } else {
+                let cooldown = entry.models.entry(model).or_default();
+                cooldown.consecutive_rate_limits =
+                    cooldown.consecutive_rate_limits.saturating_add(1);
+                let backoff = rate_limit_backoff(*retry_after, cooldown.consecutive_rate_limits);
+                cooldown.cooldown_until = Some(now + backoff);
+            }
         }
         FailureClass::QuotaExhausted { reset_after } => {
             entry.cooldown_until = Some(now + reset_after.unwrap_or(QUOTA_DEFAULT_COOLDOWN));
@@ -559,7 +627,10 @@ pub fn record_failure(key: &KeyRef, class: &FailureClass, now: Instant) -> bool 
 }
 
 /// 记一次成功：清掉限流计数、关闭熔断，并把会话粘到这个 Key 上。
-pub fn record_success(key: &KeyRef, conversation: Option<&str>) {
+///
+/// 清掉整个 Key 的冷却和 `upstream_model` 这个模型的限流冷却；同一个 Key 上别的模型被限流的记录不动
+/// （那个模型还没恢复）。`upstream_model` 为空时清掉这个 Key 的全部限流冷却。
+pub fn record_success(key: &KeyRef, upstream_model: &str, conversation: Option<&str>) {
     let mut state = lock();
     if let Some(entry) = state
         .keys
@@ -567,6 +638,12 @@ pub fn record_success(key: &KeyRef, conversation: Option<&str>) {
     {
         entry.consecutive_rate_limits = 0;
         entry.cooldown_until = None;
+        let model = model_key(upstream_model);
+        if model.is_empty() {
+            entry.models.clear();
+        } else {
+            entry.models.remove(&model);
+        }
         // 能成功就说明凭据是好的（例如刚刷新过）。
         entry.disabled_fingerprint = None;
     }
@@ -643,10 +720,11 @@ pub fn snapshot(now: Instant) -> PoolSnapshot {
         .keys
         .iter()
         .map(|((relay_id, key_id), health)| {
+            // 只有某个模型被限流时也显示成冷却中（界面上的「被限流」「冷却 Key」照旧），
+            // 剩余时间取这个 Key 全部恢复要多久。
             let remaining = health
-                .cooldown_until
-                .filter(|until| *until > now)
-                .map(|until| (until - now).as_millis() as u64);
+                .longest_cooling(now)
+                .map(|remaining| remaining.as_millis() as u64);
             KeyHealthView {
                 relay_id: relay_id.clone(),
                 key_id: key_id.clone(),
@@ -903,6 +981,15 @@ mod tests {
         }
     }
 
+    /// 用 `upstream_model` 请求这家时现在可用的 Key（不推进轮询）。
+    fn available_ids(relay: &RelayProfile, upstream_model: &str, now: Instant) -> Vec<String> {
+        order_keys_detailed(relay, upstream_model, KeyRotationMode::Sticky, None, now, false)
+            .available
+            .into_iter()
+            .map(|key| key.key.key_id)
+            .collect()
+    }
+
     fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
         let mut map = HeaderMap::new();
         for (name, value) in pairs {
@@ -1022,21 +1109,15 @@ mod tests {
         assert_eq!(keys[0].key.key_id, "a");
         assert!(record_failure(
             &keys[0].key,
+            "m",
             &FailureClass::RateLimited {
                 retry_after: Some(Duration::from_secs(20))
             },
             now
         ));
-        let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, None, now);
-        assert_eq!(
-            keys.iter()
-                .map(|key| key.key.key_id.as_str())
-                .collect::<Vec<_>>(),
-            vec!["b"]
-        );
+        assert_eq!(available_ids(&relay, "m", now), vec!["b"]);
         let later = now + Duration::from_secs(21);
-        let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, None, later);
-        assert_eq!(keys.len(), 2);
+        assert_eq!(available_ids(&relay, "m", later), vec!["a", "b"]);
     }
 
     #[test]
@@ -1051,15 +1132,16 @@ mod tests {
                 .key;
             record_failure(
                 &key,
+                "m",
                 &FailureClass::RateLimited {
                     retry_after: Some(Duration::from_secs(seconds)),
                 },
                 now,
             );
         }
-        let (keys, soonest) = order_keys(&relay, KeyRotationMode::Sticky, None, now);
-        assert!(keys.is_empty());
-        assert_eq!(soonest, Some(Duration::from_secs(10)));
+        let order = order_keys_detailed(&relay, "m", KeyRotationMode::Sticky, None, now, false);
+        assert!(order.available.is_empty());
+        assert_eq!(order.soonest, Some(Duration::from_secs(10)));
     }
 
     #[test]
@@ -1067,7 +1149,7 @@ mod tests {
         let mut relay = relay("kp-auth", &[("a", "sk-a"), ("b", "sk-b")]);
         let now = Instant::now();
         let key_a = expand_keys(&relay)[0].key.clone();
-        record_failure(&key_a, &FailureClass::AuthInvalid, now);
+        record_failure(&key_a, "m", &FailureClass::AuthInvalid, now);
         let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, None, now);
         assert_eq!(keys.len(), 1);
         relay.api_keys[0].api_key = "sk-a-new".to_string();
@@ -1083,13 +1165,13 @@ mod tests {
         relay.auth_contents = r#"{"access_token":"old"}"#.to_string();
         let now = Instant::now();
         let key = expand_keys(&relay)[0].key.clone();
-        record_failure(&key, &FailureClass::AuthInvalid, now);
+        record_failure(&key, "m", &FailureClass::AuthInvalid, now);
         assert!(order_keys(&relay, KeyRotationMode::Sticky, None, now).0.is_empty());
         relay.auth_contents = r#"{"access_token":"new"}"#.to_string();
         assert_eq!(order_keys(&relay, KeyRotationMode::Sticky, None, now).0.len(), 1);
 
         relay.auth_contents = r#"{"access_token":"old"}"#.to_string();
-        record_success(&key, None);
+        record_success(&key, "m", None);
         assert_eq!(order_keys(&relay, KeyRotationMode::Sticky, None, now).0.len(), 1, "成功一次就解除");
     }
 
@@ -1098,7 +1180,7 @@ mod tests {
         let relay = relay("kp-sticky", &[("a", "sk-a"), ("b", "sk-b")]);
         let now = Instant::now();
         let key_b = expand_keys(&relay)[1].key.clone();
-        record_success(&key_b, Some("conv-1"));
+        record_success(&key_b, "m", Some("conv-1"));
         let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, Some("conv-1"), now);
         assert_eq!(keys[0].key.key_id, "b");
         let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, Some("conv-2"), now);
@@ -1142,12 +1224,12 @@ mod tests {
         let now = Instant::now();
         let key = expand_keys(&relay)[0].key.clone();
         for _ in 0..BREAKER_THRESHOLD {
-            record_failure(&key, &FailureClass::ServerError, now);
+            record_failure(&key, "m", &FailureClass::ServerError, now);
         }
         let (keys, soonest) = order_keys(&relay, KeyRotationMode::Sticky, None, now);
         assert!(keys.is_empty());
         assert_eq!(soonest, Some(BREAKER_OPEN));
-        record_success(&key, None);
+        record_success(&key, "m", None);
         let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, None, now);
         assert_eq!(keys.len(), 1);
     }
@@ -1235,15 +1317,15 @@ mod tests {
         let now = Instant::now();
         let key = expand_keys(&relay)[0].key.clone();
         let limited = FailureClass::RateLimited { retry_after: None };
-        record_failure(&key, &limited, now);
-        assert_eq!(cooling_remaining(&key, now), Some(Duration::from_secs(5)));
-        record_failure(&key, &limited, now);
-        assert_eq!(cooling_remaining(&key, now), Some(Duration::from_secs(10)));
-        record_success(&key, None);
-        assert_eq!(cooling_remaining(&key, now), None);
-        record_failure(&key, &limited, now);
+        record_failure(&key, "m", &limited, now);
+        assert_eq!(cooling_remaining(&key, "m", now), Some(Duration::from_secs(5)));
+        record_failure(&key, "m", &limited, now);
+        assert_eq!(cooling_remaining(&key, "m", now), Some(Duration::from_secs(10)));
+        record_success(&key, "m", None);
+        assert_eq!(cooling_remaining(&key, "m", now), None);
+        record_failure(&key, "m", &limited, now);
         assert_eq!(
-            cooling_remaining(&key, now),
+            cooling_remaining(&key, "m", now),
             Some(Duration::from_secs(5)),
             "成功一次后从头算"
         );
@@ -1257,20 +1339,21 @@ mod tests {
         let keys = expand_keys(&relay);
         record_failure(
             &keys[0].key,
+            "m",
             &FailureClass::RateLimited {
                 retry_after: Some(Duration::from_secs(8)),
             },
             now,
         );
-        let order = order_keys_detailed(&relay, KeyRotationMode::Sticky, None, now, false);
+        let order = order_keys_detailed(&relay, "m", KeyRotationMode::Sticky, None, now, false);
         assert_eq!(order.available.len(), 1);
         assert_eq!(order.waiting.len(), 1);
         assert_eq!(order.waiting[0].reason, WaitReason::Cooling);
         assert_eq!(order.waiting[0].remaining, Duration::from_secs(8));
         for _ in 0..BREAKER_THRESHOLD {
-            record_failure(&keys[1].key, &FailureClass::ServerError, now);
+            record_failure(&keys[1].key, "m", &FailureClass::ServerError, now);
         }
-        let order = order_keys_detailed(&relay, KeyRotationMode::Sticky, None, now, false);
+        let order = order_keys_detailed(&relay, "m", KeyRotationMode::Sticky, None, now, false);
         assert!(order.available.is_empty());
         assert_eq!(order.soonest, Some(BREAKER_OPEN));
         let reasons = order
@@ -1284,12 +1367,102 @@ mod tests {
         );
     }
 
+    /// 429 只冷却被限流的那个模型（#3229）：同一个 Key 的其它模型照常可选，界面上 Key 仍显示冷却中。
+    #[test]
+    fn rate_limit_on_one_model_keeps_other_models_on_the_same_key() {
+        let relay = relay("kp-model-cool", &[("a", "sk-a")]);
+        let now = Instant::now();
+        let key = expand_keys(&relay)[0].key.clone();
+        let limited = FailureClass::RateLimited { retry_after: None };
+        assert!(record_failure(&key, "gpt-888", &limited, now));
+        record_failure(&key, "gpt-888", &limited, now);
+
+        assert!(available_ids(&relay, "gpt-888", now).is_empty());
+        let order = order_keys_detailed(&relay, "gpt-888", KeyRotationMode::Sticky, None, now, false);
+        assert_eq!(order.soonest, Some(Duration::from_secs(10)));
+        assert_eq!(order.waiting[0].reason, WaitReason::Cooling);
+        assert_eq!(cooling_remaining(&key, "gpt-888", now), Some(Duration::from_secs(10)));
+
+        assert_eq!(available_ids(&relay, "other-model", now), vec![PRIMARY_KEY_ID]);
+        let order = order_keys_detailed(&relay, "other-model", KeyRotationMode::Sticky, None, now, false);
+        assert_eq!(order.soonest, None, "别的模型不受冷却影响，也不报恢复时间");
+        assert!(order.waiting.is_empty());
+        assert_eq!(cooling_remaining(&key, "other-model", now), None);
+
+        // 另一个模型自己的 429 从头退避，不接着 gpt-888 的连续次数翻倍。
+        record_failure(&key, "other-model", &limited, now);
+        assert_eq!(cooling_remaining(&key, "other-model", now), Some(Duration::from_secs(5)));
+        // 另一个模型成功只清它自己的冷却。
+        record_success(&key, "other-model", None);
+        assert_eq!(cooling_remaining(&key, "other-model", now), None);
+        assert_eq!(cooling_remaining(&key, "gpt-888", now), Some(Duration::from_secs(10)));
+
+        let view = snapshot(now)
+            .keys
+            .into_iter()
+            .find(|view| view.relay_id == "kp-model-cool")
+            .expect("Key 有健康记录");
+        assert_eq!(view.state, "cooling", "界面上照旧显示被限流");
+        assert_eq!(view.remaining_ms, Some(10_000));
+        assert_eq!(view.last_failure.as_deref(), Some("rate_limited"));
+
+        assert_eq!(available_ids(&relay, "gpt-888", now + Duration::from_secs(10)), vec![PRIMARY_KEY_ID]);
+    }
+
+    /// 额度耗尽仍冷却整个 Key：换哪个模型都一样用不了。
+    #[test]
+    fn quota_exhausted_still_cools_the_whole_key() {
+        let relay = relay("kp-model-quota", &[("a", "sk-a"), ("b", "sk-b")]);
+        let now = Instant::now();
+        let key_a = expand_keys(&relay)[0].key.clone();
+        record_failure(
+            &key_a,
+            "gpt-888",
+            &FailureClass::QuotaExhausted {
+                reset_after: Some(Duration::from_secs(600)),
+            },
+            now,
+        );
+        assert_eq!(available_ids(&relay, "gpt-888", now), vec!["b"]);
+        assert_eq!(available_ids(&relay, "other-model", now), vec!["b"]);
+        assert_eq!(available_ids(&relay, "", now), vec!["b"]);
+        assert_eq!(cooling_remaining(&key_a, "other-model", now), Some(Duration::from_secs(600)));
+    }
+
+    /// 界面上的「重置」和删 / 改 Key 同样清掉按模型记的冷却。
+    #[test]
+    fn reset_and_forget_clear_model_cooldowns() {
+        let relay = relay("kp-model-reset", &[("a", "sk-a"), ("b", "sk-b")]);
+        let now = Instant::now();
+        let keys = expand_keys(&relay);
+        let limited = FailureClass::RateLimited {
+            retry_after: Some(Duration::from_secs(120)),
+        };
+        record_failure(&keys[0].key, "gpt-888", &limited, now);
+        record_failure(&keys[1].key, "gpt-888", &limited, now);
+        assert!(available_ids(&relay, "gpt-888", now).is_empty());
+
+        reset("kp-model-reset");
+        assert_eq!(available_ids(&relay, "gpt-888", now), vec!["a", "b"]);
+        assert!(
+            snapshot(now)
+                .keys
+                .iter()
+                .all(|view| view.relay_id != "kp-model-reset"),
+            "重置后界面上不再显示冷却"
+        );
+
+        record_failure(&keys[0].key, "gpt-888", &limited, now);
+        forget_key("kp-model-reset", "a");
+        assert_eq!(available_ids(&relay, "gpt-888", now), vec!["a", "b"]);
+    }
+
     #[test]
     fn client_errors_do_not_failover_or_cool_down() {
         let relay = relay("kp-client", &[("a", "sk-a"), ("b", "sk-b")]);
         let now = Instant::now();
         let key = expand_keys(&relay)[0].key.clone();
-        assert!(!record_failure(&key, &FailureClass::ClientError, now));
+        assert!(!record_failure(&key, "m", &FailureClass::ClientError, now));
         let (keys, _) = order_keys(&relay, KeyRotationMode::Sticky, None, now);
         assert_eq!(keys.len(), 2);
     }

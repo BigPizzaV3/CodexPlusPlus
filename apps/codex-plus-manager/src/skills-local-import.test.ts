@@ -8,7 +8,7 @@ const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "u
 const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
 
 test("skills page imports a picked local folder through the registered backend command", () => {
-  assert.match(extra, /import \{ open as openDialog \} from "@tauri-apps\/plugin-dialog";/);
+  assert.match(extra, /import \{ open as openDialog, save as saveDialog \} from "@tauri-apps\/plugin-dialog";/);
   assert.match(extra, /openDialog\(\{ directory: true, multiple: false,/);
   // run() 会用返回的 payload 刷新列表，并把失败原文（例如缺少 SKILL.md）提示出来。
   assert.match(extra, /if \(await run\("import_local_skills", \{ path \}\)\) setTab\("installed"\);/);

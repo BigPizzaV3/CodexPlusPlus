@@ -100,4 +100,13 @@ test("厂商图标：已知家族给彩色字形，认不出的回退字母", ()
   const unknown = glyph({ name: "mystery-1", provider: "自家中转", groupId: "self" });
   assert.equal(unknown.color, "#123456", "未知家族 → 供应商配色");
   assert.equal(unknown.letter, "M");
+  assert.equal(glyph({ name: "111" }).letter, "1");
+});
+
+test("同一档内按原价位置填充小数格", () => {
+  const fill = makeContext().codexPlusModelPickerPriceFill;
+  assert.equal(fill(null), -1);
+  assert.equal(fill({ input: 0, output: 0 }), 0);
+  assert.equal(fill({ input: 2.6, output: 2.6 }), 2.5);
+  assert.equal(fill({ input: 12, output: 12 }), 5);
 });

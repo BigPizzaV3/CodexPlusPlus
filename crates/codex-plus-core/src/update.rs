@@ -174,12 +174,21 @@ pub fn release_from_latest_json_payload(payload: &Value) -> anyhow::Result<Relea
 }
 
 pub fn select_update_asset(assets: &[(String, String)]) -> Option<ReleaseAsset> {
+    select_update_asset_by(assets, platform_asset_rank)
+}
+
+/// 按给定的打分函数挑附件：分数越小越好，2 及以上视为不可用，同分时先出现者胜。
+/// 打分函数单独传入，测试可以不依赖编译机的系统和架构。
+fn select_update_asset_by(
+    assets: &[(String, String)],
+    rank_of: impl Fn(&str) -> u8,
+) -> Option<ReleaseAsset> {
     let named = assets
         .iter()
         .filter(|(name, url)| !name.trim().is_empty() && !url.trim().is_empty());
     let mut best: Option<(u8, &str, &str)> = None;
     for (name, url) in named {
-        let rank = platform_asset_rank(&name.to_ascii_lowercase());
+        let rank = rank_of(&name.to_ascii_lowercase());
         if rank >= 2 {
             continue;
         }
@@ -637,8 +646,8 @@ fn platform_asset_rank(name: &str) -> u8 {
         }
         return 1;
     }
-    if cfg!(windows) && is_windows_installer_asset(name) {
-        return 0;
+    if cfg!(windows) {
+        return windows_asset_rank(name, std::env::consts::ARCH);
     }
     if cfg!(target_os = "linux") {
         if !is_linux_installer_asset(name) {
@@ -697,6 +706,28 @@ fn is_linux_native_arch_asset(name: &str) -> bool {
         _ => return true,
     };
     native_tokens.iter().any(|token| lower.contains(token))
+}
+
+/// Windows 安装包打分，架构作为参数传入以便测试覆盖 x64 / arm64 两种机器。
+/// - x86_64：只要 x64 包或不带架构标记的旧包，arm64 包装不上，直接排除。
+/// - aarch64：优先 arm64 包；没有时退回 x64 / 无标记包（Win11 ARM 可模拟运行 x64）。
+/// - 其他架构：不认识，都接受，但不优先 arm64。
+fn windows_asset_rank(name: &str, arch: &str) -> u8 {
+    if !is_windows_installer_asset(name) {
+        return 2;
+    }
+    match (arch, is_windows_arm64_asset(name)) {
+        ("x86_64", true) => 2,
+        ("aarch64", true) => 0,
+        ("aarch64", false) => 1,
+        (_, true) => 1,
+        (_, false) => 0,
+    }
+}
+
+fn is_windows_arm64_asset(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("arm64") || lower.contains("aarch64")
 }
 
 fn is_windows_installer_asset(name: &str) -> bool {
@@ -851,5 +882,84 @@ mod tests {
             .iter()
             .any(|progress| progress.stage == UpdateStage::Downloading && progress.downloaded_bytes > 0));
         assert_eq!(observed.last().map(|progress| progress.stage), Some(UpdateStage::Writing));
+    }
+
+    fn assets_from_names(names: &[&str]) -> Vec<(String, String)> {
+        names
+            .iter()
+            .map(|name| (name.to_string(), format!("https://example.test/{name}")))
+            .collect()
+    }
+
+    fn select_windows_asset(names: &[&str], arch: &str) -> Option<String> {
+        select_update_asset_by(&assets_from_names(names), |name| windows_asset_rank(name, arch))
+            .map(|asset| asset.name)
+    }
+
+    // latest.json 按文件名字母序列出附件，arm64 排在 x64 前面。
+    const WINDOWS_X64_AND_ARM64_ASSETS: &[&str] = &[
+        "CodexPlusPlus-3.0.0-macos-arm64.dmg",
+        "CodexPlusPlus-3.0.0-windows-arm64-setup.exe",
+        "CodexPlusPlus-3.0.0-windows-arm64.zip",
+        "CodexPlusPlus-3.0.0-windows-x64-setup.exe",
+        "CodexPlusPlus-3.0.0-windows-x64.zip",
+    ];
+
+    #[test]
+    fn windows_x64_selects_x64_installer_when_arm64_is_listed_first() {
+        assert_eq!(
+            select_windows_asset(WINDOWS_X64_AND_ARM64_ASSETS, "x86_64").as_deref(),
+            Some("CodexPlusPlus-3.0.0-windows-x64-setup.exe")
+        );
+    }
+
+    #[test]
+    fn windows_arm64_selects_arm64_installer_when_both_exist() {
+        assert_eq!(
+            select_windows_asset(WINDOWS_X64_AND_ARM64_ASSETS, "aarch64").as_deref(),
+            Some("CodexPlusPlus-3.0.0-windows-arm64-setup.exe")
+        );
+        // 顺序反过来也一样，不靠先出现者胜。
+        let mut reversed = WINDOWS_X64_AND_ARM64_ASSETS.to_vec();
+        reversed.reverse();
+        assert_eq!(
+            select_windows_asset(&reversed, "aarch64").as_deref(),
+            Some("CodexPlusPlus-3.0.0-windows-arm64-setup.exe")
+        );
+    }
+
+    #[test]
+    fn windows_arm64_falls_back_to_x64_installer() {
+        let assets = [
+            "CodexPlusPlus-2.9.0-macos-arm64.dmg",
+            "CodexPlusPlus-2.9.0-windows-x64-setup.exe",
+            "CodexPlusPlus-2.9.0-windows-x64.zip",
+        ];
+        assert_eq!(
+            select_windows_asset(&assets, "aarch64").as_deref(),
+            Some("CodexPlusPlus-2.9.0-windows-x64-setup.exe")
+        );
+    }
+
+    #[test]
+    fn windows_x64_never_selects_arm64_only_release() {
+        let assets = [
+            "CodexPlusPlus-3.0.0-windows-arm64-setup.exe",
+            "CodexPlusPlus-3.0.0-windows-arm64.zip",
+        ];
+        assert_eq!(select_windows_asset(&assets, "x86_64"), None);
+    }
+
+    #[test]
+    fn windows_accepts_installers_without_arch_token_on_both_arches() {
+        // 旧版本的安装包名不带架构标记，保持向后兼容。
+        let assets = ["codex-plus-plus-manager.exe", "CodexPlusPlus_1.0.9-setup.exe"];
+        for arch in ["x86_64", "aarch64"] {
+            assert_eq!(
+                select_windows_asset(&assets, arch).as_deref(),
+                Some("CodexPlusPlus_1.0.9-setup.exe"),
+                "arch {arch}"
+            );
+        }
     }
 }

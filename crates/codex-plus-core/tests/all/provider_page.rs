@@ -151,6 +151,45 @@ fn list_masks_named_api_keys() {
 }
 
 #[test]
+fn official_profile_restores_its_private_mixed_configuration_after_reopening_the_page() {
+    use codex_plus_core::settings::{InactiveMixedApi, RelayModelRoute};
+
+    let snapshot = InactiveMixedApi {
+        config_contents: "model = \"fixture-model\"\n".into(),
+        upstream_base_url: "https://fixture.example/v1".into(),
+        model_routes: vec![RelayModelRoute {
+            model: "old-alias".into(), target_relay_id: "b".into(), target_model: "remote".into(),
+        }],
+    };
+    let fixture = Fixture::new(vec![RelayProfile {
+        id: "toggle".into(), name: "Toggle".into(),
+        inactive_mixed_api: Some(snapshot.clone()), ..RelayProfile::default()
+    }]);
+    let live_before = (fixture.live("config.toml"), fixture.live("auth.json"));
+    for mixed in [false, true] {
+        let list = fixture.list();
+        let mut profiles = profiles_of(&list);
+        let row = profile_mut(&mut profiles, "toggle");
+        assert!(row.get("inactiveMixedApi").is_none());
+        row["officialMixApiKey"] = json!(mixed);
+        fixture.commit(json!({ "revision": list["revision"], "relayProfiles": profiles })).unwrap();
+        let saved = fixture.stored("toggle");
+        if mixed {
+            assert!(saved.config_contents.contains(&snapshot.config_contents));
+            assert_eq!(saved.upstream_base_url, snapshot.upstream_base_url);
+            assert_eq!(saved.model_routes, snapshot.model_routes);
+            assert!(saved.inactive_mixed_api.is_none());
+        } else {
+            assert_eq!(saved.inactive_mixed_api.as_ref(), Some(&snapshot));
+            assert!(saved.config_contents.is_empty());
+        }
+    }
+    assert_eq!(fixture.store.load().unwrap().active_relay_id, "a");
+    assert_eq!(fixture.switches.load(Ordering::SeqCst), 0);
+    assert_eq!((fixture.live("config.toml"), fixture.live("auth.json")), live_before);
+}
+
+#[test]
 fn editing_inactive_profile_restores_masked_keys_and_only_saves() {
     let fixture = Fixture::new(Vec::new());
     let list = fixture.list();

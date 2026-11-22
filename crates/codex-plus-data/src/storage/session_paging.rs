@@ -2,8 +2,9 @@ use super::{
     LocalSession, SchemaKind, codex_thread_filter, optional_column_expression, schema_kind,
     table_columns,
 };
+use codex_plus_core::session_names::ThreadNameCache;
 use rusqlite::{Connection, OpenFlags, Row, params_from_iter};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -30,61 +31,6 @@ pub struct LocalSessionPager {
     thread_names: ThreadNameCache,
     #[cfg(test)]
     after_snapshot: Option<Box<dyn FnOnce() + Send>>,
-}
-
-#[derive(Default)]
-struct ThreadNameCache {
-    path: PathBuf,
-    refreshed_at: Option<Instant>,
-    stamp: Option<FileStamp>,
-    names: HashMap<String, String>,
-}
-
-impl ThreadNameCache {
-    fn names(&mut self, path: &Path) -> &HashMap<String, String> {
-        // 只比较长度与时间戳：Codex 改名是追加写，我们自己的清理是原子替换，两者都会改变指纹。
-        let stamp = FileStamp::read(path, 0).ok().flatten();
-        let reusable = self.path == path
-            && stamp.is_some()
-            && stamp == self.stamp
-            && self
-                .refreshed_at
-                .is_some_and(|time| time.elapsed() < INDEX_MAX_AGE);
-        if !reusable {
-            self.path = path.to_path_buf();
-            self.refreshed_at = Some(Instant::now());
-            // 线程名只是显示用途；读不到就回落 threads.title，不把整页标记为失败。
-            self.names = match std::fs::read(path) {
-                Ok(bytes) if stamp.is_some() => parse_session_index_thread_names(&bytes),
-                _ => HashMap::new(),
-            };
-            self.stamp = stamp;
-        }
-        &self.names
-    }
-}
-
-/// 解析 Codex 的 session_index.jsonl：追加写，同一 ID 以最后一条非空 thread_name 为准，坏行跳过。
-fn parse_session_index_thread_names(bytes: &[u8]) -> HashMap<String, String> {
-    let mut names = HashMap::new();
-    for line in bytes.split(|byte| *byte == b'\n') {
-        let Ok(record) = serde_json::from_slice::<serde_json::Value>(line) else {
-            continue;
-        };
-        let (Some(id), Some(name)) = (
-            record.get("id").and_then(serde_json::Value::as_str),
-            record
-                .get("thread_name")
-                .and_then(serde_json::Value::as_str),
-        ) else {
-            continue;
-        };
-        let (id, name) = (id.trim(), name.trim());
-        if !id.is_empty() && !name.is_empty() {
-            names.insert(id.to_string(), name.to_string());
-        }
-    }
-    names
 }
 
 #[derive(Default)]

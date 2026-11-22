@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { aggregateSkillGroupItems, customSkillGroupKey, defaultSkillGroupKey, groupSkills, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { aggregateSkillGroupItems, applySkillBundleGroups, customSkillGroupKey, defaultSkillGroupKey, groupSkills, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillBundleExportGroups, skillBundleSelections, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
 
 const skill = (id: string, repoKey = "", bundled = false) => ({ id, repoKey, bundled });
 const labels = { builtin: "Built-in", user: "User", source: (item: ReturnType<typeof skill>) => item.repoKey === "local" ? "Local import" : item.repoKey.split("@", 1)[0] };
@@ -317,4 +317,51 @@ test("storage reads old data and retains unknown fields while rejecting malforme
   assert.deepEqual(restored.aliases, { "repo:a": "Alias" });
   assert.deepEqual(restored.future, { keep: true });
   assert.deepEqual(readSkillGroupStorage("broken"), { names: [], assignments: {}, assignmentsByIdentity: {}, order: [], sortDirection: null, aliases: {} });
+});
+
+test("migration package (#2852): selected groups carry their group keys, and importing restores names, members and order", () => {
+  const installed = (id: string, repoKey = "local", bundled = false) => ({ ...skill(id, repoKey, bundled), installed: true });
+  const known = [installed("alpha", "owner/repo@main"), installed("beta"), installed("gamma"), installed("sys", "", true),
+    { ...skill("remote", "owner/repo@main"), installed: false }];
+  const assignments = { [skillIdentityKey(known[1])]: customSkillGroupKey("Workflow") };
+  const groups = groupSkills(known, known, ["Workflow", "Empty"], {}, [], labels, true, {}, assignments);
+  const exportable = skillBundleExportGroups(groups);
+  assert.deepEqual(exportable.map((group) => [group.key, group.bundleGroup, group.ids]), [
+    ["user", "", ["gamma"]],
+    ["repo:owner/repo", "repo:owner/repo", ["alpha"]],
+    ["custom:Workflow", "custom:Workflow", ["beta"]],
+  ], "内置、未安装的不导出；空分组不列");
+
+  assert.deepEqual(skillBundleSelections(exportable, new Set(["user", "custom:Workflow"])), {
+    skills: [{ id: "gamma", group: "" }, { id: "beta", group: "custom:Workflow" }],
+    groups: ["custom:Workflow"],
+  });
+  const duplicated = [...exportable, { key: "custom:Other", label: "Other", bundleGroup: "custom:Other", ids: ["beta", "delta"] }];
+  assert.deepEqual(skillBundleSelections(duplicated, new Set(["custom:Workflow", "custom:Other"])).skills.map((item) => item.id),
+    ["beta", "delta"], "同一个 Skill 只进包一次");
+
+  // 新机器：导入后来源都是本地导入，本机原有一个分组和一条顺序。
+  const imported = [installed("alpha"), installed("beta"), installed("gamma"), installed("sys", "", true)];
+  const current = { names: ["Mine"], assignmentsByIdentity: { [skillIdentityKey(imported[2])]: customSkillGroupKey("Mine") }, order: ["custom:Mine"] };
+  const restored = applySkillBundleGroups({
+    groups: ["custom:Workflow", "repo:owner/repo", "custom:Mine"],
+    skills: [{ id: "alpha", group: "repo:owner/repo" }, { id: "beta", group: "custom:Workflow" }, { id: "gamma", group: "" },
+      { id: "sys", group: "custom:Workflow" }, { id: "absent", group: "custom:Ghost" }],
+  }, imported, current);
+  assert.deepEqual(restored.names, ["Mine", "Workflow", "Ghost"]);
+  assert.deepEqual(restored.assignmentsByIdentity, {
+    [skillIdentityKey(imported[2])]: "custom:Mine",
+    [skillIdentityKey(imported[0])]: "repo:owner/repo",
+    [skillIdentityKey(imported[1])]: "custom:Workflow",
+  }, "按来源的不动本机设置；内置 Skill 不改分组");
+  assert.deepEqual(restored.order, ["custom:Mine", "custom:Workflow", "repo:owner/repo"]);
+  assert.deepEqual(current.names, ["Mine"], "不改传入的状态");
+
+  const regrouped = groupSkills(imported, imported, restored.names, {}, restored.order, labels, true, {}, restored.assignmentsByIdentity);
+  assert.deepEqual(regrouped.filter((group) => group.items.length).map((group) => [group.key, group.items.map((item) => item.id)]), [
+    ["builtin", ["sys"]],
+    ["custom:Mine", ["gamma"]],
+    ["custom:Workflow", ["beta"]],
+    ["repo:owner/repo", ["alpha"]],
+  ]);
 });

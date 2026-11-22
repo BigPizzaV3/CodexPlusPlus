@@ -21,6 +21,10 @@ test("ordinary manager settings links still open settings", () => {
   assert.deepEqual(managerNavigationDestination({ page: "settings" }), { route: "settings" });
 });
 
+test("pending provider recovery opens session maintenance", () => {
+  assert.deepEqual(managerNavigationDestination({ page: "sessions" }), { route: "sessions" });
+});
+
 test("plugin market navigation opens its own page", () => {
   assert.deepEqual(managerNavigationDestination({ page: "pluginMarket" }), { route: "pluginMarket" });
   assert.deepEqual(managerNavigationDestination({ page: "pluginMarket", section: "dictation" }), { route: "pluginMarket" });

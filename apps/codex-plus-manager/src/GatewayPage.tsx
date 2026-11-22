@@ -3,13 +3,16 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
-import { AlertTriangle, Asterisk, Check, ChevronDown, ChevronRight, ChevronUp, Copy, Plus, RefreshCw, Search, Shuffle, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Asterisk, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, ListChecks, Plus, RefreshCw, Search, Shuffle, Waypoints, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import {
   glanceAgents,
   agentName,
+  appendGroupMembers,
+  batchMemberRows,
+  type BatchMemberRow,
   formatElapsed,
   groupModeDescription,
   groupModeLabel,
@@ -92,7 +95,7 @@ export function GatewayPage({
   onTabChange?: (tab: Tab) => void;
   /** 「网关设置」末尾附加的内容：主窗口传进来的新旧共用本地服务设置。 */
   extraSettings?: ReactNode;
-  onOpenCodexProviderSettings?: () => void;
+  onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：主窗口传进来才显示，不传就只留模型选择与接入开关。 */
   codexRun?: CodexRunControls;
 }) {
@@ -551,6 +554,124 @@ function imageInputOptions(payload: GatewayPayload | null, members: GroupMember[
   return options;
 }
 
+/**
+ * 「按模型批量添加」浮层（#2823）：先选模型，再勾选提供它的供应商，一次加进组里。
+ * 加完回到模型列表接着选下一个模型，浮层不关；已经在组里的那几家不能重复勾选。
+ */
+function BatchMemberPicker({ payload, members, onAdd }: { payload: GatewayPayload | null; members: GroupMember[]; onAdd: (models: string[]) => void }) {
+  const [query, setQuery] = useState("");
+  const [model, setModel] = useState<string | null>(null);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const rows = useMemo(() => batchMemberRows(payload, members), [payload, members]);
+  const current = model === null ? null : rows.find((row) => row.model === model) ?? null;
+
+  if (current) {
+    const open = current.candidates.filter((candidate) => !candidate.added);
+    const chosen = open.filter((candidate) => picked.has(candidate.providerId));
+    const allPicked = open.length > 0 && chosen.length === open.length;
+    return (
+      <div className="gw-mp gw-batch">
+        <div className="gw-mp-top">
+          <div className="gw-batch-head">
+            <button aria-label={t("返回")} className="gw-icon-button" onClick={() => setModel(null)} type="button"><ChevronLeft className="h-4 w-4" /></button>
+            <span className="gw-mp-text">
+              <strong>{prettyModelName(current.model)}</strong>
+              <small>{current.model}</small>
+            </span>
+            <button
+              className="gw-text-button"
+              disabled={!open.length}
+              onClick={() => setPicked(allPicked ? new Set() : new Set(open.map((candidate) => candidate.providerId)))}
+              type="button"
+            >
+              {allPicked ? t("全不选") : t("全选")}
+            </button>
+          </div>
+        </div>
+        <div className="gw-mp-list">
+          {current.candidates.map((candidate) => (
+            <label className="gw-select-item" data-added={candidate.added} key={candidate.providerId}>
+              <input
+                checked={candidate.added || picked.has(candidate.providerId)}
+                disabled={candidate.added}
+                onChange={() => setPicked((previous) => {
+                  const next = new Set(previous);
+                  if (!next.delete(candidate.providerId)) next.add(candidate.providerId);
+                  return next;
+                })}
+                type="checkbox"
+              />
+              <Avatar baseUrl={candidate.baseUrl} name={candidate.name} size="sm" />
+              <span>{candidate.name}</span>
+              {candidate.added ? <em>{t("已在组里")}</em> : null}
+            </label>
+          ))}
+        </div>
+        <div className="gw-mp-foot gw-batch-foot">
+          <small className="gw-muted">{tf("已选 {0} / {1} 家", [chosen.length, open.length])}</small>
+          <Button
+            disabled={!chosen.length}
+            onClick={() => {
+              onAdd(chosen.map((candidate) => candidate.member));
+              setModel(null);
+            }}
+            size="sm"
+            type="button"
+          >
+            {tf("添加 {0} 个", [chosen.length])}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const needle = query.trim().toLowerCase();
+  const visible = needle
+    ? rows.filter((row) => row.model.toLowerCase().includes(needle) || row.candidates.some((candidate) => candidate.name.toLowerCase().includes(needle)))
+    : rows;
+  const pick = (row: BatchMemberRow) => {
+    setModel(row.model);
+    setPicked(new Set(row.candidates.filter((candidate) => !candidate.added).map((candidate) => candidate.providerId)));
+  };
+  return (
+    <div className="gw-mp gw-batch">
+      <div className="gw-mp-top">
+        <label className="gw-mp-search">
+          <Search className="h-4 w-4" />
+          <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("筛选模型或供应商…")} value={query} />
+          <em>{tf("{0} 个", [visible.length])}</em>
+        </label>
+      </div>
+      <div className="gw-mp-list">
+        {visible.length === 0 ? (
+          <div className="gw-empty">{rows.length ? t("没有匹配的模型") : t("供应商池是空的，先到「供应商」里添加。")}</div>
+        ) : null}
+        {visible.map((row) => {
+          const added = row.candidates.filter((candidate) => candidate.added).length;
+          return (
+            <div
+              className="gw-mp-item"
+              key={row.model}
+              onClick={() => pick(row)}
+              onKeyDown={(event) => { if (event.key === "Enter") pick(row); }}
+              role="option"
+              aria-selected={false}
+              tabIndex={0}
+            >
+              <span className="gw-mp-text">
+                <strong title={row.model}>{prettyModelName(row.model)}</strong>
+                <small>{row.candidates.map((candidate) => candidate.name).join(" · ")}</small>
+              </span>
+              <em className="gw-batch-count">{added ? tf("已加 {0} / {1} 家", [added, row.candidates.length]) : tf("{0} 家", [row.candidates.length])}</em>
+              <ChevronRight className="gw-picker-glyph h-4 w-4" />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /** 新建 / 编辑模型组：名称、模式、成员（池里的模型或别的组）、图像输入。 */
 function GroupEditor({
   payload,
@@ -572,6 +693,8 @@ function GroupEditor({
   const [members, setMembers] = useState<GroupMember[]>(group?.members.map((member) => ({ ...member })) ?? []);
   const [picking, setPicking] = useState(false);
   const addRef = useRef<HTMLButtonElement>(null);
+  const [batching, setBatching] = useState(false);
+  const batchRef = useRef<HTMLButtonElement>(null);
   // 图像输入（#3150）：空串跟随默认；可以选成员，也可以从池里另选一个收图的模型。
   const [imageInputModel, setImageInputModel] = useState(group?.imageInputModel ?? "");
   const [pickingImage, setPickingImage] = useState(false);
@@ -708,6 +831,16 @@ function GroupEditor({
                   <Plus className="h-4 w-4" />
                   {t("添加成员")}
                 </button>
+                <button
+                  className="gw-add-row"
+                  onClick={() => setBatching(!batching)}
+                  ref={batchRef}
+                  title={t("先选一个模型，再勾选提供它的供应商，一次加进组里")}
+                  type="button"
+                >
+                  <ListChecks className="h-4 w-4" />
+                  {t("按模型批量添加")}
+                </button>
                 <span className="gw-pattern-input">
                   <Asterisk aria-hidden className="h-3.5 w-3.5" />
                   <input
@@ -741,6 +874,9 @@ function GroupEditor({
                   selectedModel=""
                   skipGroup={group?.id}
                 />
+              </Floating>
+              <Floating anchorRef={batchRef} className="gw-model-popover" onClose={() => setBatching(false)} open={batching} width={420}>
+                <BatchMemberPicker members={members} onAdd={(models) => setMembers(appendGroupMembers(members, models))} payload={payload} />
               </Floating>
             </div>
           </div>

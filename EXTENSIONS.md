@@ -602,7 +602,7 @@ codexPlus.extension({ inject: ["sessionQuery"], async apply(ctx) {
 | `listSessions({ archived?, limit?, offset? })` | 会话数组，新到旧 |
 | `filterSessions({ id?, cwd?, archived?, createdAfter?, createdBefore?, limit? })` | 会话数组 |
 | `readSession(id)` | `{ session, events }` 完整事件日志 |
-| `readTitle(id)` | 标题 |
+| `readTitle(id)` | 标题，优先使用侧栏的最新会话名称，无名称时使用数据库标题 |
 | `listEvents(id, { types?, offset?, limit?, fromEnd? })` | 轻量事件（长文本截到 200 字） |
 | `filterEvents(id, { types?, text?, limit? })` | 匹配的事件（文本不分大小写） |
 | `readEvent({ sessionId, seq, before?, after? })` | 以 seq 为中心的事件窗口 |

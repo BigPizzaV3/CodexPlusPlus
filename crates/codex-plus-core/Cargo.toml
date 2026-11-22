@@ -7,7 +7,7 @@ repository.workspace = true
 
 [dependencies]
 # Claude Desktop 完整功能模式核心（ClaudeMom 仓库，两边共用一份）。
-claude-local = { git = "https://github.com/BigPizzaV3/ClaudeMom", rev = "fa43296c23cc31734a770f9cdacd03c28b5ab8ec" }
+claude-local = { git = "https://github.com/BigPizzaV3/ClaudeMom", rev = "26fd340280b738004c0931c048239081f7f1fac4" }
 aes-gcm.workspace = true
 anyhow.workspace = true
 async-trait = "0.1"
@@ -17,6 +17,7 @@ ecb = { version = "0.1", features = ["alloc"] }
 # Gzip for Connect frames. Rust backend only, so this does not link a system zlib.
 flate2 = { version = "1.1.9", default-features = false, features = ["rust_backend"] }
 futures-util = "0.3"
+hmac = "0.12"
 http.workspace = true
 httpdate.workspace = true
 fs2.workspace = true
@@ -41,7 +42,7 @@ rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "
 # 远程控制的局域网 HTTPS（自签证书）：Cargo.lock 里已有（reqwest / tungstenite 带进来），这里只是直接用。
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
-time = "0.3"
+time = { version = "0.3", features = ["parsing"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

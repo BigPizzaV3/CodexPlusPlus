@@ -4,7 +4,7 @@
    * 状态存数据，页面每次打开重建；请求结果通过来源/序号校验后才刷新当前页面。
    */
   const codexPlusPluginMarketState = window.__codexPlusPluginMarketState || {
-    source: "public", query: "", installedOnly: false, page: 1,
+    source: "full", query: "", installedOnly: false, page: 1,
     catalogs: {}, jobs: {},
   };
   window.__codexPlusPluginMarketState = codexPlusPluginMarketState;
@@ -77,18 +77,8 @@
     const filtered = codexPlusPluginMarketFilteredPlugins();
     const pages = Math.max(1, Math.ceil(filtered.length / codexPlusPluginMarketPageSize));
     state.page = Math.max(1, Math.min(pages, state.page));
-    panel.querySelectorAll("[data-codex-plugin-source]").forEach((button) => {
-      const active = button.dataset.codexPluginSource === state.source;
-      button.dataset.active = String(active);
-      button.setAttribute("aria-pressed", String(active));
-    });
     const refresh = panel.querySelector("[data-codex-plugin-refresh]");
     if (refresh) refresh.disabled = catalog.loading;
-    const sourceNote = panel.querySelector("[data-codex-plugin-source-note]");
-    if (sourceNote) {
-      sourceNote.hidden = state.source !== "full";
-      sourceNote.textContent = "完整市场收录全部插件，索引较大，首次加载可能需要几秒。";
-    }
     const status = panel.querySelector("[data-codex-plugin-market-status]");
     if (status) status.textContent = catalog.loading ? "正在加载插件目录…" : catalog.message || `${catalog.plugins.length.toLocaleString()} 个插件${catalog.cached ? " · 使用缓存目录" : ""}`;
     const results = panel.querySelector("[data-codex-plugin-results]");
@@ -230,10 +220,8 @@
       <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-plugin-market-panel" data-codex-plugin-market-panel="true">
         <p class="codex-plus-plugin-intro">检索插件目录，选中后下载并安装。目录浏览仅获取索引，插件文件按需下载。</p>
         <div class="codex-plus-plugin-toolbar">
-          <div class="codex-plus-plugin-sources" role="group" aria-label="插件来源"><button type="button" data-codex-plugin-source="public" aria-pressed="false">公开市场</button><button type="button" data-codex-plugin-source="full" aria-pressed="false">完整市场</button></div>
           <button type="button" class="codex-plus-button" data-codex-plugin-refresh="true">刷新目录</button>
         </div>
-        <div class="codex-plus-plugin-status" data-codex-plugin-source-note="true" hidden></div>
         <div class="codex-plus-plugin-toolbar"><input type="search" class="codex-plus-plugin-search" data-codex-plugin-query="true" aria-label="搜索插件" placeholder="搜索插件名称、简介或标签" value="${escapeHtml(state.query)}"><label class="codex-plus-plugin-filter"><input type="checkbox" data-codex-plugin-installed="true" ${state.installedOnly ? "checked" : ""}>仅已安装</label></div>
         <div class="codex-plus-plugin-status" data-codex-plugin-market-status="true" role="status" aria-live="polite"></div>
         <div class="codex-plus-plugin-results" data-codex-plugin-results="true" role="list" aria-label="插件结果"></div>
@@ -253,13 +241,6 @@
     });
     overlay.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
-      const source = target?.closest("[data-codex-plugin-source]");
-      if (source) {
-        state.source = source.dataset.codexPluginSource === "full" ? "full" : "public";
-        state.page = 1;
-        void loadCodexPlusPluginMarket(state.source);
-        return;
-      }
       if (target?.closest("[data-codex-plugin-refresh]")) {
         void loadCodexPlusPluginMarket(state.source, true);
         return;

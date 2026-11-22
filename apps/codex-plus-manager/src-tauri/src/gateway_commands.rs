@@ -59,6 +59,8 @@ pub struct GatewayPoolEntry {
     pub plan: String,
     /// 这个 ChatGPT 账号正借给 Codex 登录（Codex 以官方身份接入网关）。
     pub lent_to_codex: bool,
+    /// ChatGPT 账号手上的额度重置卡；只有订阅账号有，未查过时为 None。
+    pub reset_credits: Option<codex_plus_core::gateway::reset_credits::ResetCreditsView>,
     /// 网关供应商单独走的 HTTP 代理（空串表示不单独走代理）。
     pub proxy: String,
     /// 主动限速：每个 Key 每分钟最多请求数；None 表示不限。
@@ -69,6 +71,8 @@ pub struct GatewayPoolEntry {
     pub strip_image_generation_tool: bool,
     /// 转发前移除 Responses 图片 `detail`（#2870）。
     pub strip_responses_image_detail: bool,
+    /// 转发前移除 Responses 顶层 `include` 里的 `output.encrypted_content`。
+    pub strip_responses_output_encrypted_content: bool,
     /// 不向该上游发送 `tool_search` 托管工具（#2868）。
     pub disable_tool_search: bool,
     /// 上次检查时上游有、列表里没有的模型（界面提示新模型）。
@@ -261,11 +265,13 @@ fn pool_entry(
         account: account_kind(relay),
         plan: codex_plus_core::gateway::accounts::account_plan(relay),
         lent_to_codex: codex_plus_core::official_login::is_lent_to_codex(relay),
+        reset_credits: codex_plus_core::gateway::reset_credits::cached(&relay.id),
         proxy: relay.gateway_proxy.clone().unwrap_or_default(),
         key_rpm: None,
         key_concurrency: None,
         strip_image_generation_tool: relay.strip_image_generation_tool,
         strip_responses_image_detail: relay.strip_responses_image_detail,
+        strip_responses_output_encrypted_content: relay.strip_responses_output_encrypted_content,
         disable_tool_search: relay.disable_tool_search,
         upstream_new: upstream.0,
         upstream_gone: upstream.1,
@@ -1881,6 +1887,136 @@ pub fn start_model_watch() {
     ));
 }
 
+/// 按 id 取供应商池里的中转配置。
+fn pool_relay(id: &str) -> Option<codex_plus_core::settings::RelayProfile> {
+    GatewayStore::default()
+        .load()
+        .ok()
+        .and_then(|gateway| gateway.provider(id).map(|provider| provider.relay.clone()))
+}
+
+/// 刷新 ChatGPT 账号手上的额度重置卡。60 秒内查过就用缓存，避免展开详情时反复打上游。
+#[tauri::command]
+pub async fn refresh_gateway_reset_credits(id: String) -> CommandResult<Option<GatewayPayload>> {
+    let Some(relay) = pool_relay(&id) else {
+        return failed(&format!("供应商不存在：{id}"), current_payload());
+    };
+    match codex_plus_core::gateway::reset_credits::refresh_if_stale(&relay, 60_000).await {
+        Ok(Some(view)) => {
+            let message = match view.usable_count() {
+                Some(usable) => format!("重置卡已刷新：可用 {usable} 张。"),
+                None => "重置卡已刷新：可用张数未知。".to_string(),
+            };
+            ok(&message, current_payload())
+        }
+        Ok(None) => ok("重置卡已刷新。", current_payload()),
+        Err(error) => failed(&format!("查询重置卡失败：{error:#}"), current_payload()),
+    }
+}
+
+/// 使用重置卡的结果：在网关数据之外带上 `resetOutcome`，界面据此决定是否结束未确认操作。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResetConsumePayload {
+    /// `reset` / `alreadyRedeemed` / `noCredit` / `nothingToReset` / `rejected` / `unknown`；
+    /// 没发出请求或结果未知（网络、5xx、认证失败）时为空。
+    reset_outcome: Option<&'static str>,
+    #[serde(flatten)]
+    payload: Option<GatewayPayload>,
+}
+
+fn reset_consume_result(
+    succeeded: bool,
+    message: &str,
+    outcome: Option<codex_plus_core::gateway::reset_credits::ConsumeOutcome>,
+) -> CommandResult<ResetConsumePayload> {
+    let payload = ResetConsumePayload {
+        reset_outcome: outcome.map(|outcome| outcome.as_str()),
+        payload: current_payload(),
+    };
+    if succeeded {
+        ok(message, payload)
+    } else {
+        failed(message, payload)
+    }
+}
+
+/// 用掉一张额度重置卡。
+///
+/// `requestId` 由界面持久保存；核心另按官方账号保存未确认操作，跨窗口也复用同一标识。
+#[tauri::command]
+pub async fn consume_gateway_reset_card(
+    id: String,
+    request_id: String,
+) -> CommandResult<ResetConsumePayload> {
+    use codex_plus_core::gateway::reset_credits::{self, ConsumeOutcome};
+    let Some(relay) = pool_relay(&id) else {
+        return reset_consume_result(false, &format!("供应商不存在：{id}"), None);
+    };
+    let outcome = match reset_credits::consume(&relay, &request_id).await {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return reset_consume_result(false, &format!("使用重置卡失败：{error:#}"), None);
+        }
+    };
+    match outcome {
+        ConsumeOutcome::Reset | ConsumeOutcome::AlreadyRedeemed => {
+            let quota_fresh = codex_plus_core::gateway::quota::refresh(&relay)
+                .await
+                .is_ok();
+            let cards_fresh = reset_credits::refresh_if_stale(&relay, 0).await.is_ok();
+            let message = match (outcome == ConsumeOutcome::Reset, quota_fresh && cards_fresh) {
+                (true, true) => "已使用一张重置卡，额度已重置。额度与卡片读数已刷新。",
+                (true, false) => {
+                    "已使用一张重置卡，额度已重置。部分读数尚未刷新，请稍后手动刷新；无需再次使用。"
+                }
+                (false, true) => "这次重置此前已经生效，没有重复扣卡。额度与卡片读数已刷新。",
+                (false, false) => {
+                    "这次重置此前已经生效，没有重复扣卡。部分读数尚未刷新，请稍后手动刷新；无需再次使用。"
+                }
+            };
+            reset_consume_result(true, message, Some(outcome))
+        }
+        // 没扣卡的确定结果：顺手刷新卡片，让界面上的张数与服务端一致。
+        ConsumeOutcome::NoCredit | ConsumeOutcome::NothingToReset => {
+            let _ = reset_credits::refresh_if_stale(&relay, 0).await;
+            let message = if outcome == ConsumeOutcome::NoCredit {
+                "账号没有可用的重置卡，本次没有扣卡。"
+            } else {
+                "当前额度无需重置，本次没有扣卡。"
+            };
+            reset_consume_result(false, message, Some(outcome))
+        }
+        ConsumeOutcome::Rejected(status) => reset_consume_result(
+            false,
+            &format!("服务端拒绝了这次重置（HTTP {status}），没有扣卡，可以重新发起。"),
+            Some(outcome),
+        ),
+        ConsumeOutcome::Unknown => reset_consume_result(
+            false,
+            "重置结果未确认：请保留同一请求标识，先刷新额度再决定是否重试。",
+            Some(outcome),
+        ),
+    }
+}
+
+/// 放弃该账号上次未确认的重置操作（界面已让用户确认）。之后再使用会发起新的请求，
+/// 若上次其实已生效，可能再扣一张。
+#[tauri::command]
+pub async fn abandon_gateway_reset_operation(id: String) -> CommandResult<Option<GatewayPayload>> {
+    let Some(relay) = pool_relay(&id) else {
+        return failed(&format!("供应商不存在：{id}"), current_payload());
+    };
+    match codex_plus_core::gateway::reset_credits::abandon_pending(&relay).await {
+        Ok(true) => ok(
+            "已放弃上次未确认的重置操作，下次使用会发起新的请求。",
+            current_payload(),
+        ),
+        Ok(false) => ok("没有未确认的重置操作。", current_payload()),
+        Err(error) => failed(&format!("放弃重置操作失败：{error:#}"), current_payload()),
+    }
+}
+
 /// 删除网关供应商（直连模式的数据不受影响）。
 #[tauri::command]
 pub fn delete_gateway_provider(id: String) -> CommandResult<Option<GatewayPayload>> {
@@ -1977,6 +2113,7 @@ async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Re
         strip_image_generation_tool: None,
         subscription_policy: None,
         strip_responses_image_detail: None,
+        strip_responses_output_encrypted_content: None,
         disable_tool_search: None,
         custom_headers: None,
     };

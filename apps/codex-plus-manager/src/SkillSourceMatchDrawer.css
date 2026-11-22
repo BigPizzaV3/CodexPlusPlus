@@ -18,4 +18,8 @@
 .mg-source-row label { display:flex; align-items:flex-start; gap:8px; min-width:0; }
 .mg-source-row label span { display:flex; flex-direction:column; min-width:0; overflow-wrap:anywhere; }
 .mg-source-row small { display:block; margin-top:4px; color:hsl(var(--muted-foreground)); overflow-wrap:anywhere; }
+/* 迁移包导出：每个分组一行勾选，占满整行。 */
+.mg-source-row.mg-bundle-row { grid-template-columns:minmax(0, 1fr); padding:9px 0; }
+.mg-bundle-row label { cursor:pointer; }
+.mg-source-list.mg-bundle-list { margin-top:12px; }
 @media (max-width:480px) { .mg-source-add { flex-wrap:wrap; } .mg-source-add input { flex-basis:100%; } .mg-source-row { grid-template-columns:minmax(0, 1fr); } }

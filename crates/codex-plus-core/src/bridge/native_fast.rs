@@ -8,6 +8,7 @@ use super::{
 use anyhow::{Context, bail};
 use base64::Engine;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -37,6 +38,7 @@ const PREDICTIONS_PREFIXES: &[&str] = &[
 struct InterceptorState {
     script_id: Option<String>,
     fetch_attempted: bool,
+    prepared_responses: HashMap<String, String>,
     /// 补丁准备失败的原因码（如 `app-initial:incomplete-gates`），写进页面供设置页显示。
     failure_reason: Option<String>,
 }
@@ -139,7 +141,7 @@ pub(super) async fn install(
     }
     diagnostic("bridge.native_fast_interceptor_ready", json!({}));
     tokio::spawn(async move {
-        let result = watch(&mut session, &generation, &prefixes).await;
+        let result = watch(&mut session, &generation, &prefixes, &state.prepared_responses).await;
         cleanup(&mut session, &generation, &state).await;
         if result.is_err() {
             // 不把 Runtime 异常或响应正文写入诊断。
@@ -152,9 +154,8 @@ pub(super) async fn install(
     Ok(())
 }
 
-// Electron 的 app:// 自定义协议不经过 Chromium Fetch 拦截器。
-// 在新文档的 meta CSP 解析前预载同源模块的补丁副本，原始模块图通过 import map 复用它。
-// 不修改 CSP，也不在后台注入时刷新页面；真正应用仍由显式启动流程负责。
+// 旧版模块继续走 import map。新版 Rspack 的 CSP 不允许 blob 模块，
+// 用 Fetch 在同源 URL 回填已验证的分块，不更改 CSP 或原始模块图。
 async fn initialize_module(
     session: &mut Session,
     state: &mut InterceptorState,
@@ -228,11 +229,30 @@ async fn initialize_module(
         .pointer("/diagnostics/rewriters")
         .cloned()
         .unwrap_or_else(|| json!({}));
-    let script = format!(
-        "{bootstrap}\n;window.__codexPlusNativeFastUnlock.installModules({},{});",
-        Value::Array(modules.clone()),
-        json!({ "rewriters": rewriters })
-    );
+    let rspack = value.pointer("/diagnostics/format").and_then(Value::as_str) == Some("rspack");
+    let script = if rspack {
+        // Rspack wires all replacements through one registration chunk. Never arm a partial graph.
+        anyhow::ensure!(modules.len() == 1, "expected one Rspack registration chunk");
+        let entry = &modules[0];
+        let url = entry["url"].as_str().context("Rspack URL is missing")?;
+        anyhow::ensure!(is_rspack_registration_url(url), "invalid Rspack asset URL");
+        let source = entry["patchedSource"].as_str().context("Rspack source is missing")?;
+        state.prepared_responses.insert(
+            url.to_owned(),
+            base64::engine::general_purpose::STANDARD.encode(source),
+        );
+        // 页面侧守护：回填没发生或补丁没执行时，超时发布 failed（与 import map 通道的 30 秒一致）。
+        format!(
+            "{bootstrap}\n;window.__codexPlusNativeFastUnlock.armResponseModule({});",
+            json!({ "url": url, "rewriters": rewriters })
+        )
+    } else {
+        format!(
+            "{bootstrap}\n;window.__codexPlusNativeFastUnlock.installModules({},{});",
+            Value::Array(modules.clone()),
+            json!({ "rewriters": rewriters })
+        )
+    };
     let reply = command(
         session,
         "Page.addScriptToEvaluateOnNewDocument",
@@ -252,10 +272,19 @@ async fn initialize_module(
         bridge_generation_is_current(generation),
         "native Fast generation expired"
     );
+    if rspack {
+        state.fetch_attempted = true;
+        let patterns: Vec<_> = state
+            .prepared_responses
+            .keys()
+            .map(|url| json!({"urlPattern":url,"resourceType":"Script","requestStage":"Response"}))
+            .collect();
+        command(session, "Fetch.enable", json!({"patterns":patterns})).await?;
+    }
     evaluate(session, "window.__codexPlusNativeFastAssetPatchReady=true").await?;
     diagnostic(
         "bridge.native_fast_module_ready",
-        json!({"transport":"import_map"}),
+        json!({"transport":if rspack { "same_origin_response" } else { "import_map" }}),
     );
     Ok(())
 }
@@ -332,6 +361,7 @@ async fn watch(
     session: &mut Session,
     generation: &BridgeGeneration,
     prefixes: &[&str],
+    prepared_responses: &HashMap<String, String>,
 ) -> anyhow::Result<()> {
     loop {
         if !bridge_generation_is_current(generation) {
@@ -340,7 +370,11 @@ async fn watch(
         // read_socket_message 是唯一入队点，包括其它命令等待回包时收到的事件。
         // 不直接处理 next_message 的返回值，避免同一个 paused request 被消费两次。
         if let Some(request) = session.fetch_requests.pop_front() {
-            handle_paused(session, &request, prefixes).await?;
+            if prepared_responses.is_empty() {
+                handle_paused(session, &request, prefixes).await?;
+            } else {
+                handle_prepared_response(session, &request, prepared_responses).await?;
+            }
             continue;
         }
         tokio::select! {
@@ -389,6 +423,16 @@ fn is_local_asset(url: &str, prefixes: &[&str]) -> bool {
         })
 }
 
+fn is_rspack_registration_url(url: &str) -> bool {
+    url.strip_prefix("app://-/assets/")
+        .and_then(|path| path.strip_suffix(".js"))
+        .and_then(|path| path.split_once('.'))
+        .is_some_and(|(id, hash)| {
+            !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit())
+                && !hash.is_empty() && hash.bytes().all(|c| c.is_ascii_hexdigit())
+        })
+}
+
 fn javascript_response(params: &Value) -> bool {
     params.get("responseStatusCode").and_then(Value::as_u64) == Some(200)
         && params.get("responseErrorReason").is_none()
@@ -429,10 +473,61 @@ fn fulfillment_headers(params: &Value) -> Vec<Value> {
             header["name"].as_str().is_some_and(|name| {
                 !name.eq_ignore_ascii_case("content-length")
                     && !name.eq_ignore_ascii_case("content-encoding")
+                    && !name.eq_ignore_ascii_case("transfer-encoding")
             })
         })
         .cloned()
         .collect()
+}
+
+async fn handle_prepared_response(
+    session: &mut Session,
+    event: &Value,
+    prepared: &HashMap<String, String>,
+) -> anyhow::Result<()> {
+    let params = &event["params"];
+    let request_id = params["requestId"]
+        .as_str()
+        .context("Rspack response has no request id")?;
+    let url = params
+        .pointer("/request/url")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let Some(body) = prepared.get(url).filter(|_| {
+        params["resourceType"] == "Script"
+            && params.pointer("/request/method").and_then(Value::as_str) == Some("GET")
+    }) else {
+        return release_request(session, request_id).await;
+    };
+    let reason = if javascript_response(params) {
+        let mut fulfill = json!({
+            "requestId":request_id,
+            "responseCode":200,
+            "responseHeaders":fulfillment_headers(params),
+            "body":body
+        });
+        if let Some(phrase) = params["responseStatusText"].as_str() {
+            fulfill["responsePhrase"] = json!(phrase);
+        }
+        if command(session, "Fetch.fulfillRequest", fulfill).await.is_ok() {
+            diagnostic(
+                "bridge.native_fast_asset_patched",
+                json!({"transport":"same_origin_response"}),
+            );
+            return Ok(());
+        }
+        "fulfill_failed"
+    } else {
+        "unexpected_response"
+    };
+    release_request(session, request_id).await?;
+    diagnostic(
+        "bridge.native_fast_patch_skipped",
+        json!({"reason":reason,"transport":"same_origin_response"}),
+    );
+    publish_failure_reason(session, Some(reason)).await;
+    publish_patch_state(session, "failed").await;
+    Ok(())
 }
 
 async fn handle_paused(
@@ -878,6 +973,109 @@ mod tests {
         } })
     }
 
+    #[tokio::test]
+    async fn rspack_reload_uses_only_validated_same_origin_script_responses() {
+        const URL: &str = "app://-/assets/883398.12d9a6e686.js";
+        for bad_url in [
+            "https://example.com/assets/883398.abc.js",
+            "app://-/assets/883398.abc.js?redirect=1",
+            "app://-/assets/extra/883398.abc.js",
+            "app://-/assets/not-numbered.abc.js",
+        ] {
+            assert!(!is_rspack_registration_url(bad_url));
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let generation = next_bridge_generation(&format!("native-fast-rspack-{address}"));
+        assert!(publish_bridge_generation(&generation));
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut commands = Vec::new();
+            while let Some(Ok(Message::Text(text))) = socket.next().await {
+                let message: Value = serde_json::from_str(&text).unwrap();
+                let method = message["method"].as_str().unwrap();
+                let result = match method {
+                    "Runtime.enable" | "Page.enable" | "Fetch.enable" | "Fetch.disable"
+                    | "Page.removeScriptToEvaluateOnNewDocument" | "Fetch.continueResponse" => json!({}),
+                    "Page.addScriptToEvaluateOnNewDocument" => json!({"identifier":"rspack-script"}),
+                    "Runtime.evaluate" if message["params"]["expression"].as_str().unwrap()
+                        .contains("prepareDocumentModules()") => json!({"result":{"value":{
+                            "ok":true,
+                            "modules":[{"url":URL,"patchedSource":MODULE_COMPLETION_MARKER}],
+                            "diagnostics":{"format":"rspack","rewriters":{"fast":"patched"}}
+                        }}}),
+                    "Runtime.evaluate" | "Fetch.fulfillRequest" => json!({}),
+                    other => panic!("unexpected Rspack command {other}"),
+                };
+                let mut reply = json!({"id":message["id"],"result":result});
+                if method == "Fetch.fulfillRequest" && message["params"]["requestId"] == "error" {
+                    reply = json!({"id":message["id"],"error":{"code":-32000,"message":"mock fulfillment error"}});
+                }
+                socket.send(Message::Text(reply.to_string().into())).await.unwrap();
+                commands.push(message);
+            }
+            commands
+        });
+        let socket = connect_cdp_websocket(&format!("ws://{address}/devtools/page/rspack"))
+            .await
+            .unwrap();
+        let mut session = CdpSession::new(socket);
+        let mut state = InterceptorState::default();
+        initialize_module(
+            &mut session,
+            &mut state,
+            &bootstrap_script(module_settings(true, true, false)),
+            &generation,
+        )
+        .await
+        .unwrap();
+        assert!(state.fetch_attempted);
+        for (id, url, mime, kind) in [
+            ("other", "https://example.com/assets/883398.12d9a6e686.js", "text/javascript", "Script"),
+            ("fetch", URL, "text/javascript", "Fetch"),
+            ("mime", URL, "text/html", "Script"),
+            ("success", URL, "text/javascript", "Script"),
+            ("error", URL, "text/javascript", "Script"),
+        ] {
+            let mut event = paused(id, url, mime);
+            event["params"]["resourceType"] = json!(kind);
+            event["params"]["request"]["method"] = json!("GET");
+            handle_prepared_response(&mut session, &event, &state.prepared_responses).await.unwrap();
+        }
+        cleanup(&mut session, &generation, &state).await;
+        session.close().await;
+        release_bridge_generation(&generation);
+        let commands = server.await.unwrap();
+        let matching = |method: &str| commands.iter().filter(|m| m["method"] == method).collect::<Vec<_>>();
+        assert_eq!(matching("Fetch.enable")[0]["params"]["patterns"], json!([
+            {"urlPattern":URL,"resourceType":"Script","requestStage":"Response"}
+        ]));
+        let script = matching("Page.addScriptToEvaluateOnNewDocument")[0]["params"]["source"].as_str().unwrap();
+        assert!(!script.contains(";window.__codexPlusNativeFastUnlock.installModules("));
+        // 新文档脚本必须装上页面侧超时守护，否则拦截没触发时会一直停在 armed（#3224）。
+        assert!(script.ends_with(&format!(
+            "\n;window.__codexPlusNativeFastUnlock.armResponseModule({});",
+            json!({"url":URL,"rewriters":{"fast":"patched"}})
+        )));
+        let completed = matching("Fetch.fulfillRequest");
+        assert_eq!(completed.len(), 2);
+        assert_eq!(completed[0]["params"]["requestId"], "success");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.decode(
+                completed[0]["params"]["body"].as_str().unwrap()
+            ).unwrap(),
+            MODULE_COMPLETION_MARKER.as_bytes(),
+        );
+        assert!(completed[0]["params"]["responseHeaders"].as_array().unwrap().iter()
+            .any(|header| header["name"] == "Content-Security-Policy"));
+        let continued: Vec<_> = matching("Fetch.continueResponse").into_iter()
+            .map(|message| message["params"]["requestId"].as_str().unwrap()).collect();
+        assert_eq!(continued, ["other", "fetch", "mime", "error"]);
+        assert_eq!(matching("Fetch.disable").len(), 1);
+        assert!(matching("Page.setBypassCSP").is_empty());
+    }
+
     async fn run_case(case: Case) -> Vec<Value> {
         run_case_with(case, module_settings(true, false, false)).await
     }
@@ -1050,7 +1248,7 @@ mod tests {
             )
             .await
             .unwrap();
-            watch(&mut session, &generation, &prefixes).await.unwrap();
+            watch(&mut session, &generation, &prefixes, &state.prepared_responses).await.unwrap();
             cleanup(&mut session, &generation, &state).await;
         })
         .await
@@ -1310,7 +1508,7 @@ mod tests {
         .unwrap();
         let watching_generation = generation.clone();
         let watcher = tokio::spawn(async move {
-            let result = watch(&mut interceptor, &watching_generation, FAST_PREFIXES).await;
+            let result = watch(&mut interceptor, &watching_generation, FAST_PREFIXES, &state.prepared_responses).await;
             cleanup(&mut interceptor, &watching_generation, &state).await;
             result
         });

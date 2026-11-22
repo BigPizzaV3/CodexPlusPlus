@@ -1,0 +1,14 @@
+{
+  "gpt-6.2-astra": {
+    "additional_speed_tiers": ["fast"],
+    "service_tiers": [
+      { "id": "priority", "name": "Fast", "description": "2x speed, increased usage" }
+    ]
+  },
+  "gpt-6.2-sol": {
+    "additional_speed_tiers": ["fast"],
+    "service_tiers": [
+      { "id": "priority", "name": "Fast", "description": "2x speed, increased usage" }
+    ]
+  }
+}

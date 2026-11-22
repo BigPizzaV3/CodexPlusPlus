@@ -3,7 +3,7 @@
  * 网关模式与直连模式完全独立：供应商池、模型组只属于网关；所有接入的 Agent 共用整个池。
  * 模型名三种写法：裸模型名（池里提供它的供应商依次尝试）、`<供应商 id>/<模型>`、`group/<组 id>`。
  */
-import { PRESETS } from "./presets.ts";
+import { PRESETS, type ProviderPreset } from "./presets.ts";
 import { modelSlugFromRowName } from "./model-metadata.ts";
 import { normalizeSubscriptionPolicy, type SubscriptionPolicy, type SubscriptionPolicyInput } from "./subscription-policy.ts";
 import { providerHeaderInputs, providerHeaderRows, providerHeadersValidationMessage, type ProviderHeaderRow, type ProviderHeaderView } from "./relay-headers.ts";
@@ -107,6 +107,8 @@ export type GatewayPoolEntry = {
   stripImageGenerationTool?: boolean;
   /** 转发前移除 Responses 图片 `detail`（#2870）。旧版后端没有。 */
   stripResponsesImageDetail?: boolean;
+  /** 转发前移除 Responses `include` 里的 `output.encrypted_content`。旧版后端没有。 */
+  stripResponsesOutputEncryptedContent?: boolean;
   /** 不向该上游发送 `tool_search`（#2868）。旧版后端没有。 */
   disableToolSearch?: boolean;
   /** 登录得到的账号：chatgpt / copilot / grok；普通供应商为空。 */
@@ -126,6 +128,8 @@ export type GatewayPoolEntry = {
   quota?: ProviderQuota | null;
   /** 有额度可查（订阅账号，或按地址认出的 API Key 套餐，#3084）。旧版后端没有。 */
   quotaApi?: boolean;
+  /** ChatGPT 账号手上的额度重置卡；只有订阅账号有，没查过时为空。 */
+  resetCredits?: ResetCredits | null;
   /** 已保存的 Key（打码，#2782）：订阅账号等不用 Key 的为空。旧版后端没有。 */
   keys?: ProviderKeyView[];
   /** 有余额接口的厂商（DeepSeek、Kimi 等，#2793）：卡片用「用量」页同一份余额。旧版后端没有。 */
@@ -180,6 +184,26 @@ export type ProviderQuota = {
   officialLimitReached?: boolean | null;
   creditsAvailable?: boolean | null;
 };
+/** 一张额度重置卡。 */
+export type ResetCredit = {
+  id: string;
+  /** available / redeemed / expired / redeeming / pending / unknown */
+  status: string;
+  grantedAtMs?: number | null;
+  expiresAtMs?: number | null;
+  /** 后端算好的「现在就能用」：状态是 available 且没过期。 */
+  usable: boolean;
+};
+
+/** 一个账号手上的重置卡与汇总数（汇总数为空表示上游没给，不是 0）。 */
+export type ResetCredits = {
+  availableCount?: number | null;
+  applicableAvailableCount?: number | null;
+  totalEarnedCount?: number | null;
+  credits: ResetCredit[];
+  observedAtMs: number;
+};
+
 export type SpeedView = { relayId: string; model: string; ms: number; samples: number };
 
 /** 私有接口订阅的登录方式。 */
@@ -214,6 +238,7 @@ export type GatewayDisconnectPreview = {
   files: GatewayDisconnectFile[];
   warnings: string[];
   canDisconnect: boolean;
+  needsDirectProvider?: boolean;
   /** 没法逐项预览时（Codex 接入前没留下实时存档等）：断开会完整切换到这个直连供应商，确认后走「完整切换并断开」。 */
   fullSwitch?: { relayId: string; name: string } | null;
 };
@@ -1339,51 +1364,35 @@ const GATEWAY_EXTRA_PRESETS: GatewayPreset[] = [
   },
 ];
 
-/** 「添加供应商」里的全部预设：厂商（官方 / 国内官方）、中转、本机。 */
-/**
- * 赞助商：「添加供应商」目录里单独一组，放在最前面。到期日与赞助商广告清单一致，
- * 过了到期日（当天仍显示）就不再出现在目录里。续约时改这里的日期。
- */
-export const SPONSORS: Array<{ id: string; expiresAt: string }> = [
-  { id: "jojocode-max", expiresAt: "2029-06-15" },
-  { id: "runapi", expiresAt: "2026-12-07" },
-  { id: "apikeyfun", expiresAt: "2026-11-22" },
-  { id: "cccccc-api", expiresAt: "2026-12-01" },
-  { id: "tokenmy", expiresAt: "2026-11-20" },
-  { id: "vegaapi", expiresAt: "2027-03-18" },
-];
-
-/** 本地日期（YYYY-MM-DD），与到期日按天比较。 */
-function localDay(now: Date): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
-export function activeSponsorIds(now: Date = new Date()): string[] {
-  const today = localDay(now);
-  return SPONSORS.filter((sponsor) => sponsor.expiresAt >= today).map((sponsor) => sponsor.id);
-}
-
-export function gatewayPresets(now: Date = new Date()): GatewayPreset[] {
-  const sponsorIds = activeSponsorIds(now);
-  const expired = new Set(SPONSORS.map((sponsor) => sponsor.id).filter((id) => !sponsorIds.includes(id)));
-  const shared = PRESETS.filter((preset) => !expired.has(preset.id)).map((preset): GatewayPreset => ({
+function toGatewayPreset(preset: ProviderPreset, section: PresetSection): GatewayPreset {
+  return {
     key: preset.id,
     name: preset.name,
     baseUrl: preset.baseUrl,
     protocol: preset.protocol,
     model: preset.model,
     modelList: preset.modelList ?? (preset.model ? [preset.model] : []),
-    section: sponsorIds.includes(preset.id)
-      ? "sponsor"
-      : preset.category === "official" || preset.category === "cn_official" ? "vendor" : "relay",
+    section,
     apiKeyUrl: preset.apiKeyUrl,
-  }));
+  };
+}
+
+/**
+ * 「添加供应商」里的全部预设：赞助商单独一组放在最前（来自远端推荐清单，见 sponsorPresets），
+ * 然后是厂商（官方 / 国内官方）、中转、本机。
+ */
+export function gatewayPresets(sponsors: ProviderPreset[] = []): GatewayPreset[] {
+  const sponsorIds = new Set(sponsors.map((preset) => preset.id));
+  const shared = PRESETS.filter((preset) => !sponsorIds.has(preset.id)).map((preset) =>
+    toGatewayPreset(preset, preset.category === "official" || preset.category === "cn_official" ? "vendor" : "relay"));
   const vendors = [...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "vendor"), ...shared.filter((preset) => preset.section === "vendor")];
   const relays = [...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "relay"), ...shared.filter((preset) => preset.section === "relay")];
-  // 赞助商按名单顺序排。
-  const sponsors = sponsorIds.flatMap((id) => shared.filter((preset) => preset.key === id));
-  return [...sponsors, ...vendors, ...relays, ...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "local")];
+  return [
+    ...sponsors.map((preset) => toGatewayPreset(preset, "sponsor")),
+    ...vendors,
+    ...relays,
+    ...GATEWAY_EXTRA_PRESETS.filter((preset) => preset.section === "local"),
+  ];
 }
 
 function normalizeUrl(url: string): string {
@@ -1428,13 +1437,15 @@ export type ProviderDraft = {
   subscriptionPolicy?: SubscriptionPolicy | null;
   /** 转发前移除 Responses 图片 `detail`：不认 OpenAI detail 扩展的上游用（#2870）。 */
   stripResponsesImageDetail?: boolean;
+  /** 转发前移除 Responses `include` 里的 `output.encrypted_content`。 */
+  stripResponsesOutputEncryptedContent?: boolean;
   /** 不向上游发送 `tool_search`：上游 400 时开启（#2868）。 */
   disableToolSearch?: boolean;
   /** 自定义请求头（#3075）：测试、拉模型、实际请求都带上；不带表示不改。 */
   customHeaders?: ProviderHeaderRow[];
 };
 
-const NO_PRICE = { priceCurrency: "CNY", priceInput: "", priceCached: "", priceOutput: "", proxy: "", stripImageGenerationTool: false, stripResponsesImageDetail: false, disableToolSearch: false };
+const NO_PRICE = { priceCurrency: "CNY", priceInput: "", priceCached: "", priceOutput: "", proxy: "", stripImageGenerationTool: false, stripResponsesImageDetail: false, stripResponsesOutputEncryptedContent: false, disableToolSearch: false };
 
 export function providerDraftFromPreset(preset: GatewayPreset | null): ProviderDraft {
   if (!preset) return { name: "", baseUrl: "", keys: "", protocol: "chatCompletions", model: "", modelList: "", ...NO_PRICE };
@@ -1466,6 +1477,7 @@ export function providerDraftFromEntry(entry: GatewayPoolEntry): ProviderDraft {
     stripImageGenerationTool: entry.stripImageGenerationTool === true,
     subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
     stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
+    stripResponsesOutputEncryptedContent: entry.stripResponsesOutputEncryptedContent === true,
     disableToolSearch: entry.disableToolSearch === true,
     customHeaders: providerHeaderRows(entry.customHeaders),
   };
@@ -1486,6 +1498,7 @@ export function providerInput(draft: ProviderDraft) {
     stripImageGenerationTool: draft.stripImageGenerationTool === true,
     ...(draft.subscriptionPolicy !== undefined ? { subscriptionPolicy: draft.subscriptionPolicy } : {}),
     stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
+    stripResponsesOutputEncryptedContent: draft.stripResponsesOutputEncryptedContent === true,
     disableToolSearch: draft.disableToolSearch === true,
     ...(draft.customHeaders !== undefined ? { customHeaders: providerHeaderInputs(draft.customHeaders) } : {}),
   };
@@ -1851,4 +1864,46 @@ export function memberTarget(payload: GatewayPayload | null, model: string): { e
   if (qualified) return qualified;
   const serving = servingProviders(payload, model);
   return serving.length === 1 ? { entry: serving[0], model: model.trim() } : null;
+}
+
+/** 「按模型批量添加」里一个模型下的一家供应商：`member` 是加进组里的成员值，`added` 表示组里已经有它。 */
+export type BatchMemberCandidate = { providerId: string; name: string; baseUrl: string; member: string; added: boolean };
+export type BatchMemberRow = { model: string; candidates: BatchMemberCandidate[] };
+
+/**
+ * 「按模型批量添加」（#2823）：每个模型列出池里提供它的供应商，勾选后一次加成组成员。
+ * 成员值与模型选择器一致：多家都有的模型写成 `<供应商 id>/<模型>` 固定到这一家，只有一家的用裸名。
+ */
+export function batchMemberRows(payload: GatewayPayload | null, members: GroupMember[]): BatchMemberRow[] {
+  const taken = new Set<string>();
+  for (const member of members) {
+    const target = memberTarget(payload, member.model);
+    if (target) taken.add(`${target.entry.id}/${target.model}`.toLowerCase());
+  }
+  return modelDispatch(payload).map((row) => {
+    const pinned = row.providers.length > 1 || Boolean(disabledGroup(payload, row.model));
+    return {
+      model: row.model,
+      candidates: row.providers.map((provider) => ({
+        providerId: provider.id,
+        name: provider.name,
+        baseUrl: provider.baseUrl,
+        member: pinned ? `${provider.id}/${row.model}` : row.model,
+        added: taken.has(`${provider.id}/${row.model}`.toLowerCase()),
+      })),
+    };
+  });
+}
+
+/** 把勾选的成员追加到组里：已有的（按成员值，不分大小写）跳过，新成员权重为 1。 */
+export function appendGroupMembers(members: GroupMember[], models: string[]): GroupMember[] {
+  const seen = new Set(members.map((member) => member.model.toLowerCase()));
+  const next = [...members];
+  for (const model of models) {
+    const key = model.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    next.push({ model, weight: 1 });
+  }
+  return next;
 }

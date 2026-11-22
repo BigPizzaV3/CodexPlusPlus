@@ -1588,8 +1588,29 @@ pub fn responses_to_chat_completions(body: Value) -> anyhow::Result<Value> {
 }
 
 pub fn responses_to_chat_completions_with_options(
+    body: Value,
+    standard: bool,
+) -> anyhow::Result<Value> {
+    responses_to_chat_completions_with_context(body, standard, false)
+}
+
+/// 按真实供应商上下文转换。HY4 的 `none/high` 上限只在 OpenCode Go 上成立，
+/// 不能仅凭模型名影响其它供应商。
+pub fn responses_to_chat_completions_for_relay(
+    body: Value,
+    relay: &crate::settings::RelayProfile,
+) -> anyhow::Result<Value> {
+    responses_to_chat_completions_with_context(
+        body,
+        relay.standard_openai_protocol,
+        crate::gateway::opencode::is_go_relay(relay),
+    )
+}
+
+fn responses_to_chat_completions_with_context(
     mut body: Value,
     standard: bool,
+    opencode_go_hy4_reasoning: bool,
 ) -> anyhow::Result<Value> {
     remove_unsupported_native_search(&mut body)?;
     validate_chat_attachments(&body)?;
@@ -1658,7 +1679,13 @@ pub fn responses_to_chat_completions_with_options(
         result["stream_options"] = stream_options;
     }
 
-    apply_chat_reasoning_options(&mut result, &body, model, standard);
+    apply_chat_reasoning_options(
+        &mut result,
+        &body,
+        model,
+        standard,
+        opencode_go_hy4_reasoning,
+    );
 
     let ChatToolProjection { context: tool_context, tools: converted } = chat_tool_projection(&body);
     // Codex 客户端把 tool_search 命中的 MCP 命名空间挂在历史里的 tool_search_output
@@ -4263,14 +4290,20 @@ async fn open_responses_proxy_request_once(
         } else {
             relay
         };
-        // Kimi 官方 Responses 只认 `reasoning.encrypted_content`：Codex 私有的
-        // `output.encrypted_content` 会让整包 400（issue #3026），发出前去掉。
-        // 经第三方中转调 Kimi 模型时地址认不出来，按模型名再判一次（#3068）。
-        if wire_api == UpstreamWireApi::Responses
-            && (crate::relay_config::upstream_is_kimi_official_responses(&relay)
-                || request_model_is_kimi(&upstream_body))
+        // 部分 Responses 上游只认 `reasoning.encrypted_content`：Codex 私有的
+        // `output.encrypted_content` 会让整包 400（#3026）。Kimi 继续自动识别；
+        // 其他严格上游由供应商级开关显式启用。
+        if should_strip_responses_output_encrypted_content(&relay, wire_api, &upstream_body)
+            && strip_responses_output_encrypted_content(&mut upstream_body)
         {
-            tidy_kimi_include(&mut upstream_body);
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.strip_responses_output_encrypted_content",
+                json!({
+                    "relayId": relay.id,
+                    "relayName": relay.name,
+                    "manual": relay.strips_responses_output_encrypted_content(),
+                }),
+            );
         }
         if local_exec_adapted
             && wire_api == UpstreamWireApi::Responses
@@ -5593,36 +5626,49 @@ fn upstream_rejects_custom_tools(relay: &crate::settings::RelayProfile) -> bool 
         })
 }
 
-/// Kimi 官方 Responses 的 `include` 只认 `reasoning.encrypted_content`（#3026）：
-/// 去掉 Codex 私有的 `output.encrypted_content`，其余项保留；过滤后为空就整个去掉。
-/// 请求的模型名带 `kimi`（如 `kimi-k3.1-pro`、`moonshot/kimi-k2`）：中转站转发的也是 Kimi 的接口（#3068）。
+/// 请求的模型名带 `kimi`（如 `kimi-k3.1-pro`、`moonshot/kimi-k2`）：
+/// 中转站转发的也是 Kimi 的接口（#3068）。
 fn request_model_is_kimi(body: &Value) -> bool {
     body.get("model")
         .and_then(Value::as_str)
         .is_some_and(|model| model.to_ascii_lowercase().contains("kimi"))
 }
 
-fn tidy_kimi_include(body: &mut Value) {
+/// 手工开关优先命中普通严格上游；Kimi 官方地址和带 kimi 的模型名继续自动命中。
+fn should_strip_responses_output_encrypted_content(
+    relay: &crate::settings::RelayProfile,
+    wire_api: UpstreamWireApi,
+    body: &Value,
+) -> bool {
+    wire_api == UpstreamWireApi::Responses
+        && (relay.strips_responses_output_encrypted_content()
+            || crate::relay_config::upstream_is_kimi_official_responses(relay)
+            || request_model_is_kimi(body))
+}
+
+/// 去掉 Responses 顶层 `include` 里的 Codex 私有 `output.encrypted_content`，
+/// 保留 `reasoning.encrypted_content` 及其他合法项；过滤后为空就整个去掉。
+fn strip_responses_output_encrypted_content(body: &mut Value) -> bool {
     let Some(object) = body.as_object_mut() else {
-        return;
+        return false;
     };
-    let kept = object
-        .get("include")
-        .and_then(Value::as_array)
-        .map(|include| {
-            include
-                .iter()
-                .filter(|entry| entry.as_str() != Some("output.encrypted_content"))
-                .cloned()
-                .collect::<Vec<_>>()
-        });
-    if let Some(kept) = kept {
-        if kept.is_empty() {
-            object.remove("include");
-        } else {
-            object.insert("include".to_string(), Value::Array(kept));
-        }
+    let Some(include) = object.get("include").and_then(Value::as_array) else {
+        return false;
+    };
+    let kept = include
+        .iter()
+        .filter(|entry| entry.as_str() != Some("output.encrypted_content"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if kept.len() == include.len() {
+        return false;
     }
+    if kept.is_empty() {
+        object.remove("include");
+    } else {
+        object.insert("include".to_string(), Value::Array(kept));
+    }
+    true
 }
 
 /// 只处理 Responses `input[].content[]` 与 `function_call_output.output[]`
@@ -6176,11 +6222,13 @@ async fn open_official_image_proxy_request(
     })
 }
 
+/// 模型请求等上游响应头的上限。非流式请求要整段生成完才回响应头，和压缩是同一种情况：
+/// 按探测类请求的 30 秒等，大上下文的非流式调用必然超时，客户端重试同一请求就一直 502（#3164）。
 fn response_header_timeout(is_stream: bool) -> Duration {
     if is_stream {
         stream_header_timeout()
     } else {
-        UPSTREAM_HEADER_TIMEOUT
+        UPSTREAM_SLOW_HEADER_TIMEOUT
     }
 }
 
@@ -6510,10 +6558,9 @@ async fn upstream_request_parts(
     let mut body = match relay.protocol {
         _ if !request_conversion => request_json,
         RelayProtocol::Responses => request_json,
-        RelayProtocol::ChatCompletions => responses_to_chat_completions_with_options(
-            request_json,
-            relay.standard_openai_protocol,
-        )?,
+        RelayProtocol::ChatCompletions => {
+            responses_to_chat_completions_for_relay(request_json, relay)?
+        }
         // Responses → Chat → Anthropic：第一跳复用上面同一份实现，第二跳在桥接模块里。
         RelayProtocol::AnthropicMessages => {
             crate::anthropic_bridge::responses_to_anthropic_messages(
@@ -7206,6 +7253,17 @@ mod image_proxy_tests {
     #[test]
     fn image_requests_allow_ten_minutes_for_response_headers() {
         assert_eq!(UPSTREAM_IMAGE_HEADER_TIMEOUT, Duration::from_secs(600));
+    }
+
+    #[test]
+    fn non_stream_model_requests_wait_for_the_whole_generation() {
+        // 非流式请求整段生成完才回响应头，不能按探测类请求的 30 秒等（#3164）。
+        assert_eq!(super::response_header_timeout(false), Duration::from_secs(600));
+        assert_eq!(
+            super::responses_request_header_timeout(false, false, false),
+            Duration::from_secs(600)
+        );
+        assert_eq!(super::upstream_header_timeout(), Duration::from_secs(30));
     }
 
     #[test]
@@ -11676,10 +11734,28 @@ fn canonical_json_string(value: &Value) -> String {
     }
 }
 
-fn apply_chat_reasoning_options(result: &mut Value, body: &Value, model: &str, standard: bool) {
+fn apply_chat_reasoning_options(
+    result: &mut Value,
+    body: &Value,
+    model: &str,
+    standard: bool,
+    opencode_go_hy4_reasoning: bool,
+) {
     let Some(reasoning_enabled) = reasoning_requested(body) else {
         return;
     };
+    // OpenCode Go 的 HY4 上游只接受 none/high 两档。Codex 选中的任何非零 effort
+    // 都映射成 high，避免 medium 等档位被静默丢弃、表现为完全不思考。
+    if opencode_go_hy4_reasoning && crate::gateway::opencode::is_hy4_flash_model(model) {
+        if reasoning_enabled {
+            result["reasoning_effort"] = json!("high");
+        } else {
+            if let Some(object) = result.as_object_mut() {
+                object.remove("reasoning_effort");
+            }
+        }
+        return;
+    }
     let style = if standard {
         ChatReasoningStyle::Default
     } else {
@@ -12543,6 +12619,28 @@ mod kimi_include_tests {
     }
 
     #[test]
+    fn manual_switch_strips_non_kimi_responses_upstream() {
+        let relay = crate::settings::RelayProfile {
+            protocol: RelayProtocol::Responses,
+            relay_mode: crate::settings::RelayMode::PureApi,
+            upstream_base_url: "https://strict.example/v1".to_string(),
+            strip_responses_output_encrypted_content: true,
+            ..Default::default()
+        };
+        let body = json!({ "model": "ep-cl-glm-flash" });
+        assert!(should_strip_responses_output_encrypted_content(
+            &relay,
+            UpstreamWireApi::Responses,
+            &body
+        ));
+        assert!(!should_strip_responses_output_encrypted_content(
+            &relay,
+            UpstreamWireApi::ChatCompletions,
+            &body
+        ));
+    }
+
+    #[test]
     fn include_drops_only_output_encrypted_content() {
         let mut body = json!({
             "model": "k3.1-pro",
@@ -12552,10 +12650,13 @@ mod kimi_include_tests {
                 "message.output_text.logprobs"
             ]
         });
-        tidy_kimi_include(&mut body);
+        assert!(strip_responses_output_encrypted_content(&mut body));
         assert_eq!(
             body["include"],
-            json!(["reasoning.encrypted_content", "message.output_text.logprobs"])
+            json!([
+                "reasoning.encrypted_content",
+                "message.output_text.logprobs"
+            ])
         );
     }
 
@@ -12565,7 +12666,7 @@ mod kimi_include_tests {
             "include": ["output.encrypted_content"],
             "input": []
         });
-        tidy_kimi_include(&mut body);
+        assert!(strip_responses_output_encrypted_content(&mut body));
         assert!(body.get("include").is_none());
         // 其他字段不受影响。
         assert_eq!(body["input"], json!([]));
@@ -12574,7 +12675,7 @@ mod kimi_include_tests {
     #[test]
     fn include_without_private_entries_is_untouched() {
         let mut body = json!({"include": ["reasoning.encrypted_content"]});
-        tidy_kimi_include(&mut body);
+        assert!(!strip_responses_output_encrypted_content(&mut body));
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
     }
 
@@ -12589,7 +12690,7 @@ mod kimi_include_tests {
         assert!(!crate::relay_config::upstream_is_kimi_official_responses(&relay));
         let mut body = json!({"include": ["reasoning.encrypted_content", "output.encrypted_content"]});
         if crate::relay_config::upstream_is_kimi_official_responses(&relay) {
-            tidy_kimi_include(&mut body);
+            strip_responses_output_encrypted_content(&mut body);
         }
         assert_eq!(
             body["include"],

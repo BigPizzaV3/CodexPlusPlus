@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { aggregateSkillGroupItems, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
+import { aggregateSkillGroupItems, applySkillBundleGroups, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillBundleExportGroups, skillBundleSelections, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName } from "./skill-groups.ts";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry } from "./skill-agent-batch.ts";
 
 type Element = { type: any; props: Record<string, any>; children: any[] };
@@ -224,7 +224,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
   const calls: string[] = [];
   const requests: Array<{ command: string; args: Record<string, unknown> }> = [];
   const notices: Array<{ title: string; message: string; status: string }> = [];
-  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any>; confirm?: (message: string) => Promise<boolean>; deferTransitions?: boolean; holdFrames?: boolean } = {};
+  const hooks: { mutation?: (command: string, args: Record<string, unknown>) => Promise<any>; list?: (command: string) => Promise<any>; confirm?: (message: string) => Promise<boolean>; pick?: string | null; deferTransitions?: boolean; holdFrames?: boolean } = {};
   const transitions: Array<() => void> = [];
   const frames = new Map<number, () => void>();
   let frameId = 0;
@@ -288,6 +288,9 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     ok: (result: { status: string }) => result.status === "ok", SKILL_GROUP_STORAGE_KEY: "codex-plus-plus.skill-groups.v1",
     t: (value: string) => value, tf: (value: string, args: any[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
     aggregateSkillGroupItems, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, customSkillGroupKey,
+    applySkillBundleGroups, skillBundleExportGroups, skillBundleSelections,
+    // 系统的打开 / 保存对话框：返回 hooks.pick，没设就当用户取消。
+    openDialog: async () => hooks.pick ?? null, saveDialog: async () => hooks.pick ?? null,
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
     sourceLabel: (item: FixtureSkill) => item.displayInstances ? "多个 Agent 安装" : item.bundled ? "内置" : item.repoKey === "cc-switch" || !item.repoKey ? "本地" : item.repoKey === "local" ? "本地导入" : item.repoKey.split("@", 1)[0],
     repoUrl: () => "", SkillVersionPicker: "SkillVersionPicker", MCP_AGENTS: ["codex", "claude", "grok"],
@@ -297,7 +300,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async (message: string) => hooks.confirm ? hooks.confirm(message) : true,
   };
   for (const name of ["Header", "Button", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
-    "SkillDetailDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillBackupsDrawer", "SkillInPlaceUpdateDrawer", "SkillDuplicatesDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
+    "SkillDetailDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillBackupsDrawer", "SkillInPlaceUpdateDrawer", "SkillDuplicatesDrawer", "SkillBundleExportDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ArrowDownAZ", "ArrowDownZA", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   if (!shared?.cache) vm.runInContext(cacheListenerCode, context);
   vm.runInContext(code, context);
@@ -2132,4 +2135,43 @@ test("renaming a group to a legacy prefix-like name preserves other legacy assig
   await ui.groupButton("custom:custom:Foo", "删除分组").props.onClick(); ui.render();
   assert.deepEqual(ui.savedState().assignments, { zeta: "Foo" });
   assert.deepEqual(ui.group("custom:Foo").props.group.items.map((item: FixtureSkill) => item.id), ["zeta"]);
+});
+
+test("migration package (#2852): export sends the selected groups, import restores groups from the returned manifest", async () => {
+  const ui = createHarness(JSON.stringify({ names: ["Work"], assignmentsByIdentity: { [skillIdentityKey({ repoKey: "z/repo@main", id: "zeta" })]: "custom:Work" } }));
+  ui.render(); await tick(); ui.render();
+  const menuItem = (label: string) => ui.find((node) => node.type === "MenuItem" && node.children.includes(label));
+
+  // 导出：抽屉里列出能导出的分组；取消保存对话框时不调用后端。
+  menuItem("导出迁移包").props.onClick(); ui.render();
+  const drawer = ui.find((node) => node.type === "SkillBundleExportDrawer");
+  assert.deepEqual(drawer.props.groups.map((group: { key: string; ids: string[] }) => [group.key, group.ids]),
+    [["repo:a/repo", ["alpha"]], ["custom:Work", ["zeta"]]], "内置 Skill 不导出");
+  await drawer.props.onExport(new Set(["custom:Work"])); await tick();
+  assert.equal(ui.calls.includes("export_skill_bundle"), false);
+  ui.hooks.pick = "/tmp/skills.zip";
+  ui.hooks.mutation = async () => ({ status: "ok", message: "已导出 1 个 Skill：/tmp/skills.zip" });
+  drawer.props.onExport(new Set(["custom:Work"])); await tick(); ui.render();
+  const exported = ui.requests.find((request) => request.command === "export_skill_bundle");
+  assert.deepEqual(JSON.parse(JSON.stringify(exported?.args)), { path: "/tmp/skills.zip", skills: [{ id: "zeta", group: "custom:Work" }], groups: ["custom:Work"] });
+  assert.throws(() => ui.find((node) => node.type === "SkillBundleExportDrawer"), "导出成功后关闭抽屉");
+  assert.equal(ui.notices.at(-1)?.status, "ok");
+
+  // 导入：后端装好文件并返回清单，界面补上分组名、把 Skill 指回分组并保存。
+  ui.hooks.pick = "/tmp/incoming.zip";
+  ui.hooks.mutation = async (command) => {
+    assert.equal(command, "import_skill_bundle");
+    ui.server.skills.push(skill("beta", "local"));
+    return { ...structuredClone(ui.server), message: "已导入 1 个 Skill，0 个本机已有（未覆盖文件）。",
+      bundle: { groups: ["custom:Moved"], skills: [{ id: "beta", group: "custom:Moved" }], imported: ["beta"], existing: [], errors: [] } };
+  };
+  menuItem("导入迁移包").props.onClick(); await tick(); await tick(); ui.render();
+  assert.equal(ui.requests.at(-1)?.args.path, "/tmp/incoming.zip");
+  assert.deepEqual(ui.savedState().names, ["Work", "Moved"]);
+  assert.equal(ui.savedState().assignmentsByIdentity[skillIdentityKey({ repoKey: "local", id: "beta" })], "custom:Moved");
+  assert.equal(ui.savedState().order.includes("custom:Moved"), true);
+  assert.deepEqual(ui.group("custom:Moved").props.group.items.map((item: FixtureSkill) => item.id), ["beta"]);
+  assert.deepEqual(ui.group("custom:Work").props.group.items.map((item: FixtureSkill) => item.id), ["zeta"]);
+  assert.equal(ui.notices.at(-1)?.status, "ok");
+  ui.unmount();
 });

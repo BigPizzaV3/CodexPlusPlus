@@ -4,13 +4,12 @@
 //! `models_cache.json` 里的版本是上次刷新缓存时的客户端写的，用户升级 CLI / Desktop 后可能长期停在旧版本，
 //! 官方目录就不返回新模型（#3178）。这里探测本机实际安装的版本，供版本选择取较新者。
 //!
-//! 探测不在请求路径上起进程：Desktop 内置 CLI 读 `codex-package.json`，npm 安装读包的 `package.json`，
+//! 探测在阻塞线程执行：Desktop 内置 CLI 读 `codex-package.json`，npm 安装读包的 `package.json`，
 //! 只有都读不到时才跑一次 `codex --version`，结果按「路径 + 大小 + 修改时间」缓存；整次扫描结果再缓存几分钟。
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -139,54 +138,45 @@ struct ScanMemo {
     at: Instant,
 }
 
-fn scan_memo() -> &'static Mutex<Option<ScanMemo>> {
-    static MEMO: OnceLock<Mutex<Option<ScanMemo>>> = OnceLock::new();
-    MEMO.get_or_init(Mutex::default)
+fn fresh_scan(memo: &Option<ScanMemo>) -> Option<Option<String>> {
+    memo.as_ref()
+        .filter(|memo| memo.at.elapsed() < SCAN_TTL)
+        .map(|memo| memo.version.clone())
 }
 
-fn store_scan(version: Option<String>) -> Option<String> {
-    *scan_memo().lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(ScanMemo {
-        version: version.clone(),
-        at: Instant::now(),
-    });
-    version
+/// 首条官方请求必须等扫描结束，不能把「未探测」当作「未安装」。
+pub async fn installed_codex_version() -> Option<String> {
+    static MEMO: Mutex<Option<ScanMemo>> = Mutex::new(None);
+    installed_version_with(&MEMO, || {
+        scan_installed_versions().into_iter().max().map(|(_, text)| text)
+    })
+    .await
 }
 
-/// 本机安装的 Codex CLI 中最新的版本（完整版本号，可能带预发布）。会阻塞：缓存过期时重新扫描，
-/// 可能要跑一次 `codex --version`。异步代码里请放进 `spawn_blocking`。
-pub fn installed_codex_version() -> Option<String> {
-    {
-        let memo = scan_memo().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(memo) = memo.as_ref().filter(|memo| memo.at.elapsed() < SCAN_TTL) {
-            return memo.version.clone();
+async fn installed_version_with(
+    memo: &'static Mutex<Option<ScanMemo>>,
+    scan: impl FnOnce() -> Option<String> + Send + 'static,
+) -> Option<String> {
+    if let Ok(guard) = memo.try_lock() {
+        if let Some(version) = fresh_scan(&guard) {
+            return version;
         }
     }
-    store_scan(scan_installed_versions().into_iter().max().map(|(_, text)| text))
-}
-
-/// 不阻塞的版本：直接返回上次扫描结果（可能已过期或还没有）；缺失或过期时在后台线程重新扫描。
-/// 用在请求路径上。
-pub fn installed_codex_version_cached() -> Option<String> {
-    static REFRESHING: AtomicBool = AtomicBool::new(false);
-    let (value, fresh) = {
-        let memo = scan_memo().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        match memo.as_ref() {
-            Some(memo) => (memo.version.clone(), memo.at.elapsed() < SCAN_TTL),
-            None => (None, false),
+    // 在同一把锁内复查并扫描，目录刷新和并发转发共用结果。
+    tokio::task::spawn_blocking(move || {
+        let mut memo = memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(version) = fresh_scan(&memo) {
+            return version;
         }
-    };
-    if !fresh && !REFRESHING.swap(true, AtomicOrdering::SeqCst) {
-        let spawned = std::thread::Builder::new()
-            .name("codex-cli-version".into())
-            .spawn(|| {
-                store_scan(scan_installed_versions().into_iter().max().map(|(_, text)| text));
-                REFRESHING.store(false, AtomicOrdering::SeqCst);
-            });
-        if spawned.is_err() {
-            REFRESHING.store(false, AtomicOrdering::SeqCst);
-        }
-    }
-    value
+        let version = scan();
+        *memo = Some(ScanMemo {
+            version: version.clone(),
+            at: Instant::now(),
+        });
+        version
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// 扫描所有候选 CLI，返回能读出版本的那些（版本对象 + 原文）。
@@ -382,6 +372,54 @@ fn version_from_output(output: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cold_official_requests_wait_for_one_shared_version_scan() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static MEMO: Mutex<Option<ScanMemo>> = Mutex::new(None);
+        static SCANS: AtomicUsize = AtomicUsize::new(0);
+        let scan = || {
+            SCANS.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(30));
+            Some("0.169.1".into())
+        };
+        let (first, concurrent) = tokio::join!(
+            installed_version_with(&MEMO, scan),
+            installed_version_with(&MEMO, scan)
+        );
+        for installed in [first, concurrent] {
+            assert_eq!(
+                crate::gateway::chatgpt_backend::select_codex_version(
+                    Some("0.124.0"),
+                    installed.as_deref()
+                ),
+                "0.169.1"
+            );
+        }
+        assert_eq!(SCANS.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            installed_version_with(&MEMO, || panic!("warm cache rescanned"))
+                .await
+                .as_deref(),
+            Some("0.169.1")
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_negative_scan_is_cached_until_expiry() {
+        static MEMO: Mutex<Option<ScanMemo>> = Mutex::new(None);
+        assert_eq!(installed_version_with(&MEMO, || None).await, None);
+        assert_eq!(
+            installed_version_with(&MEMO, || panic!("negative cache rescanned")).await,
+            None
+        );
+        MEMO.lock().unwrap().as_mut().unwrap().at = Instant::now() - SCAN_TTL;
+        assert_eq!(
+            installed_version_with(&MEMO, || Some("0.169.1".into())).await.as_deref(),
+            Some("0.169.1")
+        );
+    }
 
     #[test]
     fn prerelease_versions_order_like_semver() {

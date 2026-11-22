@@ -33,6 +33,23 @@ fn priority_only_unknown_metadata_never_fabricates_native_descriptor_defaults() 
 }
 
 #[test]
+fn unknown_hy4_does_not_fabricate_gpt_metadata() {
+    assert!(builtin_model_metadata("hy4-flash-free").is_none());
+    assert!(model_ui_metadata("hy4-flash-free").is_none());
+
+    let entries = collect_catalog_entries(
+        "hy4-flash-free",
+        &HashMap::new(),
+        &HashMap::new(),
+        "hy4-flash-free",
+    );
+    let catalog: serde_json::Value =
+        serde_json::from_str(&build_model_catalog_json(&entries, None)).unwrap();
+    assert_eq!(catalog["models"][0]["display_name"], "hy4-flash-free");
+    assert_eq!(catalog["models"][0]["description"], "hy4-flash-free");
+}
+
+#[test]
 fn custom_priority_declarations_preserve_other_tiers_and_explicitly_override_known_models() {
     let original = serde_json::json!({
         "description":"provider description", "service_tiers":[{"id":"flex", "name":"Flex", "description":"Existing tier"}],
@@ -1269,4 +1286,100 @@ fn unrelated_unknown_slugs_still_fall_back_to_first_bundled_template() {
         assert_eq!(model["display_name"], slug);
         assert!(!model["base_instructions"].as_str().unwrap().is_empty(), "{slug}");
     }
+}
+
+/// 官方链路专属字段：未命中官方条目的克隆不应带上（#3193）。
+fn assert_no_official_only_fields(model: &serde_json::Value, slug: &str) {
+    assert!(model.get("tool_mode").is_none_or(|value| value.is_null()), "{slug} 不应继承 tool_mode");
+    assert!(model.get("prefer_websockets").is_none_or(|value| value.is_null()), "{slug} 不应继承 prefer_websockets");
+    assert_eq!(model["use_responses_lite"], false, "{slug} 不应继承 use_responses_lite=true");
+}
+
+#[test]
+fn unmatched_relay_slugs_do_not_inherit_official_only_family_fields() {
+    // #3193：gpt-6.1-sol-relay 没有精确条目，家族回退整条 clone 了 gpt-6.1-sol，
+    // tool_mode=code_mode_only 跟着进了目录；不支持 code mode exec 的中转因此拿不到任何工具。
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    let catalog = build_catalog_for(
+        "gpt-6.1-sol-relay\ngpt-6.2-sol\ngpt-6.2-astra\ngpt-6.2-luna\ngpt-6.2-nova\ngpt-5.6-sol-relay",
+    );
+    for slug in [
+        "gpt-6.1-sol-relay",
+        "gpt-6.2-sol",
+        "gpt-6.2-astra",
+        "gpt-6.2-luna",
+        "gpt-6.2-nova",
+        "gpt-5.6-sol-relay",
+    ] {
+        assert_no_official_only_fields(catalog_model(&catalog, slug), slug);
+    }
+
+    // 只去掉官方专属字段，家族回退本身（#3180）不退化：GPT-6 未知模型仍是 GPT-6 身份文案。
+    for slug in ["gpt-6.1-sol-relay", "gpt-6.2-sol", "gpt-6.2-astra"] {
+        let model = catalog_model(&catalog, slug);
+        let base = model["base_instructions"].as_str().unwrap();
+        let template = model["model_messages"]["instructions_template"].as_str().unwrap();
+        for (field, text) in [("base_instructions", base), ("instructions_template", template)] {
+            assert!(!text.contains("based on GPT-5"), "{slug} 的 {field} 仍是 GPT-5 身份文案");
+            assert!(text.contains("based on GPT-6"), "{slug} 的 {field} 应是 GPT-6 身份文案");
+        }
+        // 仍是回退：展示名按列表条目生成，并行工具调用保持保守。
+        assert_eq!(model["display_name"], slug);
+        assert_eq!(model["supports_parallel_tool_calls"], false);
+    }
+}
+
+#[test]
+fn exact_official_models_keep_their_official_only_fields() {
+    // 精确命中（bundled + 兼容层）的官方模型不受影响：tool_mode / prefer_websockets 照旧。
+    let _lock = runtime_cache_env_lock();
+    let _guard = CodexHomeEnvGuard::set(tempfile::tempdir().unwrap().path());
+    let slugs = ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra"];
+    let catalog = build_catalog_for(&slugs.join("\n"));
+    for slug in slugs {
+        let built = catalog_model(&catalog, slug);
+        let expected = builtin_model_metadata(slug).unwrap().entry;
+        assert_eq!(expected["tool_mode"], "code_mode_only", "{slug} 的官方元数据应带 tool_mode");
+        assert_eq!(built["tool_mode"], "code_mode_only", "{slug}");
+        assert_eq!(built["prefer_websockets"], expected["prefer_websockets"], "{slug}");
+        assert_eq!(built["use_responses_lite"], expected["use_responses_lite"], "{slug}");
+    }
+    // gpt-6.1-sol 的 prefer_websockets 来自 bundled 官方条目，必须保留。
+    assert_eq!(catalog_model(&catalog, "gpt-6.1-sol")["prefer_websockets"], true);
+}
+
+#[test]
+fn runtime_cache_family_templates_also_drop_official_only_fields() {
+    // 家族模板取自运行时官方缓存时同样适用：缓存里的 gpt-6.2-sol 带 tool_mode，
+    // 精确命中保留，借它做模板的 gpt-6.2-sol-relay 不继承。
+    let _lock = runtime_cache_env_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let cache = serde_json::json!({
+        "models": [{
+            "slug": "gpt-6.2-sol",
+            "display_name": "runtime sol",
+            "context_window": 272000u64,
+            "base_instructions": "You are Codex, an agent based on GPT-6 (runtime exact).",
+            "tool_mode": "code_mode_only",
+            "use_responses_lite": true,
+            "prefer_websockets": true,
+            "supports_parallel_tool_calls": true,
+            "model_messages": {
+                "instructions_template": "You are Codex, an agent based on GPT-6 (runtime exact)."
+            }
+        }]
+    });
+    std::fs::write(temp.path().join("models_cache.json"), cache.to_string()).unwrap();
+    let _guard = CodexHomeEnvGuard::set(temp.path());
+
+    let catalog = build_catalog_for("gpt-6.2-sol\ngpt-6.2-sol-relay");
+    let exact = catalog_model(&catalog, "gpt-6.2-sol");
+    assert_eq!(exact["tool_mode"], "code_mode_only");
+    assert_eq!(exact["prefer_websockets"], true);
+    assert_eq!(exact["use_responses_lite"], true);
+
+    let relay = catalog_model(&catalog, "gpt-6.2-sol-relay");
+    assert_eq!(relay["base_instructions"], "You are Codex, an agent based on GPT-6 (runtime exact).");
+    assert_no_official_only_fields(relay, "gpt-6.2-sol-relay");
 }

@@ -1,5 +1,18 @@
 # Image overlay regressions
 
+## 支持范围
+
+| 支持的表面 | 浏览器回归检查 |
+| --- | --- |
+| 主窗口与页面顶栏 | `test-image-composite.cjs` 比对全窗口像素。`test-image-overlay.cjs` 检查固定顶栏的底色、渐变与滚动遮挡。 |
+| 左侧栏 | `test-image-overlay.cjs` 覆盖悬停、滚动、动画、滚动条命中与边缘回弹。 |
+| 新任务和会话输入框、附件、浏览器工具栏 | `test-image-native-surfaces.cjs` 检查原生控件几何、键鼠交互、背景坐标和附件像素。 |
+| 设置弹窗、菜单、提示门户 | `test-image-overlay.cjs` 检查设置预览重叠、主题切换、门户移动及实际点击。 |
+| 图片查看器、缩略图与媒体 | `test-image-viewer-surfaces.cjs`、`test-image-native-media.cjs` 检查图片原色、缩放、编辑和浮动控件对齐。 |
+| 审批、提示卡片、通知和滚到底部按钮 | `test-image-interaction-surfaces.cjs` 检查动态挂载、材质切换、图标颜色和按钮交互。 |
+
+新控件和扩展自建的内容沿用各自外观。上游更改控件时，先重现具体表面的偏差，再把控件身份、背景像素、交互和卸载行为加入对应套件。半透明材质、第三方 iframe 内部和媒体像素继续由原生内容绘制。本表针对「背景图」静态图片拓展，Dream Skin 视频导入见 [界面与日常操作](../docs/daily-ui.md)。
+
 Run the browser suites with Node and locally available Playwright, Sharp and PNGJS.
 Use NODE_PATH for an existing external dependency directory. The shared fixture
 accepts CODEX_TEST_BROWSER_PATH or CODEX_TEST_BROWSER (default: msedge).

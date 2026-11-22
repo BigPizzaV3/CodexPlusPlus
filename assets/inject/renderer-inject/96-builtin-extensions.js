@@ -54,6 +54,7 @@
       { id: "prompt-args", name: "自定义 prompt 参数", apply: codexPlusPromptArgsExtension },
       { id: "shell-command", name: "! 命令", apply: codexPlusShellCommandExtension },
       { id: "context-tuning", name: "上下文与压缩", apply: codexPlusContextTuningExtension },
+      { id: "daily-ui", name: "界面与日常操作", apply: codexPlusDailyUiExtension },
       { id: "offline-auto-review", name: "拿不到远程开关时补开「替我审批」", apply: codexPlusOfflineAutoReviewExtension },
       { id: "statsig-overrides", name: "Statsig 界面增强", apply: codexPlusStatsigOverridesExtension },
       { id: "weixin-desktop-sync", name: "微信会话同步", apply: codexPlusWeixinDesktopSyncExtension },
@@ -339,7 +340,12 @@
 
   /** 微信会话同步：微信写入的会话通知桌面目录，读到设置（含心跳）时按设置里的待同步清单跑一次。 */
   function codexPlusWeixinDesktopSyncExtension(ctx) {
-    ctx.on("settings/loaded", () => void syncWeixinDesktopThreads());
+    const sync = () => void syncWeixinDesktopThreads();
+    ctx.on("settings/loaded", sync);
+    ctx.effect(() => {
+      codexPlusWeixinSyncHeartbeat = sync;
+      return () => { codexPlusWeixinSyncHeartbeat = null; };
+    });
   }
 
   /**

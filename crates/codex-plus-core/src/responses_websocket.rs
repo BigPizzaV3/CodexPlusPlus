@@ -502,7 +502,7 @@ fn record_failure(response: &ActiveResponse, status: u16, body: &[u8]) {
             &reqwest::header::HeaderMap::new(),
             body,
         );
-        crate::gateway::pipeline::record_key_failure(&candidate.key, &class);
+        crate::gateway::pipeline::record_key_failure(&candidate.key, &candidate.upstream_model, &class);
         crate::gateway::speed::record_failure(&candidate.relay.id, &candidate.upstream_model);
     }
     if let Some(settings) = &response.ready.rotation {
@@ -1047,7 +1047,7 @@ pub(crate) async fn handle(
                         if success {
                             if let Some(gateway) = &response.ready.gateway {
                                 let candidate = &gateway.candidate;
-                                crate::gateway::key_pool::record_success(&candidate.key, gateway.key_conversation.as_deref());
+                                crate::gateway::key_pool::record_success(&candidate.key, &candidate.upstream_model, gateway.key_conversation.as_deref());
                                 if gateway.remember_route {
                                     crate::gateway::route::remember_answer(&gateway.plan, candidate);
                                 }

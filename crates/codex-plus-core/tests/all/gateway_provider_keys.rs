@@ -198,12 +198,13 @@ fn deleting_or_replacing_a_key_clears_its_pool_state() {
     let now = Instant::now();
     key_pool::record_failure(
         &key_of("key-2"),
+        "gpt-test",
         &FailureClass::RateLimited {
             retry_after: Some(Duration::from_secs(600)),
         },
         now,
     );
-    key_pool::record_success(&key_of("key-3"), Some("conversation-2782"));
+    key_pool::record_success(&key_of("key-3"), "", Some("conversation-2782"));
     let pinned = key_pool::order_keys(
         &before,
         KeyRotationMode::Sticky,

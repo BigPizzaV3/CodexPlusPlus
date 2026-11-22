@@ -74,11 +74,11 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   </tr>
   <tr>
     <td align="center">
-      <a href="https://apikey.fun/register?aff=CODEX">
+      <a href="https://apikey.fan/register?aff=CODEX">
         <img src="docs/images/sponsor-apikey-fun.png" alt="APIKEY.FUN" height="80">
       </a>
     </td>
-    <td><a href="https://apikey.fun/register?aff=CODEX"><strong>APIKEY.FUN</strong></a><br>感谢 APIKEY.FUN 赞助了本项目！APIKEY.FUN 是一家致力于提供开放、稳定、高性价比的全球主流大模型的 AI 中转站。平台支持 Claude、OpenAI、Gemini 等热门模型的 API 中转服务，价格低至官方原价的 7%。通过专属链接<a href="https://apikey.fun/register?aff=CODEX">注册 APIKEY</a>，可享受最高充值永久 95 折优惠。</td>
+    <td><a href="https://apikey.fan/register?aff=CODEX"><strong>APIKEY.FUN</strong></a><br>感谢 APIKEY.FUN 赞助了本项目！APIKEY.FUN 是一家致力于提供开放、稳定、高性价比的全球主流大模型的 AI 中转站。平台支持 Claude、OpenAI、Gemini 等热门模型的 API 中转服务，价格低至官方原价的 7%。通过专属链接<a href="https://apikey.fan/register?aff=CODEX">注册 APIKEY</a>，可享受最高充值永久 95 折优惠。</td>
   </tr>
   <tr>
     <td align="center">
@@ -198,7 +198,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   </tr>
   <tr>
     <td valign="top"><strong>🖥️ 托盘快捷面板</strong><br>点托盘图标就能换模型、看用量和最近请求。</td>
-    <td valign="top"><strong>📱 微信连接</strong><br>扫码连接本机 Codex。</td>
+    <td valign="top"><strong>📱 微信连接与任务通知</strong><br>扫码连接本机 Codex。<a href="docs/guides/chat-robot-notifications.md">钉钉、飞书通知与手机审批</a>。</td>
   </tr>
   <tr>
     <td valign="top"><strong>🐳 Agent 桌宠</strong><br>点一下会压扁、带音效，图片随心换。</td>
