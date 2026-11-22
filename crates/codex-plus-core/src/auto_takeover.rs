@@ -631,6 +631,29 @@ pub fn backoff_delay_ms(consecutive_failures: u32) -> u64 {
     (30_000_u64.saturating_mul(factor)).min(BACKOFF_CAP_MS)
 }
 
+/// 唤醒检测（纯逻辑，供探针线程与单测共用）。
+///
+/// 单调时钟的间隙**在 macOS 上不可靠**：`Instant` 走的是
+/// `CLOCK_UPTIME_RAW`（mach 绝对时间），系统睡眠期间不走字，
+/// 「长睡眠后唤醒」不会留下单调间隙，于是唤醒宽限从未生效，
+/// CDP 还没恢复就被判成「需要接管」，形成 quit 风暴（#3188）。
+/// 墙钟（`SystemTime`）在睡眠期间照常前进，必须一并参与判定。
+/// 墙钟也可能因 NTP 校时前跳，误报一次唤醒的代价只是多等一段宽限，无害。
+pub fn is_wake_gap(
+    mono_gap: Option<Duration>,
+    wall_gap: Option<Result<Duration, std::time::SystemTimeError>>,
+    threshold: Duration,
+) -> bool {
+    let mono_jumped = mono_gap.is_some_and(|gap| gap > threshold);
+    let wall_jumped = match wall_gap {
+        Some(Ok(gap)) => gap > threshold,
+        // 墙钟倒拨（校时）：宁可当成唤醒给一段宽限，也不要漏检。
+        Some(Err(_)) => true,
+        None => false,
+    };
+    mono_jumped || wall_jumped
+}
+
 /// 滑动一小时窗口内的重启次数。
 pub fn restarts_in_window(history_ms: &[u64], now_ms: u64) -> usize {
     history_ms
@@ -904,6 +927,39 @@ mod tests {
         let mut history = vec![0, 1_000];
         push_restart(&mut history, RESTART_WINDOW_MS + 10);
         assert_eq!(history, vec![1_000, RESTART_WINDOW_MS + 10]);
+    }
+
+    #[test]
+    fn wake_gap_detects_wall_clock_jump_after_sleep() {
+        // macOS 长睡眠：单调时钟没走（间隙 < 阈值），墙钟走了一晚。
+        let threshold = Duration::from_secs(90);
+        assert!(is_wake_gap(
+            Some(Duration::from_secs(2)),
+            Some(Ok(Duration::from_secs(12 * 3600))),
+            threshold,
+        ));
+        // 单调间隙足够大（Windows 等睡眠也走字的平台）照旧检测。
+        assert!(is_wake_gap(
+            Some(Duration::from_secs(120)),
+            Some(Ok(Duration::from_secs(120))),
+            threshold,
+        ));
+        // 两个钟都没跳：不是唤醒。
+        assert!(!is_wake_gap(
+            Some(Duration::from_secs(2)),
+            Some(Ok(Duration::from_secs(2))),
+            threshold,
+        ));
+        // 首次 tick（无历史）：不算唤醒。
+        assert!(!is_wake_gap(None, None, threshold));
+        // 墙钟倒拨（NTP 校时）：保守当唤醒给宽限。
+        assert!(is_wake_gap(
+            Some(Duration::from_secs(2)),
+            Some(Err(std::time::UNIX_EPOCH
+                .duration_since(std::time::SystemTime::now() + Duration::from_secs(1_000))
+                .unwrap_err())),
+            threshold,
+        ));
     }
 
     #[test]
