@@ -53,9 +53,8 @@ import { UsageView } from "./GatewayUsage";
 import { Avatar, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
 import { shortProviderName } from "./GatewayModelMatrix";
 import { TopbarActions } from "./TopbarActions";
-import { GatewayNavContext } from "./gateway-store";
+import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
-import { gatewayGeneration, publishGatewayPayload, subscribeGatewayPayload } from "./gateway-store";
 import { visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
@@ -66,17 +65,15 @@ import { AgentGlyph } from "./HubOverview";
 type Tab = "agents" | "sessions" | "providers" | "routing" | "usage" | "gateway";
 export type GatewayTab = Tab;
 
-const memo: { payload: GatewayPayload | null; tab: Tab } = { payload: null, tab: "agents" };
+const memo: { tab: Tab } = { tab: "agents" };
 
 /** 组编辑器的模型选择不排除任何供应商；模块级常量，避免每次渲染都换新数组让列表重算。 */
 const NO_EXCLUDE: string[] = [];
 
-/** 路由页刷新供应商状态的间隔。 */
+/** 路由、供应商页刷新供应商状态的间隔。 */
 const LIVE_REFRESH_MS = 2500;
-
-function hasPayload(result: GatewayResult): result is GatewayResult & GatewayPayload {
-  return Boolean(result.gateway && Array.isArray(result.pool));
-}
+/** 其它页签的刷新间隔（和侧栏一样，不额外加读取）。 */
+const IDLE_REFRESH_MS = 10_000;
 
 /**
  * 传入 `tab` 时由外层侧栏决定当前页签（不再显示页内标签条），页内跳转通过 `onTabChange` 交还外层；
@@ -99,8 +96,6 @@ export function GatewayPage({
   /** Codex 行的启动 / 停止：主窗口传进来才显示，不传就只留模型选择与接入开关。 */
   codexRun?: CodexRunControls;
 }) {
-  const [payload, setPayload] = useState<GatewayPayload | null>(memo.payload);
-  const [busy, setBusy] = useState<string | null>(memo.payload ? null : "load");
   const [ownTab, setTabState] = useState<Tab>(memo.tab);
   const tab = controlledTab ?? ownTab;
   const setTab = (next: Tab) => {
@@ -111,85 +106,35 @@ export function GatewayPage({
     memo.tab = next;
     setTabState(next);
   };
+  // 数据来自共享存储（整个窗口一个轮询）：订阅额度在后台预取，供应商、路由页要及时收到首次查询和授权后的结果，
+  // 所以这两页要的间隔短；其它页签跟侧栏一样。别处改了网关数据（如模型下拉里收藏）也会同步过来。
+  const { payload } = useGatewayState(tab === "routing" || tab === "providers" ? LIVE_REFRESH_MS : IDLE_REFRESH_MS);
+  // 切换页签时已有数据，不锁按钮：只有命令执行时才占 busy。
+  const [busy, setBusy] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const accept = (result: GatewayResult) => {
-    if (hasPayload(result)) {
-      memo.payload = result;
-      setPayload(result);
-      // 侧栏状态卡、总览共用的数据也立刻更新，不等它们下次轮询。
-      publishGatewayPayload(result);
-    }
-  };
+  // 命令的结果当作保存推给所有在用的组件（侧栏状态卡、总览），不等下次轮询。
+  const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
 
-  const run: Run = makeRun(setBusy, accept, notify);
-  // 别处改了网关数据（如模型下拉里收藏）也同步过来，不然这里还拿着旧数据，下次保存会把新改的盖掉。
-  useEffect(
-    () =>
-      subscribeGatewayPayload((next) => {
-        memo.payload = next;
-        setPayload(next);
-      }),
-    [],
-  );
-
-  const refresh = async (silent = true) => {
-    setBusy("load");
+  const refresh = async () => {
+    setRefreshing(true);
     try {
-      const result = await invoke<GatewayResult>("load_gateway");
-      accept(result);
+      const result = await refreshGateway();
       if (result.status !== "ok") await notify(t("读取失败"), result.message, "failed");
-      else if (!silent) await notify(t("已刷新"), result.message, "ok");
+      else await notify(t("已刷新"), result.message, "ok");
     } catch (error) {
       await notify(t("调用失败"), String(error), "failed");
     } finally {
-      setBusy(null);
+      setRefreshing(false);
     }
   };
 
+  // 窗口回到前台时静默读一次：别的工具可能趁这时改了 Agent 的配置（被接管提示要跟上）。和轮询共用同一个请求。
   useEffect(() => {
-    void refresh();
-    // 只在进入本页时读一次，之后由本页操作维护。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // 窗口回到前台时静默读一次：别的工具可能趁这时改了 Agent 的配置（被接管提示要跟上）。
-  useEffect(() => {
-    let cancelled = false;
-    const onFocus = () => {
-      const started = gatewayGeneration();
-      void invoke<GatewayResult>("load_gateway")
-        .then((result) => {
-          // 读的过程中保存过：这份是旧的，不用。
-          if (!cancelled && started === gatewayGeneration()) accept(result);
-        })
-        .catch(() => undefined);
-    };
+    const onFocus = () => void refreshGateway().catch(() => undefined);
     window.addEventListener("focus", onFocus);
-    return () => {
-      cancelled = true;
-      window.removeEventListener("focus", onFocus);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => window.removeEventListener("focus", onFocus);
   }, []);
-
-  // 订阅额度在后台预取；供应商页也要及时收到首次查询和授权后的结果。
-  useEffect(() => {
-    if (tab !== "routing" && tab !== "providers") return;
-    let cancelled = false;
-    const timer = window.setInterval(() => {
-      const started = gatewayGeneration();
-      void invoke<GatewayResult>("load_gateway")
-        .then((result) => {
-          if (!cancelled && started === gatewayGeneration()) accept(result);
-        })
-        .catch(() => undefined);
-    }, LIVE_REFRESH_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
 
   // 与侧栏同序：供应商 → Agent → 路由。
   const tabs: Array<{ id: Tab; label: string }> = [
@@ -205,8 +150,8 @@ export function GatewayPage({
   const nav = { openModelGroups: () => setTab("routing") };
 
   const refreshButton = (
-    <button aria-label={t("刷新")} className="gw-icon-button" disabled={busy !== null} onClick={() => void refresh(false)} title={t("刷新")} type="button">
-      <RefreshCw className={`h-4 w-4 ${busy === "load" ? "animate-spin" : ""}`} />
+    <button aria-label={t("刷新")} className="gw-icon-button" disabled={busy !== null || refreshing} onClick={() => void refresh()} title={t("刷新")} type="button">
+      <RefreshCw className={`h-4 w-4 ${refreshing ? "animate-spin" : ""}`} />
     </button>
   );
 

@@ -231,7 +231,7 @@ test("用量页快速切换范围：只认最后一次读取的结果", () => {
 
 test("网关页改了数据立刻推给侧栏和总览", () => {
   const page = read("GatewayPage.tsx");
-  assert.match(page, /publishGatewayPayload\(result\);/);
+  assert.match(page, /makeRun\(setBusy, publishGatewayPayload, notify\)/);
   assert.match(read("HubOverview.tsx"), /export \{ useGatewayPayload \};/);
   assert.match(read("gateway-store.ts"), /export function publishGatewayPayload/);
 });
@@ -366,9 +366,10 @@ test("启动落在首页（赞助商推荐），不落在上次那个 Agent 的�
 test("保存之后才回来的轮询结果作废；新手引导的 Esc 走 Esc 栈", () => {
   const store = read("gateway-store.ts");
   assert.match(store, /generation \+= 1;/, "推新数据时版本加一");
-  assert.match(store, /started !== generation/, "共享数据的轮询丢掉旧答复");
+  assert.match(store, /if \(started === generation\) \{/, "共享数据的轮询丢掉旧答复");
   const page = read("GatewayPage.tsx");
-  assert.equal((page.match(/started === gatewayGeneration\(\)/g) ?? []).length, 2, "网关页的回前台刷新和路由页轮询都丢旧答复");
+  assert.doesNotMatch(page, /invoke<GatewayResult>\("load_gateway"\)/, "网关页不再自己读：回前台刷新和路由页轮询都走共享存储（丢旧答复见 gateway-store.test.ts）");
+  assert.match(page, /refreshGateway\(\)/);
   const tour = read("OnboardingTour.tsx");
   assert.match(tour, /useEscapeLayer\(true, \(\) => onClose\(false\)\)/);
   assert.doesNotMatch(tour, /event\.key === "Escape"/, "不再自己监听 Esc");
