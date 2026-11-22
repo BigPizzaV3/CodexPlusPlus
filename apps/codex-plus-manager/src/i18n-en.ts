@@ -1815,6 +1815,8 @@ export const EN_PLAIN: Record<string, string> = {
   "保存修改后继续，或放弃修改。": "Save your changes to continue, or discard them.",
   "保存并继续": "Save and continue",
   "放弃修改": "Discard changes",
+  "放弃修改？": "Discard changes?",
+  "有未保存的修改，关闭后会丢失。": "You have unsaved changes. Closing will discard them.",
   "诊断与验证": "Diagnostics and verification",
   "检查官方应用身份、CDP renderer、目标样式和页面布局": "Check the official app identity, CDP renderer, source styles, and page layout",
   "运行诊断": "Runtime diagnostics",
