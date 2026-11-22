@@ -93,28 +93,6 @@
 }
 
 /* 日志 / 诊断：等宽文本卡片，不再套第二层边框。 */
-:root .shell .cx-set-mono-card .log-lines {
-  max-height: calc(100vh - 230px);
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  font-size: 11.5px;
-}
-
-:root .shell .cx-set-mono-card .log-line > span {
-  border-right-color: hsl(var(--cx-row-divider));
-}
-
-:root .shell .cx-set-mono-card .log-line {
-  min-height: 24px;
-  border-bottom-color: hsl(var(--cx-row-divider));
-}
-
-:root .shell .cx-set-mono-card .log-line > span,
-:root .shell .cx-set-mono-card .log-line > code {
-  padding: 4px 10px;
-}
-
 :root .shell .cx-set-mono-card .empty {
   padding: 24px 14px;
   color: hsl(var(--muted-foreground));
@@ -906,11 +884,6 @@
   border-radius: 8px;
 }
 
-:root .shell .cx-relay-initial {
-  font-size: 11px;
-  font-weight: 600;
-}
-
 :root .shell .cx-pool-add {
   height: 28px;
   white-space: nowrap;
@@ -951,11 +924,6 @@
 :root .shell .cx-codex-proxy-head small {
   color: hsl(var(--muted-foreground));
   font-size: 12px;
-}
-
-:root .shell .cx-codex-proxy-input {
-  width: 260px;
-  height: 30px;
 }
 
 :root .shell .cx-codex-advanced-body .relay-environment-panel,

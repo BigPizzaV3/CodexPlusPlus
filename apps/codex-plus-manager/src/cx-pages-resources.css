@@ -120,12 +120,6 @@
   flex: none;
 }
 
-:root .shell .ext-row-chevron {
-  width: 16px;
-  height: 16px;
-  color: hsl(var(--muted-foreground));
-}
-
 /* 行内展开（拓展设置、管理面板、dsh 插件明细）：跟在行下面，缩进到文字列。 */
 :root .shell .cx-row-expand {
   padding: 4px 16px 16px 56px;

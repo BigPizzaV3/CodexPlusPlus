@@ -389,24 +389,6 @@
   border-top: 1px solid hsl(var(--border));
 }
 
-/* 价格 */
-.pf-price {
-  display: grid;
-  grid-template-columns: 88px repeat(3, minmax(0, 1fr));
-  align-items: end;
-  gap: 8px;
-}
-
-.pf-price label {
-  display: grid;
-  gap: 4px;
-}
-
-.pf-price label span {
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
-}
-
 .pf-foot {
   display: flex;
   align-items: center;
