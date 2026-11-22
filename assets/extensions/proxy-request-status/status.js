@@ -7,6 +7,8 @@
    *
    * 节点放进公开插槽 composer.above 给的容器（输入框上方）；没有插槽容器时挂在输入框之前，
    * 空闲时 display:none，不占位；带 data-codex-plus-ext 让扫描调度器排除自喂循环。
+   * 本会话的请求结束后先只隐去内容、保留占位几秒，期间又有请求就原地接着显示：一轮里工具调用之间
+   * 常有一两秒没有请求，立刻收起会让输入框高度反复变、对话区跟着上下跳（#3236）。
    *
    * 这是官方拓展包「请求状态条」的引擎：只用公开接口，后端调用由 main.js 经 codexPlusProxyStatusHost 传进来（ctx.call）。
    */
@@ -20,6 +22,8 @@
   const codexPlusProxyStatusStyleId = "codex-plus-proxy-request-status-style";
   const codexPlusProxyStatusPollMs = 1200;
   const codexPlusProxyStatusTickMs = 500;
+  /** 本会话的请求结束后保留占位多久：盖住工具调用之间的空档（轮询本身就有 1.2 秒的粒度）。 */
+  const codexPlusProxyStatusIdleHoldMs = 4000;
 
   const codexPlusProxyStatusState = {
     /** 拓展装着时为 true：轮询只在这期间跑。 */
@@ -35,6 +39,9 @@
     slotHosts: new Set(),
     /** 上一次画出的内容摘要：没变就不重建节点。 */
     lastSignature: "",
+    /** 状态条上一次显示的是哪个会话的请求、显示在什么时候（nowMs）：只对同一会话保留占位。 */
+    shownThreadId: "",
+    lastShownAtMs: 0,
   };
 
   // 开关就是拓展本身（#2824）：停用后不显示、不轮询；重新启用后装上即接上。
@@ -116,6 +123,7 @@
     style.textContent = `
       #${codexPlusProxyStatusId}{display:flex;align-items:center;justify-content:flex-end;gap:8px;box-sizing:border-box;width:100%;margin:0 0 6px;padding:0 12px;font-size:12px;line-height:17px;color:var(--color-token-text-secondary,rgba(205,205,215,.95));color:color-mix(in srgb,var(--color-token-text-primary,#dfdfdf) 82%,transparent);user-select:none;cursor:default}
       #${codexPlusProxyStatusId}[data-hidden="true"]{display:none}
+      #${codexPlusProxyStatusId}[data-idle="true"]{visibility:hidden}
       #${codexPlusProxyStatusId} .codex-plus-proxy-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#f59e0b;box-shadow:0 0 0 0 rgba(245,158,11,.35);animation:codex-plus-proxy-pulse 1.4s ease-out infinite}
       #${codexPlusProxyStatusId}[data-phase="retrying"] .codex-plus-proxy-dot{background:#f97316}
       #${codexPlusProxyStatusId}[data-phase="generating"] .codex-plus-proxy-dot{background:#22c55e}
@@ -156,7 +164,29 @@
     const node = codexPlusProxyStatusState.node;
     // 值没变就不写，免得每 500ms 一次的倒计时在空闲时也制造 DOM 变更、唤醒别人的 MutationObserver。
     if (node && node.dataset.hidden !== "true") node.dataset.hidden = "true";
+    if (node && node.dataset.idle) delete node.dataset.idle;
     codexPlusProxyStatusState.lastSignature = "";
+    codexPlusProxyStatusState.shownThreadId = "";
+  }
+
+  /**
+   * 这会儿没有要显示的请求：刚才还在显示（同一会话、保留期内）就只隐去内容、留着占位，
+   * 下一次请求很快接上时输入框高度不变；过了保留期仍没有请求再收起（#3236）。
+   * 判断只用记下的状态，不找输入框、不读布局（#2883 跟进）。
+   */
+  function codexPlusProxyStatusIdle(threadId) {
+    const state = codexPlusProxyStatusState;
+    const node = state.node;
+    const holding = node?.isConnected
+      && node.dataset.hidden === "false"
+      && state.shownThreadId
+      && (threadId === undefined || threadId === state.shownThreadId)
+      && state.nowMs - state.lastShownAtMs < codexPlusProxyStatusIdleHoldMs;
+    if (!holding) {
+      codexPlusProxyStatusHide();
+      return;
+    }
+    if (node.dataset.idle !== "true") node.dataset.idle = "true";
   }
 
   function codexPlusProxyStatusFormatDuration(ms) {
@@ -173,16 +203,18 @@
     }
     // 没有任何进行中的请求（绝大多数时间）：先返回，不去找输入框。找输入框要对每张卡片读一次布局，
     // 原先空闲时也每 500ms 读一轮（#2883 跟进：实测约 2.9 次/秒的强制布局全来自这里）。
+    // 这里不知道当前是哪个会话：要不要保留占位只看上一次显示的那个（#3236）。
     if (!codexPlusProxyStatusState.requests.length) {
-      codexPlusProxyStatusHide();
+      codexPlusProxyStatusIdle();
       return;
     }
     const card = codexPlusProxyStatusComposerCard();
     const threadId = card ? codexPlusProxyStatusThreadId(card) : "";
     // 首页/新会话没有当前会话 id：不能把“没有会话”当成“不过滤”，
     // 否则会把别的会话里正在运行的请求显示到首页（串会话）。
+    // 保留占位时只隐去内容、不显示任何请求，所以一时找不到输入框或会话 id 也不会串会话。
     if (!card || !threadId) {
-      codexPlusProxyStatusHide();
+      codexPlusProxyStatusIdle();
       return;
     }
     const visibleRequests = codexPlusProxyStatusState.requests.filter(
@@ -190,11 +222,14 @@
     );
     const request = visibleRequests[0];
     if (!request) {
-      codexPlusProxyStatusHide();
+      // 切到了别的会话就立刻收起：占位只留给刚才那个会话的下一次请求。
+      codexPlusProxyStatusIdle(threadId);
       return;
     }
     const node = codexPlusProxyStatusEnsureNode(card);
     if (!node) return;
+    codexPlusProxyStatusState.shownThreadId = threadId;
+    codexPlusProxyStatusState.lastShownAtMs = codexPlusProxyStatusState.nowMs;
     const text = codexPlusProxyStatusText();
     const phase = String(request.phase || "");
     const retries = Number(request.autoRetries) || 0;
@@ -223,9 +258,10 @@
 
     // 内容和上一轮一样就不重建（倒计时按秒变，500ms 一跳时有一半是重复的）。
     const signature = JSON.stringify([phase, label, meta, lastError, lastErrorMessage]);
-    if (signature === codexPlusProxyStatusState.lastSignature && node.dataset.hidden === "false" && node.isConnected) return;
+    if (signature === codexPlusProxyStatusState.lastSignature && node.dataset.hidden === "false" && !node.dataset.idle && node.isConnected) return;
     codexPlusProxyStatusState.lastSignature = signature;
     node.dataset.hidden = "false";
+    if (node.dataset.idle) delete node.dataset.idle;
     node.dataset.phase = phase || "requesting";
     node.setAttribute("aria-label", text.aria);
     node.replaceChildren();

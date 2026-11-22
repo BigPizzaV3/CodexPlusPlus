@@ -186,3 +186,61 @@ test("请求状态条空闲时不找输入框、不读布局（#2883 跟进）",
   api.render();
   assert.equal(cardLookups, 1);
 });
+
+test("请求状态条：同一会话两次请求之间保留占位，输入框不再上下跳（#3236）", () => {
+  const source = packageSource("proxy-request-status", ["status.js"]);
+  let threadId = "t1";
+  const makeNode = () => {
+    const node: any = {
+      dataset: {}, isConnected: false, nextElementSibling: null, parentElement: null,
+      setAttribute: () => undefined, replaceChildren: () => undefined, append: () => undefined, appendChild: () => undefined,
+      remove: () => { node.isConnected = false; },
+    };
+    return node;
+  };
+  const composerRoot: any = {
+    parentElement: {},
+    getAttribute: (name: string) => (name === "data-composer-placement" ? "thread" : null),
+    querySelector: () => ({ getAttribute: () => threadId }),
+    insertAdjacentElement: (_where: string, node: any) => { node.isConnected = true; node.nextElementSibling = composerRoot; },
+  };
+  const card = {
+    isConnected: true,
+    getBoundingClientRect: () => ({ width: 600, height: 80 }),
+    closest: (selector: string) => (selector === "[data-codex-composer-root]" ? composerRoot : null),
+    querySelector: () => ({}),
+  };
+  const document = {
+    hidden: false,
+    documentElement: { lang: "zh-CN" },
+    head: { appendChild: () => undefined },
+    getElementById: () => null,
+    createElement: makeNode,
+    querySelectorAll: (selector: string) => (selector.includes("data-composer-surface-variant") ? [card] : []),
+    querySelector: () => null,
+  };
+  const window = { setInterval: () => 1, clearInterval: () => undefined, setTimeout: () => 1, clearTimeout: () => undefined };
+  const api = new Function("document", "window", `${source}\nreturn { state: codexPlusProxyStatusState, render: codexPlusProxyStatusRender };`)(document, window) as {
+    state: { running: boolean; requests: unknown[]; nowMs: number; node: any };
+    render(): void;
+  };
+  const at = (nowMs: number, requests: unknown[]) => {
+    api.state.nowMs = nowMs;
+    api.state.requests = requests;
+    api.render();
+    const { hidden, idle } = api.state.node.dataset;
+    return idle === "true" ? "占位" : hidden === "false" ? "显示" : "收起";
+  };
+  api.state.running = true;
+  assert.equal(at(1_000, [{ threadId: "t1", phase: "generating" }]), "显示");
+  // 工具调用之间没有请求：只隐去内容、保留高度，下一次请求原地接上。
+  assert.equal(at(2_000, []), "占位");
+  assert.equal(at(3_000, [{ threadId: "t1", phase: "requesting" }]), "显示");
+  // 一轮真的结束了：保留期过后收起。
+  assert.equal(at(4_000, []), "占位");
+  assert.equal(at(60_000, []), "收起");
+  // 切到别的会话（原会话还在跑）：立刻收起，不给别的会话留占位，也不显示它的请求。
+  assert.equal(at(61_000, [{ threadId: "t1", phase: "generating" }]), "显示");
+  threadId = "t2";
+  assert.equal(at(61_500, [{ threadId: "t1", phase: "generating" }]), "收起");
+});
