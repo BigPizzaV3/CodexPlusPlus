@@ -4721,6 +4721,7 @@ export function App() {
   const setupCard = setupOpen && !agentFocusOpen && !agentFocusChecking ? (
           <OnboardingSetup
             focus={agentFocus}
+            relaySettings={settings ? normalizeSettings(settings.settings) : null}
             codexInstalled={overview ? overview.codex_app.status === "found" : null}
             codexRunning={codexAppRunning}
             launchPending={launchPending}
@@ -4730,6 +4731,7 @@ export function App() {
             onDismiss={closeSetup}
             onTour={() => setTourOpen(true)}
             onNavigate={(target, agent) => { if (agent) void switchTool(agent, target); else void navigate(target); }}
+            onAddProvider={() => { setAddDirectProviderRequested(true); void switchTool("codex", "relay"); }}
             onCheckCodex={async () => {
               const currentApp = await run(() => call<OverviewResult>("load_overview"));
               const currentSettings = await run(() => call<SettingsResult>("load_settings"));
@@ -5027,7 +5029,7 @@ export function App() {
               launchPending={launchPending}
               onLaunchCodex={() => void (codexAppRunning ? restart() : launch())}
               onNavigate={(next) => void navigate(next)}
-              onOpenAgent={(agent) => void switchTool(agent, agentEntryRoute(agent))}
+              onOpenAgent={(agent, destination) => void switchTool(agent, destination ?? agentEntryRoute(agent))}
               autoTakeover={autoTakeover}
               autoTakeoverOn={settings ? autoTakeoverOn : null}
               watcherEnabled={watcher ? Boolean(watcher.enabled) : null}
@@ -9358,7 +9360,7 @@ function HomeScreen({
   launchPending: boolean;
   onLaunchCodex: () => void;
   onNavigate: (route: Route) => void;
-  onOpenAgent: (agent: ToolId) => void;
+  onOpenAgent: (agent: ToolId, destination?: Route) => void;
   autoTakeover: AutoTakeoverResult | null;
   /** 设置还没读到时为 null，开关先禁用。 */
   autoTakeoverOn: boolean | null;
@@ -9368,6 +9370,8 @@ function HomeScreen({
   const usage = useTodayUsage();
   const enhanceOnly = providersHidden(focus);
   const connected = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
+  // 和侧栏一样：没有 Agent 接入网关时不显示网关那一行，也不催其他 Agent 接入。
+  const gatewayInUse = connected.size > 0;
 
   const topAds = featuredAds(ads);
   const topIdentities = new Set(topAds.map(adIdentity));
@@ -9377,11 +9381,12 @@ function HomeScreen({
   const rest = pool.filter((ad) => ad.type === "sponsor");
   const open = (ad: AdItem) => void actions.openExternalUrl(ad.url);
 
-  const shortcuts: Array<{ route: Route; label: string; detail: string; icon: LucideIcon }> = [
+  // agent：Codex 自己的页面，先切到 Codex 再打开。
+  const shortcuts: Array<{ route: Route; label: string; detail: string; icon: LucideIcon; agent?: ToolId }> = [
     { route: "userScripts", label: t("万物皆拓展"), detail: t("给 Codex、Claude 加功能的脚本"), icon: Blocks },
     { route: "context", label: t("MCP 与 Skills"), detail: t("一处管理所有 Agent 的 MCP 和 Skill"), icon: Network },
     { route: "sessions", label: t("会话"), detail: t("找回、继续各 Agent 的本地会话"), icon: MessagesSquare },
-    { route: "gatewayProviders", label: t("供应商池"), detail: t("添加 Key，一个 Agent 同时用多家"), icon: Server },
+    { route: "relay", label: t("Codex 供应商"), detail: t("切换 Codex 的供应商与连接方式"), icon: Cable, agent: "codex" },
     { route: "gatewayUsage", label: t("用量"), detail: t("调用次数、Token 与费用"), icon: BarChart3 },
     { route: "settings", label: t("设置"), detail: t("主题、更新、日志与诊断"), icon: Settings },
   ];
@@ -9442,29 +9447,27 @@ function HomeScreen({
     }
     return (
       <CxRow
-        detail={viaGateway ? t("已经通过 Codex++ 网关接入") : t("未接入网关")}
+        detail={viaGateway ? t("已经通过 Codex++ 网关接入") : gatewayInUse ? t("未接入网关") : t("直连")}
         icon={<CxStatusIcon tone={viaGateway ? "ok" : "off"}><AgentGlyph agent={tool.id} className="home-agent-glyph" /></CxStatusIcon>}
         key={tool.id}
         onClick={() => onOpenAgent(tool.id)}
         title={tool.name}
       >
-        {viaGateway || enhanceOnly ? <ChevronRight aria-hidden="true" className="cx-set-chevron" /> : (
+        {viaGateway || enhanceOnly || !gatewayInUse ? <ChevronRight aria-hidden="true" className="cx-set-chevron" /> : (
           <button className="cx-secondary" onClick={(event) => { event.stopPropagation(); onNavigate("gateway"); }} type="button">{t("接入")}</button>
         )}
       </CxRow>
     );
   };
 
-  const gatewayDetail = !gateway
-    ? t("读取中…")
-    : gateway.helperRunning
-      ? [
-          tf("运行中 · 端口 {0}", [gateway.port]),
-          tf("{0} 个供应商", [gateway.pool.length]),
-          tf("{0} 个 Agent 已接入", [connected.size]),
-          usage ? tf("今日 {0} 次调用", [usage.totals.calls]) : "",
-        ].filter(Boolean).join(" · ")
-      : connected.size ? t("网关未运行") : t("还没有 Agent 接入");
+  const gatewayDetail = gateway?.helperRunning
+    ? [
+        tf("运行中 · 端口 {0}", [gateway.port]),
+        tf("{0} 个供应商", [gateway.pool.length]),
+        tf("{0} 个 Agent 已接入", [connected.size]),
+        usage ? tf("今日 {0} 次调用", [usage.totals.calls]) : "",
+      ].filter(Boolean).join(" · ")
+    : t("网关未运行");
 
   return (
     <div className="tp-page home-page">
@@ -9478,7 +9481,7 @@ function HomeScreen({
       <CxSection title={t("状态")}>
         <CxCard>
           {tools.map(agentRow)}
-          {enhanceOnly ? null : (
+          {enhanceOnly || !gatewayInUse ? null : (
             <CxRow
               detail={gatewayDetail}
               icon={<CxStatusIcon tone={gateway?.helperRunning ? "ok" : "off"}><Waypoints /></CxStatusIcon>}
@@ -9559,7 +9562,7 @@ function HomeScreen({
           {shortcuts.filter((item) => routeVisible(focus, item.route)).map((item) => {
             const Icon = item.icon;
             return (
-              <button className="home-shortcut" key={item.route} onClick={() => onNavigate(item.route)} type="button">
+              <button className="home-shortcut" key={item.route} onClick={() => (item.agent ? onOpenAgent(item.agent, item.route) : onNavigate(item.route))} type="button">
                 <Icon aria-hidden="true" />
                 <span>
                   <strong>{item.label}</strong>
@@ -15703,13 +15706,9 @@ function AppSidebar({
   const languageLabel = getLanguage() === "en" ? t("切换到中文") : t("切换到英文");
   const themeLabel = theme === "dark" ? t("切换到浅色") : t("切换到深色");
   const connectedAgents = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
-  const gatewayState = !gateway
-    ? t("读取中…")
-    : gateway.helperRunning
-      ? tf("网关运行中 · 端口 {0}", [gateway.port])
-      : connectedAgents.size
-        ? t("网关未运行")
-        : t("还没有 Agent 接入");
+  // 供应商日常在 Codex 里管：没有 Agent 接入网关时，网关一组、状态卡和接入方式的状态点都不显示。
+  const gatewayInUse = connectedAgents.size > 0;
+  const gatewayState = gateway?.helperRunning ? tf("网关运行中 · 端口 {0}", [gateway.port]) : t("网关未运行");
   const openSettings = (entryRoute: Route, sections?: string[]) => (onOpenSettings ? onOpenSettings(entryRoute, sections) : onNavigate(entryRoute));
 
   if (settingsMode) {
@@ -15784,28 +15783,31 @@ function AppSidebar({
   }
 
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
-  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话；第二组是聚合网关：一个 Agent 经网关同时用多家供应商。
+  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话、用量；聚合网关排在 Agent 增强后面，只在有 Agent 接入网关时出现。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
   // 万物皆拓展是独立入口，不随侧栏当前选的 Agent 显隐；宿主在页内切换。
   const extensionsShown = true;
+  // 用量也记直连代理的请求，不算网关专属。
   const general: SideEntry[] = [
     { key: "home", route: "home", label: t("首页"), icon: House, match: ["home", "recommendations"] },
     ...(extensionsShown ? [{ key: "extensions", route: "userScripts" as Route, label: t("万物皆拓展"), icon: Blocks, match: ["userScripts" as Route], tour: "management" }] : []),
     { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes, tour: extensionsShown ? undefined : "management" },
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
+    { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
   ];
   const gatewayEntries: SideEntry[] = [
     { key: "hub", route: "hub", label: t("总览"), icon: Waypoints, match: ["hub"], tour: "hub" },
     { key: "providers", route: "gatewayProviders", label: t("供应商池"), icon: Server, match: ["gatewayProviders"], tour: "nav-gatewayProviders" },
     { key: "gateway", route: "gateway", label: soloAgent ? tf("{0} 接入", [agentName(soloAgent)]) : t("Agent 接入"), icon: Plug, match: ["gateway"], tour: "nav-gateway" },
     { key: "routing", route: "gatewayRouting", label: t("路由"), icon: Split, match: ["gatewayRouting"] },
-    { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
   ];
   const shownGeneral = general.filter((item) => routeVisible(focus, item.route));
-  const shownGateway = gatewayEntries.filter((item) => routeVisible(focus, item.route));
-  // 声明在网关分组的拓展页面跟在聚合网关后面，其余的单独一节。
+  // 还没用网关时整组不显示（⌘K 和 Codex「连接与供应商」页仍能进去）；停在网关页上时照常显示，好在组里来回切。
+  const gatewayShown = gatewayInUse || gatewayEntries.some((item) => item.match.includes(route));
+  const shownGateway = gatewayShown ? gatewayEntries.filter((item) => routeVisible(focus, item.route)) : [];
+  // 声明在网关分组的拓展页面跟在聚合网关后面；网关一组不显示时并进其余拓展页面那一节。
   const gatewayExtensionItems = managerNavPages(extensionPages, "gateway");
-  const extensionItems = (["management", "tools"] as ManagerNavGroup[]).flatMap((group) => managerNavPages(extensionPages, group));
+  const extensionItems = [...(shownGateway.length ? [] : gatewayExtensionItems), ...(["management", "tools"] as ManagerNavGroup[]).flatMap((group) => managerNavPages(extensionPages, group))];
   const renderEntry = (item: SideEntry) => {
     const Icon = item.icon;
     const selected = item.match.includes(route);
@@ -15856,24 +15858,9 @@ function AppSidebar({
       <nav aria-label={t("主导航")} className="cx-side-nav">
         <div className="cx-side-group">{shownGeneral.map(renderEntry)}</div>
 
-        {shownGateway.length ? (
-          <div className="cx-side-group" data-group="gateway">
-            <div className="cx-side-heading" title={t("任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家")}>
-              <span>{t("聚合网关")}</span>
-            </div>
-            {shownGateway.map(renderEntry)}
-            {gatewayExtensionItems.map(renderExtensionPage)}
-          </div>
-        ) : null}
-
         <div className="cx-side-group" data-tour="agents">
           <div className="cx-side-heading">
             <span>{t("Agent 增强")}</span>
-            {soloAgent || enhanceOnly ? null : (
-              <button aria-label={t("接入 Agent")} className="cx-icon-button" onClick={() => onNavigate("gateway")} title={t("接入 Agent")} type="button">
-                <Plus aria-hidden="true" />
-              </button>
-            )}
           </div>
           {/* 每个 Agent 一行；点一下切到它，回到上次看的页面（没有就是落脚页）。它的页面在内容区顶部的胶囊里。 */}
           {tools.map((tool) => {
@@ -15913,7 +15900,7 @@ function AppSidebar({
                 >
                   <AgentGlyph agent={tool.id} className="cx-side-icon" />
                   <span className="cx-side-label">{displayName}</span>
-                  {enhanceOnly ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
+                  {enhanceOnly || !gatewayInUse ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
                 </button>
                 {tool.id === "codex" && tool.switchable ? (() => {
                   // 外部启动、没挂载增强脚本的 Codex：按钮直接变成「重启并挂载」，一步到位。
@@ -15986,6 +15973,16 @@ function AppSidebar({
           })}
         </div>
 
+        {shownGateway.length ? (
+          <div className="cx-side-group" data-group="gateway">
+            <div className="cx-side-heading" title={t("任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家")}>
+              <span>{t("聚合网关")}</span>
+            </div>
+            {shownGateway.map(renderEntry)}
+            {gatewayExtensionItems.map(renderExtensionPage)}
+          </div>
+        ) : null}
+
         {extensionItems.length ? (
           <div className="cx-side-group">
             <div className="cx-side-heading"><span>{t("拓展页面")}</span></div>
@@ -15994,7 +15991,7 @@ function AppSidebar({
         ) : null}
       </nav>
 
-      {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；否则是网关状态；有新版本时换成更新提示。 */}
+      {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；否则有 Agent 接入网关时是网关状态；有新版本时换成更新提示。 */}
       {setupCard}
       {pendingUpdateVersion ? (
         <button className="cx-side-card" onClick={onOpenUpdate} type="button">
@@ -16003,7 +16000,7 @@ function AppSidebar({
             {pendingUpdateReady ? t("点击安装") : pendingUpdateProgress !== null ? (pendingUpdateProgress >= 0 ? `${Math.round(pendingUpdateProgress)}%` : t("下载中…")) : t("查看更新")}
           </span>
         </button>
-      ) : enhanceOnly || setupCard ? null : (
+      ) : enhanceOnly || setupCard || !gatewayInUse ? null : (
         <button className={`cx-side-card ${route === "hub" ? "active" : ""}`} data-tour="hub" onClick={() => onNavigate("hub")} title={t("网关总览")} type="button">
           <span className="cx-side-card-title">
             <i className="side-dot" data-tone={gateway?.helperRunning ? "ok" : "off"} />

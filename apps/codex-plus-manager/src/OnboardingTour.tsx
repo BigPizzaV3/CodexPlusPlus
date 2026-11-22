@@ -10,6 +10,7 @@ import { paletteShortcut } from "./command-palette-model";
 import { placeCard, tourSteps } from "./onboarding-model";
 import { providersHidden, singleAgent, type AgentFocus } from "./agent-focus-model";
 import { agentName } from "./gateway-model";
+import { useGatewayPayload } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalFocus } from "./use-modal-focus";
 import "./OnboardingTour.css";
@@ -20,7 +21,9 @@ const PAD = 6;
 
 export function OnboardingTour({ focus, onClose }: { focus: AgentFocus; onClose: (finished: boolean) => void }) {
   const solo = singleAgent(focus);
-  const steps = tourSteps(solo ? agentName(solo) : null, providersHidden(focus));
+  // 和侧栏同一条规则：有 Agent 接入网关才有网关一组，也才讲网关的三步。
+  const gatewayShown = (useGatewayPayload(10_000)?.agents ?? []).some((agent) => agent.enabled);
+  const steps = tourSteps(solo ? agentName(solo) : null, providersHidden(focus), gatewayShown);
   const text = (value: string, args?: string[]) => (args ? tf(value, args) : t(value));
   useEscapeLayer(true, () => onClose(false));
   const [index, setIndex] = useState(0);

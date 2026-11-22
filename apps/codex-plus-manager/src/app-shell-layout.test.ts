@@ -32,6 +32,12 @@ test("侧栏底部是网关状态卡，点它进入总览；Agent 点名字回�
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /className=\{`cx-side-card[^`]*`\} data-tour="hub" onClick=\{\(\) => onNavigate\("hub"\)\}/);
   assert.match(sidebar, /useGatewayPayload\(/);
+  // 供应商日常在 Codex 里管：没有 Agent 接入网关时，网关一组、状态卡、接入方式的状态点和「接入 Agent」都不显示；停在网关页上时网关一组照常显示。
+  assert.match(sidebar, /const gatewayInUse = connectedAgents\.size > 0;/);
+  assert.match(sidebar, /const gatewayShown = gatewayInUse \|\| gatewayEntries\.some\(\(item\) => item\.match\.includes\(route\)\);/);
+  assert.match(sidebar, /\) : enhanceOnly \|\| setupCard \|\| !gatewayInUse \? null : \(/);
+  assert.match(sidebar, /\{enhanceOnly \|\| !gatewayInUse \? null : <i aria-hidden="true" className="side-dot" data-tone=\{access\.tone\} \/>\}/);
+  assert.doesNotMatch(sidebar, /aria-label=\{t\("接入 Agent"\)\}/);
   assert.match(text, /const agentHomeRoute: Record<string, Route> = \{ codex: "overview", claude: "claude", grok: "overview" \}/);
   assert.match(text, /const agentEntryRoute = \(toolId: ToolId\) => agentTarget\(agentRoutes\(toolId\), lastAgentRoute\.get\(toolId\), agentHomeRoute\[toolId\] \?\? "overview"\)/);
   assert.match(functionSource("App"), /onOpenAgent=\{\(toolId, destination\) => void switchTool\(toolId, destination \?\? agentEntryRoute\(toolId\)\)\}/);
@@ -196,16 +202,19 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话；第二组「聚合网关」：总览、供应商池、Agent 接入、路由、用量。
+  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话、用量；「聚合网关」（总览、供应商池、Agent 接入、路由）排在 Agent 增强后面。
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /\{ key: "extensions", route: "userScripts" as Route, label: t\("万物皆拓展"\)/);
   assert.ok(sidebar.indexOf('key: "extensions"') < sidebar.indexOf('key: "customize"'), "万物皆拓展排在第一个");
   assert.match(sidebar, /match: customizeRoutes/);
   assert.match(sidebar, /<span>\{t\("聚合网关"\)\}<\/span>/);
   for (const key of ["hub", "providers", "gateway", "routing", "usage"]) assert.match(sidebar, new RegExp(`key: "${key}"`));
-  assert.match(sidebar, /match: \["gatewayUsage", "requestLog"\]/);
+  // 用量也记直连代理的请求，放在第一组，不随网关一组隐藏。
+  const general = sidebar.slice(sidebar.indexOf("const general: SideEntry[]"), sidebar.indexOf("const gatewayEntries"));
+  assert.match(general, /\{ key: "usage", route: "gatewayUsage", label: t\("用量"\), icon: BarChart3, match: \["gatewayUsage", "requestLog"\] \}/);
+  assert.ok(sidebar.indexOf('data-tour="agents"') < sidebar.indexOf('data-group="gateway"'), "聚合网关排在 Agent 增强后面");
   assert.match(sidebar, /const shownGeneral = general\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
-  assert.match(sidebar, /const shownGateway = gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
+  assert.match(sidebar, /const shownGateway = gatewayShown \? gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\) : \[\];/);
   assert.match(text, /const customizeRoutes: Route\[\] = \["context", "skills"\];/);
   // 路由是聚合网关的一部分，不进设置模式。
   assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"gatewayRouting"/);
@@ -379,9 +388,16 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   // 首页不能全是广告：先是状态，再是精选推荐和其他赞助商，最后常用入口。
   const order = ['title={t("状态")}', 'title={t("精选推荐")}', 'title={t("更多赞助商")}', 'title={t("常用")}'].map((needle) => home.indexOf(needle));
   assert.ok(order.every((index, position) => index > 0 && (position === 0 || index > order[position - 1])), String(order));
-  // 只管增强时不显示网关一行，入口也按使用模式过滤。
-  assert.match(home, /\{enhanceOnly \? null : \(/);
+  // 只管增强、或还没有 Agent 接入网关时不显示网关一行，也不催其他 Agent 接入；入口也按使用模式过滤。
+  assert.match(home, /const gatewayInUse = connected\.size > 0;/);
+  assert.match(home, /\{enhanceOnly \|\| !gatewayInUse \? null : \(/);
+  assert.match(home, /viaGateway \|\| enhanceOnly \|\| !gatewayInUse \? <ChevronRight/);
   assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
+  // 常用入口给的是 Codex 自己的供应商页，不是网关的供应商池；Codex 的页面先切到 Codex 再打开。
+  assert.match(home, /\{ route: "relay", label: t\("Codex 供应商"\)[^\n]*agent: "codex" \}/);
+  assert.doesNotMatch(home, /route: "gatewayProviders"/);
+  assert.match(home, /item\.agent \? onOpenAgent\(item\.agent, item\.route\) : onNavigate\(item\.route\)/);
+  assert.match(app, /onOpenAgent=\{\(agent, destination\) => void switchTool\(agent, destination \?\? agentEntryRoute\(agent\)\)\}/);
   // 推荐：置顶位不管几个都上横幅、一行均分宽度，不挪去别处；推荐池的赞助商不能上横幅；其他赞助商全部列出不折叠；同一家去重。卡片上不再单独标「推广」，赞助性质由这一节标题旁的说明交代。
   assert.match(home, /const heroes = topAds;/);
   assert.match(home, /const rest = pool\.filter\(\(ad\) => ad\.type === "sponsor"\);/);

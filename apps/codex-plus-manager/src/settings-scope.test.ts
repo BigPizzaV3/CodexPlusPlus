@@ -81,7 +81,7 @@ test("只用增强功能：隐藏供应商页面，配置保存成功后才提�
   assert.match(helpers, /providersHidden\(focus\) && providerRoutes\.has\(routeId\)/);
   // 侧栏、页签、命令面板都按同一条规则过滤。
   // 聚合网关整组按模式过滤，一项都不剩时连标题一起隐藏。
-  assert.match(functionSource("AppSidebar"), /const shownGateway = gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
+  assert.match(functionSource("AppSidebar"), /const shownGateway = gatewayShown \? gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\) : \[\];/);
   assert.match(functionSource("AppSidebar"), /\{shownGateway\.length \? \(/);
   assert.match(functionSource("AppSidebar"), /\.flatMap\(\(entry\) => visibleRoutes\(focus, entry\.routes\)\)/);
   assert.match(text, /if \(!item \|\| !routeVisible\(agentFocus, routeId\)\) return null;/);

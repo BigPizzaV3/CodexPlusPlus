@@ -952,6 +952,10 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
   }
 }
 
+export function isTauri(): boolean {
+  return false;
+}
+
 export function convertFileSrc(path: string): string {
   return path;
 }
