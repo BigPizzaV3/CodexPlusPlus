@@ -2,7 +2,7 @@
  *
  * 与直连模式完全独立：这里的增删改只动 gateway.json；「导入…」是把直连模式的供应商复制一份过来。
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS as DndCSS } from "@dnd-kit/utilities";
@@ -80,6 +80,7 @@ import { ProviderKeyList } from "./ProviderKeyList";
 import { ProviderTestDialog } from "./ProviderTestDialog";
 import { takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
+import { useModalShell } from "./use-modal-shell";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { useSponsorPresets } from "./sponsor-store";
@@ -1347,16 +1348,17 @@ function ProviderCatalog({
   ].filter((section) => section.items.length);
 
   // Esc 栈：从这里打开的「导入…」在上面一层，Esc 先关导入，不会把整个添加流程关掉。
-  useEscapeLayer(true, onClose);
+  const titleId = useId();
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
 
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="gw-modal gw-catalog-modal" role="dialog" aria-label={t("添加供应商")}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
+      <div {...dialogProps} className="gw-modal gw-catalog-modal">
         <header>
-          <strong>{t("添加供应商")}</strong>
+          <strong id={titleId}>{t("添加供应商")}</strong>
           <label className="gw-sheet-search">
             <Search className="h-4 w-4" />
-            <input autoFocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("查找供应商…")} value={query} />
+            <input autoFocus data-autofocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("查找供应商…")} value={query} />
           </label>
           <button className="gw-text-button" onClick={() => setImporting(true)} type="button">{t("导入…")}</button>
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
@@ -1417,7 +1419,8 @@ function ImportDialog({
   skipAgents: GatewayAgentId[];
   agentPicks?: ReactNode;
 }) {
-  useEscapeLayer(true, onClose);
+  const titleId = useId();
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
   const candidates = importCandidates(payload);
   const keyOf = (item: ImportCandidate) => `${item.source}:${item.id}`;
   const [picked, setPicked] = useState<Set<string>>(() => new Set(candidates.filter((item) => !item.imported).map(keyOf)));
@@ -1464,10 +1467,10 @@ function ImportDialog({
   const pending = candidates.filter((item) => !item.imported);
   const allPicked = pending.length > 0 && pending.every((item) => picked.has(keyOf(item)));
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="gw-modal gw-import-modal">
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
+      <div {...dialogProps} className="gw-modal gw-import-modal">
         <header>
-          <strong>{t("从直连模式导入")}</strong>
+          <strong id={titleId}>{t("从直连模式导入")}</strong>
           {pending.length ? (
             <button className="gw-text-button" onClick={() => setPicked(allPicked ? new Set() : new Set(pending.map(keyOf)))} type="button">
               {allPicked ? t("全不选") : t("全选未导入的")}
@@ -1537,7 +1540,9 @@ function ImportDialog({
 
 /** Copilot 设备码登录：显示验证码，等你在 GitHub 页面里输入并授权。关掉弹窗（含 Esc）就是取消登录。 */
 function DeviceCodeDialog({ code, notify, onCancel }: { code: DeviceCode; notify: Notify; onCancel: () => void }) {
-  useEscapeLayer(true, onCancel);
+  // 点遮罩不关（关掉就是取消登录，误点代价大）；Esc、关闭键照常取消。
+  const titleId = useId();
+  const { dialogProps } = useModalShell<HTMLDivElement>({ onClose: onCancel, labelledBy: titleId, dismissOnBackdrop: false });
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(code.userCode);
@@ -1548,9 +1553,9 @@ function DeviceCodeDialog({ code, notify, onCancel }: { code: DeviceCode; notify
   };
   return createPortal(
     <div className="gw-modal-backdrop gw-portal">
-      <div className="gw-modal gw-device-modal">
+      <div {...dialogProps} className="gw-modal gw-device-modal">
         <header>
-          <strong>{code.title ?? t("登录 GitHub Copilot")}</strong>
+          <strong id={titleId}>{code.title ?? t("登录 GitHub Copilot")}</strong>
           <button aria-label={t("取消登录")} className="gw-icon-button" onClick={onCancel} title={t("取消登录")} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body">

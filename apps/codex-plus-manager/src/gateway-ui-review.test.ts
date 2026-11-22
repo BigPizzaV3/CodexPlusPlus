@@ -382,3 +382,19 @@ test("更换 token 先确认（危险操作），写明谁要跟着改；换完�
   assert.match(page, /onClick=\{\(\) => void rotate\(agent\.agent, agent\.name\)\}/);
   assert.match(page, /rotated === agent\.agent && binding\?\.token/);
 });
+
+test("网关弹窗走 useModalShell：标题作无障碍名称，组编辑器改过后关闭先确认；挂在 body 上的浮层不被外层焦点圈拉走", () => {
+  const page = read("GatewayPage.tsx");
+  const editor = page.slice(page.indexOf("function GroupEditor("));
+  assert.match(editor, /const dirty = pattern\.trim\(\) !== "" \|\| JSON\.stringify\(\[name, mode, sticky, members, imageInputModel\]\) !== initial;/);
+  assert.match(editor, /<strong id=\{titleId\}>/);
+  assert.match(editor, /onClick=\{\(\) => void requestClose\(\)\} size="sm" type="button" variant="ghost">\{t\("取消"\)\}/);
+  assert.match(editor, /<Input autoFocus data-autofocus /, "焦点圈先落到名称输入框，不是右上角的关闭");
+  const providers = read("GatewayProviders.tsx");
+  for (const name of ["function ProviderCatalog(", "function ImportDialog(", "function DeviceCodeDialog("]) {
+    const body = providers.slice(providers.indexOf(name), providers.indexOf("\n}\n", providers.indexOf(name)));
+    assert.match(body, /<strong id=\{titleId\}>/, name);
+    assert.match(body, /\{\.\.\.dialogProps\}/, name);
+  }
+  assert.match(read("GatewayAgents.tsx"), /<div aria-modal="true" className=\{`gw-popover gw-portal \$\{className\}`\} ref=\{panelRef\} role="dialog"/);
+});

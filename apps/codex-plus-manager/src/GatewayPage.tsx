@@ -1,5 +1,5 @@
 /** 本地网关：让 Claude Code、Grok 经 Codex++ 使用统一的供应商池，支持多 Key 轮换与模型组。 */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { appConfirm } from "./app-dialog";
@@ -46,7 +46,7 @@ import { UsageView } from "./GatewayUsage";
 import { Avatar, GatewayLoadError, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
 import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState, useGatewayViewState } from "./gateway-store";
-import { useEscapeLayer } from "./use-escape-layer";
+import { useModalShell } from "./use-modal-shell";
 import { visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
@@ -601,8 +601,11 @@ function GroupEditor({
   const [imageInputModel, setImageInputModel] = useState(group?.imageInputModel ?? "");
   const [pickingImage, setPickingImage] = useState(false);
   const imageRef = useRef<HTMLDivElement>(null);
-  // Esc 栈：「添加成员」浮层、模式下拉开着时 Esc 先关它们。
-  useEscapeLayer(true, onCancel);
+  // 改过就算未保存：Esc、点遮罩、关闭、取消都先确认再丢弃。「添加成员」浮层、模式下拉开着时 Esc 先关它们（Esc 栈）。
+  const [initial] = useState(() => JSON.stringify([group?.name ?? "", group?.mode ?? "inOrder", group?.sticky ?? "cache", group?.members ?? [], group?.imageInputModel ?? ""]));
+  const dirty = pattern.trim() !== "" || JSON.stringify([name, mode, sticky, members, imageInputModel]) !== initial;
+  const titleId = useId();
+  const { requestClose, backdropProps, dialogProps } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
   // 权重输入框正在编辑的原始文字（允许暂时为空），失焦时再规范成 ≥ 1 的整数。
   const [weightText, setWeightText] = useState<Record<number, string>>({});
   const move = (index: number, delta: number) => {
@@ -635,8 +638,9 @@ function GroupEditor({
       ? t("额度 / 速度相同时按列表顺序")
       : t("答不了时按列表顺序换下一个");
   return createPortal(
-    <div className="gw-modal-backdrop gw-portal" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+    <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
+        {...dialogProps}
         className="gw-modal gw-group-modal"
         onSubmit={(event) => {
           event.preventDefault();
@@ -645,13 +649,13 @@ function GroupEditor({
       >
         <header>
           <span className="gw-avatar gw-avatar-plus"><Waypoints className="h-4 w-4" /></span>
-          <strong>{group ? tf("编辑 {0}", [group.name]) : t("新建模型组")}</strong>
-          <button aria-label={t("关闭")} className="gw-icon-button" onClick={onCancel} type="button"><X className="h-4 w-4" /></button>
+          <strong id={titleId}>{group ? tf("编辑 {0}", [group.name]) : t("新建模型组")}</strong>
+          <button aria-label={t("关闭")} className="gw-icon-button" onClick={() => void requestClose()} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body">
           <label className="gw-field">
             <span>{t("名称")} <small>{name.trim() ? `${GROUP_MODEL_PREFIX}${name.trim()}` : ""}</small></span>
-            <Input autoFocus onChange={(event) => setName(event.currentTarget.value)} placeholder={t("例如 日常编码")} value={name} />
+            <Input autoFocus data-autofocus onChange={(event) => setName(event.currentTarget.value)} placeholder={t("例如 日常编码")} value={name} />
           </label>
           <div className="gw-field">
             <span>{t("模式")}</span>
@@ -818,7 +822,7 @@ function GroupEditor({
         </div>
         <footer>
           <span className="gw-error">{error}</span>
-          <Button onClick={onCancel} size="sm" type="button" variant="ghost">{t("取消")}</Button>
+          <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
           <Button disabled={busy !== null || Boolean(error)} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
         </footer>
       </form>

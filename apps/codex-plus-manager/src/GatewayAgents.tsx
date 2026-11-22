@@ -1,5 +1,5 @@
 /** 本地网关 · 智能体：每个 Agent 一行，接入后供应商池里的模型都出现在它自己的模型列表里，也可以在这里直接选。 */
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, RotateCcw, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
@@ -44,6 +44,7 @@ import {
 import { AppSelect } from "./AppSelect";
 import { GatewayNavContext, publishGatewayPayload, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
+import { useModalShell } from "./use-modal-shell";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
@@ -165,13 +166,14 @@ export function AgentConnectDialog({
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   onClose: () => void;
 }) {
-  // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。
-  useEscapeLayer(true, onClose);
+  // Esc 栈：里面的下拉、确认框开着时 Esc 先关它们，不会连带关掉这个弹窗。每次改动立即保存，没有未保存的状态。
+  const titleId = useId();
+  const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
   return (
-    <div className="gw-modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div aria-label={t("接入 Agent")} className="gw-modal gw-agent-modal" role="dialog">
+    <div className="gw-modal-backdrop" {...backdropProps}>
+      <div {...dialogProps} className="gw-modal gw-agent-modal">
         <header>
-          <strong>{t("接入 Agent")}</strong>
+          <strong id={titleId}>{t("接入 Agent")}</strong>
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body gw-agent-modal-body">
@@ -878,7 +880,8 @@ export function Floating({
   useEscapeLayer(open, onClose);
   if (!open || !position) return null;
   return createPortal(
-    <div className={`gw-popover gw-portal ${className}`} ref={panelRef} style={position}>
+    // 挂在 body 上、在弹窗外：标成模态浮层，外层弹窗的焦点圈在它打开时让出焦点（不然点进搜索框会被拉回弹窗）。
+    <div aria-modal="true" className={`gw-popover gw-portal ${className}`} ref={panelRef} role="dialog" style={position}>
       {children}
     </div>,
     document.body,
