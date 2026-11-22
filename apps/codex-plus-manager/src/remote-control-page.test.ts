@@ -35,8 +35,8 @@ test("前端调用的命令名与 Tauri 注册一致，动作与后端分发一�
   assert.match(commands, /rc::dispatch\(&action, &args\.unwrap_or\(Value::Null\)\)/, "与 Codex 页面共用 core 的分发");
   assert.match(lib, /remote_control_commands::remote_control_request,/);
   assert.match(lib, /remote_control_commands::start_from_saved_state_in_background\(\);/, "管理器启动时按保存的开关拉起");
-  assert.match(lib, /codex_plus_core::remote_control::stop\(\);/, "管理器退出时停掉服务");
-  for (const action of ["status", "enable", "disable", "resetToken", "enableLan", "disableLan", "startPairing", "cancelPairing", "setDeviceRole", "revokeDevice"]) {
+  assert.match(lib, /codex_plus_core::remote_control::shutdown\(\);/, "管理器退出时停掉服务并禁止重建");
+  for (const action of ["status", "enable", "disable", "setWeixinFocus", "resetToken", "enableLan", "disableLan", "startPairing", "cancelPairing", "setDeviceRole", "revokeDevice"]) {
     assert.ok(page.includes(`"${action}"`), `前端缺少动作 ${action}`);
     assert.ok(core.includes(`"${action}" =>`), `后端缺少动作 ${action}`);
   }
@@ -60,6 +60,7 @@ test("配对与设备管理：带参数的动作传对参数名，移除设备�
   const page = await read("./RemoteControlPage.tsx");
   const core = await read("../../../crates/codex-plus-core/src/remote_control/mod.rs");
   assert.match(page, /run\("startPairing", \{ role: pairRole \}\)/);
+  assert.match(page, /run\("setWeixinFocus", \{ enabled: !status\?\.weixinFocusEnabled \}\)/);
   assert.match(page, /run\("setDeviceRole", \{ id: device\.id, role \}\)/);
   assert.match(page, /run\("revokeDevice", \{ id: device\.id \}\)/);
   assert.match(core, /"startPairing" => start_pairing\(arg\("role"\)\?\)/);
@@ -93,10 +94,11 @@ test("Codex 左侧图标栏的「远程控制」入口：登记进所有写死�
   assert.ok(!extensionApi.includes(`"/remote-control"`), "不开放给拓展");
   assert.match(core, /if !HOSTED\.load/, "bridge 不在管理器进程里时不起服务");
   assert.match(commands, /rc::mark_hosted_by_this_process\(\);/);
-  for (const action of ["enable", "disable", "resetToken", "enableLan", "disableLan", "startPairing", "cancelPairing", "revokeDevice"]) {
+  for (const action of ["enable", "disable", "setWeixinFocus", "resetToken", "enableLan", "disableLan", "startPairing", "cancelPairing", "revokeDevice"]) {
     assert.ok(pageSource.includes(`"${action}"`), `Codex 页面缺少动作 ${action}`);
   }
   assert.match(pageSource, /codexPlusRemoteRun\("setDeviceRole", \{ id: deviceId, role \}\)/);
+  assert.match(pageSource, /codexPlusRemoteRun\("setWeixinFocus", \{ enabled: !state\.data\?\.weixinFocusEnabled \}\)/);
 });
 
 /** 分片顶层只有常量和函数声明：补上它依赖的工具函数，直接求值拿出渲染函数。 */

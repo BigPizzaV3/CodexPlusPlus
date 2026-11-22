@@ -766,7 +766,7 @@ pub fn run() {
                         codex_plus_core::claude_local_backend::stop_backend();
                         codex_plus_core::resident_helper::stop_resident_helper();
                         // 远程控制服务停掉侧车 app-server，别留孤儿进程。
-                        codex_plus_core::remote_control::stop();
+                        codex_plus_core::remote_control::shutdown();
                         SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                         app.exit(0);
                     });

@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 use sha1::{Digest, Sha1};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::task::JoinSet;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -57,21 +58,42 @@ trait Connection: AsyncRead + AsyncWrite + Unpin + Send + 'static {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + 'static> Connection for T {}
 
 pub async fn serve(listener: TcpListener, context: Arc<ServerContext>) {
+    let mut connections = JoinSet::new();
+    serve_with_connections(listener, context, &mut connections).await;
+}
+
+pub(crate) async fn serve_with_connections(listener: TcpListener, context: Arc<ServerContext>, connections: &mut JoinSet<()>) {
     loop {
-        let Ok((stream, peer)) = listener.accept().await else { continue };
+        let Ok((stream, peer)) = (tokio::select! {
+            result = listener.accept() => result,
+            _ = connections.join_next(), if !connections.is_empty() => continue,
+        }) else { continue };
         let context = context.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let _ = handle_connection(stream, peer, context).await;
         });
     }
 }
 
 pub async fn serve_tls(listener: TcpListener, acceptor: tokio_rustls::TlsAcceptor, context: Arc<ServerContext>) {
+    let mut connections = JoinSet::new();
+    serve_tls_with_connections(listener, acceptor, context, &mut connections).await;
+}
+
+pub(crate) async fn serve_tls_with_connections(
+    listener: TcpListener,
+    acceptor: tokio_rustls::TlsAcceptor,
+    context: Arc<ServerContext>,
+    connections: &mut JoinSet<()>,
+) {
     loop {
-        let Ok((stream, peer)) = listener.accept().await else { continue };
+        let Ok((stream, peer)) = (tokio::select! {
+            result = listener.accept() => result,
+            _ = connections.join_next(), if !connections.is_empty() => continue,
+        }) else { continue };
         let context = context.clone();
         let acceptor = acceptor.clone();
-        tokio::spawn(async move {
+        connections.spawn(async move {
             let Ok(Ok(stream)) = tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await else { return };
             let _ = handle_connection(stream, peer, context).await;
         });

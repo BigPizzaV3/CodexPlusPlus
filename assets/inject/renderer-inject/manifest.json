@@ -83,12 +83,12 @@
     {
       "name": "45-remote-control-page.js",
       "description": "左侧图标栏「远程控制」页：在 Codex 里开关远程控制与局域网访问、给手机配对、管理设备（经 /remote-control 走管理器托管的服务）",
-      "lines": 528
+      "lines": 533
     },
     {
       "name": "45-weixin-connect-page.js",
       "description": "左侧图标栏「微信连接」页：在 Codex 里扫码登录、启停微信连接、改常用设置（经 /weixin-connect 走管理器登记的宿主路由，与管理器微信页共用命令）",
-      "lines": 686
+      "lines": 690
     },
     {
       "name": "46-service-settings.js",

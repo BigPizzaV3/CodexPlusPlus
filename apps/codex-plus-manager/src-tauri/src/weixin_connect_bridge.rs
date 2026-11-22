@@ -4,7 +4,8 @@
 //! `register_codex_bridge_routes`）；每个动作直接调管理器微信页用的同一组 Tauri 命令函数，
 //! 不另写一份逻辑：
 //!
-//! - `state`：连接状态 + 页面能看到的设置（不含登录凭据）+ 远程控制开没开（加加要用）
+//! - `state`：连接状态 + 页面能看到的设置（不含登录凭据）+ 远程控制与专注授权状态
+//! - `setWeixinFocus {enabled}`：与远程控制页共用专注授权
 //! - `save {settings}`：只合并白名单字段（core `connect::page`），再走管理器的 `save_settings`
 //!   （同一套校验、热更新运行中的连接）
 //! - `qrStart` / `qrStatus`：扫码登录，网关地址与路由标记取已保存的设置
@@ -25,6 +26,10 @@ pub async fn bridge_request(payload: Value) -> anyhow::Result<Value> {
     let action = payload.get("action").and_then(Value::as_str).unwrap_or("state");
     match action {
         "state" => state(),
+        "setWeixinFocus" => tokio::task::spawn_blocking(move || {
+            codex_plus_core::remote_control::bridge_route(&payload)?;
+            state()
+        }).await?,
         "save" => {
             let patch = payload.get("settings").cloned().unwrap_or(Value::Null);
             let saved = tokio::task::spawn_blocking(move || save(&patch)).await??;
@@ -89,15 +94,13 @@ pub async fn bridge_request(payload: Value) -> anyhow::Result<Value> {
 fn state() -> anyhow::Result<Value> {
     let settings = SettingsStore::default().load()?;
     let connection = commands::weixin_connect_status().payload;
-    let remote_running = codex_plus_core::remote_control::status()
-        .get("running")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
+    let remote = codex_plus_core::remote_control::status();
     Ok(json!({
         "status": "ok",
         "connection": connection,
         "settings": page::page_settings(&settings),
-        "remoteControlRunning": remote_running,
+        "remoteControlRunning": remote["running"],
+        "weixinFocusEnabled": remote["weixinFocusEnabled"],
     }))
 }
 

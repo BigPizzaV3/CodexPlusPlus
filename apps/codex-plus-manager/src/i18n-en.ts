@@ -564,6 +564,9 @@ export const EN_PLAIN: Record<string, string> = {
   // 远程控制
   "远程控制": "Remote control",
   "启用远程控制": "Enable remote control",
+  "开启远程控制会中断正在独立后台运行的微信专注轮次。": "Enabling remote control interrupts WeChat Focus turns running independently in the background.",
+  "允许微信专注操作桌面会话": "Allow WeChat Focus to control desktop chats",
+  "远程控制关闭时，仅在此项开启后，已扫码绑定的微信用户仍可进入桌面会话、发消息和处理审批。不会开启网页访问。": "When remote control is off, enable this to let the linked WeChat user open desktop chats, send messages, and handle approvals. This does not enable web access.",
   "在浏览器里查看 Codex 的会话、发消息、停止，处理命令审批和模型提问，切换模型、权限和计划模式。": "View Codex sessions in a browser, send messages, stop runs, handle command approvals and model questions, and switch model, permissions and plan mode.",
   "本机访问链接": "Link on this computer",
   "链接里带着访问令牌，拿到链接就能操控 Codex，不要发给别人。": "The link contains the access token. Anyone with it can control Codex, so do not share it.",

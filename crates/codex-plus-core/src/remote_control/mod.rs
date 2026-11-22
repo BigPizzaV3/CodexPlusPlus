@@ -28,7 +28,7 @@ pub mod uploads;
 pub mod versions;
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -39,12 +39,16 @@ pub const DEFAULT_PORT: u16 = 57360;
 pub const DEFAULT_LAN_PORT: u16 = 57361;
 const STATE_FILE: &str = "remote-control.json";
 const THREAD_NAME: &str = "codex-plus-remote-control";
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteControlState {
     #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
+    pub weixin_focus_enabled: bool,
     #[serde(default = "default_port")]
     pub port: u16,
     #[serde(default)]
@@ -70,6 +74,7 @@ impl Default for RemoteControlState {
     fn default() -> Self {
         Self {
             enabled: false,
+            weixin_focus_enabled: false,
             port: DEFAULT_PORT,
             token: String::new(),
             lan_enabled: false,
@@ -222,9 +227,115 @@ struct Running {
     thread: std::thread::JoinHandle<()>,
 }
 
-fn running_slot() -> &'static Mutex<Option<Running>> {
-    static SLOT: OnceLock<Mutex<Option<Running>>> = OnceLock::new();
-    SLOT.get_or_init(|| Mutex::new(None))
+struct FocusHost {
+    runtime: tokio::runtime::Runtime,
+    service: Arc<service::RemoteService>,
+}
+
+#[derive(Default)]
+struct Hosts {
+    web: Option<Running>,
+    focus: Option<FocusHost>,
+    closed: bool,
+    focus_calls: Arc<tokio::sync::RwLock<()>>,
+}
+
+impl Hosts {
+    fn ensure_open(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.closed, "Codex 会话服务已停止");
+        Ok(())
+    }
+
+    fn stop_focus(&mut self) {
+        if let Some(host) = self.focus.take() {
+            let result = host.runtime.block_on(finish_shutdown(async {
+                let _drained = self.focus_calls.write().await;
+                host.service.shutdown().await;
+            }));
+            host.runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
+            if let Err(error) = result {
+                eprintln!("微信专注会话服务已强制关闭：{error}");
+            }
+        }
+    }
+
+    fn stop_web(&mut self) {
+        if let Some(web) = self.web.take() {
+            stop_running(web);
+        }
+    }
+
+    fn shutdown(&mut self) {
+        self.closed = true;
+        self.stop_web();
+        self.stop_focus();
+    }
+
+    fn focus_host(&mut self) -> anyhow::Result<&FocusHost> {
+        self.ensure_open()?;
+        if self.focus.is_none() {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .thread_name("codex-plus-weixin-focus")
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .context("无法启动微信专注会话服务")?;
+            self.focus = Some(FocusHost { runtime, service: service::RemoteService::new(service::ServiceConfig::detect()) });
+        }
+        Ok(self.focus.as_ref().expect("focus host initialized"))
+    }
+}
+
+fn hosts() -> &'static Mutex<Hosts> {
+    static HOSTS: OnceLock<Mutex<Hosts>> = OnceLock::new();
+    HOSTS.get_or_init(|| Mutex::new(Hosts::default()))
+}
+
+fn try_hosts() -> anyhow::Result<MutexGuard<'static, Hosts>> {
+    match hosts().try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(error)) => Ok(error.into_inner()),
+        Err(TryLockError::WouldBlock) => anyhow::bail!("Codex 会话服务正在切换，请稍后重试"),
+    }
+}
+
+async fn finish_shutdown(cleanup: impl std::future::Future<Output = ()>) -> anyhow::Result<()> {
+    tokio::time::timeout(SHUTDOWN_GRACE, cleanup).await.context("等待会话服务停机超时")
+}
+
+pub(crate) fn weixin_focus_available() -> bool {
+    let Ok(hosts) = try_hosts() else { return false };
+    let state = load_state_from(&state_path());
+    !hosts.closed && if hosted_service().is_some() { state.enabled } else { state.weixin_focus_enabled }
+}
+
+pub(crate) async fn with_weixin_focus<T, F, Fut>(work: F) -> anyhow::Result<T>
+where
+    F: FnOnce(Arc<service::RemoteService>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>> + Send + 'static,
+    T: Send + 'static,
+{
+    let task = {
+        let mut hosts = try_hosts()?;
+        hosts.ensure_open()?;
+        // 持有 Hosts 锁时登记在途调用，停机等它完成后再关闭侧车。
+        let call = hosts.focus_calls.clone().try_read_owned().context("Codex 会话服务正在关闭，请稍后重试")?;
+        let state = load_state_from(&state_path());
+        let (service, runtime) = if let Some((service, runtime)) = hosted_service() {
+            anyhow::ensure!(state.enabled, "远程控制正在关闭");
+            (service, runtime)
+        } else {
+            anyhow::ensure!(state.weixin_focus_enabled, "微信专注未获授权");
+            let host = hosts.focus_host()?;
+            (host.service.clone(), host.runtime.handle().clone())
+        };
+        let work = work(service);
+        runtime.spawn(async move {
+            let _call = call;
+            work.await
+        })
+    };
+    task.await.context("Codex 会话服务已停止")?
 }
 
 /// 同一进程里的其它模块（微信连接里的加加）直接用远程控制服务，不绕 HTTP。
@@ -292,20 +403,21 @@ pub fn start(port: u16, token: &str) -> anyhow::Result<()> {
 
 /// 按给定参数启动服务；参数没变时什么也不做。
 pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
-    let mut slot = running_slot().lock().unwrap_or_else(|e| e.into_inner());
+    let mut hosts = hosts().lock().unwrap_or_else(|e| e.into_inner());
+    hosts.ensure_open()?;
     // 参数没变、且局域网入口（若要）确实在听时不用重启；上次端口被占就再试一次。
-    if slot
+    if hosts.web
         .as_ref()
         .is_some_and(|running| running.options.same_as(&options) && (options.lan.is_none() || running.lan_listening))
     {
         return Ok(());
     }
-    if let Some(running) = slot.take() {
-        stop_running(running);
-    }
+    hosts.stop_web();
+    hosts.stop_focus();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel::<anyhow::Result<(u16, bool)>>();
     let (stop_tx, stop_rx) = tokio::sync::oneshot::channel::<()>();
     let thread_options = options.clone();
+    let focus_calls = hosts.focus_calls.clone();
     let thread = std::thread::Builder::new()
         .name(THREAD_NAME.into())
         .spawn(move || {
@@ -321,7 +433,7 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                     return;
                 }
             };
-            runtime.block_on(async move {
+            let result = runtime.block_on(async move {
                 let preferred_port = options.port;
                 let listener = match tokio::net::TcpListener::bind(("127.0.0.1", preferred_port)).await {
                     Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
@@ -333,7 +445,7 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                     Ok((port, listener)) => (listener, port),
                     Err(error) => {
                         let _ = ready_tx.send(Err(anyhow::anyhow!("无法启动本机远程控制监听（首选端口 {preferred_port}）：{error}")));
-                        return;
+                        return Ok(());
                     }
                 };
                 let lan_listener = match &options.lan {
@@ -362,6 +474,8 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                     scope: server::Scope::Loopback,
                 });
                 let _ = ready_tx.send(Ok((port, lan_listener.is_some())));
+                let mut local_connections = tokio::task::JoinSet::new();
+                let mut lan_connections = tokio::task::JoinSet::new();
                 let lan_task = async {
                     match lan_listener {
                         Some((listener, acceptor, lan_port)) => {
@@ -371,19 +485,30 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                                 port: lan_port,
                                 scope: server::Scope::Lan,
                             });
-                            server::serve_tls(listener, acceptor, context).await
+                            server::serve_tls_with_connections(listener, acceptor, context, &mut lan_connections).await
                         }
                         None => std::future::pending().await,
                     }
                 };
                 tokio::select! {
-                    _ = server::serve(listener, local) => {}
+                    _ = server::serve_with_connections(listener, local, &mut local_connections) => {}
                     _ = lan_task => {}
                     _ = stop_rx => {}
                 }
                 unregister_hosted(&service);
-                service.shutdown().await;
+                finish_shutdown(async {
+                    local_connections.abort_all();
+                    lan_connections.shutdown().await;
+                    local_connections.shutdown().await;
+                    let _drained = focus_calls.write().await;
+                    service.shutdown().await;
+                }).await
             });
+            // 排空超时后丢弃剩余任务；服务的侧车随最后一个引用释放而结束。
+            runtime.shutdown_timeout(RUNTIME_SHUTDOWN_GRACE);
+            if let Err(error) = result {
+                eprintln!("网页远程控制会话服务已强制关闭：{error}");
+            }
         })
         .context("无法创建远程控制线程")?;
     match ready_rx.recv_timeout(Duration::from_secs(10)) {
@@ -393,7 +518,7 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
                 "remote_control.started",
                 json!({ "port": port, "preferredPort": options.port, "lanPort": lan_port }),
             );
-            *slot = Some(Running { options, port, lan_listening, stop: stop_tx, thread });
+            hosts.web = Some(Running { options, port, lan_listening, stop: stop_tx, thread });
             set_last_error(None);
             Ok(())
         }
@@ -403,6 +528,8 @@ pub fn start_with(options: ListenOptions) -> anyhow::Result<()> {
             Err(error)
         }
         Err(_) => {
+            let _ = stop_tx.send(());
+            let _ = thread.join();
             set_last_error(Some("远程控制服务启动超时".into()));
             anyhow::bail!("远程控制服务启动超时")
         }
@@ -416,21 +543,24 @@ fn stop_running(running: Running) {
 }
 
 pub fn stop() {
-    let running = running_slot().lock().unwrap_or_else(|e| e.into_inner()).take();
-    if let Some(running) = running {
-        stop_running(running);
-    }
+    hosts().lock().unwrap_or_else(|e| e.into_inner()).stop_web();
+}
+
+/// 只在管理器退出时调用；退出期间微信轮询不能重建会话服务。
+pub fn shutdown() {
+    hosts().lock().unwrap_or_else(|e| e.into_inner()).shutdown();
 }
 
 pub fn running_port() -> Option<u16> {
-    running_slot().lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|running| running.port)
+    hosts().lock().unwrap_or_else(|e| e.into_inner()).web.as_ref().map(|running| running.port)
 }
 
 /// 局域网入口正在监听的端口。
 pub fn running_lan_port() -> Option<u16> {
-    running_slot()
+    hosts()
         .lock()
         .unwrap_or_else(|e| e.into_inner())
+        .web
         .as_ref()
         .filter(|running| running.lan_listening)
         .and_then(|running| running.options.lan.as_ref().map(|lan| lan.port))
@@ -495,6 +625,18 @@ pub fn set_enabled(enabled: bool) -> anyhow::Result<Value> {
     Ok(status())
 }
 
+pub fn set_weixin_focus_enabled(enabled: bool) -> anyhow::Result<Value> {
+    {
+        let mut hosts = hosts().lock().unwrap_or_else(|e| e.into_inner());
+        hosts.ensure_open()?;
+        update_state(|state| state.weixin_focus_enabled = enabled)?;
+        if !enabled {
+            hosts.stop_focus();
+        }
+    }
+    Ok(status())
+}
+
 /// 打开 / 关闭局域网访问（只影响配对设备，本机入口不变）。
 pub fn set_lan_enabled(enabled: bool) -> anyhow::Result<Value> {
     let (state, ()) = update_state(|state| state.lan_enabled = enabled)?;
@@ -552,7 +694,7 @@ pub fn revoke_device(id: &str) -> anyhow::Result<Value> {
     Ok(status())
 }
 
-/// 管理器与 Codex 页面共用的动作分发：`status`、`enable`、`disable`、`resetToken`、`enableLan`、`disableLan`、
+/// 管理器与 Codex 页面共用的动作分发：`status`、`enable`、`disable`、`setWeixinFocus {enabled}`、`resetToken`、`enableLan`、`disableLan`、
 /// `startPairing {role}`、`cancelPairing`、`setDeviceRole {id, role}`、`revokeDevice {id}`。
 pub fn dispatch(action: &str, args: &Value) -> anyhow::Result<Value> {
     let arg = |key: &str| -> anyhow::Result<&str> {
@@ -562,6 +704,9 @@ pub fn dispatch(action: &str, args: &Value) -> anyhow::Result<Value> {
         "status" => Ok(status()),
         "enable" => set_enabled(true),
         "disable" => set_enabled(false),
+        "setWeixinFocus" => set_weixin_focus_enabled(
+            args.get("enabled").and_then(Value::as_bool).context("缺少布尔参数 enabled")?,
+        ),
         "resetToken" => reset_token(),
         "enableLan" => set_lan_enabled(true),
         "disableLan" => set_lan_enabled(false),
@@ -645,6 +790,7 @@ pub fn status() -> Value {
     });
     json!({
         "enabled": state.enabled,
+        "weixinFocusEnabled": state.weixin_focus_enabled,
         "running": running.is_some(),
         "port": state.port,
         "url": (state.enabled && running.is_some() && !state.token.is_empty()).then(|| page_url(&state)),
@@ -660,4 +806,56 @@ pub fn status() -> Value {
         "pairing": pairing,
         "devices": devices::list().iter().map(devices::Device::public).collect::<Vec<_>>(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn focus_poll_does_not_wait_for_the_hosts_lock() {
+        let guard = hosts().lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || tx.send(weixin_focus_available()).unwrap());
+        let result = rx.recv_timeout(Duration::from_secs(1));
+        drop(guard);
+        thread.join().unwrap();
+        assert!(!result.unwrap());
+    }
+
+    #[test]
+    fn focus_shutdown_cancels_calls_that_do_not_drain() {
+        let mut hosts = Hosts::default();
+        let call = hosts.focus_calls.clone().try_read_owned().unwrap();
+        let host = hosts.focus_host().unwrap();
+        let focus = Arc::downgrade(&host.service);
+        let service = host.service.clone();
+        host.runtime.spawn(async move {
+            let (_call, _service) = (call, service);
+            std::future::pending::<()>().await;
+        });
+        let start = std::time::Instant::now();
+        hosts.stop_focus();
+        assert!(start.elapsed() < SHUTDOWN_GRACE + Duration::from_secs(5));
+        assert!(focus.upgrade().is_none());
+    }
+
+    #[test]
+    fn weixin_focus_bridge_rejects_updates_without_a_manager() {
+        let error = bridge_route(&json!({ "action": "setWeixinFocus", "enabled": true })).unwrap_err();
+        assert!(error.to_string().contains("管理器未运行"));
+    }
+
+    #[test]
+    fn shutdown_releases_focus_host_and_prevents_recreation() {
+        let mut hosts = Hosts::default();
+        let focus = Arc::downgrade(&hosts.focus_host().unwrap().service);
+        hosts.stop_focus();
+        assert!(focus.upgrade().is_none());
+        let focus = Arc::downgrade(&hosts.focus_host().unwrap().service);
+        hosts.shutdown();
+        assert!(focus.upgrade().is_none());
+        assert!(hosts.focus_host().is_err());
+        assert!(hosts.focus.is_none());
+    }
 }

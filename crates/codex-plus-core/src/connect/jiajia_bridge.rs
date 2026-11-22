@@ -884,16 +884,24 @@ impl JiajiaBridge {
             return format!("卡片 #{} 可以回复：{}", card.no, options_line(&card.options));
         };
         // 和网页端一样，先核对这张卡片的请求还是当前待处理的请求：已处理 / 过期的不再发。
-        match self.port.live_requests(&card.thread_id).await {
-            Ok(live) if !live.contains(&card.request_id.to_string()) => {
-                self.finish_card(&card);
-                return "这个请求已经处理过了。".into();
+        let result = if card.focus {
+            if !self.sessions.available() {
+                return focus::REMOTE_OFF.into();
             }
-            Ok(_) => {}
-            Err(error) => return format!("没能确认这个请求的状态：{}", events::clip(&format!("{error:#}"), 120)),
-        }
-        match self.port.respond(&card.thread_id, &card.request_id, &option.body).await {
-            Ok(()) => {
+            self.sessions.respond(&card.thread_id, &card.request_id, &option.body).await
+        } else {
+            match self.port.live_requests(&card.thread_id).await {
+                Ok(live) if !live.contains(&card.request_id.to_string()) => Ok(false),
+                Ok(_) => self.port.respond(&card.thread_id, &card.request_id, &option.body).await.map(|_| true),
+                Err(error) => return format!("没能确认这个请求的状态：{}", events::clip(&format!("{error:#}"), 120)),
+            }
+        };
+        match result {
+            Ok(false) => {
+                self.finish_card(&card);
+                "这个请求已经处理过了。".into()
+            }
+            Ok(true) => {
                 self.finish_card(&card);
                 let title = if card.title.is_empty() { "未命名会话" } else { card.title.as_str() };
                 if card.focus {

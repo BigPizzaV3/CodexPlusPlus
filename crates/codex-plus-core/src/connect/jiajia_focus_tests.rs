@@ -19,6 +19,7 @@ struct SessionsState {
     /// (会话, 文字, 附件)
     sent: Vec<(String, String, Vec<Attachment>)>,
     created: Vec<(String, String)>,
+    responded: Vec<(String, Value, Value)>,
 }
 
 pub(super) struct MockSessions(Mutex<SessionsState>);
@@ -83,6 +84,18 @@ impl SessionPort for MockSessions {
         self.lock().created.push((cwd.into(), title.into()));
         self.add(&id, title, cwd, "空闲", view(&id, title, cwd, "idle", json!([]), json!([])));
         Ok(id)
+    }
+
+    async fn respond(&self, thread_id: &str, request_id: &Value, body: &Value) -> anyhow::Result<bool> {
+        let mut sessions = self.lock();
+        let key = request_id.to_string();
+        if !sessions.views.get(thread_id).is_some_and(|view| {
+            events::snapshot(view).requests.iter().any(|(id, _)| id == &key)
+        }) {
+            return Ok(false);
+        }
+        sessions.responded.push((thread_id.into(), request_id.clone(), body.clone()));
+        Ok(true)
     }
 }
 
@@ -377,7 +390,6 @@ async fn focus_cards_have_no_number_and_bare_digits_approve_them() {
 
     // 专注的会话等审批：专注这边发卡片，不带编号；加加那边贴的同一张不重复发。
     let request = command_request(json!(7), json!(["accept", "decline"]));
-    fixture.jiajia.lock().live.insert(T1.to_string(), vec!["7".to_string()]);
     fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "active", json!([]), json!([request.clone()])));
     say(&bridge, "me", "/进入 11111111").await;
     assert!(fixture.last_text().contains("它在等你处理"));
@@ -394,7 +406,8 @@ async fn focus_cards_have_no_number_and_bare_digits_approve_them() {
 
     // 还有别的卡片，光秃秃的数字也是答专注会话的。
     assert_eq!(say(&bridge, "me", "1").await, Inbound::Handled);
-    assert_eq!(fixture.jiajia.lock().responded, [(T1.to_string(), json!(7), json!({ "decision": "accept" }))]);
+    assert_eq!(fixture.sessions.lock().responded, [(T1.to_string(), json!(7), json!({ "decision": "accept" }))]);
+    assert!(fixture.jiajia.lock().responded.is_empty());
     assert_eq!(fixture.last_text(), "已回复「同意」：会话「重构登录」。");
     let cards = bridge.state().cards;
     assert_eq!(cards.len(), 1);
@@ -416,7 +429,7 @@ async fn focus_cards_have_no_number_and_bare_digits_approve_them() {
 #[tokio::test]
 async fn non_owners_and_remote_control_off_get_an_explanation() {
     let fixture = Fixture::new().await;
-    fixture.add_login_thread();
+    let cwd = fixture.add_login_thread();
     let bridge = fixture.bridge();
     for command in ["/会话", "/进入 1", "/新会话 修 bug", "/退出"] {
         assert_eq!(say(&bridge, "friend", command).await, Inbound::Handled);
@@ -428,8 +441,13 @@ async fn non_owners_and_remote_control_off_get_an_explanation() {
     assert!(fixture.last_text().contains("重新扫码"));
 
     say(&bridge, "me", "/进入 11111111").await;
+    let request = command_request(json!(7), json!(["accept", "decline"]));
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "active", json!([]), json!([request])));
+    bridge.poll_focus(true).await;
+    assert_eq!(bridge.state().cards.len(), 1);
+    let approval = format!("1 #{}", bridge.state().cards[0].no);
     fixture.sessions.lock().off = true;
-    for command in ["/会话", "/切换 1", "/新会话 修 bug"] {
+    for command in ["/会话", "/进入 11111111", "/切换 1", "/新会话 修 bug"] {
         say(&bridge, "me", command).await;
         assert!(fixture.last_text().contains("请先在 Codex++ 打开远程控制"), "{command}");
     }
@@ -437,10 +455,20 @@ async fn non_owners_and_remote_control_off_get_an_explanation() {
     assert_eq!(say(&bridge, "me", "继续").await, Inbound::Handled);
     assert!(fixture.last_text().contains("这条没发给「重构登录」") && fixture.last_text().contains("请先在 Codex++ 打开远程控制"));
     assert!(fixture.sessions.sent().is_empty() && fixture.jiajia.sent().is_empty());
+    assert_eq!(say(&bridge, "me", &approval).await, Inbound::Handled);
+    assert_eq!(fixture.last_text(), focus::REMOTE_OFF);
+    assert!(fixture.sessions.lock().responded.is_empty() && fixture.jiajia.lock().responded.is_empty());
+    assert_eq!(bridge.state().cards.len(), 1, "权限关闭不删除待处理卡片");
     say(&bridge, "me", "/状态").await;
-    assert!(fixture.last_text().contains("当前专注：重构登录（远程控制没开）"));
+    assert!(fixture.last_text().contains("当前专注：重构登录（远程控制未运行，微信专注未获授权）"));
     bridge.poll_focus(true).await;
     assert!(bridge.state().focus.contains_key("me"), "远程控制没开不算会话没了");
+    fixture.sessions.lock().off = false;
+    assert_eq!(say(&bridge, "me", &approval).await, Inbound::Handled);
+    assert_eq!(fixture.sessions.lock().responded.len(), 1);
+    assert_eq!(say(&bridge, "me", "继续").await, Inbound::Handled);
+    assert_eq!(fixture.sessions.sent(), [(T1.into(), "继续".into(), 0)]);
+    fixture.sessions.lock().off = true;
     say(&bridge, "me", "/退出").await;
     assert!(fixture.last_text().starts_with("已退出「重构登录」"), "退出不需要远程控制");
 }
