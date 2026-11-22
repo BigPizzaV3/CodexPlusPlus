@@ -775,7 +775,6 @@ export const EN_PLAIN: Record<string, string> = {
   "未启用，点击启用": "Not enabled, click to enable",
   "同时管理 Codex、Claude Code、Grok 的 MCP 服务器：每列一个 Agent，打开即写入它的配置": "Manage MCP servers for Codex, Claude Code and Grok together: one column per agent; turning one on writes it into that agent's config",
   "插件只有 Codex 支持": "Plugins are Codex-only",
-  "从各 Agent 读取现有配置，或添加一个服务器。": "Read existing configs from each agent, or add a server.",
   "删除后会从这些 Agent 的配置中移除：": "Deleting removes it from these agents' configs: ",
   "会同步写入已有这台服务器的所有 Agent；启停请在列表行操作。": "Changes are written to every agent that already has this server; toggle per agent in the list.",
   "保存后立即写入勾选的 Agent，写前自动备份原配置。": "Saving writes to the selected agents right away; the original configs are backed up first.",
@@ -1588,7 +1587,6 @@ export const EN_PLAIN: Record<string, string> = {
   "此上游说 Anthropic Messages（/v1/messages）：本地 127.0.0.1:57321 会把请求转成 Anthropic 协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。":
     "This upstream speaks Anthropic Messages (/v1/messages): the local proxy at 127.0.0.1:57321 converts requests to Anthropic and converts the responses back to Responses. Codex must be launched from Codex++.",
   "Codex 启动参数": "Codex launch arguments",
-  "Codex MCP&插件": "Codex MCP & plugins",
   "Codex 应用": "Codex app",
   "Codex 应用路径": "Codex app path",
   "Codex 意外停止": "Codex stopped unexpectedly",
@@ -1610,8 +1608,6 @@ export const EN_PLAIN: Record<string, string> = {
   "GitHub Release 更新": "GitHub Release update",
   "GitHub Release 检查": "GitHub Release check",
   "Helper 端口": "Helper port",
-  "MCP 与插件作为全局配置独立管理，切换任意供应商都会合并。":
-    "MCP, Skills and Plugins are managed independently as global config and merged in whenever you switch providers.",
   "Markdown 导出": "Markdown export",
   "SKRouteTag": "SKRouteTag",
   "Provider 同步目标": "Provider sync target",
@@ -1841,7 +1837,6 @@ export const EN_PLAIN: Record<string, string> = {
   "超时毫秒": "Timeout milliseconds",
   "连接": "Connection",
   "高级参数": "Advanced parameters",
-  "TOML 配置体": "TOML config body",
   "Watcher 状态": "Watcher status",
   "Watcher 用于保持 Codex++ 接管状态": "The watcher keeps Codex++ in control",
   "Watcher 自动接管": "Watcher auto-takeover",
@@ -1894,7 +1889,6 @@ export const EN_PLAIN: Record<string, string> = {
   "使用": "Use",
   "使用中": "In use",
   "例如 C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app": "e.g. C:\\Program Files\\WindowsApps\\OpenAI.Codex...\\app",
-  "例如 context7": "e.g. context7",
   "例如 deepseek-v4-pro": "e.g. deepseek-v4-pro",
   "例如 gpt-5.4-mini": "e.g. gpt-5.4-mini",
   "例如 主力聚合池": "e.g. Primary aggregate pool",
@@ -2542,7 +2536,6 @@ export const EN_PLAIN: Record<string, string> = {
   "供应商预设列表": "Provider preset list",
   "保存": "Save",
   "保存为默认路径": "Save as default path",
-  "保存扩展项": "Save entry",
   "保存的应用路径": "Saved app path",
   "保存自动修复设置": "Save auto-repair settings",
   "修复历史会话": "Repair historical sessions",
@@ -2663,7 +2656,6 @@ export const EN_PLAIN: Record<string, string> = {
   "删除会话": "Delete session",
   "删除供应商": "Delete provider",
   "删除已选": "Delete selected",
-  "删除扩展项": "Delete entry",
   "删除模型": "Delete model",
   "刷新": "Refresh",
   "刷新会话": "Refresh sessions",
@@ -2741,7 +2733,6 @@ export const EN_PLAIN: Record<string, string> = {
     "This capability is already active while enhancements are on; the switch only applies after enhancements are turned off.",
   "官方订阅额度耗尽后仍可发送，不区分供应商模式；纯官方登录发出的请求仍可能被官方拒绝。只改客户端发送状态，不改变真实用量与计费。重启 Codex 后生效。": "Keeps sending after the official subscription quota runs out, regardless of provider mode; requests from plain official login may still be rejected by OpenAI. Only changes the client send state, not real usage or billing. Takes effect after restarting Codex.",
   "启用供应商配置切换": "Enable provider configuration switching",
-  "启用此扩展项": "Enable this entry",
   "包含上下文大小与压缩阈值；留空即沿用全局默认值。":
     "Covers context size and compaction threshold; leave blank to keep the global defaults.",
   "官方登录之外再挂一份 API Key，用于额度耗尽时兜底。":
@@ -2832,10 +2823,7 @@ export const EN_PLAIN: Record<string, string> = {
   "开启后，通过 Codex++ 启动 Codex 前自动整理一次旧对话的归属标记。":
     "When on, tidies up ownership tags of old conversations once before launching Codex through Codex++.",
   "当前": "Current",
-  "当前页会话": "Sessions on this page",
   "会话总数": "Total sessions",
-  "当前页未归档": "Active on this page",
-  "当前页已归档": "Archived on this page",
   "当前 provider": "current provider",
   "当前不会写入 Codex config.toml / auth.json。打开供应商配置总开关后再切换。":
     "Codex config.toml / auth.json won't be written right now. Turn on the provider configuration master switch before switching.",
@@ -2846,7 +2834,6 @@ export const EN_PLAIN: Record<string, string> = {
   "当前供应商 config.toml 里没有可提取的通用配置。": "The current provider's config.toml has no extractable common config.",
   "当前供应商切换后会写入的预览；上下文开关变化会立即反映": "Preview of what the current provider writes after switching; context toggles are reflected immediately",
   "当前供应商还没有完整 config.toml / API Key 存档。": "The current provider doesn't have a complete config.toml / API Key archive yet.",
-  "当前共有": "There are currently ",
   "当前未登录官方账号，也未配置混入 API 的 Base URL / Key。": "Not logged into an official account, and no mixed-in API Base URL / Key configured.",
   "当前未登录官方账号；切到官方登录模式后仍需要先在 Codex/ChatGPT 登录。":
     "Not logged into an official account; after switching to official login mode you still need to log in via Codex/ChatGPT first.",
@@ -2870,7 +2857,6 @@ export const EN_PLAIN: Record<string, string> = {
   "打开链接": "Open link",
   "打开关于": "Open About",
   "打开项目主页": "Open project homepage",
-  "扩展项": "entry",
   "批量删除会话": "Bulk delete sessions",
   "把 Codex++ 菜单插入 Codex 顶部原生菜单栏。": "Insert the Codex++ menu into Codex's top native menu bar.",
   "把主对话和输入框限制到固定最大宽度，适合大屏阅读。": "Constrain the main conversation and input box to a fixed max width, good for large-screen reading.",
@@ -2937,7 +2923,6 @@ export const EN_PLAIN: Record<string, string> = {
   "未知版本": "Unknown version",
   "未记录路径": "No path recorded",
   "未记录项目路径": "No project path recorded",
-  "未读取到本地会话，或当前 SQLite 会话库不存在。": "No local sessions read, or the current SQLite session database doesn't exist.",
   "本地 Codex 增强、管理工具和安装包维护": "Local Codex enhancements, management tools and install package maintenance",
   "本地会话": "Local sessions",
   "本地整体": "Local overall",
@@ -3020,12 +3005,9 @@ export const EN_PLAIN: Record<string, string> = {
   "清除保存路径": "Clear saved path",
   "清理幽灵任务索引": "Clean up ghost task index",
   "幽灵任务索引处理失败，请查看错误提示后重试。": "Ghost task index processing failed. Check the error message and retry.",
-  "点击刷新会话读取本地数据库": "Click Refresh Sessions to read the local database",
   "点击刷新加载拓展市场。": "Click Refresh to load the extension market.",
   "版本信息、项目链接、GitHub Release 更新、日志与诊断": "Version info, project links, GitHub Release updates, logs and diagnostics",
   "状态": "Status",
-  "独立管理 Codex 的 MCP 服务器与插件；切换任意供应商都会带上。":
-    "Manage Codex's MCP, Skills and Plugins independently; they carry over whenever you switch providers.",
   "环境变量": "Environment variables",
   "环境变量检测": "Environment variable detection",
   "环境变量清理": "Environment variable cleanup",
@@ -3041,7 +3023,6 @@ export const EN_PLAIN: Record<string, string> = {
   "确认删除": "Confirm delete",
   "确认导入": "Confirm import",
   "禁用": "Disable",
-  "禁用此扩展项": "Disable this entry",
   "立刻修复历史会话": "Repair historical sessions now",
   "第三方": "Third party",
   "策略": "Strategy",
@@ -3080,7 +3061,6 @@ export const EN_PLAIN: Record<string, string> = {
     "OpenAI session identity only supports the Responses API; Chat Completions does not support ChatGPT Remote remote compaction. Switch protocol or return to Custom.",
   "编辑": "Edit",
   "编辑后保存列表，再切换模式时会使用新配置": "After editing, save the list; the new config is used the next time you switch modes",
-  "编辑扩展项": "Edit entry",
   "缺失": "Missing",
   "缺少 Codex++ 静默启动快捷方式时可在安装维护页修复。": "When the Codex++ silent launch shortcut is missing, repair it on the Install & Maintenance page.",
   "缺少管理工具快捷方式时可在安装维护页修复。": "When the manager shortcut is missing, repair it on the Install & Maintenance page.",
@@ -3242,8 +3222,6 @@ export const EN_PLAIN: Record<string, string> = {
   "该步骤未执行。": "This step was not run.",
   "请先填写或选择应用路径。": "Fill in or select an app path first.",
   "请先选择要删除的会话。": "Select the sessions to delete first.",
-  "读取 Codex 本地 SQLite 会话库，会删除数据库记录和对应 rollout 文件":
-    "Reads Codex's local SQLite session database; deletes database records and the corresponding rollout files",
   "读取 cc-switch 供应商失败。": "Failed to read cc-switch providers.",
   "读取 ~/.cc-switch/cc-switch.db": "Reading ~/.cc-switch/cc-switch.db",
   "调用失败": "Call failed",
@@ -3290,10 +3268,7 @@ export const EN_PLAIN: Record<string, string> = {
     "The model name used by default when launching Codex; don't include a suffix. Configure context windows per model in the “Model list” below.",
   "（": " (",
   "）": ")",
-  "，可以从通用配置文件或这里新增。": "; you can add them from the common config file or here.",
   "，留空表示使用 Codex 默认长度。": "; leave empty to use Codex's default length.",
-  "；这些条目独立于供应商保存，会写入所有供应商切换后的 config.toml。":
-    "; these entries are saved independently of providers and written to config.toml after switching to any provider.",
   "中转站环境配置检测": "Relay environment check",
   "进程环境": "Process environment",
   "系统环境": "System environment",
@@ -3435,8 +3410,6 @@ export const EN_PLAIN: Record<string, string> = {
     "Fill in the fields below. Advanced settings the form does not cover are preserved as-is.",
   "只填写表头下面的内容。": "Enter only the contents below the table header.",
   "导入 JSON": "Import JSON",
-  "支持 mcpServers / servers 包裹，也支持直接粘贴单个服务器配置。":
-    "Accepts an mcpServers / servers wrapper, or a single server object pasted on its own.",
   "传输方式": "Transport",
   "本地命令 (stdio)": "Local command (stdio)",
   "远程 HTTP": "Remote HTTP",
@@ -4479,8 +4452,6 @@ export const EN_TEMPLATE: Record<string, string> = {
   "未发现 .env 文件：{0}": "No .env file found: {0}",
   "官方登录已就绪：{0}，会混入当前 API Key。": "Official login ready: {0}, the current API Key will be mixed in.",
   "官方账号已登录：{0}。": "Official account logged in: {0}.",
-  "已删除 {0} 个会话。": "Deleted {0} session(s).",
-  "已删除 {0} 个，失败 {1} 个：{2}": "Deleted {0}, failed {1}: {2}",
   "已加载 {0} 条推荐": "Loaded {0} recommendation(s)",
   "已同步到 {0}：修复 {1} 个会话文件，更新 {2} 行数据库索引{3}{4}{5}{6}。":
     "Synced to {0}: repaired {1} session file(s) and updated {2} database index row(s){3}{4}{5}{6}.",
@@ -4610,7 +4581,6 @@ export const EN_TEMPLATE: Record<string, string> = {
   "接入 Codex": "Connect to Codex",
   "当前版本 {0}": "Current version {0}",
   "第 {0} 页": "Page {0}",
-  "第 {0} 页，每页最多 {1} 条，按更新时间倒序显示": "Page {0}, up to {1} sessions per page, newest first",
   "打开选择器失败：{0}": "Failed to open the picker: {0}",
   "正在同步到 {0}…": "Syncing to {0}…",
   "发现 {0} 条仅存在于 session_index.jsonl、未在本地数据库或 rollout 中找到来源的候选记录。它们也可能是云端或尚未落盘的任务，请逐项核对。任务标题仅用于预览，实际按 thread ID 与数据来源判断。清理前请先完全退出 Codex App / ChatGPT。":
@@ -4621,10 +4591,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "聚合供应商已配置为{0}，包含 {1} 个成员；真实对话会走本地代理轮转。":
     "The aggregate provider is configured as {0} with {1} member(s); real conversations rotate through the local proxy.",
   "进程状态：{0}。是否要重新启动？": "Process status: {0}. Restart?",
-  "选择会话 {0}": "Select session {0}",
   "透明度 {0}%": "Opacity {0}%",
   "，跳过 {0} 个占用文件": ", skipped {0} locked file(s)",
-  "将导入 {0} 个：{1}": "Will import {0}: {1}",
   "新增{0}": "Add {0}",
 
   // Skills 面板
