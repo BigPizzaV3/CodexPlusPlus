@@ -158,7 +158,8 @@ fn local_segments_without_shared_nodes_keep_independent_baselines() {
     let snapshot = fixture.snapshot();
     assert_segment_totals(&snapshot, 4, 700);
     let mut events = snapshot.events.clone();
-    let (components, _, cyclic) = segments::causal_order(&mut events, &fixture.index.files);
+    let (components, _, cyclic) =
+        segments::causal_order(&mut events, &fixture.index.files, &BTreeMap::new());
     assert!(!cyclic);
     assert_eq!(components.into_iter().collect::<HashSet<_>>().len(), 2);
 }
@@ -213,7 +214,8 @@ fn local_segments_clock_rollback_keeps_shared_successor_counts() {
         vec![100, 200, 300]
     );
     let mut events = snapshot.events.clone();
-    let (components, _, cyclic) = segments::causal_order(&mut events, &fixture.index.files);
+    let (components, _, cyclic) =
+        segments::causal_order(&mut events, &fixture.index.files, &BTreeMap::new());
     assert!(!cyclic);
     assert_eq!(components.into_iter().collect::<HashSet<_>>().len(), 1);
 }
@@ -510,8 +512,8 @@ fn local_unrelated_predecessors_recover_when_a_shared_chain_appears() {
             .iter()
             .find(|event| event.turn == "shared")
             .unwrap();
-        assert!(shared.count_incomplete);
-        assert!(!shared.count_uncertain);
+        assert!(shared.count_pending);
+        assert!(shared.count_uncertain && !shared.count_incomplete);
         assert_eq!(segment_response(&partial)["complete"], false);
 
         fixture.write_segment(
@@ -545,7 +547,7 @@ fn local_transitive_predecessor_work_is_bounded() {
             before.push(1);
         }
     }
-    let unresolved = segments::prune_transitive_predecessors(&mut predecessors, 100);
+    let unresolved = segments::prune_transitive_predecessors(&mut predecessors, &[0; 2_001], 100);
     assert!(unresolved.iter().any(|&value| value));
     assert!(
         unresolved
@@ -591,7 +593,8 @@ fn local_transitive_predecessors_match_all_small_dags() {
                     .collect()
             })
             .collect();
-        let unresolved = segments::prune_transitive_predecessors(&mut predecessors, usize::MAX);
+        let unresolved =
+            segments::prune_transitive_predecessors(&mut predecessors, &[0; NODES], usize::MAX);
         assert!(unresolved.iter().all(|&value| !value), "{mask}");
         assert_eq!(predecessors, expected, "{mask}");
     }
@@ -606,7 +609,7 @@ fn local_sparse_shared_prefix_is_resolved_with_a_tight_work_budget() {
             before.push(0);
         }
     }
-    let unresolved = segments::prune_transitive_predecessors(&mut predecessors, 0);
+    let unresolved = segments::prune_transitive_predecessors(&mut predecessors, &[0; 2_001], 0);
     assert!(unresolved.iter().all(|&value| !value));
     assert!(
         predecessors
@@ -615,6 +618,42 @@ fn local_sparse_shared_prefix_is_resolved_with_a_tight_work_budget() {
             .skip(1)
             .all(|(position, before)| *before == [position - 1])
     );
+}
+
+#[test]
+fn local_long_sparse_copy_keeps_nearby_predecessors_within_budget() {
+    let mut predecessors = vec![Vec::new(); 5_001];
+    for (position, before) in predecessors.iter_mut().enumerate().skip(1) {
+        before.push(position - 1);
+        if position > 2 && position % 2 == 0 {
+            before.push(position - 2);
+        }
+    }
+    let unresolved = segments::prune_transitive_predecessors(&mut predecessors, &[0; 5_001], 2_500);
+    assert!(!unresolved.contains(&true));
+    for (position, before) in predecessors.iter().enumerate().skip(1) {
+        assert_eq!(*before, [position - 1]);
+    }
+}
+
+#[test]
+fn local_graph_budget_is_not_shared_between_independent_components() {
+    let mut graph = vec![
+        vec![],
+        vec![0],
+        vec![1],
+        vec![1, 2],
+        vec![1, 3],
+        vec![],
+        vec![5],
+        vec![6],
+        vec![6, 7],
+    ];
+    let unresolved =
+        segments::prune_transitive_predecessors(&mut graph, &[0, 0, 0, 0, 0, 1, 1, 1, 1], 1);
+    assert!(unresolved[4]);
+    assert!(!unresolved[8]);
+    assert_eq!(graph[8], [7]);
 }
 
 #[test]
@@ -646,8 +685,8 @@ fn local_continuation_with_multiple_possible_sources_is_partial() {
         .find(|event| event.turn == "continuation" && event.total.input_tokens == 200)
         .unwrap();
     assert_eq!(first.delta.input_tokens, 100);
-    assert!(first.count_incomplete);
-    assert!(!first.count_uncertain);
+    assert!(first.count_pending);
+    assert!(first.count_uncertain && !first.count_incomplete);
     assert_eq!(segment_response(&snapshot)["complete"], false);
     assert_eq!(
         segment_response(&snapshot)["days"][0]["usage"]["inputTokens"],
@@ -687,7 +726,7 @@ fn local_unanchored_continuation_does_not_replay_a_stale_last_request() {
         segment_response(&partial)["days"][0]["usage"]["inputTokens"],
         100
     );
-    assert!(partial.events.iter().any(|event| event.count_incomplete));
+    assert!(partial.events.iter().any(|event| event.count_pending));
 
     fixture.write_segment(
         "rollout-c.jsonl",

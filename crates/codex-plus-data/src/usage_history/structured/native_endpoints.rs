@@ -174,6 +174,8 @@ pub(super) struct Attribution {
     // 0: 无计数冲突；1: 仅继承副本冲突；2: 原记录冲突。
     #[serde(default, skip_serializing_if = "no_count_conflict")]
     count_conflict: u8,
+    #[serde(default, skip_serializing_if = "no_count_conflict")]
+    count_basis: u8,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     original_model: String,
 }
@@ -189,10 +191,18 @@ fn fingerprint(proof: &Attribution) -> [u8; 32] {
 fn merge_persisted(current: &Attribution, incoming: &Attribution, observed: bool) -> Attribution {
     if current.version == 3 {
         if incoming.version != 3 {
+            if observed && current.count_conflict == 0 {
+                return incoming.clone();
+            }
+            return current.clone();
+        }
+        if incoming.count_basis < current.count_basis {
             return current.clone();
         }
         if current.count_conflict > incoming.count_conflict
-            && !(observed && current.count_conflict == 1 && incoming.count_conflict == 0)
+            && !(observed
+                && (incoming.count_basis > current.count_basis
+                    || current.count_conflict == 1 && incoming.count_conflict == 0))
         {
             return current.clone();
         }
@@ -237,6 +247,7 @@ impl Attribution {
             // 冲突屏障只保存事件摘要和时间，不落盘会话、模型、供应商或计数。
             return self.rejected
                 && self.count_conflict <= 2
+                && self.count_basis <= 1
                 && self.at > 0
                 && self.key.session.is_empty()
                 && self.key.model.is_empty()
@@ -258,6 +269,7 @@ impl Attribution {
                         .eq_ignore_ascii_case(&self.key.model)
             }
             && self.count_conflict == 0
+            && self.count_basis == 0
             && self.binding_since > 0
             && self.at >= self.binding_since
             && !unknown_provider(&self.provider)
@@ -500,18 +512,20 @@ impl Cache {
             }
             if saved.version == 3 {
                 let locally_changed = previously_persisted.get(&id) != Some(&fingerprint(&saved));
-                if saved.count_conflict == 1
-                    && !locally_changed
-                    && self.verified.get(&id).is_some_and(|restored| {
-                        restored.version == 3 && restored.count_conflict == 0
-                    })
-                {
+                if self.verified.get(&id).is_some_and(|restored| {
+                    saved.count_conflict == 0 && !locally_changed
+                        || restored.version == 3
+                            && (restored.count_basis > saved.count_basis
+                                || saved.count_conflict == 1
+                                    && !locally_changed
+                                    && restored.count_conflict == 0)
+                }) {
                     continue;
                 }
-                let stronger = self
-                    .verified
-                    .get(&id)
-                    .is_some_and(|restored| restored.count_conflict > saved.count_conflict);
+                let stronger = self.verified.get(&id).is_some_and(|restored| {
+                    restored.count_basis >= saved.count_basis
+                        && restored.count_conflict > saved.count_conflict
+                });
                 if stronger {
                     continue;
                 }
@@ -551,6 +565,7 @@ impl Cache {
             .iter()
             .filter(|event| {
                 event.count_uncertain
+                    && !event.count_pending
                     && self
                         .verified
                         .get(&event.id)
@@ -645,24 +660,29 @@ impl Cache {
         self.verified.retain(|_, proof| proof.at >= cutoff);
         let mut available = true;
         for event in events {
-            let previous = self
-                .verified
-                .get(&event.id)
-                .map_or(0, |saved| saved.count_conflict);
-            let observed = if event.count_uncertain && !event.count_incomplete {
-                if event.inherited { 1 } else { 2 }
-            } else {
-                0
-            };
-            let retained =
-                if previous == 1 && !event.inherited && !event.count_incomplete && scan_complete {
-                    0
+            let saved = self.verified.get(&event.id);
+            let previous = saved.map_or(0, |saved| saved.count_conflict);
+            let observed =
+                if event.count_uncertain && !event.count_incomplete && !event.count_pending {
+                    if event.inherited { 1 } else { 2 }
                 } else {
-                    previous
+                    0
                 };
+            let revisited = !event.inherited
+                && !event.count_incomplete
+                && !event.count_pending
+                && scan_complete;
+            // 旧算法的分支冲突只对完整重读到的原记录重新核验。
+            let revalidate_legacy =
+                previous > 0 && revisited && saved.is_some_and(|saved| saved.count_basis == 0);
+            let retained = if revalidate_legacy || previous == 1 && revisited {
+                0
+            } else {
+                previous
+            };
             let conflict = retained.max(observed);
             event.count_uncertain |= conflict > 0;
-            if conflict == previous {
+            if conflict == previous && !revalidate_legacy {
                 continue;
             }
             if !self.verified.contains_key(&event.id) && self.verified.len() >= MAX_EVENTS {
@@ -690,6 +710,7 @@ impl Cache {
                     binding_since: 0,
                     rejected: true,
                     count_conflict: conflict,
+                    count_basis: 1,
                     original_model: String::new(),
                 },
             );
@@ -1028,10 +1049,13 @@ impl Cache {
         }
         let (mut recovered, mut tokens) = (0, 0u64);
         for (event, key) in events.iter_mut().zip(keys) {
-            if event.context_conflicts.any() || event.count_uncertain {
+            if event.context_conflicts.any() || event.count_uncertain && !event.count_pending {
                 if let Some(saved) = self.verified.get_mut(&event.id) {
                     saved.rejected = true;
                 }
+                continue;
+            }
+            if event.count_pending {
                 continue;
             }
             if !scan_complete || !unknown_provider(&event.provider) || event.turn.is_empty() {
@@ -1123,19 +1147,26 @@ impl Cache {
                     })
                     .max()
                     .unwrap_or(binding_since);
+                let make_proof = || Attribution {
+                    key: key.clone(),
+                    at: *at,
+                    turn: event.turn.clone(),
+                    provider: provider.clone(),
+                    version: 4,
+                    binding_since: since,
+                    rejected: false,
+                    count_conflict: 0,
+                    count_basis: 0,
+                    original_model: original_model.to_owned(),
+                };
                 self.verified
                     .entry(event.id)
-                    .or_insert_with(|| Attribution {
-                        key: key.clone(),
-                        at: *at,
-                        turn: event.turn.clone(),
-                        provider: provider.clone(),
-                        version: 4,
-                        binding_since: since,
-                        rejected: false,
-                        count_conflict: 0,
-                        original_model: original_model.to_owned(),
-                    });
+                    .and_modify(|saved| {
+                        if saved.version == 3 && saved.count_conflict == 0 {
+                            *saved = make_proof();
+                        }
+                    })
+                    .or_insert_with(make_proof);
             }
             if let Some(saved) = self.verified.get(&event.id).filter(|s| !s.rejected) {
                 event.provider.clone_from(&saved.provider);
@@ -1164,6 +1195,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: false,
             count_incomplete: false,
@@ -1304,6 +1337,7 @@ mod tests {
                 binding_since: at - 100,
                 rejected: false,
                 count_conflict: 0,
+                count_basis: 0,
                 original_model: String::new(),
             },
         );
@@ -1387,6 +1421,7 @@ mod tests {
                 binding_since: at - 1,
                 rejected: false,
                 count_conflict: 0,
+                count_basis: 0,
                 original_model: if version == 4 {
                     "cpx-a/model".into()
                 } else {
@@ -1437,6 +1472,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: false,
             count_incomplete: false,
@@ -1463,6 +1500,7 @@ mod tests {
                 binding_since: at - 1,
                 rejected: false,
                 count_conflict: 0,
+                count_basis: 0,
                 original_model: String::new(),
             },
         );
@@ -1501,6 +1539,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: false,
             count_incomplete: false,
@@ -1523,6 +1563,7 @@ mod tests {
                 binding_since: at - 1,
                 rejected: false,
                 count_conflict: 0,
+                count_basis: 0,
                 original_model: String::new(),
             },
         );
@@ -1599,6 +1640,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: false,
             count_incomplete: false,
@@ -1621,6 +1664,7 @@ mod tests {
                 binding_since: at - 1,
                 rejected: false,
                 count_conflict: 0,
+                count_basis: 0,
                 original_model: String::new(),
             },
         );
@@ -1662,6 +1706,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: true,
             count_incomplete: false,
@@ -1703,6 +1749,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: true,
             count_incomplete: true,
@@ -1726,6 +1774,86 @@ mod tests {
     }
 
     #[test]
+    fn legacy_count_barriers_are_only_replaced_after_complete_observed_revalidation() {
+        let at = Local::now().timestamp_millis();
+        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+        let event = UsageEvent {
+            id: [98; 32],
+            session: "session".into(),
+            turn: "turn".into(),
+            model: "model-a".into(),
+            timestamp: DateTime::from_timestamp_millis(at).unwrap().to_rfc3339(),
+            date: Local::now().date_naive(),
+            total: Tokens::new(100, 20, 10),
+            delta: Tokens::new(100, 20, 10),
+            has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
+            last: None,
+            count_uncertain: false,
+            count_incomplete: false,
+            provider: String::new(),
+            provider_source: None,
+            role: "main".into(),
+            inherited: false,
+            legacy_identity: None,
+            context_conflicts: ContextConflicts::default(),
+        };
+        let mut cache = Cache::default();
+        let mut disputed = event.clone();
+        disputed.count_uncertain = true;
+        assert!(cache.observe_count_conflicts(&mut [disputed.clone()], true));
+        let mut old = cache.verified[&event.id].clone();
+        old.count_basis = 0;
+        let missing_id = [99; 32];
+        let temporary_id = [100; 32];
+        let mut temporary = event.clone();
+        temporary.id = temporary_id;
+        temporary.count_uncertain = true;
+        temporary.count_pending = true;
+        let root = tempfile::tempdir().unwrap();
+        let mut storage = provider_cache::ProviderCache::default();
+        storage.open(root.path(), cutoff).unwrap();
+        storage
+            .save_native(&HashMap::from([
+                (event.id, old.clone()),
+                (missing_id, old.clone()),
+            ]))
+            .unwrap();
+        let mut cache = Cache::default();
+        cache.restore_after_failed_load(storage.load_native(cutoff).unwrap());
+        let mut partial = event.clone();
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut partial), false));
+        assert!(partial.count_uncertain);
+        assert_eq!(cache.verified[&event.id].count_basis, 0);
+        let mut exact = vec![event.clone(), temporary];
+        assert!(cache.observe_count_conflicts(&mut exact, true));
+        assert!(!exact[0].count_uncertain);
+        assert!(exact[1].count_uncertain);
+        assert_eq!(
+            cache.save_bounded(root.path(), cutoff, &exact).unwrap(),
+            (1, true)
+        );
+        let reloaded = storage.load_native(cutoff).unwrap();
+        assert_eq!(reloaded[&event.id].count_conflict, 0);
+        assert_eq!(reloaded[&event.id].count_basis, 1);
+        assert_eq!(reloaded[&missing_id].count_conflict, 2);
+        assert!(!reloaded.contains_key(&temporary_id));
+        assert_eq!(
+            merge_persisted(&reloaded[&event.id], &old, false).count_conflict,
+            0
+        );
+        assert_eq!(
+            merge_persisted(&old, &reloaded[&event.id], false).count_conflict,
+            2
+        );
+        cache.restore_after_failed_load(reloaded);
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut disputed), true));
+        assert_eq!(cache.verified[&event.id].count_conflict, 2);
+        assert_eq!(cache.verified[&event.id].count_basis, 1);
+    }
+
+    #[test]
     fn count_conflict_markers_expire_and_saturation_fails_closed() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
@@ -1738,6 +1866,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: true,
             count_incomplete: false,
@@ -1792,6 +1922,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: true,
             count_incomplete: false,
@@ -1817,6 +1949,7 @@ mod tests {
             binding_since: at - 1,
             rejected: false,
             count_conflict: 0,
+            count_basis: 0,
             original_model: String::new(),
         };
         assert!(
@@ -1865,6 +1998,8 @@ mod tests {
             total: Tokens::new(100, 20, 10),
             delta: Tokens::new(100, 20, 10),
             has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
             last: None,
             count_uncertain: false,
             count_incomplete: false,
@@ -1888,6 +2023,7 @@ mod tests {
                     binding_since: at - 1,
                     rejected: false,
                     count_conflict: 0,
+                    count_basis: 0,
                     original_model: String::new(),
                 },
             );

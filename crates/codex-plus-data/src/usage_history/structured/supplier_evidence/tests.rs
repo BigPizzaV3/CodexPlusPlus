@@ -16,6 +16,8 @@ fn event(number: u8) -> UsageEvent {
         total: counts,
         delta: counts,
         has_file_baseline: true,
+        rollout_position: None,
+        count_pending: false,
         last: Some(counts),
         count_uncertain: false,
         count_incomplete: false,

@@ -1177,6 +1177,8 @@ struct UsageEvent {
     last: Option<Tokens>,
     count_uncertain: bool,
     count_incomplete: bool,
+    count_pending: bool,
+    rollout_position: Option<(u64, u64, u64)>,
     provider: String,
     provider_source: Option<String>,
     role: String,
@@ -1440,6 +1442,10 @@ struct FileState {
     invalid_counts: bool,
     identity_conflict: bool,
     continuation: bool,
+    history_base: Option<segments::HistoryBase>,
+    rollout_extent: Option<(u64, u64, u64)>,
+    rollout_out_of_order: bool,
+    expired_count: Option<((u64, u64, u64), Tokens)>,
     events: Vec<UsageEvent>,
     calls: HashMap<String, Call>,
     exec_skills: HashMap<String, ExecSkill>,
@@ -2245,30 +2251,18 @@ impl Index {
                     "role":state.role
                     });
                 }
-                if let Some(name) =
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .and_then(|name| {
-                            name.strip_suffix(".zst")
-                                .unwrap_or(name)
-                                .strip_suffix(".jsonl")
+                if let Some(id) = segments::rollout_id(path) {
+                    let id = id.to_string();
+                    snapshot
+                        .aliases
+                        .entry(id.clone())
+                        .and_modify(|previous| {
+                            if *previous != state.session {
+                                *previous = id.clone();
+                            }
                         })
-                {
-                    if let Some(id) = name
-                        .get(name.len().saturating_sub(36)..)
-                        .and_then(super::normalize_session_id)
-                    {
-                        snapshot
-                            .aliases
-                            .entry(id.clone())
-                            .and_modify(|previous| {
-                                if *previous != state.session {
-                                    *previous = id.clone();
-                                }
-                            })
-                            .or_insert_with(|| state.session.clone());
-                        current_aliases.insert(id.clone(), snapshot.aliases[&id].clone());
-                    }
+                        .or_insert_with(|| state.session.clone());
+                    current_aliases.insert(id.clone(), snapshot.aliases[&id].clone());
                 }
             }
             for event in &state.events {
@@ -2345,10 +2339,12 @@ impl Index {
         for event in &mut snapshot.events {
             event.count_incomplete = incomplete_sessions.contains(&event.session);
         }
+        let prefixes = segments::referenced_prefixes(&self.files);
         let (components, mut predecessors, contradictory_order) =
-            segments::causal_order(&mut snapshot.events, &self.files);
+            segments::causal_order(&mut snapshot.events, &self.files, &prefixes);
         snapshot.issues += usize::from(contradictory_order);
-        let unresolved = segments::prune_transitive_predecessors(&mut predecessors, 1_000_000);
+        let unresolved =
+            segments::prune_transitive_predecessors(&mut predecessors, &components, 1_000_000);
         let ordered_totals: Vec<_> = snapshot.events.iter().map(|event| event.total).collect();
         seen.clear();
         seen.extend(
@@ -2358,36 +2354,33 @@ impl Index {
                 .enumerate()
                 .map(|(position, event)| (event.id, position)),
         );
-        let mut continuation_starts: HashSet<_> = self
+        let mut continuation_starts = vec![false; snapshot.events.len()];
+        let mut independent_starts = vec![false; snapshot.events.len()];
+        let mut external_baselines = HashMap::new();
+        for (path, state) in self
             .files
-            .values()
-            .filter(|state| {
-                state.continuation
-                    && !state.identity_conflict
-                    && !(state.session.is_empty() && state.stamp.is_some())
-            })
-            .flat_map(|state| state.events.iter().filter(|event| !event.has_file_baseline))
-            .filter(|event| {
-                seen.get(&event.id)
-                    .is_some_and(|&position| snapshot.events[position].inherited == event.inherited)
-            })
-            .map(|event| event.id)
-            .collect();
-        for event in self
-            .files
-            .values()
-            .filter(|state| {
-                !state.continuation
-                    && !state.identity_conflict
-                    && !(state.session.is_empty() && state.stamp.is_some())
-            })
-            .flat_map(|state| &state.events)
+            .iter()
+            .filter(|(_, state)| !state.identity_conflict)
         {
-            if seen
-                .get(&event.id)
-                .is_some_and(|&position| snapshot.events[position].inherited == event.inherited)
-            {
-                continuation_starts.remove(&event.id);
+            if state.session.is_empty() && state.stamp.is_some() {
+                continue;
+            }
+            for event in &state.events {
+                let Some(&position) = seen.get(&event.id) else {
+                    continue;
+                };
+                if snapshot.events[position].inherited != event.inherited {
+                    continue;
+                }
+                if !state.continuation || event.has_file_baseline {
+                    independent_starts[position] = true;
+                } else if let Some(prefix) = prefixes.get(path) {
+                    if let segments::PrefixCount::Baseline(total) = prefix {
+                        external_baselines.entry(position).or_insert(*total);
+                    }
+                } else {
+                    continuation_starts[position] = true;
+                }
             }
         }
         let mut count_evidence = HashMap::new();
@@ -2414,9 +2407,8 @@ impl Index {
             if event.delta.input_tokens != other.input_tokens
                 || event.delta.output_tokens != other.output_tokens
             {
-                if temporary || event.count_incomplete {
-                    event.count_incomplete = true;
-                } else {
+                if !event.count_incomplete {
+                    event.count_pending |= temporary;
                     event.count_uncertain = true;
                 }
             }
@@ -2444,12 +2436,17 @@ impl Index {
                 .copied()
                 .filter(|&before| before < position)
                 .max();
-            let previous = previous_position.map(|before| ordered_totals[before]);
+            let previous = previous_position
+                .map(|before| ordered_totals[before])
+                .or(external_baselines.get(&position).copied());
             previous_baselines.push(previous);
-            let unanchored = previous.is_none() && continuation_starts.contains(&event.id);
-            event.count_incomplete |= unresolved[position]
+            let unanchored = previous.is_none()
+                && continuation_starts[position]
+                && !independent_starts[position];
+            event.count_pending |= unresolved[position]
                 || unanchored
                 || previous.is_none() && !event.has_file_baseline && event.last.is_none();
+            event.count_uncertain |= event.count_pending;
             if unresolved[position] {
                 event.delta = Tokens::default();
             } else {
@@ -2462,7 +2459,11 @@ impl Index {
                 for &before in &predecessors[position] {
                     if let Some(Some(totals)) = preceding_totals.get(before) {
                         for &total in *totals {
-                            merge_delta(event, event.session_delta(Some(total)), false);
+                            merge_delta(
+                                event,
+                                event.session_delta(Some(total)),
+                                predecessors[position].len() > 1,
+                            );
                         }
                     }
                 }
@@ -2486,7 +2487,11 @@ impl Index {
             snapshot.events[position].count_uncertain = true;
         }
         // 使用同一个会话基线比较所有同优先级副本，不能用首次出现的文件决定计数。
-        for state in self.files.values().filter(|state| !state.identity_conflict) {
+        for (path, state) in self
+            .files
+            .iter()
+            .filter(|(_, state)| !state.identity_conflict)
+        {
             let mut source_previous = HashMap::new();
             for candidate in &state.events {
                 let Some(&position) = seen.get(&candidate.id) else {
@@ -2502,12 +2507,33 @@ impl Index {
                         before != position && predecessors[position].binary_search(&before).is_ok()
                     })
                     .map(|before| ordered_totals[before])
+                    .or_else(|| {
+                        if !candidate.has_file_baseline {
+                            match prefixes.get(path) {
+                                Some(segments::PrefixCount::Baseline(total)) => Some(*total),
+                                Some(segments::PrefixCount::Event(id, total))
+                                    if seen.get(id).is_none_or(|before| {
+                                        predecessors[position].binary_search(before).is_ok()
+                                    }) =>
+                                {
+                                    Some(*total)
+                                }
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        }
+                    })
                     .or(previous_baselines[position]);
                 if !unresolved[position] {
                     merge_delta(
                         selected,
                         candidate.session_delta(previous),
-                        predecessors[position].len() > 1,
+                        predecessors[position].len() > 1
+                            || external_baselines.contains_key(&position)
+                                && prefixes.get(path).is_some_and(|prefix| {
+                                    matches!(prefix, segments::PrefixCount::Baseline(_))
+                                }),
                     );
                 }
             }
@@ -2533,6 +2559,9 @@ impl Index {
                 continue;
             }
             for &before in before_positions {
+                if snapshot.events[before].session != snapshot.events[after].session {
+                    continue;
+                }
                 let flags = component_correction(ordered_totals[before], ordered_totals[after]);
                 if flags.0 || flags.1 {
                     corrections.push((before, flags));
@@ -2556,7 +2585,9 @@ impl Index {
                     continue;
                 }
                 for &before in &predecessors[position] {
-                    if ordered_totals[position].is_monotonic_after(ordered_totals[before]) {
+                    if snapshot.events[position].session == snapshot.events[before].session
+                        && ordered_totals[position].is_monotonic_after(ordered_totals[before])
+                    {
                         let boundary =
                             component_correction(ordered_totals[before], ordered_totals[position]);
                         corrections
@@ -2574,22 +2605,11 @@ impl Index {
                 }
             }
         }
-        let unresolved_components: HashSet<_> = components
-            .iter()
-            .zip(&unresolved)
-            .filter_map(|(&component, &unresolved)| unresolved.then_some(component))
-            .collect();
-        for (event, component) in snapshot.events.iter_mut().zip(components) {
-            if unresolved_components.contains(&component) {
-                event.delta.cached_input_tokens = 0;
-                event.delta.cached_known = false;
-                event.delta.reasoning_output_tokens = None;
-            }
-        }
         let scan_complete = snapshot.errors == 0 && snapshot.issues == 0;
-        let count_cache_has_room = self
-            .native_evidence
-            .observe_count_conflicts(&mut snapshot.events, scan_complete);
+        let count_cache_has_room = self.native_evidence.observe_count_conflicts(
+            &mut snapshot.events,
+            scan_complete && collision_identity_available,
+        );
         if !collision_identity_available {
             for event in &mut snapshot.events {
                 event.count_incomplete = true;
@@ -2900,7 +2920,19 @@ impl FileState {
         };
         let compressed = path.extension().is_some_and(|ext| ext == "zst");
         let events_before = self.events.len();
-        self.events.retain(|event| event.date >= cutoff);
+        self.events.retain(|event| {
+            if event.date >= cutoff {
+                return true;
+            }
+            if let Some(position) = event.rollout_position
+                && self
+                    .expired_count
+                    .is_none_or(|(previous, _)| position > previous)
+            {
+                self.expired_count = Some((position, event.total));
+            }
+            false
+        });
         if self.events.len() < events_before
             && self.events.capacity() > self.events.len().saturating_mul(2).max(16)
         {
@@ -3109,6 +3141,15 @@ impl FileState {
             }
             return;
         };
+        let ordinal = envelope.ordinal.and_then(|n| u64::try_from(n).ok());
+        if let Some(ordinal) = ordinal {
+            let extent = self.rollout_extent.get_or_insert((ordinal, ordinal, 0));
+            self.rollout_out_of_order |= extent.2 != 0 && ordinal != extent.1 + 1;
+            extent.1 = ordinal;
+            extent.2 = self.offset;
+        } else if self.rollout_extent.is_some() {
+            self.rollout_out_of_order = true;
+        }
         if !matches!(
             envelope.kind,
             "session_meta" | "turn_context" | "event_msg" | "response_item"
@@ -3181,7 +3222,6 @@ impl FileState {
             self.issues += 1;
             return;
         };
-        let ordinal = envelope.ordinal.and_then(|n| u64::try_from(n).ok());
         let inherited = self.history_boundary.contains(ordinal);
         if envelope.kind == "session_meta" {
             let id = payload["id"]
@@ -3260,6 +3300,7 @@ impl FileState {
             self.continuation = payload["history_base"]["end_ordinal_exclusive"]
                 .as_u64()
                 .is_some_and(|ordinal| ordinal > 0);
+            self.history_base = segments::HistoryBase::parse(&payload["history_base"], ordinal);
             self.inherited_contexts.clear();
             self.legacy_header = None;
             self.provider = payload["model_provider"].as_str().unwrap_or("").to_owned();
@@ -3405,7 +3446,17 @@ impl FileState {
                 .is_some_and(|before| total.requires_last_after(before));
         let delta = total.usage_delta(self.previous, last);
         self.previous = Some(total);
+        let rollout_position = ordinal.map(|ordinal| {
+            (
+                ordinal,
+                self.offset.saturating_sub(line.len() as u64),
+                self.offset,
+            )
+        });
         if date < cutoff {
+            if let Some(position) = rollout_position {
+                self.expired_count = Some((position, total));
+            }
             return;
         }
         if self.events.len() >= MAX_EVENTS {
@@ -3468,6 +3519,8 @@ impl FileState {
             last,
             count_uncertain,
             count_incomplete: false,
+            count_pending: false,
+            rollout_position,
             provider,
             provider_source: None,
             role,

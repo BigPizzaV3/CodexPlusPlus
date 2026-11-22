@@ -1,9 +1,140 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+pub(super) fn rollout_id(path: &Path) -> Option<uuid::Uuid> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name
+        .strip_suffix(".zst")
+        .unwrap_or(name)
+        .strip_suffix(".jsonl")?;
+    uuid::Uuid::parse_str(stem.get(stem.len().saturating_sub(36)..)?).ok()
+}
+
+pub(super) struct HistoryBase {
+    rollout: uuid::Uuid,
+    end_ordinal: u64,
+    end_offset: u64,
+}
+
+impl HistoryBase {
+    pub(super) fn parse(value: &serde_json::Value, ordinal: Option<u64>) -> Option<Self> {
+        let end_ordinal = value["end_ordinal_exclusive"].as_u64()?;
+        let end_offset = value["end_byte_offset"].as_u64()?;
+        if end_ordinal == 0 || end_offset == 0 || ordinal != Some(end_ordinal) {
+            return None;
+        }
+        Some(Self {
+            rollout: uuid::Uuid::parse_str(value["thread_id"].as_str()?).ok()?,
+            end_ordinal,
+            end_offset,
+        })
+    }
+}
+
+pub(super) enum PrefixCount {
+    Event([u8; 32], super::Tokens),
+    Baseline(super::Tokens),
+}
+
+pub(super) fn referenced_prefixes(
+    files: &BTreeMap<PathBuf, super::FileState>,
+) -> BTreeMap<&PathBuf, PrefixCount> {
+    if !files.values().any(|file| file.history_base.is_some()) {
+        return BTreeMap::new();
+    }
+    // thread_id 指物理 rollout ID。只使用已扫描的本机会话，不从记录中读取任何路径。
+    let mut rollouts = HashMap::new();
+    for (path, state) in files {
+        if let Some(rollout) = rollout_id(path) {
+            rollouts
+                .entry(rollout)
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(state));
+        }
+    }
+    fn count_before<'a>(
+        mut base: &'a HistoryBase,
+        rollouts: &HashMap<uuid::Uuid, Option<&'a super::FileState>>,
+    ) -> Option<PrefixCount> {
+        loop {
+            let source = rollouts.get(&base.rollout)?.as_ref()?;
+            let (start, last, parsed_offset) = source.rollout_extent?;
+            if source.identity_conflict
+                || source.invalid_counts
+                || source.rollout_out_of_order
+                || source.issues != 0
+                || source
+                    .history_base
+                    .as_ref()
+                    .map_or(start != 0, |parent| parent.end_ordinal != start)
+                || start >= base.end_ordinal
+                || last.saturating_add(1) < base.end_ordinal
+                || parsed_offset < base.end_offset
+                || last.saturating_add(1) == base.end_ordinal && parsed_offset != base.end_offset
+            {
+                return None;
+            }
+            let split = source.events.partition_point(|event| {
+                event
+                    .rollout_position
+                    .is_some_and(|(ordinal, _, _)| ordinal < base.end_ordinal)
+            });
+            let previous = split.checked_sub(1).map(|i| &source.events[i]);
+            let older = source.expired_count;
+            if previous.is_some_and(|event| {
+                event
+                    .rollout_position
+                    .is_none_or(|(_, _, end)| end > base.end_offset)
+            }) || source.events.get(split).is_some_and(|event| {
+                event
+                    .rollout_position
+                    .is_none_or(|(_, start, _)| start < base.end_offset)
+            }) || older.is_some_and(|((ordinal, _, end), _)| {
+                ordinal >= base.end_ordinal || end > base.end_offset
+            }) {
+                return None;
+            }
+            match (previous, older) {
+                (Some(event), Some((position, total)))
+                    if Some(position) > event.rollout_position && position.0 < base.end_ordinal =>
+                {
+                    return Some(PrefixCount::Baseline(total));
+                }
+                (Some(event), _) => return Some(PrefixCount::Event(event.id, event.total)),
+                (None, Some((_, total))) => return Some(PrefixCount::Baseline(total)),
+                (None, None) if !source.continuation => {
+                    return Some(PrefixCount::Baseline(super::Tokens::default()));
+                }
+                (None, None) => {
+                    base = source
+                        .history_base
+                        .as_ref()
+                        .filter(|parent| parent.end_ordinal == start)?;
+                }
+            }
+        }
+    }
+    files
+        .iter()
+        .filter_map(|(path, state)| {
+            if state.invalid_counts
+                || state.rollout_out_of_order
+                || !state
+                    .events
+                    .first()
+                    .is_some_and(|event| !event.has_file_baseline)
+            {
+                return None;
+            }
+            count_before(state.history_base.as_ref()?, &rollouts).map(|count| (path, count))
+        })
+        .collect()
+}
 
 pub(super) fn causal_order(
     events: &mut Vec<super::UsageEvent>,
     files: &BTreeMap<PathBuf, super::FileState>,
+    prefixes: &BTreeMap<&PathBuf, PrefixCount>,
 ) -> (Vec<usize>, Vec<Vec<usize>>, bool) {
     let selected: HashMap<_, _> = events
         .iter()
@@ -11,7 +142,7 @@ pub(super) fn causal_order(
         .map(|(position, event)| (event.id, position))
         .collect();
     let mut successors = vec![Vec::new(); events.len()];
-    for state in files.values() {
+    for (path, state) in files {
         if state.identity_conflict || state.session.is_empty() && state.stamp.is_some() {
             continue;
         }
@@ -27,6 +158,12 @@ pub(super) fn causal_order(
                 if before != position {
                     successors[before].push(position);
                 }
+            } else if !candidate.has_file_baseline
+                && let Some(PrefixCount::Event(id, _)) = prefixes.get(path)
+                && let Some(&before) = selected.get(id)
+                && before != position
+            {
+                successors[before].push(position);
             }
         }
     }
@@ -115,12 +252,15 @@ pub(super) fn causal_order(
 
 pub(super) fn prune_transitive_predecessors(
     predecessors: &mut [Vec<usize>],
-    mut budget: usize,
+    components: &[usize],
+    work_per_component: usize,
 ) -> Vec<bool> {
     let mut unresolved = vec![false; predecessors.len()];
     let mut visited = vec![0usize; predecessors.len()];
     let mut source_roots = vec![0usize; predecessors.len()];
     let mut stack = Vec::new();
+    let mut budgets =
+        vec![work_per_component; components.iter().copied().max().map_or(0, |n| n + 1)];
     for position in 0..predecessors.len() {
         let mut candidates = std::mem::take(&mut predecessors[position]);
         candidates.sort_unstable();
@@ -139,6 +279,8 @@ pub(super) fn prune_transitive_predecessors(
             continue;
         }
         let epoch = position + 1;
+        let minimum = candidates[0];
+        let budget = &mut budgets[components[position]];
         let mut direct = Vec::with_capacity(candidates.len());
         let mut exhausted = false;
         for &candidate in candidates.iter().rev() {
@@ -149,13 +291,16 @@ pub(super) fn prune_transitive_predecessors(
             visited[candidate] = epoch;
             stack.push(candidate);
             while let Some(node) = stack.pop() {
+                if node <= minimum {
+                    continue;
+                }
                 for &before in &predecessors[node] {
-                    if budget == 0 {
+                    if *budget == 0 {
                         exhausted = true;
                         break;
                     }
-                    budget -= 1;
-                    if visited[before] != epoch {
+                    *budget -= 1;
+                    if before >= minimum && visited[before] != epoch {
                         visited[before] = epoch;
                         stack.push(before);
                     }
