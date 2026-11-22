@@ -6,7 +6,6 @@
 
 /* 会话列表需要在固定的管理页内容区内滚动，避免被外层 overflow:hidden 裁掉。 */
 .mg-session-page{min-height:0}
-.mg-session-page>.mg-content{min-height:0;overflow:hidden}
 
 /* 管理页需要占满 screen 的剩余高度，列表再在自己的内容区滚动。 */
 .screen.management-screen{display:flex;flex-direction:column;align-items:stretch;align-content:normal}
@@ -182,47 +181,13 @@
   border-radius:0;
   background:transparent;
 }
-.mg-session-page .mg-search {
-  flex:1;
-  width:auto;
-  min-width:160px;
-  height:36px;
-  padding:0 11px;
-  border-radius:8px;
-  background:hsl(var(--surface-sunken)/.4);
-}
-.mg-session-page .mg-search input { color:hsl(var(--foreground)); font-size:12px; }
-.mg-session-page .mg-search input::placeholder { color:hsl(var(--muted-foreground)); }
-.mg-session-page .mg-segmented {
-  flex-shrink:0;
-  border-color:hsl(var(--border));
-  border-radius:8px;
-  background:hsl(var(--muted)/.45);
-}
-.mg-session-page .mg-segmented button { padding:5px 10px; font-size:12px; white-space:nowrap; cursor:pointer; }
-.mg-session-page .mg-segmented button[data-active=true] { color:hsl(var(--foreground)); background:hsl(var(--card)); box-shadow:none; }
 .mg-session-page :is(.mg-button,.mg-icon-button) { height:32px; white-space:nowrap; border-radius:7px; font-size:12px; box-shadow:none; }
 .mg-session-page :is(button,input):focus-visible { outline:2px solid hsl(var(--ring)); outline-offset:2px; }
 .mg-session-page > .session-maintenance { flex-shrink:0; margin-bottom:14px; border-top:0; }
-.screen.management-screen > .mg-session-page > .mg-content {
-  flex:1 1 auto;
-  min-width:0;
-  min-height:0;
-  margin:0;
-  padding:0;
-  border:0;
-  border-radius:0;
-  background:transparent;
-  box-shadow:none;
-  overflow:hidden;
-}
 .mg-session-selected-count { margin-right:4px; font-size:12px; color:hsl(var(--foreground)); white-space:nowrap; }
 /* 删除这类不可逆操作的按钮：红色描边浅底，不用品牌渐变。 */
 .mg-danger-button { color:hsl(var(--destructive)); border-color:hsl(var(--destructive)/.3); background:hsl(var(--destructive)/.07); }
 .mg-danger-button:not(:disabled):hover { background:hsl(var(--destructive)/.15); }
-@media (max-width:760px) {
-  .mg-session-page .mg-search { flex-basis:100%; }
-}
 
 /* 多 Agent 矩阵：名称 | 每个 Agent 一列开关 | 操作 */
 .mg-target-list { display:flex; flex-wrap:wrap; gap:6px 16px; }

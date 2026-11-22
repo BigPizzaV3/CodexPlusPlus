@@ -61,9 +61,9 @@ function GroupAgentSelect({ group, agent, busy, operations, count, prepareSkill,
     return { ...skill, agents };
   }), agent);
   const name = agent === "codex" ? "Codex" : agent === "claude" ? "Claude Code" : "Grok";
-  const label = `${group.label} · ${name} · ${t("全选")}`;
+  const label = tf("{0} · {1} · 全选", [group.label, name]);
   return <button type="button" className="cx-agent-toggle cx-skill-batch" aria-label={label}
-    title={count === undefined ? label : `${label}（${tf("已启用 {0} 个 Skill", [count])}）`}
+    title={count === undefined ? label : tf("{0}（已启用 {1} 个 Skill）", [label, count])}
     aria-pressed={state.mixed ? "mixed" : state.checked} disabled={busy || !state.total}
     onClick={() => onChange(!state.checked)}>
     <AgentGlyph agent={agent} /><span>{name}</span>

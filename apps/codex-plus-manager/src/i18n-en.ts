@@ -4081,7 +4081,6 @@ export const EN_TEMPLATE: Record<string, string> = {
   "列表更新于 {0} 分钟前": "Updated {0} min ago",
   "已接入 Codex · {0} 个工具": "Connected to Codex · {0} tools",
   "{0} 项不兼容": "{0} incompatible",
-  "已启用 {0} 个 Skill": "{0} Skills enabled",
   "{0} 个 Skill": "{0} skills",
   "导出 {0} 个 Skill…": "Export {0} skills…",
   "再显示 {0} 个": "Show {0} more",
@@ -4737,6 +4736,8 @@ export const EN_TEMPLATE: Record<string, string> = {
   "无法比较受控源：{0}": "Cannot compare the managed source: {0}",
   "{0} · {1}：{2}": "{0} · {1}: {2}",
   "正在完成当前仓库：{0}": "Finishing the current repository: {0}",
+  "{0} · {1} · 全选": "{0} · {1} · Select all",
+  "{0}（已启用 {1} 个 Skill）": "{0} ({1} skill(s) enabled)",
 };
 
 // Backend (Rust) messages returned via result.message. These are translated
