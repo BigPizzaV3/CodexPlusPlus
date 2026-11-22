@@ -17,6 +17,8 @@ fn event(at: i64) -> UsageEvent {
         total: Tokens::new(100, 20, 10),
         delta: Tokens::new(100, 20, 10),
         has_file_baseline: false,
+        rollout_position: None,
+        count_pending: false,
         last: None,
         count_uncertain: false,
         count_incomplete: false,

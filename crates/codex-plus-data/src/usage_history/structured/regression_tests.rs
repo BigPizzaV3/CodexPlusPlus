@@ -1,5 +1,8 @@
 use super::*;
 
+const BASE_ROLLOUT: &str = "00000000-0000-4000-8000-000000000081";
+const NEXT_ROLLOUT: &str = "00000000-0000-4000-8000-000000000082";
+
 #[path = "actual_attribution_tests.rs"]
 mod actual_attribution_tests;
 
@@ -115,14 +118,131 @@ fn local_missing_initial_baseline_does_not_assign_lifetime_usage_to_today() {
     let mut fixture = Fixture::new();
     let mut segment = fixture.usage(2_000, 100);
     segment["payload"]["info"]["last_token_usage"] = Value::Null;
-    fixture.write_continuation_segment("rollout-b.jsonl", vec![segment]);
+    let prefix = fixture.paged_segment(SESSION, None, vec![fixture.usage(1_000, 99)]);
+    let continuation = fixture.paged_segment(
+        SESSION,
+        Some((BASE_ROLLOUT, 2, prefix.len())),
+        vec![segment],
+    );
+    fixture.write_paged_segment(NEXT_ROLLOUT, &continuation);
     let response = snapshot_response(&fixture.snapshot());
     assert_eq!(response["complete"], false);
     assert_eq!(response["days"], json!([]));
-    fixture.write_segment("rollout-a.jsonl", vec![fixture.usage(1_000, 99)]);
+    fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
     let response = snapshot_response(&fixture.snapshot());
     assert_eq!(response["complete"], true);
     assert_eq!(response["days"][0]["usage"]["totalTokens"], 220);
+}
+
+#[test]
+fn local_fork_and_revert_bind_physical_prefix_instead_of_later_source_tail() {
+    for owner in [SESSION, "00000000-0000-4000-8000-000000000083"] {
+        let mut fixture = Fixture::new();
+        let prefix_event = fixture.usage(1_000, 1);
+        let prefix = fixture.paged_segment(SESSION, None, vec![prefix_event.clone()]);
+        let full_source = fixture.paged_segment(
+            SESSION,
+            None,
+            vec![prefix_event.clone(), fixture.usage(2_000, 4)],
+        );
+        fixture.write_paged_segment(BASE_ROLLOUT, &full_source);
+        let mut replayed = prefix_event;
+        replayed["timestamp"] = json!(fixture.at(3_000));
+        let continuation = fixture.paged_segment(
+            owner,
+            Some((BASE_ROLLOUT, 2, prefix.len())),
+            vec![replayed.clone(), fixture.usage(4_000, 2)],
+        );
+        fixture.write_paged_segment(NEXT_ROLLOUT, &continuation);
+        let snapshot = fixture.snapshot();
+        let response = snapshot_response(&snapshot);
+        assert_eq!(response["complete"], true, "{owner}");
+        assert_eq!(response["days"][0]["usage"]["inputTokens"], 500, "{owner}");
+        assert_eq!(snapshot.events.len(), 3);
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .filter(|event| event.session == owner)
+                .last()
+                .unwrap()
+                .delta
+                .input_tokens,
+            100
+        );
+
+        let wrong_cutoff = fixture.paged_segment(
+            owner,
+            Some((BASE_ROLLOUT, 2, full_source.len())),
+            vec![replayed, fixture.usage(4_000, 2)],
+        );
+        fixture.write_paged_segment(NEXT_ROLLOUT, &wrong_cutoff);
+        let snapshot = fixture.snapshot();
+        assert_eq!(snapshot_response(&snapshot)["complete"], false);
+        assert!(snapshot.events.iter().any(|event| event.count_pending));
+    }
+}
+
+#[test]
+fn local_revert_uses_expired_count_as_baseline_without_replaying_it() {
+    let mut fixture = Fixture::new();
+    let mut old_count = fixture.usage(1_000, 1);
+    old_count["timestamp"] = json!((Local::now() - Days::days(RETENTION_DAYS + 2)).to_rfc3339());
+    let prefix = fixture.paged_segment(SESSION, None, vec![old_count]);
+    fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
+    let mut next = fixture.usage(2_000, 2);
+    next["payload"]["info"]["last_token_usage"] = Value::Null;
+    fixture.write_paged_segment(
+        NEXT_ROLLOUT,
+        &fixture.paged_segment(SESSION, Some((BASE_ROLLOUT, 2, prefix.len())), vec![next]),
+    );
+    let response = snapshot_response(&fixture.snapshot());
+    assert_eq!(response["complete"], true);
+    assert_eq!(response["days"][0]["usage"]["inputTokens"], 100);
+}
+
+#[test]
+fn unanchored_continuation_only_blocks_nearby_request_log_proof() {
+    for gap in [2_000, 300_000] {
+        let mut fixture = Fixture::new();
+        fixture.start -= 400_000;
+        let prefix = fixture.paged_segment(SESSION, None, vec![fixture.usage(500, 1)]);
+        fixture.write_paged_segment(
+            NEXT_ROLLOUT,
+            &fixture.paged_segment(
+                SESSION,
+                Some((BASE_ROLLOUT, 2, prefix.len())),
+                vec![
+                    fixture.context(700, "model-a"),
+                    fixture.usage(1_000, 2),
+                    fixture.usage(1_000 + gap, 3),
+                ],
+            ),
+        );
+        let before = fixture.snapshot();
+        assert!(before.events[0].count_pending);
+        assert!(before.events[0].count_uncertain && !before.events[0].count_incomplete);
+        let mut proof = request();
+        proof.timestamp_ms = fixture.start + 990 + gap;
+        proof.started_at_ms = proof.timestamp_ms - 100;
+        fs::write(
+            &fixture.log,
+            format!("{}\n", serde_json::to_string(&proof).unwrap()),
+        )
+        .unwrap();
+        let after = fixture.snapshot();
+        assert_eq!(after.events.len(), 2);
+        assert_eq!(
+            after.events[1].provider == "supplier-a",
+            gap > DELAYED_REQUEST_MATCH_WINDOW_MS,
+        );
+        assert_eq!(before.events[1].delta, after.events[1].delta);
+        fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
+        let recovered = fixture.snapshot();
+        assert_eq!(snapshot_response(&recovered)["complete"], true);
+        assert_eq!(recovered.events.len(), 3);
+        assert!(!recovered.events[1].count_uncertain);
+    }
 }
 
 #[test]
@@ -589,8 +709,16 @@ fn local_missing_cache_preserves_cumulative_counts_across_segments() {
         });
         let third = fixture.usage(3_000, 3);
         if split {
-            fixture.write_segment("rollout-a.jsonl", vec![first]);
-            fixture.write_continuation_segment("rollout-b.jsonl", vec![second, third]);
+            let prefix = fixture.paged_segment(SESSION, None, vec![first]);
+            fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
+            fixture.write_paged_segment(
+                NEXT_ROLLOUT,
+                &fixture.paged_segment(
+                    SESSION,
+                    Some((BASE_ROLLOUT, 2, prefix.len())),
+                    vec![second, third],
+                ),
+            );
         } else {
             fixture.write_segment("rollout-a.jsonl", vec![first, second, third]);
         }
@@ -777,13 +905,9 @@ fn local_competing_last_values_are_incomplete_in_both_orders() {
             fixture.write_segment("rollout-b.jsonl", vec![second]);
             let snapshot = fixture.snapshot();
             let response = snapshot_response(&snapshot);
-            let uncertain = if metadata_variant == 0 { 2 } else { 3 };
             assert_eq!(response["complete"], false);
-            assert_eq!(response["scan"]["uncertainCountEvents"], uncertain);
-            assert_eq!(
-                response["days"][0]["usage"]["totalTokens"],
-                if metadata_variant == 0 { 220 } else { 110 }
-            );
+            assert_eq!(response["scan"]["uncertainCountEvents"], 2);
+            assert_eq!(response["days"][0]["usage"]["totalTokens"], 220);
             assert!(!snapshot.events.last().unwrap().count_uncertain);
             let db = rusqlite::Connection::open(
                 fixture
@@ -804,6 +928,40 @@ fn local_competing_last_values_are_incomplete_in_both_orders() {
                     serde_json::from_str::<Value>(&data).unwrap()["count_conflict"],
                     2
                 );
+            }
+            if !short_first && metadata_variant == 0 {
+                let downstream = snapshot.events.last().unwrap();
+                let mut marker: Value = serde_json::from_str(
+                    &db.query_row(
+                        "SELECT data FROM native_attributions WHERE id=?1",
+                        [snapshot.events[0].id.as_slice()],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                marker.as_object_mut().unwrap().remove("count_basis");
+                marker["at"] = json!(
+                    DateTime::parse_from_rfc3339(&downstream.timestamp)
+                        .unwrap()
+                        .timestamp_millis()
+                );
+                db.execute(
+                    "INSERT INTO native_attributions(id,at,data) VALUES(?1,?2,?3)",
+                    rusqlite::params![
+                        downstream.id.as_slice(),
+                        marker["at"].as_i64().unwrap(),
+                        marker.to_string()
+                    ],
+                )
+                .unwrap();
+                drop(db);
+                reopen_index(&mut fixture);
+                let upgraded = fixture.snapshot();
+                assert!(!upgraded.events.last().unwrap().count_uncertain);
+                let response = snapshot_response(&upgraded);
+                assert_eq!(response["scan"]["uncertainCountEvents"], 2);
+                assert_eq!(response["days"][0]["usage"]["totalTokens"], 220);
             }
         }
     }
@@ -879,8 +1037,16 @@ fn local_missing_last_after_reset_does_not_claim_complete() {
             "reasoning_output_tokens": 2
         });
         if split {
-            fixture.write_segment("rollout-a.jsonl", vec![first]);
-            fixture.write_continuation_segment("rollout-b.jsonl", vec![reset, later]);
+            let prefix = fixture.paged_segment(SESSION, None, vec![first]);
+            fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
+            fixture.write_paged_segment(
+                NEXT_ROLLOUT,
+                &fixture.paged_segment(
+                    SESSION,
+                    Some((BASE_ROLLOUT, 2, prefix.len())),
+                    vec![reset, later],
+                ),
+            );
         } else {
             fixture.write_segment("rollout-a.jsonl", vec![first, reset, later]);
         }
@@ -1047,14 +1213,40 @@ impl Fixture {
         fs::write(self.home.join("sessions").join(name), text).unwrap();
     }
 
-    fn write_continuation_segment(&self, name: &str, mut rows: Vec<Value>) {
-        rows.insert(
-            0,
-            json!({"type":"session_meta","payload":{
-                "id":SESSION,"history_base":{"end_ordinal_exclusive":1}
-            }}),
-        );
-        self.write_segment(name, rows);
+    fn paged_segment(
+        &self,
+        session: &str,
+        base: Option<(&str, u64, usize)>,
+        rows: Vec<Value>,
+    ) -> String {
+        let mut head = json!({
+            "type":"session_meta", "timestamp":self.at(0),
+            "payload":{"id":session,"model_provider":"custom","history_mode":"paginated"}
+        });
+        if let Some((rollout, ordinal, bytes)) = base {
+            head["payload"]["history_base"] = json!({
+                "thread_id":rollout, "end_ordinal_exclusive":ordinal, "end_byte_offset":bytes
+            });
+        }
+        let start = base.map_or(0, |(_, ordinal, _)| ordinal);
+        std::iter::once(head)
+            .chain(rows)
+            .enumerate()
+            .map(|(index, mut row)| {
+                row["ordinal"] = json!(start + index as u64);
+                format!("{row}\n")
+            })
+            .collect()
+    }
+
+    fn write_paged_segment(&self, rollout: &str, text: &str) {
+        fs::write(
+            self.home
+                .join("sessions")
+                .join(format!("rollout-{rollout}.jsonl")),
+            text,
+        )
+        .unwrap();
     }
 
     fn write_classified_segment(&self, name: &str, model: &str, provider: &str, role: &str) {
@@ -1239,8 +1431,9 @@ fn oversized_model_blocks_old_context_evidence_and_duplicate_recovery() {
 #[test]
 fn oversized_context_recovers_on_a_later_continuation() {
     let mut fixture = Fixture::new();
-    fixture.write_segment(
-        "rollout-a.jsonl",
+    let prefix = fixture.paged_segment(
+        SESSION,
+        None,
         vec![
             fixture.context(500, "old-model"),
             fixture.usage(1_000, 1),
@@ -1248,10 +1441,17 @@ fn oversized_context_recovers_on_a_later_continuation() {
             fixture.usage(2_000, 2),
         ],
     );
-    fixture.write_continuation_segment(
-        "rollout-b.jsonl",
-        vec![fixture.context(2_500, "new-model"), fixture.usage(3_000, 3)],
+    fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
+    let continuation = fixture.paged_segment(
+        SESSION,
+        Some((BASE_ROLLOUT, 5, prefix.len())),
+        vec![
+            fixture.context(1_500, &"x".repeat(257)),
+            fixture.context(2_500, "new-model"),
+            fixture.usage(3_000, 3),
+        ],
     );
+    fixture.write_paged_segment(NEXT_ROLLOUT, &continuation);
     for phase in ["fresh", "reopened"] {
         if phase == "reopened" {
             reopen_index(&mut fixture);
@@ -2237,7 +2437,7 @@ fn shared_session_baseline_can_make_different_file_deltas_agree() {
 }
 
 #[test]
-fn zero_or_missing_reasoning_delta_cannot_hide_a_duplicate_conflict() {
+fn missing_reasoning_preserves_counts_but_zero_delta_remains_a_conflict() {
     for zero_delta in [false, true] {
         for baseline_first in [false, true] {
             let mut fixture = Fixture::new();
@@ -2260,9 +2460,15 @@ fn zero_or_missing_reasoning_delta_cannot_hide_a_duplicate_conflict() {
             let snapshot = fixture.snapshot();
             let response = snapshot_response(&snapshot);
             assert_eq!(snapshot.events.len(), 1);
-            assert_eq!(response["complete"], false);
-            assert_eq!(response["scan"]["uncertainCountEvents"], 1);
-            assert_eq!(response["days"], json!([]));
+            if zero_delta {
+                assert_eq!(response["complete"], false);
+                assert_eq!(response["scan"]["uncertainCountEvents"], 1);
+                assert_eq!(response["days"], json!([]));
+            } else {
+                assert_eq!(response["complete"], true);
+                assert_eq!(response["days"][0]["usage"]["totalTokens"], 110);
+                assert_eq!(response["days"][0]["usage"]["reasoningKnown"], false);
+            }
         }
     }
 }
@@ -2342,6 +2548,42 @@ fn conflict_survives_first_cache_open_failure_and_retry() {
         snapshot_response(&fixture.snapshot())["scan"]["uncertainCountEvents"],
         1
     );
+}
+
+#[test]
+fn incomplete_source_and_cache_failure_recover_without_a_durable_conflict() {
+    let mut fixture = Fixture::new();
+    let cache = fixture._root.path().join("cache");
+    fs::write(&cache, "not a directory").unwrap();
+    let event = fixture.usage(1_000, 1);
+    let mut previous = fixture.usage(0, 1);
+    previous["timestamp"] = json!((Local::now() - Days::days(RETENTION_DAYS + 2)).to_rfc3339());
+    previous["payload"]["info"]["total_token_usage"] = json!({
+        "input_tokens": 80, "output_tokens": 5, "cached_input_tokens": 10,
+        "reasoning_output_tokens": 1
+    });
+    let mut invalid = fixture.usage(2_000, 2);
+    invalid["payload"]["info"]["total_token_usage"]
+        .as_object_mut()
+        .unwrap()
+        .remove("input_tokens");
+    fixture.write_segment("rollout-a.jsonl", vec![previous, event.clone(), invalid]);
+    fixture.write_segment("rollout-b.jsonl", vec![event.clone()]);
+    let failed = fixture
+        .index
+        .update_with_request_log(&fixture.home, &fixture.log);
+    assert!(failed.issues > 0);
+    assert!(failed.events[0].count_incomplete);
+    assert!(!failed.events[0].count_uncertain);
+
+    fs::remove_file(&cache).unwrap();
+    fixture.write_segment("rollout-a.jsonl", vec![event.clone()]);
+    fixture.write_segment("rollout-b.jsonl", vec![event]);
+    let recovered = snapshot_response(&fixture.snapshot());
+    assert_eq!(recovered["complete"], true);
+    assert_eq!(recovered["days"][0]["usage"]["totalTokens"], 110);
+    reopen_index(&mut fixture);
+    assert_eq!(snapshot_response(&fixture.snapshot())["complete"], true);
 }
 
 #[test]
