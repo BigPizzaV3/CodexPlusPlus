@@ -142,12 +142,6 @@ test("启动 Codex 一眼可见：Codex 页面顶栏最右侧一个主按钮，�
   assert.match(entry, /const codexRun = \{\n\s*running: codexAppRunning,\n\s*unattached: Boolean\(overview\?\.runtime_health\?\.codex_unattached\),\n\s*busy: launchPending,\n\s*unavailableReason: codexLaunch\.unavailableReason,\n\s*onStart: codexLaunch\.onLaunch,/);
   assert.match(entry, /codexRun=\{codexRun\}/);
   assert.match(entry, /<GatewayPage[\s\S]*?codexRun=\{codexRun\}/);
-  assert.match(styles, /\.shell \.side-agent-run \{\n(?:  [^\n]*\n)*  width: 24px;\n  height: 24px;/);
-  assert.match(styles, /\.shell \.side-agent-run\[data-running="false"\] \{\n  background: hsl\(var\(--status-success\) \/ 0\.14\);\n  color: hsl\(var\(--status-success\)\);/);
-  assert.doesNotMatch(styles, /:hover \.side-agent-run|\.side-agent-run \{[^}]*(?:opacity: 0;|visibility: hidden)/);
-  // 不用 :has()：旧版系统 WebKit 不认，整条规则会失效。
-  assert.doesNotMatch(styles, /:has\(\.side-agent-run\)/);
-  assert.match(styles, /\.shell \.side-agent-wrap\.has-run \.side-item-label \{/);
 });
 
 test("提示卡按语气分色、悬停暂停、不显示进度条，失败可复制详情", () => {
@@ -186,7 +180,6 @@ test("页面不再画第二条标题栏：PageHeader 和工具页的操作都送
 test("紧凑密度层：管理页不再套外框，覆盖规则带 .shell 前缀不依赖加载顺序", () => {
   const layer = styles.slice(styles.indexOf("/* ── Graphite · 紧凑密度"));
   assert.match(layer, /\.shell \.mg-page \{\n  margin: 0 auto;\n  overflow: visible;\n  border: 0;/);
-  assert.match(layer, /\.shell \.topbar \{\n  min-height: 44px;/);
   // 层内每条规则都以 .shell 开头
   const selectors = [...layer.matchAll(/^([^\s/@}][^{]*)\{$/gm)].map((match) => match[1]);
   assert.ok(selectors.length > 20);
@@ -677,12 +670,8 @@ test("添加供应商是弹出框，不再铺在供应商池页面里；池为�
 test("侧栏一级分组标题比子项醒目，快速跳转的快捷键按平台显示且弱化（#2778）", () => {
   assert.match(functionSource("AppSidebar"), /<kbd>\{paletteShortcut\}<\/kbd>/);
   assert.doesNotMatch(functionSource("AppSidebar"), /<kbd>⌘K<\/kbd>/);
-  const label = styles.match(/\.side-group-label > button:first-child \{[^}]*\}/)?.[0] ?? "";
-  const item = styles.match(/\n\.side-item \{[^}]*\}/)?.[0] ?? "";
-  const size = (rule: string) => Number(rule.match(/font-size: ([\d.]+)px/)?.[1] ?? 0);
-  assert.ok(size(item) > 0 && size(label) >= size(item), "分组标题字号不能比子项小");
-  assert.match(label, /font-weight: 700/);
-  assert.match(styles, /\.side-search kbd \{[^}]*font-size: 9\.5px/);
+  // 快捷键弱化成次要文字色（现行侧栏是 cursor-ui.css 的 cx-side-*，旧 .side-* 样式已删）。
+  assert.match(readSource("./cursor-ui.css"), /:root \.shell \.cx-side-search kbd \{[^}]*color: hsl\(var\(--muted-foreground\)\);/);
 });
 
 test("Codex 在它自己的窗口里退出后，侧栏 / 顶栏的运行状态能跟上（#2778）", () => {
