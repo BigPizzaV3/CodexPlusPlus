@@ -154,6 +154,9 @@ function fixture(handler, { enabled = true, server = null, withRpc = false } = {
     if (payload.method === "install-plugin") return installResult();
     throw new Error(`Unexpected request: ${path}`);
   };
+  // Codex 的 Chromium 自带 Symbol.dispose；Node 22（CI）只给主上下文补了它，新建的 vm 上下文里没有。
+  const contextSymbol = vm.runInContext("Symbol", context);
+  if (!contextSymbol.dispose) Object.defineProperty(contextSymbol, "dispose", { value: Symbol.dispose });
   const parse = vm.runInContext("(text) => JSON.parse(text)", context);
   const revive = (value) => parse(JSON.stringify(value));
   vm.runInContext(`${methodFunction}\n${sessionConnection}\n${adapter}\n${clientPatch}\n${transportPatch}\n${sideChatSend}\n${prototypePatch}\n${withRpc ? rpc : ""}\nglobalThis.api = {
