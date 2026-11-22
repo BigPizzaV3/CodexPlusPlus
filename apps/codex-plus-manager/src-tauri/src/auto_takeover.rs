@@ -99,6 +99,9 @@ struct Inner {
     last_wake_at: Option<Instant>,
     /// 上一次 tick 的单调时钟，用来识别挂起（睡眠后 Instant 会跳）。
     last_tick: Option<Instant>,
+    /// 上一次 tick 的墙钟：macOS 的 `Instant` 睡眠期间不走字（#3188），
+    /// 长睡眠后唤醒来不出单调间隙，必须靠墙钟补检。
+    last_tick_wall: Option<std::time::SystemTime>,
     /// 守护线程启动时刻，用于启动静默期。
     started_at: Option<Instant>,
     platform_supported: bool,
@@ -300,11 +303,16 @@ fn tick() -> Duration {
     // 睡眠/唤醒检测：挂起期间 Instant 会跳跃，这里把它当作「刚唤醒」，
     // 给 CDP 一段恢复宽限，避免唤醒瞬间误重启。
     let now = Instant::now();
+    let now_wall = std::time::SystemTime::now();
+    let threshold = Duration::from_secs(90);
     let woke = with_inner(|state| {
-        let woke = state
-            .last_tick
-            .is_some_and(|last| now.duration_since(last) > Duration::from_secs(90));
+        let mono_gap = state.last_tick.map(|last| now.duration_since(last));
+        let wall_gap = state
+            .last_tick_wall
+            .map(|last| now_wall.duration_since(last));
+        let woke = codex_plus_core::auto_takeover::is_wake_gap(mono_gap, wall_gap, threshold);
         state.last_tick = Some(now);
+        state.last_tick_wall = Some(now_wall);
         if woke {
             state.last_wake_at = Some(now);
         }
