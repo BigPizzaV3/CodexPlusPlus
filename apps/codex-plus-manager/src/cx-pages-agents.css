@@ -216,42 +216,7 @@
   font-size: 11px;
 }
 
-:root .shell .cx-feature-card > .builtin-card {
-  gap: 0;
-}
-
-:root .shell .cx-feature-card > .builtin-card + .builtin-card {
-  border-top: 1px solid hsl(var(--cx-row-divider));
-}
-
 /* 打开后的子选项：同一张卡里缩进一级，细线隔开，不再套边框。 */
-:root .shell .cx-feature-card .builtin-card-params {
-  gap: 0;
-  margin: 0 0 6px 14px;
-  padding-left: 12px;
-  border-left: 2px solid hsl(var(--cx-row-divider));
-}
-
-:root .shell .cx-feature-card .builtin-card-params > .feature-toggle {
-  padding-block: 9px;
-}
-
-:root .shell .cx-feature-card .builtin-card-params > .app-select,
-:root .shell .cx-feature-card .builtin-card-params > div:first-child:not(.feature-toggle) {
-  margin: 6px 14px 6px 0;
-}
-
-:root .shell .cx-feature-card .builtin-card-note {
-  padding: 0 14px 10px;
-}
-
-:root .shell .cx-feature-card .builtin-card-head.has-settings > .feature-toggle {
-  column-gap: 60px;
-}
-
-:root .shell .cx-feature-card .builtin-card-settings {
-  right: 64px;
-}
 
 :root .shell .cx-enhance-save {
   display: inline-flex;
@@ -679,7 +644,6 @@
   border: 0;
   background: transparent;
 }
-
 
 /* 主 Codex 用 Codex 应用图标，不再写「主C」两个字。 */
 :root .shell .multi-launch-page .multi-launch-main-icon {
