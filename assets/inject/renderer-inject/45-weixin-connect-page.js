@@ -372,14 +372,14 @@
   function codexPlusWeixinPageHtml(state) {
     const data = state.data;
     const busy = Boolean(state.busy);
-    const header = `<div class="codex-plus-modal-header"><div class="codex-plus-modal-title">微信连接</div></div>`;
+    // 页面名在左栏顶上（installCodexPlusSectionNav），右边每组第一节的标题就是大标题。
     const bannerText = state.error || (data?.connection?.state === "error" ? data.connection.message : "");
     const banner = [
       bannerText ? `<div class="codex-plus-remote-banner" data-tone="warn" role="alert">${escapeHtml(bannerText)}</div>` : "",
       state.notice ? `<div class="codex-plus-remote-banner" data-tone="ok" role="status">${escapeHtml(state.notice)}</div>` : "",
     ].join("");
     if (!data) {
-      return `${header}${banner}<div class="codex-plus-provider-empty">${busy ? "正在读取…" : '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="reload">重试</button>'}</div>`;
+      return `${banner}<div class="codex-plus-provider-empty">${busy ? "正在读取…" : '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="reload">重试</button>'}</div>`;
     }
     const settings = data.settings || {};
     const connection = data.connection || {};
@@ -469,10 +469,10 @@
       <h2 class="codex-plus-settings-section-title">更多设置</h2>
       <div class="codex-plus-settings-card">
         ${codexPlusWeixinRow("登录凭据、连接参数、Codex CLI 路径", "登录凭据和账号扫码后自动填好，一般不用改；要手动改它们、iLink 地址或 Codex CLI 路径，到 Codex++ 管理工具的微信连接页。",
-          '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="openManager">在 Codex++ 管理工具里打开更多设置</button>')}
+          '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="openManager">打开管理工具</button>')}
       </div>
     </section>`;
-    return `${header}${banner}${statusSection}${qrSection}${sessionSection}${jiajiaSection}${permissionSection}${moreSection}`;
+    return `${banner}${codexPlusSectionGroupHtml("connection", `${statusSection}${qrSection}${moreSection}`)}${codexPlusSectionGroupHtml("session", sessionSection)}${codexPlusSectionGroupHtml("jiajia", jiajiaSection)}${codexPlusSectionGroupHtml("permission", permissionSection)}`;
   }
 
   /** 正在编辑输入框或开着菜单时不重绘（会丢输入、收掉菜单），等编辑完再补画。 */
@@ -626,7 +626,7 @@
     applyCodexPlusTheme(overlay);
     applyCodexPlusZoom(overlay);
     overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="微信连接" data-codex-plus-active-tab="${codexPlusWeixinConnectTab}">
-      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-weixin-panel="true"></div></div></div>`;
+      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-weixin-panel="true"></div></div></div>`;
     overlay.addEventListener("click", (event) => { void codexPlusWeixinHandleClick(event); });
     overlay.addEventListener("change", codexPlusWeixinHandleChange);
     // 输入框失焦后补画轮询期间攒下的变化（没改内容时不会有 change）。
@@ -634,6 +634,15 @@
       const panel = document.querySelector("[data-codex-weixin-panel]");
       if (panel && codexPlusWeixinPageState.renderPending && !codexPlusWeixinEditing(panel)) renderCodexPlusWeixinPage();
     }, 0));
+    installCodexPlusSectionNav(overlay, {
+      title: "微信连接",
+      groups: [
+        { id: "connection", label: "连接", icon: "core" },
+        { id: "session", label: "对话", icon: "chat" },
+        { id: "jiajia", label: "加加", icon: "pet" },
+        { id: "permission", label: "权限", icon: "feature-lab" },
+      ],
+    });
     document.body.appendChild(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);

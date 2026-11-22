@@ -232,13 +232,13 @@
     const state = codexPlusRemotePageState;
     const data = state.data;
     const busy = Boolean(state.busy);
-    const header = `<div class="codex-plus-modal-header"><div class="codex-plus-modal-title">远程控制<em class="codex-plus-feature-tag" data-tone="experimental">实验</em></div></div>`;
+    // 页面名和「实验」标在左栏顶上（installCodexPlusSectionNav），右边每组第一节的标题就是大标题。
     const banner = [
       state.error || data?.error || data?.lan?.error ? `<div class="codex-plus-remote-banner" data-tone="warn" role="alert">${escapeHtml(state.error || data?.error || data?.lan?.error)}</div>` : "",
       state.notice ? `<div class="codex-plus-remote-banner" data-tone="ok" role="status">${escapeHtml(state.notice)}</div>` : "",
     ].join("");
     if (!data) {
-      panel.innerHTML = `${header}${banner}<div class="codex-plus-provider-empty">${state.busy ? "正在读取…" : ""}
+      panel.innerHTML = `${banner}<div class="codex-plus-provider-empty">${state.busy ? "正在读取…" : ""}
         ${state.busy ? "" : '<button type="button" class="codex-plus-action-button" data-codex-remote-action="reload">重试</button>'}</div>`;
       return;
     }
@@ -258,9 +258,11 @@
       </div>
     </section>`;
     const addresses = Array.isArray(lan.addresses) ? lan.addresses : [];
-    const phones = data.enabled ? `<section class="codex-plus-settings-section" aria-label="手机与其它设备">
+    const phones = `<section class="codex-plus-settings-section" aria-label="手机与其它设备">
       <h2 class="codex-plus-settings-section-title">手机与其它设备</h2>
       <div class="codex-plus-settings-card">
+        ${!data.enabled ? codexPlusRemoteRow("先启用远程控制", "启用后，同一 Wi-Fi 或 Tailscale 网络里的手机才能配对访问。",
+          `<button type="button" class="codex-plus-action-button" data-codex-remote-action="enable" ${busy ? "disabled" : ""}>启用远程控制</button>`) : `
         ${codexPlusRemoteRow("允许局域网访问", "同一 Wi-Fi 或同一 Tailscale 网络里的设备经 HTTPS 访问，只有配对过的设备能用。",
           `${lan.running ? `<span class="codex-plus-provider-badge" data-tone="active">端口 ${Number(lan.port)}</span>` : ""}${codexPlusRemoteToggle(lan.enabled ? "disableLan" : "enableLan", Boolean(lan.enabled), "允许局域网访问")}`)}
         ${lan.running ? `
@@ -270,9 +272,9 @@
           ${lan.fingerprint ? codexPlusRemoteRow("证书指纹", `<code class="codex-plus-remote-fingerprint">${escapeHtml(lan.fingerprint)}</code><br>证书是这台电脑自己签的，手机第一次打开会提示不受信任。可以在浏览器的证书详情里核对这串指纹，一致再继续访问。`) : ""}
           ${codexPlusRemoteRow("添加设备", "选好权限后生成一次性配对码（5 分钟内有效），用手机相机扫码打开，确认后即配对完成。",
             `${codexPlusRemoteRoleSwitch(state.pairRole)}<button type="button" class="codex-plus-action-button" data-codex-remote-action="startPairing" ${busy ? "disabled" : ""}>${data.pairing ? "重新生成" : "生成配对码"}</button>`)}
-          ${renderCodexPlusRemotePairing(data.pairing)}` : ""}
+          ${renderCodexPlusRemotePairing(data.pairing)}` : ""}`}
       </div>
-    </section>` : "";
+    </section>`;
     const deviceList = devices.length ? `<section class="codex-plus-settings-section" aria-label="已配对设备">
       <h2 class="codex-plus-settings-section-title">已配对设备（${devices.length}）</h2>
       <div class="codex-plus-settings-card">
@@ -295,7 +297,7 @@
     const field = active instanceof Element && panel.contains(active) ? active.getAttribute("data-codex-remote-robot-field") : null;
     const selection = field ? [active.selectionStart, active.selectionEnd] : null;
     const scroll = panel.closest(".codex-plus-modal-body")?.scrollTop || 0;
-    panel.innerHTML = `${header}${banner}${main}${phones}${deviceList}${codexPlusRemoteRobotSection(data)}${help}`;
+    panel.innerHTML = `${banner}${codexPlusSectionGroupHtml("remote", main)}${codexPlusSectionGroupHtml("devices", `${phones}${deviceList}`)}${codexPlusSectionGroupHtml("notify", codexPlusRemoteRobotSection(data))}${codexPlusSectionGroupHtml("help", help)}`;
     const body = panel.closest(".codex-plus-modal-body");
     if (body) body.scrollTop = scroll;
     const next = field ? panel.querySelector(`[data-codex-remote-robot-field="${field}"]`) : null;
@@ -473,9 +475,19 @@
     applyCodexPlusTheme(overlay);
     applyCodexPlusZoom(overlay);
     overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="远程控制" data-codex-plus-active-tab="${codexPlusRemoteControlTab}">
-      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-remote-panel="true"></div></div></div>`;
+      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-remote-panel="true"></div></div></div>`;
     overlay.addEventListener("click", (event) => { void codexPlusRemoteHandleClick(event); });
     overlay.addEventListener("input", codexPlusRemoteHandleInput);
+    installCodexPlusSectionNav(overlay, {
+      title: "远程控制",
+      titleHtml: '远程控制<em class="codex-plus-feature-tag" data-tone="experimental">实验</em>',
+      groups: [
+        { id: "remote", label: "远程控制", icon: "core" },
+        { id: "devices", label: "手机与其它设备", icon: "standalone" },
+        { id: "notify", label: "钉钉与飞书通知", icon: "chat" },
+        { id: "help", label: "使用说明", icon: "tools" },
+      ],
+    });
     document.body.appendChild(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);

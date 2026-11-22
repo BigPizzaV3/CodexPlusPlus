@@ -1027,10 +1027,27 @@ describe("renderer injection header compatibility", () => {
     // 只搬动已有的 modal-body，不重建里面的 data-codex-* 挂载点，
     // 否则 renderUserScripts / 各 toggle 的 querySelector 会找不到目标。
     assert.match(renderer, /main\.appendChild\(body\)/);
-    // 左面板按页面决定：「拓展」是脚本列表，设置页是分组导航；推荐内容是单栏内容页，没有左面板。
+    // 左面板按页面决定：「拓展」是脚本列表，设置页是分组导航；推荐内容、远程控制、微信连接走分组左栏。
     assert.match(renderer, /if \(tab === codexPlusExtensionsTab\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /\} else if \(tab === "home"\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /data-codex-plus-page-nav-body="true"/);
+    assert.match(renderer, /if \(tab === codexPlusSponsorTab\) \{\s*installCodexPlusSectionNav\(overlay, \{ title: codexPlusPageTitle\(tab\), groups: \[\{ id: "partners"/);
+    assert.match(renderer, /installCodexPlusSectionNav\(overlay, \{\s*title: "远程控制",[\s\S]{0,200}groups: \[\s*\{ id: "remote"[\s\S]{0,80}\{ id: "devices"[\s\S]{0,80}\{ id: "notify"[\s\S]{0,80}\{ id: "help"/);
+    assert.match(renderer, /installCodexPlusSectionNav\(overlay, \{\s*title: "微信连接",\s*groups: \[\s*\{ id: "connection"[\s\S]{0,80}\{ id: "session"[\s\S]{0,80}\{ id: "jiajia"[\s\S]{0,80}\{ id: "permission"/);
+    // 两页的面板用设置页的分页样式；重画后由 MutationObserver 补回当前组，左栏不占 refreshCodexPlusPageNav 认的挂载点。
+    assert.match(renderer, /codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-remote-panel="true"/);
+    assert.match(renderer, /codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-weixin-panel="true"/);
+    const sectionNav = renderer.slice(renderer.indexOf("function installCodexPlusSectionNav("), renderer.indexOf("function codexPlusSectionGroupHtml("));
+    assert.match(sectionNav, /data-codex-plus-section-nav-body="true"/);
+    assert.doesNotMatch(sectionNav, /data-codex-plus-page-nav-body/);
+    assert.match(sectionNav, /new MutationObserver\(sync\)\.observe\(body, \{ childList: true, subtree: true \}\)/);
+    assert.match(sectionNav, /window\.localStorage\.setItem\(storageKey, active\)/);
+    // 克隆来的图标栏入口去掉原生悬浮区标记，否则停在我们的入口上会浮出模板那一项的原生侧栏。
+    const railButton = renderer.slice(renderer.indexOf("function createCodexPlusRailButton("), renderer.indexOf("function createCodexPlusRailButton(") + 2500);
+    assert.match(railButton, /button\.removeAttribute\("data-slate-sidebar-peek-area"\);/);
+    assert.match(railButton, /button\.removeAttribute\("data-slate-sidebar-peek-product-mode"\);/);
+    // 左栏样式同设置页左栏。
+    assert.match(renderer, /\.codex-plus-modal-content:is\(\[data-codex-plus-active-tab="home"\], \[data-codex-plus-section-nav\]\) \.codex-plus-page-nav \{/);
     // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。
     assert.match(renderer, /installCodexPlusPageLayout\(overlay, initialTab\);[\s\S]{0,900}selectCodexPlusTab\(initialTab\);/);
     // 左面板分组导航走同一个选中函数。

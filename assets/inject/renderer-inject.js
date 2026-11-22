@@ -2255,6 +2255,43 @@
         visibility: visible !important;
       }
       /*
+       * 侧栏收起时原生侧栏是悬浮的：内容铺满，鼠标停在图标栏入口（或窗口左边缘）上才浮出一张圆角卡片，移开就收起。
+       * 设置、拓展、远程控制、微信连接、推荐内容的左栏照着浮（开合由 installCodexPlusNavPeek 打 data-codex-plus-nav-peek）。
+       * 卡片的位置和样式照原生悬浮侧栏：上下左各留 4px（my-1 ms-1），圆角、底色、描边、阴影取原生的令牌。
+       * modal-content 是 inline-size 容器，自带布局包含，就是卡片的定位参照。
+       */
+      .${codexPlusPageClass}[data-codex-plus-sidebar="floating"] .codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav {
+        position: absolute;
+        z-index: 3;
+        top: calc(var(--codex-plus-page-inset-top, 0px) + 4px);
+        bottom: 4px;
+        left: 4px;
+        box-sizing: border-box;
+        width: var(--codex-plus-native-peek-width, 284px) !important;
+        flex-basis: auto !important;
+        overflow: hidden;
+        border-right: 0 !important;
+        border-radius: var(--app-shell-sidebar-popover-radius, 12px);
+        background: var(--app-shell-sidebar-popover-background, var(--codex-plus-nav-bg)) !important;
+        box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
+        opacity: 0;
+        transform: translateX(-12px);
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+      }
+      .${codexPlusPageClass}[data-codex-plus-sidebar="floating"][data-codex-plus-nav-peek="true"] .codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav {
+        opacity: 1;
+        transform: none;
+        visibility: visible;
+        pointer-events: auto;
+        transition: opacity .3s ease, transform .3s ease;
+      }
+      /* 页面开着时鼠标停在原生入口上，原生悬浮侧栏（带 popover 底色的那张卡）要浮在页面之上，和在原生页面上一样。 */
+      html[data-codex-plus-page-open]:has([data-sidebar-navigation-root][class*="sidebar-popover-background"]) aside.app-shell-left-panel {
+        z-index: 2147482002 !important;
+      }
+      /*
        * 梦皮（Dream Skin）壁纸模式（#3152）：原生设置页在梦皮下是一层半透明遮罩叠在壁纸上，
        * 我们的页面却是实色底，整块盖住壁纸。页面是盖在内容区上的独立 fixed 层，底下不是同一页，
        * 不能直接透明；这里照梦皮给原生设置页的画法，在页面根节点自己画「遮罩 + 壁纸」，
@@ -2349,18 +2386,20 @@
       /*
        * 设置页左栏：尺寸、字号、选中态照原生设置页的侧栏（288 宽、30 高的行、14px、10px 圆角乘缩放），
        * 版本号与后端状态点在顶上，位置对应原生的「设置」标题。
+       * 远程控制、微信连接、推荐内容的左栏（data-codex-plus-section-nav，见 installCodexPlusSectionNav）用同一套。
        */
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav {
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav {
         box-sizing: border-box;
         width: 288px;
         flex-basis: 288px;
         background: var(--codex-plus-nav-bg);
       }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header { padding: 14px 16px 10px; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-header { padding: 14px 16px 10px; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header > .codex-plus-modal-header { padding: 0; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header .codex-plus-modal-title { font-family: var(--font-openai-sans, inherit); font-synthesis: weight style small-caps; font-size: 18px; font-weight: 600; line-height: 24px; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-body { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 8px; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item {
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header .codex-plus-modal-title,
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav-title { font-family: var(--font-openai-sans, inherit); font-synthesis: weight style small-caps; font-size: 18px; font-weight: 600; line-height: 24px; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-body { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 8px; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item {
         box-sizing: border-box;
         height: 30px;
         min-height: 30px;
@@ -2371,13 +2410,13 @@
         font-weight: 400;
         line-height: 21px;
       }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item:hover { background: var(--codex-plus-nav-hover-bg); }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg); }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-icon { width: 16px; height: 16px; border-radius: 0; background: none; color: inherit; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-icon svg { width: 16px; height: 16px; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-name { flex: 1 1 auto; min-width: 0; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item:hover { background: var(--codex-plus-nav-hover-bg); }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg); }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-icon { width: 16px; height: 16px; border-radius: 0; background: none; color: inherit; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-icon svg { width: 16px; height: 16px; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-name { flex: 1 1 auto; min-width: 0; }
       /* 分区小标题照原生：14px/500、次要灰、30 高；分区之间空 16px，标题和第一项之间空 4px（nav-body 自带 1px 间距）。 */
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-section-title {
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-section-title {
         display: flex;
         align-items: center;
         box-sizing: border-box;
@@ -2389,7 +2428,17 @@
         font-weight: 500;
         line-height: 21px;
       }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-section-title:first-child { margin-top: 0; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-section-title:first-child { margin-top: 0; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav-title .codex-plus-feature-tag { margin-left: 6px; vertical-align: 3px; }
+      /* 分页后横幅（出错、提示）在大标题上面，不再往上贴页面标题。 */
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-remote-banner { margin: 0 0 16px; }
+      /* 窗口窄时左栏让出宽度，同设置页。三个页面的 modal-content 各自是 inline-size 容器。 */
+      @container (max-width: 800px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav { width: 220px; flex-basis: 220px; }
+      }
+      @container (max-width: 480px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav { width: 168px; flex-basis: 168px; }
+      }
       .codex-plus-settings {
         width: 100%;
         max-width: 728px;
@@ -2501,7 +2550,7 @@
       /* 行高与原生 text-sm 一致：13px × 1.25/0.875。 */
       .codex-plus-settings .codex-plus-row-title { font-size: 13px; font-weight: 500; line-height: calc(1.25 / .875); }
       /* 设置项标题旁的小标签：实验 / 需重启，与管理器增强页一致。 */
-      .codex-plus-settings .codex-plus-feature-tag {
+      :is(.codex-plus-settings, .codex-plus-page-nav-title) .codex-plus-feature-tag {
         display: inline-flex;
         align-items: center;
         margin-left: 6px;
@@ -2515,7 +2564,7 @@
         line-height: 16px;
         vertical-align: 1px;
       }
-      .codex-plus-settings .codex-plus-feature-tag[data-tone="experimental"] {
+      :is(.codex-plus-settings, .codex-plus-page-nav-title) .codex-plus-feature-tag[data-tone="experimental"] {
         border-color: color-mix(in srgb, var(--codex-plus-warning) 40%, transparent);
         color: var(--codex-plus-warning);
       }
@@ -2613,14 +2662,14 @@
         background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
         container: codex-plus-remote-page / inline-size;
       }
+      /* 有了目录左栏，内容区留白同设置主页，标题落在同一高度。 */
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="remote-control"] .codex-plus-modal-body {
         box-sizing: border-box;
-        padding: 72px 32px 64px;
+        padding: 16px 20px 64px;
       }
       @container codex-plus-remote-page (max-width: 800px) {
-        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="remote-control"] .codex-plus-modal-body { padding: 48px 24px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="remote-control"] .codex-plus-modal-body { padding: 24px 16px 48px; }
       }
-      .codex-plus-remote-page .codex-plus-feature-tag { font-size: 11px; vertical-align: 6px; }
       .codex-plus-remote-page .codex-plus-row > :not(:first-child) { max-width: 60%; }
       .codex-plus-remote-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
       .codex-plus-remote-controls .codex-plus-action-button { padding: 0 12px; white-space: nowrap; }
@@ -2699,10 +2748,10 @@
       }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] .codex-plus-modal-body {
         box-sizing: border-box;
-        padding: 72px 32px 64px;
+        padding: 16px 20px 64px;
       }
       @container codex-plus-weixin-page (max-width: 800px) {
-        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] .codex-plus-modal-body { padding: 48px 24px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] .codex-plus-modal-body { padding: 24px 16px 48px; }
       }
       .codex-plus-weixin-page .codex-plus-row > :not(:first-child) { max-width: 60%; min-width: 0; }
       .codex-plus-weixin-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }
@@ -8248,7 +8297,7 @@
     const main = document.createElement("div");
     main.className = "codex-plus-page-main";
     // 「拓展」的左面板是脚本列表；设置页的左面板是分组导航（和 Codex 自己的设置页一样，右边一次只看一组）。
-    // 推荐内容是单栏内容页，没有左面板。
+    // 推荐内容的左栏是合作伙伴目录，见下方 installCodexPlusSectionNav。
     if (tab === codexPlusExtensionsTab) {
       const nav = document.createElement("div");
       nav.className = "codex-plus-page-nav";
@@ -8275,6 +8324,75 @@
     layout.appendChild(main);
     main.appendChild(body);
     if (tab === "home") syncCodexPlusSettingsGroups(overlay);
+    // 推荐内容只有一组「合作伙伴」，左栏照原生插件页的「自定义」栏，只为和其它页面同一副样子。
+    if (tab === codexPlusSponsorTab) {
+      installCodexPlusSectionNav(overlay, { title: codexPlusPageTitle(tab), groups: [{ id: "partners", label: "合作伙伴", icon: "plugins" }] });
+    }
+  }
+
+  /**
+   * 远程控制、微信连接、推荐内容的左栏，照原生设置页（和 Codex++ 设置页同一套样式）：
+   * 左栏选一组，右边只显示这一组。页面把内容包成 .codex-plus-settings-group[data-codex-plus-section-group]，
+   * 放在 .codex-plus-settings[data-codex-plus-settings-paged] 里，组里第一节的标题就是页面大标题。
+   * 侧栏展开时左栏和其它页面的左栏一样对齐原生侧栏。
+   *
+   * 页面内容会被整块重画（轮询、操作之后）：MutationObserver 在重画后、绘制前把当前组的 data-active 补回去。
+   * 选中的组记在 localStorage，下次打开还在那一组。
+   * 左栏不用 data-codex-plus-page-nav-body：refreshCodexPlusPageNav 认那个挂载点，会把设置分组画进来。
+   */
+  function installCodexPlusSectionNav(overlay, { title, titleHtml = "", groups }) {
+    const content = overlay?.querySelector(".codex-plus-modal-content");
+    const body = content?.querySelector(".codex-plus-modal-body");
+    if (!content || !body || !groups.length) return;
+    let main = body.parentElement?.classList.contains("codex-plus-page-main") ? body.parentElement : null;
+    if (!main) {
+      const layout = document.createElement("div");
+      layout.className = "codex-plus-page-layout";
+      main = document.createElement("div");
+      main.className = "codex-plus-page-main";
+      content.appendChild(layout);
+      layout.appendChild(main);
+      main.appendChild(body);
+    }
+    const storageKey = `codex-plus-section-nav:${title}`;
+    let active = "";
+    try { active = window.localStorage.getItem(storageKey) || ""; } catch {}
+    if (!groups.some((group) => group.id === active)) active = groups[0].id;
+    const nav = document.createElement("nav");
+    nav.className = "codex-plus-page-nav";
+    nav.setAttribute("aria-label", `${title}分组`);
+    nav.innerHTML = `<div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title">${titleHtml || escapeHtml(title)}</div></div>
+      <div class="codex-plus-page-nav-body" data-codex-plus-section-nav-body="true">${groups.map((group) => `<button type="button" class="codex-plus-page-nav-item" data-codex-plus-section-nav="${escapeHtml(group.id)}"><span class="codex-plus-page-nav-item-icon" aria-hidden="true">${codexPlusSettingsGroupIcon(group.icon)}</span><span class="codex-plus-page-nav-item-name">${escapeHtml(group.label)}</span></button>`).join("")}</div>`;
+    main.before(nav);
+    content.dataset.codexPlusSectionNav = "true";
+    const sync = () => {
+      body.querySelectorAll("[data-codex-plus-section-group]").forEach((node) => {
+        const value = String(node.getAttribute("data-codex-plus-section-group") === active);
+        if (node.dataset.active !== value) node.dataset.active = value;
+      });
+      nav.querySelectorAll("[data-codex-plus-section-nav]").forEach((button) => {
+        const current = button.getAttribute("data-codex-plus-section-nav") === active;
+        button.dataset.active = String(current);
+        if (current) button.setAttribute("aria-current", "page");
+        else button.removeAttribute("aria-current");
+      });
+    };
+    nav.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest("[data-codex-plus-section-nav]") : null;
+      if (!button) return;
+      active = button.getAttribute("data-codex-plus-section-nav");
+      try { window.localStorage.setItem(storageKey, active); } catch {}
+      sync();
+      // 换一组从顶上看起。
+      body.scrollTop = 0;
+    });
+    new MutationObserver(sync).observe(body, { childList: true, subtree: true });
+    sync();
+  }
+
+  /** 页面里一组的外壳：远程控制、微信连接的渲染函数用它把各节分进左栏的组里。 */
+  function codexPlusSectionGroupHtml(id, html) {
+    return `<div class="codex-plus-settings-group" data-codex-plus-section-group="${escapeHtml(id)}">${html}</div>`;
   }
 
   /** 页面标题：每个 rail 入口一个名字，和图标栏上的标签保持一致。 */
@@ -8928,9 +9046,18 @@
       overlay.dataset.codexPlusSidebar = "open";
       const sidebarWidth = backingRect.left - left;
       overlay.style.setProperty("--codex-plus-native-sidebar-width", `${zoom === 1 ? sidebarWidth : sidebarWidth / zoom}px`);
+    } else if (underTitlebar) {
+      // 侧栏收起时原生侧栏是悬浮的：鼠标移到图标栏入口上才浮出一张卡片，宽 = 侧栏宽 − 左边 4px 的缝。
+      // 收起后原生侧栏仍按原宽排着（只是被裁掉），量它；左栏照着浮（installCodexPlusNavPeek）。
+      overlay.dataset.codexPlusSidebar = "floating";
+      overlay.style.removeProperty("--codex-plus-native-sidebar-width");
+      const navWidth = document.querySelector("[data-sidebar-navigation-root]")?.getBoundingClientRect().width || 0;
+      if (navWidth > 4) overlay.style.setProperty("--codex-plus-native-peek-width", `${(zoom === 1 ? navWidth : navWidth / zoom) - 4}px`);
+      else overlay.style.removeProperty("--codex-plus-native-peek-width");
     } else {
       delete overlay.dataset.codexPlusSidebar;
       overlay.style.removeProperty("--codex-plus-native-sidebar-width");
+      overlay.style.removeProperty("--codex-plus-native-peek-width");
     }
     // 侧栏开合时 aside 本身的尺寸不一定变，原生面板 backing 的宽度一定变，所以也盯着它。
     const surfaceBacking = document.querySelector("[data-app-shell-surface-backing]");
@@ -8959,6 +9086,52 @@
     window.addEventListener("resize", reposition);
     positionCodexPlusPage(overlay);
     syncCodexPlusPageBackButton();
+    installCodexPlusNavPeek();
+  }
+
+  /**
+   * 侧栏收起时左栏照原生悬浮（CSS 见 data-codex-plus-sidebar="floating"）：鼠标停在图标栏上当前页的入口、
+   * 窗口左边缘 4px 以内或卡片本身上时浮出，移开一会儿收起，和原生侧栏的悬浮触发一样。
+   * 只认 pointermove / 离开窗口，监听挂在 document 上，重复注入时换成新一代的处理函数。
+   */
+  function installCodexPlusNavPeek() {
+    document.removeEventListener("pointermove", window.__codexPlusNavPeekHandler, true);
+    document.removeEventListener("pointerout", window.__codexPlusNavPeekHandler, true);
+    let showTimer = null;
+    let hideTimer = null;
+    window.__codexPlusNavPeekHandler = (event) => {
+      const overlay = document.querySelector(`.${codexPlusPageClass}[data-codex-plus-sidebar="floating"]`);
+      const card = overlay?.querySelector(".codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav");
+      if (!card) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const leavingWindow = event.type === "pointerout" && !event.relatedTarget;
+      const want = !leavingWindow && Boolean(
+        target?.closest('[data-codex-plus-rail] > button[aria-current="page"]')
+        || card.contains(target)
+        || event.clientX <= 4
+      );
+      if (want) {
+        clearTimeout(hideTimer);
+        hideTimer = null;
+        if (overlay.dataset.codexPlusNavPeek !== "true" && !showTimer) {
+          showTimer = setTimeout(() => {
+            showTimer = null;
+            overlay.dataset.codexPlusNavPeek = "true";
+          }, card.contains(target) ? 0 : 120);
+        }
+      } else {
+        clearTimeout(showTimer);
+        showTimer = null;
+        if (overlay.dataset.codexPlusNavPeek === "true" && !hideTimer) {
+          hideTimer = setTimeout(() => {
+            hideTimer = null;
+            delete overlay.dataset.codexPlusNavPeek;
+          }, 250);
+        }
+      }
+    };
+    document.addEventListener("pointermove", window.__codexPlusNavPeekHandler, true);
+    document.addEventListener("pointerout", window.__codexPlusNavPeekHandler, true);
   }
 
   function codexPlusHostUsesLightTheme() {
@@ -10108,7 +10281,9 @@
         closeCodexPlusPage();
         return;
       }
-      if (!target?.closest(selectors.sidebarThread)) return;
+      // 侧栏收起时原生侧栏能悬浮在页面之上（10-style.js），点里面的入口同样是去原生页面。
+      const nativeSidebarItem = target?.closest("[data-sidebar-navigation-root] :is(button, a)");
+      if (!target?.closest(selectors.sidebarThread) && !(nativeSidebarItem && !nativeSidebarItem.closest(`#${codexPlusSidebarNavId}`))) return;
       // Let Codex's own click handler update its route before removing our page.
       closeCodexPlusPageAfterNativeNavigation();
     };
@@ -10247,6 +10422,10 @@
     button.type = "button";
     // 留着 data-sidebar-destination 会被 Codex 的自定义/排序逻辑当成真的 destination。
     button.removeAttribute("data-sidebar-destination");
+    // 留着悬浮区标记，侧栏收起时鼠标停在我们的入口上会浮出模板那一项（如「定时任务」）的原生侧栏。
+    button.removeAttribute("data-slate-sidebar-peek-area");
+    button.removeAttribute("data-slate-sidebar-peek-product-mode");
+    button.removeAttribute("aria-expanded");
     button.removeAttribute("data-state");
     button.removeAttribute("disabled");
     button.removeAttribute("aria-disabled");
@@ -17253,13 +17432,13 @@ ${key} = ${value}`]);
     const state = codexPlusRemotePageState;
     const data = state.data;
     const busy = Boolean(state.busy);
-    const header = `<div class="codex-plus-modal-header"><div class="codex-plus-modal-title">远程控制<em class="codex-plus-feature-tag" data-tone="experimental">实验</em></div></div>`;
+    // 页面名和「实验」标在左栏顶上（installCodexPlusSectionNav），右边每组第一节的标题就是大标题。
     const banner = [
       state.error || data?.error || data?.lan?.error ? `<div class="codex-plus-remote-banner" data-tone="warn" role="alert">${escapeHtml(state.error || data?.error || data?.lan?.error)}</div>` : "",
       state.notice ? `<div class="codex-plus-remote-banner" data-tone="ok" role="status">${escapeHtml(state.notice)}</div>` : "",
     ].join("");
     if (!data) {
-      panel.innerHTML = `${header}${banner}<div class="codex-plus-provider-empty">${state.busy ? "正在读取…" : ""}
+      panel.innerHTML = `${banner}<div class="codex-plus-provider-empty">${state.busy ? "正在读取…" : ""}
         ${state.busy ? "" : '<button type="button" class="codex-plus-action-button" data-codex-remote-action="reload">重试</button>'}</div>`;
       return;
     }
@@ -17279,9 +17458,11 @@ ${key} = ${value}`]);
       </div>
     </section>`;
     const addresses = Array.isArray(lan.addresses) ? lan.addresses : [];
-    const phones = data.enabled ? `<section class="codex-plus-settings-section" aria-label="手机与其它设备">
+    const phones = `<section class="codex-plus-settings-section" aria-label="手机与其它设备">
       <h2 class="codex-plus-settings-section-title">手机与其它设备</h2>
       <div class="codex-plus-settings-card">
+        ${!data.enabled ? codexPlusRemoteRow("先启用远程控制", "启用后，同一 Wi-Fi 或 Tailscale 网络里的手机才能配对访问。",
+          `<button type="button" class="codex-plus-action-button" data-codex-remote-action="enable" ${busy ? "disabled" : ""}>启用远程控制</button>`) : `
         ${codexPlusRemoteRow("允许局域网访问", "同一 Wi-Fi 或同一 Tailscale 网络里的设备经 HTTPS 访问，只有配对过的设备能用。",
           `${lan.running ? `<span class="codex-plus-provider-badge" data-tone="active">端口 ${Number(lan.port)}</span>` : ""}${codexPlusRemoteToggle(lan.enabled ? "disableLan" : "enableLan", Boolean(lan.enabled), "允许局域网访问")}`)}
         ${lan.running ? `
@@ -17291,9 +17472,9 @@ ${key} = ${value}`]);
           ${lan.fingerprint ? codexPlusRemoteRow("证书指纹", `<code class="codex-plus-remote-fingerprint">${escapeHtml(lan.fingerprint)}</code><br>证书是这台电脑自己签的，手机第一次打开会提示不受信任。可以在浏览器的证书详情里核对这串指纹，一致再继续访问。`) : ""}
           ${codexPlusRemoteRow("添加设备", "选好权限后生成一次性配对码（5 分钟内有效），用手机相机扫码打开，确认后即配对完成。",
             `${codexPlusRemoteRoleSwitch(state.pairRole)}<button type="button" class="codex-plus-action-button" data-codex-remote-action="startPairing" ${busy ? "disabled" : ""}>${data.pairing ? "重新生成" : "生成配对码"}</button>`)}
-          ${renderCodexPlusRemotePairing(data.pairing)}` : ""}
+          ${renderCodexPlusRemotePairing(data.pairing)}` : ""}`}
       </div>
-    </section>` : "";
+    </section>`;
     const deviceList = devices.length ? `<section class="codex-plus-settings-section" aria-label="已配对设备">
       <h2 class="codex-plus-settings-section-title">已配对设备（${devices.length}）</h2>
       <div class="codex-plus-settings-card">
@@ -17316,7 +17497,7 @@ ${key} = ${value}`]);
     const field = active instanceof Element && panel.contains(active) ? active.getAttribute("data-codex-remote-robot-field") : null;
     const selection = field ? [active.selectionStart, active.selectionEnd] : null;
     const scroll = panel.closest(".codex-plus-modal-body")?.scrollTop || 0;
-    panel.innerHTML = `${header}${banner}${main}${phones}${deviceList}${codexPlusRemoteRobotSection(data)}${help}`;
+    panel.innerHTML = `${banner}${codexPlusSectionGroupHtml("remote", main)}${codexPlusSectionGroupHtml("devices", `${phones}${deviceList}`)}${codexPlusSectionGroupHtml("notify", codexPlusRemoteRobotSection(data))}${codexPlusSectionGroupHtml("help", help)}`;
     const body = panel.closest(".codex-plus-modal-body");
     if (body) body.scrollTop = scroll;
     const next = field ? panel.querySelector(`[data-codex-remote-robot-field="${field}"]`) : null;
@@ -17494,9 +17675,19 @@ ${key} = ${value}`]);
     applyCodexPlusTheme(overlay);
     applyCodexPlusZoom(overlay);
     overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="远程控制" data-codex-plus-active-tab="${codexPlusRemoteControlTab}">
-      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-remote-panel="true"></div></div></div>`;
+      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-remote-panel="true"></div></div></div>`;
     overlay.addEventListener("click", (event) => { void codexPlusRemoteHandleClick(event); });
     overlay.addEventListener("input", codexPlusRemoteHandleInput);
+    installCodexPlusSectionNav(overlay, {
+      title: "远程控制",
+      titleHtml: '远程控制<em class="codex-plus-feature-tag" data-tone="experimental">实验</em>',
+      groups: [
+        { id: "remote", label: "远程控制", icon: "core" },
+        { id: "devices", label: "手机与其它设备", icon: "standalone" },
+        { id: "notify", label: "钉钉与飞书通知", icon: "chat" },
+        { id: "help", label: "使用说明", icon: "tools" },
+      ],
+    });
     document.body.appendChild(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);
@@ -17906,14 +18097,14 @@ ${key} = ${value}`]);
   function codexPlusWeixinPageHtml(state) {
     const data = state.data;
     const busy = Boolean(state.busy);
-    const header = `<div class="codex-plus-modal-header"><div class="codex-plus-modal-title">微信连接</div></div>`;
+    // 页面名在左栏顶上（installCodexPlusSectionNav），右边每组第一节的标题就是大标题。
     const bannerText = state.error || (data?.connection?.state === "error" ? data.connection.message : "");
     const banner = [
       bannerText ? `<div class="codex-plus-remote-banner" data-tone="warn" role="alert">${escapeHtml(bannerText)}</div>` : "",
       state.notice ? `<div class="codex-plus-remote-banner" data-tone="ok" role="status">${escapeHtml(state.notice)}</div>` : "",
     ].join("");
     if (!data) {
-      return `${header}${banner}<div class="codex-plus-provider-empty">${busy ? "正在读取…" : '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="reload">重试</button>'}</div>`;
+      return `${banner}<div class="codex-plus-provider-empty">${busy ? "正在读取…" : '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="reload">重试</button>'}</div>`;
     }
     const settings = data.settings || {};
     const connection = data.connection || {};
@@ -18003,10 +18194,10 @@ ${key} = ${value}`]);
       <h2 class="codex-plus-settings-section-title">更多设置</h2>
       <div class="codex-plus-settings-card">
         ${codexPlusWeixinRow("登录凭据、连接参数、Codex CLI 路径", "登录凭据和账号扫码后自动填好，一般不用改；要手动改它们、iLink 地址或 Codex CLI 路径，到 Codex++ 管理工具的微信连接页。",
-          '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="openManager">在 Codex++ 管理工具里打开更多设置</button>')}
+          '<button type="button" class="codex-plus-action-button" data-codex-weixin-action="openManager">打开管理工具</button>')}
       </div>
     </section>`;
-    return `${header}${banner}${statusSection}${qrSection}${sessionSection}${jiajiaSection}${permissionSection}${moreSection}`;
+    return `${banner}${codexPlusSectionGroupHtml("connection", `${statusSection}${qrSection}${moreSection}`)}${codexPlusSectionGroupHtml("session", sessionSection)}${codexPlusSectionGroupHtml("jiajia", jiajiaSection)}${codexPlusSectionGroupHtml("permission", permissionSection)}`;
   }
 
   /** 正在编辑输入框或开着菜单时不重绘（会丢输入、收掉菜单），等编辑完再补画。 */
@@ -18160,7 +18351,7 @@ ${key} = ${value}`]);
     applyCodexPlusTheme(overlay);
     applyCodexPlusZoom(overlay);
     overlay.innerHTML = `<div class="codex-plus-modal-content" role="region" aria-label="微信连接" data-codex-plus-active-tab="${codexPlusWeixinConnectTab}">
-      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-weixin-panel="true"></div></div></div>`;
+      <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-weixin-panel="true"></div></div></div>`;
     overlay.addEventListener("click", (event) => { void codexPlusWeixinHandleClick(event); });
     overlay.addEventListener("change", codexPlusWeixinHandleChange);
     // 输入框失焦后补画轮询期间攒下的变化（没改内容时不会有 change）。
@@ -18168,6 +18359,15 @@ ${key} = ${value}`]);
       const panel = document.querySelector("[data-codex-weixin-panel]");
       if (panel && codexPlusWeixinPageState.renderPending && !codexPlusWeixinEditing(panel)) renderCodexPlusWeixinPage();
     }, 0));
+    installCodexPlusSectionNav(overlay, {
+      title: "微信连接",
+      groups: [
+        { id: "connection", label: "连接", icon: "core" },
+        { id: "session", label: "对话", icon: "chat" },
+        { id: "jiajia", label: "加加", icon: "pet" },
+        { id: "permission", label: "权限", icon: "feature-lab" },
+      ],
+    });
     document.body.appendChild(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);

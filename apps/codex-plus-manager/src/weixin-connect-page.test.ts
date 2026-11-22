@@ -20,6 +20,7 @@ async function loadShard() {
     const escapeHtml = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
     const codexPlusMenuIcons = { chevron: "<svg data-chevron></svg>", check: "<svg data-check></svg>" };
     const postJson = async () => ({ status: "failed" });
+    const codexPlusSectionGroupHtml = (id, html) => \`<div class="codex-plus-settings-group" data-codex-plus-section-group="\${id}">\${html}</div>\`;
   `;
   return new Function(`${stubs}\n${source}\nreturn { codexPlusWeixinPageHtml, codexPlusWeixinPageState, codexPlusWeixinProjectPatch };`)() as {
     codexPlusWeixinPageHtml: (state: PageState) => string;
@@ -178,7 +179,7 @@ test("已登录、运行中：状态、停止 / 重新登录、对话、加加�
   assert.match(html, /aria-checked="true" data-enabled="true"[^>]*data-codex-weixin-toggle="weixinConnectPushToWeixin"/);
   assert.match(html, /data-codex-weixin-menu="weixinConnectSandbox" data-value="workspace-write"[^>]*aria-label="沙箱权限：允许修改工作目录"/);
   assert.match(html, /data-codex-weixin-toggle="weixinConnectAllowOutboundAttachments" >/, "填了白名单和目录时能打开附件回传");
-  assert.match(html, /data-codex-weixin-action="openManager">在 Codex\+\+ 管理工具里打开更多设置</);
+  assert.match(html, /data-codex-weixin-action="openManager">打开管理工具</);
   assert.match(html, /登录凭据、连接参数、Codex CLI 路径/);
   // 新会话项目：没读过项目列表时只有「不归属项目」，提示点刷新；重置联系人会话在页内。
   assert.match(html, /data-codex-weixin-menu="weixinConnectProjectId" data-value=""[^>]*aria-label="新会话项目：不归属项目"/);
@@ -187,6 +188,11 @@ test("已登录、运行中：状态、停止 / 重新登录、对话、加加�
   assert.match(html, /data-codex-weixin-field="resetPeer" value=""[^>]*placeholder="wxid_peer_with/);
   assert.match(html, /data-codex-weixin-action="resetSession" >重置</);
   for (const title of ["连接", "对话", "加加", "权限", "更多设置"]) assert.match(html, new RegExp(`aria-label="${title}"`));
+  // 左栏分组（installCodexPlusSectionNav）：每组一页，更多设置跟在连接后面；页面名在左栏，右边没有重复的页头。
+  const groups = [...html.matchAll(/data-codex-plus-section-group="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(groups, ["connection", "session", "jiajia", "permission"]);
+  assert.match(html, /data-codex-plus-section-group="connection"><section class="codex-plus-settings-section" aria-label="连接">[\s\S]*aria-label="更多设置"[\s\S]*data-codex-plus-section-group="session"/);
+  assert.doesNotMatch(html, /codex-plus-modal-header/);
   assert.doesNotMatch(html, /<select/);
   assert.doesNotMatch(html, /weixinConnectToken/, "页面里没有登录凭据");
 });

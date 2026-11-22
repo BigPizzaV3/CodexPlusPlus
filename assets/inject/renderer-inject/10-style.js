@@ -1498,6 +1498,43 @@
         visibility: visible !important;
       }
       /*
+       * 侧栏收起时原生侧栏是悬浮的：内容铺满，鼠标停在图标栏入口（或窗口左边缘）上才浮出一张圆角卡片，移开就收起。
+       * 设置、拓展、远程控制、微信连接、推荐内容的左栏照着浮（开合由 installCodexPlusNavPeek 打 data-codex-plus-nav-peek）。
+       * 卡片的位置和样式照原生悬浮侧栏：上下左各留 4px（my-1 ms-1），圆角、底色、描边、阴影取原生的令牌。
+       * modal-content 是 inline-size 容器，自带布局包含，就是卡片的定位参照。
+       */
+      .${codexPlusPageClass}[data-codex-plus-sidebar="floating"] .codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav {
+        position: absolute;
+        z-index: 3;
+        top: calc(var(--codex-plus-page-inset-top, 0px) + 4px);
+        bottom: 4px;
+        left: 4px;
+        box-sizing: border-box;
+        width: var(--codex-plus-native-peek-width, 284px) !important;
+        flex-basis: auto !important;
+        overflow: hidden;
+        border-right: 0 !important;
+        border-radius: var(--app-shell-sidebar-popover-radius, 12px);
+        background: var(--app-shell-sidebar-popover-background, var(--codex-plus-nav-bg)) !important;
+        box-shadow: inset 0 0 0 var(--hairline, .5px) var(--app-shell-sidebar-popover-border, var(--codex-plus-border)), var(--shadow-card, 0 8px 24px rgba(0, 0, 0, .24));
+        opacity: 0;
+        transform: translateX(-12px);
+        visibility: hidden;
+        pointer-events: none;
+        transition: opacity .2s ease, transform .2s ease, visibility 0s linear .2s;
+      }
+      .${codexPlusPageClass}[data-codex-plus-sidebar="floating"][data-codex-plus-nav-peek="true"] .codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav {
+        opacity: 1;
+        transform: none;
+        visibility: visible;
+        pointer-events: auto;
+        transition: opacity .3s ease, transform .3s ease;
+      }
+      /* 页面开着时鼠标停在原生入口上，原生悬浮侧栏（带 popover 底色的那张卡）要浮在页面之上，和在原生页面上一样。 */
+      html[data-codex-plus-page-open]:has([data-sidebar-navigation-root][class*="sidebar-popover-background"]) aside.app-shell-left-panel {
+        z-index: 2147482002 !important;
+      }
+      /*
        * 梦皮（Dream Skin）壁纸模式（#3152）：原生设置页在梦皮下是一层半透明遮罩叠在壁纸上，
        * 我们的页面却是实色底，整块盖住壁纸。页面是盖在内容区上的独立 fixed 层，底下不是同一页，
        * 不能直接透明；这里照梦皮给原生设置页的画法，在页面根节点自己画「遮罩 + 壁纸」，
@@ -1592,18 +1629,20 @@
       /*
        * 设置页左栏：尺寸、字号、选中态照原生设置页的侧栏（288 宽、30 高的行、14px、10px 圆角乘缩放），
        * 版本号与后端状态点在顶上，位置对应原生的「设置」标题。
+       * 远程控制、微信连接、推荐内容的左栏（data-codex-plus-section-nav，见 installCodexPlusSectionNav）用同一套。
        */
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav {
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav {
         box-sizing: border-box;
         width: 288px;
         flex-basis: 288px;
         background: var(--codex-plus-nav-bg);
       }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header { padding: 14px 16px 10px; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-header { padding: 14px 16px 10px; }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header > .codex-plus-modal-header { padding: 0; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header .codex-plus-modal-title { font-family: var(--font-openai-sans, inherit); font-synthesis: weight style small-caps; font-size: 18px; font-weight: 600; line-height: 24px; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-body { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 8px; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item {
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-header .codex-plus-modal-title,
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav-title { font-family: var(--font-openai-sans, inherit); font-synthesis: weight style small-caps; font-size: 18px; font-weight: 600; line-height: 24px; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-body { display: flex; flex-direction: column; gap: 1px; padding: 4px 8px 8px; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item {
         box-sizing: border-box;
         height: 30px;
         min-height: 30px;
@@ -1614,13 +1653,13 @@
         font-weight: 400;
         line-height: 21px;
       }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item:hover { background: var(--codex-plus-nav-hover-bg); }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg); }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-icon { width: 16px; height: 16px; border-radius: 0; background: none; color: inherit; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-icon svg { width: 16px; height: 16px; }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-item-name { flex: 1 1 auto; min-width: 0; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item:hover { background: var(--codex-plus-nav-hover-bg); }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item[data-active="true"] { background: var(--codex-plus-nav-selected-bg); }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-icon { width: 16px; height: 16px; border-radius: 0; background: none; color: inherit; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-icon svg { width: 16px; height: 16px; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-item-name { flex: 1 1 auto; min-width: 0; }
       /* 分区小标题照原生：14px/500、次要灰、30 高；分区之间空 16px，标题和第一项之间空 4px（nav-body 自带 1px 间距）。 */
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-section-title {
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-section-title {
         display: flex;
         align-items: center;
         box-sizing: border-box;
@@ -1632,7 +1671,17 @@
         font-weight: 500;
         line-height: 21px;
       }
-      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="home"] .codex-plus-page-nav-section-title:first-child { margin-top: 0; }
+      .${codexPlusPageClass} .codex-plus-modal-content:is([data-codex-plus-active-tab="home"], [data-codex-plus-section-nav]) .codex-plus-page-nav-section-title:first-child { margin-top: 0; }
+      .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav-title .codex-plus-feature-tag { margin-left: 6px; vertical-align: 3px; }
+      /* 分页后横幅（出错、提示）在大标题上面，不再往上贴页面标题。 */
+      .codex-plus-settings[data-codex-plus-settings-paged="true"] > .codex-plus-remote-banner { margin: 0 0 16px; }
+      /* 窗口窄时左栏让出宽度，同设置页。三个页面的 modal-content 各自是 inline-size 容器。 */
+      @container (max-width: 800px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav { width: 220px; flex-basis: 220px; }
+      }
+      @container (max-width: 480px) {
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav { width: 168px; flex-basis: 168px; }
+      }
       .codex-plus-settings {
         width: 100%;
         max-width: 728px;
@@ -1744,7 +1793,7 @@
       /* 行高与原生 text-sm 一致：13px × 1.25/0.875。 */
       .codex-plus-settings .codex-plus-row-title { font-size: 13px; font-weight: 500; line-height: calc(1.25 / .875); }
       /* 设置项标题旁的小标签：实验 / 需重启，与管理器增强页一致。 */
-      .codex-plus-settings .codex-plus-feature-tag {
+      :is(.codex-plus-settings, .codex-plus-page-nav-title) .codex-plus-feature-tag {
         display: inline-flex;
         align-items: center;
         margin-left: 6px;
@@ -1758,7 +1807,7 @@
         line-height: 16px;
         vertical-align: 1px;
       }
-      .codex-plus-settings .codex-plus-feature-tag[data-tone="experimental"] {
+      :is(.codex-plus-settings, .codex-plus-page-nav-title) .codex-plus-feature-tag[data-tone="experimental"] {
         border-color: color-mix(in srgb, var(--codex-plus-warning) 40%, transparent);
         color: var(--codex-plus-warning);
       }
@@ -1856,14 +1905,14 @@
         background: var(--codex-plus-settings-page-bg, var(--codex-plus-bg-primary)) !important;
         container: codex-plus-remote-page / inline-size;
       }
+      /* 有了目录左栏，内容区留白同设置主页，标题落在同一高度。 */
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="remote-control"] .codex-plus-modal-body {
         box-sizing: border-box;
-        padding: 72px 32px 64px;
+        padding: 16px 20px 64px;
       }
       @container codex-plus-remote-page (max-width: 800px) {
-        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="remote-control"] .codex-plus-modal-body { padding: 48px 24px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="remote-control"] .codex-plus-modal-body { padding: 24px 16px 48px; }
       }
-      .codex-plus-remote-page .codex-plus-feature-tag { font-size: 11px; vertical-align: 6px; }
       .codex-plus-remote-page .codex-plus-row > :not(:first-child) { max-width: 60%; }
       .codex-plus-remote-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
       .codex-plus-remote-controls .codex-plus-action-button { padding: 0 12px; white-space: nowrap; }
@@ -1942,10 +1991,10 @@
       }
       .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] .codex-plus-modal-body {
         box-sizing: border-box;
-        padding: 72px 32px 64px;
+        padding: 16px 20px 64px;
       }
       @container codex-plus-weixin-page (max-width: 800px) {
-        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] .codex-plus-modal-body { padding: 48px 24px; }
+        .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-active-tab="weixin-connect"] .codex-plus-modal-body { padding: 24px 16px 48px; }
       }
       .codex-plus-weixin-page .codex-plus-row > :not(:first-child) { max-width: 60%; min-width: 0; }
       .codex-plus-weixin-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; min-width: 0; }

@@ -64,6 +64,8 @@ function layoutHarness(zoom = 1) {
     // 返回按钮行为由 page-back-navigation.test.ts 验证，此处只隔离布局生命周期。
     function syncCodexPlusPageBackButton() {}
     function restoreCodexPlusPageBackButton() {}
+    // 悬浮左栏的鼠标逻辑不在布局生命周期里。
+    function installCodexPlusNavPeek() {}
     ${functionSource("positionCodexPlusPage")}
     ${functionSource("observeCodexPlusPageLayout")}
     ${functionSource("closeCodexPlusPage")}
@@ -119,10 +121,13 @@ it("starts at the window top under the transparent titlebar when the native pane
     assert.equal(h.overlay.dataset.codexPlusSidebar, "open", "sidebar open: pages with a left column draw over the native sidebar");
     assert.equal(h.overlay.style.values.get("--codex-plus-native-sidebar-width"), `${(320 - 62) / zoom}px`, "left column ends where the native panel starts");
     h.nodes["[data-app-shell-surface-backing]"].rect.left = 0;
+    // 收起后原生侧栏仍按原宽排着，只是被裁掉；悬浮卡片比它窄左边那 4px 缝。
+    add("[data-sidebar-navigation-root]", { left: 62, top: 40, width: 258, height: 760, right: 320 });
     h.position(h.overlay);
     assert.equal(h.overlay.style.values.get("--codex-plus-page-radius"), "0px", "sidebar collapsed: continuous with the panel");
-    assert.equal(h.overlay.dataset.codexPlusSidebar, undefined);
+    assert.equal(h.overlay.dataset.codexPlusSidebar, "floating", "sidebar collapsed: left column floats like the native peek");
     assert.equal(h.overlay.style.values.get("--codex-plus-native-sidebar-width"), undefined);
+    assert.equal(h.overlay.style.values.get("--codex-plus-native-peek-width"), `${258 / zoom - 4}px`);
     (h.nodes["[data-app-shell-surface-backing]"] as unknown as { background: string }).background = "rgba(0, 0, 0, 0)";
     h.position(h.overlay);
     assert.equal(h.overlay.dataset.codexPlusSurface, undefined, "a skin-cleared panel never makes the page see-through");
@@ -132,7 +137,51 @@ it("starts at the window top under the transparent titlebar when the native pane
     assert.equal(h.overlay.style.top, `${40 / zoom}px`, "older shells keep starting below the header");
     assert.equal(h.overlay.dataset.codexPlusTitlebar, undefined);
     assert.equal(h.overlay.style.values.get("--codex-plus-page-radius-end"), undefined);
+    assert.equal(h.overlay.dataset.codexPlusSidebar, undefined, "older shells have no floating sidebar");
+    assert.equal(h.overlay.style.values.get("--codex-plus-native-peek-width"), undefined);
   }
+});
+
+it("floats the left column like the native sidebar peek while the sidebar is collapsed", async () => {
+  const listeners = new Map<string, (event: Record<string, unknown>) => void>();
+  const card = { contains: (node: unknown) => node === cardItem };
+  const cardItem = { closest: () => null };
+  const railButton = { closest: (selector: string) => (selector === '[data-codex-plus-rail] > button[aria-current="page"]' ? railButton : null) };
+  const elsewhere = { closest: () => null };
+  const overlay = { dataset: {} as Record<string, string>, querySelector: () => card };
+  const document = {
+    querySelector: (selector: string) => (selector === '.codex-plus-page-overlay[data-codex-plus-sidebar="floating"]' ? overlay : null),
+    addEventListener: (type: string, listener: (event: Record<string, unknown>) => void) => listeners.set(type, listener),
+    removeEventListener: (type: string) => listeners.delete(type),
+  };
+  class Element {}
+  Object.setPrototypeOf(cardItem, Element.prototype);
+  Object.setPrototypeOf(railButton, Element.prototype);
+  Object.setPrototypeOf(elsewhere, Element.prototype);
+  const window: Record<string, unknown> = {};
+  new Function("document", "window", "Element", `
+    const codexPlusPageClass = "codex-plus-page-overlay";
+    ${functionSource("installCodexPlusNavPeek")}
+    installCodexPlusNavPeek();
+  `)(document, window, Element);
+  const move = (target: unknown, clientX = 300) => listeners.get("pointermove")!({ type: "pointermove", target, clientX });
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  move(railButton, 26);
+  assert.equal(overlay.dataset.codexPlusNavPeek, undefined, "a short delay before it slides out, like the native peek");
+  await wait(160);
+  assert.equal(overlay.dataset.codexPlusNavPeek, "true", "hovering the current page's rail entry shows the card");
+  move(cardItem, 150);
+  await wait(300);
+  assert.equal(overlay.dataset.codexPlusNavPeek, "true", "the card stays while the pointer is on it");
+  move(elsewhere, 700);
+  await wait(300);
+  assert.equal(overlay.dataset.codexPlusNavPeek, undefined, "leaving the card hides it");
+  move(elsewhere, 2);
+  await wait(160);
+  assert.equal(overlay.dataset.codexPlusNavPeek, "true", "the window's left edge shows it too");
+  listeners.get("pointerout")!({ type: "pointerout", target: elsewhere, relatedTarget: null, clientX: 2 });
+  await wait(300);
+  assert.equal(overlay.dataset.codexPlusNavPeek, undefined, "leaving the window hides it");
 });
 
 it("retargets the layout observer when the host replaces its main or rail", () => {
@@ -296,6 +345,17 @@ it("replaces version 31 styles with bounded panel geometry and keeps reinjection
   assert.match(existing!.textContent!, /\[data-codex-plus-sidebar="open"\] :is\(\.codex-plus-page-nav, \.codex-plus-provider-sidebar, \.codex-plus-task-sidebar\) \{[^}]*width: var\(--codex-plus-native-sidebar-width\) !important;/);
   assert.match(existing!.textContent!, /html:has\([^)]*\[data-codex-plus-sidebar="open"\]\) :is\(\[data-sidebar-navigation-root\], \[data-app-shell-active-page\]\) \{\s*visibility: hidden !important;/);
   assert.match(existing!.textContent!, /html:has\([^)]*\[data-codex-plus-sidebar="open"\]\) \[data-app-shell-titlebar\] \{\s*visibility: visible !important;/);
+  // 侧栏收起：左栏是悬浮卡片（位置、圆角、底色照原生悬浮侧栏），平时藏着，data-codex-plus-nav-peek 时浮出。
+  const floating = existing!.textContent!.match(/\[data-codex-plus-sidebar="floating"\] \.codex-plus-modal-content > \.codex-plus-page-layout > \.codex-plus-page-nav \{([^}]+)\}/)![1];
+  assert.match(floating, /position: absolute;/);
+  assert.match(floating, /top: calc\(var\(--codex-plus-page-inset-top, 0px\) \+ 4px\);\s*bottom: 4px;\s*left: 4px;/);
+  assert.match(floating, /width: var\(--codex-plus-native-peek-width, 284px\) !important;/);
+  assert.match(floating, /border-radius: var\(--app-shell-sidebar-popover-radius, 12px\);/);
+  assert.match(floating, /background: var\(--app-shell-sidebar-popover-background, var\(--codex-plus-nav-bg\)\) !important;/);
+  assert.match(floating, /visibility: hidden;\s*pointer-events: none;/);
+  assert.match(existing!.textContent!, /\[data-codex-plus-sidebar="floating"\]\[data-codex-plus-nav-peek="true"\] \.codex-plus-modal-content > \.codex-plus-page-layout > \.codex-plus-page-nav \{\s*opacity: 1;\s*transform: none;\s*visibility: visible;\s*pointer-events: auto;/);
+  // 原生自己的悬浮侧栏浮在页面之上。
+  assert.match(existing!.textContent!, /html\[data-codex-plus-page-open\]:has\(\[data-sidebar-navigation-root\]\[class\*="sidebar-popover-background"\]\) aside\.app-shell-left-panel \{\s*z-index: 2147482002 !important;/);
   assert.match(existing!.textContent!, /\[data-codex-plus-surface="native"\] \{\s*--codex-plus-bg-primary: var\(--codex-plus-shell-surface\) !important;\s*--codex-plus-settings-page-bg: var\(--codex-plus-shell-surface\) !important;\s*--codex-plus-nav-bg: var\(--codex-plus-shell-surface\) !important;/);
   const modalRules = existing!.textContent!.match(/\.codex-plus-modal-overlay\s*\{([^}]+)\}/)![1];
   assert.match(modalRules, /height: calc\(100vh \/ var\(--codex-plus-zoom, 1\)\)/);
