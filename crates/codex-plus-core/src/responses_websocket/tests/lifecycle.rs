@@ -27,7 +27,7 @@ async fn gateway_ws_temporary_key_failover_preserves_sticky_key() {
         .unwrap()
         .key
         .clone();
-    key_pool::record_success(&key_a, Some("review-sticky-conversation"));
+    key_pool::record_success(&key_a, "", Some("review-sticky-conversation"));
     let held = key_pool::try_acquire(
         &key_a,
         KeyLimits {

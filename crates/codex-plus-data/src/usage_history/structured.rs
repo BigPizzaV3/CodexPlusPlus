@@ -233,6 +233,20 @@ fn unknown_model(model: &str) -> bool {
 }
 
 impl RequestEvidence {
+    fn same_request(&self, other: &Self) -> bool {
+        let mut comparable = self.clone();
+        comparable.relay_name.clone_from(&other.relay_name);
+        comparable == *other
+    }
+
+    fn provider_name(&self) -> &str {
+        if self.relay_name.trim().is_empty() {
+            &self.relay_id
+        } else {
+            &self.relay_name
+        }
+    }
+
     fn could_be_success(&self) -> bool {
         !self.thread_id.is_empty()
             && self.agent.is_empty()
@@ -294,13 +308,7 @@ impl RequestEvidence {
     }
 
     fn keys(&self) -> Vec<RequestMatchKey> {
-        if !self.valid_request_counts()
-            || self.actual_model().is_none()
-            || [&self.upstream_model, &self.relay_id, &self.relay_name]
-                .iter()
-                .any(|value| value.is_empty())
-            || unknown_provider(&self.relay_id)
-        {
+        if !self.valid_request_counts() || self.actual_model().is_none() {
             return Vec::new();
         }
         let RequestEvidenceUsage {
@@ -332,8 +340,7 @@ impl RequestEvidence {
 
     fn actual_model(&self) -> Option<&str> {
         let model = self.upstream_model.as_str();
-        (!unknown_model(model) && !unknown_provider(&self.relay_id) && !self.relay_name.is_empty())
-            .then_some(model)
+        (!unknown_model(model) && !unknown_provider(&self.relay_id)).then_some(model)
     }
 }
 
@@ -490,6 +497,11 @@ impl RequestEvidenceCache {
             };
         }
         self.bytes_read = 0;
+        let Ok(guard) = codex_plus_core::request_log::lock_request_log() else {
+            self.records.clear();
+            self.stamp = None;
+            return;
+        };
         let metadata = fs::symlink_metadata(path).ok().filter(|m| m.is_file());
         let stamp = metadata
             .as_ref()
@@ -502,7 +514,7 @@ impl RequestEvidenceCache {
         let Some(metadata) = metadata.filter(|m| m.len() <= MAX_REQUEST_LOG_BYTES) else {
             return;
         };
-        let Ok(file) = File::open(path) else {
+        let Ok(mut file) = File::open(path) else {
             self.stamp = None;
             return;
         };
@@ -515,8 +527,15 @@ impl RequestEvidenceCache {
             return;
         }
         self.reads += 1;
+        let mut contents = Vec::with_capacity(metadata.len() as usize);
+        let read_result = (&mut file).take(metadata.len()).read_to_end(&mut contents);
+        drop(guard);
+        if read_result.is_err() {
+            self.stamp = None;
+            return;
+        }
         // 总量和单行均有界；serde 跳过未声明字段，不分配 error/正文字符串。
-        let mut reader = BufReader::new(file.take(metadata.len()));
+        let mut reader = BufReader::new(contents.as_slice());
         let mut line = Vec::new();
         let mut oversized = false;
         let result = (|| -> io::Result<()> {
@@ -683,14 +702,21 @@ impl RequestEvidenceCache {
             rows.retain(|row| row.timestamp_ms >= floor);
             let additional = rows
                 .iter()
-                .filter(|row| observed.get(&row.id) != Some(row))
+                .filter(|row| {
+                    !observed
+                        .get(&row.id)
+                        .is_some_and(|prior| prior.same_request(row))
+                })
                 .count();
             if self.records.len().saturating_add(additional) > MAX_ROWS_CAPTURED_PROXY {
                 limited = true;
                 continue;
             }
             for row in rows {
-                if observed.get(&row.id) == Some(&row) {
+                if observed
+                    .get(&row.id)
+                    .is_some_and(|prior| prior.same_request(&row))
+                {
                     continue;
                 }
                 observed.insert(row.id.clone(), row.clone());
@@ -752,7 +778,7 @@ impl RequestEvidenceCache {
         let current: HashSet<_> = requests.keys().cloned().collect();
         for saved in self.verified.values() {
             if let Some(record) = requests.get(&saved.request.id) {
-                if record != &saved.request {
+                if !record.same_request(&saved.request) {
                     blocked.insert(saved.request.id.clone());
                 }
             } else {
@@ -860,19 +886,34 @@ impl RequestEvidenceCache {
                 .collect::<Vec<usize>>()
         };
         let delayed_reverse = reverse_counts(DELAYED_REQUEST_MATCH_WINDOW_MS);
-        let uncertain_sessions: HashSet<_> = events
-            .iter()
-            .filter(|event| {
-                event.count_uncertain
-                    || event.count_incomplete
-                    || !event.delta.cached_known
-                    || event.context_conflicts.any()
-            })
-            .filter_map(|event| aliases.resolve(&event.session))
-            .collect();
+        // 来源计数缺口可能藏有未知时间的事件；可定位的不确定事件只参与附近请求的竞争。
+        let mut incomplete_sessions = HashSet::new();
+        let mut uncertain_times: HashMap<String, Vec<i64>> = HashMap::new();
+        for event in events.iter().filter(|event| {
+            event.count_uncertain
+                || event.count_incomplete
+                || !event.delta.cached_known
+                || event.context_conflicts.any()
+        }) {
+            let Some(session) = aliases.resolve(&event.session) else {
+                continue;
+            };
+            let at = DateTime::parse_from_rfc3339(&event.timestamp)
+                .ok()
+                .map(|time| time.timestamp_millis());
+            if event.count_incomplete || at.is_none() {
+                incomplete_sessions.insert(session);
+            } else if let Some(at) = at {
+                uncertain_times.entry(session).or_default().push(at);
+            }
+        }
+        for times in uncertain_times.values_mut() {
+            times.sort_unstable();
+        }
         let (mut recovered, mut tokens, mut retained) = (0usize, 0u64, 0usize);
         let (mut delayed_events, mut delayed_tokens) = (0usize, 0u64);
         let (mut model_events, mut direct_conflicts) = (0usize, 0usize);
+        let mut missing_names = HashSet::new();
         for (event, evidence) in events.iter_mut().zip(&event_keys) {
             // 请求日志没有轮次身份，不能把旧证明复用于拆分后的碰撞事件。
             if self.collision_families.contains(&event.original_id()) {
@@ -889,12 +930,15 @@ impl RequestEvidenceCache {
             }
             if self.captured_id_check_failed
                 || event.count_uncertain
+                || event.count_incomplete
+                || !event.delta.cached_known
                 || evidence
                     .as_ref()
-                    .is_some_and(|(key, _)| uncertain_sessions.contains(&key.session))
+                    .is_some_and(|(key, _)| incomplete_sessions.contains(&key.session))
             {
                 continue;
             }
+            let mut uncertain_competition = false;
             let candidate = evidence.as_ref().and_then(|(key, at)| {
                 if let Some(records) = uncertain_requests.get(&key.session) {
                     let start = records.partition_point(|record| {
@@ -922,6 +966,22 @@ impl RequestEvidenceCache {
                 }
                 let i = entries[start].1;
                 let request = &requests[i];
+                // 以请求时间为中心，与反向唯一性使用同一窗口。
+                if let Some(times) = uncertain_times.get(&key.session) {
+                    let first = times.partition_point(|at| {
+                        *at < request
+                            .timestamp_ms
+                            .saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                    });
+                    if times.get(first).is_some_and(|at| {
+                        *at <= request
+                            .timestamp_ms
+                            .saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                    }) {
+                        uncertain_competition = true;
+                        return None;
+                    }
+                }
                 if delayed_reverse[i] != 1 {
                     return None;
                 }
@@ -949,10 +1009,16 @@ impl RequestEvidenceCache {
                     || evidence
                         .as_ref()
                         .is_none_or(|(key, at)| *key != saved_key || *at != saved.at)
-                    || candidate.is_none_or(|(i, _)| requests[i] != saved.request)
+                    || blocked.contains(&saved.request.id)
+                    || !uncertain_competition
+                        && candidate
+                            .is_none_or(|(i, _)| !requests[i].same_request(&saved.request))
                 {
                     saved.rejected = true;
                 }
+            }
+            if uncertain_competition {
+                continue;
             }
             let Some((i, delayed)) = candidate else {
                 continue;
@@ -1045,9 +1111,14 @@ impl RequestEvidenceCache {
                 event.model = actual_model.to_owned();
                 model_events += 1;
             }
-            names
-                .entry(request.relay_id.clone())
-                .or_insert_with(|| request.relay_name.clone());
+            if request.relay_name.trim().is_empty() {
+                missing_names.insert(request.relay_id.clone());
+            } else {
+                let name = names.entry(request.relay_id.clone()).or_default();
+                if name.trim().is_empty() {
+                    name.clone_from(&request.relay_name);
+                }
+            }
             recovered += 1;
             tokens = tokens.saturating_add(event.delta.total_tokens);
             if delayed {
@@ -1055,6 +1126,12 @@ impl RequestEvidenceCache {
                 delayed_tokens = delayed_tokens.saturating_add(event.delta.total_tokens);
             }
             retained += usize::from(!current.contains(&request.id));
+        }
+        for id in missing_names {
+            let name = names.entry(id.clone()).or_default();
+            if name.trim().is_empty() {
+                *name = id;
+            }
         }
         json!({"source":"request-log-exact","scope":"index","recoveredEvents":recovered,"recoveredTokens":tokens,
             "recoveredModelEvents":model_events,"directProviderConflicts":direct_conflicts,

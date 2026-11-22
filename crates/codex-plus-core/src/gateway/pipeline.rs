@@ -180,6 +180,13 @@ async fn open_candidates(
             Some(ready) => pending = vec![ready],
             None => {
                 recorder.cooling(wait.as_millis() as u64);
+                // 请求没发出去（attempts 仍为 0），但请求日志要能看出本来要发给哪家、哪个模型（#3229）：
+                // 记最早恢复的那个冷却中的候选，也就是本地 429 里「约 N 秒后恢复」说的那个。
+                if let Some(first) = plan.waiting.first() {
+                    trace.relay_id = first.candidate.relay.id.clone();
+                    trace.relay_name = first.candidate.relay.name.clone();
+                    trace.upstream_model = first.candidate.upstream_model.clone();
+                }
                 return Ok(GatewayOutcome {
                     upstream: GatewayUpstream::Cooling(wait),
                     trace,
@@ -324,7 +331,7 @@ async fn open_candidates(
                     recorder.step(candidate, "answered", None, upstream.status_code());
                     // 排在它前面的候选因为限速满了被跳过：这次只是临时顶替，不改会话固定
                     // （同一家的 Key 粘性、模型组记住的成员都保持原样）。
-                    key_pool::record_success(&candidate.key, conversation);
+                    key_pool::record_success(&candidate.key, &candidate.upstream_model, conversation);
                     crate::gateway::speed::record(
                         &candidate.relay.id,
                         &candidate.upstream_model,
@@ -367,7 +374,8 @@ async fn open_candidates(
                         Some(class.label()),
                         upstream.status_code(),
                     );
-                    let failover = record_key_failure(&candidate.key, &class);
+                    let failover =
+                        record_key_failure(&candidate.key, &candidate.upstream_model, &class);
                     // 失败也算「试过了」：速度优先的组不再把它当没测过的排第一。
                     crate::gateway::speed::record_failure(
                         &candidate.relay.id,
@@ -387,7 +395,11 @@ async fn open_candidates(
                 Err(AttemptError::Fatal(error)) => return Err(error),
                 Err(AttemptError::Transport(error)) => {
                     recorder.step(candidate, "transport", Some("server_error"), None);
-                    record_key_failure(&candidate.key, &FailureClass::ServerError);
+                    record_key_failure(
+                        &candidate.key,
+                        &candidate.upstream_model,
+                        &FailureClass::ServerError,
+                    );
                     crate::gateway::speed::record_failure(
                         &candidate.relay.id,
                         &candidate.upstream_model,
@@ -439,12 +451,17 @@ async fn open_candidates(
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("网关的所有上游都失败了")))
 }
 
-/// 把一次失败记进 Key 池，返回要不要换下一个候选。
+/// 把一次失败记进 Key 池，返回要不要换下一个候选。`upstream_model` 是这次发给上游的模型：
+/// 429 只冷却这个模型（#3229）。
 ///
 /// 拓展用 `gateway.replaces` 关掉 `builtin:key-cooldown` 时 429 / 额度耗尽不再让 Key 冷却，
 /// 关掉 `builtin:key-breaker` 时 5xx / 连接失败不再计入供应商熔断；换不换下一个候选照旧按分类定，
 /// 要不要避开这个 Key / 供应商由拓展在 route 段自己决定。
-pub(crate) fn record_key_failure(key: &key_pool::KeyRef, class: &FailureClass) -> bool {
+pub(crate) fn record_key_failure(
+    key: &key_pool::KeyRef,
+    upstream_model: &str,
+    class: &FailureClass,
+) -> bool {
     let replaced = match class {
         FailureClass::RateLimited { .. } | FailureClass::QuotaExhausted { .. } => {
             crate::extension_gateway::builtin_replaced("builtin:key-cooldown")
@@ -455,7 +472,7 @@ pub(crate) fn record_key_failure(key: &key_pool::KeyRef, class: &FailureClass) -
     if replaced {
         return class.should_failover();
     }
-    key_pool::record_failure(key, class, Instant::now())
+    key_pool::record_failure(key, upstream_model, class, Instant::now())
 }
 
 /// 所有 Key 都在冷却时，最早恢复的那个最多等这么久（#2802）。
@@ -490,8 +507,12 @@ async fn wait_for_cooling_key<'a>(
             .waiting
             .iter()
             .map(|item| {
-                let remaining =
-                    key_pool::cooling_remaining(&item.candidate.key, now).unwrap_or_default();
+                let remaining = key_pool::cooling_remaining(
+                    &item.candidate.key,
+                    &item.candidate.upstream_model,
+                    now,
+                )
+                .unwrap_or_default();
                 (&item.candidate, remaining)
             })
             .min_by_key(|(_, remaining)| *remaining);
@@ -687,7 +708,7 @@ async fn attempt_pipeline(
             prompt.as_deref(),
             crate::responses_websocket::active(),
         );
-        let version = crate::gateway::chatgpt_backend::codex_version(&home);
+        let version = crate::gateway::chatgpt_backend::codex_version(&home).await;
         relay.user_agent = crate::gateway::chatgpt_backend::codex_user_agent(&version);
         for (key, value) in [
             ("version", version.as_str()),

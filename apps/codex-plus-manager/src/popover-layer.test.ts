@@ -27,6 +27,16 @@ function rect(partial: Partial<PopoverRect> & { top: number; left: number }): Po
 }
 
 describe("resolvePopoverLayout", () => {
+  it("CSS 缩放后的触发器和视口换算为弹层布局坐标", () => {
+    const trigger = rect({ top: 100, left: 930, width: 200, height: 40 });
+    const expected = resolvePopoverLayout({ trigger, viewport, menuHeight: 180 });
+    for (const rootZoom of [0.9, 1.1, 1.25, 1.5]) {
+      const scaled = rect({ top: 100 * rootZoom, left: 930 * rootZoom, width: 200 * rootZoom, height: 40 * rootZoom });
+      assert.deepEqual(resolvePopoverLayout({ trigger: scaled,
+        viewport: { width: viewport.width * rootZoom, height: viewport.height * rootZoom },
+        rootZoom, menuHeight: 180 }), expected);
+    }
+  });
   it("贴在触发器下方并按触发器宽度铺满", () => {
     const layout = resolvePopoverLayout({
       trigger: rect({ top: 100, left: 40, width: 260 }),

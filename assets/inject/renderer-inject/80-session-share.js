@@ -78,7 +78,8 @@
    *
    * `options.type` 取 info / success / warn / error，对应 styles 里的四条配色；
    * 不传则保持原先的默认外观。`options.undoToken` 会追加「撤销」按钮——这是
-   * 内部删除流程用的，拓展一般用不到。
+   * 内部删除流程用的，拓展一般用不到。`options.durationMs` 改显示时长，给带按钮、
+   * 要留时间看完再点的提示用。
    */
   function showToast(message, options = {}) {
     // 兼容旧调用点：老签名是 showToast(message, undoToken)。第二个参数传字符串
@@ -112,11 +113,26 @@
         setTimeout(() => dismissCodexPlusToast(toast), 5000);
       });
       toast.appendChild(undo);
+    } else if (settings.actionLabel && typeof settings.onAction === "function") {
+      const action = document.createElement("button");
+      action.textContent = settings.actionLabel;
+      action.addEventListener("click", async () => {
+        action.disabled = true;
+        try {
+          await settings.onAction();
+          dismissCodexPlusToast(toast);
+        } catch (error) {
+          showToast(String(error?.message || error), { type: "warn" });
+          action.disabled = false;
+        }
+      });
+      toast.appendChild(action);
     }
     document.body.appendChild(toast);
     // append 之后统一重排：此时这条才进入 DOM，索引才是它真实的层号。
     layoutCodexPlusToasts();
-    setTimeout(() => dismissCodexPlusToast(toast), codexPlusToastLifetimeMs);
+    const lifetime = Number.isFinite(settings.durationMs) && settings.durationMs > 0 ? settings.durationMs : codexPlusToastLifetimeMs;
+    setTimeout(() => dismissCodexPlusToast(toast), lifetime);
     return () => dismissCodexPlusToast(toast);
   }
 

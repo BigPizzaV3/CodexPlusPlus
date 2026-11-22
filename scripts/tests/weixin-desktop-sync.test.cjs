@@ -6,6 +6,7 @@ const vm = require("node:vm");
 const { test } = require("node:test");
 const path = require("node:path");
 const source = fs.readFileSync(path.join(__dirname, "../../assets/inject/renderer-inject/85-weixin-desktop-sync.js"), "utf8");
+const assembled = fs.readFileSync(path.join(__dirname, "../../assets/inject/renderer-inject.js"), "utf8");
 const id = "00000000-0000-4000-8000-000000000001";
 const revision = "00000000-0000-4000-8000-000000000002";
 const secondId = "00000000-0000-4000-8000-000000000003";
@@ -406,4 +407,68 @@ test("an unreadable native state response cannot be treated as an unassigned thr
   await run();
   assert.equal(context.window.__codexPlusWeixinDesktopSync.revisions.size, 0);
   assert.equal(context.window.__codexPlusWeixinDesktopSync.retries.get(id).retryAt, 1030000);
+});
+
+test("assembled Weixin extension refreshes through Rspack and retries from the heartbeat", async () => {
+  const notified = [], assigned = [];
+  const { context, state, advance, sync } = setup(async ({ threadId }) => {
+    notified.push(threadId);
+    if (notified.length === 1) throw Error("catalog busy");
+  }, {
+    projects: { getLocalProjects: async () => ({ desktop: {} }) },
+    executionPaths: { readCodexHome: async () => "C:/codex-home" },
+    threadProjectAssignments: {
+      readMemberships: async () => ({ assignments: state.assignments }),
+      setProjectless: async () => {},
+      assignIfUnassigned: async ([request]) => assigned.push(request),
+    },
+    applicationState: { read: async () => ({ value: state.projectsByHome }) },
+  });
+  const { arbitraryExport: appServices } = await context.loadOptionalCodexAppModule();
+  context.loadOptionalCodexAppModule = async () => null;
+  const runtimeSrc = "app://-/assets/348410.792d1c9584.js";
+  context.document = {
+    querySelectorAll: () => [{ src: "app://-/assets/not-an-entry.js" }, { src: runtimeSrc }],
+  };
+  context.importWebpackEntry = async (src) => {
+    assert.equal(src, runtimeSrc);
+    return {
+      __webpack_require__: Object.assign(() => assert.fail("must not run module factories"), {
+        c: { host: { exports: { appServices, setAppServices() {} } } },
+      }),
+    };
+  };
+  assert.ok(assembled.includes(source.trim()), "the distributed renderer contains the current synchronization code");
+  assert.match(assembled, /id: "weixin-desktop-sync"[^}]+apply: codexPlusWeixinDesktopSyncExtension/);
+  const start = assembled.indexOf("  function codexPlusWeixinDesktopSyncExtension(");
+  const end = assembled.indexOf("\n  }", start) + "\n  }".length;
+  vm.runInContext(`let codexPlusWeixinSyncHeartbeat = null;
+    ${source.replace("await import(src)", "await importWebpackEntry(src)")}
+    ${assembled.slice(start, end)}
+    window.install = codexPlusWeixinDesktopSyncExtension;
+    window.heartbeat = () => codexPlusWeixinSyncHeartbeat?.();`, context);
+  let onLoaded, dispose;
+  context.window.install({
+    on(event, callback) { assert.equal(event, "settings/loaded"); onLoaded = callback; },
+    effect(install) { dispose = install(); },
+  });
+  context.codexPlusBackendSettings.weixinDesktopSync[0].project = project;
+  onLoaded();
+  await sync.flight;
+  assert.deepEqual(notified, [id], "an unregistered project does not suppress a native refresh");
+  assert.equal(sync.revisions.has(id), false);
+  assert.equal(assigned.length, 0);
+
+  state.projectsByHome = { "local:C:/codex-home": { desktop: project.id } };
+  advance(30000);
+  context.window.heartbeat();
+  await sync.flight;
+  assert.deepEqual(notified, [id, id]);
+  assert.equal(assigned[0].assignment.projectId, "desktop");
+  assert.equal(sync.revisions.get(id), revision);
+
+  dispose();
+  context.codexPlusBackendSettings.weixinDesktopSync[0].revision = nextRevision;
+  context.window.heartbeat();
+  assert.deepEqual(notified, [id, id], "disabling the extension removes its heartbeat listener");
 });

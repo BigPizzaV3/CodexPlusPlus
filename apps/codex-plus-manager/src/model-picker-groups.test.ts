@@ -299,6 +299,7 @@ async function navigationRuntime() {
     "codexPlusModelPickerGroups",
     "codexPlusModelPickerUniqueGroupIds",
     "codexPlusModelPickerSelectedRow",
+    "codexPlusModelPickerMemberGroup",
     "codexPlusModelPickerSyncGroup",
     "codexPlusModelPickerNavigate",
     "codexPlusModelPickerSyncNavigation",

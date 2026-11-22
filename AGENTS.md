@@ -122,6 +122,8 @@
 - Codex++ 这边只有宿主实现 `crates/codex-plus-core/src/claude_local_backend.rs`：设置（`claudeDesktopLocal`）、
   经网关的上游（`claude-desktop-local` 绑定）、常驻 helper 听写、3p 模式。对外函数名不变，管理器不用关心拆分。
 - 改完整功能模式的行为（代理脚本、证书、profile、启动流程）去 ClaudeMom 仓库改、测、推，再把这里的 `rev` 升上去。
+  升级用 `node scripts/bump-claude-local.mjs`（改 `rev`、更新 `Cargo.lock`、列出带进来的提交）；加 `--check` 只检查是否落后，
+  `check-claude-local.yml` 每天跑一次，落后时失败。
   本地联调可在根 `Cargo.toml` 临时加
   `[patch."https://github.com/BigPizzaV3/ClaudeMom"] claude-local = { path = "../ClaudeMom/crates/claude-local" }`，**不要提交**。
 - 补丁 Desktop（汉化副本，`claude_localization.rs` + `assets/claude-localization/`）仍在本仓库，Desktop 探测调 claude-local。

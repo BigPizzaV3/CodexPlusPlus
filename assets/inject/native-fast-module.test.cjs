@@ -240,7 +240,89 @@ async function runContentDiscoveryTests(source, url, { index, main, mainImport, 
   }
 }
 
+// Rspack 同源回填通道没有 import map 的 preload 事件，只有完成标记守护（#3224）。
+function runResponseWatchdogTests() {
+  const url = "app://-/assets/883398.12d9a6e686.js";
+  const armed = (setup = () => {}) => {
+    const env = browser();
+    // 新文档脚本里 bootstrap 先置 armed，再登记守护。
+    env.window.__codexPlusNativeFastPatchState = "armed";
+    setup(env.window);
+    const result = env.api.armResponseModule({ url, rewriters: { fast: "patched" } });
+    assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+    assert.equal(env.window.__codexPlusNativeFastModuleDiagnostics.reason, "response-interception-armed");
+    assert.deepEqual({ ...env.window.__codexPlusNativeFastModuleDiagnostics.rewriters }, { fast: "patched" });
+    assert.equal(env.events.length, 0, "回填通道不改文档，也不建 import map");
+    return env;
+  };
+
+  for (const [loaded, reason] of [[false, "response-not-intercepted"], [true, "module-execution-timeout"]]) {
+    const env = armed();
+    assert.equal(env.timers.size, 0, "DOMContentLoaded 之前不判断回填失败");
+    if (loaded) env.window.__codexPlusNativeFastResponseLoaded = url;
+    env.domContentLoaded();
+    assert.equal(env.timers.size, 1);
+    assert.equal([...env.timers.values()][0].delay, 30000, "与 import map 通道相同的 30 秒");
+    assert.equal(env.listeners.has("error"), false, "不把其他脚本的异常当成目标模块失败");
+    env.runTimers();
+    assert.equal(env.window.__codexPlusNativeFastPatchState, "failed", "超时后不能一直停在 armed");
+    assert.equal(env.window.__codexPlusNativeFastFailureReason, reason);
+    assert.equal(env.window.__codexPlusNativeFastModuleDiagnostics.reason, reason);
+    assert.equal(env.window.__codexPlusNativeFastModuleComplete, undefined);
+    assert.equal(env.reloads(), 0, "原始分块已在运行，重载只会重复同样结果");
+  }
+
+  // 另一份分块（如旧文档残留）写下的地址不算本次回填。
+  const otherChunk = armed(window => { window.__codexPlusNativeFastResponseLoaded = "app://-/assets/1.abc.js"; });
+  otherChunk.domContentLoaded();
+  otherChunk.runTimers();
+  assert.equal(otherChunk.window.__codexPlusNativeFastFailureReason, "response-not-intercepted");
+
+  for (const beforeDomReady of [true, false]) {
+    const success = armed();
+    if (!beforeDomReady) { success.domContentLoaded(); assert.equal(success.timers.size, 1); }
+    // 补丁执行时由 entryModuleSource 置标记并回调。
+    success.window.__codexPlusNativeFastCompiled = "v1";
+    success.window.__codexPlusNativeFastPatchState = "patched";
+    success.window.__codexPlusNativeFastModuleComplete();
+    if (beforeDomReady) success.domContentLoaded();
+    assert.equal(success.timers.size, 0, "补丁执行成功立即撤销守护");
+    assert.equal(success.window.__codexPlusNativeFastModuleComplete, undefined);
+    success.runTimers();
+    assert.equal(success.window.__codexPlusNativeFastPatchState, "patched");
+    assert.equal(success.window.__codexPlusNativeFastFailureReason, undefined);
+  }
+
+  // Codex++ 已发布更具体的失败（回填前发现响应异常）时不覆盖原因。
+  const released = armed();
+  released.domContentLoaded();
+  released.window.__codexPlusNativeFastPatchState = "failed";
+  released.window.__codexPlusNativeFastFailureReason = "unexpected_response";
+  released.runTimers();
+  assert.equal(released.window.__codexPlusNativeFastFailureReason, "unexpected_response");
+  assert.equal(released.window.__codexPlusNativeFastModuleDiagnostics.reason, "response-interception-armed");
+
+  // 文档已解析完（如脚本晚到）时立即开始计时。
+  const late = browser();
+  late.window.__codexPlusNativeFastPatchState = "armed";
+  late.window.document.readyState = "complete";
+  assert.equal(late.api.armResponseModule({ url }).ok, true);
+  assert.equal(late.timers.size, 1);
+
+  const disabled = browser();
+  disabled.api.runtime.update({ ...enabled, enhancementsEnabled: false });
+  assert.equal(disabled.api.armResponseModule({ url }).diagnostics.reason, "disabled");
+  assert.equal(disabled.listeners.size, 0);
+  assert.equal(disabled.window.__codexPlusNativeFastModuleComplete, undefined);
+  for (const bad of ["https://example.com/assets/883398.abc.js", undefined]) {
+    const foreign = browser();
+    assert.equal(foreign.api.armResponseModule({ url: bad }).diagnostics.reason, "unsupported-document-url");
+    assert.equal(foreign.listeners.size, 0);
+  }
+}
+
 async function runNativeFastModuleTests({ source, url }) {
+  runResponseWatchdogTests();
   await runDiscoveryTests(source, url);
   const fixture = [
     'import dependency from "./static.js"; import "./side.js";',

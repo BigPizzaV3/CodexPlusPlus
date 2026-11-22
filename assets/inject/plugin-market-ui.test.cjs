@@ -18,14 +18,10 @@ function fixture(bridge) {
   let visible = true;
   const nodes = new Map([
     ["[data-codex-plugin-refresh]", {}], ["[data-codex-plugin-market-status]", {}],
-    ["[data-codex-plugin-source-note]", {}],
     ["[data-codex-plugin-results]", {}], ["[data-codex-plugin-result-count]", {}],
     ['[data-codex-plugin-page="previous"]', {}], ['[data-codex-plugin-page="next"]', {}],
   ]);
-  const sources = ["public", "full"].map((source) => ({
-    dataset: { codexPluginSource: source }, attributes: {}, setAttribute(name, value) { this.attributes[name] = value; },
-  }));
-  const panel = { querySelector: (selector) => nodes.get(selector), querySelectorAll: () => sources };
+  const panel = { querySelector: (selector) => nodes.get(selector) };
   const context = vm.createContext({
     window: {},
     document: { querySelector: () => visible ? panel : null },
@@ -41,7 +37,7 @@ function fixture(bridge) {
     poll: pollCodexPlusPluginMarketInstall,
   };`, context);
   return {
-    ui: context.ui, calls, nodes, sources, timers,
+    ui: context.ui, calls, nodes, timers,
     hide: () => { visible = false; }, show: () => { visible = true; },
     runTimer: async () => { const [id, callback] = timers.entries().next().value; timers.delete(id); callback(); await flush(); },
   };
@@ -49,13 +45,13 @@ function fixture(bridge) {
 
 test("插件市场仅请求索引、按来源缓存，刷新才重新请求", async () => {
   const f = fixture(async () => ({ status: "ok", plugins: [plugin("one")], cached: true }));
-  await f.ui.load("public");
-  await f.ui.load("public");
+  await f.ui.load("full");
+  await f.ui.load("full");
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].path, "/plugin-market/list");
-  assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0].payload)), { source: "public", refresh: false });
-  assert.equal(f.ui.catalog("public").plugins.length, 1);
-  await f.ui.load("public", true);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.calls[0].payload)), { source: "full", refresh: false });
+  assert.equal(f.ui.catalog("full").plugins.length, 1);
+  await f.ui.load("full", true);
   assert.equal(f.calls.length, 2);
   assert.equal(f.calls[1].payload.refresh, true);
   assert.ok(f.calls.every((call) => call.path === "/plugin-market/list"));
@@ -65,7 +61,7 @@ test("插件结果分页 50、搜索名称/简介/标签、已安装筛选与 HT
   const plugins = Array.from({ length: 121 }, (_, index) => plugin(String(index)));
   plugins[120] = plugin("tail", { tags: ["RareTag"], installed: true, description: '<img src="bad" onerror="alert(1)">' });
   const f = fixture(async () => ({ status: "ok", plugins }));
-  await f.ui.load("public");
+  await f.ui.load("full");
   const html = () => f.nodes.get("[data-codex-plugin-results]").innerHTML;
   assert.equal((html().match(/role="listitem"/g) || []).length, 50);
   f.ui.state.page = 3; f.ui.render();
@@ -113,17 +109,17 @@ test("安装桥接超时后查询同一任务，重复点击不重新发起下�
     }
     throw new Error(`Unexpected route: ${path}`);
   });
-  await f.ui.load("public");
-  await f.ui.install("public", "one");
-  await f.ui.install("public", "one");
+  await f.ui.load("full");
+  await f.ui.install("full", "one");
+  await f.ui.install("full", "one");
   assert.equal(f.calls.filter((call) => call.path === "/plugin-market/install").length, 1);
-  assert.equal(f.ui.state.jobs["public:one"].busy, true);
+  assert.equal(f.ui.state.jobs["full:one"].busy, true);
   await f.runTimer();
-  assert.equal(f.ui.state.jobs["public:one"].busy, true);
+  assert.equal(f.ui.state.jobs["full:one"].busy, true);
   await f.runTimer();
-  assert.equal(f.ui.state.jobs["public:one"].busy, false);
-  assert.equal(f.ui.catalog("public").plugins[0].installed, true);
-  assert.match(f.ui.state.jobs["public:one"].message, /重启 Codex/);
+  assert.equal(f.ui.state.jobs["full:one"].busy, false);
+  assert.equal(f.ui.catalog("full").plugins[0].installed, true);
+  assert.match(f.ui.state.jobs["full:one"].message, /重启 Codex/);
   assert.equal(f.timers.size, 0);
 });
 
@@ -135,16 +131,16 @@ test("明确安装失败停止轮询，成功安装使旧清单响应失效", as
     if (path === "/plugin-market/list") return { status: "ok", plugins: [plugin("one")] };
     return fail ? { status: "failed", message: "哈希校验失败" } : { status: "ok", plugin: plugin("one", { installed: true }) };
   });
-  await f.ui.load("public");
-  await f.ui.install("public", "one");
-  assert.equal(f.ui.state.jobs["public:one"].busy, false);
-  assert.equal(f.ui.state.jobs["public:one"].failed, true);
+  await f.ui.load("full");
+  await f.ui.install("full", "one");
+  assert.equal(f.ui.state.jobs["full:one"].busy, false);
+  assert.equal(f.ui.state.jobs["full:one"].failed, true);
   assert.equal(f.timers.size, 0);
   fail = false;
-  const refresh = f.ui.load("public", true);
-  await f.ui.install("public", "one");
+  const refresh = f.ui.load("full", true);
+  await f.ui.install("full", "one");
   refreshResolve({ status: "ok", plugins: [plugin("one")] }); await refresh;
-  assert.equal(f.ui.catalog("public").plugins[0].installed, true);
+  assert.equal(f.ui.catalog("full").plugins[0].installed, true);
 });
 
 test("状态接口调用成功但 stage 为 failed 或未知时不能误报安装完成", async () => {
@@ -155,12 +151,12 @@ test("状态接口调用成功但 stage 为 failed 或未知时不能误报安�
   ]) {
     const f = fixture(async (path) => path === "/plugin-market/list" ? { status: "ok", plugins: [plugin("one")] }
       : path === "/plugin-market/install" ? { status: "failed", timeout: true } : result);
-    await f.ui.load("public");
-    await f.ui.install("public", "one");
+    await f.ui.load("full");
+    await f.ui.install("full", "one");
     await f.runTimer();
-    assert.equal(f.ui.state.jobs["public:one"].busy, false);
-    assert.equal(f.ui.state.jobs["public:one"].failed, true);
-    assert.equal(f.ui.catalog("public").plugins[0].installed, false);
+    assert.equal(f.ui.state.jobs["full:one"].busy, false);
+    assert.equal(f.ui.state.jobs["full:one"].failed, true);
+    assert.equal(f.ui.catalog("full").plugins[0].installed, false);
     assert.equal(f.timers.size, 0);
   }
 });
@@ -173,11 +169,6 @@ test("完整市场与公开市场同 id 的安装状态保持独立", async () =
   await f.ui.install("public", "one");
   assert.equal(f.ui.catalog("public").plugins[0].installed, true);
   assert.equal(f.ui.catalog("full").plugins[0].installed, false);
-  f.ui.state.source = "full"; f.ui.render();
-  assert.equal(f.nodes.get("[data-codex-plugin-source-note]").hidden, false);
-  assert.match(f.nodes.get("[data-codex-plugin-source-note]").textContent, /收录全部插件/);
-  f.ui.state.source = "public"; f.ui.render();
-  assert.equal(f.nodes.get("[data-codex-plugin-source-note]").hidden, true);
 });
 
 test("两个导航布局只保留原生插件入口，旧按钮清理、市场能力与第三方路由契约不变", () => {

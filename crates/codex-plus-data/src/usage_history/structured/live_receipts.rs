@@ -82,7 +82,10 @@ fn receipt_model_matches(receipt: &Receipt, actual: &str, record: &RequestEviden
         || codex_plus_core::aggregate_catalog::is_aggregate_model(model))
         && model != record.model
         && !(receipt.request_ids.contains(&record.id)
-            && receipt.request_signatures.get(&record.id) == Some(&request_signature(record)))
+            && receipt
+                .request_signatures
+                .get(&record.id)
+                .is_some_and(|saved| request_signature_matches(saved, record)))
     {
         return false;
     }
@@ -98,7 +101,10 @@ fn receipt_model_matches(receipt: &Receipt, actual: &str, record: &RequestEviden
         || (codex_plus_core::aggregate_catalog::is_aggregate_model(actual)
             && model == request_base_model(actual)
             && receipt.request_ids.contains(&record.id)
-            && receipt.request_signatures.get(&record.id) == Some(&request_signature(record)))
+            && receipt
+                .request_signatures
+                .get(&record.id)
+                .is_some_and(|saved| request_signature_matches(saved, record)))
 }
 
 pub(super) fn match_captured_receipts(
@@ -120,6 +126,12 @@ pub(super) fn match_captured_receipts(
         .collect();
     if receipts.is_empty() {
         return json!([]);
+    }
+    let mut saved_signatures: HashMap<&str, Vec<&str>> = HashMap::new();
+    for receipt in &receipts {
+        for (id, signature) in &receipt.request_signatures {
+            saved_signatures.entry(id).or_default().push(signature);
+        }
     }
     let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
     let Ok(cache) = provider_cache::ProviderCache::read_snapshot(storage, cutoff) else {
@@ -145,6 +157,7 @@ pub(super) fn match_captured_receipts(
         .iter()
         .map(|row| (row.id.clone(), row.clone()))
         .collect();
+    let mut revalidated_legacy = HashMap::new();
     let mut incomplete_sessions = HashSet::new();
     for (session, receipts) in targets {
         let since = receipts
@@ -197,8 +210,19 @@ pub(super) fn match_captured_receipts(
             }
         }
         for row in captured.into_iter().filter(|row| row.timestamp_ms >= floor) {
-            if observed.get(&row.id) == Some(&row) {
-                continue;
+            if let Some(prior) = observed.get(&row.id) {
+                if prior.same_request(&row) {
+                    if prior.relay_name != row.relay_name {
+                        if let Some(signatures) = saved_signatures.get(row.id.as_str()) {
+                            let legacy = legacy_request_signature(&row);
+                            if signatures.contains(&legacy.as_str()) {
+                                revalidated_legacy
+                                    .insert(row.id.clone(), (legacy, request_signature(&row)));
+                            }
+                        }
+                    }
+                    continue;
+                }
             }
             if combined.len() >= MAX_ROWS_CAPTURED_PROXY {
                 return json!([]);
@@ -215,8 +239,32 @@ pub(super) fn match_captured_receipts(
             row.success = false;
         }
     }
+    // 仅将原始缓存记录能核验的旧签名转换为不含显示名的新签名。
+    let mut normalized_input = None;
+    if !revalidated_legacy.is_empty() {
+        let mut normalized = input.clone();
+        for receipt in normalized.as_array_mut().unwrap() {
+            if let Some(signatures) = receipt
+                .get_mut("requestSignatures")
+                .and_then(Value::as_object_mut)
+            {
+                for (id, signature) in signatures {
+                    if let Some((legacy, current)) = revalidated_legacy.get(id) {
+                        if signature.as_str() == Some(legacy.as_str()) {
+                            *signature = json!(current);
+                        }
+                    }
+                }
+            }
+        }
+        normalized_input = Some(normalized);
+    }
     // 仍由同一匹配器检查签名、计数、完整竞争和双向唯一性。
-    let mut result = match_receipts(&combined, &combined_aliases, input);
+    let mut result = match_receipts(
+        &combined,
+        &combined_aliases,
+        normalized_input.as_ref().unwrap_or(input),
+    );
     let output = result.as_array_mut().unwrap();
     let incomplete: HashSet<_> = receipts
         .iter()
@@ -340,7 +388,7 @@ pub(super) fn match_receipts(
                     || receipt
                         .request_signatures
                         .get(id)
-                        .is_some_and(|saved| saved != &request_signature(record))
+                        .is_some_and(|saved| !request_signature_matches(saved, record))
                 {
                     rejected.insert(index);
                 }
@@ -522,8 +570,10 @@ pub(super) fn match_receipts(
                 && receipt.model == request_base_model(actual_model)
                 && candidate_ids.iter().all(|id| {
                     receipt.request_ids.contains(id)
-                        && receipt.request_signatures.get(id)
-                            == Some(&request_signature(ids[id.as_str()]))
+                        && receipt
+                            .request_signatures
+                            .get(id)
+                            .is_some_and(|saved| request_signature_matches(saved, ids[id.as_str()]))
                 }) {
                 receipt.model.as_str()
             } else {
@@ -533,7 +583,7 @@ pub(super) fn match_receipts(
                 "id":receipt.id,"sessionId":receipt.session_id,"timestamp":receipt.timestamp,
                 "input":delta.input,"output":delta.output,"cached":delta.cached,
                 "model":model,
-                "provider":record.relay_id,"providerName":record.relay_name,
+                "provider":record.relay_id,"providerName":record.provider_name(),
                 "requestIds":candidate_ids,
                 "requestSignatures":candidate_ids.iter().map(|id|
                     (id.clone(),request_signature(ids[id.as_str()]))).collect::<BTreeMap<_,_>>()
@@ -901,7 +951,17 @@ mod completion_lag_tests {
 }
 
 fn request_signature(record: &RequestEvidence) -> String {
-    // 只散列已脱敏的匹配字段，用于日志部分轮转后复核仍存在的单条请求。
-    let digest = Sha256::digest(serde_json::to_vec(record).unwrap_or_default());
+    let mut comparable = record.clone();
+    comparable.relay_name.clear();
+    legacy_request_signature(&comparable)
+}
+
+fn request_signature_matches(saved: &str, record: &RequestEvidence) -> bool {
+    saved == request_signature(record) || saved == legacy_request_signature(record)
+}
+
+fn legacy_request_signature(record: &RequestEvidence) -> String {
+    // 旧回执包含显示名，只能用仍可核对的原始记录验证。
+    let digest = Sha256::digest(serde_json::to_vec(record).expect("serialize request evidence"));
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }

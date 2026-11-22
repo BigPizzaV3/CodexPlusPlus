@@ -37,7 +37,20 @@ fn manager_repeated_launch_activates_existing_window() {
         .expect("read manager lib.rs");
 
     assert!(lib_rs.contains("focus_existing_manager_window();"));
-    assert!(lib_rs.contains("windows_activate_process_window"));
+    // 管理器二次启动只唤起可见窗口，隐藏/已销毁的主窗口交给请求文件，
+    // 不能用会 ShowWindow 隐藏窗口的版本，否则会翻出托盘快捷面板（issue #3223）。
+    assert!(lib_rs.contains("windows_activate_visible_process_window(process.process_id)"));
+    assert!(!lib_rs.contains("windows_activate_process_window("));
+    assert!(lib_rs.contains("window_activation_request_path()"));
+
+    // 启动器唤起 Codex 的行为不变：仍可显示隐藏的 Codex 窗口。
+    let launcher_rs = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../codex-plus-launcher/src/main.rs"
+    ))
+    .expect("read launcher main.rs");
+    assert!(launcher_rs.contains(".any(codex_plus_core::windows_activate_process_window)"));
+    assert!(!launcher_rs.contains("windows_activate_visible_process_window"));
 }
 
 #[test]
@@ -497,18 +510,6 @@ fn relay_preview_deduplicates_root_keys_when_merging_common_config() {
     assert!(app_tsx.contains("dedupeTomlRootLines"));
     assert!(app_tsx.contains("rootSeen.add(key)"));
     assert!(app_tsx.contains("joinTomlSectionsRootFirst"));
-}
-
-#[test]
-fn provider_presets_include_runapi() {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let presets = manifest_dir.parent().unwrap().join("src/presets.ts");
-    let presets = std::fs::read_to_string(&presets).expect("read manager presets.ts");
-
-    assert!(presets.contains("id: \"runapi\""));
-    assert!(presets.contains("name: \"RunAPI\""));
-    assert!(presets.contains("category: \"aggregator\""));
-    assert!(presets.contains("baseUrl: \"https://runapi.host/v1\""));
 }
 
 #[test]

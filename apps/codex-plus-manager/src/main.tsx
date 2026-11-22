@@ -14,6 +14,9 @@ import "./cx-pages-resources.css";
 import "./cx-pages-agents.css";
 import "./cx-pages-settings.css";
 import "./cx-tray.css";
+import "./display-preferences.css";
+import { loadDisplayPreferences } from "./display-preferences";
+import { applyManagerDisplay } from "./DisplaySettings";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
      Fontsource packages ship woff2 files that Vite bundles into dist/.
@@ -63,7 +66,12 @@ const app = document.getElementById("app");
 
 if (app instanceof HTMLElement) {
   // 只有主窗口去掉了系统标题栏；托盘面板、悬浮预览本来就没有标题栏。
-  if (window.location.hash !== "#tray-panel" && window.location.hash !== "#cu-pip") applyMacTitlebarClass();
+  if (window.location.hash !== "#tray-panel" && window.location.hash !== "#cu-pip") {
+    applyMacTitlebarClass();
+    const display = loadDisplayPreferences();
+    document.documentElement.dataset.managerDensity = display.density;
+    if (display.zoom !== 100) void applyManagerDisplay(display).catch(() => {});
+  }
   // 同一个前端也用于 Computer Use 的悬浮预览窗口（`#cu-pip`）和托盘快捷面板（`#tray-panel`）。
   createRoot(app).render(
     <StartupErrorBoundary>

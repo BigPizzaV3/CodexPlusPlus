@@ -26,9 +26,21 @@ const inlineFixtures = () => fixtures().map(({ key, source }) => {
   };
 });
 
+const providerAwareFixtures = () => inlineFixtures().map(({ key, source }) => ({
+  key,
+  source: source
+    .replace("readServiceTier(model)", "readServiceTier(thread)")
+    .replace("function(client,logger,model,eligible)", "function(client,logger,model,eligible,provider)")
+    .replace("manager.logger,model,async", "manager.logger,manager.getConversation(thread)?.latestModel||null,async")
+    .replace("})},async writeServiceTier", "},manager.getThreadModelProvider(thread))},async writeServiceTier")
+    .replace("readDefault(conversation?.latestModel||null)", "readDefault(conversation)")
+    .replace(/^(Request|Queue)\(/, "function("),
+}));
+
 function load(source, window, dependency) {
-  const key = source.slice(0, source.indexOf("("));
-  const factory = vm.runInNewContext(`({${source}})`, { window })[key];
+  const factory = source.startsWith("function(")
+    ? vm.runInNewContext(`(${source})`, { window })
+    : vm.runInNewContext(`({${source}})`, { window })[source.slice(0, source.indexOf("("))];
   const module = { exports: {} };
   factory(module, module.exports, dependency);
   return module.exports;
@@ -78,6 +90,22 @@ test("Rspack supports inlined gates and rejects ambiguity across old and new sha
   }
 });
 
+test("Rspack accepts mixed factory syntax and exact provider-aware queue bindings", () => {
+  const current = providerAwareFixtures();
+  const result = rspack.planFactories(current);
+  assert.equal(result.ok, true, JSON.stringify(result.diagnostics));
+  assert.deepEqual(Object.values(result.diagnostics.matches), [1, 1, 1, 1]);
+  for (const [before, after] of [
+    ["manager.getConversation(thread)", "manager.getConversation(other)"],
+    ["manager.getThreadModelProvider(thread)", "manager.getThreadModelProvider(other)"],
+    ["readDefault(conversation)", "readDefault(message)"],
+  ]) {
+    const changed = providerAwareFixtures();
+    changed[2].source = changed[2].source.replace(before, after);
+    assert.equal(rspack.planFactories(changed).diagnostics.reason, "incomplete-gates");
+  }
+});
+
 test("Rspack factory discovery keeps originals on re-prepare without executing modules", async () => {
   const source = 'const original=({UI(e,t){throw Error("readServiceTier must not execute")}}).UI;const replacement=({UI(e,t){throw Error("patched factory must not execute")}}).UI;replacement.__codexPlusNativeFastOriginal=original;export const __webpack_require__={m:{UI:replacement,ignored:()=>null}};';
   const found = await rspack.readFactories('data:text/javascript,' + encodeURIComponent(source), 1);
@@ -102,7 +130,7 @@ test("Rspack rejects invalid, shadowed and already patched factories", () => {
   }
 });
 
-for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFixtures]]) {
+for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFixtures], ["provider-aware", providerAwareFixtures]]) {
   test(`Rspack ${shape} UI and request access preserve auth, host and opt-in boundaries`, async () => {
     const factories = rspack.planFactories(makeFixtures()).factories;
     for (const enabled of [true, false]) for (const localApi of [true, false]) {
@@ -127,7 +155,12 @@ for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFix
     for (const enabled of [true, false]) for (const copilot of [true, false]) for (const host of ["local", "remote"]) {
       const queue = load(source, context(enabled), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
       let reads = 0;
-      const manager = { getHostId: () => host, getAccount: async () => { reads++; return { account: { type: "apiKey" } }; } };
+      const manager = {
+        getHostId: () => host,
+        getAccount: async () => { reads++; return { account: { type: "apiKey" } }; },
+        getConversation: () => ({ latestModel: "model" }),
+        getThreadModelProvider: () => "provider",
+      };
       const deps = { runtime: { isUsingCopilotInference: async () => copilot }, settings: { readPermissionRefreshEnabled: () => true } };
       const expected = enabled && host === "local" && !copilot;
       assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), expected ? "priority" : null);
@@ -143,7 +176,12 @@ for (const [shape, makeFixtures] of [["legacy", fixtures], ["inlined", inlineFix
     }
     const queue = load(source, context(true, true), { read: async (client, logger, model, eligible) => await eligible() ? "priority" : null });
     for (const auth of ["chatgpt", "amazonBedrock", null]) {
-      const manager = { getHostId: () => "local", getAccount: async () => ({ account: auth == null ? null : { type: auth } }) };
+      const manager = {
+        getHostId: () => "local",
+        getAccount: async () => ({ account: auth == null ? null : { type: auth } }),
+        getConversation: () => null,
+        getThreadModelProvider: () => "provider",
+      };
       const deps = { runtime: { isUsingCopilotInference: async () => false }, settings: { readPermissionRefreshEnabled: () => true } };
       assert.equal(await queue.defaults(manager, deps, () => {}).readServiceTier("model"), "priority");
       assert.equal(await queue.explicit(manager, deps, () => null)({}, { submissionOptions: { serviceTier: "priority" }, context: {} }), "priority");
@@ -180,6 +218,83 @@ test("Rspack registration replaces duplicate chunk factories without touching ot
   const replacement = require.m.UI;
   register({ __rspack_esm_ids: [2], __webpack_modules__: { UI: original } });
   assert.equal(require.m.UI, replacement);
+});
+
+test("Rspack registration compiles and installs anonymous factories by module key", () => {
+  const prepared = rspack.prepare(chunkSource, "app://-/assets/782259.abcdef.js",
+    providerAwareFixtures(), source => ({ source }), source => source);
+  assert.equal(prepared.ok, true, JSON.stringify(prepared.diagnostics));
+  const sandbox = { window: context() };
+  vm.runInNewContext(prepared.modules[0].patchedSource.replaceAll("export const ", "const ")
+    + ";globalThis.install=__rspack_esm_runtime", sandbox);
+  const require = { m: {} };
+  sandbox.install(require);
+  const original = function original() {};
+  require.m.Request = original;
+  assert.equal(require.m.Request.__codexPlusNativeFastOriginal, original);
+  assert.notEqual(require.m.Request, original);
+});
+
+test("Rspack response watchdog distinguishes executed, unexecuted and missing fulfilled chunks (#3224)", async () => {
+  const runtimeUrl = "app://-/assets/348410.abcdef.js";
+  const chunkUrl = "app://-/assets/782259.abcdef.js";
+  const page = async () => {
+    const window = context();
+    const timers = new Map();
+    let next = 0;
+    let domReady = null;
+    window.document = {
+      readyState: "loading",
+      addEventListener: (type, listener) => { if (type === "DOMContentLoaded") domReady = listener; },
+      removeEventListener: (type, listener) => { if (domReady === listener) domReady = null; },
+    };
+    window.setTimeout = (callback, delay) => { timers.set(++next, { callback, delay }); return next; };
+    window.clearTimeout = id => timers.delete(id);
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, "native-fast-rspack.js"), "utf8"), { window, Error, URL });
+    const api = window.__codexPlusNativeFastUnlock;
+    const prepared = await api.prepareDocumentModules({
+      location: new URL("app://-/index.html"), document: { scripts: [{ src: runtimeUrl }] },
+      fetchText: async value => value === runtimeUrl ? runtimeSource : chunkSource, readRspackFactories: async () => fixtures(),
+    });
+    assert.equal(prepared.ok, true, JSON.stringify(prepared.diagnostics));
+    // 新文档：bootstrap 置 armed，Rust 登记的脚本再装守护。
+    window.__codexPlusNativeFastPatchState = "armed";
+    assert.equal(api.armResponseModule({ url: chunkUrl, rewriters: prepared.diagnostics.rewriters }).ok, true);
+    const fulfill = () => {
+      const sandbox = { window };
+      vm.runInNewContext(prepared.modules[0].patchedSource.replaceAll("export const ", "const ")
+        + ";globalThis.install=__rspack_esm_runtime", sandbox);
+      return sandbox.install;
+    };
+    const expire = () => { domReady?.(); for (const [id, timer] of [...timers]) { timers.delete(id); timer.callback(); } };
+    return { window, timers, fulfill, expire, domReady: () => domReady?.() };
+  };
+
+  const patched = await page();
+  const install = patched.fulfill();
+  assert.equal(patched.window.__codexPlusNativeFastResponseLoaded, chunkUrl, "分块求值即记下回填地址");
+  assert.equal(patched.window.__codexPlusNativeFastCompiled, undefined);
+  install({ m: {} });
+  assert.equal(patched.window.__codexPlusNativeFastCompiled, "v1");
+  assert.equal(patched.window.__codexPlusNativeFastPatchState, "patched");
+  patched.domReady();
+  assert.equal(patched.timers.size, 0, "补丁执行后不再计时");
+  patched.expire();
+  assert.equal(patched.window.__codexPlusNativeFastPatchState, "patched");
+
+  const unexecuted = await page();
+  unexecuted.fulfill();
+  unexecuted.domReady();
+  assert.equal([...unexecuted.timers.values()][0].delay, 30000);
+  unexecuted.expire();
+  assert.equal(unexecuted.window.__codexPlusNativeFastPatchState, "failed");
+  assert.equal(unexecuted.window.__codexPlusNativeFastFailureReason, "module-execution-timeout");
+
+  const missing = await page();
+  missing.expire();
+  assert.equal(missing.window.__codexPlusNativeFastPatchState, "failed");
+  assert.equal(missing.window.__codexPlusNativeFastFailureReason, "response-not-intercepted");
+  assert.equal(missing.window.__codexPlusNativeFastModuleDiagnostics.reason, "response-not-intercepted");
 });
 
 test("Rspack runtime preparation fails closed on missing or ambiguous registration", () => {

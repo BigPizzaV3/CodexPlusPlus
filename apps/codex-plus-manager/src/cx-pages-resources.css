@@ -537,6 +537,18 @@
   white-space: nowrap;
 }
 
+/* 项目小标题右侧的「重新定位目录」：平时是淡色的小图标，悬停才明显。 */
+:root .shell .cx-session-group-head .cx-session-relocate {
+  width: 26px;
+  height: 26px;
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .cx-session-group-head .cx-session-relocate:hover {
+  color: hsl(var(--foreground));
+}
+
 :root .shell .cx-session-pagination {
   display: flex;
   align-items: center;

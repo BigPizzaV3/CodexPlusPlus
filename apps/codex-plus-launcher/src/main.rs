@@ -1077,8 +1077,11 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             &codex_plus_core::launcher::LaunchInstance::from_options(&options),
         )
         .await;
-    // 复用后台服务也属于用户主动启动；已有资源补丁由原服务持有，
-    // 这里只执行与完整启动相同的首次应用检查，不能重新创建 helper 或 watchdog。
+    if settings.enhancements_enabled && let Ok(launch) = &launch_result {
+        anyhow::ensure!(codex_plus_core::ports::can_connect_loopback_port(options.helper_port),
+            "Codex 已打开，原后台增强服务不可用，请重启 Codex++ 后重试。");
+        wait_for_existing_bridge(launch.debug_port().unwrap_or(options.debug_port)).await?;
+    }
     if settings.enhancements_enabled
         && (settings.codex_app_native_fast_unlock || settings.codex_app_native_predictions)
         && let Ok(launch) = &launch_result
@@ -1123,6 +1126,19 @@ fn should_finalize_pending_remote_control_recovery(
     blocking_process_ids: &[u32],
 ) -> bool {
     has_pending_recovery && blocking_process_ids.is_empty()
+}
+
+async fn wait_for_existing_bridge(debug_port: u16) -> anyhow::Result<()> {
+    let wait = async {
+        loop {
+            if codex_plus_core::launcher::bridge_health_ok(debug_port).await.unwrap_or(false) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(20), wait).await
+        .context("Codex 已打开，但后台增强桥接尚未恢复。请稍后重试，或重启持有该实例的 Codex++。")
 }
 
 fn log_launcher_already_running(debug_port: u16) {
@@ -1478,7 +1494,7 @@ impl LaunchHooks for LauncherHooks {
         helper_port: u16,
         ctx: BridgeContext,
     ) -> anyhow::Result<()> {
-        inject_with_context(debug_port, helper_port, ctx, self.runtime.clone()).await
+        try_inject_with_context(debug_port, helper_port, ctx, self.runtime.clone()).await
     }
 
     async fn inject(&self, debug_port: u16, helper_port: u16) -> anyhow::Result<()> {

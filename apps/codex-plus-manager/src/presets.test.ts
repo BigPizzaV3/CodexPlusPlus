@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, it, test } from "node:test";
-import { PRESETS } from "./presets.ts";
+import { PRESETS, sponsorPresets } from "./presets.ts";
 
 describe("provider presets", () => {
   it("keeps MiniMax China and global credentials in separate presets", () => {
@@ -46,10 +46,57 @@ test("expired GrooRoute sponsor preset is removed", () => {
   assert.equal(PRESETS.some((candidate) => candidate.id === "grooroute"), false);
 });
 
-test("RunAPI preset uses the current v1 Base URL", () => {
-  const preset = PRESETS.find((candidate) => candidate.id === "runapi");
-  assert.ok(preset);
-  assert.equal(preset.baseUrl, "https://runapi.host/v1");
-  assert.equal(preset.protocol, "responses");
+test("sponsor presets are not built in", () => {
+  for (const id of ["jojocode-max", "runapi", "apikeyfun", "cccccc-api", "tokenmy", "vegaapi"]) {
+    assert.equal(PRESETS.some((candidate) => candidate.id === id), false, id);
+  }
 });
+});
+
+describe("sponsor presets from the remote ad list", () => {
+  const ad = (id: string, preset: unknown, extra: Record<string, unknown> = {}) => ({
+    id: `${id}-ad`, type: "sponsor", title: id, description: "d", url: "https://example.test", preset, ...extra,
+  });
+  const preset = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, name: id.toUpperCase(), baseUrl: `https://${id}.example/v1`, protocol: "responses", model: "", ...extra,
+  });
+
+  it("returns nothing when the list did not load", () => {
+    assert.deepEqual(sponsorPresets(null), []);
+    assert.deepEqual(sponsorPresets({ ads: [] }), []);
+  });
+
+  it("reads the preset of each sponsor ad, top slots first, as an aggregator preset", () => {
+    const presets = sponsorPresets({
+      topAds: [ad("jojo", preset("jojocode-max", { websiteUrl: "https://max2.jojocode.com/" }))],
+      ads: [
+        ad("apikey", preset("apikeyfun", { model: "gpt-5.5", modelList: ["gpt-5.5", " ", 3], apiKeyUrl: "javascript:alert(1)" })),
+        ad("plain", undefined),
+        ad("jojo-again", preset("jojocode-max")),
+        { ...ad("normal", preset("normal")), type: "normal" },
+      ],
+    });
+    assert.deepEqual(presets, [
+      { id: "jojocode-max", name: "JOJOCODE-MAX", websiteUrl: "https://max2.jojocode.com/", category: "aggregator", baseUrl: "https://jojocode-max.example/v1", protocol: "responses", model: "" },
+      { id: "apikeyfun", name: "APIKEYFUN", category: "aggregator", baseUrl: "https://apikeyfun.example/v1", protocol: "responses", model: "gpt-5.5", modelList: ["gpt-5.5"] },
+    ]);
+  });
+
+  it("drops presets with a bad address or protocol", () => {
+    const presets = sponsorPresets({
+      ads: [
+        ad("a", preset("a", { baseUrl: "javascript:alert(1)" })),
+        ad("b", preset("b", { protocol: "anthropicMessages" })),
+        ad("c", preset("c", { name: " " })),
+        ad("d", preset("d", { protocol: "chatCompletions" })),
+      ],
+    });
+    assert.deepEqual(presets.map((item) => [item.id, item.protocol]), [["d", "chatCompletions"]]);
+  });
+
+  it("keeps a sponsor through its expiry day and drops it the day after", () => {
+    const payload = { ads: [ad("apikey", preset("apikeyfun"), { expires_at: "2026-12-22" })] };
+    assert.equal(sponsorPresets(payload, new Date(2026, 11, 22, 23, 59)).length, 1);
+    assert.equal(sponsorPresets(payload, new Date(2026, 11, 23)).length, 0);
+  });
 });

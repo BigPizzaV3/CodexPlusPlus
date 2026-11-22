@@ -10,6 +10,7 @@ test("completion notice never reports pending or stale launch as successful", ()
   }
   assert.equal(launchCompletionNotice({ status: "failed", message: "failure", started_at_ms: 101 }, 100).message, "failure");
   assert.equal(launchCompletionNotice({ status: "running", message: "ready", started_at_ms: 101 }, 100).status, "ok");
+  assert.equal(launchCompletionNotice({ status: "running_degraded", message: "waiting", started_at_ms: 101 }, 100).status, "accepted");
 });
 
 test("launch status ignores a terminal result from an older request", () => {

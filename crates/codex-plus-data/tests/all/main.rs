@@ -5,6 +5,7 @@
 mod deletion_blob_backup;
 mod markdown;
 mod provider_sync;
+mod session_relocate;
 mod storage_adapter;
 mod storage_safety_regressions;
 mod usage_candidate_db;

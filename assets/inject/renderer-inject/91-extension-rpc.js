@@ -15,20 +15,23 @@
    * capnweb 的 import id 按 push 顺序隐式分配，所以改写 push 时后面的帧必须按原顺序发出。
    * 本地上下文刷新单独等待 resolve，允许它的预检请求通过；没有拓展或上下文刷新时同步放行。
    *
+   * 插件请求（`plugin/*`）也只走这里：插件市场适配层（62）按请求给出「自己作答」或「在原生结果上补条目」，
+   * 本层负责把回包对上号、摘下来、改好再投回（见 codexPlusRpcNoteFrame / codexPlusRpcAnswerIncoming）。
+   *
    * 语义（`ctx.on(name, async (params, next) => …)`，先 `await next()` 拿下游决定再改）：
    *   - `agent/pre-step`：params `{ agent, turn, step, messages, signal }`，决定是
    *     `{ kind: "enter", messages }` 或 `{ kind: "reject", reason? }`。拒绝时这一轮不发出。
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 19;
+  const codexPlusRpcInterceptorVersion = 21;
   const codexPlusRpcMiddlewareTimeoutMs = (typeof codexPlusRpcMiddlewareTimeoutMsOverride === "number"
     && codexPlusRpcMiddlewareTimeoutMsOverride > 0)
     ? codexPlusRpcMiddlewareTimeoutMsOverride : 5000;
   const codexPlusRpcPreparationTimeoutMs = 120000;
   const codexPlusRpcOpaque = Symbol("codexPlusRpcOpaque");
   const codexPlusRpcSourceItem = Symbol("codexPlusRpcSourceItem");
-  const codexPlusRpcPushFailure = Symbol("codexPlusRpcPushFailure");
+  const codexPlusRpcPushFailure = window.__codexPlusRpcFrameInterceptor?.pushFailure || Symbol("codexPlusRpcPushFailure");
   const codexPlusRpcPortQueues = new WeakMap();
   const codexPlusRpcRejectionPorts = window.__codexPlusRpcRejectionPorts ||= new WeakMap();
   const codexPlusRpcCreationFailures = window.__codexPlusRpcCreationFailures ||= new WeakMap();
@@ -38,6 +41,10 @@
   const codexPlusRpcHostReceivers = window.__codexPlusRpcHostReceivers
     ||= new WeakMap();
   const codexPlusRpcTurnPreparations = window.__codexPlusRpcTurnPreparations ||= new Map();
+  // 每个端口的 push 计数与待处理的回包；frames 记下要由本层作答的 push（planFrame 可能对同一帧调用多次）。
+  const codexPlusRpcAnswers = window.__codexPlusRpcAnswers ||= { trackers: new WeakMap(), frames: new WeakMap(), seq: 0 };
+  const codexPlusRpcAnswerTimeoutMs = 15_000;
+  const codexPlusRpcAnswerPendingMs = 90_000;
 
   async function codexPlusRpcSerializeTurn(threadId, prepare) {
     if (typeof threadId !== "string" || !threadId) return prepare();
@@ -267,7 +274,16 @@
 
   function codexPlusRpcRejectNotice(reason) {
     try {
-      if (typeof showToast === "function") showToast(reason, { type: "warn" });
+      if (typeof showToast !== "function") return;
+      const options = { type: "warn" };
+      if (String(reason).includes("Provider sync recovery is pending:")) {
+        options.actionLabel = "打开会话维护";
+        options.onAction = async () => {
+          const result = await postJson("/manager/open", { page: "sessions" });
+          if (result?.status !== "ok") throw new Error(result?.message || "打开管理器失败");
+        };
+      }
+      showToast(reason, options);
     } catch {}
   }
 
@@ -275,6 +291,105 @@
     const rejected = [...frame];
     rejected[codexPlusRpcPushFailure] = ["error", "Error", reason];
     return rejected;
+  }
+
+  /**
+   * 回包对号。capnweb 的回包只带 import 序号，序号由对端按 push 顺序隐式分配，帧里看不到，
+   * 注入又可能晚于会话开始。所以每个端口从接管起数 push（count），再用看得见的序号校准起点（base）：
+   * 页面 pull 的、对端 resolve / reject 的序号都不会超过「起点 + 已发 push 数」，取这些下界里最大的。
+   * 页面 await 一次调用就会 pull 刚发的那个 push，所以起点很快就是准的，之后一直准。
+   */
+  function codexPlusRpcCalibrate(tracker, id) {
+    if (!Number.isInteger(id) || id <= 0) return;
+    const base = id - tracker.count;
+    if (tracker.base === null || base > tracker.base) tracker.base = base;
+  }
+
+  /** 页面每发一帧调用一次（排队后重放的帧不再经过这里）：数 push、校准序号、登记要处理的插件请求。 */
+  function codexPlusRpcNoteFrame(frame, port) {
+    if (!Array.isArray(frame) || (frame[0] !== "push" && frame[0] !== "pull")) return;
+    let tracker = codexPlusRpcAnswers.trackers.get(port);
+    if (!tracker) {
+      tracker = { count: 0, base: null, requests: new Map(), markers: new Map() };
+      codexPlusRpcAnswers.trackers.set(port, tracker);
+    }
+    if (frame[0] === "pull") {
+      codexPlusRpcCalibrate(tracker, frame[1]);
+      return;
+    }
+    const ordinal = ++tracker.count;
+    const expr = frame[1];
+    if (typeof codexPlusPluginNativeRpcHandler !== "function" || !Array.isArray(expr) || expr[0] !== "pipeline"
+        || !Array.isArray(expr[2]) || expr[2].length !== 1 || expr[2][0] !== "sendRequest" || !Array.isArray(expr[3])
+        || typeof expr[3][0] !== "string" || !expr[3][0].startsWith("plugin/")) return;
+    const handler = codexPlusPluginNativeRpcHandler(expr[3][0], codexPlusRpcDecode(expr[3][1]),
+      codexPlusRpcReceiverHost(port, expr));
+    if (!handler) return;
+    const now = Date.now();
+    // 回包一直没来的登记项顺手清掉，不另起定时器。
+    for (const [key, item] of tracker.requests) {
+      if (now - item.at < codexPlusRpcAnswerPendingMs) continue;
+      tracker.requests.delete(key);
+      if (item.marker) tracker.markers.delete(item.marker);
+    }
+    const entry = { ordinal, handler, at: now };
+    if (handler.answer) {
+      // 拒绝理由会原样出现在对端的 reject 里，用它认回包，不依赖序号。
+      entry.marker = `Codex++ answers ${expr[3][0]} itself (#${++codexPlusRpcAnswers.seq})`;
+      entry.outcome = Promise.resolve().then(handler.answer).then((result) => ({ result }), (error) => ({ error }));
+      tracker.markers.set(entry.marker, entry);
+      codexPlusRpcAnswers.frames.set(frame, entry.marker);
+    }
+    tracker.requests.set(ordinal, entry);
+  }
+
+  /**
+   * 对端回包先过这里。命中登记的请求时把这一帧摘下来（换成协议空操作），等适配层给出结果后
+   * 向同一端口投一帧 resolve / reject。补条目限时，超时或出错把原帧原样投回，不能让页面的请求一直挂着。
+   */
+  function codexPlusRpcAnswerIncoming(port, frame) {
+    if (!Array.isArray(frame) || (frame[0] !== "resolve" && frame[0] !== "reject")
+        || !Number.isInteger(frame[1]) || frame[1] <= 0) return null;
+    const tracker = codexPlusRpcAnswers.trackers.get(port);
+    if (!tracker) return null;
+    codexPlusRpcCalibrate(tracker, frame[1]);
+    if (!tracker.requests.size) return null;
+    const rejected = frame[0] === "reject";
+    const message = rejected && Array.isArray(frame[2]) && frame[2][0] === "error" ? String(frame[2][2] ?? "") : "";
+    let entry = rejected ? tracker.markers.get(message) : null;
+    if (entry) tracker.base = frame[1] - entry.ordinal;
+    else entry = tracker.requests.get(frame[1] - tracker.base);
+    if (!entry) return null;
+    tracker.requests.delete(entry.ordinal);
+    if (entry.marker) tracker.markers.delete(entry.marker);
+    let pending;
+    if (entry.outcome) {
+      // 自己作答的请求在对端一定被拒；收到 resolve 说明对错了号，不动它。
+      if (!rejected) return null;
+      pending = entry.outcome.then(({ result, error }) => (error
+        ? ["reject", frame[1], ["error", "Error", String(error?.message || error)]]
+        : ["resolve", frame[1], codexPlusRpcEncode(result)]));
+    } else {
+      let extended = null;
+      try {
+        extended = rejected ? entry.handler.extend(undefined, message) : entry.handler.extend(codexPlusRpcDecode(frame[2]));
+      } catch {}
+      if (!extended) return null;
+      let timer = null;
+      pending = Promise.race([
+        Promise.resolve(extended).then((result) => ["resolve", frame[1], codexPlusRpcEncode(result)]),
+        new Promise((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("回包处理超时")), codexPlusRpcAnswerTimeoutMs);
+        }),
+      ]).finally(() => clearTimeout(timer));
+    }
+    void pending.catch((error) => {
+      codexPlusMarkExtensionFailure("", `rpc 回包处理失败，已原样转发：${String(error?.message || error)}`);
+      return frame;
+    }).then((next) => port.dispatchEvent(new MessageEvent("message", { data: next })))
+      .catch((error) => codexPlusMarkExtensionFailure("", `rpc 回包投递失败：${String(error?.message || error)}`));
+    // 未知 import 的 resolve 是协议空操作；正半整数不属于任何原生或本层编号。
+    return ["resolve", 0.5, ["undefined"]];
   }
 
   /**
@@ -617,6 +732,9 @@
       }
       const hostId = codexPlusRpcReceiverHost(port, expr);
       if (expr[2][0] === "sendRequest") {
+        // 由本层作答的请求不交给对端执行：让它带着拒绝理由被拒，回包到了再换成我们的结果。
+        const answered = codexPlusRpcAnswers.frames.get(frame);
+        if (answered) return async () => codexPlusRpcRejectPush(frame, answered);
         return codexPlusRpcPlanResume(frame, hostId, codexPlusRpcPlanSendRequest(frame, hostId));
       }
       if (["resumeConversation", "resumeThread"].includes(expr[2][0])) {
@@ -682,6 +800,8 @@
   }
 
   function codexPlusRpcIncomingFrame(port, incoming) {
+    const answered = codexPlusRpcAnswerIncoming(port, incoming);
+    if (answered) return answered;
     const creation = codexPlusRpcCreationFailures.get(port);
     const rejections = codexPlusRpcRejectionPorts.get(port);
     const gates = codexPlusRpcResumeGates.get(port);
@@ -837,7 +957,7 @@
         if (!queued) break;
         let nextPlan = null;
         try {
-          nextPlan = codexPlusRpcPlanFrame(queued[0], port);
+          nextPlan = window.__codexPlusRpcFrameInterceptor.planFrame(queued[0], port);
         } catch {}
         entry = [queued[0], queued[1], nextPlan];
       }
@@ -851,10 +971,15 @@
     const proto = window.MessagePort?.prototype;
     if (!proto || typeof proto.postMessage !== "function") return false;
     const installed = window.__codexPlusRpcFrameInterceptor;
-    if (installed?.version >= codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) return true;
+    if (installed?.version > codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) return true;
+    window.__codexPlusRpcIncomingFrame = codexPlusRpcIncomingFrame;
+    if (installed?.version === codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) {
+      installed.planFrame = codexPlusRpcPlanFrame;
+      installed.noteFrame = codexPlusRpcNoteFrame;
+      return true;
+    }
     // 重复注入时包原生的那个，不叠层。
     const original = installed?.original || proto.postMessage;
-    window.__codexPlusRpcIncomingFrame = codexPlusRpcIncomingFrame;
     const eventProto = window.MessageEvent?.prototype;
     if (eventProto && !window.__codexPlusRpcMessageData) {
       const descriptor = Object.getOwnPropertyDescriptor(eventProto, "data");
@@ -880,13 +1005,19 @@
       const state = codexPlusRpcPortQueues.get(this);
       let plan = null;
       try {
-        plan = codexPlusRpcPlanFrame(message, this);
+        window.__codexPlusRpcFrameInterceptor.noteFrame(message, this);
+      } catch {}
+      try {
+        plan = window.__codexPlusRpcFrameInterceptor.planFrame(message, this);
       } catch {}
       // resolve 不分配隐式 RPC 序号。单独等待它，预检发出的请求才能通过同一端口。
       if (message?.[0] === "resolve" && plan?.context && !plan.before) {
         const port = this;
         void (async () => {
-          if (state) await state.done;
+          if (state) {
+            await state.done;
+            return proto.postMessage.call(port, message, ...rest);
+          }
           const replaced = await codexPlusRpcRunPlan(plan, message);
           original.call(port, replaced || message, ...rest);
         })().catch((error) => {
@@ -903,7 +1034,8 @@
       return undefined;
     };
     proto.postMessage = patched;
-    window.__codexPlusRpcFrameInterceptor = { version: codexPlusRpcInterceptorVersion, original, patched };
+    window.__codexPlusRpcFrameInterceptor = { version: codexPlusRpcInterceptorVersion, original, patched,
+      planFrame: codexPlusRpcPlanFrame, noteFrame: codexPlusRpcNoteFrame, pushFailure: codexPlusRpcPushFailure };
     return true;
   }
 

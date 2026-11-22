@@ -155,9 +155,26 @@ pub trait Subscription: Send + Sync {
         credentials: &Value,
     ) -> anyhow::Result<Option<Value>>;
 
-    /// 这个账号能用的模型（订阅自己的模型名）。
+    /// 这个账号能用的模型（订阅自己的模型名）。拉不到时可以用内置的默认列表兜底：
+    /// 登录、本机适配入口的 `/models` 用它，要的是「总有模型可用」。
     async fn models(&self, http: &reqwest::Client, credentials: &Value)
     -> anyhow::Result<Vec<String>>;
+
+    /// 照实向上游拉这个账号的模型列表，拉不到就报错，不拿默认列表冒充上游结果（#3221）。
+    /// 「从上游同步」和后台的新模型检查用它：失败时用户的列表保持不变，并能看到原因。
+    ///
+    /// 默认实现：这家没有可查询的模型列表接口，直接报错。
+    async fn list_models(
+        &self,
+        http: &reqwest::Client,
+        credentials: &Value,
+    ) -> anyhow::Result<Vec<String>> {
+        let _ = (http, credentials);
+        anyhow::bail!(
+            "{} 没有可查询的模型列表接口，模型列表保持不变，需要时请手动编辑",
+            self.name()
+        )
+    }
 
     /// 发一个 Chat Completions 请求（`stream` 总是 true；`model` 是订阅自己的模型名），
     /// 返回 Chat SSE。出错时用 [`fail`] 带上状态码。
@@ -264,6 +281,25 @@ pub fn kind_of(relay: &RelayProfile) -> Option<(&'static dyn Subscription, Value
     let item = get(kind.strip_prefix(KIND_PREFIX)?)?;
     let credentials = value.get("credentials").cloned().unwrap_or(Value::Null);
     Some((item, credentials))
+}
+
+/// 宽松版模型列表的兜底：照实拉取（[`Subscription::list_models`]）失败或为空时用 `fallback`，
+/// 并记一条诊断日志，免得默认列表悄悄顶替了上游结果却无从查起（#3221）。
+pub fn models_or_fallback(
+    kind: &str,
+    fetched: anyhow::Result<Vec<String>>,
+    fallback: impl FnOnce() -> Vec<String>,
+) -> Vec<String> {
+    let error = match fetched {
+        Ok(models) if !models.is_empty() => return models,
+        Ok(_) => "上游没有返回模型".to_string(),
+        Err(error) => format!("{error:#}"),
+    };
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "gateway.subscription_models_fallback",
+        json!({ "kind": kind, "error": error }),
+    );
+    fallback()
 }
 
 /// 登录得到的供应商（还没进池；进池由命令层按账号去重后添加）。

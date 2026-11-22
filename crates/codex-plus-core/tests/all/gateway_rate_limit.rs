@@ -349,6 +349,50 @@ async fn long_cooling_still_answers_locally_without_hitting_upstream() {
     assert_eq!(seen.lock().unwrap().len(), 1);
 }
 
+/// 一个模型 429 只冷却这个模型（#3229）：同一个 Key 下其它模型的请求照常发到上游，
+/// 不被网关本地回 `gateway_keys_cooling`；被本地拦下的请求也记下本来要发给哪家、哪个模型。
+#[tokio::test]
+async fn rate_limit_on_one_model_does_not_block_other_models_on_the_same_key() {
+    let (base, seen) = mock_upstream(Arc::new(|_, hit| {
+        if hit == 1 {
+            rate_limited(&[("retry-after", "120")])
+        } else {
+            ok()
+        }
+    }))
+    .await;
+    let mut provider = provider("rl-per-model", &base, &["a"]);
+    provider.relay.model_list = "rl-model\nrl-other".to_string();
+    let gateway = gateway(vec![provider]);
+    let first = send(&BackendSettings::default(), &plan(&gateway)).await;
+    assert_eq!(status(&first), Some(429));
+    assert!(cooling_ms("rl-per-model").is_some(), "界面上照旧显示 Key 冷却中");
+
+    // 同一个模型：仍在冷却，本地回 429、不打上游，但请求日志里有供应商和上游模型。
+    let cooled = plan(&gateway);
+    assert!(cooled.candidates.is_empty());
+    let local = send(&BackendSettings::default(), &cooled).await;
+    assert!(matches!(local.upstream, GatewayUpstream::Cooling(_)));
+    assert_eq!(local.trace.attempts, 0, "请求没发出去");
+    assert_eq!(local.trace.relay_id, "rl-per-model");
+    assert_eq!(local.trace.relay_name, "rl-per-model");
+    assert_eq!(local.trace.upstream_model, "rl-model");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    // 同一个 Key 的另一个模型：照常是候选，发到上游并成功。
+    let other = route::resolve_plan(&gateway, &ToolId::Claude, "rl-other", None).unwrap();
+    assert_eq!(other.candidates.len(), 1, "别的模型不受冷却影响");
+    assert_eq!(other.candidates[0].upstream_model, "rl-other");
+    assert_eq!(other.cooling, None);
+    let answered = send(&BackendSettings::default(), &other).await;
+    assert_eq!(status(&answered), Some(200));
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    // 另一个模型成功不解除被限流模型的冷却。
+    assert!(plan(&gateway).candidates.is_empty());
+    key_pool::reset("rl-per-model");
+    assert_eq!(plan(&gateway).candidates.len(), 1, "重置后恢复");
+}
+
 /// 只有一家供应商时熔断不拦请求：连续 5xx 后下一次照样发给它（半开），成功即恢复。
 #[tokio::test]
 async fn breaker_does_not_block_the_only_provider() {

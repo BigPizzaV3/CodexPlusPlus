@@ -34,6 +34,7 @@ export type PopoverLayout = {
 export type PopoverLayoutInput = {
   trigger: PopoverRect;
   viewport: PopoverViewport;
+  rootZoom?: number;
   /** 菜单内容自然高度（滚动高度），0 表示还没量到。 */
   menuHeight: number;
   align?: PopoverAlign;
@@ -67,6 +68,7 @@ function clamp(value: number, min: number, max: number) {
 export function resolvePopoverLayout({
   trigger,
   viewport,
+  rootZoom = 1,
   menuHeight,
   align = "start",
   menuWidth,
@@ -75,6 +77,14 @@ export function resolvePopoverLayout({
   gap = POPOVER_DEFAULT_GAP,
   edge = POPOVER_DEFAULT_EDGE,
 }: PopoverLayoutInput): PopoverLayout {
+  if (Number.isFinite(rootZoom) && rootZoom > 0 && rootZoom !== 1) {
+    trigger = {
+      top: trigger.top / rootZoom, bottom: trigger.bottom / rootZoom,
+      left: trigger.left / rootZoom, right: trigger.right / rootZoom,
+      width: trigger.width / rootZoom, height: trigger.height / rootZoom,
+    };
+    viewport = { width: viewport.width / rootZoom, height: viewport.height / rootZoom };
+  }
   const usableWidth = Math.max(0, viewport.width - edge * 2);
   const desiredWidth = Math.max(minWidth, menuWidth ?? trigger.width);
   const width = Math.round(clamp(desiredWidth, 0, usableWidth));

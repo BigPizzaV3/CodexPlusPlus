@@ -44,6 +44,7 @@ pub mod disclaimed_spawn;
 pub mod connect;
 pub(crate) mod context_usage;
 pub mod diagnostic_log;
+pub mod diagnostic_redaction;
 pub mod dictation;
 pub mod dream_skin;
 pub mod dream_skin_community;
@@ -105,6 +106,7 @@ pub(crate) mod responses_exec_transport;
 pub(crate) mod rollout_file;
 pub mod routes;
 pub mod script_market;
+pub mod session_names;
 pub mod side_chat;
 pub mod session_tuning;
 pub mod settings;
@@ -160,6 +162,12 @@ pub fn windows_open_url(url: &str) -> anyhow::Result<()> {
 #[cfg(windows)]
 pub fn windows_activate_process_window(process_id: u32) -> bool {
     windows_integration::activate_process_window(process_id)
+}
+
+/// 只唤起已显示（含最小化）的窗口，不把隐藏窗口翻出来（管理器二次启动用，issue #3223）。
+#[cfg(windows)]
+pub fn windows_activate_visible_process_window(process_id: u32) -> bool {
+    windows_integration::activate_visible_process_window(process_id)
 }
 
 /// 设置 Codex++ 任务栏分组、名称和重启入口，保留 Codex 自己的图标。

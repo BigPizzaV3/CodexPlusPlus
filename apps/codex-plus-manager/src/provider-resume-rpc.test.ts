@@ -294,7 +294,7 @@ describe("provider resume RPC gate without context helpers", () => {
     env.state.bridgeFailure = "";
     env.window.__codexPlusRpcFrameInterceptor.version = 11;
     env.install();
-    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 19);
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 21);
     assert.equal(env.window.__codexPlusRpcFrameInterceptor.original, original);
     env.port.postMessage(frame);
     await env.settle();

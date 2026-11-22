@@ -392,6 +392,15 @@
         errors.push(`${assetPrefix}: ${error?.message || String(error)}`);
       }
     }
+    for (const { src } of document.querySelectorAll('script[type="module"][src]')) {
+      if (!/^app:\/\/-\/assets\/\d+\.[a-f\d]+\.js$/.test(src)) continue;
+      const { __webpack_require__: runtime } = await import(src);
+      for (const { exports } of Object.values(runtime?.c || {})) {
+        if (!exports || !Object.hasOwn(exports, "appServices") || !Object.hasOwn(exports, "setAppServices")) continue;
+        const services = exports.appServices;
+        if (typeof services?.settings?.readAll === "function" && typeof services.settings.write === "function") return services;
+      }
+    }
     throw new Error(`Codex 宿主服务不可用 (${errors.join("; ")})`);
   }
 

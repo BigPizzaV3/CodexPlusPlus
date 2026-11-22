@@ -32,6 +32,7 @@ const formatHelpers = transpile([
   functionSource(gatewayModel, "trimNumber"),
   functionSource(gatewayModel, "formatTokens"),
   functionSource(app, "formatContextWindow"),
+  functionSource(app, "claudeTemplateLabel"),
 ].join("\n"));
 
 type Element = { type: string; props: Record<string, any> };
@@ -685,6 +686,80 @@ test("完整功能模式的五项能力分别保存，不修改补丁版开关�
   }
   assert.equal(screen.calls.length, 5);
   assert.equal(screen.calls.some((call) => /permission|computer_use|claude_localization/.test(call.command)), false);
+});
+
+test("Cowork、合并式主页、界面版本：按后端默认值显示，各自保存；3p 模式下不显示", async () => {
+  const templates = [{ build: "a4ced7f85b", builtAt: 1794603257 }, { build: "0f183c1216", builtAt: null }];
+  const saved = { ...localReady, templates, config: { ...localReady.config, enabled: true } };
+  const screen = harness(undefined, {}, { localMemo: { status: saved, autoDetected: true }, openAdvanced: false });
+  const toggle = (label: string) => inputs(screen.render()).find((item) => item.props["aria-label"] === label)!;
+  const version = () => findElements(screen.render(), "AppSelect").find((item) => item.props.ariaLabel === "界面版本")!;
+
+  // 旧配置里没有这几个字段：Cowork 按开、合并式主页按关、版本按最新。
+  assert.equal(toggle("本地 Cowork").props.checked, true);
+  assert.equal(toggle("本地合并式主页").props.checked, false);
+  assert.equal(version().props.value, "");
+  const day = new Date(1794603257 * 1000);
+  const date = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+  assert.deepEqual(structuredClone(version().props.options), [
+    { value: "", label: `最新（${date} · a4ced7f85b）` },
+    { value: "a4ced7f85b", label: `${date} · a4ced7f85b` },
+    { value: "0f183c1216", label: "0f183c1216" },
+  ]);
+
+  let config: Record<string, unknown> = saved.config;
+  const expectSaved = async (index: number, patch: Record<string, unknown>) => {
+    assert.equal(screen.calls[index].command, "claude_local_configure");
+    config = { ...config, ...patch };
+    assert.deepEqual(structuredClone((screen.calls[index].args[0] as { config: object }).config), config);
+    screen.calls[index].resolve({ ...saved, config });
+    await tick();
+  };
+  toggle("本地 Cowork").props.onChange({ currentTarget: { checked: false } });
+  await expectSaved(0, { cowork: false });
+  assert.equal(toggle("本地 Cowork").props.checked, false);
+  toggle("本地合并式主页").props.onChange({ currentTarget: { checked: true } });
+  await expectSaved(1, { hubHome: true });
+  version().props.onChange("0f183c1216");
+  await expectSaved(2, { template: "0f183c1216" });
+  assert.equal(version().props.value, "0f183c1216");
+
+  // 已下架的版本按最新显示；只有一个版本时没有可选的，不显示这一行。
+  const retired = harness(undefined, {}, {
+    localMemo: { status: { ...saved, config: { ...saved.config, template: "gone" } }, autoDetected: true }, openAdvanced: false,
+  });
+  assert.equal(findElements(retired.render(), "AppSelect").find((item) => item.props.ariaLabel === "界面版本")!.props.value, "");
+  const single = harness(undefined, {}, { localMemo: { status: { ...saved, templates: [templates[0]] }, autoDetected: true }, openAdvanced: false });
+  assert.equal(findElements(single.render(), "AppSelect").some((item) => item.props.ariaLabel === "界面版本"), false);
+
+  // 这几项只作用于完整功能模式。
+  const threeP = harness(undefined, {}, { localMemo: { status: { ...localReady, templates }, autoDetected: true }, openAdvanced: false });
+  const page = threeP.render();
+  assert.equal(inputs(page).some((item) => /Cowork|合并式主页/.test(item.props["aria-label"] ?? "")), false);
+  assert.equal(findElements(page, "AppSelect").some((item) => item.props.ariaLabel === "界面版本"), false);
+});
+
+test("系统证书：只在支持的系统上、Cowork 开着时显示，未安装时可以安装", async () => {
+  const saved = { ...localReady, caMachineSupported: true, caMachineTrusted: false, config: { ...localReady.config, enabled: true } };
+  const screen = harness(undefined, {}, { localMemo: { status: saved, autoDetected: true }, openAdvanced: false });
+  let page = screen.render();
+  assert.match(text(page), /系统证书未安装/);
+  buttons(page).find((button) => text(button) === "安装系统证书")!.props.onClick();
+  assert.equal(JSON.stringify(screen.calls[0].args[0]), JSON.stringify({ action: "trust_machine" }));
+  screen.calls[0].resolve({ ...saved, caMachineTrusted: true });
+  await tick();
+  page = screen.render();
+  assert.match(text(page), /系统证书已安装/);
+  assert.equal(buttons(page).some((button) => text(button) === "安装系统证书"), false);
+
+  for (const status of [
+    { ...saved, caMachineSupported: false },
+    { ...saved, config: { ...saved.config, cowork: false } },
+    { ...localReady, caMachineSupported: true, caMachineTrusted: false },
+  ]) {
+    const hidden = harness(undefined, {}, { localMemo: { status, autoDetected: true }, openAdvanced: false });
+    assert.doesNotMatch(text(hidden.render()), /系统证书/);
+  }
 });
 
 test("原版显示证书准备与信任操作，本地服务在线不冒充 Claude 已连接", async () => {

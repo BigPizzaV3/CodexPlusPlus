@@ -73,6 +73,8 @@ pub struct RelayProfile {
     pub relay_mode: RelayMode,
     #[serde(rename = "officialMixApiKey", default)]
     pub official_mix_api_key: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inactive_mixed_api: Option<InactiveMixedApi>,
     /// 供应商引用的网关/账号凭证；留空时沿用供应商自己的 auth 快照。
     #[serde(rename = "officialAccountRef", default, skip_serializing_if = "String::is_empty")]
     pub official_account_ref: String,
@@ -99,7 +101,8 @@ pub struct RelayProfile {
     #[serde(
         rename = "modelWindows",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_windows: String,
     /// 每模型自动压缩百分比（JSON map: slug -> 百分比字符串，如 "90" 或 "90%"）。
@@ -107,17 +110,24 @@ pub struct RelayProfile {
     #[serde(
         rename = "modelAutoCompact",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_auto_compact: String,
     /// 每模型元数据覆盖（JSON map: slug -> 字段覆盖）。
     #[serde(
         rename = "modelMetadata",
         default,
-        skip_serializing_if = "String::is_empty"
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
     )]
     pub model_metadata: String,
-    #[serde(rename = "modelVlm", default, skip_serializing_if = "String::is_empty")]
+    #[serde(
+        rename = "modelVlm",
+        default,
+        skip_serializing_if = "String::is_empty",
+        deserialize_with = "deserialize_json_text"
+    )]
     pub model_vlm: String,
     #[serde(
         rename = "vlmApiKey",
@@ -186,6 +196,11 @@ pub struct RelayProfile {
     /// OpenAI 扩展字段，只会返回泛化的 invalid_request（#2870）。
     #[serde(default, skip_serializing_if = "is_false")]
     pub strip_responses_image_detail: bool,
+    /// 转发前移除 Responses 顶层 `include` 里的 `output.encrypted_content`。
+    /// 部分严格上游只接受 `reasoning.encrypted_content`，带上该项会整单 400。
+    /// 默认关闭；Kimi 等已知上游仍由自动识别处理。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strip_responses_output_encrypted_content: bool,
     /// 不向该上游发送 `tool_search` 托管工具：部分第三方 Responses 上游不认识
     /// 它，供应商测试能过但实际聊天整单 400（#2868 / #2871）。Kimi 官方自动处理。
     #[serde(default, skip_serializing_if = "is_false")]
@@ -370,6 +385,15 @@ pub struct AggregateRelayProfile {
     pub auto_review_relay_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InactiveMixedApi {
+    pub config_contents: String,
+    pub upstream_base_url: String,
+    #[serde(default)]
+    pub model_routes: Vec<RelayModelRoute>,
+}
+
 impl Default for RelayProfile {
     fn default() -> Self {
         Self {
@@ -384,6 +408,7 @@ impl Default for RelayProfile {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
@@ -414,6 +439,7 @@ impl Default for RelayProfile {
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
+            strip_responses_output_encrypted_content: false,
             disable_tool_search: false,
             pure_api_image_generation: false,
             auto_review_model: String::new(),
@@ -476,6 +502,15 @@ impl RelayProfile {
     /// 第三方 Responses 上游生效。
     pub fn strips_responses_image_detail(&self) -> bool {
         self.strip_responses_image_detail
+            && self.protocol == RelayProtocol::Responses
+            && self.relay_mode != RelayMode::Aggregate
+            && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
+    }
+
+    /// 是否在转发前移除 Responses 顶层 `include` 里的
+    /// `output.encrypted_content`；只对经本地代理转发的第三方 Responses 上游生效。
+    pub fn strips_responses_output_encrypted_content(&self) -> bool {
+        self.strip_responses_output_encrypted_content
             && self.protocol == RelayProtocol::Responses
             && self.relay_mode != RelayMode::Aggregate
             && (self.relay_mode != RelayMode::Official || self.official_mix_api_key)
@@ -1718,6 +1753,7 @@ impl BackendSettings {
                 protocol: RelayProtocol::Responses,
                 relay_mode: RelayMode::MixedApi,
                 official_mix_api_key: true,
+                inactive_mixed_api: None,
                 official_account_ref: String::new(),
                 no_auth: false,
                 hide_official_usage_alert: false,
@@ -1748,6 +1784,7 @@ impl BackendSettings {
                 strict_responses_reasoning: false,
                 strip_image_generation_tool: false,
                 strip_responses_image_detail: false,
+                strip_responses_output_encrypted_content: false,
                 disable_tool_search: false,
                 pure_api_image_generation: false,
                 auto_review_model: String::new(),
@@ -1793,6 +1830,7 @@ impl BackendSettings {
             protocol: RelayProtocol::Responses,
             relay_mode: RelayMode::Official,
             official_mix_api_key: false,
+            inactive_mixed_api: None,
             official_account_ref: String::new(),
             no_auth: false,
             hide_official_usage_alert: false,
@@ -1823,6 +1861,7 @@ impl BackendSettings {
             strict_responses_reasoning: false,
             strip_image_generation_tool: false,
             strip_responses_image_detail: false,
+            strip_responses_output_encrypted_content: false,
             disable_tool_search: false,
             pure_api_image_generation: false,
             auto_review_model: String::new(),
@@ -1896,6 +1935,7 @@ impl BackendSettings {
             || self.active_relay_profile().strips_image_generation_tool()
             || self.active_relay_profile().enables_pure_api_image_generation()
             || self.active_relay_profile().strips_responses_image_detail()
+            || self.active_relay_profile().strips_responses_output_encrypted_content()
     }
 
     pub fn active_relay_uses_protocol_proxy(&self) -> bool {
@@ -2384,6 +2424,28 @@ where
     Ok(Option::<u64>::deserialize(deserializer)?
         .map(clamp_stepwise_timeout_ms)
         .unwrap_or_else(default_stepwise_timeout_ms))
+}
+
+// 兼容直接写入 JSON 对象的配置；保存时仍使用原有文本形态。
+// 对象里直接写数字的（`{"model-a": 500000}`）转成文本形态里的字符串：窗口、压缩百分比这两张表
+// 应用时只认字符串值，原样留着数字会在切换供应商时报「值必须是字符串」。
+fn deserialize_json_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(match Option::<Value>::deserialize(deserializer)? {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(text)) => text,
+        Some(Value::Object(mut map)) => {
+            for value in map.values_mut() {
+                if let Value::Number(number) = value {
+                    *value = Value::String(number.to_string());
+                }
+            }
+            Value::Object(map).to_string()
+        }
+        Some(other) => other.to_string(),
+    })
 }
 
 fn deserialize_profile_api_key<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -3593,6 +3655,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "protocol",
     "relayMode",
     "officialMixApiKey",
+    "inactiveMixedApi",
     "officialAccountRef",
     "noAuth",
     "hideOfficialUsageAlert",
@@ -3623,6 +3686,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "strictResponsesReasoning",
     "stripImageGenerationTool",
     "stripResponsesImageDetail",
+    "stripResponsesOutputEncryptedContent",
     "disableToolSearch",
     "pureApiImageGeneration",
     "autoReviewModel",
@@ -4471,6 +4535,29 @@ mod tests {
         };
 
         assert!(settings.active_relay_uses_protocol_proxy());
+    }
+
+    #[test]
+    fn relay_profile_accepts_json_text_fields_written_as_maps() {
+        let profile: RelayProfile = serde_json::from_value(serde_json::json!({
+            "id": "relay",
+            "name": "Relay",
+            "modelWindows": { "model-a": 500000 },
+            "modelAutoCompact": { "model-a": 80 },
+            "modelMetadata": { "model-a": { "supports_search_tool": true } },
+            "modelVlm": { "model-a": "strip" }
+        }))
+        .unwrap();
+
+        let saved = serde_json::to_value(&profile).unwrap();
+        // 数字值转成字符串：应用供应商时这两张表只认字符串值。
+        assert_eq!(saved["modelWindows"], r#"{"model-a":"500000"}"#);
+        assert_eq!(saved["modelAutoCompact"], r#"{"model-a":"80"}"#);
+        assert_eq!(
+            saved["modelMetadata"],
+            r#"{"model-a":{"supports_search_tool":true}}"#
+        );
+        assert_eq!(saved["modelVlm"], r#"{"model-a":"strip"}"#);
     }
 
     #[test]
@@ -6156,6 +6243,58 @@ experimental_bearer_token = "sk-existing""#
             ..BackendSettings::default()
         };
         assert!(!off.active_relay_transport_uses_protocol_proxy());
+    }
+
+    /// 「不发送 output.encrypted_content」也只在代理里执行：开启后必须改走本地代理，
+    /// 关闭后立即恢复直连，并确认配置按 camelCase 往返。
+    #[test]
+    fn strip_responses_output_encrypted_content_routes_through_protocol_proxy() {
+        let enabled = RelayProfile {
+            id: "on".to_string(),
+            relay_mode: RelayMode::PureApi,
+            protocol: RelayProtocol::Responses,
+            base_url: "https://responses.example.test/v1".to_string(),
+            strip_responses_output_encrypted_content: true,
+            ..RelayProfile::default()
+        };
+        assert!(enabled.strips_responses_output_encrypted_content());
+        let value = serde_json::to_value(&enabled).unwrap();
+        assert_eq!(value["stripResponsesOutputEncryptedContent"], true);
+        let restored: RelayProfile = serde_json::from_value(value).unwrap();
+        assert!(restored.strips_responses_output_encrypted_content());
+
+        let settings = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![enabled.clone()],
+            ..BackendSettings::default()
+        };
+        assert!(settings.active_relay_transport_uses_protocol_proxy());
+        let off = BackendSettings {
+            active_relay_id: "on".to_string(),
+            relay_profiles: vec![RelayProfile {
+                strip_responses_output_encrypted_content: false,
+                ..enabled
+            }],
+            ..BackendSettings::default()
+        };
+        assert!(!off.active_relay_transport_uses_protocol_proxy());
+
+        let default = serde_json::to_value(RelayProfile::default()).unwrap();
+        assert!(
+            default
+                .get("stripResponsesOutputEncryptedContent")
+                .is_none()
+        );
+
+        let dir = temp_dir();
+        let store = SettingsStore::new(dir.join("settings.json"));
+        let mut persisted = settings.clone();
+        store.save(&persisted).unwrap();
+        persisted = store.load().unwrap();
+        assert!(persisted.relay_profiles[0].strip_responses_output_encrypted_content);
+        persisted.relay_profiles[0].strip_responses_output_encrypted_content = false;
+        store.save(&persisted).unwrap();
+        assert!(!store.load().unwrap().relay_profiles[0].strip_responses_output_encrypted_content);
     }
 
     #[test]

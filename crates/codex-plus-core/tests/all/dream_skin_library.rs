@@ -178,6 +178,43 @@ fn creates_theme_from_image_with_unique_stable_id() {
 }
 
 #[test]
+fn local_video_roundtrips_through_library_activation_and_instance_snapshot() {
+    let state = tempfile::tempdir().unwrap();
+    for (extension, header) in [
+        ("webm", &b"\x1a\x45\xdf\xa3\x87\x42\x82\x84webm"[..]),
+        ("mp4", &b"\x00\x00\x00\x14ftypisom\0\0\0\0mp42"[..]),
+    ] {
+        let source = state.path().join(format!("clip-{extension}.{extension}"));
+        std::fs::write(&source, header).unwrap();
+        let draft = create_dream_skin_theme_from_image(&source, state.path()).unwrap();
+        let stored = load_stored_dream_skin_theme(state.path(), &draft.config.id).unwrap();
+        assert_eq!(std::fs::read(&stored.image_path).unwrap(), header);
+        let activation = prepare_dream_skin_activation(state.path(), &stored).unwrap();
+        let settings = BackendSettings {
+            codex_app_dream_skin_theme_config: activation.config,
+            codex_app_dream_skin_image_path: activation.active_image_path,
+            ..Default::default()
+        };
+        let target = tempfile::tempdir().unwrap();
+        let copy = prepare_instance_theme_snapshot(state.path(), target.path(), &settings).unwrap();
+        assert_eq!(std::fs::read(copy.active_image_path).unwrap(), header);
+        std::fs::write(&stored.image_path, b"not video").unwrap();
+        assert!(prepare_dream_skin_activation(state.path(), &stored).is_err());
+    }
+}
+
+#[test]
+fn video_import_rejects_wrong_container_and_over_limit() {
+    let state = tempfile::tempdir().unwrap();
+    let spoof = state.path().join("image.mp4");
+    write_test_png(&spoof);
+    assert!(create_dream_skin_theme_from_image(&spoof, state.path()).is_err());
+    let large = state.path().join("large.webm");
+    std::fs::File::create(&large).unwrap().set_len(16 * 1024 * 1024 + 1).unwrap();
+    assert!(create_dream_skin_theme_from_image(&large, state.path()).is_err());
+}
+
+#[test]
 fn saving_and_renaming_never_changes_theme_id() {
     let temp = tempfile::tempdir().unwrap();
     let draft = stored_test_draft(temp.path(), "stable-id", "Before");

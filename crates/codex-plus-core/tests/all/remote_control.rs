@@ -539,6 +539,35 @@ fn server_starts_serves_page_and_stops() {
 }
 
 #[test]
+fn occupied_loopback_port_uses_a_system_assigned_port_without_changing_settings() {
+    use codex_plus_core::remote_control as remote;
+    use std::io::{Read, Write as _};
+    let _guard = crate::common::global_state_lock();
+    let temp = TempState::new();
+    let occupied = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let preferred = occupied.local_addr().unwrap().port();
+    remote::update_state(|settings| settings.port = preferred).unwrap();
+
+    let status = remote::set_enabled(true).unwrap();
+    let actual = remote::running_port().unwrap();
+    assert_ne!(actual, preferred);
+    assert_eq!(status["port"], actual);
+    assert!(status["url"].as_str().unwrap().starts_with(&format!("http://127.0.0.1:{actual}/")));
+    assert_eq!(remote::load_state_from(&temp.dir.path().join("remote-control.json")).port, preferred);
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", actual)).unwrap();
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+    write!(stream, "GET /api/status HTTP/1.1\r\nHost: 127.0.0.1:{actual}\r\n\r\n").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 401"));
+
+    remote::set_enabled(false).unwrap();
+    assert!(std::net::TcpStream::connect(("127.0.0.1", actual)).is_err());
+    assert_eq!(remote::status()["port"], preferred);
+}
+
+#[test]
 fn permission_mode_is_derived_like_the_desktop_presets() {
     use codex_plus_core::remote_control::follower::{PERMISSION_PRESETS, permission_mode_of};
     // 每个预设写出去的设置，读回来要还是同一个预设。

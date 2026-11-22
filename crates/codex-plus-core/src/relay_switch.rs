@@ -4,8 +4,9 @@ use std::path::Path;
 use anyhow::Context;
 
 use crate::relay_config::{
-    LiveEndpointChanged, RelayBackfillPolicy, backfill_relay_profile_from_home_with_common,
-    backfill_relay_profile_from_home_with_common_and_policy, relay_config_status_from_home,
+    RelayBackfillPolicy, backfill_relay_profile_from_home_with_common,
+    backfill_relay_profile_from_home_with_common_and_policy, is_live_endpoint_conflict,
+    relay_config_status_from_home,
 };
 use crate::settings::{BackendSettings, RelayMode, SettingsStore};
 
@@ -16,7 +17,7 @@ pub struct RelaySwitchResult {
     pub backup_path: Option<String>,
 }
 
-/// 切换前回填上一个供应商时，实时配置的 endpoint 已被外部改过（#2666）。
+/// 切换前回填上一个供应商时，实时配置的 endpoint 已被外部改过（#2666）或缺失（#3222）。
 /// 管理器据此弹窗让用户选择，`message` 保持原来的完整报错文案。
 #[derive(Debug)]
 pub struct LiveEndpointConflict {
@@ -275,8 +276,9 @@ fn backfill_profile_before_switch(
     .with_context(|| format!("回填当前供应商配置失败（供应商：{previous_active_relay_id}）"))
     .map_err(|error| {
         let message = format!("{error:#}");
-        // endpoint 被外部改过是用户能选择怎么处理的一类（#2666），保留类型交给管理器弹窗。
-        if error.chain().any(|cause| cause.is::<LiveEndpointChanged>()) {
+        // endpoint 被外部改过（#2666）或缺失（#3222）是用户能选择怎么处理的一类，
+        // 保留类型交给管理器弹窗；接入网关时据此先存原文再放弃回填。
+        if is_live_endpoint_conflict(&error) {
             anyhow::Error::new(LiveEndpointConflict {
                 profile_id: previous_active_relay_id.to_string(),
                 message,

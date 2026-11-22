@@ -103,3 +103,68 @@ fn duplicate_target_is_stable_and_all_candidate_errors_are_distinct_from_missing
             .contains("database missing")
     );
 }
+
+#[test]
+fn both_usage_routes_find_unindexed_local_rollouts() {
+    let id = "12345678-1234-4234-8234-123456789012";
+    for (folder, moved_to) in [
+        ("sessions/2026/01/01", "sessions/2026/01/02"),
+        ("archived_sessions", "archived_sessions/older"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("state_5.sqlite");
+        database(&legacy, None);
+        let catalog = temp.path().join("codex.db");
+        let db = Connection::open(&catalog).unwrap();
+        db.execute_batch("CREATE TABLE local_thread_catalog(id TEXT PRIMARY KEY);")
+            .unwrap();
+        db.execute("INSERT INTO local_thread_catalog VALUES (?1)", [id])
+            .unwrap();
+        let directory = temp.path().join(folder);
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(format!("rollout-2026-01-01T00-00-00-{id}.jsonl"));
+        rollout(&path);
+        let usage = fs::read_to_string(&path).unwrap();
+        fs::write(
+            &path,
+            format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\"}}}}\n{usage}"),
+        )
+        .unwrap();
+
+        let adapter =
+            SQLiteStorageAdapter::new(&legacy, BackupStore::new(temp.path().join("backups")))
+                .with_allowed_db_paths([catalog])
+                .with_codex_home(temp.path());
+        let mut session = SessionRef::new(format!("local:{id}"), "fixture").unwrap();
+        let live = adapter.codex_thread_usage_live(&session);
+        let history = adapter.codex_thread_usage_history(&session);
+        assert_eq!(live["status"], "ok", "{live}");
+        assert_eq!(live["events"][0]["total_tokens"], 23);
+        assert_eq!(history["status"], "ok", "{history}");
+        assert_eq!(history["history"][0]["usage"]["totalTokens"], 23);
+
+        // 找到的路径会被记住；文件挪了位置后要重新查找，不能一直指着旧路径。
+        let moved = temp.path().join(moved_to);
+        fs::create_dir_all(&moved).unwrap();
+        let moved = moved.join(path.file_name().unwrap());
+        fs::rename(&path, &moved).unwrap();
+        let live = adapter.codex_thread_usage_live(&session);
+        assert_eq!(live["status"], "ok", "{live}");
+        let path = moved;
+
+        session.host_id = Some("remote".into());
+        assert_eq!(adapter.codex_thread_usage_live(&session)["status"], "failed");
+        session.host_id = None;
+        fs::write(
+            path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"87654321-4321-4321-8321-210987654321\"}}}}\n{usage}"
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            adapter.codex_thread_usage_history(&session)["status"],
+            "failed"
+        );
+    }
+}

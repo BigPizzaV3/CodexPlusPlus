@@ -1,0 +1,53 @@
+/* 在供应商池原有列表和详情中补充配额信息，不改变账号列表布局。 */
+:root .shell .gw-account-quota-details { display: grid; gap: 12px; width: 100%; }
+:root .shell .gw-account-windows { display: grid; gap: 16px; }
+:root .shell .gw-account-window > div:first-child { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+:root .shell .gw-account-window strong { font-variant-numeric: tabular-nums; }
+:root .shell .gw-account-reset-time { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; color: hsl(var(--muted-foreground)); font-size: 11px; margin: 4px 0 8px; }
+:root .shell .gw-account-progress { height: 7px; overflow: hidden; border-radius: 8px; background: hsl(var(--muted)); }
+:root .shell .gw-account-progress i { display: block; height: 100%; border-radius: inherit; background: hsl(var(--status-success)); }
+:root .shell .gw-account-window[data-tone="low"] i { background: hsl(var(--status-error)); }
+:root .shell .gw-account-window[data-tone="mid"] i { background: hsl(var(--status-warning)); }
+:root .shell .gw-quota-timeline { display: grid; gap: 16px; margin-top: 22px; min-width: 0; }
+:root .shell .gw-quota-timeline > header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 14px; }
+:root .shell .gw-quota-timeline h2 { margin: 0; font-size: 18px; font-weight: 600; }
+:root .shell .gw-quota-timeline header p { margin: 5px 0 0; color: hsl(var(--muted-foreground)); font-size: 12px; }
+:root .shell .gw-quota-controls, :root .shell .gw-quota-controls > div { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+:root .shell .gw-quota-controls > div { border: 1px solid hsl(var(--border)); border-radius: 20px; padding: 3px; background: hsl(var(--muted) / .5); }
+:root .shell .gw-quota-controls button { border-radius: 16px; }
+:root .shell .gw-quota-table-scroll { border: 1px solid hsl(var(--border)); border-radius: 14px; overflow-x: auto; }
+:root .shell .gw-quota-table { width: 100%; min-width: 960px; table-layout: fixed; border-collapse: collapse; font-size: 12px; }
+:root .shell .gw-quota-table th { font-weight: 500; text-align: left; }
+:root .shell .gw-quota-table th:first-child { width: 220px; padding: 12px 14px; border-right: 1px solid hsl(var(--border)); }
+:root .shell .gw-quota-table th:nth-child(2), :root .shell .gw-quota-table td { padding: 0; }
+:root .shell .gw-quota-table tbody tr { border-top: 1px solid hsl(var(--border)); }
+:root .shell .gw-quota-table tbody th strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:root .shell .gw-quota-table tbody th small { display: block; margin-top: 5px; color: hsl(var(--muted-foreground)); }
+:root .shell .gw-quota-table tr[data-off="true"] { opacity: .6; }
+:root .shell .gw-quota-ticks { display: flex; }
+:root .shell .gw-quota-ticks > span { flex: 0 0 auto; text-align: center; padding: 10px 0; border-right: 1px solid hsl(var(--border)); }
+:root .shell .gw-quota-ticks small { display: block; color: hsl(var(--muted-foreground)); margin-bottom: 4px; }
+:root .shell .gw-quota-track { position: relative; height: 74px; overflow: hidden; }
+:root .shell .gw-quota-grid-line { position: absolute; inset-block: 0; width: 1px; background: hsl(var(--border)); pointer-events: none; }
+:root .shell .gw-quota-segment { position: absolute; top: 24px; height: 28px; padding: 5px 10px; border: 1px solid hsl(var(--primary) / .45); border-radius: 20px; background: hsl(var(--primary) / .5); color: hsl(var(--foreground)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-sizing: border-box; }
+:root .shell .gw-quota-segment[data-projected="true"] { background: transparent; border-style: dashed; color: hsl(var(--muted-foreground)); }
+:root .shell .gw-quota-segment[data-stale="true"] { background: hsl(var(--muted)); border-color: hsl(var(--border)); color: hsl(var(--muted-foreground)); }
+:root .shell .gw-quota-now, :root .shell .gw-quota-expiry-marker { position: absolute; top: 0; bottom: 0; width: 1px; background: hsl(var(--muted-foreground) / .6); pointer-events: auto; }
+:root .shell .gw-quota-expiry-marker { width: 2px; background: hsl(var(--status-warning)); z-index: 1; }
+:root .shell .gw-quota-no-data { display: block; padding: 27px 12px; color: hsl(var(--muted-foreground)); }
+:root .shell .gw-quota-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; margin: 0; color: hsl(var(--muted-foreground)); font-size: 11px; }
+:root .shell .gw-quota-legend span { display: inline-flex; align-items: center; gap: 7px; }
+:root .shell .gw-quota-legend i { display: inline-block; width: 24px; height: 10px; border-radius: 8px; border: 1px solid hsl(var(--primary) / .45); background: hsl(var(--primary) / .5); }
+:root .shell .gw-quota-legend i[data-projected="true"] { border-style: dashed; background: transparent; }
+:root .shell .gw-quota-legend i[data-marker="true"] { width: 2px; height: 16px; border: 0; border-radius: 0; background: hsl(var(--status-warning)); }
+@media (max-width: 600px) {
+  :root .shell .gw-quota-controls { width: 100%; justify-content: space-between; }
+}
+
+:root .shell .gw-pool-detail .gw-detail-row.gw-quota-detail-row { align-items: start; }
+:root .shell .gw-pool-detail .gw-detail-row.gw-quota-detail-row > .gw-detail-actions { opacity: 1; }
+@media (max-width: 700px) {
+  :root .shell .gw-pool-detail .gw-detail-row.gw-quota-detail-row { grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+  :root .shell .gw-pool-detail .gw-quota-detail-row > .gw-detail-value { grid-column: 1 / -1; grid-row: 2; }
+  :root .shell .gw-pool-detail .gw-quota-detail-row > .gw-detail-actions { grid-column: 2; grid-row: 1; flex-wrap: wrap; }
+}

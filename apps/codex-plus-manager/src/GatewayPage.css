@@ -2516,6 +2516,40 @@ span.gw-avatar[data-size] {
   height: 15px;
 }
 
+/* —— 模型组：按模型批量添加成员（先选模型，再勾选供应商）—— */
+.gw-portal .gw-batch .gw-mp-item {
+  padding-left: 14px;
+}
+
+.gw-portal .gw-batch-count {
+  flex: none;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-portal .gw-batch-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gw-portal .gw-batch .gw-select-item {
+  margin: 0 8px;
+}
+
+.gw-portal .gw-batch .gw-select-item[data-added="true"] {
+  color: var(--gw-mute);
+  cursor: default;
+}
+
+.gw-portal .gw-batch-foot {
+  align-items: center;
+  justify-content: space-between;
+}
+
 /* 添加供应商：给哪些 Agent 用（目录弹窗底部、填写表单里各一排）。 */
 .gw-portal .gw-agent-picks {
   display: flex;
@@ -4376,4 +4410,85 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
 
 .gw-portal .gw-disconnect-confirm:hover {
   background: color-mix(in srgb, var(--gw-err) 88%, black);
+}
+
+/* ChatGPT 账号的额度重置卡（折叠标记 + 展开后的逐张明细）。 */
+.shell .gw-reset-chip {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 0 7px;
+  border: 1px solid var(--gw-line);
+  border-radius: 999px;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.shell .gw-reset-chip[data-tone="ok"] {
+  border-color: hsl(var(--status-success) / 0.35);
+  background: hsl(var(--status-success) / 0.08);
+  color: var(--gw-ok);
+}
+
+.shell .gw-reset-chip[data-tone="none"] {
+  opacity: 0.7;
+}
+
+.shell .gw-reset-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  min-width: 0;
+}
+
+.shell .gw-reset-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.shell .gw-reset-count[data-tone="ok"] {
+  color: var(--gw-ok);
+}
+
+.shell .gw-reset-count[data-tone="none"] {
+  color: var(--gw-mute);
+}
+
+.shell .gw-reset-expiry {
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell .gw-reset-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shell .gw-reset-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.shell .gw-reset-list li[data-tone="done"] {
+  opacity: 0.55;
+}
+
+.shell .gw-reset-pending {
+  width: 100%;
+  color: var(--gw-warn);
+  font-size: 11.5px;
 }

@@ -215,7 +215,7 @@ export type TrayRequest =
 export type TrayResult = { id: string; ok: boolean; message?: string };
 
 /** 面板能直接打开的主窗口页面。 */
-export const TRAY_ROUTES = ["overview", "sessions", "requestLog", "gateway", "gatewayProviders", "gatewayRouting", "gatewayUsage", "settings"] as const;
+export const TRAY_ROUTES = ["overview", "sessions", "requestLog", "gateway", "gatewayProviders", "gatewayRouting", "gatewayUsage", "settings", "addDirectProvider"] as const;
 export type TrayRoute = (typeof TRAY_ROUTES)[number];
 
 export function isTrayRoute(value: unknown): value is TrayRoute {

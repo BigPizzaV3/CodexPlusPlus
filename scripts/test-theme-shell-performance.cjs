@@ -110,6 +110,23 @@ async function run() {
       console.log(`${platform}: stylesheet, mutation and cleanup regressions passed`);
     }
 
+    await page.setContent(`<html data-dream-skin="active" data-dream-art-wide="true" data-dream-task-mode="full"><body>
+      <main data-app-shell-main-surface><section id="directory" class="@container/skills-grid"><div data-app-shell-inline-page-header></div></section>
+      <section id="other"><div data-app-shell-inline-page-header></div></section></main></body></html>`);
+    await page.addStyleTag({content: asset("dream-skin-native-shell-compat.css")});
+    for (const surface of ["#fff", "#141414"]) {
+      await page.evaluate(surface => document.documentElement.style.setProperty("--color-token-main-surface-primary", surface), surface);
+      assert.match(await page.$eval("#directory", node => getComputedStyle(node).backgroundColor), /0\.78\)/);
+      assert.equal(await page.$eval("#other", node => getComputedStyle(node).backgroundColor), "rgba(0, 0, 0, 0)");
+    }
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty("--color-token-main-surface-primary", "#fff");
+      document.documentElement.style.setProperty("--ds-panel", "#000");
+    });
+    assert.equal(await page.$eval("#directory", node => getComputedStyle(node).backgroundColor), "color(srgb 0 0 0 / 0.78)");
+    await page.evaluate(() => document.documentElement.removeAttribute("data-dream-skin"));
+    assert.equal(await page.$eval("#directory", node => getComputedStyle(node).backgroundColor), "rgba(0, 0, 0, 0)");
+
     // 新版 header 在 main 外，aside 在 workspace 内；同时保留旧版结构。
     for (const structure of ["legacy", "workspace"]) {
       await page.setContent(`<style>@layer theme,base,utilities;

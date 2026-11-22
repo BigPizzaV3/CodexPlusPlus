@@ -103,6 +103,7 @@ import {
 } from "lucide-react";
 import { createPresetPatch } from "@/components/ProviderPresetSelector";
 import { PRESETS, type ProviderPreset } from "./presets";
+import { setSponsorAds, useSponsorPresets } from "./sponsor-store";
 import { createPortal } from "react-dom";
 import { managerExtensionPages, managerNavPages, managerPageOverrides, type ManagerExtensionPage, type ManagerNavGroup, type ManagerPageSummary } from "./extension-manager-pages";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
@@ -140,6 +141,7 @@ import { MyPublishedPanel } from "./MyPublishedPanel";
 import { AgentIcon, SectionLabel, Switch } from "./gateway-ui";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppSelect, type AppSelectOption } from "./AppSelect";
+import { DisplaySettings } from "./DisplaySettings";
 import { ExtensionConfigForm, type ExtensionConfigField } from "./extension-config-form";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AppDialogHost, appAlert, appConfirm, appPrompt } from "./app-dialog";
@@ -239,6 +241,7 @@ import {
   requestCompatibilityEnabled,
   stripImageGenerationToolEnabled,
   stripResponsesImageDetailEnabled,
+  stripResponsesOutputEncryptedContentEnabled,
   pureApiImageGenerationEnabled,
   findRelayModelRouteIssue,
   modelRouteSaveRequiresRestart,
@@ -435,6 +438,9 @@ import { Puzzle } from "lucide-react";
 import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
 
 const isWindowsPlatform = /\bWindows\b/i.test(navigator.userAgent);
+const skinMediaExtensions = /Mac/i.test(navigator.platform)
+  ? ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp", "mp4", "webm"]
+  : ["png", "jpg", "jpeg", "webp", "gif", "bmp", "mp4", "webm"];
 /// 增强设置项清单按平台过滤（例如桌宠跟随鼠标只在 Windows / macOS 显示）。
 const enhancementPlatform = enhancementPlatformFromUserAgent(navigator.userAgent);
 /// 会话维护页的两条开关与 Codex 设置页共用清单里的文案（#2846 拆开后分别显示）。
@@ -721,6 +727,7 @@ export type RelayProfile = {
   relayMode: RelayMode;
   sessionProvider?: RelaySessionProvider;
   officialMixApiKey: boolean;
+  inactiveMixedApi?: Pick<RelayProfile, "configContents" | "upstreamBaseUrl" | "modelRoutes">;
   officialAccountRef?: string;
   hideOfficialUsageAlert: boolean;
   testModel: string;
@@ -757,6 +764,8 @@ export type RelayProfile = {
   stripImageGenerationTool?: boolean;
   /** #2870：转发前移除 Responses 图片 `detail`，默认关闭。 */
   stripResponsesImageDetail?: boolean;
+  /** 转发前移除 Responses `include` 里的 `output.encrypted_content`，默认关闭。 */
+  stripResponsesOutputEncryptedContent?: boolean;
   /** #2868：不向上游发送 tool_search，默认关闭。 */
   disableToolSearch?: boolean;
   /** #1433：纯 API 下让 Codex 注册原生生图工具，生图请求经本地代理发给本供应商，默认关闭。 */
@@ -1824,6 +1833,7 @@ export function App() {
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [legacyDisconnectOpen, setLegacyDisconnectOpen] = useState(false);
+  const [addDirectProviderRequested, setAddDirectProviderRequested] = useState(false);
   // 外部改设置时要拿「上次读到的设置」与当前编辑比对，监听回调里读这个 ref 拿最新值。
   const settingsRef = useRef<SettingsResult | null>(null);
   settingsRef.current = settings;
@@ -1918,6 +1928,7 @@ export function App() {
   }, []);
   // 「会话」页默认看所有 Agent；切到 Codex 页签才是带删除 / 归档 / 修复的完整会话管理。
   const [sessionTab, setSessionTab] = useState<SessionTab>("all");
+  const [recoveryRefreshRequest, setRecoveryRefreshRequest] = useState(0);
   /** 请求日志打开时的 Agent 过滤（从 Agent 概览跳过去时设置，用一次就清掉）。 */
   const [requestLogAgentFilter, setRequestLogAgentFilter] = useState<"all" | "codex" | "claude" | "grok">("all");
   const [requestLogFocus, setRequestLogFocus] = useState<RequestLogFocus>({});
@@ -2748,13 +2759,8 @@ export function App() {
       selected = await open({
         directory: false,
         multiple: false,
-        title: t("选择皮肤图片"),
-        filters: [{
-          name: t("图片"),
-          extensions: isWindowsPlatform
-            ? ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
-            : ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp"],
-        }],
+        title: t("选择皮肤图片或视频"),
+        filters: [{ name: t("图片或视频"), extensions: skinMediaExtensions }],
       });
     } catch (error) {
       showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
@@ -2781,13 +2787,8 @@ export function App() {
       selected = await open({
         directory: false,
         multiple: false,
-        title: t("选择皮肤图片"),
-        filters: [{
-          name: t("图片"),
-          extensions: isWindowsPlatform
-            ? ["png", "jpg", "jpeg", "webp", "gif", "bmp"]
-            : ["png", "jpg", "jpeg", "heic", "tif", "tiff", "webp"],
-        }],
+        title: t("选择皮肤图片或视频"),
+        filters: [{ name: t("图片或视频"), extensions: skinMediaExtensions }],
       });
     } catch (error) {
       showNotice(t("主题库"), tf("打开选择器失败：{0}", [stringifyError(error)]), "failed");
@@ -3138,8 +3139,12 @@ export function App() {
       if (!navigation) return false;
       const destination = managerNavigationDestination(navigation);
       await refreshSettings(true);
-      if (destination.route === "enhance" || destination.route === "pluginMarket" || destination.route === "weixin") {
+      if (destination.route === "enhance" || destination.route === "pluginMarket" || destination.route === "weixin" || destination.route === "sessions") {
         setActiveTool("codex");
+      }
+      if (destination.route === "sessions") {
+        setSessionTab("codex");
+        setRecoveryRefreshRequest(current => current + 1);
       }
       setRoute(destination.route);
       if (destination.route === "weixin") await refreshWeixinStatus(true);
@@ -3824,6 +3829,7 @@ export function App() {
     const result = await run(() => call<AdsResult>("load_ads"));
     if (result) {
       setAds(result);
+      setSponsorAds(result);
       if (!silent) showResultNotice(t("推荐内容"), result, { silentSuccess: true });
     }
   };
@@ -4471,6 +4477,11 @@ export function App() {
   trayRequestHandlerRef.current = async (request: TrayRequest): Promise<TrayResult> => {
     const revealMainWindow = () => void invoke("tray_panel_action", { action: "open" }).catch(() => {});
     if (request.kind === "navigate") {
+      if (request.route === "addDirectProvider") {
+        setAddDirectProviderRequested(true);
+        await switchTool("codex", "relay");
+        return { id: request.id, ok: true };
+      }
       if (request.route === "sessions" || request.route === "requestLog") setActiveTool("codex");
       await navigate(request.route);
       return { id: request.id, ok: true };
@@ -4519,7 +4530,7 @@ export function App() {
       setProviderSyncProgress((current) => current.active ? current : ({ active: false, percent: 0, message: result.message, result }));
     }).catch(() => {});
     return () => { disposed = true; };
-  }, [route]);
+  }, [route, recoveryRefreshRequest]);
 
   useEffect(() => {
     if (route !== "sessions") return;
@@ -5309,6 +5320,7 @@ export function App() {
             }
           }}
           onClose={() => setLegacyDisconnectOpen(false)}
+          onAddDirectProvider={() => setAddDirectProviderRequested(true)}
         />
       ) : null}
       {tourOpen && !agentFocusOpen ? <OnboardingTour focus={agentFocus} onClose={closeTour} /> : null}
@@ -5362,6 +5374,8 @@ export function App() {
               旧入口 relayEnvironment 打开同一页并展开「高级」。 */}
           {route === "relay" || route === "relayEnvironment" ? (
             <RelayScreen
+              addDirectProviderRequested={addDirectProviderRequested}
+              onRequestedProviderOpened={() => setAddDirectProviderRequested(false)}
               settings={settings}
               relayFiles={relayFiles}
               envConflicts={envConflicts}
@@ -5434,6 +5448,19 @@ export function App() {
               onDeleteMany={actions.deleteLocalSessions}
               onArchiveMany={actions.archiveLocalSessions}
               onListProjectSessions={actions.listProjectSessions}
+              onPickFolder={async (title) => {
+                try {
+                  const selected = await open({ directory: true, multiple: false, title });
+                  return typeof selected === "string" && selected.trim() ? selected : null;
+                } catch (error) {
+                  showNotice(t("移动会话"), stringifyError(error), "failed");
+                  return null;
+                }
+              }}
+              onRelocated={async (message, ok) => {
+                showNotice(t("移动会话"), message, ok ? "ok" : "failed");
+                await actions.refreshLocalSessions(true, localSessions?.offset ?? 0);
+              }}
               repairPanel={<SessionRepairPanel dirty={settingsDirty} form={settingsForm} providerSyncProgress={providerSyncProgress}
                 sessionIndexRepairActive={sessionIndexRepairActive} sessionIndexRepairReport={sessionIndexRepairReport}
                 sessionIndexRepairReportError={sessionIndexRepairReportError} providerSyncTargets={providerSyncTargets}
@@ -5553,7 +5580,10 @@ export function App() {
               }
               codexRun={codexRun}
               notify={actions.showMessage}
-              onOpenCodexProviderSettings={() => { void switchTool("codex", "relay"); }}
+              onOpenCodexProviderSettings={(addDirectProvider) => {
+                if (addDirectProvider) setAddDirectProviderRequested(true);
+                void switchTool("codex", "relay");
+              }}
               onTabChange={(tab) => void navigate(gatewayRouteByTab[tab])}
               tab={gatewayTabByRoute[route]}
             />
@@ -7931,6 +7961,8 @@ function PoolLinkControl({ link, profileId }: { link: CodexPoolLink; profileId: 
 }
 
 function RelayScreen({
+  addDirectProviderRequested,
+  onRequestedProviderOpened,
   settings,
   relayFiles,
   envConflicts,
@@ -7942,6 +7974,8 @@ function RelayScreen({
   advancedOpen = false,
   onOpenGateway,
 }: {
+  addDirectProviderRequested: boolean;
+  onRequestedProviderOpened: () => void;
   settings: SettingsResult | null;
   relayFiles: RelayFilesResult | null;
   envConflicts: EnvConflictsResult | null;
@@ -7972,6 +8006,13 @@ function RelayScreen({
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
   const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
+  useEffect(() => {
+    if (!addDirectProviderRequested) return;
+    setNewProfileDraft(null);
+    setDetailProfileId(null);
+    setProviderCatalogOpen(true);
+    onRequestedProviderOpened();
+  }, [addDirectProviderRequested, onRequestedProviderOpened]);
   // 目录页的搜索词放在这里：从模板进入编辑页再返回时，目录页会重新挂载，搜索不能丢。
   const [providerCatalogQuery, setProviderCatalogQuery] = useState("");
   // 进入时停在当前供应商所在的分区；找不到当前供应商时，没有直连项就展示协议转换分区。
@@ -8328,12 +8369,10 @@ function RelayScreen({
                 </div>
               ) : null}
             </div>
-            {takenOverByGateway ? null : (
-              <button className="cx-primary" onClick={() => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); }} type="button">
+              <button className="cx-primary" onClick={openCatalog} type="button">
                 <Plus />
-                {t("添加供应商")}
+                {takenOverByGateway ? t("添加直连供应商") : t("添加供应商")}
               </button>
-            )}
           </>
         )}
       />
@@ -8353,17 +8392,19 @@ function RelayScreen({
           <button className="cx-primary" onClick={() => void saveRelaySettings({ ...normalized, relayProfilesEnabled: true })} type="button">{t("打开配置切换")}</button>
         </CxBanner>
       ) : null}
-      {/* Codex 被网关接管：直连供应商整块隐藏，只留一行说明被谁接管、怎么回到直连。
-          直连供应商在接入期间不生效，改它们会让「断开并还原」出错；要编辑、删除去「多开」页，
-          要迁到网关去「供应商池」→「添加供应商 → 导入」。 */}
       {normalized.relayProfilesEnabled && takenOverByGateway ? (
         <CxCard className="cx-takeover">
           <CxEmpty
-            detail={tf("{0} 个直连供应商在接入网关期间不生效，已隐藏。点上方「直连」断开网关后恢复；要把它们加进供应商池，去「供应商池」→「添加供应商」→「导入」。", [directProfiles.length])}
+            detail={t("可以先添加或编辑直连档案。保存后继续使用网关，点上方「直连」预览并确认还原。")}
             title={t("Codex 正由 Codex++ 网关接管")}
           >
             {onOpenGateway ? <button className="cx-secondary" onClick={onOpenGateway} type="button">{t("打开供应商池")}</button> : null}
           </CxEmpty>
+          {directProfiles.map((profile) => (
+            <CxRow key={profile.id} title={profile.name || t("未命名供应商")} detail={relayProfileModeLabel(profile)}>
+              <button className="cx-secondary" onClick={() => void editRelayProfile(profile.id)} type="button">{t("编辑档案")}</button>
+            </CxRow>
+          ))}
         </CxCard>
       ) : null}
       {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
@@ -8731,7 +8772,10 @@ function ProviderCatalogScreen({
     { id: "aggregator", label: t("聚合/中转") },
     { id: "third_party", label: t("第三方平台") },
   ];
-  const filteredPresets = PRESETS.filter((preset) => {
+  // 赞助商排在「聚合/中转」最前面。
+  const sponsors = useSponsorPresets();
+  const sponsorIds = new Set(sponsors.map((preset) => preset.id));
+  const filteredPresets = [...sponsors, ...PRESETS.filter((preset) => !sponsorIds.has(preset.id))].filter((preset) => {
     const haystack = `${preset.name} ${preset.baseUrl} ${preset.model}`.toLowerCase();
     return !query.trim() || haystack.includes(query.trim().toLowerCase());
   });
@@ -9139,6 +9183,14 @@ function EnhancementSettingControl({
   );
 }
 
+function DreamSkinPreview({ path, src, label, className, controls = false }: {
+  path: string; src: string; label: string; className?: string; controls?: boolean;
+}) {
+  return /\.(mp4|webm)$/i.test(path)
+    ? <video aria-label={label} className={className} controls={controls} muted playsInline preload="metadata" src={src} />
+    : <img alt={label} className={className} loading="lazy" src={src} />;
+}
+
 function DreamSkinScreen({
   form,
   launchPending,
@@ -9331,7 +9383,7 @@ function DreamSkinScreen({
           badges={<CxBadge tone={dirty ? "warn" : "neutral"}>{draftStateLabel}</CxBadge>}
           className="dream-skin-selected-row"
           detail={<span role="status">{currentThemeLabel}：{currentThemeName} · {stateLabel}</span>}
-          icon={<CxStatusIcon tone={stateDot}><img alt={t("Dream Skin 图片预览")} className="dream-skin-selected-thumb" src={previewUrl} /></CxStatusIcon>}
+          icon={<CxStatusIcon tone={stateDot}><DreamSkinPreview label={theme.name} className="dream-skin-selected-thumb" path={customImagePath} src={previewUrl} /></CxStatusIcon>}
           title={<span title={theme.name}>{theme.name || t("未命名主题")}</span>}
         >
           <button className="cx-primary" disabled={!masterEnabled || !draft} onClick={() => void actions.activateDreamSkinTheme()} title={!masterEnabled ? t("请先在 Codex增强 页面开启总开关。") : t("保存并应用主题（皮肤没开时会一起打开）；需要重启时只会标记为待应用")} type="button">
@@ -9406,7 +9458,7 @@ function DreamSkinScreen({
           </button>
           <button className="cx-primary" onClick={() => void actions.createDreamSkinTheme()} type="button">
             <ImagePlus className="h-4 w-4" />
-            {t("从图片创建")}
+            {t("从图片或视频创建")}
           </button>
         </CxToolbar>
       ) : null}
@@ -9491,7 +9543,7 @@ function DreamSkinScreen({
                       type="button"
                     >
                       <span className="dream-skin-theme-image">
-                        <img alt={item.name} loading="lazy" src={cardPreview} />
+                        <DreamSkinPreview label={item.name} path={item.previewPath} src={cardPreview} />
                         {currentRunning || pendingApplication ? (
                           <span className="dream-skin-theme-badges">
                             {currentRunning ? <b>{currentThemeLabel}</b> : null}
@@ -9576,14 +9628,14 @@ function DreamSkinScreen({
                     className="dream-skin-preview"
                     style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.background }}
                   >
-                    <img alt={t("Dream Skin 图片预览")} src={previewUrl} />
+                    <DreamSkinPreview controls label={theme.name} path={customImagePath} src={previewUrl} />
                     <span style={isWindowsPlatform ? undefined : { backgroundColor: themeColors.panel, color: themeColors.text }}>
                       <strong>{theme.name}</strong>
-                      <small style={isWindowsPlatform ? undefined : { color: themeColors.muted }}>{customImagePath ? t("自定义托管图片") : t("目标项目默认图片")}</small>
+                      <small style={isWindowsPlatform ? undefined : { color: themeColors.muted }}>{customImagePath ? t("本地素材") : t("目标项目默认图片")}</small>
                     </span>
                   </div>
-                  <RelayFold className="relay-config-section dream-skin-image-info" title={t("图片信息")}>
-                    <Field label={t("托管图片路径")}>
+                  <RelayFold className="relay-config-section dream-skin-image-info" title={t("素材信息")}>
+                    <Field label={t("素材路径")}>
                       <Input
                         readOnly
                         placeholder={t("使用目标项目默认图片")}
@@ -9594,7 +9646,7 @@ function DreamSkinScreen({
                   <Toolbar>
                     <Button variant="secondary" onClick={() => void actions.chooseDreamSkinImagePath()}>
                       <Camera className="h-4 w-4" />
-                      {t("导入图片")}
+                      {t("导入图片或视频")}
                     </Button>
                     <Button
                       disabled={!customImagePath}
@@ -11510,6 +11562,7 @@ function GlobalSettingsScreen({
             >
               <AppSelect ariaLabel={t("界面主题")} className="cx-set-select" onChange={(value) => actions.setThemePreference(value)} options={themeOptions} size="sm" value={themePreference} />
             </CxRow>
+            <DisplaySettings />
           </CxCard>
         </CxSection>
         <CxSection title={t("窗口与托盘")}>
@@ -12459,6 +12512,7 @@ function RelayProfileEditor({
     profile.strictResponsesReasoning === true,
     profile.stripImageGenerationTool === true,
     profile.stripResponsesImageDetail === true,
+    profile.stripResponsesOutputEncryptedContent === true,
     profile.disableToolSearch === true,
     profile.pureApiImageGeneration === true,
   ].filter(Boolean).length;
@@ -14053,6 +14107,10 @@ function RelayProfileEditor({
                   <label className="switch-row compact relay-switch-row relay-field-strip-responses-image-detail">
                     <input type="checkbox" checked={profile.stripResponsesImageDetail === true} onChange={(event) => updateDraft({ stripResponsesImageDetail: event.currentTarget.checked })} />
                     <span><strong>{t("移除 Responses 图片 detail 字段")}</strong><small>{t("部分 Responses 上游不认 OpenAI 的 input_image.detail，只会返回泛化的参数错误。开启后转发前从普通消息和工具输出里的图片块删除 detail，请求改走本地代理。默认关闭。")}</small></span><ToggleVisual />
+                  </label>
+                  <label className="switch-row compact relay-switch-row relay-field-strip-responses-output-encrypted-content">
+                    <input type="checkbox" checked={profile.stripResponsesOutputEncryptedContent === true} onChange={(event) => updateDraft({ stripResponsesOutputEncryptedContent: event.currentTarget.checked })} />
+                    <span><strong>{t("不发送 output.encrypted_content（上游不支持时开启）")}</strong><small>{t("部分严格 Responses 上游不接受 Codex 请求 include 里的 output.encrypted_content，会整条返回 400。开启后只删除这一项，保留 reasoning.encrypted_content 和其他项，请求改走本地代理。Kimi 地址或模型名会自动处理。默认关闭。")}</small></span><ToggleVisual />
                   </label>
                   <label className="switch-row compact relay-switch-row relay-field-disable-tool-search">
                     <input type="checkbox" checked={profile.disableToolSearch === true} onChange={(event) => updateDraft({ disableToolSearch: event.currentTarget.checked })} />
@@ -15892,7 +15950,16 @@ type ClaudeLocalConfig = {
   codeShareHome?: boolean;
   /** 启动前把命令行建的会话加进 Desktop 的会话列表；不写按默认（开）。 */
   importCliSessions?: boolean;
+  /** Cowork 总开关；不写按默认（开）。 */
+  cowork?: boolean;
+  /** 合并式主页（Claude 的实验布局）；不写按默认（关）。 */
+  hubHome?: boolean;
+  /** 界面用哪个录制版本（build id）；空串按最新的。 */
+  template?: string;
 };
+
+/** 内嵌的一个录制版本；builtAt 是该版本前端的构建时间（秒）。 */
+type ClaudeTemplateVersion = { build: string; builtAt?: number | null };
 
 type ClaudeLocalStatus = {
   supported: boolean;
@@ -15906,6 +15973,11 @@ type ClaudeLocalStatus = {
   port?: number | null;
   caReady: boolean;
   caTrusted: boolean;
+  /** 系统级根证书（Cowork 虚拟机用）：只有 Windows 支持。 */
+  caMachineSupported?: boolean;
+  caMachineTrusted?: boolean;
+  /** 内嵌的录制版本，新的在前。 */
+  templates?: ClaudeTemplateVersion[];
   nodeAvailable: boolean;
   dictationReady: boolean;
   config: ClaudeLocalConfig;
@@ -15928,6 +16000,14 @@ const CLAUDE_DEFAULT_CONTEXT_WINDOW = 200_000;
 function formatContextWindow(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value) || value <= 0) return "";
   return formatTokens(value).replace(/K$/, "k");
+}
+
+/** 录制版本的显示：前端构建日期 + build id，例如「2026-11-14 · a4ced7f85b」；没有构建时间时只显示 build id。 */
+function claudeTemplateLabel(template: ClaudeTemplateVersion): string {
+  if (!template.builtAt) return template.build;
+  const date = new Date(template.builtAt * 1000);
+  const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  return `${day} · ${template.build}`;
 }
 
 /**
@@ -16087,7 +16167,7 @@ function ClaudeLocalizationScreen(
     claudeLocalMemo.autoDetected = true;
     void refreshLocal();
   }, []);
-  const localAction = async (action: "launch" | "stop" | "trust" | "untrust" | "prepare" | "sync_sessions") => {
+  const localAction = async (action: "launch" | "stop" | "trust" | "untrust" | "trust_machine" | "prepare" | "sync_sessions") => {
     if (localPending.current || pending.current) return;
     localPending.current = true;
     localGeneration.current++;
@@ -16356,6 +16436,7 @@ function ClaudeLocalizationScreen(
   const localTone = local?.connected ? "ok" : local?.config.enabled && local?.claudeRunning ? "warn" : "neutral";
   const canLaunchOriginal = Boolean(local?.supported && (!local.config.enabled || local.nodeAvailable));
   const localDisabled = localBusy !== null || busy !== null;
+  const localTemplates = local?.templates ?? [];
   const localDetail = local
     ? (local.supported ? `${t("原版版本")} ${local.version || t("未检测到")}` : t("未检测到支持的 Claude Desktop"))
       + ` · ${local.contextWindow != null && local.contextWindow > 0
@@ -16575,27 +16656,60 @@ function ClaudeLocalizationScreen(
                   )}
                 </div>
               </CxRow>
+              {/* Cowork 虚拟机以系统服务运行，只读系统级根证书：只有 Windows 需要，Cowork 关着时用不上。 */}
+              {(local.config.cowork ?? true) && local.caMachineSupported ? (
+                <CxRow
+                  badges={<CxBadge tone={local.caMachineTrusted ? "ok" : "neutral"}>{local.caMachineTrusted ? t("已安装") : t("未安装")}</CxBadge>}
+                  detail={t("Cowork 虚拟机以系统服务运行，只读取系统级根证书；安装需要管理员授权。")}
+                  title={t("系统证书")}
+                >
+                  {!local.caMachineTrusted ? (
+                    <div className="claude-l10n-actions">
+                      <button className="cx-secondary" disabled={localDisabled} onClick={() => void localAction("trust_machine")} type="button"><ShieldCheck />{t("安装系统证书")}</button>
+                    </div>
+                  ) : null}
+                </CxRow>
+              ) : null}
               <CxRow badges={<CxBadge tone={local.dictationReady ? "ok" : "neutral"}>{local.dictationReady ? t("已就绪") : t("未就绪")}</CxBadge>} title={t("语音识别")} />
               <CxRow badges={<CxBadge tone={local.nodeAvailable ? "ok" : "warn"}>{local.nodeAvailable ? t("已就绪") : t("缺少 Node.js")}</CxBadge>} title={t("运行环境")} />
+              {localTemplates.length > 1 ? (
+                <CxRow
+                  detail={t("录制 claude.ai 界面时的版本。新版本有问题时可以换回旧的；前端代码按所选版本从 Anthropic 下载。")}
+                  title={t("界面版本")}
+                >
+                  <AppSelect
+                    ariaLabel={t("界面版本")}
+                    disabled={localDisabled}
+                    menuWidth={300}
+                    onChange={(next) => void configureLocal({ ...local.config, template: next })}
+                    options={[
+                      { value: "", label: tf("最新（{0}）", [claudeTemplateLabel(localTemplates[0])]) },
+                      ...localTemplates.map((template) => ({ value: template.build, label: claudeTemplateLabel(template) })),
+                    ]}
+                    value={localTemplates.some((template) => template.build === local.config.template) ? local.config.template ?? "" : ""}
+                  />
+                </CxRow>
+              ) : null}
             </CxCard>
             <CxCard className="claude-l10n-feature-grid">
               {([
-                ["localization", "界面汉化", "本地界面汉化"],
-                ["voiceInput", "原生听写", "本地原生听写"],
-                ["computerUse", "电脑控制", "本地电脑控制"],
-                ["backgroundMode", "后台模式", "本地后台模式"],
-                ["forceBackgroundMode", "新系统也开后台模式", "本地后台模式不限系统版本"],
-              ] as const).map(([key, label, ariaLabel]) => (
+                ["localization", "界面汉化", "本地界面汉化", ""],
+                ["voiceInput", "原生听写", "本地原生听写", ""],
+                ["computerUse", "电脑控制", "本地电脑控制", ""],
+                ["backgroundMode", "后台模式", "本地后台模式", ""],
+                ["forceBackgroundMode", "新系统也开后台模式", "本地后台模式不限系统版本", "Claude 在较新的 macOS 上会提示「暂不支持后台模式」；打开后不再限制系统版本，未经 Claude 验证，可能不稳定"],
+                ["cowork", "Cowork", "本地 Cowork", "关掉后按 Claude 自己的开关，新版 Claude 通常只剩 Chat / Code。系统条件（Windows 需商店版、虚拟化可用）仍由 Claude 检查"],
+                ["hubHome", "合并式主页（实验）", "本地合并式主页", "Claude 正在小范围试验的主页布局：对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。关着时用有切换的经典主页"],
+              ] as const).map(([key, label, ariaLabel, hint]) => (
                 <label
                   className="switch-row compact"
                   key={key}
-                  title={key === "forceBackgroundMode"
-                    ? t("Claude 在较新的 macOS 上会提示「暂不支持后台模式」；打开后不再限制系统版本，未经 Claude 验证，可能不稳定")
-                    : undefined}
+                  title={hint ? t(hint) : undefined}
                 >
                   <input
                     aria-label={t(ariaLabel)}
-                    checked={local.config[key] ?? false}
+                    // 只有 Cowork 默认是开的。
+                    checked={local.config[key] ?? key === "cowork"}
                     disabled={localDisabled}
                     onChange={(event) => {
                       const checked = event.currentTarget.checked;

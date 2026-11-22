@@ -958,9 +958,53 @@
     }
   }
 
+  // Rspack 通道：Codex++ 用 CDP Fetch 在同源 URL 回填注册分块，页面里没有 import map 那样的
+  // preload 失败事件，只能看完成标记。和 installModules 一样，DOMContentLoaded 后 30 秒仍未执行补丁
+  // 就发布 failed，设置页显示原因，app-server 捕获门也不再一直等着。
+  // 不重载：没拦截到时页面跑的是原始分块，重载只会重复同样结果；已回填但没执行时，
+  // 下一文档仍会被同样回填，重载也救不回来。
+  function armResponseModule(details = {}) {
+    const url = typeof details?.url === "string" ? details.url : undefined;
+    const diagnostics = { url, reason: "response-interception-armed" };
+    if (details?.rewriters && typeof details.rewriters === "object") diagnostics.rewriters = { ...details.rewriters };
+    const document = root.document;
+    if (!activeRewriters().length) return { ok: false, diagnostics: { url, reason: "disabled" } };
+    if (!moduleUrl(url) || !document) return { ok: false, diagnostics: { url, reason: "unsupported-document-url" } };
+    root.__codexPlusNativeFastModuleDiagnostics = diagnostics;
+    let watchdog = null;
+    const cleanup = () => {
+      if (watchdog != null) { root.clearTimeout(watchdog); watchdog = null; }
+      document.removeEventListener("DOMContentLoaded", armWatchdog);
+      if (root.__codexPlusNativeFastModuleComplete === complete) delete root.__codexPlusNativeFastModuleComplete;
+    };
+    const complete = () => {
+      if (root.__codexPlusNativeFastCompiled === "v1") cleanup();
+    };
+    const timeout = () => {
+      watchdog = null;
+      cleanup();
+      // 已生效，或 Codex++ 已发布更具体的失败（如 unexpected_response），都不覆盖。
+      if (root.__codexPlusNativeFastCompiled === "v1" || root.__codexPlusNativeFastPatchState !== "armed") return;
+      // 补丁分块求值时会写下自己的地址：有它说明回填到了，只是补丁没执行完。
+      diagnostics.reason = root.__codexPlusNativeFastResponseLoaded === url ? "module-execution-timeout" : "response-not-intercepted";
+      root.__codexPlusNativeFastFailureReason = diagnostics.reason;
+      root.__codexPlusNativeFastPatchState = "failed";
+    };
+    const armWatchdog = () => {
+      if (root.__codexPlusNativeFastCompiled === "v1") { cleanup(); return; }
+      if (watchdog != null) return;
+      watchdog = root.setTimeout(timeout, 30000);
+    };
+    root.__codexPlusNativeFastModuleComplete = complete;
+    document.addEventListener("DOMContentLoaded", armWatchdog, { once: true });
+    if (document.readyState !== "loading") armWatchdog();
+    return { ok: true, diagnostics };
+  }
+
   const api = {
     plan, transform, prepareModule, installModule, runtime,
     registerRewriter, transformModule, prepareModules, discoverModules, prepareDocumentModules, installModules,
+    armResponseModule,
   };
   if (typeof module === "object" && module.exports) module.exports = api;
   if (typeof window === "object") window.__codexPlusNativeFastUnlock = api;

@@ -675,6 +675,10 @@ impl ResponsesSseToAnthropicSse {
             input_tokens: usage.input_tokens + usage.cache_read_input_tokens,
             output_tokens: usage.output_tokens,
             cached_tokens: usage.cache_read_input_tokens,
+            cached_tokens_known: response
+                .pointer("/usage/input_tokens_details/cached_tokens")
+                .and_then(Value::as_u64)
+                .is_some(),
             reasoning_tokens: usage.reasoning_tokens,
         });
         let stop_reason = stop_reason(response, self.emitted_tool_use);
@@ -1041,6 +1045,20 @@ fn take_sse_block(buffer: &mut String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn responses_to_anthropic_request_usage_preserves_cache_presence() {
+        for (details, known) in [
+            (json!({}), false),
+            (json!({"input_tokens_details": {"cached_tokens": 0}}), true),
+        ] {
+            let mut converter = ResponsesSseToAnthropicSse::new("test-model", 0);
+            converter.finish_message(&json!({"usage":details}), &mut String::new());
+            let usage = converter.usage().unwrap();
+            assert_eq!(usage.cached_tokens, 0);
+            assert_eq!(usage.cached_tokens_known, known);
+        }
+    }
 
     fn sse(events: &[Value]) -> String {
         events

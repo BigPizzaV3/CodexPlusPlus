@@ -282,6 +282,65 @@ export function nextSkillGroupSortDirection(direction: SkillGroupSortDirection |
   return direction === "asc" ? "desc" : "asc";
 }
 
+/* —— 迁移包（#2852）：分组存在本窗口里，导出时把分组键写进包，导入后按包写回 —— */
+
+/** 迁移包里的一个 Skill：`group` 是分组键（`custom:<名称>` / `repo:<owner/name>`），空串表示按来源。 */
+export type SkillBundleSkill = { id: string; group: string };
+export type SkillBundleExportGroup = { key: string; label: string; bundleGroup: string; ids: string[] };
+
+/** 能导出的分组：每组里已安装、非内置的 Skill（同一 id 只列一次）；没有可导出 Skill 的分组不列。 */
+export function skillBundleExportGroups<T extends GroupableSkill & { installed: boolean }>(groups: SkillGroup<T>[]): SkillBundleExportGroup[] {
+  return groups.flatMap((group) => {
+    if (group.kind === "builtin") return [];
+    const ids = [...new Set(group.items.filter((skill) => skill.installed && !skill.bundled).map((skill) => skill.id))];
+    // 「用户」分组就是按来源的默认位置，包里不记分组。
+    return ids.length ? [{ key: group.key, label: group.label, bundleGroup: group.kind === "user" ? "" : group.key, ids }] : [];
+  });
+}
+
+/** 选中的分组 → 导出请求。一个 Skill 出现在多个分组里时（同名冲突的几份）算进最前面的那个。 */
+export function skillBundleSelections(groups: SkillBundleExportGroup[], selected: ReadonlySet<string>): { skills: SkillBundleSkill[]; groups: string[] } {
+  const seen = new Set<string>();
+  const skills: SkillBundleSkill[] = [];
+  const keys: string[] = [];
+  for (const group of groups) {
+    if (!selected.has(group.key)) continue;
+    if (group.bundleGroup) keys.push(group.bundleGroup);
+    for (const id of group.ids) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      skills.push({ id, group: group.bundleGroup });
+    }
+  }
+  return { skills, groups: keys };
+}
+
+/**
+ * 导入迁移包后恢复分组：补上包里的自建分组名，把包里的 Skill 指回各自的分组，包里的分组顺序接在已有顺序后面。
+ * 包里按来源（空串）的 Skill 不动本机已有的分组设置。
+ */
+export function applySkillBundleGroups<T extends GroupableSkill & { installed: boolean }>(
+  bundle: { groups: string[]; skills: SkillBundleSkill[] },
+  known: T[],
+  current: { names: string[]; assignmentsByIdentity: Record<string, string>; order: string[] },
+): { names: string[]; assignmentsByIdentity: Record<string, string>; order: string[] } {
+  const names = [...current.names];
+  const assignmentsByIdentity = { ...current.assignmentsByIdentity };
+  for (const skill of bundle.skills) {
+    const group = skill.group.trim();
+    const custom = group.startsWith("custom:") ? group.slice(7).trim() : "";
+    if (!custom && !(group.startsWith("repo:") && group.length > 5)) continue;
+    if (custom && !names.includes(custom)) names.push(custom);
+    const key = custom ? customSkillGroupKey(custom) : group;
+    for (const item of known) {
+      if (item.id === skill.id && item.installed && !item.bundled) assignmentsByIdentity[skillGroupIdentityKey(item)] = key;
+    }
+  }
+  const order = [...current.order];
+  for (const key of bundle.groups) if (key && !order.includes(key)) order.push(key);
+  return { names, assignmentsByIdentity, order };
+}
+
 export function moveSkillGroup<T>(groups: SkillGroup<T>[], from: string, to: string): string[] {
   const movable = groups.filter((group) => group.kind === "repo" || group.kind === "custom").map((group) => group.key);
   const source = movable.indexOf(from);

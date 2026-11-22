@@ -18,6 +18,7 @@ export type RelayModelRouteProfile = {
   strictResponsesReasoning?: boolean;
   stripImageGenerationTool?: boolean;
   stripResponsesImageDetail?: boolean;
+  stripResponsesOutputEncryptedContent?: boolean;
   pureApiImageGeneration?: boolean;
   modelMetadata?: string;
   modelRoutes?: RelayModelRoute[];
@@ -131,6 +132,16 @@ export function stripResponsesImageDetailEnabled(
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
 }
 
+/** 转发前移除 Responses 顶层 `include` 里的 `output.encrypted_content`，只对第三方 Responses 上游生效。 */
+export function stripResponsesOutputEncryptedContentEnabled(
+  profile: Pick<RelayModelRouteProfile, "protocol" | "relayMode" | "officialMixApiKey" | "stripResponsesOutputEncryptedContent">,
+): boolean {
+  return profile.stripResponsesOutputEncryptedContent === true
+    && profile.protocol === "responses"
+    && profile.relayMode !== "aggregate"
+    && (profile.relayMode !== "official" || profile.officialMixApiKey);
+}
+
 /** #1433：纯 API 下让 Codex 注册原生生图工具，生图请求要经本地代理转给供应商。 */
 export function pureApiImageGenerationEnabled(
   profile: Pick<RelayModelRouteProfile, "relayMode" | "pureApiImageGeneration">,
@@ -152,6 +163,8 @@ export function settingsRequireLocalHelper(settings: RelayModelRouteSettings): b
     || localCompactionPromptAtEndEnabled(active)
     || requestCompatibilityEnabled(active)
     || stripImageGenerationToolEnabled(active)
+    || stripResponsesImageDetailEnabled(active)
+    || stripResponsesOutputEncryptedContentEnabled(active)
     || pureApiImageGenerationEnabled(active)
     || normalizeRelayModelRoutes(active.modelRoutes).some(
       (route) => Boolean(route.model.trim() && route.targetRelayId.trim()),

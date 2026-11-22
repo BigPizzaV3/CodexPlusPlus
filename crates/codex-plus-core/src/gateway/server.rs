@@ -575,7 +575,7 @@ pub(crate) async fn open_responses_for_agent(
             response.request_trace = Some(merged);
             Ok((response, slot))
         }
-        GatewayUpstream::Cooling(wait) => Ok((cooling_response(wait), None)),
+        GatewayUpstream::Cooling(wait) => Ok((cooling_response(wait, trace), None)),
         GatewayUpstream::Native(_) => anyhow::bail!("Responses 客户端不会走 Anthropic 原样转发"),
     }
 }
@@ -587,7 +587,11 @@ fn cooling_message(wait: std::time::Duration) -> String {
     )
 }
 
-fn cooling_response(wait: std::time::Duration) -> UpstreamProxyResponse {
+/// 本地回的 429：带上候选循环的 trace，请求日志才看得出本来要发给哪家、哪个模型（#3229）。
+fn cooling_response(
+    wait: std::time::Duration,
+    trace: crate::request_log::RequestTrace,
+) -> UpstreamProxyResponse {
     UpstreamProxyResponse {
         status_code: 429,
         content_type: JSON.to_string(),
@@ -603,7 +607,7 @@ fn cooling_response(wait: std::time::Duration) -> UpstreamProxyResponse {
             .unwrap_or_default(),
         ),
         stream_prefix: Vec::new(),
-        request_trace: None,
+        request_trace: Some(trace),
         exec_adapted: false,
         exec_outcome: None,
         websocket: None,
@@ -1026,7 +1030,15 @@ async fn handle_claude_messages(
             Ok(())
         }
         GatewayUpstream::Native(response) => {
-            write_native(stream, &mut request_log, &trace, response, wants_stream).await
+            write_native(
+                stream,
+                &mut request_log,
+                &trace,
+                response,
+                wants_stream,
+                remote_addr_text.as_deref(),
+            )
+            .await
         }
         GatewayUpstream::Pipeline(mut response) => {
             request_log.record_trace(&trace, response.status_code, wants_stream);
@@ -1047,14 +1059,20 @@ async fn handle_claude_messages(
             let upstream_json = response.content_type.to_ascii_lowercase().contains("json");
             if wants_stream && upstream_json {
                 // 上游没理会 stream:true、回了整段 JSON：转成完整消息后再拆成事件流。
-                let responses_json = match read_pipeline_json(&mut response, &responses_body).await {
+                let (responses_json, usage) = match read_pipeline_json(&mut response, &responses_body).await {
                     Ok(json) => json,
                     Err(error) => {
-                        return write_bad_upstream(stream, &dialect, &mut request_log, &error).await;
+                        return write_bad_upstream(
+                            stream,
+                            &dialect,
+                            &mut request_log,
+                            &error,
+                            remote_addr_text.as_deref(),
+                        )
+                        .await;
                     }
                 };
-                request_log.record_usage_json(&serde_json::to_vec(&responses_json)?);
-                request_log.record_stream(None, None, None);
+                request_log.record_stream(None, usage, None);
                 let message = dialect.json_reply(&responses_json, &client_model);
                 write_stream_headers(stream).await?;
                 stream.write_all(&dialect.reply_to_sse(&message)).await?;
@@ -1067,6 +1085,10 @@ async fn handle_claude_messages(
                     inner: stream,
                     converter: dialect.converter(&client_model, input_estimate),
                 };
+                let mut explicit_chat_zero = false;
+                // 转发层看到的失败原因（例如读流出错的原文），和转换器给客户端的那条分开记。
+                let mut upstream_failure = None;
+                let mut upstream_detail = None;
                 {
                     // 拓展的网关响应流中间件看到的是 Responses 事件，转换成客户端格式之前生效。
                     let mut filtered = crate::launcher::ExtensionResponseSink::new(&mut sink, "/responses", Some(&responses_body)).await;
@@ -1075,7 +1097,7 @@ async fn handle_claude_messages(
                     } else {
                         let prefix = std::mem::take(&mut response.stream_prefix);
                         let wire_api = response.wire_api;
-                        let (_failure, _usage, _detail, first_output_at_ms) =
+                        let (failure, upstream_usage, detail, first_output_at_ms) =
                             forward_protocol_proxy_stream(
                                 &mut filtered,
                                 &prefix,
@@ -1085,6 +1107,11 @@ async fn handle_claude_messages(
                                 session.as_deref(),
                             )
                             .await?;
+                        upstream_failure = failure;
+                        upstream_detail = detail;
+                        explicit_chat_zero = filtered.is_unmodified()
+                            && wire_api == UpstreamWireApi::ChatCompletions
+                            && upstream_usage.is_some_and(|usage| usage.cached_tokens_known && usage.cached_tokens == 0);
                         if let Some(first_output_at_ms) = first_output_at_ms {
                             request_log.mark_first_token_at(first_output_at_ms);
                         }
@@ -1096,22 +1123,44 @@ async fn handle_claude_messages(
                     sink.inner.write_all(&tail).await?;
                 }
                 let failure = sink.converter.failure().map(str::to_string);
+                let mut usage = sink.converter.usage();
+                if let Some(usage) = usage.as_mut()
+                    && explicit_chat_zero && usage.cached_tokens == 0
+                {
+                    usage.cached_tokens_known = true;
+                }
                 request_log.record_stream(
                     failure.as_deref(),
-                    sink.converter.usage(),
+                    usage,
                     failure.clone(),
                 );
+                if let Some(error) = failure.as_deref().or(upstream_failure.as_deref()) {
+                    log_gateway_failure(
+                        "gateway.claude_stream_failed",
+                        &request_log,
+                        error,
+                        upstream_failure.as_deref(),
+                        upstream_detail.as_deref(),
+                        remote_addr_text.as_deref(),
+                    );
+                }
                 stream.shutdown().await?;
                 return Ok(());
             }
-            let responses_json = match read_pipeline_json(&mut response, &responses_body).await {
+            let (responses_json, usage) = match read_pipeline_json(&mut response, &responses_body).await {
                 Ok(json) => json,
                 Err(error) => {
-                    return write_bad_upstream(stream, &dialect, &mut request_log, &error).await;
+                    return write_bad_upstream(
+                        stream,
+                        &dialect,
+                        &mut request_log,
+                        &error,
+                        remote_addr_text.as_deref(),
+                    )
+                    .await;
                 }
             };
-            request_log.record_usage_json(&serde_json::to_vec(&responses_json)?);
-            request_log.record_stream(None, None, None);
+            request_log.record_stream(None, usage, None);
             let message = dialect.json_reply(&responses_json, &client_model);
             write_http_response(stream, "200 OK", JSON, &serde_json::to_vec(&message)?).await?;
             stream.shutdown().await?;
@@ -1124,7 +1173,7 @@ async fn handle_claude_messages(
 async fn read_pipeline_json(
     response: &mut crate::protocol_proxy::UpstreamProxyResponse,
     responses_body: &Value,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<(Value, Option<crate::request_log::RequestUsage>)> {
     let body = response.read_body().await?;
     non_stream_body_to_responses(response.wire_api, &body, Some(responses_body))
 }
@@ -1136,9 +1185,18 @@ async fn write_bad_upstream(
     dialect: &Dialect,
     request_log: &mut ProxyRequestLog,
     error: &anyhow::Error,
+    remote_addr_text: Option<&str>,
 ) -> anyhow::Result<()> {
     let message = format!("上游答复无法解析：{error:#}");
     request_log.record_error("502 Bad Gateway", message.clone());
+    log_gateway_failure(
+        "gateway.claude_bad_upstream",
+        request_log,
+        &message,
+        None,
+        None,
+        remote_addr_text,
+    );
     let body = serde_json::to_vec(&dialect.error_body(502, &message))?;
     write_http_response(stream, "502 Bad Gateway", JSON, &body).await?;
     stream.shutdown().await?;
@@ -1164,6 +1222,7 @@ async fn write_native(
     trace: &crate::request_log::RequestTrace,
     mut response: NativeAnthropicResponse,
     wants_stream: bool,
+    remote_addr_text: Option<&str>,
 ) -> anyhow::Result<()> {
     request_log.record_trace(trace, response.status_code, response.is_stream);
     if let Some(body) = response.buffered_body.take() {
@@ -1237,8 +1296,54 @@ async fn write_native(
         failure = Some("上游在 message_stop 之前结束了响应流".to_string());
     }
     request_log.record_stream(failure.as_deref(), observer.usage(), failure.clone());
+    if let Some(error) = failure.as_deref() {
+        log_gateway_failure(
+            "gateway.claude_stream_failed",
+            request_log,
+            error,
+            None,
+            None,
+            remote_addr_text,
+        );
+    }
     stream.shutdown().await?;
     Ok(())
+}
+
+/// 网关转发失败时写一条诊断日志（#3164）。
+///
+/// 这些失败原因原来只进请求日志，诊断日志里查不到，用户导出诊断日志排查时就缺了这一环。
+/// 字段对齐 Codex 代理的 `helper.protocol_proxy_stream_failed`，再带上路由（供应商、上游模型、
+/// 协议），方便判断是哪家上游掐断的。不带 Key / token；账号类供应商的名字里带邮箱，
+/// 和 `gateway.upstream_failed` 一样只留打码后的。
+fn log_gateway_failure(
+    event: &str,
+    request_log: &ProxyRequestLog,
+    error: &str,
+    upstream_error: Option<&str>,
+    detail: Option<&str>,
+    remote_addr_text: Option<&str>,
+) {
+    let entry = &request_log.entry;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        event,
+        json!({
+            "method": entry.method,
+            "path": entry.path,
+            "status": crate::protocol_proxy::http_status_line(entry.status_code),
+            "stream": entry.stream,
+            "agent": entry.agent,
+            "relayId": entry.relay_id,
+            "relayName": crate::gateway::accounts::mask_account_name(&entry.relay_name),
+            "model": entry.model,
+            "upstreamModel": entry.upstream_model,
+            "wireApi": entry.wire_api,
+            "error": error,
+            "upstreamError": upstream_error,
+            "detail": detail,
+            "remote_addr": remote_addr_text,
+        }),
+    );
 }
 
 /// 非流式 Anthropic 响应里的 usage。
@@ -1251,6 +1356,10 @@ fn anthropic_usage(body: &[u8]) -> Option<crate::request_log::RequestUsage> {
         input_tokens: number("input_tokens") + cached + number("cache_creation_input_tokens"),
         output_tokens: number("output_tokens"),
         cached_tokens: cached,
+        cached_tokens_known: usage
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .is_some(),
         reasoning_tokens: 0,
     })
 }
@@ -1263,6 +1372,7 @@ struct AnthropicSseObserver {
     stopped: bool,
     input_tokens: u64,
     cached_tokens: u64,
+    cached_tokens_known: bool,
     output_tokens: u64,
 }
 
@@ -1300,6 +1410,7 @@ impl AnthropicSseObserver {
                 }
                 if let Some(cached) = number("cache_read_input_tokens") {
                     self.cached_tokens = cached;
+                    self.cached_tokens_known = true;
                 }
                 if let Some(output) = number("output_tokens") {
                     self.output_tokens = output;
@@ -1314,6 +1425,7 @@ impl AnthropicSseObserver {
                 input_tokens: self.input_tokens,
                 output_tokens: self.output_tokens,
                 cached_tokens: self.cached_tokens,
+                cached_tokens_known: self.cached_tokens_known,
                 reasoning_tokens: 0,
             }
         })
@@ -1709,7 +1821,27 @@ mod tests {
         let usage = observer.usage().unwrap();
         assert_eq!(usage.input_tokens, 100);
         assert_eq!(usage.cached_tokens, 90);
+        assert!(usage.cached_tokens_known);
         assert_eq!(usage.output_tokens, 7);
         assert!(observer.stopped);
+    }
+
+    #[test]
+    fn anthropic_request_usage_preserves_cache_presence() {
+        for (cached, known) in [
+            (None, false),
+            (Some(0), true),
+        ] {
+            let mut usage = json!({"input_tokens": 10, "output_tokens": 2});
+            if let Some(cached) = cached {
+                usage["cache_read_input_tokens"] = json!(cached);
+            }
+            let body = serde_json::to_vec(&json!({"usage":usage})).unwrap();
+            assert_eq!(anthropic_usage(&body).unwrap().cached_tokens_known, known);
+            let mut observer = AnthropicSseObserver::default();
+            let event = json!({"type":"message_start","message":{"usage":usage}});
+            observer.push(format!("data: {event}\n\n").as_bytes());
+            assert_eq!(observer.usage().unwrap().cached_tokens_known, known);
+        }
     }
 }
