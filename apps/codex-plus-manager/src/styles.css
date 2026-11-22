@@ -268,11 +268,6 @@ body {
   line-height: 1.45;
 }
 
-@keyframes sponsor-carousel-in {
-  from { opacity: 0.55; transform: translateY(3px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
 .fill {
   min-height: calc(100vh - 188px);
 }
@@ -3439,18 +3434,6 @@ input[type="range"]:disabled {
   to {
     opacity: 1;
     transform: translate3d(0, 0, 0);
-  }
-}
-
-@keyframes relay-detail-toolbar-enter {
-  from {
-    opacity: 0;
-    transform: translateY(-6px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
   }
 }
 
