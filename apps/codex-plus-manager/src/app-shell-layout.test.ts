@@ -83,7 +83,7 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(sections, /\{ id: "overview", routes: \["overview", "relay"\] \}/);
   for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
   assert.doesNotMatch(sections, /"agentSettings"|"relayEnvironment"/);
-  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance", "gatewaySettings",/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "gatewaySettings",/);
   assert.doesNotMatch(text, /key: "codexConnection"|key: "legacyProxy"|key: "legacyRelay"/);
   assert.match(text, /id: "relay", get label\(\) \{ return t\("连接与供应商"\); \}/);
   // 内容区顶部不再画 Agent 页签。
@@ -242,10 +242,12 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   const app = functionSource("App");
   assert.match(app, /<LegacyRelayGatewayHint[\s\S]*onOpenGateway=\{\(\) => void navigate\("gatewayProviders"\)\}/);
   // 连接方式作为 connection 传进 RelayScreen，只在列表视图显示；旧版代理设置作为 advanced 收进同一页底部。
-  assert.match(app, /\{route === "relay" \|\| route === "relayEnvironment" \? \(\n\s*<RelayScreen/);
+  assert.match(app, /\{route === "relay" \? \(\n\s*<RelayScreen/);
   assert.match(app, /connection=\{\(\n\s*<LegacyRelayGatewayHint/);
   assert.match(app, /advanced=\{\(\n\s*<ProxySettingsScreen/);
-  assert.match(app, /advancedOpen=\{route === "relayEnvironment" \|\| relayAdvancedOpen\}/);
+  // 旧入口 relayEnvironment 在 navigate 里换成这一页并展开「高级」。
+  assert.match(app, /advancedOpen=\{relayAdvancedOpen\}/);
+  assert.match(app, /setRelayAdvancedOpen\(target === "relayEnvironment"\);/);
   assert.match(app, /onDisconnect=\{\(\) => setLegacyDisconnectOpen\(true\)\}/);
   assert.match(app, /legacyDisconnectOpen \? \(\s*<AgentDisconnectDialog/);
   assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding", \{ agent: "codex", previewToken \}\)/);
@@ -299,8 +301,10 @@ test("Agent 页签条不能是滚动容器：否则在 .screen 的 grid 里会�
 
 test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里，设置页下方渲染维护内容，旧路由跳到设置", () => {
   const app = functionSource("App");
-  assert.match(app, /const next: Route = target === "maintenance" \? "agentSettings" : target === "about" \? "settings" : target === "relayEnvironment" \? "relay" : target === "recommendations" \? "home" : target;/);
-  assert.match(app, /\{route === "agentSettings" \|\| route === "maintenance" \? \(/);
+  // 旧路由在入口处经 route-aliases 换成现在的页面，渲染分支里不再出现旧 id。
+  assert.match(app, /const next = resolveRouteAlias<Route>\(target\);/);
+  assert.match(app, /\{route === "agentSettings" \? \(/);
+  assert.doesNotMatch(app, /route === "maintenance"|route === "about"|route === "relayEnvironment"|route === "recommendations"/);
   assert.match(text, /\{ key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent"/);
   // 分类目录交给侧栏，页内不再有左侧目录；分组卡片 id 仍然保留，深链照常。
   assert.doesNotMatch(app, /sections=\{codexSettingsSections\(\)\}/);
@@ -351,7 +355,8 @@ test("导入供应商弹窗：只有文字那块占满宽度，头像（也是 s
 });
 
 test("代理设置按归属拆开：本地服务与请求避震移到网关设置（新旧共用），旧版页只留旧版专用的两项", () => {
-  assert.match(text, /id: "relayEnvironment", get label\(\) \{ return t\("旧版代理设置"\); \}/);
+  // 旧版代理设置不再是单独的路由，旧 id 打开「连接与供应商」并展开「高级」。
+  assert.doesNotMatch(text, /id: "relayEnvironment", get label/);
   const shared = functionSource("SharedServiceSettings");
   // 两节：本地服务、请求避震；标题悬停说明新旧共用。
   assert.match(shared, /t\("本地服务"\)/);
@@ -380,9 +385,8 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   assert.doesNotMatch(text, /SponsorBoard|FloatingSponsor/);
   assert.doesNotMatch(functionSource("OverviewScreen"), /featuredAds|AdGrid/);
   // 侧栏主模式第一项；旧「推荐内容」路由跳到首页，设置模式里不再有这一项。
-  assert.match(functionSource("AppSidebar"), /const general: SideEntry\[\] = \[\n\s*\{ key: "home", route: "home", label: t\("首页"\), icon: House, match: \["home", "recommendations"\] \},/);
-  assert.match(app, /target === "recommendations" \? "home" : target/);
-  assert.match(app, /if \(next === "home"\) await refreshAds\(true\);/);
+  assert.match(functionSource("AppSidebar"), /const general: SideEntry\[\] = \[\n\s*\{ key: "home", route: "home", label: t\("首页"\), icon: House, match: \["home"\] \},/);
+  assert.match(app, /case "home":\n\s*loads\.push\(refreshAds\(true\)\);/);
   assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"recommendations"/);
   const home = functionSource("HomeScreen");
   // 首页不能全是广告：先是状态，再是精选推荐和其他赞助商，最后常用入口。
@@ -537,8 +541,15 @@ test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式�
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /onClick=\{\(\) => openSettings\("settings", \["app-settings-general"\]\)\}/);
   const app = functionSource("App");
-  // 只显示侧栏选中分类的卡片；深链到某张卡片时换到它所在的分类。
-  assert.match(app, /settingsSections\.map\(\(id\) => `:not\(#\$\{id\}\)`\)/);
+  // 只渲染侧栏选中分类的卡片（不再注入隐藏样式）；深链到某张卡片时换到它所在的分类。
+  assert.doesNotMatch(app, /settingsSections\.map\(\(id\) => `:not\(#\$\{id\}\)`\)/);
+  assert.match(app, /<GlobalSettingsScreen\n\s*sections=\{settingsSections\}/);
+  assert.match(app, /<AboutScreen\n\s*sections=\{settingsSections\}/);
+  assert.match(functionSource("GlobalSettingsScreen"), /\{shown\("app-settings-doctor"\) \? <ConfigDoctorPanel \/> : null\}/);
+  assert.match(functionSource("AboutScreen"), /\{shown\("app-settings-logs"\) \? <div className="cx-set-group" id="app-settings-logs">/);
+  // 日志与诊断在分类显示时才读；切分类不再整页重读。
+  assert.match(app, /const settingsLogsShown = route === "settings" && settingsSections\.includes\("app-settings-logs"\);/);
+  assert.match(app, /if \(next !== route\) void navigate\(next\);/);
   assert.match(app, /if \(settingsFocus\) setSettingsSections\(settingsSectionsFor\(settingsFocus\)\);/);
   const entries = text.slice(text.indexOf("function settingsNavEntries"), text.indexOf("const settingsModeRoutes"));
   for (const id of ["app-settings-general", "app-settings-config", "app-settings-doctor", "app-settings-update", "app-settings-logs", "app-settings-diagnostics", "app-settings-about"]) {

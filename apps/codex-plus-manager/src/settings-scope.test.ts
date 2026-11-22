@@ -37,7 +37,7 @@ test("整体设置只放应用级选项，Agent 设置承担工具级选项", ()
 test("Codex 设置与整体设置都进齿轮的设置模式，不占 Agent 的页签", () => {
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"agentSettings"/);
-  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "about", "agentSettings", "maintenance",/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings",/);
 
   const globalNavigation = text.slice(text.indexOf("const globalNavigationRoutes"), text.indexOf("const defaultSettings"));
   assert.match(globalNavigation, /"settings"/);
@@ -77,7 +77,7 @@ test("标题：设置模式用分类名，Agent 自己的页面和其余页面�
 
 test("只用增强功能：隐藏供应商页面，配置保存成功后才提交模式", () => {
   const helpers = text.slice(text.indexOf("const multiAgentRoutes"), text.indexOf("function agentFocusDescription"));
-  assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "relayEnvironment", "multiLaunch"\]\);/);
+  assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"\]\);/);
   assert.match(helpers, /providersHidden\(focus\) && providerRoutes\.has\(routeId\)/);
   // 侧栏、页签、命令面板都按同一条规则过滤。
   // 聚合网关整组按模式过滤，一项都不剩时连标题一起隐藏。

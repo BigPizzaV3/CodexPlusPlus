@@ -786,7 +786,6 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex、Claude Code、Grok 的本地会话放在一起：在终端继续，Codex 会话还能删除、归档与修复": "Local sessions from Codex, Claude Code and Grok in one place: resume in a terminal; Codex sessions can also be deleted, archived and repaired",
   "按 Agent 查看会话": "View sessions by agent",
   "Codex 的供应商配置由 Codex++ 直接管理": "Codex providers are managed directly by Codex++",
-  "来自 Codex++ 广告源的推荐，点卡片在浏览器里打开": "Recommendations from the Codex++ ad feed; click a card to open it in your browser",
   "重新扫描": "Rescan",
   "已扫描": "Scanned",
   "可清理": "Cleanable",
@@ -1001,8 +1000,6 @@ export const EN_PLAIN: Record<string, string> = {
   "重新接入": "Reconnect",
   "现在连的是 {0}": "Now connected to {0}",
   "代理": "Proxy",
-  "旧版代理设置": "Proxy settings (legacy)",
-  "旧版直连模式专用：目录外模型映射与供应商独立代理": "Legacy direct mode only: unlisted model mapping and per-provider proxies",
   "本地服务与请求避震已移到网关设置": "Local service and retry moved to gateway settings",
   "本地服务状态、请求体上限和请求避震对新旧两套同时生效，统一在「网关 → 网关设置」里改。": "The local service status, request body limit and retry apply to both modes; change them under Gateway → Settings.",
   "打开网关设置": "Open gateway settings",
@@ -2553,7 +2550,6 @@ export const EN_PLAIN: Record<string, string> = {
   "先添加至少 1 个可用的 API 供应商或官方登录账号，再创建聚合供应商。":
     "Add at least 1 usable API provider or signed-in official account before creating an aggregate provider.",
   "免安装版或解包版只需要选择一次，之后从界面启动会自动复用": "Portable or unpacked builds only need to be selected once; launching from the window reuses it afterwards",
-  "入口检查与修复、开机启动与应用路径": "Entrypoint checks and repairs, launch at login and app path",
   "全选当前列表": "Select all in current list",
   "关于": "About",
   "关于 Codex++": "About Codex++",
@@ -2788,7 +2784,6 @@ export const EN_PLAIN: Record<string, string> = {
   "安装": "Install",
   "安装包更新失败，请查看错误提示后重试。": "Installer update failed. Check the error message and retry.",
   "安装包更新进度": "Installer update progress",
-  "安装维护": "Install & maintenance",
   "官方": "Official",
   "官方混入 API Key": "Official mixed-in API Key",
   "官方混合 API 不应在 auth.json 中保存 OPENAI_API_KEY。请清理此供应商的 auth.json 后再切换。":
@@ -3023,7 +3018,6 @@ export const EN_PLAIN: Record<string, string> = {
   "幽灵任务索引处理失败，请查看错误提示后重试。": "Ghost task index processing failed. Check the error message and retry.",
   "点击刷新会话读取本地数据库": "Click Refresh Sessions to read the local database",
   "点击刷新加载拓展市场。": "Click Refresh to load the extension market.",
-  "版本信息、项目链接、GitHub Release 更新、日志与诊断": "Version info, project links, GitHub Release updates, logs and diagnostics",
   "状态": "Status",
   "独立管理 Codex 的 MCP 服务器与插件；切换任意供应商都会带上。":
     "Manage Codex's MCP, Skills and Plugins independently; they carry over whenever you switch providers.",

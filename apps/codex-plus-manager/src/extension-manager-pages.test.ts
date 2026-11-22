@@ -4,6 +4,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { MANAGER_DATA_SOURCES, managerDataRequest, managerExtensionPages, managerNavPages, managerPageOverrides } from "./extension-manager-pages.ts";
 import { handleManagerRequest, MANAGER_PANEL_BOOTSTRAP, type ManagerBridgeDeps } from "./extension-manager-bridge.ts";
+import { isRouteAlias } from "./route-aliases.ts";
 
 const app = readFileSync(new URL("./App.tsx", import.meta.url), "utf8");
 const rust = readFileSync(new URL("../../../crates/codex-plus-core/src/user_scripts.rs", import.meta.url), "utf8");
@@ -41,7 +42,8 @@ test("拓展页面只取启用中、清单无误的；先声明的拓展优先�
 test("能顶替的页面都是管理器里真有的路由，且不含停用拓展的入口", () => {
   const routeIds = new Set([...app.matchAll(/\{ id: "([A-Za-z]+)",/g)].map((match) => match[1]));
   const replaceable = rustList("MANAGER_REPLACEABLE_PAGES");
-  for (const id of replaceable) assert.ok(routeIds.has(id), `${id} 不是管理器路由`);
+  // 旧 id（relayEnvironment、recommendations…）已并进别的页面，留在清单里只是兼容，不会再被顶替。
+  for (const id of replaceable) assert.ok(routeIds.has(id) || isRouteAlias(id), `${id} 不是管理器路由`);
   for (const id of ["userScripts", "enhance", "settings", "extension"]) assert.ok(!replaceable.includes(id), `${id} 不能被顶替`);
 });
 

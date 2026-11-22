@@ -298,7 +298,9 @@ test("manager deep links only pick the route", () => {
     && ts.isIdentifier(node.name) && node.name.text === "consumePendingManagerNavigation");
   assert.ok(navigation);
   const calls = descendants(navigation).filter(ts.isCallExpression).map((node) => node.expression.getText(app));
-  assert.ok(calls.includes("setRoute"));
+  // 和侧栏点进去走同一条 navigate：页面要的数据（会话列表等）一起读。
+  assert.ok(calls.includes("navigate"));
+  assert.ok(!calls.includes("setRoute"));
   assert.ok(!calls.includes("setEnhancementTab"));
 });
 
