@@ -12,7 +12,8 @@ assert.ok(component);
 const transpile = (text: string) => ts.transpileModule(text, {
   compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const source = transpile(component.getText(app));
+// 页面拆到 ClaudeDesktopPage.tsx 后带 `export`，放进 vm 前去掉。
+const source = transpile(component.getText(app).replace(/^export /, ""));
 
 // 页面用到的两个纯格式函数也直接取 App.tsx 里的真实实现（不复制一份，改了实现这边会跟着变）。
 function functionSource(file: ts.SourceFile, name: string) {
