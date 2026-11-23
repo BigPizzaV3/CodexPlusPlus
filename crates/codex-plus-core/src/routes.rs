@@ -96,6 +96,10 @@ pub trait BridgeSettingsService: Send + Sync {
         crate::paths::default_app_state_dir().join("whale-balance.sqlite3")
     }
 
+    fn gateway_store(&self) -> crate::gateway::store::GatewayStore {
+        crate::gateway::store::GatewayStore::default()
+    }
+
     /// 有没有启用中的拓展包在清单里声明了这条路由。桌宠 / 大肥鱼的数据路由（图片、音效、用量、余额）
     /// 只在有拓展用它时才干活：Agent 桌宠拓展停用后不联网、不扫会话日志、不查余额。测试可覆盖。
     fn extension_route_declared(&self, route: &str) -> bool {
@@ -568,6 +572,10 @@ pub async fn handle_bridge_request(
             }
             Err(error) => Err(error),
         },
+        // 供应商配置价只读投影；读取失败仍返回失败，但不向页面暴露状态文件路径。
+        "/provider-prices/public" => ctx.settings.gateway_store().load()
+            .map(|gateway| crate::extension_manager_data::gateway_provider_prices(&gateway))
+            .map_err(|_| anyhow::anyhow!("无法读取供应商配置价")),
         "/user-scripts/list" => {
             ctx.runtime
                 .user_script_inventory_with_runtime_status(payload.clone())

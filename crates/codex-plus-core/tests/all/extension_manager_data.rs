@@ -106,6 +106,46 @@ fn provider_and_routing_views_only_return_explicit_public_fields() {
 }
 
 #[test]
+fn provider_prices_preserve_whole_prices_and_original_model_keys() {
+    let mut gateway = gateway();
+    gateway.providers[0] = serde_json::from_value(json!({
+        "relay": gateway.providers[0].relay,
+        "enabled": false,
+        "proxy": "SECRET_PROXY",
+        "unknown": "SECRET_EXTRA",
+        "price": {"currency":"USD","input":1.0,"cachedInput":0.5,"output":2.0},
+        "modelPrices": {
+            "ALPHA[1M]": {"currency":"USD","input":7.0,"cachedInput":0.0,"output":0.0},
+            "alpha": {"currency":"CNY","input":9.0,"cachedInput":2.0,"output":3.0},
+            "beta[invalid]": {"currency":"USD","input":4.0,"cachedInput":1.0,"output":5.0}
+        }
+    })).unwrap();
+    let provider = &gateway.providers[0];
+    let view = public::gateway_provider_prices(&gateway);
+    assert_eq!(view, json!({"providers": [{
+        "id": "provider",
+        "name": "Provider",
+        "price": {"currency":"USD","input":1.0,"cachedInput":0.5,"output":2.0},
+        "modelPrices": {
+            "ALPHA[1M]": {"currency":"USD","input":7.0,"cachedInput":0.0,"output":0.0},
+            "alpha": {"currency":"CNY","input":9.0,"cachedInput":2.0,"output":3.0},
+            "beta[invalid]": {"currency":"USD","input":4.0,"cachedInput":1.0,"output":5.0}
+        }
+    }]}));
+    assert_eq!(provider.price_for("alpha").unwrap().input, 7.0);
+    assert_eq!(provider.price_for(" alpha[200K] ").unwrap().cached_input, 0.0);
+    assert_eq!(provider.price_for("beta[invalid]").unwrap().input, 4.0);
+    assert_eq!(provider.price_for("beta[1M]").unwrap().input, 1.0);
+    assert!(!view.to_string().contains("SECRET"));
+
+    gateway.providers[0].price = None;
+    gateway.providers[0].model_prices.clear();
+    assert_eq!(public::gateway_provider_prices(&gateway)["providers"][0]["price"], Value::Null);
+    assert_eq!(public::gateway_provider_prices(&gateway)["providers"][0]["modelPrices"], json!({}));
+    assert!(gateway.providers[0].price_for("unknown").is_none());
+}
+
+#[test]
 fn health_snapshot_excludes_keys_and_unknown_providers() {
     let health = PoolSnapshot {
         keys: vec![KeyHealthView {
