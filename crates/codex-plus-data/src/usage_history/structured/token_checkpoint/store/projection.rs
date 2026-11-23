@@ -1,13 +1,14 @@
 use super::{Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{Checkpoint, Counter, Observation};
 use crate::usage_history::structured::{
-    FileState, Index, MAX_FILES, Snapshot, UsageEvent, segments, usage_provider,
+    FileState, Index, MAX_FILES, Query, Snapshot, UsageEvent, segments, usage_provider,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use serde_json::{Value, json};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
 pub(super) fn links(path: &Path, state: &FileState) -> BTreeSet<String> {
@@ -44,7 +45,7 @@ pub(in super::super) struct Prepared<'a> {
     events: Vec<UsageEvent>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
 pub(in super::super) struct DayTotals {
     pub(in super::super) counts: Counter,
     pub(in super::super) records: u64,
@@ -52,6 +53,67 @@ pub(in super::super) struct DayTotals {
     // 完整分组直接使用 counts，混合分组只保存可计价的子集。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in super::super) priceable: Option<[u64; 3]>,
+}
+
+impl DayTotals {
+    fn from_event(event: &UsageEvent) -> Self {
+        if event.count_uncertain || event.count_incomplete {
+            Self {
+                unresolved: 1,
+                ..Self::default()
+            }
+        } else if event.delta.total_tokens != 0 {
+            Self {
+                counts: Counter(event.delta),
+                records: 1,
+                ..Self::default()
+            }
+        } else {
+            Self::default()
+        }
+    }
+
+    pub(in super::super) fn merge(&mut self, other: Self) {
+        if other.records != 0 {
+            let incoming = other.counts.0;
+            if self.counts.0.cached_known && !incoming.cached_known && self.records != 0 {
+                let prior = self.counts.0;
+                self.priceable = Some([
+                    prior.input_tokens,
+                    prior.cached_input_tokens,
+                    prior.output_tokens,
+                ]);
+            }
+            if !self.counts.0.cached_known || !incoming.cached_known {
+                let known = if incoming.cached_known {
+                    Some([
+                        incoming.input_tokens,
+                        incoming.cached_input_tokens,
+                        incoming.output_tokens,
+                    ])
+                } else {
+                    other.priceable
+                };
+                if let Some(known) = known {
+                    let amount = self.priceable.get_or_insert([0; 3]);
+                    for (sum, part) in amount.iter_mut().zip(known) {
+                        *sum = sum.saturating_add(part);
+                    }
+                }
+            }
+            self.counts.0.add(incoming);
+            self.records += other.records;
+        }
+        self.unresolved += other.unresolved;
+    }
+
+    fn value(&self) -> Value {
+        let mut row = json!({"usage":self.counts.0.value(),"recordCount":self.records});
+        if let Some([input, cached, output]) = self.priceable {
+            row["priceableUsage"] = super::super::super::Tokens::new(input, cached, output).value();
+        }
+        row
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -64,6 +126,28 @@ pub(in super::super) struct DayGroup {
 }
 
 type Groups = BTreeMap<(String, String, String, u8), DayTotals>;
+
+pub(in super::super) struct Selection {
+    pub(in super::super) revision: i64,
+    pub(in super::super) days: Vec<Value>,
+    pub(in super::super) unresolved: u64,
+    pub(in super::super) archived: bool,
+    pub(in super::super) needs_source_recovery: bool,
+}
+
+fn group_key(event: &UsageEvent) -> (String, String, String, u8) {
+    let conflict = event.context_conflicts;
+    let flags = u8::from(conflict.model)
+        | u8::from(conflict.provider) << 1
+        | u8::from(conflict.role) << 2
+        | u8::from(conflict.turn) << 3;
+    (
+        event.model.clone(),
+        event.provider.clone(),
+        event.role.clone(),
+        flags,
+    )
+}
 
 #[derive(Clone, Copy)]
 pub(in super::super) struct SourceUpdate<'a> {
@@ -377,11 +461,6 @@ impl Store {
              WHERE s.session = ?1 AND d.day = ?2",
         )?;
         for event in &prepared.events {
-            let conflict = event.context_conflicts;
-            let flags = u8::from(conflict.model)
-                | u8::from(conflict.provider) << 1
-                | u8::from(conflict.role) << 2
-                | u8::from(conflict.turn) << 3;
             let groups = match days.entry((&event.session, event.date)) {
                 std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
                 std::collections::btree_map::Entry::Vacant(entry) => {
@@ -403,33 +482,10 @@ impl Store {
                     entry.insert(groups)
                 }
             };
-            let totals = groups
-                .entry((
-                    event.model.clone(),
-                    event.provider.clone(),
-                    event.role.clone(),
-                    flags,
-                ))
-                .or_default();
-            if event.count_uncertain || event.count_incomplete {
-                totals.unresolved += 1;
-            } else if event.delta.total_tokens > 0 {
-                let previous = totals.counts.0;
-                if previous.cached_known && !event.delta.cached_known && totals.records > 0 {
-                    totals.priceable = Some([
-                        previous.input_tokens,
-                        previous.cached_input_tokens,
-                        previous.output_tokens,
-                    ]);
-                } else if !previous.cached_known && event.delta.cached_known {
-                    let [input, cached, output] = totals.priceable.get_or_insert([0; 3]);
-                    *input = input.saturating_add(event.delta.input_tokens);
-                    *cached = cached.saturating_add(event.delta.cached_input_tokens);
-                    *output = output.saturating_add(event.delta.output_tokens);
-                }
-                totals.counts.0.add(event.delta);
-                totals.records += 1;
-            }
+            groups
+                .entry(group_key(event))
+                .or_default()
+                .merge(DayTotals::from_event(event));
         }
         drop(prior_day);
         let days = days
@@ -718,14 +774,34 @@ impl Store {
         read: &Connection,
         start: NaiveDate,
         end: NaiveDate,
+        visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+    ) -> Result<()> {
+        Self::visit_summary(read, Some(start), Some(end), visit)
+    }
+
+    fn visit_summary(
+        read: &Connection,
+        start: Option<NaiveDate>,
+        end: Option<NaiveDate>,
         mut visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
     ) -> Result<()> {
-        let mut query = read.prepare(
-            "SELECT s.session, d.day, d.groups FROM token_days d
-                 JOIN token_sessions s ON s.id = d.session_id
-                 WHERE d.day >= ?1 AND d.day < ?2 ORDER BY d.day, s.session",
-        )?;
-        let mut rows = query.query(params![start.to_string(), end.to_string()])?;
+        let select = "SELECT s.session, d.day, d.groups FROM token_days d
+                      JOIN token_sessions s ON s.id = d.session_id WHERE d.day >= ?1";
+        let (sql, values) = match end {
+            Some(end) => (
+                format!("{select} AND d.day < ?2 ORDER BY d.day, s.session"),
+                vec![
+                    start.map(|day| day.to_string()).unwrap_or_default(),
+                    end.to_string(),
+                ],
+            ),
+            None => (
+                format!("{select} ORDER BY d.day, s.session"),
+                vec![start.map(|day| day.to_string()).unwrap_or_default()],
+            ),
+        };
+        let mut query = read.prepare_cached(&sql)?;
+        let mut rows = query.query(rusqlite::params_from_iter(values))?;
         while let Some(row) = rows.next()? {
             visit(
                 row.get(0)?,
@@ -744,6 +820,21 @@ impl Store {
         visit_detail: impl FnMut(UsageEvent) -> Result<()>,
         visit_archived_day: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
     ) -> Result<(i64, bool)> {
+        let read = db.transaction()?;
+        let current = revision(&read)?;
+        let missing_exact =
+            Self::visit_range(&read, start_ms, end_ms, visit_detail, visit_archived_day)?;
+        read.commit()?;
+        Ok((current, missing_exact))
+    }
+
+    fn visit_range(
+        read: &Connection,
+        start_ms: i64,
+        end_ms: i64,
+        visit_detail: impl FnMut(UsageEvent) -> Result<()>,
+        visit_archived_day: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+    ) -> Result<bool> {
         ensure!(start_ms < end_ms, "invalid Token range");
         let local = |ms| {
             DateTime::from_timestamp_millis(ms)
@@ -760,12 +851,10 @@ impl Store {
         };
         let start_aligned = is_midnight(start);
         let end_aligned = is_midnight(end);
-        let read = db.transaction()?;
-        let (current, cutoff): (i64, String) = read.query_row(
-            "SELECT revision, precise_from FROM token_revision",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        let cutoff: String =
+            read.query_row("SELECT precise_from FROM token_revision", [], |row| {
+                row.get(0)
+            })?;
         let mut missing_exact = false;
         if !cutoff.is_empty() {
             let cutoff = NaiveDate::parse_from_str(&cutoff, "%Y-%m-%d")?;
@@ -776,13 +865,135 @@ impl Store {
             };
             let whole_end = end_day.min(cutoff);
             if whole_start < whole_end {
-                Self::visit_days(&read, whole_start, whole_end, visit_archived_day)?;
+                Self::visit_days(read, whole_start, whole_end, visit_archived_day)?;
             }
             missing_exact =
                 !start_aligned && start_day < cutoff || !end_aligned && end_day < cutoff;
         }
-        Self::visit_committed(&read, start_ms, end_ms, visit_detail)?;
+        Self::visit_committed(read, start_ms, end_ms, visit_detail)?;
+        Ok(missing_exact)
+    }
+
+    pub(in super::super) fn read_selection(
+        db: &mut Connection,
+        query: &Query,
+        bounds: Option<(i64, i64)>,
+        sessions: Option<&HashSet<String>>,
+    ) -> Result<Selection> {
+        ensure!(
+            query.turn_id.is_none() && !query.include_activity && !query.include_session_cursors,
+            "Token snapshot selection requires the existing compatibility reader for this query"
+        );
+        let read = db.transaction()?;
+        let revision = revision(&read)?;
+        let session_in_scope =
+            |session: &str| sessions.is_none_or(|sessions| sessions.contains(session));
+        let mut summary = BTreeMap::<NaiveDate, Groups>::new();
+        let mut detail = BTreeMap::<NaiveDate, Groups>::new();
+        let read_summary = |session: String, day: NaiveDate, groups: Vec<DayGroup>| {
+            if session_in_scope(&session) {
+                for group in groups {
+                    let model = Some(group.model.as_str()).filter(|model| !model.is_empty());
+                    if query.accepts_fields(&session, "", model, Some(day)) {
+                        summary
+                            .entry(day)
+                            .or_default()
+                            .entry((group.model, group.provider, group.role, group.conflicts))
+                            .or_default()
+                            .merge(group.totals);
+                    }
+                }
+            }
+            Ok(())
+        };
+        let (archived, needs_source_recovery) = if let Some((start, end)) = bounds {
+            let needs_source_recovery = Self::visit_range(
+                &read,
+                start,
+                end,
+                |event| {
+                    let model = Some(event.model.as_str()).filter(|model| !model.is_empty());
+                    if session_in_scope(&event.session)
+                        && query.accepts_fields(
+                            &event.session,
+                            &event.turn,
+                            model,
+                            Some(event.date),
+                        )
+                    {
+                        detail
+                            .entry(event.date)
+                            .or_default()
+                            .entry(group_key(&event))
+                            .or_default()
+                            .merge(DayTotals::from_event(&event));
+                    }
+                    Ok(())
+                },
+                read_summary,
+            )?;
+            (!summary.is_empty(), needs_source_recovery)
+        } else {
+            Self::visit_summary(
+                &read,
+                query.from,
+                query.to.and_then(|day| day.succ_opt()),
+                read_summary,
+            )?;
+            let precise_from: String =
+                read.query_row("SELECT precise_from FROM token_revision", [], |row| {
+                    row.get(0)
+                })?;
+            let archived = summary
+                .keys()
+                .next()
+                .is_some_and(|date| date.to_string() < precise_from);
+            (archived, false)
+        };
         read.commit()?;
-        Ok((current, missing_exact))
+        let mut unresolved = 0;
+        let mut days = Vec::new();
+        for (date, groups) in summary.into_iter().chain(detail) {
+            let mut totals = DayTotals::default();
+            let mut models = BTreeMap::<String, DayTotals>::new();
+            let mut breakdowns = Vec::new();
+            for ((model, provider, role, conflicts), group) in groups {
+                unresolved += group.unresolved;
+                if group.records == 0 {
+                    continue;
+                }
+                let mut row = group.value();
+                row["model"] = json!(model);
+                row["provider"] = json!(provider);
+                row["role"] = json!(if conflicts & 4 != 0 { "unknown" } else { &role });
+                if conflicts & 2 != 0 {
+                    row["providerConflict"] = json!(true);
+                }
+                breakdowns.push(row);
+                models.entry(model).or_default().merge(group);
+                totals.merge(group);
+            }
+            let mut day = totals.value();
+            day["date"] = json!(date.to_string());
+            day["models"] = json!(
+                models
+                    .into_iter()
+                    .map(|(model, counts)| {
+                        let mut row = counts.value();
+                        row["model"] = json!(model);
+                        row
+                    })
+                    .collect::<Vec<_>>()
+            );
+            day["breakdowns"] = json!(breakdowns);
+            days.push(day);
+        }
+        Ok(Selection {
+            revision,
+            days,
+            unresolved,
+            archived,
+            needs_source_recovery,
+        })
     }
 }

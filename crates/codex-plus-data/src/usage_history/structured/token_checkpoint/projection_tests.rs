@@ -1059,6 +1059,81 @@ fn cross_retention_range_reads_one_revision_without_inventing_partial_days() {
         assert_eq!(snapshot, (revision + 1, missing_exact));
         assert_eq!(detail, expected_events);
     }
+
+    let scoped = std::collections::HashSet::from([PARENT.to_owned()]);
+    let query = crate::usage_history::Query::parse(
+        &json!({"from":archived.to_string(),"to":retained.to_string()}),
+        retained,
+    )
+    .unwrap();
+    let summaries = Store::read_selection(&mut reader, &query, None, Some(&scoped)).unwrap();
+    assert_eq!(summaries.revision, revision + 1);
+    assert_eq!(summaries.unresolved, 0);
+    assert!(summaries.archived && !summaries.needs_source_recovery);
+    assert_eq!(summaries.days.len(), 2);
+    assert_eq!(summaries.days[0]["usage"]["totalTokens"], 110);
+    assert_eq!(summaries.days[1]["usage"]["totalTokens"], 220);
+    let exact = Store::read_selection(
+        &mut reader,
+        &query,
+        Some((at(archived, 12, 0).timestamp_millis(), end)),
+        Some(&scoped),
+    )
+    .unwrap();
+    assert_eq!(exact.revision, summaries.revision);
+    assert!(!exact.archived && exact.needs_source_recovery);
+    assert_eq!(exact.days, summaries.days[1..]);
+    let excluded = crate::usage_history::Query::parse(
+        &json!({"sessionId":OTHER,"model":"missing","search":"missing"}),
+        retained,
+    )
+    .unwrap();
+    assert!(
+        Store::read_selection(&mut reader, &excluded, None, Some(&scoped))
+            .unwrap()
+            .days
+            .is_empty()
+    );
+}
+
+#[test]
+fn selection_preserves_the_known_priceable_subset_across_sessions() {
+    use crate::usage_history::Query;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    for (session, cache_known) in [(PARENT, true), (CHILD, false)] {
+        let path = root.join(format!("rollout-{session}.jsonl"));
+        let mut item = count(1, 1, 1, true);
+        if !cache_known {
+            for key in ["total_token_usage", "last_token_usage"] {
+                item["payload"]["info"][key]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("cached_input_tokens");
+            }
+        }
+        let state = parse(&path, &[header(session, 0), item], cutoff);
+        let prepared = store
+            .prepare(new_source(&path, &state), cutoff, BTreeMap::new(), 8192)
+            .unwrap();
+        store.publish(prepared).unwrap();
+    }
+    let query = Query::parse(&json!({}), cutoff).unwrap();
+    let result = Store::read_selection(&mut store.db, &query, None, None).unwrap();
+    assert_eq!(result.days.len(), 1);
+    let day = &result.days[0];
+    assert_eq!(day["recordCount"], 2);
+    assert_eq!(day["usage"]["totalTokens"], 220);
+    assert_eq!(day["usage"]["cachedKnown"], false);
+    assert_eq!(day["breakdowns"].as_array().unwrap().len(), 1);
+    for row in [day, &day["models"][0], &day["breakdowns"][0]] {
+        assert_eq!(row["priceableUsage"]["inputTokens"], 100);
+        assert_eq!(row["priceableUsage"]["cachedInputTokens"], 20);
+        assert_eq!(row["priceableUsage"]["outputTokens"], 10);
+    }
 }
 
 #[test]
