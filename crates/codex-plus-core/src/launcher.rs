@@ -498,6 +498,9 @@ pub trait LaunchHooks: Send + Sync {
     fn effective_settings(&self, settings: BackendSettings) -> BackendSettings {
         settings
     }
+    /// 新的一次启动开始：上一场「跳过拓展」会话留下的标记到此为止（见 `UserScriptConfig::skipped_session`）。
+    /// 测试用的钩子不碰真实配置。
+    fn begin_extension_session(&self) {}
     /// 启用中拓展的启动前后声明（codexpp.json 的 `launch`）。测试用的钩子没有。
     fn extension_launches(&self) -> Vec<(String, Value, crate::extension_launch::ExtensionLaunch)> {
         Vec::new()
@@ -891,6 +894,7 @@ where
     let hooks = hooks.into_launch_hooks();
     let mut debug_port = hooks.select_debug_port(options.debug_port);
     let mut helper_port = hooks.select_helper_port(options.helper_port);
+    hooks.begin_extension_session();
     // 被拓展顶替的内置拓展（原生 Fast、强制中文、Work 视图、原生浏览器兼容……）在这次启动里按「关」处理。
     let settings = hooks.effective_settings(hooks.load_settings().await?);
     // 请求体上限必须在 helper 绑定端口、开始接收请求前生效；环境变量优先级更高，
@@ -1778,6 +1782,13 @@ impl LaunchHooks for DefaultLaunchHooks {
 
     fn effective_settings(&self, settings: BackendSettings) -> BackendSettings {
         crate::builtin_takeover::mask_settings(settings)
+    }
+
+    fn begin_extension_session(&self) {
+        // Codex 还开着就不是新的一场会话（多开、补回桥接）：那个页面要是带着「跳过拓展」启动的，现在仍然没有拓展。
+        if !self.codex_desktop_running() {
+            let _ = crate::user_scripts::default_user_script_manager().end_skipped_session();
+        }
     }
 
     fn extension_launches(&self) -> Vec<(String, Value, crate::extension_launch::ExtensionLaunch)> {

@@ -1501,6 +1501,13 @@ impl LaunchHooks for LauncherHooks {
         self.core.inject(debug_port, helper_port).await
     }
 
+    fn begin_extension_session(&self) {
+        // 只补回桥接时页面还是原来那个：它要是带着「跳过拓展」启动的，现在仍然没有拓展。
+        if !self.attach_only {
+            self.core.begin_extension_session();
+        }
+    }
+
     async fn apply_native_module_patches_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
         // 恢复后台服务只补回桥接，不刷新用户正在使用的页面。
         if self.attach_only {

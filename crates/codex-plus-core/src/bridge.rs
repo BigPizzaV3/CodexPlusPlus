@@ -28,6 +28,23 @@ pub(crate) struct CdpCommandTimeout {
     message_id: u64,
     seconds: u64,
 }
+/// `Runtime.evaluate` 交给页面的脚本抛了异常，或者整段脚本根本解析不了（语法错误，此时一行也没执行）。
+#[derive(Debug, thiserror::Error)]
+#[error("Runtime.evaluate raised an exception: {0}")]
+pub(crate) struct RuntimeEvaluateException(Value);
+
+impl RuntimeEvaluateException {
+    /// 异常的第一行说明（如 `SyntaxError: Unexpected token ';'`），后面的调用栈不要。
+    pub(crate) fn summary(&self) -> &str {
+        let description = self
+            .0
+            .pointer("/exception/description")
+            .and_then(Value::as_str)
+            .or_else(|| self.0.get("text").and_then(Value::as_str))
+            .unwrap_or("renderer exception");
+        description.lines().next().unwrap_or(description)
+    }
+}
 // 25MiB 音频的 base64 与 JSON 封装约 33.4MiB；限制单 frame 和完整 message 的内存上限。
 const CDP_MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
 /// 陈旧会话的 generation 轮询间隔。旧会话只会在"socket 再收到消息"时走到循环顶部的
@@ -1934,7 +1951,7 @@ fn ensure_runtime_evaluate_succeeded(response: Value) -> anyhow::Result<Value> {
         .get("result")
         .and_then(|result| result.get("exceptionDetails"))
     {
-        bail!("Runtime.evaluate raised an exception: {exception}");
+        return Err(RuntimeEvaluateException(exception.clone()).into());
     }
     Ok(response)
 }

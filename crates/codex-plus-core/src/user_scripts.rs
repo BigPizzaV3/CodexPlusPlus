@@ -70,7 +70,15 @@ pub async fn reload_scripts_at(
     let bundle = manager.build_reload_bundle()?;
     // 拓展重载后旧后台的方法表、配置都过期了：先全部停掉，下次调用按新代码重起。
     crate::extension_backend::stop_all(manager).await;
-    apply_scripts_at(websocket, manager, &bundle, Some(Duration::from_secs(15))).await
+    let inventory = apply_scripts_at(websocket, manager, bundle, Some(Duration::from_secs(15)), |broken| {
+        manager.reload_bundle(broken)
+    })
+    .await?;
+    // 页内重载成功：拓展又在跑了。退回整页刷新（mode 为 page）的由新页面的初始化去记。
+    if inventory["reload_mode"] != "page" {
+        manager.end_skipped_session()?;
+    }
+    Ok(inventory)
 }
 
 pub async fn load_scripts_at(
@@ -79,41 +87,83 @@ pub async fn load_scripts_at(
 ) -> anyhow::Result<Value> {
     // 页面重新加载：上一个页面的后台不再有人用。
     crate::extension_backend::stop_all(manager).await;
-    apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?, None).await
+    // 跳过标记只消费一次：注入包因语法错误重拼时沿用这次的结果。
+    let skip = manager.consume_skip_next_start()?;
+    let bundle = manager.initial_bundle(skip, &BrokenScripts::new())?;
+    let inventory = apply_scripts_at(websocket, manager, bundle, None, |broken| manager.initial_bundle(skip, broken)).await?;
+    if let Some(ran) = inventory.get("initial_ran").and_then(Value::as_bool) {
+        manager.settle_initial_load(inventory["reload_mode"] == "skipped", ran)?;
+    }
+    Ok(inventory)
 }
 
+/// 把注入包交给页面执行。`rebuild`：注入包整体解析失败时，按「语法有错的脚本」表重拼一份。
 async fn apply_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
-    bundle: &str,
+    bundle: String,
     reload_timeout: Option<Duration>,
+    rebuild: impl Fn(&BrokenScripts) -> anyhow::Result<String>,
 ) -> anyhow::Result<Value> {
-    let response = if let Some(timeout) = reload_timeout {
-        crate::bridge::evaluate_script_with_await_promise_timeout(websocket, bundle, false, timeout)
-            .await
-            .map_err(|error| {
-                if error.is::<crate::bridge::CdpCommandTimeout>() {
-                    error.context(ReloadOutcomeUnknown)
-                } else {
-                    error
-                }
-            })?
-    } else {
-        crate::bridge::evaluate_script(websocket, bundle).await?
+    let response = match evaluate_bundle(websocket, &bundle, reload_timeout).await {
+        // 所有脚本拼在同一段里求值：任何一个脚本有语法错误，整段都解析不了，一个拓展也加载不上。
+        // 页面逐个编译能找出语法有错的脚本，就说明整段确实没解析过去、一行也没执行，可以放心重来：
+        // 把出错的换成报错占位后再执行一次。找不出来的是别的异常（比如旧脚本不支持页内重载），照原样报。
+        Err(error) if error.is::<crate::bridge::RuntimeEvaluateException>() => {
+            let broken = find_syntax_errors(websocket, manager).await;
+            if broken.is_empty() {
+                return Err(error);
+            }
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "user_scripts.syntax_error_isolated",
+                json!({ "scripts": broken }),
+            );
+            evaluate_bundle(websocket, &rebuild(&broken)?, reload_timeout).await?
+        }
+        outcome => outcome?,
     };
-    if let Some(exception) = response.pointer("/result/exceptionDetails") {
-        anyhow::bail!(
-            "脚本重载失败：{}",
-            exception
-                .pointer("/exception/description")
-                .and_then(Value::as_str)
-                .unwrap_or("renderer exception")
-        );
-    }
     let result = parse_live_runtime_status_response(&response)?;
     let mut inventory = manager.inventory_with_runtime_status(result.get("scripts"))?;
     inventory["reload_mode"] = result["mode"].clone();
+    // 首个页面的注入包会报告这次有没有真的初始化页面（见 build_initial_bundle）。
+    if let Some(ran) = result.get("ran") {
+        inventory["initial_ran"] = ran.clone();
+    }
     Ok(inventory)
+}
+
+async fn evaluate_bundle(websocket: &str, bundle: &str, reload_timeout: Option<Duration>) -> anyhow::Result<Value> {
+    let Some(timeout) = reload_timeout else {
+        return crate::bridge::evaluate_script(websocket, bundle).await;
+    };
+    crate::bridge::evaluate_script_with_await_promise_timeout(websocket, bundle, false, timeout)
+        .await
+        .map_err(|error| {
+            if error.is::<crate::bridge::CdpCommandTimeout>() {
+                error.context(ReloadOutcomeUnknown)
+            } else {
+                error
+            }
+        })
+}
+
+/// 让页面逐个编译（只编译、不执行）启用中的脚本，返回语法有错的那些：脚本 key → 报错。
+///
+/// 做法是把脚本包进一个不调用的函数里求值：语法有错时页面报 SyntaxError，没错时得到一个函数、一行也不执行。
+/// 不用 `Runtime.compileScript`：它要求连接先 `Runtime.enable`，而这里每条命令都是新连接，会直接报
+/// 「Runtime agent is not enabled」（在真实的 Chromium 上验证过）。
+/// 问不到页面（连接失败、命令超时）的脚本当作没问题，交给后面的整包执行去报错。
+async fn find_syntax_errors(websocket: &str, manager: &UserScriptManager) -> BrokenScripts {
+    let mut broken = BrokenScripts::new();
+    for (key, block) in manager.enabled_script_blocks().unwrap_or_default() {
+        let probe = format!("void (function(){{\n{block}\n}})");
+        if let Err(error) = crate::bridge::evaluate_script(websocket, &probe).await
+            && let Some(exception) = error.downcast_ref::<crate::bridge::RuntimeEvaluateException>()
+        {
+            broken.insert(key, exception.summary().to_string());
+        }
+    }
+    broken
 }
 
 /// Query the live renderer-side user-script registry through a one-shot CDP
@@ -159,11 +209,23 @@ pub struct UserScriptConfig {
     pub claude_scripts: BTreeMap<String, bool>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub skip_next_start: bool,
+    /// 这一场 Codex 会话是带着「跳过拓展」启动的：页面里没有加载任何拓展。
+    /// `skip_next_start` 在页面初始化时就消费掉了，之后靠这一项记住「拓展没在跑」，
+    /// 否则被顶替的内置功能会既没人接管、又被按「关」处理。拓展真正加载进页面（新页面初始化、热重载）时清掉。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skipped_session: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub market: BTreeMap<String, MarketScriptInstall>,
     /// 拓展包的配置值，键是脚本 key（`user:<id>`）。只存清单 schema 里声明过的键。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub configs: BTreeMap<String, Map<String, Value>>,
+}
+
+impl UserScriptConfig {
+    /// 拓展这次不加载：等着下次启动跳过，或这一场会话已经是跳过拓展启动的。
+    pub fn extensions_skipped(&self) -> bool {
+        self.skip_next_start || self.skipped_session
+    }
 }
 
 impl Default for UserScriptConfig {
@@ -173,6 +235,7 @@ impl Default for UserScriptConfig {
             scripts: BTreeMap::new(),
             claude_scripts: BTreeMap::new(),
             skip_next_start: false,
+            skipped_session: false,
             market: BTreeMap::new(),
             configs: BTreeMap::new(),
         }
@@ -360,6 +423,43 @@ impl UserScriptManager {
         config.skip_next_start = false;
         self.save_config_unlocked(&config)?;
         Ok(true)
+    }
+
+    /// 首个页面的注入包执行完之后，按页面里实际发生的事记账（`ran`：这次真的初始化了页面，而不是桥接恢复时的重复请求）。
+    ///
+    /// - 初始化了、且是跳过拓展的空包：这一场会话没有拓展，记下 `skipped_session`；
+    /// - 初始化了、加载的是正常的拓展包：拓展在跑了，清掉 `skipped_session`；
+    /// - 没初始化（页面早就初始化过）却消费了跳过标记：这次什么也没跳过，把标记还回去，留给真正的下一次启动。
+    pub fn settle_initial_load(&self, skipped: bool, ran: bool) -> anyhow::Result<()> {
+        self.update_skip_state(|config| match (ran, skipped) {
+            (true, skipped) => config.skipped_session = skipped,
+            (false, true) => config.skip_next_start = true,
+            (false, false) => {}
+        })
+    }
+
+    /// 拓展重新加载进页面了（热重载成功），或新的一次启动开始：这一场会话不再算「跳过拓展」。
+    pub fn end_skipped_session(&self) -> anyhow::Result<()> {
+        self.update_skip_state(|config| config.skipped_session = false)
+    }
+
+    /// 改「跳过拓展」的两个标记；有变化才写盘，并让顶替状态的缓存立刻失效。
+    fn update_skip_state(&self, update: impl FnOnce(&mut UserScriptConfig)) -> anyhow::Result<()> {
+        let changed = {
+            let _guard = self.config_lock.lock().unwrap();
+            let mut config = self.load_config_unlocked();
+            let before = (config.skip_next_start, config.skipped_session);
+            update(&mut config);
+            let changed = before != (config.skip_next_start, config.skipped_session);
+            if changed {
+                self.save_config_unlocked(&config)?;
+            }
+            changed
+        };
+        if changed {
+            crate::builtin_takeover::invalidate();
+        }
+        Ok(())
     }
 
     pub fn set_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
@@ -1272,10 +1372,10 @@ impl UserScriptManager {
     }
 
     /// 启用中、清单无误的拓展包声明的页面最早期脚本：(脚本 key, 拓展 id, 生效配置, 脚本)，以及有没有拓展要求启动后重载一次。
-    /// 用户脚本总开关关着、或「下次启动跳过拓展」开着时没有（不消费跳过标记，那由页面注入包消费）。
+    /// 用户脚本总开关关着、「下次启动跳过拓展」开着、或这一场会话已经跳过拓展时没有（不消费跳过标记，那由页面注入包消费）。
     pub fn enabled_preloads(&self) -> anyhow::Result<(Vec<(String, String, Value, Vec<PathBuf>)>, bool)> {
         let config = self.load_config();
-        if !config.enabled || config.skip_next_start {
+        if !config.enabled || config.extensions_skipped() {
             return Ok((Vec::new(), false));
         }
         let mut reload = false;
@@ -1295,7 +1395,7 @@ impl UserScriptManager {
     /// 启用中、清单无误的拓展包声明的启动前后：(拓展 id, 生效配置, launch)。
     pub fn enabled_launches(&self) -> anyhow::Result<Vec<(String, Value, crate::extension_launch::ExtensionLaunch)>> {
         let config = self.load_config();
-        if !config.enabled || config.skip_next_start {
+        if !config.enabled || config.extensions_skipped() {
             return Ok(Vec::new());
         }
         Ok(self
@@ -1339,7 +1439,15 @@ impl UserScriptManager {
     /// 内置拓展的停用 / 顶替状态：`{ disabled: [id], replacedBy: { id: 拓展 key } }`。
     /// `disabled` 只含没有设置字段、在用户脚本配置里停用的项；有设置字段的由功能自己读设置判断，
     /// 页面上切设置立刻生效，不必等注入包重发。
+    ///
+    /// 拓展这次没加载（等着跳过、或这一场会话已经跳过）时谁也没被顶替：内置功能照常生效。
     pub fn builtin_extension_state(&self) -> anyhow::Result<Value> {
+        self.builtin_extension_state_with(true)
+    }
+
+    /// `respect_skip` 为 false：给注入包用。注入包只在拓展正要加载进页面时才拼，此时顶替一定算数，
+    /// 不能被上一场会话留下的「已跳过」标记影响（那个标记要等注入包执行完才清）。
+    fn builtin_extension_state_with(&self, respect_skip: bool) -> anyhow::Result<Value> {
         let config = self.load_config();
         let disabled = crate::settings_catalog::builtin_extension_defs()
             .iter()
@@ -1348,7 +1456,7 @@ impl UserScriptManager {
             .filter(|id| config.scripts.get(&builtin_extension_key(id)) == Some(&false))
             .collect::<Vec<_>>();
         let mut replaced_by = Map::new();
-        if config.enabled {
+        if config.enabled && !(respect_skip && config.extensions_skipped()) {
             for script in self.scan_script_files(&config)? {
                 let Some(package) = script.package.as_ref().filter(|package| script.enabled && package.error.is_none()) else {
                     continue;
@@ -1406,11 +1514,34 @@ impl UserScriptManager {
     }
 
     pub fn build_enabled_bundle(&self) -> anyhow::Result<String> {
+        self.build_enabled_bundle_with(&BrokenScripts::new())
+    }
+
+    /// 启用中的每个脚本各自包好的那一段（脚本 key → 注入包里的原文）。注入包整体解析失败时，
+    /// 逐段交给页面编译，找出是哪个脚本的语法有错。
+    pub fn enabled_script_blocks(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter_map(|script| {
+                let source = enabled_script_source(&script)?;
+                Some((script.key.clone(), wrap_script(&script, &source)))
+            })
+            .collect())
+    }
+
+    /// `broken`：语法有错的脚本（key → 报错）。它们的源码不进注入包，换成一句抛出该报错的占位，
+    /// 于是只有这一个脚本显示为加载失败，其余照常加载。
+    fn build_enabled_bundle_with(&self, broken: &BrokenScripts) -> anyhow::Result<String> {
         let config = self.load_config();
         // 内置拓展的停用 / 顶替状态总要下发（用户脚本总开关关着也一样），页面据此装上 / 卸下内置功能。
         let builtin_state = format!(
             "window.__codexPlusBuiltinExtensionState = {}; try {{ window.__codexPlusSyncBuiltinExtensions?.(); }} catch {{}}",
-            self.builtin_extension_state().unwrap_or_else(|_| json!({}))
+            self.builtin_extension_state_with(false).unwrap_or_else(|_| json!({}))
         );
         if !config.enabled {
             return Ok(builtin_state);
@@ -1428,16 +1559,16 @@ impl UserScriptManager {
             Value::Array(services)
         ));
         for script in self.scan_script_files(&config)? {
-            if !script.enabled {
+            let Some(source) = enabled_script_source(&script) else {
                 continue;
-            }
-            let source = match &script.package {
-                // 清单不合法或版本不兼容的包不注入，原因在管理页显示。
-                Some(package) if package.error.is_some() => continue,
-                Some(package) => package_source(package),
-                None => fs::read_to_string(&script.path).unwrap_or_else(|error| {
-                    format!("throw new Error({});", json!(error.to_string()))
-                }),
+            };
+            let source = match broken.get(&script.key) {
+                // 占位自己的调用栈对写拓展的人没用：只留这一句话。
+                Some(error) => format!(
+                    "{{ const error = new Error({}); error.stack = error.message; throw error; }}",
+                    json!(format!("脚本有语法错误，没有加载：{error}"))
+                ),
+                None => source,
             };
             blocks.push(wrap_script(&script, &source));
         }
@@ -1447,20 +1578,27 @@ impl UserScriptManager {
     /// 页面启动与桥接恢复只能初始化一次，不能清理旧脚本或触发刷新。
     pub fn build_initial_bundle(&self) -> anyhow::Result<String> {
         let skip_next_start = self.consume_skip_next_start()?;
+        self.initial_bundle(skip_next_start, &BrokenScripts::new())
+    }
+
+    /// 首个页面的注入包。`skip`：这次跳过拓展（跳过标记由调用方消费，重拼时不再消费第二次）。
+    fn initial_bundle(&self, skip_next_start: bool, broken: &BrokenScripts) -> anyhow::Result<String> {
         let bundle = if skip_next_start {
             String::new()
         } else {
-            self.build_enabled_bundle()?
+            self.build_enabled_bundle_with(broken)?
         };
         Ok(format!(
             r#"(() => {{
   {RUNTIME_SCRIPT}
   const runtime = window.__codexPlusUserScripts;
+  let ran = false;
   if (!runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
     runtime.initialized = true;
+    ran = true;
     {bundle}
   }}
-  return JSON.stringify({{ mode: "{mode}", scripts: runtime.scripts }});
+  return JSON.stringify({{ mode: "{mode}", ran, scripts: runtime.scripts }});
 }})()"#,
             mode = if skip_next_start {
                 "skipped"
@@ -1472,7 +1610,11 @@ impl UserScriptManager {
 
     /// 即便全部禁用也必须清理上一次运行的脚本。
     pub fn build_reload_bundle(&self) -> anyhow::Result<String> {
-        let bundle = self.build_enabled_bundle()?;
+        self.reload_bundle(&BrokenScripts::new())
+    }
+
+    fn reload_bundle(&self, broken: &BrokenScripts) -> anyhow::Result<String> {
+        let bundle = self.build_enabled_bundle_with(broken)?;
         Ok(format!(
             r#"(() => {{
   {RUNTIME_SCRIPT}
@@ -3337,6 +3479,23 @@ fn resolve_package_entry(root: &std::path::Path, entry: &str) -> anyhow::Result<
     Ok(resolved)
 }
 
+/// 语法有错、没有进注入包的脚本：脚本 key → 页面编译时的报错。
+type BrokenScripts = BTreeMap<String, String>;
+
+/// 一个脚本进注入包的源码；停用的、清单不合法或版本不兼容的包不注入（原因在管理页显示），返回 None。
+fn enabled_script_source(script: &UserScriptFile) -> Option<String> {
+    if !script.enabled {
+        return None;
+    }
+    match &script.package {
+        Some(package) if package.error.is_some() => None,
+        Some(package) => Some(package_source(package)),
+        None => Some(fs::read_to_string(&script.path).unwrap_or_else(|error| {
+            format!("throw new Error({});", json!(error.to_string()))
+        })),
+    }
+}
+
 /// 包的各个入口按清单顺序拼进同一个作用域，相当于一次简单打包。
 fn package_source(package: &ExtensionPackage) -> String {
     package
@@ -3440,6 +3599,7 @@ fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
             })
             .unwrap_or_default(),
         skip_next_start,
+        skipped_session: raw.get("skipped_session").and_then(Value::as_bool).unwrap_or(false),
         market,
         configs,
     }
