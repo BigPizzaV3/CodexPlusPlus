@@ -96,11 +96,17 @@
   align-items: center;
   gap: 12px;
   padding: 8px;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 16px;
 }
+.shell.dark .plugin-market-row {
+  border-color: rgba(255, 255, 255, 0.082);
+}
 .shell .plugin-market-row:hover {
-  background: hsl(var(--accent));
+  background: rgba(0, 0, 0, 0.04);
+}
+.shell.dark .plugin-market-row:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 .shell .plugin-market-row-main {
   display: flex;
@@ -128,10 +134,13 @@
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 10px;
   background: hsl(var(--card));
   color: hsl(var(--muted-foreground));
+}
+.shell.dark .plugin-market-icon {
+  border-color: rgba(255, 255, 255, 0.082);
 }
 .shell .plugin-market-icon svg {
   width: 18px;
