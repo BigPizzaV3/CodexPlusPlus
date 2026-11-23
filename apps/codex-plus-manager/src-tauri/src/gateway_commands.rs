@@ -192,6 +192,8 @@ pub struct GatewayPayload {
     pub cc_switch_claude: Vec<GatewaySourceEntry>,
     /// ClaudeMom 的上游，可以复制进网关。
     pub claude_mom_profiles: Vec<GatewaySourceEntry>,
+    /// Magpie 的供应商（三种协议都收），可以复制进网关。
+    pub magpie_providers: Vec<GatewaySourceEntry>,
     pub grok_profiles: Vec<GatewaySourceEntry>,
     /// OpenCode 自己保存的 OpenCode Go / Zen Key（不含 Key 本身）。
     pub opencode_keys: Vec<GatewaySourceEntry>,
@@ -508,6 +510,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         claude_providers,
         cc_switch_claude: source_entries(codex_plus_core::claude_provider_sources::cc_switch_entries()),
         claude_mom_profiles: source_entries(codex_plus_core::claude_provider_sources::claude_mom_entries()),
+        magpie_providers: source_entries(codex_plus_core::magpie_import::entries()),
         grok_profiles,
         opencode_keys: codex_plus_core::gateway::opencode::load_stored_keys()
             .into_iter()
@@ -2141,6 +2144,8 @@ pub async fn import_gateway_providers(
     let mut groups: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
+    // Magpie 的供应商文件里没有模型列表：进池之后在后台从上游获取。
+    let mut fetch_models: Vec<String> = Vec::new();
     for item in &items {
         let already = GatewayStore::default().load().is_ok_and(|gateway| {
             gateway
@@ -2175,13 +2180,26 @@ pub async fn import_gateway_providers(
                 }
                 Ok(())
             })(),
-            source => import_from_direct(source, &item.id, skip).map(|_| added += 1),
+            source => import_from_direct(source, &item.id, skip).map(|id| {
+                added += 1;
+                if source == "magpie" {
+                    fetch_models.push(id);
+                }
+            }),
         };
         if let Err(error) = result {
             failures.push(format!("{error:#}"));
         }
     }
     let _ = refresh_added(Ok(()));
+    for id in fetch_models {
+        tauri::async_runtime::spawn(async move {
+            let result = model_sync::fetch_provider_models(&GatewayStore::default(), &id).await;
+            if refresh_agents(result).is_ok() {
+                autofill_prices(Some(id));
+            }
+        });
+    }
     prefetch_changed_quotas(&before).await;
     let mut message = format!("已导入 {added} 个供应商");
     if !groups.is_empty() {
@@ -2205,11 +2223,12 @@ fn source_entries(entries: Vec<codex_plus_core::claude_provider_sources::SourceE
     entries.into_iter().map(|entry| GatewaySourceEntry { id: entry.id, name: entry.name }).collect()
 }
 
-/// 从直连模式复制一项进池：`codex` / `claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商。
+/// 从直连模式复制一项进池：`codex` / `claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商、Magpie 的供应商。
 fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow::Result<String> {
     let relay = match source {
         "ccswitch" => codex_plus_core::claude_provider_sources::cc_switch_relay(id)?,
         "claudemom" => codex_plus_core::claude_provider_sources::claude_mom_relay(id)?,
+        "magpie" => codex_plus_core::magpie_import::relay(id)?,
         "codex" => apply::copy_codex_provider(&SettingsStore::default().load()?, id)?,
         "claude" => {
             let provider = claude::load(&ClaudeContext::default_paths())?

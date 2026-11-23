@@ -574,6 +574,8 @@ pub fn run() {
             dream_skin_bridge::activate_installed_dream_skin_theme,
             commands::load_ccs_providers,
             commands::import_ccs_providers,
+            commands::load_magpie_providers,
+            commands::import_magpie_providers,
             commands::load_pending_provider_import,
             commands::confirm_pending_provider_import,
             commands::dismiss_pending_provider_import,
