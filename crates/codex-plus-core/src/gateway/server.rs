@@ -122,7 +122,7 @@ pub(crate) async fn handle(
     let query_key = query_param(path, "key");
     let path = path.split('?').next().unwrap_or(path);
     let Some((agent, tail)) = split_gateway_path(path) else {
-        return write_error(stream, &ToolId::Claude, 404, "未知的网关路径").await;
+        return write_error(stream, &ToolId::Claude, 404, "未知的本地服务路径").await;
     };
     if method == "OPTIONS" {
         write_http_response(stream, "204 No Content", JSON, &[]).await?;
@@ -132,7 +132,7 @@ pub(crate) async fn handle(
     let gateway = GatewayStore::default().load().unwrap_or_default().with_extension_providers();
     let Some(binding) = gateway.active_binding(&agent) else {
         let message = format!(
-            "Codex++ 网关模式没有为 {} 开启，请在 Codex++ 里打开网关模式或切回直连供应商",
+            "Codex++ 本地服务模式没有为 {} 开启，请在 Codex++ 里打开本地服务模式或切回直连供应商",
             crate::tools::tool_display_name(&agent)
         );
         return write_error(stream, &agent, 503, &message).await;
@@ -170,7 +170,7 @@ pub(crate) async fn handle(
             stream,
             &agent,
             401,
-            "网关 token 无效，请在 Codex++ 里重新应用网关模式",
+            "本地服务 token 无效，请在 Codex++ 里重新应用本地服务模式",
         )
         .await;
     }
@@ -290,7 +290,7 @@ pub(crate) async fn handle(
             )
             .await
         }
-        _ => write_error(stream, &agent, 404, &format!("网关不支持 {method} {tail}")).await,
+        _ => write_error(stream, &agent, 404, &format!("本地服务不支持 {method} {tail}")).await,
     }
 }
 
@@ -482,7 +482,7 @@ async fn handle_images(
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("所选网关模型 {0} 已不可用，请重新选择模型")]
+#[error("所选本地服务模型 {0} 已不可用，请重新选择模型")]
 pub(crate) struct RetiredCodexModel(pub String);
 
 /// Grok 等 Responses 客户端：按 Agent 绑定选上游，返回值交给 Codex 代理的输出链路。
@@ -582,7 +582,7 @@ pub(crate) async fn open_responses_for_agent(
 
 fn cooling_message(wait: std::time::Duration) -> String {
     format!(
-        "网关的所有上游 Key 都在冷却或熔断中，约 {} 秒后恢复",
+        "本地服务的所有上游 Key 都在冷却或熔断中，约 {} 秒后恢复",
         wait.as_secs().max(1)
     )
 }
@@ -1532,7 +1532,7 @@ async fn handle_models(
                         "owned_by": "codex-plus"
                     });
                     if id != *model {
-                        row["description"] = json!("经 Codex++ 网关转发");
+                        row["description"] = json!("经 Codex++ 本地服务转发");
                     }
                     // #3107：报真实窗口；Desktop 只按 supports_1m 区分 200k / 1M，不到 1M 显式写 false。
                     if let Some((window, supports_1m)) = binding

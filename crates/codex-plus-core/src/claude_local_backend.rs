@@ -1,7 +1,7 @@
 //! Codex++ 的 Claude Desktop 完整功能模式。
 //!
 //! 核心（本地兼容服务、证书、profile 切换、启动 / 停止）在 claude-local（ClaudeMom 仓库，两边共用一份）；
-//! 这里是 Codex++ 的宿主实现：设置存在 settings.json 的 `claudeDesktopLocal`，上游走 Codex++ 网关的
+//! 这里是 Codex++ 的宿主实现：设置存在 settings.json 的 `claudeDesktopLocal`，上游走 Codex++ 本地服务的
 //! `claude-desktop-local` 绑定，听写走常驻 helper，关掉完整功能模式时经网关启动 3p 模式。
 //! 对外仍是原来的 `status` / `configure` / `perform` 等函数，调用方不用改。
 
@@ -152,7 +152,7 @@ impl Host for CodexPlusHost {
     fn preview_upstream(&self, config: &ClaudeLocalSettings) -> Result<Upstream> {
         let gateway = GatewayStore::default().load()?.with_extension_providers();
         if available_models(&gateway).is_empty() {
-            anyhow::bail!("供应商池中还没有可用的聊天模型");
+            anyhow::bail!("共享供应商中还没有可用的聊天模型");
         }
         let binding = local_binding(&gateway, config)?;
         let port = crate::protocol_proxy::protocol_proxy_port();
@@ -446,7 +446,7 @@ fn local_binding(gateway: &GatewaySettings, config: &ClaudeLocalSettings) -> Res
     let model = crate::gateway::route::binding_default_model(gateway, &binding);
     ensure!(
         !model.is_empty() && crate::gateway::route::model_is_routable(gateway, &binding, &model),
-        "请先在供应商池中添加可用模型，并为 Claude 本地模式选择模型"
+        "请先在共享供应商中添加可用模型，并为 Claude 本地模式选择模型"
     );
     binding.model = model;
     binding.enabled = true;
@@ -486,13 +486,13 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
     ensure!(
         !default_model.is_empty()
             && crate::gateway::route::model_is_routable(&gateway, &binding, &default_model),
-        "请先在供应商池中添加可用模型，并为 Claude 选择模型"
+        "请先在共享供应商中添加可用模型，并为 Claude 选择模型"
     );
     binding.model = default_model;
     let gateway = crate::gateway::apply::enable_binding(&context, &agent, binding)?;
     let binding = gateway
         .binding(&agent)
-        .context("Claude Desktop 网关配置缺失")?;
+        .context("Claude Desktop 本地服务配置缺失")?;
     let wiring = wiring(&gateway, binding, "claude-desktop", port);
     claude_local::private_dir(root)?;
     claude_local::private_dir(&root.join("claude-code-3p"))?;

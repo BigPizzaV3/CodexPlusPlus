@@ -1,4 +1,4 @@
-//! 网关模式的开启 / 关闭，以及网关自己的供应商池、路由组的增删改。
+//! 网关模式的开启 / 关闭，以及网关自己的共享供应商、路由组的增删改。
 //!
 //! - Claude Code：在 `claude-providers.json` 里放一个托管供应商（[`GATEWAY_PROVIDER_ID`]），
 //!   用现有的「关键字段」切换逻辑写进 `~/.claude/settings.json`，用户的 hooks 等键不动；
@@ -8,7 +8,7 @@
 //! - Codex：在直连模式的供应商列表里放一个托管供应商（[`CODEX_GATEWAY_RELAY_ID`]），
 //!   用直连模式自己的切换流程写进 `~/.codex`（回填、冲突检测、模型目录都照旧）；
 //!   关闭时切回开启前的供应商并删掉托管供应商。直连模式里切到别的供应商等于断开网关。
-//! - 供应商池与路由组只存在 `gateway.json`；从直连模式导入是复制，之后互不影响。
+//! - 共享供应商与路由组只存在 `gateway.json`；从直连模式导入是复制，之后互不影响。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -90,14 +90,14 @@ pub fn gateway_base_url_on(host: &str, port: u16, agent: &ToolId) -> String {
 /// 开启前检查：池里有这个 Agent 能用的供应商，默认模型能路由。
 fn ensure_routable(gateway: &GatewaySettings, binding: &AgentBinding) -> anyhow::Result<()> {
     if route::binding_pool_relays(gateway, binding).is_empty() {
-        bail!("供应商池是空的或都已关闭：先在「供应商」里添加供应商");
+        bail!("共享供应商是空的或都已关闭：先在「供应商」里添加供应商");
     }
     let model = binding_default_model(gateway, binding);
     if model.is_empty() {
         bail!("没有可用的默认模型：请给池里的供应商配置模型");
     }
     if !route::model_is_routable(gateway, binding, &model) {
-        bail!("供应商池里没有供应商提供模型 {model}");
+        bail!("共享供应商里没有供应商提供模型 {model}");
     }
     Ok(())
 }
@@ -141,7 +141,7 @@ pub fn claude_gateway_provider(
             json!(role(&binding.claude_roles.subagent)),
         );
     }
-    // Claude Code 只有一个窗口设置：按默认模型的窗口（供应商池里写的），没写用 Agent 的默认窗口。
+    // Claude Code 只有一个窗口设置：按默认模型的窗口（共享供应商里写的），没写用 Agent 的默认窗口。
     let window = route::model_entry_window(gateway, binding, &default_model)
         .or(binding.context_window)
         .or_else(|| {
@@ -159,9 +159,9 @@ pub fn claude_gateway_provider(
     }
     ClaudeProvider {
         id: GATEWAY_PROVIDER_ID.to_string(),
-        name: "Codex++ 网关".to_string(),
+        name: "Codex++ 本地服务".to_string(),
         website_url: String::new(),
-        notes: "由 Codex++ 网关模式管理，请在网关模式里修改或关闭。".to_string(),
+        notes: "由 Codex++ 本地服务模式管理，请在本地服务模式里修改或关闭。".to_string(),
         settings_config: json!({ "env": Value::Object(env) }),
         created_at: 0,
         ccs_source_id: String::new(),
@@ -195,7 +195,7 @@ fn agent_gateway_profile(
     let base = format!("{}/v1", gateway_base_url_on(host, port, agent));
     RelayProfile {
         id: "codex-plus-gateway".to_string(),
-        name: "Codex++ 网关".to_string(),
+        name: "Codex++ 本地服务".to_string(),
         protocol: RelayProtocol::Responses,
         relay_mode: RelayMode::PureApi,
         base_url: base.clone(),
@@ -227,7 +227,7 @@ fn agent_gateway_model_list(
     models
         .iter()
         .filter(|model| !model.is_empty())
-        // 窗口依次取供应商池、绑定声明的后缀、Agent 默认窗口；都没有时，只发给官方账号的
+        // 窗口依次取共享供应商、绑定声明的后缀、Agent 默认窗口；都没有时，只发给官方账号的
         // Codex 模型用本机官方缓存的窗口（#3161：内置兼容资料是给中转的，会把 500000 压成 272000）；
         // 再没有就不带，交给 Agent 自带的模型资料。
         .map(|model| {
@@ -346,7 +346,7 @@ fn write_agent_config(
         }
         other => match agents::spec(other.as_str()) {
             Some(spec) => agents::connect::write(ctx, spec, &gateway, binding)?,
-            None => bail!("{} 不支持网关模式", other.as_str()),
+            None => bail!("{} 不支持本地服务模式", other.as_str()),
         },
     }
     Ok((None, false))
@@ -409,7 +409,7 @@ pub fn codex_gateway_profile_on(
     let catalog = codex_gateway_model_catalog(gateway, binding);
     let base_url = format!("{}/v1", gateway_base_url_on(&host, port, &ToolId::Codex));
     let mut profile = crate::provider_import::pool_relay_profile(
-        "Codex++ 网关",
+        "Codex++ 本地服务",
         &base_url,
         &binding.token,
         RelayProtocol::Responses,
@@ -420,7 +420,7 @@ pub fn codex_gateway_profile_on(
     profile.id = CODEX_GATEWAY_RELAY_ID.to_string();
     profile.relay_mode = RelayMode::PureApi;
     profile.model_metadata = catalog.model_metadata;
-    // 供应商池里设了压缩阈值的模型（#3100）：与直连模式同一份 `model_auto_compact`，
+    // 共享供应商里设了压缩阈值的模型（#3100）：与直连模式同一份 `model_auto_compact`，
     // 生成目录时写 `auto_compact_token_limit = 窗口 × 百分比`；没设的模型照旧留空。
     profile.model_auto_compact = catalog.model_auto_compact;
     if signed_in {
@@ -1189,7 +1189,7 @@ fn lend_login_to_codex(ctx: &ApplyContext, provider_id: &str) -> anyhow::Result<
             &provider.relay.auth_contents,
             false,
         )
-        .context("Codex 已经登录了别的 ChatGPT 账号，不能再借用网关的账号")?;
+        .context("Codex 已经登录了别的 ChatGPT 账号，不能再借用本地服务的账号")?;
         crate::settings::atomic_write(&path, merged.as_bytes())?;
         let mut auth: Value = serde_json::from_str(&provider.relay.auth_contents)?;
         auth[crate::official_login::LENT_TO_CODEX_MARKER] = Value::Bool(true);
@@ -1276,7 +1276,7 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
 }
 
 /// 接入前对账 ChatGPT 登录：只清理同一身份、已停用且仍标记借出的网关登录。
-/// 用户在原生 Codex 中自行建立的会话不因供应商池的启用状态而被移除。
+/// 用户在原生 Codex 中自行建立的会话不因共享供应商的启用状态而被移除。
 fn reconcile_codex_sign_in(
     ctx: &ApplyContext,
     gateway: &GatewaySettings,
@@ -1721,7 +1721,7 @@ fn validate_codex_model(
         bail!("默认模型无法写入 Codex 配置：模型 ID 过长或包含不支持的内容");
     }
     if !settings.relay_profiles_enabled {
-        bail!("Codex 的供应商配置总开关已关闭，无法接入网关：请在 Codex++ 的「供应商列表」里打开「配置切换」");
+        bail!("Codex 的供应商配置总开关已关闭，无法接入本地服务：请在 Codex++ 的「供应商列表」里打开「配置切换」");
     }
     Ok(())
 }
@@ -1814,12 +1814,12 @@ fn write_codex(
                 &previous,
                 crate::relay_switch::LiveConflictResolution::DiscardLiveChanges,
             )
-            .context("把 Codex 切到网关失败")?;
+            .context("把 Codex 切到本地服务失败")?;
             let mut saved = live.clone();
             saved.record_write(&live, &capture_codex_live(ctx));
             stash::save_stash(&codex_stash_path(ctx), &saved)?;
         }
-        Err(error) => return Err(error.context("把 Codex 切到网关失败")),
+        Err(error) => return Err(error.context("把 Codex 切到本地服务失败")),
     }
     // 切换时回填上一个供应商用的还是借之前的 auth.json；切过去之后再写入借来的登录。
     if let Some(provider_id) = lend {
@@ -2017,7 +2017,7 @@ pub fn rotate_binding_token(ctx: &ApplyContext, agent: &ToolId) -> anyhow::Resul
     let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (gateway, binding) = ctx.gateway.update(|gateway| {
         let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
-            bail!("还没有配置网关绑定");
+            bail!("还没有配置本地服务绑定");
         };
         binding.token = new_client_token(agent);
         Ok(binding.clone())
@@ -2038,7 +2038,7 @@ pub fn reset_model_selections(
     let (gateway, ()) = store.update(|gateway| {
         let runtime = gateway.clone().with_extension_providers();
         let Some(binding) = gateway.bindings.get_mut(agent.as_str()) else {
-            bail!("还没有配置网关绑定");
+            bail!("还没有配置本地服务绑定");
         };
         binding.model_selections.clear();
         if binding.default_model_selection.as_ref().is_some_and(|selection| {
@@ -2093,7 +2093,7 @@ pub fn disable_binding(
         // gateway.json 读不出来（例如损坏），但 Agent 还指向网关：照样还原，不碰 gateway.json。
         Err(error) if agent_points_at_gateway(ctx, agent) => {
             restore_agent(ctx, settings, agent, &AgentBinding::default())
-                .with_context(|| format!("网关状态读取失败（{error:#}），按直连还原也失败"))?;
+                .with_context(|| format!("本地服务状态读取失败（{error:#}），按直连还原也失败"))?;
             let _ = crate::diagnostic_log::append_diagnostic_log(
                 "gateway.disable_without_store",
                 serde_json::json!({ "agent": agent.as_str(), "message": format!("{error:#}") }),
@@ -2314,7 +2314,7 @@ fn restore_claude(ctx: &ApplyContext, binding: &AgentBinding) -> anyhow::Result<
             )
             .context("还原 Claude Code 的 settings.json 失败")?;
             stash::write_or_remove(&live_path, restored.as_deref())
-                .context("写回 Claude Code 接入网关前的 settings.json 失败")?;
+                .context("写回 Claude Code 接入本地服务前的 settings.json 失败")?;
         }
     }
     stash::remove_stash(&stash_path);
@@ -2488,7 +2488,7 @@ fn restore_grok(ctx: &ApplyContext, settings: &BackendSettings) -> anyhow::Resul
             let restored = stash::restore_toml(saved.before.as_deref(), live.as_deref(), &paths)
                 .context("还原 Grok 的 config.toml 失败")?;
             stash::write_or_remove(&live_path, restored.as_deref())
-                .context("写回 Grok 接入网关前的 config.toml 失败")?;
+                .context("写回 Grok 接入本地服务前的 config.toml 失败")?;
         }
         stash::remove_stash(&stash_path);
         return Ok(());
@@ -2561,7 +2561,7 @@ pub fn note_grok_switched(store: &GatewayStore) -> anyhow::Result<()> {
 }
 
 /// 用户在 Codex 的供应商页直接切换：切到别的供应商等于断开网关；
-/// 切回托管的「Codex++ 网关」等于重新接入（断开时它还留在列表里，没被删）。
+/// 切回托管的「Codex++ 本地服务」等于重新接入（断开时它还留在列表里，没被删）。
 pub fn note_codex_switched(
     store: &GatewayStore,
     target_id: &str,
@@ -2846,7 +2846,7 @@ pub fn restore_all_for_exit(
     }
 }
 
-/// 供应商池或路由组变化后重写开着的 Agent 配置：Grok 的模型列表、Claude 的默认模型随池更新。
+/// 共享供应商或路由组变化后重写开着的 Agent 配置：Grok 的模型列表、Claude 的默认模型随池更新。
 /// 不碰恢复现场；某个 Agent 写失败时继续写其它的，最后返回第一个错误。
 /// 已被别的工具接管的 Agent 不重写（界面提示漂移，由用户决定要不要重新接入）。
 pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
@@ -3010,7 +3010,7 @@ pub fn copy_claude_provider(provider: &ClaudeProvider) -> anyhow::Result<RelayPr
         );
     }
     if base_url.contains("/gw/claude") {
-        bail!("「{}」是网关托管的供应商，不能导入", provider.name);
+        bail!("「{}」是本地服务托管的供应商，不能导入", provider.name);
     }
     let (api_key, bearer) = match (text("ANTHROPIC_AUTH_TOKEN"), text("ANTHROPIC_API_KEY")) {
         (token, _) if !token.is_empty() => (token, true),
@@ -3077,7 +3077,7 @@ pub fn copy_grok_profile(
         .with_context(|| format!("Grok 供应商不存在：{profile_id}"))?;
     let base_url = crate::tools::grok::profile_base_url(&source);
     if base_url.contains("/gw/grok") {
-        bail!("「{}」指向网关本身，不能导入", source.name);
+        bail!("「{}」指向本地服务本身，不能导入", source.name);
     }
     let parsed = crate::tools::grok::parse_grok_model_list(&source.model_list);
     let models = parsed
@@ -3258,7 +3258,7 @@ pub fn import_codex_aggregate(
                 Ok(Some(id)) => id,
                 Ok(None) => {
                     result.notes.push(format!(
-                        "「{}」是官方登录账号，不能复制：在网关里登录 ChatGPT 后再把它加进模型组",
+                        "「{}」是官方登录账号，不能复制：在本地服务里登录 ChatGPT 后再把它加进模型组",
                         crate::gateway::accounts::mask_account_name(&relay.name)
                     ));
                     continue;
@@ -3322,14 +3322,14 @@ pub fn import_codex_aggregate(
     }
     if !aggregate.routes.is_empty() {
         result.notes.push(format!(
-            "{} 条模型路由规则网关里没有对应功能，没有转换；可以把对应模型直接加进供应商池",
+            "{} 条模型路由规则本地服务里没有对应功能，没有转换；可以把对应模型直接加进共享供应商",
             aggregate.routes.len()
         ));
     }
     if aggregate.model_aggregation_enabled {
         result
             .notes
-            .push("按模型聚合：网关的供应商池本身按模型名分发，不用建模型组".to_string());
+            .push("按模型聚合：共享供应商本身按模型名分发，不用建模型组".to_string());
         return Ok(result);
     }
     if members.is_empty() {
@@ -3387,18 +3387,18 @@ pub fn copy_codex_provider(
         .with_context(|| format!("Codex 供应商不存在：{relay_id}"))?;
     if relay.relay_mode == RelayMode::Aggregate {
         bail!(
-            "「{}」是聚合供应商，网关的组请在「路由」页里新建",
+            "「{}」是聚合供应商，本地服务的组请在「路由」页里新建",
             relay.name
         );
     }
     if crate::official_login::member_uses_official_login_transport(relay) {
         bail!(
-            "「{}」是官方登录账号，不能复制：两边共用登录会互相把对方刷失效，请在网关里单独登录",
+            "「{}」是官方登录账号，不能复制：两边共用登录会互相把对方刷失效，请在本地服务里单独登录",
             relay.name
         );
     }
     if relay.base_url.contains("/gw/") {
-        bail!("「{}」指向网关本身，不能导入", relay.name);
+        bail!("「{}」指向本地服务本身，不能导入", relay.name);
     }
     Ok(relay.clone())
 }
@@ -3480,7 +3480,7 @@ fn build_relay(
     custom_headers: Vec<crate::settings::RelayHeaderKeyValue>,
 ) -> anyhow::Result<RelayProfile> {
     if input.base_url.contains("/gw/") {
-        bail!("不能把网关自己加进供应商池");
+        bail!("不能把本地服务自己加进共享供应商");
     }
     let keys = clean_keys(&input.keys);
     let Some(first) = keys.first() else {
@@ -3742,7 +3742,7 @@ fn update_provider_in(
     // 原来的 User-Agent、Anthropic 鉴权方式这些高级设置保留（请求头见上面）。
     relay.user_agent = provider.relay.user_agent.clone();
     relay.anthropic_auth_header = provider.relay.anthropic_auth_header.clone();
-    // 按模型的思考等级等模型资料也保留（在供应商池详情里单独编辑）。
+    // 按模型的思考等级等模型资料也保留（在共享供应商详情里单独编辑）。
     relay.model_metadata = provider.relay.model_metadata.clone();
     // 没传「移除托管生图工具」时沿用原来的选择。
     if input.strip_image_generation_tool.is_none() {

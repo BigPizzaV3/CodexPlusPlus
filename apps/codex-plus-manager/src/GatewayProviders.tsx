@@ -1,4 +1,4 @@
-/** 本地网关 · 供应商：网关自己的供应商池（可开关、排序、编辑、删除），右上角「添加供应商」打开目录弹窗。
+/** 本地网关 · 供应商：网关自己的共享供应商（可开关、排序、编辑、删除），右上角「添加供应商」打开目录弹窗。
  *
  * 与直连模式完全独立：这里的增删改只动 gateway.json；「导入…」是把直连模式的供应商复制一份过来。
  */
@@ -37,6 +37,7 @@ import {
   importCandidates,
   memberStatus,
   pendingImportCount,
+  pendingImports,
   presetAdded,
   presetHost,
   poolExcludeToggle,
@@ -78,8 +79,7 @@ import { ProviderTestDialog } from "./ProviderTestDialog";
 import { takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalShell } from "./use-modal-shell";
-import { singleAgent, visibleAgents } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
+import { MAGPIE_UPSTREAM_ID, togglePoolPick } from "./third-party-import-model";
 import { useSponsorPresets } from "./sponsor-store";
 
 /** 能在网关里直接登录的订阅。 */
@@ -119,7 +119,7 @@ type FormState = ProviderFormState;
 const MODEL_CHIP_PREVIEW = 6;
 const MODEL_CHIP_COLLAPSE = 8;
 
-/** 供应商池上次用的视图（切页再回来保持）。 */
+/** 共享供应商上次用的视图（切页再回来保持）。 */
 
 /** 重置卡的时间只到分钟；缺失时间由调用方分别标注。 */
 function creditTime(value: number | null | undefined, missing: string): string {
@@ -426,9 +426,9 @@ export function ProvidersView({
       ) : null}
       {payload !== null && pool.length === 0 ? (
         <div className="gw-card gw-pool-empty">
-          <strong>{t("供应商池还是空的")}</strong>
+          <strong>{t("共享供应商还是空的")}</strong>
           {pendingImports ? (
-            <span>{tf("直连模式里有 {0} 个供应商，可以一次导入网关；之后两边各改各的。也可以登录订阅，或添加新的厂商 API、中转站。", [pendingImports])}</span>
+            <span>{tf("直连模式里有 {0} 个供应商，可以一次导入本地服务；之后两边各改各的。也可以登录订阅，或添加新的厂商 API、中转站。", [pendingImports])}</span>
           ) : (
             <span>{t("登录订阅，或添加厂商 API、中转站的 Key。所有接入的 Agent 共用这里的供应商。")}</span>
           )}
@@ -644,7 +644,7 @@ function LocalLoginsCard({ found, busy, pending, onImport, onDismiss }: { found:
   return (
     <div className="gw-local-logins">
       <div className="gw-local-logins-line">
-        <button aria-expanded={open} className="gw-pool-off-toggle gw-local-logins-toggle" onClick={() => setOpen(!open)} title={t("来自这些官方客户端的登录文件，导入时复制一份登录凭据进网关。不想看到这条提示，可以在「网关设置」里关掉「发现本机已登录的订阅账号」。")} type="button">
+        <button aria-expanded={open} className="gw-pool-off-toggle gw-local-logins-toggle" onClick={() => setOpen(!open)} title={t("来自这些官方客户端的登录文件，导入时复制一份登录凭据进本地服务。不想看到这条提示，可以在「本地服务设置」里关掉「发现本机已登录的订阅账号」。")} type="button">
           <ChevronRight className="h-3.5 w-3.5" />
           {tf("发现 {0} 个本机已登录的订阅账号：{1}", [found.length, names])}
           <span className="gw-local-logins-action">{t("导入")}</span>
@@ -672,7 +672,7 @@ function LocalLoginsCard({ found, busy, pending, onImport, onDismiss }: { found:
 }
 
 /** 「添加供应商」整套流程：目录弹窗 → 填写表单或订阅登录，顶部可选给哪些 Agent 用。
- * 供应商池和总览都用它；流程结束（添加成功、取消或登录结束）时调 `onClose`。 */
+ * 共享供应商和总览都用它；流程结束（添加成功、取消或登录结束）时调 `onClose`。 */
 export function ProviderAdder({
   payload,
   busy,
@@ -847,7 +847,7 @@ function PoolRow({
     if (await run(`limits:${entry.id}`, "save_gateway_provider_limits", { id: entry.id, rpm, concurrency }, t("保存限速"))) setLimitsOpen(false);
   };
   const remove = async () => {
-    const ok = await appConfirm(tf("从网关删除「{0}」？直连模式里的供应商不受影响。", [maskAccountName(entry.name)]), { title: t("删除供应商"), confirmText: t("删除"), danger: true });
+    const ok = await appConfirm(tf("从本地服务删除「{0}」？直连模式里的供应商不受影响。", [maskAccountName(entry.name)]), { title: t("删除供应商"), confirmText: t("删除"), danger: true });
     if (ok) await run(`remove:${entry.id}`, "delete_gateway_provider", { id: entry.id }, t("删除供应商"));
   };
   return (
@@ -1225,10 +1225,8 @@ function EditIcon({ label, disabled, onClick }: { label: string; disabled: boole
 /** 添加时给哪些 Agent 用：一排可切换的 Agent，默认按各自的「添加供应商时自动加入」。 */
 function AgentPicks({ payload, picked, onChange }: { payload: GatewayPayload | null; picked: GatewayAgentId[]; onChange: (next: GatewayAgentId[]) => void }) {
   // 只列内置的三个和已接入的通用 Agent；装了但没接入的不在这里出现。
-  // 没勾选的 Agent 不列（保持各自的默认）；单 Agent 模式下只有一个可选，整行不显示。
-  const focus = useAgentFocus();
-  const agents = visibleAgents(focus, glanceAgents(payload?.agents));
-  if (!agents.length || singleAgent(focus)) return null;
+  const agents = glanceAgents(payload?.agents);
+  if (!agents.length) return null;
   return (
     <div className="gw-agent-picks">
       <span>{t("添加后给这些 Agent 用")}</span>
@@ -1257,15 +1255,14 @@ type CatalogItem = { key: string; name: string; added?: boolean; icon?: ReactNod
 
 /** 编辑时给哪些 Agent 用（#3030）：每个已接入 Agent 一个开关，改的是各自的「挑选」排除列表。 */
 function EditAgentPicks({ payload, busy, run, entry }: { payload: GatewayPayload | null; busy: string | null; run: Run; entry: GatewayPoolEntry }) {
-  const focus = useAgentFocus();
   const connected = connectedAgents(payload);
   // 只列已接入的 Agent：没接入的谈不上用不用这家供应商。
-  const agents = visibleAgents(focus, glanceAgents(payload?.agents)).filter((agent) => connected.includes(agent.agent));
-  if (!agents.length || singleAgent(focus)) return null;
+  const agents = glanceAgents(payload?.agents).filter((agent) => connected.includes(agent.agent));
+  if (!agents.length) return null;
   const toggle = (agent: GatewayAgentId, on: boolean) => {
     const binding = payload?.gateway.bindings[agent];
     if (!binding) return;
-    void run(`pool:${agent}:${entry.id}`, "save_gateway_binding", { agent, binding: { ...binding, poolExclude: poolExcludeToggle(binding.poolExclude, entry.id, on) } }, t("保存网关绑定"));
+    void run(`pool:${agent}:${entry.id}`, "save_gateway_binding", { agent, binding: { ...binding, poolExclude: poolExcludeToggle(binding.poolExclude, entry.id, on) } }, t("保存本地服务绑定"));
   };
   return (
     <div className="gw-agent-picks">
@@ -1331,10 +1328,19 @@ function ProviderCatalog({
       { kind: "chatgpt-api", name: "ChatGPT API", icon: "openai" },
       { kind: "copilot", name: "GitHub Copilot", icon: "githubcopilot" },
       { kind: "grok", name: "SuperGrok", icon: "grok" },
-      ...(payload?.subscriptions ?? []).map((item) => ({ kind: `sub:${item.id}` as AccountKind, name: item.name, icon: item.id })),
     ] as Array<{ kind: AccountKind; name: string; icon: string }>
   )
     .filter((item) => hit(item.name, t("订阅")))
+    .map((item) => ({
+      key: `login:${item.kind}`,
+      name: item.name,
+      added: loggedIn(item.kind),
+      onClick: () => onLogin(item.kind),
+    }));
+  // 私有接口订阅（Cursor、Kiro、Zed 等）单独一节标成实验：冒用官方客户端身份，随时可能失效，不再新增。
+  const experimentalSubscriptions: CatalogItem[] = (payload?.subscriptions ?? [])
+    .map((item) => ({ kind: `sub:${item.id}` as AccountKind, name: item.name }))
+    .filter((item) => hit(item.name, t("订阅"), t("实验")))
     .map((item) => ({
       key: `login:${item.kind}`,
       name: item.name,
@@ -1351,6 +1357,7 @@ function ProviderCatalog({
     { key: "vendor", title: t("供应商"), hint: t("模型厂商的 API"), items: presetItems("vendor") },
     { key: "relay", title: t("中转"), hint: t("一个密钥用多家模型"), items: presetItems("relay") },
     { key: "local", title: t("本机"), hint: t("本机运行的模型服务，或任意兼容地址"), items: local },
+    { key: "experimental", title: t("实验订阅"), hint: t("冒用官方客户端身份调用未公开的接口，可能随时失效，也有账号被限制的风险；不再新增"), items: experimentalSubscriptions },
   ].filter((section) => section.items.length);
 
   // Esc 栈：从这里打开的「导入…」在上面一层，Esc 先关导入，不会把整个添加流程关掉。
@@ -1378,7 +1385,7 @@ function ProviderCatalog({
                   <button className="gw-catalog-item" disabled={busy !== null} key={item.key} onClick={item.onClick} type="button">
                     {item.icon ?? <Avatar name={item.name} size="sm" />}
                     <span>{item.name}</span>
-                    {item.added ? <i className="gw-dot" data-tone="added" title={t("已在供应商池里")} /> : null}
+                    {item.added ? <i className="gw-dot" data-tone="added" title={t("已在共享供应商里")} /> : null}
                   </button>
                 ))}
               </div>
@@ -1429,13 +1436,10 @@ function ImportDialog({
   const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
   const candidates = importCandidates(payload);
   const keyOf = (item: ImportCandidate) => `${item.source}:${item.id}`;
-  const [picked, setPicked] = useState<Set<string>>(() => new Set(candidates.filter((item) => !item.imported).map(keyOf)));
-  const toggle = (key: string) => {
-    const next = new Set(picked);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    setPicked(next);
-  };
+  // 默认勾上还没导入的。Magpie 的两种导入方式（当作一个上游 / 复制它的供应商）二选一：默认是当作上游，勾了一种会取消另一种。
+  const pendingKeys = () => new Set(pendingImports(payload).map(keyOf));
+  const [picked, setPicked] = useState<Set<string>>(pendingKeys);
+  const toggle = (item: ImportCandidate) => setPicked(togglePoolPick(picked, item, candidates));
   const chosen = candidates.filter((item) => picked.has(keyOf(item)));
   const submit = async () => {
     const items = chosen.map((item) => ({ source: item.source, id: item.id }));
@@ -1456,9 +1460,14 @@ function ImportDialog({
       case "claude":
         return t("Anthropic 协议，原样转发");
       case "ccswitch":
-        return t("CC Switch 里的 Claude 供应商，复制一份进网关");
+        return t("CC Switch 里的 Claude 供应商，复制一份进本地服务");
       case "claudemom":
         return t("ClaudeMom 的上游，Anthropic 协议");
+      case "magpie":
+        // `@gateway` 不是复制某一家，而是把 Magpie 本身当作一个上游（指向它的本地网关）。
+        return item.id === MAGPIE_UPSTREAM_ID
+          ? t("把 Magpie 当作一个上游：请求经 Magpie 转发，用它里面的账号和路由，Magpie 要开着；和下面的复制二选一")
+          : t("Magpie 的供应商，复制一份进本地服务，模型导入后自动获取；和上面的当作上游二选一");
       case "grok":
         return t("Grok 页里配置的供应商");
       default:
@@ -1471,12 +1480,14 @@ function ImportDialog({
     { key: "claude", title: t("Claude Code 的供应商") },
     { key: "ccswitch", title: t("CC Switch 里的 Claude 供应商") },
     { key: "claudemom", title: t("ClaudeMom 的上游") },
+    { key: "magpie", title: t("Magpie 的供应商") },
     { key: "grok", title: t("Grok 的供应商") },
     { key: "opencode", title: t("OpenCode 里保存的 Key") },
   ];
   const official = payload?.codexOfficial ?? [];
   const chatgptLoggedIn = Boolean(payload?.pool.some((entry) => entry.account === "chatgpt"));
-  const pending = candidates.filter((item) => !item.imported);
+  // 「全选未导入的」就是默认会导的那些：Magpie 只含「当作上游」那一条（它和复制二选一）。
+  const pending = pendingImports(payload);
   const allPicked = pending.length > 0 && pending.every((item) => picked.has(keyOf(item)));
   return createPortal(
     <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
@@ -1484,14 +1495,14 @@ function ImportDialog({
         <header>
           <strong id={titleId}>{t("从直连模式导入")}</strong>
           {pending.length ? (
-            <button className="gw-text-button" onClick={() => setPicked(allPicked ? new Set() : new Set(pending.map(keyOf)))} type="button">
+            <button className="gw-text-button" onClick={() => setPicked(allPicked ? new Set() : pendingKeys())} type="button">
               {allPicked ? t("全不选") : t("全选未导入的")}
             </button>
           ) : null}
           <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
         </header>
         <div className="gw-modal-body">
-          <p className="gw-muted gw-import-note">{t("复制一份进网关，之后两边各改各的，互不影响。")}</p>
+          <p className="gw-muted gw-import-note">{t("复制一份进本地服务，之后两边各改各的，互不影响。")}</p>
           {sections.map((section) => {
             const items = candidates.filter((item) => item.source === section.key);
             if (!items.length) return null;
@@ -1502,7 +1513,7 @@ function ImportDialog({
                   const key = keyOf(item);
                   const on = picked.has(key);
                   return (
-                    <button aria-pressed={on} className="gw-import-item" data-on={on} disabled={busy !== null} key={key} onClick={() => toggle(key)} type="button">
+                    <button aria-pressed={on} className="gw-import-item" data-on={on} disabled={busy !== null} key={key} onClick={() => toggle(item)} type="button">
                       <span className="gw-import-check">{on ? <Check className="h-3.5 w-3.5" /> : null}</span>
                       <Avatar name={item.name} size="sm" />
                       <span>
@@ -1525,10 +1536,10 @@ function ImportDialog({
                   <Avatar name={item.name} size="sm" />
                   <span>
                     <strong>{maskAccountName(item.name)}</strong>
-                    <small>{t("不能复制：两边共用登录会互相把对方刷失效，需要在网关里单独登录一次")}</small>
+                    <small>{t("不能复制：两边共用登录会互相把对方刷失效，需要在本地服务里单独登录一次")}</small>
                   </span>
                   {chatgptLoggedIn ? (
-                    <em className="gw-import-badge">{t("网关已登录 ChatGPT")}</em>
+                    <em className="gw-import-badge">{t("本地服务已登录 ChatGPT")}</em>
                   ) : (
                     <button className="gw-text-button strong" disabled={busy !== null} onClick={onLogin} type="button">{t("去登录")}</button>
                   )}

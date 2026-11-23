@@ -349,7 +349,7 @@ fn tool_definitions() -> Value {
                     "renderer": {"type": ["array", "string"], "items": {"type": "string"}, "description": "按顺序执行的页面入口文件；省略时若 files 里有 renderer.js 就用它，只声明 hooks 的拓展可以没有页面入口"},
                     "hooks": {"type": "object", "description": "Codex 钩子声明，例如 {\"PreToolUse\": [{\"matcher\": \"^Bash$\", \"script\": \"hooks/guard.mjs\", \"timeout\": 30}]}；写法见指南「Codex 钩子」"},
                     "toolPipeline": {"type": "object", "description": "工具管道声明，例如 {\"preExecute\": [{\"matcher\": \"^Bash$\", \"script\": \"tools/pre.mjs\"}], \"execute\": [...], \"postExecute\": [...]}：preExecute 改参数或拦截，execute 代为执行，postExecute 改写工具结果。写法见指南「工具管道」"},
-                    "providers": {"type": "array", "description": "模型供应商，例如 [{\"id\": \"myrelay\", \"protocol\": \"chat\", \"baseUrl\": \"https://…/v1\", \"apiKey\": {\"config\": \"apiKey\"}, \"models\": [\"m1\"]}]：并入 Codex++ 网关供应商池，模型名是 <id>/<模型>。写法见指南「模型供应商」"},
+                    "providers": {"type": "array", "description": "模型供应商，例如 [{\"id\": \"myrelay\", \"protocol\": \"chat\", \"baseUrl\": \"https://…/v1\", \"apiKey\": {\"config\": \"apiKey\"}, \"models\": [\"m1\"]}]：并入 Codex++ 本地服务共享供应商，模型名是 <id>/<模型>。写法见指南「模型供应商」"},
                     "skills": {"type": "array", "items": {"type": "string"}, "description": "技能目录（包内含 SKILL.md 的目录），例如 [\"skills/review\"]；省略时自动收 skills/*/SKILL.md。启用后装进 ~/.codex/skills，新开对话可用"},
                     "agents": {"type": "array", "description": "子 agent 预设，例如 [{\"name\": \"reviewer\", \"description\": \"代码审查\", \"instructions\": \"prompts/reviewer.md\", \"model\": \"gpt-5\", \"reasoningEffort\": \"high\"}]：写成 Codex 的 agents 角色"},
                     "mcpServers": {"type": "object", "description": "外部 MCP 服务器，例如 {\"weather\": {\"command\": \"node\", \"args\": [\"${extensionDir}/mcp/server.mjs\"], \"env\": {\"KEY\": \"${config.apiKey}\"}}} 或 {\"docs\": {\"url\": \"https://…/mcp\"}}：写进 Codex 配置"},
@@ -389,7 +389,7 @@ fn tool_definitions() -> Value {
         },
         {
             "name": "codexpp_extension_set_enabled",
-            "description": "启用或停用一个拓展包并热重载。用户不想要某个拓展时用它停用（本工具不删除文件）。",
+            "description": "启用或停用本对话关联的拓展包并热重载。用户不想要某个拓展时用它停用（本工具不删除文件）。要动别的拓展，先在用户明确要求下 read(id, select: true) 关联它。",
             "inputSchema": {
                 "type": "object",
                 "properties": {"id": {"type": "string"}, "enabled": {"type": "boolean"}},
@@ -817,6 +817,16 @@ async fn call_tool(creator: &ExtensionCreator, name: &str, arguments: Value, met
                 serde_json::from_value(arguments).context("codexpp_extension_set_enabled 参数无效")?;
             if !creator.manager.has_extension_package(&arguments.id) {
                 anyhow::bail!("没有 id 为 {} 的用户拓展包", arguments.id);
+            }
+            // 和写入、改配置同一条规矩：只能动本对话关联的拓展。否则一句被注入的指令就能停掉别的拓展
+            // （比如拦危险命令的钩子拓展），或把用户特意停用的拓展重新打开。
+            let thread_id = required_thread_id(meta)?;
+            if context::Bindings::lock(&creator.manager)?.get(&thread_id) != Some(arguments.id.as_str()) {
+                anyhow::bail!(
+                    "本对话没有关联拓展 {id}，未改动它的启停。用户明确要{verb}它时先 read(id, select: true) 关联，再调用本工具。",
+                    id = arguments.id,
+                    verb = if arguments.enabled { "启用" } else { "停用" },
+                );
             }
             let key = user_scripts::extension_package_key(&arguments.id);
             creator.manager.set_script_enabled(&key, arguments.enabled)?;

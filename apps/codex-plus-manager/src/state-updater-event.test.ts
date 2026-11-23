@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 /**
- * 函数式 setState 的 updater 不能读事件对象（#2705，供应商池填 API Key 白屏）。
+ * 函数式 setState 的 updater 不能读事件对象（#2705，共享供应商填 API Key 白屏）。
  *
  * updater 会延迟到渲染阶段执行，那时 `event.currentTarget` 已被 React 置空，
  * 读 `.value` 直接抛 TypeError；管理器没有错误边界，整页白屏。

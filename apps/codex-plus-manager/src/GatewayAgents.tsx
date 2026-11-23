@@ -1,4 +1,4 @@
-/** 本地网关 · 智能体：每个 Agent 一行，接入后供应商池里的模型都出现在它自己的模型列表里，也可以在这里直接选。 */
+/** 本地网关 · 智能体：每个 Agent 一行，接入后共享供应商里的模型都出现在它自己的模型列表里，也可以在这里直接选。 */
 import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -45,9 +45,7 @@ import { AppSelect } from "./AppSelect";
 import { GatewayNavContext, publishGatewayPayload, takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalShell } from "./use-modal-shell";
-import { singleAgent, visibleAgents } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
-import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
+import { CxBadge, CxCard, CxLoading, CxSection, CxStatusIcon } from "./cx-layout";
 import { AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, moveOptionFocus, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
 /** Codex 行的启动 / 停止：和侧栏 `cx-side-run` 用的同一份 App 状态（`App` 里只建一份，两处共用）。 */
@@ -74,6 +72,9 @@ type ClaudeLocalRunStatus = {
   config?: { enabled?: boolean };
 };
 
+/** 主列表里的 Agent：Codex++ 专注做增强的这几个，其余通用 Agent 算实验。 */
+const CORE_AGENTS = new Set<string>(["codex", "claude", "claude-desktop", "grok"]);
+
 export function AgentsView({
   payload,
   busy,
@@ -95,20 +96,24 @@ export function AgentsView({
   /** 嵌在别的页面的弹窗里：展开状态不和「Agent 接入」页共用。 */
   embedded?: boolean;
 }) {
-  // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
-  const focus = useAgentFocus();
-  const solo = singleAgent(focus);
-  const agents = visibleAgents(focus, payload?.agents ?? []);
+  const agents = payload?.agents ?? [];
   // 展开的那一行、「未接入」折叠状态在切换页签后保留；嵌在弹窗里时不和页面共用。
   // 从总览点某个 Agent 跳过来：展开那一行并滚到它（没接入的先展开「未接入」）。
   const [jumped] = useState(() => (embedded ? null : takeGatewayJump("agent")));
-  const [expanded, setExpanded] = useGatewayViewState<string | null>(embedded ? null : "agents.expanded", solo, jumped ?? undefined);
+  const [expanded, setExpanded] = useGatewayViewState<string | null>(embedded ? null : "agents.expanded", null, jumped ?? undefined);
   const connected = agents.filter((agent) => agent.enabled);
-  const others = agents.filter((agent) => !agent.enabled);
+  // 没接入的通用 Agent（Codex / Claude / Grok 之外）收进「更多 Agent（实验）」：不再新增，已接入的照常在「已接入」里。
+  const others = agents.filter((agent) => !agent.enabled && CORE_AGENTS.has(agent.agent));
+  const experimental = agents.filter((agent) => !agent.enabled && !CORE_AGENTS.has(agent.agent));
   const [othersOpen, setOthersOpen] = useGatewayViewState<boolean | null>(
     embedded ? null : "agents.othersOpen",
     null,
     jumped && others.some((agent) => agent.agent === jumped) ? true : undefined,
+  );
+  const [experimentalOpen, setExperimentalOpen] = useGatewayViewState<boolean>(
+    embedded ? null : "agents.experimentalOpen",
+    false,
+    jumped && experimental.some((agent) => agent.agent === jumped) ? true : undefined,
   );
   useEffect(() => {
     if (jumped) document.querySelector(`[data-agent-row="${CSS.escape(jumped)}"]`)?.scrollIntoView({ block: "center" });
@@ -130,15 +135,13 @@ export function AgentsView({
     />
   );
   // 参照 Cursor 的 Customize：「已接入」「未接入」两节，每个 Agent 一行；选模型 + 打开开关就算接入，详情在行下展开。
-  // 单 Agent 模式只有一行，不分节，直接展开它的设置。
   const list = (items: GatewayAgentView[]) => <CxCard className="gw-agent-card">{items.map(row)}</CxCard>;
   return (
     <div className="gw-agents cx-page">
-      {!payload ? <CxCard><CxEmpty title={t("正在读取…")} /></CxCard> : null}
-      {solo && agents.length ? list(agents) : null}
-      {!solo && connected.length ? <CxSection count={connected.length} title={t("已接入")}>{list(connected)}</CxSection> : null}
+      {!payload ? <CxCard><CxLoading rows={4} /></CxCard> : null}
+      {connected.length ? <CxSection count={connected.length} title={t("已接入")}>{list(connected)}</CxSection> : null}
       {/* 未接入的默认折叠，点标题展开；一个都没接入时直接展开，新用户不用再点一下。 */}
-      {!solo && others.length ? (
+      {others.length ? (
         <CxSection
           className="gw-agents-others"
           title={(
@@ -150,6 +153,20 @@ export function AgentsView({
           )}
         >
           {othersShown ? list(others) : null}
+        </CxSection>
+      ) : null}
+      {experimental.length ? (
+        <CxSection
+          className="gw-agents-others"
+          title={(
+            <button aria-expanded={experimentalOpen} className="cx-section-toggle" onClick={() => setExperimentalOpen(!experimentalOpen)} title={t("Codex++ 专注 Codex 与 Claude 的增强，这些 Agent 的接入不再扩充；已经接入的照常可用。")} type="button">
+              <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
+              {t("更多 Agent（实验）")}
+              <span className="cx-section-count">{experimental.length}</span>
+            </button>
+          )}
+        >
+          {experimentalOpen ? list(experimental) : null}
         </CxSection>
       ) : null}
     </div>
@@ -285,7 +302,7 @@ function AgentRow({
       return false;
     }
     if (updateDraft) setDraft(next);
-    const saved = await run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding, item) }, t("保存网关绑定"), connected);
+    const saved = await run(`save:${agent.agent}`, "save_gateway_binding", { agent: agent.agent, binding: bindingFromDraft(next, binding, item) }, t("保存本地服务绑定"), connected);
     if (!saved && updateDraft) setDraft(draft);
     return saved;
   };
@@ -506,7 +523,7 @@ function AgentDetail({
   run: Run;
   onSave: (next: BindingDraft) => void;
   onDisconnect: () => void;
-  /** 去供应商池（弹窗里是关掉弹窗再去）。 */
+  /** 去共享供应商（弹窗里是关掉弹窗再去）。 */
   onManage: () => void;
 }) {
   // 「Agent 接入」页里 Claude Desktop 的绑定 id 是 `claude-desktop`；`claude` 是 Claude Code（命令行），
@@ -601,10 +618,10 @@ function AgentDetail({
                 </label>
               );
             })}
-            {providers.length === 0 ? <div className="gw-empty">{t("供应商池是空的")}</div> : null}
+            {providers.length === 0 ? <div className="gw-empty">{t("共享供应商是空的")}</div> : null}
             <button className="gw-text-button gw-select-manage" onClick={() => { setSelecting(false); onManage(); }} type="button">
               <List className="h-3.5 w-3.5" />
-              {t("管理供应商池")}
+              {t("管理共享供应商")}
             </button>
           </div>
         </Floating>
@@ -709,8 +726,8 @@ function AgentDetail({
             value={draft.unknownModel}
           />
         </SetLine>
-        {/* 窗口按模型在供应商池里填；这里只给池里没写窗口的模型兜底。 */}
-        <SetLine hint={t("供应商池里没写窗口的模型用这个")} title={t("默认窗口")} tooltip={t("供应商池里没写窗口的模型用这个；按模型的窗口在供应商池的详情里填")}>
+        {/* 窗口按模型在共享供应商里填；这里只给池里没写窗口的模型兜底。 */}
+        <SetLine hint={t("共享供应商里没写窗口的模型用这个")} title={t("默认窗口")} tooltip={t("共享供应商里没写窗口的模型用这个；按模型的窗口在共享供应商的详情里填")}>
           <input
             aria-label={t("默认窗口")}
             className="gw-inline-input"
@@ -783,7 +800,7 @@ function AgentDiagnostics({ agent, helperRunning }: { agent: GatewayAgentView; h
     : "";
   const pending = presentation.tone === "pending"
     ? diagnostics?.state === "awaitingTraffic"
-      ? t("配置已指向网关；尚未观察到请求，请在 Agent 里发送一条消息。")
+      ? t("配置已指向本地服务；尚未观察到请求，请在 Agent 里发送一条消息。")
       : t("尚无足够信息确认请求路径。")
     : "";
   return (
@@ -806,7 +823,7 @@ function AgentDiagnostics({ agent, helperRunning }: { agent: GatewayAgentView; h
             </div>
             {diagnostics.recentError ? (
               <p className="gw-agent-diagnostic-error">
-                {tf("最近一次网关错误：{0}", [`${t(diagnosticErrorLabel(diagnostics.recentError.kind))}${diagnostics.recentError.status ? ` · HTTP ${diagnostics.recentError.status}` : ""}`])}
+                {tf("最近一次本地服务错误：{0}", [`${t(diagnosticErrorLabel(diagnostics.recentError.kind))}${diagnostics.recentError.status ? ` · HTTP ${diagnostics.recentError.status}` : ""}`])}
               </p>
             ) : null}
             {diagnostics.configEvidence.length ? (
@@ -977,7 +994,7 @@ export function ModelList({
         key: "current",
         title: "当前选择",
         avatar: "",
-        items: [{ model: current, label: modelDisplay(payload, current, exclude).title, sub: "按供应商池顺序尝试", avatar: "" }],
+        items: [{ model: current, label: modelDisplay(payload, current, exclude).title, sub: "按共享供应商顺序尝试", avatar: "" }],
       }, ...sections];
     }
     return sections;
@@ -1051,7 +1068,7 @@ export function ModelList({
       <div className="gw-mp-list" onKeyDown={(event) => { if (moveOptionFocus(event.currentTarget, event.key)) event.preventDefault(); }} ref={listRef}>
         {displaySections.length === 0 ? (
           <div className="gw-empty">
-            {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("供应商池是空的，先在「供应商池」里添加供应商。")}
+            {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("共享供应商是空的，先在「共享供应商」里添加供应商。")}
           </div>
         ) : null}
         {displaySections.map((section) => {
@@ -1183,7 +1200,7 @@ function ImageModelRow({ agent, payload, busy, run }: { agent: string; payload: 
         <SetLine
           hint={t("上游只给图片链接时，下载下来再交给 Codex")}
           title={t("图片链接转成图片数据")}
-          tooltip={t("上游只返回图片链接时，网关把图下载下来转成图片数据再交给 Agent（Codex 只认图片数据）。关掉后原样转发链接。")}
+          tooltip={t("上游只返回图片链接时，本地服务把图下载下来转成图片数据再交给 Agent（Codex 只认图片数据）。关掉后原样转发链接。")}
         >
           <Switch
             pending={busy !== null}
@@ -1206,7 +1223,7 @@ function OwnModelsRow({ agent, payload, busy, run }: { agent: GatewayAgentView; 
     <SetLine
       hint={tf("直连 {0} · {1} 个，不经 Codex++", [own.vendor, String(own.models.length)])}
       title={tf("显示 {0} 自带的模型", [agent.name])}
-      tooltip={tf("{0} 用自己的登录或 Key 直接向 {1} 要的模型，不经 Codex++。关掉后模型下拉只列网关的模型；{0} 现在用着的那个照样显示。", [agent.name, own.vendor])}
+      tooltip={tf("{0} 用自己的登录或 Key 直接向 {1} 要的模型，不经 Codex++。关掉后模型下拉只列本地服务的模型；{0} 现在用着的那个照样显示。", [agent.name, own.vendor])}
     >
       <Switch
         pending={busy !== null}
@@ -1260,7 +1277,7 @@ export function AgentModelPicker({ agentId, payload, busy, run, notify }: {
       return;
     }
     setDraft(next);
-    const saved = await run(`save:${agentId}`, "save_gateway_binding", { agent: agentId, binding: bindingFromDraft(next, binding, item) }, t("保存网关绑定"), connected);
+    const saved = await run(`save:${agentId}`, "save_gateway_binding", { agent: agentId, binding: bindingFromDraft(next, binding, item) }, t("保存本地服务绑定"), connected);
     if (!saved) setDraft(draft);
   };
   return (
@@ -1321,9 +1338,9 @@ function ModelPicker({
       ? { ...baseDisplay, issue: undefined }
       : baseDisplay;
   const inactiveHint = inactive && connected
-    ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
+    ? tf("原模型组「{0}」已停用，本地服务默认回退为 {1}", [inactive.name, display.title || t("未设置")])
     : unavailable && connected
-      ? tf("原默认模型「{0}」不可用，网关默认回退为 {1}", [original.title, display.title || t("未设置")])
+      ? tf("原默认模型「{0}」不可用，本地服务默认回退为 {1}", [original.title, display.title || t("未设置")])
     : undefined;
   // 没接入、Agent 用着自带的某个模型：按钮上显示它（直连）。
   const own = connected ? null : ownCurrent(agent);

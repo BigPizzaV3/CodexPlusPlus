@@ -36,7 +36,7 @@ function elements(element: any): any[] {
   return [element, ...elements(element.props?.children)];
 }
 
-test("自带同名模型不遮住按供应商池路由的当前选择", () => {
+test("自带同名模型不遮住按共享供应商路由的当前选择", () => {
   const compiled = ts.transpileModule(component.getText(file), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
   }).outputText;
@@ -206,12 +206,12 @@ test("停用的默认供应商显示实际回退模型，恢复后显示原选�
       : exports.PanelAgentRow({ agent: { ...agent, defaultModel, defaultSelectionStatus, defaultModelDiffers }, payload: current, onRun: () => {} });
     const fallback = render(data, "fallback-model");
     const picker = elements(fallback).find((element) => element.props?.className?.includes("gw-picker-button"));
-    assert.match(picker?.props.title, /原默认模型「Example-Model」不可用，网关默认回退为 Fallback-Model/);
+    assert.match(picker?.props.title, /原默认模型「Example-Model」不可用，本地服务默认回退为 Fallback-Model/);
     assert.equal(elements(fallback).find((element) => element.type === "ModelList")?.props.selectedModel, "fallback-model");
     assert.equal(elements(fallback).find((element) => element.type === "ModelList")?.props.selectedModelSelection, null);
     const noFallback = render(data, "");
     const emptyPicker = elements(noFallback).find((element) => element.props?.className?.includes("gw-picker-button"));
-    assert.match(emptyPicker?.props.title, /原默认模型「Example-Model」不可用，网关默认回退为 未设置/);
+    assert.match(emptyPicker?.props.title, /原默认模型「Example-Model」不可用，本地服务默认回退为 未设置/);
     assert.equal(elements(emptyPicker).find((element) => element.type === "ModelViewGlyph")?.props.view.title, "");
     assert.equal(elements(noFallback).find((element) => element.type === "ModelList")?.props.selectedModel, "");
     const invalid = render(data, "a/example-model", "invalid");
@@ -303,7 +303,7 @@ test("接入后的空绑定和停用组使用网关默认模型，拓展成员�
     assert.equal(group.view.title, "m1", name);
     assert.equal(group.view.sub, "", name);
     assert.equal(group.selected, "", name);
-    assert.match(group.picker.props.title, /网关默认回退为 m1/, name);
+    assert.match(group.picker.props.title, /本地服务默认回退为 m1/, name);
     const direct = inspect(render("", "m2", true, false));
     assert.ok(elements(direct.picker).some((element) => element.props?.children === "Direct model"), name);
   }

@@ -50,7 +50,8 @@
   margin: 0;
   color: hsl(var(--foreground));
   font-size: 16px;
-  font-weight: 600;
+  font-weight: 500;
+  line-height: 24px;
 }
 .shell .plugin-market-shelf > h2 > button:not(.cx-icon-button) {
   display: inline-flex;
@@ -83,8 +84,8 @@
 
 .shell .plugin-market-rows {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
-  gap: 0 40px;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0 24px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -94,14 +95,21 @@
   min-width: 0;
   align-items: center;
   gap: 12px;
-  padding: 10px 0;
+  padding: 10px 8px;
+  border-radius: 16px;
+}
+.shell .plugin-market-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.shell.dark .plugin-market-row:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
 .shell .plugin-market-row-main {
   display: flex;
   min-width: 0;
   flex: 1;
   align-items: center;
-  gap: 14px;
+  gap: 12px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -111,18 +119,16 @@
   cursor: pointer;
 }
 .shell .plugin-market-row-main:hover strong {
-  text-decoration: underline;
   text-underline-offset: 3px;
 }
 .shell .plugin-market-icon {
   display: inline-flex;
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   flex: none;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid hsl(var(--border));
   border-radius: 10px;
   background: hsl(var(--card));
   color: hsl(var(--muted-foreground));
@@ -134,7 +140,8 @@
 .shell .plugin-market-icon img {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
+  border-radius: 2px;
 }
 .shell.dark .plugin-market-icon img[data-variant="light"],
 .shell:not(.dark) .plugin-market-icon img[data-variant="dark"] {
@@ -144,7 +151,7 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 3px;
+  gap: 2px;
 }
 .shell .plugin-market-row-title {
   display: flex;
@@ -179,11 +186,12 @@
 }
 .shell .plugin-market-row-action {
   display: inline-flex;
-  width: 32px;
-  height: 32px;
+  width: 28px;
+  height: 28px;
   flex: none;
   align-items: center;
   justify-content: center;
+  border-radius: 10px;
   color: hsl(var(--muted-foreground));
 }
 .shell .plugin-market-row-action svg {
@@ -298,4 +306,39 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .shell .plugin-market-spinner { animation: none; }
+}
+
+/* 「已安装」：和目录列表同一种行，右边是启用开关和三点菜单；停用的整行淡一点。 */
+.shell .plugin-config-panel > .plugin-market-summary {
+  margin: 0 0 6px;
+}
+.shell .plugin-config-panel .plugin-market-row[data-disabled] .plugin-market-row-main {
+  opacity: 0.55;
+}
+.shell .plugin-config-panel span.plugin-market-row-main {
+  cursor: default;
+}
+
+/* 内置插件折叠组 */
+.shell .plugin-config-bundled {
+  margin-top: 8px;
+}
+.shell .plugin-config-bundled-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.shell .plugin-config-bundled-toggle:hover {
+  color: hsl(var(--foreground));
+}
+.shell .plugin-config-bundled-toggle svg {
+  width: 14px;
+  height: 14px;
 }

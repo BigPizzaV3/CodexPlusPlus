@@ -61,7 +61,7 @@ export function OverviewScreen({
   const gatewayManaged = activeProfile?.id === CODEX_GATEWAY_RELAY_ID;
   // Codex 的状态栏：经网关 / 直连哪家供应商，操作是网关管理或切换供应商。
   const codexStatus: DashboardStatus = gatewayManaged
-    ? { tone: "gateway", text: codexGatewayModelCount(activeProfile) ? tf("经 Codex++ 网关 · {0} 个模型", [codexGatewayModelCount(activeProfile)]) : t("经 Codex++ 网关") }
+    ? { tone: "gateway", text: codexGatewayModelCount(activeProfile) ? tf("经 Codex++ 本地服务 · {0} 个模型", [codexGatewayModelCount(activeProfile)]) : t("经 Codex++ 本地服务") }
     : activeProfile
       ? { tone: "relay", text: tf("直连 · {0}", [[activeProfile.name || t("未命名供应商"), relayProtocolLabel(activeProfile.protocol), activeProfile.model].filter(Boolean).join(" · ")]) }
       : { tone: "missing", text: t("还没有配置供应商。") };

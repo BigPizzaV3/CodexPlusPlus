@@ -416,7 +416,7 @@ pub const CLAUDE_DESKTOP: AgentSpec = AgentSpec {
     detect: desktop_detect,
     config_path: desktop_path,
     write: desktop_write,
-    hint: "完全退出并重新打开 Claude Desktop 后生效（Code 与 Cowork 走网关，无需 Anthropic 登录）；非 Claude 模型在它的选择器里以真实名字显示（底层 id 是 claude-gw- / mythos-gw- 开头的别名），有思考档位的模型带思考等级菜单，选中的档位按模型实有档位套用",
+    hint: "完全退出并重新打开 Claude Desktop 后生效（Code 与 Cowork 走本地服务，无需 Anthropic 登录）；非 Claude 模型在它的选择器里以真实名字显示（底层 id 是 claude-gw- / mythos-gw- 开头的别名），有思考档位的模型带思考等级菜单，选中的档位按模型实有档位套用",
 };
 
 fn desktop_local_path(env: &AgentEnv) -> PathBuf {
@@ -444,7 +444,7 @@ pub static CLAUDE_DESKTOP_LOCAL: AgentSpec = AgentSpec {
     detect: |env| env.os == Os::Mac && desktop_detect(env),
     config_path: desktop_local_path,
     write: desktop_local_write,
-    hint: "从 Codex++ 启动原版 Claude Desktop 后生效；本地兼容服务通过进程环境连接网关，不修改官方应用或部署模式",
+    hint: "从 Codex++ 启动原版 Claude Desktop 后生效；本地兼容服务通过进程环境连接本地服务，不修改官方应用或部署模式",
 };
 
 // ---------------------------------------------------------------- Zed
@@ -509,7 +509,7 @@ pub const ZED: AgentSpec = AgentSpec {
     },
     config_path: zed_path,
     write: zed_write,
-    hint: "在 Zed 的 Agent 面板模型菜单里选 codexplus 下的模型；Zed 首次会要 API Key（存在系统钥匙串里），填这个 Agent 的网关 token",
+    hint: "在 Zed 的 Agent 面板模型菜单里选 codexplus 下的模型；Zed 首次会要 API Key（存在系统钥匙串里），填这个 Agent 的本地服务 token",
 };
 
 // ---------------------------------------------------------------- VS Code 系
@@ -966,7 +966,7 @@ pub const JETBRAINS_AIR: AgentSpec = AgentSpec {
     detect: |env| air_dir(env).is_dir(),
     config_path: |env| air_dir(env).join("acp.json"),
     write: air_write,
-    hint: "在 Air 新建任务时从 Agent 菜单选 Codex++，模型菜单里是网关的模型；需要本机装有 OpenCode",
+    hint: "在 Air 新建任务时从 Agent 菜单选 Codex++，模型菜单里是本地服务的模型；需要本机装有 OpenCode",
 };
 
 // ---------------------------------------------------------------- Copilot (JetBrains)

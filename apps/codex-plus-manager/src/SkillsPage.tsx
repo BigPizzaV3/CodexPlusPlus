@@ -10,11 +10,9 @@ import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, skillRepoKey } from "./management-model";
 import { AgentToggle, Menu, MenuItem, PageButton as Button, PageHeader } from "./ManagementPages";
-import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxStatusIcon, CxToolbar } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxLoading, CxRow, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AgentGlyph } from "./hub-shared";
 import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
-import { agentVisible } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 import { aggregateSkillGroupItems, applySkillBundleGroups, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillBundleExportGroups, skillBundleSelections, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
@@ -342,10 +340,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [bundleExportOpen, setBundleExportOpen] = useState(false);
   const [updateTarget, setUpdateTarget] = useState<{ id: string; repoKey: string; localPath?: string } | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
-  // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
-  const focus = useAgentFocus();
-  // 记住这一列数组：它是每个 SkillRow 的属性，每次渲染都新建会让行的 memo 失效。
-  const agentColumns: McpAgentId[] = useMemo(() => MCP_AGENTS.filter((agent) => agentVisible(focus, agent)), [focus]);
+  // 每个 Agent 一列。数组是每个 SkillRow 的属性，要保持同一个引用，否则行的 memo 失效。
+  const agentColumns: McpAgentId[] = MCP_AGENTS;
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   // 每组展开了多少行（默认 SKILL_GROUP_PAGE）。
   const [rowLimits, setRowLimits] = useState<Record<string, number>>({});
@@ -840,7 +836,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const refreshCommand = tab === "installed" ? "list_installed_skills" : "refresh_skill_catalog";
   const openRepoWorkspace = () => { setRepoOpen(true); void load("list_installed_skills", true); };
   const emptyState = visibleCount ? null
-    : !data && pageLoading ? <CxEmpty title={t("正在读取 Skills…")} />
+    : !data && pageLoading ? <CxLoading label={t("正在读取 Skills…")} rows={5} />
     : readFailed ? <CxEmpty title={t("Skills 读取失败")} detail={loadError || data?.message}><Button onClick={() => void load(refreshCommand)} disabled={pageLoading}>{t("重试")}</Button></CxEmpty>
     : deferredQuery.trim() ? <CxEmpty title={t("没有匹配的 Skill")} detail={tab === "installed" ? t("只搜索了已安装的 Skill，可以到「发现」里找。") : undefined}><Button onClick={() => setQuery("")}>{t("清除搜索")}</Button></CxEmpty>
     : pageLoading ? <CxEmpty title={t("正在扫描…")} />

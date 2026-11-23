@@ -11,10 +11,11 @@ const source = readAppSource();
 
 test("provider view tabs keep model aggregation right after direct", () => {
   // 分页是「Codex 连接」页直连供应商一节的筛选胶囊，顺序就是这个数组。
-  const match = source.match(/items=\{\(\[([^\]]+)\] as ProviderViewKind\[\]\)\.map/);
+  const match = source.match(/items=\{\(\[([^\]]+)\] as ListView\[\]\)\.map/);
   assert.ok(match, "App.tsx 里找不到供应商分页胶囊");
   const order = [...match[1].matchAll(/"([A-Za-z]+)"/g)].map((item) => item[1]);
 
-  assert.deepEqual(order, ["direct", "modelAggregation", "routing", "failover"]);
+  // 「共享」（本地服务的共享供应商）排在最后。
+  assert.deepEqual(order, ["direct", "modelAggregation", "routing", "failover", "shared"]);
   assert.match(source, /onChange=\{selectProviderView\}/);
 });

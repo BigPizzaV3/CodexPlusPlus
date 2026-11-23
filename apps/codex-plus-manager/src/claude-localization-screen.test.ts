@@ -116,6 +116,7 @@ function harness(
     patchClaudeEnhance: () => {},
     FullModeBashTimeout: "FullModeBashTimeout",
     ClaudeProviders: "ClaudeProviders",
+    onTabListKeyDown: () => {},
     CxBanner: "CxBanner",
     // Computer Use 接入状态不计入设置操作；同时记录 Bash 保存的参数和失败结果。
     invoke: (command: string, ...args: unknown[]) => command === "computer_use_status"
@@ -663,7 +664,7 @@ test("会话同步：开关默认关闭，切换走 configure，立即同步走 
   assert.equal((screen.calls[1].args[0] as { action: string }).action, "sync_sessions");
 });
 
-test("默认模型和供应商在「供应商」那一块选：启动设置里不再有默认模型，也不放跳转", () => {
+test("默认模型和供应商在 Claude 的「供应商」页选：Desktop 增强页里不再有默认模型和供应商那一块", () => {
   const notify = async () => {};
   const screen = harness(undefined, {}, {
     localMemo: { status: { ...localReady, config: { ...localReady.config, enabled: true } }, autoDetected: true },
@@ -674,9 +675,8 @@ test("默认模型和供应商在「供应商」那一块选：启动设置里�
   assert.equal(findElements(page, "AppSelect").some((item) => item.props.ariaLabel === "Claude 默认模型"), false, "不再有默认模型下拉");
   assert.equal(findElements(page, "AppSelect").some((item) => item.props.ariaLabel === "启动模式"), true, "启动模式那一行还在");
   assert.doesNotMatch(text(page), /模型在「Agent 接入」里的 Claude Desktop 行选择/);
-  const providers = findElements(page, "ClaudeProviders");
-  assert.equal(providers.length, 1, "供应商那一块在页面里");
-  assert.equal(providers[0].props.notify, notify);
+  // 供应商从「Desktop 增强」移到了 Claude 自己的「供应商」页（和 Codex 的「连接与供应商」一样）。
+  assert.equal(findElements(page, "ClaudeProviders").length, 0, "供应商那一块不在这一页");
   assert.equal(buttons(page).some((button) => text(button).includes("去「Agent 接入」")), false, "不给跳转按钮");
   // 模型字段还留在配置类型里（后端旧值兜底），页面只是不再让人在这里改。
   assert.equal(screen.calls.length, 0, "页面不写配置");
@@ -957,6 +957,49 @@ test("启动模式选补丁副本：副本块直接显示在 Desktop 增强页�
   } finally {
     enhanceDelivery.value = "full";
   }
+});
+
+test("Desktop 增强的设置按页签分开：完整功能模式四个页签，3p 两个，补丁副本没有；切页签只藏起别的面板", () => {
+  const tabsOf = (page: Element) => findElements(page, "button").filter((button) => button.props.role === "tab");
+  const panelsOf = (page: Element) => findElements(page, "div").filter((div) => div.props.role === "tabpanel");
+  const full = { ...localReady, config: { ...localReady.config, enabled: true } };
+  const screen = harness(undefined, {}, { localMemo: { status: full, autoDetected: true }, openAdvanced: false, notify: async () => {} });
+  let page = screen.render();
+  assert.deepEqual(tabsOf(page).map(text), ["模型", "账号与会话", "功能", "证书与环境"]);
+  assert.deepEqual(panelsOf(page).map((panel) => panel.props.hidden), [false, true, true, true], "默认在「模型」");
+  // 启动模式在页签上面，哪个页签都看得到。
+  assert.equal(findElements(page, "AppSelect").some((item) => item.props.ariaLabel === "启动模式"), true);
+  tabsOf(page)[2].props.onClick();
+  page = screen.render();
+  assert.deepEqual(tabsOf(page).map((tab) => tab.props["aria-selected"]), [false, false, true, false]);
+  const shown = panelsOf(page).filter((panel) => !panel.props.hidden);
+  assert.deepEqual(shown.map((panel) => panel.props.id), ["claude-local-panel-features"], "只显示「功能」那一页");
+  assert.ok(inputs(shown[0]).some((item) => item.props["aria-label"] === "本地界面汉化"));
+  // 藏起来的面板仍在页面里：切走不丢草稿，账号页签里的输入框照样渲染着。
+  const account = panelsOf(page).find((panel) => panel.props.id === "claude-local-panel-account")!;
+  assert.equal(account.props.hidden, true);
+  assert.ok(inputs(account).some((item) => item.props["aria-label"] === "用户名"));
+  assert.equal(screen.calls.length, 0, "切页签不写配置");
+
+  const threeP = harness(undefined, {}, { localMemo: { status: localReady, autoDetected: true }, openAdvanced: false, notify: async () => {} });
+  assert.deepEqual(tabsOf(threeP.render()).map(text), ["模型", "账号与会话"], "3p 模式没有功能、证书与环境");
+
+  enhanceDelivery.value = "copy";
+  try {
+    const copy = harness({ status: ready, autoDetected: true }, {}, { localMemo: { status: localReady, autoDetected: true }, openAdvanced: false });
+    copy.render();
+    assert.equal(tabsOf(copy.render()).length, 0, "补丁副本没有这些设置，不显示页签");
+  } finally {
+    enhanceDelivery.value = "full";
+  }
+});
+
+test("证书没信任或缺 Node 时，「证书与环境」页签带提示点", () => {
+  const untrusted = { ...localReady, caTrusted: false, config: { ...localReady.config, enabled: true } };
+  const screen = harness(undefined, {}, { localMemo: { status: untrusted, autoDetected: true }, openAdvanced: false });
+  const tabs = findElements(screen.render(), "button").filter((button) => button.props.role === "tab");
+  const dots = tabs.map((tab) => findElements(tab, "span").some((span) => span.props.className === "claude-local-tab-dot"));
+  assert.deepEqual(dots, [false, false, false, true]);
 });
 
 test("汉化、语音输入、Computer Use 三个开关共用 setClaudeFlag，不再各写一份", () => {

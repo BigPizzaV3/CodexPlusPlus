@@ -304,12 +304,10 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     matchesManagementQuery: (values: string[], query: string) => !query || values.some((value) => value?.toLowerCase().includes(query.toLowerCase())),
     sourceLabel: (item: FixtureSkill) => item.displayInstances ? "多个 Agent 安装" : item.bundled ? "内置" : item.repoKey === "cc-switch" || !item.repoKey ? "本地" : item.repoKey === "local" ? "本地导入" : item.repoKey.split("@", 1)[0],
     repoUrl: () => "", SkillVersionPicker: "SkillVersionPicker", MCP_AGENTS: ["codex", "claude", "grok"],
-    // 使用模式会隐藏部分 Agent 列；这里按全部 Agent 渲染。
-    agentVisible: () => true, useAgentFocus: () => "all",
     mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, skillBatchRegistry: registry, skillPageCache: cache,
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async (message: string) => hooks.confirm ? hooks.confirm(message) : true,
   };
-  for (const name of ["PageHeader", "Button", "memo", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
+  for (const name of ["PageHeader", "Button", "memo", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxLoading", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
     "SkillDetailDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillBackupsDrawer", "SkillInPlaceUpdateDrawer", "SkillDuplicatesDrawer", "SkillBundleExportDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ArrowDownAZ", "ArrowDownZA", "GitBranch", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   if (!shared?.cache) vm.runInContext(cacheListenerCode, context);

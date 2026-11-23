@@ -1668,6 +1668,7 @@ ${key} = ${value}`]);
     GATEWAY_AGENT_NAMES: () => GATEWAY_AGENT_NAMES,
     GATEWAY_CLAUDE_PROVIDER_ID: () => GATEWAY_CLAUDE_PROVIDER_ID,
     GROUP_MODEL_PREFIX: () => GROUP_MODEL_PREFIX,
+    MAGPIE_UPSTREAM_ID: () => MAGPIE_UPSTREAM_ID,
     MAX_GATEWAY_PORT: () => MAX_GATEWAY_PORT,
     MIN_GATEWAY_PORT: () => MIN_GATEWAY_PORT,
     QUEUE_REASON_PREFIX: () => QUEUE_REASON_PREFIX,
@@ -1732,6 +1733,7 @@ ${key} = ${value}`]);
     parseWeight: () => parseWeight,
     patternMatches: () => patternMatches,
     pendingImportCount: () => pendingImportCount,
+    pendingImports: () => pendingImports,
     pickerSections: () => pickerSections,
     poolExcludeToggle: () => poolExcludeToggle,
     presetAdded: () => presetAdded,
@@ -2236,12 +2238,12 @@ ${key} = ${value}`]);
   }
   function validateDraft(draft, payload, retainedModel, retainedSelection) {
     if (payload) {
-      if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先在「供应商池」里添加供应商";
+      if (!agentPoolProviders(payload, draft.poolExclude).length) return "共享供应商是空的，先在「共享供应商」里添加供应商";
       const model = draft.model.trim();
       const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
       const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);
       const retainedUnavailableModel = draft.model === retainedModel && retainedSelection && modelSlugFromRowName(model).toLowerCase() === `${retainedSelection.providerId}/${modelSlugFromRowName(retainedSelection.upstreamModel)}`.toLowerCase() && (retainedSelection.providerRemoved || !retainedProvider || !providerEnabled(retainedProvider) || draft.poolExclude.includes(retainedProvider.id));
-      if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
+      if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "共享供应商里没有这个模型";
     }
     const window = parseContextWindow(draft.contextWindow);
     if (window !== null && (!Number.isFinite(window) || window < 1e3)) return "上下文窗口格式不对，例如 200000、200k 或 1M";
@@ -3024,12 +3026,26 @@ ${key} = ${value}`]);
       ...plain("claude", payload?.claudeProviders),
       ...plain("ccswitch", payload?.ccSwitchClaude),
       ...plain("claudemom", payload?.claudeMomProfiles),
+      ...plain("magpie", payload?.magpieProviders),
       ...plain("grok", payload?.grokProfiles),
       ...plain("opencode", payload?.opencodeKeys)
     ];
   }
+  var MAGPIE_UPSTREAM_ID = "@gateway";
+  function pendingImports(payload) {
+    const candidates = importCandidates(payload);
+    const magpie = candidates.filter((item) => item.source === "magpie");
+    const magpieDone = magpie.some((item) => item.imported);
+    const upstream = magpie.find((item) => item.id === MAGPIE_UPSTREAM_ID);
+    return candidates.filter((item) => {
+      if (item.imported) return false;
+      if (item.source !== "magpie") return true;
+      if (magpieDone) return false;
+      return upstream ? item === upstream : true;
+    });
+  }
   function pendingImportCount(payload) {
-    return importCandidates(payload).filter((item) => !item.imported).length;
+    return pendingImports(payload).length;
   }
   function pinnedBare(payload, model) {
     const slash = model.indexOf("/");
@@ -3164,13 +3180,13 @@ ${key} = ${value}`]);
   }
   function diagnosticEvidenceLabel(code) {
     const labels = {
-      matches: "与网关配置一致",
-      matched: "与网关配置一致",
+      matches: "与本地服务配置一致",
+      matched: "与本地服务配置一致",
       missing: "配置项缺失",
       missingFile: "文件不存在",
       missing_file: "文件不存在",
       changed: "配置项已改变",
-      mismatch: "与网关配置不符",
+      mismatch: "与本地服务配置不符",
       endpointChanged: "地址已改变",
       endpoint_changed: "地址已改变",
       unreadable: "无法读取",
@@ -3180,21 +3196,21 @@ ${key} = ${value}`]);
       credential_changed: "本地凭据已改变",
       credentialMissing: "本地凭据缺失",
       credential_missing: "本地凭据缺失",
-      endpointMatched: "与网关配置一致",
-      endpointPortMismatch: "端口与网关配置不符",
-      endpointHostMismatch: "主机与网关配置不符",
-      endpointPathMismatch: "路径与网关配置不符",
+      endpointMatched: "与本地服务配置一致",
+      endpointPortMismatch: "端口与本地服务配置不符",
+      endpointHostMismatch: "主机与本地服务配置不符",
+      endpointPathMismatch: "路径与本地服务配置不符",
       endpointMissing: "地址缺失",
       selectionChanged: "当前供应商或模型已改变",
       fileMissing: "文件不存在",
       fileUnreadable: "无法读取",
       invalidConfig: "配置格式无效",
       unsupportedConfig: "此配置暂无法验证",
-      endpoint_match: "与网关配置一致",
-      credential_match: "与网关配置一致",
+      endpoint_match: "与本地服务配置一致",
+      credential_match: "与本地服务配置一致",
       credential_sealed: "凭据已由系统安全存储加密保存",
-      selection_match: "与网关配置一致",
-      managed_config_match: "与网关配置一致",
+      selection_match: "与本地服务配置一致",
+      managed_config_match: "与本地服务配置一致",
       config_missing: "配置缺失",
       config_unreadable: "无法读取",
       config_invalid: "配置格式无效",
@@ -3202,9 +3218,9 @@ ${key} = ${value}`]);
       unsupported_agent: "此 Agent 暂无法验证",
       endpoint_missing: "地址缺失",
       endpoint_invalid: "地址格式无效",
-      endpoint_host_mismatch: "主机与网关配置不符",
-      endpoint_port_mismatch: "端口与网关配置不符",
-      endpoint_path_mismatch: "路径与网关配置不符",
+      endpoint_host_mismatch: "主机与本地服务配置不符",
+      endpoint_port_mismatch: "端口与本地服务配置不符",
+      endpoint_path_mismatch: "路径与本地服务配置不符",
       selection_changed: "当前供应商或模型已改变",
       managed_config_changed: "托管配置已改变"
     };

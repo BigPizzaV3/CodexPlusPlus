@@ -136,7 +136,7 @@ fn write_goose(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
         ("name", json!(PROVIDER_ID)),
         ("engine", json!("openai")),
         ("display_name", json!(PROVIDER_NAME)),
-        ("description", json!("Codex++ 本地网关")),
+        ("description", json!("Codex++ 本地服务")),
         ("api_key_env", json!("")),
         ("base_url", json!(wiring.v1())),
         (
@@ -186,7 +186,7 @@ pub const GOOSE: AgentSpec = AgentSpec {
 const DSH_KEY_ENV: &str = "CODEXPLUS_GATEWAY_KEY";
 const DSH_BEGIN: &str = "# >>> codex-plus-gateway";
 const DSH_BEGIN_LINE: &str =
-    "# >>> codex-plus-gateway：由 Codex++ 网关写入，断开网关时自动移除，请不要手改";
+    "# >>> codex-plus-gateway：由 Codex++ 本地服务写入，断开本地服务时自动移除，请不要手改";
 const DSH_END: &str = "# <<< codex-plus-gateway";
 const DSH_HEAD: &str = "# dsh 的全局补丁层，叠加在每个 profile 的补丁层之上\n";
 

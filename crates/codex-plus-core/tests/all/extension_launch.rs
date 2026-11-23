@@ -66,12 +66,15 @@ fn invalid_preload_and_launch_declarations_are_reported() {
     write_package(&temp, "outside", json!({ "preload": ["../escape.js"] }), &[]);
     write_package(&temp, "missing", json!({ "preload": "nope.js" }), &[]);
     write_package(&temp, "port", json!({ "launch": { "args": ["--remote-debugging-port=1"] } }), &[]);
+    // 调试端口的变体写法同样拦住（黑名单按前缀）。
+    write_package(&temp, "inspect", json!({ "launch": { "args": ["--inspect-brk=9229"] } }), &[]);
     write_package(&temp, "shell", json!({ "launch": { "args": ["rm -rf /"] } }), &[]);
     write_package(&temp, "timeout", json!({ "launch": { "before": "b.mjs", "timeout": 999 } }), &[("b.mjs", "export default () => null;")]);
     for (key, needle) in [
         ("user:outside", "相对路径"),
         ("user:missing", "nope.js"),
         ("user:port", "--remote-debugging-port"),
+        ("user:inspect", "--inspect-brk"),
         ("user:shell", "不合法"),
         ("user:timeout", "launch.timeout"),
     ] {

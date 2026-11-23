@@ -155,6 +155,59 @@ fn enabled_package_with_replaces_takes_over_a_builtin() {
     assert_eq!(manager.builtin_extension_state().unwrap()["replacedBy"], json!({}));
 }
 
+/// 「下次启动跳过拓展」：拓展这一场没加载，被它顶替的内置功能要照常生效，不能既没人接管又被按「关」处理。
+/// 跳过标记在页面初始化时就消费掉了，所以整场会话靠 `skipped_session` 记着。
+#[test]
+fn skipping_extensions_gives_replaced_builtins_back_for_the_whole_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(temp.path());
+    write_package(temp.path(), "my-fast", json!({ "id": "my-fast", "renderer": "renderer.js", "replaces": ["native-fast-unlock"] }));
+    let replaced = |manager: &UserScriptManager| manager.builtin_extension_state().unwrap()["replacedBy"].clone();
+    assert_eq!(replaced(&manager)["native-fast-unlock"], "user:my-fast");
+
+    // 等着跳过：启动期读到的就已经是「没被顶替」。
+    manager.set_skip_next_start(true).unwrap();
+    assert_eq!(replaced(&manager), json!({}));
+    assert!(manager.builtin_extension_active("native-fast-unlock"));
+
+    // 页面初始化：空包执行完，标记消费掉，但这一场会话仍然没有拓展。
+    assert!(manager.build_initial_bundle().unwrap().contains("mode: \"skipped\""));
+    manager.settle_initial_load(true, true).unwrap();
+    let config = manager.load_config();
+    assert!(!config.skip_next_start && config.skipped_session);
+    assert_eq!(replaced(&manager), json!({}), "标记消费后内置功能也不能被关掉");
+
+    // 这一场里拓展要加载进页面时（刷新页面、热重载），注入包里的顶替状态照实下发。
+    assert!(manager.build_enabled_bundle().unwrap().contains(r#""native-fast-unlock":"user:my-fast""#));
+
+    // 热重载成功、或下一次启动开始：拓展在跑了，顶替重新算数。
+    manager.end_skipped_session().unwrap();
+    assert_eq!(replaced(&manager)["native-fast-unlock"], "user:my-fast");
+
+    // 正常初始化的页面同样清掉标记。
+    manager.settle_initial_load(true, true).unwrap();
+    manager.settle_initial_load(false, true).unwrap();
+    assert!(!manager.load_config().skipped_session);
+}
+
+/// 页面早就初始化过（桥接恢复时的重复加载请求）却消费了跳过标记：什么也没跳过，标记要留给真正的下一次启动。
+#[test]
+fn skip_marker_consumed_without_a_fresh_page_is_put_back() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(temp.path());
+    manager.set_skip_next_start(true).unwrap();
+    manager.build_initial_bundle().unwrap();
+    assert!(!manager.load_config().skip_next_start);
+    manager.settle_initial_load(true, false).unwrap();
+    let config = manager.load_config();
+    assert!(config.skip_next_start && !config.skipped_session);
+    // 没跳过、也没初始化：什么都不动。
+    manager.set_skip_next_start(false).unwrap();
+    manager.settle_initial_load(false, false).unwrap();
+    let config = manager.load_config();
+    assert!(!config.skip_next_start && !config.skipped_session);
+}
+
 #[test]
 fn replaces_must_name_a_known_builtin() {
     let temp = tempfile::tempdir().unwrap();

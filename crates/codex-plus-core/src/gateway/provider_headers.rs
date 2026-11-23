@@ -1,10 +1,10 @@
-//! 供应商池的自定义请求头（#3075）。
+//! 共享供应商的自定义请求头（#3075）。
 //!
 //! 存在供应商的 `relay.custom_headers`，测试连接、拉模型列表、实际转发三处都经
 //! `relay_headers` 带上，规则与直连模式完全一致：传输头不许配；显式 `Authorization`
 //! 优先于 API Key（不再注入 bearer，不做合并）；官方登录通道过滤掉用户的 `Authorization`。
 //!
-//! 和直连模式不同的是供应商池的 Key 原文不出后端（#2782），请求头同理：
+//! 和直连模式不同的是共享供应商的 Key 原文不出后端（#2782），请求头同理：
 //! - 敏感头（鉴权、Cookie、名字里带 token / secret / key / auth / password 的）给界面时只给打码后的样子，
 //!   界面没改就回传 `keep`，后端按名字沿用已存的值；
 //! - 地址换到别的站点时不许沿用敏感头的旧值，必须重新填写，免得把这个站点的凭据发到另一个站点；
@@ -48,7 +48,7 @@ pub fn is_secret(name: &str) -> bool {
             .any(|word| lowered.contains(word))
 }
 
-/// 这个成员的请求头能不能在供应商池里编辑：订阅账号、官方登录、聚合、
+/// 这个成员的请求头能不能在共享供应商里编辑：订阅账号、官方登录、聚合、
 /// 订阅接口包出来的本地上游，请求头由 Codex++ 自己定，不开放。
 pub fn editable(relay: &RelayProfile) -> bool {
     !crate::official_login::member_uses_official_login_transport(relay)

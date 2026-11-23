@@ -18,12 +18,12 @@ pub struct ProviderImportRequest {
     pub config_contents: String,
     #[serde(default)]
     pub auth_contents: String,
-    /// 导入到哪里：空为直连模式供应商（原有行为），`pool` 为网关供应商池。
+    /// 导入到哪里：空为直连模式供应商（原有行为），`pool` 为网关共享供应商。
     #[serde(default)]
     pub target: String,
 }
 
-/// 导入目标：网关供应商池。
+/// 导入目标：网关共享供应商。
 pub const IMPORT_TARGET_POOL: &str = "pool";
 
 /// 唯一接受的导入链接地址（查询参数之前的部分）。
@@ -331,7 +331,7 @@ fn clear_pending_provider_import_if_unchanged_at(
     Ok(())
 }
 
-/// 导入链接带 `target=pool` 时，确认后加进网关供应商池而不是直连模式。
+/// 导入链接带 `target=pool` 时，确认后加进网关共享供应商而不是直连模式。
 pub fn is_pool_import(request: &ProviderImportRequest) -> bool {
     request.target == IMPORT_TARGET_POOL
 }
@@ -346,7 +346,7 @@ pub fn confirm_pending_provider_import_to_pool_at(
     Ok(result)
 }
 
-/// 把导入请求加进网关供应商池。同一地址下已有相同 Key 的供应商时不重复添加。
+/// 把导入请求加进网关共享供应商。同一地址下已有相同 Key 的供应商时不重复添加。
 /// 模型列表留空，由调用方随后从上游获取。
 pub fn import_provider_to_pool(
     request: ProviderImportRequest,
@@ -516,7 +516,7 @@ fn validate_import_base_url(value: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// 导入目标只认识网关供应商池，其余（含空）都按直连模式处理。
+/// 导入目标只认识网关共享供应商，其余（含空）都按直连模式处理。
 fn normalize_target(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
         "pool" | "gateway" | "gateway-pool" => IMPORT_TARGET_POOL.to_string(),
@@ -592,7 +592,7 @@ fn relay_profile_from_request(
     }
 }
 
-/// 网关「导入到供应商池」用：按地址、Key、协议拼出与导入链接同形的供应商
+/// 网关「导入到共享供应商」用：按地址、Key、协议拼出与导入链接同形的供应商
 /// （config.toml / auth.json 快照齐全，切到它时 Codex 也能直接用）。
 pub fn pool_relay_profile(
     name: &str,
@@ -915,7 +915,7 @@ mod tests {
             &pending_path,
             "codexplusplus://v1/import/provider?name=Shown&baseUrl=https%3A%2F%2Fshown.example&apiKey=sk-shown",
         );
-        // 弹窗展示后又来了一条新链接（导入到供应商池），覆盖了 pending。
+        // 弹窗展示后又来了一条新链接（导入到共享供应商），覆盖了 pending。
         let replaced = save_pending_url(
             &pending_path,
             "codexplusplus://v1/import/provider?name=Other&baseUrl=https%3A%2F%2Fother.example&apiKey=sk-other&target=pool",
@@ -944,7 +944,7 @@ mod tests {
         );
         assert!(pending_path.exists());
 
-        // 带上新指纹再确认：按同一次读取的 target=pool 导入到供应商池。
+        // 带上新指纹再确认：按同一次读取的 target=pool 导入到共享供应商。
         let confirmed = confirm_pending_provider_import_matching_at(
             &pending_path,
             &replaced,

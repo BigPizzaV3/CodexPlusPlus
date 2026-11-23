@@ -28,6 +28,23 @@ pub(crate) struct CdpCommandTimeout {
     message_id: u64,
     seconds: u64,
 }
+/// `Runtime.evaluate` 交给页面的脚本抛了异常，或者整段脚本根本解析不了（语法错误，此时一行也没执行）。
+#[derive(Debug, thiserror::Error)]
+#[error("Runtime.evaluate raised an exception: {0}")]
+pub(crate) struct RuntimeEvaluateException(Value);
+
+impl RuntimeEvaluateException {
+    /// 异常的第一行说明（如 `SyntaxError: Unexpected token ';'`），后面的调用栈不要。
+    pub(crate) fn summary(&self) -> &str {
+        let description = self
+            .0
+            .pointer("/exception/description")
+            .and_then(Value::as_str)
+            .or_else(|| self.0.get("text").and_then(Value::as_str))
+            .unwrap_or("renderer exception");
+        description.lines().next().unwrap_or(description)
+    }
+}
 // 25MiB 音频的 base64 与 JSON 封装约 33.4MiB；限制单 frame 和完整 message 的内存上限。
 const CDP_MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
 /// 陈旧会话的 generation 轮询间隔。旧会话只会在"socket 再收到消息"时走到循环顶部的
@@ -1270,15 +1287,15 @@ pub async fn install_bridge(
     let generation = next_bridge_generation(websocket_url);
     session = session.with_generation(generation.clone());
     let mut registered_script_ids = Vec::new();
-    let native_modules_requested = crate::builtin_takeover::load_effective_settings()
-        .is_ok_and(|settings| crate::native_predictions::native_modules_requested(&settings));
 
     let install_result: anyhow::Result<()> = async {
-        if native_modules_requested {
-            session
-                .send_command(next_message_id(), "Page.enable", json!({}))
-                .await?;
-        }
+        // 必须先 Page.enable：下面用 Page.addScriptToEvaluateOnNewDocument 登记的脚本，只有本连接启用了 Page 域，
+        // 页面刷新后才会真的执行（在 Codex 26.11 的 Chromium 158 上实测：不发就不执行）。以前只在开了原生 Fast /
+        // 输入预测时才发，默认设置下页面一刷新 Codex++ 的注入就整个没了，要等看门狗几秒后重新注入；
+        // 拓展的 preload（要赶在 Codex 自己的脚本之前）也因此根本跑不到。
+        session
+            .send_command(next_message_id(), "Page.enable", json!({}))
+            .await?;
         session.send_command(1, "Runtime.enable", json!({})).await?;
         session
             .send_command(2, "Runtime.removeBinding", json!({ "name": binding_name }))
@@ -1934,7 +1951,7 @@ fn ensure_runtime_evaluate_succeeded(response: Value) -> anyhow::Result<Value> {
         .get("result")
         .and_then(|result| result.get("exceptionDetails"))
     {
-        bail!("Runtime.evaluate raised an exception: {exception}");
+        return Err(RuntimeEvaluateException(exception.clone()).into());
     }
     Ok(response)
 }

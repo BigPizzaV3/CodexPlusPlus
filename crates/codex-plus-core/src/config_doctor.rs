@@ -587,7 +587,7 @@ fn check_profile(profile: &RelayProfile, is_active: bool, findings: &mut Vec<Fin
         }
         if path.ends_with("//") || base_url.ends_with('/') {
             findings.push(
-                finding(Level::Info, "profile.base_url.trailing_slash", "接入地址结尾多了斜杠", "多数中转能容忍，但拼出来的路径会变成 `//responses`，个别网关会 404。")
+                finding(Level::Info, "profile.base_url.trailing_slash", "接入地址结尾多了斜杠", "多数中转能容忍，但拼出来的路径会变成 `//responses`，个别本地服务会 404。")
                     .fix("把结尾的 `/` 去掉。")
                     .scope(&scope),
             );

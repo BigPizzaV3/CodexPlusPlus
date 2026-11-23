@@ -4,16 +4,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { BookOpen, MoreHorizontal, Plus, RefreshCw, Search, Server, TriangleAlert, Upload, X } from "lucide-react";
+import { MoreHorizontal, Plus, RefreshCw, Search, Server, TriangleAlert, Upload, X } from "lucide-react";
 import { t, tf } from "./i18n";
-import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
+import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxLoading, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AppSelect } from "./AppSelect";
 import { matchesManagementQuery } from "./management-model";
 import { TopbarActions } from "./TopbarActions";
 import { AgentGlyph } from "./hub-shared";
 import { MCP_AGENTS, editedEnabledState, mcpOn, mcpPresent, mergeMcpRows, type AgentMcpConfig, type McpAgentId, type McpRow } from "./agent-mcp-model";
-import { agentVisible } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 
 type Result = { status: string; message: string };
@@ -140,7 +138,8 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
   onImport: (json: string) => Promise<boolean>; notify: Notify;
 }) {
   const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<"mcp" | "plugin">("mcp");
+  // 插件配置挪到了「Codex 插件」页的「本机配置」；这一页只管 MCP。
+  const kind = "mcp" as const;
   const [editor, setEditor] = useState<{ row?: McpRow } | null>(null);
   const [importing, setImporting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<McpRow | null>(null);
@@ -149,17 +148,12 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentErrors, setAgentErrors] = useState<Partial<Record<"claude" | "grok", string>>>({});
   const [busy, setBusy] = useState(false); const lock = useRef(false);
-  // 只管理 Codex 时只有 Codex 一列（只用增强功能时是 Codex、Claude Code 两列），隐藏的 Agent 不读配置，
-  // 编辑、删除都不会碰它们的文件。
-  const focus = useAgentFocus();
-  const shownAgents = MCP_AGENTS.filter((agent) => agentVisible(focus, agent));
   const loadRequest = useRef(0);
   const loadAgents = async () => {
     const request = ++loadRequest.current;
     setAgentsLoading(true);
     // 几个 Agent 的配置文件互不相干，并行读。
-    const agents = (["claude", "grok"] as const).filter((item) => agentVisible(focus, item));
-    const results = await Promise.all(agents.map(async (agent) => {
+    const results = await Promise.all((["claude", "grok"] as const).map(async (agent) => {
       try {
         const result = await invoke<Result & { config?: AgentMcpConfig }>("load_agent_mcp", { agent });
         return succeeded(result) && result.config ? { agent, config: result.config } : { agent, error: result.message };
@@ -176,14 +170,14 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
     setAgentErrors(errors);
     setAgentsLoading(false);
   };
-  useEffect(() => { void loadAgents(); }, [focus]);
+  useEffect(() => { void loadAgents(); }, []);
   const failedAgents = (Object.keys(agentErrors) as Array<"claude" | "grok">).filter((agent) => agentErrors[agent]);
   const codexEntries = entries.filter((entry) => entry.kind === kind);
   const rows = kind === "mcp"
     ? mergeMcpRows(codexEntries.map((entry) => ({ id: entry.id, tomlBody: entry.tomlBody, enabled: entry.enabled })), { claude: agentConfigs.claude?.entries, grok: agentConfigs.grok?.entries })
     : mergeMcpRows(codexEntries.map((entry) => ({ id: entry.id, tomlBody: entry.tomlBody, enabled: entry.enabled })), {});
   const visible = rows.filter((row) => matchesManagementQuery([row.id, row.body], query));
-  const agents: McpAgentId[] = kind === "mcp" ? shownAgents : ["codex"];
+  const agents: McpAgentId[] = kind === "mcp" ? MCP_AGENTS : ["codex"];
   const write = async (task: () => Promise<boolean>) => {
     if (lock.current) return false; lock.current = true; setBusy(true);
     try { return await task(); } catch (e) { await notify("MCP", String(e), "failed"); return false; } finally { lock.current = false; setBusy(false); }
@@ -230,19 +224,18 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
   };
   return <div className="mg-page cx-page"><PageHeader icon={<Server size={20} strokeWidth={1.5} />} title={kind === "mcp" ? "MCP" : t("插件配置")} actions={<>
     <button className="cx-secondary" type="button" onClick={() => void refreshAll()} disabled={busy}><RefreshCw size={14} />{t("刷新本机配置")}</button>
-    <Menu><MenuItem onClick={() => setImporting(true)} disabled={kind !== "mcp" || busy}>{t("导入 JSON")}</MenuItem><MenuItem onClick={() => setKind(kind === "mcp" ? "plugin" : "mcp")}>{kind === "mcp" ? t("管理插件配置") : t("返回 MCP")}</MenuItem></Menu>
+    <Menu><MenuItem onClick={() => setImporting(true)} disabled={busy}>{t("导入 JSON")}</MenuItem></Menu>
   </>} />
     <CxToolbar query={query} onQuery={setQuery} placeholder={kind === "mcp" ? t("搜索名称、命令或 URL") : t("搜索插件")}>
       <button className="cx-primary" type="button" onClick={() => setEditor({})} disabled={busy}><Plus size={15} />{kind === "mcp" ? t("添加服务器") : t("添加插件")}</button>
     </CxToolbar>
-    {kind === "plugin" ? <CxBanner icon={<BookOpen size={16} />} title={t("插件配置")} detail={t("插件只有 Codex 支持")}><button className="cx-secondary" type="button" onClick={() => setKind("mcp")}>{t("返回 MCP")}</button></CxBanner> : null}
     {kind === "mcp" && failedAgents.length ? <CxBanner tone="warn" icon={<TriangleAlert size={16} />} title={t("部分 Agent 的 MCP 配置读取失败")} detail={failedAgents.map((agent) => `${agentLabel(agent)}: ${t(agentErrors[agent] || "")}`).join("\n")}><button className="cx-secondary" type="button" disabled={agentsLoading} onClick={() => void loadAgents()}>{t("重试")}</button></CxBanner> : null}
     {connected.length ? <CxSection title={t("已连接")} count={connected.length}><CxCard>{connected.map(renderRow)}</CxCard></CxSection> : null}
     {idle.length ? <CxSection title={t("未启用")} count={idle.length}><CxCard>{idle.map(renderRow)}</CxCard></CxSection> : null}
     {!visible.length ? <CxCard>{rows.length
       ? <CxEmpty title={tf("没有匹配的{0}", [noun])}><button className="cx-secondary" type="button" onClick={() => setQuery("")}>{t("清除搜索")}</button></CxEmpty>
       : kind === "mcp" && agentsLoading
-        ? <CxEmpty title={t("正在读取各 Agent 的 MCP 配置…")} />
+        ? <CxLoading label={t("正在读取各 Agent 的 MCP 配置…")} />
         : <CxEmpty title={kind === "mcp" ? t("还没有 MCP 服务器") : t("还没有插件")} detail={kind === "mcp" ? t("添加一个服务器，或粘贴现有的 mcpServers JSON 导入。") : t("添加一个 Codex 插件配置。")}>
           <button className="cx-primary" type="button" disabled={busy} onClick={() => setEditor({})}><Plus size={15} />{kind === "mcp" ? t("添加服务器") : t("添加插件")}</button>
           {kind === "mcp" ? <button className="cx-secondary" type="button" disabled={busy} onClick={() => setImporting(true)}><Upload size={15} />{t("导入 JSON")}</button> : null}

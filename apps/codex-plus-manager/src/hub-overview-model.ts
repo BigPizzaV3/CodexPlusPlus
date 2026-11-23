@@ -1,4 +1,4 @@
-/** 网关总览（Agent → Codex++ → 供应商池）的纯数据整理，页面只负责画。 */
+/** 网关总览（Agent → Codex++ → 共享供应商）的纯数据整理，页面只负责画。 */
 import {
   glanceAgents,
   maskAccountName,
@@ -12,7 +12,7 @@ import {
 } from "./gateway-model.ts";
 import { flowAgent, flowStatus, type FlowEntry } from "./request-flow-model.ts";
 
-/** 拓扑图左列的一个 Agent。Codex 没接入网关时走直连模式，不经网关的供应商池。 */
+/** 拓扑图左列的一个 Agent。Codex 没接入网关时走直连模式，不经网关的共享供应商。 */
 export type HubAgentNode = {
   id: string;
   name: string;
@@ -85,7 +85,7 @@ export function hubProviders(payload: GatewayPayload | null, callsByProvider: Ma
   }));
 }
 
-/** 供应商池的状态：读取中 / 空池 / 池里有但全部关闭 / 有打开的。总览用它决定右列显示什么。 */
+/** 共享供应商的状态：读取中 / 空池 / 池里有但全部关闭 / 有打开的。总览用它决定右列显示什么。 */
 export function hubPoolState(payload: GatewayPayload | null): "loading" | "empty" | "allOff" | "ready" {
   if (!payload) return "loading";
   if (payload.pool.length === 0) return "empty";

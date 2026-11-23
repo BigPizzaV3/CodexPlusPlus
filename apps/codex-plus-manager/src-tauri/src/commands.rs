@@ -588,6 +588,44 @@ pub struct CcsProvidersPayload {
     pub configured_db_path: String,
     pub fallback_reason: Option<String>,
     pub providers: Vec<codex_plus_core::ccs_import::CcsProviderImport>,
+    /// 已经导入过的条目（`sourceId`），导入对话框里标「已导入」、默认不勾。
+    pub imported: Vec<String>,
+}
+
+/// 「从第三方导入」里 Magpie 的一条供应商。不带 Key：列表只用来勾选，导入时后端再读一次。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MagpieProviderEntry {
+    pub source_id: String,
+    pub name: String,
+    pub base_url: String,
+    pub protocol: codex_plus_core::settings::RelayProtocol,
+    /// 在 Magpie 里关掉了。
+    pub disabled: bool,
+    pub has_key: bool,
+    pub imported: bool,
+}
+
+/// 「把 Magpie 当作一个上游」那一条：指向 Magpie 本地网关的地址。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MagpieGatewayEntry {
+    pub source_id: String,
+    pub base_url: String,
+    pub imported: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MagpieProvidersPayload {
+    /// 实际读的 `providers.json`。
+    pub path: String,
+    /// 这个文件在不在（不在就是没装 Magpie，或还没在里面加过供应商）。
+    pub found: bool,
+    /// 可以复制过来的各家供应商。
+    pub providers: Vec<MagpieProviderEntry>,
+    /// 把 Magpie 本身当作一个上游；没装 Magpie 时没有。
+    pub gateway: Option<MagpieGatewayEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5777,6 +5815,7 @@ pub fn load_ccs_providers() -> CommandResult<CcsProvidersPayload> {
                 source.providers.len()
             ),
             CcsProvidersPayload {
+                imported: codex_plus_core::ccs_import::imported_source_ids(&settings, &source),
                 db_path: source.db_path.to_string_lossy().to_string(),
                 configured_db_path: source.configured_db_path,
                 fallback_reason: source.fallback_reason,
@@ -5792,14 +5831,17 @@ pub fn load_ccs_providers() -> CommandResult<CcsProvidersPayload> {
                 configured_db_path: settings.ccs_db_path,
                 fallback_reason: None,
                 providers: Vec::new(),
+                imported: Vec::new(),
             },
         ),
     }
 }
 
+/// `only` 是导入对话框里勾选的条目（`sourceId`）；不传就是全部（旧行为）。
 #[tauri::command]
 pub fn import_ccs_providers(
     bindings: Option<std::collections::BTreeMap<String, String>>,
+    only: Option<Vec<String>>,
 ) -> CommandResult<SettingsPayload> {
     let store = SettingsStore::default();
     let mut settings = match store.load() {
@@ -5811,7 +5853,7 @@ pub fn import_ccs_providers(
             );
         }
     };
-    let source =
+    let mut source =
         match codex_plus_core::ccs_import::resolve_codex_provider_source(&settings.ccs_db_path) {
             Ok(source) => source,
             Err(error) => {
@@ -5821,6 +5863,9 @@ pub fn import_ccs_providers(
                 );
             }
         };
+    if let Some(only) = &only {
+        source.providers.retain(|provider| only.contains(&provider.source_id));
+    }
     let (imported, linked) = match codex_plus_core::ccs_import::import_providers_with_origins(
         &mut settings,
         &source,
@@ -5844,6 +5889,90 @@ pub fn import_ccs_providers(
         ),
         Err(error) => failed(
             &format!("保存 cc-switch 供应商失败：{error}"),
+            fallback_settings_payload(),
+        ),
+    }
+}
+
+/// 「从第三方导入」的 Magpie 一栏：列出它的供应商（不含 Key），标出已经导入过的。只读 Magpie 的文件。
+#[tauri::command(async)]
+pub fn load_magpie_providers() -> CommandResult<MagpieProvidersPayload> {
+    let path = codex_plus_core::magpie_import::default_providers_path();
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let imported = codex_plus_core::magpie_import::imported_ids(&settings, &path);
+    let gateway = codex_plus_core::magpie_import::gateway_provider().map(|gateway| MagpieGatewayEntry {
+        imported: imported.contains(&gateway.id),
+        source_id: gateway.id,
+        base_url: gateway.base_url,
+    });
+    let payload = |providers| MagpieProvidersPayload {
+        path: path.to_string_lossy().to_string(),
+        found: path.is_file(),
+        providers,
+        gateway: gateway.clone(),
+    };
+    match codex_plus_core::magpie_import::list_providers_at(&path) {
+        Ok(providers) => {
+            let entries: Vec<MagpieProviderEntry> = providers
+                .into_iter()
+                .map(|provider| MagpieProviderEntry {
+                    imported: imported.contains(&provider.id),
+                    source_id: provider.id,
+                    name: provider.name,
+                    base_url: provider.base_url,
+                    protocol: provider.protocol,
+                    disabled: provider.disabled,
+                    has_key: !provider.api_key.is_empty(),
+                })
+                .collect();
+            ok(
+                &format!("已读取 Magpie 的供应商：{} 个。", entries.len()),
+                payload(entries),
+            )
+        }
+        Err(error) => failed(&format!("读取 Magpie 的供应商失败：{error:#}"), payload(Vec::new())),
+    }
+}
+
+/// 把勾选的 Magpie 条目导入成直连供应商：各家供应商是复制，`@gateway` 是把 Magpie 本身当作一个上游。
+/// 已导入过的跳过，已有配置不覆盖。
+#[tauri::command]
+pub fn import_magpie_providers(ids: Vec<String>) -> CommandResult<SettingsPayload> {
+    let store = SettingsStore::default();
+    let mut settings = match store.load() {
+        Ok(settings) => settings,
+        Err(error) => {
+            return failed(
+                &format!("读取设置失败：{error}"),
+                fallback_settings_payload(),
+            );
+        }
+    };
+    let path = codex_plus_core::magpie_import::default_providers_path();
+    let (imported, skipped) =
+        match codex_plus_core::magpie_import::import_into_settings(&mut settings, &path, &ids) {
+            Ok(counts) => counts,
+            Err(error) => {
+                return failed(
+                    &format!("导入 Magpie 失败：{error:#}"),
+                    fallback_settings_payload(),
+                );
+            }
+        };
+    if imported == 0 {
+        return settings_payload("勾选的供应商都已导入，保留已有配置。", "设置读取失败");
+    }
+    match store.save(&settings) {
+        Ok(()) => settings_payload(
+            &if skipped > 0 {
+                format!("已从 Magpie 导入 {imported} 个供应商，{skipped} 个之前导入过；已有配置未覆盖。")
+            } else {
+                format!("已从 Magpie 导入 {imported} 个供应商。")
+            },
+            "导入后读取设置失败",
+        ),
+        Err(error) => failed(
+            &format!("保存 Magpie 供应商失败：{error}"),
             fallback_settings_payload(),
         ),
     }
@@ -5874,9 +6003,9 @@ pub fn confirm_pending_provider_import(fingerprint: String) -> CommandResult<Set
             let message = match (confirmed.to_pool, result.imported) {
                 (true, true) => {
                     crate::gateway_commands::after_url_pool_import(result.profile_id.clone());
-                    format!("已加入网关供应商池：{}，正在从上游获取模型。", result.profile_name)
+                    format!("已加入网关共享供应商：{}，正在从上游获取模型。", result.profile_name)
                 }
-                (true, false) => format!("供应商池里已有相同地址和 Key 的供应商：{}。", result.profile_name),
+                (true, false) => format!("共享供应商里已有相同地址和 Key 的供应商：{}。", result.profile_name),
                 (false, true) => format!("已导入供应商配置：{}。", result.profile_name),
                 (false, false) => format!("供应商配置已存在：{}。", result.profile_name),
             };
@@ -7586,7 +7715,8 @@ pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandR
     }
 }
 
-/// 记下管理器的使用模式（#2902）：页面本地存储之外再存进设置文件，本地存储丢了也能补回。
+/// 记下管理器的启动引导已经出现过（#2902）：页面本地存储之外再在设置文件里留个记号，本地存储丢了也不会重复弹。
+/// 这个字段原来记的是使用模式（已取消，所有功能始终显示），所以取值还是那三个模式名，前端现在只写 "all"、只看非空。
 #[tauri::command]
 pub fn set_manager_agent_focus(mode: String) -> CommandResult<SettingsPayload> {
     let mode = mode.trim();
@@ -7699,13 +7829,21 @@ pub async fn extension_manager_backend_call(key: String, method: String, params:
 }
 
 /// 保存拓展包的配置（清单 config 里声明的项）。页面侧要热重载后才读到新值，由前端随后触发。
+/// `merge`：只覆盖给出的项、其余已存的值保留。拓展自己的面板调 `codexPlusManager.config.set(values)` 时用，
+/// 它常常只传改动的那一项；设置表单提交的是整份，照旧整份替换。
 #[tauri::command]
-pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>) -> CommandResult<SettingsPayload> {
+pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>, merge: Option<bool>) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return failed("拓展 key 不能为空。", fallback_settings_payload());
     }
-    match default_user_script_manager().set_extension_config(trimmed, &values) {
+    let manager = default_user_script_manager();
+    let saved = if merge.unwrap_or(false) {
+        manager.update_extension_config(trimmed, &values)
+    } else {
+        manager.set_extension_config(trimmed, &values)
+    };
+    match saved {
         Ok(_) => settings_payload("拓展配置已保存。", "拓展配置保存失败"),
         Err(error) => failed(&format!("拓展配置保存失败：{error:#}"), fallback_settings_payload()),
     }
@@ -10025,7 +10163,7 @@ pub fn switch_relay_profile(
         &settings.active_relay_id,
     ) {
         return failed(
-            "Codex 正由 Codex++ 网关接管：先在「供应商配置」顶部或「Agent 接入」里点「断开并还原」，再切换供应商。",
+            "Codex 正由 Codex++ 本地服务接管：先在「供应商配置」顶部或「Agent 接入」里点「断开并还原」，再切换供应商。",
             relay_switch_payload(
                 store.load().unwrap_or_default(),
                 codex_plus_core::relay_config::relay_status_from_home(&home),
@@ -10060,7 +10198,7 @@ pub fn switch_relay_profile(
                     "liveBackupPath": outcome.live_backup_path.as_ref()
                 }),
             );
-            // 在 Codex 供应商页切到别的供应商等于断开网关，切回「Codex++ 网关」等于重新接入。
+            // 在 Codex 供应商页切到别的供应商等于断开网关，切回「Codex++ 本地服务」等于重新接入。
             let binding_update = codex_plus_core::gateway::apply::note_codex_switched(
                 &codex_plus_core::gateway::store::GatewayStore::default(),
                 &result.settings.active_relay_id,

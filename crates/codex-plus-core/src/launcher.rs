@@ -498,6 +498,9 @@ pub trait LaunchHooks: Send + Sync {
     fn effective_settings(&self, settings: BackendSettings) -> BackendSettings {
         settings
     }
+    /// 新的一次启动开始：上一场「跳过拓展」会话留下的标记到此为止（见 `UserScriptConfig::skipped_session`）。
+    /// 测试用的钩子不碰真实配置。
+    fn begin_extension_session(&self) {}
     /// 启用中拓展的启动前后声明（codexpp.json 的 `launch`）。测试用的钩子没有。
     fn extension_launches(&self) -> Vec<(String, Value, crate::extension_launch::ExtensionLaunch)> {
         Vec::new()
@@ -891,6 +894,7 @@ where
     let hooks = hooks.into_launch_hooks();
     let mut debug_port = hooks.select_debug_port(options.debug_port);
     let mut helper_port = hooks.select_helper_port(options.helper_port);
+    hooks.begin_extension_session();
     // 被拓展顶替的内置拓展（原生 Fast、强制中文、Work 视图、原生浏览器兼容……）在这次启动里按「关」处理。
     let settings = hooks.effective_settings(hooks.load_settings().await?);
     // 请求体上限必须在 helper 绑定端口、开始接收请求前生效；环境变量优先级更高，
@@ -1072,7 +1076,7 @@ where
         }
 
         // 拓展的启动前脚本与追加的启动参数（codexpp.json 的 `launch`）。
-        let extension_launches = hooks.extension_launches();
+        let extension_launches = extension_launches_for_this_start(&settings, hooks.extension_launches());
         let extension_launch_context = crate::extension_launch::LaunchContext {
             codex_home: home.clone(),
             state_dir: hooks.state_dir(),
@@ -1780,6 +1784,13 @@ impl LaunchHooks for DefaultLaunchHooks {
         crate::builtin_takeover::mask_settings(settings)
     }
 
+    fn begin_extension_session(&self) {
+        // Codex 还开着就不是新的一场会话（多开、补回桥接）：那个页面要是带着「跳过拓展」启动的，现在仍然没有拓展。
+        if !self.codex_desktop_running() {
+            let _ = crate::user_scripts::default_user_script_manager().end_skipped_session();
+        }
+    }
+
     fn extension_launches(&self) -> Vec<(String, Value, crate::extension_launch::ExtensionLaunch)> {
         crate::user_scripts::default_user_script_manager().enabled_launches().unwrap_or_default()
     }
@@ -2199,7 +2210,7 @@ pub(crate) async fn handle_helper_connection_on(
     if listener == HelperListener::Wsl && !crate::wsl_network::wsl_listener_allows(path) {
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "forbidden",
-            "message": "WSL 网卡上只开放 Codex++ 网关接口。"
+            "message": "WSL 网卡上只开放 Codex++ 本地服务接口。"
         }))?;
         write_http_response(&mut stream, "403 Forbidden", "application/json; charset=utf-8", &body)
             .await?;
@@ -4357,6 +4368,7 @@ async fn transcribe_until_disconnect(
 #[cfg(test)]
 mod dictation_receipt_tests {
     use super::*;
+
 
     #[test]
     fn receipt_round_trip_keeps_port_token_and_owner_only_permissions() {
@@ -7459,6 +7471,44 @@ fn runtime_evaluate_result_is_true(result: &Value) -> bool {
         .unwrap_or(false)
 }
 
+/// 这次启动要用的拓展启动声明。增强总开关关着时一个也不用：启动前脚本不跑、不加启动参数、退出后脚本也不跑，
+/// 和页面里的拓展、preload 一致（增强关着时都不加载）。总开关是出问题时的急救手段，关了就不该还有拓展代码在跑。
+fn extension_launches_for_this_start<T>(settings: &BackendSettings, launches: Vec<T>) -> Vec<T> {
+    if settings.enhancements_enabled { launches } else { Vec::new() }
+}
+
+#[cfg(test)]
+mod extension_launch_gate_tests {
+    use super::*;
+
+    /// 增强总开关关着时拓展的启动声明一个也不用（启动前后脚本不跑、不加启动参数）；开着时原样交给启动流程。
+    #[test]
+    fn extension_launches_follow_the_enhancements_switch() {
+        let mut settings = BackendSettings::default();
+        settings.enhancements_enabled = true;
+        assert_eq!(extension_launches_for_this_start(&settings, vec!["a", "b"]), ["a", "b"]);
+        settings.enhancements_enabled = false;
+        assert!(extension_launches_for_this_start(&settings, vec!["a", "b"]).is_empty());
+    }
+}
+
+/// 注入时登记的新文档脚本：Codex++ 的页面脚本，后面跟着启用中拓展的页面最早期脚本（codexpp.json 的 `preload`，
+/// 增强开着时才有），都在 Codex 自己的脚本之前执行。被拓展顶替的内置功能在这里按「关」处理。
+///
+/// 这里的注入和启动器自己的注入（`apps/codex-plus-launcher`，带用户脚本服务的那条，发布版走的就是它）共用这一份：
+/// 以前两边各拼各的，启动器那边漏了 preload 和顶替，清单里声明了也不生效。
+pub fn injection_document_scripts(helper_port: u16) -> Vec<String> {
+    let settings = crate::builtin_takeover::mask_settings(SettingsStore::default().load().unwrap_or_default());
+    let mut scripts = vec![crate::assets::injection_script_with_settings(helper_port, &settings)];
+    if settings.enhancements_enabled
+        && let Ok((entries, _)) = crate::user_scripts::default_user_script_manager().enabled_preloads()
+        && let Some(preload) = crate::extension_launch::preload_document_script(&entries)
+    {
+        scripts.push(preload);
+    }
+    scripts
+}
+
 async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
     let targets = crate::cdp::list_targets(debug_port).await?;
     let target = crate::cdp::pick_injectable_codex_page_target(&targets)?;
@@ -7466,15 +7516,7 @@ async fn try_inject(debug_port: u16, helper_port: u16) -> anyhow::Result<()> {
         .web_socket_debugger_url
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
-    let settings = crate::builtin_takeover::mask_settings(SettingsStore::default().load().unwrap_or_default());
-    let mut scripts = vec![crate::assets::injection_script_with_settings(helper_port, &settings)];
-    // 拓展的页面最早期脚本（codexpp.json 的 `preload`）：增强开着时随新文档脚本一起登记，在 Codex 自己的脚本之前执行。
-    if settings.enhancements_enabled
-        && let Ok((entries, _)) = crate::user_scripts::default_user_script_manager().enabled_preloads()
-        && let Some(preload) = crate::extension_launch::preload_document_script(&entries)
-    {
-        scripts.push(preload);
-    }
+    let scripts = injection_document_scripts(helper_port);
     let ctx = crate::routes::BridgeContext::core(Arc::new(crate::routes::CoreRuntimeService::new(
         debug_port,
         StatusStore::default(),

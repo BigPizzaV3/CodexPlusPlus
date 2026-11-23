@@ -243,13 +243,13 @@ export function PendingProviderImportDialog({
         <div className="modal-head">
           <div>
             <h2>{t("导入 Codex++ 供应商")}</h2>
-            <p>{toPool ? t("检测到来自网页的供应商导入请求，确认后会加进网关供应商池，并自动从上游获取模型。") : t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
+            <p>{toPool ? t("检测到来自网页的供应商导入请求，确认后会加进共享供应商，并自动从上游获取模型。") : t("检测到来自网页的供应商配置导入请求，确认后会写入本机 Codex++。")}</p>
           </div>
           <button className="toast-close" onClick={onDismiss} type="button">×</button>
         </div>
         <div className="metric-list">
           <Metric label={t("名称")} value={request.name || t("未命名供应商")} />
-          <Metric label={t("导入到")} value={toPool ? t("网关供应商池") : t("直连模式供应商")} />
+          <Metric label={t("导入到")} value={toPool ? t("共享供应商") : t("直连模式供应商")} />
           <Metric label="Base URL" value={request.baseUrl || t("未填写")} />
           <Metric label={t("协议")} value={providerImportWireApiLabel(request.wireApi)} />
           {toPool ? null : <Metric label={t("模式")} value={providerImportRelayModeLabel(request.relayMode)} />}

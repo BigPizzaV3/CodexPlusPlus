@@ -38,16 +38,16 @@ it("所有入口都经别名表：navigate、拓展 navigate、?previewRoute；�
 });
 
 it("⌘K 能搜到设置的各个分类（更新、日志、配置体检…），搜索框有无障碍名称；页面名称一页一个", () => {
-  assert.match(app, /for \(const entry of settingsNavEntries\(agentFocus, /);
+  assert.match(app, /for \(const entry of settingsNavEntries\(toolEntries\.some\(/);
   assert.match(app, /keywords: `settings \$\{entry\.route\} \$\{entry\.key\} \$\{entry\.keywords \?\? ""\}`,/);
   assert.match(app, /if \(entry\.sections\) setSettingsSections\(entry\.sections\);\n\s*void navigate\(entry\.route\);/);
   const palette = readFileSync(new URL("./CommandPalette.tsx", import.meta.url), "utf8");
   assert.match(palette, /<input\n\s*aria-label=\{t\("跳到页面、Agent 或执行操作…"\)\}/);
   assert.match(app, /\{ id: "settings", get label\(\) \{ return t\("设置"\); \}/);
-  assert.match(app, /\{ id: "hub", get label\(\) \{ return t\("网关总览"\); \}/);
+  assert.match(app, /\{ id: "hub", get label\(\) \{ return t\("本地服务总览"\); \}/);
   assert.doesNotMatch(app, /t\("整体设置"\)/);
   const en = readFileSync(new URL("./i18n-en.ts", import.meta.url), "utf8");
-  assert.match(en, /"网关总览": "Gateway overview"/);
+  assert.match(en, /"本地服务总览": "Local service overview"/);
   assert.match(en, /"概览": "Overview"/);
 });
 

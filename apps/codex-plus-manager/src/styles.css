@@ -320,174 +320,6 @@ body {
   gap: 10px;
 }
 
-.third-party-import {
-  position: relative;
-}
-
-.third-party-import-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 8px);
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  width: 380px;
-  /* 视口内兜底：菜单改 fixed 定位后也不允许超出窗口，超高时内部滚动。
-     真正的限高由 `resolveAnchoredMenuLayout` 按触发按钮的 top 算出来走内联样式，
-     这里只是没量到坐标时的回退（固定 100vh 不减 top 会把按钮顶到窗口外面）。
-     正常情况下只有供应商列表滚动（下面的 .third-party-import-list）；只有窗口
-     矮到连菜单头尾都放不下时，才由菜单自己滚动兜底，保证按钮仍可达。 */
-  max-width: calc(100vw - 24px);
-  max-height: calc(100vh - 24px);
-  overflow-y: auto;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--popover));
-  box-shadow: 0 12px 26px hsl(var(--foreground) / 0.08);
-  padding: 12px;
-  gap: 10px;
-}
-
-/* 除供应商列表外的子项一律不压缩：否则「实际来源：…」这类一行文字会被 flex 挤成 4px 高。 */
-.third-party-import-menu > *:not(.third-party-import-list) {
-  flex: none;
-}
-
-/* 供应商列表是唯一可滚动的区域：上面的路径/操作与下面的导入按钮始终可见。 */
-.third-party-import-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  /* 只有列表参与伸缩：被压缩时由它让出高度，其它子项保持原始高度。 */
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.third-party-import-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 10px;
-  border-top: 1px solid hsl(var(--border));
-}
-
-.third-party-import-head {
-  display: grid;
-  gap: 2px;
-  padding: 2px 2px 4px;
-}
-
-.third-party-import-head strong {
-  font-size: 13.5px;
-  font-weight: 600;
-}
-
-.third-party-import-head small,
-.third-party-import-meta,
-.third-party-import-empty {
-  color: hsl(var(--muted-foreground));
-  font-size: 12px;
-}
-
-.third-party-import-source {
-  display: grid;
-  gap: 6px;
-}
-
-.third-party-import-path {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.third-party-import-path input {
-  flex: 1;
-  min-width: 0;
-  height: 30px;
-  font-size: 12px;
-}
-
-.third-party-import-meta {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.third-party-import-warning {
-  color: hsl(var(--status-warning));
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.third-party-import-empty {
-  margin: 0;
-  padding: 14px 4px;
-  text-align: center;
-}
-
-.third-party-import-list-head {
-  display: flex;
-  justify-content: space-between;
-  padding: 6px 2px 0;
-  color: hsl(var(--muted-foreground));
-  font-size: 11.5px;
-}
-
-.third-party-import-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 150px);
-  gap: 10px;
-  align-items: center;
-  padding: 7px 8px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--surface-sunken) / 0.35);
-}
-
-.third-party-import-name {
-  display: grid;
-  gap: 1px;
-  min-width: 0;
-}
-
-.third-party-import-name strong,
-.third-party-import-name small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.third-party-import-name strong {
-  font-size: 12.5px;
-  font-weight: 600;
-}
-
-.third-party-import-name small {
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
-}
-
-.third-party-import-row select {
-  width: 100%;
-  height: 28px;
-  padding: 0 6px;
-  border: 1px solid hsl(var(--input));
-  border-radius: 6px;
-  background: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font: inherit;
-  font-size: 12px;
-}
-
-.third-party-import-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
 .env-conflict-notice {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
@@ -2268,17 +2100,11 @@ details.relay-fold[open] > .relay-fold-body {
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--background));
-  cursor: pointer;
   padding: 11px 12px;
   transition:
     border-color var(--motion-normal) var(--motion-ease),
     background-color var(--motion-normal) var(--motion-ease),
     opacity var(--motion-normal) var(--motion-ease);
-}
-
-.feature-toggle:hover {
-  border-color: hsl(var(--primary) / 0.32);
-  background: hsl(var(--accent) / 0.45);
 }
 
 .feature-toggle.disabled {
@@ -2306,17 +2132,11 @@ details.relay-fold[open] > .relay-fold-body {
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--background));
-  cursor: pointer;
   padding: 12px;
   margin-bottom: 12px;
   transition:
     border-color var(--motion-normal) var(--motion-ease),
     background-color var(--motion-normal) var(--motion-ease);
-}
-
-.switch-row:hover {
-  border-color: hsl(var(--primary) / 0.32);
-  background: hsl(var(--accent) / 0.45);
 }
 
 .feature-toggle > input[type="checkbox"],
@@ -2338,7 +2158,10 @@ details.relay-fold[open] > .relay-fold-body {
   min-width: 0;
 }
 
+/* 开关行只有开关本身可点（switch-only.ts 拦掉 label 的整行切换）：
+   整行不是按钮，没有手型和悬停底色，手型只在开关上。 */
 .toggle-switch-visual {
+  cursor: pointer;
   position: relative;
   display: inline-flex;
   grid-column: 2;
@@ -2406,9 +2229,10 @@ details.relay-fold[open] > .relay-fold-body {
   opacity: 0.62;
 }
 
-.switch-row.is-disabled:hover {
-  border-color: hsl(var(--border));
-  background: hsl(var(--background));
+input:disabled ~ .toggle-switch-visual,
+.switch-row.is-disabled .toggle-switch-visual,
+.feature-toggle.disabled .toggle-switch-visual {
+  cursor: not-allowed;
 }
 
 .provider-sync-progress {
@@ -3815,7 +3639,7 @@ select {
   animation: none;
 }
 
-/* 页面直接切换，不保留标题或正文的入场过渡。 */
+/* .screen 容器和标题行本身不做入场动画；正文的淡入在 cursor-ui.css 的「页面切换动效」。 */
 .shell :is(.topbar, .screen) {
   animation: none;
   transition: none;
@@ -3914,9 +3738,7 @@ select {
 }
 
 .relay-profile-card:hover,
-.relay-profile-card:focus-visible,
-.feature-toggle:hover,
-.switch-row:hover {
+.relay-profile-card:focus-visible {
   border-color: hsl(var(--border));
   background: hsl(var(--surface-raised));
   box-shadow: none;
@@ -4082,7 +3904,6 @@ select {
 
 /* ── 浮层 ───────────────────────────────────────────────────── */
 
-.third-party-import-menu,
 .modal-card,
 .toast-card {
   border-color: hsl(var(--border));
@@ -4137,8 +3958,7 @@ select {
 }
 
 .light .toast-card,
-.light .modal-card,
-.light .third-party-import-menu {
+.light .modal-card {
   box-shadow: var(--shadow-lg);
 }
 
@@ -4767,10 +4587,6 @@ select {
 
 .enhance-page .feature-toggle small {
   font-size: 12px;
-}
-
-.enhance-page .feature-toggle:hover {
-  background: hsl(var(--accent) / 0.4);
 }
 
 .settings-page {
@@ -6265,7 +6081,6 @@ select {
   align-items: center;
   gap: 12px;
   min-width: 0;
-  cursor: pointer;
 }
 .shell .enhance-master-switch > input {
   position: absolute;

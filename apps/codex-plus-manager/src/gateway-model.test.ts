@@ -125,21 +125,21 @@ test("校验：池里要有能用的供应商，模型要能路由，窗口格�
   assert.equal(validateDraft({ ...base, model: "glm-5.3" }, data), null);
   assert.equal(validateDraft({ ...base, model: "group/daily" }, data), null);
   assert.equal(validateDraft({ ...base, model: "deepseek/deepseek-v5" }, data), null);
-  assert.equal(validateDraft({ ...base, model: "nope" }, data), "供应商池里没有这个模型");
-  assert.equal(validateDraft({ ...base, poolExclude: ["deepseek", "glm", "bare"] }, data), "供应商池是空的，先在「供应商池」里添加供应商");
+  assert.equal(validateDraft({ ...base, model: "nope" }, data), "共享供应商里没有这个模型");
+  assert.equal(validateDraft({ ...base, poolExclude: ["deepseek", "glm", "bare"] }, data), "共享供应商是空的，先在「共享供应商」里添加供应商");
   assert.equal(validateDraft({ ...base, contextWindow: "12" }, data), "上下文窗口格式不对，例如 200000、200k 或 1M");
 });
 
-test("保留已停用的绑定组时，让后端按新的供应商池验证回退模型", () => {
+test("保留已停用的绑定组时，让后端按新的共享供应商验证回退模型", () => {
   const data = payload();
   data.groups[0].disabled = true;
   const draft = { ...draftFromBinding(undefined), model: "group/daily", poolExclude: ["deepseek"] };
   assert.equal(modelRoutable(data, "deepseek-v4-pro", draft.poolExclude), false, "旧回退模型不在新池里");
   assert.equal(modelRoutable(data, "glm-5.3", draft.poolExclude), true, "新池仍有可用模型");
   assert.equal(validateDraft(draft, data, "group/daily"), null);
-  assert.equal(validateDraft(draft, data), "供应商池里没有这个模型", "新绑定不能选择停用组");
-  assert.equal(validateDraft(draft, data, "group/other"), "供应商池里没有这个模型", "更换成停用组不能绕过校验");
-  assert.equal(validateDraft({ ...draft, poolExclude: ["deepseek", "glm", "bare"] }, data, "group/daily"), "供应商池是空的，先在「供应商池」里添加供应商");
+  assert.equal(validateDraft(draft, data), "共享供应商里没有这个模型", "新绑定不能选择停用组");
+  assert.equal(validateDraft(draft, data, "group/other"), "共享供应商里没有这个模型", "更换成停用组不能绕过校验");
+  assert.equal(validateDraft({ ...draft, poolExclude: ["deepseek", "glm", "bare"] }, data, "group/daily"), "共享供应商是空的，先在「共享供应商」里添加供应商");
   assert.equal(validateDraft({ ...draft, contextWindow: "12" }, data, "group/daily"), "上下文窗口格式不对，例如 200000、200k 或 1M");
 });
 
@@ -149,9 +149,9 @@ test("保留不可用的默认供应商时允许修改详情，新选择仍需�
   const draft = { ...draftFromBinding(undefined), model: "deepseek/deepseek-v4-pro" };
   data.pool[0].enabled = false;
   assert.equal(validateDraft(draft, data, draft.model, selection), null);
-  assert.equal(validateDraft(draft, data), "供应商池里没有这个模型");
-  assert.equal(validateDraft({ ...draft, model: "missing/model" }, data, draft.model, selection), "供应商池里没有这个模型");
-  assert.equal(validateDraft({ ...draft, poolExclude: ["glm", "bare"] }, data, draft.model, selection), "供应商池是空的，先在「供应商池」里添加供应商");
+  assert.equal(validateDraft(draft, data), "共享供应商里没有这个模型");
+  assert.equal(validateDraft({ ...draft, model: "missing/model" }, data, draft.model, selection), "共享供应商里没有这个模型");
+  assert.equal(validateDraft({ ...draft, poolExclude: ["glm", "bare"] }, data, draft.model, selection), "共享供应商是空的，先在「共享供应商」里添加供应商");
   data.pool[0].enabled = true;
   assert.equal(validateDraft({ ...draft, poolExclude: ["deepseek"] }, data, draft.model, selection), null);
 });
@@ -781,13 +781,13 @@ test("请求日志认出去掉别家签发的压缩上下文，并显示成说�
   assert.match(app, /t\("已去掉别家压缩上下文"\)/);
 });
 
-test("供应商池详情能编辑每个 Key 的限速", () => {
+test("共享供应商详情能编辑每个 Key 的限速", () => {
   const providers = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
   assert.match(providers, /"save_gateway_provider_limits", \{ id: entry\.id, rpm, concurrency \}/);
   assert.match(lib, /gateway_commands::save_gateway_provider_limits,/);
 });
 
-test("供应商池：编辑在标题栏、各处编辑是图标按钮；已保存的 Key 打码列出，按标识单独替换、删除（#2782）", () => {
+test("共享供应商：编辑在标题栏、各处编辑是图标按钮；已保存的 Key 打码列出，按标识单独替换、删除（#2782）", () => {
   const providers = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
   // 详情里不再有「编辑」文字按钮，底部也没有「编辑 >」；标题栏有铅笔按钮，悬停与无障碍名保留文案。
   assert.doesNotMatch(providers, /\{t\("编辑"\)\}/);

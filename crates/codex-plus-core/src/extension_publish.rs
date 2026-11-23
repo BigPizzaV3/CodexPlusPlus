@@ -269,25 +269,61 @@ pub fn generate_readme(manifest: &Value, repo: &str) -> String {
     let text = |key: &str| manifest.get(key).and_then(Value::as_str).unwrap_or("").to_string();
     let permissions = crate::extension_discovery::manifest_permissions(manifest);
     let mut rows = Vec::new();
+    let list = |key: &str| -> Vec<String> {
+        permissions.get(key).and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(|item| format!("`{item}`")).collect()
+    };
+    let number = |key: &str| permissions.get(key).and_then(Value::as_u64).unwrap_or(0);
+    // 与安装确认框同一个顺序：先是在页面之外运行的，再是改请求、改工具的，最后是页面里的。
     if let Some(backend) = permissions.get("backend").and_then(Value::as_str) {
-        rows.push(format!("| 常驻后台进程 | `{backend}` |"));
+        let http = if permissions["backendHttp"] == true { "（处理本机 HTTP 请求）" } else { "" };
+        rows.push(format!("| 常驻后台进程 | `{backend}`{http} |"));
+    }
+    if number("schedules") > 0 {
+        rows.push(format!("| 定时任务 | {} 条 |", number("schedules")));
+    }
+    for (key, label) in [("launchBefore", "启动前脚本"), ("launchAfter", "退出后脚本"), ("dsh", "dsh 插件")] {
+        if let Some(script) = permissions.get(key).and_then(Value::as_str) {
+            rows.push(format!("| {label} | `{script}` |"));
+        }
+    }
+    for (key, label) in [("launchArgs", "Codex 启动参数"), ("mcpServers", "MCP 服务器")] {
+        if !list(key).is_empty() {
+            rows.push(format!("| {label} | {} |", list(key).join(" ")));
+        }
     }
     for hook in permissions.get("hooks").and_then(Value::as_array).into_iter().flatten() {
         rows.push(format!("| Codex 钩子 | `{}` {} |", hook["event"].as_str().unwrap_or(""), hook["matcher"].as_str().unwrap_or("")));
     }
-    for (key, label) in [("gatewayRequest", "网关请求中间件"), ("gatewayResponse", "网关响应中间件")] {
-        if permissions.get(key).and_then(Value::as_u64).unwrap_or(0) > 0 {
-            rows.push(format!("| {label} | {} 个 |", permissions[key]));
+    for (key, label) in [
+        ("toolPipeline", "工具调用管线"),
+        ("gatewayRequest", "网关请求中间件"),
+        ("gatewayResponse", "网关响应中间件"),
+        ("gatewayError", "网关失败重试"),
+    ] {
+        if number(key) > 0 {
+            rows.push(format!("| {label} | {} 个 |", number(key)));
         }
     }
-    for tool in permissions.get("tools").and_then(Value::as_array).into_iter().flatten() {
-        rows.push(format!("| 模型工具 | `{}` |", tool.as_str().unwrap_or("")));
+    for (key, label) in [
+        ("gatewayReplaces", "关掉的内置网关环节"),
+        ("providers", "模型供应商"),
+        ("tools", "模型工具"),
+        ("skills", "Skills"),
+        ("agents", "子 Agent"),
+        ("prompts", "提示词"),
+        ("replaces", "顶替的内置拓展"),
+        ("managerReplaces", "顶替的管理器页面"),
+        ("managerData", "读取的管理器数据"),
+        ("routes", "本地路由"),
+        ("preload", "页面最早期脚本"),
+        ("renderer", "页面脚本"),
+    ] {
+        if !list(key).is_empty() {
+            rows.push(format!("| {label} | {} |", list(key).join(" ")));
+        }
     }
-    for route in permissions.get("routes").and_then(Value::as_array).into_iter().flatten() {
-        rows.push(format!("| 本地路由 | `{}` |", route.as_str().unwrap_or("")));
-    }
-    for entry in permissions.get("renderer").and_then(Value::as_array).into_iter().flatten() {
-        rows.push(format!("| 页面脚本 | `{}` |", entry.as_str().unwrap_or("")));
+    if permissions["instructions"] == true {
+        rows.push("| 全局指令 | 追加到 Codex 的系统指令 |".to_string());
     }
     let table = if rows.is_empty() {
         "这个拓展没有声明额外能力。".to_string()

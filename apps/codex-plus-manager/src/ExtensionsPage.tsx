@@ -16,7 +16,6 @@ import { ExtensionConfigForm } from "./extension-config-form";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AgentGlyph } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
-import { agentVisible, type AgentFocus } from "./agent-focus-model";
 import { defaultMarketSort, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
 import { extensionEnabledForHost, extensionsForHost, extensionStateForHost, type ExtensionHost } from "./extension-host-model";
 import { Menu, MenuItem } from "./ManagementPages";
@@ -264,7 +263,7 @@ function EnhancementSettingControl({
   );
 }
 
-export function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, onOpenRescue, onOpenPluginMarket, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions }) {
+export function UserScriptsScreen({ host, onHostChange, settings, market, onOpenRescue, onOpenPluginMarket, onOpenClaude, actions }: { host: ExtensionHost; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions }) {
   const codexHost = host === "codex";
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
@@ -401,7 +400,7 @@ export function UserScriptsScreen({ host, focus = null, onHostChange, settings, 
           {codexHost ? <MenuItem onClick={onOpenRescue}>{t("打开启动急救")}</MenuItem> : null}
         </Menu>
       </TopbarActions>
-      <ExtensionsHero host={host} focus={focus} onHostChange={onHostChange} />
+      <ExtensionsHero host={host} onHostChange={onHostChange} />
       {codexHost && onOpenPluginMarket ? (
         <p className="cx-aggregate-note ext-crosslink">
           <span>{t("这里是 Codex++ 拓展；Codex 官方目录里的插件在「Codex 插件」页。")}</span>
@@ -649,9 +648,9 @@ const extensionCapabilities = [
   "界面与页面", "斜杠命令", "消息与面板", "模型工具", "Codex 钩子", "网关中间件", "常驻后台", "会话历史", "拓展间服务", "多语言",
 ] as const;
 
-function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void }) {
-  // 页面标题就是「万物皆拓展」：这里只留一句理念（能改到的地方放在悬停里），宿主切换放在右侧；只有一个宿主时不显示切换。
-  const hosts = (["codex", "claude"] as const).filter((target) => agentVisible(focus, target));
+function ExtensionsHero({ host, onHostChange }: { host: ExtensionHost; onHostChange: (host: ExtensionHost) => void }) {
+  // 页面标题就是「万物皆拓展」：这里只留一句理念（能改到的地方放在悬停里），宿主切换放在右侧。
+  const hosts = ["codex", "claude"] as const;
   return (
     <section className="ext-hero" aria-label={t("万物皆拓展")}>
       <p className="ext-hero-lead" title={host === "codex" ? `${t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")}\n${extensionCapabilities.map((label) => t(label)).join(" · ")}` : undefined}>
@@ -659,16 +658,14 @@ function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionH
           ? t("界面、命令、工具、钩子、模型请求都能由拓展接管；在 Codex 对话里说一句就能造一个。")
           : t("往 Claude 页面里加 js / css 的页面扩展，格式和扩展市场与 ClaudeMom 相同；也能给 Claude Code 装适配它的 Codex++ 拓展。")}
       </p>
-      {hosts.length > 1 ? (
-        <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>
-          {hosts.map((target) => (
-            <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
-              <AgentGlyph agent={target} />
-              {target === "codex" ? "Codex" : "Claude"}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>
+        {hosts.map((target) => (
+          <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
+            <AgentGlyph agent={target} />
+            {target === "codex" ? "Codex" : "Claude"}
+          </button>
+        ))}
+      </div>
     </section>
   );
 }
@@ -808,6 +805,15 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
       : null,
     pkg?.schedules?.length ? { text: tf("定时任务：{0}", [pkg.schedules.map((item) => item.at ? `${item.method} ${item.at}` : tf("{0} 每 {1} 分钟", [item.method, String(item.everyMinutes ?? "")])).join("、")]) } : null,
     pkg?.http ? { text: tf("HTTP 路由：/ext/{0}/", [pkg.id]) } : null,
+    pkg?.launch?.before || pkg?.launch?.after || pkg?.launch?.args?.length
+      ? { text: tf("启动前后：{0}", [joined([!!pkg.launch.before && t("启动前脚本"), !!pkg.launch.after && t("退出后脚本"), !!pkg.launch.args?.length && tf("启动参数 {0}", [pkg.launch.args.join(" ")])])]) }
+      : null,
+    pkg?.preload?.scripts ? { text: t("页面最早期脚本") } : null,
+    pkg?.gatewayReplaces?.length ? { text: tf("关掉内置网关环节：{0}", [pkg.gatewayReplaces.join("、")]) } : null,
+    pkg?.replaces?.length ? { text: tf("顶替内置拓展：{0}", [pkg.replaces.join("、")]) } : null,
+    pkg?.managerPage?.replaces?.length ? { text: tf("顶替管理器页面：{0}", [pkg.managerPage.replaces.join("、")]) } : null,
+    pkg?.dsh ? { text: t("dsh 插件") } : null,
+    pkg?.routes?.length ? { text: tf("数据路由：{0}", [pkg.routes.join("、")]) } : null,
     pkg?.skippedAssets?.length
       ? { text: tf("资源超出大小上限未加载：{0}", [pkg.skippedAssets.join("、")]), tone: "warn" as const, title: pkg.skippedAssets.join("\n") }
       : null,
@@ -890,8 +896,11 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
       <div className="cx-row-expand"><ExtensionManagerPanel
         scriptKey={script.key}
         config={script.package?.config ?? {}}
-        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values)}
+        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values, { merge: true })}
         onToast={(message) => actions.showExtensionNotice(managerPage.title || displayName, message)}
+        // 行内展开和整页打开是同一个面板：清单声明的只读数据、跳转都要能用（只声明 page 的拓展只有这一个入口）。
+        dataSources={managerPage.data ?? []}
+        onNavigate={actions.navigateFromExtension}
       /></div>
     ) : null}
     {configOpen && settingsPage ? (
@@ -899,7 +908,7 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
         kind="settings"
         scriptKey={script.key}
         config={script.package?.config ?? {}}
-        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values, { silent: true })}
+        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values, { silent: true, merge: true })}
         onToast={(message) => actions.showExtensionNotice(displayName, message)}
       /></div>
     ) : null}

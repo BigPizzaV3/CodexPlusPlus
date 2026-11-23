@@ -70,7 +70,7 @@ export function SubscriptionPolicyFields({ value, onChange, quota, disabled = fa
         </label>
       </div>
       <p className="pf-hint">{t("上限按官方累计已用比例计算，100 或留空表示不设上限。同一真实账号的供应商共享官方额度，原生客户端等其他来源的使用也计入。")}</p>
-      <p className="pf-hint">{t("策略约束新的网关请求；用量更新存在延迟，进行中的请求可能超过阈值。")}</p>
+      <p className="pf-hint">{t("策略约束经本地服务的新请求；用量更新存在延迟，进行中的请求可能超过阈值。")}</p>
     </section>
   );
 }

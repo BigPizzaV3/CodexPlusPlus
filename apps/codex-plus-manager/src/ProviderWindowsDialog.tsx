@@ -1,4 +1,4 @@
-/** 供应商的上下文窗口：按模型填，在供应商池的详情里编辑。
+/** 供应商的上下文窗口：按模型填，在共享供应商的详情里编辑。
  * 窗口写进 Agent 的模型资料（Agent 按它压缩上下文），路由时请求比窗口还长的成员排到最后。 */
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -75,7 +75,7 @@ export function ProviderWindowsDialog({
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
-  /** 能「从上游同步」（供应商池详情里打开、不是订阅账号）。编辑弹窗里按编辑中的列表打开时不给。 */
+  /** 能「从上游同步」（共享供应商详情里打开、不是订阅账号）。编辑弹窗里按编辑中的列表打开时不给。 */
   upstreamSync?: boolean;
   /** 从详情行的「从上游同步」进来：打开就展开同步面板。 */
   syncOnOpen?: boolean;

@@ -294,14 +294,14 @@ fn generic_preview(
             result.can_disconnect = false;
             result
                 .warnings
-                .push("配置仍指向网关，但恢复存档缺失或损坏；未提供不完整的断开预览。".into());
+                .push("配置仍指向本地服务，但恢复存档缺失或损坏；未提供不完整的断开预览。".into());
         }
         return Ok(());
     };
     if !agents::connect::points_at_gateway(ctx, spec) {
         result
             .warnings
-            .push("配置已由其他工具改走；断开只清理网关记录，不覆盖当前配置。".into());
+            .push("配置已由其他工具改走；断开只清理本地服务记录，不覆盖当前配置。".into());
         return Ok(());
     }
     for (path, record) in &saved.files {
@@ -338,7 +338,7 @@ fn native_preview(
         result.can_disconnect = false;
         result
             .warnings
-            .push("网关状态无法读取；无法在隔离环境中精确预演此次还原。".into());
+            .push("本地服务状态无法读取；无法在隔离环境中精确预演此次还原。".into());
         return Ok(());
     }
     if *agent != ToolId::Codex && super::drift::check(ctx, agent).is_some() {
@@ -350,7 +350,7 @@ fn native_preview(
         if recorded {
             result
                 .warnings
-                .push("配置已由其他工具改走；断开只清理网关记录，不覆盖当前配置。".into());
+                .push("配置已由其他工具改走；断开只清理本地服务记录，不覆盖当前配置。".into());
             return Ok(());
         }
     }
@@ -372,7 +372,7 @@ fn native_preview(
     {
         result.can_disconnect = false;
         result.warnings.push(
-            "Grok 仍连接网关，但没有可用的恢复存档，当前供应商也没有模型；请在 Grok 供应商页添加并应用一个直连供应商后再断开。".into(),
+            "Grok 仍连接本地服务，但没有可用的恢复存档，当前供应商也没有模型；请在 Grok 供应商页添加并应用一个直连供应商后再断开。".into(),
         );
         return Ok(());
     }
@@ -1247,7 +1247,7 @@ mod tests {
         let mut settings = BackendSettings::default();
         settings.relay_profiles = vec![crate::settings::RelayProfile {
             id: apply::CODEX_GATEWAY_RELAY_ID.into(),
-            name: "Codex++ 网关".into(),
+            name: "Codex++ 本地服务".into(),
             ..Default::default()
         }];
         settings.active_relay_id = apply::CODEX_GATEWAY_RELAY_ID.into();

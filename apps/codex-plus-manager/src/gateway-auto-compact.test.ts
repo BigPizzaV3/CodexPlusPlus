@@ -1,4 +1,4 @@
-// #3100：网关供应商池的自动压缩阈值（窗口的百分比）。
+// #3100：网关共享供应商的自动压缩阈值（窗口的百分比）。
 //
 // 后端把百分比换算成目录里的 `auto_compact_token_limit`（Rust 侧用例见
 // crates/codex-plus-core/tests/all/gateway_auto_compact.rs）；这里守输入解析和整表替换的边界：

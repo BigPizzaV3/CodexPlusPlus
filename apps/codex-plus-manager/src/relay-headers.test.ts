@@ -94,7 +94,7 @@ describe("hasCustomAuthorization", () => {
   });
 });
 
-describe("网关供应商池的请求头（#3075）", () => {
+describe("网关共享供应商的请求头（#3075）", () => {
   it("摘要只列名称，不带值", () => {
     assert.strictEqual(
       providerHeadersSummary([
