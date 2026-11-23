@@ -93,6 +93,13 @@ impl Store {
              ) WITHOUT ROWID, STRICT;
              CREATE INDEX IF NOT EXISTS token_resolved_time ON token_resolved(timestamp_ms);
              CREATE INDEX IF NOT EXISTS token_resolved_session ON token_resolved(session_id);
+             CREATE TABLE IF NOT EXISTS token_days (
+                session_id INTEGER NOT NULL REFERENCES token_sessions(id),
+                day TEXT NOT NULL,
+                groups BLOB NOT NULL,
+                PRIMARY KEY (session_id, day)
+             ) WITHOUT ROWID, STRICT;
+             CREATE INDEX IF NOT EXISTS token_days_date ON token_days(day);
              COMMIT;",
         )?;
         Ok(Self { db })

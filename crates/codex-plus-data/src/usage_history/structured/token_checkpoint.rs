@@ -26,7 +26,7 @@ struct StoredTokens {
     cached_known: bool,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 #[serde(transparent)]
 struct Counter(#[serde(with = "StoredTokens")] Tokens);
 

@@ -170,6 +170,28 @@ fn replacing_scope_uses_old_and_new_links_and_failed_publication_keeps_the_old_v
     }
     let (old, before) = read(&mut reader, i64::MIN, i64::MAX);
     assert_eq!(before.len(), 2);
+    let day = before[0].date;
+    let summaries = |db: &mut Connection| {
+        let mut groups = Vec::new();
+        let revision = Store::read_days(db, day, day.succ_opt().unwrap(), |session, _, rows| {
+            groups.extend(rows.into_iter().map(|group| {
+                assert_eq!(group.provider, "supplier-a");
+                assert_eq!(group.conflicts, 0);
+                (session.clone(), group.totals.records, group.totals.counts.0)
+            }));
+            Ok(())
+        })
+        .unwrap();
+        (revision, groups)
+    };
+    let (summary_revision, before_summary) = summaries(&mut reader);
+    assert_eq!(summary_revision, old);
+    assert_eq!(before_summary.len(), 2);
+    for (event, (session, records, counts)) in before.iter().zip(&before_summary) {
+        assert_eq!(&event.session, session);
+        assert_eq!(*records, 1);
+        assert_eq!(*counts, event.delta);
+    }
     let (a_revision, old_checkpoint) = store.checkpoint(&a).unwrap().unwrap();
 
     let replacement = parse(&a, &[header(CHILD, 0), count(1, 3, 2, true)], cutoff);
@@ -188,7 +210,7 @@ fn replacing_scope_uses_old_and_new_links_and_failed_publication_keeps_the_old_v
     store
         .db
         .execute_batch(
-            "CREATE TEMP TRIGGER fail_token_projection BEFORE INSERT ON token_resolved
+            "CREATE TEMP TRIGGER fail_token_projection BEFORE INSERT ON token_days
          BEGIN SELECT RAISE(ABORT, 'projection write failed'); END;",
         )
         .unwrap();
@@ -207,6 +229,7 @@ fn replacing_scope_uses_old_and_new_links_and_failed_publication_keeps_the_old_v
     let (after_error, events) = read(&mut reader, i64::MIN, i64::MAX);
     assert_eq!(after_error, old);
     assert!(events == before);
+    assert_eq!(summaries(&mut reader), (old, before_summary));
     store
         .db
         .execute_batch("DROP TRIGGER fail_token_projection")
@@ -245,6 +268,76 @@ fn replacing_scope_uses_old_and_new_links_and_failed_publication_keeps_the_old_v
         vec![PARENT, CHILD, CHILD]
     );
     assert!(events[0] == before[0]);
+    let (summary_revision, groups) = summaries(&mut reader);
+    assert_eq!(summary_revision, revision);
+    assert_eq!(groups.iter().map(|(_, count, _)| count).sum::<u64>(), 3);
+    assert_eq!(
+        groups
+            .iter()
+            .map(|(_, _, counts)| counts.total_tokens)
+            .sum::<u64>(),
+        events
+            .iter()
+            .map(|event| event.delta.total_tokens)
+            .sum::<u64>(),
+    );
+}
+
+#[test]
+fn replacing_recent_details_keeps_older_daily_totals_and_unknown_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = fs::canonicalize(dir.path()).unwrap().join("rollout-a.jsonl");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut usage = count(1, 1, 1, true);
+    for key in ["total_token_usage", "last_token_usage"] {
+        usage["payload"]["info"][key]
+            .as_object_mut()
+            .unwrap()
+            .remove("cached_input_tokens");
+    }
+    let original = parse(&source, &[header(PARENT, 0), usage], cutoff);
+    let day = original.events[0].date;
+    let end = day.succ_opt().unwrap();
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let first = store
+        .prepare(
+            new_source(&source, &original),
+            cutoff,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    let first_revision = store.publish(first).unwrap();
+    let replacement = parse(&source, &[header(PARENT, 0)], end);
+    let second = store
+        .prepare(
+            SourceUpdate {
+                source: &source,
+                state: &replacement,
+                previous_revision: Some(first_revision),
+                replace: true,
+            },
+            end,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    let latest = store.publish(second).unwrap();
+    assert!(read(&mut store.db, i64::MIN, i64::MAX).1.is_empty());
+    let mut visited = false;
+    let summary_rev = Store::read_days(&mut store.db, day, end, |session, date, groups| {
+        assert_eq!(session, PARENT);
+        assert_eq!(date, day);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].totals.records, 1);
+        assert_eq!(groups[0].totals.counts.0.total_tokens, 110);
+        assert!(!groups[0].totals.counts.0.cached_known);
+        visited = true;
+        Ok(())
+    })
+    .unwrap();
+    assert!(visited);
+    assert_eq!(summary_rev, latest);
 }
 
 #[test]

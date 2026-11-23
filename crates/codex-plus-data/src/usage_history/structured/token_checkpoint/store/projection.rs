@@ -1,11 +1,12 @@
 use super::{Store, decode_path, encode_path};
-use crate::usage_history::structured::token_checkpoint::{Checkpoint, Observation};
+use crate::usage_history::structured::token_checkpoint::{Checkpoint, Counter, Observation};
 use crate::usage_history::structured::{
     FileState, Index, MAX_FILES, Snapshot, UsageEvent, segments,
 };
 use anyhow::{Result, ensure};
 use chrono::{DateTime, NaiveDate};
 use rusqlite::{Connection, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 
@@ -35,10 +36,29 @@ pub(super) fn links(path: &Path, state: &FileState) -> BTreeSet<String> {
 pub(in super::super) struct Prepared<'a> {
     update: SourceUpdate<'a>,
     base_revision: i64,
+    cutoff: NaiveDate,
     sessions: BTreeSet<String>,
     collisions: HashMap<[u8; 32], i64>,
     events: Vec<UsageEvent>,
 }
+
+#[derive(Default, Serialize, Deserialize)]
+pub(in super::super) struct DayTotals {
+    pub(in super::super) counts: Counter,
+    pub(in super::super) records: u64,
+    pub(in super::super) unresolved: u64,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(in super::super) struct DayGroup {
+    pub(in super::super) model: String,
+    pub(in super::super) provider: String,
+    pub(in super::super) role: String,
+    pub(in super::super) conflicts: u8,
+    pub(in super::super) totals: DayTotals,
+}
+
+type Groups<'a> = BTreeMap<(&'a str, &'a str, &'a str, u8), DayTotals>;
 
 #[derive(Clone, Copy)]
 pub(in super::super) struct SourceUpdate<'a> {
@@ -196,6 +216,7 @@ impl Store {
         Ok(Prepared {
             update,
             base_revision,
+            cutoff,
             sessions,
             collisions,
             events: snapshot.events,
@@ -203,6 +224,41 @@ impl Store {
     }
 
     pub(in super::super) fn publish(&mut self, prepared: Prepared<'_>) -> Result<i64> {
+        let mut days: BTreeMap<(&str, NaiveDate), Groups<'_>> = BTreeMap::new();
+        for event in &prepared.events {
+            let conflict = event.context_conflicts;
+            let flags = u8::from(conflict.model)
+                | u8::from(conflict.provider) << 1
+                | u8::from(conflict.role) << 2
+                | u8::from(conflict.turn) << 3;
+            let totals = days
+                .entry((&event.session, event.date))
+                .or_default()
+                .entry((&event.model, &event.provider, &event.role, flags))
+                .or_default();
+            if event.count_uncertain || event.count_incomplete {
+                totals.unresolved += 1;
+            } else if event.delta.total_tokens > 0 {
+                totals.counts.0.add(event.delta);
+                totals.records += 1;
+            }
+        }
+        let days = days
+            .into_iter()
+            .map(|((session, day), groups)| {
+                let groups: Vec<_> = groups
+                    .into_iter()
+                    .map(|((model, provider, role, conflicts), totals)| DayGroup {
+                        model: model.to_owned(),
+                        provider: provider.to_owned(),
+                        role: role.to_owned(),
+                        conflicts,
+                        totals,
+                    })
+                    .collect();
+                Ok((session, day.to_string(), serde_json::to_vec(&groups)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -222,8 +278,15 @@ impl Store {
             let mut remove = tx.prepare(
                 "DELETE FROM token_resolved WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
             )?;
+            let mut remove_days = tx.prepare(
+                "DELETE FROM token_days WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+                 AND day >= ?2",
+            )?;
+            let cutoff = prepared.cutoff.to_string();
             for session in prepared.sessions {
-                remove.execute([session])?;
+                remove.execute([&session])?;
+                // 保留已过明细截止点的日汇总。
+                remove_days.execute(params![session, cutoff])?;
             }
             let mut collide = tx.prepare("INSERT OR IGNORE INTO token_collisions VALUES (?1)")?;
             for id in prepared.collisions.keys() {
@@ -239,6 +302,12 @@ impl Store {
                     DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis(),
                     serde_json::to_vec(&Observation::capture(event))?
                 ])?;
+            }
+            let mut insert_day = tx.prepare(
+                "INSERT INTO token_days VALUES ((SELECT id FROM token_sessions WHERE session = ?1), ?2, ?3)",
+            )?;
+            for (session, day, groups) in days {
+                insert_day.execute(params![session, day, groups])?;
             }
         }
         tx.commit()?;
@@ -265,6 +334,33 @@ impl Store {
                 let id = row.get_ref(0)?.as_blob()?.try_into()?;
                 let event: Observation = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
                 visit(event.into_event(id, row.get(1)?)?)?;
+            }
+        }
+        read.commit()?;
+        Ok(current)
+    }
+
+    pub(in super::super) fn read_days(
+        db: &mut Connection,
+        start: NaiveDate,
+        end: NaiveDate,
+        mut visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+    ) -> Result<i64> {
+        let read = db.transaction()?;
+        let current = revision(&read)?;
+        {
+            let mut query = read.prepare(
+                "SELECT s.session, d.day, d.groups FROM token_days d
+                 JOIN token_sessions s ON s.id = d.session_id
+                 WHERE d.day >= ?1 AND d.day < ?2 ORDER BY d.day, s.session",
+            )?;
+            let mut rows = query.query(params![start.to_string(), end.to_string()])?;
+            while let Some(row) = rows.next()? {
+                visit(
+                    row.get(0)?,
+                    NaiveDate::parse_from_str(row.get_ref(1)?.as_str()?, "%Y-%m-%d")?,
+                    serde_json::from_slice(row.get_ref(2)?.as_blob()?)?,
+                )?;
             }
         }
         read.commit()?;
