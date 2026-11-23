@@ -13376,9 +13376,20 @@ fn is_client_tool_call_item_type(item_type: &str) -> bool {
 ///
 /// 桌面端只在 `phase == "commentary"` 的助手消息里识别它，并且整条消息只能是这一条指令；
 /// 标成 `final_answer` 的话指令原文会当作最终回复显示在聊天里（issue #3244）。
+/// 整段文本（忽略首尾空白）是否恰好只有一条 `::名字{...}` 指令：
+/// `{` 之后必须一直到文本结尾都是指令内容，右花括号即结尾，
+/// 后面不能再跟正文（PR #3245 复审意见）。
 fn is_standalone_ui_directive(text: &str) -> bool {
-    let text = text.trim_end();
-    text.starts_with("::browser-complete{") && text.ends_with('}') && !text.contains('\n')
+    let text = text.trim();
+    let Some(rest) = text.strip_prefix("::") else {
+        return false;
+    };
+    let name_len = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .count();
+    // `::` 后紧跟名字和 `{`，且右花括号收尾；空名字的普通文本不算。
+    name_len > 0 && rest[name_len..].starts_with('{') && text.ends_with('}')
 }
 
 /// 给缺 `phase` 的助手消息选阶段：后面还有工具调用，或整条消息只是一条界面指令时是
@@ -14096,6 +14107,71 @@ mod responses_sse_transformer_tests {
         assert_eq!(filled_message_phase("见 ::browser-complete{title=\"x\"}", false), "final_answer");
         assert_eq!(filled_message_phase("好的", false), "final_answer");
         assert_eq!(filled_message_phase("好的", true), "commentary");
+    }
+
+    #[test]
+    fn ui_directive_followed_by_body_text_stays_final_answer() {
+        // PR #3245 复审：`::指令{…}` 开头后面还跟着大段正文时，整条是
+        // 正常回答，不能整条降级成 commentary，导致本轮没有 final_answer。
+        assert_eq!(
+            filled_message_phase(
+                "::browser-complete{title=\"x\"}\n\n下面是本次任务的完整总结：所有步骤均已成功执行……",
+                false
+            ),
+            "final_answer"
+        );
+        // 右花括号必须就是文本结尾（忽略首尾空白）。
+        assert_eq!(
+            filled_message_phase("  ::browser-complete{title=\"x\"}  ", false),
+            "commentary"
+        );
+        assert_eq!(
+            filled_message_phase("::browser-complete{title=\"x\"} 已完成上传。", false),
+            "final_answer"
+        );
+    }
+
+    #[test]
+    fn multi_part_message_requires_all_text_parts_to_be_directives() {
+        // PR #3245 复审：多个 content part 时只要有一个 text part 不是
+        // 独立指令，整条就仍是最终回答；全部是独立指令才补成 commentary。
+        let completed = sse(json!({ "type": "response.completed", "response": {} }));
+        let build = |id: &str, content: Value| {
+            sse(json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {
+                    "id": id,
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": content
+                }
+            }))
+        };
+        let mixed = build(
+            "msg_2",
+            json!([
+                { "type": "output_text", "text": "::browser-complete{title=\"x\"}", "annotations": [] },
+                { "type": "output_text", "text": "这是给用户的总结正文。", "annotations": [] }
+            ]),
+        );
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
+        assert!(t.push_bytes(mixed.as_bytes()).is_empty());
+        let out = t.push_bytes(completed.as_bytes());
+        assert_eq!(message_phases(&out), vec![Some("final_answer".to_string())]);
+
+        let all_directives = build(
+            "msg_3",
+            json!([
+                { "type": "output_text", "text": "  ::browser-complete{title=\"x\"}  ", "annotations": [] },
+                { "type": "output_text", "text": "::browser-open{url=\"https://example.com\"}", "annotations": [] }
+            ]),
+        );
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
+        assert!(t.push_bytes(all_directives.as_bytes()).is_empty());
+        let out = t.push_bytes(completed.as_bytes());
+        assert_eq!(message_phases(&out), vec![Some("commentary".to_string())]);
     }
 
     #[test]
