@@ -132,7 +132,7 @@ pub(crate) async fn handle(
     let gateway = GatewayStore::default().load().unwrap_or_default().with_extension_providers();
     let Some(binding) = gateway.active_binding(&agent) else {
         let message = format!(
-            "Codex++ 网关模式没有为 {} 开启，请在 Codex++ 里打开网关模式或切回直连供应商",
+            "Codex++ 本地服务模式没有为 {} 开启，请在 Codex++ 里打开网关模式或切回直连供应商",
             crate::tools::tool_display_name(&agent)
         );
         return write_error(stream, &agent, 503, &message).await;
@@ -1532,7 +1532,7 @@ async fn handle_models(
                         "owned_by": "codex-plus"
                     });
                     if id != *model {
-                        row["description"] = json!("经 Codex++ 网关转发");
+                        row["description"] = json!("经 Codex++ 本地服务转发");
                     }
                     // #3107：报真实窗口；Desktop 只按 supports_1m 区分 200k / 1M，不到 1M 显式写 false。
                     if let Some((window, supports_1m)) = binding

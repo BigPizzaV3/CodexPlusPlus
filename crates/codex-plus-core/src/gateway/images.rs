@@ -120,7 +120,7 @@ pub fn targets(
     let wanted = gateway.image_model_for(agent).trim();
     if wanted.eq_ignore_ascii_case(IMAGE_OFF) {
         return Err(
-            "Codex++ 网关里这个 Agent 的生图已关闭：在「Agent 接入」里选一个生图模型".to_string(),
+            "Codex++ 本地服务里这个 Agent 的生图已关闭：在「Agent 接入」里选一个生图模型".to_string(),
         );
     }
     let target = |option: &ImageOption| {
@@ -155,7 +155,7 @@ pub fn targets(
         }
         if targets.is_empty() {
             return Err(
-                "Codex++ 网关的供应商池里没有能生图的模型：登录一个 ChatGPT 账号，或给供应商加上生图模型（如 gpt-image-1）"
+                "Codex++ 本地服务的共享供应商里没有能生图的模型：登录一个 ChatGPT 账号，或给供应商加上生图模型（如 gpt-image-1）"
                     .to_string(),
             );
         }

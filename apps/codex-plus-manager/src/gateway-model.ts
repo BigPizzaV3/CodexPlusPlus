@@ -1,6 +1,6 @@
 /** 网关模式的前端数据模型：与 `codex_plus_core::gateway` 的序列化结构一一对应，外加表单转换。
  *
- * 网关模式与直连模式完全独立：供应商池、模型组只属于网关；所有接入的 Agent 共用整个池。
+ * 网关模式与直连模式完全独立：共享供应商、模型组只属于网关；所有接入的 Agent 共用整个池。
  * 模型名三种写法：裸模型名（池里提供它的供应商依次尝试）、`<供应商 id>/<模型>`、`group/<组 id>`。
  */
 import { PRESETS, type ProviderPreset } from "./presets.ts";
@@ -327,7 +327,7 @@ export type GatewayPayload = {
   helperRunning: boolean;
   /** Codex 旧版供应商配置总开关；旧版后端没有这个字段。 */
   relayProfilesEnabled?: boolean;
-  /** 网关自己的供应商池（不含 Key）。 */
+  /** 网关自己的共享供应商（不含 Key）。 */
   pool: GatewayPoolEntry[];
   groups: GatewayGroupEntry[];
   agents: GatewayAgentView[];
@@ -643,14 +643,14 @@ export function modelRoutable(payload: GatewayPayload | null, model: string, exc
 /** 表单校验：返回错误文案（中文原文，界面再翻译），没问题返回 null。 */
 export function validateDraft(draft: BindingDraft, payload: GatewayPayload | null, retainedModel?: string, retainedSelection?: DefaultModelSelection | null): string | null {
   if (payload) {
-    if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先在「供应商池」里添加供应商";
+    if (!agentPoolProviders(payload, draft.poolExclude).length) return "共享供应商是空的，先在「共享供应商」里添加供应商";
     const model = draft.model.trim();
     const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
     const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);
     const retainedUnavailableModel = draft.model === retainedModel && retainedSelection
       && modelSlugFromRowName(model).toLowerCase() === `${retainedSelection.providerId}/${modelSlugFromRowName(retainedSelection.upstreamModel)}`.toLowerCase()
       && (retainedSelection.providerRemoved || !retainedProvider || !providerEnabled(retainedProvider) || draft.poolExclude.includes(retainedProvider.id));
-    if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
+    if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "共享供应商里没有这个模型";
   }
   const window = parseContextWindow(draft.contextWindow);
   if (window !== null && (!Number.isFinite(window) || window < 1_000)) return "上下文窗口格式不对，例如 200000、200k 或 1M";
@@ -1074,7 +1074,7 @@ export function quotaSupported(entry: GatewayPoolEntry): boolean {
   return entry.quotaApi ?? (entry.account === "chatgpt" || entry.account === "copilot" || entry.account === "grok");
 }
 
-/** 「用量」页的额度一节：打开的、有额度可查的供应商（和供应商池卡片同一份缓存）。 */
+/** 「用量」页的额度一节：打开的、有额度可查的供应商（和共享供应商卡片同一份缓存）。 */
 export function quotaEntries(pool: GatewayPoolEntry[] | undefined): GatewayPoolEntry[] {
   return (pool ?? []).filter((entry) => entry.enabled !== false && quotaSupported(entry));
 }
@@ -1189,7 +1189,7 @@ export function memberStatus(payload: GatewayPayload | null, relayId: string, no
 }
 
 /**
- * 供应商池「按模型」矩阵、路由页组成员里一格（供应商 × 模型）的状态：冷却、熔断按整家供应商算；「刚用过」只标在真正被请求的那个模型上。
+ * 共享供应商「按模型」矩阵、路由页组成员里一格（供应商 × 模型）的状态：冷却、熔断按整家供应商算；「刚用过」只标在真正被请求的那个模型上。
  * 其它情况不显示（返回 null）。
  */
 export function dispatchStatus(payload: GatewayPayload | null, relayId: string, model: string, nowMs: number = Date.now()): MemberStatus | null {
@@ -1256,7 +1256,7 @@ export type DispatchProvider = { id: string; name: string; baseUrl: string; excl
 export type DispatchRow = { model: string; providers: DispatchProvider[] };
 
 /**
- * 供应商池「按模型」矩阵：每个模型名列出池里提供它的供应商，顺序就是网关的尝试顺序（与后端 `expand_model` 一致：
+ * 共享供应商「按模型」矩阵：每个模型名列出池里提供它的供应商，顺序就是网关的尝试顺序（与后端 `expand_model` 一致：
  * 打开的供应商按池顺序）。有备用的模型排前面；`excludedBy` 是在「挑选」里排除了这家的已接入 Agent。
  */
 export function modelDispatch(payload: GatewayPayload | null): DispatchRow[] {

@@ -16,12 +16,13 @@ export type TourStep = {
 export const TOUR_VERSION = 1;
 export const TOUR_STORAGE_KEY = "codex-plus-plus.onboarding";
 
-// 顺序跟着侧栏从上往下走：万物皆拓展 → Agent → 聚合网关（总览、供应商池、Agent 接入）→ 搜索 → 设置。
+// 顺序跟着侧栏从上往下走：万物皆拓展 → Agent → 搜索 → 设置。
+// 本地服务（共享供应商、路由、Agent 接入）在设置的「本地服务」里，从 Agent 的页面进去，导览不单独讲。
 export const TOUR_STEPS: TourStep[] = [
   {
     id: "welcome",
     title: "欢迎使用 Codex++",
-    body: "Codex++ 给 Codex、Claude Code 等 Agent 加上拓展和增强，并让它们经同一个本地网关接入任意供应商。花半分钟认识一下侧栏。",
+    body: "Codex++ 给 Codex、Claude Code 等 Agent 加上拓展和增强。花半分钟认识一下侧栏。",
   },
   {
     id: "management",
@@ -33,25 +34,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "agents",
     target: "agents",
     title: "Agent",
-    body: "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……Codex 行的播放键可以启动或停止 Codex。",
-  },
-  {
-    id: "hub",
-    target: "hub",
-    title: "聚合网关",
-    body: "任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家。总览里一屏看全谁在用、走哪家。",
-  },
-  {
-    id: "providers",
-    target: "nav-gatewayProviders",
-    title: "第一步：添加供应商",
-    body: "把 API Key 或 ChatGPT、Copilot 等订阅加进供应商池，所有 Agent 共用这一个池子。",
-  },
-  {
-    id: "agents-connect",
-    target: "nav-gateway",
-    title: "第二步：接入 Agent",
-    body: "给 Agent 选一个默认模型、打开接入开关；供应商池里的模型就会出现在它自己的模型列表里。",
+    body: "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……想让几个 Agent 共用一份供应商，在设置的「本地服务」里配置。",
   },
   {
     id: "palette",
@@ -67,55 +50,30 @@ export const TOUR_STEPS: TourStep[] = [
   },
 ];
 
-/** 网关的三步：只用增强功能，或还没有 Agent 接入网关（侧栏不显示网关一组）时去掉。 */
-const GATEWAY_STEPS = new Set(["hub", "providers", "agents-connect"]);
-
-/**
- * 只用增强功能时的步骤：没有网关、供应商池和 Agent 接入，这三步去掉，其余换成不提供应商的说法。
- */
+/** 只用增强功能时的步骤：换成不提供应商的说法。 */
 const ENHANCE_OVERRIDES: Record<string, Pick<TourStep, "body">> = {
   welcome: { body: "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下侧栏。" },
   agents: { body: "点开 Codex 或 Claude Code，在它下面的页面里启用所需增强；Codex 行的播放键可以启动或停止 Codex。" },
   management: { body: "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在对话里造一个自己的。MCP、Skills 和会话就在它下面。" },
 };
 const ENHANCE_TOUR_STEPS: TourStep[] = TOUR_STEPS
-  .filter((step) => !GATEWAY_STEPS.has(step.id))
   .map((step) => (ENHANCE_OVERRIDES[step.id] ? { ...step, ...ENHANCE_OVERRIDES[step.id] } : step));
-
-/** 还没用网关时的步骤：不讲网关，在 Agent 那一步提一句从哪里改用。 */
-const DIRECT_OVERRIDES: Record<string, Pick<TourStep, "body">> = {
-  welcome: { body: "Codex++ 给 Codex、Claude Code 等 Agent 加上拓展和增强。花半分钟认识一下侧栏。" },
-  agents: { body: "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……想让多个 Agent 共用一个供应商池，可以在 Codex 的「连接与供应商」里改用聚合网关。" },
-};
-const DIRECT_TOUR_STEPS: TourStep[] = TOUR_STEPS
-  .filter((step) => !GATEWAY_STEPS.has(step.id))
-  .map((step) => (DIRECT_OVERRIDES[step.id] ? { ...step, ...DIRECT_OVERRIDES[step.id] } : step));
 
 /**
  * 按使用模式调整的步骤。单 Agent 模式下不讲「多个 Agent 共用」，
- * 欢迎卡、接入、Agent 列表三步换成只针对这一个 Agent 的说法（文案里的 {0} 是 Agent 名字）。
- * `gatewayShown` 为 false（侧栏没有网关一组）时去掉网关的三步。
+ * 欢迎卡、Agent 列表两步换成只针对这一个 Agent 的说法（文案里的 {0} 是 Agent 名字）。
  */
-export function tourSteps(soloName: string | null, enhanceOnly = false, gatewayShown = true): TourStep[] {
+export function tourSteps(soloName: string | null, enhanceOnly = false): TourStep[] {
   if (enhanceOnly) return ENHANCE_TOUR_STEPS;
-  const base = gatewayShown ? TOUR_STEPS : DIRECT_TOUR_STEPS;
-  if (!soloName) return base;
+  if (!soloName) return TOUR_STEPS;
   const override: Record<string, Partial<Pick<TourStep, "title" | "body">>> = {
-    welcome: {
-      body: gatewayShown
-        ? "Codex++ 给 {0} 加上拓展和增强，并让它经本地网关接入任意供应商。花半分钟认识一下侧栏。"
-        : "Codex++ 给 {0} 加上拓展和增强。花半分钟认识一下侧栏。",
-    },
-    "agents-connect": {
-      title: "第二步：让 {0} 走网关",
-      body: "打开 {0} 的网关开关并选一个默认模型；供应商池里的模型就会出现在 {0} 自己的模型列表里。",
-    },
+    welcome: { body: "Codex++ 给 {0} 加上拓展和增强。花半分钟认识一下侧栏。" },
     agents: {
       title: "{0} 的页面",
       body: "点开 {0} 后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……其他 Agent 的入口可在设置里切到「全部功能」后显示。",
     },
   };
-  return base.map((step) => (override[step.id] ? { ...step, ...override[step.id], args: [soloName], plainTitle: !override[step.id].title } : step));
+  return TOUR_STEPS.map((step) => (override[step.id] ? { ...step, ...override[step.id], args: [soloName], plainTitle: !override[step.id].title } : step));
 }
 
 /** 是否需要自动弹出引导：没看过，或看的是旧版本。 */

@@ -131,7 +131,8 @@ const REQUEST_TIMEOUT_MS = 90_000;
 const TAB_META: Record<TrayTabId, { label: string; icon: LucideIcon }> = {
   home: { label: "概览", icon: House },
   usage: { label: "用量", icon: ChartColumn },
-  gateway: { label: "网关", icon: Waypoints },
+  // 各 Agent 经本地服务用的模型（原「网关」页签）。
+  gateway: { label: "模型", icon: Waypoints },
   flow: { label: "实时", icon: Radio },
 };
 
@@ -377,7 +378,7 @@ export function TrayPanel() {
             <button aria-selected={tab === id} className="tp-tab" data-active={tab === id} key={id} onClick={() => setTab(id)} role="tab" type="button">
               <Icon aria-hidden="true" />
               <span>{t(meta.label)}</span>
-              {badge ? <i className="tp-tab-badge" title={t("有 Agent 已接入网关")} /> : null}
+              {badge ? <i className="tp-tab-badge" title={t("有 Agent 已接入本地服务")} /> : null}
             </button>
           );
         })}
@@ -478,8 +479,8 @@ const ENHANCE_QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: Lucide
 const QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: LucideIcon }> = [
   { route: "sessions", label: "会话", icon: MessagesSquare },
   { route: "requestLog", label: "请求日志", icon: ScrollText },
-  { route: "gateway", label: "网关接入", icon: Waypoints },
-  { route: "gatewayProviders", label: "供应商池", icon: Layers },
+  { route: "gateway", label: "Agent 接入", icon: Waypoints },
+  { route: "gatewayProviders", label: "共享供应商", icon: Layers },
   { route: "gatewayRouting", label: "路由", icon: Split },
   { route: "gatewayUsage", label: "用量统计", icon: Activity },
 ];
@@ -516,7 +517,7 @@ function HomeTab({
     : !active
       ? t("还没有配置供应商")
       : active.kind === "gateway"
-        ? t("经 Codex++ 网关")
+        ? t("经 Codex++ 本地服务")
         : tf("直连 · {0}", [active.name || t("未命名供应商")]);
   return (
     <>
@@ -663,7 +664,7 @@ function UsageTab({
           </div>
         </Section>
       ) : null}
-      {glance && glance.calls === 0 ? <p className="tp-note">{t("只统计经过 Codex++ 的请求（网关或协议转换）。直连时请求不经过 Codex++，这里不会有记录。")}</p> : null}
+      {glance && glance.calls === 0 ? <p className="tp-note">{t("只统计经过 Codex++ 的请求（本地服务或协议转换）。直连时请求不经过 Codex++，这里不会有记录。")}</p> : null}
 
       {quotas.length ? (
         <Section title={t("订阅额度")}>
@@ -703,7 +704,7 @@ function UsageTab({
           {balancesFailed ? (
             <p className="tp-note">{t("余额查询失败，请稍后重试。")}</p>
           ) : balances === null ? (
-            <p className="tp-note">{t("会联网查询网关供应商池里中转站和 DeepSeek 等厂商的余额。")}</p>
+            <p className="tp-note">{t("会联网查询共享供应商里中转站和 DeepSeek 等厂商的余额。")}</p>
           ) : balances.length === 0 ? (
             <p className="tp-note">{t("没有可以查询余额的供应商。")}</p>
           ) : (
@@ -757,13 +758,13 @@ function GatewayTab({
     return (
       <div className="tp-card tp-intro">
         <Waypoints aria-hidden="true" className="tp-intro-icon" />
-        <strong>{t("还没用上网关")}</strong>
+        <strong>{t("还没用上本地服务")}</strong>
         <p>{solo
-          ? tf("网关把 {0} 接到 Codex++ 的供应商池：一处管理 Key 和模型，在这里就能随时换模型。", [agentName(solo)])
-          : t("网关把 Codex、Claude Code、Grok 接到同一个供应商池：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
+          ? tf("本地服务把 {0} 接到 Codex++ 的共享供应商：一处管理 Key 和模型，在这里就能随时换模型。", [agentName(solo)])
+          : t("本地服务把 Codex、Claude Code、Grok 接到同一个共享供应商：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
         <div className="tp-intro-actions">
           <button className="tp-button" data-variant="primary" onClick={() => void onOpenRoute("gatewayProviders")} type="button">{t("添加供应商")}</button>
-          <button className="tp-button" onClick={() => void onOpenRoute("gateway")} type="button">{t("了解网关")}</button>
+          <button className="tp-button" onClick={() => void onOpenRoute("gateway")} type="button">{t("了解本地服务")}</button>
         </div>
       </div>
     );
@@ -775,7 +776,7 @@ function GatewayTab({
     <>
       <div className="tp-gateway-status">
         <i className="tp-dot" data-tone={payload?.helperRunning ? "on" : "off"} />
-        <span>{payload?.helperRunning ? tf("网关运行中 · 127.0.0.1:{0}", [payload.port]) : t("网关没有运行")}</span>
+        <span>{payload?.helperRunning ? tf("本地服务运行中 · 127.0.0.1:{0}", [payload.port]) : t("本地服务没有运行")}</span>
         <LinkButton label={t("管理")} onClick={() => void onOpenRoute("gateway")} />
       </div>
 
@@ -931,9 +932,9 @@ function PanelAgentRow({
       ? { ...baseDisplay, issue: undefined }
       : baseDisplay;
   const inactiveHint = inactive && agent.enabled
-    ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
+    ? tf("原模型组「{0}」已停用，本地服务默认回退为 {1}", [inactive.name, display.title || t("未设置")])
     : unavailable && agent.enabled
-      ? tf("原默认模型「{0}」不可用，网关默认回退为 {1}", [original.title, display.title || t("未设置")])
+      ? tf("原默认模型「{0}」不可用，本地服务默认回退为 {1}", [original.title, display.title || t("未设置")])
     : undefined;
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);

@@ -18,7 +18,7 @@ import "./OnboardingTour.css";
 const MODE_TEXT: Record<FocusMode, { name: string; hint: string }> = {
   codex: { name: "只管理 Codex", hint: "管理 Codex 的供应商、增强、皮肤和拓展。隐藏其他 Agent 的界面，已有网关连接保持不变。" },
   enhance: { name: "只用增强功能", hint: "保留 Codex、Claude Code 的增强、皮肤和拓展，隐藏供应商、网关和用量，并关闭旧版供应商配置切换。已有网关连接保持不变。" },
-  all: { name: "全部功能", hint: "同时管理 Codex、Claude Code、Grok 等多个 Agent，经同一个网关共用供应商池。" },
+  all: { name: "全部功能", hint: "同时管理 Codex、Claude Code、Grok 等多个 Agent，经同一个网关共用共享供应商。" },
 };
 
 type GatewayState = { status: "loading" | "error"; agents: string[] } | { status: "ready"; agents: string[] };
@@ -133,7 +133,7 @@ export function AgentFocusDialog({ initial, onDone, onCancel }: {
             <div className="tour-actions"><button className="tour-ghost" onClick={() => setLoadAttempt((attempt) => attempt + 1)} type="button"><RefreshCw aria-hidden="true" size={13} />{t("重试")}</button></div>
           </div>
         ) : value === "enhance" && gateway.agents.length ? (
-          <p className="agent-focus-warning">{tf("{0} 目前经 Codex++ 网关接入，切换后会继续运行并管理对应配置。要交给其他供应商工具，请先在「全部功能」的「Agent 接入」中断开。", [gateway.agents.join("、")])}</p>
+          <p className="agent-focus-warning">{tf("{0} 目前经 Codex++ 本地服务接入，切换后会继续运行并管理对应配置。要交给其他供应商工具，请先在「全部功能」的「Agent 接入」中断开。", [gateway.agents.join("、")])}</p>
         ) : null}
         {saveFailed ? <p className="agent-focus-warning" role="alert">{t("模式尚未切换。请重试，或取消后检查设置。")}</p> : null}
         <div className="tour-actions agent-focus-actions">

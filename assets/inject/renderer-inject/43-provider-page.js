@@ -6,12 +6,12 @@
    *     （codexPlusProviderEditing，来源 apps/codex-plus-manager/src/relay-profile-editing.ts），
    *     行为与管理器的「连接与供应商」页一致；
    *   - 保存 / 切换经 bridge 路由 /providers/*（core provider_page），最终跑的是管理器自己的
-   *     save_settings / switch_relay_profile：归一化、切换锁、live 文件、网关绑定都只有一份。
+   *     save_settings / switch_relay_profile：归一化、切换锁、live 文件、本地服务绑定都只有一份。
    *   - 命名 Key 只下发打码预览，提交时由服务端按 id 还原；选中别的已存 Key 不改文件，
    *     由服务端归一化时按选中的那把重写，所以页面里永远拿不到备用 Key 的明文。
    *
    * 本页编辑直连供应商（官方 / 官方+API / 纯 API）与聚合供应商（故障转移 / 模型聚合：成员、权重、
-   * 策略、路由、默认成员、审批成员，同样用共用函数归一化与校验）；网关接管条目只能「使用」。
+   * 策略、路由、默认成员、审批成员，同样用共用函数归一化与校验）；本地服务接管条目只能「使用」。
    * 直连供应商的模型路由、请求头、兼容选项仍在管理器里编辑（「在 Codex++ 中打开」）。
    *
    * 页面 DOM 每次打开重建，状态只放在 codexPlusProviderPageState 里（见 01-registry 的生命周期约定）。
@@ -54,7 +54,7 @@
     return !!profile && !profile.gatewayManaged && !codexPlusProviderIsAggregate(profile);
   }
 
-  /** 能在本页保存的条目：直连与聚合都行，网关接管条目不行。 */
+  /** 能在本页保存的条目：直连与聚合都行，本地服务接管条目不行。 */
   function codexPlusProviderCanEdit(profile) {
     return !!profile && !profile.gatewayManaged;
   }
@@ -67,7 +67,7 @@
   }
 
   function codexPlusProviderModeLabel(profile) {
-    if (profile?.gatewayManaged) return "网关";
+    if (profile?.gatewayManaged) return "本地服务";
     const mode = codexPlusProviderModeKey(profile);
     if (mode === "aggregate") return profile.aggregate?.modelAggregationEnabled === true ? "模型聚合" : "故障转移";
     return { pureApi: "纯 API", mixedApi: "官方 + API", official: "官方登录" }[mode];
@@ -218,7 +218,7 @@
   /**
    * 没改过的供应商原样提交服务端下发的版本：页面读取时做过与管理器相同的归一化，
    * 原样回传归一化结果可能和库里有细微差别，服务端会误判「当前供应商变了」而去重写 live 文件
-   * （网关接管时那次切换还会被拒，连带改别的供应商也保存不了）。
+   * （本地服务接管时那次切换还会被拒，连带改别的供应商也保存不了）。
    */
   function codexPlusProviderProfilesForCommit(profiles) {
     const state = codexPlusProviderPageState;
@@ -294,7 +294,7 @@
   async function codexPlusProviderUse(id) {
     const state = codexPlusProviderPageState;
     if (state.data?.gatewayMode === true) {
-      // 管理器在网关接管时会拒绝直接切换：先给出还原预览，确认断开后再切到这个供应商。
+      // 管理器在本地服务接管时会拒绝直接切换：先给出还原预览，确认断开后再切到这个供应商。
       await codexPlusGatewayOpenDisconnect(() => codexPlusProviderUse(id));
       return;
     }
@@ -705,7 +705,7 @@
     else if (kind === "agg-review") codexPlusProviderUpdateAggregate({ autoReviewRelayId: value });
     else if (kind === "agg-route-target") codexPlusProviderUpdateRoute(Number(trigger.dataset.aggRouteIndex), { profileId: value });
     if (kind.startsWith("agg-")) return renderCodexPlusProviderPage();
-    // 网关页签：协议写进草稿（与输入框一样不重绘）；测试用模型只在点「测试」时读按钮上的值。
+    // 本地服务页签：协议写进草稿（与输入框一样不重绘）；测试用模型只在点「测试」时读按钮上的值。
     if (kind === "gw-protocol") codexPlusGatewayHandleInput({ target: { dataset: { codexGatewayField: "protocol" }, value } });
   }
 
@@ -772,8 +772,8 @@
       isActive ? "当前使用的供应商不能删除，先切换到别的供应商。" : "它的 Key 和配置快照会一起删掉。",
       `<button type="button" class="codex-plus-action-button" data-codex-provider-action="delete" data-danger="true" ${busy || isActive ? "disabled" : ""}>删除</button>`));
     if (!canEdit) {
-      return `${header}${statusBanner}${codexPlusProviderCard("编辑", codexPlusProviderActionLine("由网关维护",
-        "这是 Codex++ 网关接管 Codex 时生成的条目，由网关维护，这里只能切换。",
+      return `${header}${statusBanner}${codexPlusProviderCard("编辑", codexPlusProviderActionLine("由本地服务维护",
+        "这是 Codex++ 本地服务接管 Codex 时生成的条目，由本地服务维护，这里只能切换。",
         '<button type="button" class="codex-plus-action-button" data-codex-provider-action="open-manager">在 Codex++ 中打开</button>'))}`;
     }
     if (!editable) return `${header}${statusBanner}${renderCodexPlusProviderAggregateDetail(draft)}${dangerCard}`;
@@ -986,7 +986,7 @@
     const gatewayMode = state.data?.gatewayMode === true;
     const tabs = `<div class="codex-plus-provider-tabs" role="tablist" aria-label="供应商类型">
       <div class="codex-plus-provider-tab-group">
-        <button type="button" role="tab" data-codex-provider-tab="gateway" aria-selected="${state.tab === "gateway"}">网关供应商池${gatewayMode ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</button>
+        <button type="button" role="tab" data-codex-provider-tab="gateway" aria-selected="${state.tab === "gateway"}">共享供应商${gatewayMode ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</button>
         <button type="button" role="tab" data-codex-provider-tab="direct" aria-selected="${state.tab !== "gateway"}">直连供应商${gatewayMode ? "" : '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>'}</button>
       </div>
     </div>`;
@@ -1006,7 +1006,7 @@
         ${renderCodexPlusProviderList()}
       </aside>
       <section class="codex-plus-provider-detail">
-        ${gatewayMode ? '<div class="codex-plus-provider-note">Codex 正经网关接入，直连供应商暂时不起作用；在这里点「使用」会先断开网关并还原。</div>' : ""}
+        ${gatewayMode ? '<div class="codex-plus-provider-note">Codex 正经共享供应商接入，直连供应商暂时不起作用；在这里点「使用」会先断开本地服务并还原。</div>' : ""}
         ${renderCodexPlusProviderDetail()}
       </section></div>${footer}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
     const detail = panel.querySelector(".codex-plus-provider-detail");

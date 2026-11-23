@@ -516,7 +516,7 @@ const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const UPSTREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_STREAM_HEADER_TIMEOUT: Duration = Duration::from_secs(120);
 const UPSTREAM_IMAGE_HEADER_TIMEOUT: Duration = Duration::from_secs(600);
-/// 压缩请求、以及发给 Codex++ 网关的请求等响应头的上限（#2759）。
+/// 压缩请求、以及发给 Codex++ 本地服务的请求等响应头的上限（#2759）。
 ///
 /// - 原生压缩要整段读完、确认拿到 checkpoint 才回响应头，大上下文压缩常超过两分钟；
 /// - Codex 登录 ChatGPT 时请求先到本地代理、再转给网关：网关这一跳自己也会等上游响应头、
@@ -6232,7 +6232,7 @@ fn response_header_timeout(is_stream: bool) -> Duration {
     }
 }
 
-/// Responses 代理一次上游请求等响应头的上限：压缩请求、发给 Codex++ 网关的请求放宽到
+/// Responses 代理一次上游请求等响应头的上限：压缩请求、发给 Codex++ 本地服务的请求放宽到
 /// [`UPSTREAM_SLOW_HEADER_TIMEOUT`]，其余按是否流式。
 fn responses_request_header_timeout(is_stream: bool, compaction: bool, via_gateway: bool) -> Duration {
     if compaction || via_gateway {

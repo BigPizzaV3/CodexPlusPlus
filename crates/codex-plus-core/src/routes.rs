@@ -522,7 +522,7 @@ pub async fn handle_bridge_request(
                 .map_err(anyhow::Error::from)
                 .and_then(|result| result)
         }
-        // 网关供应商池：分发到管理器的网关命令（同步命令里有文件锁、可能联网），放到阻塞线程池。
+        // 网关共享供应商：分发到管理器的网关命令（同步命令里有文件锁、可能联网），放到阻塞线程池。
         "/providers/gateway" => {
             let payload = payload.clone();
             tokio::task::spawn_blocking(move || crate::provider_page::route_gateway(&payload))

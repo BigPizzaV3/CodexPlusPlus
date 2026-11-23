@@ -327,7 +327,7 @@ fn new_plain_key_is_kept_and_unknown_masked_key_is_dropped() {
 #[test]
 fn gateway_entry_is_kept_from_storage() {
     let gateway = RelayProfile {
-        name: "Codex++ 网关".to_string(),
+        name: "Codex++ 本地服务".to_string(),
         ..pure_profile(CODEX_GATEWAY_RELAY_ID, "http://127.0.0.1:57321/gw/codex/v1", &[("gw", "sk-gateway-local-9999")])
     };
     let fixture = Fixture::new(vec![gateway.clone()]);

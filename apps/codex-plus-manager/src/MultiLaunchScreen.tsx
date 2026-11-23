@@ -225,9 +225,9 @@ export function CodexMultiLaunchScreen({
           })}
           {!normalized.relayProfiles.length ? <CxEmpty title={t("暂无供应商，请先添加供应商配置。")} /> : null}
         </CxCard>
-        {/* #2754：新版的 API 多加在「供应商池」，多开却只读旧版供应商配置；添加入口直接说明这一点。 */}
+        {/* #2754：新版的 API 多加在「共享供应商」，多开却只读旧版供应商配置；添加入口直接说明这一点。 */}
         <CxAddRow
-          detail={t("多开用「连接与供应商」里的直连供应商；供应商池（网关）里的不在这里")}
+          detail={t("多开用「连接与供应商」里的直连供应商；共享供应商里的不在这里")}
           onClick={onOpenRelay}
           title={t("导入或添加供应商")}
         />

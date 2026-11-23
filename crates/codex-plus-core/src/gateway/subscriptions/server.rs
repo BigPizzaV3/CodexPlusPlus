@@ -154,7 +154,7 @@ pub(crate) async fn handle(
         .or_else(|| header_value_from_headers(headers, "x-api-key"))
         .unwrap_or_default();
     if !crate::gateway::store::token_matches(local_secret(), token.trim()) {
-        return write_error(stream, 401, "订阅入口只接受 Codex++ 网关自己的请求").await;
+        return write_error(stream, 401, "订阅入口只接受 Codex++ 本地服务自己的请求").await;
     }
     let (item, credentials, http) = match ready(&id).await {
         Ok(ready) => ready,

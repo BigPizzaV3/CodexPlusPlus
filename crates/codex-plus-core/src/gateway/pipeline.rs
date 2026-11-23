@@ -592,7 +592,7 @@ impl LocalRateLimited {
         Self {
             message: format!(
                 "Codex++ 本地限速：{} 的 Key 都已达到你设置的请求上限，排队等待 {} 秒仍没有空出名额。\
-                 这是 Codex++ 网关自己的限速，不是上游返回的错误；可以在网关「供应商池」里调高这家的限速上限，或给它添加更多 Key。",
+                 这是 Codex++ 本地服务自己的限速，不是上游返回的错误；可以在网关「共享供应商」里调高这家的限速上限，或给它添加更多 Key。",
                 providers.join("、"),
                 waited.as_secs()
             ),
@@ -808,7 +808,7 @@ async fn attempt_pipeline(
     })
 }
 
-/// 只发一次、只发给这个候选（供应商池的「测试」用，见 [`crate::gateway::probe`]）。
+/// 只发一次、只发给这个候选（共享供应商的「测试」用，见 [`crate::gateway::probe`]）。
 ///
 /// 和候选循环里的一次尝试走同一条路（ChatGPT 后端的请求整理、协议转换、代理、认证都一样），
 /// 但调用方要自己先做 `prepare_relay` / OpenCode 的 prepare；这里不占限速名额、不记 Key 冷却 /
@@ -838,7 +838,7 @@ pub(crate) async fn attempt_once(
     }
 }
 
-/// ChatGPT 后端的响应头带着这个账号的额度，顺手记下（模型组「额度优先」、供应商池显示用）。
+/// ChatGPT 后端的响应头带着这个账号的额度，顺手记下（模型组「额度优先」、共享供应商显示用）。
 fn observe_quota(relay: &crate::settings::RelayProfile, upstream: &GatewayUpstream) {
     let headers = match upstream {
         GatewayUpstream::Pipeline(response) => {

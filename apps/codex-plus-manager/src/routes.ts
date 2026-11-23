@@ -87,15 +87,17 @@ export const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: 
   { id: "computerUse", get label() { return t("Computer Use"); }, icon: MousePointerClick },
   // 远程控制：在浏览器或手机上操控 Codex 的会话。和「微信连接」同是「在手机上用 Codex」，挂在侧栏 Codex 下面、紧跟微信连接。
   { id: "remoteControl", get label() { return t("远程控制"); }, icon: Smartphone, tool: "codex" },
-  // 网关：任意 Agent 经 Codex++ 接入任意供应商，与具体 Agent 无关，是应用级页面。
-  // 侧栏、页面标题、⌘K 都叫「网关总览」（英文和 Agent 的「概览」区分开）。
-  { id: "hub", get label() { return t("网关总览"); }, icon: Waypoints },
+  // 本地服务（原「聚合网关」）：Codex++ 的后台能力，不再在主侧栏单独占一组，
+  // 这几页放在设置模式的「本地服务」分组里，从各 Agent 的页面（Codex「连接与供应商」、Agent 概览、Claude 供应商）进来，
+  // 左上角「返回」回到原来的页面。路由 id 沿用旧名，拓展里的深链不失效。
+  // 总览不再列入任何导航，只留给旧深链。
+  { id: "hub", get label() { return t("本地服务总览"); }, icon: Waypoints },
   // 先有供应商，再接 Agent；路由是进阶设置，放在 Agent 接入之后。
-  { id: "gatewayProviders", get label() { return t("供应商池"); }, icon: Server },
+  { id: "gatewayProviders", get label() { return t("共享供应商"); }, icon: Server },
   { id: "gateway", get label() { return t("Agent 接入"); }, icon: Plug },
   { id: "gatewayRouting", get label() { return t("路由"); }, icon: Split },
   { id: "gatewayUsage", get label() { return t("用量"); }, icon: BarChart3 },
-  { id: "gatewaySettings", get label() { return t("网关设置"); }, icon: SlidersHorizontal },
+  { id: "gatewaySettings", get label() { return t("服务设置"); }, icon: SlidersHorizontal },
   // 和侧栏底部齿轮同名；页面标题按选中的分类显示（通用、配置文件…）。
   { id: "settings", get label() { return t("设置"); }, icon: Settings },
   // Agent 专属设置：目前只有 Codex 有专属选项（启动参数等）。
@@ -128,9 +130,9 @@ export const lastAgentRoute = new Map<string, Route>();
  * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
  */
 export const globalNavigationRoutes: Route[] = ["home", "extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentCollaboration", "agentCache", "settings"];
-/** 侧栏「网关」分组：任意 Agent 经 Codex++ 接入任意供应商。 */
+/** 本地服务的几页：设置模式「本地服务」分组和 ⌘K 里的顺序。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
-export const gatewayNavigationRoutes: Route[] = ["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
+export const gatewayNavigationRoutes: Route[] = ["gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
 /** 侧栏「全局管理」分组：万物皆拓展置顶，其后是用量、会话、MCP、Skills。 */
 export const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "sessions", "context", "skills"];
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
@@ -160,7 +162,7 @@ export const gatewayTabByRoute: Partial<Record<Route, GatewayTab>> = {
 export const gatewayRouteByTab = Object.fromEntries(Object.entries(gatewayTabByRoute).map(([route, tab]) => [tab, route])) as Record<GatewayTab, Route>;
 /**
  * 每个 Agent 在侧栏里的落脚页：点 Agent 名字先到这里。
- * Claude Code / Grok 的供应商不再在 Codex++ 里单独配置：要么经网关接入供应商池（「Agent 接入」），
+ * Claude Code / Grok 的供应商不再在 Codex++ 里单独配置：要么经网关接入共享供应商（「Agent 接入」），
  * 要么不接入、照它自己的配置文件直连。
  */
 export const agentHomeRoute: Record<string, Route> = { codex: "overview", claude: "claude", grok: "overview" };
@@ -175,7 +177,8 @@ export const visibleActiveTool = (toolId: string | null | undefined) =>
 export const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "overview");
 
 /** 进入设置模式的路由：侧栏切成设置目录。 */
-export const settingsModeRoutes = new Set<Route>(["settings", "agentSettings", "gatewaySettings", "agentCache", "computerUse", "agentCollaboration"]);
+// 本地服务的几页也在设置模式里：它们是后台能力的设置，不是日常要逛的页面。
+export const settingsModeRoutes = new Set<Route>(["settings", "agentSettings", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "agentCache", "computerUse", "agentCollaboration"]);
 /** 「MCP 与 Skills」一页：两个胶囊切换。万物皆拓展是侧栏第一个入口，不放在这里。 */
 export const customizeRoutes: Route[] = ["context", "skills"];
 
@@ -186,7 +189,7 @@ export function routeTitle(route: Route) {
 /** 页面副标题；只管理 Codex（soloAgent）时网关两页不讲「任意 Agent」。 */
 export function routeSubtitle(route: Route, soloAgent: string | null = null) {
   if (soloAgent && route === "hub") return tf("{0} 经 Codex++ 接入任意供应商：走哪家、是否健康，一屏看全", [agentName(soloAgent)]);
-  if (soloAgent && route === "gateway") return tf("让 {0} 经 Codex++ 网关接入供应商池，并选它默认用的模型", [agentName(soloAgent)]);
+  if (soloAgent && route === "gateway") return tf("让 {0} 经 Codex++ 本地服务接入共享供应商，并选它默认用的模型", [agentName(soloAgent)]);
   const subtitles: Record<Route, string> = {
     home: t("赞助商推荐：支持 Codex++ 的服务"),
     overview: t("检查问题、启动与快速修复"),
@@ -208,11 +211,11 @@ export function routeSubtitle(route: Route, soloAgent: string | null = null) {
     computerUse: t("复用 ChatGPT.app 的 Computer Use 与 Chrome 控制，通过 MCP 接给 Claude Code、Claude Desktop、DeepSeek Harness、ZCode、WorkBuddy 与 Devin。"),
     remoteControl: t("在浏览器里查看和操控 Codex 桌面的会话：发消息、停止、审批命令、回答提问"),
     hub: t("任意 Agent 经 Codex++ 接入任意供应商：谁在用、走哪家、是否健康，一屏看全"),
-    gateway: t("选择哪些 Agent 经 Codex++ 网关接入，以及它们默认用哪个模型"),
-    gatewayProviders: t("所有接入的 Agent 共用的供应商池，支持多 Key 轮换"),
+    gateway: t("选择哪些 Agent 经 Codex++ 本地服务接入，以及它们默认用哪个模型"),
+    gatewayProviders: t("接入本地服务的 Agent 共用的供应商：多 Key 轮换、出错换下一家、协议自动转换"),
     gatewayRouting: t("多家都有的模型怎么分、你建的组怎么走：路由方式、会话固定、出错换谁"),
     gatewayUsage: t("调用统计与每条请求：按 Agent、供应商与模型汇总 token、缓存与费用"),
-    gatewaySettings: t("监听地址、Key 轮换方式与退出时的恢复策略"),
+    gatewaySettings: t("本地服务的监听地址、Key 轮换方式与退出时的恢复策略"),
     settings: t("主题、配置文件、版本更新与日志诊断，不随 Agent 变化"),
     agentSettings: t("当前 Agent 的专属设置"),
     extension: t("由拓展提供的页面"),

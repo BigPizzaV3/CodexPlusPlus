@@ -314,7 +314,7 @@ export function GatewayLoadError({ error }: { error: string }) {
   };
   return (
     <CxCard className="gw-load-error">
-      <CxEmpty detail={maskAccountText(error)} title={t("读取网关状态失败")}>
+      <CxEmpty detail={maskAccountText(error)} title={t("读取本地服务状态失败")}>
         <button className="cx-secondary" disabled={retrying} onClick={retry} type="button">
           <RefreshCw className={retrying ? "animate-spin" : undefined} />
           {t("重试")}

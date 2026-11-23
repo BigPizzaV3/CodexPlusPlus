@@ -59,7 +59,7 @@ test("模式问卷与入门清单的所有状态、按钮和错误均有英文",
 
 test("全部、单 Agent、增强模式和未用网关时的实际导览步骤均有英文且保留占位符", () => {
   const keys = emptyKeys();
-  for (const steps of [tourSteps(null), tourSteps("Codex"), tourSteps(null, true), tourSteps(null, false, false), tourSteps("Codex", false, false)]) {
+  for (const steps of [tourSteps(null), tourSteps("Codex"), tourSteps(null, true), tourSteps("Codex", true)]) {
     for (const step of steps) {
       (step.args && !step.plainTitle ? keys.template : keys.plain).add(step.title);
       (step.args ? keys.template : keys.plain).add(step.body);

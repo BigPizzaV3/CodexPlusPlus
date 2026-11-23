@@ -29,16 +29,21 @@ test("只保留一条侧栏，旧的图标栏和 Agent 子侧栏都已移除", (
   assert.doesNotMatch(styles, /\.app-rail\b|\.tool-chip\b|\.rail-brand\b/);
 });
 
-test("侧栏网关一组的「总览」进入网关总览，底部不再重复一张网关状态卡；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
+test("本地服务不在主侧栏占一组，几页在设置模式的「本地服务」分组；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
   const sidebar = functionSource("AppSidebar");
   assert.doesNotMatch(sidebar, /className=\{`cx-side-card[^`]*`\} data-tour="hub"/);
-  assert.match(sidebar, /\{ key: "hub", route: "hub", label: t\("网关总览"\), icon: Waypoints, match: \["hub"\], tour: "hub" \}/);
+  // 主侧栏没有本地服务（原聚合网关）一组。
+  assert.doesNotMatch(sidebar, /data-group="gateway"|const gatewayEntries/);
+  // 设置模式里的「本地服务」分组：共享供应商、路由、Agent 接入、服务设置。
+  const entries = functionSource("settingsNavEntries");
+  for (const route of ["gatewayProviders", "gatewayRouting", "gateway", "gatewaySettings"]) {
+    assert.match(entries, new RegExp(`route: "${route}", group: "service"`));
+  }
+  assert.match(sidebar, /\{ id: "service", label: t\("本地服务"\) \}/);
   assert.match(sidebar, /useGatewayPayload\(/);
-  // 供应商日常在 Codex 里管：没有 Agent 接入网关时，网关一组、接入方式的状态点和「接入 Agent」都不显示；停在网关页上时网关一组照常显示。
-  // 网关数据第一次读回来之前用上次记下的结果，网关一组不会晚一拍才冒出来。
+  // 接入方式的状态点只在有 Agent 接入本地服务时画；网关数据第一次读回来之前用上次记下的结果。
   assert.match(sidebar, /const gatewayInUse = gateway \? connectedAgents\.size > 0 : loadCachedGatewayInUse\(\);/);
   assert.match(sidebar, /if \(gateway\) storeCachedGatewayInUse\(gatewayInUse\);/);
-  assert.match(sidebar, /const gatewayShown = gatewayInUse \|\| gatewayEntries\.some\(\(item\) => item\.match\.includes\(route\)\);/);
   assert.match(sidebar, /\{enhanceOnly \|\| !gatewayInUse \? null : <i aria-hidden="true" className="side-dot" data-tone=\{access\.tone\} \/>\}/);
   assert.doesNotMatch(sidebar, /aria-label=\{t\("接入 Agent"\)\}/);
   assert.match(text, /const agentHomeRoute: Record<string, Route> = \{ codex: "overview", claude: "claude", grok: "overview" \}/);
@@ -89,7 +94,7 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(sections, /\{ id: "overview", routes: \["overview", "relay"\] \}/);
   for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
   assert.doesNotMatch(sections, /"agentSettings"|"relayEnvironment"/);
-  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "gatewaySettings",/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings",/);
   assert.doesNotMatch(text, /key: "codexConnection"|key: "legacyProxy"|key: "legacyRelay"/);
   assert.match(text, /id: "relay", get label\(\) \{ return t\("连接与供应商"\); \}/);
   // 内容区顶部不再画 Agent 页签。
@@ -157,7 +162,7 @@ test("提示卡按语气分色、悬停暂停、不显示进度条，失败可�
   assert.doesNotMatch(styles, /\.toast-progress\b|@keyframes toast-progress/);
 });
 
-test("Claude / Grok 的供应商配置页已去掉：要么经网关接入供应商池，要么照 Agent 自己的配置直连", () => {
+test("Claude / Grok 的供应商配置页已去掉：要么经网关接入共享供应商，要么照 Agent 自己的配置直连", () => {
   assert.doesNotMatch(text, /id: "claudeRelay"/);
   assert.doesNotMatch(text, /id: "grok", get label/);
   assert.doesNotMatch(text, /<ClaudeProviderPage|function GrokScreen/);
@@ -203,22 +208,19 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话、用量；「聚合网关」（总览、供应商池、Agent 接入、路由）排在 Agent 一组后面。
+  // 侧栏第一组：万物皆拓展、MCP 与 Skills（两个胶囊）、会话、用量；本地服务的几页在设置模式里，不在主侧栏。
   const sidebar = functionSource("AppSidebar");
   assert.match(sidebar, /\{ key: "extensions", route: "userScripts", label: t\("万物皆拓展"\)/);
   assert.ok(sidebar.indexOf('key: "extensions"') < sidebar.indexOf('key: "customize"'), "万物皆拓展排在第一个");
   assert.match(sidebar, /match: customizeRoutes/);
-  assert.match(sidebar, /<span>\{t\("聚合网关"\)\}<\/span>/);
-  for (const key of ["hub", "providers", "gateway", "routing", "usage"]) assert.match(sidebar, new RegExp(`key: "${key}"`));
-  // 用量也记直连代理的请求，放在第一组，不随网关一组隐藏。
-  const general = sidebar.slice(sidebar.indexOf("const general: SideEntry[]"), sidebar.indexOf("const gatewayEntries"));
+  assert.match(sidebar, /key: "usage"/);
+  // 用量也记直连代理的请求，放在第一组。
+  const general = sidebar.slice(sidebar.indexOf("const general: SideEntry[]"), sidebar.indexOf("const shownGeneral"));
   assert.match(general, /\{ key: "usage", route: "gatewayUsage", label: t\("用量"\), icon: BarChart3, match: \["gatewayUsage", "requestLog"\] \}/);
-  assert.ok(sidebar.indexOf('data-tour="agents"') < sidebar.indexOf('data-group="gateway"'), "聚合网关排在 Agent 一组后面");
   assert.match(sidebar, /const shownGeneral = general\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
-  assert.match(sidebar, /const shownGateway = gatewayShown \? gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\) : \[\];/);
   assert.match(text, /const customizeRoutes: Route\[\] = \["context", "skills"\];/);
-  // 路由是聚合网关的一部分，不进设置模式。
-  assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"gatewayRouting"/);
+  // 路由是本地服务的一部分，和共享供应商一起在设置模式里。
+  assert.match(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"gatewayRouting"/);
   // 网关的会话页并进「会话」：Codex 页签是完整的会话管理，其余页签是多 Agent 会话列表。
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
@@ -256,28 +258,28 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   assert.match(app, /invoke<GatewayResult>\("disable_gateway_binding", \{ agent: "codex", previewToken \}\)/);
   assert.doesNotMatch(app, /"disable_gateway_binding", \{ agent: "codex" \}/);
   const hint = functionSource("LegacyRelayGatewayHint");
-  assert.match(hint, /t\("建议改用新版网关"\)/);
+  assert.match(hint, /t\("可改用共享供应商"\)/);
   assert.match(hint, /form\.activeRelayId === CODEX_GATEWAY_RELAY_ID/);
-  assert.match(hint, /t\("Codex 当前经 Codex\+\+ 网关（新版）"\)/);
-  assert.match(hint, /t\("Codex 已从网关切回直连"\)/);
-  // 一行：标题写现在怎么连（经 Codex++ 网关 / 直连 · 供应商名），右侧切换 + 三点菜单；断开并还原在菜单里。
-  assert.match(hint, /\? t\("经 Codex\+\+ 网关"\)/);
+  assert.match(hint, /t\("Codex 当前经 Codex\+\+ 本地服务"\)/);
+  assert.match(hint, /t\("Codex 已从本地服务切回直连"\)/);
+  // 一行：标题写现在怎么连（经 Codex++ 本地服务 / 直连 · 供应商名），右侧切换 + 三点菜单；断开并还原在菜单里。
+  assert.match(hint, /\? t\("经 Codex\+\+ 本地服务"\)/);
   assert.match(hint, /tf\("直连 · \{0\}", \[direct\.name \|\| t\("未命名供应商"\)\]\)/);
   assert.match(hint, /\{viaGateway \? <MenuItem danger onClick=\{onDisconnect\}>\{t\("断开并还原"\)\}<\/MenuItem> : null\}/);
   // 列表里托管的网关供应商单独标出，只能「使用」，不能编辑、删除。
   const card = functionSource("SortableRelayProfileCard");
   assert.match(card, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
-  assert.match(card, /data-tone="gateway">\{t\("新版网关"\)\}/);
+  assert.match(card, /data-tone="gateway">\{t\("共享供应商"\)\}/);
   assert.match(card, /\{gatewayManaged \? null : \(\s*<span className="relay-card-extra" onClick=\{\(event\) => event\.stopPropagation\(\)\}>/);
   // 次要操作在三点菜单里；删除走公共确认（先查占用再二次确认）。
   assert.match(card, /<Menu label=\{t\("供应商操作"\)\}>/);
   assert.match(card, /confirmRemoveRelayProfile\(form, profile, actions, "relay"\)/);
-  // 被网关接管时可切换、可编辑的列表整块隐藏，要先断开并还原；只读列出直连供应商，供迁移进供应商池。
+  // 被网关接管时可切换、可编辑的列表整块隐藏，要先断开并还原；只读列出直连供应商，供迁移进共享供应商。
   const relay = functionSource("RelayScreen");
   assert.match(relay, /const takenOverByGateway = normalized\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(relay, /\{normalized\.relayProfilesEnabled && !takenOverByGateway \? \(/);
   assert.match(relay, /\{normalized\.relayProfilesEnabled && takenOverByGateway \? \(/);
-  // 直连用户可以关掉「加入供应商池」的提醒；网关接管时总是提示。
+  // 直连用户可以关掉「加入共享供应商」的提醒；网关接管时总是提示。
   assert.match(relay, /poolLink\.pending\.length && \(takenOverByGateway \|\| !nudgeDismissed\)/);
   assert.match(relay, /window\.localStorage\.setItem\(DIRECT_POOL_NUDGE_KEY, "1"\)/);
 });
@@ -353,7 +355,7 @@ test("代理设置按归属拆开：本地服务与请求避震移到网关设�
   const shared = functionSource("SharedServiceSettings");
   // 两节：本地服务、请求避震；标题悬停说明新旧共用。
   assert.match(shared, /t\("本地服务"\)/);
-  assert.match(shared, /t\("网关和旧版本地协议代理共用这些设置"\)/);
+  assert.match(shared, /t\("本地服务和旧版本地协议代理共用这些设置"\)/);
   assert.match(shared, /<CxSection /);
   assert.match(shared, /protocolProxyAutoRetry/);
   assert.match(shared, /helperMaxRequestBodyMib/);
@@ -390,7 +392,7 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   assert.match(home, /\{enhanceOnly \|\| !gatewayInUse \? null : \(/);
   assert.match(home, /viaGateway \|\| enhanceOnly \|\| !gatewayInUse \? <ChevronRight/);
   assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
-  // 常用入口给的是 Codex 自己的供应商页，不是网关的供应商池；Codex 的页面先切到 Codex 再打开。
+  // 常用入口给的是 Codex 自己的供应商页，不是网关的共享供应商；Codex 的页面先切到 Codex 再打开。
   // 和页签同名（一页一个名字）。
   assert.match(home, /\{ route: "relay", label: t\("连接与供应商"\)[^\n]*agent: "codex" \}/);
   assert.doesNotMatch(home, /route: "gatewayProviders"/);
@@ -436,15 +438,15 @@ test("「连接与供应商」页的 hook 都在编辑页 / 目录页的提前�
   assert.ok(screen.indexOf("const [nudgeDismissed") < earlyReturn);
 });
 
-test("直连供应商和网关供应商池打通：每行标出是否已在池里，没进池的可单个或全部加入，接管期间也能迁移", () => {
+test("直连供应商和网关共享供应商打通：每行标出是否已在池里，没进池的可单个或全部加入，接管期间也能迁移", () => {
   const link = functionSource("useCodexPoolLink");
   // 复制走网关「导入供应商」同一条命令；只认直连供应商（codex）和聚合供应商（aggregate）两种来源。
   assert.match(link, /importCandidates\(payload\)\.filter\(\(item\) => \(item\.source === "codex" \|\| item\.source === "aggregate"\) && profileIds\.includes\(item\.id\)\)/);
   assert.match(link, /invoke<GatewayResult>\("import_gateway_providers", \{/);
   assert.match(link, /publishGatewayPayload\(result\);/);
   const control = functionSource("PoolLinkControl");
-  assert.match(control, /t\("已在供应商池"\)/);
-  assert.match(control, /t\("加入供应商池"\)/);
+  assert.match(control, /t\("已在共享供应商"\)/);
+  assert.match(control, /t\("加入共享供应商"\)/);
   const screen = functionSource("RelayScreen");
   assert.match(screen, /const poolLink = useCodexPoolLink\(actions, normalized\.relayProfiles\.map\(\(profile\) => profile\.id\)\);/);
   assert.match(screen, /onClick=\{\(\) => void poolLink\.addAll\(\)\}/);
@@ -453,7 +455,7 @@ test("直连供应商和网关供应商池打通：每行标出是否已在池�
   assert.doesNotMatch(screen, /\{poolBanner\}/);
   // 接管期间档案可编辑；使用、删除仍不从这个入口执行。
   const takenOver = screen.slice(screen.indexOf("{normalized.relayProfilesEnabled && takenOverByGateway ? ("), screen.indexOf("{normalized.relayProfilesEnabled && !takenOverByGateway ? ("));
-  assert.match(takenOver, /title=\{t\("Codex 正由 Codex\+\+ 网关接管"\)\}/);
+  assert.match(takenOver, /title=\{t\("Codex 正由 Codex\+\+ 本地服务接管"\)\}/);
   assert.match(takenOver, /directProfiles\.map[\s\S]*editRelayProfile\(profile\.id\)/);
   assert.doesNotMatch(takenOver, /onSwitchProfile|removeRelayProfile/);
   assert.match(functionSource("SortableRelayProfileCard"), /\{gatewayManaged \|\| !poolLink \? null : <PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>\}/);
@@ -467,13 +469,13 @@ test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时�
   assert.match(screen, /\{takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(\r?\n\s*<CxSection>[\s\S]*?className="switch-row compact relay-master-switch/);
   assert.match(screen, /onClick=\{\(\) => void saveRelaySettings\(\{ \.\.\.normalized, relayProfilesEnabled: true \}\)\}/);
   assert.match(screen, /onClick=\{openCatalog\}[^>]*>[\s\S]*?takenOverByGateway \? t\("添加直连供应商"\)/);
-  assert.match(screen, /重新开启只恢复配置写入能力，不会切换直连供应商或断开当前网关/);
+  assert.match(screen, /重新开启只恢复配置写入能力，不会切换直连供应商或断开当前本地服务/);
   // 导入只写旧版供应商列表、不动 Codex 配置，接管期间也要能从 cc-switch 导入。
   const header = screen.slice(screen.indexOf("<PageHeader"), screen.indexOf("{connection}"));
   assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<div className="third-party-import"/);
   assert.match(header, /<div className="third-party-import" ref=\{thirdPartyImportTriggerRef\}>/);
   assert.doesNotMatch(screen, /disabled=\{takenOverByGateway\}/);
-  assert.match(screen, /保存后继续使用网关，点上方「直连」预览并确认还原/);
+  assert.match(screen, /保存后继续使用本地服务，点上方「直连」预览并确认还原/);
 });
 
 test("多开页可以直接编辑、删除供应商：删除先查占用再二次确认，网关托管项不给入口（#2801）", () => {
@@ -663,7 +665,7 @@ test("会话页列出 Claude Desktop 的会话：标出 Desktop / 已归档，�
   assert.match(commands, /"claude" if desktop => \{\n\s*if codex_plus_core::computer_use::claude_desktop_running\(\)/);
 });
 
-test("添加供应商是弹出框，不再铺在供应商池页面里；池为空时显示引导", () => {
+test("添加供应商是弹出框，不再铺在共享供应商页面里；池为空时显示引导", () => {
   const providers = readSource("./GatewayProviders.tsx");
   assert.match(providers, /className="gw-modal gw-catalog-modal"/);
   assert.match(providers, /\{catalogOpen \? \(\n\s*<ProviderCatalog/);

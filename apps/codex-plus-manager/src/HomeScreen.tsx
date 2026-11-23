@@ -127,7 +127,7 @@ export function HomeScreen({
   const agentRow = (tool: ToolEntry) => {
     const viaGateway = connected.has(tool.id);
     if (tool.id === "codex") {
-      const mode = viaGateway ? t("经网关") : tool.activeRelayName ? tf("直连 · {0}", [tool.activeRelayName]) : t("直连");
+      const mode = viaGateway ? t("经共享供应商") : tool.activeRelayName ? tf("直连 · {0}", [tool.activeRelayName]) : t("直连");
       return [
         <CxRow
           detail={`${codexRunning ? t("运行中") : t("未运行")} · ${mode}`}
@@ -146,7 +146,7 @@ export function HomeScreen({
     }
     const row = (
       <CxRow
-        detail={viaGateway ? t("已经通过 Codex++ 网关接入") : gatewayInUse ? t("未接入网关") : t("直连")}
+        detail={viaGateway ? t("已经通过 Codex++ 本地服务接入") : gatewayInUse ? t("未接入本地服务") : t("直连")}
         icon={<CxStatusIcon tone={viaGateway ? "ok" : "off"}><AgentGlyph agent={tool.id} className="home-agent-glyph" /></CxStatusIcon>}
         key={tool.id}
         onClick={() => onOpenAgent(tool.id)}
@@ -170,7 +170,7 @@ export function HomeScreen({
         tf("{0} 个 Agent 已接入", [connected.size]),
         usage ? tf("今日 {0} 次调用", [usage.totals.calls]) : "",
       ].filter(Boolean).join(" · ")
-    : t("网关未运行");
+    : t("本地服务未运行");
 
   return (
     <div className="tp-page home-page">
@@ -188,8 +188,8 @@ export function HomeScreen({
             <CxRow
               detail={gatewayDetail}
               icon={<CxStatusIcon tone={gateway?.helperRunning ? "ok" : "off"}><Waypoints /></CxStatusIcon>}
-              onClick={() => onNavigate("hub")}
-              title={t("聚合网关")}
+              onClick={() => onNavigate("gateway")}
+              title={t("本地服务")}
             >
               <ChevronRight aria-hidden="true" className="cx-set-chevron" />
             </CxRow>

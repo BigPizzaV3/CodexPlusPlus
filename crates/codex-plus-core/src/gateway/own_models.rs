@@ -364,7 +364,7 @@ fn claude_base_after_restore(ctx: &ApplyContext, binding: Option<&AgentBinding>)
 /// 写 Codex `config.toml` 根上的 `model`。断开后还停在托管供应商上说明没还原成，不写。
 fn write_codex_model(ctx: &ApplyContext, model: &str) -> anyhow::Result<()> {
     if ctx.settings.load()?.active_relay_id == CODEX_GATEWAY_RELAY_ID {
-        bail!("Codex 还接在 Codex++ 网关上，没能断开");
+        bail!("Codex 还接在 Codex++ 本地服务上，没能断开");
     }
     let path = ctx.codex_home.join("config.toml");
     let text = stash::read_optional(&path)?.unwrap_or_default();

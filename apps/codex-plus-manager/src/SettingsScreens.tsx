@@ -46,8 +46,8 @@ import {
 
 /** 设置页里「使用模式」一行的说明。 */
 function agentFocusDescription(focus: AgentFocus): string {
-  if (focus === "codex") return t("只管理 Codex：隐藏其他 Agent 的界面，已有网关连接保持不变。");
-  if (focus === "enhance") return t("只用增强功能：隐藏供应商、网关和用量，关闭旧版供应商配置切换。已有网关连接仍会运行并管理对应配置。");
+  if (focus === "codex") return t("只管理 Codex：隐藏其他 Agent 的界面，已有本地服务连接保持不变。");
+  if (focus === "enhance") return t("只用增强功能：隐藏供应商、本地服务和用量，关闭旧版供应商配置切换。已有本地服务连接仍会运行并管理对应配置。");
   return t("全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 或只用增强功能的话，可以切换模式隐藏用不到的内容。");
 }
 
@@ -94,7 +94,7 @@ export function SharedServiceSettings({
   );
   const retry = form.protocolProxyAutoRetry;
   const retryModeLabel = form.protocolProxyAutoRetryMode === "buffered" ? t("整段缓冲") : form.protocolProxyAutoRetryMode === "streaming-legacy" ? t("流式（旧行为）") : t("流式（推荐）");
-  const sharedHint = t("网关和旧版本地协议代理共用这些设置");
+  const sharedHint = t("本地服务和旧版本地协议代理共用这些设置");
   // 本地服务一节、请求避震一节。避震的五个参数默认值够用，收进折叠区，摘要里显示当前值。
   return (
     <div className="gw-shared-settings">
@@ -120,7 +120,7 @@ export function SharedServiceSettings({
         <CxCard>
           <CxRow
             detail={retry
-              ? t("在本地服务内消化上游过载与限流，尽量不把错误交给 Agent。作用于经过网关和旧版本地协议代理的请求。")
+              ? t("在本地服务内消化上游过载与限流，尽量不把错误交给 Agent。作用于经过本地服务和旧版本地协议代理的请求。")
               : t("已关闭：上游过载或限流时，错误直接交给 Agent。")}
             title={t("启用请求避震")}
           >
@@ -666,14 +666,14 @@ export function GlobalSettingsScreen({
             <CxRow
               detail={trayPanel.error || t("单击托盘图标查看状态、启动 Codex、切换供应商")}
               title={t("点击托盘图标弹出快捷面板")}
-              tooltip={t("面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，网关用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。")}
+              tooltip={t("面板里能看 Codex 状态、一键启动或重启、切换供应商、看用量，本地服务用户还能给各 Agent 换模型。右键仍是原来的菜单，双击打开主窗口；关掉恢复原来的点击行为。")}
             >
               <Switch disabled={trayPanel.enabled === null || trayPanel.saving} label={t("点击托盘图标弹出快捷面板")} on={trayPanel.enabled ?? true} onToggle={() => void trayPanel.toggle()} />
             </CxRow>
             <CxRow
               detail={lightweight.error || t("后台服务照常运行，再次打开时重新加载界面")}
               title={t("关闭窗口后释放界面内存")}
-              tooltip={t("关闭主窗口时连同界面一起释放，后台服务、网关和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}
+              tooltip={t("关闭主窗口时连同界面一起释放，后台服务、本地服务和托盘照常运行，从托盘再打开时重新加载界面。未保存的编辑内容会丢失；关掉则关闭窗口时只隐藏。")}
             >
               <Switch disabled={lightweight.enabled === null || lightweight.saving} label={t("关闭窗口后释放界面内存")} on={lightweight.enabled ?? false} onToggle={() => void lightweight.toggle()} />
             </CxRow>

@@ -75,7 +75,7 @@ fn official_members_use_native_cache_windows_but_explicit_windows_win() {
     assert!(only_official.contains(&"gpt-6.1-sol[500000]".to_string()), "{only_official:?}");
     assert!(only_official.contains(&"gpt-6.1-terra[400000]".to_string()), "{only_official:?}");
 
-    // 用户在供应商池里显式设的窗口优先。
+    // 用户在共享供应商里显式设的窗口优先。
     let explicit = lines(&gateway(vec![official()], json!({ "gpt-6.1-sol": 300_000 })));
     assert!(explicit.contains(&"gpt-6.1-sol[300000]".to_string()), "{explicit:?}");
 

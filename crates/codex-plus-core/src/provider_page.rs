@@ -49,7 +49,7 @@ pub type ProviderSwitchHook = Arc<
 pub struct ProviderPageHost {
     pub save: ProviderSaveHook,
     pub switch: ProviderSwitchHook,
-    /// 网关供应商池：`(命令名, 参数) -> 命令返回的 JSON`。管理器按名字分发到它自己的
+    /// 网关共享供应商：`(命令名, 参数) -> 命令返回的 JSON`。管理器按名字分发到它自己的
     /// `gateway_commands::*`（生效、价格填充、断开预览 token 都在那边），这里只做白名单与脱敏。
     pub gateway: ProviderGatewayHook,
 }

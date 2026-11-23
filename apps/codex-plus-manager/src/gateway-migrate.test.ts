@@ -37,7 +37,7 @@ test("可导入的供应商：直连 Codex / 聚合 / Claude / Grok / OpenCode�
   assert.equal(pendingImportCount(payload()), 3);
 });
 
-test("导入弹窗多选、一次导完；官方登录账号直接去登录；空池时总览和供应商池给出导入入口", () => {
+test("导入弹窗多选、一次导完；官方登录账号直接去登录；空池时总览和共享供应商给出导入入口", () => {
   const providers = read("GatewayProviders.tsx");
   assert.match(providers, /"import_gateway_providers", \{ items, skipAgents \}/);
   assert.match(providers, /new Set\(candidates\.filter\(\(item\) => !item\.imported\)\.map\(keyOf\)\)/, "默认勾上还没导入的");

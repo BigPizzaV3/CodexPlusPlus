@@ -343,7 +343,7 @@ test("托盘在模型组停用时显示回退模型，重新启用后恢复原�
   let tree = tray.render();
   let picker = elements(tree).find((element) => element.props.className === "gw-picker-button tp-agent-picker")!;
   assert.match(text(picker), /GPT/);
-  assert.equal(picker.props.title, "原模型组「Daily」已停用，网关默认回退为 GPT");
+  assert.equal(picker.props.title, "原模型组「Daily」已停用，本地服务默认回退为 GPT");
   assert.equal(elements(tree).find((element) => element.type === "ModelList")!.props.selectedModel, "gpt");
 
   group.disabled = false;
@@ -423,7 +423,7 @@ test("展开详情才展示配置证据；无证据不声称配置已验证，�
   }];
   viewed.diagnostics!.recentError = { kind: "auth_invalid", status: 401, atMs: 1 };
   tree = exports.AgentDiagnostics({ agent: viewed, helperRunning: true });
-  assert.match(text(tree), /配置已指向网关；尚未观察到请求/);
+  assert.match(text(tree), /配置已指向本地服务；尚未观察到请求/);
   assert.match(text(tree), /请求 0 · 失败 0 · 进行中 0/);
   assert.match(text(tree), /当前地址.*127.0.0.1:57321/);
   assert.match(text(tree), /opencode.jsoncprovider与网关配置一致/);

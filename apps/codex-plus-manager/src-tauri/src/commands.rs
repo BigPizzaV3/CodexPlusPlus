@@ -5874,9 +5874,9 @@ pub fn confirm_pending_provider_import(fingerprint: String) -> CommandResult<Set
             let message = match (confirmed.to_pool, result.imported) {
                 (true, true) => {
                     crate::gateway_commands::after_url_pool_import(result.profile_id.clone());
-                    format!("已加入网关供应商池：{}，正在从上游获取模型。", result.profile_name)
+                    format!("已加入网关共享供应商：{}，正在从上游获取模型。", result.profile_name)
                 }
-                (true, false) => format!("供应商池里已有相同地址和 Key 的供应商：{}。", result.profile_name),
+                (true, false) => format!("共享供应商里已有相同地址和 Key 的供应商：{}。", result.profile_name),
                 (false, true) => format!("已导入供应商配置：{}。", result.profile_name),
                 (false, false) => format!("供应商配置已存在：{}。", result.profile_name),
             };
@@ -10025,7 +10025,7 @@ pub fn switch_relay_profile(
         &settings.active_relay_id,
     ) {
         return failed(
-            "Codex 正由 Codex++ 网关接管：先在「供应商配置」顶部或「Agent 接入」里点「断开并还原」，再切换供应商。",
+            "Codex 正由 Codex++ 本地服务接管：先在「供应商配置」顶部或「Agent 接入」里点「断开并还原」，再切换供应商。",
             relay_switch_payload(
                 store.load().unwrap_or_default(),
                 codex_plus_core::relay_config::relay_status_from_home(&home),
@@ -10060,7 +10060,7 @@ pub fn switch_relay_profile(
                     "liveBackupPath": outcome.live_backup_path.as_ref()
                 }),
             );
-            // 在 Codex 供应商页切到别的供应商等于断开网关，切回「Codex++ 网关」等于重新接入。
+            // 在 Codex 供应商页切到别的供应商等于断开网关，切回「Codex++ 本地服务」等于重新接入。
             let binding_update = codex_plus_core::gateway::apply::note_codex_switched(
                 &codex_plus_core::gateway::store::GatewayStore::default(),
                 &result.settings.active_relay_id,

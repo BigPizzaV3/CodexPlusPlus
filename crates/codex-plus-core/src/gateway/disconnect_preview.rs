@@ -1247,7 +1247,7 @@ mod tests {
         let mut settings = BackendSettings::default();
         settings.relay_profiles = vec![crate::settings::RelayProfile {
             id: apply::CODEX_GATEWAY_RELAY_ID.into(),
-            name: "Codex++ 网关".into(),
+            name: "Codex++ 本地服务".into(),
             ..Default::default()
         }];
         settings.active_relay_id = apply::CODEX_GATEWAY_RELAY_ID.into();

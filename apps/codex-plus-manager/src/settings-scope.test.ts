@@ -59,9 +59,9 @@ test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Age
 
   const globalNavigation = routesSource.slice(routesSource.indexOf("const globalNavigationRoutes"), routesSource.indexOf("const settingsModeRoutes"));
   assert.match(globalNavigation, /"computerUse"/);
-  // Computer Use、Agent 协作、缓存清理都在设置模式里，⌘K 经设置分类搜到；网关自己一组。
+  // Computer Use、Agent 协作、缓存清理都在设置模式里，⌘K 经设置分类搜到；本地服务的几页在 ⌘K 里自己一组。
   assert.doesNotMatch(text, /toolNavigationRoutes/);
-  assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting",/);
+  assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["gatewayProviders", "gateway", "gatewayRouting",/);
   const entries = appDeclarationSource("settingsNavEntries");
   assert.match(entries, /\{ key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta"/);
   assert.match(entries, /entries\.filter\(\(entry\) => routeVisible\(focus, entry\.route\)/);
@@ -83,9 +83,8 @@ test("只用增强功能：隐藏供应商页面，配置保存成功后才提�
   assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"\]\);/);
   assert.match(helpers, /providersHidden\(focus\) && providerRoutes\.has\(routeId\)/);
   // 侧栏、页签、命令面板都按同一条规则过滤。
-  // 聚合网关整组按模式过滤，一项都不剩时连标题一起隐藏。
-  assert.match(functionSource("AppSidebar"), /const shownGateway = gatewayShown \? gatewayEntries\.filter\(\(item\) => routeVisible\(focus, item\.route\)\) : \[\];/);
-  assert.match(functionSource("AppSidebar"), /\{shownGateway\.length \? \(/);
+  // 本地服务的几页在设置模式里，和其余设置分类一样按模式过滤。
+  assert.doesNotMatch(functionSource("AppSidebar"), /shownGateway/);
   assert.match(functionSource("AppSidebar"), /\.flatMap\(\(entry\) => visibleRoutes\(focus, entry\.routes\)\)/);
   assert.match(text, /if \(!item \|\| !routeVisible\(agentFocus, routeId\)\) return null;/);
   // 启动默认停在网关总览：模式不让看就回落脚页。

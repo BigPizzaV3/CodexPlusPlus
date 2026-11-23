@@ -137,9 +137,9 @@ export function AgentDashboard({
 
   const heroStatus: DashboardStatus = enhanceOnly ? { tone: "direct", text: t("供应商由其他工具管理") } : status ?? {
     tone: access,
-    text: access === "gateway" ? (model ? tf("经 Codex++ 网关 · {0}", [model]) : t("经 Codex++ 网关"))
-      : access === "drift" ? (view?.drift?.by ? tf("配置被 {0} 改掉了，没有经过网关", [view.drift.by]) : t("配置被别的工具改掉了，没有经过网关"))
-        : access === "direct" ? t("未接入网关 · 用它自己的设置")
+    text: access === "gateway" ? (model ? tf("经 Codex++ 本地服务 · {0}", [model]) : t("经 Codex++ 本地服务"))
+      : access === "drift" ? (view?.drift?.by ? tf("配置被 {0} 改掉了，没有经过本地服务", [view.drift.by]) : t("配置被别的工具改掉了，没有经过本地服务"))
+        : access === "direct" ? t("未接入本地服务 · 用它自己的设置")
           : t("读取中…"),
   };
   const launchButton = (
@@ -153,7 +153,7 @@ export function AgentDashboard({
     <>
       {launchButton}
       <button className={access === "direct" || access === "drift" ? "cx-primary cx-dash-primary" : "cx-secondary"} onClick={() => onNavigate("gateway")} type="button">
-        {access === "gateway" ? t("管理接入") : access === "drift" ? t("重新接入") : t("接入网关")}
+        {access === "gateway" ? t("管理接入") : access === "drift" ? t("重新接入") : t("接入本地服务")}
       </button>
     </>
   );
@@ -217,8 +217,8 @@ export function AgentDashboard({
                 <CxEmpty
                   detail={agent === "codex"
                     ? t("直连且未开启协议转换时，请求不经过本地代理，这里不会有记录。")
-                    : view?.enabled ? t("在它里面发一条消息试试。") : t("接入网关后，这里显示它的每次请求走了哪家供应商。")}
-                  title={agent === "codex" ? t("最近没有经过本地代理的请求") : t("还没有经过网关的请求")}
+                    : view?.enabled ? t("在它里面发一条消息试试。") : t("接入本地服务后，这里显示它的每次请求走了哪家供应商。")}
+                  title={agent === "codex" ? t("最近没有经过本地代理的请求") : t("还没有经过本地服务的请求")}
                 />
               ) : requests.map((request) => {
                 const name = groupDisplayName(payload, request.model) ?? request.model;

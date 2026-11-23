@@ -1,6 +1,6 @@
-//! 网关模式命令：Agent 接入开关、网关自己的供应商池与路由组、Key 健康状态。
+//! 网关模式命令：Agent 接入开关、网关自己的共享供应商与路由组、Key 健康状态。
 //!
-//! 网关模式与直连模式完全独立：供应商池、路由组只存在 `gateway.json`；
+//! 网关模式与直连模式完全独立：共享供应商、路由组只存在 `gateway.json`；
 //! 直连模式的 Codex / Claude / Grok 供应商只在「导入」时被读取并复制一份。
 
 use anyhow::Context;
@@ -113,7 +113,7 @@ pub struct GatewayAgentView {
     pub default_model: String,
     /// 当前默认选择在实际路由快照中的状态。
     pub default_selection_status: Option<&'static str>,
-    /// 网关默认模型的成员与可编辑供应商池不一致时，界面只显示模型 ID。
+    /// 网关默认模型的成员与可编辑共享供应商不一致时，界面只显示模型 ID。
     pub default_model_differs: bool,
     pub models: Vec<String>,
     /// 开着网关、但配置已被别的工具改掉（请求不再经过 Codex++）。
@@ -167,7 +167,7 @@ pub struct NativeAuthState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayPayload {
-    /// 绑定与选项；供应商池单独放在 `pool`（不带 Key），这里的 `providers` 总是空的。
+    /// 绑定与选项；共享供应商单独放在 `pool`（不带 Key），这里的 `providers` 总是空的。
     pub gateway: GatewaySettings,
     pub port: u16,
     pub helper_running: bool,
@@ -181,7 +181,7 @@ pub struct GatewayPayload {
     pub health: PoolSnapshot,
     /// 路由动态：各 Agent 最近一次请求怎么走的、计数、正在回答的上游。
     pub activity: ActivitySnapshot,
-    /// 各（供应商, 模型）最近的平均首包耗时，「路由」页、供应商池「按模型」和「速度优先」用。
+    /// 各（供应商, 模型）最近的平均首包耗时，「路由」页、共享供应商「按模型」和「速度优先」用。
     pub speeds: Vec<codex_plus_core::gateway::speed::SpeedView>,
     /// 可复制进网关的直连模式供应商。
     pub codex_providers: Vec<GatewayPoolEntry>,
@@ -739,7 +739,7 @@ fn respond<T>(
     }
 }
 
-/// 供应商池或路由组变了：开着的 Agent 重写配置，让它的模型列表跟上。重写失败只记日志。
+/// 共享供应商或路由组变了：开着的 Agent 重写配置，让它的模型列表跟上。重写失败只记日志。
 fn refresh_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
     notify_settings_changed();
     if result.is_ok()
@@ -972,7 +972,7 @@ pub fn save_gateway_binding(
     })();
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
-        &format!("{name} 已接入 Codex++ 网关，新开的会话生效。"),
+        &format!("{name} 已接入 Codex++ 本地服务，新开的会话生效。"),
         "接入网关失败",
         result,
     )
@@ -1429,7 +1429,7 @@ pub fn update_gateway_provider(
     respond("供应商已保存。", "保存供应商失败", result)
 }
 
-/// 给网关供应商再加一个 Key（#2782，在供应商池的详情里操作）。
+/// 给网关供应商再加一个 Key（#2782，在共享供应商的详情里操作）。
 #[tauri::command]
 pub fn add_gateway_provider_key(id: String, key: String) -> CommandResult<Option<GatewayPayload>> {
     respond(
@@ -1488,7 +1488,7 @@ fn probe_slot() -> std::sync::MutexGuard<'static, Option<(u64, Box<dyn FnOnce() 
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// 测试供应商池里的一家供应商：发一条很短的请求（见 `gateway::probe`），不计入路由与统计。
+/// 测试共享供应商里的一家供应商：发一条很短的请求（见 `gateway::probe`），不计入路由与统计。
 /// `key_id` 给了就只用这个 Key（按标识选，完整 Key 不经过界面）；`model` 为空时用默认模型。
 /// 在后台任务里跑、最多 60 秒，可用 [`cancel_gateway_provider_test`] 取消。
 #[tauri::command]
@@ -1554,7 +1554,7 @@ pub fn cancel_gateway_provider_test() -> CommandResult<()> {
     )
 }
 
-/// 只改供应商的价格与独立代理（在供应商池的详情里编辑）。
+/// 只改供应商的价格与独立代理（在共享供应商的详情里编辑）。
 #[tauri::command]
 pub fn save_gateway_provider_extras(
     id: String,
@@ -1585,7 +1585,7 @@ pub fn save_gateway_provider_limits(
     )
 }
 
-/// 改 new-api 供应商的访问令牌与用户 ID（#2793，在供应商池的详情里编辑）。
+/// 改 new-api 供应商的访问令牌与用户 ID（#2793，在共享供应商的详情里编辑）。
 /// `token` 留空沿用已保存的；`clear` 删掉令牌，之后不再查账户余额。令牌不写进返回的消息。
 #[tauri::command]
 pub fn save_gateway_provider_newapi_access(
@@ -1790,7 +1790,7 @@ fn refresh_added<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
     refresh_agents(result)
 }
 
-/// 网页导入链接（`target=pool`）加进供应商池之后：重写开着的 Agent 配置，
+/// 网页导入链接（`target=pool`）加进共享供应商之后：重写开着的 Agent 配置，
 /// 并在后台从上游获取模型列表（导入链接不带模型），拿到后再补价格。
 pub(crate) fn after_url_pool_import(id: String) {
     let _ = refresh_added(Ok(()));
@@ -1874,7 +1874,7 @@ pub fn start_model_watch() {
     ));
 }
 
-/// 按 id 取供应商池里的中转配置。
+/// 按 id 取共享供应商里的中转配置。
 fn pool_relay(id: &str) -> Option<codex_plus_core::settings::RelayProfile> {
     GatewayStore::default()
         .load()
@@ -2064,7 +2064,7 @@ pub fn set_gateway_provider_enabled(
     )
 }
 
-/// 调整供应商池顺序。
+/// 调整共享供应商顺序。
 #[tauri::command]
 pub fn reorder_gateway_providers(ids: Vec<String>) -> CommandResult<Option<GatewayPayload>> {
     respond(
@@ -3047,7 +3047,7 @@ mod login_tests {
     }
 }
 
-/// 在网关里登录 ChatGPT 订阅：浏览器登录后加进网关的供应商池。同一个账号再登录只更新 token。
+/// 在网关里登录 ChatGPT 订阅：浏览器登录后加进网关的共享供应商。同一个账号再登录只更新 token。
 /// 与 Codex 自己的登录是两次独立的登录，互不影响。
 #[tauri::command]
 pub async fn login_gateway_chatgpt(

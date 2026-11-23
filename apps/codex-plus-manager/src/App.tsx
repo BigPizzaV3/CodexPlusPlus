@@ -541,7 +541,7 @@ export function App() {
     message: t("尚未运行安装包更新。"),
   });
   const [ads, setAds] = useState<AdsResult | null>(null);
-  // 供应商池右下角「正在找合适的供应商？」的悬浮提示：点 × 关掉，本次运行内不再出现。
+  // 共享供应商右下角「正在找合适的供应商？」的悬浮提示：点 × 关掉，本次运行内不再出现。
   const [sponsorHintClosed, setSponsorHintClosed] = useState(false);
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
@@ -3150,7 +3150,7 @@ export function App() {
   }, [codexAppRunning]);
   /**
    * 「连接与供应商」页的「经网关」：和「Agent 接入」页打开 Codex 开关同一条命令（save_gateway_binding），
-   * 沿用上次的接入设置（默认模型等）；供应商池是空的或模型不在池里时说明原因并带去对应页面。
+   * 沿用上次的接入设置（默认模型等）；共享供应商是空的或模型不在池里时说明原因并带去对应页面。
    * 切回直连走「断开并还原」（先预览再确认），见 legacyDisconnectOpen。
    */
   const [codexConnecting, setCodexConnecting] = useState(false);
@@ -3165,7 +3165,7 @@ export function App() {
       const issue = validateDraft(draft, payload);
       if (issue) {
         await showNotice(t("切换到网关"), t(issue), "failed");
-        void navigate(issue.includes("供应商池是空的") ? "gatewayProviders" : "gateway");
+        void navigate(issue.includes("共享供应商是空的") ? "gatewayProviders" : "gateway");
         return;
       }
       const result = await invoke<GatewayResult>("save_gateway_binding", { agent: "codex", binding: { ...bindingFromDraft(draft, previous), enabled: true }, reconnect: true });
@@ -3307,7 +3307,7 @@ export function App() {
   };
   const pushCommand = (command: PaletteCommand | null) => { if (command) paletteCommands.push(command); };
   pushCommand(routeCommand("home", t("全局管理"), () => void navigate("home"), "home ads 推荐 赞助"));
-  gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("网关"), () => void navigate(routeId), "gateway")));
+  gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("本地服务"), () => void navigate(routeId), "gateway 网关 本地服务")));
   managementNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("全局管理"), () => void navigate(routeId))));
   pushCommand(routeCommand("requestLog", t("全局管理"), () => void navigate("requestLog"), "usage requests"));
   for (const tool of shownTools.filter((entry) => entry.switchable)) {
@@ -3515,7 +3515,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {/* 「Codex 连接」一页：连接方式（经网关 / 直连）+ 直连供应商（可加入供应商池）+ 高级（原「旧版代理设置」）。
+          {/* 「Codex 连接」一页：连接方式（经网关 / 直连）+ 直连供应商（可加入共享供应商）+ 高级（原「旧版代理设置」）。
               旧入口 relayEnvironment 在 navigate 里换成这一页并展开「高级」。 */}
           {route === "relay" ? (
             <RelayScreen
@@ -3713,7 +3713,7 @@ export function App() {
               tab={gatewayTabByRoute[route]}
             />
           ) : null}
-          {/* 供应商池右下角的悬浮提示：在找供应商时顺手带去首页的赞助商推荐；首页没有赞助商时不显示。 */}
+          {/* 共享供应商右下角的悬浮提示：在找供应商时顺手带去首页的赞助商推荐；首页没有赞助商时不显示。 */}
           {route === "gatewayProviders" && !sponsorHintClosed && (ads?.ads?.length ?? 0) + (ads?.topAds?.length ?? 0) > 0 ? (
             <div className="cx-float-hint">
               <button className="cx-float-hint-main" onClick={() => void navigate("home")} type="button">

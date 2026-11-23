@@ -78,7 +78,7 @@ export function hasCustomAuthorization(rows: RelayHeaderRow[]): boolean {
   );
 }
 
-/* —————————————— 网关供应商池（#3075） —————————————— */
+/* —————————————— 网关共享供应商（#3075） —————————————— */
 
 /** 后端给的一条已保存请求头：敏感头的 `value` 为空、只有打码后的 `masked`（原文不出后端）。 */
 export type ProviderHeaderView = { key: string; value: string; masked?: string | null };

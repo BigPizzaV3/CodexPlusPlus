@@ -74,7 +74,7 @@ type SettingsNavEntry = {
   route: Route;
   /** route 为 settings 时只显示这些卡片（卡片 id）。 */
   sections?: string[];
-  group: "app" | "agent" | "tools" | "beta";
+  group: "app" | "agent" | "service" | "tools" | "beta";
   keywords?: string;
 };
 
@@ -87,7 +87,11 @@ export function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): 
     { key: "logs", label: t("日志与诊断"), icon: ScrollText, route: "settings", sections: ["app-settings-logs", "app-settings-diagnostics"], group: "app", keywords: "logs diagnostics 日志 诊断" },
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },
     { key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent", keywords: "codex launch args takeover 启动参数 接管 维护 修复" },
-    { key: "gateway", label: t("网关"), icon: SlidersHorizontal, route: "gatewaySettings", group: "agent", keywords: "gateway port key 网关 端口 监听" },
+    // 本地服务（原「聚合网关」）：共享供应商、路由、Agent 接入和服务设置。从各 Agent 的页面跳进来，「返回」回去。
+    { key: "gatewayProviders", label: t("共享供应商"), icon: Server, route: "gatewayProviders", group: "service", keywords: "gateway pool providers keys subscriptions 网关 供应商池 共享 订阅 多 Key" },
+    { key: "gatewayRouting", label: t("路由"), icon: Split, route: "gatewayRouting", group: "service", keywords: "gateway routing groups failover 网关 路由 模型组 故障转移" },
+    { key: "gatewayAgents", label: t("Agent 接入"), icon: Plug, route: "gateway", group: "service", keywords: "gateway agents connect 网关 接入 Claude Code Grok" },
+    { key: "gateway", label: t("服务设置"), icon: SlidersHorizontal, route: "gatewaySettings", group: "service", keywords: "gateway port key 网关 端口 监听 本地服务" },
     { key: "cache", label: t("缓存清理"), icon: Trash2, route: "agentCache", group: "tools", keywords: "cache clean 缓存 清理" },
     { key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta", keywords: "computer use mcp" },
     { key: "agentCollaboration", label: t("Agent 协作"), icon: GitBranch, route: "agentCollaboration", group: "beta", keywords: "collaboration 协作" },
@@ -220,7 +224,7 @@ export function AppSidebar({
     const activeKey = activeSettingsEntry(entries, route, settingsSections);
     const query = settingsQuery.trim().toLowerCase();
     const shown = query ? entries.filter((entry) => `${entry.label} ${entry.keywords ?? ""}`.toLowerCase().includes(query)) : entries;
-    const groups: Array<{ id: SettingsNavEntry["group"]; label?: string }> = [{ id: "app" }, { id: "agent" }, { id: "tools" }, { id: "beta", label: "Beta" }];
+    const groups: Array<{ id: SettingsNavEntry["group"]; label?: string }> = [{ id: "app" }, { id: "agent" }, { id: "service", label: t("本地服务") }, { id: "tools" }, { id: "beta", label: "Beta" }];
     return (
       <aside className="side cx-side" data-mode="settings">
         <div aria-hidden="true" className="cx-titlebar-drag" data-tauri-drag-region />
@@ -286,7 +290,7 @@ export function AppSidebar({
   }
 
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
-  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话、用量；聚合网关排在 Agent 一组后面，只在有 Agent 接入网关时出现。
+  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话、用量；本地服务排在 Agent 一组后面，只在有 Agent 接入网关时出现。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
   // 用量也记直连代理的请求，不算网关专属。
   const general: SideEntry[] = [
@@ -297,19 +301,10 @@ export function AppSidebar({
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
     { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
   ];
-  const gatewayEntries: SideEntry[] = [
-    { key: "hub", route: "hub", label: t("网关总览"), icon: Waypoints, match: ["hub"], tour: "hub" },
-    { key: "providers", route: "gatewayProviders", label: t("供应商池"), icon: Server, match: ["gatewayProviders"], tour: "nav-gatewayProviders" },
-    { key: "gateway", route: "gateway", label: soloAgent ? tf("{0} 接入", [agentName(soloAgent)]) : t("Agent 接入"), icon: Plug, match: ["gateway"], tour: "nav-gateway" },
-    { key: "routing", route: "gatewayRouting", label: t("路由"), icon: Split, match: ["gatewayRouting"] },
-  ];
   const shownGeneral = general.filter((item) => routeVisible(focus, item.route));
-  // 还没用网关时整组不显示（⌘K 和 Codex「连接与供应商」页仍能进去）；停在网关页上时照常显示，好在组里来回切。
-  const gatewayShown = gatewayInUse || gatewayEntries.some((item) => item.match.includes(route));
-  const shownGateway = gatewayShown ? gatewayEntries.filter((item) => routeVisible(focus, item.route)) : [];
-  // 声明在网关分组的拓展页面跟在聚合网关后面；网关一组不显示时并进其余拓展页面那一节。
-  const gatewayExtensionItems = managerNavPages(extensionPages, "gateway");
-  const extensionItems = [...(shownGateway.length ? [] : gatewayExtensionItems), ...(["management", "tools"] as ManagerNavGroup[]).flatMap((group) => managerNavPages(extensionPages, group))];
+  // 本地服务不再在主侧栏占一组（几页都在设置的「本地服务」里）；声明在 gateway 分组的拓展页面并进其余拓展页面那一节。
+  // `gateway` 是已发布的清单分组名，照旧认。
+  const extensionItems = (["gateway", "management", "tools"] as ManagerNavGroup[]).flatMap((group) => managerNavPages(extensionPages, group));
   const renderEntry = (item: SideEntry) => {
     const Icon = item.icon;
     const selected = item.match.includes(route);
@@ -375,10 +370,10 @@ export function AppSidebar({
               : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
             // 状态点表示接入方式：接入网关为绿色；Codex 没接入网关时是直连，由 Codex++ 直接管理供应商配置。
             const access = connectedAgents.has(tool.id)
-              ? { tone: "ok", label: t("已经通过 Codex++ 网关接入") }
+              ? { tone: "ok", label: t("已经通过 Codex++ 本地服务接入") }
               : tool.id === "codex"
                 ? { tone: "direct", label: t("Codex 的供应商配置由 Codex++ 直接管理") }
-                : { tone: "off", label: t("未接入网关") };
+                : { tone: "off", label: t("未接入本地服务") };
             return (
               <Fragment key={tool.id}>
               <div className={`cx-side-agent ${tool.id === "codex" && tool.switchable ? "has-run" : ""}`.trim()}>
@@ -488,16 +483,6 @@ export function AppSidebar({
           })}
         </div>
 
-        {shownGateway.length ? (
-          <div className="cx-side-group" data-group="gateway">
-            <div className="cx-side-heading" title={t("任意 Agent 经 Codex++ 接入任意供应商：一个 Agent 可以同时用多家，按模型路由、出错自动换下一家")}>
-              <span>{t("聚合网关")}</span>
-            </div>
-            {shownGateway.map(renderEntry)}
-            {gatewayExtensionItems.map(renderExtensionPage)}
-          </div>
-        ) : null}
-
         {extensionItems.length ? (
           <div className="cx-side-group">
             <div className="cx-side-heading"><span>{t("拓展页面")}</span></div>
@@ -507,7 +492,7 @@ export function AppSidebar({
       </nav>
 
       {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；有新版本时是更新提示。
-          网关状态不再单独占一张卡：有 Agent 接入时侧栏已经有「聚合网关」一组，它的「总览」就是同一个入口。 */}
+          网关状态不再单独占一张卡：有 Agent 接入时侧栏已经有「本地服务」一组，它的「总览」就是同一个入口。 */}
       {setupCard}
       {pendingUpdateVersion ? (
         <button className="cx-side-card" onClick={onOpenUpdate} type="button">

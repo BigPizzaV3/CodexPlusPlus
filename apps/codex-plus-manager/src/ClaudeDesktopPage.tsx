@@ -535,7 +535,7 @@ export function ClaudeLocalizationScreen(
         </nav>
         {/* 供应商与模型：Claude 用哪些供应商、默认哪个模型，加 / 导入供应商（补丁副本走 Claude 自己的登录，不经网关，没有这一页）。 */}
         <div {...settingsPanel("providers")}>
-          {notify ? <ClaudeProviders notify={notify} /> : null}
+          {notify ? <ClaudeProviders notify={notify} onManage={onNavigate ? () => onNavigate("gatewayProviders") : undefined} /> : null}
           <CxCard>
           {/* 窗口比默认模型小的模型不会列给 Claude（Claude 按默认模型的窗口压所有模型）；说清楚它们去哪了。 */}
           <CxRow
@@ -557,7 +557,7 @@ export function ClaudeLocalizationScreen(
             </label>
           </CxRow>
           <CxRow
-            detail={t("Claude 自带的 Opus、Sonnet、Haiku 等条目不对应任何供应商，选了也会被换成默认模型。打开后选择器里只留供应商池里的模型；改完需要重新启动本地服务。")}
+            detail={t("Claude 自带的 Opus、Sonnet、Haiku 等条目不对应任何供应商，选了也会被换成默认模型。打开后选择器里只留共享供应商里的模型；改完需要重新启动本地服务。")}
             title={t("隐藏无供应商的模型")}
           >
             <label className="switch-row compact">
@@ -631,7 +631,7 @@ export function ClaudeLocalizationScreen(
           <CxRow
             detail={(local?.config.codeShareHome ?? true)
               ? t("Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于网关。从这里启动后生效。")
-              : t("Code 页签用独立目录，请求走 Codex++ 网关；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。")}
+              : t("Code 页签用独立目录，请求走 Codex++ 本地服务；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。")}
             title={t("和命令行共用 ~/.claude")}
           >
             <label className="switch-row compact">

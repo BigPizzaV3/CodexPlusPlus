@@ -1,4 +1,4 @@
-//! 网关模式的开启 / 关闭，以及网关自己的供应商池、路由组的增删改。
+//! 网关模式的开启 / 关闭，以及网关自己的共享供应商、路由组的增删改。
 //!
 //! - Claude Code：在 `claude-providers.json` 里放一个托管供应商（[`GATEWAY_PROVIDER_ID`]），
 //!   用现有的「关键字段」切换逻辑写进 `~/.claude/settings.json`，用户的 hooks 等键不动；
@@ -8,7 +8,7 @@
 //! - Codex：在直连模式的供应商列表里放一个托管供应商（[`CODEX_GATEWAY_RELAY_ID`]），
 //!   用直连模式自己的切换流程写进 `~/.codex`（回填、冲突检测、模型目录都照旧）；
 //!   关闭时切回开启前的供应商并删掉托管供应商。直连模式里切到别的供应商等于断开网关。
-//! - 供应商池与路由组只存在 `gateway.json`；从直连模式导入是复制，之后互不影响。
+//! - 共享供应商与路由组只存在 `gateway.json`；从直连模式导入是复制，之后互不影响。
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -90,14 +90,14 @@ pub fn gateway_base_url_on(host: &str, port: u16, agent: &ToolId) -> String {
 /// 开启前检查：池里有这个 Agent 能用的供应商，默认模型能路由。
 fn ensure_routable(gateway: &GatewaySettings, binding: &AgentBinding) -> anyhow::Result<()> {
     if route::binding_pool_relays(gateway, binding).is_empty() {
-        bail!("供应商池是空的或都已关闭：先在「供应商」里添加供应商");
+        bail!("共享供应商是空的或都已关闭：先在「供应商」里添加供应商");
     }
     let model = binding_default_model(gateway, binding);
     if model.is_empty() {
         bail!("没有可用的默认模型：请给池里的供应商配置模型");
     }
     if !route::model_is_routable(gateway, binding, &model) {
-        bail!("供应商池里没有供应商提供模型 {model}");
+        bail!("共享供应商里没有供应商提供模型 {model}");
     }
     Ok(())
 }
@@ -141,7 +141,7 @@ pub fn claude_gateway_provider(
             json!(role(&binding.claude_roles.subagent)),
         );
     }
-    // Claude Code 只有一个窗口设置：按默认模型的窗口（供应商池里写的），没写用 Agent 的默认窗口。
+    // Claude Code 只有一个窗口设置：按默认模型的窗口（共享供应商里写的），没写用 Agent 的默认窗口。
     let window = route::model_entry_window(gateway, binding, &default_model)
         .or(binding.context_window)
         .or_else(|| {
@@ -159,9 +159,9 @@ pub fn claude_gateway_provider(
     }
     ClaudeProvider {
         id: GATEWAY_PROVIDER_ID.to_string(),
-        name: "Codex++ 网关".to_string(),
+        name: "Codex++ 本地服务".to_string(),
         website_url: String::new(),
-        notes: "由 Codex++ 网关模式管理，请在网关模式里修改或关闭。".to_string(),
+        notes: "由 Codex++ 本地服务模式管理，请在网关模式里修改或关闭。".to_string(),
         settings_config: json!({ "env": Value::Object(env) }),
         created_at: 0,
         ccs_source_id: String::new(),
@@ -195,7 +195,7 @@ fn agent_gateway_profile(
     let base = format!("{}/v1", gateway_base_url_on(host, port, agent));
     RelayProfile {
         id: "codex-plus-gateway".to_string(),
-        name: "Codex++ 网关".to_string(),
+        name: "Codex++ 本地服务".to_string(),
         protocol: RelayProtocol::Responses,
         relay_mode: RelayMode::PureApi,
         base_url: base.clone(),
@@ -227,7 +227,7 @@ fn agent_gateway_model_list(
     models
         .iter()
         .filter(|model| !model.is_empty())
-        // 窗口依次取供应商池、绑定声明的后缀、Agent 默认窗口；都没有时，只发给官方账号的
+        // 窗口依次取共享供应商、绑定声明的后缀、Agent 默认窗口；都没有时，只发给官方账号的
         // Codex 模型用本机官方缓存的窗口（#3161：内置兼容资料是给中转的，会把 500000 压成 272000）；
         // 再没有就不带，交给 Agent 自带的模型资料。
         .map(|model| {
@@ -409,7 +409,7 @@ pub fn codex_gateway_profile_on(
     let catalog = codex_gateway_model_catalog(gateway, binding);
     let base_url = format!("{}/v1", gateway_base_url_on(&host, port, &ToolId::Codex));
     let mut profile = crate::provider_import::pool_relay_profile(
-        "Codex++ 网关",
+        "Codex++ 本地服务",
         &base_url,
         &binding.token,
         RelayProtocol::Responses,
@@ -420,7 +420,7 @@ pub fn codex_gateway_profile_on(
     profile.id = CODEX_GATEWAY_RELAY_ID.to_string();
     profile.relay_mode = RelayMode::PureApi;
     profile.model_metadata = catalog.model_metadata;
-    // 供应商池里设了压缩阈值的模型（#3100）：与直连模式同一份 `model_auto_compact`，
+    // 共享供应商里设了压缩阈值的模型（#3100）：与直连模式同一份 `model_auto_compact`，
     // 生成目录时写 `auto_compact_token_limit = 窗口 × 百分比`；没设的模型照旧留空。
     profile.model_auto_compact = catalog.model_auto_compact;
     if signed_in {
@@ -1276,7 +1276,7 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
 }
 
 /// 接入前对账 ChatGPT 登录：只清理同一身份、已停用且仍标记借出的网关登录。
-/// 用户在原生 Codex 中自行建立的会话不因供应商池的启用状态而被移除。
+/// 用户在原生 Codex 中自行建立的会话不因共享供应商的启用状态而被移除。
 fn reconcile_codex_sign_in(
     ctx: &ApplyContext,
     gateway: &GatewaySettings,
@@ -2561,7 +2561,7 @@ pub fn note_grok_switched(store: &GatewayStore) -> anyhow::Result<()> {
 }
 
 /// 用户在 Codex 的供应商页直接切换：切到别的供应商等于断开网关；
-/// 切回托管的「Codex++ 网关」等于重新接入（断开时它还留在列表里，没被删）。
+/// 切回托管的「Codex++ 本地服务」等于重新接入（断开时它还留在列表里，没被删）。
 pub fn note_codex_switched(
     store: &GatewayStore,
     target_id: &str,
@@ -2846,7 +2846,7 @@ pub fn restore_all_for_exit(
     }
 }
 
-/// 供应商池或路由组变化后重写开着的 Agent 配置：Grok 的模型列表、Claude 的默认模型随池更新。
+/// 共享供应商或路由组变化后重写开着的 Agent 配置：Grok 的模型列表、Claude 的默认模型随池更新。
 /// 不碰恢复现场；某个 Agent 写失败时继续写其它的，最后返回第一个错误。
 /// 已被别的工具接管的 Agent 不重写（界面提示漂移，由用户决定要不要重新接入）。
 pub fn refresh_enabled(ctx: &ApplyContext) -> anyhow::Result<usize> {
@@ -3322,14 +3322,14 @@ pub fn import_codex_aggregate(
     }
     if !aggregate.routes.is_empty() {
         result.notes.push(format!(
-            "{} 条模型路由规则网关里没有对应功能，没有转换；可以把对应模型直接加进供应商池",
+            "{} 条模型路由规则网关里没有对应功能，没有转换；可以把对应模型直接加进共享供应商",
             aggregate.routes.len()
         ));
     }
     if aggregate.model_aggregation_enabled {
         result
             .notes
-            .push("按模型聚合：网关的供应商池本身按模型名分发，不用建模型组".to_string());
+            .push("按模型聚合：网关的共享供应商本身按模型名分发，不用建模型组".to_string());
         return Ok(result);
     }
     if members.is_empty() {
@@ -3480,7 +3480,7 @@ fn build_relay(
     custom_headers: Vec<crate::settings::RelayHeaderKeyValue>,
 ) -> anyhow::Result<RelayProfile> {
     if input.base_url.contains("/gw/") {
-        bail!("不能把网关自己加进供应商池");
+        bail!("不能把网关自己加进共享供应商");
     }
     let keys = clean_keys(&input.keys);
     let Some(first) = keys.first() else {
@@ -3742,7 +3742,7 @@ fn update_provider_in(
     // 原来的 User-Agent、Anthropic 鉴权方式这些高级设置保留（请求头见上面）。
     relay.user_agent = provider.relay.user_agent.clone();
     relay.anthropic_auth_header = provider.relay.anthropic_auth_header.clone();
-    // 按模型的思考等级等模型资料也保留（在供应商池详情里单独编辑）。
+    // 按模型的思考等级等模型资料也保留（在共享供应商详情里单独编辑）。
     relay.model_metadata = provider.relay.model_metadata.clone();
     // 没传「移除托管生图工具」时沿用原来的选择。
     if input.strip_image_generation_tool.is_none() {

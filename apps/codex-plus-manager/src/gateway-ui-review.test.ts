@@ -190,9 +190,9 @@ test("总览：读取中、空池、全部关闭分开显示；最近请求没�
 
   const hub = read("HubOverview.tsx");
   assert.match(hub, /poolState === "loading" \? <p className="hub-empty">\{error \? t\("读取失败"\) : t\("读取中…"\)\}<\/p>/);
-  assert.match(hub, /\{!payload && error \? <GatewayLoadError error=\{error\} \/> : null\}/, "读不到网关状态时给重试，不再一直读取中");
+  assert.match(hub, /\{!payload && error \? <GatewayLoadError error=\{error\} \/> : null\}/, "读不到本地服务状态时给重试，不再一直读取中");
   assert.match(hub, /poolState === "allOff"/);
-  assert.match(hub, /\? t\("正在读取网关状态…"\)/);
+  assert.match(hub, /\? t\("正在读取本地服务状态…"\)/);
   assert.match(read("GatewayPage.tsx"), /\{!payload \? <div className="gw-card gw-empty">\{t\("正在读取…"\)\}<\/div> : null\}/);
 });
 
@@ -291,7 +291,7 @@ test("模型选择器顶部的供应商按钮是筛选，不是滚动到那一�
   assert.doesNotMatch(source, /scrollTop = node\.offsetTop/);
 });
 
-test("上下文窗口按模型在供应商池里填，Agent 页只留兜底的默认窗口", () => {
+test("上下文窗口按模型在共享供应商里填，Agent 页只留兜底的默认窗口", () => {
   const providers = read("GatewayProviders.tsx");
   assert.match(providers, /"save_gateway_provider_windows", \{ id: entry\.id, windows: modelWindows, fallback, autoCompact \}/);
   const dialog = read("ProviderWindowsDialog.tsx");
@@ -299,13 +299,13 @@ test("上下文窗口按模型在供应商池里填，Agent 页只留兜底的�
   assert.match(read("GatewayAgents.tsx"), /title=\{t\("默认窗口"\)\}/);
 });
 
-test("生图模型在 Agent 接入里按 Agent 选；供应商池按模型改思考等级，存的是和直连模式同格式的模型资料", () => {
+test("生图模型在 Agent 接入里按 Agent 选；共享供应商按模型改思考等级，存的是和直连模式同格式的模型资料", () => {
   const agents = read("GatewayAgents.tsx");
   assert.match(agents, /"save_gateway_image_model", \{ agent, model: next \}/);
   assert.match(agents, /"save_gateway_image_inline", \{ agent, enabled: !inlineUrls \}/, "生图链接转数据可以按 Agent 关掉");
   assert.match(agents, /\{ value: "off", label: t\("关闭"\)/);
   assert.match(agents, /agent\.agent === "codex" \? <ImageModelRow/, "目前只有 Codex 会发生图请求");
-  assert.doesNotMatch(read("GatewayPage.tsx"), /save_gateway_image_model/, "网关设置里不再有全局的生图模型");
+  assert.doesNotMatch(read("GatewayPage.tsx"), /save_gateway_image_model/, "本地服务设置里不再有全局的生图模型");
   assert.match(read("GatewayProviders.tsx"), /const chatModels = entry\.models\.filter/, "供应商详情里生图模型单独一行");
   const dialog = read("ProviderReasoningDialog.tsx");
   assert.match(dialog, /setModelReasoningLevelsForSlug\(current, model, levels, defaultLevel\)/);
@@ -366,7 +366,7 @@ test("保存之后才回来的轮询结果作废；新手引导的 Esc 走 Esc �
   assert.match(store, /generation \+= 1;/, "推新数据时版本加一");
   assert.match(store, /if \(started === generation\) \{/, "共享数据的轮询丢掉旧答复");
   const page = read("GatewayPage.tsx");
-  assert.doesNotMatch(page, /invoke<GatewayResult>\("load_gateway"\)/, "网关页不再自己读：回前台刷新和路由页轮询都走共享存储（丢旧答复见 gateway-store.test.ts）");
+  assert.doesNotMatch(page, /invoke<GatewayResult>\("load_gateway"\)/, "本地服务页不再自己读：回前台刷新和路由页轮询都走共享存储（丢旧答复见 gateway-store.test.ts）");
   assert.match(page, /refreshGateway\(\)/);
   const tour = read("OnboardingTour.tsx");
   assert.match(tour, /useEscapeLayer\(true, \(\) => onClose\(false\)\)/);

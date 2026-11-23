@@ -4,7 +4,7 @@ import { filterCommands, paletteShortcutLabel, type PaletteCommand } from "./com
 
 const command = (id: string, group: string, label: string, keywords = ""): PaletteCommand => ({ id, group, label, keywords, run: () => undefined });
 const commands = [
-  command("a", "网关", "供应商池", "gatewayProviders gateway"),
+  command("a", "网关", "共享供应商", "gatewayProviders gateway"),
   command("b", "Codex", "供应商配置", "relay codex"),
   command("c", "Claude Code", "供应商配置", "claudeRelay claude"),
   command("d", "操作", "重启 Codex", "codex restart"),

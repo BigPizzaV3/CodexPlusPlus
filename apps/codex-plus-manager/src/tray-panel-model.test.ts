@@ -76,7 +76,7 @@ test("供应商列表：当前的排最前，模型去掉窗口后缀，区分�
     relayProfiles: [
       { id: "a", name: "DeepSeek", model: "deepseek-v4-pro[1M]", baseUrl: "https://api.deepseek.com/v1", protocol: "responses", relayMode: "pureApi" },
       { id: "b", name: " Kimi ", model: "kimi-k2", baseUrl: "https://api.moonshot.cn/v1", protocol: "chatCompletions" },
-      { id: "codex-plus-gateway", name: "Codex++ 网关", model: "", baseUrl: "http://127.0.0.1:57321/codex" },
+      { id: "codex-plus-gateway", name: "Codex++ 本地服务", model: "", baseUrl: "http://127.0.0.1:57321/codex" },
       { id: "c", name: "备用", relayMode: "aggregate" },
       { id: "d", name: "ChatGPT", relayMode: "official" },
     ],

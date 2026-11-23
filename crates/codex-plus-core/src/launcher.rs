@@ -2199,7 +2199,7 @@ pub(crate) async fn handle_helper_connection_on(
     if listener == HelperListener::Wsl && !crate::wsl_network::wsl_listener_allows(path) {
         let body = serde_json::to_vec(&serde_json::json!({
             "status": "forbidden",
-            "message": "WSL 网卡上只开放 Codex++ 网关接口。"
+            "message": "WSL 网卡上只开放 Codex++ 本地服务接口。"
         }))?;
         write_http_response(&mut stream, "403 Forbidden", "application/json; charset=utf-8", &body)
             .await?;

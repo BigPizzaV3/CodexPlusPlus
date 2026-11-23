@@ -24,10 +24,10 @@ const CLAUDE_IMPORT_SOURCES = new Set(["claude", "ccswitch", "claudemom"]);
 
 /**
  * Desktop 增强页的「供应商」：Claude Desktop 用哪些供应商、默认哪个模型，加供应商、从 CC Switch / ClaudeMom 导入。
- * 供应商存在网关的供应商池里（和 Codex 等共用一份，网关负责把 Anthropic 请求转成各家的协议），这里只是 Claude 视角的入口：
+ * 供应商存在网关的共享供应商里（和 Codex 等共用一份，网关负责把 Anthropic 请求转成各家的协议），这里只是 Claude 视角的入口：
  * 开关就是 Agent 接入页里 Claude Desktop 的「挑选」，默认模型就是那一行的模型下拉。
  */
-export function ClaudeProviders({ notify }: { notify: Notify }) {
+export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage?: () => void }) {
   const payload = useGatewayPayload(10_000);
   const [busy, setBusy] = useState<string | null>(null);
   const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
@@ -42,7 +42,7 @@ export function ClaudeProviders({ notify }: { notify: Notify }) {
   const toggle = (providerId: string, on: boolean) => {
     const draft = draftFromBinding(binding);
     const next = { ...draft, poolExclude: poolExcludeToggle(draft.poolExclude, providerId, on) };
-    void run(`exclude:${providerId}`, "save_gateway_binding", { agent: AGENT, binding: bindingFromDraft(next, binding) }, t("保存网关绑定"), true);
+    void run(`exclude:${providerId}`, "save_gateway_binding", { agent: AGENT, binding: bindingFromDraft(next, binding) }, t("保存本地服务绑定"), true);
   };
 
   return (
@@ -55,6 +55,8 @@ export function ClaudeProviders({ notify }: { notify: Notify }) {
           <button className="cx-secondary" disabled={!payload || busy !== null} onClick={() => setAdding("catalog")} type="button">
             <Plus />{t("添加供应商")}
           </button>
+          {/* Key、额度、路由组在设置的「本地服务 → 共享供应商」里管，「返回」回到这一页。 */}
+          {onManage ? <button className="cx-secondary" onClick={onManage} type="button">{t("管理共享供应商")}</button> : null}
         </span>
       )}
       className="claude-providers"
@@ -65,7 +67,7 @@ export function ClaudeProviders({ notify }: { notify: Notify }) {
         {!payload ? (
           <CxEmpty title={t("正在读取供应商…")} />
         ) : !pool.length ? (
-          <CxEmpty detail={t("DeepSeek、Kimi、智谱这些 OpenAI 协议的也能用，网关会自动转换。")} title={t("还没有供应商")}>
+          <CxEmpty detail={t("DeepSeek、Kimi、智谱这些 OpenAI 协议的也能用，本地服务会自动转换。")} title={t("还没有供应商")}>
             <button className="cx-secondary" onClick={() => setAdding("catalog")} type="button"><Plus />{t("添加供应商")}</button>
             <button className="cx-secondary" onClick={() => setAdding("import")} type="button"><Download />{t("从 CC Switch / ClaudeMom 导入")}</button>
           </CxEmpty>

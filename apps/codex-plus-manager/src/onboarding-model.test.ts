@@ -36,29 +36,23 @@ test("只管理 Codex 时引导换成单 Agent 说法，步骤和目标不变", 
   assert.equal(welcome.plainTitle, true);
   assert.deepEqual(welcome.args, ["Codex"]);
   assert.match(welcome.body, /\{0\}/);
-  const connect = solo.find((step) => step.id === "agents-connect")!;
-  assert.ok(!connect.plainTitle && connect.title.includes("{0}"));
+  const agents = solo.find((step) => step.id === "agents")!;
+  assert.ok(!agents.plainTitle && agents.title.includes("{0}"));
   // 没改写的步骤原样保留。
-  assert.equal(solo.find((step) => step.id === "providers"), TOUR_STEPS.find((step) => step.id === "providers"));
+  assert.equal(solo.find((step) => step.id === "palette"), TOUR_STEPS.find((step) => step.id === "palette"));
 });
 
-test("只用增强功能时去掉网关、供应商池、Agent 接入三步，欢迎卡不提供应商", () => {
+test("只用增强功能时欢迎卡不提供应商", () => {
   const steps = tourSteps(null, true);
-  const ids = steps.map((step) => step.id);
-  for (const hidden of ["hub", "providers", "agents-connect"]) assert.ok(!ids.includes(hidden));
-  assert.deepEqual(ids, ["welcome", "management", "agents", "palette", "settings"]);
+  assert.deepEqual(steps.map((step) => step.id), ["welcome", "management", "agents", "palette", "settings"]);
   assert.match(steps[0].body, /供应商仍由你自己的工具管理/);
   assert.equal(steps[0].args, undefined);
 });
 
-test("还没有 Agent 接入网关（侧栏没有网关一组）时也去掉那三步，欢迎卡不讲网关，Agent 一步说明从哪里改用", () => {
-  // 顺序跟着侧栏：Agent 一组在聚合网关前面。
-  assert.deepEqual(TOUR_STEPS.map((step) => step.id), ["welcome", "management", "agents", "hub", "providers", "agents-connect", "palette", "settings"]);
-  for (const solo of [null, "Codex"]) {
-    const steps = tourSteps(solo, false, false);
-    assert.deepEqual(steps.map((step) => step.id), ["welcome", "management", "agents", "palette", "settings"]);
-    assert.doesNotMatch(steps[0].body, /网关/);
-  }
-  assert.match(tourSteps(null, false, false).find((step) => step.id === "agents")!.body, /「连接与供应商」里改用聚合网关/);
-  assert.deepEqual(tourSteps("Codex", false, false)[0].args, ["Codex"]);
+test("本地服务不在主侧栏，导览不讲网关：欢迎卡不提网关，Agent 一步说明共享供应商在设置的「本地服务」里", () => {
+  // 顺序跟着侧栏：万物皆拓展 → Agent → 搜索 → 设置。
+  assert.deepEqual(TOUR_STEPS.map((step) => step.id), ["welcome", "management", "agents", "palette", "settings"]);
+  for (const solo of [null, "Codex"]) assert.doesNotMatch(tourSteps(solo)[0].body, /网关/);
+  assert.match(tourSteps(null).find((step) => step.id === "agents")!.body, /设置的「本地服务」里配置/);
+  assert.deepEqual(tourSteps("Codex")[0].args, ["Codex"]);
 });

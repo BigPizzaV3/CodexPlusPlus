@@ -1695,7 +1695,7 @@ struct ExtensionPackage {
     backend_http: bool,
     /// 定时调用后台方法（codexpp.json 的 `schedules`）。
     schedules: Vec<ExtensionSchedule>,
-    /// 拓展声明的模型供应商（codexpp.json 的 `providers`），并入网关的供应商池。
+    /// 拓展声明的模型供应商（codexpp.json 的 `providers`），并入网关的共享供应商。
     providers: Vec<ExtensionProvider>,
     /// 包内 `locale/<语言>.json`：语言 id → 词条（`meta.title` / `meta.description` 是本地化的名称与描述）。
     locales: std::collections::BTreeMap<String, Value>,

@@ -1,4 +1,4 @@
-// 有余额接口的厂商（DeepSeek、Kimi / Moonshot、OpenRouter、SiliconFlow）的余额：「用量」页和供应商池卡片
+// 有余额接口的厂商（DeepSeek、Kimi / Moonshot、OpenRouter、SiliconFlow）的余额：「用量」页和共享供应商卡片
 // 共用同一份查询结果（#2793）。后端 `load_gateway_balances` 一次查完池里所有这类供应商，
 // 这里只做内存缓存和并发合并：同一时间只有一个请求在路上，几张卡片一起要也只查一次。
 

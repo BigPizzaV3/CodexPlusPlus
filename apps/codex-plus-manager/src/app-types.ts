@@ -575,7 +575,7 @@ export type ProviderImportRequest = {
   relayMode: string;
   configContents: string;
   authContents: string;
-  /** 空为直连模式供应商；"pool" 为网关供应商池。 */
+  /** 空为直连模式供应商；"pool" 为网关共享供应商。 */
   target?: string;
 };
 

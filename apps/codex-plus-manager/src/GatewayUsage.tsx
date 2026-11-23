@@ -42,7 +42,7 @@ const memo: { range: UsageRange; summary: UsageSummary | null } = { range: "30d"
 export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayload | null; busy: string | null; run: Run; notify: Notify }) {
   const [range, setRangeState] = useState<UsageRange>(memo.range);
   const [summary, setSummary] = useState<UsageSummary | null>(memo.summary);
-  // 余额和供应商池卡片共用一份（#2793），谁先查到另一边直接用。
+  // 余额和共享供应商卡片共用一份（#2793），谁先查到另一边直接用。
   const [balances, setBalances] = useState<ProviderBalance[] | null>(cachedProviderBalances().balances);
   const [loadingBalances, setLoadingBalances] = useState(false);
   // 读用量中：第一次进来（没有缓存）不先显示「0 次调用 / 还没有请求」，切换时间段时旧数字变淡。
@@ -95,7 +95,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
     // 进入时读一次；切换范围时由 setRange 读。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // 供应商池卡片那边刷新了余额，这里跟着更新。
+  // 共享供应商卡片那边刷新了余额，这里跟着更新。
   useEffect(() => subscribeProviderBalances(setBalances), []);
 
   const ranges: Array<{ id: UsageRange; label: string }> = [
@@ -266,7 +266,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
         </div>
       </CxSection>
 
-      {/* 额度（#3084）：订阅账号和 OpenCode Go、Command Code 等套餐的时间窗口，和供应商池卡片同一份缓存。 */}
+      {/* 额度（#3084）：订阅账号和 OpenCode Go、Command Code 等套餐的时间窗口，和共享供应商卡片同一份缓存。 */}
       {quotas.length ? (
         <CxSection count={quotas.length} title={t("额度")}>
           <CxCard>

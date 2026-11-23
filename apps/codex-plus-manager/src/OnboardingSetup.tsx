@@ -219,7 +219,7 @@ export function OnboardingSetup({
     mixedApi: t("官方登录 + API"),
     pureApi: t("纯 API"),
     aggregate: t("聚合供应商"),
-    gateway: t("经聚合网关"),
+    gateway: t("经本地服务"),
   };
 
   // 三步里完成了几步：侧栏进度卡上的「1/3」和进度环。

@@ -167,7 +167,7 @@ test("增强模式等网关状态确认，加载失败后可重试并显示已�
   f.loads[1].resolve(ready(["Codex", "Claude Code"]));
   await flush();
   tree = f.render();
-  assert.match(text(tree), /Codex、Claude Code 目前经 Codex\+\+ 网关接入/);
+  assert.match(text(tree), /Codex、Claude Code 目前经 Codex\+\+ 本地服务接入/);
   assert.match(text(tree), /继续运行并管理对应配置/);
   assert.equal(button(tree, "完成").props.disabled, false);
   f.unmount();
@@ -183,7 +183,7 @@ test("加载超时可重试，旧请求晚到不会覆盖新的连接状态", as
   await flush();
   f.loads[0].resolve(ready());
   await flush();
-  assert.match(text(f.render()), /Claude Code 目前经 Codex\+\+ 网关接入/);
+  assert.match(text(f.render()), /Claude Code 目前经 Codex\+\+ 本地服务接入/);
   assert.equal(f.timerCount(), 0);
   f.unmount();
 });

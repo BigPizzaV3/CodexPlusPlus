@@ -39,9 +39,9 @@ test("路由页：「我的组」和「自动组」两段卡片，卡片上直�
   assert.match(page, /hideMembers: previous\?\.hideMembers \?\? false, pick: previous\?\.pick \?\? ""/);
 });
 
-test("侧栏顺序：供应商池 → Agent 接入 → 路由；供应商池只有按供应商的列表（「按模型」矩阵已去掉）", () => {
+test("本地服务的顺序：共享供应商 → Agent 接入 → 路由；共享供应商只有按供应商的列表（「按模型」矩阵已去掉）", () => {
   const app = readAppSource();
-  assert.match(app, /const gatewayNavigationRoutes: Route\[\] = \["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"\];/);
+  assert.match(app, /const gatewayNavigationRoutes: Route\[\] = \["gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"\];/);
   const providers = read("GatewayProviders.tsx");
   assert.doesNotMatch(providers, /<ModelMatrix\s|t\("按模型"\)/);
   assert.match(providers, /placeholder=\{t\("查找供应商"\)\}/);
