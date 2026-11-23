@@ -2268,17 +2268,11 @@ details.relay-fold[open] > .relay-fold-body {
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--background));
-  cursor: pointer;
   padding: 11px 12px;
   transition:
     border-color var(--motion-normal) var(--motion-ease),
     background-color var(--motion-normal) var(--motion-ease),
     opacity var(--motion-normal) var(--motion-ease);
-}
-
-.feature-toggle:hover {
-  border-color: hsl(var(--primary) / 0.32);
-  background: hsl(var(--accent) / 0.45);
 }
 
 .feature-toggle.disabled {
@@ -2306,17 +2300,11 @@ details.relay-fold[open] > .relay-fold-body {
   border: 1px solid hsl(var(--border));
   border-radius: 8px;
   background: hsl(var(--background));
-  cursor: pointer;
   padding: 12px;
   margin-bottom: 12px;
   transition:
     border-color var(--motion-normal) var(--motion-ease),
     background-color var(--motion-normal) var(--motion-ease);
-}
-
-.switch-row:hover {
-  border-color: hsl(var(--primary) / 0.32);
-  background: hsl(var(--accent) / 0.45);
 }
 
 .feature-toggle > input[type="checkbox"],
@@ -2338,7 +2326,10 @@ details.relay-fold[open] > .relay-fold-body {
   min-width: 0;
 }
 
+/* 开关行只有开关本身可点（switch-only.ts 拦掉 label 的整行切换）：
+   整行不是按钮，没有手型和悬停底色，手型只在开关上。 */
 .toggle-switch-visual {
+  cursor: pointer;
   position: relative;
   display: inline-flex;
   grid-column: 2;
@@ -2406,9 +2397,10 @@ details.relay-fold[open] > .relay-fold-body {
   opacity: 0.62;
 }
 
-.switch-row.is-disabled:hover {
-  border-color: hsl(var(--border));
-  background: hsl(var(--background));
+input:disabled ~ .toggle-switch-visual,
+.switch-row.is-disabled .toggle-switch-visual,
+.feature-toggle.disabled .toggle-switch-visual {
+  cursor: not-allowed;
 }
 
 .provider-sync-progress {
@@ -3914,9 +3906,7 @@ select {
 }
 
 .relay-profile-card:hover,
-.relay-profile-card:focus-visible,
-.feature-toggle:hover,
-.switch-row:hover {
+.relay-profile-card:focus-visible {
   border-color: hsl(var(--border));
   background: hsl(var(--surface-raised));
   box-shadow: none;
@@ -4767,10 +4757,6 @@ select {
 
 .enhance-page .feature-toggle small {
   font-size: 12px;
-}
-
-.enhance-page .feature-toggle:hover {
-  background: hsl(var(--accent) / 0.4);
 }
 
 .settings-page {
@@ -6265,7 +6251,6 @@ select {
   align-items: center;
   gap: 12px;
   min-width: 0;
-  cursor: pointer;
 }
 .shell .enhance-master-switch > input {
   position: absolute;

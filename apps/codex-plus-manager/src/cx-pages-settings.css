@@ -140,10 +140,6 @@
   border-top: 1px solid hsl(var(--cx-row-divider));
 }
 
-:root .shell .cx-set-switches .switch-row:hover {
-  background: hsl(var(--accent) / 0.25);
-}
-
 :root .shell .cx-set-switches .switch-row strong {
   color: hsl(var(--foreground));
   font-size: 13.5px;

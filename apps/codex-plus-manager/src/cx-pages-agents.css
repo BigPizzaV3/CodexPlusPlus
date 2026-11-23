@@ -193,10 +193,6 @@
   box-shadow: none;
 }
 
-:root .shell .cx-feature-card .feature-toggle:hover {
-  background: hsl(var(--accent) / 0.3);
-}
-
 :root .shell .cx-feature-card .feature-toggle strong {
   display: flex;
   align-items: center;

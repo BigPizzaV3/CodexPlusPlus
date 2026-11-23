@@ -339,12 +339,25 @@ test("页内目录收成单列：分组锚点不再显示；增强页不再分�
   const toggle = functionSource("FeatureToggle");
   assert.match(toggle, /EXPERIMENTAL_TITLE\.test\(title\)/);
   assert.match(toggle, /RESTART_HINT\.test\(detail\)/);
-  // 开关行只有开关本身可点：点标题、说明不切换；整行不再有手型和悬停底色。
-  assert.match(toggle, /<label className=\{`feature-toggle switch-only \$\{disabled \? "disabled" : ""\}`\} onClick=\{switchOnlyClick\}>/);
-  assert.match(text, /<label className="feature-toggle switch-only enhance-master-switch cx-enhance-master-switch" onClick=\{switchOnlyClick\}/);
-  assert.match(readSource("./app-shared.tsx"), /export function switchOnlyClick\(event: MouseEvent<HTMLLabelElement>\) \{\n  if \(!\(event\.target as HTMLElement\)\.closest\("input, \.toggle-switch-visual"\)\) event\.preventDefault\(\);\n\}/);
-  assert.match(layer, /:root \.shell \.feature-toggle\.switch-only \{\n  cursor: default;\n\}/);
-  assert.match(layer, /:root \.shell \.cx-feature-card \.feature-toggle\.switch-only:hover \{\n  background: transparent;\n\}/);
+});
+
+test("开关行只有开关本身可点：全局一条规则拦掉 label 的整行切换，整行没有手型和悬停底色", () => {
+  // 所有窗口启动时装一次，在捕获阶段拦；各页面的开关行不用各自处理。
+  const main = readSource("./main.tsx");
+  assert.match(main, /import \{ installSwitchOnlyClicks \} from "\.\/switch-only";/);
+  assert.match(main, /const hash = window\.location\.hash;\n[^\n]*\n  installSwitchOnlyClicks\(\);/);
+  assert.match(readSource("./switch-only.ts"), /doc\.addEventListener\("click", \(event\) => \{\n    if \(blocksSwitchRowClick\(event\.target\)\) event\.preventDefault\(\);\n  \}, true\);/);
+  // 手型只在开关图形上；禁用时是禁止光标。
+  assert.match(styles, /\.toggle-switch-visual \{\n  cursor: pointer;/);
+  assert.match(styles, /input:disabled ~ \.toggle-switch-visual,\n\.switch-row\.is-disabled \.toggle-switch-visual,\n\.feature-toggle\.disabled \.toggle-switch-visual \{\n  cursor: not-allowed;\n\}/);
+  // 整行不再有悬停底色，行本身也不设手型。
+  const allCss = ["./styles.css", "./cursor-ui.css", "./cx-pages-agents.css", "./cx-pages-settings.css", "./cx-pages-gateway.css", "./cx-pages-resources.css"].map(readSource).join("\n");
+  assert.doesNotMatch(allCss, /\.(?:switch-row|feature-toggle)(?:\.[\w-]+)*:hover/);
+  for (const row of ["switch-row", "feature-toggle"]) {
+    const base = styles.match(new RegExp(`\\n\\.${row} \\{\\n([^}]*)\\}`));
+    assert.ok(base, `${row} base rule should exist`);
+    assert.doesNotMatch(base[1], /cursor:/);
+  }
 });
 
 test("插件市场的规则都带 .shell 前缀：正式版 styles.css 后加载，同权重的 .panel { padding: 0 } 会盖掉它们", () => {

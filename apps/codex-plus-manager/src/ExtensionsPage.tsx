@@ -33,7 +33,7 @@ import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxStat
 import { Puzzle } from "lucide-react";
 import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
 import type { Actions, BackendSettings, BuiltinExtension, ScriptMarketItem, ScriptMarketResult, SettingsResult, UserScriptInventory } from "./app-types";
-import { AutoSaveStatus, enhancementPlatform, switchOnlyClick, ToggleVisual, useEnhanceAutoSave } from "./app-shared";
+import { AutoSaveStatus, enhancementPlatform, ToggleVisual, useEnhanceAutoSave } from "./app-shared";
 
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
 
@@ -108,8 +108,8 @@ export function EnhanceScreen({
         <span className="enhance-save-actions cx-enhance-save">
           <AutoSaveStatus state={autoSave} />
         </span>
-        {/* 总开关：一个紧凑开关，说明放悬停。只有开关本身可点，点文字不切换。 */}
-        <label className="feature-toggle switch-only enhance-master-switch cx-enhance-master-switch" onClick={switchOnlyClick} title={t(masterItem.description)}>
+        {/* 总开关：一个紧凑开关，说明放悬停。 */}
+        <label className="feature-toggle enhance-master-switch cx-enhance-master-switch" title={t(masterItem.description)}>
           <input
             checked={form.enhancementsEnabled}
             onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
@@ -587,9 +587,8 @@ function FeatureToggle({
   // 「（实验）」从标题里拿出来做成小标签；说明里写了要重启 Codex 的，标题旁加「需重启」。
   const experimental = EXPERIMENTAL_TITLE.test(title);
   const needsRestart = RESTART_HINT.test(detail);
-  // 只有开关本身可点：点这一行的标题、说明不切换。
   return (
-    <label className={`feature-toggle switch-only ${disabled ? "disabled" : ""}`} onClick={switchOnlyClick}>
+    <label className={`feature-toggle ${disabled ? "disabled" : ""}`}>
       <input
         checked={checked}
         disabled={disabled}

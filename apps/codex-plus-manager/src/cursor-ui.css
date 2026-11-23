@@ -633,23 +633,6 @@
   border-bottom: 0;
 }
 
-/* 只有开关本身可点的开关行（switchOnlyClick）：整行不是按钮，去掉手型和悬停底色，手型只留在开关上。 */
-:root .shell .feature-toggle.switch-only {
-  cursor: default;
-}
-
-:root .shell .feature-toggle.switch-only:not(.disabled) .toggle-switch-visual {
-  cursor: pointer;
-}
-
-:root .shell .feature-toggle.switch-only.disabled .toggle-switch-visual {
-  cursor: not-allowed;
-}
-
-:root .shell .cx-feature-card .feature-toggle.switch-only:hover {
-  background: transparent;
-}
-
 :root .shell .setting-row-copy strong,
 :root .shell .feature-toggle strong {
   color: hsl(var(--foreground));
@@ -1399,7 +1382,6 @@
   padding: 0 !important;
   border: 0 !important;
   background: transparent !important;
-  cursor: pointer;
 }
 
 :root .shell .cx-enhance-master-switch > span strong {
