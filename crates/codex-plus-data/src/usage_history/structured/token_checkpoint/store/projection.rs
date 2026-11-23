@@ -313,10 +313,16 @@ impl Store {
             let (offset, checkpoint) = Checkpoint::capture(state);
             charge(serde_json::to_vec(&checkpoint)?.len())?;
             let mut incoming = checkpoint.restore(offset);
-            incoming.events = index
-                .files
-                .remove(source)
-                .map_or_else(Vec::new, |old| old.events);
+            if let Some(old) = index.files.remove(source) {
+                if let Some((position, total)) = old.expired_count
+                    && incoming
+                        .expired_count
+                        .is_none_or(|(current, _)| position > current)
+                {
+                    incoming.expired_count = Some((position, total));
+                }
+                incoming.events = old.events;
+            }
             for event in &state.events {
                 charge(serde_json::to_vec(&Observation::capture(event))?.len())?;
                 if stored_collision.exists([event.original_id.as_slice()])? {
@@ -538,6 +544,72 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(removed)
+    }
+
+    pub(in super::super) fn reclaim_source_observations(
+        &mut self,
+        source: &Path,
+        after: (i64, i64),
+        batch: u32,
+    ) -> Result<(Option<(i64, i64)>, usize)> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let cutoff: String =
+            tx.query_row("SELECT precise_from FROM token_revision", [], |row| {
+                row.get(0)
+            })?;
+        let (source_id, payload): (i64, Vec<u8>) = tx.query_row(
+            "SELECT id, checkpoint FROM token_sources WHERE source = ?1",
+            [encode_path(source)],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut checkpoint: Checkpoint = serde_json::from_slice(&payload)?;
+        let mut next = None;
+        let mut expired = Vec::new();
+        {
+            // 复用来源主键，保留最后一条原始观察供有序追加取基线。
+            let mut query = tx.prepare(
+                "SELECT revision, position, payload FROM token_observations
+                 WHERE source_id = ?1 AND (revision, position) > (?2, ?3)
+                   AND (revision, position) < (
+                       SELECT revision, position FROM token_observations WHERE source_id = ?1
+                       ORDER BY revision DESC, position DESC LIMIT 1
+                   )
+                 ORDER BY revision, position LIMIT ?4",
+            )?;
+            let mut rows = query.query(params![source_id, after.0, after.1, batch])?;
+            while let Some(row) = rows.next()? {
+                let key = (row.get(0)?, row.get(1)?);
+                next = Some(key);
+                let observation: Observation = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
+                if observation.date < cutoff {
+                    expired.push(key);
+                    if let Some(position) = observation.rollout_position
+                        && checkpoint
+                            .expired_count
+                            .as_ref()
+                            .is_none_or(|(current, _)| position > *current)
+                    {
+                        checkpoint.expired_count = Some((position, observation.total));
+                    }
+                }
+            }
+        }
+        if !expired.is_empty() {
+            let mut remove = tx.prepare(
+                "DELETE FROM token_observations WHERE source_id = ?1 AND revision = ?2 AND position = ?3",
+            )?;
+            for (revision, position) in &expired {
+                remove.execute(params![source_id, revision, position])?;
+            }
+            tx.execute(
+                "UPDATE token_sources SET checkpoint = ?2 WHERE id = ?1",
+                params![source_id, serde_json::to_vec(&checkpoint)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok((next, expired.len()))
     }
 
     pub(in super::super) fn read_committed(

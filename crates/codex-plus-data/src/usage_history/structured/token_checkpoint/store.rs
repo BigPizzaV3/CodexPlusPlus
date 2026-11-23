@@ -135,7 +135,7 @@ impl Store {
         replace: bool,
     ) -> Result<i64> {
         ensure!(!state.skipping, "cannot checkpoint within a skipped line");
-        let (offset, checkpoint) = Checkpoint::capture(state);
+        let (offset, mut checkpoint) = Checkpoint::capture(state);
         let path = encode_path(source);
         let previous: Option<(i64, i64, u64)> = tx
             .query_row(
@@ -153,6 +153,22 @@ impl Store {
                 offset > old_offset || offset == old_offset && state.events.is_empty(),
                 "Token source offset did not advance"
             );
+            let prior: Option<String> = tx.query_row(
+                "SELECT json_extract(CAST(checkpoint AS TEXT), '$.expired_count')
+                 FROM token_sources WHERE source = ?1",
+                [&path],
+                |row| row.get(0),
+            )?;
+            if let Some(prior) = prior {
+                let prior: ((u64, u64, u64), super::Counter) = serde_json::from_str(&prior)?;
+                if checkpoint
+                    .expired_count
+                    .as_ref()
+                    .is_none_or(|(current, _)| prior.0 > *current)
+                {
+                    checkpoint.expired_count = Some(prior);
+                }
+            }
         }
         let revision = tx.query_row(
             "UPDATE token_revision SET revision = revision + 1 RETURNING revision",

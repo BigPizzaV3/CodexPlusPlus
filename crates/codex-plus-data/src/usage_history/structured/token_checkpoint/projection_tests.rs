@@ -516,6 +516,172 @@ fn advancing_retention_does_not_rehydrate_an_ordered_source() {
 }
 
 #[test]
+fn reclaiming_archived_observations_unblocks_a_referenced_continuation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let source = root.join(format!("rollout-prefix-{PHYSICAL_PREFIX}.jsonl"));
+    let old_cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let head: Vec<_> = std::iter::once(header(PARENT, 0))
+        .chain((1..=50).map(|pos| count(pos, pos, pos as u64, true)))
+        .collect();
+    let parent = parse(&source, &head, old_cutoff);
+    let old_day = parent.events[0].date;
+    let cutoff = old_day.succ_opt().unwrap();
+    let old_offset = parent.offset;
+    let file = root.join("tokens.sqlite3");
+    let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+    let initial = store
+        .prepare(
+            new_source(&source, &parent),
+            old_cutoff,
+            BTreeMap::new(),
+            1 << 20,
+        )
+        .unwrap();
+    let parent_revision = store.publish(initial).unwrap();
+
+    let child_path = root.join("rollout-child.jsonl");
+    let mut child_header = header(CHILD, 51);
+    child_header["payload"]["history_base"] = json!({"thread_id":PHYSICAL_PREFIX,
+        "end_ordinal_exclusive":51,"end_byte_offset":old_offset});
+    let mut child_count = count(52, 52, 51, false);
+    child_count["timestamp"] = Local
+        .from_local_datetime(&cutoff.and_hms_opt(12, 0, 0).unwrap())
+        .single()
+        .unwrap()
+        .to_rfc3339()
+        .into();
+    let child = parse(&child_path, &[child_header, child_count], cutoff);
+    // 由无关空来源推进保留线，保留已提交的父来源日汇总。
+    let other_path = root.join("rollout-other.jsonl");
+    let other = parse(&other_path, &[header(OTHER, 0)], cutoff);
+    let advance = store
+        .prepare(
+            new_source(&other_path, &other),
+            cutoff,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    let before = store.publish(advance).unwrap();
+    let (_, mut stale_parser) = store.checkpoint(&source).unwrap().unwrap();
+    assert!(matches!(
+        store.prepare(new_source(&child_path, &child), cutoff, BTreeMap::new(), 8192),
+        Err(error) if error.to_string().contains("reconciliation input budget")
+    ));
+
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER fail_reclaim BEFORE UPDATE OF checkpoint ON token_sources
+         BEGIN SELECT RAISE(ABORT, 'compaction checkpoint failed'); END;",
+        )
+        .unwrap();
+    assert!(matches!(
+        store.reclaim_source_observations(&source, (0, 0), 7),
+        Err(error) if error.to_string().contains("compaction checkpoint failed")
+    ));
+    assert_eq!(store.observations(&source).unwrap().len(), 50);
+    assert!(
+        store
+            .checkpoint(&source)
+            .unwrap()
+            .unwrap()
+            .1
+            .expired_count
+            .is_none()
+    );
+    store.db.execute_batch("DROP TRIGGER fail_reclaim").unwrap();
+
+    let mut cursor = (0, 0);
+    let mut removed = 0;
+    for _ in 0..8 {
+        let (next, batch) = store
+            .reclaim_source_observations(&source, cursor, 7)
+            .unwrap();
+        assert!(batch <= 7);
+        removed += batch;
+        if let Some(next) = next {
+            cursor = next;
+        } else {
+            break;
+        }
+    }
+    assert_eq!(removed, 49);
+    assert_eq!(store.observations(&source).unwrap().len(), 1);
+    let (source_revision, checkpoint) = store.checkpoint(&source).unwrap().unwrap();
+    assert_eq!(
+        (source_revision, checkpoint.offset),
+        (parent_revision, old_offset)
+    );
+    assert_eq!(checkpoint.expired_count.unwrap().0.0, 49);
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).0, before);
+
+    drop(store);
+    let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        json!({"type":"event_msg","ordinal":51,"timestamp":"2026-01-02T12:00:51Z",
+            "payload":{"type":"task_complete"}})
+    )
+    .unwrap();
+    assert!(
+        stale_parser
+            .read_with_budget(&source, cutoff, &mut Budget::new(std::iter::empty()))
+            .unwrap()
+    );
+    assert!(stale_parser.expired_count.is_none());
+    let updated_parent = store
+        .prepare(
+            SourceUpdate {
+                source: &source,
+                state: &stale_parser,
+                previous_revision: Some(parent_revision),
+                replace: false,
+            },
+            cutoff,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    let before = store.publish(updated_parent).unwrap();
+    let (_, checkpoint) = store.checkpoint(&source).unwrap().unwrap();
+    assert!(checkpoint.offset > old_offset);
+    assert_eq!(checkpoint.expired_count.unwrap().0.0, 49);
+
+    let ready = store
+        .prepare(
+            new_source(&child_path, &child),
+            cutoff,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    assert_eq!(store.publish(ready).unwrap(), before + 1);
+    let (_, events) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].session, CHILD);
+    assert_eq!(events[0].delta.total_tokens, 110);
+    assert!(!events[0].count_pending && !events[0].count_uncertain);
+    let mut archived = 0;
+    Store::read_days(&mut store.db, old_day, cutoff, |session, day, groups| {
+        archived += 1;
+        assert_eq!((session.as_str(), day), (PARENT, old_day));
+        assert_eq!(
+            (
+                groups[0].totals.records,
+                groups[0].totals.counts.0.total_tokens
+            ),
+            (50, 5500)
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(archived, 1);
+}
+
+#[test]
 fn cross_retention_range_reads_one_revision_without_inventing_partial_days() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
