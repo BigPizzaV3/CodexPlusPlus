@@ -273,11 +273,18 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   // 次要操作在三点菜单里；删除走公共确认（先查占用再二次确认）。
   assert.match(card, /<Menu label=\{t\("供应商操作"\)\}>/);
   assert.match(card, /confirmRemoveRelayProfile\(form, profile, actions, "relay"\)/);
-  // 被网关接管时可切换、可编辑的列表整块隐藏，要先断开并还原；只读列出直连供应商，供迁移进共享供应商。
+  // 直连和共享供应商一份列表：经本地服务时列表照常显示（不再整块换成接管卡片），顶部的切换卡片只在孤立状态出现。
+  assert.match(hint, /if \(!orphan\) return null;/);
   const relay = functionSource("RelayScreen");
   assert.match(relay, /const takenOverByGateway = normalized\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
-  assert.match(relay, /\{normalized\.relayProfilesEnabled && !takenOverByGateway \? \(/);
-  assert.match(relay, /\{normalized\.relayProfilesEnabled && takenOverByGateway \? \(/);
+  assert.match(relay, /\{normalized\.relayProfilesEnabled \? \(\n\s*<CxSection/);
+  assert.doesNotMatch(relay, /className="cx-takeover"/);
+  // 「共享」分页列本地服务的共享供应商；经本地服务时点直连供应商的「使用」先断开并还原，成功后再切过去。
+  assert.match(relay, /providerView === "shared" \? \(\n\s*<SharedProviderList/);
+  assert.match(relay, /if \(takenOverByGateway && profileId !== CODEX_GATEWAY_RELAY_ID && onDisconnectGateway\) \{\n\s*onDisconnectGateway\(profileId\);/);
+  assert.match(relay, /profile\.id !== CODEX_GATEWAY_RELAY_ID && relayProviderView\(profile\) === providerView/);
+  assert.match(functionSource("SharedProviderList"), /onClick=\{\(\) => onUse\(`\$\{entry\.id\}\/\$\{model\}`\)\}/);
+  assert.match(app, /if \(result\.status === "ok"\) await switchAfterDisconnect\(\);/);
   // 直连用户可以关掉「加入共享供应商」的提醒；网关接管时总是提示。
   assert.match(relay, /poolLink\.pending\.length && \(takenOverByGateway \|\| !nudgeDismissed\)/);
   assert.match(relay, /window\.localStorage\.setItem\(DIRECT_POOL_NUDGE_KEY, "1"\)/);
@@ -413,10 +420,11 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   assert.match(functionSource("featuredAds"), /filter\(\(ad\) => !isExpiredAd\(ad\)\)/);
 });
 
-test("Codex 在「经网关」和「直连」之间一键切换：切到网关沿用上次接入设置，切回直连先预览还原", () => {
+test("Codex 经本地服务：沿用上次接入设置（「共享」分页里选的那家换成默认模型），切回直连先预览还原", () => {
   const app = functionSource("App");
-  // 切到网关：和「Agent 接入」开关同一条命令，沿用上次的绑定；池空或模型不在池里时说明原因并带去对应页面。
-  assert.match(app, /const draft = draftFromBinding\(previous\);\n\s*const issue = validateDraft\(draft, payload\);/);
+  // 切到本地服务：和「Agent 接入」开关同一条命令，沿用上次的绑定；池空或模型不在池里时说明原因并带去对应页面。
+  assert.match(app, /const draft = \{ \.\.\.draftFromBinding\(previous\), \.\.\.\(model \? \{ model \} : \{\}\) \};\n\s*const issue = validateDraft\(draft, payload\);/);
+  assert.match(app, /onUseShared=\{\(model\) => void connectCodexGateway\(model\)\}/);
   assert.match(app, /invoke<GatewayResult>\("save_gateway_binding", \{ agent: "codex", binding: \{ \.\.\.bindingFromDraft\(draft, previous\), enabled: true \}, reconnect: true \}\)/);
   assert.match(app, /onConnect=\{\(\) => void connectCodexGateway\(\)\}/);
   const hint = functionSource("LegacyRelayGatewayHint");
@@ -452,11 +460,6 @@ test("直连供应商和网关共享供应商打通：每行标出是否已在�
   // 提示收在「直连供应商」标题右侧一行，不再单独一张卡。
   assert.match(screen, /<span className="cx-pool-hint"/);
   assert.doesNotMatch(screen, /\{poolBanner\}/);
-  // 接管期间档案可编辑；使用、删除仍不从这个入口执行。
-  const takenOver = screen.slice(screen.indexOf("{normalized.relayProfilesEnabled && takenOverByGateway ? ("), screen.indexOf("{normalized.relayProfilesEnabled && !takenOverByGateway ? ("));
-  assert.match(takenOver, /title=\{t\("Codex 正由 Codex\+\+ 本地服务接管"\)\}/);
-  assert.match(takenOver, /directProfiles\.map[\s\S]*editRelayProfile\(profile\.id\)/);
-  assert.doesNotMatch(takenOver, /onSwitchProfile|removeRelayProfile/);
   assert.match(functionSource("SortableRelayProfileCard"), /\{gatewayManaged \|\| !poolLink \? null : <PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>\}/);
 });
 
@@ -474,7 +477,6 @@ test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时�
   assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<div className="third-party-import"/);
   assert.match(header, /<div className="third-party-import" ref=\{thirdPartyImportTriggerRef\}>/);
   assert.doesNotMatch(screen, /disabled=\{takenOverByGateway\}/);
-  assert.match(screen, /保存后继续使用本地服务，点上方「直连」预览并确认还原/);
 });
 
 test("多开页可以直接编辑、删除供应商：删除先查占用再二次确认，网关托管项不给入口（#2801）", () => {

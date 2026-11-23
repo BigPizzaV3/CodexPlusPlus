@@ -5,6 +5,19 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "Claude 等其它 Agent 也能用这些供应商": "Claude and other agents can use these providers too",
+  "Codex 现在经本地服务": "Codex is going through the local service",
+  "Codex 经本地服务，默认用这家的模型；新开的会话生效": "Codex goes through the local service and uses this provider's model by default; takes effect in new sessions",
+  "从直连供应商复制过来的，两边各改各的": "Copied from a direct provider; the two copies are edited separately",
+  "在「本地服务」里添加供应商或登录订阅；Codex、Claude 都能用，支持多 Key 轮换和出错换下一家。": "Add providers or sign in to subscriptions under Local service. Codex and Claude can both use them, with multi-key rotation and failover.",
+  "在「本地服务」里管理": "Manage in Local service",
+  "改回直连": "Switch back to direct",
+  "本地服务的共享供应商：多 Key 轮换、出错换下一家、协议自动转换，Claude 等其它 Agent 也能用。": "The local service's shared providers: multi-key rotation, failover and automatic protocol conversion. Claude and other agents can use them too.",
+  "来自直连": "From direct",
+  "正在读取共享供应商…": "Loading shared providers…",
+  "添加共享供应商": "Add shared provider",
+  "还没有共享供应商": "No shared providers yet",
+  "这家还没有模型": "This provider has no models yet",
   "配置体检": "Config doctor",
   "已保存 AI 接入配置。": "AI connection settings saved.",
   "自定义地址": "Custom address",
@@ -3841,6 +3854,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "默认模型 {0}；Claude 等其它 Agent 也能用这些供应商": "Default model {0}; Claude and other agents can use these providers too",
   "{0}（秒）": "{0} (seconds)",
   "「{0}」是社区扩展，来自 {1}，没有经过审核。扩展的代码会在 Claude 页面里运行，能读到页面上的内容。确定安装？": "\"{0}\" is a community extension from {1} and has not been reviewed. Its code runs inside Claude's pages and can read what is on them. Install it?",
   "删除「{0}」？扩展文件夹会一起删掉。": "Delete \"{0}\"? Its extension folder will be removed too.",

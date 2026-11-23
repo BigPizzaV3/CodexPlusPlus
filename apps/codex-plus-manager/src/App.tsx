@@ -48,7 +48,7 @@ import { preferredProviderSyncTarget } from "./provider-sync-target";
 import { resolveLaunchStatus, launchCompletionNotice } from "./launch-status";
 import type { DreamSkinCommunityResult, DreamSkinRuntimeResult } from "./dream-skin";
 import { subscribeLanguage, getLanguage, t, tf, toggleLanguage } from "@/i18n";
-import { relayProfileSwitchValidation, isAggregateRelayProfile, activeRelayProfile, configureRelayProfileEditing } from "./relay-profile-editing";
+import { relayProfileSwitchValidation, isAggregateRelayProfile, activeRelayProfile, configureRelayProfileEditing, syncLegacyRelayFields } from "./relay-profile-editing";
 import {
   applyResolvedTheme,
   loadThemePreference,
@@ -437,6 +437,8 @@ export function App() {
   const [overview, setOverview] = useState<OverviewResult | null>(null);
   const [settings, setSettings] = useState<SettingsResult | null>(null);
   const [legacyDisconnectOpen, setLegacyDisconnectOpen] = useState(false);
+  /** 断开本地服务成功后要切到的直连供应商：经本地服务时在列表里点了某个直连供应商的「使用」。 */
+  const legacyDisconnectThen = useRef<string | null>(null);
   const [addDirectProviderRequested, setAddDirectProviderRequested] = useState(false);
   // 外部改设置时要拿「上次读到的设置」与当前编辑比对，监听回调里读这个 ref 拿最新值。
   const settingsRef = useRef<SettingsResult | null>(null);
@@ -3156,14 +3158,15 @@ export function App() {
    * 切回直连走「断开并还原」（先预览再确认），见 legacyDisconnectOpen。
    */
   const [codexConnecting, setCodexConnecting] = useState(false);
-  const connectCodexGateway = async () => {
+  const connectCodexGateway = async (model?: string) => {
     if (codexConnecting) return;
     setCodexConnecting(true);
     try {
       const loaded = await invoke<GatewayResult>("load_gateway");
       const payload = loaded.gateway && Array.isArray(loaded.pool) ? (loaded as GatewayPayload) : null;
       const previous = payload?.gateway.bindings?.codex;
-      const draft = draftFromBinding(previous);
+      // 在列表里点了某个共享供应商的「使用」：默认模型换成它的；其余接入设置沿用上次的。
+      const draft = { ...draftFromBinding(previous), ...(model ? { model } : {}) };
       const issue = validateDraft(draft, payload);
       if (issue) {
         await showNotice(t("切换到网关"), t(issue), "failed");
@@ -3178,6 +3181,21 @@ export function App() {
       await showNotice(t("切换到网关"), stringifyError(error), "failed");
     } finally {
       setCodexConnecting(false);
+    }
+  };
+  /** 断开本地服务后切到列表里点的那个直连供应商（断开时已切回接入前的那个，是它就不再切）。 */
+  const switchAfterDisconnect = async () => {
+    const target = legacyDisconnectThen.current;
+    legacyDisconnectThen.current = null;
+    if (!target) return;
+    try {
+      const fresh = await invoke<SettingsResult>("load_settings");
+      if (!isSuccessStatus(fresh.status)) return;
+      const current = normalizeSettings(fresh.settings);
+      if (current.activeRelayId === target || !current.relayProfiles.some((profile) => profile.id === target)) return;
+      await switchRelayProfile(syncLegacyRelayFields({ ...current, activeRelayId: target }), current.activeRelayId);
+    } catch (error) {
+      await showNotice(t("切换供应商"), stringifyError(error), "failed");
     }
   };
   // 「启动 / 重启 Codex」：Codex 页面的顶栏按钮和侧栏播放键共用一份状态，都走 actions.launch / actions.restart。
@@ -3447,6 +3465,7 @@ export function App() {
               const result = await invoke<GatewayResult>("disable_gateway_binding", { agent: "codex", previewToken });
               await showNotice(result.status === "ok" ? t("已断开网关") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
               await refreshSettings(true);
+              if (result.status === "ok") await switchAfterDisconnect();
               return result.status === "ok";
             } catch (error) {
               await showNotice(t("断开失败"), String(error), "failed");
@@ -3460,13 +3479,17 @@ export function App() {
               publishGatewayPayload(result);
               await showNotice(result.status === "ok" ? t("已断开网关") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
               await refreshSettings(true);
+              if (result.status === "ok") await switchAfterDisconnect();
               return result.status === "ok";
             } catch (error) {
               await showNotice(t("断开失败"), String(error), "failed");
               return false;
             }
           }}
-          onClose={() => setLegacyDisconnectOpen(false)}
+          onClose={() => {
+            legacyDisconnectThen.current = null;
+            setLegacyDisconnectOpen(false);
+          }}
           onAddDirectProvider={() => setAddDirectProviderRequested(true)}
         />
       ) : null}
@@ -3532,6 +3555,12 @@ export function App() {
               form={settingsForm}
               actions={actions}
               onOpenGateway={() => void navigate("gatewayProviders")}
+              onUseShared={(model) => void connectCodexGateway(model)}
+              sharedConnecting={codexConnecting}
+              onDisconnectGateway={(then) => {
+                legacyDisconnectThen.current = then ?? null;
+                setLegacyDisconnectOpen(true);
+              }}
               advancedOpen={relayAdvancedOpen}
               connection={(
                 <LegacyRelayGatewayHint
