@@ -5,8 +5,10 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
-  "Codex config.toml 里的插件条目：从目录安装的，以及别处装的（如 Codex 自带市场）。关掉开关等于停用，不删文件。": "Plugin entries in Codex's config.toml: ones installed from the catalog and ones installed elsewhere (such as Codex's built-in marketplace). Turning one off disables it without deleting files.",
-  "config.toml 里还没有插件配置。": "No plugin entries in config.toml yet.",
+  "Codex config.toml 里的插件：从目录安装的，以及别处装的（如 Codex 自带的）。关掉开关等于停用，不删文件。": "Plugins in Codex's config.toml: ones installed from the catalog and ones installed elsewhere (such as Codex's built-in ones). Turning one off disables it without deleting files.",
+  "插件文件在，但 config.toml 里没有它的配置，Codex 不会加载；在目录里点开它重新安装即可。": "The plugin files are here but config.toml has no entry for it, so Codex won't load it. Open it in the catalog and reinstall.",
+  "没有配置": "No config",
+  "还没有安装插件。": "No plugins installed yet.",
   "写在 [plugins.\"<配置键>\"] 下面的内容。": "The content under [plugins.\"<config key>\"].",
   "删除插件配置": "Delete plugin config",
   "删除配置": "Delete config",
@@ -14,7 +16,6 @@ export const EN_PLAIN: Record<string, string> = {
   "手写一段 [plugins.\"<插件>@<市场>\"] 配置": "Write a [plugins.\"<plugin>@<marketplace>\"] entry by hand",
   "已经有这个插件的配置，请直接编辑它。": "This plugin already has an entry; edit that one instead.",
   "插件配置操作": "Plugin config actions",
-  "本机插件配置": "Local plugin config",
   "格式是 <插件>@<市场>，例如 github@openai-curated。": "Format: <plugin>@<marketplace>, e.g. github@openai-curated.",
   "添加插件配置": "Add plugin config",
   "目录": "Catalog",

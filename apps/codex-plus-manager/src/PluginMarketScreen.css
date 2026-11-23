@@ -299,3 +299,17 @@
 @media (prefers-reduced-motion: reduce) {
   .shell .plugin-market-spinner { animation: none; }
 }
+
+/* 「已安装」列表里目录插件的名字：可点开详情，但看起来和普通行标题一样（不画下划线，悬停才提示）。 */
+.shell .plugin-config-panel .plugin-config-title {
+  color: inherit;
+  font: inherit;
+  text-decoration: none;
+}
+.shell .plugin-config-panel .plugin-config-title:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.shell .plugin-config-panel > .plugin-market-summary {
+  margin: 0 0 10px;
+}
