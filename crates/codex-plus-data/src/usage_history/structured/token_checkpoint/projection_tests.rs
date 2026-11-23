@@ -1,3 +1,4 @@
+use super::ingest::SourceReader;
 use super::store::{Store, projection::SourceUpdate};
 use crate::usage_history::structured::{FileState, UsageEvent, index_budget::Budget};
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
@@ -59,6 +60,186 @@ fn new_source<'a>(source: &'a Path, state: &'a FileState) -> SourceUpdate<'a> {
         previous_revision: None,
         replace: false,
     }
+}
+
+#[test]
+fn source_ingest_retries_a_failed_batch_then_completes_the_split_line_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let source = root.join("rollout-a.jsonl");
+    let database = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let prefix = format!("{}\n{}\n", header(PARENT, 0), count(1, 1, 1, true));
+    let tail = count(2, 2, 2, true).to_string();
+    fs::write(&source, format!("{prefix}{}", &tail[..20])).unwrap();
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut reader = SourceReader::restore(&store, &source).unwrap();
+    let mut budget = Budget::new(std::iter::empty());
+    let names = BTreeMap::new();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER fail_batch BEFORE INSERT ON token_days
+             BEGIN SELECT RAISE(ABORT, 'test publish failure'); END;",
+        )
+        .unwrap();
+    let error = reader
+        .step(&mut store, cutoff, &mut budget, &names, 8192)
+        .unwrap_err();
+    assert!(error.to_string().contains("test publish failure"));
+    assert!(store.checkpoint(&source).unwrap().is_none());
+    assert!(read(&mut store.db, i64::MIN, i64::MAX).1.is_empty());
+    store.db.execute_batch("DROP TRIGGER fail_batch").unwrap();
+    let bytes_left = budget.read_left;
+    assert!(
+        !reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    assert_eq!(budget.read_left, bytes_left);
+    assert_eq!(
+        store.checkpoint(&source).unwrap().unwrap().1.offset,
+        prefix.len() as u64
+    );
+    let (_, observed) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].delta.total_tokens, 110);
+    drop(store);
+
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        &tail[20..]
+    )
+    .unwrap();
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut reader = SourceReader::restore(&store, &source).unwrap();
+    let mut budget = Budget::new(std::iter::empty());
+    assert!(
+        reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    let (revision, observed) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(observed.len(), 2);
+    assert!(observed.iter().all(|event| event.delta.total_tokens == 110));
+    assert!(
+        reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).0, revision);
+}
+
+#[test]
+fn source_ingest_keeps_committed_results_until_a_replacement_is_complete() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let source = root.join("rollout-a.jsonl");
+    let database = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    fs::write(
+        &source,
+        format!(
+            "{}\n{}\n{}\n",
+            header(PARENT, 0),
+            count(1, 1, 1, true),
+            count(2, 2, 2, true)
+        ),
+    )
+    .unwrap();
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut reader = SourceReader::restore(&store, &source).unwrap();
+    let names = BTreeMap::new();
+    let mut budget = Budget::new(std::iter::empty());
+    assert!(
+        reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    let (before, observed) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(observed.len(), 2);
+    let replacement = format!("{}\n{}\n", header(OTHER, 0), count(1, 3, 1, true));
+    fs::write(&source, replacement).unwrap();
+    let mut budget = Budget::new(std::iter::empty());
+    budget.read_left = 150;
+    assert!(
+        !reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    let (revision, still_visible) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(revision, before);
+    assert!(still_visible == observed);
+    let mut budget = Budget::new(std::iter::empty());
+    assert!(
+        reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    let (after, revised) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(after, before + 1);
+    assert_eq!(revised.len(), 1);
+    assert_eq!(revised[0].session, OTHER);
+}
+
+#[test]
+fn source_ingest_resumes_a_compressed_prefix_across_bounded_rounds() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let source = root.join("rollout-a.jsonl.zst");
+    let database = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let prefix = format!("{}\n{}\n", header(PARENT, 0), count(1, 1, 1, true));
+    let full = format!("{prefix}{}\n", count(2, 2, 2, true));
+    fs::write(
+        &source,
+        zstd::stream::encode_all(full.as_bytes(), 1).unwrap(),
+    )
+    .unwrap();
+    let names = BTreeMap::new();
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut reader = SourceReader::restore(&store, &source).unwrap();
+    let mut budget = Budget::new(std::iter::empty());
+    budget.read_left = prefix.len() as u64;
+    assert!(
+        !reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    let (before, observed) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(observed.len(), 1);
+    drop(store);
+
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut reader = SourceReader::restore(&store, &source).unwrap();
+    let mut budget = Budget::new(std::iter::empty());
+    budget.read_left = 80;
+    assert!(
+        !reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    assert_eq!(budget.read_left, 0);
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).0, before);
+    let mut complete = false;
+    for _ in 0..full.len().div_ceil(80) {
+        let mut budget = Budget::new(std::iter::empty());
+        budget.read_left = 80;
+        complete = reader
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap();
+        if complete {
+            break;
+        }
+    }
+    assert!(complete);
+    let (_, observed) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(observed.len(), 2);
+    assert!(observed.iter().all(|event| event.delta.total_tokens == 110));
+    let (_, checkpoint) = store.checkpoint(&source).unwrap().unwrap();
+    assert_eq!(checkpoint.offset, full.len() as u64);
+    assert!(!checkpoint.resume_pending);
 }
 
 #[test]
@@ -291,10 +472,19 @@ fn copies_sharing_one_session_resolve_once_without_affecting_other_sessions() {
     let source = root.join("rollout-original.jsonl");
     let original = parse(&source, &[header(PARENT, 0), count(1, 1, 1, true)], cutoff);
     let other_path = root.join("rollout-other.jsonl");
-    let other = parse(&other_path, &[header(OTHER, 0), count(1, 4, 1, true)], cutoff);
+    let other = parse(
+        &other_path,
+        &[header(OTHER, 0), count(1, 4, 1, true)],
+        cutoff,
+    );
     let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
     let prepared = store
-        .prepare(new_source(&other_path, &other), cutoff, BTreeMap::new(), 8192)
+        .prepare(
+            new_source(&other_path, &other),
+            cutoff,
+            BTreeMap::new(),
+            8192,
+        )
         .unwrap();
     store.publish(prepared).unwrap();
     for copy in 0..96 {
@@ -317,7 +507,12 @@ fn copies_sharing_one_session_resolve_once_without_affecting_other_sessions() {
     assert!(store.checkpoint(&source).unwrap().is_none());
 
     let prepared = store
-        .prepare(new_source(&source, &original), cutoff, BTreeMap::new(), 1 << 20)
+        .prepare(
+            new_source(&source, &original),
+            cutoff,
+            BTreeMap::new(),
+            1 << 20,
+        )
         .unwrap();
     assert_eq!(store.publish(prepared).unwrap(), before + 1);
     let (_, resolved) = read(&mut store.db, i64::MIN, i64::MAX);

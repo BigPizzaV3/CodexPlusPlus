@@ -1,0 +1,94 @@
+use super::store::{Store, projection::SourceUpdate};
+use crate::usage_history::structured::{FileState, index_budget::Budget};
+use anyhow::{Context, Result};
+use chrono::NaiveDate;
+use std::collections::BTreeMap;
+use std::path::Path;
+
+// 一份在读来源只保留当前批次。发生写入错误时下一轮重试同一批。
+pub(super) struct SourceReader<'a> {
+    source: &'a Path,
+    state: FileState,
+    revision: Option<i64>,
+    offset: u64,
+    committed_complete: bool,
+    replacing: bool,
+    ready: Option<bool>,
+}
+
+impl<'a> SourceReader<'a> {
+    pub(super) fn restore(store: &Store, source: &'a Path) -> Result<Self> {
+        let (revision, state) = match store.checkpoint(source)? {
+            Some((revision, state)) => (Some(revision), state),
+            None => (None, FileState::default()),
+        };
+        Ok(Self {
+            source,
+            offset: state.offset,
+            committed_complete: revision.is_some() && !state.resume_pending,
+            state,
+            revision,
+            replacing: false,
+            ready: None,
+        })
+    }
+
+    pub(super) fn step(
+        &mut self,
+        store: &mut Store,
+        cutoff: NaiveDate,
+        budget: &mut Budget,
+        provider_names: &BTreeMap<String, String>,
+        reconciliation_limit: usize,
+    ) -> Result<bool> {
+        let complete = match self.ready {
+            Some(complete) => complete,
+            None => {
+                let activity_limit = budget.activity_limit;
+                budget.activity_limit = 0;
+                let result = self.state.read_source_batch(self.source, cutoff, budget);
+                budget.activity_limit = activity_limit;
+                let (complete, replaced) = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        *self = Self::restore(store, self.source).with_context(|| {
+                            format!("restoring checkpoint after read failure: {error}")
+                        })?;
+                        return Err(error.into());
+                    }
+                };
+                self.replacing |= replaced && self.revision.is_some();
+                if self.state.skipping || self.replacing && !complete {
+                    return Ok(false);
+                }
+                let offset = self.state.offset - self.state.pending.len() as u64;
+                if !self.replacing
+                    && offset == self.offset
+                    && (!complete || self.committed_complete)
+                {
+                    return Ok(complete);
+                }
+                self.ready = Some(complete);
+                complete
+            }
+        };
+        let prepared = store.prepare(
+            SourceUpdate {
+                source: self.source,
+                state: &self.state,
+                previous_revision: self.revision,
+                replace: self.replacing,
+            },
+            cutoff,
+            provider_names.clone(),
+            reconciliation_limit,
+        )?;
+        self.revision = Some(store.publish(prepared)?);
+        self.offset = self.state.offset - self.state.pending.len() as u64;
+        self.committed_complete = complete;
+        self.state.events.clear();
+        self.ready = None;
+        self.replacing = false;
+        Ok(complete)
+    }
+}

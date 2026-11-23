@@ -2935,6 +2935,16 @@ impl FileState {
         cutoff: NaiveDate,
         budget: &mut index_budget::Budget,
     ) -> io::Result<bool> {
+        self.read_source_batch(path, cutoff, budget)
+            .map(|(complete, _)| complete)
+    }
+
+    fn read_source_batch(
+        &mut self,
+        path: &Path,
+        cutoff: NaiveDate,
+        budget: &mut index_budget::Budget,
+    ) -> io::Result<(bool, bool)> {
         let before = fs::symlink_metadata(path)?;
         if !before.is_file() {
             return Err(io::Error::new(
@@ -3009,23 +3019,24 @@ impl FileState {
         };
         meter.refresh(self, cursor_bytes);
         if self.stamp == Some(stamp) && self.reader.is_none() && !self.resume_pending {
-            return Ok(self.pending.is_empty() && !self.skipping);
+            return Ok((self.pending.is_empty() && !self.skipping, false));
         }
-        if self.stamp.is_some_and(|old| {
+        let replaced = self.stamp.is_some_and(|old| {
             old != stamp
                 && (compressed
                     || self.invalid_counts
                     || old.0 > stamp.0
                     || old.2 != stamp.2
                     || old.0 == stamp.0 && old.1 != stamp.1)
-        }) {
+        });
+        if replaced {
             *self = Self::default();
             meter = index_budget::Meter::new(self);
             meter.refresh(self, 0);
         }
         if self.reader.is_none() {
             if !budget.can_open(self) {
-                return Ok(false);
+                return Ok((false, replaced));
             }
             let mut file = file
                 .take()
@@ -3124,7 +3135,7 @@ impl FileState {
             // WouldBlock 是输入预算耗尽，不是损坏流；保留解压器内部状态供下轮续读。
             Err(ref error) if error.kind() == io::ErrorKind::WouldBlock => {
                 self.reader = Some(cursor);
-                Ok(false)
+                Ok((false, replaced))
             }
             Ok(false) => {
                 if waiting_for_append {
@@ -3132,7 +3143,7 @@ impl FileState {
                 } else {
                     self.reader = Some(cursor);
                 }
-                Ok(false)
+                Ok((false, replaced))
             }
             other => {
                 if self.pending.is_empty() {
@@ -3148,7 +3159,7 @@ impl FileState {
                     self.inherited_contexts.shrink_to_fit();
                 }
                 meter.refresh(self, 0);
-                other
+                other.map(|complete| (complete, replaced))
             }
         }
     }
