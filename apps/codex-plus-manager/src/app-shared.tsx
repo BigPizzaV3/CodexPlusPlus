@@ -1,6 +1,6 @@
 // 管理器主界面里多个页面共用的小组件与辅助函数（从 App.tsx 拆出）。
 import { ArrowRightLeft, CheckCircle2, RefreshCw, AppWindow, Bug, Server, type LucideIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { parseContextEntries, splitContextConfigText, type CodexContextEntries } from "./context-config-text";
 import { appConfirm } from "./app-dialog";
@@ -378,6 +378,14 @@ export function StatusBadge({ status = "unknown", label }: { status?: string; la
   const level = statusClass(status);
   const tone = level === "good" ? "ok" : level === "bad" ? "danger" : level === "idle" ? "neutral" : "warn";
   return <CxBadge tone={tone}>{label ?? statusLabel(status)}</CxBadge>;
+}
+
+/**
+ * 开关行只有开关本身可点：挂在包着开关的 `<label>` 上，点标题、说明时拦掉 label 的默认行为（不切换）。
+ * 点开关图形、或键盘操作隐藏的 checkbox 照常切换。配合 `.switch-only` 类去掉整行的手型和悬停底色。
+ */
+export function switchOnlyClick(event: MouseEvent<HTMLLabelElement>) {
+  if (!(event.target as HTMLElement).closest("input, .toggle-switch-visual")) event.preventDefault();
 }
 
 export function ToggleVisual() {

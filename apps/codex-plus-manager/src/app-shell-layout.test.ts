@@ -339,6 +339,12 @@ test("页内目录收成单列：分组锚点不再显示；增强页不再分�
   const toggle = functionSource("FeatureToggle");
   assert.match(toggle, /EXPERIMENTAL_TITLE\.test\(title\)/);
   assert.match(toggle, /RESTART_HINT\.test\(detail\)/);
+  // 开关行只有开关本身可点：点标题、说明不切换；整行不再有手型和悬停底色。
+  assert.match(toggle, /<label className=\{`feature-toggle switch-only \$\{disabled \? "disabled" : ""\}`\} onClick=\{switchOnlyClick\}>/);
+  assert.match(text, /<label className="feature-toggle switch-only enhance-master-switch cx-enhance-master-switch" onClick=\{switchOnlyClick\}/);
+  assert.match(readSource("./app-shared.tsx"), /export function switchOnlyClick\(event: MouseEvent<HTMLLabelElement>\) \{\n  if \(!\(event\.target as HTMLElement\)\.closest\("input, \.toggle-switch-visual"\)\) event\.preventDefault\(\);\n\}/);
+  assert.match(layer, /:root \.shell \.feature-toggle\.switch-only \{\n  cursor: default;\n\}/);
+  assert.match(layer, /:root \.shell \.cx-feature-card \.feature-toggle\.switch-only:hover \{\n  background: transparent;\n\}/);
 });
 
 test("插件市场的规则都带 .shell 前缀：正式版 styles.css 后加载，同权重的 .panel { padding: 0 } 会盖掉它们", () => {
