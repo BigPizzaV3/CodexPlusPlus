@@ -24,7 +24,6 @@ import type {
 } from "./app-types";
 import { clampNumber, claudeLocalizationMemo, claudeLocalMemo, stringifyError, ToggleVisual } from "./app-shared";
 import type { Route } from "./routes";
-import { ClaudeProviders } from "./ClaudeProviders";
 import { ClaudeAutoTakeoverRow } from "./ClaudeAutoTakeover";
 import { patchClaudeEnhance, saveClaudeBashTimeout, setClaudeDelivery, useClaudeEnhance, type ClaudeDelivery } from "./claude-enhance";
 
@@ -426,7 +425,7 @@ export function ClaudeLocalizationScreen(
   // 设置页签：补丁副本没有这些设置；证书与环境、功能只在完整功能模式下有。证书没信任或缺 Node 时那个页签带个点。
   const fullLocal = claudeLaunch === "full" && Boolean(local);
   const settingsTabs: Array<{ id: ClaudeSettingsTab; label: string; attention?: boolean }> = claudeLaunch === "copy" ? [] : [
-    { id: "providers", label: t("供应商与模型") },
+    { id: "providers", label: t("模型") },
     { id: "account", label: t("账号与会话") },
     ...(fullLocal ? [
       { id: "features" as const, label: t("功能") },
@@ -533,10 +532,14 @@ export function ClaudeLocalizationScreen(
             </button>
           ))}
         </nav>
-        {/* 供应商与模型：Claude 用哪些供应商、默认哪个模型，加 / 导入供应商（补丁副本走 Claude 自己的登录，不经网关，没有这一页）。 */}
+        {/* 模型：模型选择器里列哪些模型。供应商和默认模型在 Claude 的「供应商」页（补丁副本走 Claude 自己的登录，没有这一页）。 */}
         <div {...settingsPanel("providers")}>
-          {notify ? <ClaudeProviders notify={notify} onManage={onNavigate ? () => onNavigate("gatewayProviders") : undefined} /> : null}
           <CxCard>
+          {onNavigate ? (
+            <CxRow detail={t("Claude 用哪些供应商、默认哪个模型，在 Claude 的「供应商」页里设置。")} title={t("供应商与默认模型")}>
+              <button className="cx-secondary" onClick={() => onNavigate("claudeProviders")} type="button">{t("打开供应商")}</button>
+            </CxRow>
+          ) : null}
           {/* 窗口比默认模型小的模型不会列给 Claude（Claude 按默认模型的窗口压所有模型）；说清楚它们去哪了。 */}
           <CxRow
             detail={t("默认只列窗口不小于默认模型的模型（Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）；打开后池里的聊天模型全列出来，代价是切到小窗口模型可能超上限。")}

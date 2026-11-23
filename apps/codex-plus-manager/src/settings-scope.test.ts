@@ -80,7 +80,7 @@ test("标题：设置模式用分类名，Agent 自己的页面和其余页面�
 
 test("只用增强功能：隐藏供应商页面，配置保存成功后才提交模式", () => {
   const helpers = routesSource.slice(routesSource.indexOf("const multiAgentRoutes"), routesSource.indexOf("const gatewayTabByRoute"));
-  assert.match(helpers, /const providerRoutes = new Set<Route>\(\["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"\]\);/);
+  assert.match(helpers, /const providerRoutes = new Set<Route>\(\["claudeProviders", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"\]\);/);
   assert.match(helpers, /providersHidden\(focus\) && providerRoutes\.has\(routeId\)/);
   // 侧栏、页签、命令面板都按同一条规则过滤。
   // 本地服务的几页在设置模式里，和其余设置分类一样按模式过滤。

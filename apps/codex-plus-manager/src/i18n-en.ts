@@ -5,6 +5,10 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "供应商与默认模型": "Providers & default model",
+  "Claude 用哪些供应商、默认哪个模型，在 Claude 的「供应商」页里设置。": "Choose which providers Claude uses and its default model on Claude's Providers page.",
+  "打开供应商": "Open providers",
+  "Claude 用哪些供应商、默认哪个模型；OpenAI 协议的供应商由本地服务自动转换": "Which providers Claude uses and its default model; OpenAI-protocol providers are converted by the local service",
   "Claude 等其它 Agent 也能用这些供应商": "Claude and other agents can use these providers too",
   "Codex 现在经本地服务": "Codex is going through the local service",
   "Codex 经本地服务，默认用这家的模型；新开的会话生效": "Codex goes through the local service and uses this provider's model by default; takes effect in new sessions",

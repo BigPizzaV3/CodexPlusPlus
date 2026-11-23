@@ -218,12 +218,13 @@
     renderCodexPlusProviderPage();
   }
 
-  /** 让 Codex 经共享供应商接入：与管理器「连接与供应商 → 经共享供应商」同一条命令，沿用上次的接入设置。 */
-  async function codexPlusGatewayConnect() {
+  /** 让 Codex 经共享供应商接入：与管理器「连接与供应商」的「共享」分页同一条命令，沿用上次的接入设置；
+   * 传了 `model`（`<供应商 id>/<模型>`）就把默认模型换成它。 */
+  async function codexPlusGatewayConnect(model = "") {
     const state = codexPlusGatewayPageState;
     const payload = state.payload;
     const previous = payload?.gateway?.bindings?.codex;
-    const draft = codexPlusGatewayModel.draftFromBinding(previous);
+    const draft = { ...codexPlusGatewayModel.draftFromBinding(previous), ...(model ? { model } : {}) };
     const issue = codexPlusGatewayModel.validateDraft(draft, payload);
     if (issue) {
       codexPlusGatewaySetStatus(`${issue}（请先在共享供应商里添加可用的供应商，或在 Codex++「Agent 接入」里调整默认模型）`, "error");
@@ -297,14 +298,22 @@
     const gatewayMode = codexPlusProviderPageState.data?.gatewayMode === true;
     const busy = Boolean(codexPlusGatewayPageState.busy);
     const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+    // 选中的这一家能不能直接「使用」：有模型、开着、不是正在用的那家。
+    const entry = codexPlusGatewayPageState.isNew ? null : codexPlusGatewaySelected();
+    const entryModel = entry?.models?.[0] || "";
+    const active = gatewayMode && entry && model.toLowerCase().startsWith(`${entry.id}/`.toLowerCase());
+    const useButton = entry && entryModel && entry.enabled !== false && !active
+      ? `<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="use-selected" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在切换…" : "让 Codex 用这家"}</button>`
+      : "";
     return gatewayMode
       ? `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="gateway">
           <span>Codex 正经 Codex++ 本地服务接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。已打开的对话下一条请求就生效。</span>
+          ${useButton}
           <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="disconnect" ${busy ? "disabled" : ""}>断开并还原为直连</button>
         </div>`
       : `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="direct">
-          <span>Codex 现在是直连，这里的共享供应商暂时不起作用。</span>
-          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="connect" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在接入…" : "让 Codex 经共享供应商接入"}</button>
+          <span>Codex 现在是直连。在这里「使用」一家，Codex 就经本地服务、默认用这家的模型。</span>
+          ${useButton}
         </div>`;
   }
 
@@ -316,7 +325,7 @@
     const activeModel = state.payload?.gateway?.bindings?.codex?.model || "";
     const activeProviderId = gatewayMode && activeModel.includes("/") ? activeModel.split("/")[0] : "";
     const rows = entries.map((entry, index) => {
-      const selected = entry.id === state.selectedId && !state.isNew;
+      const selected = entry.id === state.selectedId && !state.isNew && codexPlusProviderPageState.tab === "gateway";
       const enabled = entry.enabled !== false;
       const isActive = gatewayMode && entry.id === activeProviderId;
       const tag = entry.account ? (entry.plan || "账号") : String(entry.source || "").startsWith("extension:") ? "拓展" : String(entry.source || "").startsWith("native:") ? "原生登录" : ({ responses: "Responses", chatCompletions: "Chat", anthropicMessages: "Anthropic" }[entry.protocol] || entry.protocol);
@@ -507,6 +516,11 @@
         break;
       }
       case "connect": await codexPlusGatewayConnect(); break;
+      case "use-selected": {
+        const model = entry?.models?.[0] || "";
+        if (entry && model) await codexPlusGatewayConnect(`${entry.id}/${model}`);
+        break;
+      }
       case "disconnect": await codexPlusGatewayOpenDisconnect(); break;
       case "disconnect-cancel":
         state.disconnect = null;

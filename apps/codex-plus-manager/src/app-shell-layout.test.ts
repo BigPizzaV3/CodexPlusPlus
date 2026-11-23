@@ -90,7 +90,7 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   // 「连接与供应商」（原旧版供应商配置 + 旧版代理设置）紧跟概览，是 Codex 自己的页面：直连用户每天在这里切供应商，
   // 不藏进设置；Codex 设置（启动参数、维护）在设置模式里。
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
-  assert.match(sections, /\{ id: "overview", routes: \["overview", "relay"\] \}/);
+  assert.match(sections, /\{ id: "overview", routes: \["overview", "relay", "claudeProviders"\] \}/);
   for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
   assert.doesNotMatch(sections, /"agentSettings"|"relayEnvironment"/);
   assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "agentCache", "computerUse", "agentCollaboration"\]\);/);

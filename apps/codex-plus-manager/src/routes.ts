@@ -39,7 +39,7 @@ import { t, tf } from "@/i18n";
 /** 左侧 Agent 切换栏的工具标识。后端 `list_tools` 返回同名字符串。 */
 export type ToolId = string;
 
-export type Route = "home" | "overview" | "relay" | "multiLaunch" | "claude" | "claudePatch" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "agentCollaboration" | "computerUse" | "remoteControl" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "settings" | "agentSettings" | "extension";
+export type Route = "home" | "overview" | "relay" | "claudeProviders" | "multiLaunch" | "claude" | "claudePatch" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "agentCollaboration" | "computerUse" | "remoteControl" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "settings" | "agentSettings" | "extension";
 /** 进来的路由可以是旧 id（见 route-aliases.ts），由 `navigate` 换成现在的页面。 */
 export type RouteTarget = Route | RouteAlias;
 export const isKnownRoute = (target: string): target is Route => routes.some((item) => item.id === target);
@@ -61,6 +61,9 @@ export const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: 
   { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
   // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
   { id: "relay", get label() { return t("连接与供应商"); }, icon: Cable, tool: "codex" },
+  // Claude 的供应商（Claude Desktop 用哪些共享供应商、默认哪个模型）：和 Codex 的「连接与供应商」一样，是 Claude 自己的一页，
+  // 不再藏在「Desktop 增强」的页签里。
+  { id: "claudeProviders", get label() { return t("供应商"); }, icon: Cable, tool: "claude" },
   { id: "multiLaunch", get label() { return t("多开"); }, icon: Layers3, tool: "codex" },
   // 增强针对的是 Claude Desktop（汉化、Cowork 时限等），名字写明，免得和 Claude Code 命令行的概览混在一起（#2913）。
   { id: "claude", get label() { return t("Desktop 增强"); }, icon: Languages, tool: "claude" },
@@ -113,7 +116,7 @@ export const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: 
  */
 export const navigationSections: Array<{ id: string; routes: Route[] }> = [
   // 「连接与供应商」紧跟概览：直连模式的老用户每天在这里切供应商，想改用网关也从这里开始。
-  { id: "overview", routes: ["overview", "relay"] },
+  { id: "overview", routes: ["overview", "relay", "claudeProviders"] },
   { id: "enhance", routes: ["claude", "claudePatch", "enhance", "pluginMarket", "weixin", "remoteControl", "multiLaunch"] },
   // Codex 设置（含安装维护）在齿轮的设置模式里，不再占 Agent 的页签。
 ];
@@ -145,7 +148,7 @@ const multiAgentRoutes = new Set<Route>(["agentCollaboration", "computerUse"]);
  * 和供应商有关的页面：只用增强功能（供应商交给别的工具）时全部隐藏。
  * 网关一整组、用量与请求日志、旧版供应商配置 / 代理设置，以及按供应商多开。
  */
-const providerRoutes = new Set<Route>(["hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"]);
+const providerRoutes = new Set<Route>(["claudeProviders", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"]);
 /** 当前使用模式下这一页是否显示：侧栏、页签、命令面板都按它过滤，停在隐藏页面上时自动离开。 */
 export const routeVisible = (focus: AgentFocus, routeId: Route) =>
   !(singleAgent(focus) && multiAgentRoutes.has(routeId)) && !(providersHidden(focus) && providerRoutes.has(routeId));
@@ -195,6 +198,7 @@ export function routeSubtitle(route: Route, soloAgent: string | null = null) {
     home: t("赞助商推荐：支持 Codex++ 的服务"),
     overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
+    claudeProviders: t("Claude 用哪些供应商、默认哪个模型；OpenAI 协议的供应商由本地服务自动转换"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),
     claude: t("启动原版 Claude Desktop，选择 3p 或完整功能模式"),
     claudePatch: t("制作、更新与启动改过代码的 Desktop 副本；原件与 app.asar 不动"),

@@ -173,6 +173,7 @@ import { lazyNamed, PageFallback } from "./lazy-page";
 
 // 不常用的页面按需加载（首页、侧栏、Codex 连接 / 多开 / 会话 / MCP 等常用页仍随主界面一起加载）。
 const GatewayPage = lazyNamed(() => import("./GatewayPage"), "GatewayPage");
+const ClaudeProviders = lazyNamed(() => import("./ClaudeProviders"), "ClaudeProviders");
 const HubOverview = lazyNamed(() => import("./HubOverview"), "HubOverview");
 const SkillsPage = lazyNamed(() => import("./SkillsPage"), "SkillsPage");
 const ComputerUsePage = lazyNamed(() => import("./ComputerUsePage"), "ComputerUsePage");
@@ -3612,6 +3613,12 @@ export function App() {
             />
           ) : null}
           {route === "claudePatch" ? <ClaudeLocalizationScreen mode="patch" onNavigate={(next) => void navigate(next)} /> : null}
+          {/* Claude 的供应商：从「Desktop 增强」的页签里移出来，和 Codex 的「连接与供应商」一样单独一页。 */}
+          {route === "claudeProviders" ? (
+            <div className="claude-localization-page cx-page">
+              <ClaudeProviders notify={actions.showMessage} onManage={() => void navigate("gatewayProviders")} />
+            </div>
+          ) : null}
           {/* 只管理 Codex 时没有 Agent 页签，直接是 Codex 的完整会话管理。 */}
           {route === "sessions" && !soloAgent ? <SessionAgentTabs onChange={setSessionTab} value={sessionTab} /> : null}
           {route === "sessions" && shownSessionTab !== "codex" ? (
