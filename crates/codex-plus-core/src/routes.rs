@@ -293,6 +293,9 @@ pub trait BridgeDataService: Send + Sync {
     async fn usage_archive(&self, _request: Value) -> anyhow::Result<Value> {
         Ok(json!({"status":"unavailable","code":"archive-unavailable"}))
     }
+    async fn usage_history_storage_info(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable"}))
+    }
     /// 关闭查询时释放本进程的只读缓存，默认实现兼容其他数据服务。
     async fn clear_usage_history(&self) {}
     async fn whale_session(&self, _session: SessionRef) -> anyhow::Result<Value> {
@@ -475,6 +478,7 @@ pub async fn handle_bridge_request(
         }
         // 只读：设置项清单（标题、说明、分组等），注入页据此生成设置行。
         "/settings/catalog" => crate::settings_catalog::enhancement_settings_catalog(),
+        "/settings/usage-history-storage" => ctx.data.usage_history_storage_info().await,
         // 只读：Codex 自定义 prompt（<CODEX_HOME>/prompts/*.md），给「prompt 参数展开」发送前展开占位符。
         "/custom-prompts/list" => Ok(json!({
             "status": "ok",
