@@ -178,7 +178,11 @@
    * 脚本本身抛错在用户看来是同一件事，不需要第二套排查入口。
    */
   function codexPlusMarkExtensionFailure(scriptKey, message) {
-    if (!scriptKey) return;
+    if (!scriptKey) {
+      // 没有归属脚本的失败（RPC 拦截层、请求中间件这些内核环节）没有脚本状态可写，记进诊断日志。
+      codexPlusLogKernelFailure(message);
+      return;
+    }
     const record = window.__codexPlusUserScripts?.scripts?.[scriptKey];
     if (record) {
       record.error = message;
@@ -188,4 +192,44 @@
     window.__codexPlusExtensionFailures = window.__codexPlusExtensionFailures || [];
     window.__codexPlusExtensionFailures.push({ script_key: scriptKey, message, at: Date.now() });
     if (window.__codexPlusExtensionFailures.length > 100) window.__codexPlusExtensionFailures.shift();
+  }
+
+  /** 内核失败日志的限流窗口：同一条 message 一个窗口内只记一次，一个窗口最多记这么多条。 */
+  const codexPlusKernelFailureWindowMs = 60_000;
+  const codexPlusKernelFailureWindowLimit = 20;
+  const codexPlusKernelFailureWindow = { startedAt: 0, seen: new Set(), suppressed: 0 };
+
+  /**
+   * 把没有归属脚本的失败写进诊断日志（事件 `extension.kernel_failure`）。
+   *
+   * 调用点在 RPC 帧拦截这类热路径上，每一帧都可能触发，所以必须限流；被限流掉的条数
+   * 记在下一条写出去的日志里（suppressed）。先登记再发送：发送途中即使又绕回这里，
+   * 同一条 message 也已经在窗口里，不会递归。本函数不抛错，也不回调 codexPlusMarkExtensionFailure。
+   */
+  function codexPlusLogKernelFailure(message) {
+    try {
+      const text = String(message ?? "").slice(0, 2000);
+      const state = codexPlusKernelFailureWindow;
+      const now = Date.now();
+      if (now - state.startedAt >= codexPlusKernelFailureWindowMs || now < state.startedAt) {
+        state.startedAt = now;
+        state.seen.clear();
+      }
+      if (state.seen.has(text) || state.seen.size >= codexPlusKernelFailureWindowLimit) {
+        state.suppressed += 1;
+        return;
+      }
+      state.seen.add(text);
+      const detail = { message: text, suppressed: state.suppressed };
+      state.suppressed = 0;
+      // 完整产物里走统一的诊断上报（桥没连上时它会退到本地服务）；单独执行本分片时直接走桥。
+      if (typeof sendCodexPlusDiagnostic === "function") {
+        Promise.resolve(sendCodexPlusDiagnostic("extension.kernel_failure", detail)).catch(() => {});
+        return;
+      }
+      window.__codexSessionDeleteBridge?.("/diagnostics/log", {
+        event: "extension.kernel_failure",
+        detail,
+      })?.catch?.(() => {});
+    } catch {}
   }

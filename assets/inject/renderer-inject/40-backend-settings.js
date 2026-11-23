@@ -704,14 +704,16 @@
     if (!panel) return;
     const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
     const config = local?.package?.config || window.__codexPlusUserScripts?.scripts?.[key]?.manifest?.config || {};
-    const saveConfig = (values) => saveCodexPlusExtensionConfig(key, values);
+    // 拓展自己调的 saveConfig 只覆盖给出的项：它常常只传改动的那一项，整份替换会把别的项打回默认值。
+    const saveConfig = (values) => saveCodexPlusExtensionConfig(key, values, true);
     const result = runCodexPlusExtensionCallback(key, "settingsPanel.render", () => panel.render({ container: slot, config: { ...config }, saveConfig }));
     codexPlusMountedSettingsPanel = { key, node: slot, panel, cleanup: result.ok ? result.value : null };
   }
 
   /** 拓展设置面板保存配置：后台只收清单里声明过的项；拓展用 onConfigUpdate 接住时原地生效，否则整体热重载。 */
-  async function saveCodexPlusExtensionConfig(key, values) {
-    const result = await postJson("/user-scripts/set-config", { key, values: values && typeof values === "object" ? values : {} });
+  /** merge 为 true：只覆盖给出的项，其余已存的值保留；默认整份替换（通用表单逐项保存时传的是整份）。 */
+  async function saveCodexPlusExtensionConfig(key, values, merge = false) {
+    const result = await postJson("/user-scripts/set-config", { key, values: values && typeof values === "object" ? values : {}, merge });
     if (!result || result.status !== "ok") throw new Error(result?.message || "拓展配置没有保存");
     const config = result.config && typeof result.config === "object" ? result.config : {};
     const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
