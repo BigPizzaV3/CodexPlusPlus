@@ -50,15 +50,28 @@ const host = codexPlus.host ?? "codex";            // Claude 里是 "claudeDeskt
 if (codexPlus.supports?.("registerComposerAction") ?? true) { /* 有输入框按钮这个位置 */ }
 ```
 
-目前在 Claude 里已经接上的：
+在 Claude 里各接口挂在哪：
 
-- 拓展实例与生命周期：`codexPlus.extension`、`ctx.effect`、`ctx.on` / `emit`、`ctx.intercept` / `waterfall`、`ctx.provide` / `get` / `inject`、`ctx.listen`、`ctx.setTimeout` / `setInterval`、`ctx.onScan`、`ctx.dispose`。
-- 界面：`toast`、`ask`、`registerPage`（整页覆盖层）、`registerNavEntry`、`registerFloatingTab`、`registerShortcut`、`registerTheme`。页面入口和悬浮页签在右下角的悬浮按钮里。
-- 数据：`ctx.config`、`ctx.storage`、`ctx.locale`、`ctx.backend.call` / `on`、`ctx.call`（只开放 `/diagnostics/log`、`/backend/status`，同样要在 `permissions.routes` 里声明）。
+| 接口 | 位置 |
+| --- | --- |
+| `toast`、`ask`、`registerShortcut`、`registerTheme` | 不依赖 Claude 的界面，任何页面都可用 |
+| `registerPage` / `registerNavEntry` | 侧栏「项目 / Artifacts / 插件」那组导航行后面，点开是整页覆盖层 |
+| `registerFloatingTab` | 右下角的悬浮按钮 |
+| `registerComposerAction` | 输入框工具行左边，挨着加号 |
+| `registerCommand` / `registerInputTrigger` | 输入框：回车时拦下「/名字 参数」；光标前是触发符时弹出候选（`@`、`/` 归 Claude，不能用作触发符） |
+| `registerMessageAction` / `registerMessageDecoration` | 每条消息的操作行里；回复正文和操作行之间、用户消息气泡下面。`message.id` 是这条消息所在那一轮的标识 |
+| `registerSlot` | `composer.above` / `composer.below`、`thread.top` / `thread.bottom`、`turn.after`、`sidebar.top` / `sidebar.bottom`、`titlebar`、`sessionRow.suffix`、`overlay` |
+| `registerRowAction` | 最近对话列表每一行「更多选项」旁边（都画成行上的图标按钮，Claude 的「更多」菜单不动） |
+| `registerSidePanel` | 开关在对话页头部，面板在右侧；没有头部的页面上用返回的句柄打开 |
+| `registerMenuItem` / `registerSettingsSection` / `registerSettingsPanel` | Claude 里没有 Codex++ 的菜单和拓展详情页，这三样集中在侧栏的「拓展」页里 |
+
+拓展实例与生命周期（`codexPlus.extension`、`ctx.effect`、`ctx.on` / `emit`、`ctx.intercept` / `waterfall`、`ctx.provide` / `get` / `inject`、`ctx.listen`、`ctx.setTimeout` / `setInterval`、`ctx.onScan`、`ctx.dispose`）和数据接口（`ctx.config`、`ctx.storage`、`ctx.locale`、`ctx.backend.call` / `on`、`ctx.call`）与 Codex 里同名同义；`ctx.call` 只开放 `/diagnostics/log`、`/backend/status`，同样要在 `permissions.routes` 里声明。
 
 和 Codex 不一样的地方：
 
-- **其余挂载点还没有接上**：`registerComposerAction`、`registerCommand`、`registerInputTrigger`、`registerMessageAction`、`registerMessageDecoration`、`registerToolView`、`registerSlot`、`registerSidePanel`、`registerRowAction`、`registerSettingsSection`、`registerSettingsPanel`、`registerMenuItem`。调用它们不会报错，只是不出现；「万物皆拓展」的那一行会列出这个拓展用了哪些 Claude 里还没有的接口。
+- **位置是对着 Chat 页签量的**。按钮和侧栏行照旁边的原生控件做，Claude 改了样式会自动跟着变；Claude 改了结构时，那一处不出现（其余照常），「万物皆拓展」的那一行会标出来。Cowork、Code 页签和本机版界面（3p）还没量过，那里只保证不依赖界面的接口可用。
+- **还没有位置的**：`registerToolView`，以及 `registerSlot` 的 `composer.left` / `composer.right` / `composer.model`、`home.above`、`settings.nav`、`activity.after`、`approval`、`header.title`、`sidebar.section`、`sessionRow.prefix`、`projectRow.suffix`。登记它们不报错、不出现，`codexPlus.supports()` 对它们回 `false`。
+- **在页面里存配置还不行**：`registerSettingsPanel` 拿到的 `saveConfig` 会以 `CodexPlusUnsupportedError` 拒绝；配置在「万物皆拓展」里改，刷新页面生效。
 - **取数据的接口会拒绝**：`ctx.llm.*`、没开放的路由、没声明的后台方法，返回的 Promise 以 `CodexPlusUnsupportedError` 拒绝（`error.code === "unsupported"`）。
 - **密钥类配置不进页面**：`config` 里 `secret: true` 的项在页面的 `ctx.config` 里是 `null`，只有后台拿得到。页面里 Claude 自己的脚本和拓展脚本同权，放进页面就等于交给了页面里的所有代码。
 - **`ctx.storage` 跟着页面的源走**：登录账号的界面（`claude.ai`）和本机版界面（`app://localhost`）各存各的。要长期保存的数据放后台的 `ctx.dataDir`。

@@ -30,6 +30,27 @@ codexPlus.extension((ctx) => {
     },
   }, { id: "main" });
 
+  // 输入框工具行里的按钮（挨着加号）：把当前时间写进输入框。
+  ctx.registerComposerAction({
+    label: "插入当前时间",
+    icon: "◷",
+    onActivate: ({ insertText }) => insertText(new Date().toLocaleTimeString()),
+  });
+
+  // 每条消息操作行里的按钮：报一下这条消息有多少字。
+  ctx.registerMessageAction({
+    label: "字数",
+    icon: "#",
+    onActivate: ({ message }) => ctx.toast(`${message.role === "user" ? "你" : "Claude"} 的这条消息有 ${message.text.length} 个字`),
+  });
+
+  // 斜杠命令：在输入框里打「/demo 任意文字」回车，交给拓展处理，不会发给 Claude。
+  ctx.registerCommand({
+    name: "demo",
+    description: "连通测试的斜杠命令",
+    run: (args, { toast }) => toast(`收到命令参数：${args || "（空）"}`),
+  });
+
   ctx.registerShortcut({
     key: "Mod+Shift+E",
     description: "显示连通测试的提示",
