@@ -1,6 +1,45 @@
 use super::{Checkpoint, FileState, Observation, UsageEvent};
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+pub(super) mod projection;
+
+#[cfg(unix)]
+fn encode_path(path: &Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().to_vec()
+}
+
+#[cfg(unix)]
+fn decode_path(bytes: Vec<u8>) -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(OsString::from_vec(bytes).into())
+}
+
+#[cfg(windows)]
+fn encode_path(path: &Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str()
+        .encode_wide()
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+#[cfg(windows)]
+fn decode_path(bytes: Vec<u8>) -> Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    let chunks = bytes.chunks_exact(2);
+    ensure!(
+        chunks.remainder().is_empty(),
+        "invalid encoded Token source path"
+    );
+    let wide: Vec<_> = chunks
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    Ok(OsString::from_wide(&wide).into())
+}
 
 pub(super) struct Store {
     pub(super) db: Connection,
@@ -37,6 +76,23 @@ impl Store {
                 payload BLOB NOT NULL,
                 PRIMARY KEY (source_id, revision, position)
              ) WITHOUT ROWID, STRICT;
+             CREATE TABLE IF NOT EXISTS token_source_links (
+                source_id INTEGER NOT NULL REFERENCES token_sources(id),
+                link TEXT NOT NULL,
+                PRIMARY KEY (source_id, link)
+             ) WITHOUT ROWID, STRICT;
+             CREATE INDEX IF NOT EXISTS token_link_sources ON token_source_links(link);
+             CREATE TABLE IF NOT EXISTS token_collisions (
+                id BLOB PRIMARY KEY
+             ) WITHOUT ROWID, STRICT;
+             CREATE TABLE IF NOT EXISTS token_resolved (
+                event_id BLOB PRIMARY KEY,
+                session_id INTEGER NOT NULL REFERENCES token_sessions(id),
+                timestamp_ms INTEGER NOT NULL,
+                payload BLOB NOT NULL
+             ) WITHOUT ROWID, STRICT;
+             CREATE INDEX IF NOT EXISTS token_resolved_time ON token_resolved(timestamp_ms);
+             CREATE INDEX IF NOT EXISTS token_resolved_session ON token_resolved(session_id);
              COMMIT;",
         )?;
         Ok(Self { db })
@@ -44,7 +100,7 @@ impl Store {
 
     pub(super) fn save(
         &mut self,
-        source: &[u8],
+        source: &Path,
         expected_revision: Option<i64>,
         state: &FileState,
         replace: bool,
@@ -59,17 +115,18 @@ impl Store {
 
     pub(super) fn stage(
         tx: &Transaction<'_>,
-        source: &[u8],
+        source: &Path,
         expected_revision: Option<i64>,
         state: &FileState,
         replace: bool,
     ) -> Result<i64> {
         ensure!(!state.skipping, "cannot checkpoint within a skipped line");
         let (offset, checkpoint) = Checkpoint::capture(state);
+        let path = encode_path(source);
         let previous: Option<(i64, i64, u64)> = tx
             .query_row(
                 "SELECT id, revision, offset FROM token_sources WHERE source = ?1",
-                [source],
+                [&path],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
@@ -94,7 +151,7 @@ impl Store {
              ON CONFLICT (source) DO UPDATE SET revision = excluded.revision,
                 offset = excluded.offset, checkpoint = excluded.checkpoint
              RETURNING id",
-            params![source, revision, offset, serde_json::to_vec(&checkpoint)?],
+            params![path, revision, offset, serde_json::to_vec(&checkpoint)?],
             |row| row.get::<_, i64>(0),
         )?;
         if replace {
@@ -102,6 +159,18 @@ impl Store {
                 "DELETE FROM token_observations WHERE source_id = ?1",
                 [source_id],
             )?;
+            tx.execute(
+                "DELETE FROM token_source_links WHERE source_id = ?1",
+                [source_id],
+            )?;
+        }
+        {
+            let mut insert = tx.prepare(
+                "INSERT OR IGNORE INTO token_source_links (source_id, link) VALUES (?1, ?2)",
+            )?;
+            for link in projection::links(source, state) {
+                insert.execute(params![source_id, link])?;
+            }
         }
         {
             let mut add_session =
@@ -125,12 +194,12 @@ impl Store {
         Ok(revision)
     }
 
-    pub(super) fn checkpoint(&self, source: &[u8]) -> Result<Option<(i64, FileState)>> {
+    pub(super) fn checkpoint(&self, source: &Path) -> Result<Option<(i64, FileState)>> {
         let row: Option<(i64, u64, Vec<u8>)> = self
             .db
             .query_row(
                 "SELECT revision, offset, checkpoint FROM token_sources WHERE source = ?1",
-                [source],
+                [encode_path(source)],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .optional()?;
@@ -143,14 +212,14 @@ impl Store {
         .transpose()
     }
 
-    pub(super) fn observations(&self, source: &[u8]) -> Result<Vec<UsageEvent>> {
+    pub(super) fn observations(&self, source: &Path) -> Result<Vec<UsageEvent>> {
         let mut stmt = self.db.prepare(
             "SELECT o.event_id, s.session, o.payload FROM token_observations o
              JOIN token_sources t ON t.id = o.source_id
              JOIN token_sessions s ON s.id = o.session_id
              WHERE t.source = ?1 ORDER BY o.revision, o.position",
         )?;
-        let mut rows = stmt.query([source])?;
+        let mut rows = stmt.query([encode_path(source)])?;
         let mut observations = Vec::new();
         while let Some(row) = rows.next()? {
             let id = row.get_ref(0)?.as_blob()?.try_into()?;

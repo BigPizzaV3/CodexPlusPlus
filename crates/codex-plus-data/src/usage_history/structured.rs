@@ -2067,107 +2067,7 @@ impl Index {
         Ok(available && self.native_cache_version == Some(self.provider_cache.data_version()?))
     }
 
-    fn update(&mut self, home: &Path) -> Snapshot {
-        let request_log = codex_plus_core::request_log::request_log_path();
-        self.update_with_request_log(home, &request_log)
-    }
-
-    fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> Snapshot {
-        let started = Instant::now();
-        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
-        let mut snapshot = Snapshot::default();
-        let mut cache_available = true;
-        let mut cache_opened = false;
-        match self
-            .provider_cache
-            .open(self.storage_dir.as_deref().unwrap_or(home), cutoff)
-        {
-            Ok(true) => {
-                cache_opened = true;
-                self.native_cache_loaded = false;
-                self.native_cache_version = None;
-                // refresh 会在路径变化时清空请求缓存，必须先建立路径再恢复落盘证据。
-                self.request_evidence.refresh(request_log);
-                match self.provider_cache.load_verified(cutoff) {
-                    Ok(records) => self.request_evidence.restore_verified(records),
-                    Err(_) => cache_available = false,
-                }
-            }
-            Ok(false) => cache_opened = true,
-            Err(_) => cache_available = false,
-        }
-        if cache_opened && self.sync_native_evidence(cutoff).is_err() {
-            self.native_cache_loaded = false;
-            self.native_cache_version = None;
-            cache_available = false;
-        }
-        // 加载器会跳过无效条目；仅比较加载后的数量无法证明 LIMIT 未截断。
-        if cache_available {
-            cache_available = native_endpoints::cache_below_limit(
-                self.storage_dir.as_deref().unwrap_or(home),
-                cutoff,
-            )
-            .unwrap_or(false);
-        }
-        snapshot.aliases = self.provider_cache.aliases.clone();
-        let mut current_aliases = BTreeMap::new();
-        let settings = self
-            .settings_path
-            .clone()
-            .unwrap_or_else(codex_plus_core::paths::default_settings_path);
-        let stamp = native_endpoints::config_stamp(&settings);
-        if self.provider_stamp.as_ref() != Some(&stamp) {
-            self.provider_endpoints.clear();
-            self.provider_names.clear();
-            self.provider_endpoint_since = 0;
-            self.provider_stamp = None;
-            if let Ok(profiles) = native_endpoints::profiles(&settings)
-                && native_endpoints::config_stamp(&settings) == stamp
-            {
-                self.provider_endpoints = native_endpoints::endpoints(&profiles);
-                self.provider_endpoint_since = self
-                    .provider_cache
-                    .endpoint_binding_since(&self.provider_endpoints)
-                    .unwrap_or_else(|_| Local::now().timestamp_millis());
-                self.provider_names = profiles
-                    .into_iter()
-                    .map(|name| (name.id, name.name))
-                    .collect();
-                self.provider_stamp = Some(stamp);
-            }
-        }
-        snapshot.provider_names = self.provider_names.clone();
-        let mut paths = Vec::new();
-        discover(home, &mut paths, &mut snapshot.errors);
-        let existing: HashSet<_> = paths.iter().cloned().collect();
-        self.files.retain(|path, _| existing.contains(path));
-        let mut budget = index_budget::Budget::new(self.files.values());
-        let mut seen = HashMap::new();
-        let mut tools = BTreeMap::new();
-        for path in paths {
-            snapshot.files += 1;
-            snapshot.compressed += usize::from(path.extension().is_some_and(|ext| ext == "zst"));
-            let state = self.files.entry(path.clone()).or_default();
-            state.bytes_read = 0;
-            let previous_usage = index_budget::Usage::of(state);
-            budget.replace(previous_usage, index_budget::Usage::default());
-            match state.read_with_budget(&path, cutoff, &mut budget) {
-                Err(_) => {
-                    snapshot.errors += 1;
-                    // 下次从有效文件头重试，不能让失败的解压流留下错误累计基线。
-                    *state = FileState::default();
-                }
-                Ok(true) => snapshot.indexed += 1,
-                Ok(false) => snapshot.errors += 1,
-            }
-            budget.replace(
-                index_budget::Usage::default(),
-                index_budget::Usage::of(state),
-            );
-            snapshot.issues += state.issues;
-            snapshot.activity_truncated |= state.activity_truncated;
-            snapshot.bytes_read += state.bytes_read;
-        }
+    fn observed_collisions(&self) -> HashMap<[u8; 32], i64> {
         // 原有事件 ID 保持不变；仅给有明确不同轮次的碰撞分配独立身份。
         let mut turns = HashMap::<[u8; 32], (bool, HashSet<String>, i64)>::new();
         for event in self
@@ -2194,25 +2094,13 @@ impl Index {
                     .map_or(0, |time| time.timestamp_millis()),
             );
         }
-        let observed_collisions: HashMap<_, _> = turns
+        turns
             .into_iter()
             .filter_map(|(id, (_, turns, at))| (turns.len() > 1).then_some((id, at)))
-            .collect();
-        let collision_identity_available = match self
-            .provider_cache
-            .event_collisions(&observed_collisions, cutoff)
-        {
-            Ok(collisions) => {
-                self.collision_families = collisions;
-                true
-            }
-            Err(_) => {
-                cache_available = false;
-                self.collision_families
-                    .extend(observed_collisions.keys().copied());
-                false
-            }
-        };
+            .collect()
+    }
+
+    fn apply_collision_ids(&mut self) {
         for event in self.files.values_mut().flat_map(|state| &mut state.events) {
             let original = event.original_id;
             event.id = if self.collision_families.contains(&original) && !event.turn.is_empty() {
@@ -2229,6 +2117,17 @@ impl Index {
                 original
             };
         }
+    }
+
+    fn select_observations(
+        &self,
+        cutoff: NaiveDate,
+        snapshot: &mut Snapshot,
+        current_aliases: &mut BTreeMap<String, String>,
+        event_limit: usize,
+    ) {
+        let mut seen = HashMap::new();
+        let mut tools = BTreeMap::new();
         for (path, state) in &self.files {
             if state.identity_conflict || state.session.is_empty() && state.stamp.is_some() {
                 snapshot.ignored += 1;
@@ -2283,7 +2182,7 @@ impl Index {
                     }
                     continue;
                 }
-                if snapshot.events.len() == MAX_EVENTS {
+                if snapshot.events.len() == event_limit {
                     snapshot.issues += 1;
                     break;
                 }
@@ -2318,6 +2217,9 @@ impl Index {
         snapshot
             .collect_scope_parents(self.files.values().filter(|state| !state.identity_conflict));
         snapshot.tools = tools.into_values().collect();
+    }
+
+    fn resolve_counts(&self, snapshot: &mut Snapshot) -> HashMap<[u8; 32], usize> {
         // 无法读取累计输入或输出时，整个会话的增量边界暂时不可核验。
         let incomplete_sessions: HashSet<_> = self
             .files
@@ -2345,14 +2247,12 @@ impl Index {
         let unresolved =
             segments::prune_transitive_predecessors(&mut predecessors, &components, 1_000_000);
         let ordered_totals: Vec<_> = snapshot.events.iter().map(|event| event.total).collect();
-        seen.clear();
-        seen.extend(
-            snapshot
-                .events
-                .iter()
-                .enumerate()
-                .map(|(position, event)| (event.id, position)),
-        );
+        let mut seen: HashMap<_, _> = snapshot
+            .events
+            .iter()
+            .enumerate()
+            .map(|(position, event)| (event.id, position))
+            .collect();
         let mut continuation_starts = vec![false; snapshot.events.len()];
         let mut independent_starts = vec![false; snapshot.events.len()];
         let mut external_baselines = HashMap::new();
@@ -2604,6 +2504,127 @@ impl Index {
                 }
             }
         }
+        seen
+    }
+
+    fn update(&mut self, home: &Path) -> Snapshot {
+        let request_log = codex_plus_core::request_log::request_log_path();
+        self.update_with_request_log(home, &request_log)
+    }
+
+    fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> Snapshot {
+        let started = Instant::now();
+        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+        let mut snapshot = Snapshot::default();
+        let mut cache_available = true;
+        let mut cache_opened = false;
+        match self
+            .provider_cache
+            .open(self.storage_dir.as_deref().unwrap_or(home), cutoff)
+        {
+            Ok(true) => {
+                cache_opened = true;
+                self.native_cache_loaded = false;
+                self.native_cache_version = None;
+                // refresh 会在路径变化时清空请求缓存，必须先建立路径再恢复落盘证据。
+                self.request_evidence.refresh(request_log);
+                match self.provider_cache.load_verified(cutoff) {
+                    Ok(records) => self.request_evidence.restore_verified(records),
+                    Err(_) => cache_available = false,
+                }
+            }
+            Ok(false) => cache_opened = true,
+            Err(_) => cache_available = false,
+        }
+        if cache_opened && self.sync_native_evidence(cutoff).is_err() {
+            self.native_cache_loaded = false;
+            self.native_cache_version = None;
+            cache_available = false;
+        }
+        // 加载器会跳过无效条目；仅比较加载后的数量无法证明 LIMIT 未截断。
+        if cache_available {
+            cache_available = native_endpoints::cache_below_limit(
+                self.storage_dir.as_deref().unwrap_or(home),
+                cutoff,
+            )
+            .unwrap_or(false);
+        }
+        snapshot.aliases = self.provider_cache.aliases.clone();
+        let mut current_aliases = BTreeMap::new();
+        let settings = self
+            .settings_path
+            .clone()
+            .unwrap_or_else(codex_plus_core::paths::default_settings_path);
+        let stamp = native_endpoints::config_stamp(&settings);
+        if self.provider_stamp.as_ref() != Some(&stamp) {
+            self.provider_endpoints.clear();
+            self.provider_names.clear();
+            self.provider_endpoint_since = 0;
+            self.provider_stamp = None;
+            if let Ok(profiles) = native_endpoints::profiles(&settings)
+                && native_endpoints::config_stamp(&settings) == stamp
+            {
+                self.provider_endpoints = native_endpoints::endpoints(&profiles);
+                self.provider_endpoint_since = self
+                    .provider_cache
+                    .endpoint_binding_since(&self.provider_endpoints)
+                    .unwrap_or_else(|_| Local::now().timestamp_millis());
+                self.provider_names = profiles
+                    .into_iter()
+                    .map(|name| (name.id, name.name))
+                    .collect();
+                self.provider_stamp = Some(stamp);
+            }
+        }
+        snapshot.provider_names = self.provider_names.clone();
+        let mut paths = Vec::new();
+        discover(home, &mut paths, &mut snapshot.errors);
+        let existing: HashSet<_> = paths.iter().cloned().collect();
+        self.files.retain(|path, _| existing.contains(path));
+        let mut budget = index_budget::Budget::new(self.files.values());
+        for path in paths {
+            snapshot.files += 1;
+            snapshot.compressed += usize::from(path.extension().is_some_and(|ext| ext == "zst"));
+            let state = self.files.entry(path.clone()).or_default();
+            state.bytes_read = 0;
+            let previous_usage = index_budget::Usage::of(state);
+            budget.replace(previous_usage, index_budget::Usage::default());
+            match state.read_with_budget(&path, cutoff, &mut budget) {
+                Err(_) => {
+                    snapshot.errors += 1;
+                    // 下次从有效文件头重试，不能让失败的解压流留下错误累计基线。
+                    *state = FileState::default();
+                }
+                Ok(true) => snapshot.indexed += 1,
+                Ok(false) => snapshot.errors += 1,
+            }
+            budget.replace(
+                index_budget::Usage::default(),
+                index_budget::Usage::of(state),
+            );
+            snapshot.issues += state.issues;
+            snapshot.activity_truncated |= state.activity_truncated;
+            snapshot.bytes_read += state.bytes_read;
+        }
+        let observed_collisions = self.observed_collisions();
+        let collision_identity_available = match self
+            .provider_cache
+            .event_collisions(&observed_collisions, cutoff)
+        {
+            Ok(collisions) => {
+                self.collision_families = collisions;
+                true
+            }
+            Err(_) => {
+                cache_available = false;
+                self.collision_families
+                    .extend(observed_collisions.keys().copied());
+                false
+            }
+        };
+        self.apply_collision_ids();
+        self.select_observations(cutoff, &mut snapshot, &mut current_aliases, MAX_EVENTS);
+        let seen = self.resolve_counts(&mut snapshot);
         let scan_complete = snapshot.errors == 0 && snapshot.issues == 0;
         let count_cache_has_room = self.native_evidence.observe_count_conflicts(
             &mut snapshot.events,
@@ -2834,6 +2855,28 @@ impl Index {
 }
 
 impl FileState {
+    fn expire_observations(&mut self, cutoff: NaiveDate) {
+        let events_before = self.events.len();
+        self.events.retain(|event| {
+            if event.date >= cutoff {
+                return true;
+            }
+            if let Some(position) = event.rollout_position
+                && self
+                    .expired_count
+                    .is_none_or(|(previous, _)| position > previous)
+            {
+                self.expired_count = Some((position, event.total));
+            }
+            false
+        });
+        if self.events.len() < events_before
+            && self.events.capacity() > self.events.len().saturating_mul(2).max(16)
+        {
+            self.events.shrink_to_fit();
+        }
+    }
+
     fn inherited_context(&mut self, ordinal: u64) -> &mut InheritedUsageContext {
         if self.inherited_contexts.is_empty() {
             self.inherited_contexts.push(InheritedUsageContext {
@@ -2919,25 +2962,7 @@ impl FileState {
             observed
         };
         let compressed = path.extension().is_some_and(|ext| ext == "zst");
-        let events_before = self.events.len();
-        self.events.retain(|event| {
-            if event.date >= cutoff {
-                return true;
-            }
-            if let Some(position) = event.rollout_position
-                && self
-                    .expired_count
-                    .is_none_or(|(previous, _)| position > previous)
-            {
-                self.expired_count = Some((position, event.total));
-            }
-            false
-        });
-        if self.events.len() < events_before
-            && self.events.capacity() > self.events.len().saturating_mul(2).max(16)
-        {
-            self.events.shrink_to_fit();
-        }
+        self.expire_observations(cutoff);
         let tools_before = self.tools.len();
         self.tools.retain(|tool| tool.date >= cutoff);
         if self.tools.len() < tools_before

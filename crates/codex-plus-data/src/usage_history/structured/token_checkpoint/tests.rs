@@ -5,6 +5,7 @@ use rusqlite::{Connection, ErrorCode};
 use serde_json::json;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+use std::path::Path;
 
 const SESSION: &str = "00000000-0000-4000-8000-000000000010";
 
@@ -247,7 +248,7 @@ fn sqlite_full_rolls_back_cursor_observations_and_revision_then_reopens() {
     let root = fs::canonicalize(dir.path()).unwrap();
     let path = root.join("rollout.jsonl");
     let db = root.join("tokens.sqlite3");
-    let key = b"rollout.jsonl";
+    let key = Path::new("rollout.jsonl");
     let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     fs::write(&path, rows.concat()).unwrap();
     let mut state = FileState::default();
@@ -318,7 +319,7 @@ fn abrupt_process_exit_keeps_only_committed_batches() {
 
     const TEST_HOME: &str = "CODEX_PLUS_TEST_TOKEN_CHECKPOINT_CRASH_HOME";
     const TEST_COMMIT: &str = "CODEX_PLUS_TEST_TOKEN_CHECKPOINT_CRASH_COMMIT";
-    let key = b"rollout.jsonl";
+    let key = Path::new("rollout.jsonl");
     let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     if let Some(home) = std::env::var_os(TEST_HOME) {
         let home = std::path::PathBuf::from(home);
@@ -410,8 +411,10 @@ fn replacing_a_source_replaces_only_its_observations_and_rejects_a_stale_batch()
     );
     let mut store =
         store::Store::open(Connection::open(root.join("tokens.sqlite3")).unwrap()).unwrap();
-    let original = store.save(b"source-a", None, &state, false).unwrap();
-    store.save(b"source-b", None, &state, false).unwrap();
+    let a = Path::new("source-a");
+    let b = Path::new("source-b");
+    let original = store.save(a, None, &state, false).unwrap();
+    store.save(b, None, &state, false).unwrap();
 
     fs::write(&path, rows[..3].concat()).unwrap();
     let mut replacement = FileState::default();
@@ -420,16 +423,10 @@ fn replacing_a_source_replaces_only_its_observations_and_rejects_a_stale_batch()
             .read_with_budget(&path, cutoff, &mut Budget::new(std::iter::empty()))
             .unwrap()
     );
-    store
-        .save(b"source-a", Some(original), &replacement, true)
-        .unwrap();
-    assert!(
-        store
-            .save(b"source-a", Some(original), &state, false)
-            .is_err()
-    );
-    assert!(store.observations(b"source-a").unwrap() == replacement.events);
-    assert!(store.observations(b"source-b").unwrap() == state.events);
+    store.save(a, Some(original), &replacement, true).unwrap();
+    assert!(store.save(a, Some(original), &state, false).is_err());
+    assert!(store.observations(a).unwrap() == replacement.events);
+    assert!(store.observations(b).unwrap() == state.events);
 }
 
 #[test]
@@ -482,15 +479,15 @@ fn reopened_duplicate_rollouts_match_the_live_resolver_and_daily_totals() {
         let mut budget = Budget::new(std::iter::empty());
         budget.read_left = rows[..5].iter().map(Vec::len).sum::<usize>() as u64;
         assert!(!state.read_with_budget(&path, cutoff, &mut budget).unwrap());
-        let revision = store.save(name.as_bytes(), None, &state, false).unwrap();
-        let (_, mut state) = store.checkpoint(name.as_bytes()).unwrap().unwrap();
+        let revision = store.save(Path::new(name), None, &state, false).unwrap();
+        let (_, mut state) = store.checkpoint(Path::new(name)).unwrap().unwrap();
         assert!(
             state
                 .read_with_budget(&path, cutoff, &mut Budget::new(std::iter::empty()))
                 .unwrap()
         );
         store
-            .save(name.as_bytes(), Some(revision), &state, false)
+            .save(Path::new(name), Some(revision), &state, false)
             .unwrap();
     }
     drop(store);
@@ -498,8 +495,8 @@ fn reopened_duplicate_rollouts_match_the_live_resolver_and_daily_totals() {
     let store = store::Store::open(Connection::open(&db).unwrap()).unwrap();
     let mut index = make_index("restored-evidence");
     for name in sources {
-        let (_, mut state) = store.checkpoint(name.as_bytes()).unwrap().unwrap();
-        state.events = store.observations(name.as_bytes()).unwrap();
+        let (_, mut state) = store.checkpoint(Path::new(name)).unwrap().unwrap();
+        state.events = store.observations(Path::new(name)).unwrap();
         index.files.insert(sessions.join(name), state);
     }
     let restored = index.update_with_request_log(&root, &log);
@@ -522,7 +519,7 @@ fn bounded_batches_commit_beyond_the_in_memory_observation_limit() {
     let root = fs::canonicalize(dir.path()).unwrap();
     let path = root.join("long.jsonl");
     let db = root.join("tokens.sqlite3");
-    let key = b"long.jsonl";
+    let key = Path::new("long.jsonl");
     let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     let mut file = BufWriter::new(fs::File::create(&path).unwrap());
     file.write_all(&source_rows()[0]).unwrap();

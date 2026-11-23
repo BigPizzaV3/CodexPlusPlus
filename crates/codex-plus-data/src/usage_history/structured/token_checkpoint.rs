@@ -219,5 +219,6 @@ impl Checkpoint {
     }
 }
 
+mod projection_tests;
 mod store;
 mod tests;
