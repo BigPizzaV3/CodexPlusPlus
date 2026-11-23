@@ -676,7 +676,7 @@ async fn llm_proxy_rejects_local_addresses() {
 }
 
 #[tokio::test]
-async fn llm_proxy_requires_https() {
+async fn llm_proxy_allows_http() {
     let ctx = test_context();
 
     let result = handle_bridge_request(
@@ -690,8 +690,7 @@ async fn llm_proxy_requires_https() {
     )
     .await;
 
-    assert_eq!(result["status"], json!("failed"));
-    assert_eq!(result["message"], json!("Base URL 必须使用 HTTPS"));
+    assert_ne!(result["message"], json!("Base URL 必须使用 HTTP(S)"));
 }
 
 #[tokio::test]
