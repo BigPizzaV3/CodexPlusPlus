@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getLanguage, t, tf } from "./i18n";
 import { appConfirm } from "./app-dialog";
+import { PluginConfigPanel, type PluginConfigEntry } from "./PluginConfigPanel";
 import { applyPluginInstallation, filterMarketPlugins, isPluginMarketSuccess, mergePluginMarketCatalog, pluginMarketConnector, pluginMarketPage, pluginMarketShelves, PluginMarketRequests, type MarketCatalogs, type MarketConnector, type MarketFilter, type MarketPlugin, type MarketResult, type MarketSource } from "./plugin-market-model";
 import { CxBanner, CxCard, CxEmpty, CxFilters, CxToolbar } from "./cx-layout";
 import "./PluginMarketScreen.css";
@@ -51,14 +52,23 @@ function PluginIcon({ plugin }: { plugin: MarketPlugin }) {
 }
 
 /** onOpenExtensions：Codex 插件和 Codex++ 拓展是两回事，页头一行指向「万物皆拓展」。 */
-export function PluginMarketScreen({ onOpenExtensions }: { onOpenExtensions?: () => void } = {}) {
+export function PluginMarketScreen({ onOpenExtensions, configEntries, onSaveConfig, onInstalledChanged }: {
+  onOpenExtensions?: () => void;
+  /** config.toml 里的 `[plugins.*]` 条目（「本机配置」页签）；不传就没有这个页签。 */
+  configEntries?: PluginConfigEntry[];
+  onSaveConfig?: (id: string, body: string | null) => Promise<boolean>;
+  /** 安装 / 卸载写了 config.toml 之后：让外面重读这份配置。 */
+  onInstalledChanged?: () => void;
+} = {}) {
   // 只有完整库一个来源；旧公开库已并入它。
   const source: MarketSource = "full";
   const [catalogs, setCatalogs] = useState<MarketCatalogs>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<MarketFilter>("all");
+  // 「本机配置」不是目录的筛选：选它时下面换成 config.toml 里的插件条目。
+  const [pageFilter, setFilter] = useState<MarketFilter | "config">("all");
+  const filter: MarketFilter = pageFilter === "config" ? "all" : pageFilter;
   const [shelfSlug, setShelfSlug] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const [installing, setInstalling] = useState<MarketPlugin | null>(null);
@@ -171,6 +181,7 @@ export function PluginMarketScreen({ onOpenExtensions }: { onOpenExtensions?: ()
       if (requests.isCurrentInstall(sequence)) setNotice({ message: String(cause), failed: true, restart: false });
     } finally {
       if (requests.finishInstall(sequence)) setInstalling(null);
+      onInstalledChanged?.();
     }
   };
 
@@ -207,6 +218,7 @@ export function PluginMarketScreen({ onOpenExtensions }: { onOpenExtensions?: ()
       if (requests.isCurrentInstall(sequence)) setNotice({ message: String(cause), failed: true, restart: false });
     } finally {
       if (requests.finishInstall(sequence)) setUninstalling(null);
+      onInstalledChanged?.();
     }
   };
   const busy = !!installing || !!uninstalling;
@@ -215,10 +227,11 @@ export function PluginMarketScreen({ onOpenExtensions }: { onOpenExtensions?: ()
     installed: filterMarketPlugins(plugins, "", "installed").length,
     updates: filterMarketPlugins(plugins, "", "updates").length,
   } : null, [market, plugins]);
-  const filterItems: Array<{ id: MarketFilter; label: string; count?: number }> = [
+  const filterItems: Array<{ id: MarketFilter | "config"; label: string; count?: number }> = [
     { id: "all", label: t("全部插件") },
     { id: "installed", label: t("已安装"), count: filterCounts?.installed },
     { id: "updates", label: t("有更新"), count: filterCounts?.updates },
+    ...(configEntries && onSaveConfig ? [{ id: "config" as const, label: t("本机配置"), count: configEntries.length }] : []),
   ];
   // 顶部最多一条提示：进行中的安装 / 卸载 > 加载错误 > 上一次操作的结果。
   const progress = installing ? tf("正在下载并安装 {0}…", [installing.displayName || installing.name])
@@ -286,7 +299,7 @@ export function PluginMarketScreen({ onOpenExtensions }: { onOpenExtensions?: ()
               </button>
             </CxToolbar>
           )}
-          value={filter}
+          value={pageFilter}
         />
         <p aria-live="polite" className="plugin-market-summary">
           {market ? tf("安装 Codex 官方插件目录里的插件，CLI 和 Codex App 都能用。目录是 {0} 的快照。", [market.updatedAt || t("未知日期")])
@@ -326,7 +339,9 @@ export function PluginMarketScreen({ onOpenExtensions }: { onOpenExtensions?: ()
         </div>
       ) : null}
 
-      {!market && loading ? (
+      {pageFilter === "config" && configEntries && onSaveConfig ? (
+        <PluginConfigPanel busy={busy} entries={configEntries} onSave={onSaveConfig} plugins={plugins} />
+      ) : !market && loading ? (
         <CxCard><CxEmpty title={<span className="plugin-market-loading"><LoaderCircle aria-hidden="true" className="plugin-market-spinner" />{t("正在读取插件清单…")}</span>} /></CxCard>
       ) : overview ? (
         <div aria-busy={loading} className="plugin-market-shelves">

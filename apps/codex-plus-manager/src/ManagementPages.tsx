@@ -4,7 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { BookOpen, MoreHorizontal, Plus, RefreshCw, Search, Server, TriangleAlert, Upload, X } from "lucide-react";
+import { MoreHorizontal, Plus, RefreshCw, Search, Server, TriangleAlert, Upload, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AppSelect } from "./AppSelect";
@@ -138,7 +138,8 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
   onImport: (json: string) => Promise<boolean>; notify: Notify;
 }) {
   const [query, setQuery] = useState("");
-  const [kind, setKind] = useState<"mcp" | "plugin">("mcp");
+  // 插件配置挪到了「Codex 插件」页的「本机配置」；这一页只管 MCP。
+  const kind = "mcp" as const;
   const [editor, setEditor] = useState<{ row?: McpRow } | null>(null);
   const [importing, setImporting] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<McpRow | null>(null);
@@ -223,12 +224,11 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
   };
   return <div className="mg-page cx-page"><PageHeader icon={<Server size={20} strokeWidth={1.5} />} title={kind === "mcp" ? "MCP" : t("插件配置")} actions={<>
     <button className="cx-secondary" type="button" onClick={() => void refreshAll()} disabled={busy}><RefreshCw size={14} />{t("刷新本机配置")}</button>
-    <Menu><MenuItem onClick={() => setImporting(true)} disabled={kind !== "mcp" || busy}>{t("导入 JSON")}</MenuItem><MenuItem onClick={() => setKind(kind === "mcp" ? "plugin" : "mcp")}>{kind === "mcp" ? t("管理插件配置") : t("返回 MCP")}</MenuItem></Menu>
+    <Menu><MenuItem onClick={() => setImporting(true)} disabled={busy}>{t("导入 JSON")}</MenuItem></Menu>
   </>} />
     <CxToolbar query={query} onQuery={setQuery} placeholder={kind === "mcp" ? t("搜索名称、命令或 URL") : t("搜索插件")}>
       <button className="cx-primary" type="button" onClick={() => setEditor({})} disabled={busy}><Plus size={15} />{kind === "mcp" ? t("添加服务器") : t("添加插件")}</button>
     </CxToolbar>
-    {kind === "plugin" ? <CxBanner icon={<BookOpen size={16} />} title={t("插件配置")} detail={t("插件只有 Codex 支持")}><button className="cx-secondary" type="button" onClick={() => setKind("mcp")}>{t("返回 MCP")}</button></CxBanner> : null}
     {kind === "mcp" && failedAgents.length ? <CxBanner tone="warn" icon={<TriangleAlert size={16} />} title={t("部分 Agent 的 MCP 配置读取失败")} detail={failedAgents.map((agent) => `${agentLabel(agent)}: ${t(agentErrors[agent] || "")}`).join("\n")}><button className="cx-secondary" type="button" disabled={agentsLoading} onClick={() => void loadAgents()}>{t("重试")}</button></CxBanner> : null}
     {connected.length ? <CxSection title={t("已连接")} count={connected.length}><CxCard>{connected.map(renderRow)}</CxCard></CxSection> : null}
     {idle.length ? <CxSection title={t("未启用")} count={idle.length}><CxCard>{idle.map(renderRow)}</CxCard></CxSection> : null}

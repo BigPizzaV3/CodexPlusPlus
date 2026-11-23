@@ -5,6 +5,22 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "Codex config.toml 里的插件条目：从目录安装的，以及别处装的（如 Codex 自带市场）。关掉开关等于停用，不删文件。": "Plugin entries in Codex's config.toml: ones installed from the catalog and ones installed elsewhere (such as Codex's built-in marketplace). Turning one off disables it without deleting files.",
+  "config.toml 里还没有插件配置。": "No plugin entries in config.toml yet.",
+  "写在 [plugins.\"<配置键>\"] 下面的内容。": "The content under [plugins.\"<config key>\"].",
+  "删除插件配置": "Delete plugin config",
+  "删除配置": "Delete config",
+  "只从 config.toml 里删掉这段配置，不删插件文件；从目录装的插件要卸载请在目录里点开它。": "Only removes this entry from config.toml; plugin files stay. To uninstall a catalog plugin, open it in the catalog.",
+  "手写一段 [plugins.\"<插件>@<市场>\"] 配置": "Write a [plugins.\"<plugin>@<marketplace>\"] entry by hand",
+  "已经有这个插件的配置，请直接编辑它。": "This plugin already has an entry; edit that one instead.",
+  "插件配置操作": "Plugin config actions",
+  "本机插件配置": "Local plugin config",
+  "格式是 <插件>@<市场>，例如 github@openai-curated。": "Format: <plugin>@<marketplace>, e.g. github@openai-curated.",
+  "添加插件配置": "Add plugin config",
+  "目录": "Catalog",
+  "编辑插件配置": "Edit plugin config",
+  "编辑配置": "Edit config",
+  "配置键": "Config key",
   // 从第三方导入（ThirdPartyImportDialog.tsx）：CC Switch、Magpie。
   "导入来源": "Import source",
   "复制一份成直连供应商；只读取对方的数据，不会改动它，之后两边各改各的。": "Copies each one as a direct provider. The other app's data is only read, never changed; after that the two sides are edited separately.",
@@ -3867,6 +3883,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "启用插件 {0}": "Enable plugin {0}",
   "已完成 {0} / {1} 步": "{0} of {1} steps done",
   "{0}，测试通过。": "{0}, test passed.",
   "默认模型 {0}；Claude 等其它 Agent 也能用这些供应商": "Default model {0}; Claude and other agents can use these providers too",

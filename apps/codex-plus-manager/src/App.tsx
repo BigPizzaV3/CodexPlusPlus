@@ -1275,7 +1275,7 @@ export function App() {
   /** 进页面时读它要的数据：互不依赖的一起发出，页面用不到的不读。 */
   const loadRouteData = async (next: Route) => {
     const loads: Promise<unknown>[] = [];
-    const needsSettings: Route[] = ["relay", "multiLaunch", "sessions", "context", "weixin", "settings", "agentSettings", "enhance", "userScripts"];
+    const needsSettings: Route[] = ["relay", "multiLaunch", "sessions", "context", "weixin", "settings", "agentSettings", "enhance", "userScripts", "pluginMarket"];
     if (needsSettings.includes(next)) loads.push(refreshSettings(true));
     // 回到会话页时停在原来那一页。
     const sessionsOffset = localSessionsRef.current?.offset ?? 0;
@@ -1300,6 +1300,10 @@ export function App() {
         break;
       case "weixin":
         // 微信页从最近的会话里挑，读第一页。
+      case "pluginMarket":
+        // 「本机配置」页签列 config.toml 里的插件条目。
+        loads.push(refreshLiveContextEntries(true));
+        break;
         loads.push(refreshWeixinStatus(true), refreshLocalSessions(true));
         break;
       case "userScripts":
@@ -3247,10 +3251,15 @@ export function App() {
   // MCP 页的条目：设置里的条目叠上 live config.toml 的启停状态。只在两者变化时重算，免得每次渲染都给 McpPage 一个新数组。
   const mcpPageEntries = useMemo(() => {
     const entries = contextEntriesWithLiveEntries(settingsForm, liveContextEntries);
-    return [...contextEntriesByKind(entries, "mcp"), ...contextEntriesByKind(entries, "plugin")];
+    return contextEntriesByKind(entries, "mcp");
   }, [settingsForm, liveContextEntries]);
   // 停在不属于当前 Agent 的页面上：回到当前 Agent 的落脚页。
   useEffect(() => {
+  // 「Codex 插件」页「本机配置」：config.toml 里的 [plugins.*] 条目（原来在 MCP 页的「管理插件配置」里）。
+  const pluginConfigEntries = useMemo(
+    () => contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "plugin"),
+    [settingsForm, liveContextEntries],
+  );
     const currentRoute = routes.find((candidate) => candidate.id === route);
     if (currentRoute?.tools && currentRoute.id !== "userScripts" && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "overview");
     // navigate 每次渲染都是新函数，只在页面或 Agent 变化时检查。
@@ -3627,7 +3636,14 @@ export function App() {
             />
           ) : null}
           {route === "userScripts" ? <UserScriptsScreen host={extensionHost} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
-          {route === "pluginMarket" ? <PluginMarketScreen onOpenExtensions={() => void navigate("userScripts")} /> : null}
+          {route === "pluginMarket" ? (
+            <PluginMarketScreen
+              configEntries={pluginConfigEntries}
+              onInstalledChanged={() => void actions.refreshLiveContextEntries()}
+              onOpenExtensions={() => void navigate("userScripts")}
+              onSaveConfig={(id, body) => actions.applyContextEntry(settingsForm, "plugin", id, body)}
+            />
+          ) : null}
           {route === "home" ? (
             <HomeScreen
               ads={ads}
