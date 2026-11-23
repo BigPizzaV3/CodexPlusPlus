@@ -769,12 +769,14 @@ ${slice("  let codexPlusSettingsCatalog = null;", "  function refreshCodexPlusSe
   function refreshCodexPlusSettingsCatalogView() { refreshes += 1; }
   return {
     load: loadCodexPlusSettingsCatalog,
+    loadUsageStorage: loadCodexPlusUsageStorage,
     sections: renderCodexPlusSettingsCatalogSections,
     status: () => codexPlusSettingsCatalogStatus,
     refreshes: () => refreshes,
   };`,
   )(postJson, (name: string, detail: unknown) => { diagnostics.push({ name, detail }); }, platform.windows, platform.mac, backendSettings) as {
     load: () => Promise<unknown>;
+    loadUsageStorage: (element: unknown) => Promise<void>;
     sections: () => string;
     status: () => { status: string; message: string };
     refreshes: () => number;
@@ -3766,6 +3768,33 @@ describe("Codex++ 设置页按设置项清单生成", () => {
       const source = await readFile(new URL(fragment.name, fragmentDir), "utf8");
       for (const item of catalog.items) assert.ok(!source.includes(item.description), `${fragment.name} 里有「${item.title}」说明的副本`);
     }
+  });
+
+  it("按需显示用量历史目录和占用，读取失败不冒充零字节", async () => {
+    const requests: string[] = [];
+    const catalog = await readCatalog();
+    const page = await settingsCatalogRuntime(async (path) => {
+      if (path === "/settings/catalog") return catalog;
+      requests.push(path);
+      if (requests.length === 1) return { status: "ok", bytes: 1572864, directory: "example/usage-history" };
+      throw new Error("storage unavailable");
+    });
+    await page.load();
+    assert.match(page.sections(), /data-codex-plus-usage-storage/);
+    assert.equal(requests.length, 0);
+    const bytes = { textContent: "" }, directory = { textContent: "" };
+    const details = {
+      dataset: {},
+      querySelector: (selector: string) => selector === "[data-usage-storage-bytes]" ? bytes : directory,
+    };
+    await page.loadUsageStorage(details);
+    assert.equal(bytes.textContent, `${(1.5).toLocaleString()} MiB`);
+    assert.equal(directory.textContent, "example/usage-history");
+    await page.loadUsageStorage(details);
+    assert.equal(bytes.textContent, "读取失败");
+    assert.equal(directory.textContent, "storage unavailable");
+    assert.deepEqual(details.dataset, {});
+    assert.deepEqual(requests, ["/settings/usage-history-storage", "/settings/usage-history-storage"]);
   });
 
   it("每个在 Codex 显示的设置项生成一行，文案与绑定都取自清单", async () => {

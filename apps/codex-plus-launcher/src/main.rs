@@ -1652,6 +1652,16 @@ impl BridgeDataService for LauncherDataService {
         .unwrap_or_else(|_| json!({"status":"failed","code":"archive-task-failed"})))
     }
 
+    async fn usage_history_storage_info(&self) -> anyhow::Result<Value> {
+        tokio::task::spawn_blocking(|| {
+            codex_plus_data::usage_history::storage_info(
+                &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+                &codex_plus_core::paths::default_settings_path(),
+            )
+        })
+        .await?
+    }
+
     async fn clear_usage_history(&self) {
         let _ = tokio::task::spawn_blocking(clear_usage_history).await;
     }
