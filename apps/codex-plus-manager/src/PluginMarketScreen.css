@@ -85,7 +85,7 @@
 .shell .plugin-market-rows {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 8px 24px;
+  gap: 0 24px;
   margin: 0;
   padding: 0;
   list-style: none;
