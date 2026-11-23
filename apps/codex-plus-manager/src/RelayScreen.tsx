@@ -432,24 +432,24 @@ function useCodexPoolLink(actions: Actions, profileIds: string[]) {
 }
 type CodexPoolLink = ReturnType<typeof useCodexPoolLink>;
 
-/** 行右侧的「已在供应商池 / 加入供应商池」。 */
+/** 行右侧的「已在供应商池」标记，或一个「加入供应商池」图标按钮（批量加入在分区标题右侧）。 */
 function PoolLinkControl({ link, profileId }: { link: CodexPoolLink; profileId: string }) {
   const state = link.stateOf(profileId);
   if (state === "pooled") return <CxBadge title={t("网关的供应商池里已经有它，所有接入网关的 Agent 都能用")} tone="ok">{t("已在供应商池")}</CxBadge>;
   if (state !== "available") return null;
   return (
     <button
-      className="cx-secondary cx-pool-add"
+      aria-label={t("加入供应商池")}
+      className="cx-icon-button cx-pool-add"
       disabled={link.importing !== null}
       onClick={(event) => {
         event.stopPropagation();
         void link.addOne(profileId);
       }}
-      title={t("复制进网关的供应商池：所有接入网关的 Agent 都能用；直连配置照旧保留")}
+      title={t("加入供应商池：复制进网关，所有接入网关的 Agent 都能用；直连配置照旧保留")}
       type="button"
     >
       {link.importing === profileId ? <Loader2 className="animate-spin" /> : <Waypoints />}
-      {t("加入供应商池")}
     </button>
   );
 }
@@ -974,11 +974,9 @@ export function RelayScreen({
           <CxCard>
             <CxRow
               className="cx-preserve-row"
-              detail={<>
-                {t("打开后，切换供应商、接入或重写网关、重启 Codex 时：实时 config.toml 里改过的 MCP 服务器（命令、参数、env、超时）以实时文件为准，缺失的项目信任设置和通知命令从实时文件补回。直连和网关都适用。")}
-                <br />
-                {t("始终按目标重写的供应商设置：model_provider、model、供应商地址与凭据、模型目录。不论开关都保留：Codex++ 没有托管的 MCP / 插件条目、[[skills.config]] 技能启停；网关模式下 developer_instructions 等根级个人设置也会跟着走。")}
-              </>}
+              detail={t("切换供应商或重启 Codex 时，保留你在 config.toml 里改过的 MCP、项目信任和通知设置。")}
+              // 完整规则放悬停：哪些按实时文件保留、哪些始终按目标重写。
+              tooltip={`${t("打开后，切换供应商、接入或重写网关、重启 Codex 时：实时 config.toml 里改过的 MCP 服务器（命令、参数、env、超时）以实时文件为准，缺失的项目信任设置和通知命令从实时文件补回。直连和网关都适用。")}\n\n${t("始终按目标重写的供应商设置：model_provider、model、供应商地址与凭据、模型目录。不论开关都保留：Codex++ 没有托管的 MCP / 插件条目、[[skills.config]] 技能启停；网关模式下 developer_instructions 等根级个人设置也会跟着走。")}`}
               title={t("切换时保留实时配置里的改动")}
             >
               <label className="switch-row compact relay-master-switch relay-master-switch-compact">

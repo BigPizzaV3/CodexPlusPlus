@@ -884,14 +884,10 @@
   border-radius: 8px;
 }
 
-:root .shell .cx-pool-add {
-  height: 28px;
-  white-space: nowrap;
-}
-
+/* 行里的「加入供应商池」是图标按钮，和三点菜单同尺寸；批量加入在分区标题右侧。 */
 :root .shell .cx-pool-add svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
 }
 
 /* 高级折叠区：内容是一行一项。 */
@@ -1246,7 +1242,7 @@
   height: 16px;
 }
 
-/* 「切换时保留」行：说明要列清哪些字段保留，允许换行（#3115）。 */
+/* 「切换时保留」行：说明一句，窄窗口时允许换行；完整规则在悬停里（#3115）。 */
 :root .shell .cx-preserve-row .cx-row-detail {
   white-space: normal;
 }

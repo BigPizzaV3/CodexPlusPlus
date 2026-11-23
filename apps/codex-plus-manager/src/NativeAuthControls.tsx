@@ -4,7 +4,7 @@ import { Check, Loader2, RefreshCw, RotateCw } from "lucide-react";
 import { t } from "./i18n";
 import { nativeAuthSelection, savedAuthLabel, type NativeAuthResult, type NativeAuthState } from "./native-auth-model";
 import { AppSelect } from "./AppSelect";
-import { CxRow } from "./cx-layout";
+import { CxCard, CxRow } from "./cx-layout";
 import { AgentIcon } from "./gateway-ui";
 import "./NativeAuthControls.css";
 
@@ -79,9 +79,26 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
       setRestarting(false);
     }
   };
+  // 提示一次只显示一条，放进卡片里，不再在卡片外面散成几行：未应用的选择 > 错误 > 配置不一致 > 不能重启的原因 > 需要重启。
+  const notice: { text: string; tone: "error" | "muted"; role?: "alert" | "status" } | null = pending
+    ? { text: t("选择还没生效，点「应用」后才会写入 Codex 的登录凭证。"), tone: "muted", role: "status" }
+    : error
+      ? { text: error, tone: "error", role: "alert" }
+      : state?.drift
+        ? { text: state.drift, tone: "error", role: "status" }
+        : state?.restartBlockedReason
+          ? { text: t(state.restartBlockedReason), tone: "muted", role: "status" }
+          : state?.managed
+            ? { text: t("更改登录选择后，请关闭所有 Codex 实例并重新启动。"), tone: "muted", role: "status" }
+            : null;
   return (
-    <div className="native-auth-control">
-      <CxRow className="native-auth-current" icon={<AgentIcon agent="codex" />} title={t("Codex 登录")}>
+    <CxCard className="native-auth-control">
+      <CxRow
+        className="native-auth-current"
+        detail={state ? `${t("已写入凭证：")}${state.actualLabel || t("未登录")}` : undefined}
+        icon={<AgentIcon agent="codex" />}
+        title={t("Codex 登录")}
+      >
         <AppSelect
           ariaLabel={t("Codex 当前登录")}
           disabled={!state || busy}
@@ -112,10 +129,8 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
           <RefreshCw className={loading ? "animate-spin" : ""} />
         </button>
       </CxRow>
-      {pending ? <p className="native-auth-pending" role="status">{t("选择还没生效，点「应用」后才会写入 Codex 的登录凭证。")}</p> : null}
-      {state ? <p className="native-auth-pending">{t("已写入凭证：")}{state.actualLabel || t("未登录")}</p> : null}
-      {error ? <p className="native-auth-error" role="alert">{error}</p> : state?.drift ? <p className="native-auth-error" role="status">{state.drift}</p> : state?.restartBlockedReason ? <p className="native-auth-pending" role="status">{t(state.restartBlockedReason)}</p> : state?.managed ? <p className="native-auth-pending" role="status">{t("更改登录选择后，请关闭所有 Codex 实例并重新启动。")}</p> : null}
-    </div>
+      {notice ? <p className={notice.tone === "error" ? "native-auth-error native-auth-notice" : "native-auth-pending native-auth-notice"} role={notice.role}>{notice.text}</p> : null}
+    </CxCard>
   );
 }
 
