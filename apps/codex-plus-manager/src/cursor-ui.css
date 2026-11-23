@@ -130,6 +130,30 @@
   overflow-y: auto;
   /* 窗口矮时侧栏要能看出还能往下滚（原来 none 把滚动条藏掉，Agent 列表被截了看不出来）。 */
   scrollbar-width: thin;
+  /* 选中色块（.cx-side-indicator）按导航内容定位、垫在条目下面。 */
+  position: relative;
+  isolation: isolate;
+}
+
+/* 选中底色：一块在条目之间滑动的色块，位置和大小由 side-indicator.ts 逐帧写入。
+   色块接管后（导航带 data-indicator）条目自己不再铺选中底色；脚本没跑起来时条目照旧自己铺。 */
+:root .shell .cx-side-indicator {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  width: 0;
+  height: 0;
+  border-radius: 8px;
+  background: hsl(var(--accent));
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+:root .shell .cx-side-nav[data-indicator] :is(.cx-side-item.active:not(.has-subnav), .cx-side-subitem.active),
+:root .shell .cx-side-nav[data-indicator] :is(.cx-side-item.active:not(.has-subnav), .cx-side-subitem.active):hover {
+  background: transparent;
 }
 
 :root .shell .cx-side-nav::-webkit-scrollbar {
@@ -497,18 +521,6 @@
    否则这 220ms 里弹层会按正文而不是窗口定位。 */
 :root .shell .screen > :has(.modal-backdrop, .mg-drawer-backdrop, .gw-modal-backdrop) {
   animation: none;
-}
-
-/* 侧栏里 Agent 的子页面列表展开时同样淡入。 */
-@keyframes cx-subnav-enter {
-  from {
-    opacity: 0;
-    transform: translate3d(0, -4px, 0);
-  }
-}
-
-:root .shell .cx-side-subnav {
-  animation: cx-subnav-enter 180ms var(--motion-ease);
 }
 
 /* 请求日志、会话、MCP 与其他页面同宽：切换「统计 / 请求」页签时标题不跳。 */
@@ -1279,13 +1291,45 @@
 }
 
 /* 侧栏里当前 Agent 下面的页面：缩进、细字、左侧一条竖线（参照 Cursor 侧栏仓库下的会话列表）。 */
+/* 展开 / 收起：外层 grid 的行高在 0fr 和 1fr 之间过渡，下面的行跟着平移，不再瞬间跳位。
+   每个 Agent 的列表都挂着，收起的高度为 0、不可见也不可聚焦（inert）。
+   margin-top: -1px 抵掉收起时多出来的那一格列表间距。 */
+:root .shell .cx-side-subnav-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  margin-top: -1px;
+  visibility: hidden;
+  transition:
+    grid-template-rows 220ms var(--motion-ease),
+    visibility 0s linear 220ms;
+}
+
+:root .shell .cx-side-subnav-wrap[data-open="true"] {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition:
+    grid-template-rows 220ms var(--motion-ease),
+    visibility 0s;
+}
+
+:root .shell .cx-side-subnav-clip {
+  min-height: 0;
+  overflow: hidden;
+}
+
 :root .shell .cx-side-subnav {
   display: flex;
   flex-direction: column;
   gap: 1px;
-  margin: 2px 0 6px 18px;
+  margin: 3px 0 6px 18px;
   padding-left: 10px;
   border-left: 1px solid hsl(var(--sidebar-border));
+  opacity: 0;
+  transition: opacity 180ms var(--motion-ease);
+}
+
+:root .shell .cx-side-subnav-wrap[data-open="true"] .cx-side-subnav {
+  opacity: 1;
 }
 
 :root .shell .cx-side-subitem {
@@ -1311,11 +1355,6 @@
 :root .shell .cx-side-subitem.active {
   background: hsl(var(--accent));
   color: hsl(var(--foreground));
-}
-
-/* Agent 行在显示子页面时不再整行高亮，只由子项表示当前页。 */
-:root .shell .cx-side-agent + .cx-side-subnav {
-  margin-top: 2px;
 }
 
 /* 内置增强：一行工具条 = 页签 + 搜索 + 保存状态 + 总开关。 */

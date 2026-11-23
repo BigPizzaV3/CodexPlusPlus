@@ -58,7 +58,9 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(sidebar, /className=\{`cx-side-item \$\{current \? "active" : ""\} \$\{expanded && agentTabGroups/);
   // 当前 Agent 的页面缩进列在侧栏里它那一行下面，不再是内容区顶部的胶囊。
   assert.match(sidebar, /className="cx-side-subnav" role="group" aria-label=\{t\("Agent 页面"\)\}/);
-  assert.match(sidebar, /\{expanded \? \(\(\) => \{\n\s*const pages = agentTabGroups\(navigationSections, routeTool, activeTool\)/);
+  // 每个 Agent 的页面列表都挂着，收起的高度为 0（切换时才有高度过渡），不可聚焦。
+  assert.match(sidebar, /\{\(\(\) => \{\n\s*const pages = agentTabGroups\(navigationSections, routeTool, tool\.id\)/);
+  assert.match(sidebar, /<div className="cx-side-subnav-wrap" data-open=\{expanded\} inert=\{!expanded\}>/);
   // #2913：再点当前 Agent 收起 / 展开它的页面列表，不跳页；切到别的 Agent 时重新展开。
   assert.match(sidebar, /const expanded = current && collapsedAgent !== tool\.id;/);
   assert.match(sidebar, /if \(current\) \{\n\s*setCollapsedAgent\(\(value\) => \(value === tool\.id \? null : tool\.id\)\);\n\s*return;/);
@@ -779,4 +781,25 @@ test("切换页面时正文淡入上移，标题行和页签不动；动画结�
   assert.ok(cursorUi.indexOf(overlayRule) > cursorUi.indexOf(rule[0]), "overlay rule should follow the enter rule");
   // .screen 容器自身仍不做动画（整页位移会带着吸顶标题一起动）。
   assert.match(styles, /\.shell :is\(\.topbar, \.screen\) \{\n  animation: none;\n  transition: none;\n\}/);
+});
+
+test("侧栏切换不生硬：子页面列表展开 / 收起有高度过渡，选中底色是一块滑动的色块", () => {
+  const sidebar = functionSource("AppSidebar");
+  const cursorUi = readSource("./cursor-ui.css");
+  // 高度过渡：外层 grid 行高 0fr ↔ 1fr，内层裁切；收起后才隐藏（visibility 延后到过渡结束）。
+  assert.match(cursorUi, /:root \.shell \.cx-side-subnav-wrap \{\n  display: grid;\n  grid-template-rows: 0fr;[\s\S]*?visibility: hidden;\n  transition:\n    grid-template-rows 220ms var\(--motion-ease\),\n    visibility 0s linear 220ms;\n\}/);
+  assert.match(cursorUi, /:root \.shell \.cx-side-subnav-wrap\[data-open="true"\] \{\n  grid-template-rows: 1fr;\n  visibility: visible;/);
+  assert.match(cursorUi, /:root \.shell \.cx-side-subnav-clip \{\n  min-height: 0;\n  overflow: hidden;\n\}/);
+  // 色块：主导航和设置目录各一个，跟着选中项、Agent 和展开状态走。
+  assert.equal(sidebar.match(/<i aria-hidden="true" className="cx-side-indicator" \/>/g)?.length, 2);
+  assert.equal(sidebar.match(/className="cx-side-nav"[^>]*ref=\{navRef\}/g)?.length, 2);
+  assert.match(sidebar, /useSideIndicator\(navRef, \[settingsMode, route, settingsSections\.join\(","\), activeTool, collapsedAgent \?\? "", activeExtensionKey \?\? ""\]\.join\("\|"\)\);/);
+  // 色块垫在条目下面；接管后条目自己不铺选中底色（没接管时照旧自己铺，所以原规则保留）。
+  assert.match(cursorUi, /:root \.shell \.cx-side-indicator \{\n  position: absolute;[\s\S]*?z-index: -1;[\s\S]*?background: hsl\(var\(--accent\)\);[\s\S]*?pointer-events: none;/);
+  assert.match(cursorUi, /:root \.shell \.cx-side-nav\[data-indicator\] :is\(\.cx-side-item\.active:not\(\.has-subnav\), \.cx-side-subitem\.active\):hover \{\n  background: transparent;\n\}/);
+  assert.match(cursorUi, /:root \.shell \.cx-side-item\.active \{\n  background: hsl\(var\(--accent\)\);/);
+  // 收起的列表里的选中项不算目标；系统「减弱动态效果」时直接对齐。
+  const indicator = readSource("./side-indicator.ts");
+  assert.match(indicator, /element\.closest\('\.cx-side-subnav-wrap\[data-open="false"\]'\)/);
+  assert.match(indicator, /prefers-reduced-motion: reduce/);
 });

@@ -78,6 +78,9 @@ function harness() {
     useClaudeEnhance: () => null,
     useState: () => [[], () => {}],
     useEffect: () => {},
+    // 选中色块只在真实 DOM 里起作用，这里不渲染。
+    useRef: () => ({ current: null }),
+    useSideIndicator: () => {},
     loadCachedGatewayInUse: () => false,
     storeCachedGatewayInUse: () => {},
     getLanguage: () => "zh",

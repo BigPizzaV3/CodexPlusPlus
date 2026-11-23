@@ -40,7 +40,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { managerNavPages, type ManagerExtensionPage, type ManagerNavGroup } from "./extension-manager-pages";
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { AgentGlyph, useGatewayPayload } from "./hub-shared";
 import { paletteShortcut } from "./command-palette-model";
 import { agentName } from "./gateway-model";
@@ -50,6 +50,7 @@ import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import type { Theme, ToolEntry } from "./app-types";
 import { APP_LOGO_URL } from "./app-shared";
 import { useClaudeEnhance } from "./claude-enhance";
+import { useSideIndicator } from "./side-indicator";
 import {
   customizeRoutes,
   globalNavigationRoutes,
@@ -213,6 +214,9 @@ export function AppSidebar({
     if (gateway) storeCachedGatewayInUse(gatewayInUse);
   }, [gateway, gatewayInUse]);
   const openSettings = (entryRoute: Route, sections?: string[]) => (onOpenSettings ? onOpenSettings(entryRoute, sections) : onNavigate(entryRoute));
+  // 选中底色是一块在条目之间滑动的色块：选中项或展开状态变了就滑过去。
+  const navRef = useRef<HTMLElement>(null);
+  useSideIndicator(navRef, [settingsMode, route, settingsSections.join(","), activeTool, collapsedAgent ?? "", activeExtensionKey ?? ""].join("|"));
 
   if (settingsMode) {
     const codexAvailable = tools.some((tool) => tool.id === "codex" && tool.switchable);
@@ -241,7 +245,8 @@ export function AppSidebar({
             value={settingsQuery}
           />
         </label>
-        <nav aria-label={t("设置分类")} className="cx-side-nav" data-tour="settings">
+        <nav aria-label={t("设置分类")} className="cx-side-nav" data-tour="settings" ref={navRef}>
+          <i aria-hidden="true" className="cx-side-indicator" />
           {groups.map((group) => {
             const items = shown.filter((entry) => entry.group === group.id);
             if (!items.length) return null;
@@ -350,7 +355,8 @@ export function AppSidebar({
         <kbd>{paletteShortcut}</kbd>
       </button>
 
-      <nav aria-label={t("主导航")} className="cx-side-nav">
+      <nav aria-label={t("主导航")} className="cx-side-nav" ref={navRef}>
+        <i aria-hidden="true" className="cx-side-indicator" />
         <div className="cx-side-group">{shownGeneral.map(renderEntry)}</div>
 
         <div className="cx-side-group" data-tour="agents">
@@ -447,14 +453,17 @@ export function AppSidebar({
                   );
                 })() : null}
               </div>
-              {/* 当前 Agent 的页面：缩进列在它那一行下面（参照 Cursor 侧栏里仓库下面的会话列表），不再占内容区顶部一排胶囊。 */}
-{expanded ? (() => {
-            const pages = agentTabGroups(navigationSections, routeTool, activeTool)
+              {/* 当前 Agent 的页面：缩进列在它那一行下面（参照 Cursor 侧栏里仓库下面的会话列表），不再占内容区顶部一排胶囊。
+                  每个 Agent 的列表都一直挂着，收起的那些高度为 0：切 Agent、收起 / 展开时才有高度过渡，不是瞬间出现 / 消失。 */}
+{(() => {
+            const pages = agentTabGroups(navigationSections, routeTool, tool.id)
               .flatMap((entry) => visibleRoutes(focus, entry.routes))
               // 「补丁 Desktop」的内容在启动模式选补丁副本时直接显示在 Desktop 增强页，侧栏不再单列（⌘K 仍能进；停在那页时照常显示）。
               .filter((routeId) => routeId !== "claudePatch" || route === "claudePatch");
             if (pages.length < 2) return null;
             return (
+              <div className="cx-side-subnav-wrap" data-open={expanded} inert={!expanded}>
+              <div className="cx-side-subnav-clip">
               <div className="cx-side-subnav" role="group" aria-label={t("Agent 页面")}>
                 {pages.map((routeId) => {
                   const item = routes.find((candidate) => candidate.id === routeId);
@@ -474,8 +483,10 @@ export function AppSidebar({
                   );
                 })}
               </div>
+              </div>
+              </div>
             );
-})() : null}
+})()}
               </Fragment>
             );
           })}
