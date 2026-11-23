@@ -34,6 +34,6 @@ test("总览里点某个 Agent：到「Agent 接入」展开它那一行；不�
   assert.match(hub, /onOpen=\{\(\) => openAgent\(agent\.id\)\}/);
   const agents = read("GatewayAgents.tsx");
   assert.match(agents, /const \[jumped\] = useState\(\(\) => \(embedded \? null : takeGatewayJump\("agent"\)\)\);/);
-  assert.match(agents, /useGatewayViewState<string \| null>\(embedded \? null : "agents\.expanded", solo, jumped \?\? undefined\)/);
+  assert.match(agents, /useGatewayViewState<string \| null>\(embedded \? null : "agents\.expanded", null, jumped \?\? undefined\)/);
   assert.match(agents, /data-agent-row=\{agent\.agent\}/);
 });

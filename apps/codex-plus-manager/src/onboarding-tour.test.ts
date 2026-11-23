@@ -4,7 +4,6 @@ import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
 import * as model from "./onboarding-model.ts";
-import * as focusModel from "./agent-focus-model.ts";
 
 const source = ts.transpileModule(readFileSync(new URL("./OnboardingTour.tsx", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
@@ -91,10 +90,6 @@ function harness() {
     },
     "./command-palette-model": { paletteShortcut: "Ctrl K" },
     "./onboarding-model": model,
-    "./agent-focus-model": focusModel,
-    "./gateway-model": { agentName: (agent: string) => agent },
-    // 有 Agent 接入网关：走完整的导览步骤。
-    "./gateway-store": { useGatewayPayload: () => ({ agents: [{ agent: "codex", enabled: true }] }) },
     "./use-escape-layer": { useEscapeLayer: (_enabled: boolean, close: () => void) => { escape = close; } },
     "./use-modal-focus": { useModalFocus: () => {} },
     "./OnboardingTour.css": {},
@@ -111,7 +106,7 @@ function harness() {
       for (let pass = 0; pass < 6; pass += 1) {
         cursor = 0;
         dirty = false;
-        tree = exports.OnboardingTour({ focus: "all", onClose: (finished: boolean) => closed.push(finished) });
+        tree = exports.OnboardingTour({ onClose: (finished: boolean) => closed.push(finished) });
         while (effects.length) effects.shift()!();
         if (!dirty) return tree;
       }

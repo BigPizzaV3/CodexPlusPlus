@@ -1,23 +1,19 @@
-/** 首次使用引导：步骤定义与「看过没有」的记录。页面只负责高亮与摆放说明卡。 */
+/** 界面导览：步骤定义与「看过没有」的记录。页面只负责高亮与摆放说明卡。 */
 
 export type TourStep = {
   id: string;
-  /** 要高亮的元素：`[data-tour="..."]`；没有目标的步骤（欢迎、结束）显示在屏幕中央。 */
+  /** 要高亮的元素：`[data-tour="..."]`；没有目标的步骤（欢迎）显示在屏幕中央。 */
   target?: string;
   title: string;
   body: string;
-  /** 有值时标题和正文是 tf 模板，按它填 {0}。 */
-  args?: string[];
-  /** 只有正文是模板、标题仍是普通文案。 */
-  plainTitle?: boolean;
 };
 
-/** 导览版本；入门清单使用独立记录，不因内容更新打扰已完成引导的用户。 */
+/** 导览版本；启动引导使用独立记录，不因内容更新打扰已完成引导的用户。 */
 export const TOUR_VERSION = 1;
 export const TOUR_STORAGE_KEY = "codex-plus-plus.onboarding";
 
 // 顺序跟着侧栏从上往下走：万物皆拓展 → Agent → 搜索 → 设置。
-// 本地服务（共享供应商、路由、Agent 接入）在设置的「本地服务」里，从 Agent 的页面进去，导览不单独讲。
+// 本地服务（共享供应商、路由、Agent 接入）是侧栏第一组里的一个入口，在 Agent 一步里顺带提一句，不单独讲。
 export const TOUR_STEPS: TourStep[] = [
   {
     id: "welcome",
@@ -34,7 +30,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "agents",
     target: "agents",
     title: "Agent",
-    body: "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……想让几个 Agent 共用一份供应商，在设置的「本地服务」里配置。",
+    body: "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……想让几个 Agent 共用一份供应商，到侧栏的「本地服务」里配置。",
   },
   {
     id: "palette",
@@ -46,35 +42,9 @@ export const TOUR_STEPS: TourStep[] = [
     id: "settings",
     target: "settings",
     title: "设置",
-    body: "主题、版本更新、日志诊断和各项高级设置都在齿轮里。想再看一遍这个引导，在「设置 → 通用」里重新打开。",
+    body: "主题、版本更新、日志诊断和各项高级设置都在齿轮里。想再看一遍这个导览，在「设置 → 通用」里重新打开。",
   },
 ];
-
-/** 只用增强功能时的步骤：换成不提供应商的说法。 */
-const ENHANCE_OVERRIDES: Record<string, Pick<TourStep, "body">> = {
-  welcome: { body: "Codex++ 给 Codex 和 Claude Code 加上增强、皮肤、拓展等功能，供应商仍由你自己的工具管理。花半分钟认识一下侧栏。" },
-  agents: { body: "点开 Codex 或 Claude Code，在它下面的页面里启用所需增强；Codex 行的播放键可以启动或停止 Codex。" },
-  management: { body: "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在对话里造一个自己的。MCP、Skills 和会话就在它下面。" },
-};
-const ENHANCE_TOUR_STEPS: TourStep[] = TOUR_STEPS
-  .map((step) => (ENHANCE_OVERRIDES[step.id] ? { ...step, ...ENHANCE_OVERRIDES[step.id] } : step));
-
-/**
- * 按使用模式调整的步骤。单 Agent 模式下不讲「多个 Agent 共用」，
- * 欢迎卡、Agent 列表两步换成只针对这一个 Agent 的说法（文案里的 {0} 是 Agent 名字）。
- */
-export function tourSteps(soloName: string | null, enhanceOnly = false): TourStep[] {
-  if (enhanceOnly) return ENHANCE_TOUR_STEPS;
-  if (!soloName) return TOUR_STEPS;
-  const override: Record<string, Partial<Pick<TourStep, "title" | "body">>> = {
-    welcome: { body: "Codex++ 给 {0} 加上拓展和增强。花半分钟认识一下侧栏。" },
-    agents: {
-      title: "{0} 的页面",
-      body: "点开 {0} 后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……其他 Agent 的入口可在设置里切到「全部功能」后显示。",
-    },
-  };
-  return TOUR_STEPS.map((step) => (override[step.id] ? { ...step, ...override[step.id], args: [soloName], plainTitle: !override[step.id].title } : step));
-}
 
 /** 是否需要自动弹出引导：没看过，或看的是旧版本。 */
 export function shouldShowTour(stored: string | null): boolean {

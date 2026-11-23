@@ -74,10 +74,6 @@
   align-items: start;
 }
 
-:root .shell .cx-dash-lists[data-single="true"] {
-  grid-template-columns: minmax(0, 1fr);
-}
-
 :root .shell .cx-dash-lists > .cx-section + .cx-section {
   margin-top: 0;
 }

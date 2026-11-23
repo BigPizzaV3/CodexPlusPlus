@@ -43,7 +43,7 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
   const pool = payload?.pool ?? [];
   const pendingImports = importCandidates(payload).filter((item) => !item.imported && CLAUDE_IMPORT_SOURCES.has(item.source)).length;
   // Claude Code（命令行）：和 Agent 接入页那一行同一个模型下拉，选一个共享供应商的模型就是让它经本地服务，
-  // 下拉顶部「断开」就还原成它自己的 settings.json。没有这个 Agent（例如只用增强功能）时不显示这一行。
+  // 下拉顶部「断开」就还原成它自己的 settings.json。本地服务里没有这个 Agent 时不显示这一行。
   const claudeCode = payload?.agents.find((item) => item.agent === "claude");
   const claudeCodeDetail = !claudeCode
     ? t("正在读取…")

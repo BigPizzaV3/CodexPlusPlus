@@ -11,8 +11,6 @@ import { appConfirm } from "./app-dialog";
 import { t, tf } from "./i18n";
 import { agentName, shortPath, type AgentSessionView, type SessionAgent } from "./gateway-model";
 import { AGENT_ICONS, AgentIcon, type Notify } from "./gateway-ui";
-import { agentVisible } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxSection, CxToolbar } from "./cx-layout";
 import { matchesManagementQuery, normalizeProjectPath } from "./management-model";
 import { SessionRow, useCopyFeedback } from "./ProjectSessionPage";
@@ -69,9 +67,8 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
     memo.agent = next;
     setAgentState(next);
   };
-  // 当前使用模式下隐藏的 Agent（如只用增强功能时的 Grok）不读、不进「全部」。
-  const focus = useAgentFocus();
-  const wanted = useMemo(() => (agent === "all" ? SESSION_AGENTS.filter((item) => agentVisible(focus, item)) : [agent]), [agent, focus]);
+  // 「全部」读所有 Agent 的会话。
+  const wanted = useMemo(() => (agent === "all" ? [...SESSION_AGENTS] : [agent]), [agent]);
   const requests = useRef(new Map<SessionAgent, number>());
 
   const load = async (agents: SessionAgent[], searchQuery = codexQuery) => {

@@ -27,8 +27,6 @@ import {
 } from "./gateway-model";
 import type { RequestLogFocus } from "./UsageTabs";
 import { usePolling } from "./use-polling";
-import { singleAgent } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { Menu, MenuItem } from "./ManagementPages";
 import { errorText } from "@/lib/utils";
 import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
@@ -357,9 +355,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
   const [filter, setFilter] = useState<"all" | "running" | "success" | "failed" | "retried">("all");
   const [sessionFilter, setSessionFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState<"all" | "codex" | "claude" | "grok">(initialAgent);
-  // 只管理 Codex 时固定看 Codex 的请求，不出现 Agent 筛选。
-  const codexOnly = singleAgent(useAgentFocus()) === "codex";
-  const agentScope = codexOnly ? "codex" : agentFilter;
+  const agentScope = agentFilter;
   // 初始过滤只用一次：之后从侧栏进来仍是「全部」。
   useEffect(() => { if (initialAgent !== "all" || Object.keys(initialFocus).length) onConsumeInitialAgent?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -558,7 +554,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
         onChange={setFilter}
         trailing={
           <>
-            {codexOnly ? null : <AppSelect
+            <AppSelect
               ariaLabel={t("按 Agent 筛选")}
               className="request-log-select"
               menuWidth={160}
@@ -571,7 +567,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
               ] as AppSelectOption<typeof agentFilter>[]}
               size="sm"
               value={agentFilter}
-            />}
+            />
             <AppSelect
               ariaLabel={t("时间段")}
               className="request-log-select"

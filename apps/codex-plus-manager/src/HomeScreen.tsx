@@ -20,12 +20,11 @@ import {
 import { AgentGlyph, useGatewayPayload, useTodayUsage } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
 import { ClaudeAutoTakeoverRow } from "./ClaudeAutoTakeover";
-import { providersHidden, type AgentFocus } from "./agent-focus-model";
 import { t, tf } from "@/i18n";
 import { CxCard, CxRow, CxSection, CxStatusIcon } from "./cx-layout";
 import type { Actions, AdItem, AdsResult, AutoTakeoverResult, ToolEntry } from "./app-types";
 import { autoTakeoverView, enhancementPlatform, StatusBadge, ToggleVisual } from "./app-shared";
-import { type Route, routeVisible, type ToolId } from "./routes";
+import { type Route, type ToolId } from "./routes";
 
 /// 置顶赞助位：只读广告源的 `top_ad/topAds`（`top_ad` 可以是单个对象或数组），过期的不显示。
 function featuredAds(ads: AdsResult | null): AdItem[] {
@@ -41,7 +40,6 @@ export function HomeScreen({
   ads,
   actions,
   tools,
-  focus,
   codexRunning,
   launchPending,
   onLaunchCodex,
@@ -54,7 +52,6 @@ export function HomeScreen({
   ads: AdsResult | null;
   actions: Actions;
   tools: ToolEntry[];
-  focus: AgentFocus;
   codexRunning: boolean;
   launchPending: boolean;
   onLaunchCodex: () => void;
@@ -67,7 +64,6 @@ export function HomeScreen({
 }) {
   const gateway = useGatewayPayload(10_000);
   const usage = useTodayUsage();
-  const enhanceOnly = providersHidden(focus);
   const connected = new Set((gateway?.agents ?? []).filter((agent) => agent.enabled).map((agent) => agent.agent as string));
   // 和侧栏一样：没有 Agent 接入网关时不显示网关那一行，也不催其他 Agent 接入。
   const gatewayInUse = connected.size > 0;
@@ -152,7 +148,7 @@ export function HomeScreen({
         onClick={() => onOpenAgent(tool.id)}
         title={tool.name}
       >
-        {viaGateway || enhanceOnly || !gatewayInUse ? <ChevronRight aria-hidden="true" className="cx-set-chevron" /> : (
+        {viaGateway || !gatewayInUse ? <ChevronRight aria-hidden="true" className="cx-set-chevron" /> : (
           <button className="cx-secondary" onClick={(event) => { event.stopPropagation(); onNavigate("gateway"); }} type="button">{t("接入")}</button>
         )}
       </CxRow>
@@ -184,7 +180,7 @@ export function HomeScreen({
       <CxSection title={t("状态")}>
         <CxCard>
           {tools.map(agentRow)}
-          {enhanceOnly || !gatewayInUse ? null : (
+          {!gatewayInUse ? null : (
             <CxRow
               detail={gatewayDetail}
               icon={<CxStatusIcon tone={gateway?.helperRunning ? "ok" : "off"}><Waypoints /></CxStatusIcon>}
@@ -262,7 +258,7 @@ export function HomeScreen({
 
       <CxSection title={t("常用")}>
         <div className="home-shortcuts">
-          {shortcuts.filter((item) => routeVisible(focus, item.route)).map((item) => {
+          {shortcuts.map((item) => {
             const Icon = item.icon;
             return (
               <button className="home-shortcut" key={item.route} onClick={() => (item.agent ? onOpenAgent(item.agent, item.route) : onNavigate(item.route))} type="button">

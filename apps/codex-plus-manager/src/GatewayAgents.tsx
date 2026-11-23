@@ -45,8 +45,6 @@ import { AppSelect } from "./AppSelect";
 import { GatewayNavContext, publishGatewayPayload, takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalShell } from "./use-modal-shell";
-import { singleAgent, visibleAgents } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
 import { AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, moveOptionFocus, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
@@ -98,14 +96,11 @@ export function AgentsView({
   /** 嵌在别的页面的弹窗里：展开状态不和「Agent 接入」页共用。 */
   embedded?: boolean;
 }) {
-  // 没勾选的 Agent 不列；它们已经接入的话照常工作，到设置里「我用的 Agent」重新勾选就能再管理。
-  const focus = useAgentFocus();
-  const solo = singleAgent(focus);
-  const agents = visibleAgents(focus, payload?.agents ?? []);
+  const agents = payload?.agents ?? [];
   // 展开的那一行、「未接入」折叠状态在切换页签后保留；嵌在弹窗里时不和页面共用。
   // 从总览点某个 Agent 跳过来：展开那一行并滚到它（没接入的先展开「未接入」）。
   const [jumped] = useState(() => (embedded ? null : takeGatewayJump("agent")));
-  const [expanded, setExpanded] = useGatewayViewState<string | null>(embedded ? null : "agents.expanded", solo, jumped ?? undefined);
+  const [expanded, setExpanded] = useGatewayViewState<string | null>(embedded ? null : "agents.expanded", null, jumped ?? undefined);
   const connected = agents.filter((agent) => agent.enabled);
   // 没接入的通用 Agent（Codex / Claude / Grok 之外）收进「更多 Agent（实验）」：不再新增，已接入的照常在「已接入」里。
   const others = agents.filter((agent) => !agent.enabled && CORE_AGENTS.has(agent.agent));
@@ -140,15 +135,13 @@ export function AgentsView({
     />
   );
   // 参照 Cursor 的 Customize：「已接入」「未接入」两节，每个 Agent 一行；选模型 + 打开开关就算接入，详情在行下展开。
-  // 单 Agent 模式只有一行，不分节，直接展开它的设置。
   const list = (items: GatewayAgentView[]) => <CxCard className="gw-agent-card">{items.map(row)}</CxCard>;
   return (
     <div className="gw-agents cx-page">
       {!payload ? <CxCard><CxEmpty title={t("正在读取…")} /></CxCard> : null}
-      {solo && agents.length ? list(agents) : null}
-      {!solo && connected.length ? <CxSection count={connected.length} title={t("已接入")}>{list(connected)}</CxSection> : null}
+      {connected.length ? <CxSection count={connected.length} title={t("已接入")}>{list(connected)}</CxSection> : null}
       {/* 未接入的默认折叠，点标题展开；一个都没接入时直接展开，新用户不用再点一下。 */}
-      {!solo && others.length ? (
+      {others.length ? (
         <CxSection
           className="gw-agents-others"
           title={(
@@ -162,7 +155,7 @@ export function AgentsView({
           {othersShown ? list(others) : null}
         </CxSection>
       ) : null}
-      {!solo && experimental.length ? (
+      {experimental.length ? (
         <CxSection
           className="gw-agents-others"
           title={(

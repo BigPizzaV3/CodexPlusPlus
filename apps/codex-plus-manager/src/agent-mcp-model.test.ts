@@ -30,11 +30,10 @@ test("MCP 页按 Agent 三列管理，Claude / Grok 走后端命令且命令已�
   const { readFileSync } = await import("node:fs");
   const page = readFileSync(new URL("./ManagementPages.tsx", import.meta.url), "utf8");
   const lib = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
-  // 按使用模式去掉隐藏的 Agent 列（只管理 Codex 时只剩 Codex），隐藏的 Agent 也不读配置。
-  assert.match(page, /const shownAgents = MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\);/);
-  assert.match(page, /const agents: McpAgentId\[\] = kind === "mcp" \? shownAgents : \["codex"\];/);
-  // 可见 Agent 的配置并行读取，读完之前页面显示读取中而不是「还没有 MCP 服务器」。
-  assert.match(page, /const agents = \(\["claude", "grok"\] as const\)\.filter\(\(item\) => agentVisible\(focus, item\)\);\n\s*const results = await Promise\.all\(agents\.map\(/);
+  // MCP 页每个 Agent 一列，Skill 一类条目只有 Codex 一列。
+  assert.match(page, /const agents: McpAgentId\[\] = kind === "mcp" \? MCP_AGENTS : \["codex"\];/);
+  // 各 Agent 的配置并行读取，读完之前页面显示读取中而不是「还没有 MCP 服务器」。
+  assert.match(page, /const results = await Promise\.all\(\(\["claude", "grok"\] as const\)\.map\(/);
   assert.match(page, /kind === "mcp" && agentsLoading\n?\s*\? <CxEmpty title=\{t\("正在读取各 Agent 的 MCP 配置…"\)\} \/>/);
   // 删除确认用危险样式，不用品牌主色。
   assert.match(page, /<Action danger disabled=\{busy\}[\s\S]*?>\{t\("确认删除"\)\}<\/Action>/);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { placeCard, shouldShowTour, tourSteps, TOUR_STEPS, TOUR_VERSION } from "./onboarding-model.ts";
+import { placeCard, shouldShowTour, TOUR_STEPS, TOUR_VERSION } from "./onboarding-model.ts";
 
 test("首次使用和引导升级后自动弹出，看过当前版本就不再弹", () => {
   assert.equal(shouldShowTour(null), true);
@@ -27,32 +27,12 @@ test("说明卡优先放目标右侧，放不下换左侧，再不行放下方�
   assert.ok(bottom.top + card.height <= viewport.height - 12);
 });
 
-test("只管理 Codex 时引导换成单 Agent 说法，步骤和目标不变", () => {
-  assert.equal(tourSteps(null), TOUR_STEPS);
-  const solo = tourSteps("Codex");
-  assert.deepEqual(solo.map((step) => [step.id, step.target]), TOUR_STEPS.map((step) => [step.id, step.target]));
-  const welcome = solo.find((step) => step.id === "welcome")!;
-  assert.equal(welcome.title, TOUR_STEPS[0].title);
-  assert.equal(welcome.plainTitle, true);
-  assert.deepEqual(welcome.args, ["Codex"]);
-  assert.match(welcome.body, /\{0\}/);
-  const agents = solo.find((step) => step.id === "agents")!;
-  assert.ok(!agents.plainTitle && agents.title.includes("{0}"));
-  // 没改写的步骤原样保留。
-  assert.equal(solo.find((step) => step.id === "palette"), TOUR_STEPS.find((step) => step.id === "palette"));
-});
-
-test("只用增强功能时欢迎卡不提供应商", () => {
-  const steps = tourSteps(null, true);
-  assert.deepEqual(steps.map((step) => step.id), ["welcome", "management", "agents", "palette", "settings"]);
-  assert.match(steps[0].body, /供应商仍由你自己的工具管理/);
-  assert.equal(steps[0].args, undefined);
-});
-
-test("本地服务不在主侧栏，导览不讲网关：欢迎卡不提网关，Agent 一步说明共享供应商在设置的「本地服务」里", () => {
+test("导览只有一套文案：顺序跟着侧栏走，欢迎卡不提网关，Agent 一步指到侧栏的「本地服务」", () => {
   // 顺序跟着侧栏：万物皆拓展 → Agent → 搜索 → 设置。
   assert.deepEqual(TOUR_STEPS.map((step) => step.id), ["welcome", "management", "agents", "palette", "settings"]);
-  for (const solo of [null, "Codex"]) assert.doesNotMatch(tourSteps(solo)[0].body, /网关/);
-  assert.match(tourSteps(null).find((step) => step.id === "agents")!.body, /设置的「本地服务」里配置/);
-  assert.deepEqual(tourSteps("Codex")[0].args, ["Codex"]);
+  assert.doesNotMatch(TOUR_STEPS[0].body, /网关/);
+  // 本地服务是侧栏第一组里的一个入口，不在设置里。
+  assert.match(TOUR_STEPS.find((step) => step.id === "agents")!.body, /到侧栏的「本地服务」里配置/);
+  // 使用模式已经取消，文案里不再有按 Agent 名字填的占位符。
+  for (const step of TOUR_STEPS) assert.doesNotMatch(step.title + step.body, /\{\d+\}/);
 });

@@ -40,12 +40,11 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { managerNavPages, type ManagerExtensionPage, type ManagerNavGroup } from "./extension-manager-pages";
-import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { AgentGlyph, useGatewayPayload } from "./hub-shared";
 import { paletteShortcut } from "./command-palette-model";
 import { agentName } from "./gateway-model";
 import { agentTabGroups, pageVisibleForTool } from "./page-groups";
-import { providersHidden, type AgentFocus } from "./agent-focus-model";
 import { getLanguage, t, tf, toggleLanguage } from "@/i18n";
 import type { Theme, ToolEntry } from "./app-types";
 import { APP_LOGO_URL } from "./app-shared";
@@ -58,11 +57,9 @@ import {
   type Route,
   routes,
   routeTool,
-  routeVisible,
   settingsModeRoutes,
   localServiceRoutes,
   type ToolId,
-  visibleRoutes,
 } from "./routes";
 
 /**
@@ -80,7 +77,7 @@ type SettingsNavEntry = {
   keywords?: string;
 };
 
-export function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): SettingsNavEntry[] {
+export function settingsNavEntries(codexAvailable: boolean): SettingsNavEntry[] {
   const entries: SettingsNavEntry[] = [
     { key: "general", label: t("通用"), icon: Settings, route: "settings", sections: ["app-settings-general"], group: "app", keywords: "theme mode tour 主题 模式 引导 托盘" },
     { key: "config", label: t("配置文件"), icon: FileCode2, route: "settings", sections: ["app-settings-config"], group: "app", keywords: "backup import export 备份 导入 导出 路径" },
@@ -93,7 +90,7 @@ export function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): 
     { key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta", keywords: "computer use mcp" },
     { key: "agentCollaboration", label: t("Agent 协作"), icon: GitBranch, route: "agentCollaboration", group: "beta", keywords: "collaboration 协作" },
   ];
-  return entries.filter((entry) => routeVisible(focus, entry.route) && (entry.key !== "codex" || codexAvailable));
+  return entries.filter((entry) => entry.key !== "codex" || codexAvailable);
 }
 /** 设置分类当前是哪一个：整体设置页按显示的卡片判断，其余按路由。 */
 export function activeSettingsEntry(entries: SettingsNavEntry[], route: Route, settingsSections: string[]) {
@@ -145,26 +142,20 @@ export function AppSidebar({
   onOpenUpdate,
   codexRun,
   claudeRun,
-  soloAgent,
-  focus,
   extensionPages = [],
   activeExtensionKey = null,
   onOpenExtensionPage,
   settingsSections = ["app-settings-general"],
   onOpenSettings,
   onExitSettings,
-  setupCard = null,
+  setupSlotRef,
 }: {
-  /** 入门清单（没完成、没关掉时）：放在侧栏底部，替代网关状态卡。 */
-  setupCard?: ReactNode;
+  /** 启动引导的进度卡（没完成、没关掉时）由引导组件投到这个位置：侧栏底部。 */
+  setupSlotRef?: (element: HTMLDivElement | null) => void;
   /** 拓展贡献的管理器页面：声明了 manager.nav 的放进对应分组。 */
   extensionPages?: ManagerExtensionPage[];
   activeExtensionKey?: string | null;
   onOpenExtensionPage?: (key: string) => void;
-  /** 单 Agent 模式下的那个 Agent：侧栏不再出现「接入更多 Agent」的入口和多 Agent 工具。 */
-  soloAgent: string | null;
-  /** 使用模式：只用增强功能时没有网关入口，底部状态卡不讲网关，Agent 行不画接入状态点。 */
-  focus: AgentFocus;
   /** Codex 行的播放 / 停止：只有桌面应用的 Codex 有，命令行 Agent 没有常驻进程可启停。
       unavailableReason 非空（如没找到 Codex 应用）时播放键置灰，悬停显示原因。 */
   codexRun: { running: boolean; unattached: boolean; busy: boolean; unavailableReason: string | null; onStart: () => void; onStop: () => void; onRestart: () => void };
@@ -201,7 +192,6 @@ export function AppSidebar({
   const [settingsQuery, setSettingsQuery] = useState("");
   // 收起了页面列表的 Agent：再点一次当前 Agent 收起 / 展开它下面的页面（#2913）。切到别的 Agent 时清掉。
   const [collapsedAgent, setCollapsedAgent] = useState<string | null>(null);
-  const enhanceOnly = providersHidden(focus);
   const settingsMode = settingsModeRoutes.has(route);
   const onGlobalPage = globalNavigationRoutes.includes(route);
   const languageLabel = getLanguage() === "en" ? t("切换到中文") : t("切换到英文");
@@ -220,7 +210,7 @@ export function AppSidebar({
 
   if (settingsMode) {
     const codexAvailable = tools.some((tool) => tool.id === "codex" && tool.switchable);
-    const entries = settingsNavEntries(focus, codexAvailable);
+    const entries = settingsNavEntries(codexAvailable);
     const activeKey = activeSettingsEntry(entries, route, settingsSections);
     const query = settingsQuery.trim().toLowerCase();
     const shown = query ? entries.filter((entry) => `${entry.label} ${entry.keywords ?? ""}`.toLowerCase().includes(query)) : entries;
@@ -304,7 +294,6 @@ export function AppSidebar({
     // 本地服务（原「聚合网关」一整组）只占一个入口，页内四个页签。
     { key: "localService", route: "gatewayProviders", label: t("本地服务"), icon: Waypoints, match: ["hub", ...localServiceRoutes] },
   ];
-  const shownGeneral = general.filter((item) => routeVisible(focus, item.route));
   // 本地服务只占第一组里一个入口；声明在 gateway 分组的拓展页面并进其余拓展页面那一节。
   // `gateway` 是已发布的清单分组名，照旧认。
   const extensionItems = (["gateway", "management", "tools"] as ManagerNavGroup[]).flatMap((group) => managerNavPages(extensionPages, group));
@@ -357,7 +346,7 @@ export function AppSidebar({
 
       <nav aria-label={t("主导航")} className="cx-side-nav" ref={navRef}>
         <i aria-hidden="true" className="cx-side-indicator" />
-        <div className="cx-side-group">{shownGeneral.map(renderEntry)}</div>
+        <div className="cx-side-group">{general.map(renderEntry)}</div>
 
         <div className="cx-side-group" data-tour="agents">
           <div className="cx-side-heading">
@@ -385,7 +374,7 @@ export function AppSidebar({
                   aria-current={current ? "true" : undefined}
                   aria-expanded={current ? expanded : undefined}
                   aria-label={tool.switchable ? `${displayName} · ${access.label}` : `${displayName} · ${t("待接入")}`}
-                  className={`cx-side-item ${current ? "active" : ""} ${expanded && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => visibleRoutes(focus, entry.routes)).length > 1 ? "has-subnav" : ""}`.trim()}
+                  className={`cx-side-item ${current ? "active" : ""} ${expanded && agentTabGroups(navigationSections, routeTool, tool.id).flatMap((entry) => entry.routes).length > 1 ? "has-subnav" : ""}`.trim()}
                   disabled={!tool.switchable}
                   onClick={() => {
                     // 再点当前 Agent：只收起 / 展开它的页面列表，不跳页；点别的 Agent 照常切过去并展开。
@@ -401,7 +390,7 @@ export function AppSidebar({
                 >
                   <AgentGlyph agent={tool.id} className="cx-side-icon" />
                   <span className="cx-side-label">{displayName}</span>
-                  {enhanceOnly || !gatewayInUse ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
+                  {!gatewayInUse ? null : <i aria-hidden="true" className="side-dot" data-tone={access.tone} />}
                 </button>
                 {tool.id === "codex" && tool.switchable ? (() => {
                   // 外部启动、没挂载增强脚本的 Codex：按钮直接变成「重启并挂载」，一步到位。
@@ -457,7 +446,7 @@ export function AppSidebar({
                   每个 Agent 的列表都一直挂着，收起的那些高度为 0：切 Agent、收起 / 展开时才有高度过渡，不是瞬间出现 / 消失。 */}
 {(() => {
             const pages = agentTabGroups(navigationSections, routeTool, tool.id)
-              .flatMap((entry) => visibleRoutes(focus, entry.routes))
+              .flatMap((entry) => entry.routes)
               // 「补丁 Desktop」的内容在启动模式选补丁副本时直接显示在 Desktop 增强页，侧栏不再单列（⌘K 仍能进；停在那页时照常显示）。
               .filter((routeId) => routeId !== "claudePatch" || route === "claudePatch");
             if (pages.length < 2) return null;
@@ -500,9 +489,9 @@ export function AppSidebar({
         ) : null}
       </nav>
 
-      {/* 底部状态卡（对应 Cursor 的 Getting Started）：入门清单没完成时是它；有新版本时是更新提示。
+      {/* 底部状态卡（对应 Cursor 的 Getting Started）：启动引导没完成时是它的进度卡；有新版本时是更新提示。
           网关状态不再单独占一张卡：有 Agent 接入时侧栏已经有「本地服务」一组，它的「总览」就是同一个入口。 */}
-      {setupCard}
+      {setupSlotRef ? <div className="cx-side-setup" ref={setupSlotRef} /> : null}
       {pendingUpdateVersion ? (
         <button className="cx-side-card" onClick={onOpenUpdate} type="button">
           <span className="cx-side-card-title"><ArrowUp aria-hidden="true" />{pendingUpdateReady ? tf("新版本 {0} 已下载", [pendingUpdateVersion]) : pendingUpdateProgress !== null ? tf("正在下载新版本 {0}", [pendingUpdateVersion]) : tf("新版本 {0}", [pendingUpdateVersion])}</span>

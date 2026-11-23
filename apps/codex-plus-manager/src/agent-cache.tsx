@@ -3,9 +3,7 @@ import { appConfirm } from "./app-dialog";
 import { useEffect, useRef, useState } from "react";
 import { RefreshCw, Trash2 } from "lucide-react";
 import { t, tf } from "./i18n";
-import { cacheApps, cacheCleanupSummary, cacheSelection, selectableCacheGroups, visibleCacheGroups, type CacheGroup } from "./agent-cache-model";
-import { agentVisible } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
+import { cacheApps, cacheCleanupSummary, cacheSelection, selectableCacheGroups, type CacheGroup } from "./agent-cache-model";
 import { APP_LOGO_URL } from "./gateway-ui";
 import { AgentGlyph } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
@@ -64,17 +62,14 @@ export function AgentCachePanel() {
     return () => { mounted.current = false; };
   }, []);
 
-  // 和其它管理页一样按使用模式只看显示的 Agent：隐藏的 Agent 的缓存不统计、不能选、不会被清理。
-  const focus = useAgentFocus();
-  const visible = (agent: string) => agentVisible(focus, agent);
-  const groups = visibleCacheGroups(report?.groups ?? [], visible);
+  const groups = report?.groups ?? [];
   const chosen = selectableCacheGroups(groups).filter((group) => selected.includes(group.id));
   const chosenSummary = cacheCleanupSummary(chosen);
   const chosenBytes = chosenSummary.bytes;
   const chosenFiles = chosenSummary.files;
   const totalBytes = groups.reduce((sum, group) => sum + group.totalBytes, 0);
   const eligibleBytes = groups.reduce((sum, group) => sum + group.eligibleBytes, 0);
-  const apps = cacheApps(groups, visible);
+  const apps = cacheApps(groups);
   const selectable = cacheSelection(groups, "all");
 
   /** `keepResult`：清理后自动重扫时保留上一次的清理结果或失败原因。重扫期间旧报告留在页面上，扫完再换。 */
@@ -89,7 +84,7 @@ export function AgentCachePanel() {
       // 扫描完直接勾上推荐项（不含日志），大多数人只需要点一次「清理」。
       if (mounted.current) {
         setReport(response.report);
-        setSelected(cacheSelection(visibleCacheGroups(response.report.groups, visible), "recommended"));
+        setSelected(cacheSelection(response.report.groups, "recommended"));
       }
     } catch (cause) {
       if (mounted.current) setError(String(cause));

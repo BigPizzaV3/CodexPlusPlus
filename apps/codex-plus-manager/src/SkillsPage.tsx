@@ -13,8 +13,6 @@ import { AgentToggle, Menu, MenuItem, PageButton as Button, PageHeader } from ".
 import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AgentGlyph } from "./hub-shared";
 import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
-import { agentVisible } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import "./ManagementPages.css";
 import { aggregateSkillGroupItems, applySkillBundleGroups, customSkillGroupKey, groupSkills, legacySkillCustomGroupName, migrateSkillGroupAssignments, migrateSkillInstanceAssignments, moveSkillGroup, nextSkillGroupSortDirection, readSkillGroupStorage, skillBundleExportGroups, skillBundleSelections, skillGroupAssignment, skillGroupIdentityKey, skillIdentityKey, sortSkillGroupKeys, sortSkillGroupsByName, type SkillGroup, type SkillGroupSortDirection } from "./skill-groups";
 import { mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchState, skillBatchTargets, skillCodexStatusError, SkillBatchRegistry, type PendingSkillBatchOperation } from "./skill-agent-batch";
@@ -342,10 +340,8 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const [bundleExportOpen, setBundleExportOpen] = useState(false);
   const [updateTarget, setUpdateTarget] = useState<{ id: string; repoKey: string; localPath?: string } | null>(null);
   const [repoSelection, setRepoSelection] = useState<string | null>(null);
-  // 当前使用模式下隐藏的 Agent 不占列：只管理 Codex 时只有 Codex，只用增强功能时是 Codex、Claude Code。
-  const focus = useAgentFocus();
-  // 记住这一列数组：它是每个 SkillRow 的属性，每次渲染都新建会让行的 memo 失效。
-  const agentColumns: McpAgentId[] = useMemo(() => MCP_AGENTS.filter((agent) => agentVisible(focus, agent)), [focus]);
+  // 每个 Agent 一列。数组是每个 SkillRow 的属性，要保持同一个引用，否则行的 memo 失效。
+  const agentColumns: McpAgentId[] = MCP_AGENTS;
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   // 每组展开了多少行（默认 SKILL_GROUP_PAGE）。
   const [rowLimits, setRowLimits] = useState<Record<string, number>>({});

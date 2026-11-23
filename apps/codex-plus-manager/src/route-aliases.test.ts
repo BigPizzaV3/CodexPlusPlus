@@ -38,7 +38,7 @@ it("所有入口都经别名表：navigate、拓展 navigate、?previewRoute；�
 });
 
 it("⌘K 能搜到设置的各个分类（更新、日志、配置体检…），搜索框有无障碍名称；页面名称一页一个", () => {
-  assert.match(app, /for \(const entry of settingsNavEntries\(agentFocus, /);
+  assert.match(app, /for \(const entry of settingsNavEntries\(toolEntries\.some\(/);
   assert.match(app, /keywords: `settings \$\{entry\.route\} \$\{entry\.key\} \$\{entry\.keywords \?\? ""\}`,/);
   assert.match(app, /if \(entry\.sections\) setSettingsSections\(entry\.sections\);\n\s*void navigate\(entry\.route\);/);
   const palette = readFileSync(new URL("./CommandPalette.tsx", import.meta.url), "utf8");

@@ -83,7 +83,7 @@ export type BackendSettings = WhaleBalanceSettings & {
   providerSyncEnabled: boolean;
   /** 「启动前修复会话索引」与 providerSyncEnabled 分开（#2846）：只补投影、不改会话归属。 */
   sessionIndexRepairEnabled?: boolean;
-  /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
+  /** 「启动引导出现过」的记号（#2902）：非空即出现过，本地存储丢了时靠它不再重复弹。原来记的是已取消的使用模式。 */
   managerAgentFocus?: string;
   threadModelFollowSwitchEnabled?: boolean;
   /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */

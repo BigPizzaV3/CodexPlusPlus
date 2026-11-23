@@ -78,8 +78,6 @@ import { ProviderTestDialog } from "./ProviderTestDialog";
 import { takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalShell } from "./use-modal-shell";
-import { singleAgent, visibleAgents } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { useSponsorPresets } from "./sponsor-store";
 
 /** 能在网关里直接登录的订阅。 */
@@ -1225,10 +1223,8 @@ function EditIcon({ label, disabled, onClick }: { label: string; disabled: boole
 /** 添加时给哪些 Agent 用：一排可切换的 Agent，默认按各自的「添加供应商时自动加入」。 */
 function AgentPicks({ payload, picked, onChange }: { payload: GatewayPayload | null; picked: GatewayAgentId[]; onChange: (next: GatewayAgentId[]) => void }) {
   // 只列内置的三个和已接入的通用 Agent；装了但没接入的不在这里出现。
-  // 没勾选的 Agent 不列（保持各自的默认）；单 Agent 模式下只有一个可选，整行不显示。
-  const focus = useAgentFocus();
-  const agents = visibleAgents(focus, glanceAgents(payload?.agents));
-  if (!agents.length || singleAgent(focus)) return null;
+  const agents = glanceAgents(payload?.agents);
+  if (!agents.length) return null;
   return (
     <div className="gw-agent-picks">
       <span>{t("添加后给这些 Agent 用")}</span>
@@ -1257,11 +1253,10 @@ type CatalogItem = { key: string; name: string; added?: boolean; icon?: ReactNod
 
 /** 编辑时给哪些 Agent 用（#3030）：每个已接入 Agent 一个开关，改的是各自的「挑选」排除列表。 */
 function EditAgentPicks({ payload, busy, run, entry }: { payload: GatewayPayload | null; busy: string | null; run: Run; entry: GatewayPoolEntry }) {
-  const focus = useAgentFocus();
   const connected = connectedAgents(payload);
   // 只列已接入的 Agent：没接入的谈不上用不用这家供应商。
-  const agents = visibleAgents(focus, glanceAgents(payload?.agents)).filter((agent) => connected.includes(agent.agent));
-  if (!agents.length || singleAgent(focus)) return null;
+  const agents = glanceAgents(payload?.agents).filter((agent) => connected.includes(agent.agent));
+  if (!agents.length) return null;
   const toggle = (agent: GatewayAgentId, on: boolean) => {
     const binding = payload?.gateway.bindings[agent];
     if (!binding) return;

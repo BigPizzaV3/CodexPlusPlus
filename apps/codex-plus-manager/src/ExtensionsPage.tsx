@@ -16,7 +16,6 @@ import { ExtensionConfigForm } from "./extension-config-form";
 import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AgentGlyph } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
-import { agentVisible, type AgentFocus } from "./agent-focus-model";
 import { defaultMarketSort, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
 import { extensionEnabledForHost, extensionsForHost, extensionStateForHost, type ExtensionHost } from "./extension-host-model";
 import { Menu, MenuItem } from "./ManagementPages";
@@ -264,7 +263,7 @@ function EnhancementSettingControl({
   );
 }
 
-export function UserScriptsScreen({ host, focus = null, onHostChange, settings, market, onOpenRescue, onOpenPluginMarket, onOpenClaude, actions }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions }) {
+export function UserScriptsScreen({ host, onHostChange, settings, market, onOpenRescue, onOpenPluginMarket, onOpenClaude, actions }: { host: ExtensionHost; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions }) {
   const codexHost = host === "codex";
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
@@ -401,7 +400,7 @@ export function UserScriptsScreen({ host, focus = null, onHostChange, settings, 
           {codexHost ? <MenuItem onClick={onOpenRescue}>{t("打开启动急救")}</MenuItem> : null}
         </Menu>
       </TopbarActions>
-      <ExtensionsHero host={host} focus={focus} onHostChange={onHostChange} />
+      <ExtensionsHero host={host} onHostChange={onHostChange} />
       {codexHost && onOpenPluginMarket ? (
         <p className="cx-aggregate-note ext-crosslink">
           <span>{t("这里是 Codex++ 拓展；Codex 官方目录里的插件在「Codex 插件」页。")}</span>
@@ -649,9 +648,9 @@ const extensionCapabilities = [
   "界面与页面", "斜杠命令", "消息与面板", "模型工具", "Codex 钩子", "网关中间件", "常驻后台", "会话历史", "拓展间服务", "多语言",
 ] as const;
 
-function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionHost; focus?: AgentFocus; onHostChange: (host: ExtensionHost) => void }) {
-  // 页面标题就是「万物皆拓展」：这里只留一句理念（能改到的地方放在悬停里），宿主切换放在右侧；只有一个宿主时不显示切换。
-  const hosts = (["codex", "claude"] as const).filter((target) => agentVisible(focus, target));
+function ExtensionsHero({ host, onHostChange }: { host: ExtensionHost; onHostChange: (host: ExtensionHost) => void }) {
+  // 页面标题就是「万物皆拓展」：这里只留一句理念（能改到的地方放在悬停里），宿主切换放在右侧。
+  const hosts = ["codex", "claude"] as const;
   return (
     <section className="ext-hero" aria-label={t("万物皆拓展")}>
       <p className="ext-hero-lead" title={host === "codex" ? `${t("Codex++ 构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。在 Codex 对话里说一句，就能造一个属于自己的拓展。")}\n${extensionCapabilities.map((label) => t(label)).join(" · ")}` : undefined}>
@@ -659,16 +658,14 @@ function ExtensionsHero({ host, focus = null, onHostChange }: { host: ExtensionH
           ? t("界面、命令、工具、钩子、模型请求都能由拓展接管；在 Codex 对话里说一句就能造一个。")
           : t("往 Claude 页面里加 js / css 的页面扩展，格式和扩展市场与 ClaudeMom 相同；也能给 Claude Code 装适配它的 Codex++ 拓展。")}
       </p>
-      {hosts.length > 1 ? (
-        <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>
-          {hosts.map((target) => (
-            <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
-              <AgentGlyph agent={target} />
-              {target === "codex" ? "Codex" : "Claude"}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>
+        {hosts.map((target) => (
+          <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
+            <AgentGlyph agent={target} />
+            {target === "codex" ? "Codex" : "Claude"}
+          </button>
+        ))}
+      </div>
     </section>
   );
 }

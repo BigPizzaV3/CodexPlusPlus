@@ -43,7 +43,7 @@ test("本地服务在主侧栏只占一个入口，页内四个页签；Agent �
   // 接入方式的状态点只在有 Agent 接入本地服务时画；网关数据第一次读回来之前用上次记下的结果。
   assert.match(sidebar, /const gatewayInUse = gateway \? connectedAgents\.size > 0 : loadCachedGatewayInUse\(\);/);
   assert.match(sidebar, /if \(gateway\) storeCachedGatewayInUse\(gatewayInUse\);/);
-  assert.match(sidebar, /\{enhanceOnly \|\| !gatewayInUse \? null : <i aria-hidden="true" className="side-dot" data-tone=\{access\.tone\} \/>\}/);
+  assert.match(sidebar, /\{!gatewayInUse \? null : <i aria-hidden="true" className="side-dot" data-tone=\{access\.tone\} \/>\}/);
   assert.doesNotMatch(sidebar, /aria-label=\{t\("接入 Agent"\)\}/);
   assert.match(text, /const agentHomeRoute: Record<string, Route> = \{ codex: "overview", claude: "claude", grok: "overview" \}/);
   assert.match(text, /const agentEntryRoute = \(toolId: ToolId\) => agentTarget\(agentRoutes\(toolId\), lastAgentRoute\.get\(toolId\), agentHomeRoute\[toolId\] \?\? "overview"\)/);
@@ -87,8 +87,8 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(text, /const stoppedByUser = result\.latest_launch\?\.phase === "user_stopped";/);
   const lib = readSource("../src-tauri/src/lib.rs");
   assert.match(lib, /commands::stop_codex_plus,/);
-  // 侧栏里当前 Agent 下面缩进列出它的页面（概览 / 增强 / 皮肤 / 插件市场 / 微信 / 多开），仍按页面的 tool 归属和使用模式过滤。
-  assert.match(sidebar, /\.flatMap\(\(entry\) => visibleRoutes\(focus, entry\.routes\)\)\n[^\n]*\n\s*\.filter\(\(routeId\) => routeId !== "claudePatch" \|\| route === "claudePatch"\);\n\s*if \(pages\.length < 2\) return null;/);
+  // 侧栏里当前 Agent 下面缩进列出它的页面（概览 / 增强 / 皮肤 / 插件市场 / 微信 / 多开），按页面的 tool 归属过滤。
+  assert.match(sidebar, /\.flatMap\(\(entry\) => entry\.routes\)\n[^\n]*\n\s*\.filter\(\(routeId\) => routeId !== "claudePatch" \|\| route === "claudePatch"\);\n\s*if \(pages\.length < 2\) return null;/);
   // 「连接与供应商」（原旧版供应商配置 + 旧版代理设置）紧跟概览，是 Codex 自己的页面：直连用户每天在这里切供应商，
   // 不藏进设置；Codex 设置（启动参数、维护）在设置模式里。
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
@@ -216,29 +216,28 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   assert.match(sidebar, /match: customizeRoutes/);
   assert.match(sidebar, /key: "usage"/);
   // 用量也记直连代理的请求，放在第一组。
-  const general = sidebar.slice(sidebar.indexOf("const general: SideEntry[]"), sidebar.indexOf("const shownGeneral"));
+  const general = sidebar.slice(sidebar.indexOf("const general: SideEntry[]"), sidebar.indexOf("const extensionItems"));
   assert.match(general, /\{ key: "usage", route: "gatewayUsage", label: t\("用量"\), icon: BarChart3, match: \["gatewayUsage", "requestLog"\] \}/);
-  assert.match(sidebar, /const shownGeneral = general\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
+  // 使用模式已经取消：第一组的入口全部显示，不再按模式过滤。
+  assert.match(sidebar, /<div className="cx-side-group">\{general\.map\(renderEntry\)\}<\/div>/);
+  assert.doesNotMatch(text, /routeVisible|visibleRoutes|agent-focus/);
   assert.match(text, /const customizeRoutes: Route\[\] = \["context", "skills"\];/);
   // 本地服务的几页不进设置模式。
   assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("export const localServiceRoutes")), /"gateway/);
   // 网关的会话页并进「会话」：Codex 页签是完整的会话管理，其余页签是多 Agent 会话列表。
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");
-  // 只管理 Codex 时没有 Agent 页签，固定显示 Codex 的完整会话管理。
-  assert.match(entry, /const shownSessionTab: SessionTab = soloAgent === "codex" \|\| \(sessionTab !== "all" && !agentVisible\(agentFocus, sessionTab\)\) \? "codex" : sessionTab;/);
   // 默认是 Codex 页签（完整的会话管理）。
   assert.match(entry, /useState<SessionTab>\("codex"\)/);
-  assert.match(entry, /route === "sessions" && !soloAgent \? <SessionAgentTabs/);
-  assert.match(entry, /route === "sessions" && shownSessionTab !== "codex" \? \(/);
-  assert.match(entry, /<SessionsView agent=\{shownSessionTab\}/);
-  assert.match(entry, /route === "sessions" && shownSessionTab === "codex" \? \(\s*<ProjectSessionPage/);
+  assert.match(entry, /route === "sessions" \? <SessionAgentTabs/);
+  assert.match(entry, /route === "sessions" && sessionTab !== "codex" \? \(/);
+  assert.match(entry, /<SessionsView agent=\{sessionTab\}/);
+  assert.match(entry, /route === "sessions" && sessionTab === "codex" \? \(\s*<ProjectSessionPage/);
 });
 
 test("请求日志按 Agent 筛选；网关记录带 agent 字段，没有的算 Codex", () => {
   const screen = functionSource("RequestLogScreen");
-  // 只管理 Codex 时固定看 Codex 的请求，不出现 Agent 筛选。
-  assert.match(screen, /const agentScope = codexOnly \? "codex" : agentFilter;/);
+  assert.match(screen, /const agentScope = agentFilter;/);
   assert.match(screen, /agentScope !== "all" && requestLogAgent\(entry\) !== agentScope/);
   assert.match(screen, /\[entries, filter, query, sessionFilter, agentScope, displayNames\]/);
   assert.match(functionSource("requestLogAgent"), /return entry\.agent \|\| "codex";/);
@@ -296,8 +295,9 @@ test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一
   const extra = readSource("./SkillsPage.tsx");
   const css = readSource("./ManagementPages.css");
   assert.match(extra, /<CxRow className="cx-skill-row"/);
-  assert.match(extra, /const agentColumns: McpAgentId\[\] = useMemo\(\(\) => MCP_AGENTS\.filter\(\(agent\) => agentVisible\(focus, agent\)\), \[focus\]\);/);
-  // 行里每个可见 Agent 一枚开关；分组标题同一列是这一组的批量开关。
+  // 列数组是每一行的属性，直接用模块里的常量，引用不变。
+  assert.match(extra, /const agentColumns: McpAgentId\[\] = MCP_AGENTS;/);
+  // 行里每个 Agent 一枚开关；分组标题同一列是这一组的批量开关。
   assert.match(extra, /agentColumns\.map\(\(agent\) => \{[\s\S]*?return <AgentToggle /);
   assert.match(extra, /agentColumns\.map\(\(agent\) => <GroupAgentSelect /);
   assert.doesNotMatch(extra, /mg-agent-toggle|mg-skill-group-select/);
@@ -414,11 +414,11 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   // 首页不能全是广告：先是状态，再是精选推荐和其他赞助商，最后常用入口。
   const order = ['title={t("状态")}', 'title={t("精选推荐")}', 'title={t("更多赞助商")}', 'title={t("常用")}'].map((needle) => home.indexOf(needle));
   assert.ok(order.every((index, position) => index > 0 && (position === 0 || index > order[position - 1])), String(order));
-  // 只管增强、或还没有 Agent 接入网关时不显示网关一行，也不催其他 Agent 接入；入口也按使用模式过滤。
+  // 还没有 Agent 接入本地服务时不显示本地服务一行，也不催其他 Agent 接入。
   assert.match(home, /const gatewayInUse = connected\.size > 0;/);
-  assert.match(home, /\{enhanceOnly \|\| !gatewayInUse \? null : \(/);
-  assert.match(home, /viaGateway \|\| enhanceOnly \|\| !gatewayInUse \? <ChevronRight/);
-  assert.match(home, /shortcuts\.filter\(\(item\) => routeVisible\(focus, item\.route\)\)/);
+  assert.match(home, /\{!gatewayInUse \? null : \(/);
+  assert.match(home, /viaGateway \|\| !gatewayInUse \? <ChevronRight/);
+  assert.match(home, /shortcuts\.map\(\(item\) => \{/);
   // 常用入口给的是 Codex 自己的供应商页，不是网关的共享供应商；Codex 的页面先切到 Codex 再打开。
   // 和页签同名（一页一个名字）。
   assert.match(home, /\{ route: "relay", label: t\("连接与供应商"\)[^\n]*agent: "codex" \}/);
@@ -595,20 +595,32 @@ test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
   assert.match(hub, /export function HubTopology\(/);
 });
 
-test("首次入门清单与可选导览分开；模式确认后显示清单，旧用户可从设置重开", () => {
+test("启动引导是挂在应用顶层的两步向导，进度卡投到侧栏；导览单独打开，旧用户可从设置重开", () => {
   const app = functionSource("App");
-  // 使用模式问卷先弹，答完才进引导。
-  assert.match(app, /\{agentFocusOpen \? <AgentFocusDialog initial=\{agentFocus\} onDone=\{closeAgentFocus\} onCancel=\{cancelAgentFocus\} \/> : null\}/);
-  assert.match(app, /\{tourOpen && !agentFocusOpen \? <Suspense fallback=\{null\}><OnboardingTour focus=\{agentFocus\} onClose=\{closeTour\} \/><\/Suspense> : null\}/);
-  assert.match(app, /setupOpen && !agentFocusOpen && !agentFocusChecking \? \(\s*<OnboardingSetup/);
+  // 向导挂在应用顶层（设置模式的侧栏没有卡位，挂在侧栏里会被卸载）；进度卡的位置由侧栏交出来。
+  assert.match(app, /const onboardingSetup = setupOpen && !setupChecking \? \(\s*<OnboardingSetup\n\s*key=\{setupRun\}\n\s*open=\{wizardOpen\}\n\s*onOpenChange=\{setWizardOpen\}\n\s*cardSlot=\{setupSlot\}/);
+  assert.match(app, /<AppSidebar\n\s*setupSlotRef=\{setSetupSlot\}/);
+  assert.match(app, /<CommandPalette[^\n]*\n\s*\{onboardingSetup\}/);
+  assert.match(functionSource("AppSidebar"), /\{setupSlotRef \? <div className="cx-side-setup" ref=\{setupSlotRef\} \/> : null\}/);
+  // 使用模式问卷已经取消，不再有它的弹窗。
+  assert.doesNotMatch(app, /AgentFocusDialog|useAgentFocus|agentFocusOpen/);
+  assert.match(app, /\{tourOpen && !wizardOpen \? <Suspense fallback=\{null\}><OnboardingTour onClose=\{closeTour\} \/><\/Suspense> : null\}/);
   assert.match(app, /window\.localStorage\.setItem\(TOUR_STORAGE_KEY, String\(TOUR_VERSION\)\)/);
-  assert.match(functionSource("initialSetupOpen"), /has\("previewRoute"\)/);
-  assert.match(functionSource("initialSetupOpen"), /shouldShowSetup\(/);
-  assert.match(app, /if \(agentFocusOpen \|\| tourOpen\) return;\s*setPaletteOpen/);
-  assert.match(app, /updatePrompt && !agentFocusOpen && !tourOpen/);
-  assert.match(functionSource("GlobalSettingsScreen"), /onClick=\{onOpenTour\}/);
-  // 设置页里点「重新打开引导」：退出设置模式，打开入门清单并开始导览（以前只改了一个设置模式里不渲染的状态）。
-  assert.match(functionSource("App"), /onOpenTour=\{\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*setSetupOpen\(true\);\n\s*void navigate\(lastMainRoute\.current\);\n\s*setTourOpen\(true\);/);
+  // 进度卡和自动打开都由记录决定（预览模式不显示），判定见 onboarding-setup-store。
+  assert.match(app, /const \[setupOpen, setSetupOpen\] = useState\(setupCardNeeded\);/);
+  assert.match(app, /const \[setupChecking, setSetupChecking\] = useState\(setupAutoOpenPossible\);/);
+  // 自动打开等启动流程最先发出的那次设置读取（#2936），打开的同时记下出现过。
+  assert.match(app, /void resolveSetupAutoOpen\(async \(\) => \(await settingsLoad\)\?\.managerAgentFocus\)\.then\(\(autoOpen\) => \{\n\s*if \(autoOpen\) \{\n(?:\s*\/\/[^\n]*\n)*\s*markSetupSeen\(\);\n\s*setSetupOpen\(true\);\n\s*setWizardOpen\(true\);\n\s*\}\n\s*setSetupChecking\(false\);/);
+  // 向导、导览开着时不弹命令面板和更新提示。
+  assert.match(app, /if \(wizardOpen \|\| tourOpen\) return;\s*setPaletteOpen/);
+  assert.match(app, /updatePrompt && !wizardOpen && !tourOpen/);
+  const settingsScreen = functionSource("GlobalSettingsScreen");
+  assert.match(settingsScreen, /onClick=\{onOpenSetup\}/);
+  assert.match(settingsScreen, /onClick=\{onOpenTour\}/);
+  // 设置页里点「重新打开引导」：换 key 让向导从第一步开始，并退出设置模式（进度卡在主侧栏里）。
+  assert.match(app, /onOpenSetup=\{\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*setSetupRun\(\(run\) => run \+ 1\);\n\s*setSetupOpen\(true\);\n\s*setWizardOpen\(true\);\n\s*void navigate\(lastMainRoute\.current\);/);
+  // 点「开始导览」：先回到进设置前的页面（导览高亮的入口在主侧栏里）。
+  assert.match(app, /onOpenTour=\{\(\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*void navigate\(lastMainRoute\.current\);\n\s*setTourOpen\(true\);/);
   const model = readSource("./onboarding-model.ts");
   const sidebar = functionSource("AppSidebar");
   for (const match of model.matchAll(/target: "([^"]+)"/g)) {

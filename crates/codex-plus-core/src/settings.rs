@@ -1322,8 +1322,9 @@ pub struct BackendSettings {
     /// Codex App 与 CLI 的本地代理响应信任上报用量，不改 usage；旧会话首次响应前仍可能使用原估算。默认关。
     #[serde(rename = "codexAppReportedUsageCompaction", default)]
     pub codex_app_reported_usage_compaction: bool,
-    /// 管理器的使用模式（"codex" / "enhance" / "all"，空 = 没选过）。页面本地存储会丢（例如管理员身份启动时
-    /// WebView 数据目录不同），这里再存一份，启动时用它补回，问卷不再每次都弹（#2902）。
+    /// 管理器的启动引导出现过没有（空 = 没出现过）。页面本地存储会丢（例如管理员身份启动时 WebView 数据目录不同），
+    /// 这里再留一个记号，启动时两处都看，向导不会每次都弹（#2902）。
+    /// 字段原来记的是使用模式（"codex" / "enhance" / "all"，已取消），旧值照样算出现过；现在只写 "all"。
     #[serde(rename = "managerAgentFocus", default)]
     pub manager_agent_focus: String,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
@@ -5421,7 +5422,7 @@ experimental_bearer_token = "sk-existing""#
 
     #[test]
     fn settings_store_update_persists_manager_agent_focus() {
-        // #2902：使用模式存进设置文件，只认已知的三个值。
+        // #2902：记号存进设置文件，只认已知的三个值（沿用旧的使用模式取值）。
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
         store.save(&BackendSettings::default()).unwrap();

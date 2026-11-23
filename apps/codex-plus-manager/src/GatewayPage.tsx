@@ -50,8 +50,6 @@ import { Avatar, GatewayLoadError, MemberStatusLabel, QuotaBadge, SectionLabel, 
 import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState, useGatewayViewState } from "./gateway-store";
 import { useModalShell } from "./use-modal-shell";
-import { visibleAgents } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
 import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
@@ -993,7 +991,6 @@ function GatewayPortRow({ notify }: { notify: Notify }) {
 }
 
 function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload | null; busy: string | null; run: Run; notify: Notify }) {
-  const agentFocus = useAgentFocus();
   // 刚复制的那一行，图标短暂换成对勾。
   const [copied, setCopied] = useState<string | null>(null);
   // 刚换过 token 的 Agent：那一行给个「复制新 token」，方便贴到手动填过 token 的地方。
@@ -1052,7 +1049,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
           >
             {copyButton("listen", listen)}
           </CxRow>
-          {visibleAgents(agentFocus, glanceAgents(payload.agents)).map((agent) => {
+          {glanceAgents(payload.agents).map((agent) => {
             const binding = payload.gateway.bindings[agent.agent];
             return (
               <CxRow

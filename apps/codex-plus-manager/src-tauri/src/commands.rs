@@ -7586,7 +7586,8 @@ pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandR
     }
 }
 
-/// 记下管理器的使用模式（#2902）：页面本地存储之外再存进设置文件，本地存储丢了也能补回。
+/// 记下管理器的启动引导已经出现过（#2902）：页面本地存储之外再在设置文件里留个记号，本地存储丢了也不会重复弹。
+/// 这个字段原来记的是使用模式（已取消，所有功能始终显示），所以取值还是那三个模式名，前端现在只写 "all"、只看非空。
 #[tauri::command]
 pub fn set_manager_agent_focus(mode: String) -> CommandResult<SettingsPayload> {
     let mode = mode.trim();

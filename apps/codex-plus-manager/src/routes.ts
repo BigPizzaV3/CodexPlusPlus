@@ -30,11 +30,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { GatewayTab } from "./GatewayPage";
-import { agentName } from "./gateway-model";
 import { agentTabGroups, agentTarget } from "./page-groups";
 import type { RouteAlias } from "./route-aliases";
-import { providersHidden, singleAgent, type AgentFocus } from "./agent-focus-model";
-import { t, tf } from "@/i18n";
+import { t } from "@/i18n";
 
 /** 左侧 Agent 切换栏的工具标识。后端 `list_tools` 返回同名字符串。 */
 export type ToolId = string;
@@ -139,20 +137,6 @@ export const gatewayNavigationRoutes: Route[] = ["gatewayProviders", "gateway", 
 export const managementNavigationRoutes: Route[] = ["userScripts", "gatewayUsage", "sessions", "context", "skills"];
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 export const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
-/**
- * 只在管理其他 Agent 时才有用的页面：只管理 Codex 时不进侧栏和命令面板。
- * Agent 协作要多个 Agent；Computer Use 接入的是 Claude Code、Claude Desktop 等，Codex 自带 Computer Use。
- */
-const multiAgentRoutes = new Set<Route>(["agentCollaboration", "computerUse"]);
-/**
- * 和供应商有关的页面：只用增强功能（供应商交给别的工具）时全部隐藏。
- * 网关一整组、用量与请求日志、旧版供应商配置 / 代理设置，以及按供应商多开。
- */
-const providerRoutes = new Set<Route>(["claudeProviders", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "gatewayUsage", "requestLog", "relay", "multiLaunch"]);
-/** 当前使用模式下这一页是否显示：侧栏、页签、命令面板都按它过滤，停在隐藏页面上时自动离开。 */
-export const routeVisible = (focus: AgentFocus, routeId: Route) =>
-  !(singleAgent(focus) && multiAgentRoutes.has(routeId)) && !(providersHidden(focus) && providerRoutes.has(routeId));
-export const visibleRoutes = (focus: AgentFocus, list: Route[]) => list.filter((routeId) => routeVisible(focus, routeId));
 /** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
 export const gatewayTabByRoute: Partial<Record<Route, GatewayTab>> = {
   gateway: "agents",
@@ -190,10 +174,8 @@ export function routeTitle(route: Route) {
   return routes.find((item) => item.id === route)?.label ?? t("概览");
 }
 
-/** 页面副标题；只管理 Codex（soloAgent）时网关两页不讲「任意 Agent」。 */
-export function routeSubtitle(route: Route, soloAgent: string | null = null) {
-  if (soloAgent && route === "hub") return tf("{0} 经 Codex++ 接入任意供应商：走哪家、是否健康，一屏看全", [agentName(soloAgent)]);
-  if (soloAgent && route === "gateway") return tf("让 {0} 经 Codex++ 本地服务接入共享供应商，并选它默认用的模型", [agentName(soloAgent)]);
+/** 页面副标题。 */
+export function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     home: t("赞助商推荐：支持 Codex++ 的服务"),
     overview: t("检查问题、启动与快速修复"),

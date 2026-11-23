@@ -32,7 +32,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 它还内置一个本地网关：Codex、Claude Code、Gemini CLI、OpenCode、Zed 等 50 多个 Agent 共用一份供应商池，按模型名选供应商，Key 冷却或供应商熔断时自动换上游，ChatGPT、GitHub Copilot、Cursor 等订阅也能登录进池。原来的直连模式（官方登录、官方 + API、纯 API、聚合供应商）完整保留，Codex 在「经网关」和「直连」之间一键切换。
 
-此外还有会话管理、Codex 界面增强、Claude Desktop 增强版、跨 Agent 的 Computer Use 与子 Agent 协作。管理器是一个桌面程序的样子：侧栏切 Agent 和页面，顶部页签切分页，齿轮进设置目录；只用 Codex 或只想要增强功能，可以切换使用模式把用不到的页面藏起来。双击打开管理界面，再从界面启动各个应用；它不修改任何官方应用的安装文件。
+此外还有会话管理、Codex 界面增强、Claude Desktop 增强版、跨 Agent 的 Computer Use 与子 Agent 协作。管理器是一个桌面程序的样子：侧栏切 Agent 和页面，顶部页签切分页，齿轮进设置目录。双击打开管理界面，再从界面启动各个应用；它不修改任何官方应用的安装文件。
 
 ## 交流与支持
 

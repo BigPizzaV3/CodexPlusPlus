@@ -1,6 +1,14 @@
-/** 入门清单只读取现有配置：Codex 直连当前用的供应商是否就绪，以及对它发一次真实请求的测试结果。 */
+/** 启动引导只读取现有配置：Codex 直连当前用的供应商是否就绪，以及对它发一次真实请求的测试结果。 */
 export const SETUP_STORAGE_KEY = "codex-plus-plus.setup";
+/**
+ * 旧版「使用模式」问卷的本地记录。使用模式已经取消（所有功能始终显示），这条记录只用来认出老用户：
+ * 答过那份问卷的人不再被自动弹出的向导打断。
+ */
+export const LEGACY_FOCUS_STORAGE_KEY = "codex-plus-plus.agent-focus";
 const SETUP_VERSION = 1;
+
+/** completed：走完了；dismissed：关掉不再显示；later：向导出现过、还没做完，侧栏留着进度卡。 */
+export type SetupState = "completed" | "dismissed" | "later";
 
 export function hasCodexEnhancements(config: {
   settings: { enhancementsEnabled: boolean; codexAppStandaloneQuotaUnlock: boolean };
@@ -10,20 +18,33 @@ export function hasCodexEnhancements(config: {
   return config.settings.enhancementsEnabled || config.settings.codexAppStandaloneQuotaUnlock;
 }
 
-export function serializeSetupState(state: "completed" | "dismissed"): string {
+export function serializeSetupState(state: SetupState): string {
   return JSON.stringify({ version: SETUP_VERSION, state });
 }
 
-/** 老用户不因新增清单再被打断；设置里的主动重开不受此规则限制。 */
-export function shouldShowSetup(storedSetup: string | null, storedTour: string | null): boolean {
-  if (storedTour?.trim()) return false;
+function savedSetupState(storedSetup: string | null): SetupState | null {
   try {
     const saved: unknown = JSON.parse(storedSetup ?? "null");
     if (saved && typeof saved === "object" && "version" in saved && "state" in saved
       && typeof saved.version === "number" && saved.version >= SETUP_VERSION
-      && (saved.state === "completed" || saved.state === "dismissed")) return false;
+      && (saved.state === "completed" || saved.state === "dismissed" || saved.state === "later")) return saved.state;
   } catch { /* 无有效记录时按首次启动处理。 */ }
-  return true;
+  return null;
+}
+
+/** 侧栏要不要有进度卡：没走完、也没关掉。看过旧导览的老用户不因新增引导再被打断；设置里的主动重开不受此规则限制。 */
+export function shouldShowSetup(storedSetup: string | null, storedTour: string | null): boolean {
+  if (storedTour?.trim()) return false;
+  const state = savedSetupState(storedSetup);
+  return state !== "completed" && state !== "dismissed";
+}
+
+/**
+ * 向导要不要自动打开：只在它从没出现过的时候。出现过一次（记了 later）之后只留进度卡，
+ * 答过旧版使用模式问卷的老用户也不再弹。
+ */
+export function shouldAutoOpenSetup(storedSetup: string | null, storedTour: string | null, storedLegacyFocus: string | null): boolean {
+  return shouldShowSetup(storedSetup, storedTour) && savedSetupState(storedSetup) === null && !storedLegacyFocus?.trim();
 }
 
 /** 内存中的配置版本标记；地址和代理可能含凭据，因此不把原文作为标记返回。 */
@@ -40,7 +61,7 @@ function configurationFingerprint(value: unknown): string {
 /** 网关接管 Codex 时放进直连列表的托管供应商（core 的 `CODEX_GATEWAY_RELAY_ID`）。 */
 const GATEWAY_RELAY_ID = "codex-plus-gateway";
 
-/** 只取入门清单用得到的字段；App 里完整的 RelayProfile / BackendSettings 结构上兼容。 */
+/** 只取启动引导用得到的字段；App 里完整的 RelayProfile / BackendSettings 结构上兼容。 */
 export type SetupRelayProfile = {
   id: string;
   name: string;

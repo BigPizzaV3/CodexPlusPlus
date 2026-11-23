@@ -10,7 +10,6 @@ import { AppSelect, type AppSelectOption } from "./AppSelect";
 import { DisplaySettings } from "./DisplaySettings";
 import { diagnosticFacts, filterLogEntries, formatLogTime, parseLogText } from "./log-view-model";
 import { TopbarActions } from "./TopbarActions";
-import type { AgentFocus } from "./agent-focus-model";
 import { ReleaseNotes } from "./ReleaseNotes";
 import { Menu, MenuItem } from "./ManagementPages";
 import { t, tf } from "@/i18n";
@@ -43,13 +42,6 @@ import {
   TaskProgressBox,
   ToggleVisual,
 } from "./app-shared";
-
-/** 设置页里「使用模式」一行的说明。 */
-function agentFocusDescription(focus: AgentFocus): string {
-  if (focus === "codex") return t("只管理 Codex：隐藏其他 Agent 的界面，已有本地服务连接保持不变。");
-  if (focus === "enhance") return t("只用增强功能：隐藏供应商、本地服务和用量，关闭旧版供应商配置切换。已有本地服务连接仍会运行并管理对应配置。");
-  return t("全部功能：同时管理 Codex、Claude Code、Grok 等多个 Agent。只用 Codex 或只用增强功能的话，可以切换模式隐藏用不到的内容。");
-}
 
 /**
  * 新旧两套共用的本地服务设置：服务状态、请求体上限、请求避震。放在「网关 → 网关设置」，
@@ -616,15 +608,15 @@ export function GlobalSettingsScreen({
   theme,
   themePreference,
   actions,
+  onOpenSetup,
   onOpenTour,
-  agentFocus,
-  onOpenAgentFocus,
 }: {
   /** 当前显示的设置分类里的卡片 id；其余卡片不渲染。 */
   sections: string[];
+  /** 重新走一遍启动引导（三步向导）。 */
+  onOpenSetup: () => void;
+  /** 只看侧栏各入口的导览。 */
   onOpenTour: () => void;
-  agentFocus: AgentFocus;
-  onOpenAgentFocus: () => void;
   dirty: boolean;
   form: BackendSettings;
   settings: SettingsResult | null;
@@ -681,11 +673,11 @@ export function GlobalSettingsScreen({
         </CxSection>
         <CxSection title={t("入门")}>
           <CxCard>
-            <CxRow detail={agentFocus === "codex" ? t("只管理 Codex") : agentFocus === "enhance" ? t("只用增强功能") : t("全部功能")} title={t("使用模式")} tooltip={agentFocusDescription(agentFocus)}>
-              <button className="cx-secondary" onClick={onOpenAgentFocus} type="button">{t("修改")}</button>
+            <CxRow detail={t("重新走一遍：连接模型、启动 Codex。")} title={t("启动引导")}>
+              <button className="cx-secondary" onClick={onOpenSetup} type="button">{t("重新打开引导")}</button>
             </CxRow>
-            <CxRow detail={t("完成配置、验证连接并开始使用，也可以查看各个入口的导览。")} title={t("新手引导")}>
-              <button className="cx-secondary" onClick={onOpenTour} type="button">{t("重新打开引导")}</button>
+            <CxRow detail={t("半分钟认识侧栏上的各个入口。")} title={t("界面导览")}>
+              <button className="cx-secondary" onClick={onOpenTour} type="button">{t("开始导览")}</button>
             </CxRow>
           </CxCard>
         </CxSection>
