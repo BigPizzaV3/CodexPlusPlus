@@ -769,12 +769,14 @@ ${slice("  let codexPlusSettingsCatalog = null;", "  function refreshCodexPlusSe
   function refreshCodexPlusSettingsCatalogView() { refreshes += 1; }
   return {
     load: loadCodexPlusSettingsCatalog,
+    loadUsageStorage: loadCodexPlusUsageStorage,
     sections: renderCodexPlusSettingsCatalogSections,
     status: () => codexPlusSettingsCatalogStatus,
     refreshes: () => refreshes,
   };`,
   )(postJson, (name: string, detail: unknown) => { diagnostics.push({ name, detail }); }, platform.windows, platform.mac, backendSettings) as {
     load: () => Promise<unknown>;
+    loadUsageStorage: (element: unknown) => Promise<void>;
     sections: () => string;
     status: () => { status: string; message: string };
     refreshes: () => number;
@@ -3201,7 +3203,7 @@ describe("拓展接口层", () => {
     assert.ok(routes.includes("/cdp/targets"), "CDP 页面列表应开放给拓展");
     assert.ok(routes.includes("/cdp/evaluate"), "CDP evaluate 应开放给拓展");
     assert.ok(routes.includes("/request-log/recent"), "只读的最近请求日志应开放给拓展");
-    for (const route of ["/proxy-status", "/thread-usage-live", "/backend/status", "/settings/public", "/model-catalog/public"]) {
+    for (const route of ["/proxy-status", "/thread-usage-live", "/backend/status", "/settings/public", "/provider-prices/public", "/model-catalog/public"]) {
       assert.ok(routes.includes(route), `只读的 ${route} 应开放给拓展`);
     }
     // 原始模型目录带供应商地址与本机路径，拓展只能拿 /model-catalog/public 的脱敏版本。
@@ -3232,6 +3234,40 @@ describe("拓展接口层", () => {
     assert.ok(mount >= 0, "找不到 window.codexPlus 的挂载点");
     // 挂载必须在主 IIFE 结束之前，否则闭包里的函数已经不可达。
     assert.ok(mount < tail, "挂载点必须位于 IIFE 收尾之前");
+  });
+
+  it("生成产物挂载的公开接口能调用供应商配置价且仍拒绝内部写路由", async () => {
+    const renderer = await readFile(artifactPath, "utf8");
+    const routeStart = renderer.indexOf("  const codexPlusExtensionRoutes = new Set([");
+    const onceStart = renderer.indexOf("  function codexPlusExtensionCallOnce(", routeStart);
+    const routeEnd = renderer.indexOf("\n  /**", onceStart);
+    const buildStart = renderer.indexOf("  function buildCodexPlusExtensionApi() {");
+    const buildEnd = renderer.indexOf("\n  }\n", buildStart) + "\n  }\n".length;
+    const mount = "window.codexPlus = buildCodexPlusExtensionApi();";
+    assert.ok(routeStart >= 0 && onceStart > routeStart && routeEnd > onceStart);
+    assert.ok(buildStart >= 0 && buildEnd > buildStart && renderer.includes(mount));
+    const calls: unknown[] = [];
+    const fakeWindow: { codexPlus?: { call: (route: string) => Promise<unknown> }; __codexSessionDeleteBridge: (route: string, payload: unknown) => Promise<unknown> } = {
+      __codexSessionDeleteBridge: async (route, payload) => {
+        calls.push([route, payload]);
+        return { providers: [{ id: "p", name: "P", price: null, modelPrices: {} }] };
+      },
+    };
+    new Function("window", `
+      const codexPlusExtensionApiVersion = 1;
+      const codexPlusExtensionAdapterVersion = "test";
+      const codexPlusExtensionConstants = {};
+      const codexPlusCreateExtension = () => {};
+      ${renderer.slice(routeStart, routeEnd)}
+      ${renderer.slice(buildStart, buildEnd)}
+      ${mount}
+    `)(fakeWindow);
+    assert.deepEqual(await fakeWindow.codexPlus!.call("/provider-prices/public"), {
+      providers: [{ id: "p", name: "P", price: null, modelPrices: {} }],
+    });
+    assert.deepEqual(calls, [["/provider-prices/public", {}]]);
+    await assert.rejects(fakeWindow.codexPlus!.call("/settings/set"), /未开放的路由/);
+    assert.equal(calls.length, 1);
   });
 });
 
@@ -3766,6 +3802,33 @@ describe("Codex++ 设置页按设置项清单生成", () => {
       const source = await readFile(new URL(fragment.name, fragmentDir), "utf8");
       for (const item of catalog.items) assert.ok(!source.includes(item.description), `${fragment.name} 里有「${item.title}」说明的副本`);
     }
+  });
+
+  it("按需显示用量历史目录和占用，读取失败不冒充零字节", async () => {
+    const requests: string[] = [];
+    const catalog = await readCatalog();
+    const page = await settingsCatalogRuntime(async (path) => {
+      if (path === "/settings/catalog") return catalog;
+      requests.push(path);
+      if (requests.length === 1) return { status: "ok", bytes: 1572864, directory: "example/usage-history" };
+      throw new Error("storage unavailable");
+    });
+    await page.load();
+    assert.match(page.sections(), /data-codex-plus-usage-storage/);
+    assert.equal(requests.length, 0);
+    const bytes = { textContent: "" }, directory = { textContent: "" };
+    const details = {
+      dataset: {},
+      querySelector: (selector: string) => selector === "[data-usage-storage-bytes]" ? bytes : directory,
+    };
+    await page.loadUsageStorage(details);
+    assert.equal(bytes.textContent, `${(1.5).toLocaleString()} MiB`);
+    assert.equal(directory.textContent, "example/usage-history");
+    await page.loadUsageStorage(details);
+    assert.equal(bytes.textContent, "读取失败");
+    assert.equal(directory.textContent, "storage unavailable");
+    assert.deepEqual(details.dataset, {});
+    assert.deepEqual(requests, ["/settings/usage-history-storage", "/settings/usage-history-storage"]);
   });
 
   it("每个在 Codex 显示的设置项生成一行，文案与绑定都取自清单", async () => {

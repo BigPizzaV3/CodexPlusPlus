@@ -36,6 +36,7 @@ async fn bridge_routes_cover_all_current_paths() {
         ("/settings/set", json!({"providerSyncEnabled": true})),
         ("/settings/catalog", json!({})),
         ("/settings/public", json!({})),
+        ("/provider-prices/public", json!({})),
         ("/model-catalog/public", json!({})),
         ("/user-scripts/list", json!({})),
         ("/user-scripts/set-enabled", json!({"enabled": false})),
@@ -168,6 +169,52 @@ async fn reload_route_reports_unconfirmed_result() {
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(None);
     assert_eq!(result["status"], "unknown");
     assert!(result["message"].as_str().unwrap().contains("尚未确认"));
+}
+
+#[tokio::test]
+async fn provider_prices_public_route_reads_only_projected_gateway_prices() {
+    let _state = crate::common::IsolatedTestState::new();
+    let settings = Arc::new(FakeSettings::default());
+    let path = settings.gateway_store().path;
+    let ctx = BridgeContext::new(settings, Arc::new(FakeRuntime::default()), Arc::new(FakeData));
+    assert_eq!(
+        handle_bridge_request(ctx.clone(), "/provider-prices/public", json!({})).await,
+        json!({"providers": []})
+    );
+    assert!(!path.exists());
+
+    let fixture = json!({
+        "version": 4,
+        "providers": [
+            {
+                "enabled": false,
+                "relay": {"id":"stable-id","name":"Supplier","apiKey":"SECRET_KEY",
+                    "baseUrl":"https://SECRET_HOST","authContents":"SECRET_AUTH"},
+                "proxy":"SECRET_PROXY",
+                "futurePrivate":"SECRET_EXTRA",
+                "price":{"currency":"USD","input":1.0,"cachedInput":0.0,"output":3.0},
+                "modelPrices":{"Model[1M]":{"currency":"CNY","input":2.0,"cachedInput":0.1,"output":4.0}}
+            },
+            {"relay":{"id":"no-price","name":"No price"}}
+        ]
+    }).to_string();
+    std::fs::write(&path, &fixture).unwrap();
+    let result = handle_bridge_request(ctx.clone(), "/provider-prices/public", json!({"ignored": true})).await;
+    assert_eq!(result, json!({"providers": [
+        {"id":"stable-id","name":"Supplier",
+            "price":{"currency":"USD","input":1.0,"cachedInput":0.0,"output":3.0},
+            "modelPrices":{"Model[1M]":{"currency":"CNY","input":2.0,"cachedInput":0.1,"output":4.0}}},
+        {"id":"no-price","name":"No price","price":null,"modelPrices":{}}
+    ]}));
+    assert!(!result.to_string().contains("SECRET"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), fixture, "只读接口不能修改网关配置");
+
+    std::fs::write(&path, "{\"secret\":\"SECRET_CORRUPT\"").unwrap();
+    let failed = handle_bridge_request(ctx, "/provider-prices/public", json!({})).await;
+    assert_eq!(failed["status"], "failed");
+    assert_eq!(failed["message"], "无法读取供应商配置价");
+    assert!(!failed.to_string().contains("SECRET"));
+    assert!(!failed.to_string().contains("gateway.json"));
 }
 
 #[tokio::test]
@@ -1860,6 +1907,9 @@ impl FakeSettings {
 impl BridgeSettingsService for FakeSettings {
     fn codex_home_dir(&self) -> std::path::PathBuf {
         self.agent_pet_cache.path().join("codex")
+    }
+    fn gateway_store(&self) -> codex_plus_core::gateway::store::GatewayStore {
+        codex_plus_core::gateway::store::GatewayStore::at(self.agent_pet_cache.path().join("gateway.json"))
     }
     fn agent_pet_cache_dir(&self) -> std::path::PathBuf {
         self.agent_pet_cache.path().join("agent-pet-cache")

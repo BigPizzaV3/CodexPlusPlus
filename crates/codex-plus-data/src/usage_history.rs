@@ -19,6 +19,55 @@ pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathB
         .join(&id[..16])
 }
 
+/// 设置页只统计当前实例的用量数据库；不打开数据库，也不创建目录。
+pub fn storage_info(home: &Path, settings_path: &Path) -> anyhow::Result<Value> {
+    let directory = storage_dir(home, settings_path);
+    let mut bytes = 0;
+    for database in ["usage-provider-cache.sqlite", "usage-summary.sqlite"] {
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let path = directory.join(format!("{database}{suffix}"));
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_file() => bytes += metadata.len(),
+                Ok(_) => anyhow::bail!("用量库路径不是普通文件：{}", path.display()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(json!({"status": "ok", "directory": directory, "bytes": bytes}))
+}
+
+#[cfg(test)]
+#[test]
+fn storage_info_reports_only_current_usage_database_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let home = temp.path().join("home");
+    fs::create_dir(&home).unwrap();
+    let settings = temp.path().join("settings.json");
+    let directory = storage_dir(&home, &settings);
+    assert_eq!(
+        storage_info(&home, &settings).unwrap(),
+        json!({"status": "ok", "directory": directory, "bytes": 0})
+    );
+    assert!(!directory.exists());
+    fs::create_dir_all(&directory).unwrap();
+    for (name, size) in [
+        ("usage-summary.sqlite", 4096),
+        ("usage-summary.sqlite-wal", 32),
+        ("usage-provider-cache.sqlite", 2048),
+        ("usage-provider-cache.sqlite-shm", 64),
+        ("usage-provider-cache.sqlite-journal", 16),
+        ("unrelated.sqlite", 1000),
+    ] {
+        fs::write(directory.join(name), vec![0; size]).unwrap();
+    }
+    assert_eq!(storage_info(&home, &settings).unwrap()["bytes"], 6256);
+    assert_eq!(
+        storage_info(&temp.path().join("other-home"), &settings).unwrap()["bytes"],
+        0
+    );
+}
+
 pub(crate) fn normalize_session_id(id: &str) -> Option<String> {
     let id = id.strip_prefix("local:").unwrap_or(id);
     let normalized = uuid::Uuid::parse_str(id).ok()?.to_string();
