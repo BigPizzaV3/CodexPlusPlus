@@ -842,8 +842,9 @@ export function App() {
   };
 
   /// 保存拓展配置后热重载，页面侧的 ctx.config 才会读到新值。
-  const setExtensionConfig = async (key: string, values: Record<string, unknown>, options: { silent?: boolean } = {}) => {
-    const result = await run(() => call<SettingsResult>("set_extension_config", { key, values }));
+  /// merge：拓展自己的面板保存（codexPlusManager.config.set），只覆盖给出的项；设置表单提交整份，照旧整份替换。
+  const setExtensionConfig = async (key: string, values: Record<string, unknown>, options: { silent?: boolean; merge?: boolean } = {}) => {
+    const result = await run(() => call<SettingsResult>("set_extension_config", { key, values, merge: options.merge === true }));
     if (!result) return false;
     setSettings(result);
     // 自动保存（Agent 桌宠页）成功时不弹提示，失败照常提示。
@@ -2980,6 +2981,8 @@ export function App() {
       setUserScriptsSkipNextStart,
       setUserScriptEnabled,
       setExtensionConfig,
+      // 定义在下面（依赖拓展页面列表）：包一层，调用时才取。
+      navigateFromExtension: (target: string) => navigateFromExtension(target),
       showExtensionNotice,
       deleteUserScript,
       refreshLocalSessions,
@@ -3080,7 +3083,7 @@ export function App() {
         key={page.key}
         scriptKey={page.key}
         config={script?.package?.config ?? {}}
-        onSaveConfig={(values) => actions.setExtensionConfig(page.key, values)}
+        onSaveConfig={(values) => actions.setExtensionConfig(page.key, values, { merge: true })}
         onToast={(message) => actions.showExtensionNotice(page.title, message)}
         dataSources={page.data}
         onNavigate={navigateFromExtension}

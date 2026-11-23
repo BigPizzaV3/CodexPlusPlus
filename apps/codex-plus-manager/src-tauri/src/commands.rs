@@ -7829,13 +7829,21 @@ pub async fn extension_manager_backend_call(key: String, method: String, params:
 }
 
 /// 保存拓展包的配置（清单 config 里声明的项）。页面侧要热重载后才读到新值，由前端随后触发。
+/// `merge`：只覆盖给出的项、其余已存的值保留。拓展自己的面板调 `codexPlusManager.config.set(values)` 时用，
+/// 它常常只传改动的那一项；设置表单提交的是整份，照旧整份替换。
 #[tauri::command]
-pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>) -> CommandResult<SettingsPayload> {
+pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>, merge: Option<bool>) -> CommandResult<SettingsPayload> {
     let trimmed = key.trim();
     if trimmed.is_empty() {
         return failed("拓展 key 不能为空。", fallback_settings_payload());
     }
-    match default_user_script_manager().set_extension_config(trimmed, &values) {
+    let manager = default_user_script_manager();
+    let saved = if merge.unwrap_or(false) {
+        manager.update_extension_config(trimmed, &values)
+    } else {
+        manager.set_extension_config(trimmed, &values)
+    };
+    match saved {
         Ok(_) => settings_payload("拓展配置已保存。", "拓展配置保存失败"),
         Err(error) => failed(&format!("拓展配置保存失败：{error:#}"), fallback_settings_payload()),
     }

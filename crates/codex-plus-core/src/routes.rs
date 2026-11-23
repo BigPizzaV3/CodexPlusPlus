@@ -164,6 +164,12 @@ pub trait BridgeRuntimeService: Send + Sync {
         let config = crate::user_scripts::default_user_script_manager().set_extension_config(&key, &values)?;
         Ok(json!({ "status": "ok", "config": config }))
     }
+    /// 同上，但只覆盖给出的项、其余已存的值保留。拓展自己调的 `saveConfig(values)` 走这个：
+    /// 拓展常常只传改动的那一项，整份替换会把别的项（含密钥）悄悄打回默认值。
+    async fn merge_extension_config(&self, key: String, values: serde_json::Map<String, Value>) -> anyhow::Result<Value> {
+        let config = crate::user_scripts::default_user_script_manager().update_extension_config(&key, &values)?;
+        Ok(json!({ "status": "ok", "config": config }))
+    }
     /// 拓展的 README（Codex 里「拓展」详情页的「细节」页签用），见 [`crate::user_scripts::UserScriptManager::extension_readme`]。
     async fn extension_readme(&self, key: String) -> anyhow::Result<Value> {
         crate::user_scripts::default_user_script_manager().extension_readme(&key)
@@ -608,7 +614,13 @@ pub async fn handle_bridge_request(
             if key.is_empty() {
                 Ok(json!({ "status": "failed", "message": "拓展 key 不能为空" }))
             } else {
-                match ctx.runtime.set_extension_config(key, values).await {
+                // merge：拓展自己的设置面板保存（只覆盖给出的项）；通用表单逐项保存时传的是整份，照旧整份替换。
+                let saved = if payload.get("merge").and_then(Value::as_bool).unwrap_or(false) {
+                    ctx.runtime.merge_extension_config(key, values).await
+                } else {
+                    ctx.runtime.set_extension_config(key, values).await
+                };
+                match saved {
                     Ok(value) => Ok(value),
                     Err(error) => Ok(json!({ "status": "failed", "message": format!("{error:#}") })),
                 }

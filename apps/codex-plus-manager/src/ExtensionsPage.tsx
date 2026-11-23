@@ -896,8 +896,11 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
       <div className="cx-row-expand"><ExtensionManagerPanel
         scriptKey={script.key}
         config={script.package?.config ?? {}}
-        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values)}
+        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values, { merge: true })}
         onToast={(message) => actions.showExtensionNotice(managerPage.title || displayName, message)}
+        // 行内展开和整页打开是同一个面板：清单声明的只读数据、跳转都要能用（只声明 page 的拓展只有这一个入口）。
+        dataSources={managerPage.data ?? []}
+        onNavigate={actions.navigateFromExtension}
       /></div>
     ) : null}
     {configOpen && settingsPage ? (
@@ -905,7 +908,7 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
         kind="settings"
         scriptKey={script.key}
         config={script.package?.config ?? {}}
-        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values, { silent: true })}
+        onSaveConfig={(values) => actions.setExtensionConfig(script.key, values, { silent: true, merge: true })}
         onToast={(message) => actions.showExtensionNotice(displayName, message)}
       /></div>
     ) : null}

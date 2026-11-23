@@ -335,6 +335,45 @@ async fn a_runtime_exception_is_reported_without_retrying() {
     assert_eq!(*methods.lock().unwrap(), ["bundle", "check"], "整包只执行一次，不重试");
 }
 
+/// 读改写不能在读不出配置时按默认值写回去：那样停用标记、拓展配置（含密钥）、市场安装记录就全没了。
+#[test]
+fn an_unreadable_config_is_never_overwritten_with_defaults() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    fs::write(user.join("demo.js"), "window.demo = true;").unwrap();
+
+    // 读不出来（这里用目录占住配置路径；实际是文件被占用、权限问题）：报错，什么都不写。
+    let blocked = temp.path().join("blocked.json");
+    fs::create_dir_all(&blocked).unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, &blocked);
+    let error = manager.set_script_enabled("user:demo.js", false).unwrap_err();
+    assert!(format!("{error:#}").contains("这次改动没有保存"), "{error:#}");
+    assert!(manager.set_skip_next_start(true).is_err());
+    assert!(blocked.is_dir(), "原来的东西还在");
+
+    // 内容坏了：先另存一份再从默认值开始，后续操作不被卡死，原内容找得回来。
+    let config_path = temp.path().join("config.json");
+    fs::write(&config_path, "{ \"enabled\": false, \"scripts\": { \"user:demo.js\": fal").unwrap();
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, &config_path);
+    manager.set_script_enabled("user:demo.js", false).unwrap();
+    assert_eq!(manager.load_config().scripts.get("user:demo.js"), Some(&false));
+    let backups = fs::read_dir(temp.path())
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("config.json.corrupt-"))
+        .collect::<Vec<_>>();
+    assert_eq!(backups.len(), 1);
+    assert!(fs::read_to_string(backups[0].path()).unwrap().contains("\"user:demo.js\": fal"));
+
+    // 文件不存在（第一次用）照常从默认值开始，不产生备份。
+    let fresh = temp.path().join("fresh.json");
+    let manager = UserScriptManager::new(temp.path().join("builtin"), &user, &fresh);
+    manager.set_script_enabled("user:demo.js", false).unwrap();
+    assert!(manager.load_config().enabled);
+    assert!(!fs::read_dir(temp.path()).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("fresh.json.corrupt-")));
+}
+
 #[test]
 fn global_switch_preserves_individual_script_choices_after_reload() {
     let temp = tempfile::tempdir().unwrap();

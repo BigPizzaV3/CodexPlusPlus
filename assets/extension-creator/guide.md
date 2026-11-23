@@ -39,7 +39,7 @@
    - `failed` 或有 `error`：读错误、改代码、在同一个关联拓展上再写一次，不要因报错另建一个。
    - `reload.reloaded = false`：按 `reload.reason` 告诉用户需要做什么（通常是在 Codex++ 管理器里点「热重载」）。
 5. 改已有拓展前先 `codexpp_extension_read` 读回现有代码，在它的基础上改。
-6. 不提供删除：用户不想要了就 `codexpp_extension_set_enabled` 停用，并告诉用户拓展目录在哪里、可以手动删除。
+6. 不提供删除：用户不想要了就 `codexpp_extension_set_enabled` 停用，并告诉用户拓展目录在哪里、可以手动删除。启停和写入一样只能动本对话关联的拓展；用户明确要停用 / 启用别的拓展时，先 `codexpp_extension_read(id, select: true)` 关联它。
 
 ## 代码骨架
 
@@ -454,8 +454,8 @@ ctx.backend.on("tick", ({ count }) => ctx.toast(`第 ${count} 分钟`));
 </script>
 ```
 
-- `manager` 里再写 `"nav": "management"`（或 `gateway` / `tools`）就进管理器侧栏、整页打开；`"replaces": ["gatewayUsage"]` 顶替管理器的内置页面（上方有「查看内置页面」可切回；「万物皆拓展」「内置拓展」「设置」不能顶替）；`"data": ["requestLogs"]` 后能用 `codexPlusManager.data("requestLogs", { limit })` 读只读数据（`requestFlow` / `requestLogs` / `gatewayUsage` / `localSessions`），`codexPlusManager.navigate("hub")` 跳到别的页面。
-- 能用的只有：`config.get()` / `config.set(values)` / `config.onChange(fn)`（本拓展配置，只能写声明过的项）、
+- `manager` 里再写 `"nav": "management"`（或 `gateway` / `tools`）就进管理器侧栏、整页打开；`"replaces": ["gatewayUsage"]` 顶替管理器的内置页面（上方有「查看内置页面」可切回；「万物皆拓展」「启动急救」「设置」不能顶替）；`"data": ["requestLogs"]` 后能用 `codexPlusManager.data("requestLogs", { limit })` 读只读数据（`requestFlow` / `requestLogs` / `gatewayUsage` / `localSessions`），`codexPlusManager.navigate("hub")` 跳到别的页面。
+- 能用的只有：`config.get()` / `config.set(values)` / `config.onChange(fn)`（本拓展配置，只能写声明过的项；`set` 只覆盖给出的项，其余保留）、
   `backend.call(method, params)`（本拓展的常驻后台，要同时声明 `backend`）、`asset(path)`（本拓展 assets/ 的 data URL）、
   `toast(text)`、`theme()` / `onTheme(fn)`。都返回 Promise。
 - 页面在沙箱 iframe 里：**不能联网、不能加载外部或包内其它文件**，脚本和样式写在页面里；图片用 `asset()` 取；

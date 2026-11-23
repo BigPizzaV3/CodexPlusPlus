@@ -766,7 +766,7 @@ interface CodexPlusManagerRouteGroup {
 interface CodexPlusManagerPanelApi {
   config: {
     get(): Promise<Record<string, unknown>>;
-    /** 只能写清单 config 里声明过的项；保存后返回最新配置。 */
+    /** 只能写清单 config 里声明过的项；只覆盖给出的项，其余已存的值保留；保存后返回最新配置。 */
     set(values: Record<string, unknown>): Promise<Record<string, unknown>>;
     onChange(handler: (config: Record<string, unknown>) => void): () => void;
   };

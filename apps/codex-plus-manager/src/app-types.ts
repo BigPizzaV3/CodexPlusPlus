@@ -898,7 +898,9 @@ export type Actions = {
   setUserScriptsEnabled: (enabled: boolean, host?: ExtensionHost) => Promise<void>;
   setUserScriptsSkipNextStart: (skip: boolean) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean, host?: ExtensionHost) => Promise<void>;
-  setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean }) => Promise<boolean>;
+  setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean; merge?: boolean }) => Promise<boolean>;
+  /** 拓展面板里的 codexPlusManager.navigate(target)：跳得过去返回 true。 */
+  navigateFromExtension: (target: string) => boolean;
   showExtensionNotice: (title: string, message: string) => void;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number, filter?: LocalSessionFilter) => Promise<LocalSessionsResult | null>;

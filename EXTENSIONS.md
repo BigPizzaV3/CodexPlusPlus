@@ -347,7 +347,7 @@ codexPlus.extension((ctx) => {
   打开这个页面（和[管理器面板](#管理器面板)同一套沙箱与 `codexPlusManager` 接口，拓展停用时也能打开）；Codex 里
   「拓展」页面选中这个拓展时，详情的「设置」页签显示 `ctx.registerSettingsPanel({ render({ container, config, saveConfig }) })` 画的面板
   （拓展停用、面板还没登记时退回按清单生成的通用表单），
-  `saveConfig(values)` 只存本拓展声明过的项、回生效配置，可返回清理函数。两边想用同一份界面，就把界面写成一个函数，
+  `saveConfig(values)` 只存本拓展声明过的项（只覆盖给出的项，其余保留）、回生效配置，可返回清理函数。两边想用同一份界面，就把界面写成一个函数，
   页面脚本里调一次、设置页里内联一份（官方的 Agent 桌宠拓展就是这样，见 `assets/extensions/agent-pet/settings.js`）。
 - 不重载地接住新配置：`ctx.onConfigUpdate((next, prev) => { 应用 next; return true; })`。管理器保存后先问页面，这个拓展的
   每个实例都返回 `true` 时 `ctx.config` 原地换成新值，不再热重载；有一个实例没接（没注册或返回别的）就照常整体热重载。
@@ -1065,7 +1065,7 @@ codexPlus.extension((ctx) => {
 
 | `codexPlusManager` 成员 | 说明 |
 | --- | --- |
-| `config.get()` / `config.set(values)` / `config.onChange(fn)` | 读写本拓展的配置（只能写清单 `config` 里声明过的项，类型要对）；保存后和设置表单一样热更新到 Codex 页面 |
+| `config.get()` / `config.set(values)` / `config.onChange(fn)` | 读写本拓展的配置（只能写清单 `config` 里声明过的项，类型要对）；`set` 只覆盖给出的项，其余已存的值保留；保存后和设置表单一样热更新到 Codex 页面 |
 | `backend.call(method, params)` | 调本拓展的常驻后台（`backend.script` 导出的方法），超时 30 秒 |
 | `asset(path)` | 本拓展 `assets/` 里资源的 data URL |
 | `toast(text)` | 在管理器里弹一条提示 |
@@ -1091,9 +1091,11 @@ codexPlus.extension((ctx) => {
   `icon` 可选 `app-window`、`bar-chart`、`list`、`server`、`store`、`palette`、`network`、`book`、`waypoints`、`plug`、`split`、
   `messages`、`paw`、`git-branch`、`wrench`、`settings`、`code`、`layers`，其余用默认图标。
 - `replaces`：顶替的管理器页面（路由 id：`hub`、`gatewayProviders`、`gateway`、`gatewayRouting`、`gatewayUsage`、`gatewaySettings`、
-  `requestLog`、`overview`、`relay`、`multiLaunch`、`relayEnvironment`、`claude`、`sessions`、`context`、`skills`、`weixin`、`dreamSkin`、
-  `pluginMarket`、`recommendations`、`agentCache`、`agentCollaboration`、`computerUse`）。打开这些页面时显示拓展页面，
-  上方有「查看内置页面」随时切回。「万物皆拓展」「内置拓展」「设置」三页是停用拓展的入口，不能顶替。
+  `requestLog`、`overview`、`relay`、`multiLaunch`、`claude`、`sessions`、`context`、`skills`、`weixin`、
+  `pluginMarket`、`agentCache`、`agentCollaboration`、`computerUse`）。打开这些页面时显示拓展页面，
+  上方有「查看内置页面」随时切回。「万物皆拓展」「启动急救」「设置」三页是停用拓展的入口，不能顶替；首页、Claude 的供应商与补丁页、
+  远程控制、Codex 设置也不开放。旧 id `relayEnvironment`、`recommendations`、`dreamSkin` 对应的页面已经并进别处，
+  写在清单里不报错，但不再顶替任何页面。
 - `data`：页面经 `codexPlusManager.data(name, params)` 能读的只读数据，要先在这里声明：`requestFlow`（最近的请求，`{ limit }`）、
   `requestLogs`（请求日志，`{ limit, sinceMs, agent, relayId, model }`）、`gatewayUsage`（用量统计，`{ range }`）、
   `localSessions`（本机会话，`{ offset, limit }`）。都不含 Key。

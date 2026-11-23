@@ -316,7 +316,7 @@ impl UserScriptManager {
     /// 官方拓展包的一次性迁移：配置与开关里都还没有它时写入；返回是否写了。
     fn migrate_bundled(&self, key: &str, values: Map<String, Value>, enabled: bool) -> anyhow::Result<bool> {
         let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let mut config = self.load_config_for_update()?;
         if config.configs.contains_key(key) || config.scripts.contains_key(key) {
             return Ok(false);
         }
@@ -358,7 +358,50 @@ impl UserScriptManager {
         let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(&text) else {
             return UserScriptConfig::default();
         };
-        let mut config = config_from_object(&raw);
+        self.config_from_raw(&raw)
+    }
+
+    /// 读改写用的加载。只读的地方读不出来可以先按默认值看（[`Self::load_config_unlocked`]），
+    /// 但读改写不行：按默认值改完写回去，停用标记、拓展配置（含密钥）、市场安装记录就全没了。
+    ///
+    /// - 文件不存在（第一次用）：从默认值开始；
+    /// - 读不出来（文件正被占用、权限问题）：报错，这次改动不保存，文件原样留着；
+    /// - 内容不是合法的配置（写坏了、被手改坏了）：先把原文件另存为 `<文件名>.corrupt-<时间戳>` 再从默认值开始，
+    ///   这样既不卡死后续的启停操作，原来的内容也还找得回来。
+    fn load_config_for_update(&self) -> anyhow::Result<UserScriptConfig> {
+        let text = match fs::read_to_string(&self.config_path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(UserScriptConfig::default()),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("读取拓展配置 {} 失败，这次改动没有保存，请稍后重试", self.config_path.display())
+                });
+            }
+        };
+        if let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(&text) {
+            return Ok(self.config_from_raw(&raw));
+        }
+        if !text.trim().is_empty() {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or_default();
+            let mut backup = self.config_path.clone().into_os_string();
+            backup.push(format!(".corrupt-{stamp}"));
+            let backup = PathBuf::from(backup);
+            fs::copy(&self.config_path, &backup).with_context(|| {
+                format!("拓展配置 {} 已损坏，另存备份失败，这次改动没有保存", self.config_path.display())
+            })?;
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "user_scripts.config_corrupt",
+                json!({ "path": self.config_path.display().to_string(), "backup": backup.display().to_string() }),
+            );
+        }
+        Ok(UserScriptConfig::default())
+    }
+
+    fn config_from_raw(&self, raw: &Map<String, Value>) -> UserScriptConfig {
+        let mut config = config_from_object(raw);
         if !raw.contains_key("claude_scripts") {
             config.claude_scripts = config.scripts.clone();
             // 旧版的整体开关也约束 Claude；迁移后保留当时各项的关闭状态。
@@ -398,7 +441,7 @@ impl UserScriptManager {
 
     pub fn set_global_enabled(&self, enabled: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let mut config = self.load_config_for_update()?;
         config.enabled = enabled;
         self.save_config_unlocked(&config)?;
         Ok(config)
@@ -406,7 +449,7 @@ impl UserScriptManager {
 
     pub fn set_skip_next_start(&self, skip: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let mut config = self.load_config_for_update()?;
         config.skip_next_start = skip;
         self.save_config_unlocked(&config)?;
         Ok(config)
@@ -416,7 +459,7 @@ impl UserScriptManager {
     /// The marker is cleared only after the updated configuration is persisted.
     pub fn consume_skip_next_start(&self) -> anyhow::Result<bool> {
         let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let mut config = self.load_config_for_update()?;
         if !config.skip_next_start {
             return Ok(false);
         }
@@ -447,7 +490,7 @@ impl UserScriptManager {
     fn update_skip_state(&self, update: impl FnOnce(&mut UserScriptConfig)) -> anyhow::Result<()> {
         let changed = {
             let _guard = self.config_lock.lock().unwrap();
-            let mut config = self.load_config_unlocked();
+            let mut config = self.load_config_for_update()?;
             let before = (config.skip_next_start, config.skipped_session);
             update(&mut config);
             let changed = before != (config.skip_next_start, config.skipped_session);
@@ -464,7 +507,7 @@ impl UserScriptManager {
 
     pub fn set_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let mut config = self.load_config_for_update()?;
         // 有设置字段的内置拓展：开关就是那个设置项，写设置，不在用户脚本配置里另记一份
         // （顺手清掉旧版本记下的停用标记，免得它在没有入口的地方一直压着功能）。
         let setting = key
@@ -489,7 +532,7 @@ impl UserScriptManager {
     /// Claude 只接受显式适配的拓展包；不改 Codex 的单项开关或设置字段。
     pub fn set_claude_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let mut config = self.load_config_for_update()?;
         let script = self.scan_script_files(&config)?
             .into_iter()
             .find(|script| script.key == key)
@@ -559,7 +602,7 @@ impl UserScriptManager {
         }
 
         let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let mut config = self.load_config_for_update()?;
         config.scripts.remove(key);
         config.claude_scripts.remove(key);
         config.market.remove(key);
@@ -573,7 +616,7 @@ impl UserScriptManager {
 
     pub fn record_market_install(&self, script: &MarketScript) -> anyhow::Result<UserScriptConfig> {
         let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let mut config = self.load_config_for_update()?;
         let key = format!("user:{}", market_script_filename(&script.id));
         config.scripts.entry(key.clone()).or_insert(true);
         config.market.insert(
@@ -776,7 +819,7 @@ impl UserScriptManager {
             stored.insert(name.clone(), value.clone());
         }
         let _guard = self.config_lock.lock().unwrap();
-        let mut latest = self.load_config_unlocked();
+        let mut latest = self.load_config_for_update()?;
         latest.configs.insert(key.to_string(), stored.clone());
         self.save_config_unlocked(&latest)?;
         Ok(resolve_extension_config(&package.config_schema, Some(&stored)))
@@ -2640,13 +2683,17 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
 /// 管理器面板页的大小上限：页面整份读进 iframe 的 srcdoc，资源另经 `asset()` 取。
 const EXTENSION_MANAGER_PAGE_MAX_BYTES: u64 = 1024 * 1024;
 
-/// 管理器里能被拓展页面顶替的内置页面（管理器的路由 id）。「万物皆拓展」「内置拓展」「设置」三页不开放：
+/// 管理器里能被拓展页面顶替的内置页面（管理器的路由 id）。「万物皆拓展」「启动急救」「设置」三页不开放：
 /// 它们是停用、改回拓展的入口，顶替后可能回不去。被顶替的页面上方仍有「查看内置页面」。
+/// [`MANAGER_RETIRED_PAGES`] 里的旧 id 仍留在这里，只为老清单不报错。
 pub const MANAGER_REPLACEABLE_PAGES: &[&str] = &[
     "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog",
     "overview", "relay", "multiLaunch", "relayEnvironment", "claude", "sessions", "context", "skills", "weixin",
     "dreamSkin", "pluginMarket", "recommendations", "agentCache", "agentCollaboration", "computerUse",
 ];
+/// 已经并进别的页面的旧 id（代理设置并进「连接与供应商」、推荐内容并进首页、皮肤急救并进「启动急救」）。
+/// 清单里写了不报错，但也不再顶替任何页面：不记进 `replaces`，界面上就不会声称它顶替了什么。
+pub const MANAGER_RETIRED_PAGES: &[&str] = &["relayEnvironment", "recommendations", "dreamSkin"];
 /// 拓展的设置页 / 管理器面板经 `codexPlusManager.call(route, payload)` 能调的数据路由（还要清单声明）。
 pub const EXTENSION_PAGE_ROUTES: &[&str] = &crate::agent_pet::ROUTES;
 /// 拓展页面经 `codexPlusManager.data(name, params)` 能读的管理器数据（都是只读、不含凭据）。
@@ -2762,7 +2809,8 @@ fn parse_extension_manager_page(
         }
         Ok(list)
     };
-    let replaces = names("replaces", MANAGER_REPLACEABLE_PAGES)?;
+    let mut replaces = names("replaces", MANAGER_REPLACEABLE_PAGES)?;
+    replaces.retain(|id| !MANAGER_RETIRED_PAGES.contains(&id.as_str()));
     let data = names("data", MANAGER_DATA_SOURCES)?;
     Ok(Some(ExtensionManagerPage { path, title, nav, icon, replaces, data }))
 }
