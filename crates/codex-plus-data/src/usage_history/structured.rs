@@ -74,6 +74,8 @@ struct RequestEvidence {
     auto_retries: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     final_response_evidence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_response_id: Option<String>,
     usage: Option<RequestEvidenceUsage>,
     #[serde(
         default,
@@ -99,6 +101,8 @@ struct RequestEvidenceUsage {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     cached_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_tokens_known: Option<bool>,
 }
 
 #[derive(Clone, Hash, serde::Serialize, Deserialize, PartialEq, Eq)]
@@ -233,10 +237,61 @@ fn unknown_model(model: &str) -> bool {
 }
 
 impl RequestEvidence {
-    fn same_request(&self, other: &Self) -> bool {
-        let mut comparable = self.clone();
-        comparable.relay_name.clone_from(&other.relay_name);
-        comparable == *other
+    fn known_cached(&self) -> Option<u64> {
+        let usage = self.usage?;
+        let cached = usage.cached_tokens?;
+        usage
+            .cached_tokens_known
+            .unwrap_or(
+                cached > 0 || self.final_response_evidence.as_deref() == Some("final-response-v1"),
+            )
+            .then_some(cached)
+    }
+
+    // 同一次完成请求跨格式重读：只补缺失的回执和缓存计数，不覆盖已知证据。
+    fn merge_observation<'a>(&'a self, other: &Self) -> Option<std::borrow::Cow<'a, Self>> {
+        use std::borrow::Cow;
+        if !self.valid_capture()
+            || !other.valid_capture()
+            || self.id != other.id
+            || self.thread_id != other.thread_id
+            || self.model != other.model
+            || self.upstream_model != other.upstream_model
+            || self.relay_id != other.relay_id
+            || self.agent != other.agent
+            || self.success != other.success
+            || self.state != other.state
+            || self.status_code != other.status_code
+            || self.timestamp_ms != other.timestamp_ms
+            || self.started_at_ms != other.started_at_ms
+            || self.attempts != other.attempts
+            || self.auto_retries != other.auto_retries
+            || self.final_response_evidence != other.final_response_evidence
+            || self
+                .final_response_id
+                .as_ref()
+                .zip(other.final_response_id.as_ref())
+                .is_some_and(|(a, b)| a != b)
+            || self.usage.map(|u| (u.input_tokens, u.output_tokens))
+                != other.usage.map(|u| (u.input_tokens, u.output_tokens))
+        {
+            return None;
+        }
+        let (left, right) = (self.known_cached(), other.known_cached());
+        if left.zip(right).is_some_and(|(a, b)| a != b) {
+            return None;
+        }
+        let mut merged = Cow::Borrowed(self);
+        if left.is_none() && right.is_some() {
+            merged.to_mut().usage = other.usage;
+        }
+        if self.final_response_id.is_none() && other.final_response_id.is_some() {
+            merged
+                .to_mut()
+                .final_response_id
+                .clone_from(&other.final_response_id);
+        }
+        Some(merged)
     }
 
     fn provider_name(&self) -> &str {
@@ -260,7 +315,7 @@ impl RequestEvidence {
         self.usage.is_none_or(|usage| {
             usage.input_tokens.is_none_or(|count| count <= input)
                 && usage.output_tokens.is_none_or(|count| count <= output)
-                && usage.cached_tokens.is_none_or(|count| count <= cached)
+                && self.known_cached().is_none_or(|count| count <= cached)
         })
     }
 
@@ -292,29 +347,43 @@ impl RequestEvidence {
         true
     }
 
-    fn valid_request_counts(&self) -> bool {
+    fn valid_capture(&self) -> bool {
         if !self.valid_request() {
             return false;
         }
         let Some(RequestEvidenceUsage {
             input_tokens: Some(input),
             output_tokens: Some(output),
-            cached_tokens: Some(cached),
+            cached_tokens,
+            cached_tokens_known,
         }) = self.usage
         else {
             return false;
         };
-        cached <= input && input.saturating_add(output) > 0
+        self.actual_model().is_some()
+            && self
+                .final_response_id
+                .as_ref()
+                .is_none_or(|id| !id.is_empty() && id.len() <= 256)
+            && cached_tokens.is_none_or(|cached| cached <= input)
+            && !(cached_tokens_known == Some(true) && cached_tokens.is_none())
+            && !(cached_tokens_known == Some(false) && cached_tokens.is_some_and(|n| n > 0))
+            && input.saturating_add(output) > 0
+    }
+
+    fn valid_request_counts(&self) -> bool {
+        self.valid_capture() && self.known_cached().is_some()
     }
 
     fn keys(&self) -> Vec<RequestMatchKey> {
-        if !self.valid_request_counts() || self.actual_model().is_none() {
+        if !self.valid_request_counts() {
             return Vec::new();
         }
         let RequestEvidenceUsage {
             input_tokens: Some(input),
             output_tokens: Some(output),
             cached_tokens: Some(cached),
+            ..
         } = self.usage.unwrap()
         else {
             unreachable!("validated request counts")
@@ -654,7 +723,8 @@ impl RequestEvidenceCache {
         let mut observed: HashMap<_, _> = self
             .records
             .iter()
-            .map(|r| (r.id.clone(), r.clone()))
+            .enumerate()
+            .map(|(index, r)| (r.id.clone(), index))
             .collect();
         let mut recovered = 0;
         let mut limited = targets.len() > 256;
@@ -705,7 +775,7 @@ impl RequestEvidenceCache {
                 .filter(|row| {
                     !observed
                         .get(&row.id)
-                        .is_some_and(|prior| prior.same_request(row))
+                        .is_some_and(|&index| self.records[index].merge_observation(row).is_some())
                 })
                 .count();
             if self.records.len().saturating_add(additional) > MAX_ROWS_CAPTURED_PROXY {
@@ -713,13 +783,15 @@ impl RequestEvidenceCache {
                 continue;
             }
             for row in rows {
-                if observed
-                    .get(&row.id)
-                    .is_some_and(|prior| prior.same_request(&row))
+                if let Some(&index) = observed.get(&row.id)
+                    && let Some(merged) = self.records[index].merge_observation(&row)
                 {
+                    if let std::borrow::Cow::Owned(merged) = merged {
+                        self.records[index] = merged;
+                    }
                     continue;
                 }
-                observed.insert(row.id.clone(), row.clone());
+                observed.insert(row.id.clone(), self.records.len());
                 self.records.push(row);
                 recovered += 1;
             }
@@ -769,7 +841,7 @@ impl RequestEvidenceCache {
             if record.id.is_empty() || record.id.len() > 256 {
                 continue;
             }
-            if record.keys().is_empty()
+            if !record.valid_capture()
                 || requests.insert(record.id.clone(), record.clone()).is_some()
             {
                 blocked.insert(record.id.clone());
@@ -777,9 +849,13 @@ impl RequestEvidenceCache {
         }
         let current: HashSet<_> = requests.keys().cloned().collect();
         for saved in self.verified.values() {
-            if let Some(record) = requests.get(&saved.request.id) {
-                if !record.same_request(&saved.request) {
-                    blocked.insert(saved.request.id.clone());
+            if let Some(record) = requests.get_mut(&saved.request.id) {
+                match record.merge_observation(&saved.request) {
+                    None => {
+                        blocked.insert(saved.request.id.clone());
+                    }
+                    Some(std::borrow::Cow::Owned(merged)) => *record = merged,
+                    Some(std::borrow::Cow::Borrowed(_)) => {}
                 }
             } else {
                 requests.insert(saved.request.id.clone(), saved.request.clone());
@@ -788,7 +864,10 @@ impl RequestEvidenceCache {
         let mut uncertain_requests: HashMap<String, Vec<RequestEvidence>> = HashMap::new();
         for record in &self.records {
             if record.could_be_success()
-                && (blocked.contains(&record.id) || record.keys().is_empty())
+                && (blocked.contains(&record.id)
+                    || requests
+                        .get(&record.id)
+                        .is_none_or(|r| !r.valid_request_counts()))
             {
                 if let Some(session) = aliases.resolve(&record.thread_id) {
                     uncertain_requests
@@ -1011,10 +1090,16 @@ impl RequestEvidenceCache {
                         .is_none_or(|(key, at)| *key != saved_key || *at != saved.at)
                     || blocked.contains(&saved.request.id)
                     || !uncertain_competition
-                        && candidate
-                            .is_none_or(|(i, _)| !requests[i].same_request(&saved.request))
+                        && candidate.is_none_or(|(i, _)| {
+                            requests[i].merge_observation(&saved.request).is_none()
+                        })
                 {
                     saved.rejected = true;
+                } else if let Some((i, _)) = candidate
+                    && let Some(std::borrow::Cow::Owned(merged)) =
+                        saved.request.merge_observation(&requests[i])
+                {
+                    saved.request = merged;
                 }
             }
             if uncertain_competition {

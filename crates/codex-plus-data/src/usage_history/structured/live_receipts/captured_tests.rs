@@ -217,6 +217,27 @@ fn cached_extra_evidence_is_still_a_conflict_after_name_normalization() {
 }
 
 #[test]
+fn pre_enrichment_receipt_signature_survives_a_rename_but_not_a_changed_response_id() {
+    let (root, mut cache, at) = fixture();
+    let mut record = request("old-format", at, -10, 10, 2, 3);
+    let mut input = json!([receipt("live", at, 10, 2, 3)]);
+    input[0]["model"] = json!(record.model);
+    input[0]["provider"] = json!(record.relay_id);
+    input[0]["requestIds"] = json!([record.id]);
+    input[0]["requestSignatures"] = json!({record.id.clone(): legacy_request_signature(&record)});
+    cache.capture_proxy(std::slice::from_ref(&record)).unwrap();
+    record.final_response_id = Some("response-a".into());
+    record.usage.as_mut().unwrap().cached_tokens_known = Some(true);
+    cache.capture_proxy(std::slice::from_ref(&record)).unwrap();
+    record.relay_name = "Renamed".into();
+    let proof = check(root.path(), std::slice::from_ref(&record), &input);
+    assert!(positive(&proof), "{proof}");
+    input[0]["requestSignatures"] = proof[0]["requestSignatures"].clone();
+    record.final_response_id = Some("response-b".into());
+    assert!(!positive(&check(root.path(), &[record], &input)));
+}
+
+#[test]
 fn persisted_aliases_include_all_competitors_and_conflicting_aliases_fail_closed() {
     let (root, mut cache, at) = fixture();
     let mut record = request("a", at, 0, 10, 2, 3);
