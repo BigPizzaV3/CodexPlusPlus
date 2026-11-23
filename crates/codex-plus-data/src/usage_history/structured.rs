@@ -2945,18 +2945,7 @@ impl FileState {
         cutoff: NaiveDate,
         budget: &mut index_budget::Budget,
     ) -> io::Result<(bool, bool)> {
-        let before = fs::symlink_metadata(path)?;
-        if !before.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "rollout path changed",
-            ));
-        }
-        let observed = (
-            before.len(),
-            before.modified().ok(),
-            observed_file_identity(path, &before)?,
-        );
+        let observed = Self::source_stamp(path)?;
         let unchanged =
             self.stamp == Some(observed) && self.reader.is_none() && !self.resume_pending;
         let mut file = if unchanged {
@@ -3021,14 +3010,7 @@ impl FileState {
         if self.stamp == Some(stamp) && self.reader.is_none() && !self.resume_pending {
             return Ok((self.pending.is_empty() && !self.skipping, false));
         }
-        let replaced = self.stamp.is_some_and(|old| {
-            old != stamp
-                && (compressed
-                    || self.invalid_counts
-                    || old.0 > stamp.0
-                    || old.2 != stamp.2
-                    || old.0 == stamp.0 && old.1 != stamp.1)
-        });
+        let replaced = self.source_replaced(stamp, compressed);
         if replaced {
             *self = Self::default();
             meter = index_budget::Meter::new(self);
@@ -3162,6 +3144,36 @@ impl FileState {
                 other.map(|complete| (complete, replaced))
             }
         }
+    }
+
+    fn source_stamp(path: &Path) -> io::Result<(u64, Option<SystemTime>, Option<(u64, u64)>)> {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "rollout path changed",
+            ));
+        }
+        Ok((
+            metadata.len(),
+            metadata.modified().ok(),
+            observed_file_identity(path, &metadata)?,
+        ))
+    }
+
+    fn source_replaced(
+        &self,
+        stamp: (u64, Option<SystemTime>, Option<(u64, u64)>),
+        compressed: bool,
+    ) -> bool {
+        self.stamp.is_some_and(|old| {
+            old != stamp
+                && (compressed
+                    || self.invalid_counts
+                    || old.0 > stamp.0
+                    || old.2 != stamp.2
+                    || old.0 == stamp.0 && old.1 != stamp.1)
+        })
     }
 
     fn accept_pending_line(

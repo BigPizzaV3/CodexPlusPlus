@@ -65,6 +65,43 @@ fn blocked_source_does_not_delay_other_sources_and_can_retry_without_rescan() {
 }
 
 #[test]
+fn deferred_batch_is_discarded_when_its_source_is_replaced() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let source = sessions.join("rollout-01.jsonl");
+    fs::write(&source, rollout(FIRST)).unwrap();
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER block_source BEFORE INSERT ON token_days
+             BEGIN SELECT RAISE(ABORT, 'source is blocked'); END;",
+        )
+        .unwrap();
+    let mut scan = Scan::default();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    assert_eq!(
+        scan.round(&mut store, &root, cutoff, &names, 8192)
+            .pending_sources,
+        1
+    );
+    fs::rename(&source, root.join("replaced.jsonl")).unwrap();
+    fs::write(&source, rollout(SECOND)).unwrap();
+    store.db.execute_batch("DROP TRIGGER block_source").unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let mut seen = Vec::new();
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+        seen.push(event.session);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(seen, [SECOND]);
+}
+
+#[test]
 fn source_round_limits_work_and_reports_unfinished_discovery_queue() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

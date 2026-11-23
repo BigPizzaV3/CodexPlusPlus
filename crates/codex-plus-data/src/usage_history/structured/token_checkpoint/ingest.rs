@@ -53,6 +53,13 @@ impl SourceReader {
         provider_names: &BTreeMap<String, String>,
         reconciliation_limit: usize,
     ) -> Result<bool> {
+        if self.ready.is_some() {
+            let stamp = FileState::source_stamp(&self.source)?;
+            let compressed = self.source.extension().is_some_and(|ext| ext == "zst");
+            if self.state.source_replaced(stamp, compressed) {
+                *self = Self::restore(store, &self.source)?;
+            }
+        }
         let complete = match self.ready {
             Some(complete) => complete,
             None => {
