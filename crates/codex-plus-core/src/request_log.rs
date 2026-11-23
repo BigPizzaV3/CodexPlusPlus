@@ -388,7 +388,7 @@ pub fn append_request_log(entry: &RequestLogEntry) -> std::io::Result<()> {
 }
 
 pub fn append_request_log_at(path: &Path, entry: &RequestLogEntry) -> std::io::Result<()> {
-    use std::io::Write;
+    use std::io::{Read, Seek, SeekFrom, Write};
 
     let mut line = serde_json::to_vec(entry)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
@@ -399,8 +399,18 @@ pub fn append_request_log_at(path: &Path, entry: &RequestLogEntry) -> std::io::R
     }
     let mut file = std::fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(path)?;
+    // 上次写入若在换行前中断，不让残行吞掉这次完整的请求。
+    if file.metadata()?.len() != 0 {
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0];
+        file.read_exact(&mut last)?;
+        if last != [b'\n'] {
+            file.write_all(b"\n")?;
+        }
+    }
     file.write_all(&line)?;
     let needs_trim = file.metadata()?.len() > MAX_LOG_BYTES;
     drop(file);
@@ -519,7 +529,7 @@ pub fn read_request_log_page_at(
 ) -> std::io::Result<RequestLogPage> {
     let contents = match {
         let _guard = lock_request_log()?;
-        std::fs::read_to_string(path)
+        std::fs::read(path)
     } {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(RequestLogPage::default()),
@@ -528,14 +538,14 @@ pub fn read_request_log_page_at(
     let mut page = RequestLogPage::default();
     let mut entries = VecDeque::with_capacity(limit.min(1024));
     let mut offset = 0u64;
-    for raw in contents.split_inclusive('\n') {
+    for raw in contents.split_inclusive(|byte| *byte == b'\n') {
         let start = offset;
         offset += raw.len() as u64;
-        let line = raw.trim();
+        let line = raw.trim_ascii();
         if line.is_empty() {
             continue;
         }
-        let Ok(entry) = serde_json::from_str::<RequestLogEntry>(line) else {
+        let Ok(entry) = serde_json::from_slice::<RequestLogEntry>(line) else {
             continue;
         };
         if page.oldest_ms.is_none() {
@@ -626,19 +636,15 @@ pub fn read_request_logs_after_at(
 pub fn read_request_logs_at(path: &Path, limit: usize) -> std::io::Result<Vec<RequestLogEntry>> {
     let contents = match {
         let _guard = lock_request_log()?;
-        std::fs::read_to_string(path)
+        std::fs::read(path)
     } {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error),
     };
     let mut entries = VecDeque::with_capacity(limit.min(1024));
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_str::<RequestLogEntry>(line) {
+    for line in contents.split(|byte| *byte == b'\n') {
+        if let Ok(entry) = serde_json::from_slice::<RequestLogEntry>(line.trim_ascii()) {
             entries.push_back(entry);
             if entries.len() > limit {
                 entries.pop_front();
@@ -675,19 +681,14 @@ pub fn read_recent_request_logs_at(path: &Path, limit: usize) -> std::io::Result
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
     drop(guard);
-    let text = String::from_utf8_lossy(&bytes);
-    let mut lines = text.lines();
+    let mut lines = bytes.split(|byte| *byte == b'\n');
     // 从文件中间开始读时，第一行多半被截断，丢掉。
     if start > 0 {
         lines.next();
     }
     let mut entries = VecDeque::with_capacity(limit.min(1024));
     for line in lines {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_str::<RequestLogEntry>(line) {
+        if let Ok(entry) = serde_json::from_slice::<RequestLogEntry>(line.trim_ascii()) {
             entries.push_back(entry);
             if entries.len() > limit {
                 entries.pop_front();
@@ -1202,6 +1203,37 @@ mod tests {
         live_requests().lock().unwrap().remove(&running.id);
         update_running_route(&running.id, &RequestTrace::default(), false);
         assert!(!running_requests().iter().any(|row| row.id == running.id));
+    }
+
+    #[test]
+    fn interrupted_utf8_row_does_not_hide_or_consume_completed_requests() {
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("requests.jsonl");
+        append_request_log_at(&path, &entry("before")).unwrap();
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        file.write_all(b"{\"relayName\":\"\xe6\xb5").unwrap();
+        drop(file);
+
+        let first = read_request_log_page_at(&path, 10, &Default::default()).unwrap();
+        assert_eq!(first.entries.len(), 1);
+        let cursor = first.cursor.unwrap();
+        assert_eq!(cursor.id, "before");
+        append_request_log_at(&path, &entry("after")).unwrap();
+        for rows in [
+            read_request_logs_at(&path, 10).unwrap(),
+            read_recent_request_logs_at(&path, 10).unwrap(),
+            read_request_log_page_at(&path, 10, &Default::default()).unwrap().entries,
+        ] {
+            assert_eq!(
+                rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+                ["after", "before"]
+            );
+        }
+        let delta = read_request_logs_after_at(&path, &Default::default(), &cursor).unwrap().unwrap();
+        assert_eq!(delta.entries.len(), 1);
+        assert_eq!(delta.entries[0].id, "after");
     }
 
     #[test]
