@@ -28,6 +28,8 @@ pub const TAKEOVER_GRACE_MS: u64 = 10_000;
 pub const WAKE_GRACE_MS: u64 = 30_000;
 /// 活跃探针间隔。
 pub const PROBE_INTERVAL_ACTIVE_MS: u64 = 2_000;
+/// 判定「需要接管」前，CDP 要连续探测失败这么多次。
+pub const CDP_MISS_CONFIRMATIONS: u32 = 3;
 /// App 长时间未出现后的探针间隔（降频，避免白烧 CPU）。
 pub const PROBE_INTERVAL_IDLE_MS: u64 = 10_000;
 /// 进入降频前，「App 未出现」需要持续多久。
@@ -736,6 +738,18 @@ pub fn is_wake_gap(
     mono_jumped || wall_jumped
 }
 
+/// CDP 探测失败要连续够次数才算数。
+///
+/// 探针单次只等 300ms，App 刚启动或正忙时端口明明在却会偶发超时（#3188 的日志里
+/// `cdpReady` 两秒内真假交替）。只凭一次失败就接管，会把刚拉起来的 App 再杀一遍。
+pub fn confirm_cdp_miss(decision: TakeoverDecision, consecutive_cdp_misses: u32) -> TakeoverDecision {
+    if decision.is_takeover() && consecutive_cdp_misses < CDP_MISS_CONFIRMATIONS {
+        TakeoverDecision::Wait("cdp_unconfirmed")
+    } else {
+        decision
+    }
+}
+
 /// 滑动一小时窗口内的重启次数。
 pub fn restarts_in_window(history_ms: &[u64], now_ms: u64) -> usize {
     history_ms
@@ -896,6 +910,23 @@ mod tests {
     #[test]
     fn bare_launch_is_taken_over() {
         assert!(decide(&base_inputs()).is_takeover());
+    }
+
+    #[test]
+    fn single_cdp_probe_miss_does_not_trigger_takeover() {
+        let takeover = decide(&base_inputs());
+        for misses in 0..CDP_MISS_CONFIRMATIONS {
+            assert_eq!(
+                confirm_cdp_miss(takeover, misses),
+                TakeoverDecision::Wait("cdp_unconfirmed")
+            );
+        }
+        assert!(confirm_cdp_miss(takeover, CDP_MISS_CONFIRMATIONS).is_takeover());
+        // 其它决策不受影响。
+        assert_eq!(
+            confirm_cdp_miss(TakeoverDecision::Wait("grace"), 0),
+            TakeoverDecision::Wait("grace")
+        );
     }
 
     #[test]
