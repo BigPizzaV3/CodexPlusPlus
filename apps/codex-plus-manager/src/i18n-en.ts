@@ -5,7 +5,7 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
-  "经本地服务：用上面这些共享供应商，OpenAI 协议的自动转换": "Through the local service: uses the shared providers above, converting OpenAI-protocol ones automatically",
+  "经本地服务：用下面这些共享供应商，OpenAI 协议的自动转换": "Through the local service: uses the shared providers below, converting OpenAI-protocol ones automatically",
   "直连：用它自己的 ~/.claude/settings.json；选一个模型就改为经本地服务": "Direct: uses its own ~/.claude/settings.json; pick a model to go through the local service instead",
   "Claude Code（命令行）": "Claude Code (CLI)",
   "供应商与默认模型": "Providers & default model",

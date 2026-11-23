@@ -837,3 +837,22 @@ test("标题行右侧的按钮同一种外形：30px 高、8px 圆角、12.5px �
   // 启动 Codex 是通用 Button 的实底样式，靠 bg-primary 这个类被上面的规则选中。
   assert.match(readSource("./CodexLaunchButton.tsx"), /className="codex-launch-button"[\s\S]*?variant="default"/);
 });
+
+test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副骨架：标题行右侧导入 / 添加，顶部一张接入卡，列表里只有供应商", () => {
+  const claude = readSource("./ClaudeProviders.tsx");
+  // 导入、添加在标题行右侧，添加是主按钮（Codex 页也是 cx-secondary 导入 + cx-primary 添加）。
+  assert.match(claude, /<TopbarActions>\s*<button className="cx-secondary"[^>]*onClick=\{\(\) => setAdding\("import"\)\}[\s\S]*?<button className="cx-primary"[^>]*onClick=\{\(\) => setAdding\("catalog"\)\}[\s\S]*?<\/TopbarActions>/);
+  assert.match(readSource("./RelayScreen.tsx"), /<button className="cx-secondary" onClick=\{openThirdPartyImport\}[\s\S]*?<button className="cx-primary" onClick=\{openCatalog\}/);
+  // 顶部一张卡：Claude Desktop、Claude Code 各一行默认模型；不再混在供应商列表里。
+  const agents = claude.match(/<CxSection className="claude-providers-agents">([\s\S]*?)<\/CxSection>/);
+  assert.ok(agents, "agents card should exist");
+  assert.match(agents[1], /title="Claude Desktop"[\s\S]*?<AgentModelPicker agentId=\{AGENT\}/);
+  assert.match(agents[1], /title=\{t\("Claude Code（命令行）"\)\}[\s\S]*?<AgentModelPicker agentId="claude"/);
+  // 「供应商 N」是总数（和 Codex 页一样），分区里只有供应商行；「管理共享供应商」在分区标题右侧。
+  const list = claude.slice(claude.indexOf('className="claude-providers"'));
+  assert.match(list, /count=\{pool\.length \|\| undefined\}/);
+  assert.match(claude, /aside=\{onManage \? <button className="cx-secondary" onClick=\{onManage\} type="button">\{t\("管理共享供应商"\)\}<\/button> : null\}/);
+  assert.doesNotMatch(list, /AgentModelPicker|t\("默认模型"\)/);
+  // Claude Code 那一行并进了顶部的卡，App 里不再单独挂一块。
+  assert.doesNotMatch(text, /ClaudeCodeConnection/);
+});
