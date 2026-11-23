@@ -151,6 +151,8 @@ export type BackendSettings = WhaleBalanceSettings & {
   protocolProxyMapUnlistedModels: boolean;
   /** 本地协议代理单次请求体上限（MiB，32~512，默认 128）。与 Rust `helper_max_request_body_mib` 对应。 */
   helperMaxRequestBodyMib: number;
+  /** 流式请求等上游响应头的上限（秒，120~3600；null 表示用默认 120）。与 Rust `upstream_stream_header_timeout_secs` 对应。 */
+  upstreamStreamHeaderTimeoutSecs: number | null;
   codexAppCapacityAutoRetry: boolean;
   codexAppTurnRewind: boolean;
   codexAppStepwiseEnabled: boolean;

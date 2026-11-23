@@ -85,6 +85,7 @@ mod gateway_provider_probe;
 mod gateway_rate_limit;
 mod gateway_restore;
 mod helper_body_limit_settings;
+mod upstream_header_timeout_settings;
 mod history_turn_recovery;
 mod hooks_editor;
 mod installers;
