@@ -85,6 +85,9 @@ impl BridgeDataService for MockData {
         self.archive_queries.lock().unwrap().push(payload.clone());
         Ok(json!({"status":"ok","echo":payload}))
     }
+    async fn usage_history_storage_info(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status":"ok","directory":"usage-history/example","bytes":50}))
+    }
     async fn clear_usage_history(&self) {
         self.clears.fetch_add(1, Ordering::SeqCst);
     }
@@ -125,6 +128,16 @@ async fn assert_rejected(enabled: Option<bool>) {
     assert_eq!(result["records"], json!([]));
     assert_eq!(data.clears.load(Ordering::SeqCst), 1);
     assert!(data.queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn storage_info_can_be_viewed_while_recording_is_off_without_querying_history() {
+    let (ctx, data) = context(Some(false));
+    let result = handle_bridge_request(ctx, "/settings/usage-history-storage", json!({})).await;
+    assert_eq!(result, json!({"status":"ok","directory":"usage-history/example","bytes":50}));
+    assert!(data.queries.lock().unwrap().is_empty());
+    assert!(data.archive_queries.lock().unwrap().is_empty());
+    assert_eq!(data.clears.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]

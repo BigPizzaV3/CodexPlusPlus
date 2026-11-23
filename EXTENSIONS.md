@@ -1467,9 +1467,18 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/thread-usage-live` | 会话最近的 token 事件 `{ session_id, events }`，参数同 `/thread-usage-history`。只读 rollout 尾部，可以秒级轮询（只读，与官方拓展包「用量状态栏」同源） |
 | `/backend/status` | Codex++ 版本与连接状态 `{ status, message, version }`（只读） |
 | `/settings/public` | 设置的公开子集：`codexPlusVersion`、`codexAppVersion`、`enhancementsEnabled`、`relayProfilesEnabled`、`modelCatalogFingerprint`，以及 `activeProfile { id, name, relayMode, protocol, model, contextWindow, autoCompactLimit, aggregate }`。不含地址、Key 与 config / auth 内容（只读） |
+| `/provider-prices/public` | 网关中已配置供应商的配置价 `{ providers: [{ id, name, price, modelPrices }] }`，包含停用的供应商；不含地址、Key 或其他设置（只读） |
 | `/model-catalog/public` | 当前供应商的模型目录：`models`、`modelMetadata`（每模型的 `contextWindow` 等）、`model`、`default_model`、`provider_name`、`model_provider`、`service_tier`。去掉了来源地址与本机路径（只读） |
 
 **写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
+
+`/provider-prices/public` 返回的是 Codex++ 配置价，不是上游实时报价或实际账单，也不会请求上游。`price` 是供应商默认价，未设置时为 `null`；`modelPrices` 按原始上游模型名保存逐模型价，缺项时为空对象。价格包含 `currency`、`input`、`cachedInput`、`output`，单位是每百万 Token。宿主现有配置不能区分价格字段中的未填写和明确免费，两者都可能为 `0`；通过管理器保存的全零价格会被视为未填写，不能据此断言免费或价格完整。
+
+查找模型价格时，宿主先将模型名及配置键两端去空白，剥去末尾合法的窗口后缀（例如 `[1M]`），按 ASCII 大小写不敏感比较。命中逐模型价时使用整条价格，不能用默认价填补其中的字段；未命中才使用 `price`。多个配置键归一化后匹配同一模型时，宿主按原始键的 UTF-8 字节顺序取第一条，不优先精确大小写。返回值保留全部原始键，调用方应维持同样规则；无价格和非目标币种均不等于零费用。
+
+```ts
+const result = await window.codexPlus.call<CodexPlusProviderPrices>("/provider-prices/public");
+```
 
 `/cdp/evaluate` 是显式开放的底层注入能力，用来把脚本打进宠物 overlay 这类独立窗口。它**不是**任意 CDP 协议：只能 `Runtime.evaluate`，只能打到 `app://-/index.html` 的 Codex 页面，返回值里也不带 WebSocket URL。调用时必须提供 `kind` 或 `target_id` 其一：
 

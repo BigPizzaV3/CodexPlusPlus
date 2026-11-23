@@ -561,7 +561,7 @@ fn thread_provider_prepare_honors_lifecycle_lock_and_pending_recovery() {
 }
 
 #[test]
-fn compressed_rollout_recovery_retries_conflicts_and_unblocks_an_unrelated_thread() {
+fn compressed_rollout_recovery_preserves_conflicts_without_blocking_an_unrelated_thread() {
     use sha2::{Digest, Sha256};
     let temp = tempdir().unwrap();
     let home = temp.path();
@@ -589,7 +589,8 @@ fn compressed_rollout_recovery_retries_conflicts_and_unblocks_an_unrelated_threa
         "original_meta_lines": [meta], "original_mtime": null, "applied": null, "restored": false
     })).collect();
     fs::write(backup.join("metadata.json"), br#"{"version":2,"managedBy":"Codex++ provider sync","namespace":"provider-sync"}"#).unwrap();
-    fs::write(backup.join("recovery-journal.json"), json!({"version":1,"state":"prepared","entries":[],"rollouts":changes}).to_string()).unwrap();
+    let journal = backup.join("recovery-journal.json");
+    fs::write(&journal, json!({"version":1,"state":"prepared","entries":[],"rollouts":changes}).to_string()).unwrap();
     fs::write(archive("applied"), compressed(&rewritten)).unwrap();
     let unchanged = compressed(&original);
     fs::write(archive("unapplied"), &unchanged).unwrap();
@@ -597,7 +598,6 @@ fn compressed_rollout_recovery_retries_conflicts_and_unblocks_an_unrelated_threa
     fs::write(archive("conflict"), &conflict).unwrap();
     fs::write(rollout("plain"), &rewritten).unwrap();
     let prepare = || prepare_thread_provider(home, true, &thread_provider_prepare_request());
-    assert!(prepare().unwrap_err().to_string().contains("恢复未完成修复"));
     let recover = || codex_plus_data::recover_provider_sync_from_backup(home, &backup).unwrap();
     let first = recover();
     assert!(!first.completed);
@@ -610,11 +610,54 @@ fn compressed_rollout_recovery_retries_conflicts_and_unblocks_an_unrelated_threa
     assert_eq!(fs::read(rollout("plain")).unwrap(), original.as_bytes());
     assert_eq!(zstd::stream::decode_all(fs::File::open(archive("applied")).unwrap()).unwrap(), original.as_bytes());
     assert!(!rollout("applied").exists());
-    assert!(prepare().is_err());
+    let journal_before = fs::read(&journal).unwrap();
+    assert_eq!(prepare().unwrap()["sqlite_rows_updated"], 2);
+    assert_eq!(fs::read(&journal).unwrap(), journal_before);
+    assert_eq!(codex_plus_data::pending_recovery_journal(home), Some(journal));
+    assert_eq!(run_provider_sync(Some(home)).status, ProviderSyncStatus::PartialFailure);
     for name in ["missing", "conflict"] { fs::write(archive(name), compressed(&rewritten)).unwrap(); }
     assert!(recover().completed);
-    assert_eq!(prepare().unwrap()["sqlite_rows_updated"], 2);
+    assert!(codex_plus_data::pending_recovery_journal(home).is_none());
     assert_eq!(fs::read(history).unwrap(), history_before);
+}
+
+#[test]
+fn thread_provider_prepare_blocks_overlapping_or_unverifiable_journals() {
+    let temp = tempdir().unwrap();
+    let home = temp.path();
+    write_provider_config(home, "custom");
+    let db = home.join("state_5.sqlite");
+    create_state_db_with_providers(&db, &[("thread-1", "openai", 0)]);
+    let db_before = fs::read(&db).unwrap();
+    let backup = home.join("backups_state/provider-sync/unfinished");
+    fs::create_dir_all(&backup).unwrap();
+    fs::write(backup.join("metadata.json"), br#"{"version":2,"managedBy":"Codex++ provider sync","namespace":"provider-sync"}"#).unwrap();
+    let journal = backup.join("recovery-journal.json");
+    for (meta, entries) in [
+        (r#"{"type":"session_meta","payload":{"id":"thread-1"}}"#, json!([])),
+        (r#"{"type":"session_meta","payload":{}}"#, json!([])),
+        (r#"{"type":"session_meta","payload":{"id":"other"}}"#, json!([
+            {"database": db, "state": "commit_intent", "changes": [{
+                "table": "threads", "keys": {"id": {"Text": "thread-1"}},
+                "before": {"model_provider": {"Text": "openai"}},
+                "after": {"model_provider": {"Text": "custom"}}
+            }]}
+        ])),
+    ] {
+        fs::write(&journal, json!({
+            "version": 1, "state": "prepared", "entries": entries,
+            "rollouts": [{
+                "path": home.join("sessions/rollout-old.jsonl"),
+                "before_sha256": "", "after_sha256": "",
+                "original_meta_lines": [meta],
+                "original_mtime": null, "applied": null, "restored": false
+            }]
+        }).to_string()).unwrap();
+        let error = prepare_thread_provider(home, true, &thread_provider_prepare_request()).unwrap_err();
+        assert!(error.to_string().contains("恢复未完成修复"), "{error}");
+    }
+    assert_eq!(fs::read(db).unwrap(), db_before);
+    assert!(!home.join("backups_state/thread-provider-prepare").exists());
 }
 
 #[test]

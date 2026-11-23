@@ -29,6 +29,7 @@ type CodexPlusExtensionRoute =
   | "/thread-usage-live"
   | "/backend/status"
   | "/settings/public"
+  | "/provider-prices/public"
   | "/model-catalog/public"
   | "/agent-pet/catalog"
   | "/agent-pet/image"
@@ -39,6 +40,23 @@ type CodexPlusExtensionRoute =
   | "/whale/history"
   | "/whale/session"
   | "/image-overlay/image";
+
+/** 每百万 Token 的网关配置价；0 可能是未填写，也可能是免费。 */
+interface CodexPlusProviderPrice {
+  currency: string;
+  input: number;
+  cachedInput: number;
+  output: number;
+}
+
+interface CodexPlusProviderPrices {
+  providers: Array<{
+    id: string;
+    name: string;
+    price: CodexPlusProviderPrice | null;
+    modelPrices: Record<string, CodexPlusProviderPrice | undefined>;
+  }>;
+}
 
 interface CodexPlusToastOptions {
   type?: CodexPlusToastType;

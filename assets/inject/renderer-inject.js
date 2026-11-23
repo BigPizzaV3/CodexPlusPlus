@@ -9696,6 +9696,14 @@
     root.querySelectorAll('[data-codex-plus-panel="home"] > [data-codex-plus-settings-group]').forEach((node) => {
       const value = String(node.getAttribute("data-codex-plus-settings-group") === active);
       if (node.dataset.active !== value) node.dataset.active = value;
+      if (node.getAttribute("data-codex-plus-settings-group") === "ext-permissions") {
+        const details = node.querySelector("[data-codex-plus-usage-storage]");
+        const visible = value === "true" || !node.closest('[data-codex-plus-settings-paged="true"]');
+        if (details && details.dataset.active !== String(visible)) {
+          details.dataset.active = String(visible);
+          if (visible && !details.dataset.loading) void loadCodexPlusUsageStorage(details);
+        }
+      }
     });
     root.querySelectorAll("[data-codex-plus-settings-nav]").forEach((button) => {
       const current = button.getAttribute("data-codex-plus-settings-nav") === active;
@@ -9960,6 +9968,27 @@
     return escapeHtml(experimental ? item.title.replace(codexPlusExperimentalTitle, "") : item.title) + tags;
   }
 
+  async function loadCodexPlusUsageStorage(details) {
+    const size = details.querySelector("[data-usage-storage-bytes]");
+    const path = details.querySelector("[data-usage-storage-directory]");
+    details.dataset.loading = "true";
+    try {
+      const result = await postJson("/settings/usage-history-storage", {});
+      if (result.status !== "ok" || !Number.isSafeInteger(result.bytes) || result.bytes < 0 || typeof result.directory !== "string") {
+        throw new Error(result.message || "未取得用量库存储信息");
+      }
+      size.textContent = result.bytes < 1024 ** 2
+        ? `${result.bytes.toLocaleString()} B`
+        : `${(result.bytes / 1024 ** 2).toLocaleString(undefined, { maximumFractionDigits: 2 })} MiB`;
+      path.textContent = result.directory;
+    } catch (error) {
+      size.textContent = "读取失败";
+      path.textContent = error.message;
+    } finally {
+      delete details.dataset.loading;
+    }
+  }
+
   function renderCodexPlusSettingsCatalogRow(item, options = {}) {
     const title = escapeHtml(item.title);
     let control = "";
@@ -9978,11 +10007,18 @@
     const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
     const builtin = item.builtin ? ` data-codex-plus-builtin="${escapeHtml(item.builtin)}"` : "";
     const param = options.param ? " data-codex-plus-builtin-param=\"true\"" : "";
+    const storage = item.key === "usageHistoryEnabled" ? `
+                <div class="codex-plus-row" data-codex-plus-usage-storage>
+                  <div role="status">
+                    <div class="codex-plus-row-title">用量库占用 <span data-usage-storage-bytes>正在读取</span></div>
+                    <div class="codex-plus-row-description">保存目录 <span data-usage-storage-directory></span></div>
+                  </div>
+                </div>` : "";
     return `
                 <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}"${builtin}${param}>
                   <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div>${item.key === "codexAppNativeFastUnlock" ? '<div class="codex-plus-row-description" data-codex-plus-native-fast-status="true" role="status" hidden></div>' : ""}</div>
                   ${control}
-                </div>`;
+                </div>${storage}`;
   }
 
   /**
@@ -31136,6 +31172,8 @@ ${key} = ${value}`]);
     "/backend/status",
     // 只读：设置的公开子集（当前供应商的名称、模式、模型、上下文窗口），不含地址、Key 与配置内容。
     "/settings/public",
+    // 只读：网关供应商的配置价，不含地址、Key 或其他设置。
+    "/provider-prices/public",
     // 只读：模型目录（模型列表与每模型元数据，含上下文窗口），去掉了来源地址与本机路径。
     "/model-catalog/public",
     // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。

@@ -177,6 +177,26 @@ pub struct ProviderSyncDatabaseOutcome {
 }
 
 impl SyncJournal {
+    pub(crate) fn permits_thread_prepare(&self, thread_id: &str) -> bool {
+        // 只放行能确认范围的会话文件作业；不要让续接写入干扰待补偿的数据库或全局状态。
+        matches!(self.state.as_str(), "prepared" | "partial_failure")
+            && self.entries.is_empty()
+            && self.files.is_empty()
+            && !self.rollouts.is_empty()
+            && self.rollouts.iter().all(|rollout| {
+                rollout.restored
+                    || rollout.applied == Some(false)
+                    || (!rollout.original_meta_lines.is_empty()
+                        && rollout.original_meta_lines.iter().all(|line| {
+                            serde_json::from_str::<serde_json::Value>(line).is_ok_and(|meta| {
+                                meta["type"].as_str() == Some("session_meta")
+                                    && meta.pointer("/payload/id").and_then(|id| id.as_str())
+                                        .is_some_and(|id| !id.trim().is_empty() && id != thread_id)
+                            })
+                        }))
+            })
+    }
+
     pub(crate) fn load_for_recovery(
         path: &Path,
         home: &Path,
