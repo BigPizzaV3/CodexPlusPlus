@@ -244,7 +244,8 @@ window.__codexPlusUserScripts.registerCleanup(() => { window.active--; });
     let empty_initial = manager.build_initial_bundle().unwrap();
     let input = json!({"first": first, "updated": updated, "disabled": disabled,
         "globallyDisabled": globally_disabled, "legacy": legacy, "deleted": deleted,
-        "bootstrap": BOOTSTRAP_SCRIPT, "initial": initial, "emptyInitial": empty_initial});
+        "bootstrap": BOOTSTRAP_SCRIPT, "renderer": codex_plus_core::assets::renderer_script(),
+        "initial": initial, "emptyInitial": empty_initial});
     let fixture = temp.path().join("bundles.json");
     fs::write(&fixture, input.to_string()).unwrap();
     let output = Command::new("node").arg("-e").arg(r#"
@@ -287,17 +288,33 @@ assert.equal(window.active, 0);
 
 // 新页面启动只请求一次当前脚本，且不在子框架执行。
 let requests = 0;
-const fresh = { location: window.location, electronBridge: {},
-  __codexSessionDeleteBridge(path) { assert.equal(path, '/user-scripts/load'); requests++; return Promise.resolve({}); } };
+const fresh = Object.assign(new EventTarget(), { location: window.location, electronBridge: {},
+  __codexSessionDeleteBridge(path) {
+    assert.equal(path, '/user-scripts/load');
+    assert.ok(fresh.codexPlus);
+    requests++;
+    return Promise.resolve({});
+  } });
 fresh.self = fresh.top = fresh;
-const startup = vm.createContext({window: fresh, document: {readyState: 'complete'}, console});
+const startup = vm.createContext({window: fresh, document: {readyState: 'complete'}, console,
+  Event, buildCodexPlusExtensionApi: () => ({ apiVersion: 1 })});
 vm.runInContext(bundles.bootstrap, startup);
 vm.runInContext(bundles.bootstrap, startup);
+assert.equal(requests, 0);
+const apiStart = bundles.renderer.indexOf('window.codexPlus = buildCodexPlusExtensionApi();');
+const apiEnd = bundles.renderer.indexOf('// 内置功能挂到拓展内核上', apiStart);
+assert.ok(apiStart >= 0 && apiEnd > apiStart);
+vm.runInContext(bundles.renderer.slice(apiStart, apiEnd), startup);
+assert.equal(requests, 1);
+fresh.dispatchEvent(new Event('codex-plus-extension-api-ready'));
 assert.equal(requests, 1);
 fresh.__codexPlusUserScriptsBootstrap = false;
 fresh.top = {};
 vm.runInContext(bundles.bootstrap, startup);
 assert.equal(requests, 1);
+fresh.top = fresh;
+vm.runInContext(bundles.bootstrap, startup);
+assert.equal(requests, 2);
 
 // 重复启动请求、桥接恢复及刷新后的新页面均不得再次刷新或叠加旧脚本。
 for (let page = 0; page < 3; page++) {
