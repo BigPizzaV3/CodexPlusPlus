@@ -1298,12 +1298,12 @@ export function App() {
       case "context":
         loads.push(refreshRelayFiles(true), refreshLiveContextEntries(true));
         break;
-      case "weixin":
-        // 微信页从最近的会话里挑，读第一页。
       case "pluginMarket":
         // 「本机配置」页签列 config.toml 里的插件条目。
         loads.push(refreshLiveContextEntries(true));
         break;
+      case "weixin":
+        // 微信页从最近的会话里挑，读第一页。
         loads.push(refreshWeixinStatus(true), refreshLocalSessions(true));
         break;
       case "userScripts":
@@ -3253,13 +3253,13 @@ export function App() {
     const entries = contextEntriesWithLiveEntries(settingsForm, liveContextEntries);
     return contextEntriesByKind(entries, "mcp");
   }, [settingsForm, liveContextEntries]);
-  // 停在不属于当前 Agent 的页面上：回到当前 Agent 的落脚页。
-  useEffect(() => {
   // 「Codex 插件」页「本机配置」：config.toml 里的 [plugins.*] 条目（原来在 MCP 页的「管理插件配置」里）。
   const pluginConfigEntries = useMemo(
     () => contextEntriesByKind(contextEntriesWithLiveEntries(settingsForm, liveContextEntries), "plugin"),
     [settingsForm, liveContextEntries],
   );
+  // 停在不属于当前 Agent 的页面上：回到当前 Agent 的落脚页。
+  useEffect(() => {
     const currentRoute = routes.find((candidate) => candidate.id === route);
     if (currentRoute?.tools && currentRoute.id !== "userScripts" && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "overview");
     // navigate 每次渲染都是新函数，只在页面或 Agent 变化时检查。
