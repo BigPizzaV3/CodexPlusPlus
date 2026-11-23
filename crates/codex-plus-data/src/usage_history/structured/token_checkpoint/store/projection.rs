@@ -49,6 +49,9 @@ pub(in super::super) struct DayTotals {
     pub(in super::super) counts: Counter,
     pub(in super::super) records: u64,
     pub(in super::super) unresolved: u64,
+    // 完整分组直接使用 counts，混合分组只保存可计价的子集。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in super::super) priceable: Option<[u64; 3]>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -408,6 +411,19 @@ impl Store {
             if event.count_uncertain || event.count_incomplete {
                 totals.unresolved += 1;
             } else if event.delta.total_tokens > 0 {
+                let previous = totals.counts.0;
+                if previous.cached_known && !event.delta.cached_known && totals.records > 0 {
+                    totals.priceable = Some([
+                        previous.input_tokens,
+                        previous.cached_input_tokens,
+                        previous.output_tokens,
+                    ]);
+                } else if !previous.cached_known && event.delta.cached_known {
+                    let [input, cached, output] = totals.priceable.get_or_insert([0; 3]);
+                    *input = input.saturating_add(event.delta.input_tokens);
+                    *cached = cached.saturating_add(event.delta.cached_input_tokens);
+                    *output = output.saturating_add(event.delta.output_tokens);
+                }
                 totals.counts.0.add(event.delta);
                 totals.records += 1;
             }
@@ -498,9 +514,10 @@ impl Store {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let cutoff: String = tx.query_row("SELECT precise_from FROM token_revision", [], |row| {
-            row.get(0)
-        })?;
+        let cutoff: String =
+            tx.query_row("SELECT precise_from FROM token_revision", [], |row| {
+                row.get(0)
+            })?;
         if cutoff.is_empty() {
             return Ok(0);
         }

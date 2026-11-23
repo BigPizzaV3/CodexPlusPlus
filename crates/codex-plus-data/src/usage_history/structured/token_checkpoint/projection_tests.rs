@@ -566,12 +566,118 @@ fn replacing_recent_details_keeps_older_daily_totals_and_unknown_cache() {
         assert_eq!(groups[0].totals.records, 1);
         assert_eq!(groups[0].totals.counts.0.total_tokens, 110);
         assert!(!groups[0].totals.counts.0.cached_known);
+        assert_eq!(groups[0].totals.priceable, None);
         visited = true;
         Ok(())
     })
     .unwrap();
     assert!(visited);
     assert_eq!(summary_rev, latest);
+}
+
+#[test]
+fn daily_pricing_subset_survives_append_reopen_and_detail_reclamation() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let source = root.join("rollout-a.jsonl");
+    let db = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let known = count(1, 1, 1, true);
+    let mut unknown = count(2, 2, 2, true);
+    let mut latest = count(3, 3, 3, true);
+    for key in ["total_token_usage", "last_token_usage"] {
+        unknown["payload"]["info"][key]
+            .as_object_mut()
+            .unwrap()
+            .remove("cached_input_tokens");
+    }
+    latest["payload"]["info"]["last_token_usage"]["cached_input_tokens"] = json!(0);
+    latest["payload"]["info"]["total_token_usage"]["cached_input_tokens"] = json!(40);
+    let original = parse(&source, &[header(PARENT, 0), known], cutoff);
+    let day = original.events[0].date;
+    let end = day.succ_opt().unwrap();
+    let inspect = |store: &mut Store, records, total, priceable| {
+        let mut visited = false;
+        Store::read_days(&mut store.db, day, end, |session, _, groups| {
+            assert_eq!(session, PARENT);
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].totals.records, records);
+            assert_eq!(groups[0].totals.counts.0.total_tokens, total);
+            assert_eq!(groups[0].totals.counts.0.cached_known, records == 1);
+            assert_eq!(groups[0].totals.priceable, priceable);
+            visited = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(visited);
+    };
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let first = store
+        .prepare(
+            new_source(&source, &original),
+            cutoff,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    store.publish(first).unwrap();
+    inspect(&mut store, 1, 110, None);
+
+    for (line, records, priceable) in [(unknown, 2, [100, 20, 10]), (latest, 3, [200, 20, 20])] {
+        drop(store);
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&source).unwrap(),
+            "{line}"
+        )
+        .unwrap();
+        store = Store::open(Connection::open(&db).unwrap()).unwrap();
+        let (revision, mut state) = store.checkpoint(&source).unwrap().unwrap();
+        assert!(
+            state
+                .read_with_budget(&source, cutoff, &mut Budget::new(std::iter::empty()))
+                .unwrap()
+        );
+        let staged = store
+            .prepare(
+                SourceUpdate {
+                    source: &source,
+                    state: &state,
+                    previous_revision: Some(revision),
+                    replace: false,
+                },
+                cutoff,
+                BTreeMap::new(),
+                8192,
+            )
+            .unwrap();
+        let committed = store.publish(staged).unwrap();
+        let linear: i64 = store
+            .db
+            .query_row("SELECT revision FROM token_linear_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            linear, committed,
+            "append must retain its linear source certificate"
+        );
+        inspect(&mut store, records, records * 110, Some(priceable));
+    }
+
+    let next_source = root.join("rollout-next-day.jsonl");
+    let next_day = json!({"type":"event_msg","ordinal":1,"timestamp":"2026-01-04T12:00:01Z",
+        "payload":count(1, 1, 1, true)["payload"]});
+    let next = parse(&next_source, &[header(OTHER, 0), next_day], end);
+    let staged = store
+        .prepare(new_source(&next_source, &next), end, BTreeMap::new(), 8192)
+        .unwrap();
+    store.publish(staged).unwrap();
+    assert_eq!(store.reclaim_expired_details(2).unwrap(), 2);
+    drop(store);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    assert_eq!(store.reclaim_expired_details(2).unwrap(), 1);
+    assert_eq!(store.reclaim_expired_details(2).unwrap(), 0);
+    inspect(&mut store, 3, 330, Some([200, 20, 20]));
 }
 
 #[test]
