@@ -3,6 +3,48 @@ use super::*;
 const BASE_ROLLOUT: &str = "00000000-0000-4000-8000-000000000081";
 const NEXT_ROLLOUT: &str = "00000000-0000-4000-8000-000000000082";
 
+#[test]
+fn cold_scan_reads_recently_changed_rollout_before_historical_backlog() {
+    let mut fixture = Fixture::new();
+    let older = fixture.home.join("sessions/rollout-a.jsonl");
+    let recent = fixture.home.join("sessions/rollout-z.jsonl");
+    let tool_free_row = json!({
+        "type":"response_item",
+        "payload":{"type":"message","text":"a".repeat(128 * 1024)}
+    });
+    // 一个旧来源就可耗尽整轮 4 MiB 读取配额。
+    fixture.write_segment("rollout-a.jsonl", vec![tool_free_row; 40]);
+    fixture.write_segment(
+        "rollout-z.jsonl",
+        vec![fixture.context(500, "current-model"), fixture.usage(1_000, 1)],
+    );
+    File::options()
+        .write(true)
+        .open(&older)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(86_400))
+        .unwrap();
+    let first = fixture
+        .index
+        .update_with_request_log(&fixture.home, &fixture.log);
+    assert!(first.indexed < first.files);
+    assert_eq!(first.events.len(), 1);
+    assert_eq!(first.events[0].model, "current-model");
+    assert_eq!(first.events[0].delta.total_tokens, 110);
+    let response = snapshot_response(&first);
+    assert_eq!(response["status"], "partial");
+    assert_eq!(response["days"][0]["usage"]["totalTokens"], 110);
+    assert_eq!(
+        fixture.index.files[&recent].offset,
+        fs::metadata(recent).unwrap().len()
+    );
+    let finished = fixture.snapshot();
+    assert!(finished.ready);
+    assert_eq!(finished.indexed, 2);
+    assert_eq!(finished.events.len(), 1);
+    assert_eq!(finished.events[0].id, first.events[0].id);
+}
+
 #[path = "actual_attribution_tests.rs"]
 mod actual_attribution_tests;
 
