@@ -596,18 +596,24 @@ fn reclaiming_archived_observations_unblocks_a_referenced_continuation() {
         .to_rfc3339()
         .into();
     let child = parse(&child_path, &[child_header, child_count], cutoff);
-    // 由无关空来源推进保留线，保留已提交的父来源日汇总。
-    let other_path = root.join("rollout-other.jsonl");
-    let other = parse(&other_path, &[header(OTHER, 0)], cutoff);
-    let advance = store
+    let stale = store
         .prepare(
-            new_source(&other_path, &other),
-            cutoff,
+            new_source(&child_path, &child),
+            old_cutoff,
             BTreeMap::new(),
-            8192,
+            1 << 20,
         )
         .unwrap();
-    let before = store.publish(advance).unwrap();
+    // 没有其他新来源时也能推进保留线，并拒绝基于旧保留线准备的写入。
+    let before = store.advance_retention(cutoff).unwrap().unwrap();
+    assert_eq!(before, parent_revision + 1);
+    assert_eq!(store.advance_retention(cutoff).unwrap(), None);
+    assert_eq!(store.advance_retention(old_cutoff).unwrap(), None);
+    assert!(matches!(
+        store.publish(stale),
+        Err(error) if error.to_string().contains("index changed during reconciliation")
+    ));
+    assert!(store.checkpoint(&child_path).unwrap().is_none());
     let (_, mut stale_parser) = store.checkpoint(&source).unwrap().unwrap();
     assert!(matches!(
         store.prepare(new_source(&child_path, &child), cutoff, BTreeMap::new(), 8192),

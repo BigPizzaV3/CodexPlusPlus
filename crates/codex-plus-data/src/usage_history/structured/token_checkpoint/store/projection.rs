@@ -514,6 +514,22 @@ impl Store {
         Ok(next)
     }
 
+    pub(in super::super) fn advance_retention(&mut self, cutoff: NaiveDate) -> Result<Option<i64>> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let next = tx
+            .query_row(
+                "UPDATE token_revision SET precise_from = ?1, revision = revision + 1
+                 WHERE precise_from < ?1 RETURNING revision",
+                [cutoff.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        tx.commit()?;
+        Ok(next)
+    }
+
     pub(in super::super) fn reclaim_expired_details(&mut self, batch: u32) -> Result<usize> {
         let tx = self
             .db
