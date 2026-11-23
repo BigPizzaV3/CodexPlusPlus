@@ -236,35 +236,28 @@ impl Store {
         }
         let mut files = 0;
         {
-            // 物理前缀和同会话副本都参与计数。同一来源的旧关联和新关联均为种子。
+            // 来源和关联分别去重，避免同一会话的每份副本都重新展开整组来源。
             let mut affected = read.prepare(
                 "WITH RECURSIVE
-                     seeds(id) AS (
-                        SELECT id FROM token_sources WHERE source = ?1
-                        UNION SELECT source_id FROM token_source_links
-                              WHERE link IN (SELECT value FROM json_each(?2))
-                     ),
-                     component(id) AS (
-                        SELECT id FROM seeds
-                        UNION SELECT neighbor.source_id FROM component
+                     component(id, link) AS (
+                        SELECT id, NULL FROM token_sources WHERE source = ?1
+                        UNION SELECT NULL, value FROM json_each(?2)
+                        UNION SELECT NULL, own.link FROM component
                            JOIN token_source_links own ON own.source_id = component.id
-                           JOIN token_source_links neighbor ON neighbor.link = own.link
-                        LIMIT ?3
+                        UNION SELECT neighbor.source_id, NULL FROM component
+                           JOIN token_source_links neighbor ON neighbor.link = component.link
                      )
-                 SELECT s.id, s.source, s.revision, s.offset, s.checkpoint
-                 FROM component JOIN token_sources s ON s.id = component.id",
+                 SELECT component.link, s.id, s.source, s.revision, s.offset, s.checkpoint
+                 FROM component LEFT JOIN token_sources s ON s.id = component.id",
             )?;
             let mut observation = read.prepare(
                 "SELECT o.event_id, s.session, o.payload FROM token_observations o
                  JOIN token_sessions s ON s.id = o.session_id
                  WHERE o.source_id = ?1 ORDER BY o.revision, o.position",
             )?;
-            let mut membership = read.prepare(
-                "SELECT link FROM token_source_links WHERE source_id = ?1 AND link LIKE 's:%'",
-            )?;
             let mut stored_collision =
                 read.prepare("SELECT 1 FROM token_collisions WHERE id = ?1")?;
-            let mut rows = affected.query(params![path_key, seed_json, MAX_FILES + 1])?;
+            let mut rows = affected.query(params![path_key, seed_json])?;
             let mut remaining = input_limit;
             let mut charge = |bytes: usize| -> Result<()> {
                 remaining = remaining.checked_sub(bytes).ok_or_else(|| {
@@ -273,15 +266,19 @@ impl Store {
                 Ok(())
             };
             while let Some(row) = rows.next()? {
+                if let Some(link) = row.get::<_, Option<String>>(0)? {
+                    charge(link.len())?;
+                    if let Some(session) = link.strip_prefix("s:") {
+                        sessions.insert(session.to_owned());
+                    }
+                    continue;
+                }
                 files += 1;
                 ensure!(files <= MAX_FILES, "Token component exceeds source budget");
-                let id: i64 = row.get(0)?;
-                let path = decode_path(row.get(1)?)?;
-                for member in membership.query_map([id], |r| r.get::<_, String>(0))? {
-                    sessions.insert(member?[2..].to_owned());
-                }
+                let id: i64 = row.get(1)?;
+                let path = decode_path(row.get(2)?)?;
                 if path == source {
-                    source_revision = Some(row.get(2)?);
+                    source_revision = Some(row.get(3)?);
                     ensure!(
                         source_revision == previous_revision,
                         "Token source changed before reconciliation"
@@ -290,9 +287,9 @@ impl Store {
                         continue;
                     }
                 }
-                let record = row.get_ref(4)?.as_blob()?;
+                let record = row.get_ref(5)?.as_blob()?;
                 charge(record.len())?;
-                let mut old = serde_json::from_slice::<Checkpoint>(record)?.restore(row.get(3)?);
+                let mut old = serde_json::from_slice::<Checkpoint>(record)?.restore(row.get(4)?);
                 let mut records = observation.query([id])?;
                 while let Some(record) = records.next()? {
                     let bytes = record.get_ref(2)?.as_blob()?;

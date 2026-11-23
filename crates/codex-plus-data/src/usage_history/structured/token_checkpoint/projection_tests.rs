@@ -284,6 +284,50 @@ fn replacing_scope_uses_old_and_new_links_and_failed_publication_keeps_the_old_v
 }
 
 #[test]
+fn copies_sharing_one_session_resolve_once_without_affecting_other_sessions() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let source = root.join("rollout-original.jsonl");
+    let original = parse(&source, &[header(PARENT, 0), count(1, 1, 1, true)], cutoff);
+    let other_path = root.join("rollout-other.jsonl");
+    let other = parse(&other_path, &[header(OTHER, 0), count(1, 4, 1, true)], cutoff);
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let prepared = store
+        .prepare(new_source(&other_path, &other), cutoff, BTreeMap::new(), 8192)
+        .unwrap();
+    store.publish(prepared).unwrap();
+    for copy in 0..96 {
+        store
+            .save(
+                &root.join(format!("rollout-copy-{copy}.jsonl")),
+                None,
+                &original,
+                false,
+            )
+            .unwrap();
+    }
+    let (before, events) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        store.prepare(new_source(&source, &original), cutoff, BTreeMap::new(), 8192),
+        Err(error) if error.to_string().contains("reconciliation input budget")
+    ));
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).0, before);
+    assert!(store.checkpoint(&source).unwrap().is_none());
+
+    let prepared = store
+        .prepare(new_source(&source, &original), cutoff, BTreeMap::new(), 1 << 20)
+        .unwrap();
+    assert_eq!(store.publish(prepared).unwrap(), before + 1);
+    let (_, resolved) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(resolved.len(), 2);
+    assert_eq!(resolved[0].session, PARENT);
+    assert_eq!(resolved[0].delta.total_tokens, 110);
+    assert!(resolved[1] == events[0]);
+}
+
+#[test]
 fn ordered_append_matches_full_resolution_after_reopen_and_late_copy() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
