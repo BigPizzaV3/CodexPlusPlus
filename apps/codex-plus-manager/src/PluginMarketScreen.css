@@ -319,3 +319,27 @@
 .shell .plugin-config-panel span.plugin-market-row-main {
   cursor: default;
 }
+
+/* 内置插件折叠组 */
+.shell .plugin-config-bundled {
+  margin-top: 8px;
+}
+.shell .plugin-config-bundled-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.shell .plugin-config-bundled-toggle:hover {
+  color: hsl(var(--foreground));
+}
+.shell .plugin-config-bundled-toggle svg {
+  width: 14px;
+  height: 14px;
+}
