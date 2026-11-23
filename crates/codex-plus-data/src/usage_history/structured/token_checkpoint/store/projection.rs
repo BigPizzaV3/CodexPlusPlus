@@ -560,9 +560,49 @@ impl Store {
         Ok(removed)
     }
 
+    #[cfg(test)]
     pub(in super::super) fn reclaim_source_observations(
         &mut self,
         source: &Path,
+        after: (i64, i64),
+        batch: u32,
+    ) -> Result<(Option<(i64, i64)>, usize)> {
+        let source_id = self.db.query_row(
+            "SELECT id FROM token_sources WHERE source = ?1",
+            [encode_path(source)],
+            |row| row.get(0),
+        )?;
+        self.reclaim_observations(source_id, after, batch)
+    }
+
+    pub(in super::super) fn reclaim_next_source(
+        &mut self,
+        cursor: &mut (i64, (i64, i64)),
+        batch: u32,
+    ) -> Result<bool> {
+        let (after_id, after_row) = *cursor;
+        let id = if after_row == (0, 0) {
+            self.db
+                .query_row(
+                    "SELECT id FROM token_sources WHERE id > ?1 ORDER BY id LIMIT 1",
+                    [after_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+        } else {
+            Some(after_id)
+        };
+        let Some(id) = id else {
+            return Ok(false);
+        };
+        let (next, _) = self.reclaim_observations(id, after_row, batch)?;
+        *cursor = (id, next.unwrap_or((0, 0)));
+        Ok(true)
+    }
+
+    fn reclaim_observations(
+        &mut self,
+        source_id: i64,
         after: (i64, i64),
         batch: u32,
     ) -> Result<(Option<(i64, i64)>, usize)> {
@@ -573,10 +613,10 @@ impl Store {
             tx.query_row("SELECT precise_from FROM token_revision", [], |row| {
                 row.get(0)
             })?;
-        let (source_id, payload): (i64, Vec<u8>) = tx.query_row(
-            "SELECT id, checkpoint FROM token_sources WHERE source = ?1",
-            [encode_path(source)],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+        let payload: Vec<u8> = tx.query_row(
+            "SELECT checkpoint FROM token_sources WHERE id = ?1",
+            [source_id],
+            |row| row.get(0),
         )?;
         let mut checkpoint: Checkpoint = serde_json::from_slice(&payload)?;
         let mut next = None;

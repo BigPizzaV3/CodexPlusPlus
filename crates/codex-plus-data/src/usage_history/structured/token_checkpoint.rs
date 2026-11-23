@@ -221,5 +221,6 @@ impl Checkpoint {
 
 mod ingest;
 mod projection_tests;
+mod scan;
 mod store;
 mod tests;

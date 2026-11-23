@@ -3,11 +3,11 @@ use crate::usage_history::structured::{FileState, index_budget::Budget};
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // 一份在读来源只保留当前批次。发生写入错误时下一轮重试同一批。
-pub(super) struct SourceReader<'a> {
-    source: &'a Path,
+pub(super) struct SourceReader {
+    pub(super) source: PathBuf,
     state: FileState,
     revision: Option<i64>,
     offset: u64,
@@ -16,14 +16,14 @@ pub(super) struct SourceReader<'a> {
     ready: Option<bool>,
 }
 
-impl<'a> SourceReader<'a> {
-    pub(super) fn restore(store: &Store, source: &'a Path) -> Result<Self> {
+impl SourceReader {
+    pub(super) fn restore(store: &Store, source: &Path) -> Result<Self> {
         let (revision, state) = match store.checkpoint(source)? {
             Some((revision, state)) => (Some(revision), state),
             None => (None, FileState::default()),
         };
         Ok(Self {
-            source,
+            source: source.to_path_buf(),
             offset: state.offset,
             committed_complete: revision.is_some() && !state.resume_pending,
             state,
@@ -31,6 +31,18 @@ impl<'a> SourceReader<'a> {
             replacing: false,
             ready: None,
         })
+    }
+
+    pub(super) fn has_open_reader(&self) -> bool {
+        self.state.reader.is_some()
+    }
+
+    pub(super) fn can_retry_write(&self) -> bool {
+        self.ready.is_some()
+    }
+
+    pub(super) fn has_count_gap(&self) -> bool {
+        self.state.issues != 0 || self.state.invalid_counts || self.state.identity_conflict
     }
 
     pub(super) fn step(
@@ -46,12 +58,12 @@ impl<'a> SourceReader<'a> {
             None => {
                 let activity_limit = budget.activity_limit;
                 budget.activity_limit = 0;
-                let result = self.state.read_source_batch(self.source, cutoff, budget);
+                let result = self.state.read_source_batch(&self.source, cutoff, budget);
                 budget.activity_limit = activity_limit;
                 let (complete, replaced) = match result {
                     Ok(result) => result,
                     Err(error) => {
-                        *self = Self::restore(store, self.source).with_context(|| {
+                        *self = Self::restore(store, &self.source).with_context(|| {
                             format!("restoring checkpoint after read failure: {error}")
                         })?;
                         return Err(error.into());
@@ -74,7 +86,7 @@ impl<'a> SourceReader<'a> {
         };
         let prepared = store.prepare(
             SourceUpdate {
-                source: self.source,
+                source: &self.source,
                 state: &self.state,
                 previous_revision: self.revision,
                 replace: self.replacing,
