@@ -273,7 +273,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const bundles = require(process.argv[1]);
 assert.throws(() => new vm.Script(bundles.original), SyntaxError);
-const window = { location: { href: 'app://-/index.html' }, electronBridge: {} };
+const window = { location: { href: 'app://-/index.html' }, electronBridge: {}, codexPlus: { extension() {} } };
 window.top = window.self = window;
 const context = vm.createContext({ window, process, console });
 // 单独检查：有语法错的报 SyntaxError；没错的只是得到 undefined，脚本一行也不执行。
@@ -464,13 +464,23 @@ window.__codexPlusUserScripts.registerCleanup(() => { window.active--; });
     fs::write(&path, "window.legacy = (window.legacy || 0) + 1;").unwrap();
     let legacy = manager.build_reload_bundle().unwrap();
     let initial = manager.build_initial_bundle().unwrap();
+    write_package(
+        &user,
+        "with-api",
+        json!({"id": "with-api", "name": "With API", "renderer": ["renderer.js"]}),
+    );
+    fs::write(user.join("with-api/renderer.js"), r#"
+codexPlus.extension(() => { window.packageLoads = (window.packageLoads || 0) + 1; });
+"#).unwrap();
+    let mixed_initial = manager.build_initial_bundle().unwrap();
+    manager.set_script_enabled("user:with-api", false).unwrap();
     manager.delete_user_script("user:demo.js").unwrap();
     let deleted = manager.build_reload_bundle().unwrap();
     let empty_initial = manager.build_initial_bundle().unwrap();
     let input = json!({"first": first, "updated": updated, "disabled": disabled,
         "globallyDisabled": globally_disabled, "legacy": legacy, "deleted": deleted,
         "bootstrap": BOOTSTRAP_SCRIPT, "renderer": codex_plus_core::assets::renderer_script(),
-        "initial": initial, "emptyInitial": empty_initial});
+        "initial": initial, "emptyInitial": empty_initial, "mixedInitial": mixed_initial});
     let fixture = temp.path().join("bundles.json");
     fs::write(&fixture, input.to_string()).unwrap();
     let output = Command::new("node").arg("-e").arg(r#"
@@ -542,10 +552,24 @@ vm.runInContext(bundles.bootstrap, startup);
 assert.equal(requests, 2);
 
 // 重复启动请求、桥接恢复及刷新后的新页面均不得再次刷新或叠加旧脚本。
+// 桥接请求等候期间换页，新页没有 API；不能运行半份注入包并锁死初始化。
+const replacement = { electronBridge: {}, location: window.location };
+replacement.top = replacement.self = replacement;
+const replacementContext = vm.createContext({window: replacement, console});
+assert.equal(JSON.parse(vm.runInContext(bundles.mixedInitial, replacementContext)).ran, false);
+assert.equal(replacement.legacy, undefined);
+assert.equal(replacement.__codexPlusUserScripts.initialized, undefined);
+replacementContext.codexPlus = replacement.codexPlus = { extension(apply) { apply(); } };
+assert.equal(JSON.parse(vm.runInContext(bundles.mixedInitial, replacementContext)).ran, true);
+assert.equal(JSON.parse(vm.runInContext(bundles.mixedInitial, replacementContext)).ran, false);
+assert.equal(replacement.legacy, 1);
+assert.equal(replacement.packageLoads, 1);
+assert.equal(replacement.__codexPlusUserScripts.scripts["user:with-api"].status, "loaded");
+
 for (let page = 0; page < 3; page++) {
   let pageReloads = 0;
   const scheduled = [];
-  const pageWindow = { electronBridge: {}, __codexPlusUserScriptsBootstrap: true,
+  const pageWindow = { electronBridge: {}, codexPlus: { extension() {} }, __codexPlusUserScriptsBootstrap: true,
     location: { href: 'app://-/index.html', reload() { pageReloads++; } },
     setTimeout(fn) { scheduled.push(fn); } };
   pageWindow.top = pageWindow.self = pageWindow;
@@ -562,7 +586,7 @@ for (let page = 0; page < 3; page++) {
 }
 
 // 即便第一次无脚本，自动初始化也不能随重复请求变成隐式热重载。
-const emptyWindow = {};
+const emptyWindow = { codexPlus: { extension() {} } };
 const emptyContext = vm.createContext({window: emptyWindow, console});
 vm.runInContext(bundles.emptyInitial, emptyContext);
 vm.runInContext(bundles.initial, emptyContext);
@@ -635,7 +659,7 @@ fn extension_packages_are_scanned_bundled_and_exposed_with_manifest() {
             r#"
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const window = { location: { href: 'app://-/index.html' }, electronBridge: {} };
+const window = { location: { href: 'app://-/index.html' }, electronBridge: {}, codexPlus: { extension() {} } };
 window.top = window.self = window;
 const status = JSON.parse(vm.runInContext(process.argv[1], vm.createContext({ window, process, console })));
 assert.equal(JSON.stringify(window.order), '["a","b"]'); // vm 里的数组跨 realm，按文本比较

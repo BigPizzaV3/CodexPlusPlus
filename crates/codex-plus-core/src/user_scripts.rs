@@ -1636,7 +1636,9 @@ impl UserScriptManager {
   {RUNTIME_SCRIPT}
   const runtime = window.__codexPlusUserScripts;
   let ran = false;
-  if (!runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
+  // 桥接等待期间可能换页，必须以执行注入包的页面为准。
+  if (typeof window.codexPlus?.extension === "function"
+      && !runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
     runtime.initialized = true;
     ran = true;
     {bundle}
