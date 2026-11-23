@@ -663,7 +663,7 @@ pub fn prepare_thread_provider(
     }
 
     let _guard = try_acquire_provider_sync_lifecycle_guard(Some(home))?;
-    if let Some(path) = pending_recovery_journal(home) {
+    if let Some(path) = blocking_recovery_journal(home, Some(thread_id)) {
         anyhow::bail!("Provider sync recovery is pending: {}。请在 Codex++ 管理器的会话维护中点击「恢复未完成修复」，完成后重试当前会话。", path.display());
     }
     let config_path = home.join("config.toml");
@@ -6803,6 +6803,10 @@ fn pending_recovery_result(home: &Path, target_provider: &str) -> Option<Provide
 /// 返回未完成/无法确认安全的恢复位置；namespace 本身不可读时返回该目录供诊断。
 /// 只有 namespace 不存在，或全部受管 journal 明确完成，才返回 None。
 pub fn pending_recovery_journal(home: &Path) -> Option<PathBuf> {
+    blocking_recovery_journal(home, None)
+}
+
+fn blocking_recovery_journal(home: &Path, resume_thread_id: Option<&str>) -> Option<PathBuf> {
     let root = home.join("backups_state/provider-sync");
     let entries = match fs::read_dir(&root) {
         Ok(entries) => entries,
@@ -6843,17 +6847,23 @@ pub fn pending_recovery_journal(home: &Path) -> Option<PathBuf> {
         if metadata.get("managedBy").and_then(Value::as_str) != Some("Codex++ provider sync") {
             return Some(journal);
         }
-        let finished = fs::read(&journal)
+        let can_continue = fs::read(&journal)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .is_some_and(|value| {
                 value.get("version").and_then(Value::as_u64) == Some(1)
-                    && matches!(
-                        value.get("state").and_then(Value::as_str),
-                        Some("complete" | "rolled_back")
-                    )
+                    && (matches!(
+                            value.get("state").and_then(Value::as_str),
+                            Some("complete" | "rolled_back")
+                        )
+                        || (metadata.get("namespace").and_then(Value::as_str)
+                            == Some("provider-sync")
+                            && resume_thread_id.is_some_and(|id| {
+                                serde_json::from_value::<SyncJournal>(value)
+                                    .is_ok_and(|journal| journal.permits_thread_prepare(id))
+                            })))
             });
-        if !finished {
+        if !can_continue {
             return Some(journal);
         }
     }
