@@ -1287,15 +1287,15 @@ pub async fn install_bridge(
     let generation = next_bridge_generation(websocket_url);
     session = session.with_generation(generation.clone());
     let mut registered_script_ids = Vec::new();
-    let native_modules_requested = crate::builtin_takeover::load_effective_settings()
-        .is_ok_and(|settings| crate::native_predictions::native_modules_requested(&settings));
 
     let install_result: anyhow::Result<()> = async {
-        if native_modules_requested {
-            session
-                .send_command(next_message_id(), "Page.enable", json!({}))
-                .await?;
-        }
+        // 必须先 Page.enable：下面用 Page.addScriptToEvaluateOnNewDocument 登记的脚本，只有本连接启用了 Page 域，
+        // 页面刷新后才会真的执行（在 Codex 26.11 的 Chromium 158 上实测：不发就不执行）。以前只在开了原生 Fast /
+        // 输入预测时才发，默认设置下页面一刷新 Codex++ 的注入就整个没了，要等看门狗几秒后重新注入；
+        // 拓展的 preload（要赶在 Codex 自己的脚本之前）也因此根本跑不到。
+        session
+            .send_command(next_message_id(), "Page.enable", json!({}))
+            .await?;
         session.send_command(1, "Runtime.enable", json!({})).await?;
         session
             .send_command(2, "Runtime.removeBinding", json!({ "name": binding_name }))

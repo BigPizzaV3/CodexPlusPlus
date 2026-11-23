@@ -883,7 +883,8 @@ Codex++ 自带的功能全部是内置拓展：管理器「Codex → 内置拓�
 - `launch.before` / `launch.after`：启动 Codex 之前 / Codex 退出之后各跑一次（Node，默认导出函数），拿到
   `{ event, extension, codexHome, stateDir, appDir, platform, config }`，不含任何凭据。超时 `timeout` 秒（1~30，默认 10）；
   出错、超时只记诊断日志，不挡 Codex 启动。
-- 都只在用户脚本总开关与增强都开着时生效；「下次启动跳过拓展」开着时也跳过。
+- 都只在用户脚本总开关与增强都开着时生效；「下次启动跳过拓展」开着时也跳过。Codex++ 重启后只补回桥接（Codex 没重启）时
+  不跑启动前后脚本、也不为 preload 刷新页面。
 
 ### 悬浮球页签、工具调用视图、设置页分区
 
