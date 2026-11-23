@@ -843,6 +843,13 @@ fn replacing_recent_details_keeps_older_daily_totals_and_unknown_cache() {
         )
         .unwrap();
     let first_revision = store.publish(first).unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER fail_archived_detail_delete BEFORE DELETE ON token_resolved
+             BEGIN SELECT RAISE(ABORT, 'archived detail must be reclaimed separately'); END;",
+        )
+        .unwrap();
     let replacement = parse(&source, &[header(PARENT, 0)], end);
     let second = store
         .prepare(
@@ -874,6 +881,12 @@ fn replacing_recent_details_keeps_older_daily_totals_and_unknown_cache() {
     .unwrap();
     assert!(visited);
     assert_eq!(summary_rev, latest);
+    store
+        .db
+        .execute_batch("DROP TRIGGER fail_archived_detail_delete")
+        .unwrap();
+    assert_eq!(store.reclaim_expired_details(1).unwrap(), 1);
+    assert_eq!(store.reclaim_expired_details(1).unwrap(), 0);
 }
 
 #[test]

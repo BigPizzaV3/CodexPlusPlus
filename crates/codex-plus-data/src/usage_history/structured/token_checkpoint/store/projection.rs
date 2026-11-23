@@ -463,7 +463,8 @@ impl Store {
         tx.execute("UPDATE token_revision SET precise_from = ?1", [&cutoff])?;
         {
             let mut remove = tx.prepare(
-                "DELETE FROM token_resolved WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
+                "DELETE FROM token_resolved WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+                 AND day >= ?2",
             )?;
             let mut remove_days = tx.prepare(
                 "DELETE FROM token_days WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
@@ -475,8 +476,8 @@ impl Store {
                      (SELECT source_id FROM token_source_links WHERE link = ?1)",
                 )?;
                 for session in prepared.sessions {
-                    remove.execute([&session])?;
-                    // 保留已过明细截止点的日汇总。
+                    // 归档后的明细由分批回收处理，日汇总继续保留。
+                    remove.execute(params![session, cutoff])?;
                     remove_days.execute(params![session, cutoff])?;
                     invalidate.execute([format!("s:{session}")])?;
                 }
