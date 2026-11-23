@@ -1,9 +1,9 @@
   /**
-   * 「供应商」页的网关页签：在 Codex 里管理 Codex++ 网关的供应商池，并在网关 / 直连之间切换。
+   * 「供应商」页的本地服务页签：在 Codex 里管理 Codex++ 本地服务的共享供应商，并在本地服务 / 直连之间切换。
    *
-   * - 全部操作经 /providers/gateway 转给管理器自己的网关命令（core provider_page 做白名单与脱敏），
+   * - 全部操作经 /providers/gateway 转给管理器自己的本地服务命令（core provider_page 做白名单与脱敏），
    *   所以生效方式与管理器完全一致：路由每次请求重读 gateway.json，模型变化由 refresh_agents 重写
-   *   Codex 的网关目录、心跳指纹变化后页面自动重载 model/list；已打开的对话下一条请求就用新的池。
+   *   Codex 的本地服务目录、心跳指纹变化后页面自动重载 model/list；已打开的对话下一条请求就用新的池。
    * - 表单逻辑用与管理器共用的 gateway-model.ts（42 分片的 codexPlusProviderEditing.gateway）。
    * - Key 只有打码视图：编辑时 Key 留空表示不改，新增 / 替换 / 删除各走单独命令。
    * - 账号 / 订阅类、Codex 原生登录、拓展提供的条目只读（管理器同样不给编辑），去 Codex++ 里管。
@@ -46,7 +46,7 @@
   function codexPlusGatewaySetStatus(message, tone = "") {
     codexPlusGatewayPageState.status = String(message || "");
     codexPlusGatewayPageState.statusTone = tone;
-    // 同步底部状态栏（如果当前是网关页签）
+    // 同步底部状态栏（如果当前是本地服务页签）
     if (codexPlusProviderPageState.tab === "gateway") {
       const footer = document.querySelector("[data-codex-provider-footer]");
       if (footer) {
@@ -66,7 +66,7 @@
     state.draft = entry && codexPlusGatewayEditable(entry) ? codexPlusGatewayModel.providerDraftFromEntry(entry) : null;
   }
 
-  /** 网关命令的返回（CommandResult 里平铺了 GatewayPayload）。没带 payload 的结果不覆盖现有列表。 */
+  /** 本地服务命令的返回（CommandResult 里平铺了 GatewayPayload）。没带 payload 的结果不覆盖现有列表。 */
   function codexPlusGatewayApplyResult(result, { keepSelection = true } = {}) {
     const state = codexPlusGatewayPageState;
     if (result?.gateway && Array.isArray(result.pool)) {
@@ -94,7 +94,7 @@
     const result = await codexPlusGatewayCall("load_gateway");
     state.busy = "";
     if (result?.status !== "ok" || !result.gateway) {
-      codexPlusGatewaySetStatus(result?.message || "读取网关供应商池失败", "error");
+      codexPlusGatewaySetStatus(result?.message || "读取共享供应商失败", "error");
     } else {
       codexPlusGatewayApplyResult(result);
     }
@@ -112,8 +112,8 @@
     if (ok) {
       state.isNew = false;
       codexPlusGatewayApplyResult(result);
-      codexPlusGatewaySetStatus(`${success || result.message || "已保存。"} 已打开的对话下一条请求就用新的供应商池。`, "ok");
-      showToast(success || "网关供应商池已更新", { type: "success" });
+      codexPlusGatewaySetStatus(`${success || result.message || "已保存。"} 已打开的对话下一条请求就用新的共享供应商。`, "ok");
+      showToast(success || "共享供应商已更新", { type: "success" });
     } else {
       codexPlusGatewaySetStatus(result?.message || "操作失败", "error");
     }
@@ -158,8 +158,8 @@
 
   async function codexPlusGatewayDelete(entry) {
     const answer = await codexPlusAsk({
-      title: "从网关删除供应商",
-      message: `确定从网关供应商池删除「${entry.name}」？它的 Key、模型和用量设置一起删除，模型组和各 Agent 里对它的引用也会清掉。`,
+      title: "从共享供应商删除供应商",
+      message: `确定从共享供应商删除「${entry.name}」？它的 Key、模型和用量设置一起删除，模型组和各 Agent 里对它的引用也会清掉。`,
       options: [{ value: "delete", label: "删除" }],
     });
     if (!answer) return;
@@ -218,19 +218,20 @@
     renderCodexPlusProviderPage();
   }
 
-  /** 让 Codex 经网关接入：与管理器「连接与供应商 → 经网关」同一条命令，沿用上次的接入设置。 */
-  async function codexPlusGatewayConnect() {
+  /** 让 Codex 经共享供应商接入：与管理器「连接与供应商」的「共享」分页同一条命令，沿用上次的接入设置；
+   * 传了 `model`（`<供应商 id>/<模型>`）就把默认模型换成它。 */
+  async function codexPlusGatewayConnect(model = "") {
     const state = codexPlusGatewayPageState;
     const payload = state.payload;
     const previous = payload?.gateway?.bindings?.codex;
-    const draft = codexPlusGatewayModel.draftFromBinding(previous);
+    const draft = { ...codexPlusGatewayModel.draftFromBinding(previous), ...(model ? { model } : {}) };
     const issue = codexPlusGatewayModel.validateDraft(draft, payload);
     if (issue) {
-      codexPlusGatewaySetStatus(`${issue}（请先在供应商池里添加可用的供应商，或在 Codex++「Agent 接入」里调整默认模型）`, "error");
+      codexPlusGatewaySetStatus(`${issue}（请先在共享供应商里添加可用的供应商，或在 Codex++「Agent 接入」里调整默认模型）`, "error");
       return renderCodexPlusProviderPage();
     }
     const binding = { ...codexPlusGatewayModel.bindingFromDraft(draft, previous), enabled: true };
-    const result = await codexPlusGatewayMutate("save_gateway_binding", { agent: "codex", binding, reconnect: true }, { busy: "connect", success: "Codex 已经由网关接入。" });
+    const result = await codexPlusGatewayMutate("save_gateway_binding", { agent: "codex", binding, reconnect: true }, { busy: "connect", success: "Codex 已经经共享供应商接入。" });
     if (result) await codexPlusProviderLoad({ quiet: true });
   }
 
@@ -259,7 +260,7 @@
     state.disconnect = { ...state.disconnect, applying: true };
     renderCodexPlusProviderPage();
     const command = fullSwitch ? "disable_gateway_binding_full_switch" : "disable_gateway_binding";
-    const result = await codexPlusGatewayMutate(command, { agent: "codex", previewToken: preview.previewToken }, { busy: "disconnect", success: "已断开网关，Codex 改回直连。" });
+    const result = await codexPlusGatewayMutate(command, { agent: "codex", previewToken: preview.previewToken }, { busy: "disconnect", success: "已断开本地服务，Codex 改回直连。" });
     state.disconnect = null;
     await codexPlusProviderLoad({ quiet: true });
     if (result && typeof then === "function") await then();
@@ -276,10 +277,10 @@
         <div class="codex-plus-gateway-diff-head"><code>${escapeHtml(file.path)}</code><span>${escapeHtml(codexPlusGatewaySafety.disconnectFileLabel(file.kind))}</span></div>
         <pre>${file.diff ? file.diff.split("\n").map((line) => `<span data-kind="${line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : "context"}">${escapeHtml(line)}\n</span>`).join("") : "文件内容无需修改"}</pre>
       </section>`).join("");
-    return `<div class="codex-plus-gateway-modal" data-codex-plus-ext="builtin-provider" role="dialog" aria-modal="true" aria-label="断开网关并还原">
+    return `<div class="codex-plus-gateway-modal" data-codex-plus-ext="builtin-provider" role="dialog" aria-modal="true" aria-label="断开本地服务并还原">
       <div class="codex-plus-gateway-modal-box">
-        <div class="codex-plus-provider-title">断开网关并还原为直连</div>
-        <div class="codex-plus-provider-help">Codex 会恢复接入网关之前的设置，下面是要改回的内容。</div>
+        <div class="codex-plus-provider-title">断开本地服务并还原为直连</div>
+        <div class="codex-plus-provider-help">Codex 会恢复接入本地服务之前的设置，下面是要改回的内容。</div>
         ${dialog.loading ? '<div class="codex-plus-provider-note">正在检查文件与还原差异…</div>' : ""}
         ${dialog.error ? `<div class="codex-plus-provider-status" data-tone="error">${escapeHtml(dialog.error)}</div>` : ""}
         ${preview?.warnings?.length ? `<ul class="codex-plus-gateway-warnings">${preview.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : ""}
@@ -297,14 +298,22 @@
     const gatewayMode = codexPlusProviderPageState.data?.gatewayMode === true;
     const busy = Boolean(codexPlusGatewayPageState.busy);
     const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+    // 选中的这一家能不能直接「使用」：有模型、开着、不是正在用的那家。
+    const entry = codexPlusGatewayPageState.isNew ? null : codexPlusGatewaySelected();
+    const entryModel = entry?.models?.[0] || "";
+    const active = gatewayMode && entry && model.toLowerCase().startsWith(`${entry.id}/`.toLowerCase());
+    const useButton = entry && entryModel && entry.enabled !== false && !active
+      ? `<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="use-selected" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在切换…" : "让 Codex 用这家"}</button>`
+      : "";
     return gatewayMode
       ? `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="gateway">
-          <span>Codex 正经 Codex++ 网关接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。已打开的对话下一条请求就生效。</span>
+          <span>Codex 正经 Codex++ 本地服务接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。已打开的对话下一条请求就生效。</span>
+          ${useButton}
           <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="disconnect" ${busy ? "disabled" : ""}>断开并还原为直连</button>
         </div>`
       : `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="direct">
-          <span>Codex 现在是直连，这里的供应商池暂时不起作用。</span>
-          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="connect" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在接入…" : "让 Codex 经网关接入"}</button>
+          <span>Codex 现在是直连。在这里「使用」一家，Codex 就经本地服务、默认用这家的模型。</span>
+          ${useButton}
         </div>`;
   }
 
@@ -316,7 +325,7 @@
     const activeModel = state.payload?.gateway?.bindings?.codex?.model || "";
     const activeProviderId = gatewayMode && activeModel.includes("/") ? activeModel.split("/")[0] : "";
     const rows = entries.map((entry, index) => {
-      const selected = entry.id === state.selectedId && !state.isNew;
+      const selected = entry.id === state.selectedId && !state.isNew && codexPlusProviderPageState.tab === "gateway";
       const enabled = entry.enabled !== false;
       const isActive = gatewayMode && entry.id === activeProviderId;
       const tag = entry.account ? (entry.plan || "账号") : String(entry.source || "").startsWith("extension:") ? "拓展" : String(entry.source || "").startsWith("native:") ? "原生登录" : ({ responses: "Responses", chatCompletions: "Chat", anthropicMessages: "Anthropic" }[entry.protocol] || entry.protocol);
@@ -334,7 +343,7 @@
     const draftRow = state.isNew
       ? `<div class="codex-plus-provider-item" role="listitem" data-selected="true"><div class="codex-plus-provider-item-main"><div class="codex-plus-provider-item-name">${escapeHtml(state.draft?.name || "新供应商")}</div><div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge" data-tone="new">未保存</span></div></div></div>`
       : "";
-    return `<div class="codex-plus-provider-list" role="list" aria-label="网关供应商池">${rows}${draftRow}${rows || draftRow ? "" : '<div class="codex-plus-provider-help">供应商池是空的。</div>'}</div>`;
+    return `<div class="codex-plus-provider-list" role="list" aria-label="共享供应商">${rows}${draftRow}${rows || draftRow ? "" : '<div class="codex-plus-provider-help">共享供应商是空的。</div>'}</div>`;
   }
 
   function renderCodexPlusGatewayDetail() {
@@ -346,7 +355,7 @@
     const enabled = entry ? entry.enabled !== false : true;
     const header = `<div class="codex-plus-provider-detail-header">
       <div><div class="codex-plus-provider-title">${escapeHtml(state.isNew ? (state.draft?.name || "新供应商") : entry.name)}</div>
-        <div class="codex-plus-provider-subtitle">网关供应商${entry && !enabled ? " · 已停用" : ""}${state.dirty ? " · 有未保存的修改" : ""}</div></div>
+        <div class="codex-plus-provider-subtitle">共享供应商${entry && !enabled ? " · 已停用" : ""}${state.dirty ? " · 有未保存的修改" : ""}</div></div>
       <div class="codex-plus-provider-actions">
         ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="toggle" ${busy ? "disabled" : ""}>${enabled ? "停用" : "启用"}</button>` : ""}
         ${editable ? `<button type="button" class="codex-plus-action-button" data-primary="true" data-codex-gateway-action="save" ${busy || !state.dirty ? "disabled" : ""}>${state.busy === "save" ? "保存中…" : "保存"}</button>` : ""}
@@ -354,7 +363,7 @@
         ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>' : ""}
       </div></div>`;
     // 删除放到页面底部的「危险操作」卡片，与直连页一致。
-    const dangerCard = entry ? codexPlusProviderCard("危险操作", codexPlusProviderActionLine("从供应商池删除", "它的 Key 和模型配置会一起删掉；只想暂时不用可以点右上角「停用」。",
+    const dangerCard = entry ? codexPlusProviderCard("危险操作", codexPlusProviderActionLine("从共享供应商删除", "它的 Key 和模型配置会一起删掉；只想暂时不用可以点右上角「停用」。",
       `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`)) : "";
     // 与直连页同一套卡片：小节标题 + 圆角卡片，卡片里一行一项（左标题右控件）。
     const testRow = entry
@@ -369,7 +378,7 @@
           codexPlusProviderActionLine("模型列表", (entry.models || []).join("、") || "（无）", ""),
           testRow,
         ].join(""), entry.account
-          ? "登录得到的账号（订阅额度、Token 刷新都由网关维护），在 Codex 里只能启停、排序和测试。"
+          ? "登录得到的账号（订阅额度、Token 刷新都由本地服务维护），在 Codex 里只能启停、排序和测试。"
           : "这一项由 Codex 原生登录或拓展提供，在 Codex 里只能启停、排序和测试。")}
         ${managerRow("账号与订阅", "登录、额度和刷新在 Codex++ 管理器里管理。")}
         ${dangerCard}`;
@@ -408,12 +417,12 @@
   function renderCodexPlusGatewayPane() {
     const state = codexPlusGatewayPageState;
     if (!state.payload) {
-      return `<div class="codex-plus-provider-empty">${state.busy === "load" ? "正在读取网关供应商池…" : escapeHtml(state.status || "还没有读取网关供应商池")}
+      return `<div class="codex-plus-provider-empty">${state.busy === "load" ? "正在读取共享供应商…" : escapeHtml(state.status || "还没有读取共享供应商")}
         <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`;
     }
     return `<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
-        <div class="codex-plus-provider-sidebar-header"><span>供应商池</span>
+        <div class="codex-plus-provider-sidebar-header"><span>共享供应商</span>
           <button type="button" class="codex-plus-action-button" data-codex-gateway-action="new" ${state.busy ? "disabled" : ""}>+ 新建</button></div>
         ${renderCodexPlusGatewayList()}
       </aside>
@@ -425,11 +434,11 @@
 
   async function codexPlusGatewayConfirmDiscard() {
     if (!codexPlusGatewayPageState.dirty) return true;
-    const answer = await codexPlusAsk({ title: "放弃修改？", message: "当前网关供应商有未保存的修改。", options: [{ value: "discard", label: "放弃修改" }] });
+    const answer = await codexPlusAsk({ title: "放弃修改？", message: "当前共享供应商有未保存的修改。", options: [{ value: "discard", label: "放弃修改" }] });
     return Boolean(answer);
   }
 
-  /** 网关页签的输入：只改草稿，不重绘（保持焦点）。 */
+  /** 本地服务页签的输入：只改草稿，不重绘（保持焦点）。 */
   function codexPlusGatewayHandleInput(event) {
     const target = event.target;
     const field = target?.dataset?.codexGatewayField;
@@ -442,7 +451,7 @@
     return true;
   }
 
-  /** 网关页签的点击；处理了返回 true。 */
+  /** 本地服务页签的点击；处理了返回 true。 */
   async function codexPlusGatewayHandleClick(target) {
     const state = codexPlusGatewayPageState;
     const move = target.closest("[data-codex-gateway-move]");
@@ -507,6 +516,11 @@
         break;
       }
       case "connect": await codexPlusGatewayConnect(); break;
+      case "use-selected": {
+        const model = entry?.models?.[0] || "";
+        if (entry && model) await codexPlusGatewayConnect(`${entry.id}/${model}`);
+        break;
+      }
       case "disconnect": await codexPlusGatewayOpenDisconnect(); break;
       case "disconnect-cancel":
         state.disconnect = null;

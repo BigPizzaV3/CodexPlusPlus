@@ -473,6 +473,19 @@ mod tests {
     use super::super::media::AttachmentKind;
     use super::*;
 
+    /// 「目录释放后应被清掉」要给它一点时间重试。租约锁是跟着「打开的文件」走的：测试并行跑时，
+    /// 别的线程正在启动子进程的那一瞬间，子进程带着租约描述符的副本，这边关掉之后锁要等那份也关掉才空出来。
+    /// 清理遇到还锁着的目录按设计是跳过、等下次，所以这里重试到它真的清掉为止（最多约 2 秒）。
+    fn eventually(mut attempt: impl FnMut() -> bool) -> bool {
+        for _ in 0..400 {
+            if attempt() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        attempt()
+    }
+
     #[tokio::test]
     async fn atomic_save_and_record_keep_unique_complete_files_without_temporary_entries() {
         let root = tempfile::tempdir().unwrap();
@@ -571,12 +584,21 @@ mod tests {
         for _ in 0..MAX_DIRECTORIES + 1 {
             drop(Inbox::create(root.path()).unwrap());
         }
-        let owned = std::fs::read_dir(&inbox)
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().join(MARKER).is_file())
-            .count();
-        assert_eq!(owned, MAX_DIRECTORIES);
+        let owned = || {
+            std::fs::read_dir(&inbox)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.path().join(MARKER).is_file())
+                .count()
+        };
+        // 某次清理碰上还锁着的旧目录会跳过它，多留一个；下一次新建时补清，数量回到上限。
+        assert!(eventually(|| {
+            if owned() != MAX_DIRECTORIES {
+                drop(Inbox::create(root.path()).unwrap());
+            }
+            owned() == MAX_DIRECTORIES
+        }));
+        assert_eq!(owned(), MAX_DIRECTORIES);
         assert_eq!(std::fs::read(foreign.join("keep.txt")).unwrap(), b"keep");
         assert_eq!(std::fs::read(unmarked.join("keep.txt")).unwrap(), b"keep");
     }
@@ -637,13 +659,15 @@ mod tests {
             .unwrap()
             .set_times(std::fs::FileTimes::new().set_modified(original_time))
             .unwrap();
-        cleanup(
-            &inbox,
-            modified + RETENTION + Duration::from_secs(1),
-            MAX_DIRECTORIES,
-        )
-        .unwrap();
-        assert!(!path.exists());
+        assert!(eventually(|| {
+            cleanup(
+                &inbox,
+                modified + RETENTION + Duration::from_secs(1),
+                MAX_DIRECTORIES,
+            )
+            .unwrap();
+            !path.exists()
+        }));
         assert_eq!(
             std::fs::read(root.path().join("keep.txt")).unwrap(),
             b"foreign"
@@ -692,8 +716,10 @@ mod tests {
         cleanup(&parent, SystemTime::now() + RETENTION * 2, 0).unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), b"in use");
         drop(active);
-        cleanup(&parent, SystemTime::now() + RETENTION * 2, 0).unwrap();
-        assert!(!path.exists());
+        assert!(eventually(|| {
+            cleanup(&parent, SystemTime::now() + RETENTION * 2, 0).unwrap();
+            !path.exists()
+        }));
     }
 
     #[cfg(windows)]

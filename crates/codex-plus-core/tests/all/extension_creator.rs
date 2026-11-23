@@ -190,6 +190,19 @@ async fn write_read_and_disable_round_trip_without_codex() {
     let (error, _) = call(&creator, "codexpp_extension_set_enabled", json!({"id": "missing", "enabled": true})).await;
     assert!(error);
 
+    // 别的对话没有关联这个拓展：不能替用户把它重新打开（也不能停掉别人的拓展）。
+    let (error, refused) = call_in_thread(&creator, "another-thread", "codexpp_extension_set_enabled", json!({"id": "pomodoro", "enabled": true})).await;
+    assert!(error, "{refused}");
+    assert!(refused.to_string().contains("本对话没有关联拓展 pomodoro"), "{refused}");
+    assert_eq!(creator.manager.load_config().scripts.get("user:pomodoro"), Some(&false), "启停没有被改动");
+    // 用户明确要求后先选中它，再启停。
+    let (error, _) = call_in_thread(&creator, "another-thread", "codexpp_extension_read", json!({"id": "pomodoro", "select": true})).await;
+    assert!(!error);
+    let (error, enabled) = call_in_thread(&creator, "another-thread", "codexpp_extension_set_enabled", json!({"id": "pomodoro", "enabled": true})).await;
+    assert!(!error, "{enabled}");
+    let (error, _) = call(&creator, "codexpp_extension_set_enabled", json!({"id": "pomodoro", "enabled": false})).await;
+    assert!(!error, "原来的对话仍然关联着它");
+
     let (_, listed) = call(&creator, "codexpp_extension_list", json!({})).await;
     assert_eq!(listed["codexConnected"], false);
     assert_eq!(listed["items"][0]["key"], "user:pomodoro");

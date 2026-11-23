@@ -313,7 +313,7 @@ describe("gateway reconnect on the next turn", () => {
     env.state.provider = "openai";
     await env.run();
     await env.send("turn/start", { threadId: "thread" });
-    assert.match(env.notices[0], /供应商与网关不一致.*旧连接/);
+    assert.match(env.notices[0], /供应商与本地服务不一致.*旧连接/);
     assert.ok(env.diagnostics.includes("gateway_recovery_provider_mismatch"));
     assert.equal(env.calls.filter((call) => call.method === "turn/start").length, 1);
     assert.equal(env.calls.some((call) => call.method === "thread/unsubscribe"), false);
@@ -349,7 +349,7 @@ describe("gateway reconnect on the next turn", () => {
     await assert.rejects(env.run(), /resume failed/);
     env.state.failResume = false;
     env.state.changeDuringResume = true;
-    await assert.rejects(env.run(), /网关连接已变化/);
+    await assert.rejects(env.run(), /本地服务连接已变化/);
     env.state.changeDuringResume = false;
     await env.run();
     assert.equal(env.calls.filter((call) => call.method === "thread/resume").length, 3);

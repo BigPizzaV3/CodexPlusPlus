@@ -1,4 +1,4 @@
-/** 本地网关：让 Claude Code、Grok 经 Codex++ 使用统一的供应商池，支持多 Key 轮换与模型组。 */
+/** 本地网关：让 Claude Code、Grok 经 Codex++ 使用统一的共享供应商，支持多 Key 轮换与模型组。 */
 import { memo, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
@@ -50,10 +50,8 @@ import { Avatar, GatewayLoadError, MemberStatusLabel, QuotaBadge, SectionLabel, 
 import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState, useGatewayViewState } from "./gateway-store";
 import { useModalShell } from "./use-modal-shell";
-import { visibleAgents } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import "./GatewayPage.css";
-import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
+import { CxBadge, CxCard, CxLoading, CxRow, CxSection } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
 import { AgentGlyph } from "./hub-shared";
 
@@ -138,7 +136,7 @@ export function GatewayPage({
         {payload && !payload.helperRunning && payload.agents.some((agent) => agent.enabled) ? (
           <p className="gw-alert" role="alert">
             <AlertTriangle className="h-4 w-4" />
-            <span>{t("Codex++ 网关当前没有运行，走网关的 Agent 会连不上。请重新保存一次绑定或重启 Codex++。")}</span>
+            <span>{t("Codex++ 本地服务当前没有运行，走本地服务的 Agent 会连不上。请重新保存一次绑定或重启 Codex++。")}</span>
           </p>
         ) : null}
         {loadFailed && error ? <GatewayLoadError error={error} /> : null}
@@ -214,7 +212,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
           <Search aria-hidden="true" />
           <input aria-label={t("搜索组或模型")} onChange={(event) => setQuery(event.target.value)} placeholder={t("搜索组或模型")} value={query} />
         </label>
-        <div className="gw-models-auto" title={t("多家都有的模型自动成一个组：Agent 选不带供应商的模型名时走它。关掉后只列出你建的组，不带供应商的模型名按供应商池的顺序依次尝试。")}>
+        <div className="gw-models-auto" title={t("多家都有的模型自动成一个组：Agent 选不带供应商的模型名时走它。关掉后只列出你建的组，不带供应商的模型名按共享供应商的顺序依次尝试。")}>
           <span>{t("自动建组")}</span>
           <Switch
             disabled={busy !== null || !payload}
@@ -229,7 +227,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
         </button>
       </div>
 
-      {!payload ? <div className="gw-card gw-empty">{t("正在读取…")}</div> : null}
+      {!payload ? <CxCard><CxLoading /></CxCard> : null}
 
       {payload ? (
         <SectionLabel>
@@ -268,7 +266,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
       {payload && !autoOn ? (
         <div className="gw-card gw-empty">
           <strong>{t("自动建组已关闭")}</strong>
-          <span>{t("打开后，多家都有的模型会自动成一个组；不带供应商的模型名现在按供应商池的顺序依次尝试。")}</span>
+          <span>{t("打开后，多家都有的模型会自动成一个组；不带供应商的模型名现在按共享供应商的顺序依次尝试。")}</span>
         </div>
       ) : null}
       {payload && autoOn && autos.length === 0 ? (
@@ -320,7 +318,7 @@ type MemberView = {
   key: string;
 };
 
-/** 一次算好所有组用到的模型：每个成员只扫一遍供应商池、健康和活动数据。 */
+/** 一次算好所有组用到的模型：每个成员只扫一遍共享供应商、健康和活动数据。 */
 function memberViews(payload: GatewayPayload | null, groups: GatewayGroupEntry[]): Map<string, MemberView> {
   const views = new Map<string, MemberView>();
   const add = (model: string) => {
@@ -509,7 +507,7 @@ function imageInputOptions(payload: GatewayPayload | null, members: GroupMember[
     ...listed.map((member) => option(member.model, t("组内成员"))),
   ];
   if (current && !listed.some((member) => member.model === current)) options.push(option(current, t("不在组里")));
-  options.push({ value: IMAGE_INPUT_PICK, label: t("选择其他模型…"), hint: t("从供应商池里选一个收图的模型") });
+  options.push({ value: IMAGE_INPUT_PICK, label: t("选择其他模型…"), hint: t("从共享供应商里选一个收图的模型") });
   return options;
 }
 
@@ -619,7 +617,7 @@ function BatchMemberPicker({ payload, members, onAdd }: { payload: GatewayPayloa
         role="listbox"
       >
         {visible.length === 0 ? (
-          <div className="gw-empty">{rows.length ? t("没有匹配的模型") : t("供应商池是空的，先在「供应商池」里添加供应商。")}</div>
+          <div className="gw-empty">{rows.length ? t("没有匹配的模型") : t("共享供应商是空的，先在「共享供应商」里添加供应商。")}</div>
         ) : null}
         {visible.map((row) => {
           const added = row.candidates.filter((candidate) => candidate.added).length;
@@ -944,11 +942,11 @@ function GatewayPortRow({ notify }: { notify: Notify }) {
     try {
       const result = await invoke<GatewayPortResult>("save_gateway_port", { port: parsed });
       if (result.status !== "ok") {
-        await notify(t("保存网关端口失败"), result.message, "failed");
+        await notify(t("保存本地服务端口失败"), result.message, "failed");
         return;
       }
       accept(result);
-      await notify(t("网关端口已保存"), t("完全退出 Codex++（含托盘）后重新打开生效；走网关的 Agent 会在启动时改到新端口，没跟上的在「Agent 接入」里重新接入一次。"), "ok");
+      await notify(t("本地服务端口已保存"), t("完全退出 Codex++（含托盘）后重新打开生效；走本地服务的 Agent 会在启动时改到新端口，没跟上的在「Agent 接入」里重新接入一次。"), "ok");
     } catch (error) {
       await notify(t("调用失败"), String(error), "failed");
     } finally {
@@ -966,12 +964,12 @@ function GatewayPortRow({ notify }: { notify: Notify }) {
     <CxRow
       badges={info.restartRequired ? <CxBadge tone="warn">{t("待重启")}</CxBadge> : null}
       detail={detail}
-      title={t("网关端口")}
+      title={t("本地服务端口")}
       tooltip={t("Agent 配置里写的是这个端口。保存时会检测端口是否被占用；旧端口会被记住，旧配置里的地址仍认作 Codex++ 的地址。")}
     >
       <Input
         aria-invalid={invalid || undefined}
-        aria-label={t("网关端口")}
+        aria-label={t("本地服务端口")}
         className="cx-set-input-port"
         disabled={envLocked || saving}
         inputMode="numeric"
@@ -993,7 +991,6 @@ function GatewayPortRow({ notify }: { notify: Notify }) {
 }
 
 function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload | null; busy: string | null; run: Run; notify: Notify }) {
-  const agentFocus = useAgentFocus();
   // 刚复制的那一行，图标短暂换成对勾。
   const [copied, setCopied] = useState<string | null>(null);
   // 刚换过 token 的 Agent：那一行给个「复制新 token」，方便贴到手动填过 token 的地方。
@@ -1006,7 +1003,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
   const responsesWebsocket = payload.gateway.responsesWebsocket === true;
   const websocketHint = t("Codex 与 Codex++ 之间改用 WebSocket 长连接，延迟更低。只建议上游是 ChatGPT 官方账号或 OpenAI API 时打开；第三方中转常不保留连接内的上下文，会导致工具调用后丢上下文。关着时走 HTTP，与 2.6 一致。新连接生效。");
   const subagentFollow = payload.gateway.subagentModelFollowRequest === true;
-  const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存网关选项"), true);
+  const saveOptions = (keyRotation: string, restore: boolean) => void run("options", "save_gateway_options", { keyRotation, restoreOnExit: restore }, t("保存本地服务选项"), true);
   const listen = `http://127.0.0.1:${payload.port}`;
   const copy = (key: string, value: string) => {
     void navigator.clipboard?.writeText(value).then(() => {
@@ -1030,13 +1027,13 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
   };
   const keyRotationHint = mode === "roundRobin" ? t("每个请求换下一个 Key，用量更平均，但上游缓存命中会变低。") : t("同一会话固定一个 Key，出错才换；保住上游的提示词缓存。");
   const restoreHint = restoreOnExit
-    ? t("网关只在 Codex++ 运行时可用。退出时把 Agent 切回直连，下次启动再自动指回网关。")
-    : t("Agent 一直指着网关：退出 Codex++ 后连不上，再打开就恢复。安装更新前照样会切回直连。");
+    ? t("本地服务只在 Codex++ 运行时可用。退出时把 Agent 切回直连，下次启动再自动指回本地服务。")
+    : t("Agent 一直指着本地服务：退出 Codex++ 后连不上，再打开就恢复。安装更新前照样会切回直连。");
   const suffixHint = modelSuffix
     ? t("多家都有的模型，在 Codex 的模型列表和输入框里显示成「GPT-6 Astra（ChatGPT Pro）」，自动组显示「（自动）」。")
     : t("只显示模型名「GPT-6 Astra」，看不出是哪一家；Codex 选择器里仍按供应商分组。");
   const discoveryHint = localDiscovery
-    ? t("读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进供应商池。")
+    ? t("读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进共享供应商。")
     : t("关着时不读其它客户端的登录文件。打开后，本机已登录的 Kiro、Cursor 等账号会在供应商页提示导入。");
   // 参照 Cursor 设置页：地址一节、选项一节；每行标题 + 一行说明，右侧控件。地址可复制，token 更换收进三点菜单。
   return (
@@ -1052,7 +1049,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
           >
             {copyButton("listen", listen)}
           </CxRow>
-          {visibleAgents(agentFocus, glanceAgents(payload.agents)).map((agent) => {
+          {glanceAgents(payload.agents).map((agent) => {
             const binding = payload.gateway.bindings[agent.agent];
             return (
               <CxRow
@@ -1083,7 +1080,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
         </CxCard>
       </CxSection>
 
-      <CxSection title={t("网关选项")}>
+      <CxSection title={t("本地服务选项")}>
         <CxCard>
           <GatewayPortRow notify={notify} />
           <CxRow detail={keyRotationHint} title={t("多 Key 轮换")}>
@@ -1108,7 +1105,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
               pending={busy !== null}
               label={t("模型名后带供应商")}
               on={modelSuffix}
-              onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存网关选项"), true)}
+              onToggle={() => void run("model-suffix", "save_gateway_model_suffix", { enabled: !modelSuffix }, t("保存本地服务选项"), true)}
             />
           </CxRow>
           <CxRow detail={websocketHint} title={t("Codex 用 WebSocket 连接")}>
@@ -1116,7 +1113,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
               pending={busy !== null}
               label={t("Codex 用 WebSocket 连接")}
               on={responsesWebsocket}
-              onToggle={() => void run("responses-websocket", "save_gateway_responses_websocket", { enabled: !responsesWebsocket }, t("保存网关选项"), true)}
+              onToggle={() => void run("responses-websocket", "save_gateway_responses_websocket", { enabled: !responsesWebsocket }, t("保存本地服务选项"), true)}
             />
           </CxRow>
           <CxRow detail={discoveryHint} title={t("发现本机已登录的订阅账号")}>
@@ -1124,7 +1121,7 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
               pending={busy !== null}
               label={t("发现本机已登录的订阅账号")}
               on={localDiscovery}
-              onToggle={() => void run("local-login-discovery", "save_gateway_local_login_discovery", { enabled: !localDiscovery }, t("保存网关选项"), true)}
+              onToggle={() => void run("local-login-discovery", "save_gateway_local_login_discovery", { enabled: !localDiscovery }, t("保存本地服务选项"), true)}
             />
           </CxRow>
           <CxRow

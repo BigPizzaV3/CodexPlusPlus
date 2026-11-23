@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { BadgeCheck, Download, FolderOpen, Loader2, PackagePlus, RefreshCw, Star, Trash2 } from "lucide-react";
 import { AppSelect } from "./AppSelect";
 import { appConfirm } from "./app-dialog";
-import { CxBadge, CxCard, CxEmpty, CxFilters, CxSection } from "./cx-layout";
+import { CxBadge, CxCard, CxEmpty, CxFilters, CxLoading, CxSection } from "./cx-layout";
 import { ExtensionCard, githubAvatar } from "./ExtensionCard";
 import { Switch } from "./gateway-ui";
 import { MenuItem } from "./ManagementPages";
@@ -239,7 +239,7 @@ export function ClaudePageExtensions({ search, delivery, pane, onPaneChange, cod
       />
       {pane === "code" ? null : pane === "installed" ? (
         installed === null ? (
-          <CxCard><CxEmpty title={t("正在读取页面扩展…")} /></CxCard>
+          <CxCard><CxLoading label={t("正在读取页面扩展…")} /></CxCard>
         ) : shownInstalled.length ? (
           <CxSection aside={<span className="claude-l10n-section-note">{applyHint}</span>} count={shownInstalled.length} title={t("已安装")}>
             <CxCard>{shownInstalled.map(installedRow)}</CxCard>
@@ -258,7 +258,7 @@ export function ClaudePageExtensions({ search, delivery, pane, onPaneChange, cod
           </CxEmpty>
         </CxCard>
       ) : !market ? (
-        <CxCard><CxEmpty title={t("正在读取扩展市场…")} /></CxCard>
+        <CxCard><CxLoading label={t("正在读取扩展市场…")} /></CxCard>
       ) : shownMarket.length ? (
         <>
           {marketInstalled.length ? (

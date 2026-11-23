@@ -966,7 +966,3 @@ export function isTauri(): boolean {
 export function convertFileSrc(path: string): string {
   return path;
 }
-
-export function isTauri(): boolean {
-  return false;
-}

@@ -59,8 +59,8 @@ test("预览授权绑定Agent与非空token；文件状态和未知诊断证据�
   assert.equal(disconnectPreviewReady({ ...preview(), canDisconnect: false }, "opencode"), false);
   assert.equal(disconnectPreviewReady(null, "opencode"), false);
   assert.deepEqual(["modify", "remove", "create"].map((kind) => disconnectFileLabel(kind as "modify")), ["将修改", "将移除", "将创建"]);
-  assert.equal(diagnosticEvidenceLabel("endpointMatched"), "与网关配置一致");
-  assert.equal(diagnosticEvidenceLabel("endpointPortMismatch"), "端口与网关配置不符");
+  assert.equal(diagnosticEvidenceLabel("endpointMatched"), "与本地服务配置一致");
+  assert.equal(diagnosticEvidenceLabel("endpointPortMismatch"), "端口与本地服务配置不符");
   assert.equal(diagnosticEvidenceLabel("unrecognized_evidence"), "诊断信息待确认");
   assert.equal(diagnosticErrorLabel("authInvalid"), "认证已失效");
   assert.equal(diagnosticErrorLabel("unrecognized_error"), "错误原因待确认");
@@ -343,7 +343,7 @@ test("托盘在模型组停用时显示回退模型，重新启用后恢复原�
   let tree = tray.render();
   let picker = elements(tree).find((element) => element.props.className === "gw-picker-button tp-agent-picker")!;
   assert.match(text(picker), /GPT/);
-  assert.equal(picker.props.title, "原模型组「Daily」已停用，网关默认回退为 GPT");
+  assert.equal(picker.props.title, "原模型组「Daily」已停用，本地服务默认回退为 GPT");
   assert.equal(elements(tree).find((element) => element.type === "ModelList")!.props.selectedModel, "gpt");
 
   group.disabled = false;
@@ -423,10 +423,10 @@ test("展开详情才展示配置证据；无证据不声称配置已验证，�
   }];
   viewed.diagnostics!.recentError = { kind: "auth_invalid", status: 401, atMs: 1 };
   tree = exports.AgentDiagnostics({ agent: viewed, helperRunning: true });
-  assert.match(text(tree), /配置已指向网关；尚未观察到请求/);
+  assert.match(text(tree), /配置已指向本地服务；尚未观察到请求/);
   assert.match(text(tree), /请求 0 · 失败 0 · 进行中 0/);
   assert.match(text(tree), /当前地址.*127.0.0.1:57321/);
-  assert.match(text(tree), /opencode.jsoncprovider与网关配置一致/);
+  assert.match(text(tree), /opencode.jsoncprovider与本地服务配置一致/);
   assert.match(text(tree), /认证已失效 · HTTP 401/);
   assert.doesNotMatch(text(tree), /endpoint_match|auth_invalid/);
 });

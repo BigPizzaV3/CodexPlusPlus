@@ -9,7 +9,7 @@
 //!                                  └─► Subscription::chat（各家协议）──► Chat SSE
 //! ```
 //!
-//! 供应商池里它就是一个普通的 Chat Completions 供应商（`auth_contents` 里记着订阅类型和凭据），
+//! 共享供应商里它就是一个普通的 Chat Completions 供应商（`auth_contents` 里记着订阅类型和凭据），
 //! 路由、多账号轮换、冷却、用量统计都照旧；请求前 [`prepare`] 把地址指到本地适配入口。
 //!
 //! 新增订阅：实现 [`Subscription`]，登记到 `catalog.rs` 的 `ITEMS`。

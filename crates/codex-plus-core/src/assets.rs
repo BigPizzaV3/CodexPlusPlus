@@ -679,8 +679,8 @@ fn renderer_after_document_ready(script: &str) -> String {
 
 /// 注入脚本里的皮肤运行时：等文档就绪再安装（#2680）。
 ///
-/// 注入脚本同时登记为新文档脚本；只要启动器发过 Page.enable（开了原生 Fast / 输入预测），
-/// Page.reload、启动壳自救重载等每次新文档都会在根节点建立前执行它。这时
+/// 注入脚本同时登记为新文档脚本，桥接连接总是先发 Page.enable，
+/// 所以 Page.reload、启动壳自救重载等每次新文档都会在根节点建立前执行它。这时
 /// `document.documentElement` 为空，皮肤 API 引导里的 `root.style.setProperty` 和
 /// `observer.observe(document.documentElement)` 直接抛错，整个皮肤运行时没装上，
 /// 页面里只剩 Codex++ 的其它增强，看起来就是「重启 Codex 后皮肤不生效」。
@@ -716,12 +716,10 @@ pub fn injection_script_with_settings(helper_port: u16, settings: &BackendSettin
     let force_chinese_locale = force_chinese_locale_config(settings);
     let statsig_overrides = statsig_overrides_config(settings);
     let hide_official_usage_alert = hide_official_usage_alert_config(settings);
-    // 原生模块补丁的新文档脚本需要 Page.enable；DOM 增强必须等正常文档就绪，不能访问空的根节点。
-    let renderer_runtime = if crate::native_predictions::native_modules_requested(settings) {
-        renderer_after_document_ready(renderer_script())
-    } else {
-        renderer_script().to_string()
-    };
+    // 注入脚本同时登记为新文档脚本，桥接连接又总是先发 Page.enable（见 bridge::install_bridge），
+    // 所以页面每次刷新它都会在根节点建立之前执行一次：DOM 增强必须等文档就绪，不能访问空的根节点。
+    // 实时注入时 body 已在，包这一层等于立即执行。以前只在开了原生 Fast / 输入预测时才包（那时才发 Page.enable）。
+    let renderer_runtime = renderer_after_document_ready(renderer_script());
     let stepwise_runtime =
         if settings.codex_app_stepwise_enabled || settings.codex_app_answer_outline_enabled {
             stepwise_script()
@@ -862,6 +860,22 @@ mod tests {
         "#, serde_json::to_string(&wrapped).unwrap());
         let output = std::process::Command::new("node").arg("-e").arg(test).output().unwrap();
         assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    }
+
+    /// 桥接连接总是先发 Page.enable，注入脚本每次页面刷新都会在根节点建立之前执行：
+    /// 不管开没开原生 Fast / 输入预测，页面脚本都得包在「等文档就绪」里，且只出现这一份。
+    /// 没包的话它在空的根节点上直接抛错（实测是 98-avatar-overlay-layout 的 root.toggleAttribute），
+    /// 刷新后 window.codexPlus 就没了，要等看门狗重新注入。
+    #[test]
+    fn renderer_in_injection_always_waits_for_document_ready() {
+        let wrapped = renderer_after_document_ready(renderer_script());
+        for native_fast in [false, true] {
+            let mut settings = BackendSettings::default();
+            settings.codex_app_native_fast_unlock = native_fast;
+            let script = injection_script_with_settings(57321, &settings);
+            assert!(script.contains(&wrapped), "native_fast={native_fast}");
+            assert_eq!(script.matches(renderer_script()).count(), 1, "native_fast={native_fast}");
+        }
     }
 
     // 回归 #2680：注入脚本作为新文档脚本执行时根节点还不存在，皮肤运行时必须等文档就绪。

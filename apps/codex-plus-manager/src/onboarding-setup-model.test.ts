@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { hasCodexEnhancements, serializeSetupState, setupDirectState, shouldShowSetup, type SetupRelayProfile, type SetupRelaySettings } from "./onboarding-setup-model.ts";
+import { hasCodexEnhancements, serializeSetupState, setupDirectState, shouldAutoOpenSetup, shouldShowSetup, type SetupRelayProfile, type SetupRelaySettings } from "./onboarding-setup-model.ts";
 
 test("仅启用拓展不能绕过增强总开关，独立额度解锁可单独使用", () => {
   const config = {
@@ -18,7 +18,25 @@ test("仅启用拓展不能绕过增强总开关，独立额度解锁可单独�
   assert.equal(hasCodexEnhancements(config), true);
 });
 
-test("入门清单只自动面向新用户，完成与跳过都独立记忆，旧导览用户不强制重看", () => {
+test("向导只在从没出现过时自动打开：出现过一次之后只留进度卡，答过旧版使用模式问卷的老用户不再弹", () => {
+  assert.equal(shouldAutoOpenSetup(null, null, null), true);
+  assert.equal(shouldAutoOpenSetup("broken", null, null), true);
+  // 出现过（later）：进度卡还在，但不再自动打开。
+  const later = serializeSetupState("later");
+  assert.deepEqual(JSON.parse(later), { version: 1, state: "later" });
+  assert.equal(shouldShowSetup(later, null), true);
+  assert.equal(shouldAutoOpenSetup(later, null, null), false);
+  // 走完、关掉、看过旧导览：进度卡和向导都不出。
+  for (const state of ["completed", "dismissed"] as const) assert.equal(shouldAutoOpenSetup(serializeSetupState(state), null, null), false);
+  assert.equal(shouldAutoOpenSetup(null, "1", null), false);
+  // 旧版问卷的本地记录还在：老用户，进度卡照旧，向导不自动弹。
+  const legacy = '{"version":1,"mode":"codex"}';
+  assert.equal(shouldShowSetup(null, null), true);
+  assert.equal(shouldAutoOpenSetup(null, null, legacy), false);
+  assert.equal(shouldAutoOpenSetup(null, null, "  "), true);
+});
+
+test("进度卡只自动面向新用户，完成与跳过都独立记忆，旧导览用户不强制重看", () => {
   assert.equal(shouldShowSetup(null, null), true);
   assert.equal(shouldShowSetup("broken", null), true);
   assert.equal(shouldShowSetup("null", null), true);

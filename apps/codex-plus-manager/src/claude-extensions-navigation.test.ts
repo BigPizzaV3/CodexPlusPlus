@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { agentVisible, providersHidden, singleAgent } from "./agent-focus-model.ts";
 import { pageVisibleForTool } from "./page-groups.ts";
 import {
   extensionEnabledForHost,
@@ -43,8 +42,8 @@ function functionSource(name: string) {
 
 const navigationNames = [
   "routes", "routeTool", "globalNavigationRoutes", "gatewayNavigationRoutes", "managementNavigationRoutes",
-  "navAliasRoute", "multiAgentRoutes", "providerRoutes", "routeVisible", "visibleRoutes",
-  "settingsModeRoutes", "customizeRoutes",
+  "navAliasRoute",
+  "settingsModeRoutes", "localServiceRoutes", "customizeRoutes",
 ];
 const navigationSource = navigationNames.map((name) => `const ${declaration(name).getText(app)};`).join("\n");
 const icons = [...text.matchAll(/icon: (\w+)/g)].map((match) => match[1]);
@@ -73,11 +72,14 @@ function harness() {
     t: (value: string) => value,
     tf: (value: string, args: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
     agentName: (value: string) => value,
-    singleAgent, providersHidden, pageVisibleForTool,
+    pageVisibleForTool,
     useGatewayPayload: () => null,
     useClaudeEnhance: () => null,
     useState: () => [[], () => {}],
     useEffect: () => {},
+    // 选中色块只在真实 DOM 里起作用，这里不渲染。
+    useRef: () => ({ current: null }),
+    useSideIndicator: () => {},
     loadCachedGatewayInUse: () => false,
     storeCachedGatewayInUse: () => {},
     getLanguage: () => "zh",
@@ -93,9 +95,9 @@ function harness() {
     context,
     routes: context.routes as Array<{ id: string; tool?: string; tools?: string[] }>,
     navigations,
-    sidebar: (activeTool: string, focus: "all" | "enhance" | "codex" = "all") => context.sidebar({
+    sidebar: (activeTool: string) => context.sidebar({
       tools: [{ id: activeTool, name: activeTool, switchable: true, relayCount: 0 }],
-      activeTool, focus, soloAgent: singleAgent(focus), route: "overview", theme: "light", version: "test",
+      activeTool, route: "overview", theme: "light", version: "test",
       codexRun: { running: true, busy: false, unavailableReason: null, onStart: () => {}, onStop: () => {} },
       claudeRun: { running: false, busy: false, unavailableReason: null, onStart: () => {}, onStop: () => {} },
       onNavigate: (route: string) => navigations.push(route),
@@ -125,9 +127,6 @@ test("万物皆拓展是独立入口，不随侧栏当前 Agent 显隐；宿主�
     entry.props.onClick();
     assert.deepEqual(h.navigations, ["userScripts"]);
   }
-  const h = harness();
-  assert.ok(extensions(h.sidebar("claude", "enhance")), "只用增强功能时也保留万物皆拓展");
-  assert.equal(agentVisible("codex", "claude"), false, "原来的只管理 Codex 模式仍不显示 Claude");
 });
 
 test("只有显式 tools 限定的入口按宿主过滤，其余全局管理保持原行为", () => {
@@ -198,7 +197,7 @@ function extensionHarness() {
     useMemo: (compute: () => unknown) => compute(),
     // 打开页面时市场还没读过就自动读一次：记下调用，渲染时不执行副作用。
     useEffect: () => undefined,
-    agentVisible, extensionEnabledForHost, extensionHostForTool, extensionsForHost, extensionStateForHost,
+    extensionEnabledForHost, extensionHostForTool, extensionsForHost, extensionStateForHost,
     defaultMarketSort, parseMarketTime, sortMarketScripts,
     formatMarketUpdatedAt: (value: string) => value,
   });
@@ -259,7 +258,7 @@ function extensionScreenProps(h: ReturnType<typeof extensionHarness>, host: Exte
 
 test("页内宿主切换绑定共享路由并传递当前宿主", () => {
   // 宿主是页面自己的状态：切宿主不调 switchTool，不改侧栏当前的 Agent。
-  assert.match(text, /<UserScriptsScreen host=\{extensionHost\} focus=\{agentFocus\} onHostChange=\{setExtensionHost\}/);
+  assert.match(text, /<UserScriptsScreen host=\{extensionHost\} onHostChange=\{setExtensionHost\}/);
   assert.doesNotMatch(text, /switchTool\(host, "userScripts"\)/);
   for (const host of ["codex", "claude"] as const) {
     const h = extensionHarness();
@@ -278,29 +277,6 @@ test("页内宿主切换绑定共享路由并传递当前宿主", () => {
     assert.equal(selected(claude), host === "claude");
     (host === "codex" ? claude : codex).props.onClick();
     assert.deepEqual(h.calls, [["host", host === "codex" ? "claude" : "codex"]]);
-  }
-});
-
-test("拓展页宿主切换遵守只管理 Codex 模式（只有一个宿主时不显示切换），其余模式保留双宿主", () => {
-  const invocation = text.split("\n").find((line) => line.includes("<UserScriptsScreen"));
-  assert.ok(invocation);
-  assert.match(invocation, /\bfocus=\{agentFocus\}/);
-  for (const focus of ["codex", "enhance", "all", null] as const) {
-    const h = extensionHarness();
-    const props = { ...extensionScreenProps(h, "codex"), focus };
-    const hero = elements(h.render("UserScriptsScreen", props)).find((node) => node.type === h.context.ExtensionsHero);
-    assert.ok(hero);
-    assert.equal(hero.props.focus, focus);
-    const controls = elements(h.render("ExtensionsHero", hero.props)).filter((node) => node.type === "button");
-    assert.equal(controls.some((node) => elementText(node).trim() === "Codex"), focus !== "codex");
-    const claude = controls.find((node) => elementText(node).trim() === "Claude");
-    assert.equal(Boolean(claude), focus !== "codex", String(focus));
-    if (claude) {
-      claude.props.onClick();
-      assert.deepEqual(h.calls, [["host", "claude"]]);
-    } else {
-      assert.deepEqual(h.calls, []);
-    }
   }
 });
 

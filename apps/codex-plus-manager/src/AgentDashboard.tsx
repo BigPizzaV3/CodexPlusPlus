@@ -11,8 +11,6 @@ import { t, tf } from "./i18n";
 import { agentAccessState, agentUsageStats, recentAgentRequests, type DashboardRequest } from "./agent-dashboard-model";
 import { AgentGlyph, useGatewayPayload } from "./hub-shared";
 import { formatElapsed, formatTokens, groupDisplayName, modelDisplay, relativeTime, shortPath, type AgentSessionView, type UsageSummary } from "./gateway-model";
-import { providersHidden } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { CxBadge, CxCard, CxEmpty, CxRow, CxSection, CxStats, CxStatusIcon } from "./cx-layout";
 
 export type DashboardAgent = "codex" | "claude" | "grok";
@@ -68,8 +66,6 @@ export function AgentDashboard({
   const [skillCount, setSkillCount] = useState<number | null>(null);
   const [launching, setLaunching] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  // 只用增强功能：供应商交给别的工具，不显示接入状态、调用统计和最近请求，只留会话、MCP、Skills。
-  const enhanceOnly = providersHidden(useAgentFocus());
 
   const onRequestLogsRef = useRef(onRequestLogs);
   onRequestLogsRef.current = onRequestLogs;
@@ -135,11 +131,11 @@ export function AgentDashboard({
     }
   };
 
-  const heroStatus: DashboardStatus = enhanceOnly ? { tone: "direct", text: t("供应商由其他工具管理") } : status ?? {
+  const heroStatus: DashboardStatus = status ?? {
     tone: access,
-    text: access === "gateway" ? (model ? tf("经 Codex++ 网关 · {0}", [model]) : t("经 Codex++ 网关"))
-      : access === "drift" ? (view?.drift?.by ? tf("配置被 {0} 改掉了，没有经过网关", [view.drift.by]) : t("配置被别的工具改掉了，没有经过网关"))
-        : access === "direct" ? t("未接入网关 · 用它自己的设置")
+    text: access === "gateway" ? (model ? tf("经 Codex++ 本地服务 · {0}", [model]) : t("经 Codex++ 本地服务"))
+      : access === "drift" ? (view?.drift?.by ? tf("配置被 {0} 改掉了，没有经过本地服务", [view.drift.by]) : t("配置被别的工具改掉了，没有经过本地服务"))
+        : access === "direct" ? t("未接入本地服务 · 用它自己的设置")
           : t("读取中…"),
   };
   const launchButton = (
@@ -149,11 +145,11 @@ export function AgentDashboard({
     </button>
   );
   // 每个 Agent 只有一个主操作：没接入 / 被改掉时是「接入网关」，接入后退成次要的「管理接入」。
-  const heroActions = enhanceOnly ? (agent === "codex" ? null : launchButton) : actions ?? (
+  const heroActions = actions ?? (
     <>
       {launchButton}
       <button className={access === "direct" || access === "drift" ? "cx-primary cx-dash-primary" : "cx-secondary"} onClick={() => onNavigate("gateway")} type="button">
-        {access === "gateway" ? t("管理接入") : access === "drift" ? t("重新接入") : t("接入网关")}
+        {access === "gateway" ? t("管理接入") : access === "drift" ? t("重新接入") : t("接入本地服务")}
       </button>
     </>
   );
@@ -180,15 +176,13 @@ export function AgentDashboard({
         </CxRow>
       </CxCard>
 
-      {enhanceOnly ? null : (
-        <CxStats items={statItems.map((item) => ({
-          label: item.label,
-          value: <span className="cx-dash-stat-value" data-mono={item.mono === false ? "false" : undefined} title={typeof item.value === "string" ? item.value : undefined}>{item.value}</span>,
-          tone: item.tone === "warn" ? "warn" : undefined,
-        }))} />
-      )}
+      <CxStats items={statItems.map((item) => ({
+        label: item.label,
+        value: <span className="cx-dash-stat-value" data-mono={item.mono === false ? "false" : undefined} title={typeof item.value === "string" ? item.value : undefined}>{item.value}</span>,
+        tone: item.tone === "warn" ? "warn" : undefined,
+      }))} />
 
-      <div className="cx-dash-lists" data-single={enhanceOnly ? "true" : undefined}>
+      <div className="cx-dash-lists">
         <CxSection
           aside={<button className="cx-dash-link" onClick={() => onOpenList("sessions", agent)} type="button">{t("全部")}<ArrowUpRight aria-hidden="true" size={13} /></button>}
           title={t("最近会话")}
@@ -207,8 +201,7 @@ export function AgentDashboard({
           </CxCard>
         </CxSection>
 
-        {enhanceOnly ? null : (
-          <CxSection
+        <CxSection
             aside={<button className="cx-dash-link" onClick={() => onOpenList("requestLog", agent)} type="button">{t("请求日志")}<ArrowUpRight aria-hidden="true" size={13} /></button>}
             title={t("最近请求")}
           >
@@ -217,8 +210,8 @@ export function AgentDashboard({
                 <CxEmpty
                   detail={agent === "codex"
                     ? t("直连且未开启协议转换时，请求不经过本地代理，这里不会有记录。")
-                    : view?.enabled ? t("在它里面发一条消息试试。") : t("接入网关后，这里显示它的每次请求走了哪家供应商。")}
-                  title={agent === "codex" ? t("最近没有经过本地代理的请求") : t("还没有经过网关的请求")}
+                    : view?.enabled ? t("在它里面发一条消息试试。") : t("接入本地服务后，这里显示它的每次请求走了哪家供应商。")}
+                  title={agent === "codex" ? t("最近没有经过本地代理的请求") : t("还没有经过本地服务的请求")}
                 />
               ) : requests.map((request) => {
                 const name = groupDisplayName(payload, request.model) ?? request.model;
@@ -232,8 +225,7 @@ export function AgentDashboard({
                 );
               })}
             </CxCard>
-          </CxSection>
-        )}
+        </CxSection>
       </div>
 
       <footer className="cx-dash-foot">

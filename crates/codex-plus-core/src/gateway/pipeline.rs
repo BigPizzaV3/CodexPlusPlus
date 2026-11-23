@@ -172,7 +172,7 @@ async fn open_candidates(
     }
     if plan.candidates.is_empty() {
         let Some(wait) = plan.cooling else {
-            anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
+            anyhow::bail!("本地服务没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
         };
         // 所有 Key 都在冷却（#2802）：最早的那个很快恢复时等它一等再试，不马上回本地 429——
         // Codex 自己的重试几秒内就用完了，冷却稍长一点就会整轮失败，而直连时这几秒后上游多半已恢复。
@@ -215,7 +215,7 @@ async fn open_candidates(
             ) {
                 crate::gateway::store::GatewayStore::default()
                     .load()
-                    .map_err(|error| anyhow::anyhow!("读取网关额度策略失败：{error}"))?
+                    .map_err(|error| anyhow::anyhow!("读取本地服务额度策略失败：{error}"))?
             } else {
                 crate::gateway::store::GatewaySettings::default()
             };
@@ -448,7 +448,7 @@ async fn open_candidates(
         queued += now.elapsed();
         pending = deferred;
     }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("网关的所有上游都失败了")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("本地服务的所有上游都失败了")))
 }
 
 /// 把一次失败记进 Key 池，返回要不要换下一个候选。`upstream_model` 是这次发给上游的模型：
@@ -592,7 +592,7 @@ impl LocalRateLimited {
         Self {
             message: format!(
                 "Codex++ 本地限速：{} 的 Key 都已达到你设置的请求上限，排队等待 {} 秒仍没有空出名额。\
-                 这是 Codex++ 网关自己的限速，不是上游返回的错误；可以在网关「供应商池」里调高这家的限速上限，或给它添加更多 Key。",
+                 这是 Codex++ 本地服务自己的限速，不是上游返回的错误；可以在网关「共享供应商」里调高这家的限速上限，或给它添加更多 Key。",
                 providers.join("、"),
                 waited.as_secs()
             ),
@@ -808,7 +808,7 @@ async fn attempt_pipeline(
     })
 }
 
-/// 只发一次、只发给这个候选（供应商池的「测试」用，见 [`crate::gateway::probe`]）。
+/// 只发一次、只发给这个候选（共享供应商的「测试」用，见 [`crate::gateway::probe`]）。
 ///
 /// 和候选循环里的一次尝试走同一条路（ChatGPT 后端的请求整理、协议转换、代理、认证都一样），
 /// 但调用方要自己先做 `prepare_relay` / OpenCode 的 prepare；这里不占限速名额、不记 Key 冷却 /
@@ -824,7 +824,7 @@ pub(crate) async fn attempt_once(
     if crate::official_login::member_uses_official_login_transport(&candidate.relay) {
         let gateway = crate::gateway::store::GatewayStore::default()
             .load()
-            .context("读取网关额度策略失败")?;
+            .context("读取本地服务额度策略失败")?;
         crate::gateway::quota::dispatch_decision(&gateway, &candidate.relay)?;
     }
     let upstream = match attempt_pipeline(settings, candidate, request).await {
@@ -838,7 +838,7 @@ pub(crate) async fn attempt_once(
     }
 }
 
-/// ChatGPT 后端的响应头带着这个账号的额度，顺手记下（模型组「额度优先」、供应商池显示用）。
+/// ChatGPT 后端的响应头带着这个账号的额度，顺手记下（模型组「额度优先」、共享供应商显示用）。
 fn observe_quota(relay: &crate::settings::RelayProfile, upstream: &GatewayUpstream) {
     let headers = match upstream {
         GatewayUpstream::Pipeline(response) => {

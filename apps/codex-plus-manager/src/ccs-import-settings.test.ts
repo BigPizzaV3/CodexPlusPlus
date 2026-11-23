@@ -3,11 +3,11 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
 import ts from "typescript";
-import { readAppSource } from "./app-source.test-helper.ts";
 
-const text = readAppSource();
-const app = ts.createSourceFile("App.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-const relay = app.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "RelayScreen");
+// cc-switch 数据库路径的保存逻辑跟着「从第三方导入」搬进了对话框（ThirdPartyImportDialog）。
+const text = await readFile(new URL("./ThirdPartyImportDialog.tsx", import.meta.url), "utf8");
+const app = ts.createSourceFile("ThirdPartyImportDialog.tsx", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+const relay = app.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === "ThirdPartyImportDialog");
 assert.ok(relay && ts.isFunctionDeclaration(relay) && relay.body);
 const saver = relay.body.statements.filter(ts.isVariableStatement).flatMap((node) => node.declarationList.declarations)
   .find((node) => node.name.getText(app) === "saveCcsDbPath");
@@ -22,7 +22,7 @@ test("CCS database path is persisted before refreshing the source, preserving pr
   let persisted: { ccsDbPath: string; relayProfiles: typeof providers } | undefined;
   const context = vm.createContext({
     ccsDbPathDraft: "  C:/custom/cc-switch.db  ",
-    normalized: { ccsDbPath: "", relayProfiles: providers },
+    form: { ccsDbPath: "", relayProfiles: providers },
     setCcsPathSaving: (saving: boolean) => events.push(`busy:${saving}`),
     actions: {
       saveSettingsValue: async (settings: typeof persisted) => { events.push("save"); persisted = settings; return settings; },
@@ -39,7 +39,7 @@ test("CCS database path is persisted before refreshing the source, preserving pr
 test("failed CCS path save does not refresh or import from the old source", async () => {
   const events: string[] = [];
   const context = vm.createContext({
-    ccsDbPathDraft: "", normalized: {},
+    ccsDbPathDraft: "", form: {},
     setCcsPathSaving: (saving: boolean) => events.push(`busy:${saving}`),
     actions: {
       saveSettingsValue: async () => { events.push("save"); return null; },

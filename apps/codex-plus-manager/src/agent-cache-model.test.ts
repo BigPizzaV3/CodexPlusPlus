@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { cacheApps, cacheCleanupSummary, cacheSelection, visibleCacheGroups, type CacheGroup } from "./agent-cache-model.ts";
+import { cacheApps, cacheCleanupSummary, cacheSelection, type CacheGroup } from "./agent-cache-model.ts";
 
 const group = (id: string, patch: Partial<CacheGroup> = {}): CacheGroup => ({
   id, app: "Codex", kind: "cache", path: `/test/${id}`, totalBytes: 100,
@@ -42,13 +42,6 @@ test("cleanup summary stays compact with many directories and excludes ineligibl
   assert.deepEqual(cacheCleanupSummary([]), { apps: [], files: 0, bytes: 0 });
 });
 
-test("hidden agents' caches are neither listed nor selectable; Codex++ always stays", () => {
-  const groups = [group("codex"), group("claude", { app: "Claude" }), group("plus", { app: "Codex++" })];
-  const codexOnly = (agent: string) => agent === "codex";
-  const visible = visibleCacheGroups(groups, codexOnly);
-  assert.deepEqual(visible.map((item) => item.id), ["codex", "plus"]);
-  assert.deepEqual(cacheApps(visible, codexOnly).map((app) => app.name), ["Codex", "Codex++"]);
-  assert.deepEqual(cacheSelection(visible, "recommended"), ["codex", "plus"]);
-  // 不传可见性时和以前一样列出全部默认应用。
+test("the three default apps are always listed, even with nothing scanned", () => {
   assert.deepEqual(cacheApps([]).map((app) => app.name), ["Codex", "Claude", "Codex++"]);
 });

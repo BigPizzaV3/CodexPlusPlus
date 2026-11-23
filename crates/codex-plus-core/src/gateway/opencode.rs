@@ -535,7 +535,7 @@ pub fn route_for(plan: Plan, model: &str) -> Result<Route, String> {
         Some(route) => route,
         None => guess_route(plan, model),
     };
-    route.ok_or_else(|| format!("OpenCode 的 {model} 只走 Google Gemini 接口，网关暂不支持"))
+    route.ok_or_else(|| format!("OpenCode 的 {model} 只走 Google Gemini 接口，本地服务暂不支持"))
 }
 
 /// 「从上游获取模型」：网关能用的模型（排除已下线、免费、Gemini）。读不到目录时返回 Err。

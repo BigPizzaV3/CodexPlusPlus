@@ -27,13 +27,11 @@ import {
 } from "./gateway-model";
 import type { RequestLogFocus } from "./UsageTabs";
 import { usePolling } from "./use-polling";
-import { singleAgent } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { Menu, MenuItem } from "./ManagementPages";
 import { errorText } from "@/lib/utils";
 import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
 import { getLanguage, t, tf } from "@/i18n";
-import { CxCard, CxEmpty, CxFilters, CxToolbar } from "./cx-layout";
+import { CxCard, CxEmpty, CxFilters, CxLoading, CxToolbar } from "./cx-layout";
 import type { RequestLogEntry, Status } from "./app-types";
 import { requestLogAgent } from "./app-shared";
 
@@ -357,9 +355,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
   const [filter, setFilter] = useState<"all" | "running" | "success" | "failed" | "retried">("all");
   const [sessionFilter, setSessionFilter] = useState("all");
   const [agentFilter, setAgentFilter] = useState<"all" | "codex" | "claude" | "grok">(initialAgent);
-  // 只管理 Codex 时固定看 Codex 的请求，不出现 Agent 筛选。
-  const codexOnly = singleAgent(useAgentFocus()) === "codex";
-  const agentScope = codexOnly ? "codex" : agentFilter;
+  const agentScope = agentFilter;
   // 初始过滤只用一次：之后从侧栏进来仍是「全部」。
   useEffect(() => { if (initialAgent !== "all" || Object.keys(initialFocus).length) onConsumeInitialAgent?.(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [autoRefresh, setAutoRefresh] = useState(true);
@@ -558,7 +554,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
         onChange={setFilter}
         trailing={
           <>
-            {codexOnly ? null : <AppSelect
+            <AppSelect
               ariaLabel={t("按 Agent 筛选")}
               className="request-log-select"
               menuWidth={160}
@@ -571,7 +567,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
               ] as AppSelectOption<typeof agentFilter>[]}
               size="sm"
               value={agentFilter}
-            />}
+            />
             <AppSelect
               ariaLabel={t("时间段")}
               className="request-log-select"
@@ -633,7 +629,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
 
       <CxCard className="request-log-card">
         {loading && entries.length === 0 ? (
-          <CxEmpty title={t("正在读取请求日志…")} />
+          <CxLoading label={t("正在读取请求日志…")} rows={6} />
         ) : filtered.length ? (
             <div className="request-log-table" role="table" aria-label={t("请求日志")}>
               <div className="request-log-row request-log-head" role="row">
@@ -666,7 +662,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
         ) : entries.length ? (
           <CxEmpty title={t("没有匹配当前筛选条件的请求。")} />
         ) : (
-          <CxEmpty title={t("还没有请求日志")} detail={t("在 Codex 或已接入网关的 Agent 里发起一次对话后即可看到。")} />
+          <CxEmpty title={t("还没有请求日志")} detail={t("在 Codex 或已接入本地服务的 Agent 里发起一次对话后即可看到。")} />
         )}
       </CxCard>
       {more || partial ? (

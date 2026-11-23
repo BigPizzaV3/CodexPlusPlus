@@ -401,7 +401,7 @@ describe("runtime context through host RPC", () => {
     const original = env.window.__codexPlusRpcFrameInterceptor.original;
     env.window.__codexPlusRpcFrameInterceptor.version = 19;
     env.api.install();
-    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 21);
+    assert.equal(env.window.__codexPlusRpcFrameInterceptor.version, 22);
     assert.equal(env.window.__codexPlusRpcFrameInterceptor.original, original);
   });
 

@@ -1,4 +1,4 @@
-/** 供应商按模型的思考等级：在供应商池的详情里编辑，存进这家的模型资料（格式同直连模式的「模型配置」）。
+/** 供应商按模型的思考等级：在共享供应商的详情里编辑，存进这家的模型资料（格式同直连模式的「模型配置」）。
  * 写进 Agent 的模型目录（Codex 选择器里的档位），转发时按「思考参数」决定怎么发给上游。 */
 import { useEffect, useId, useMemo, useState } from "react";
 import { createPortal } from "react-dom";

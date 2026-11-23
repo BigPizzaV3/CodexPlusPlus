@@ -60,7 +60,7 @@ test("速度：按供应商和小写模型名查", () => {
   assert.equal(speedOf(payload(), "openrouter", "x"), null);
 });
 
-test("模型组编辑器：五种模式、三种会话固定、通配符成员；供应商池显示额度并能刷新", () => {
+test("模型组编辑器：五种模式、三种会话固定、通配符成员；共享供应商显示额度并能刷新", () => {
   assert.equal(groupModeLabel("usage"), "额度优先");
   assert.equal(groupModeLabel("fast"), "速度优先");
   assert.equal(groupStickyLabel(undefined), "缓存期内固定", "旧数据没有 sticky 时按默认");

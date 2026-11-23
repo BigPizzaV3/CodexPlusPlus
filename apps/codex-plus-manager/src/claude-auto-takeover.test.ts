@@ -130,8 +130,10 @@ test("the row sits under the Claude row on home and in the full-mode launch sett
   assert.match(home, /tool\.id === "claude"\s*\? \[row, <ClaudeAutoTakeoverRow key="claude-auto-takeover" loginReminder [\s\S]*?showIcon \/>\]/, "首页 Claude 行后面要紧跟自动接管行");
   assert.match(home, /onEnableLogin=\{\(\) => actions\.setWatcherEnabled\(true\)\}/, "没开登录自启时首页要能直接打开");
   const screen = appDeclarationSource("ClaudeLocalizationScreen");
-  const launchSettings = screen.slice(screen.indexOf('title={t("启动设置")}'));
-  assert.match(launchSettings, /\{claudeLaunch === "full" \? <ClaudeAutoTakeoverRow \/> : null\}/, "Desktop 增强页只在完整功能模式下显示");
+  // 自动接管行在「账号与会话」页签里，跟着启动模式走。
+  const accountPanel = screen.slice(screen.indexOf('{...settingsPanel("account")}'), screen.indexOf('{...settingsPanel("environment")}'));
+  assert.ok(accountPanel.length > 0, "Desktop 增强页要有「账号与会话」页签");
+  assert.match(accountPanel, /\{claudeLaunch === "full" \? <ClaudeAutoTakeoverRow \/> : null\}/, "Desktop 增强页只在完整功能模式下显示");
   // 只在可见时轮询：组件挂着才起定时器，开关开着才轮询。
   assert.match(componentSource, /if \(!enabled\) return[\s\S]*?window\.setInterval\(load, POLL_MS\)/);
 });

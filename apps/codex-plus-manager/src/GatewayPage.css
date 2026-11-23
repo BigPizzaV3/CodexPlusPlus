@@ -2749,6 +2749,172 @@ body.gw-sorting * {
   margin-left: auto;
 }
 
+/* —— Codex「从第三方导入」（ThirdPartyImportDialog）：和上面的导入弹窗同一套条目，多了来源切换、路径一行和行内的「导入为」 —— */
+.gw-portal .tpi-modal {
+  width: min(560px, 100%);
+}
+
+/* 弹窗高度固定在内容区滚动：来源里几十个供应商时，底部的导入按钮始终看得到（#1906）。 */
+.gw-portal .tpi-modal .gw-modal-body {
+  min-height: 0;
+  align-content: start;
+}
+
+.gw-portal .tpi-sources {
+  justify-self: start;
+}
+
+.gw-portal .tpi-sources button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.gw-portal .tpi-count {
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-portal .tpi-origin {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gw-portal .tpi-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gw-portal .tpi-path input {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.gw-portal .tpi-path .gw-text-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}
+
+.gw-portal .tpi-meta,
+.gw-portal .tpi-warning {
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .tpi-warning {
+  color: hsl(var(--status-warning));
+  white-space: normal;
+}
+
+.gw-portal .tpi-list {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* 行本身不是按钮（里面还有「导入为」下拉）：勾选区是行里的按钮，占满剩余宽度。 */
+.gw-portal .tpi-row {
+  cursor: default;
+}
+
+.gw-portal .tpi-pick {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gw-portal .tpi-pick:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+/* Magpie 的两种导入方式，二选一：两张并排的选项卡，选中的描边加深。 */
+.gw-portal .tpi-modes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.gw-portal .tpi-mode {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--gw-line);
+  border-radius: 10px;
+  background: none;
+  color: var(--gw-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gw-portal .tpi-mode:hover:not(:disabled) {
+  background: var(--gw-soft);
+}
+
+.gw-portal .tpi-mode[aria-checked="true"] {
+  border-color: hsl(var(--primary));
+  background: var(--gw-soft);
+}
+
+.gw-portal .tpi-mode:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.gw-portal .tpi-mode strong {
+  font-size: 13px;
+}
+
+.gw-portal .tpi-mode small {
+  color: var(--gw-mute);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* 「导入为」下拉固定宽度，不和名字抢地方。 */
+.gw-portal .tpi-row .app-select {
+  flex: none;
+  width: 176px;
+}
+
+/* 「当作上游」那一条是选定的、不能取消：不按禁用项变淡。 */
+.gw-portal .tpi-row[data-on="true"] .tpi-pick:disabled {
+  opacity: 1;
+}
+
+.gw-portal .tpi-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.gw-portal .tpi-copy strong,
+.gw-portal .tpi-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .shell .gw-pool-empty-actions {
   display: flex;
   flex-wrap: wrap;

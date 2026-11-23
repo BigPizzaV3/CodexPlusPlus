@@ -187,6 +187,55 @@ export function CxStats({ items }: { items: Array<{ label: ReactNode; value: Rea
   );
 }
 
+/** 占位用的几行：和真实的行（CxRow）一样高，图标格 + 标题条 + 说明条。只是形状，不给读屏。 */
+function SkeletonRows({ rows }: { rows: number }) {
+  return (
+    <>
+      {Array.from({ length: rows }, (_, index) => (
+        <div aria-hidden="true" className="cx-row cx-loading-row" key={index}>
+          <div className="cx-row-main">
+            <span className="cx-row-icon cx-skeleton" />
+            <span className="cx-row-copy">
+              <span className="cx-skeleton cx-skeleton-title" />
+              <span className="cx-skeleton cx-skeleton-detail" />
+            </span>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/**
+ * 数据还没到时的占位，放在卡片里：几行和真实的行一样高的灰色条块，内容到了高度不跳。
+ * 以前这种地方是一行「正在读取…」，数据一到整块突然撑开。`label` 只给读屏用，不显示。
+ */
+export function CxLoading({ label, rows = 3 }: { label?: string; rows?: number }) {
+  return (
+    <div aria-busy="true" aria-label={label ?? t("读取中…")} className="cx-loading" role="status">
+      <SkeletonRows rows={rows} />
+    </div>
+  );
+}
+
+/**
+ * 整页的占位（页面代码还在加载，见 lazy-page.tsx）：一张单行卡片，下面一个带标题的分区、三行，
+ * 和多数页面「顶部一张卡 + 列表」的形状接近。
+ */
+export function CxPageSkeleton() {
+  return (
+    <div aria-busy="true" aria-label={t("读取中…")} className="cx-page cx-page-skeleton" role="status">
+      <section className="cx-section">
+        <div className="cx-card"><SkeletonRows rows={1} /></div>
+      </section>
+      <section className="cx-section">
+        <header aria-hidden="true" className="cx-section-head"><span className="cx-skeleton cx-skeleton-heading" /></header>
+        <div className="cx-card"><SkeletonRows rows={3} /></div>
+      </section>
+    </div>
+  );
+}
+
 export function CxEmpty({ title, detail, children }: { title: ReactNode; detail?: ReactNode; children?: ReactNode }) {
   return (
     <div className="cx-empty">

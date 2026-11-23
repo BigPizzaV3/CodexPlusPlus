@@ -1,7 +1,11 @@
 .native-auth-control {
-  margin: 8px 0 12px;
   font-size: 12px;
   min-width: 0;
+}
+/* 卡片里的一条提示（未应用的选择、错误、需要重启），贴在登录那一行下面。 */
+.native-auth-control > .native-auth-notice {
+  margin: -4px 0 0;
+  padding: 0 14px 12px 0;
 }
 .native-auth-row {
   display: flex;

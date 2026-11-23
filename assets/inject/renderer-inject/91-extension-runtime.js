@@ -962,6 +962,9 @@
     // apply 里提供服务会触发全体复查，又回到这个句柄：正在检查时只记下「需要再查一次」。
     let checking = false;
     let recheck = false;
+    // apply 抛错那一次的依赖 token 串。依赖没变就不重试：apply 里先 provide 再抛错时，provide 和回滚时的
+    // 撤销各触发一次复查，照旧重试会同步地一直 apply 到栈溢出。提供方重载或消失后回来（token 变了）再试。
+    let failedTokens = null;
     const fiber = {
       id: extensionId,
       scriptKey,
@@ -995,12 +998,15 @@
           ctx.dispose();
         }
         if (!fiber.ctx && ready && fiber.state !== "disposed") {
+          if (fiber.state === "failed" && current === failedTokens) return;
           tokens = current;
+          failedTokens = null;
           fiber.state = "active";
           try {
             fiber.ctx = codexPlusInstantiateExtension({ apply, scriptKey, manifest, extensionId, inject, fiber });
           } catch (error) {
             fiber.state = "failed";
+            failedTokens = tokens;
             codexPlusMarkExtensionFailure(scriptKey, `${extensionId}: ${String(error?.stack || error?.message || error)}`);
           }
         }

@@ -97,7 +97,7 @@ pub(crate) async fn ready_in(
         let gateway = store.load()?;
         let provider = gateway
             .provider(id)
-            .ok_or_else(|| subscriptions::fail(404, format!("网关里没有供应商 {id}")))?;
+            .ok_or_else(|| subscriptions::fail(404, format!("本地服务里没有供应商 {id}")))?;
         let (item, credentials) = kind_of(&provider.relay)
             .ok_or_else(|| subscriptions::fail(400, format!("{id} 不是订阅供应商")))?;
         let http = crate::http_client::proxied_client_for_relay("", &provider.relay)?;
@@ -154,7 +154,7 @@ pub(crate) async fn handle(
         .or_else(|| header_value_from_headers(headers, "x-api-key"))
         .unwrap_or_default();
     if !crate::gateway::store::token_matches(local_secret(), token.trim()) {
-        return write_error(stream, 401, "订阅入口只接受 Codex++ 网关自己的请求").await;
+        return write_error(stream, 401, "订阅入口只接受 Codex++ 本地服务自己的请求").await;
     }
     let (item, credentials, http) = match ready(&id).await {
         Ok(ready) => ready,

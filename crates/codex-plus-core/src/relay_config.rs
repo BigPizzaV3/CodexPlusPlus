@@ -6581,7 +6581,7 @@ pub fn relay_profile_api_key(profile: &RelayProfile) -> String {
 ///
 /// 只露名称和末 4 位（与上游报错里的 `****xxxx` 对得上），不泄露整串 Key；
 /// 不用 Key 的供应商（免 Key、聚合、官方登录）和太短的 Key（露末 4 位等于露了大半）返回 None。
-/// 直连模式的「测试」与网关供应商池的「测试」共用。
+/// 直连模式的「测试」与网关共享供应商的「测试」共用。
 pub fn relay_test_key_identity(profile: &RelayProfile) -> Option<(Option<String>, String)> {
     if profile.uses_no_auth()
         || profile.relay_mode == RelayMode::Aggregate

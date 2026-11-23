@@ -1,4 +1,4 @@
-// 供应商卡片上的中转站（sub2api / new-api）倍率 / 余额。直连供应商和网关供应商池共用：
+// 供应商卡片上的中转站（sub2api / new-api）倍率 / 余额。直连供应商和网关共享供应商共用：
 // 两边只是识别请求不同（直连传整个 profile，网关按 id 由后端取 Key）。
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -246,7 +246,7 @@ export function RelayBillingLine({
   );
 }
 
-/** 供应商池 new-api 卡片的余额提示（#2793）：没配访问令牌时说明配了能显示余额，配了但失败时给原因。 */
+/** 共享供应商 new-api 卡片的余额提示（#2793）：没配访问令牌时说明配了能显示余额，配了但失败时给原因。 */
 function newApiAccessText(probe: RelayBillingProbe): { text: string; failed: boolean } | null {
   const hint = newApiAccessHint(probe);
   if (!hint) return null;
@@ -255,7 +255,7 @@ function newApiAccessText(probe: RelayBillingProbe): { text: string; failed: boo
     : { text: t("配置访问令牌后可显示余额（展开供应商详情，在「访问令牌」里填写）"), failed: false };
 }
 
-/** 网关供应商池右侧：和订阅账号的「套餐 + 额度条」同一位置、同一样式。只显示倍率，
+/** 网关共享供应商右侧：和订阅账号的「套餐 + 额度条」同一位置、同一样式。只显示倍率，
  * 中转站类型（sub2api / new-api）放在悬停提示里；没有倍率时不显示，由调用方显示 Key 数。 */
 export function RelayBillingPoolLabel({ probe }: { probe: RelayBillingProbe }) {
   if (!probe.platform || !probe.rate) return null;
@@ -304,7 +304,7 @@ export function RelayBillingPoolBadge({
 }
 
 /**
- * 有余额接口的厂商（DeepSeek、Kimi 等）在供应商池卡片上的余额（#2793）：和「用量」页用同一份查询结果，
+ * 有余额接口的厂商（DeepSeek、Kimi 等）在共享供应商卡片上的余额（#2793）：和「用量」页用同一份查询结果，
  * 几张卡片一起要也只查一次；卡片 5 分钟内不重查，点刷新才强制重查。
  */
 export function useProviderBalance(id: string, enabled: boolean) {
@@ -330,7 +330,7 @@ export function useProviderBalance(id: string, enabled: boolean) {
   };
 }
 
-/** 供应商池右侧的厂商余额：样式与中转站余额一致（同一个徽章和刷新按钮）。 */
+/** 共享供应商右侧的厂商余额：样式与中转站余额一致（同一个徽章和刷新按钮）。 */
 export function ProviderBalancePoolBadge({
   balance,
   loading,

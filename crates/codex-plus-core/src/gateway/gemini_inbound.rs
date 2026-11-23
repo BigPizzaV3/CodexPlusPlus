@@ -99,7 +99,7 @@ fn media_part(part: &Value) -> anyhow::Result<Option<Value>> {
             json!({ "type": "input_text", "text": String::from_utf8_lossy(&bytes) })
         } else {
             bail!(
-                "暂不支持 {mime} 类型的 inlineData：网关的 Responses 管道只能转发图片、PDF 与文本"
+                "暂不支持 {mime} 类型的 inlineData：本地服务的 Responses 管道只能转发图片、PDF 与文本"
             )
         }));
     }
@@ -507,7 +507,7 @@ pub fn gemini_to_responses(model: &str, request: &Value, stream: bool) -> anyhow
     if let Some(count) = field(&config, "candidateCount", "candidate_count").and_then(Value::as_u64)
         && count > 1
     {
-        bail!("网关不支持 candidateCount>1（一次生成多个候选），请改为 1");
+        bail!("本地服务不支持 candidateCount>1（一次生成多个候选），请改为 1");
     }
     if let Some(max_tokens) =
         field(&config, "maxOutputTokens", "max_output_tokens").and_then(Value::as_u64)

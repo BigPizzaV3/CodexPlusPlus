@@ -15,6 +15,7 @@ pub mod bridge;
 pub mod builtin_takeover;
 pub mod bundled_extensions;
 pub mod ccs_import;
+pub mod magpie_import;
 pub mod cdp;
 pub mod claude_auto_takeover;
 #[cfg(any(target_os = "windows", test))]

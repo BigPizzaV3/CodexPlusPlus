@@ -151,7 +151,7 @@ fn claude_mom_book() -> PathBuf {
     dir.join("upstreams.json")
 }
 
-/// 能导入的上游：从 Codex++ 网关导过去的（指回我们自己）不算。
+/// 能导入的上游：从 Codex++ 本地服务导过去的（指回我们自己）不算。
 fn claude_mom_profiles(path: &Path) -> Vec<UpstreamProfile> {
     std::fs::read(path)
         .ok()

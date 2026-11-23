@@ -24,7 +24,7 @@
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 21;
+  const codexPlusRpcInterceptorVersion = 22;
   const codexPlusRpcMiddlewareTimeoutMs = (typeof codexPlusRpcMiddlewareTimeoutMsOverride === "number"
     && codexPlusRpcMiddlewareTimeoutMsOverride > 0)
     ? codexPlusRpcMiddlewareTimeoutMsOverride : 5000;
@@ -45,6 +45,50 @@
   const codexPlusRpcAnswers = window.__codexPlusRpcAnswers ||= { trackers: new WeakMap(), frames: new WeakMap(), seq: 0 };
   const codexPlusRpcAnswerTimeoutMs = 15_000;
   const codexPlusRpcAnswerPendingMs = 90_000;
+  // 中间件熔断阈值：连续这么多个改写计划等满超时，就认定有拓展的中间件挂住了。
+  const codexPlusRpcBreakerThreshold = 3;
+  // 熔断冷却时间：这段时间内当作没有拓展中间件，帧原样放行；到点后再试，头一个计划又超时就立刻重新熔断。
+  const codexPlusRpcBreakerCooldownMs = 60_000;
+
+  /**
+   * 中间件熔断。超时是逐帧等的（codexPlusRpcRunPlan），一个不 resolve 的中间件会让端口队列里每一帧
+   * 各等满一次；连续超时到阈值后，冷却期内下面几个「有没有拓展要拦」的判断一律答没有：
+   * 只为拓展拦的帧同步放行，上下文刷新、供应商预检这些原生环节照常走。
+   *
+   * 状态挂在 window.__codexPlusRpcFrameInterceptor.breaker 上、每次安装都换新的：同版本重新注入时
+   * 已打补丁的 postMessage（连同它的发送循环）还是上一代闭包，判断帧的却是新一代，两边得读同一份。
+   */
+  function codexPlusRpcNewBreaker() {
+    return { timeouts: 0, openUntil: 0 };
+  }
+
+  function codexPlusRpcBreakerOpen() {
+    const breaker = window.__codexPlusRpcFrameInterceptor?.breaker;
+    return !!breaker && Date.now() < breaker.openUntil;
+  }
+
+  /** 每个计划的中间件阶段结束时记一次：超时累加，没超时（正常完成或出错放行）清零。 */
+  function codexPlusRpcNoteMiddlewareOutcome(timedOut) {
+    const breaker = window.__codexPlusRpcFrameInterceptor?.breaker;
+    if (!breaker) return;
+    const now = Date.now();
+    // 熔断前就在等的计划（别的端口）此时才回来：冷却期内不计数，也不再记日志。
+    if (now < breaker.openUntil) return;
+    if (!timedOut) {
+      breaker.timeouts = 0;
+      return;
+    }
+    breaker.timeouts += 1;
+    if (breaker.timeouts < codexPlusRpcBreakerThreshold) {
+      codexPlusMarkExtensionFailure("", "rpc 拓展中间件超时，已跳过它的改写");
+      return;
+    }
+    // 计数停在阈值前一格：冷却结束后头一个计划又超时就直接重新熔断，不必再等满三次。
+    breaker.timeouts = codexPlusRpcBreakerThreshold - 1;
+    breaker.openUntil = now + codexPlusRpcBreakerCooldownMs;
+    codexPlusMarkExtensionFailure("",
+      `rpc 拓展中间件持续超时，接下来 ${Math.round(codexPlusRpcBreakerCooldownMs / 1000)} 秒跳过拓展拦截、原样放行`);
+  }
 
   async function codexPlusRpcSerializeTurn(threadId, prepare) {
     if (typeof threadId !== "string" || !threadId) return prepare();
@@ -113,7 +157,7 @@
 
   function codexPlusRpcHasListeners(name) {
     try {
-      return !!codexPlusExtensionListeners.get(name)?.size;
+      return !codexPlusRpcBreakerOpen() && !!codexPlusExtensionListeners.get(name)?.size;
     } catch {
       return false;
     }
@@ -121,7 +165,7 @@
 
   function codexPlusRpcWantsRequestChain() {
     try {
-      return codexPlusExtensionInterceptors.has("codex/request");
+      return !codexPlusRpcBreakerOpen() && codexPlusExtensionInterceptors.has("codex/request");
     } catch {
       return false;
     }
@@ -399,7 +443,8 @@
    */
   async function codexPlusRpcProcessTurn({ messageId, carriers, settings, settingsHolders, signal }) {
     const primary = carriers[0];
-    const outcome = await codexPlusRpcTurnHooksOnce(messageId, () => codexPlusRpcRunTurnHooks({
+    // 熔断期间不碰缓存：同一条消息挂住的那次 hooks 还缓存在里面，等它就又是一次超时。
+    const outcome = codexPlusRpcBreakerOpen() ? {} : await codexPlusRpcTurnHooksOnce(messageId, () => codexPlusRpcRunTurnHooks({
       messageId,
       conversationId: primary.conversationId,
       input: primary.params.input,
@@ -619,7 +664,7 @@
         } catch (error) {
           signal?.throwIfAborted();
           if (refreshContext) throw error;
-          codexPlusMarkExtensionFailure("", `网关连接检查不可用：${String(error?.message || error)}`);
+          codexPlusMarkExtensionFailure("", `本地服务连接检查不可用：${String(error?.message || error)}`);
           return nextFrame;
         }
         signal?.throwIfAborted();
@@ -751,12 +796,14 @@
   async function codexPlusRpcRunPlan(plan, frame, deferContext = false) {
     const controller = new AbortController();
     let timer = null;
+    let timedOut = false;
     let replaced = null;
     try {
       replaced = await Promise.race([
         Promise.resolve().then(() => plan(controller.signal)),
         new Promise((resolve) => {
           timer = setTimeout(() => {
+            timedOut = true;
             controller.abort(new Error("Codex++ 拓展中间件超时"));
             resolve(null);
           }, codexPlusRpcMiddlewareTimeoutMs);
@@ -767,6 +814,9 @@
     } finally {
       clearTimeout(timer);
     }
+    try {
+      codexPlusRpcNoteMiddlewareOutcome(timedOut);
+    } catch {}
     if (!plan.context || deferContext || replaced?.[codexPlusRpcPushFailure]) return replaced;
     // plan.context 里会等 app-server 往返（网关预检、模型刷新）；一旦挂住，
     // 端口队列会卡死后续所有帧，渲染层首批请求就永远停在 fetching（issue #3098）。
@@ -845,6 +895,23 @@
     return transformed;
   }
 
+  /**
+   * 发出改写后的帧；发不出去（中间件给的参数里带函数、DOM 节点这类不可克隆的值，postMessage 抛
+   * DataCloneError）就退回原帧。import 序号按 push 顺序隐式分配，丢一帧后面的回包全部错位，
+   * 所以宁可不要这次改写。没改写过的帧只发一次，原帧也发不出去时照旧抛给调用方。
+   * 改写结果是「拒绝本轮」时不退回：改发原帧会把本该拦下的消息发出去。
+   */
+  function codexPlusRpcSendFrame(original, port, replaced, message, rest) {
+    if (!replaced || replaced === message) return original.call(port, message, ...rest);
+    try {
+      return original.call(port, replaced, ...rest);
+    } catch (error) {
+      if (replaced[0] === "reject" && message[0] !== "reject") throw error;
+      codexPlusMarkExtensionFailure("", `rpc 改写后的帧发送失败，已改发原帧：${String(error?.message || error)}`);
+    }
+    return original.call(port, message, ...rest);
+  }
+
   /** 某个端口开始等中间件：之后的帧全部排队，按原顺序逐个处理、发出。 */
   async function codexPlusRpcDrainPort(port, original, first) {
     let finish;
@@ -857,6 +924,8 @@
         const deferContext = message[0] === "resolve" && plan?.before && plan.context;
         const replaced = plan ? await codexPlusRpcRunPlan(plan, message, deferContext) : null;
         try {
+          // 带拒绝标记的帧是原帧的副本（内容没改写），下面两支发送失败时不改发原帧：
+          // 原帧同样发不出去，发得出去也不行，那是把要拒绝的请求真发给对端。
           const failure = replaced?.[codexPlusRpcPushFailure];
           const readInputs = failure && replaced[1][2][0] === "startConversation"
             && replaced[1][3][1]?.readThreadCreationInputs;
@@ -894,18 +963,36 @@
             gates.pending.add(id);
             const controller = new AbortController();
             (gates.controllers ||= new Map()).set(id, controller);
-            const next = replaced || message;
-            const resolving = next[0] === "resolve";
-            const expr = next[1];
-            const args = resolving ? { ...next[2] } : [...expr[3]];
-            const params = args[plan.resumeIndex];
-            const dataOnly = codexPlusRpcDataOnly(params);
-            // 含 export 的参数留在原 push 导入，失败时由 Capnweb 正常释放。
-            if (resolving || dataOnly) args[plan.resumeIndex] = ["promise", id];
-            else args.push(["promise", id]);
-            original.call(port, resolving
-              ? ["resolve", next[1], args, ...next.slice(3)]
-              : ["push", [...expr.slice(0, 3), args, ...expr.slice(4)], ...next.slice(2)], ...rest);
+            const sendGated = (next) => {
+              const resolving = next[0] === "resolve";
+              const expr = next[1];
+              const args = resolving ? { ...next[2] } : [...expr[3]];
+              const params = args[plan.resumeIndex];
+              const dataOnly = codexPlusRpcDataOnly(params);
+              // 含 export 的参数留在原 push 导入，失败时由 Capnweb 正常释放。
+              if (resolving || dataOnly) {
+                // 留在闸门后面的参数要等预检完才随 resolve 发出，那时这一帧已经占了序号、退不回原帧，
+                // 所以改写过的现在就验一遍能不能克隆。
+                if (next !== message && typeof structuredClone === "function") structuredClone(params);
+                args[plan.resumeIndex] = ["promise", id];
+              } else {
+                args.push(["promise", id]);
+              }
+              original.call(port, resolving
+                ? ["resolve", next[1], args, ...next.slice(3)]
+                : ["push", [...expr.slice(0, 3), args, ...expr.slice(4)], ...next.slice(2)], ...rest);
+              return { next, resolving, args, params, dataOnly };
+            };
+            let gated;
+            try {
+              gated = sendGated(replaced || message);
+            } catch (error) {
+              if (!replaced || replaced === message) throw error;
+              // 改写后的帧发不出去：用原帧按同一个闸门重发，理由见 codexPlusRpcSendFrame。
+              codexPlusMarkExtensionFailure("", `rpc 改写后的帧发送失败，已改发原帧：${String(error?.message || error)}`);
+              gated = sendGated(message);
+            }
+            const { next, resolving, args, params, dataOnly } = gated;
             // 先释放整个发送队列，再让预检经同一端口发出。
             void state.done.then(async () => {
               let timer;
@@ -947,7 +1034,7 @@
               },
             ).catch((error) => codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`));
           } else {
-            original.call(port, replaced || message, ...rest);
+            codexPlusRpcSendFrame(original, port, replaced, message, rest);
           }
         } catch (error) {
           // 已经是异步发送，异常没法还给调用方；记下来，后面的帧照常发。
@@ -976,6 +1063,8 @@
     if (installed?.version === codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) {
       installed.planFrame = codexPlusRpcPlanFrame;
       installed.noteFrame = codexPlusRpcNoteFrame;
+      // 熔断状态跟注入代际走：重新注入后从头计数。
+      installed.breaker = codexPlusRpcNewBreaker();
       return true;
     }
     // 重复注入时包原生的那个，不叠层。
@@ -1019,7 +1108,7 @@
             return proto.postMessage.call(port, message, ...rest);
           }
           const replaced = await codexPlusRpcRunPlan(plan, message);
-          original.call(port, replaced || message, ...rest);
+          codexPlusRpcSendFrame(original, port, replaced, message, rest);
         })().catch((error) => {
           codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`);
         });
@@ -1035,7 +1124,8 @@
     };
     proto.postMessage = patched;
     window.__codexPlusRpcFrameInterceptor = { version: codexPlusRpcInterceptorVersion, original, patched,
-      planFrame: codexPlusRpcPlanFrame, noteFrame: codexPlusRpcNoteFrame, pushFailure: codexPlusRpcPushFailure };
+      planFrame: codexPlusRpcPlanFrame, noteFrame: codexPlusRpcNoteFrame, pushFailure: codexPlusRpcPushFailure,
+      breaker: codexPlusRpcNewBreaker() };
     return true;
   }
 

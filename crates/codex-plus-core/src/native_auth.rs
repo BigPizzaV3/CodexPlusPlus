@@ -339,7 +339,7 @@ fn remember_projection(store: &GatewayStore, account_ref: &str, auth: &str) -> a
 
 pub(crate) fn gateway_auth(account_ref: &str) -> anyhow::Result<String> {
     gateway_auth_optional(account_ref)?
-        .with_context(|| format!("找不到网关账号凭证：{account_ref}"))
+        .with_context(|| format!("找不到本地服务账号凭证：{account_ref}"))
 }
 
 pub(crate) fn gateway_auth_optional(account_ref: &str) -> anyhow::Result<Option<String>> {

@@ -166,7 +166,7 @@ describe("provider and gateway recovery on the same turn", () => {
   it("does not claim the new generation or send after the gateway changes during resume", async () => {
     const env = await switchedGateway();
     env.state.generationDuringResume = "three";
-    await assert.rejects(env.client.sendRequest("turn/start", { threadId: "thread" }), /网关连接已变化/);
+    await assert.rejects(env.client.sendRequest("turn/start", { threadId: "thread" }), /本地服务连接已变化/);
     assert.equal(env.gatewayStates.has("thread"), false);
     assert.equal(env.calls.filter((call) => call.method === "thread/resume").length, 1);
     assert.equal(env.calls.some((call) => call.method === "turn/start"), false);
