@@ -2102,8 +2102,8 @@ fn chat_completion_to_response_with_context(
     if let Some(mut message) = chat_message_to_response_output_item(message, &response_id) {
         // 与流式转换一致：无工具调用的消息即本轮最终回答（issue #2659，设置里打开才补）。
         if message_phase_fill_enabled() {
-            message["phase"] =
-                json!(if tool_items.is_empty() { "final_answer" } else { "commentary" });
+            let text = response_message_item_text(&message);
+            message["phase"] = json!(filled_message_phase(&text, !tool_items.is_empty()));
         }
         output.push(message);
     }
@@ -7946,8 +7946,7 @@ impl ChatSseState {
             "content": [{ "type": "output_text", "text": self.text.text, "annotations": [] }]
         });
         if message_phase_fill_enabled() {
-            item["phase"] =
-                json!(if self.tools.is_empty() { "final_answer" } else { "commentary" });
+            item["phase"] = json!(filled_message_phase(&self.text.text, !self.tools.is_empty()));
         }
         self.output_items.push((output_index, item.clone()));
         self.text.done = true;
@@ -13373,6 +13372,36 @@ fn is_client_tool_call_item_type(item_type: &str) -> bool {
     )
 }
 
+/// Codex 桌面端的独立界面指令（目前只有浏览器任务结束标记）。
+///
+/// 桌面端只在 `phase == "commentary"` 的助手消息里识别它，并且整条消息只能是这一条指令；
+/// 标成 `final_answer` 的话指令原文会当作最终回复显示在聊天里（issue #3244）。
+fn is_standalone_ui_directive(text: &str) -> bool {
+    let text = text.trim_end();
+    text.starts_with("::browser-complete{") && text.ends_with('}') && !text.contains('\n')
+}
+
+/// 给缺 `phase` 的助手消息选阶段：后面还有工具调用，或整条消息只是一条界面指令时是
+/// `commentary`，否则是本轮最终回答。
+fn filled_message_phase(text: &str, followed_by_tool_call: bool) -> &'static str {
+    if followed_by_tool_call || is_standalone_ui_directive(text) {
+        "commentary"
+    } else {
+        "final_answer"
+    }
+}
+
+/// Responses 消息项里的全部文字（各 `output_text` 段按顺序拼接）。
+fn response_message_item_text(item: &Value) -> String {
+    item.get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect()
+}
+
 /// 缺 `phase` 的助手消息完成事件。
 fn is_phaseless_assistant_message_done(event_type: &str, data: &Value) -> bool {
     if event_type != "response.output_item.done" {
@@ -13413,12 +13442,13 @@ impl MessagePhaseFill {
                     self.release(Some("commentary"))
                 }
                 "response.completed" => {
-                    let phase = if self.saw_client_tool_call {
-                        "commentary"
-                    } else {
-                        "final_answer"
-                    };
-                    self.release(Some(phase))
+                    let text = self
+                        .pending
+                        .as_ref()
+                        .and_then(|(_, data)| data.get("item"))
+                        .map(response_message_item_text)
+                        .unwrap_or_default();
+                    self.release(Some(filled_message_phase(&text, self.saw_client_tool_call)))
                 }
                 // 失败/中断：不猜阶段，原样放行。
                 "response.failed" | "response.incomplete" | "error" => self.release(None),
@@ -14031,6 +14061,41 @@ mod responses_sse_transformer_tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.ends_with(&completed), "消息必须先于 completed 写出: {text}");
         assert!(t.finish().is_none());
+    }
+
+    #[test]
+    fn standalone_browser_complete_directive_becomes_commentary() {
+        // Codex 桌面端只在 commentary 消息里消费 `::browser-complete{…}`（issue #3244）。
+        let directive = sse(json!({
+            "type": "response.output_item.done",
+            "output_index": 0,
+            "item": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "text": "::browser-complete{title=\"Blocked GitHub banner upload\"}\n",
+                    "annotations": []
+                }]
+            }
+        }));
+        let completed = sse(json!({ "type": "response.completed", "response": {} }));
+        let mut t = ResponsesSseTransformer::for_request(None).filling_message_phase(true);
+        assert!(t.push_bytes(directive.as_bytes()).is_empty());
+        let out = t.push_bytes(completed.as_bytes());
+        assert_eq!(message_phases(&out), vec![Some("commentary".to_string())]);
+
+        assert_eq!(filled_message_phase("::browser-complete{title=\"x\"}", false), "commentary");
+        // 指令后面还有正文、或只是正文里提到它：仍是最终回答。
+        assert_eq!(
+            filled_message_phase("::browser-complete{title=\"x\"}\n已完成上传。", false),
+            "final_answer"
+        );
+        assert_eq!(filled_message_phase("见 ::browser-complete{title=\"x\"}", false), "final_answer");
+        assert_eq!(filled_message_phase("好的", false), "final_answer");
+        assert_eq!(filled_message_phase("好的", true), "commentary");
     }
 
     #[test]
