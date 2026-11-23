@@ -10,7 +10,7 @@ import { Avatar, Switch, makeRun, type Notify, type Run } from "./gateway-ui";
 import {
   bindingFromDraft,
   draftFromBinding,
-  importCandidates,
+  pendingImports,
   poolExcludeToggle,
   presetHost,
   protocolLabel,
@@ -21,8 +21,8 @@ import { t, tf } from "./i18n";
 
 /** Claude Desktop 在网关里的绑定：3p 模式直接用它，完整功能模式也按它的模型和「挑选」列模型。 */
 const AGENT: GatewayAgentId = "claude-desktop";
-/** 从 CC Switch、ClaudeMom 导进来的也算 Claude 的来源，导入按钮上提示还有几个没导。 */
-const CLAUDE_IMPORT_SOURCES = new Set(["claude", "ccswitch", "claudemom"]);
+/** 从 CC Switch、ClaudeMom、Magpie 导进来的也算 Claude 的来源，导入按钮上提示还有几个没导。 */
+const CLAUDE_IMPORT_SOURCES = new Set(["claude", "ccswitch", "claudemom", "magpie"]);
 
 /**
  * Claude 的「供应商」页：Claude Desktop、Claude Code 各用哪个默认模型，Claude Desktop 用哪些供应商，加供应商、从 CC Switch / ClaudeMom 导入。
@@ -41,7 +41,7 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
   const binding = payload?.gateway.bindings[AGENT];
   const exclude = binding?.poolExclude ?? [];
   const pool = payload?.pool ?? [];
-  const pendingImports = importCandidates(payload).filter((item) => !item.imported && CLAUDE_IMPORT_SOURCES.has(item.source)).length;
+  const pendingCount = pendingImports(payload).filter((item) => CLAUDE_IMPORT_SOURCES.has(item.source)).length;
   // Claude Code（命令行）：和 Agent 接入页那一行同一个模型下拉，选一个共享供应商的模型就是让它经本地服务，
   // 下拉顶部「断开」就还原成它自己的 settings.json。本地服务里没有这个 Agent 时不显示这一行。
   const claudeCode = payload?.agents.find((item) => item.agent === "claude");
@@ -64,8 +64,8 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
     <>
       {/* 和 Codex 的「连接与供应商」一样：导入、添加在标题行右侧，添加是主按钮。 */}
       <TopbarActions>
-        <button className="cx-secondary" disabled={!payload || busy !== null} onClick={() => setAdding("import")} title={t("从 CC Switch、ClaudeMom 或直连模式导入")} type="button">
-          <Download />{pendingImports ? tf("导入 · {0}", [pendingImports]) : t("导入")}
+        <button className="cx-secondary" disabled={!payload || busy !== null} onClick={() => setAdding("import")} title={t("从 CC Switch、ClaudeMom、Magpie 或直连模式导入")} type="button">
+          <Download />{pendingCount ? tf("导入 · {0}", [pendingCount]) : t("导入")}
         </button>
         <button className="cx-primary" disabled={!payload || busy !== null} onClick={() => setAdding("catalog")} type="button">
           <Plus />{t("添加供应商")}
@@ -107,7 +107,7 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
           ) : !pool.length ? (
             <CxEmpty detail={t("DeepSeek、Kimi、智谱这些 OpenAI 协议的也能用，本地服务会自动转换。")} title={t("还没有供应商")}>
               <button className="cx-secondary" onClick={() => setAdding("catalog")} type="button"><Plus />{t("添加供应商")}</button>
-              <button className="cx-secondary" onClick={() => setAdding("import")} type="button"><Download />{t("从 CC Switch / ClaudeMom 导入")}</button>
+              <button className="cx-secondary" onClick={() => setAdding("import")} type="button"><Download />{t("从 CC Switch / ClaudeMom / Magpie 导入")}</button>
             </CxEmpty>
           ) : pool.map((entry) => {
             const enabled = providerEnabled(entry);

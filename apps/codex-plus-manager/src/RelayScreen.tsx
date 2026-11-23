@@ -16,7 +16,6 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import {
   ArrowLeft,
   Cable,
@@ -26,7 +25,6 @@ import {
   GripVertical,
   KeyRound,
   Loader2,
-  FolderOpen,
   PowerOff,
   Plus,
   RefreshCw,
@@ -45,16 +43,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, Switch } from "./gateway-ui";
-import { AppSelect } from "./AppSelect";
 import { useGatewayPayload } from "./hub-shared";
 import { publishGatewayPayload } from "./gateway-store";
 import { importCandidates, presetHost, protocolLabel, providerEnabled, type GatewayPayload, type ImportCandidate, type GatewayResult } from "./gateway-model";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { aggregateMemberCandidates } from "./aggregate-members";
 import { NativeAuthControl } from "./NativeAuthControls";
+import { ThirdPartyImportDialog } from "./ThirdPartyImportDialog";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
-import { resolveAnchoredMenuLayout, type AnchoredMenuLayout } from "./popover-layer";
 import { t, tf } from "@/i18n";
 import {
   applyRelayProfilePatchToFiles,
@@ -619,41 +616,8 @@ export function RelayScreen({
   const [providerView, setProviderView] = useState<ListView>(initialProviderView);
   const gatewayPayload = useGatewayPayload(15_000);
   const [newAggregateMode, setNewAggregateMode] = useState<AggregateMode | null>(null);
+  // 「从第三方导入」对话框（CC Switch、Magpie）：路径、勾选、导入都在对话框里。
   const [thirdPartyImportOpen, setThirdPartyImportOpen] = useState(false);
-  const thirdPartyImportTriggerRef = useRef<HTMLDivElement>(null);
-  const [thirdPartyImportPosition, setThirdPartyImportPosition] = useState<AnchoredMenuLayout | null>(null);
-  const [ccsDbPathDraft, setCcsDbPathDraft] = useState(normalized.ccsDbPath);
-  const [ccsPathSaving, setCcsPathSaving] = useState(false);
-  const [ccsBindings, setCcsBindings] = useState<Record<string, string>>({});
-  // 路径草稿与已保存的不一致时，列表还是旧库的：先「应用」才能导入。
-  const ccsPathDirty = ccsDbPathDraft.trim() !== normalized.ccsDbPath;
-  useEffect(() => setCcsDbPathDraft(normalized.ccsDbPath), [normalized.ccsDbPath]);
-  const saveCcsDbPath = async (path = ccsDbPathDraft) => {
-    setCcsPathSaving(true);
-    try {
-      const saved = await actions.saveSettingsValue({ ...normalized, ccsDbPath: path.trim() }, true);
-      if (saved) await actions.refreshCcsProviders();
-    } finally {
-      setCcsPathSaving(false);
-    }
-  };
-  const selectCcsDatabase = async () => {
-    try {
-      const selected = await open({
-        title: t("选择 cc-switch 数据库"),
-        multiple: false,
-        directory: false,
-        filters: [{ name: "SQLite", extensions: ["db", "sqlite", "sqlite3"] }],
-      });
-      const path = Array.isArray(selected) ? selected[0] : selected;
-      if (path) {
-        setCcsDbPathDraft(path);
-        await saveCcsDbPath(path);
-      }
-    } catch (error) {
-      await actions.showMessage(t("cc-switch 导入"), stringifyError(error), "failed");
-    }
-  };
   const detailProfile = newProfileDraft || (detailProfileId
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
@@ -751,47 +715,6 @@ export function RelayScreen({
       void actions.refreshRelayFiles();
     }
   }, [detailProfileId, newProfileDraft, normalized.activeRelayId]);
-  const openThirdPartyImport = () => {
-    const next = !thirdPartyImportOpen;
-    if (next) {
-      // 菜单改为 fixed 定位：它原本挂在 .mg-content（overflow:auto）里，
-      // 面板较矮时后半截会被裁掉（ccswitch 导入按钮、刷新列表都看不到）。
-      // 高度必须按触发按钮的位置收窄，否则 cc-switch 供应商一多（几十行），
-      // 菜单底部会超出窗口下沿，最后那排按钮永远点不到（issue #1906）。
-      const rect = thirdPartyImportTriggerRef.current?.getBoundingClientRect();
-      setThirdPartyImportPosition(
-        rect
-          ? resolveAnchoredMenuLayout(rect, { width: window.innerWidth, height: window.innerHeight })
-          : null,
-      );
-    }
-    setThirdPartyImportOpen(next);
-    if (!ccsProviders) void actions.refreshCcsProviders(true);
-  };
-  useEffect(() => {
-    if (!thirdPartyImportOpen) return;
-    const close = () => setThirdPartyImportOpen(false);
-    // 菜单挂在 .mg-page（overflow:hidden）里，只能自己判定外点，不然点空白处收不起来。
-    const handlePointerDown = (event: PointerEvent) => {
-      if (thirdPartyImportTriggerRef.current?.contains(event.target as Node)) return;
-      close();
-    };
-    document.addEventListener("pointerdown", handlePointerDown, true);
-    window.addEventListener("resize", close);
-    // capture 监听内层 .mg-content 的滚动：页面滚了菜单会跟触发按钮错位，得收起。
-    // 但供应商列表自己也会滚（滚轮、拖滚动条），scroll 事件同样会冒到 window 的
-    // capture 阶段——不排除掉它，列表一动菜单就关，等于列表不能滚（issue #1906）。
-    const handleScroll = (event: Event) => {
-      if (thirdPartyImportTriggerRef.current?.contains(event.target as Node)) return;
-      close();
-    };
-    window.addEventListener("scroll", handleScroll, { capture: true, passive: true });
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown, true);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("scroll", handleScroll, { capture: true });
-    };
-  }, [thirdPartyImportOpen]);
   if (detailProfile) {
     return (
       <RelayProfileDetail
@@ -885,102 +808,11 @@ export function RelayScreen({
         actions={(
           <>
             {/* 「从第三方导入」接管期间也保留（#2801）：导入只写直连供应商列表、不动 Codex 配置，
-                导进来的供应商可以直接多开，也能「加入共享供应商」给网关用。 */}
-            <div className="third-party-import" ref={thirdPartyImportTriggerRef}>
-              <button className="cx-secondary" onClick={openThirdPartyImport} type="button">
-                <Download />
-                {t("从第三方导入")}
-              </button>
-              {thirdPartyImportOpen ? (
-                <div
-                  className="third-party-import-menu"
-                  style={thirdPartyImportPosition
-                    ? {
-                      position: "fixed",
-                      top: thirdPartyImportPosition.top,
-                      right: thirdPartyImportPosition.right,
-                      maxHeight: thirdPartyImportPosition.maxHeight,
-                    }
-                    : undefined}
-                >
-                  <div className="third-party-import-head">
-                    <strong>{t("从 cc-switch 导入")}</strong>
-                    <small>{t("只读取 cc-switch 的数据库，不会改动它。")}</small>
-                  </div>
-                  <div className="third-party-import-source">
-                    <div className="third-party-import-path">
-                      <Input
-                        aria-label={t("cc-switch 数据库路径")}
-                        onChange={(event) => setCcsDbPathDraft(event.currentTarget.value)}
-                        placeholder={t("默认 ~/.cc-switch/cc-switch.db")}
-                        value={ccsDbPathDraft}
-                      />
-                      <Button disabled={ccsPathSaving} onClick={() => void selectCcsDatabase()} size="sm" title={t("选择数据库")} variant="secondary">
-                        <FolderOpen className="h-4 w-4" />
-                        {t("选择")}
-                      </Button>
-                      {ccsPathDirty ? (
-                        <Button disabled={ccsPathSaving} onClick={() => void saveCcsDbPath()} size="sm">
-                          {ccsPathSaving ? t("应用中") : t("应用")}
-                        </Button>
-                      ) : null}
-                    </div>
-                    {ccsProviders && isSuccessStatus(ccsProviders.status) ? (
-                      <small className="third-party-import-meta" title={ccsProviders.dbPath}>{t("实际来源")}：{ccsProviders.dbPath}</small>
-                    ) : null}
-                    {ccsProviders?.fallbackReason ? <small className="third-party-import-warning">{ccsProviders.fallbackReason}</small> : null}
-                  </div>
-                  {/* 供应商列表单独滚动：cc-switch 里几十个供应商时，底部按钮仍然可见可点（issue #1906）。 */}
-                  <div className="third-party-import-list">
-                    {ccsProviders?.providers.length ? (
-                      <div className="third-party-import-list-head">
-                        <span>{tf("Codex 供应商 {0} 个", [ccsProviders.providers.length])}</span>
-                        <span>{t("导入为")}</span>
-                      </div>
-                    ) : (
-                      <p className="third-party-import-empty">{ccsProviderSummary(ccsProviders)}</p>
-                    )}
-                    {ccsProviders?.providers.map((provider) => (
-                      <label className="third-party-import-row" key={provider.sourceId}>
-                        <span className="third-party-import-name">
-                          <strong title={provider.name}>{provider.name}</strong>
-                          <small title={provider.baseUrl}>{urlHost(provider.baseUrl) || t("未填写地址")}</small>
-                        </span>
-                        <AppSelect
-                          ariaLabel={tf("{0} 导入为", [provider.name])}
-                          menuWidth={240}
-                          onChange={(next) => setCcsBindings((current) => ({ ...current, [provider.sourceId]: next }))}
-                          options={[
-                            { value: "", label: t("新增（同名自动关联）") },
-                            ...normalized.relayProfiles.map((profile) => ({ value: profile.id, label: `${t("关联已有")}：${profile.name}` })),
-                          ]}
-                          size="sm"
-                          value={ccsBindings[provider.sourceId] || ""}
-                        />
-                      </label>
-                    ))}
-                  </div>
-                  <div className="third-party-import-actions">
-                    {ccsPathDirty ? <small className="third-party-import-warning">{t("路径已修改，点「应用」读取新数据库后再导入。")}</small> : null}
-                    <div className="third-party-import-footer">
-                      <Button aria-label={t("刷新列表")} onClick={() => void actions.refreshCcsProviders()} size="icon" title={t("刷新列表")} variant="ghost">
-                        <RefreshCw className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        disabled={ccsPathSaving || ccsPathDirty || !ccsProviders?.providers.length}
-                        onClick={() => {
-                          setThirdPartyImportOpen(false);
-                          void actions.importCcsProviders(ccsBindings);
-                        }}
-                      >
-                        <Download className="h-4 w-4" />
-                        {ccsProviders?.providers.length ? tf("导入 {0} 个供应商", [ccsProviders.providers.length]) : t("导入")}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-            </div>
+                导进来的供应商可以直接多开，也能「加入共享供应商」给网关用。点开是一个对话框（ThirdPartyImportDialog）。 */}
+            <button className="cx-secondary" onClick={() => setThirdPartyImportOpen(true)} type="button">
+              <Download />
+              {t("从第三方导入")}
+            </button>
               <button className="cx-primary" onClick={openCatalog} type="button">
                 <Plus />
                 {takenOverByGateway ? t("添加直连供应商") : t("添加供应商")}
@@ -988,6 +820,9 @@ export function RelayScreen({
           </>
         )}
       />
+      {thirdPartyImportOpen ? (
+        <ThirdPartyImportDialog actions={actions} ccsProviders={ccsProviders} form={normalized} onClose={() => setThirdPartyImportOpen(false)} />
+      ) : null}
       {connection}
       <NativeAuthControl onRestart={() => actions.restart()} />
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
@@ -1564,9 +1399,3 @@ function urlHost(value: string | undefined): string {
   }
 }
 
-function ccsProviderSummary(result: CcsProvidersResult | null): string {
-  if (!result) return t("读取 ~/.cc-switch/cc-switch.db");
-  if (!isSuccessStatus(result.status)) return result.message || t("读取 cc-switch 供应商失败。");
-  const count = result.providers.length;
-  return count ? tf("发现 {0} 个 Codex 供应商", [count]) : t("未发现可导入供应商");
-}

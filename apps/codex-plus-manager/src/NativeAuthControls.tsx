@@ -97,7 +97,8 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
         className="native-auth-current"
         detail={state ? `${t("已写入凭证：")}${state.actualLabel || t("未登录")}` : undefined}
         icon={<AgentIcon agent="codex" />}
-        title={t("Codex 登录")}
+        // 「主登录身份」：Codex 自己用哪个账号登录；和各供应商绑定的「供应商登录账号」区分开。
+        title={t("主登录身份")}
       >
         <AppSelect
           ariaLabel={t("Codex 当前登录")}

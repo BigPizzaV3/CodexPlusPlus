@@ -502,25 +502,18 @@
 }
 
 /* ── 页面切换动效 ────────────────────────────────────────────
-   切换页面时 .screen 按 route 重建，正文淡入并上移 6px；标题行和页签不动
-   （「统计 / 请求」这类页签切换也换 route，页签跟着动会闪）。
-   只写 from、不保留结束状态：动画一结束正文上就没有 transform，
-   不会给里面 position: fixed 的弹层另立包含块（以前整页动画踩过弹层被裁的坑）。 */
+   切换页面时 .screen 按 route 重建，正文在原地慢慢淡入，不位移（试过带 6px 上移的，
+   一挪一现显得生硬）；标题行和页签不动（「统计 / 请求」这类页签切换也换 route，页签跟着动会闪）。
+   只动透明度、不用 transform：正文不会成为里面 position: fixed 弹层的包含块
+   （以前整页位移动画踩过弹层被裁的坑），所以正文里开着弹层时也不用特殊处理。 */
 @keyframes cx-page-enter {
   from {
     opacity: 0;
-    transform: translate3d(0, 6px, 0);
   }
 }
 
 :root .shell .screen > :not(.cx-page-head, .tp-tabs, .cx-float-hint) {
-  animation: cx-page-enter 220ms var(--motion-ease);
-}
-
-/* 跳转的同时就弹出的抽屉 / 对话框（嵌在正文里、没走 portal 的那几种）：这一页不做入场位移，
-   否则这 220ms 里弹层会按正文而不是窗口定位。 */
-:root .shell .screen > :has(.modal-backdrop, .mg-drawer-backdrop, .gw-modal-backdrop) {
-  animation: none;
+  animation: cx-page-enter 320ms ease-out;
 }
 
 /* 请求日志、会话、MCP 与其他页面同宽：切换「统计 / 请求」页签时标题不跳。 */

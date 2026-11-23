@@ -345,6 +345,8 @@ export type GatewayPayload = {
   ccSwitchClaude?: Array<{ id: string; name: string }>;
   /** ClaudeMom 的上游（旧后端没有这一项）。 */
   claudeMomProfiles?: Array<{ id: string; name: string }>;
+  /** Magpie 的供应商（旧后端没有这一项）。 */
+  magpieProviders?: Array<{ id: string; name: string }>;
   grokProfiles: Array<{ id: string; name: string }>;
   /** OpenCode 里保存的 OpenCode Go / Zen Key。 */
   opencodeKeys?: Array<{ id: string; name: string }>;
@@ -1775,7 +1777,7 @@ function maskToken(value: string): string {
 
 /* —————————————— 从直连模式导入 —————————————— */
 
-export type ImportSource = "codex" | "claude" | "ccswitch" | "claudemom" | "grok" | "opencode" | "aggregate";
+export type ImportSource = "codex" | "claude" | "ccswitch" | "claudemom" | "magpie" | "grok" | "opencode" | "aggregate";
 export type ImportCandidate = { source: ImportSource; id: string; name: string; imported: boolean };
 
 /** 能导入网关的供应商（不含官方登录账号）：已导入过的标 `imported`。 */
@@ -1789,14 +1791,36 @@ export function importCandidates(payload: GatewayPayload | null): ImportCandidat
     ...plain("claude", payload?.claudeProviders),
     ...plain("ccswitch", payload?.ccSwitchClaude),
     ...plain("claudemom", payload?.claudeMomProfiles),
+    ...plain("magpie", payload?.magpieProviders),
     ...plain("grok", payload?.grokProfiles),
     ...plain("opencode", payload?.opencodeKeys),
   ];
 }
 
+/** 「把 Magpie 当作一个上游」那一条在后端的 id（`magpie_import::GATEWAY_ID`）。 */
+export const MAGPIE_UPSTREAM_ID = "@gateway";
+
+/**
+ * 还没导入、默认会去导的那些。别的来源就是没导入的条目；Magpie 的两种方式二选一，默认是当作一个上游：
+ * Magpie 里已经有任何一条导入过（不管哪种方式）就不再算；否则只算「当作上游」那一条，
+ * 没有那一条（旧版后端）才算可复制的各家。导入弹窗的默认勾选、各处的「还有 N 个没导」都按这个来。
+ */
+export function pendingImports(payload: GatewayPayload | null): ImportCandidate[] {
+  const candidates = importCandidates(payload);
+  const magpie = candidates.filter((item) => item.source === "magpie");
+  const magpieDone = magpie.some((item) => item.imported);
+  const upstream = magpie.find((item) => item.id === MAGPIE_UPSTREAM_ID);
+  return candidates.filter((item) => {
+    if (item.imported) return false;
+    if (item.source !== "magpie") return true;
+    if (magpieDone) return false;
+    return upstream ? item === upstream : true;
+  });
+}
+
 /** 还没导入网关的供应商数（引导卡片用）。 */
 export function pendingImportCount(payload: GatewayPayload | null): number {
-  return importCandidates(payload).filter((item) => !item.imported).length;
+  return pendingImports(payload).length;
 }
 
 /* —————————————— 模型收藏 —————————————— */

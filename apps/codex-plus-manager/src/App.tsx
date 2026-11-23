@@ -941,13 +941,23 @@ export function App() {
     return result;
   };
 
-  const importCcsProviders = async (bindings: Record<string, string> = {}) => {
-    const result = await run(() => call<SettingsResult>("import_ccs_providers", { bindings }));
+  const importCcsProviders = async (bindings: Record<string, string> = {}, only?: string[]) => {
+    const result = await run(() => call<SettingsResult>("import_ccs_providers", { bindings, only }));
     if (result) {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       showResultNotice(t("cc-switch 导入"), result);
       await refreshCcsProviders(true);
+    }
+  };
+
+  /** 把 Magpie 里勾选的供应商导入成直连供应商（「从第三方导入」对话框）。 */
+  const importMagpieProviders = async (ids: string[]) => {
+    const result = await run(() => call<SettingsResult>("import_magpie_providers", { ids }));
+    if (result) {
+      setSettings(result);
+      setSettingsForm(normalizeSettings(result.settings));
+      showResultNotice(t("Magpie 导入"), result);
     }
   };
 
@@ -2952,6 +2962,7 @@ export function App() {
       removeEnvConflicts,
       refreshCcsProviders,
       importCcsProviders,
+      importMagpieProviders,
       refreshLiveContextEntries,
       syncLiveContextEntries,
       refreshAds,
