@@ -11,9 +11,9 @@ pub(super) fn rollout_id(path: &Path) -> Option<uuid::Uuid> {
 }
 
 pub(super) struct HistoryBase {
-    rollout: uuid::Uuid,
-    end_ordinal: u64,
-    end_offset: u64,
+    pub(super) rollout: uuid::Uuid,
+    pub(super) end_ordinal: u64,
+    pub(super) end_offset: u64,
 }
 
 impl HistoryBase {

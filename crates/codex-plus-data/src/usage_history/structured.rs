@@ -19,6 +19,8 @@ mod provider_cache;
 mod provider_capture;
 mod segments;
 mod supplier_evidence;
+#[cfg(test)]
+mod token_checkpoint;
 mod tool_receipts;
 
 const RETENTION_DAYS: i64 = 365;
@@ -1142,7 +1144,7 @@ impl RequestEvidenceCache {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
 struct ContextConflicts {
     model: bool,
     provider: bool,
@@ -1156,7 +1158,7 @@ impl ContextConflicts {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 struct LegacyIdentity {
     id: [u8; 32],
     session: String,
@@ -1394,6 +1396,7 @@ struct ExecSkill {
     evidence: String,
 }
 
+#[derive(Clone, serde::Serialize, Deserialize)]
 struct SessionModelObservation {
     at: i64,
     model: String,
@@ -1404,7 +1407,7 @@ struct SessionModelObservation {
     unordered: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, serde::Serialize, Deserialize)]
 struct InheritedUsageContext {
     session: String,
     model: String,
@@ -1421,6 +1424,8 @@ struct InheritedUsageContext {
 struct FileState {
     stamp: Option<(u64, Option<SystemTime>, Option<(u64, u64)>)>,
     offset: u64,
+    resume_pending: bool,
+    replay_remaining: u64,
     reader: Option<index_budget::ReadCursor>,
     retained_charge: usize,
     pending: index_budget::PendingLine,
@@ -2887,7 +2892,8 @@ impl FileState {
             before.modified().ok(),
             observed_file_identity(path, &before)?,
         );
-        let unchanged = self.stamp == Some(observed) && self.reader.is_none();
+        let unchanged =
+            self.stamp == Some(observed) && self.reader.is_none() && !self.resume_pending;
         let mut file = if unchanged {
             None
         } else {
@@ -2965,7 +2971,7 @@ impl FileState {
             0
         };
         meter.refresh(self, cursor_bytes);
-        if self.stamp == Some(stamp) && self.reader.is_none() {
+        if self.stamp == Some(stamp) && self.reader.is_none() && !self.resume_pending {
             return Ok(self.pending.is_empty() && !self.skipping);
         }
         if self.stamp.is_some_and(|old| {
@@ -2989,8 +2995,12 @@ impl FileState {
                 .ok_or_else(|| io::Error::other("missing rollout reader"))?;
             if !compressed {
                 file.seek(SeekFrom::Start(self.offset))?;
+            } else if self.resume_pending {
+                // 重开压缩流须跳过已提交的解压字节，但不重放计数。
+                self.replay_remaining = self.offset;
             }
             self.reader = Some(index_budget::ReadCursor::new(file, compressed)?);
+            self.resume_pending = false;
             self.retained_charge += index_budget::CURSOR_BYTES;
         }
         self.stamp = Some(stamp);
@@ -3000,6 +3010,25 @@ impl FileState {
         let result = (|| -> io::Result<bool> {
             let input = &mut cursor.input;
             loop {
+                if self.replay_remaining != 0 {
+                    let limit = budget.read_limit(self);
+                    if limit == 0 {
+                        return Ok(false);
+                    }
+                    let bytes = input.fill_buf()?;
+                    if bytes.is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "compressed rollout ended before its committed cursor",
+                        ));
+                    }
+                    let length = self.replay_remaining.min(bytes.len().min(limit) as u64);
+                    input.consume(length as usize);
+                    self.replay_remaining -= length;
+                    self.bytes_read += length;
+                    budget.charge_read(length as usize);
+                    continue;
+                }
                 if self.pending.last() == Some(&b'\n') {
                     if !self.accept_pending_line(cutoff, budget, &mut meter) {
                         return Ok(false);
