@@ -53,9 +53,10 @@ impl Store {
             "BEGIN IMMEDIATE;
              CREATE TABLE IF NOT EXISTS token_revision (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                revision INTEGER NOT NULL
+                revision INTEGER NOT NULL,
+                precise_from TEXT NOT NULL
              ) STRICT;
-             INSERT OR IGNORE INTO token_revision VALUES (1, 0);
+             INSERT OR IGNORE INTO token_revision VALUES (1, 0, '');
              CREATE TABLE IF NOT EXISTS token_sources (
                 id INTEGER PRIMARY KEY,
                 source BLOB NOT NULL UNIQUE,
@@ -94,6 +95,7 @@ impl Store {
                 event_id BLOB PRIMARY KEY,
                 session_id INTEGER NOT NULL REFERENCES token_sessions(id),
                 timestamp_ms INTEGER NOT NULL,
+                day TEXT NOT NULL,
                 payload BLOB NOT NULL
              ) WITHOUT ROWID, STRICT;
              CREATE INDEX IF NOT EXISTS token_resolved_time ON token_resolved(timestamp_ms);

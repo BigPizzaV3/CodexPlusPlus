@@ -133,6 +133,15 @@ impl Store {
         } = update;
         let read = self.db.transaction()?;
         let base_revision = revision(&read)?;
+        let cutoff_key = cutoff.to_string();
+        let precise_from: String =
+            read.query_row("SELECT precise_from FROM token_revision", [], |row| {
+                row.get(0)
+            })?;
+        ensure!(
+            cutoff_key >= precise_from,
+            "Token retention boundary cannot move backward"
+        );
         let mut source_revision = None;
         let mut index = Index {
             provider_names,
@@ -152,13 +161,13 @@ impl Store {
                  JOIN token_linear_sources l ON s.id = l.source_id
                  JOIN token_observations o ON o.source_id = s.id
                  JOIN token_sessions owner ON owner.id = o.session_id
-                 WHERE s.source = ?1 AND s.revision = ?2 AND l.revision = ?2 AND l.cutoff = ?3
+                 WHERE s.source = ?1 AND s.revision = ?2 AND l.revision = ?2 AND l.cutoff <= ?3
                  AND NOT EXISTS (
                     SELECT 1 FROM token_source_links
                     WHERE source_id != s.id AND link IN (SELECT value FROM json_each(?4))
                  )
                  ORDER BY o.revision DESC, o.position DESC LIMIT 1",
-                    params![path_key, previous_revision, cutoff.to_string(), seed_json],
+                    params![path_key, previous_revision, cutoff_key, seed_json],
                     |row| {
                         Ok((
                             row.get::<_, Vec<u8>>(0)?,
@@ -428,6 +437,8 @@ impl Store {
             update.state,
             update.replace,
         )?;
+        let cutoff = prepared.cutoff.to_string();
+        tx.execute("UPDATE token_revision SET precise_from = ?1", [&cutoff])?;
         {
             let mut remove = tx.prepare(
                 "DELETE FROM token_resolved WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
@@ -436,7 +447,6 @@ impl Store {
                 "DELETE FROM token_days WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
                  AND day >= ?2",
             )?;
-            let cutoff = prepared.cutoff.to_string();
             if !prepared.append {
                 let mut invalidate = tx.prepare(
                     "DELETE FROM token_linear_sources WHERE source_id IN
@@ -461,13 +471,14 @@ impl Store {
                 collide.execute([id.as_slice()])?;
             }
             let mut insert = tx.prepare(
-                "INSERT INTO token_resolved VALUES (?1, (SELECT id FROM token_sessions WHERE session = ?2), ?3, ?4)",
+                "INSERT INTO token_resolved VALUES (?1, (SELECT id FROM token_sessions WHERE session = ?2), ?3, ?4, ?5)",
             )?;
             for event in &prepared.events {
                 insert.execute(params![
                     event.id.as_slice(),
                     event.session,
                     DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis(),
+                    event.date.to_string(),
                     serde_json::to_vec(&Observation::capture(event))?
                 ])?;
             }
@@ -496,6 +507,7 @@ impl Store {
                 "SELECT r.event_id, s.session, r.payload FROM token_resolved r
                  JOIN token_sessions s ON s.id = r.session_id
                  WHERE r.timestamp_ms >= ?1 AND r.timestamp_ms < ?2
+                 AND r.day >= (SELECT precise_from FROM token_revision)
                  ORDER BY r.timestamp_ms, r.event_id",
             )?;
             let mut rows = query.query([start_ms, end_ms])?;

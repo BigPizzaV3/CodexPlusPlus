@@ -364,6 +364,119 @@ fn ordered_append_matches_full_resolution_after_reopen_and_late_copy() {
 }
 
 #[test]
+fn advancing_retention_does_not_rehydrate_an_ordered_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let source = root.join("rollout-retention.jsonl");
+    let file = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let head: Vec<_> = std::iter::once(header(PARENT, 0))
+        .chain((1..=50).map(|pos| count(pos, pos, pos as u64, true)))
+        .collect();
+    let initial = parse(&source, &head, cutoff);
+    let expired = initial.events[0].date;
+    let retained = expired.succ_opt().unwrap();
+    let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+    let first = store
+        .prepare(
+            new_source(&source, &initial),
+            cutoff,
+            BTreeMap::new(),
+            1 << 20,
+        )
+        .unwrap();
+    let first_revision = store.publish(first).unwrap();
+    drop(store);
+
+    let mut row = count(51, 51, 51, true);
+    row["timestamp"] = "2026-01-03T12:00:51Z".into();
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{row}"
+    )
+    .unwrap();
+    let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+    let (base, mut tail) = store.checkpoint(&source).unwrap().unwrap();
+    assert_eq!(base, first_revision);
+    assert!(
+        tail.read_with_budget(&source, retained, &mut Budget::new(std::iter::empty()))
+            .unwrap()
+    );
+    let update = SourceUpdate {
+        source: &source,
+        state: &tail,
+        previous_revision: Some(base),
+        replace: false,
+    };
+    let next = store
+        .prepare(update, retained, BTreeMap::new(), 8192)
+        .unwrap();
+    let mut reader = Connection::open_with_flags(&file, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER reject_retention BEFORE UPDATE OF precise_from ON token_revision
+         BEGIN SELECT RAISE(ABORT, 'retention write failed'); END;",
+        )
+        .unwrap();
+    assert!(
+        store
+            .publish(next)
+            .unwrap_err()
+            .to_string()
+            .contains("retention write failed")
+    );
+    let (unchanged, previous) = read(&mut reader, i64::MIN, i64::MAX);
+    assert_eq!(unchanged, first_revision);
+    assert_eq!(previous.len(), 50);
+    assert_eq!(
+        store.checkpoint(&source).unwrap().unwrap().0,
+        first_revision
+    );
+    store
+        .db
+        .execute_batch("DROP TRIGGER reject_retention")
+        .unwrap();
+    let mut next = Some(
+        store
+            .prepare(update, retained, BTreeMap::new(), 8192)
+            .unwrap(),
+    );
+    let mut seen = 0;
+    let snapshot = Store::read_committed(&mut reader, i64::MIN, i64::MAX, |_| {
+        if let Some(next) = next.take() {
+            assert_eq!(store.publish(next).unwrap(), first_revision + 1);
+        }
+        seen += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!((snapshot, seen), (first_revision, 50));
+    let (actual_revision, events) = read(&mut reader, i64::MIN, i64::MAX);
+    assert_eq!(actual_revision, first_revision + 1);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].date, retained);
+    assert_eq!(events[0].delta.total_tokens, 110);
+    let mut summaries = Vec::new();
+    let summary_revision = Store::read_days(
+        &mut reader,
+        expired,
+        retained.succ_opt().unwrap(),
+        |_, day, groups| {
+            summaries.push((
+                day,
+                groups[0].totals.records,
+                groups[0].totals.counts.0.total_tokens,
+            ));
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(summary_revision, actual_revision);
+    assert_eq!(summaries, vec![(expired, 50, 5500), (retained, 1, 110)]);
+}
+
+#[test]
 fn replacing_recent_details_keeps_older_daily_totals_and_unknown_cache() {
     let dir = tempfile::tempdir().unwrap();
     let source = fs::canonicalize(dir.path())
