@@ -1,8 +1,9 @@
-//! Magpie（`com.yetone.magpie`）的供应商：读它的 `providers.json`，导入成直连供应商，或复制进共享供应商。
+//! Magpie（<https://github.com/yetone/magpie>，MIT）的供应商：读它的 `providers.json`，导入成直连供应商，或复制进共享供应商。
 //!
 //! 只读，不改 Magpie 的数据；导入之后两边各改各的，互不影响。
+//! 规则对照它的源码（`internal/appdir`、`internal/provider`、`internal/gateway`、`internal/settings`），各处注明出处。
 //!
-//! `providers.json` 的格式（按 0.1.4682 实测）：
+//! `providers.json` 的格式（`internal/provider/provider.go` 的 `Provider`）：
 //!
 //! ```json
 //! { "providers": [
@@ -10,13 +11,15 @@
 //! ] }
 //! ```
 //!
-//! `baseAPI` 是 `responses` / `chat` / `anthropic`，同名字段里放接口地址；`off` 是在 Magpie 里关掉了。
-//! 没有地址的内置项（订阅登录的 `codex` 那一条）和 `hidden` 的删除记录不是供应商，跳过。
+//! 接口地址每种协议一个字段（`responses` / `chat` / `anthropic`），可以同时有几个；`baseAPI` 只是编辑时选的那一种。
+//! `off` 是在 Magpie 里关掉了。没有地址的内置项（订阅登录的 `codex` 那一条）和 `hidden` 的删除记录不是供应商，跳过；
+//! 指回 Codex++ 本地服务的条目（地址里带 `/gw/`）也跳过，导进来就绕圈了（Magpie 自己导入时同样不收指向它网关的地址）。
 //!
 //! 导入有两种方式，一次只能选一种（两种一起会有两条路通向同一批账号）：
 //! - **复制它的供应商**：把地址和 Key 抄过来，之后不依赖 Magpie；
 //! - **把 Magpie 当作一个上游**（[`GATEWAY_ID`]）：只加一条指向 Magpie 本地网关的供应商，请求经 Magpie 转发，
-//!   用它里面的账号、路由和额度，Magpie 要开着。网关地址读它的 `gateway.json`（`{"addr": "127.0.0.1:3425"}`）。
+//!   用它里面的账号、路由和额度，Magpie 要开着。网关地址先读它运行时写的 `gateway.json`（`{"addr": "127.0.0.1:3425"}`），
+//!   没有就按 `settings.json` 的 `port`，再没有是默认端口 3425（`settings.SavedAddr`）。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -34,12 +37,11 @@ pub const ORIGIN_KIND: &str = "magpie";
 /// 「把 Magpie 当作一个上游」那一条的 id。Magpie 自己的供应商 id 只有小写字母、数字、`-`、`_`，不会和它撞。
 pub const GATEWAY_ID: &str = "@gateway";
 
-/// Magpie 本地网关在本机回环上认的固定 Key：它接 Codex 时写进 `config.toml` 的 `experimental_bearer_token` 就是这个。
-/// 在 Magpie 里另设了网关 Key 的，导入后要把这条供应商的 Key 换成那个。
+/// Magpie 告诉各个 Agent 填的 Key（`gateway.Token`）。它的网关只听回环、什么 Key 都收，这个只是因为 Agent 非要一个。
 const GATEWAY_LOOPBACK_KEY: &str = "magpie";
 
-/// `gateway.json` 读不到时用的地址（Magpie 的默认端口）。
-const GATEWAY_DEFAULT_ADDR: &str = "127.0.0.1:3425";
+/// Magpie 网关的默认端口（`settings.DefaultPort`）。
+const GATEWAY_DEFAULT_PORT: u64 = 3425;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagpieProvider {
@@ -52,23 +54,15 @@ pub struct MagpieProvider {
     pub disabled: bool,
 }
 
-/// Magpie 的配置目录：`XDG_CONFIG_HOME/magpie`（绝对路径时），否则 `~/.config/magpie`（macOS 实测也在这里）。
-/// Windows 下的位置没有实测过：`~/.config/magpie` 没有时再看 `%APPDATA%\magpie`。
+/// Magpie 的配置目录（`appdir.installed`）：`XDG_CONFIG_HOME/magpie`（绝对路径时），否则 `~/.config/magpie`，
+/// macOS、Linux、Windows 都一样。便携模式（程序旁边有 `data` 目录或 `.portable` 文件）下它的文件在那个 `data` 里，
+/// 那个位置跟着程序走，这里找不到，读不出来。
 pub fn magpie_config_dir() -> PathBuf {
-    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+    std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join("magpie"));
-    let home = crate::computer_use::home_dir().join(".config").join("magpie");
-    let appdata = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join("magpie"));
-    [xdg, Some(home.clone()), appdata]
-        .into_iter()
-        .flatten()
-        .find(|dir| dir.join("providers.json").is_file())
-        .unwrap_or(home)
+        .unwrap_or_else(|| crate::computer_use::home_dir().join(".config"))
+        .join("magpie")
 }
 
 pub fn default_providers_path() -> PathBuf {
@@ -88,12 +82,22 @@ fn gateway_provider_at(dir: &Path) -> Option<MagpieProvider> {
     if !dir.is_dir() {
         return None;
     }
-    let addr = std::fs::read(dir.join("gateway.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+    let json = |name: &str| {
+        std::fs::read(dir.join(name))
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+    };
+    // 正在跑的网关写的地址优先；没在跑就按设置里的端口，都没有是默认端口。端口范围同 `settings.CheckPort`。
+    let addr = json("gateway.json")
         .and_then(|book| book.get("addr").and_then(Value::as_str).map(str::trim).map(str::to_string))
         .and_then(|addr| loopback_addr(&addr))
-        .unwrap_or_else(|| GATEWAY_DEFAULT_ADDR.to_string());
+        .unwrap_or_else(|| {
+            let port = json("settings.json")
+                .and_then(|settings| settings.get("port").and_then(Value::as_u64))
+                .filter(|port| (1024..=65535).contains(port))
+                .unwrap_or(GATEWAY_DEFAULT_PORT);
+            format!("127.0.0.1:{port}")
+        });
     Some(MagpieProvider {
         id: GATEWAY_ID.to_string(),
         name: "Magpie".to_string(),
@@ -157,6 +161,10 @@ fn provider_from_value(value: &Value) -> Option<MagpieProvider> {
         .into_iter()
         .filter_map(|api| Some((protocol_of(api)?, text(api))))
         .find(|(_, url)| !url.is_empty())?;
+    // 指回 Codex++ 本地服务的地址（`…/gw/<agent>`）：导进来请求就在两边之间绕圈。
+    if base_url.contains("/gw/") {
+        return None;
+    }
     let name = text("name");
     Some(MagpieProvider {
         name: if name.is_empty() { id.clone() } else { name },
@@ -177,13 +185,19 @@ fn protocol_of(api: &str) -> Option<RelayProtocol> {
     }
 }
 
-/// Magpie 里 OpenAI 协议的地址常常只写到域名（`https://example.com`），它自己拼 `/v1/…`。
-/// 直连供应商的地址是原样写进 Codex 配置的（Codex 只在后面接 `/responses`），所以只有域名时补上 `/v1`；
-/// 已经带路径的（`…/api/v4`）不动。Anthropic 协议的地址本来就不带 `/v1`，不动。
+/// 把 Magpie 里存的地址整理成直连供应商要的写法，规则同它自己的 `DetectBase`（`internal/provider/detect.go`）：
+/// 先去掉粘上来的接口路径（`/chat/completions`、`/responses`、`/v1/messages`、`/messages`）；
+/// Anthropic 的地址是根（`/v1/messages` 由请求方接），带了 `/v1` 就去掉；
+/// OpenAI 两种协议只写到域名时补上 `/v1`（直连供应商的地址原样写进 Codex 配置，Codex 只在后面接 `/responses`），
+/// 已经带路径的（`…/api/v4`）不动。
 fn normalize_base_url(url: &str, protocol: RelayProtocol) -> String {
-    let base = url.trim().trim_end_matches('/');
+    let mut base = url.trim().trim_end_matches('/');
+    for suffix in ["/chat/completions", "/responses", "/v1/messages", "/messages"] {
+        base = base.strip_suffix(suffix).unwrap_or(base);
+    }
+    let base = base.trim_end_matches('/');
     if protocol == RelayProtocol::AnthropicMessages {
-        return base.to_string();
+        return base.strip_suffix("/v1").unwrap_or(base).to_string();
     }
     let origin_only = base.split_once("://").map_or(!base.contains('/'), |(_, rest)| !rest.contains('/'));
     if origin_only { format!("{base}/v1") } else { base.to_string() }
@@ -421,6 +435,12 @@ mod tests {
         assert_eq!(gateway.protocol, RelayProtocol::Responses);
         // 没装 Magpie（目录不在）时没有这一条。
         assert!(gateway_provider_at(&dir.path().join("missing")).is_none());
+        // 网关没在跑（没有 gateway.json）：按设置里的端口；端口不合规就回到默认。
+        let idle = tempfile::tempdir().unwrap();
+        std::fs::write(idle.path().join("settings.json"), r#"{ "theme": "system", "port": 4010 }"#).unwrap();
+        assert_eq!(gateway_provider_at(idle.path()).unwrap().base_url, "http://127.0.0.1:4010/v1");
+        std::fs::write(idle.path().join("settings.json"), r#"{ "port": 80 }"#).unwrap();
+        assert_eq!(gateway_provider_at(idle.path()).unwrap().base_url, "http://127.0.0.1:3425/v1");
 
         let mut settings = BackendSettings::default();
         let before = settings.relay_profiles.len();
@@ -443,6 +463,32 @@ mod tests {
         let relay = relay_at(&path, GATEWAY_ID).unwrap();
         assert_eq!(relay.name, "Magpie");
         assert_eq!(relay.upstream_base_url, "http://127.0.0.1:4567/v1");
+    }
+
+    #[test]
+    fn base_urls_follow_magpies_own_normalisation() {
+        let openai = RelayProtocol::Responses;
+        let anthropic = RelayProtocol::AnthropicMessages;
+        // 只写到域名的 OpenAI 协议地址补 /v1；带路径的不动。
+        assert_eq!(normalize_base_url("https://a.example.com/", openai), "https://a.example.com/v1");
+        assert_eq!(normalize_base_url("https://a.example.com/api/v4", openai), "https://a.example.com/api/v4");
+        // 粘上来的接口路径去掉。
+        assert_eq!(normalize_base_url("https://a.example.com/v1/chat/completions", RelayProtocol::ChatCompletions), "https://a.example.com/v1");
+        assert_eq!(normalize_base_url("https://a.example.com/v1/responses", openai), "https://a.example.com/v1");
+        // Anthropic 的地址是根：/v1、/v1/messages 都去掉。
+        assert_eq!(normalize_base_url("https://c.example.com/v1/messages", anthropic), "https://c.example.com");
+        assert_eq!(normalize_base_url("https://c.example.com/v1/", anthropic), "https://c.example.com");
+        assert_eq!(normalize_base_url("https://c.example.com/api-relay", anthropic), "https://c.example.com/api-relay");
+    }
+
+    #[test]
+    fn entries_pointing_back_at_our_own_local_service_are_skipped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = book(dir.path(), r#"{ "providers": [
+          { "id": "loop", "name": "Codex++", "key": "k", "anthropic": "http://127.0.0.1:55789/gw/claude", "baseAPI": "anthropic" },
+          { "id": "ok", "name": "OK", "key": "k", "responses": "https://ok.example.com", "baseAPI": "responses" }
+        ] }"#);
+        assert_eq!(list_providers_at(&path).unwrap().iter().map(|provider| provider.id.as_str()).collect::<Vec<_>>(), ["ok"]);
     }
 
     #[test]
