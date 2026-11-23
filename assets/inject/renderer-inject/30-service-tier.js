@@ -467,7 +467,7 @@
       }
       if (!codexPlusBackendSettings.providerSyncEnabled && sourceProvider !== targetProvider
           && sourceProvider !== "codex_plus_managed" && targetProvider !== "codex_plus_managed") {
-        throw new Error("会话供应商与当前网关不一致，请开启供应商同步后重试");
+        throw new Error("会话供应商与当前本地服务不一致，请开启供应商同步后重试");
       }
       if (needsIndex) {
         const result = await postJson("/thread-provider/prepare", {
@@ -543,7 +543,7 @@
           const currentGateway = await readCodexGatewayGenerationForRecovery();
           signal?.throwIfAborted();
           if (currentGateway && (!currentGateway.active || currentGateway.generation !== gateway.generation)) {
-            throw new Error("网关连接已变化，请重新发送");
+            throw new Error("本地服务连接已变化，请重新发送");
           }
           if (currentGateway) {
             const connection = codexGatewayPreparations.get(threadId) || { tail: null };
@@ -592,7 +592,7 @@
       codexBridgePreparationReadTimeoutMs);
     if (connection?.status !== "ok" || typeof connection.active !== "boolean"
         || typeof connection.generation !== "string") {
-      throw new Error(connection?.message || "读取网关连接状态失败，请稍后重试");
+      throw new Error(connection?.message || "读取本地服务连接状态失败，请稍后重试");
     }
     return connection;
   }
@@ -690,7 +690,7 @@
             || cached?.threadRuntimeStatus?.type === "active") {
           sendCodexPlusDiagnostic("gateway_recovery_active", {});
           if (typeof showToast === "function") {
-            showToast("网关连接已变化；活动回复会继续，此时发送可能仍使用旧连接。", { type: "warn" });
+            showToast("本地服务连接已变化；活动回复会继续，此时发送可能仍使用旧连接。", { type: "warn" });
           }
           return;
         }
@@ -706,7 +706,7 @@
         if (read.thread.modelProvider !== provider) {
           sendCodexPlusDiagnostic("gateway_recovery_provider_mismatch", {});
           if (typeof showToast === "function") {
-            showToast("当前会话供应商与网关不一致，消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
+            showToast("当前会话供应商与本地服务不一致，消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
           }
           return;
         }
@@ -779,7 +779,7 @@
             if (!unloaded) await new Promise((resolve) => setTimeout(resolve, 500));
             signal.throwIfAborted();
           }
-          if (!unloaded) throw new Error("会话仍被占用，无法重新连接网关，请稍后重新发送");
+          if (!unloaded) throw new Error("会话仍被占用，无法重新连接本地服务，请稍后重新发送");
           if (!resumed) {
             mayContinueNatively = false;
             state.resuming = --codexGatewayResumeSequence;
@@ -805,7 +805,7 @@
           signal.throwIfAborted();
           if (!currentGateway) return;
           if (!currentGateway.active || currentGateway.generation !== gateway.generation) {
-            throw new Error("网关连接已变化，请重新发送");
+            throw new Error("本地服务连接已变化，请重新发送");
           }
           state.generation = gateway.generation;
         } finally {
@@ -820,7 +820,7 @@
             || window.__codexPlusConnectionRecoveryPending?.has(threadId)) throw error;
         sendCodexPlusDiagnostic("gateway_recovery_preflight_failed", { errorMessage: String(error?.message || error) });
         if (typeof showToast === "function") {
-          showToast("网关连接检查未完成，本次消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
+          showToast("本地服务连接检查未完成，本次消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
         }
       } finally {
         release();
@@ -833,7 +833,7 @@
     try {
       await Promise.race([work, new Promise((_, reject) => {
         timer = setTimeout(() => {
-          const error = new Error("网关连接准备超时，请重新发送");
+          const error = new Error("本地服务连接准备超时，请重新发送");
           controller.abort(error);
           reject(error);
         }, codexGatewayPreparationTimeoutMs);

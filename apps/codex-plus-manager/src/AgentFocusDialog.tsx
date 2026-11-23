@@ -1,7 +1,7 @@
 /**
  * 使用模式：启动时问一次（在首次引导之前），设置页里也能改。
- * 「只管理 Codex」隐藏其他 Agent 的相关内容，网关按 Codex 专用的单 Agent 模式显示；
- * 「只用增强功能」隐藏供应商、网关、用量，供应商交给别的工具；「全部功能」和以前一样。
+ * 「只管理 Codex」隐藏其他 Agent 的相关内容，本地服务按 Codex 专用的单 Agent 模式显示；
+ * 「只用增强功能」隐藏供应商、本地服务、用量，供应商交给别的工具；「全部功能」和以前一样。
  */
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
@@ -16,9 +16,9 @@ import { useModalFocus } from "./use-modal-focus";
 import "./OnboardingTour.css";
 
 const MODE_TEXT: Record<FocusMode, { name: string; hint: string }> = {
-  codex: { name: "只管理 Codex", hint: "管理 Codex 的供应商、增强、皮肤和拓展。隐藏其他 Agent 的界面，已有网关连接保持不变。" },
-  enhance: { name: "只用增强功能", hint: "保留 Codex、Claude Code 的增强、皮肤和拓展，隐藏供应商、网关和用量，并关闭旧版供应商配置切换。已有网关连接保持不变。" },
-  all: { name: "全部功能", hint: "同时管理 Codex、Claude Code、Grok 等多个 Agent，经同一个网关共用共享供应商。" },
+  codex: { name: "只管理 Codex", hint: "管理 Codex 的供应商、增强、皮肤和拓展。隐藏其他 Agent 的界面，已经接入本地服务的保持不变。" },
+  enhance: { name: "只用增强功能", hint: "保留 Codex、Claude Code 的增强、皮肤和拓展，隐藏供应商、本地服务和用量，并关闭旧版供应商配置切换。已经接入本地服务的保持不变。" },
+  all: { name: "全部功能", hint: "同时管理 Codex、Claude Code、Grok 等多个 Agent，经本地服务共用共享供应商。" },
 };
 
 type GatewayState = { status: "loading" | "error"; agents: string[] } | { status: "ready"; agents: string[] };
@@ -107,7 +107,7 @@ export function AgentFocusDialog({ initial, onDone, onCancel }: {
       <div className="tour-dim" />
       <div className="tour-card agent-focus-card" data-centered="true">
         <h3 id="agent-focus-title">{t("你打算怎么用 Codex++？")}</h3>
-        <p id="agent-focus-description">{t("选择要使用的功能，之后可以在设置里修改。已有的 Agent 网关连接不会随模式切换而断开。")}</p>
+        <p id="agent-focus-description">{t("选择要使用的功能，之后可以在设置里修改。已经接入本地服务的 Agent 不会随模式切换而断开。")}</p>
         <div className="agent-focus-list" role="radiogroup" aria-label={t("使用模式")}>
           {FOCUS_MODES.map((mode) => {
             const checked = value === mode;
@@ -126,10 +126,10 @@ export function AgentFocusDialog({ initial, onDone, onCancel }: {
           })}
         </div>
         {value === "enhance" && gateway.status === "loading" ? (
-          <p className="agent-focus-warning" role="status">{t("正在确认已有网关连接…")}</p>
+          <p className="agent-focus-warning" role="status">{t("正在确认已有的本地服务接入…")}</p>
         ) : value === "enhance" && gateway.status === "error" ? (
           <div className="agent-focus-status">
-            <p className="agent-focus-warning" role="alert">{t("无法确认已有网关连接，请重试后再完成模式切换。")}</p>
+            <p className="agent-focus-warning" role="alert">{t("无法确认已有的本地服务接入，请重试后再完成模式切换。")}</p>
             <div className="tour-actions"><button className="tour-ghost" onClick={() => setLoadAttempt((attempt) => attempt + 1)} type="button"><RefreshCw aria-hidden="true" size={13} />{t("重试")}</button></div>
           </div>
         ) : value === "enhance" && gateway.agents.length ? (

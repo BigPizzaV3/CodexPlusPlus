@@ -3170,16 +3170,16 @@ export function App() {
       const draft = { ...draftFromBinding(previous), ...(model ? { model } : {}) };
       const issue = validateDraft(draft, payload);
       if (issue) {
-        await showNotice(t("切换到网关"), t(issue), "failed");
+        await showNotice(t("切换到本地服务"), t(issue), "failed");
         void navigate(issue.includes("共享供应商是空的") ? "gatewayProviders" : "gateway");
         return;
       }
       const result = await invoke<GatewayResult>("save_gateway_binding", { agent: "codex", binding: { ...bindingFromDraft(draft, previous), enabled: true }, reconnect: true });
       publishGatewayPayload(result);
       await refreshSettings(true);
-      await showNotice(t("切换到网关"), result.message, isSuccessStatus(result.status as Status) ? "ok" : "failed");
+      await showNotice(t("切换到本地服务"), result.message, isSuccessStatus(result.status as Status) ? "ok" : "failed");
     } catch (error) {
-      await showNotice(t("切换到网关"), stringifyError(error), "failed");
+      await showNotice(t("切换到本地服务"), stringifyError(error), "failed");
     } finally {
       setCodexConnecting(false);
     }
@@ -3464,7 +3464,7 @@ export function App() {
           onApply={async (previewToken) => {
             try {
               const result = await invoke<GatewayResult>("disable_gateway_binding", { agent: "codex", previewToken });
-              await showNotice(result.status === "ok" ? t("已断开网关") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
+              await showNotice(result.status === "ok" ? t("已断开本地服务") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
               await refreshSettings(true);
               if (result.status === "ok") await switchAfterDisconnect();
               return result.status === "ok";
@@ -3478,7 +3478,7 @@ export function App() {
             try {
               const result = await invoke<GatewayResult>("disable_gateway_binding_full_switch", { agent: "codex", previewToken });
               publishGatewayPayload(result);
-              await showNotice(result.status === "ok" ? t("已断开网关") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
+              await showNotice(result.status === "ok" ? t("已断开本地服务") : t("断开失败"), result.message, result.status === "ok" ? "ok" : "failed");
               await refreshSettings(true);
               if (result.status === "ok") await switchAfterDisconnect();
               return result.status === "ok";

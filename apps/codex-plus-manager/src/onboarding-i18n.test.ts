@@ -53,7 +53,7 @@ test("模式问卷与入门清单的所有状态、按钮和错误均有英文",
     }
   }
   assert.ok(keys.plain.has("重试保存"), "需要扫描嵌套条件分支中的失败状态");
-  assert.ok(keys.plain.has("管理 Codex 的供应商、增强、皮肤和拓展。隐藏其他 Agent 的界面，已有网关连接保持不变。"), "需要扫描动态读取的模式说明");
+  assert.ok(keys.plain.has("管理 Codex 的供应商、增强、皮肤和拓展。隐藏其他 Agent 的界面，已经接入本地服务的保持不变。"), "需要扫描动态读取的模式说明");
   checkKeys(keys);
 });
 

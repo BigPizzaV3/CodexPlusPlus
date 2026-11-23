@@ -496,7 +496,7 @@ export function ClaudeLocalizationScreen(
               ? t("启动改过代码的副本，汉化、听写、页面扩展在副本里注入；官方 Claude 不动。")
               : claudeLaunch === "full"
                 ? t("经本地服务启动官方 Claude，汉化、听写、页面扩展都由它注入。已打开的 Claude 需完全退出重开。")
-                : t("用安装包自带的界面直连网关，不注入汉化、听写和页面扩展。已打开的 Claude 需完全退出重开。")}
+                : t("用安装包自带的界面直连本地服务，不注入汉化、听写和页面扩展。已打开的 Claude 需完全退出重开。")}
             title={t("启动模式")}
           >
             <AppSelect
@@ -633,7 +633,7 @@ export function ClaudeLocalizationScreen(
           <CxCard>
           <CxRow
             detail={(local?.config.codeShareHome ?? true)
-              ? t("Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于网关。从这里启动后生效。")
+              ? t("Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于本地服务。从这里启动后生效。")
               : t("Code 页签用独立目录，请求走 Codex++ 本地服务；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。")}
             title={t("和命令行共用 ~/.claude")}
           >

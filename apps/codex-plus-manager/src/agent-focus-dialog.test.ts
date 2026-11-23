@@ -160,7 +160,7 @@ test("增强模式等网关状态确认，加载失败后可重试并显示已�
   f.loads[0].reject(new Error("fixture unavailable"));
   await flush();
   tree = f.render();
-  assert.match(text(tree), /无法确认已有网关连接/);
+  assert.match(text(tree), /无法确认已有的本地服务接入/);
   assert.equal(button(tree, "完成").props.disabled, true);
   button(tree, "重试").props.onClick();
   f.render();
@@ -195,7 +195,7 @@ test("网关返回失败或缺少连接列表时，不能当成没有既有连�
     f.loads[0].resolve(result);
     await flush();
     const tree = f.render();
-    assert.match(text(tree), /无法确认已有网关连接/);
+    assert.match(text(tree), /无法确认已有的本地服务接入/);
     assert.equal(button(tree, "完成").props.disabled, true);
     button(tree, "完成").props.onClick();
     assert.equal(f.saves.length, 0);

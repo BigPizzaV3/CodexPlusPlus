@@ -666,7 +666,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
         ) : entries.length ? (
           <CxEmpty title={t("没有匹配当前筛选条件的请求。")} />
         ) : (
-          <CxEmpty title={t("还没有请求日志")} detail={t("在 Codex 或已接入网关的 Agent 里发起一次对话后即可看到。")} />
+          <CxEmpty title={t("还没有请求日志")} detail={t("在 Codex 或已接入本地服务的 Agent 里发起一次对话后即可看到。")} />
         )}
       </CxCard>
       {more || partial ? (

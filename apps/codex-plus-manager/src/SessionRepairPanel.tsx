@@ -123,7 +123,7 @@ export function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionI
                 <ToggleVisual />
               </label>
             </SettingRow>
-            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、网关或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
+            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、本地服务或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
               <label className="relay-bare-switch">
                 <input
                   aria-label={t("非官方登录时保留本地项目")}
