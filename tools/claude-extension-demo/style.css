@@ -1,0 +1,4 @@
+.claude-extension-demo { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+.claude-extension-demo button { align-self: flex-start; padding: 6px 14px; border-radius: 8px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.claude-extension-demo button:disabled { opacity: 0.5; cursor: default; }
+.claude-extension-demo pre { margin: 0; padding: 12px; border-radius: 8px; background: rgb(127 127 127 / 0.12); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

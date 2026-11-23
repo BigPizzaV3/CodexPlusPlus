@@ -317,8 +317,12 @@ pub async fn claude_enhance_set_bash_timeout(
     claude_enhance_result("Bash 时间限制已保存，重新启动 Claude 后生效。", result)
 }
 
+/// 读一次列表（claude-local 顺带重写完整功能模式的注入计划），再把补丁副本那份也换成新的。
 fn page_extensions_payload() -> Value {
-    json!({ "extensions": codex_plus_core::claude_local_backend::page_extensions() })
+    let extensions = codex_plus_core::claude_local_backend::page_extensions();
+    codex_plus_core::claude_localization::refresh_page_injection();
+    // pageStatus：Claude 页面回报的各拓展加载结果，按脚本 key；「万物皆拓展」里 Codex++ 拓展目录的那几行也用它。
+    json!({ "extensions": extensions, "pageStatus": codex_plus_core::claude_local_backend::page_status() })
 }
 
 #[tauri::command]
@@ -336,10 +340,13 @@ pub async fn claude_page_extension_enable(id: String, enabled: bool) -> CommandR
     })
     .await
     {
-        Ok(Ok(list)) => ok(
-            if enabled { "扩展已启用，刷新 Claude 页面后生效。" } else { "扩展已停用，刷新 Claude 页面后生效。" },
-            json!({ "extensions": list }),
-        ),
+        Ok(Ok(list)) => {
+            codex_plus_core::claude_localization::refresh_page_injection();
+            ok(
+                if enabled { "扩展已启用，刷新 Claude 页面后生效。" } else { "扩展已停用，刷新 Claude 页面后生效。" },
+                json!({ "extensions": list, "pageStatus": codex_plus_core::claude_local_backend::page_status() }),
+            )
+        }
         Ok(Err(error)) => failed(&format!("{error:#}"), page_extensions_payload()),
         Err(error) => failed(&format!("设置扩展失败：{error}"), page_extensions_payload()),
     }
@@ -368,6 +375,16 @@ pub async fn claude_page_extension_import(path: String) -> CommandResult<Value> 
         Ok(Ok(message)) => ok(&message, page_extensions_payload()),
         Ok(Err(error)) => failed(&format!("{error:#}"), page_extensions_payload()),
         Err(error) => failed(&format!("导入扩展失败：{error}"), page_extensions_payload()),
+    }
+}
+
+/// 保存一个装在 Claude 页面扩展目录里的拓展包（codexpp.json）的配置。
+#[tauri::command]
+pub async fn claude_page_extension_config(id: String, values: serde_json::Map<String, Value>) -> CommandResult<Value> {
+    match tauri::async_runtime::spawn_blocking(move || codex_plus_core::claude_local_backend::set_page_extension_config(&id, &values)).await {
+        Ok(Ok(_)) => ok("设置已保存，刷新 Claude 页面后生效。", page_extensions_payload()),
+        Ok(Err(error)) => failed(&format!("{error:#}"), page_extensions_payload()),
+        Err(error) => failed(&format!("保存设置失败：{error}"), page_extensions_payload()),
     }
 }
 
@@ -7549,6 +7566,8 @@ pub async fn refresh_user_script_inventory() -> CommandResult<SettingsPayload> {
         .and_then(|status| status.debug_port)
         .unwrap_or_else(default_debug_port);
     let manager = default_user_script_manager();
+    // 装了新拓展、手改了清单之后界面都会重读一次清单：顺带把 Claude 页面的注入计划换成新的。
+    let _ = tauri::async_runtime::spawn_blocking(codex_plus_core::claude_localization::refresh_page_injection).await;
     let (user_scripts, message) = match codex_plus_core::user_scripts::live_runtime_status(
         debug_port,
     )
@@ -7695,12 +7714,14 @@ pub fn set_user_scripts_enabled(enabled: bool, host: Option<String>) -> CommandR
     if !claude {
         codex_plus_core::extension_hooks::sync_default(&manager);
     }
+    // Claude 页面里的拓展脚本跟着两个总开关走：重新生成注入计划，刷新 Claude 页面就按新的来。
+    codex_plus_core::claude_localization::refresh_page_injection();
     match result {
         Ok(_) => settings_payload(
             if claude && enabled {
-                "Claude Desktop 拓展已开启，重新启动补丁版 Claude 后加载。"
+                "Claude Desktop 拓展已开启：页面里的脚本刷新 Claude 页面后生效，Code 会话里的按钮和工具重新启动 Claude 后加载。"
             } else if claude {
-                "Claude Desktop 拓展已关闭。"
+                "Claude Desktop 拓展已关闭，刷新 Claude 页面后生效。"
             } else if enabled {
                 "本地拓展整体已开启。"
             } else {
@@ -7843,6 +7864,8 @@ pub fn set_extension_config(key: String, values: serde_json::Map<String, Value>,
     } else {
         manager.set_extension_config(trimmed, &values)
     };
+    // 配置也给 Claude 页面里的拓展脚本和它的后台用：注入计划跟着换。
+    codex_plus_core::claude_localization::refresh_page_injection();
     match saved {
         Ok(_) => settings_payload("拓展配置已保存。", "拓展配置保存失败"),
         Err(error) => failed(&format!("拓展配置保存失败：{error:#}"), fallback_settings_payload()),
@@ -7884,12 +7907,13 @@ pub fn set_user_script_enabled(key: String, enabled: bool, host: Option<String>)
     if !claude {
         codex_plus_core::extension_hooks::sync_default(&manager);
     }
+    codex_plus_core::claude_localization::refresh_page_injection();
     match result {
         Ok(_) => settings_payload(
             if claude && enabled {
-                "Claude Desktop 拓展已启用，重新启动补丁版 Claude 后加载。"
+                "Claude Desktop 拓展已启用：页面里的脚本刷新 Claude 页面后生效，Code 会话里的按钮和工具重新启动 Claude 后加载。"
             } else if claude {
-                "Claude Desktop 拓展已停用。"
+                "Claude Desktop 拓展已停用，刷新 Claude 页面后生效。"
             } else if enabled {
                 "脚本已启用。"
             } else {
@@ -7913,6 +7937,7 @@ pub fn delete_user_script(key: String) -> CommandResult<SettingsPayload> {
     let manager = default_user_script_manager();
     let result = manager.delete_user_script(trimmed);
     codex_plus_core::extension_hooks::sync_default(&manager);
+    codex_plus_core::claude_localization::refresh_page_injection();
     match result {
         Ok(_) => settings_payload("脚本已删除。", "脚本删除失败"),
         Err(error) => failed(

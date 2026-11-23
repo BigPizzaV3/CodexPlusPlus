@@ -5,6 +5,7 @@ import vm from "node:vm";
 import ts from "typescript";
 import { pageVisibleForTool } from "./page-groups.ts";
 import {
+  claudeParts,
   extensionEnabledForHost,
   extensionHostForTool,
   extensionsForHost,
@@ -197,7 +198,7 @@ function extensionHarness() {
     useMemo: (compute: () => unknown) => compute(),
     // 打开页面时市场还没读过就自动读一次：记下调用，渲染时不执行副作用。
     useEffect: () => undefined,
-    extensionEnabledForHost, extensionHostForTool, extensionsForHost, extensionStateForHost,
+    claudeParts, extensionEnabledForHost, extensionHostForTool, extensionsForHost, extensionStateForHost,
     defaultMarketSort, parseMarketTime, sortMarketScripts,
     formatMarketUpdatedAt: (value: string) => value,
   });
@@ -283,23 +284,29 @@ test("页内宿主切换绑定共享路由并传递当前宿主", () => {
 test("Claude 页只显示已声明适配的本地包，并按 Claude 开关排序", () => {
   const h = extensionHarness();
   const props = extensionScreenProps(h, "claude");
-  // Claude 下先显示页面扩展（格式和市场与 ClaudeMom 相同）；一排胶囊由它出，第三个是 Claude Code 拓展。
+  // Claude 下「已安装」里两类一起列：页面扩展目录里的（页面扩展组件自己画，胶囊那排也由它出），
+  // 下面接着是 Codex++ 拓展目录里适配 Claude 的拓展包。
   let nodes = elements(h.render("UserScriptsScreen", props));
   const page = nodes.find((node) => node.type === "ClaudePageExtensions");
   assert.ok(page);
   assert.equal(page.props.pane, "installed");
-  assert.equal(page.props.codeCount, 2);
-  assert.equal(nodes.some((node) => node.type === h.context.ScriptRow), false);
+  assert.equal(page.props.packageCount, 2, "算进「已安装」的计数里");
   assert.equal(nodes.some((node) => node.type === "CxFilters"), false, "不再有第二排胶囊");
-  page.props.onPaneChange("code");
-  nodes = elements(h.render("UserScriptsScreen", props));
-  assert.equal(nodes.find((node) => node.type === "ClaudePageExtensions")?.props.pane, "code", "胶囊那排还在");
   const rows = nodes.filter((node) => node.type === h.context.ScriptRow);
   assert.deepEqual(rows.map((node) => node.props.script.key), ["user:claude-on", "user:claude-off"]);
-  assert.ok(rows.every((node) => node.props.host === "claude" && node.props.globalEnabled === true));
-  // 「已启用」「未启用」两节按 Claude 开关分组，数量就是原来摘要里的「已启用 N 个」。
+  assert.ok(rows.every((node) => node.props.host === "claude" && node.props.globalEnabled === true && node.props.pageStatus === null));
+  // 按 Claude 开关分两节。
   const sections = nodes.filter((node) => node.type === "CxSection").map((node) => [node.props.title, node.props.count]);
-  assert.deepEqual(sections, [["已启用", 1], ["未启用", 1]]);
+  assert.deepEqual(sections, [["Codex++ 拓展包", 1], ["Codex++ 拓展包 · 未启用", 1]]);
+  // Claude 页面回报过加载结果后，对应的那一行带上它。
+  page.props.onPageStatus({ "user:claude-on": { status: "loaded", error: "", unsupported: [], loadedAt: "" } });
+  const reported = elements(h.render("UserScriptsScreen", props)).filter((node) => node.type === h.context.ScriptRow);
+  assert.deepEqual(reported.map((node) => node.props.pageStatus?.status ?? null), ["loaded", null]);
+  // 切到扩展市场时不列已安装的。
+  page.props.onPaneChange("market");
+  const market = elements(h.render("UserScriptsScreen", props));
+  assert.equal(market.find((node) => node.type === "ClaudePageExtensions")?.props.pane, "market", "胶囊那排还在");
+  assert.equal(market.some((node) => node.type === h.context.ScriptRow), false);
   for (const component of ["ExtensionCreatorCard", "CuratedPackagesSection", "CommunityExtensionsPanel", "MyPublishedPanel", "DshPluginsPanel", "BuiltinExtensionsSummary"]) {
     assert.equal(nodes.some((node) => node.type === component), false, component);
   }
@@ -385,6 +392,32 @@ test("Claude 行不显示 Codex 加载失败，单项开关带 Claude 宿主", (
   state = nodes.find((node) => node.props.className === "user-script-state-label");
   assert.equal(state?.props["data-state"], "globalOff");
   assert.doesNotMatch(String(state?.props.title), /Codex/);
+});
+
+test("Claude 行按页面部分显示：刷新后生效、已加载、加载失败带原因", () => {
+  const h = extensionHarness();
+  const withPage = (mods: boolean) => {
+    const base = extensionScript("user:page", false, true);
+    const page = { scripts: ["page.js"], styles: [], methods: [] };
+    return { ...base, status: "failed", error: "CODEX_ONLY_ERROR", package: { ...base.package, claudeDesktop: mods ? { buttons: [{ id: "count" }], page } : { page } } };
+  };
+  const stateOf = (props: Record<string, unknown>) =>
+    elements(h.render("ScriptRow", { host: "claude", globalEnabled: true, actions: h.actions, ...props }))
+      .find((node) => node.props.className === "user-script-state-label");
+  // 页面还没回报过：页面部分刷新就生效；同时有 Code 会话那部分时说清楚两头各怎么生效。
+  let state = stateOf({ script: withPage(false) });
+  assert.deepEqual([state?.props["data-state"], elementText(state!)], ["notLoaded", "刷新后生效"]);
+  assert.doesNotMatch(String(state?.props.title), /重新启动|CODEX_ONLY_ERROR/);
+  state = stateOf({ script: withPage(true) });
+  assert.match(String(state?.props.title), /刷新 Claude 页面后生效.*重新启动 Claude 后加载/);
+  // 页面回报的结果：用的是 Claude 页面里的报错，不是 Codex 的。
+  const status = (extra: object) => ({ status: "loaded", error: "", unsupported: [], loadedAt: "", ...extra });
+  state = stateOf({ script: withPage(false), pageStatus: status({}) });
+  assert.equal(state?.props["data-state"], "loaded");
+  state = stateOf({ script: withPage(false), pageStatus: status({ status: "failed", error: "CLAUDE_PAGE_ERROR" }) });
+  assert.equal(state?.props["data-state"], "failed");
+  assert.match(String(state?.props.title), /CLAUDE_PAGE_ERROR/);
+  assert.doesNotMatch(String(state?.props.title), /CODEX_ONLY_ERROR/);
 });
 
 test("Codex 行保留加载失败详情和自己的单项开关", () => {

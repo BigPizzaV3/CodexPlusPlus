@@ -1,11 +1,18 @@
 {
   "id": "claude-extension-demo",
   "name": "Claude 拓展连通测试",
-  "version": "0.1.0",
-  "description": "验证 Claude Desktop 的按钮、后台工具与会话事件。",
+  "version": "0.2.0",
+  "description": "验证 Claude Desktop 里的页面脚本、按钮、后台工具与会话事件。",
   "engines": { "codexpp": 1 },
+  "permissions": { "routes": ["/backend/status"] },
   "backend": { "script": "backend.mjs" },
+  "config": {
+    "greeting": { "type": "string", "title": "加载时的提示", "default": "Claude 拓展已加载" }
+  },
   "claudeDesktop": {
+    "renderer": "renderer.js",
+    "styles": ["style.css"],
+    "methods": ["status"],
     "buttons": [
       { "id": "status", "label": "拓展状态", "method": "status" }
     ],

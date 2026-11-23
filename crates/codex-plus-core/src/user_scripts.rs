@@ -904,21 +904,62 @@ impl UserScriptManager {
             .filter(|script| config.claude_scripts.get(&script.key).copied().unwrap_or(true))
             .filter_map(|script| {
                 let package = script.package.filter(|package| package.error.is_none())?;
+                // 只有页面部分的包不进 Mods 插件；页面部分由注入计划下发（见 enabled_claude_page_packages）。
+                let declaration = package.claude_desktop.filter(|declaration| declaration.has_mods())?;
                 Some(crate::extension_claude::EnabledClaudeExtension {
                     key: script.key,
                     name: package.name.unwrap_or_else(|| package.id.clone()),
                     id: package.id,
-                    declaration: package.claude_desktop?,
+                    declaration: declaration.mods_only(),
                 })
             })
             .collect())
     }
 
     /// 每次 Claude 调用都重新确认宿主开关、拓展身份与清单方法白名单，不沿用 Codex 的扫描缓存。
+    /// 启用中的 Claude 页面拓展包：声明了 `claudeDesktop.renderer` / `styles` 的包，交给 claude-local 并进注入计划。
+    /// 和 Mods 那边同一套开关：Claude 总开关、每个拓展的 Claude 开关、清单无误。
+    pub fn enabled_claude_page_packages(&self) -> Vec<claude_local::extensions::HostPagePackage> {
+        if !self.claude_extensions_enabled() {
+            return Vec::new();
+        }
+        let config = self.load_config();
+        let Ok(scripts) = self.scan_script_files(&config) else {
+            return Vec::new();
+        };
+        scripts
+            .into_iter()
+            .filter(|script| config.claude_scripts.get(&script.key).copied().unwrap_or(true))
+            .filter_map(|script| {
+                let package = script.package.filter(|package| package.error.is_none())?;
+                let page = package.claude_desktop.as_ref()?.page.clone()?;
+                Some(claude_local::extensions::HostPagePackage {
+                    data_dir: crate::extension_backend::claude_data_dir(self, &package.id),
+                    key: script.key,
+                    name: package.name.clone().unwrap_or_else(|| package.id.clone()),
+                    version: package.version.clone(),
+                    description: package.description.clone(),
+                    root: package.root.clone()?,
+                    scripts: page.scripts,
+                    styles: page.styles,
+                    methods: page.methods,
+                    routes: package.routes.clone(),
+                    backend: package.backend.clone(),
+                    config: package.config.clone(),
+                    config_schema: package.config_schema.clone(),
+                    id: package.id,
+                })
+            })
+            .collect()
+    }
+
+    /// `page` 为真是 Claude 页面里的拓展脚本在调（只能调 `claudeDesktop.methods` 里的），否则是 Code 会话里的
+    /// 按钮、工具、事件在调（只能调它们各自声明的方法）。
     pub(crate) fn enabled_claude_extension_backend(
         &self,
         key: &str,
         method: &str,
+        page: bool,
     ) -> anyhow::Result<(String, PathBuf, Value)> {
         if !self.claude_extensions_enabled() {
             anyhow::bail!("Claude Desktop 拓展已关闭");
@@ -936,7 +977,7 @@ impl UserScriptManager {
             anyhow::bail!("拓展包清单有误：{error}");
         }
         let declaration = package.claude_desktop.context("拓展没有声明 claudeDesktop")?;
-        if !declaration.permits(method) {
+        if !(if page { declaration.permits_page(method) } else { declaration.permits(method) }) {
             anyhow::bail!("Claude Desktop 无权调用拓展 {key} 的方法 {method}");
         }
         Ok((
@@ -1909,108 +1950,10 @@ struct ExtensionPackage {
     error: Option<String>,
 }
 
-/// 拓展配置项（codexpp.json 的 `config.<key>`）。
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExtensionConfigField {
-    pub key: String,
-    /// string / text（多行）/ number / boolean / select / array / object
-    #[serde(rename = "type")]
-    pub kind: String,
-    /// 字符串，或 `{ en, zh, ... }` 多语言文本（管理器按界面语言显示）。
-    pub title: Value,
-    pub description: Value,
-    pub default: Value,
-    /// select 的可选值：[{ value, label }]
-    pub options: Vec<Value>,
-    /// 界面上按密码框显示。值仍以明文存在本机 user_scripts.json。
-    pub secret: bool,
-    /// number 的取值范围。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
-    /// array 的元素类型（键为空的字段）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<ExtensionConfigField>>,
-    /// object 的子字段。
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub properties: Vec<ExtensionConfigField>,
-    /// string 的输入方式：`file` 表示本机文件路径，管理器显示「选择…」按钮。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub format: Option<String>,
-    /// `format: "file"` 时选择器只列这些扩展名（不带点）；空表示不限。
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub extensions: Vec<String>,
-}
-
-impl ExtensionConfigField {
-    /// 校验一个值是否合乎类型；select 必须是可选值之一；对象可以缺键（缺的取默认），不能有未声明的键。
-    fn accepts(&self, value: &Value) -> bool {
-        match self.kind.as_str() {
-            "string" | "text" => value.is_string(),
-            "number" => value.as_f64().is_some_and(|number| {
-                self.min.is_none_or(|min| number >= min) && self.max.is_none_or(|max| number <= max)
-            }),
-            "boolean" => value.is_boolean(),
-            "select" => self.options.iter().any(|option| option.get("value") == Some(value)),
-            "array" => value.as_array().is_some_and(|items| {
-                items.len() <= 200 && self.items.as_ref().is_some_and(|field| items.iter().all(|item| field.accepts(item)))
-            }),
-            "object" => value.as_object().is_some_and(|map| {
-                map.iter().all(|(key, item)| {
-                    self.properties.iter().find(|field| &field.key == key).is_some_and(|field| field.accepts(item))
-                })
-            }),
-            _ => false,
-        }
-    }
-
-    /// 生效值：合法的已存值，对象逐个子字段合并默认值；否则取默认值。
-    fn resolve(&self, stored: Option<&Value>) -> Value {
-        match (self.kind.as_str(), stored) {
-            ("object", Some(Value::Object(map))) if self.accepts(&Value::Object(map.clone())) => {
-                Value::Object(self.properties.iter().map(|field| (field.key.clone(), field.resolve(map.get(&field.key)))).collect())
-            }
-            ("object", _) => self.default.clone(),
-            (_, Some(value)) if self.accepts(value) => value.clone(),
-            _ => self.default.clone(),
-        }
-    }
-}
-
-/// 交给模型前 secret 配置项显示成的打码值。
-pub const SECRET_MASK: &str = "******";
-
-/// 把配置里 secret 项（含对象子字段、数组元素里的）换成打码值。`schema` 是序列化后的字段数组，
-/// 交给模型的清单、配置结果都要过一遍，免得 API Key 进模型上下文和会话记录。
-pub fn mask_secret_config(schema: &Value, config: &Value) -> Value {
-    fn mask_field(field: &Value, value: &Value) -> Value {
-        if field["secret"].as_bool() == Some(true) {
-            return match value {
-                Value::Null => Value::Null,
-                Value::String(text) if text.is_empty() => value.clone(),
-                _ => Value::String(SECRET_MASK.into()),
-            };
-        }
-        match (field["type"].as_str(), value) {
-            (Some("object"), Value::Object(_)) => mask_secret_config(&field["properties"], value),
-            (Some("array"), Value::Array(items)) => Value::Array(items.iter().map(|item| mask_field(&field["items"], item)).collect()),
-            _ => value.clone(),
-        }
-    }
-    let (Some(fields), Some(map)) = (schema.as_array(), config.as_object()) else {
-        return config.clone();
-    };
-    Value::Object(
-        map.iter()
-            .map(|(key, value)| {
-                let masked = fields.iter().find(|field| field["key"] == *key).map_or_else(|| value.clone(), |field| mask_field(field, value));
-                (key.clone(), masked)
-            })
-            .collect(),
-    )
-}
+// 拓展配置项的声明、校验、默认值合并和密钥打码在 claude-local 里（ClaudeMom 与 Codex++ 共用一份规则）。
+pub use claude_local::extensions::config::{
+    ExtensionConfigField, SECRET_MASK, mask_secret_config, parse_extension_config_schema, resolve_extension_config,
+};
 
 /// README 最多读这么多字节，超出的截断（页面上提示）。
 const EXTENSION_README_MAX_BYTES: usize = 512 * 1024;
@@ -2028,15 +1971,6 @@ fn find_extension_readme(root: &std::path::Path) -> Option<PathBuf> {
     EXTENSION_README_NAMES
         .iter()
         .find_map(|name| files.iter().find(|(file, _)| file == name).map(|(_, path)| path.clone()))
-}
-
-/// 生效配置：每个声明的键取已存且合法的值，否则取默认值（对象按子字段合并）。
-fn resolve_extension_config(schema: &[ExtensionConfigField], stored: Option<&Map<String, Value>>) -> Value {
-    let mut resolved = Map::new();
-    for field in schema {
-        resolved.insert(field.key.clone(), field.resolve(stored.and_then(|values| values.get(&field.key))));
-    }
-    Value::Object(resolved)
 }
 
 /// 拓展声明的一个模型工具（codexpp.json 的 `tools[]`），由 Codex++ 拓展 MCP 对外提供。
@@ -2879,13 +2813,15 @@ fn parse_extension_manifest(
     let launch_declared = raw.get("launch").is_some();
     let pipeline_declared = raw.get("toolPipeline").is_some();
     let providers_declared = raw.get("providers").is_some_and(|value| value.as_array().is_some_and(|list| !list.is_empty()));
+    // 只给 Claude Desktop 用的包（claudeDesktop 里的页面脚本、样式）在 Codex 这边没有别的入口，也是一个合法的包。
+    let claude_declared = raw.get("claudeDesktop").is_some();
     let root = directory
         .canonicalize()
         .with_context(|| format!("无法解析拓展目录 {}", directory.display()))?;
     package.root = Some(root.clone());
     package.codex = crate::extension_codex::parse(&root, &raw)?;
-    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && !manager_declared && !preload_declared && !launch_declared && package.codex.is_empty() {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、manager、preload、launch、skills、agents、mcpServers 或 instructions");
+    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && !manager_declared && !preload_declared && !launch_declared && !claude_declared && package.codex.is_empty() {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、manager、preload、launch、skills、agents、mcpServers、instructions 或 claudeDesktop");
     }
     package.preload = crate::extension_launch::parse_preload(&root, raw.get("preload"))?;
     package.launch = crate::extension_launch::parse_launch(&root, raw.get("launch"))?;
@@ -2940,7 +2876,8 @@ fn parse_extension_manifest(
     package.claude_desktop = raw.get("claudeDesktop")
         .map(crate::extension_claude::ClaudeDesktopExtension::parse)
         .transpose()?;
-    if package.claude_desktop.is_some() && package.backend.is_none() {
+    // 只有页面脚本和样式的包不需要后台；声明了按钮、事件、工具或页面可调的方法才需要。
+    if package.claude_desktop.as_ref().is_some_and(|declaration| declaration.needs_backend()) && package.backend.is_none() {
         anyhow::bail!("claudeDesktop 调用后台方法，需要同时声明 backend.script");
     }
     package.replaces = parse_extension_replaces(raw.get("replaces"))?;
@@ -3286,147 +3223,6 @@ fn parse_gateway_replaces(value: Option<&Value>) -> anyhow::Result<Vec<String>> 
             Ok(name.to_string())
         })
         .collect()
-}
-
-/// 解析 `config`：`{ "minutes": { "type": "number", "title": "时长", "default": 25 } }`。
-fn parse_extension_config_schema(value: Option<&Value>) -> anyhow::Result<Vec<ExtensionConfigField>> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    let map = value.as_object().context("config 必须是对象：{ 键: { type, title, default } }")?;
-    if map.len() > 32 {
-        anyhow::bail!("config 最多 32 项");
-    }
-    map.iter().map(|(key, field)| parse_config_field(key, &format!("config.{key}"), field, 0)).collect()
-}
-
-/// 解析一个配置字段。`path` 用于报错（如 `config.proxy.host`），`depth` 限制对象嵌套层数。
-fn parse_config_field(key: &str, path: &str, field: &Value, depth: usize) -> anyhow::Result<ExtensionConfigField> {
-    if !key.is_empty() && !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
-        anyhow::bail!("配置键 {key:?} 只能包含字母、数字、_、-");
-    }
-    let field = field.as_object().with_context(|| format!("{path} 必须是对象"))?;
-    let kind = field.get("type").and_then(Value::as_str).unwrap_or("string").to_string();
-    if !["string", "text", "number", "boolean", "select", "array", "object"].contains(&kind.as_str()) {
-        anyhow::bail!("{path}.type 只能是 string、text、number、boolean、select、array、object");
-    }
-    // title / description：字符串，或 { 语言: 文本 } 多语言对象。
-    let text = |name: &str, fallback: &str| -> anyhow::Result<Value> {
-        match field.get(name) {
-            None => Ok(json!(fallback)),
-            Some(Value::String(text)) => Ok(json!(text)),
-            Some(Value::Object(map)) if !map.is_empty() && map.values().all(Value::is_string) => Ok(Value::Object(map.clone())),
-            Some(_) => anyhow::bail!("{path}.{name} 必须是字符串或 {{ 语言: 文本 }}"),
-        }
-    };
-    let options = match field.get("options") {
-        None => Vec::new(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| match item {
-                Value::Object(object) if object.contains_key("value") => Ok(json!({
-                    "value": object["value"],
-                    "label": object.get("label").and_then(Value::as_str).map(str::to_owned)
-                        .unwrap_or_else(|| object["value"].to_string().trim_matches('"').to_string()),
-                })),
-                Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(json!({ "value": item, "label": item.to_string().trim_matches('"') })),
-                _ => anyhow::bail!("{path}.options 的每一项要么是值，要么是 {{ value, label }}"),
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?,
-        Some(_) => anyhow::bail!("{path}.options 必须是数组"),
-    };
-    if kind == "select" && options.is_empty() {
-        anyhow::bail!("{path} 是 select，必须给 options");
-    }
-    let bound = |name: &str| -> anyhow::Result<Option<f64>> {
-        match field.get(name) {
-            None => Ok(None),
-            Some(value) => value.as_f64().map(Some).with_context(|| format!("{path}.{name} 必须是数字")),
-        }
-    };
-    let items = if kind == "array" {
-        let items = field.get("items").with_context(|| format!("{path} 是 array，必须给 items（元素类型）"))?;
-        let item = parse_config_field("", &format!("{path}.items"), items, depth + 1)?;
-        if matches!(item.kind.as_str(), "array" | "object") {
-            anyhow::bail!("{path}.items 只能是简单类型（string、text、number、boolean、select）");
-        }
-        Some(Box::new(item))
-    } else {
-        None
-    };
-    let properties = if kind == "object" {
-        if depth >= 2 {
-            anyhow::bail!("{path} 嵌套过深（对象最多 3 层）");
-        }
-        let map = field
-            .get("properties")
-            .and_then(Value::as_object)
-            .filter(|map| !map.is_empty())
-            .with_context(|| format!("{path} 是 object，必须给 properties（子字段）"))?;
-        if map.len() > 32 {
-            anyhow::bail!("{path}.properties 最多 32 项");
-        }
-        map.iter()
-            .map(|(child, value)| parse_config_field(child, &format!("{path}.{child}"), value, depth + 1))
-            .collect::<anyhow::Result<Vec<_>>>()?
-    } else {
-        Vec::new()
-    };
-    let format = match field.get("format") {
-        None => None,
-        Some(Value::String(format)) if format == "file" && kind == "string" => Some(format.clone()),
-        Some(_) => anyhow::bail!("{path}.format 目前只支持 \"file\"，且只能用在 string 上"),
-    };
-    let extensions = match field.get("extensions") {
-        None => Vec::new(),
-        Some(Value::Array(items)) if format.is_some() && items.len() <= 20 => items
-            .iter()
-            .map(|item| match item.as_str() {
-                Some(name) if !name.is_empty() && name.len() <= 10 && name.chars().all(|ch| ch.is_ascii_alphanumeric()) => {
-                    Ok(name.to_ascii_lowercase())
-                }
-                _ => anyhow::bail!("{path}.extensions 的每一项是不带点的扩展名，如 \"png\""),
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?,
-        Some(_) => anyhow::bail!("{path}.extensions 只能和 format: \"file\" 一起用，最多 20 项"),
-    };
-    let mut result = ExtensionConfigField {
-        key: key.to_string(),
-        kind: kind.clone(),
-        title: text("title", key)?,
-        description: text("description", "")?,
-        default: Value::Null,
-        options,
-        secret: field.get("secret").and_then(Value::as_bool).unwrap_or(false),
-        min: bound("min")?,
-        max: bound("max")?,
-        items,
-        properties,
-        format,
-        extensions,
-    };
-    result.default = match kind.as_str() {
-        // 对象的默认值由子字段默认值组成；清单里写的 default 只用来覆盖其中的键。
-        "object" => {
-            let given = field.get("default").and_then(Value::as_object).cloned().unwrap_or_default();
-            Value::Object(result.properties.iter().map(|child| (child.key.clone(), child.resolve(given.get(&child.key)))).collect())
-        }
-        _ => {
-            let fallback = match kind.as_str() {
-                "number" => match result.min { Some(min) if min > 0.0 => json!(min), _ => json!(0) },
-                "boolean" => json!(false),
-                "select" => result.options[0]["value"].clone(),
-                "array" => json!([]),
-                _ => json!(""),
-            };
-            match field.get("default") {
-                Some(value) if result.accepts(value) => value.clone(),
-                Some(_) => anyhow::bail!("{path}.default 与 type 不符"),
-                None => fallback,
-            }
-        }
-    };
-    Ok(result)
 }
 
 /// 解析 `tools`：`[{ "name": "lookup", "description": "…", "inputSchema": {…}, "script": "tools/lookup.mjs", "timeout": 30 }]`。

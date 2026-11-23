@@ -438,6 +438,7 @@ pub fn run() {
             commands::claude_page_extension_enable,
             commands::claude_page_extension_import,
             commands::claude_page_extension_remove,
+            commands::claude_page_extension_config,
             commands::claude_page_extension_open_folder,
             commands::claude_page_extension_market,
             commands::claude_page_extension_install,

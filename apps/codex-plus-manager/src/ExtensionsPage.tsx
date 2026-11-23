@@ -17,7 +17,7 @@ import { ExtensionManagerPanel } from "./ExtensionManagerPanel";
 import { AgentGlyph } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
 import { defaultMarketSort, parseMarketTime, relativeAge, sortMarketScripts, type LocalScriptState, type ScriptMarketSort } from "./script-market-model";
-import { extensionEnabledForHost, extensionsForHost, extensionStateForHost, type ExtensionHost } from "./extension-host-model";
+import { claudeParts, extensionEnabledForHost, extensionsForHost, extensionStateForHost, type ClaudePageStatus, type ExtensionHost } from "./extension-host-model";
 import { Menu, MenuItem } from "./ManagementPages";
 import {
   builtinSettingValue,
@@ -284,10 +284,13 @@ export function UserScriptsScreen({ host, onHostChange, settings, market, onOpen
   const [search, setSearch] = useState("");
   const [communitySort, setCommunitySort] = useState<CommunitySort>("stars");
   const [codexPane, setPane] = useState<"market" | "community" | "local" | "mine" | "dsh">("market");
-  // Claude 下分两类：注入 Claude 页面的页面扩展（格式和扩展市场与 ClaudeMom 相同），和声明适配 Claude Code 的 Codex++ 拓展。
-  const [claudePane, setClaudePane] = useState<"installed" | "market" | "code">("installed");
+  // Claude 下「已安装」里两类一起列：装在页面扩展目录里的（页面扩展和拓展包，格式和扩展市场与 ClaudeMom 相同），
+  // 和 Codex++ 拓展目录里适配 Claude 的拓展包（同一个包也给 Codex 用，开关各管各的）。
+  const [claudePane, setClaudePane] = useState<"installed" | "market">("installed");
+  // Claude 页面回报的各拓展加载结果，按脚本 key。
+  const [claudeStatus, setClaudeStatus] = useState<Record<string, ClaudePageStatus>>({});
   const claudeEnhance = useClaudeEnhance();
-  const pane = codexHost ? codexPane : claudePane === "code" ? "local" : "page";
+  const pane = codexHost ? codexPane : claudePane === "installed" ? "local" : "page";
   // 直接打开本页（命令面板、深链）时市场可能还没读过，自动读一次，不再要用户点「刷新」。
   useEffect(() => {
     if (codexHost && !market) void actions.refreshScriptMarket();
@@ -335,7 +338,9 @@ export function UserScriptsScreen({ host, onHostChange, settings, market, onOpen
     : scripts);
   const enabledScripts = localScripts.filter((script) => extensionEnabledForHost(script, host));
   const idleScripts = localScripts.filter((script) => !extensionEnabledForHost(script, host));
-  const scriptRow = (script: (typeof scripts)[number]) => <ScriptRow key={`${host}:${script.key}`} host={host} script={script} globalEnabled={localEnabled} actions={actions} />;
+  const scriptRow = (script: (typeof scripts)[number]) => (
+    <ScriptRow actions={actions} globalEnabled={localEnabled} host={host} key={`${host}:${script.key}`} pageStatus={codexHost ? null : claudeStatus[script.key] ?? null} script={script} />
+  );
   const marketRow = (script: ScriptMarketItem) => (
     <MarketScriptCard actions={actions} installedKey={installedKeyByMarketId.get(script.id)} key={script.id} script={script} />
   );
@@ -411,9 +416,9 @@ export function UserScriptsScreen({ host, onHostChange, settings, market, onOpen
         {codexHost ? <ExtensionCreatorCard /> : null}
       </CxToolbar>
       {/* 顶部最多一条状态提示：整体关闭优先，其次是「下次启动跳过」。 */}
-      {pane === "page" ? null : inventory && !localEnabled ? (
+      {pane === "page" || (!codexHost && !scripts.length) ? null : inventory && !localEnabled ? (
         <CxBanner
-          detail={codexHost ? t("拓展开着，但「启用本地拓展」整体开关关着，暂不注入") : t("重启 Claude 补丁版后应用")}
+          detail={codexHost ? t("拓展开着，但「启用本地拓展」整体开关关着，暂不注入") : t("打开后，Codex++ 拓展目录里适配 Claude 的拓展包才会进 Claude")}
           icon={<PowerOff />}
           title={codexHost ? t("本地拓展已整体关闭") : t("Claude 拓展已关闭")}
           tone="warn"
@@ -426,10 +431,12 @@ export function UserScriptsScreen({ host, onHostChange, settings, market, onOpen
         </CxBanner>
       ) : null}
       {codexHost ? <CxFilters items={panes} label={t("拓展")} onChange={setPane} trailing={sortControl} value={codexPane} /> : (
-        // 和 Codex 一样一排胶囊：页面扩展的已安装 / 扩展市场，加上 Claude Code 拓展；页面扩展组件自己管这排胶囊和列表。
+        // 和 Codex 一样一排胶囊：已安装 / 扩展市场；页面扩展组件自己管这排胶囊和它那部分列表，
+        // 「已安装」下面接着是 Codex++ 拓展目录里适配 Claude 的拓展包（见下面的 local 分支）。
         <ClaudePageExtensions
-          codeCount={scripts.length}
           delivery={claudeEnhance?.delivery ?? null}
+          onPageStatus={setClaudeStatus}
+          packageCount={scripts.length}
           notify={(title, message, status) => void actions.showMessage(title, message, status === "ok" ? "ok" : "failed")}
           onOpenUrl={(url) => void actions.openExternalUrl(url)}
           onPaneChange={setClaudePane}
@@ -459,20 +466,21 @@ export function UserScriptsScreen({ host, onHostChange, settings, market, onOpen
       ) : (
         <>
           {enabledScripts.length ? (
-            <CxSection count={enabledScripts.length} title={t("已启用")}>
+            <CxSection count={enabledScripts.length} title={codexHost ? t("已启用") : t("Codex++ 拓展包")}>
               <CxCard>{enabledScripts.map(scriptRow)}</CxCard>
             </CxSection>
           ) : null}
           {idleScripts.length ? (
-            <CxSection count={idleScripts.length} title={t("未启用")}>
+            <CxSection count={idleScripts.length} title={codexHost ? t("未启用") : t("Codex++ 拓展包 · 未启用")}>
               <CxCard>{idleScripts.map(scriptRow)}</CxCard>
             </CxSection>
           ) : null}
-          {!localScripts.length ? (
+          {/* Claude 下空列表由页面扩展那部分说（两类都没有时它给出「浏览扩展市场」）。 */}
+          {codexHost && !localScripts.length ? (
             <CxCard>
-              <CxEmpty title={query ? t("没有匹配的拓展。") : codexHost ? t("还没有本地拓展。") : t("还没有适配 Claude 的本地拓展。")}>
+              <CxEmpty title={query ? t("没有匹配的拓展。") : t("还没有本地拓展。")}>
                 {query ? <button className="cx-secondary" onClick={() => setSearch("")} type="button">{t("清除搜索")}</button>
-                  : codexHost ? <button className="cx-secondary" onClick={() => setPane("market")} type="button">{t("浏览精选")}</button> : null}
+                  : <button className="cx-secondary" onClick={() => setPane("market")} type="button">{t("浏览精选")}</button>}
               </CxEmpty>
             </CxCard>
           ) : null}
@@ -610,12 +618,21 @@ function FeatureToggle({
 const EXPERIMENTAL_TITLE = /\s*(?:（实验性?）|\(experimental\))$/i;
 const RESTART_HINT = /重启 ?Codex|重新启动 ?Codex|下次启动 ?Codex|restart(?:ing)? Codex|relaunch/i;
 
-/// 本地脚本合并状态的文案与悬停说明。
-function localScriptStateLabel(state: LocalScriptState, host: ExtensionHost = "codex"): { label: string; hint: string } {
+/// 本地脚本合并状态的文案与悬停说明。`claude` 是这个包在 Claude 里有哪两部分（见 claudeParts）。
+function localScriptStateLabel(state: LocalScriptState, host: ExtensionHost = "codex", claude = { page: false, mods: true }): { label: string; hint: string } {
   if (host === "claude") {
     if (state === "off") return { label: t("已关闭"), hint: t("该拓展已在 Claude 中关闭") };
     if (state === "globalOff") return { label: t("整体已关闭"), hint: t("Claude 拓展整体开关已关闭") };
-    return { label: t("重启后应用"), hint: t("重启 Claude 补丁版后应用") };
+    if (state === "loaded") return { label: t("已加载"), hint: t("已在 Claude 页面里运行") };
+    if (state === "failed") return { label: t("加载失败"), hint: t("拓展在 Claude 页面里运行出错") };
+    // 页面里的脚本刷新页面就生效；Code 会话里的按钮、工具、事件走 Claude Code Mods，要重启 Claude。
+    if (!claude.page) return { label: t("重启后应用"), hint: t("Code 会话里的按钮、工具和事件重新启动 Claude 后加载") };
+    return {
+      label: t("刷新后生效"),
+      hint: claude.mods
+        ? t("页面里的脚本刷新 Claude 页面后生效；Code 会话里的按钮、工具和事件重新启动 Claude 后加载")
+        : t("刷新 Claude 页面（⌘R / Ctrl+R）后生效"),
+    };
   }
   switch (state) {
     case "off":
@@ -752,8 +769,9 @@ function BuiltinExtensionsSummary({ builtins }: { builtins: BuiltinExtension[] }
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
 /// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
 /// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
-function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHost; script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; actions: Actions }) {
+function ScriptRow({ host, script, globalEnabled, pageStatus, actions }: { host: ExtensionHost; script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; pageStatus?: ClaudePageStatus | null; actions: Actions }) {
   const codexHost = host === "codex";
+  const claude = claudeParts(script);
   const enabled = extensionEnabledForHost(script, host);
   const isPackage = script.kind === "package";
   const source = script.market_id
@@ -763,10 +781,12 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
       : script.source === "builtin" ? t("内置") : t("用户");
   // 拓展包是文件夹：后端整个移进废纸篓（可找回，#2919），单文件脚本直接删除。
   const canDelete = codexHost && script.source === "user";
-  const state = extensionStateForHost(script, host, globalEnabled);
-  const { label, hint } = localScriptStateLabel(state, host);
-  const stateHint = codexHost && state === "failed" && script.error ? `${hint}\n${script.error}` : hint;
-  const configSchema = codexHost ? script.package?.configSchema ?? [] : [];
+  const state = extensionStateForHost(script, host, globalEnabled, pageStatus);
+  const { label, hint } = localScriptStateLabel(state, host, claude);
+  const failure = codexHost ? script.error : pageStatus?.error;
+  const stateHint = state === "failed" && failure ? `${hint}\n${failure}` : hint;
+  // 配置是一份，Codex 和 Claude 共用：Claude 页签里也能改。
+  const configSchema = script.package?.configSchema ?? [];
   // 拓展自己的设置页（settings.page）优先，没有时用按清单 config 生成的通用表单。
   const settingsPage = codexHost && !!script.package?.settingsPage;
   const hasSettings = settingsPage || configSchema.length > 0;
@@ -818,8 +838,11 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
       ? { text: tf("资源超出大小上限未加载：{0}", [pkg.skippedAssets.join("、")]), tone: "warn" as const, title: pkg.skippedAssets.join("\n") }
       : null,
   ] : [
-    pkg?.claudeDesktop ? { text: "Claude Code" } : null,
+    claude.page ? { text: t("页面脚本") } : null,
+    claude.mods ? { text: t("Code 会话的按钮与工具") } : null,
     pkg?.backend ? { text: t("常驻后台") } : null,
+    // 页面用了 Claude 里还没有的接口：照常运行，只是那几处不出现。
+    pageStatus?.unsupported?.length ? { text: tf("Claude 里还不可用：{0}", [pageStatus.unsupported.join("、")]) } : null,
   ];
   const capabilityTags = capabilityCandidates.filter((tag): tag is CapabilityTag => tag !== null);
   // 一行只放一句说明：有描述用描述，没有就列能力；完整的能力清单放进悬停。警示类能力单独打橙色标签。

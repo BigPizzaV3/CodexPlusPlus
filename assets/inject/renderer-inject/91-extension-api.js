@@ -321,6 +321,21 @@
     return {
       version: codexPlusExtensionAdapterVersion,
       apiVersion: codexPlusExtensionApiVersion,
+      /**
+       * 当前宿主。同一份拓展脚本也能跑在 Claude Desktop 里（清单的 claudeDesktop.renderer），那边是 "claudeDesktop"。
+       * 老版本没有这个成员，判断时写 `codexPlus.host ?? "codex"`。
+       */
+      host: "codex",
+      /**
+       * 某个接口 / 挂载点在当前宿主可不可用，例如 supports("registerComposerAction")、supports("registerSlot:composer.above")。
+       * Codex 里公开接口都有；Claude Desktop 里有些挂载点没有对应位置，先问一下再注册。
+       */
+      supports(name) {
+        const [member, detail] = String(name || "").split(":");
+        if (member === "registerSlot" && detail !== undefined) return codexPlusUiSlotNames.includes(detail);
+        // 从挂好的对象上查，不靠 this：拓展可能把 supports 解构出来单独调。
+        return member !== "dshClient" && typeof window.codexPlus?.[member] === "function";
+      },
       constants: codexPlusExtensionConstants,
       // 用 getter 而不是快照：脚本初始化结束后再读也能拿到自己的 key。
       get script() {

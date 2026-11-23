@@ -23,6 +23,7 @@ mod claude_ion_asar;
 pub mod claude_hooks;
 pub mod claude_local_backend;
 pub mod claude_localization;
+pub mod claude_page_host;
 pub mod claude_page_market;
 pub mod claude_provider_sources;
 pub mod codex_app_state;
