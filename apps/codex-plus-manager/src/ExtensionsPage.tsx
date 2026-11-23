@@ -805,6 +805,15 @@ function ScriptRow({ host, script, globalEnabled, actions }: { host: ExtensionHo
       : null,
     pkg?.schedules?.length ? { text: tf("定时任务：{0}", [pkg.schedules.map((item) => item.at ? `${item.method} ${item.at}` : tf("{0} 每 {1} 分钟", [item.method, String(item.everyMinutes ?? "")])).join("、")]) } : null,
     pkg?.http ? { text: tf("HTTP 路由：/ext/{0}/", [pkg.id]) } : null,
+    pkg?.launch?.before || pkg?.launch?.after || pkg?.launch?.args?.length
+      ? { text: tf("启动前后：{0}", [joined([!!pkg.launch.before && t("启动前脚本"), !!pkg.launch.after && t("退出后脚本"), !!pkg.launch.args?.length && tf("启动参数 {0}", [pkg.launch.args.join(" ")])])]) }
+      : null,
+    pkg?.preload?.scripts ? { text: t("页面最早期脚本") } : null,
+    pkg?.gatewayReplaces?.length ? { text: tf("关掉内置网关环节：{0}", [pkg.gatewayReplaces.join("、")]) } : null,
+    pkg?.replaces?.length ? { text: tf("顶替内置拓展：{0}", [pkg.replaces.join("、")]) } : null,
+    pkg?.managerPage?.replaces?.length ? { text: tf("顶替管理器页面：{0}", [pkg.managerPage.replaces.join("、")]) } : null,
+    pkg?.dsh ? { text: t("dsh 插件") } : null,
+    pkg?.routes?.length ? { text: tf("数据路由：{0}", [pkg.routes.join("、")]) } : null,
     pkg?.skippedAssets?.length
       ? { text: tf("资源超出大小上限未加载：{0}", [pkg.skippedAssets.join("、")]), tone: "warn" as const, title: pkg.skippedAssets.join("\n") }
       : null,

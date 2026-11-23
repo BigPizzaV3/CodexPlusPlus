@@ -308,9 +308,11 @@
   /** 按风险列出的徽标（与管理器 riskBadges 一致）。 */
   function codexPlusRiskBadges(permissions = {}) {
     const badges = [];
-    if (permissions.backend) badges.push("后台进程");
-    if (permissions.hooks?.length) badges.push("钩子");
-    if (permissions.gatewayRequest || permissions.gatewayResponse) badges.push("网关");
+    if (permissions.backend || permissions.dsh) badges.push("后台进程");
+    if (permissions.launchBefore || permissions.launchAfter) badges.push("启动脚本");
+    if (permissions.mcpServers?.length) badges.push("MCP");
+    if (permissions.hooks?.length || permissions.toolPipeline) badges.push("钩子");
+    if (permissions.gatewayRequest || permissions.gatewayResponse || permissions.gatewayError || permissions.gatewayReplaces?.length || permissions.providers?.length) badges.push("网关");
     if (permissions.tools?.length) badges.push("模型工具");
     return badges;
   }

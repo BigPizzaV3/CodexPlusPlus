@@ -390,6 +390,9 @@ export type UserScriptInventory = {
       managerPage?: ManagerPageSummary | null;
       /** 拓展自己的设置页（codexpp.json 的 settings.page），「设置」打开它而不是通用表单。 */
       settingsPage?: boolean;
+      /** 顶替的内置拓展、关掉的内置网关环节、页面最早期脚本、启动前后脚本与启动参数、dsh 插件。 */
+      replaces?: string[]; gatewayReplaces?: string[]; preload?: { scripts?: number };
+      launch?: { args?: string[]; before?: boolean; after?: boolean }; dsh?: boolean;
     } | null;
     enabled: boolean;
     claude_enabled?: boolean | null;
