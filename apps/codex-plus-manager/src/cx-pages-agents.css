@@ -510,6 +510,23 @@
   gap: 12px;
 }
 
+/* 设置页签：下划线页签（.tp-tabs），每页一组卡片。没选中的页签面板只是藏起来。 */
+:root .shell .claude-local-panel {
+  display: grid;
+  gap: 12px;
+}
+
+:root .shell .claude-local-panel[hidden] {
+  display: none;
+}
+
+:root .shell .claude-local-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: hsl(var(--status-warning));
+}
+
 :root .shell .claude-local-settings select {
   width: min(100%, 320px);
   min-width: 0;
