@@ -5,8 +5,8 @@
  * 原来藏在「MCP 与 Skills」三点菜单的「管理插件配置」里（插件只有 Codex 支持，和多 Agent 的 MCP 列表不在一起）。
  */
 import { useState, type ReactNode } from "react";
-import { Download, LoaderCircle, Puzzle } from "lucide-react";
-import { CxAddRow, CxBadge, CxCard, CxEmpty, CxRow, CxStatusIcon } from "./cx-layout";
+import { Download, LoaderCircle, PackageOpen } from "lucide-react";
+import { CxAddRow, CxBadge, CxCard, CxEmpty } from "./cx-layout";
 import { Action, Field, ManagementDrawer, Menu, MenuItem } from "./ManagementPages";
 import { Switch } from "./gateway-ui";
 import type { MarketPlugin } from "./plugin-market-model";
@@ -82,65 +82,78 @@ export function PluginConfigPanel({ entries, plugins, onSave, busy: outerBusy, q
     return hit(entry.id, plugin?.displayName, plugin?.name, plugin?.shortDescription, plugin?.description);
   });
   const shownOrphans = orphans.filter((plugin) => hit(plugin.displayName, plugin.name, plugin.shortDescription));
-  const catalogTitle = (plugin: MarketPlugin, title: string) => onOpenDetails ? (
-    <button className="cx-link plugin-config-title" onClick={(event) => onOpenDetails(plugin, event.currentTarget)} title={t("查看详情")} type="button">{title}</button>
-  ) : title;
   const updateButton = (plugin: MarketPlugin, title: string) => plugin.updateAvailable && onUpdate ? (
     updatingId === plugin.id
       ? <span aria-label={t("安装中…")} className="plugin-market-row-action" role="status"><LoaderCircle aria-hidden="true" className="plugin-market-spinner" /></span>
-      : <button aria-label={tf("更新插件 {0}", [title])} className="cx-icon-button" disabled={busy} onClick={() => onUpdate(plugin)} title={t("更新插件")} type="button"><Download aria-hidden="true" /></button>
+      : <button aria-label={tf("更新插件 {0}", [title])} className="cx-icon-button plugin-market-row-action" disabled={busy} onClick={() => onUpdate(plugin)} title={t("更新插件")} type="button"><Download aria-hidden="true" /></button>
   ) : null;
+  const genericIcon = <span aria-hidden="true" className="plugin-market-icon"><PackageOpen /></span>;
+  // 和目录列表同一种行：图标、名字、一句话简介；右边是开关和菜单（目录列表那里是 + / 对勾）。
+  // 目录插件点开看详情；别处装的点开编辑配置。
+  const rowMain = (title: string, description: string, iconNode: ReactNode, onOpen: ((trigger: HTMLElement) => void) | null, badge?: ReactNode) => {
+    const body = (
+      <>
+        {iconNode}
+        <span className="plugin-market-row-text">
+          <span className="plugin-market-row-title"><strong title={title}>{title}</strong>{badge}</span>
+          <span className="plugin-market-row-description" title={description}>{description}</span>
+        </span>
+      </>
+    );
+    return onOpen ? (
+      <button aria-label={tf("查看插件 {0} 的详情", [title])} className="plugin-market-row-main" onClick={(event) => onOpen(event.currentTarget)} type="button">{body}</button>
+    ) : <span className="plugin-market-row-main">{body}</span>;
+  };
   return (
-    <section className="plugin-config-panel">
+    <section className="plugin-config-panel plugin-market-shelf">
       <p className="plugin-market-summary">{t("Codex config.toml 里的插件：从目录安装的，以及别处装的（如 Codex 自带的）。关掉开关等于停用，不删文件。")}</p>
-      <CxCard>
-        {shown.length === 0 && shownOrphans.length === 0 ? <CxEmpty title={needle ? t("没有匹配的插件。") : t("还没有安装插件。")} /> : null}
-        {shown.map((entry) => {
-          const plugin = catalogOf(entry);
-          const enabled = pluginConfigEnabled(entry.tomlBody);
-          const title = plugin ? plugin.displayName || plugin.name : pluginConfigName(entry.id);
-          return (
-            <CxRow
-              badges={plugin?.updateAvailable ? <CxBadge tone="warn">{t("有更新")}</CxBadge> : null}
-              detail={plugin
-                ? <span title={entry.id}>{plugin.shortDescription || plugin.description || entry.id}</span>
-                : <code className="cx-set-path" title={entry.id}>{entry.id}</code>}
-              icon={plugin && icon ? icon(plugin) : <CxStatusIcon tone={enabled ? "ok" : "off"}><Puzzle aria-hidden="true" /></CxStatusIcon>}
-              key={entry.id}
-              muted={!enabled}
-              title={plugin ? catalogTitle(plugin, title) : title}
-            >
-              {plugin ? updateButton(plugin, title) : null}
-              <Switch
-                disabled={busy}
-                label={tf("启用插件 {0}", [title])}
-                on={enabled}
-                onToggle={() => void run(`toggle:${entry.id}`, () => onSave(entry.id, pluginConfigWithEnabled(entry.tomlBody, !enabled)))}
-                pending={working === `toggle:${entry.id}`}
-              />
-              <Menu label={t("插件配置操作")}>
-                <MenuItem disabled={busy} onClick={() => setEditor({ entry })}>{t("编辑配置")}</MenuItem>
-                <MenuItem danger disabled={busy} onClick={() => setDeleting(entry)}>{t("删除配置")}</MenuItem>
-              </Menu>
-            </CxRow>
-          );
-        })}
-        {shownOrphans.map((plugin) => {
-          const title = plugin.displayName || plugin.name;
-          return (
-            <CxRow
-              badges={<CxBadge tone="warn" title={t("插件文件在，但 config.toml 里没有它的配置，Codex 不会加载；在目录里点开它重新安装即可。")}>{t("没有配置")}</CxBadge>}
-              detail={plugin.shortDescription || plugin.description || plugin.name}
-              icon={icon ? icon(plugin) : <CxStatusIcon tone="off"><Puzzle aria-hidden="true" /></CxStatusIcon>}
-              key={`orphan:${plugin.id}`}
-              muted
-              title={catalogTitle(plugin, title)}
-            >
-              {updateButton(plugin, title)}
-            </CxRow>
-          );
-        })}
-      </CxCard>
+      {shown.length === 0 && shownOrphans.length === 0 ? (
+        <CxCard><CxEmpty title={needle ? t("没有匹配的插件。") : t("还没有安装插件。")} /></CxCard>
+      ) : (
+        <ul className="plugin-market-rows">
+          {shown.map((entry) => {
+            const plugin = catalogOf(entry);
+            const enabled = pluginConfigEnabled(entry.tomlBody);
+            const title = plugin ? plugin.displayName || plugin.name : pluginConfigName(entry.id);
+            const description = plugin ? plugin.shortDescription || plugin.description || entry.id : entry.id;
+            const open = plugin && onOpenDetails
+              ? (trigger: HTMLElement) => onOpenDetails(plugin, trigger)
+              : () => setEditor({ entry });
+            return (
+              <li className="plugin-market-row" data-disabled={!enabled || undefined} key={entry.id}>
+                {rowMain(title, description, plugin && icon ? icon(plugin) : genericIcon, open)}
+                {plugin ? updateButton(plugin, title) : null}
+                <Switch
+                  disabled={busy}
+                  label={tf("启用插件 {0}", [title])}
+                  on={enabled}
+                  onToggle={() => void run(`toggle:${entry.id}`, () => onSave(entry.id, pluginConfigWithEnabled(entry.tomlBody, !enabled)))}
+                  pending={working === `toggle:${entry.id}`}
+                />
+                <Menu label={t("插件配置操作")}>
+                  <MenuItem disabled={busy} onClick={() => setEditor({ entry })}>{t("编辑配置")}</MenuItem>
+                  <MenuItem danger disabled={busy} onClick={() => setDeleting(entry)}>{t("删除配置")}</MenuItem>
+                </Menu>
+              </li>
+            );
+          })}
+          {shownOrphans.map((plugin) => {
+            const title = plugin.displayName || plugin.name;
+            return (
+              <li className="plugin-market-row" data-disabled key={`orphan:${plugin.id}`}>
+                {rowMain(
+                  title,
+                  plugin.shortDescription || plugin.description || plugin.name,
+                  icon ? icon(plugin) : genericIcon,
+                  onOpenDetails ? (trigger) => onOpenDetails(plugin, trigger) : null,
+                  <CxBadge tone="warn" title={t("插件文件在，但 config.toml 里没有它的配置，Codex 不会加载；在目录里点开它重新安装即可。")}>{t("没有配置")}</CxBadge>,
+                )}
+                {updateButton(plugin, title)}
+              </li>
+            );
+          })}
+        </ul>
+      )}
       <CxAddRow detail={t("手写一段 [plugins.\"<插件>@<市场>\"] 配置")} disabled={busy} onClick={() => setEditor({})} title={t("添加插件配置")} />
       {editor ? (
         <PluginConfigEditor

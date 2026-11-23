@@ -300,16 +300,13 @@
   .shell .plugin-market-spinner { animation: none; }
 }
 
-/* 「已安装」列表里目录插件的名字：可点开详情，但看起来和普通行标题一样（不画下划线，悬停才提示）。 */
-.shell .plugin-config-panel .plugin-config-title {
-  color: inherit;
-  font: inherit;
-  text-decoration: none;
-}
-.shell .plugin-config-panel .plugin-config-title:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
+/* 「已安装」：和目录列表同一种行，右边是启用开关和三点菜单；停用的整行淡一点。 */
 .shell .plugin-config-panel > .plugin-market-summary {
-  margin: 0 0 10px;
+  margin: 0 0 6px;
+}
+.shell .plugin-config-panel .plugin-market-row[data-disabled] .plugin-market-row-main {
+  opacity: 0.55;
+}
+.shell .plugin-config-panel span.plugin-market-row-main {
+  cursor: default;
 }
