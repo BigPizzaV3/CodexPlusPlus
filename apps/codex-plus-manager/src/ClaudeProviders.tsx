@@ -118,3 +118,36 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
     </CxSection>
   );
 }
+
+/**
+ * Claude 的「供应商」页里的 Claude Code（命令行）一行：和 Agent 接入页那一行同一个模型下拉，
+ * 选一个共享供应商的模型就是让 Claude Code 经本地服务，下拉顶部「断开」就还原成它自己的 settings.json。
+ * 入口跟着 Agent 走：不用再去「本地服务 → Agent 接入」里找。
+ */
+export function ClaudeCodeConnection({ notify }: { notify: Notify }) {
+  const payload = useGatewayPayload(10_000);
+  const [busy, setBusy] = useState<string | null>(null);
+  const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
+  const agent = payload?.agents.find((item) => item.agent === "claude");
+  if (payload && !agent) return null;
+  const detail = !agent
+    ? t("正在读取…")
+    : agent.drift
+      ? agent.drift.by ? tf("配置被 {0} 改掉了，没有经过本地服务", [agent.drift.by]) : t("配置被别的工具改掉了，没有经过本地服务")
+      : agent.enabled
+        ? t("经本地服务：用上面这些共享供应商，OpenAI 协议的自动转换")
+        : t("直连：用它自己的 ~/.claude/settings.json；选一个模型就改为经本地服务");
+  return (
+    <CxSection title={t("Claude Code（命令行）")}>
+      <CxCard>
+        <CxRow
+          badges={agent?.version ? <CxBadge>{agent.version}</CxBadge> : null}
+          detail={detail}
+          title={t("默认模型")}
+        >
+          <AgentModelPicker agentId="claude" busy={busy} notify={notify} payload={payload} run={run} />
+        </CxRow>
+      </CxCard>
+    </CxSection>
+  );
+}
