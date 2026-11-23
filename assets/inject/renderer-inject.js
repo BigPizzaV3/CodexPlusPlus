@@ -8632,7 +8632,10 @@
     const version = prepared.fromDefaultBranch
       ? `${prepared.repo} · 作者未发布版本，将安装默认分支的提交 ${sha}`
       : `${prepared.repo} · 版本 ${prepared.tag || prepared.version}，锁定提交 ${sha}`;
-    const lines = codexPlusPackagePermissionLines(prepared.permissions);
+    // 本机已装着同 id 的包时，旧版本没有的能力标成「新增」（按文案逐条比，与管理器一致）。
+    const before = prepared.previousPermissions ? new Set(codexPlusPackagePermissionLines(prepared.previousPermissions)) : null;
+    const lines = codexPlusPackagePermissionLines(prepared.permissions).map((line) => (before && !before.has(line) ? `【新增】${line}` : line));
+    const addedCount = before ? lines.filter((line) => line.startsWith("【新增】")).length : 0;
     const conflict = prepared.conflict
       ? prepared.conflict.source === "github" && prepared.conflict.channel && prepared.conflict.channel !== "community" && prepared.channel === "community"
         ? `本机已装 ${prepared.conflict.repo || ""} 的${prepared.conflict.channel === "official" ? "官方" : "精选"}版本 ${prepared.id}，社区里的同 id 拓展不能替换它。`
@@ -8646,6 +8649,7 @@
       "",
       "它会获得这些能力：",
       ...(lines.length ? lines.map((line) => `• ${line}`) : ["没有声明任何能力。"]),
+      ...(addedCount ? ["", `相比本机已装的版本，这一版新增了 ${addedCount} 项能力（上面标了【新增】）。`] : []),
       ...(conflict ? ["", conflict] : []),
     ].join("\n");
     const verb = prepared.conflict ? "替换并安装" : "安装";
@@ -31199,8 +31203,10 @@ ${key} = ${value}`]);
    * 拓展面板普遍用 setInterval 轮询这几个只读接口，每个面板各轮一次就是一次独立的桥
    * 往返，而后端每条请求都要走一遍 JSON 编解码。实测 /request-log/recent 58 次/分钟、
    * /thread-usage-live 37 次/分钟，几乎全是同一 payload 的重复请求。
-   * 窗口内同参调用复用同一个 Promise：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
+   * 窗口内同参调用复用同一次桥请求：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
    * 后端与桥的往返次数按窗口长度下降一个量级。
+   * 共用的只是那一次请求：结果每个调用方各拿一份拷贝（一方原地 sort / reverse 改不到别人），
+   * 超时各算各的（先到者的 options.timeout 不套给后来的）。
    */
   const codexPlusExtensionCoalesceWindowMs = new Map([
     // 实测这些面板的轮询间隔在 1~1.5 秒，窗口必须比它长才有合并效果；
@@ -31215,14 +31221,50 @@ ${key} = ${value}`]);
     ["/cdp/targets", 5000],
   ]);
 
-  /** route + payload 指纹 → { at, promise }。只在窗口内复用，过期即重发。 */
+  /**
+   * route + payload 指纹 → { at, windowMs, request }。request 是那一次桥请求（不带超时），只在窗口内复用，过期即重发。
+   * 过期的条目到点删掉；payload 带变化值（时间戳、游标）时指纹各不相同，另设一个条数上限，超了先丢最早的。
+   */
   const codexPlusExtensionCallCache = new Map();
+  const codexPlusExtensionCallCacheLimit = 64;
 
   function codexPlusExtensionCallCacheKey(route, payload) {
     try {
       return `${route}\u0000${JSON.stringify(payload ?? {})}`;
     } catch {
       return "";
+    }
+  }
+
+  /** 只在缓存里还是这一条时才删：同一个指纹可能已经换成了新一次请求。 */
+  function codexPlusExtensionCallCacheDrop(cacheKey, entry) {
+    if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+  }
+
+  function codexPlusExtensionCallCacheStore(cacheKey, entry) {
+    // 后台标签页里定时器会被钳得很慢：放新条目时顺手把已经过期的清掉。
+    for (const [key, cached] of codexPlusExtensionCallCache) {
+      if (entry.at - cached.at >= cached.windowMs) codexPlusExtensionCallCache.delete(key);
+    }
+    // 先删再放：Map 按插入顺序排，超上限时丢的才是最早的那条。
+    codexPlusExtensionCallCache.delete(cacheKey);
+    codexPlusExtensionCallCache.set(cacheKey, entry);
+    while (codexPlusExtensionCallCache.size > codexPlusExtensionCallCacheLimit) {
+      codexPlusExtensionCallCache.delete(codexPlusExtensionCallCache.keys().next().value);
+    }
+    // 轮询停了以后不会再有新条目来触发清理，所以每条到点自己删，响应体不会一直留着。
+    const timer = setTimeout(() => codexPlusExtensionCallCacheDrop(cacheKey, entry), entry.windowMs);
+    // Node 测试环境里不让这个定时器拖住进程；浏览器的定时器 id 是数字，没有 unref。
+    if (typeof timer?.unref === "function") timer.unref();
+  }
+
+  /** 交给调用方的结果拷贝。桥的结果都是 JSON 形状；万一拷不了，宁可共用也不让调用失败。 */
+  function codexPlusExtensionCopyResult(value) {
+    if (!value || typeof value !== "object") return value;
+    try {
+      return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+    } catch {
+      return value;
     }
   }
 
@@ -31245,40 +31287,68 @@ ${key} = ${value}`]);
     const cacheKey = windowMs ? codexPlusExtensionCallCacheKey(route, payload) : "";
     if (!windowMs || !cacheKey) return codexPlusExtensionCallOnce(route, payload, options, bridge);
     const now = Date.now();
-    const cached = codexPlusExtensionCallCache.get(cacheKey);
-    if (cached && now - cached.at < windowMs) return cached.promise;
-    const promise = codexPlusExtensionCallOnce(route, payload, options, bridge);
-    const entry = { at: now, promise };
-    codexPlusExtensionCallCache.set(cacheKey, entry);
-    // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
-    promise.catch(() => {
-      if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+    let entry = codexPlusExtensionCallCache.get(cacheKey);
+    if (!entry || now - entry.at >= windowMs) {
+      const fresh = { at: now, windowMs, request: codexPlusExtensionBridgeRequest(route, payload, bridge) };
+      entry = fresh;
+      codexPlusExtensionCallCacheStore(cacheKey, fresh);
+      // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
+      fresh.request.catch(() => codexPlusExtensionCallCacheDrop(cacheKey, fresh));
+    }
+    const shared = entry;
+    return codexPlusExtensionAwaitRequest(shared.request, route, options, {
+      // 有人等到超时说明这次请求卡住了：不再让后来的调用方接着等它，下一次调用重新发。
+      onTimeout: () => codexPlusExtensionCallCacheDrop(cacheKey, shared),
     });
-    return promise;
+  }
+
+  /** 发一次桥请求，不带超时。路由层的 {status:"failed"}、浮层面板的 {error} 统一成 reject。 */
+  function codexPlusExtensionBridgeRequest(route, payload, bridge) {
+    return Promise.resolve(bridge(route, payload)).then(
+      (result) => {
+        if (result?.status === "failed" || result?.error) {
+          throw new Error(result.message || result.error || `${route} 调用失败`);
+        }
+        return result;
+      },
+      (error) => {
+        throw error instanceof Error ? error : new Error(String(error));
+      },
+    );
+  }
+
+  /**
+   * 按调用方自己的超时等一次桥请求。给了 shared（这次请求是合并缓存里共用的）时，结果拷一份再交出去，
+   * 超时那一刻回调 shared.onTimeout。
+   */
+  function codexPlusExtensionAwaitRequest(request, route, options, shared = null) {
+    const timeout = Number.isFinite(options?.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
+    return new Promise((resolve, reject) => {
+      let timedOut = false;
+      // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
+      const timer = setTimeout(() => {
+        timedOut = true;
+        shared?.onTimeout();
+        reject(new Error(`调用 ${route} 超时`));
+      }, timeout);
+      request.then(
+        (result) => {
+          // 已经超时放弃的调用方不用再为它拷一份。
+          if (timedOut) return;
+          clearTimeout(timer);
+          resolve(shared ? codexPlusExtensionCopyResult(result) : result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 
   /** 真正发起一次桥调用（不做合并）。 */
   function codexPlusExtensionCallOnce(route, payload, options, bridge) {
-    const timeout = Number.isFinite(options.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
-    // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
-    const request = bridge(route, payload);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`调用 ${route} 超时`)), timeout);
-      Promise.resolve(request).then(
-        (result) => {
-          clearTimeout(timer);
-          if (result?.status === "failed" || result?.error) {
-            reject(new Error(result.message || result.error || `${route} 调用失败`));
-            return;
-          }
-          resolve(result);
-        },
-        (error) => {
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        },
-      );
-    });
+    return codexPlusExtensionAwaitRequest(codexPlusExtensionBridgeRequest(route, payload, bridge), route, options);
   }
 
   /**
@@ -31656,7 +31726,8 @@ ${key} = ${value}`]);
    * 两种拓展间耦合方式：
    *   - 事件：ctx.on / ctx.emit，一对多通知，处理器抛错互不影响
    *   - waterfall：ctx.intercept / ctx.waterfall，中间件链，handler(value, next)
-   *     调 next(v) 交给下一个，不调即短路；没有中间件时原样返回
+   *     调 next(v) 交给下一个，不调即短路；调了 next 却没 return 时沿用 next 的结果；
+   *     没有中间件时原样返回
    *
    * 宿主后续会在协议层、界面层的关键点调用 codexPlusRunWaterfall /
    * codexPlusEmitExtensionEvent，拓展用同一套 ctx 接口挂上去。设计见
@@ -32124,6 +32195,27 @@ ${key} = ${value}`]);
   }
 
   /**
+   * 交给某个拓展实例的内置服务：建立订阅的那几个方法（返回撤销函数的 observeAll / observeSession / register）
+   * 包一层，把撤销函数登记进该实例的副作用表（track），实例卸载、热重载时自动撤销；拓展没把订阅包进
+   * ctx.effect 也不会留下监听和会话轮询。返回的撤销函数照旧可以提前调，重复调无害。
+   * 只认 Codex++ 自己提供的 sessionQuery / locale；其它拓展 ctx.provide 的服务原样交出去。
+   */
+  function codexPlusScopeServiceToInstance(name, entry, track) {
+    let methods = null;
+    if (entry.owner === "builtin" && name === "sessionQuery") methods = ["observeAll", "observeSession"];
+    else if (entry.owner === "builtin" && name === "locale") methods = ["register"];
+    if (!methods || !entry.value || typeof entry.value !== "object") return entry.value;
+    // 服务对象是冻结的：按属性描述符抄一份（current 这类 getter 原样保留），只换掉订阅方法。
+    const descriptors = Object.getOwnPropertyDescriptors(entry.value);
+    for (const method of methods) {
+      const subscribe = entry.value[method];
+      if (typeof subscribe !== "function") continue;
+      descriptors[method] = { ...descriptors[method], value: (...args) => track(subscribe.apply(entry.value, args)) };
+    }
+    return Object.freeze(Object.defineProperties({}, descriptors));
+  }
+
+  /**
    * 拓展后台声明的服务（codexpp.json 的 backend.provides）：登记成页面服务，值是一个代理，
    * 调用任意方法都经桥接转给提供方后台（没起就先起）。清单随注入包下发，热重载时增删。
    * 页面里已有同名服务时以页面的为准。
@@ -32410,6 +32502,10 @@ ${key} = ${value}`]);
    *
    * 中间件可以是异步的：返回 Promise 时整条链的结果也是 Promise。中间件抛错（或
    * reject）时跳过它——若它已经调过 next，沿用下游的结果，避免下游被执行两次。
+   *
+   * 调过 next 却没有 return（`(v, next) => { next(v); }`，同步、异步都算）时沿用 next 的结果：
+   * 否则这一层交出去的是 undefined，上游的改写和下游的结果一起丢。没调 next 的仍是短路，
+   * 返回什么就是什么（包括 undefined）。
    */
   function codexPlusRunWaterfall(name, value) {
     const chain = [...(codexPlusExtensionInterceptors.get(name) || [])];
@@ -32424,15 +32520,17 @@ ${key} = ${value}`]);
         return downstream;
       };
       const recover = () => (called ? downstream : step(index + 1, current));
+      // 到这一层给出结果的那一刻再看 called：异步中间件可能 await 之后才调 next。
+      const settle = (result) => (result === undefined && called ? downstream : result);
       const outcome = runCodexPlusExtensionCallback(item.scriptKey, `intercept:${name}`, () => item.handler(current, next));
       if (!outcome.ok) return recover();
       if (codexPlusIsThenable(outcome.value)) {
-        return Promise.resolve(outcome.value).catch((error) => {
+        return Promise.resolve(outcome.value).then(settle, (error) => {
           codexPlusMarkExtensionFailure(item.scriptKey, `intercept:${name}: ${String(error?.stack || error?.message || error)}`);
           return recover();
         });
       }
-      return outcome.value;
+      return settle(outcome.value);
     };
     return step(0, value);
   }
@@ -32690,11 +32788,27 @@ ${key} = ${value}`]);
       };
     };
 
-    // 多实例时注册项的 id 带上实例 id，同一个拓展的几份不会互相顶掉。
+    // 本实例拿到的服务（ctx.<服务名>、ctx.get）：内置的 sessionQuery / locale 按实例包一层，经它建立的订阅
+    // 随本实例卸载撤销（见 codexPlusScopeServiceToInstance）。同一个提供者只包一次，反复读到的是同一个对象。
+    const scopedServices = new Map();
+    const serviceFor = (name) => {
+      const entry = codexPlusServices.get(name);
+      if (!entry) return undefined;
+      const cached = scopedServices.get(name);
+      if (cached?.token === entry.token) return cached.value;
+      const value = codexPlusScopeServiceToInstance(name, entry, track);
+      if (value !== entry.value) scopedServices.set(name, { token: entry.token, value });
+      return value;
+    };
+
+    // 多实例时注册项的 id 带上实例 id，同一个拓展的几份不会互相顶掉。拓展没给 id、由注册函数按名字起默认 id 的
+    // 几类（命令 cmd-<名字>、主题 theme-<id>、带 definition.id 的设置分区）靠 instanceId 在那边补同样的后缀；
+    // 「每个拓展一个」的设置面板靠它认出多实例。单实例时不带 instanceId，id 与以前完全一样。
     const instanceId = manifest?.instance?.id;
     const registerOptions = (itemOptions) => ({
       ...(itemOptions || {}),
       ...(instanceId && itemOptions?.id ? { id: `${itemOptions.id}@${instanceId}` } : {}),
+      ...(instanceId ? { instanceId } : {}),
       scriptKey,
     });
     // 按拓展隔离的本地存储：键名自动带拓展 id 前缀，值按 JSON 存取。
@@ -32889,7 +33003,7 @@ ${key} = ${value}`]);
       },
       /** 取一个服务，不存在时返回 undefined（可选依赖用这个；必需依赖请在 inject 里声明）。 */
       get(name) {
-        return codexPlusServices.get(String(name))?.value;
+        return serviceFor(String(name));
       },
       /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
       inject(deps, apply) {
@@ -33117,7 +33231,7 @@ ${key} = ${value}`]);
     // 声明过的服务挂到 ctx 上（读的是当前提供者的值；换了提供者时整个实例会被重建）。
     for (const name of inject) {
       if (Object.prototype.hasOwnProperty.call(ctx, name)) continue;
-      Object.defineProperty(ctx, name, { enumerable: true, get: () => codexPlusServices.get(name)?.value });
+      Object.defineProperty(ctx, name, { enumerable: true, get: () => serviceFor(name) });
     }
     if (fiber) Object.defineProperty(ctx, "fiber", { value: fiber });
     codexPlusExtensionInstances.add(ctx);
@@ -33147,6 +33261,64 @@ ${key} = ${value}`]);
       settle();
     }
     return ctx;
+  }
+
+  /**
+   * 同一个文档里重复注入之后，把用户脚本搬到这一代内核上。99-startup 在 window.codexPlus 挂好后调一次。
+   *
+   * Codex++ 重启 / 升级而 Codex 没重启、或看门狗补注入时，注入脚本在同一个页面里再执行一遍：注册表、监听表、
+   * 中间件表都是新闭包，用户脚本（含随包发布的官方拓展）却不会重跑——页面已经初始化过，/user-scripts/load
+   * 对它什么都不执行。它们的实例还挂在上一代内核上：codex/request、agent/pre-step 这类拦截静默失效，
+   * 定时器、监听、扫描步骤却还在跑。这里请求一次显式重载：后端让页面先跑各脚本登记的清理函数
+   * （codexPlus.extension 创建的实例自动登记了，会从旧内核上卸掉），再把脚本在这一代内核上重跑一遍。
+   *
+   * 只在不会整页刷新时才请求：prepareReload（assets/inject/user-scripts-runtime.js）遇到没登记清理函数的脚本
+   * 会退回 window.location.reload()，那会打断用户正在进行的对话。所以按它的同一个条件先查一遍——每个脚本
+   * 都登记了清理函数、且没有等着执行的整页刷新——不满足就保持现状，只记一条诊断。
+   * （清理函数执行时才抛错、或普通函数返回了 Promise，prepareReload 仍会整页刷新，这两种事先看不出来。）
+   * 请求放在微任务里发，不占注入脚本的同步执行；失败只记诊断、不抛错。
+   * 不会循环：重载执行的是用户脚本包，不会重跑注入脚本，注入代际不再涨，本函数每次注入只跑这一回。
+   *
+   * 返回是否发起了重载请求。
+   */
+  /**
+   * 重载请求晚这么久再发。重新注入时新旧两条桥接连接会并存一小会儿，立刻发的话两条连接都会收到并各处理一遍，
+   * 用户脚本就被连着重载两次（在真实的 Codex 上测到过）。等旧连接让位之后再发，只重载一次。
+   */
+  const codexPlusRehomeDelayMs = 1000;
+
+  function codexPlusRehomeUserScriptsAfterReinjection(delayMs = codexPlusRehomeDelayMs) {
+    const note = (message) => codexPlusMarkExtensionFailure("", message);
+    try {
+      // 首次注入：用户脚本还没加载，稍后由 /user-scripts/load 直接跑在这一代内核上。
+      if (codexPlusInjectionGeneration <= 1) return false;
+      const runtime = window.__codexPlusUserScripts;
+      const scripts = Object.values(runtime?.scripts || {});
+      // 没有用户脚本（总开关关着、这次启动跳过了拓展、还没加载）就没有要搬的东西；整页刷新已经排上的也不用管。
+      if (!scripts.length || runtime.refreshPending) return false;
+      // 异步的清理函数 prepareReload 也等不了，同样退回整页刷新：async 函数一眼认得出，一并算进去。
+      const isAsync = (cleanup) => Object.prototype.toString.call(cleanup) === "[object AsyncFunction]";
+      const unsafe = scripts.filter((script) => !script?.cleanups?.length || script.cleanups.some(isAsync));
+      if (unsafe.length) {
+        note(`重复注入后没有重载用户脚本：${unsafe.map((script) => script?.key || script?.name || "?").join("、")} 没有登记清理函数（或登记的是异步清理函数），重载会刷新整个页面；用户脚本留在上一代内核上，重启 Codex 后恢复`);
+        return false;
+      }
+      new Promise((resolve) => setTimeout(resolve, delayMs)).then(() => {
+        // 等的这段时间里又注入了一次：交给更新的那一代去搬。
+        if (window.__codexPlusRuntimeGeneration !== codexPlusInjectionGeneration) return null;
+        const bridge = window.__codexSessionDeleteBridge;
+        if (typeof bridge !== "function") throw new Error("Codex 页面尚未连接");
+        return bridge("/user-scripts/reload", {});
+      }).then((result) => {
+        if (result?.status === "failed" || result?.status === "unknown" || result?.error) {
+          note(`重复注入后重载用户脚本失败：${result.message || result.error || result.status}`);
+        }
+      }, (error) => note(`重复注入后重载用户脚本失败：${String(error?.message || error)}`));
+      return true;
+    } catch (error) {
+      note(`重复注入后重载用户脚本失败：${String(error?.message || error)}`);
+      return false;
+    }
   }
   /**
    * 拓展的 RPC 层拦截点：`agent/pre-step`、`agent/request` 和 `codex/request`。
@@ -34618,7 +34790,10 @@ ${key} = ${value}`]);
     const name = String(definition?.name || "").trim();
     if (!/^[A-Za-z0-9][\w-]{0,31}$/.test(name)) throw new Error("命令名只能是字母、数字、_、-，最长 32 个字符");
     if (typeof definition?.run !== "function") throw new Error(`命令 /${name} 必须提供 run(args, context)`);
-    const dispose = codexPlusRegisterExtensionItem("command", codexPlusRegistry.commands, { ...definition, name }, { ...options, id: options.id || `cmd-${name}` });
+    // 多实例（清单 instances）时默认 id 也带实例后缀，规则同内核的 registerOptions：<id>@<实例 id>；
+    // 否则第二个实例撞上「id 已被占用」。同名命令仍是先注册的生效。
+    const defaultId = `cmd-${name}${options.instanceId ? `@${options.instanceId}` : ""}`;
+    const dispose = codexPlusRegisterExtensionItem("command", codexPlusRegistry.commands, { ...definition, name }, { ...options, id: options.id || defaultId });
     installCodexPlusCommandHandlers();
     return dispose;
   }
@@ -35881,7 +36056,10 @@ ${key} = ${value}`]);
     const themeId = String(definition?.id || "").trim();
     if (!/^[\w-]{1,48}$/.test(themeId)) throw new Error("主题 id 只能是字母、数字、_、-");
     if (!definition.variables && typeof definition.css !== "string") throw new Error(`主题 ${themeId} 需要 variables 或 css`);
-    const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || `theme-${themeId}` });
+    // 多实例（清单 instances）时默认 id 也带实例后缀，规则同内核的 registerOptions：<id>@<实例 id>。
+    // 主题 id（themeId）本身不变：几个实例注册同一个主题 id 时，生效的是排在前面的那一份。
+    const defaultId = `theme-${themeId}${options.instanceId ? `@${options.instanceId}` : ""}`;
+    const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || defaultId });
     applyCodexPlusExtensionTheme();
     return () => {
       dispose();
@@ -36134,7 +36312,10 @@ ${key} = ${value}`]);
     if (typeof definition?.render !== "function") throw new Error("设置分区需要 render({ container, close })");
     const scriptKey = codexPlusCurrentExtensionScriptKey(options);
     const sectionKey = String(options.id || definition.id || codexPlusExtensionIdSeed());
-    const id = `${scriptKey}:settingsSection:${sectionKey}`;
+    // 多实例（清单 instances）时取自 definition.id 的注册 id 也带实例后缀，规则同内核的 registerOptions：
+    // <id>@<实例 id>（options.id 在内核里已经带上了）。sectionKey 只用来挑图标、兜底标题，保持原样。
+    const instanceSuffix = !options.id && definition.id && options.instanceId ? `@${options.instanceId}` : "";
+    const id = `${scriptKey}:settingsSection:${sectionKey}${instanceSuffix}`;
     const dispose = registerCodexPlusExtension("settingsSection", codexPlusRegistry.settingsSections, id, { ...definition, sectionKey }, scriptKey);
     // 设置页宿主在 40-backend-settings.js；单独切出这一段测试时没有它。
     const changed = () => {
@@ -36151,11 +36332,22 @@ ${key} = ${value}`]);
   /**
    * 每个拓展一个设置面板，登记在注册表里（持久）；面板 DOM 由「拓展」详情页每次打开时向拓展要（瞬态）。
    * 注册 / 撤销时通知详情页：正显示着这个拓展时重画，热重载后看到的是新代码画的面板。
+   *
+   * 多实例（清单 instances）时面板仍是整个拓展一个（它画的是包配置，saveConfig 存的也是包配置）：
+   * 先注册的那个实例生效，别的实例再注册时忽略并在控制台留一句提示，不抛错——抛错会让后面的实例建不起来。
+   * 同一个实例重复注册、以及单实例拓展，照旧报「id 已被占用」。
    */
   function codexPlusRegisterSettingsPanel(definition, options = {}) {
     if (typeof definition?.render !== "function") throw new Error("设置面板需要 render({ container, config, saveConfig })");
     const scriptKey = codexPlusCurrentExtensionScriptKey(options);
-    const dispose = registerCodexPlusExtension("settingsPanel", codexPlusRegistry.settingsPanels, `${scriptKey}:settingsPanel`, definition, scriptKey);
+    const id = `${scriptKey}:settingsPanel`;
+    const instanceId = options.instanceId ? String(options.instanceId) : "";
+    const owner = instanceId ? codexPlusRegistry.settingsPanels.get(id)?.instanceId : "";
+    if (owner && owner !== instanceId) {
+      console.info(`[Codex++] 拓展 ${scriptKey} 的设置面板每个拓展一个：已由实例 ${owner} 注册，实例 ${instanceId} 的 registerSettingsPanel 已忽略`);
+      return () => {};
+    }
+    const dispose = registerCodexPlusExtension("settingsPanel", codexPlusRegistry.settingsPanels, id, instanceId ? { ...definition, instanceId } : definition, scriptKey);
     // 详情页宿主在 40-backend-settings.js；单独切出这一段测试时没有它。
     const changed = () => {
       if (typeof codexPlusSettingsPanelChanged === "function") codexPlusSettingsPanelChanged(scriptKey);
@@ -43409,6 +43601,9 @@ ${key} = ${value}`]);
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
+  // 同页重复注入：已经在跑的用户脚本还挂在上一代内核上，请求一次重载把它们搬过来（只在不会整页刷新时才做，
+  // 见 91-extension-runtime.js 的 codexPlusRehomeUserScriptsAfterReinjection）。请求是异步发的，这里不等。
+  codexPlusRehomeUserScriptsAfterReinjection();
   // 内置功能挂到拓展内核上（见 96-builtin-extensions.js）。旧版直接挂在 body 上的多开身份提示先摘掉，
   // 现在由内置拓展经 overlay 插槽画。用户脚本注入包下发停用 / 顶替状态后会再调一次。
   document.querySelector('body > #codex-plus-instance-identity[data-codex-plus-ext="instance-identity"]')?.remove();

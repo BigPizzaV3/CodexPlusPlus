@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 3418
+      "lines": 3422
     },
     {
       "name": "41-extension-detail.js",
@@ -173,12 +173,12 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 528
+      "lines": 594
     },
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1511
+      "lines": 1613
     },
     {
       "name": "91-extension-rpc.js",
@@ -188,7 +188,7 @@
     {
       "name": "92-extension-host.js",
       "description": "拓展宿主：把注册中心里的第三方项渲染成 DOM",
-      "lines": 587
+      "lines": 590
     },
     {
       "name": "92-extension-slots.js",
@@ -198,12 +198,12 @@
     {
       "name": "92-extension-extras.js",
       "description": "拓展输入触发、快捷键、主题、向用户提问与拓展变更事件",
-      "lines": 405
+      "lines": 408
     },
     {
       "name": "92-extension-views.js",
       "description": "悬浮球页签、工具调用视图、Codex 设置页分区",
-      "lines": 167
+      "lines": 181
     },
     {
       "name": "93-dictation.js",
@@ -278,7 +278,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 46
+      "lines": 49
     },
     {
       "name": "99-tail.js",

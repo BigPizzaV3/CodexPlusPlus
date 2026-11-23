@@ -281,7 +281,10 @@
     const themeId = String(definition?.id || "").trim();
     if (!/^[\w-]{1,48}$/.test(themeId)) throw new Error("主题 id 只能是字母、数字、_、-");
     if (!definition.variables && typeof definition.css !== "string") throw new Error(`主题 ${themeId} 需要 variables 或 css`);
-    const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || `theme-${themeId}` });
+    // 多实例（清单 instances）时默认 id 也带实例后缀，规则同内核的 registerOptions：<id>@<实例 id>。
+    // 主题 id（themeId）本身不变：几个实例注册同一个主题 id 时，生效的是排在前面的那一份。
+    const defaultId = `theme-${themeId}${options.instanceId ? `@${options.instanceId}` : ""}`;
+    const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || defaultId });
     applyCodexPlusExtensionTheme();
     return () => {
       dispose();
