@@ -201,6 +201,12 @@ fn parse_live_runtime_status_response(response: &Value) -> anyhow::Result<Value>
     Ok(status)
 }
 
+/// 见 [`UserScriptManager::lock_for_update`]。文件关闭时文件锁随之释放。
+struct ConfigUpdateGuard<'a> {
+    _process: std::sync::MutexGuard<'a, ()>,
+    _file: Option<fs::File>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UserScriptConfig {
     pub enabled: bool,
@@ -315,7 +321,7 @@ impl UserScriptManager {
 
     /// 官方拓展包的一次性迁移：配置与开关里都还没有它时写入；返回是否写了。
     fn migrate_bundled(&self, key: &str, values: Map<String, Value>, enabled: bool) -> anyhow::Result<bool> {
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut config = self.load_config_for_update()?;
         if config.configs.contains_key(key) || config.scripts.contains_key(key) {
             return Ok(false);
@@ -359,6 +365,34 @@ impl UserScriptManager {
             return UserScriptConfig::default();
         };
         self.config_from_raw(&raw)
+    }
+
+    /// 读改写期间持有的锁：进程内的互斥锁，加上尽力而为的跨进程文件锁。
+    fn lock_for_update(&self) -> ConfigUpdateGuard<'_> {
+        let process = self.config_lock.lock().unwrap();
+        ConfigUpdateGuard { _process: process, _file: self.lock_config_file() }
+    }
+
+    /// 管理器、启动器、拓展 MCP、钩子进程都会读改写这份配置，同一进程里不同的管理器实例也各有各的互斥锁：
+    /// 没有跨进程的锁，两边同时改会互相覆盖（一边切开关、一边在对话里改配置，后写的把先写的冲掉）。
+    /// 最多等 2 秒；等不到、或建不了锁文件，就不加文件锁照常进行——宁可偶尔丢一次并发更新，也不能卡死在一把锁上。
+    fn lock_config_file(&self) -> Option<fs::File> {
+        let mut path = self.config_path.clone().into_os_string();
+        path.push(".lock");
+        if let Some(parent) = self.config_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(path).ok()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
+                return Some(file);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
     }
 
     /// 读改写用的加载。只读的地方读不出来可以先按默认值看（[`Self::load_config_unlocked`]），
@@ -440,7 +474,7 @@ impl UserScriptManager {
     }
 
     pub fn set_global_enabled(&self, enabled: bool) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut config = self.load_config_for_update()?;
         config.enabled = enabled;
         self.save_config_unlocked(&config)?;
@@ -448,7 +482,7 @@ impl UserScriptManager {
     }
 
     pub fn set_skip_next_start(&self, skip: bool) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut config = self.load_config_for_update()?;
         config.skip_next_start = skip;
         self.save_config_unlocked(&config)?;
@@ -458,7 +492,7 @@ impl UserScriptManager {
     /// Consume the one-shot safe-start marker before building the first-page bundle.
     /// The marker is cleared only after the updated configuration is persisted.
     pub fn consume_skip_next_start(&self) -> anyhow::Result<bool> {
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut config = self.load_config_for_update()?;
         if !config.skip_next_start {
             return Ok(false);
@@ -489,7 +523,7 @@ impl UserScriptManager {
     /// 改「跳过拓展」的两个标记；有变化才写盘，并让顶替状态的缓存立刻失效。
     fn update_skip_state(&self, update: impl FnOnce(&mut UserScriptConfig)) -> anyhow::Result<()> {
         let changed = {
-            let _guard = self.config_lock.lock().unwrap();
+            let _guard = self.lock_for_update();
             let mut config = self.load_config_for_update()?;
             let before = (config.skip_next_start, config.skipped_session);
             update(&mut config);
@@ -506,7 +540,7 @@ impl UserScriptManager {
     }
 
     pub fn set_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut config = self.load_config_for_update()?;
         // 有设置字段的内置拓展：开关就是那个设置项，写设置，不在用户脚本配置里另记一份
         // （顺手清掉旧版本记下的停用标记，免得它在没有入口的地方一直压着功能）。
@@ -531,7 +565,7 @@ impl UserScriptManager {
 
     /// Claude 只接受显式适配的拓展包；不改 Codex 的单项开关或设置字段。
     pub fn set_claude_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut config = self.load_config_for_update()?;
         let script = self.scan_script_files(&config)?
             .into_iter()
@@ -601,7 +635,7 @@ impl UserScriptManager {
             }
         }
 
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut config = self.load_config_for_update()?;
         config.scripts.remove(key);
         config.claude_scripts.remove(key);
@@ -615,7 +649,7 @@ impl UserScriptManager {
     }
 
     pub fn record_market_install(&self, script: &MarketScript) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut config = self.load_config_for_update()?;
         let key = format!("user:{}", market_script_filename(&script.id));
         config.scripts.entry(key.clone()).or_insert(true);
@@ -818,7 +852,7 @@ impl UserScriptManager {
             }
             stored.insert(name.clone(), value.clone());
         }
-        let _guard = self.config_lock.lock().unwrap();
+        let _guard = self.lock_for_update();
         let mut latest = self.load_config_for_update()?;
         latest.configs.insert(key.to_string(), stored.clone());
         self.save_config_unlocked(&latest)?;
@@ -1762,6 +1796,9 @@ impl UserScriptManager {
                     "replacedBy": script.replaced_by,
                     "status": status,
                     "error": error,
+                    // 只是清单本身的问题（坏 JSON、版本不兼容……）。`error` 还混着页面里运行时报的错，
+                    // 管理器判断「这个拓展的清单能不能用」（它的管理器页面、侧栏入口）要看这一项。
+                    "manifestError": package_error.unwrap_or(""),
                     "market_id": market.as_ref().map(|item| item.id.as_str()).unwrap_or(""),
                     "version": market.as_ref().map(|item| item.version.as_str()).unwrap_or(""),
                     "installed": market.is_some(),

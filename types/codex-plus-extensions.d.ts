@@ -813,6 +813,8 @@ interface CodexPlusManagerPanelApi {
   data(name: "requestFlow" | "requestLogs" | "gatewayUsage" | "localSessions", params?: Record<string, unknown>): Promise<unknown>;
   /** 跳到管理器的另一个页面：路由 id（如 "hub"），或 "ext:<拓展 key>" 打开另一个拓展页面。 */
   navigate(target: string): Promise<null>;
+  /** 调本拓展清单 `permissions.routes` 声明过、且开放给拓展页面的 Codex++ 数据路由（目前是 `/agent-pet/*`）。 */
+  call<T = unknown>(route: string, payload?: Record<string, unknown>): Promise<T>;
 }
 
 interface Window {

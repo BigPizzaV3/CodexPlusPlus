@@ -501,6 +501,8 @@ Codex++ 自己在发请求前也会做几件事（本地压缩、第三方推理
     转给 Codex++ 本机网关那一跳的令牌仍由 Codex++ 带；网关模式的 Anthropic 原生直通改走协议代理链路（直通不经过 upstream 段）。
   - `builtin:official-shaping`：官方登录 / ChatGPT 后端的请求整理（请求体改成 Codex CLI 的样子、UA 与版本头、ChatGPT API 账号的
     请求整理、官方请求自动补 web_search 声明）。关掉后由拓展在 upstream 段整理（上下文 `official: true`）；会话头与官方凭据仍由 Codex++ 处理。
+  - 上面三项（请求转换、鉴权头、官方整理）只在请求一跳到上游时由拓展接手。Codex 经启动器再转给本机网关（两跳）时，
+    拓展的 upstream 段只在外层那一跳跑、拿不到真实上游的 Key，网关这一层仍由 Codex++ 自己做转换和带鉴权头。
   - `builtin:request-log`：请求日志与用量统计。关掉后经代理的请求不再写请求日志、不计入用量，「请求状态条」也看不到进行中的请求；
     要记就在响应流中间件里自己记（`response.completed` 事件带 usage）。
 
@@ -1457,6 +1459,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | --- | --- |
 | `/diagnostics/log` | 写一条诊断日志 |
 | `/thread-usage-history` | 读会话用量历史 |
+| `/usage/history` | 读本机用量历史（要先在设置里开启用量历史，没开时返回 `{ status: "unavailable" }`） |
+| `/usage/archive` | 用量历史的封存接口，给按日固定 schema 的消费者用；写入只影响它自己的独立数据库（同样要求开启用量历史） |
 | `/archived-thread` | 读归档会话 |
 | `/export-markdown` | 导出 Markdown |
 | `/user-scripts/list` | 读拓展清单 |
@@ -1464,6 +1468,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/cdp/evaluate` | 在匹配的 Codex 页面执行 JS 表达式 |
 | `/system/cursor-position` | 系统鼠标位置 `{ x, y }`（与 `window.screenX` 同一坐标系，只读；Windows、macOS） |
 | `/agent-pet/catalog`、`/agent-pet/image`、`/agent-pet/sound`、`/agent-pet/import-sound` | Agent 桌宠的图库、图片、音效与导入自定义音效（拓展要在清单 `permissions.routes` 里声明，且启用中才干活） |
+| `/whale/media`、`/whale/full`、`/whale/history`、`/whale/session` | 大肥鱼（Agent 桌宠的一种）的素材、挂件数据与本机用量；条件同 `/agent-pet/*` |
+| `/image-overlay/image` | 读背景图拓展自己配置里的那张本机图片（只读） |
 | `/request-log/recent` | 最近已完成的模型请求 `{ entries }`，按开始时间倒序；`limit` 默认 20、最多 100。每条有 `id`、`model` / `upstreamModel`、`relayName`、`durationMs`、`success`、`statusCode`、`usage.inputTokens` / `outputTokens`、`timestampMs` 等（只读，与托盘「实时请求」同源） |
 | `/proxy-status` | 进行中的模型请求 `{ requests }`，每条有 `id`、`model`、`threadId`、`relayName`、`startedAtMs`、`phase`、`firstTokenMs`、`attempts`、`autoRetries`、`retryReasons`、`estimatedOutputTokens`（只读，与官方拓展包「请求状态条」同源） |
 | `/thread-usage-live` | 会话最近的 token 事件 `{ session_id, events }`，参数同 `/thread-usage-history`。只读 rollout 尾部，可以秒级轮询（只读，与官方拓展包「用量状态栏」同源） |

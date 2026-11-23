@@ -158,6 +158,9 @@ enum BackendHost {
     ClaudeDesktop,
 }
 
+/// 往后台写一条调用最多等多久。
+const BACKEND_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 在跑的后台，按 [`slot`] 登记：同一进程里不同拓展目录的同名拓展各起各的，停一个目录的后台也不波及别的目录。
 static BACKENDS: std::sync::LazyLock<Mutex<HashMap<String, Backend>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -758,12 +761,18 @@ async fn call_declared(
         let (sender, receiver) = oneshot::channel();
         backend.pending.lock().await.insert(id, sender);
         let request = json!({ "id": id, "method": method, "params": params });
-        let written = {
-            let mut writer = backend.stdin.lock().await;
-            writer.write_all(format!("{request}\n").as_bytes()).await.is_ok() && writer.flush().await.is_ok()
-        };
+        // 限时写。后台卡死（同步死循环）后不再读 stdin，管道一满写入就一直等；而这里还持着全局的 BACKENDS 锁，
+        // 所有拓展的后台调用、事件轮询、停止（热重载、页面加载都会先停后台）都会跟着卡住。
+        let stdin = backend.stdin.clone();
+        let line = format!("{request}\n");
+        let written = tokio::time::timeout(BACKEND_WRITE_TIMEOUT, async move {
+            let mut writer = stdin.lock().await;
+            writer.write_all(line.as_bytes()).await.is_ok() && writer.flush().await.is_ok()
+        })
+        .await
+        .unwrap_or(false);
         if !written {
-            // 进程已经没了：移除，下次调用重新拉起。
+            // 进程已经没了，或卡住不读输入了：移除（随之结束进程），下次调用重新拉起。
             backends.remove(key);
             anyhow::bail!("拓展后台已退出，请重试");
         }
