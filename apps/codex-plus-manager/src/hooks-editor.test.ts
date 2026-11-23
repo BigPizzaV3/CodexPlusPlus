@@ -39,6 +39,7 @@ async function runtime() {
       interpret: codexPlusHooksEditorInterpret,
       listHooks: codexPlusHooksEditorListHooks,
       mismatch: codexPlusHooksEditorHomeMismatch,
+      mismatchWsl: codexPlusHooksEditorHomeMismatchWsl,
       mismatchMessage: codexPlusHooksEditorHomeMismatchMessage,
       keyPrefix: codexPlusHooksEditorKeyPrefix,
       events: codexPlusHooksEditorEvents,
@@ -60,8 +61,9 @@ async function runtime() {
     sample(event: string, options?: { cwd?: string; matcher?: string }): string;
     interpret(event: string, result: Record<string, unknown>): { tone: string; lines: string[] };
     listHooks(client: unknown, cwds: string[]): Promise<{ hooks: Map<string, Record<string, unknown>>; warnings: string[] }>;
-    mismatch(files: Array<Record<string, unknown> | null>, listed: Map<string, Record<string, unknown>>): number;
-    mismatchMessage(helperHome: string, count: number): string;
+    mismatch(files: Array<Record<string, unknown> | null>, listed: Map<string, Record<string, unknown>>, platform?: string): number;
+    mismatchWsl(files: Array<Record<string, unknown> | null>, listed: Map<string, Record<string, unknown>>, platform?: string): boolean;
+    mismatchMessage(helperHome: string, count: number, wsl?: boolean): string;
     keyPrefix(file: Record<string, unknown> | null, hooks: Array<{ sourcePath?: string }>): string;
     events: Array<{ name: string }>;
     extension(ctx: unknown): void;
@@ -334,19 +336,47 @@ it("key 前缀以 hooks/list 的 sourcePath 为准；没有时用户层取规范
 
 it("#3235：用户层 hook 在 app-server 里一条都看不到时，判定为两份 CODEX_HOME 并提示", async () => {
   const api = await runtime();
-  const user = { scope: "user", path: P, canonicalPath: P, exists: true, text: JSON.stringify(sampleDoc()) };
-  // sampleDoc 有 3 条 handler，app-server 一条都没回 → 提示。
-  assert.equal(api.mismatch([user], new Map()), 3);
+  const winUser = { scope: "user", path: "C:\\Users\\u\\.codex\\hooks.json", canonicalPath: "C:\\Users\\u\\.codex\\hooks.json", exists: true, text: JSON.stringify(sampleDoc()) };
+  const posixUser = { scope: "user", path: P, canonicalPath: P, exists: true, text: JSON.stringify(sampleDoc()) };
+  // Windows 侧用户层文件、app-server 一条都没回 → 提示（sampleDoc 有 3 条 handler）。
+  assert.equal(api.mismatch([winUser], new Map(), "windows"), 3);
+  // WSL 只在 Windows 上存在：非 Windows 平台不判定，避免 macOS 上 app-server
+  // 拒加载非法 handler 返回空列表时妄断成两份 CODEX_HOME。
+  assert.equal(api.mismatch([posixUser], new Map(), "mac"), 0);
+  assert.equal(api.mismatch([posixUser], new Map(), "linux"), 0);
   // app-server 回出了用户层文件里的 hook：两边同源，不提示。
-  assert.equal(api.mismatch([user], new Map([["k", { sourcePath: P }]])), 0);
+  assert.equal(api.mismatch([winUser], new Map([["k", { sourcePath: "C:\\Users\\u\\.codex\\hooks.json" }]]), "windows"), 0);
   // app-server 在另一份 home（WSL 侧）下回出自己的 hook：仍然提示。
-  assert.equal(api.mismatch([user], new Map([["k", { sourcePath: "/home/u/.codex/hooks.json" }]])), 3);
+  assert.equal(api.mismatch([winUser], new Map([["k", { sourcePath: "/home/u/.codex/hooks.json" }]]), "windows"), 3);
   // 用户层文件不存在 / 没有 hook 时，空列表是真实结果，不提示。
-  assert.equal(api.mismatch([{ scope: "user", path: P, exists: false, text: "" }], new Map()), 0);
-  assert.equal(api.mismatch([{ scope: "user", path: P, exists: true, text: '{"hooks":{}}' }], new Map()), 0);
-  assert.equal(api.mismatch([{ scope: "user", path: P, exists: true, text: "不是 JSON" }], new Map()), 0);
-  const message = api.mismatchMessage("D:\\Codex", 3);
-  assert.match(message, /3 条 hook/);
-  assert.match(message, /WSL/);
-  assert.match(message, /D:\\Codex/);
+  assert.equal(api.mismatch([{ scope: "user", path: "C:\\x", exists: false, text: "" }], new Map(), "windows"), 0);
+  assert.equal(api.mismatch([{ scope: "user", path: "C:\\x", exists: true, text: '{"hooks":{}}' }], new Map(), "windows"), 0);
+  assert.equal(api.mismatch([{ scope: "user", path: "C:\\x", exists: true, text: "不是 JSON" }], new Map(), "windows"), 0);
+});
+
+it("#3235（复审）：WSL 判定要有可靠信号；文案区分确认/未确认；确认不了不断言 WSL", async () => {
+  const api = await runtime();
+  const winUser = { scope: "user", path: "C:\\Users\\u\\.codex\\hooks.json", canonicalPath: "C:\\Users\\u\\.codex\\hooks.json", exists: true, text: JSON.stringify(sampleDoc()) };
+  // 确认 WSL：app-server 回出 POSIX sourcePath（Windows 宿主上不会这样回）。
+  assert.equal(api.mismatchWsl([winUser], new Map([["k", { sourcePath: "/home/u/.codex/hooks.json" }]]), "windows"), true);
+  // 确认 WSL：项目层 root 在 WSL 文件系统里（POSIX 或 wsl.localhost / //wsl$ 写法）。
+  assert.equal(api.mismatchWsl([winUser, { scope: "project", root: "\\\\wsl.localhost\\Ubuntu\\home\\u\\proj" }], new Map(), "windows"), true);
+  assert.equal(api.mismatchWsl([winUser, { scope: "project", root: "//wsl$/Ubuntu/home/u/proj" }], new Map(), "windows"), true);
+  assert.equal(api.mismatchWsl([winUser, { scope: "project", root: "/home/u/proj" }], new Map(), "windows"), true);
+  // 确认不了：全是 Windows 路径、app-server 也没回任何东西 → 不确认，用中性文案。
+  assert.equal(api.mismatchWsl([winUser], new Map(), "windows"), false);
+  assert.equal(api.mismatchWsl([winUser, { scope: "project", root: "D:\\work\\proj" }], new Map(), "windows"), false);
+  // 用户层文件不是 Windows 路径（异常场景）时不确认。
+  assert.equal(api.mismatchWsl([{ scope: "user", path: P, canonicalPath: P, exists: true, text: "{}" }], new Map([["k", { sourcePath: "/home/u/x" }]]), "windows"), false);
+  // 确认 WSL → 文案断言两份 CODEX_HOME 并给软链指引（此时「Windows 侧 CODEX_HOME」兜底是对的）。
+  const wslMessage = api.mismatchMessage("D:\\Codex", 3, true);
+  assert.match(wslMessage, /3 条 hook/);
+  assert.match(wslMessage, /WSL/);
+  assert.match(wslMessage, /D:\\Codex/);
+  // 未确认 → 中性文案：不出现 WSL / 软链，只说 app-server 没读到这份文件。
+  const neutral = api.mismatchMessage("", 3, false);
+  assert.match(neutral, /3 条 hook/);
+  assert.match(neutral, /没有读到这份用户层文件/);
+  assert.doesNotMatch(neutral, /WSL/);
+  assert.doesNotMatch(neutral, /软链/);
 });

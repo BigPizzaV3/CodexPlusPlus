@@ -431,8 +431,11 @@
    * 这不是 hook 丢了，不能静默空列表：Windows 侧用户层有 hook 而 app-server 一条都看不到时，
    * 判定为两份 CODEX_HOME，返回用户层 hook 条数供提示。app-server 只要回出任何指向用户层
    * 文件的 hook（sourcePath 与用户层文件路径一致），就证明两边同源，不提示。
+   * 复审修正：WSL 只在 Windows 上存在，非 Windows 平台不判定（app-server 拒加载非法
+   * handler、或别的原因导致空列表时不能妄断是两份 CODEX_HOME）。
    */
-  function codexPlusHooksEditorHomeMismatch(files, listed) {
+  function codexPlusHooksEditorHomeMismatch(files, listed, platform = codexPlusHooksEditorPlatform()) {
+    if (platform !== "windows") return 0;
     const userFile = (Array.isArray(files) ? files : []).find((file) => file?.scope === "user");
     if (!userFile?.exists || !userFile.text) return 0;
     const parsed = codexPlusHooksEditorParse(userFile.text);
@@ -446,7 +449,50 @@
     return count;
   }
 
-  function codexPlusHooksEditorHomeMismatchMessage(helperHome, count) {
+  /** Windows 风格路径：盘符（C:\）、UNC（\\…）或其正斜杠写法（//wsl.localhost/…）。 */
+  function codexPlusHooksEditorIsWindowsPath(path) {
+    return /^[a-zA-Z]:[/\\]/.test(path) || /^\\\\/.test(path) || /^\/\/[^/]/.test(path);
+  }
+
+  /** POSIX 风格路径：以单个 / 开头。 */
+  function codexPlusHooksEditorIsPosixPath(path) {
+    return path.startsWith("/") && !path.startsWith("//");
+  }
+
+  /**
+   * 当前工作位置是否真的在 WSL（纯函数，不凭猜）：平台是 Windows，且
+   *   - 用户层文件是 Windows 路径（Codex++ 管理的 Windows 侧 CODEX_HOME），并且
+   *   - app-server 回出的某个 sourcePath 是 POSIX 路径（Windows 宿主上 app-server
+   *     用的是 Windows 路径；只有跑在 WSL 里才会回 POSIX 路径），或者
+   *   - 某个项目层 root 本身是 POSIX 路径或 WSL UNC（\wsl.localhost\…、//wsl$/…），
+   *     即工作位置就在 WSL 文件系统里。
+   * app-server 一条都没回、也没有 WSL 风格的项目目录时无法确认，返回 false，提示用中性文案。
+   */
+  function codexPlusHooksEditorHomeMismatchWsl(files, listed, platform = codexPlusHooksEditorPlatform()) {
+    if (platform !== "windows") return false;
+    const fileList = Array.isArray(files) ? files : [];
+    const userFile = fileList.find((file) => file?.scope === "user");
+    if (!userFile || !codexPlusHooksEditorIsWindowsPath(String(userFile.path || ""))) return false;
+    for (const file of fileList) {
+      const root = String(file?.root || "");
+      if (root && (codexPlusHooksEditorIsPosixPath(root) || /wsl\.localhost|wsl\$/i.test(root))) return true;
+    }
+    for (const hook of listed instanceof Map ? listed.values() : []) {
+      const source = typeof hook?.sourcePath === "string" ? hook.sourcePath : "";
+      if (source && codexPlusHooksEditorIsPosixPath(source)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * wsl=true（已确认工作位置在 WSL）才断言两份 CODEX_HOME 并给软链指引；
+   * 其它情况（app-server 拒加载、原因不明）只中性陈述现象，不断言原因。
+   */
+  function codexPlusHooksEditorHomeMismatchMessage(helperHome, count, wsl = false) {
+    if (!wsl) {
+      return `Codex++ 用户层 hooks.json 里有 ${count} 条 hook，但当前 app-server 一条都看不到（app-server 没有读到这份用户层文件）。`
+        + ` 请检查 hook 配置是否合法、app-server 是否加载成功；app-server 若在使用另一份 CODEX_HOME，请直接在它使用的 CODEX_HOME 里配置 hooks。`;
+    }
     return `Codex++ 用户层 hooks.json 里有 ${count} 条 hook，但当前 app-server 一条都看不到。`
       + ` 工作位置为 WSL 时 app-server 使用 WSL 内的 ~/.codex，与 Codex++ 管理的 ${helperHome || "Windows 侧 CODEX_HOME"} 不是同一份 CODEX_HOME。`
       + ` 可在 WSL 中把 ~/.codex 软链到共享目录（例如 /mnt/<盘>/Codex），或在此工作位置单独配置 hooks。`;
@@ -641,6 +687,7 @@
       dirty: false,
       listed: new Map(),
       warnings: [],
+      reportedHomeMismatch: "",
       hookState: {},
       editing: null,
       testing: null,
@@ -738,13 +785,20 @@
       state.listed = hooks;
       state.warnings = warnings;
       // issue #3235：WSL 工作位置下 app-server 用的是 WSL 侧 CODEX_HOME，用户层 hook 会
-      // 静默消失。这里明确提示两份配置不同并引导共享/单独配置，而不是给一个空列表。
+      // 静默消失。这里明确提示并引导共享/单独配置，而不是给一个空列表。只在 Windows 上、
+      // 且能确认工作位置确实在 WSL 时才断言两份 CODEX_HOME；确认不了就用中性文案。
       const mismatchHooks = codexPlusHooksEditorHomeMismatch(state.files, state.listed);
       if (mismatchHooks) {
-        state.warnings.unshift(codexPlusHooksEditorHomeMismatchMessage(state.codexHome, mismatchHooks));
-        if (typeof sendCodexPlusDiagnostic === "function") {
+        const mismatchWsl = codexPlusHooksEditorHomeMismatchWsl(state.files, state.listed);
+        state.warnings.unshift(codexPlusHooksEditorHomeMismatchMessage(state.codexHome, mismatchHooks, mismatchWsl));
+        // refreshListed 会被保存、信任、写开关连续触发多次，同一份 mismatch 状态只上报一次。
+        const mismatchKey = `${mismatchHooks}:${mismatchWsl}`;
+        if (state.reportedHomeMismatch !== mismatchKey && typeof sendCodexPlusDiagnostic === "function") {
+          state.reportedHomeMismatch = mismatchKey;
           sendCodexPlusDiagnostic("hooks_editor_app_server_home_mismatch", { hookCount: mismatchHooks });
         }
+      } else {
+        state.reportedHomeMismatch = "";
       }
       state.hookState = hookState;
     };
