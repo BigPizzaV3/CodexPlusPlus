@@ -3,8 +3,8 @@ use crate::usage_history::structured::token_checkpoint::{Checkpoint, Counter, Ob
 use crate::usage_history::structured::{
     FileState, Index, MAX_FILES, Snapshot, UsageEvent, segments, usage_provider,
 };
-use anyhow::{Result, ensure};
-use chrono::{DateTime, NaiveDate};
+use anyhow::{Context, Result, ensure};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -544,53 +544,119 @@ impl Store {
         db: &mut Connection,
         start_ms: i64,
         end_ms: i64,
-        mut visit: impl FnMut(UsageEvent) -> Result<()>,
+        visit: impl FnMut(UsageEvent) -> Result<()>,
     ) -> Result<i64> {
         let read = db.transaction()?;
         let current = revision(&read)?;
-        {
-            let mut query = read.prepare(
-                "SELECT r.event_id, s.session, r.payload FROM token_resolved r
+        Self::visit_committed(&read, start_ms, end_ms, visit)?;
+        read.commit()?;
+        Ok(current)
+    }
+
+    fn visit_committed(
+        read: &Connection,
+        start_ms: i64,
+        end_ms: i64,
+        mut visit: impl FnMut(UsageEvent) -> Result<()>,
+    ) -> Result<()> {
+        let mut query = read.prepare(
+            "SELECT r.event_id, s.session, r.payload FROM token_resolved r
                  JOIN token_sessions s ON s.id = r.session_id
                  WHERE r.timestamp_ms >= ?1 AND r.timestamp_ms < ?2
                  AND r.day >= (SELECT precise_from FROM token_revision)
                  ORDER BY r.timestamp_ms, r.event_id",
-            )?;
-            let mut rows = query.query([start_ms, end_ms])?;
-            while let Some(row) = rows.next()? {
-                let id = row.get_ref(0)?.as_blob()?.try_into()?;
-                let event: Observation = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
-                visit(event.into_event(id, row.get(1)?)?)?;
-            }
+        )?;
+        let mut rows = query.query([start_ms, end_ms])?;
+        while let Some(row) = rows.next()? {
+            let id = row.get_ref(0)?.as_blob()?.try_into()?;
+            let event: Observation = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
+            visit(event.into_event(id, row.get(1)?)?)?;
         }
-        read.commit()?;
-        Ok(current)
+        Ok(())
     }
 
     pub(in super::super) fn read_days(
         db: &mut Connection,
         start: NaiveDate,
         end: NaiveDate,
-        mut visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+        visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
     ) -> Result<i64> {
         let read = db.transaction()?;
         let current = revision(&read)?;
-        {
-            let mut query = read.prepare(
-                "SELECT s.session, d.day, d.groups FROM token_days d
-                 JOIN token_sessions s ON s.id = d.session_id
-                 WHERE d.day >= ?1 AND d.day < ?2 ORDER BY d.day, s.session",
-            )?;
-            let mut rows = query.query(params![start.to_string(), end.to_string()])?;
-            while let Some(row) = rows.next()? {
-                visit(
-                    row.get(0)?,
-                    NaiveDate::parse_from_str(row.get_ref(1)?.as_str()?, "%Y-%m-%d")?,
-                    serde_json::from_slice(row.get_ref(2)?.as_blob()?)?,
-                )?;
-            }
-        }
+        Self::visit_days(&read, start, end, visit)?;
         read.commit()?;
         Ok(current)
+    }
+
+    fn visit_days(
+        read: &Connection,
+        start: NaiveDate,
+        end: NaiveDate,
+        mut visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+    ) -> Result<()> {
+        let mut query = read.prepare(
+            "SELECT s.session, d.day, d.groups FROM token_days d
+                 JOIN token_sessions s ON s.id = d.session_id
+                 WHERE d.day >= ?1 AND d.day < ?2 ORDER BY d.day, s.session",
+        )?;
+        let mut rows = query.query(params![start.to_string(), end.to_string()])?;
+        while let Some(row) = rows.next()? {
+            visit(
+                row.get(0)?,
+                NaiveDate::parse_from_str(row.get_ref(1)?.as_str()?, "%Y-%m-%d")?,
+                serde_json::from_slice(row.get_ref(2)?.as_blob()?)?,
+            )?;
+        }
+        Ok(())
+    }
+
+    // 旧的完整本地日与保留期内的明细不重叠；残日必须由原会话回读补齐。
+    pub(in super::super) fn read_range(
+        db: &mut Connection,
+        start_ms: i64,
+        end_ms: i64,
+        visit_detail: impl FnMut(UsageEvent) -> Result<()>,
+        visit_archived_day: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+    ) -> Result<(i64, bool)> {
+        ensure!(start_ms < end_ms, "invalid Token range");
+        let local = |ms| {
+            DateTime::from_timestamp_millis(ms)
+                .map(|time| time.with_timezone(&Local))
+                .context("Token range follows an unsupported timestamp")
+        };
+        let start = local(start_ms)?;
+        let end = local(end_ms)?;
+        let start_day = start.date_naive();
+        let end_day = end.date_naive();
+        let is_midnight = |time: DateTime<Local>| {
+            time.time() == NaiveTime::MIN
+                && Local.from_local_datetime(&time.naive_local()).single() == Some(time)
+        };
+        let start_aligned = is_midnight(start);
+        let end_aligned = is_midnight(end);
+        let read = db.transaction()?;
+        let (current, cutoff): (i64, String) = read.query_row(
+            "SELECT revision, precise_from FROM token_revision",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let mut missing_exact = false;
+        if !cutoff.is_empty() {
+            let cutoff = NaiveDate::parse_from_str(&cutoff, "%Y-%m-%d")?;
+            let whole_start = if start_aligned {
+                start_day
+            } else {
+                start_day.succ_opt().context("Token start date overflow")?
+            };
+            let whole_end = end_day.min(cutoff);
+            if whole_start < whole_end {
+                Self::visit_days(&read, whole_start, whole_end, visit_archived_day)?;
+            }
+            missing_exact =
+                !start_aligned && start_day < cutoff || !end_aligned && end_day < cutoff;
+        }
+        Self::visit_committed(&read, start_ms, end_ms, visit_detail)?;
+        read.commit()?;
+        Ok((current, missing_exact))
     }
 }

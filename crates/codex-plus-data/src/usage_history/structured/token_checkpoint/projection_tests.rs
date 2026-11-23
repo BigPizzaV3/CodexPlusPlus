@@ -1,6 +1,6 @@
 use super::store::{Store, projection::SourceUpdate};
 use crate::usage_history::structured::{FileState, UsageEvent, index_budget::Budget};
-use chrono::{DateTime, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -513,6 +513,141 @@ fn advancing_retention_does_not_rehydrate_an_ordered_source() {
     .unwrap();
     assert_eq!(summary_revision, actual_revision);
     assert_eq!(summaries, vec![(expired, 50, 5500), (retained, 1, 110)]);
+}
+
+#[test]
+fn cross_retention_range_reads_one_revision_without_inventing_partial_days() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let source = root.join("rollout-range.jsonl");
+    let file = root.join("tokens.sqlite3");
+    let archived = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+    let retained = archived.succ_opt().unwrap();
+    let at = |day: NaiveDate, hour, minute| {
+        Local
+            .from_local_datetime(&day.and_hms_opt(hour, minute, 0).unwrap())
+            .single()
+            .unwrap()
+    };
+    let timed_count = |day, minute, ordinal| {
+        let mut event = count(ordinal, ordinal, ordinal as u64, true);
+        event["timestamp"] = at(day, 12, minute).to_rfc3339().into();
+        event
+    };
+    let initial = parse(
+        &source,
+        &[
+            header(PARENT, 0),
+            timed_count(archived, 0, 1),
+            timed_count(retained, 0, 2),
+        ],
+        archived,
+    );
+    let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+    let initial = store
+        .prepare(
+            new_source(&source, &initial),
+            archived,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    store.publish(initial).unwrap();
+    let later_source = root.join("rollout-advance-retention.jsonl");
+    let later = parse(
+        &later_source,
+        &[
+            header(OTHER, 0),
+            timed_count(retained.succ_opt().unwrap(), 0, 1),
+        ],
+        retained,
+    );
+    let advance = store
+        .prepare(
+            new_source(&later_source, &later),
+            retained,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    let revision = store.publish(advance).unwrap();
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        timed_count(retained, 30, 3)
+    )
+    .unwrap();
+    let (source_revision, mut tail) = store.checkpoint(&source).unwrap().unwrap();
+    assert!(
+        tail.read_with_budget(&source, retained, &mut Budget::new(std::iter::empty()))
+            .unwrap()
+    );
+    let append = store
+        .prepare(
+            SourceUpdate {
+                source: &source,
+                state: &tail,
+                previous_revision: Some(source_revision),
+                replace: false,
+            },
+            retained,
+            BTreeMap::new(),
+            8192,
+        )
+        .unwrap();
+    let mut append = Some(append);
+    let mut reader = Connection::open_with_flags(&file, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let start = at(archived, 0, 0).timestamp_millis();
+    let end = at(retained, 13, 0).timestamp_millis();
+    let mut exact = Vec::new();
+    let mut days = Vec::new();
+    let snapshot = Store::read_range(
+        &mut reader,
+        start,
+        end,
+        |event| {
+            exact.push((event.date, event.delta.total_tokens));
+            Ok(())
+        },
+        |session, day, groups| {
+            assert_eq!(session, PARENT);
+            assert_eq!(groups.len(), 1);
+            days.push((
+                day,
+                groups[0].totals.records,
+                groups[0].totals.counts.0.total_tokens,
+            ));
+            assert_eq!(store.publish(append.take().unwrap()).unwrap(), revision + 1);
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(snapshot, (revision, false));
+    assert_eq!(days, vec![(archived, 1, 110)]);
+    assert_eq!(exact, vec![(retained, 110)]);
+
+    for (from, to, missing_exact, expected_events) in [
+        (at(retained, 12, 0), at(retained, 12, 30), false, 1),
+        (at(archived, 12, 0), at(retained, 13, 0), true, 2),
+        (at(archived, 12, 0), at(archived, 13, 0), true, 0),
+    ] {
+        let mut detail = 0;
+        let snapshot = Store::read_range(
+            &mut reader,
+            from.timestamp_millis(),
+            to.timestamp_millis(),
+            |event| {
+                assert_eq!(event.date, retained);
+                assert_eq!(event.delta.total_tokens, 110);
+                detail += 1;
+                Ok(())
+            },
+            |_, _, _| panic!("must not emit an out-of-range daily summary"),
+        )
+        .unwrap();
+        assert_eq!(snapshot, (revision + 1, missing_exact));
+        assert_eq!(detail, expected_events);
+    }
 }
 
 #[test]
