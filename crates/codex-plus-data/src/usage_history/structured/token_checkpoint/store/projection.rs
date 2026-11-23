@@ -494,6 +494,35 @@ impl Store {
         Ok(next)
     }
 
+    pub(in super::super) fn reclaim_expired_details(&mut self, batch: u32) -> Result<usize> {
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let cutoff: String = tx.query_row("SELECT precise_from FROM token_revision", [], |row| {
+            row.get(0)
+        })?;
+        if cutoff.is_empty() {
+            return Ok(0);
+        }
+        let day = NaiveDate::parse_from_str(&cutoff, "%Y-%m-%d")?;
+        // 用现有时间索引限制读取；日期才是删除依据，UTC 偏移小于一天。
+        let latest = day
+            .and_time(chrono::NaiveTime::MIN)
+            .and_utc()
+            .timestamp_millis()
+            + 86_400_000;
+        let removed = tx.execute(
+            "DELETE FROM token_resolved WHERE event_id IN (
+                SELECT event_id FROM token_resolved
+                WHERE timestamp_ms < ?1 AND day < ?2
+                ORDER BY timestamp_ms LIMIT ?3
+             )",
+            params![latest, cutoff, batch],
+        )?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub(in super::super) fn read_committed(
         db: &mut Connection,
         start_ms: i64,

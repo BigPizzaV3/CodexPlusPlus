@@ -377,6 +377,7 @@ fn advancing_retention_does_not_rehydrate_an_ordered_source() {
     let expired = initial.events[0].date;
     let retained = expired.succ_opt().unwrap();
     let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+    assert_eq!(store.reclaim_expired_details(7).unwrap(), 0);
     let first = store
         .prepare(
             new_source(&source, &initial),
@@ -446,12 +447,50 @@ fn advancing_retention_does_not_rehydrate_an_ordered_source() {
     let snapshot = Store::read_committed(&mut reader, i64::MIN, i64::MAX, |_| {
         if let Some(next) = next.take() {
             assert_eq!(store.publish(next).unwrap(), first_revision + 1);
+            assert_eq!(store.reclaim_expired_details(7).unwrap(), 7);
         }
         seen += 1;
         Ok(())
     })
     .unwrap();
     assert_eq!((snapshot, seen), (first_revision, 50));
+    let count_details = |store: &Store| {
+        store
+            .db
+            .query_row("SELECT COUNT(*) FROM token_resolved", [], |row| {
+                row.get::<_, usize>(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(count_details(&store), 44);
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER reject_detail_reclaim BEFORE DELETE ON token_resolved
+             BEGIN SELECT RAISE(ABORT, 'detail reclaim failed'); END;",
+        )
+        .unwrap();
+    assert!(
+        store
+            .reclaim_expired_details(7)
+            .unwrap_err()
+            .to_string()
+            .contains("detail reclaim failed")
+    );
+    assert_eq!(count_details(&store), 44);
+    store
+        .db
+        .execute_batch("DROP TRIGGER reject_detail_reclaim")
+        .unwrap();
+    assert_eq!(store.reclaim_expired_details(7).unwrap(), 7);
+    assert_eq!(store.reclaim_expired_details(100).unwrap(), 36);
+    assert_eq!(store.reclaim_expired_details(100).unwrap(), 0);
+    assert_eq!(count_details(&store), 1);
+    assert_eq!(store.observations(&source).unwrap().len(), 51);
+    assert_eq!(
+        store.checkpoint(&source).unwrap().unwrap().1.offset,
+        tail.offset
+    );
     let (actual_revision, events) = read(&mut reader, i64::MIN, i64::MAX);
     assert_eq!(actual_revision, first_revision + 1);
     assert_eq!(events.len(), 1);
