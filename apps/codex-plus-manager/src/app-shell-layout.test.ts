@@ -29,17 +29,16 @@ test("只保留一条侧栏，旧的图标栏和 Agent 子侧栏都已移除", (
   assert.doesNotMatch(styles, /\.app-rail\b|\.tool-chip\b|\.rail-brand\b/);
 });
 
-test("本地服务不在主侧栏占一组，几页在设置模式的「本地服务」分组；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
+test("本地服务在主侧栏只占一个入口，页内四个页签；Agent 点名字回到上次看的页面，没有就到各自的落脚页", () => {
   const sidebar = functionSource("AppSidebar");
   assert.doesNotMatch(sidebar, /className=\{`cx-side-card[^`]*`\} data-tour="hub"/);
   // 主侧栏没有本地服务（原聚合网关）一组。
   assert.doesNotMatch(sidebar, /data-group="gateway"|const gatewayEntries/);
-  // 设置模式里的「本地服务」分组：共享供应商、路由、Agent 接入、服务设置。
-  const entries = functionSource("settingsNavEntries");
-  for (const route of ["gatewayProviders", "gatewayRouting", "gateway", "gatewaySettings"]) {
-    assert.match(entries, new RegExp(`route: "${route}", group: "service"`));
-  }
-  assert.match(sidebar, /\{ id: "service", label: t\("本地服务"\) \}/);
+  // 一个「本地服务」入口，四个页签都算选中；不放进设置模式。
+  assert.match(sidebar, /\{ key: "localService", route: "gatewayProviders", label: t\("本地服务"\), icon: Waypoints, match: \["hub", \.\.\.localServiceRoutes\] \}/);
+  assert.match(text, /export const localServiceRoutes: Route\[\] = \["gatewayProviders", "gatewayRouting", "gateway", "gatewaySettings"\];/);
+  assert.match(functionSource("App"), /isLocalServiceRoute\(route\) \? <LocalServiceTabs onChange=\{\(next\) => void navigate\(next\)\} value=\{route\} \/> : null/);
+  assert.doesNotMatch(functionSource("settingsNavEntries"), /group: "service"/);
   assert.match(sidebar, /useGatewayPayload\(/);
   // 接入方式的状态点只在有 Agent 接入本地服务时画；网关数据第一次读回来之前用上次记下的结果。
   assert.match(sidebar, /const gatewayInUse = gateway \? connectedAgents\.size > 0 : loadCachedGatewayInUse\(\);/);
@@ -94,7 +93,7 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(sections, /\{ id: "overview", routes: \["overview", "relay"\] \}/);
   for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
   assert.doesNotMatch(sections, /"agentSettings"|"relayEnvironment"/);
-  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings",/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "agentCache", "computerUse", "agentCollaboration"\]\);/);
   assert.doesNotMatch(text, /key: "codexConnection"|key: "legacyProxy"|key: "legacyRelay"/);
   assert.match(text, /id: "relay", get label\(\) \{ return t\("连接与供应商"\); \}/);
   // 内容区顶部不再画 Agent 页签。
@@ -219,8 +218,8 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   assert.match(general, /\{ key: "usage", route: "gatewayUsage", label: t\("用量"\), icon: BarChart3, match: \["gatewayUsage", "requestLog"\] \}/);
   assert.match(sidebar, /const shownGeneral = general\.filter\(\(item\) => routeVisible\(focus, item\.route\)\);/);
   assert.match(text, /const customizeRoutes: Route\[\] = \["context", "skills"\];/);
-  // 路由是本地服务的一部分，和共享供应商一起在设置模式里。
-  assert.match(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("const customizeRoutes")), /"gatewayRouting"/);
+  // 本地服务的几页不进设置模式。
+  assert.doesNotMatch(text.slice(text.indexOf("const settingsModeRoutes"), text.indexOf("export const localServiceRoutes")), /"gateway/);
   // 网关的会话页并进「会话」：Codex 页签是完整的会话管理，其余页签是多 Agent 会话列表。
   assert.doesNotMatch(text, /"gatewaySessions"/);
   const entry = functionSource("App");

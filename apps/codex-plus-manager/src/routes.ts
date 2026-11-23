@@ -87,17 +87,16 @@ export const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: 
   { id: "computerUse", get label() { return t("Computer Use"); }, icon: MousePointerClick },
   // 远程控制：在浏览器或手机上操控 Codex 的会话。和「微信连接」同是「在手机上用 Codex」，挂在侧栏 Codex 下面、紧跟微信连接。
   { id: "remoteControl", get label() { return t("远程控制"); }, icon: Smartphone, tool: "codex" },
-  // 本地服务（原「聚合网关」）：Codex++ 的后台能力，不再在主侧栏单独占一组，
-  // 这几页放在设置模式的「本地服务」分组里，从各 Agent 的页面（Codex「连接与供应商」、Agent 概览、Claude 供应商）进来，
-  // 左上角「返回」回到原来的页面。路由 id 沿用旧名，拓展里的深链不失效。
-  // 总览不再列入任何导航，只留给旧深链。
+  // 本地服务（原「聚合网关」）：Codex++ 的后台能力，不再在主侧栏占一整组。侧栏只有一个「本地服务」入口，
+  // 页内四个页签（共享供应商、路由、Agent 接入、设置，见 localServiceRoutes），各 Agent 的页面也能直接跳进来。
+  // 路由 id 沿用旧名，拓展里的深链不失效。总览不再列入任何导航，只留给旧深链。
   { id: "hub", get label() { return t("本地服务总览"); }, icon: Waypoints },
   // 先有供应商，再接 Agent；路由是进阶设置，放在 Agent 接入之后。
   { id: "gatewayProviders", get label() { return t("共享供应商"); }, icon: Server },
   { id: "gateway", get label() { return t("Agent 接入"); }, icon: Plug },
   { id: "gatewayRouting", get label() { return t("路由"); }, icon: Split },
   { id: "gatewayUsage", get label() { return t("用量"); }, icon: BarChart3 },
-  { id: "gatewaySettings", get label() { return t("服务设置"); }, icon: SlidersHorizontal },
+  { id: "gatewaySettings", get label() { return t("设置"); }, icon: SlidersHorizontal },
   // 和侧栏底部齿轮同名；页面标题按选中的分类显示（通用、配置文件…）。
   { id: "settings", get label() { return t("设置"); }, icon: Settings },
   // Agent 专属设置：目前只有 Codex 有专属选项（启动参数等）。
@@ -130,7 +129,7 @@ export const lastAgentRoute = new Map<string, Route>();
  * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
  */
 export const globalNavigationRoutes: Route[] = ["home", "extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "userScripts", "computerUse", "agentCollaboration", "agentCache", "settings"];
-/** 本地服务的几页：设置模式「本地服务」分组和 ⌘K 里的顺序。 */
+/** 本地服务的几页：⌘K 里的顺序。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
 export const gatewayNavigationRoutes: Route[] = ["gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings"];
 /** 侧栏「全局管理」分组：万物皆拓展置顶，其后是用量、会话、MCP、Skills。 */
@@ -177,8 +176,10 @@ export const visibleActiveTool = (toolId: string | null | undefined) =>
 export const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "overview");
 
 /** 进入设置模式的路由：侧栏切成设置目录。 */
-// 本地服务的几页也在设置模式里：它们是后台能力的设置，不是日常要逛的页面。
-export const settingsModeRoutes = new Set<Route>(["settings", "agentSettings", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewaySettings", "agentCache", "computerUse", "agentCollaboration"]);
+export const settingsModeRoutes = new Set<Route>(["settings", "agentSettings", "agentCache", "computerUse", "agentCollaboration"]);
+/** 「本地服务」一页的四个页签（每个是一条路由），侧栏里只有一个「本地服务」入口；旧的总览也算这一页。 */
+export const localServiceRoutes: Route[] = ["gatewayProviders", "gatewayRouting", "gateway", "gatewaySettings"];
+export const isLocalServiceRoute = (route: Route) => route === "hub" || localServiceRoutes.includes(route);
 /** 「MCP 与 Skills」一页：两个胶囊切换。万物皆拓展是侧栏第一个入口，不放在这里。 */
 export const customizeRoutes: Route[] = ["context", "skills"];
 

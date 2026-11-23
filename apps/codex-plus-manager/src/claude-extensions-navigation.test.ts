@@ -44,7 +44,7 @@ function functionSource(name: string) {
 const navigationNames = [
   "routes", "routeTool", "globalNavigationRoutes", "gatewayNavigationRoutes", "managementNavigationRoutes",
   "navAliasRoute", "multiAgentRoutes", "providerRoutes", "routeVisible", "visibleRoutes",
-  "settingsModeRoutes", "customizeRoutes",
+  "settingsModeRoutes", "localServiceRoutes", "customizeRoutes",
 ];
 const navigationSource = navigationNames.map((name) => `const ${declaration(name).getText(app)};`).join("\n");
 const icons = [...text.matchAll(/icon: (\w+)/g)].map((match) => match[1]);

@@ -59,6 +59,7 @@ import {
   routeTool,
   routeVisible,
   settingsModeRoutes,
+  localServiceRoutes,
   type ToolId,
   visibleRoutes,
 } from "./routes";
@@ -74,7 +75,7 @@ type SettingsNavEntry = {
   route: Route;
   /** route 为 settings 时只显示这些卡片（卡片 id）。 */
   sections?: string[];
-  group: "app" | "agent" | "service" | "tools" | "beta";
+  group: "app" | "agent" | "tools" | "beta";
   keywords?: string;
 };
 
@@ -87,11 +88,6 @@ export function settingsNavEntries(focus: AgentFocus, codexAvailable: boolean): 
     { key: "logs", label: t("日志与诊断"), icon: ScrollText, route: "settings", sections: ["app-settings-logs", "app-settings-diagnostics"], group: "app", keywords: "logs diagnostics 日志 诊断" },
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },
     { key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent", keywords: "codex launch args takeover 启动参数 接管 维护 修复" },
-    // 本地服务（原「聚合网关」）：共享供应商、路由、Agent 接入和服务设置。从各 Agent 的页面跳进来，「返回」回去。
-    { key: "gatewayProviders", label: t("共享供应商"), icon: Server, route: "gatewayProviders", group: "service", keywords: "gateway pool providers keys subscriptions 网关 供应商池 共享 订阅 多 Key" },
-    { key: "gatewayRouting", label: t("路由"), icon: Split, route: "gatewayRouting", group: "service", keywords: "gateway routing groups failover 网关 路由 模型组 故障转移" },
-    { key: "gatewayAgents", label: t("Agent 接入"), icon: Plug, route: "gateway", group: "service", keywords: "gateway agents connect 网关 接入 Claude Code Grok" },
-    { key: "gateway", label: t("服务设置"), icon: SlidersHorizontal, route: "gatewaySettings", group: "service", keywords: "gateway port key 网关 端口 监听 本地服务" },
     { key: "cache", label: t("缓存清理"), icon: Trash2, route: "agentCache", group: "tools", keywords: "cache clean 缓存 清理" },
     { key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta", keywords: "computer use mcp" },
     { key: "agentCollaboration", label: t("Agent 协作"), icon: GitBranch, route: "agentCollaboration", group: "beta", keywords: "collaboration 协作" },
@@ -224,7 +220,7 @@ export function AppSidebar({
     const activeKey = activeSettingsEntry(entries, route, settingsSections);
     const query = settingsQuery.trim().toLowerCase();
     const shown = query ? entries.filter((entry) => `${entry.label} ${entry.keywords ?? ""}`.toLowerCase().includes(query)) : entries;
-    const groups: Array<{ id: SettingsNavEntry["group"]; label?: string }> = [{ id: "app" }, { id: "agent" }, { id: "service", label: t("本地服务") }, { id: "tools" }, { id: "beta", label: "Beta" }];
+    const groups: Array<{ id: SettingsNavEntry["group"]; label?: string }> = [{ id: "app" }, { id: "agent" }, { id: "tools" }, { id: "beta", label: "Beta" }];
     return (
       <aside className="side cx-side" data-mode="settings">
         <div aria-hidden="true" className="cx-titlebar-drag" data-tauri-drag-region />
@@ -300,9 +296,11 @@ export function AppSidebar({
     { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes },
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
     { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
+    // 本地服务（原「聚合网关」一整组）只占一个入口，页内四个页签。
+    { key: "localService", route: "gatewayProviders", label: t("本地服务"), icon: Waypoints, match: ["hub", ...localServiceRoutes] },
   ];
   const shownGeneral = general.filter((item) => routeVisible(focus, item.route));
-  // 本地服务不再在主侧栏占一组（几页都在设置的「本地服务」里）；声明在 gateway 分组的拓展页面并进其余拓展页面那一节。
+  // 本地服务只占第一组里一个入口；声明在 gateway 分组的拓展页面并进其余拓展页面那一节。
   // `gateway` 是已发布的清单分组名，照旧认。
   const extensionItems = (["gateway", "management", "tools"] as ManagerNavGroup[]).flatMap((group) => managerNavPages(extensionPages, group));
   const renderEntry = (item: SideEntry) => {

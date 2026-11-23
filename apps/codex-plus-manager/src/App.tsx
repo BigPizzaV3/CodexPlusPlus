@@ -17,6 +17,7 @@ import { SessionsView, sessionDeleteSucceeded } from "./AgentSessions";
 import { agentName, draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type GatewayResult } from "./gateway-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
+import { LocalServiceTabs } from "./LocalServiceTabs";
 import { agentTabGroups, pageVisibleForTool } from "./page-groups";
 import { keepIfSame, usePolling } from "./use-polling";
 import { useStableCallbacks } from "./use-stable-callbacks";
@@ -149,6 +150,7 @@ import {
   routeTool,
   routeVisible,
   settingsModeRoutes,
+  isLocalServiceRoute,
   type ToolId,
   visibleActiveTool,
   visibleRoutes,
@@ -3365,6 +3367,8 @@ export function App() {
         ? t("MCP 与 Skills")
         : onAgentPage
           ? routeTitle(route)
+          : isLocalServiceRoute(route)
+            ? t("本地服务")
           : soloAgent && route === "gateway"
             ? tf("{0} 接入", [agentName(soloAgent)])
             : routeTitle(navAliasRoute[route] ?? route);
@@ -3559,6 +3563,7 @@ export function App() {
             />
           ) : null}
           {route === "gatewayUsage" || route === "requestLog" ? <UsageTabs onChange={(next) => void navigate(next)} value={route} /> : null}
+          {isLocalServiceRoute(route) ? <LocalServiceTabs onChange={(next) => void navigate(next)} value={route} /> : null}
           {route === "requestLog" ? (
             <RequestLogScreen
               initialAgent={requestLogAgentFilter}
