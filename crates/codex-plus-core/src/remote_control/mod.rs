@@ -41,6 +41,8 @@ const STATE_FILE: &str = "remote-control.json";
 const THREAD_NAME: &str = "codex-plus-remote-control";
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 const RUNTIME_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+pub(crate) const WEIXIN_FOCUS_BUSY: &str = "Codex 会话服务正在切换，请稍后重试";
+pub(crate) const WEIXIN_FOCUS_DISABLED: &str = "请先在 Codex++ 打开远程控制，或在「微信连接 → 权限」开启「允许微信专注操作桌面会话」。";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -295,7 +297,7 @@ fn try_hosts() -> anyhow::Result<MutexGuard<'static, Hosts>> {
     match hosts().try_lock() {
         Ok(guard) => Ok(guard),
         Err(TryLockError::Poisoned(error)) => Ok(error.into_inner()),
-        Err(TryLockError::WouldBlock) => anyhow::bail!("Codex 会话服务正在切换，请稍后重试"),
+        Err(TryLockError::WouldBlock) => anyhow::bail!("{WEIXIN_FOCUS_BUSY}"),
     }
 }
 
@@ -303,10 +305,20 @@ async fn finish_shutdown(cleanup: impl std::future::Future<Output = ()>) -> anyh
     tokio::time::timeout(SHUTDOWN_GRACE, cleanup).await.context("等待会话服务停机超时")
 }
 
-pub(crate) fn weixin_focus_available() -> bool {
-    let Ok(hosts) = try_hosts() else { return false };
+fn check_weixin_focus_permission(web_running: bool) -> anyhow::Result<()> {
     let state = load_state_from(&state_path());
-    !hosts.closed && if hosted_service().is_some() { state.enabled } else { state.weixin_focus_enabled }
+    if web_running {
+        anyhow::ensure!(state.enabled, "远程控制正在关闭，请稍后重试");
+    } else {
+        anyhow::ensure!(state.weixin_focus_enabled, "{WEIXIN_FOCUS_DISABLED}");
+    }
+    Ok(())
+}
+
+pub(crate) fn check_weixin_focus_access() -> anyhow::Result<()> {
+    let hosts = try_hosts()?;
+    hosts.ensure_open()?;
+    check_weixin_focus_permission(hosted_service().is_some())
 }
 
 pub(crate) async fn with_weixin_focus<T, F, Fut>(work: F) -> anyhow::Result<T>
@@ -320,12 +332,11 @@ where
         hosts.ensure_open()?;
         // 持有 Hosts 锁时登记在途调用，停机等它完成后再关闭侧车。
         let call = hosts.focus_calls.clone().try_read_owned().context("Codex 会话服务正在关闭，请稍后重试")?;
-        let state = load_state_from(&state_path());
-        let (service, runtime) = if let Some((service, runtime)) = hosted_service() {
-            anyhow::ensure!(state.enabled, "远程控制正在关闭");
+        let web = hosted_service();
+        check_weixin_focus_permission(web.is_some())?;
+        let (service, runtime) = if let Some((service, runtime)) = web {
             (service, runtime)
         } else {
-            anyhow::ensure!(state.weixin_focus_enabled, "微信专注未获授权");
             let host = hosts.focus_host()?;
             (host.service.clone(), host.runtime.handle().clone())
         };
@@ -812,15 +823,62 @@ pub fn status() -> Value {
 mod tests {
     use super::*;
 
+    static HOSTS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn focus_poll_does_not_wait_for_the_hosts_lock() {
+        let _serial = HOSTS_TEST_LOCK.lock().unwrap();
         let guard = hosts().lock().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
-        let thread = std::thread::spawn(move || tx.send(weixin_focus_available()).unwrap());
+        let thread = std::thread::spawn(move || tx.send(check_weixin_focus_access()).unwrap());
         let result = rx.recv_timeout(Duration::from_secs(1));
         drop(guard);
         thread.join().unwrap();
-        assert!(!result.unwrap());
+        assert_eq!(result.unwrap().unwrap_err().to_string(), WEIXIN_FOCUS_BUSY);
+    }
+
+    #[test]
+    fn weixin_focus_checks_saved_permission_before_creating_or_using_a_host() {
+        let _serial = HOSTS_TEST_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(STATE_FILE);
+        set_state_path_for_tests(Some(path));
+        struct RestoreState;
+        impl Drop for RestoreState {
+            fn drop(&mut self) {
+                hosts().lock().unwrap_or_else(|e| e.into_inner()).stop_focus();
+                set_state_path_for_tests(None);
+            }
+        }
+        let _restore = RestoreState;
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let unexpected = |_| async { panic!("unauthorized work must not run") };
+
+        assert_eq!(check_weixin_focus_access().unwrap_err().to_string(), WEIXIN_FOCUS_DISABLED);
+        assert_eq!(runtime.block_on(with_weixin_focus::<(), _, _>(unexpected)).unwrap_err().to_string(), WEIXIN_FOCUS_DISABLED);
+        assert!(hosts().lock().unwrap().focus.is_none());
+
+        set_weixin_focus_enabled(true).unwrap();
+        check_weixin_focus_access().unwrap();
+        assert!(hosts().lock().unwrap().focus.is_none(), "权限检查本身不创建服务");
+        let focus = runtime.block_on(with_weixin_focus(|service| async move { Ok(Arc::downgrade(&service)) })).unwrap();
+        assert!(focus.upgrade().is_some());
+        assert!(hosted_service().is_none(), "独立授权不注册网页服务");
+
+        set_weixin_focus_enabled(false).unwrap();
+        assert!(focus.upgrade().is_none());
+        assert_eq!(check_weixin_focus_access().unwrap_err().to_string(), WEIXIN_FOCUS_DISABLED);
+        assert_eq!(runtime.block_on(with_weixin_focus::<(), _, _>(unexpected)).unwrap_err().to_string(), WEIXIN_FOCUS_DISABLED);
+        assert!(hosts().lock().unwrap().focus.is_none());
+
+        set_weixin_focus_enabled(true).unwrap();
+        let web = service::RemoteService::new(service::ServiceConfig::detect());
+        runtime.block_on(async { register_hosted(&web) });
+        let closing = check_weixin_focus_access().unwrap_err().to_string();
+        assert!(closing.contains("远程控制正在关闭"));
+        assert_eq!(runtime.block_on(with_weixin_focus::<(), _, _>(unexpected)).unwrap_err().to_string(), closing);
+        assert!(hosts().lock().unwrap().focus.is_none());
+        unregister_hosted(&web);
     }
 
     #[test]

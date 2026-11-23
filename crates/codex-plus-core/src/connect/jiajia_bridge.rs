@@ -885,8 +885,8 @@ impl JiajiaBridge {
         };
         // 和网页端一样，先核对这张卡片的请求还是当前待处理的请求：已处理 / 过期的不再发。
         let result = if card.focus {
-            if !self.sessions.available() {
-                return focus::REMOTE_OFF.into();
+            if let Err(error) = self.sessions.check_access() {
+                return error.to_string();
             }
             self.sessions.respond(&card.thread_id, &card.request_id, &option.body).await
         } else {

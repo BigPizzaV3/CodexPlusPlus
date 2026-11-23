@@ -33,7 +33,6 @@ const BUSY_AFTER_SEND_MS: i64 = 3 * 60 * 1000;
 const SEEN_LIMIT: usize = 64;
 /// 进入时附上的上一条回复最多多少字。
 const ENTRY_REPLY_LIMIT: usize = 300;
-pub(super) const REMOTE_OFF: &str = "请先在 Codex++ 打开远程控制，或在「微信连接 → 权限」开启「允许微信专注操作桌面会话」。";
 const EXPORT_LIMIT: usize = 10;
 const EXPORT_HEADER: &str = "微信专注回传";
 /// 附件声明行的开头，后面跟这条消息的随机标记和 JSON 数组。
@@ -226,8 +225,8 @@ pub struct SessionList {
 /// 专注模式要用到的会话操作。真实实现是 [`LiveSessions`]（远程控制的 [`RemoteService`]），测试里换成假的。
 #[async_trait]
 pub trait SessionPort: Send + Sync {
-    /// 远程控制在运行，或已单独授权微信专注。
-    fn available(&self) -> bool;
+    /// 远程控制在运行，或已单独授权微信专注；不可用时返回原因。
+    fn check_access(&self) -> anyhow::Result<()>;
     /// 最近的会话（最近更新的在前）。
     async fn list_threads(&self) -> anyhow::Result<Vec<ThreadSummary>>;
     /// 会话视图（结构同远程控制网页用的那份）；会话已经不存在时 `Ok(None)`。
@@ -251,8 +250,8 @@ fn is_missing_thread(error: &str) -> bool {
 
 #[async_trait]
 impl SessionPort for LiveSessions {
-    fn available(&self) -> bool {
-        crate::remote_control::weixin_focus_available()
+    fn check_access(&self) -> anyhow::Result<()> {
+        crate::remote_control::check_weixin_focus_access()
     }
 
     async fn list_threads(&self) -> anyhow::Result<Vec<ThreadSummary>> {
@@ -526,8 +525,8 @@ impl JiajiaBridge {
         if command == Command::Exit {
             return self.exit_focus(peer);
         }
-        if !self.sessions.available() {
-            return REMOTE_OFF.into();
+        if let Err(error) = self.sessions.check_access() {
+            return error.to_string();
         }
         match command {
             Command::Sessions => self.list_sessions(peer).await,
@@ -728,14 +727,14 @@ impl JiajiaBridge {
     /// `/状态` 里的一行。
     pub(super) async fn focus_status_line(&self, peer: &str) -> String {
         let Some(focus) = self.focus_of(peer) else { return "未专注".into() };
-        let state = if !self.sessions.available() {
-            "远程控制未运行，微信专注未获授权"
+        let state = if let Err(error) = self.sessions.check_access() {
+            error.to_string()
         } else {
             match self.sessions.thread_view(&focus.thread_id).await {
                 Ok(Some(view)) => phase_label(events::snapshot(&view).phase),
                 Ok(None) => "会话已经不在了",
                 Err(_) => "读不到状态",
-            }
+            }.to_string()
         };
         // 回传目录是微信连接设置里的工作目录，不一定是会话的项目目录：说清楚文件要放哪。
         let outbound = match self.outbound.permit(peer) {
@@ -754,9 +753,9 @@ impl JiajiaBridge {
     /// 本人的消息（和附件）直接发给钉住的会话。
     pub(super) async fn send_to_focus(&self, peer: &str, token: &str, message: &WeixinMessage, text: &str, focus: &FocusState) -> Inbound {
         let title = display_title(&focus.title).to_string();
-        if !self.sessions.available() {
+        if let Err(error) = self.sessions.check_access() {
             let back = self.back_label(peer);
-            self.reply(peer, token, &format!("这条没发给「{title}」：{REMOTE_OFF}\n发 /退出 回到{back}。")).await;
+            self.reply(peer, token, &format!("这条没发给「{title}」：{error}\n发 /退出 回到{back}。")).await;
             return Inbound::Handled;
         }
         let (attachments, warnings, _inbox) = if message.has_attachments() { self.receive_attachments(message, &focus.cwd).await } else { (Vec::new(), Vec::new(), None) };
@@ -862,7 +861,8 @@ impl JiajiaBridge {
     pub async fn take_focus_request(&self) {
         let Some(request) = self.port.take_focus_request() else { return };
         let Some(owner) = self.owner.clone() else { return };
-        if !self.sessions.available() {
+        if let Err(error) = self.sessions.check_access() {
+            self.deliver(Kind::Notice, error.to_string(), None).await;
             return;
         }
         let text = self.enter_focus(&owner, &request.thread_id, &request.title, true).await;
@@ -884,7 +884,7 @@ impl JiajiaBridge {
             inner.focus_polled_at = now;
             focus
         };
-        if !self.sessions.available() {
+        if self.sessions.check_access().is_err() {
             return;
         }
         let view = match self.sessions.thread_view(&focus.thread_id).await {

@@ -5,6 +5,7 @@ use std::path::Path;
 use super::*;
 use crate::connect::jiajia_bridge::focus::{LIST_TTL_MS, SessionPort, ThreadSummary, pick_project, session_line, turn_report};
 use crate::remote_control::uploads::{Attachment, AttachmentKind};
+use crate::remote_control::{WEIXIN_FOCUS_BUSY, WEIXIN_FOCUS_DISABLED};
 
 const T1: &str = "11111111-aaaa-4000-8000-000000000001";
 const T2: &str = "22222222-bbbb-4000-8000-000000000002";
@@ -14,6 +15,7 @@ const T2: &str = "22222222-bbbb-4000-8000-000000000002";
 #[derive(Default)]
 struct SessionsState {
     off: bool,
+    busy: bool,
     threads: Vec<ThreadSummary>,
     views: HashMap<String, Value>,
     /// (会话, 文字, 附件)
@@ -58,8 +60,11 @@ impl MockSessions {
 
 #[async_trait]
 impl SessionPort for MockSessions {
-    fn available(&self) -> bool {
-        !self.lock().off
+    fn check_access(&self) -> anyhow::Result<()> {
+        let state = self.lock();
+        anyhow::ensure!(!state.busy, "{WEIXIN_FOCUS_BUSY}");
+        anyhow::ensure!(!state.off, "{WEIXIN_FOCUS_DISABLED}");
+        Ok(())
     }
 
     async fn list_threads(&self) -> anyhow::Result<Vec<ThreadSummary>> {
@@ -456,11 +461,11 @@ async fn non_owners_and_remote_control_off_get_an_explanation() {
     assert!(fixture.last_text().contains("这条没发给「重构登录」") && fixture.last_text().contains("请先在 Codex++ 打开远程控制"));
     assert!(fixture.sessions.sent().is_empty() && fixture.jiajia.sent().is_empty());
     assert_eq!(say(&bridge, "me", &approval).await, Inbound::Handled);
-    assert_eq!(fixture.last_text(), focus::REMOTE_OFF);
+    assert_eq!(fixture.last_text(), WEIXIN_FOCUS_DISABLED);
     assert!(fixture.sessions.lock().responded.is_empty() && fixture.jiajia.lock().responded.is_empty());
     assert_eq!(bridge.state().cards.len(), 1, "权限关闭不删除待处理卡片");
     say(&bridge, "me", "/状态").await;
-    assert!(fixture.last_text().contains("当前专注：重构登录（远程控制未运行，微信专注未获授权）"));
+    assert!(fixture.last_text().contains(&format!("当前专注：重构登录（{WEIXIN_FOCUS_DISABLED}）")));
     bridge.poll_focus(true).await;
     assert!(bridge.state().focus.contains_key("me"), "远程控制没开不算会话没了");
     fixture.sessions.lock().off = false;
@@ -471,6 +476,35 @@ async fn non_owners_and_remote_control_off_get_an_explanation() {
     fixture.sessions.lock().off = true;
     say(&bridge, "me", "/退出").await;
     assert!(fixture.last_text().starts_with("已退出「重构登录」"), "退出不需要远程控制");
+}
+
+#[tokio::test]
+async fn focus_busy_asks_to_retry_without_rerouting_or_discarding_the_card() {
+    let fixture = Fixture::new().await;
+    let cwd = fixture.add_login_thread();
+    let bridge = fixture.bridge();
+    say(&bridge, "me", "/进入 11111111").await;
+    let request = command_request(json!(7), json!(["accept", "decline"]));
+    fixture.sessions.set_view(T1, view(T1, "重构登录", &cwd, "active", json!([]), json!([request])));
+    bridge.poll_focus(true).await;
+    let approval = format!("1 #{}", bridge.state().cards[0].no);
+
+    fixture.sessions.lock().busy = true;
+    assert_eq!(say(&bridge, "me", "继续").await, Inbound::Handled);
+    let reply = fixture.last_text();
+    assert!(reply.contains(WEIXIN_FOCUS_BUSY) && !reply.contains(WEIXIN_FOCUS_DISABLED), "{reply}");
+    assert_eq!(say(&bridge, "me", &approval).await, Inbound::Handled);
+    assert_eq!(fixture.last_text(), WEIXIN_FOCUS_BUSY);
+    assert!(fixture.sessions.sent().is_empty() && fixture.jiajia.sent().is_empty());
+    assert!(fixture.sessions.lock().responded.is_empty() && fixture.jiajia.lock().responded.is_empty());
+    assert_eq!(bridge.state().cards.len(), 1);
+    assert_eq!(bridge.state().focus["me"].thread_id, T1);
+
+    fixture.sessions.lock().busy = false;
+    assert_eq!(say(&bridge, "me", &approval).await, Inbound::Handled);
+    assert_eq!(fixture.sessions.lock().responded.len(), 1);
+    assert_eq!(say(&bridge, "me", "继续").await, Inbound::Handled);
+    assert_eq!(fixture.sessions.sent(), [(T1.into(), "继续".into(), 0)]);
 }
 
 // ---------- 附件回传 ----------
