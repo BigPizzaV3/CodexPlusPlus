@@ -1497,10 +1497,12 @@ fn request() -> RequestEvidence {
         attempts: Some(1),
         auto_retries: Some(0),
         final_response_evidence: None,
+        final_response_id: None,
         usage: Some(RequestEvidenceUsage {
             input_tokens: Some(100),
             output_tokens: Some(10),
             cached_tokens: Some(20),
+            cached_tokens_known: None,
         }),
         agent: String::new(),
     }
@@ -3716,6 +3718,7 @@ fn fallback_merged_receipt_requires_each_original_request_to_match() {
         input_tokens: Some(50),
         output_tokens: Some(5),
         cached_tokens: Some(10),
+        cached_tokens_known: None,
     });
     let mut second = first.clone();
     second.id = "request-2".into();

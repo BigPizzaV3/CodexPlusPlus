@@ -15,17 +15,16 @@ pub(super) fn database_path(storage: &Path) -> io::Result<PathBuf> {
     Ok(storage.join("usage-provider-cache.sqlite"))
 }
 
-fn saved_request_matches(data: &str, request: &RequestEvidence) -> bool {
-    let Ok(mut saved) = serde_json::from_str::<Value>(data) else {
-        return false;
-    };
-    let Some(saved_fields) = saved.as_object_mut() else {
-        return false;
-    };
-    saved_fields.remove("relayName");
-    let mut current = serde_json::to_value(request).expect("serialize request evidence");
-    current.as_object_mut().unwrap().remove("relayName");
-    saved == current
+fn stored_observation(data: &str) -> Option<RequestEvidence> {
+    let row: RequestEvidence = serde_json::from_str(data).ok()?;
+    if !row.valid_capture() {
+        return None;
+    }
+    // 数据库只保存投影。未识别的持久证据不能像网关日志里的展示字段那样直接忽略。
+    let encoded = serde_json::to_string(&row).expect("serialize request evidence");
+    (encoded == data
+        || serde_json::from_str::<Value>(data).ok()? == serde_json::to_value(&row).unwrap())
+    .then_some(row)
 }
 
 pub(super) struct Captured<T> {
@@ -638,15 +637,16 @@ impl ProviderCache {
                 if row.id.is_empty() || row.id.len() > 256 {
                     continue;
                 }
-                let data = serde_json::to_string(row)?;
                 let (old, denied): (Option<String>, bool) =
                     previous.query_row([&row.id], |entry| Ok((entry.get(0)?, entry.get(1)?)))?;
+                let stored = old.as_deref().and_then(stored_observation);
+                let merged = stored
+                    .as_ref()
+                    .and_then(|saved| saved.merge_observation(row));
                 let denied = denied
                     || duplicates.contains(row.id.as_str())
-                    || row.keys().is_empty()
-                    || old
-                        .as_ref()
-                        .is_some_and(|old| !saved_request_matches(old, row));
+                    || !row.valid_capture()
+                    || old.is_some() && merged.is_none();
                 let at = if row.timestamp_ms > 0 {
                     row.timestamp_ms
                 } else {
@@ -658,21 +658,24 @@ impl ProviderCache {
                     timestamp_ms: at,
                     ..Default::default()
                 };
-                let rejected_data = denied
-                    .then(|| serde_json::to_string(&rejected))
-                    .transpose()?;
-                let inserted = insert.execute(params![
-                    row.id,
-                    at,
-                    RequestSessionAliases::identity(&rejected.thread_id),
-                    rejected_data.as_ref().unwrap_or(&data)
-                ])?;
-                added += inserted;
-                writes += inserted;
+                if old.is_none() {
+                    let inserted = insert.execute(params![
+                        row.id,
+                        at,
+                        RequestSessionAliases::identity(&rejected.thread_id),
+                        serde_json::to_string(if denied { &rejected } else { row })?
+                    ])?;
+                    added += inserted;
+                    writes += inserted;
+                }
                 if denied {
                     // 拒绝身份独立于首次请求的会话和时间索引；重复观测每日续期一次。
                     writes += reject.execute(params![row.id, now.max(at), today])?;
-                    writes += invalidate.execute(params![row.id, rejected_data])?;
+                    writes +=
+                        invalidate.execute(params![row.id, serde_json::to_string(&rejected)?])?;
+                } else if let Some(std::borrow::Cow::Owned(enriched)) = merged {
+                    writes +=
+                        invalidate.execute(params![row.id, serde_json::to_string(&enriched)?])?;
                 }
             }
         }
@@ -751,18 +754,27 @@ impl ProviderCache {
             .db
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
-        let mut current: BTreeMap<&str, &RequestEvidence> = BTreeMap::new();
+        let mut current = BTreeMap::<&str, std::borrow::Cow<RequestEvidence>>::new();
         let mut rejected = HashSet::new();
         for row in rows {
             if row.id.is_empty() || row.id.len() > 256 {
                 continue;
             }
-            if row.keys().is_empty()
-                || current
-                    .insert(row.id.as_str(), row)
-                    .is_some_and(|old| !old.same_request(row))
-            {
+            let prior = current
+                .entry(&row.id)
+                .or_insert(std::borrow::Cow::Borrowed(row));
+            if !row.valid_capture() {
                 rejected.insert(row.id.clone());
+            } else {
+                match prior.merge_observation(row) {
+                    None => {
+                        rejected.insert(row.id.clone());
+                    }
+                    Some(std::borrow::Cow::Owned(merged)) => {
+                        *prior = std::borrow::Cow::Owned(merged)
+                    }
+                    Some(std::borrow::Cow::Borrowed(_)) => {}
+                }
             }
         }
         // 批量检查三类输入，避免逐事件查询；也发现采集线程尚未处理的 ID 复用。
@@ -783,9 +795,8 @@ impl ProviderCache {
             })?;
             for row in stored {
                 let (id, data) = row?;
-                let matches = current
-                    .get(id.as_str())
-                    .is_some_and(|row| saved_request_matches(&data, row));
+                let matches = stored_observation(&data)
+                    .is_some_and(|saved| saved.merge_observation(&current[id.as_str()]).is_some());
                 if !matches {
                     rejected.insert(id);
                 }
