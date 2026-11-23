@@ -119,7 +119,6 @@
   cursor: pointer;
 }
 .shell .plugin-market-row-main:hover strong {
-  text-decoration: underline;
   text-underline-offset: 3px;
 }
 .shell .plugin-market-icon {
