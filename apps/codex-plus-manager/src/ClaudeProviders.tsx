@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Download, Plus } from "lucide-react";
-import { CxBadge, CxCard, CxEmpty, CxRow, CxSection } from "./cx-layout";
+import { CxBadge, CxCard, CxEmpty, CxLoading, CxRow, CxSection } from "./cx-layout";
 import { AgentModelPicker } from "./GatewayAgents";
 import { AgentGlyph } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
@@ -103,7 +103,7 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
       >
         <CxCard>
           {!payload ? (
-            <CxEmpty title={t("正在读取供应商…")} />
+            <CxLoading label={t("正在读取供应商…")} />
           ) : !pool.length ? (
             <CxEmpty detail={t("DeepSeek、Kimi、智谱这些 OpenAI 协议的也能用，本地服务会自动转换。")} title={t("还没有供应商")}>
               <button className="cx-secondary" onClick={() => setAdding("catalog")} type="button"><Plus />{t("添加供应商")}</button>

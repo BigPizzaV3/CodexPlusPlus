@@ -964,6 +964,58 @@
   background: hsl(var(--card));
 }
 
+/* ── 加载占位 ────────────────────────────────────────────────
+   数据或页面代码还没到时，用和真实内容差不多形状的灰色条块占着位置（CxLoading / CxPageSkeleton），
+   内容到了高度不跳。以前是一行「读取中…」，整页会塌成一行再突然撑开。 */
+@keyframes cx-skeleton-shift {
+  from {
+    background-position: 100% 0;
+  }
+
+  to {
+    background-position: -100% 0;
+  }
+}
+
+/* 第二个选择器：图标格（.cx-row-icon）自己有底色，要盖过它。 */
+:root .shell .cx-skeleton,
+:root .shell .cx-row-icon.cx-skeleton {
+  display: block;
+  border-radius: 5px;
+  background: linear-gradient(90deg, hsl(var(--foreground) / 0.06) 25%, hsl(var(--foreground) / 0.11) 45%, hsl(var(--foreground) / 0.06) 65%);
+  background-size: 240% 100%;
+  animation: cx-skeleton-shift 1.4s ease-in-out infinite;
+}
+
+:root .shell .cx-row-icon.cx-skeleton {
+  border-radius: 8px;
+}
+
+:root .shell .cx-skeleton-title {
+  width: 32%;
+  height: 12px;
+}
+
+:root .shell .cx-skeleton-detail {
+  width: 56%;
+  height: 9px;
+  margin-top: 8px;
+}
+
+/* 每行长短错开一点，不像一排一模一样的条。 */
+:root .shell .cx-loading-row:nth-child(2n) .cx-skeleton-title {
+  width: 24%;
+}
+
+:root .shell .cx-loading-row:nth-child(3n) .cx-skeleton-detail {
+  width: 42%;
+}
+
+:root .shell .cx-skeleton-heading {
+  width: 72px;
+  height: 12px;
+}
+
 :root .shell .cx-row {
   display: flex;
   min-height: 56px;

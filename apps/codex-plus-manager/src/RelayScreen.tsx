@@ -66,7 +66,7 @@ import {
   normalizeAggregateConfig,
   type ProviderViewKind,
 } from "./relay-profile-editing";
-import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxStatusIcon } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxLoading, CxRow, CxSection, CxStatusIcon } from "./cx-layout";
 import type {
   Actions,
   AggregateMode,
@@ -477,7 +477,7 @@ function SharedProviderList({
   onManage?: () => void;
   onDisconnect?: () => void;
 }) {
-  if (!payload) return <CxCard><CxEmpty title={t("正在读取共享供应商…")} /></CxCard>;
+  if (!payload) return <CxCard><CxLoading label={t("正在读取共享供应商…")} /></CxCard>;
   const binding = payload.gateway.bindings?.codex;
   const current = onGateway && binding?.enabled ? binding.model.trim() : "";
   const activeId = current.includes("/") ? current.slice(0, current.indexOf("/")).toLowerCase() : "";

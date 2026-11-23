@@ -193,7 +193,7 @@ test("总览：读取中、空池、全部关闭分开显示；最近请求没�
   assert.match(hub, /\{!payload && error \? <GatewayLoadError error=\{error\} \/> : null\}/, "读不到本地服务状态时给重试，不再一直读取中");
   assert.match(hub, /poolState === "allOff"/);
   assert.match(hub, /\? t\("正在读取本地服务状态…"\)/);
-  assert.match(read("GatewayPage.tsx"), /\{!payload \? <div className="gw-card gw-empty">\{t\("正在读取…"\)\}<\/div> : null\}/);
+  assert.match(read("GatewayPage.tsx"), /\{!payload \? <CxCard><CxLoading \/><\/CxCard> : null\}/);
 });
 
 test("路由说明的失败原因按标记翻译，不再按「是不是汉字开头」猜", () => {

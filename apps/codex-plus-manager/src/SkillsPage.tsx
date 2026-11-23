@@ -10,7 +10,7 @@ import { t, tf } from "./i18n";
 import { appConfirm, appPrompt } from "./app-dialog";
 import { matchesManagementQuery, skillRepoKey } from "./management-model";
 import { AgentToggle, Menu, MenuItem, PageButton as Button, PageHeader } from "./ManagementPages";
-import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxStatusIcon, CxToolbar } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxLoading, CxRow, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AgentGlyph } from "./hub-shared";
 import { MCP_AGENTS, type McpAgentId } from "./agent-mcp-model";
 import "./ManagementPages.css";
@@ -836,7 +836,7 @@ export function SkillsPage({ notify }: { notify: Notify }) {
   const refreshCommand = tab === "installed" ? "list_installed_skills" : "refresh_skill_catalog";
   const openRepoWorkspace = () => { setRepoOpen(true); void load("list_installed_skills", true); };
   const emptyState = visibleCount ? null
-    : !data && pageLoading ? <CxEmpty title={t("正在读取 Skills…")} />
+    : !data && pageLoading ? <CxLoading label={t("正在读取 Skills…")} rows={5} />
     : readFailed ? <CxEmpty title={t("Skills 读取失败")} detail={loadError || data?.message}><Button onClick={() => void load(refreshCommand)} disabled={pageLoading}>{t("重试")}</Button></CxEmpty>
     : deferredQuery.trim() ? <CxEmpty title={t("没有匹配的 Skill")} detail={tab === "installed" ? t("只搜索了已安装的 Skill，可以到「发现」里找。") : undefined}><Button onClick={() => setQuery("")}>{t("清除搜索")}</Button></CxEmpty>
     : pageLoading ? <CxEmpty title={t("正在扫描…")} />

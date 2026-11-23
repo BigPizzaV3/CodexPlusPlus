@@ -51,7 +51,7 @@ import { TopbarActions } from "./TopbarActions";
 import { GatewayNavContext, publishGatewayPayload, refreshGateway, useGatewayState, useGatewayViewState } from "./gateway-store";
 import { useModalShell } from "./use-modal-shell";
 import "./GatewayPage.css";
-import { CxBadge, CxCard, CxRow, CxSection } from "./cx-layout";
+import { CxBadge, CxCard, CxLoading, CxRow, CxSection } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
 import { AgentGlyph } from "./hub-shared";
 
@@ -227,7 +227,7 @@ function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; b
         </button>
       </div>
 
-      {!payload ? <div className="gw-card gw-empty">{t("正在读取…")}</div> : null}
+      {!payload ? <CxCard><CxLoading /></CxCard> : null}
 
       {payload ? (
         <SectionLabel>

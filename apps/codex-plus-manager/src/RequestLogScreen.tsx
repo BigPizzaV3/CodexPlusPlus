@@ -31,7 +31,7 @@ import { Menu, MenuItem } from "./ManagementPages";
 import { errorText } from "@/lib/utils";
 import { mergeRequestLogDelta, reuseRequestLogEntries, type RequestLogCursor } from "./request-log-merge";
 import { getLanguage, t, tf } from "@/i18n";
-import { CxCard, CxEmpty, CxFilters, CxToolbar } from "./cx-layout";
+import { CxCard, CxEmpty, CxFilters, CxLoading, CxToolbar } from "./cx-layout";
 import type { RequestLogEntry, Status } from "./app-types";
 import { requestLogAgent } from "./app-shared";
 
@@ -629,7 +629,7 @@ export function RequestLogScreen({ initialAgent = "all", initialFocus = {}, onCo
 
       <CxCard className="request-log-card">
         {loading && entries.length === 0 ? (
-          <CxEmpty title={t("正在读取请求日志…")} />
+          <CxLoading label={t("正在读取请求日志…")} rows={6} />
         ) : filtered.length ? (
             <div className="request-log-table" role="table" aria-label={t("请求日志")}>
               <div className="request-log-row request-log-head" role="row">

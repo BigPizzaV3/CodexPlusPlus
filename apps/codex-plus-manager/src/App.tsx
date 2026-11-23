@@ -165,7 +165,7 @@ import {
 } from "./AppDialogs";
 import { LegacyRelayGatewayHint, ProxySettingsScreen, RelayScreen } from "./RelayScreen";
 import { activeSettingsEntry, AppSidebar, CustomizeTabs, settingsNavEntries } from "./AppSidebar";
-import { lazyNamed, PageFallback } from "./lazy-page";
+import { lazyNamed, PageFallback, preloadLazyPages } from "./lazy-page";
 
 // 不常用的页面按需加载（首页、侧栏、Codex 连接 / 多开 / 会话 / MCP 等常用页仍随主界面一起加载）。
 const GatewayPage = lazyNamed(() => import("./GatewayPage"), "GatewayPage");
@@ -411,6 +411,8 @@ export function App() {
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
   const theme: Theme = resolveTheme(themePreference, systemDark);
   const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  // 启动后空闲时把按需加载的页面代码预先读进来：第一次切到这些页面也不用等（见 lazy-page.tsx）。
+  useEffect(() => preloadLazyPages(), []);
   // 轮询、事件回调里读当前页用（闭包里的 route 可能是旧的）。
   const routeRef = useRef(route);
   routeRef.current = route;

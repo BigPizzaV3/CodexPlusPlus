@@ -11,7 +11,7 @@ import { appConfirm } from "./app-dialog";
 import { t, tf } from "./i18n";
 import { agentName, shortPath, type AgentSessionView, type SessionAgent } from "./gateway-model";
 import { AGENT_ICONS, AgentIcon, type Notify } from "./gateway-ui";
-import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxSection, CxToolbar } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxLoading, CxSection, CxToolbar } from "./cx-layout";
 import { matchesManagementQuery, normalizeProjectPath } from "./management-model";
 import { SessionRow, useCopyFeedback } from "./ProjectSessionPage";
 import { TopbarActions } from "./TopbarActions";
@@ -282,7 +282,7 @@ export function SessionsView({ notify, agent: fixedAgent }: { notify: Notify; ag
       {!shown.length ? (
         <CxCard>
           {!loaded ? (
-            <CxEmpty title={t("正在读取…")} />
+            <CxLoading />
           ) : query.trim() ? (
             <CxEmpty title={t("没有匹配的会话")}><button className="cx-secondary" onClick={() => search("")} type="button">{t("清除搜索")}</button></CxEmpty>
           ) : failed.length === wanted.length ? (

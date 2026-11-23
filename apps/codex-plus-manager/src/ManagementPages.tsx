@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { MoreHorizontal, Plus, RefreshCw, Search, Server, TriangleAlert, Upload, X } from "lucide-react";
 import { t, tf } from "./i18n";
-import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
+import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxLoading, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AppSelect } from "./AppSelect";
 import { matchesManagementQuery } from "./management-model";
 import { TopbarActions } from "./TopbarActions";
@@ -235,7 +235,7 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
     {!visible.length ? <CxCard>{rows.length
       ? <CxEmpty title={tf("没有匹配的{0}", [noun])}><button className="cx-secondary" type="button" onClick={() => setQuery("")}>{t("清除搜索")}</button></CxEmpty>
       : kind === "mcp" && agentsLoading
-        ? <CxEmpty title={t("正在读取各 Agent 的 MCP 配置…")} />
+        ? <CxLoading label={t("正在读取各 Agent 的 MCP 配置…")} />
         : <CxEmpty title={kind === "mcp" ? t("还没有 MCP 服务器") : t("还没有插件")} detail={kind === "mcp" ? t("添加一个服务器，或粘贴现有的 mcpServers JSON 导入。") : t("添加一个 Codex 插件配置。")}>
           <button className="cx-primary" type="button" disabled={busy} onClick={() => setEditor({})}><Plus size={15} />{kind === "mcp" ? t("添加服务器") : t("添加插件")}</button>
           {kind === "mcp" ? <button className="cx-secondary" type="button" disabled={busy} onClick={() => setImporting(true)}><Upload size={15} />{t("导入 JSON")}</button> : null}

@@ -34,7 +34,8 @@ test("MCP 页按 Agent 三列管理，Claude / Grok 走后端命令且命令已�
   assert.match(page, /const agents: McpAgentId\[\] = kind === "mcp" \? MCP_AGENTS : \["codex"\];/);
   // 各 Agent 的配置并行读取，读完之前页面显示读取中而不是「还没有 MCP 服务器」。
   assert.match(page, /const results = await Promise\.all\(\(\["claude", "grok"\] as const\)\.map\(/);
-  assert.match(page, /kind === "mcp" && agentsLoading\n?\s*\? <CxEmpty title=\{t\("正在读取各 Agent 的 MCP 配置…"\)\} \/>/);
+  // 读取中是和列表行一样高的占位，不是一行文字（数据到了高度不跳）。
+  assert.match(page, /kind === "mcp" && agentsLoading\n?\s*\? <CxLoading label=\{t\("正在读取各 Agent 的 MCP 配置…"\)\} \/>/);
   // 删除确认用危险样式，不用品牌主色。
   assert.match(page, /<Action danger disabled=\{busy\}[\s\S]*?>\{t\("确认删除"\)\}<\/Action>/);
   assert.match(page, /invoke<Result & \{ config\?: AgentMcpConfig; backupPath\?: string \}>\("save_agent_mcp"/);

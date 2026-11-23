@@ -45,7 +45,7 @@ import { AppSelect } from "./AppSelect";
 import { GatewayNavContext, publishGatewayPayload, takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalShell } from "./use-modal-shell";
-import { CxBadge, CxCard, CxEmpty, CxSection, CxStatusIcon } from "./cx-layout";
+import { CxBadge, CxCard, CxLoading, CxSection, CxStatusIcon } from "./cx-layout";
 import { AutoTag, Avatar, ModelViewGlyph, Switch, avatarOf, loadFavorites, moveOptionFocus, saveFavorites, type Notify, type Run, AgentIcon } from "./gateway-ui";
 
 /** Codex 行的启动 / 停止：和侧栏 `cx-side-run` 用的同一份 App 状态（`App` 里只建一份，两处共用）。 */
@@ -138,7 +138,7 @@ export function AgentsView({
   const list = (items: GatewayAgentView[]) => <CxCard className="gw-agent-card">{items.map(row)}</CxCard>;
   return (
     <div className="gw-agents cx-page">
-      {!payload ? <CxCard><CxEmpty title={t("正在读取…")} /></CxCard> : null}
+      {!payload ? <CxCard><CxLoading rows={4} /></CxCard> : null}
       {connected.length ? <CxSection count={connected.length} title={t("已接入")}>{list(connected)}</CxSection> : null}
       {/* 未接入的默认折叠，点标题展开；一个都没接入时直接展开，新用户不用再点一下。 */}
       {others.length ? (

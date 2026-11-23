@@ -307,7 +307,7 @@ function createHarness(saved = "{}", shared?: { server: FixtureServer; registry:
     mergeSkillAgentResult, skillAgents, skillBatchHasPending, skillBatchTargets, skillCodexStatusError, skillBatchRegistry: registry, skillPageCache: cache,
     appPrompt: async () => prompts.shift() ?? null, appConfirm: async (message: string) => hooks.confirm ? hooks.confirm(message) : true,
   };
-  for (const name of ["PageHeader", "Button", "memo", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
+  for (const name of ["PageHeader", "Button", "memo", "CxToolbar", "CxFilters", "CxRow", "CxBadge", "CxBanner", "CxCard", "CxEmpty", "CxLoading", "CxStatusIcon", "AgentToggle", "Menu", "MenuItem", "SortableSkillGroup", "GroupAgentSelect", "DndContext", "SortableContext",
     "SkillDetailDrawer", "SkillRepoDrawer", "SkillSourceMatchDrawer", "SkillBackupsDrawer", "SkillInPlaceUpdateDrawer", "SkillDuplicatesDrawer", "SkillBundleExportDrawer", "BookOpen", "RefreshCw", "FolderOpen", "FolderPlus", "Link", "Search", "ArrowDownAZ", "ArrowDownZA", "GitBranch", "ArrowDownUp", "ChevronDown", "ChevronsUp", "ChevronsDown", "CloudDownload", "GripVertical", "X"]) context[name] = name;
   vm.createContext(context);
   if (!shared?.cache) vm.runInContext(cacheListenerCode, context);
