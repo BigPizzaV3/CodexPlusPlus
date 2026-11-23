@@ -32,6 +32,8 @@ import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxRow, CxSection, CxStat
 import { Puzzle } from "lucide-react";
 import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
 import type { Actions, BackendSettings, BuiltinExtension, ScriptMarketItem, ScriptMarketResult, SettingsResult, UserScriptInventory } from "./app-types";
+import type { ManagerExtensionPage, ManagerPageConflict } from "./extension-manager-pages";
+import { isKnownRoute, localServiceRoutes, routeTitle } from "./routes";
 import { AutoSaveStatus, enhancementPlatform, ToggleVisual, useEnhanceAutoSave } from "./app-shared";
 
 const SCRIPT_MARKET_REPOSITORY_URL = "https://github.com/BigPizzaV3/CodexPlusPlusScriptMarket";
@@ -263,7 +265,12 @@ function EnhancementSettingControl({
   );
 }
 
-export function UserScriptsScreen({ host, onHostChange, settings, market, onOpenRescue, onOpenPluginMarket, onOpenClaude, actions }: { host: ExtensionHost; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions }) {
+export function UserScriptsScreen({ host, onHostChange, settings, market, onOpenRescue, onOpenPluginMarket, onOpenClaude, actions, managerPages = [], managerPageConflicts = {} }: {
+  host: ExtensionHost; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions;
+  /** 当前可用的拓展管理器页面与顶替冲突：App 算好的那一份（侧栏入口、⌘K、顶替都用它），行菜单「打开面板」和冲突提示与之一致。 */
+  managerPages?: ManagerExtensionPage[];
+  managerPageConflicts?: Record<string, ManagerPageConflict[]>;
+}) {
   const codexHost = host === "codex";
   const [reloading, setReloading] = useState(false);
   const reload = async () => {
@@ -338,8 +345,22 @@ export function UserScriptsScreen({ host, onHostChange, settings, market, onOpen
     : scripts);
   const enabledScripts = localScripts.filter((script) => extensionEnabledForHost(script, host));
   const idleScripts = localScripts.filter((script) => !extensionEnabledForHost(script, host));
+  // 抢先顶替的拓展按本地列表里显示的名字说，找不到（不该发生）时退回它的页面标题。
+  const overrideConflictsFor = (key: string) => (codexHost ? managerPageConflicts[key] ?? [] : []).map((conflict) => {
+    const winner = (inventory?.scripts ?? []).find((item) => item.key === conflict.by.key);
+    return { by: winner ? localizedPackageText(winner.package?.locales, "title", winner.name) : conflict.by.title, routes: conflict.routes };
+  });
   const scriptRow = (script: (typeof scripts)[number]) => (
-    <ScriptRow actions={actions} globalEnabled={localEnabled} host={host} key={`${host}:${script.key}`} pageStatus={codexHost ? null : claudeStatus[script.key] ?? null} script={script} />
+    <ScriptRow
+      key={`${host}:${script.key}`}
+      host={host}
+      script={script}
+      globalEnabled={localEnabled}
+      pageStatus={codexHost ? null : claudeStatus[script.key] ?? null}
+      actions={actions}
+      managerPageAvailable={codexHost && managerPages.some((page) => page.key === script.key)}
+      overrideConflicts={overrideConflictsFor(script.key)}
+    />
   );
   const marketRow = (script: ScriptMarketItem) => (
     <MarketScriptCard actions={actions} installedKey={installedKeyByMarketId.get(script.id)} key={script.id} script={script} />
@@ -766,10 +787,23 @@ function BuiltinExtensionsSummary({ builtins }: { builtins: BuiltinExtension[] }
   );
 }
 
+/// 清单 manager.replaces 里的路由 id 换成界面上的页面名（不认得的照原样）；
+/// 本地服务的几个页签带上「本地服务」，免得「设置」「路由」看不出是哪一页。
+function managerRouteLabel(id: string): string {
+  if (!isKnownRoute(id)) return id;
+  return localServiceRoutes.includes(id) ? `${t("本地服务")} · ${routeTitle(id)}` : routeTitle(id);
+}
+
 /// 本地脚本一行：名称 / 来源 / 开关 + 状态 / 操作。
 /// 以前「启用 / 关闭」和 loaded / disabled 各占一列、还另有启用按钮，三处说同一件事（#2781）；
 /// 现在开关直接放进状态列，状态只补充开关之外的信息（是否真正加载、失败原因）。
-function ScriptRow({ host, script, globalEnabled, pageStatus, actions }: { host: ExtensionHost; script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; pageStatus?: ClaudePageStatus | null; actions: Actions }) {
+function ScriptRow({ host, script, globalEnabled, pageStatus, actions, managerPageAvailable = false, overrideConflicts = [] }: {
+  host: ExtensionHost; script: NonNullable<UserScriptInventory["scripts"]>[number]; globalEnabled: boolean; pageStatus?: ClaudePageStatus | null; actions: Actions;
+  /** 这个拓展的管理器页面当前可用（启用中、清单无误、总开关开着；和侧栏入口同一个判断）。 */
+  managerPageAvailable?: boolean;
+  /** 声明了顶替、但被先声明的拓展抢先的管理器页面：`by` 是抢先那个拓展的名字。 */
+  overrideConflicts?: Array<{ by: string; routes: string[] }>;
+}) {
   const codexHost = host === "codex";
   const claude = claudeParts(script);
   const enabled = extensionEnabledForHost(script, host);
@@ -791,18 +825,20 @@ function ScriptRow({ host, script, globalEnabled, pageStatus, actions }: { host:
   const settingsPage = codexHost && !!script.package?.settingsPage;
   const hasSettings = settingsPage || configSchema.length > 0;
   const [configOpen, setConfigOpen] = useState(false);
-  // 拓展自己的管理器面板（manager.page），启用时才能打开。
-  const managerPage = codexHost && enabled ? script.package?.managerPage ?? null : null;
+  // 拓展自己的管理器面板（manager.page）：和侧栏入口、顶替同一个条件才能打开（启用中、清单无误）。
+  // 拓展在 Codex 页面里运行出错（script.error）不影响它的面板，两处不会一个有一个没有。
+  const managerPage = codexHost && enabled && managerPageAvailable ? script.package?.managerPage ?? null : null;
   const [panelOpen, setPanelOpen] = useState(false);
   // 用户自己的拓展包可以一键发布到 GitHub（单文件脚本、内置拓展没有这个入口）。
   const canPublish = codexHost && isPackage && script.source === "user" && !!script.package?.id;
   const [publishOpen, setPublishOpen] = useState(false);
   const displayName = localizedPackageText(script.package?.locales, "title", script.name);
   const displayDescription = localizedPackageText(script.package?.locales, "description", script.package?.description ?? "");
-  // 拓展声明的能力，排成一行小标签；警示类（资源超限）用警告色。
+  // 拓展声明的能力，排成一行小标签；警示类（资源超限、顶替管理器页面被别的拓展抢先）用警告色。
   const pkg = script.package;
   const joined = (parts: unknown[]) => parts.filter((part): part is string => typeof part === "string" && part !== "").join("、");
-  type CapabilityTag = { text: string; tone?: "warn"; title?: string };
+  // badge：警示类标签在标题旁显示的文字（没给时就是 text）。
+  type CapabilityTag = { text: string; tone?: "warn"; title?: string; badge?: string };
   const capabilityCandidates: Array<CapabilityTag | null> = codexHost ? [
     pkg?.claudeDesktop ? { text: "Claude Code" } : null,
     pkg?.hookEvents?.length ? { text: tf("Codex 钩子：{0}", [pkg.hookEvents.join("、")]) } : null,
@@ -831,12 +867,17 @@ function ScriptRow({ host, script, globalEnabled, pageStatus, actions }: { host:
     pkg?.preload?.scripts ? { text: t("页面最早期脚本") } : null,
     pkg?.gatewayReplaces?.length ? { text: tf("关掉内置网关环节：{0}", [pkg.gatewayReplaces.join("、")]) } : null,
     pkg?.replaces?.length ? { text: tf("顶替内置拓展：{0}", [pkg.replaces.join("、")]) } : null,
-    pkg?.managerPage?.replaces?.length ? { text: tf("顶替管理器页面：{0}", [pkg.managerPage.replaces.join("、")]) } : null,
+    pkg?.managerPage?.replaces?.length ? { text: tf("顶替管理器页面：{0}", [pkg.managerPage.replaces.map(managerRouteLabel).join("、")]) } : null,
     pkg?.dsh ? { text: t("dsh 插件") } : null,
     pkg?.routes?.length ? { text: tf("数据路由：{0}", [pkg.routes.join("、")]) } : null,
     pkg?.skippedAssets?.length
-      ? { text: tf("资源超出大小上限未加载：{0}", [pkg.skippedAssets.join("、")]), tone: "warn" as const, title: pkg.skippedAssets.join("\n") }
+      ? { text: tf("资源超出大小上限未加载：{0}", [pkg.skippedAssets.join("、")]), tone: "warn" as const, title: pkg.skippedAssets.join("\n"), badge: t("资源超限") }
       : null,
+    // 两个拓展顶替同一页时先声明的生效：这里说清哪一页没顶替上、被谁抢先。
+    ...overrideConflicts.map((conflict) => ({
+      text: tf("顶替「{0}」未生效：已被「{1}」顶替", [conflict.routes.map(managerRouteLabel).join("、"), conflict.by]),
+      tone: "warn" as const,
+    })),
   ] : [
     claude.page ? { text: t("页面脚本") } : null,
     claude.mods ? { text: t("Code 会话的按钮与工具") } : null,
@@ -860,7 +901,7 @@ function ScriptRow({ host, script, globalEnabled, pageStatus, actions }: { host:
       badges={
         <>
           <CxBadge>{source}</CxBadge>
-          {warnTags.map((tag) => <CxBadge key={tag.text} title={tag.title ?? tag.text} tone="warn">{t("资源超限")}</CxBadge>)}
+          {warnTags.map((tag) => <CxBadge key={tag.text} title={tag.title ?? tag.text} tone="warn">{tag.badge ?? tag.text}</CxBadge>)}
         </>
       }
       className="ext-local-row"

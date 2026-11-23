@@ -397,7 +397,10 @@ export type UserScriptInventory = {
     enabled: boolean;
     claude_enabled?: boolean | null;
     status: string;
+    /** 清单本身的错误，或拓展在 Codex 页面里运行时报的错（带运行状态的清单才有后者）。 */
     error: string;
+    /** 只含清单本身的问题，空串表示清单没问题；管理器页面能不能用只看这一项。旧版后端没有。 */
+    manifestError?: string;
     market_id?: string;
     version?: string;
     installed?: boolean;

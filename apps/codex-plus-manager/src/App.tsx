@@ -3,8 +3,8 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowRight, Languages, Moon, Rocket, Sparkles, Sun, AppWindow, X } from "lucide-react";
 import { setSponsorAds } from "./sponsor-store";
-import { managerExtensionPages, managerPageOverrides, type ManagerExtensionPage } from "./extension-manager-pages";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { keepUserScriptRuntime, managerExtensionPages, managerPageOverrideConflicts, managerPageOverrides, type ManagerExtensionPage } from "./extension-manager-pages";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { mergeRotatedAuthContents, rebaseSettingsEdits } from "./settings-rebase";
@@ -434,7 +434,19 @@ export function App() {
     resolve: (selectedIds: string[] | null) => void;
   } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
-  const [settings, setSettings] = useState<SettingsResult | null>(null);
+  const [settings, setSettingsWithRuntime] = useState<SettingsResult | null>(null);
+  // 只有 refresh_user_script_inventory / reload_user_scripts 的返回值问过 Codex 页面、带各拓展的运行状态，
+  // 它们用 setSettingsWithRuntime 整份替换。其余命令（保存设置、切「下次启动跳过拓展」、保存拓展配置、
+  // 外部改设置后重新读取……）返回的 user_scripts 只扫了磁盘，启用的拓展一律是兜底的 not_loaded：
+  // 直接替换会把本地列表里的「已加载」全冲成「未加载」，所以默认的 setSettings 沿用上一份清单的运行状态。
+  const setSettings = useCallback((next: SetStateAction<SettingsResult | null>) => {
+    setSettingsWithRuntime((current) => {
+      const value = typeof next === "function" ? next(current) : next;
+      if (!value || !current || value.user_scripts === current.user_scripts) return value;
+      const userScripts = keepUserScriptRuntime(current.user_scripts, value.user_scripts);
+      return userScripts === value.user_scripts ? value : { ...value, user_scripts: userScripts };
+    });
+  }, []);
   const [legacyDisconnectOpen, setLegacyDisconnectOpen] = useState(false);
   /** 断开本地服务成功后要切到的直连供应商：经本地服务时在列表里点了某个直连供应商的「使用」。 */
   const legacyDisconnectThen = useRef<string | null>(null);
@@ -789,7 +801,8 @@ export function App() {
   const refreshUserScriptInventory = async () => {
     const result = await run(() => call<SettingsResult>("refresh_user_script_inventory"));
     if (result) {
-      setSettings(result);
+      // 这份清单带页面运行状态（Codex 没开时就是实打实的「未加载」）：整份替换，不沿用旧状态。
+      setSettingsWithRuntime(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
     }
     return result;
@@ -798,7 +811,8 @@ export function App() {
   const reloadUserScripts = async (silent = false) => {
     const result = await run(() => call<SettingsResult>("reload_user_scripts"));
     if (result) {
-      setSettings(result);
+      // 热重载的结果就是最新的运行状态（失败时是「未加载」/「状态待确认」）：整份替换。
+      setSettingsWithRuntime(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
     }
@@ -1314,7 +1328,7 @@ export function App() {
           // 市场和本地清单一起读；清单是最新的本地状态，两个都回来后以它为准。
           const [, inventory] = await Promise.all([refreshScriptMarket(true), refreshUserScriptInventory()]);
           if (inventory) {
-            setSettings(inventory);
+            setSettingsWithRuntime(inventory);
             setScriptMarket((current) => syncMarketInstalledState(current, inventory.user_scripts));
           }
         })());
@@ -3041,6 +3055,8 @@ export function App() {
   // 拓展贡献的管理器页面：侧栏入口与对内置页面的顶替（见 extension-manager-pages.ts）。
   const extensionPages = useMemo(() => managerExtensionPages(settings?.user_scripts), [settings?.user_scripts]);
   const pageOverrides = useMemo(() => managerPageOverrides(extensionPages), [extensionPages]);
+  // 两个拓展顶替同一页时先声明的生效：后者在本地拓展行上提示「顶替未生效」。
+  const pageOverrideConflicts = useMemo(() => managerPageOverrideConflicts(extensionPages), [extensionPages]);
   const openExtensionPage = (key: string) => {
     setExtensionPageKey(key);
     void navigate("extension");
@@ -3435,8 +3451,10 @@ export function App() {
       ) : null}
       {tourOpen && !wizardOpen ? <Suspense fallback={null}><OnboardingTour onClose={closeTour} /></Suspense> : null}
       <main className="workspace">
+        {/* 「请求」页的铺满布局（页签下面的日志卡占满剩余高度、整页不滚动）只给内置页面：拓展页面照普通页面排。
+            切回内置页面时页签下面多一条「使用拓展页面」横幅，has-override-banner 给它单独留一行。 */}
         <section
-          className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
+          className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" && !shownExtensionPage ? "request-log-screen" : ""} ${restorableOverride ? "has-override-banner" : ""}`.trim()}
           data-settings-mode={settingsModeRoutes.has(route) ? "true" : undefined}
           key={route}
           // 滚动后给吸顶的标题行加一条分隔线（macOS 无标题栏时标题行吸顶）；直接改 DOM 属性，不触发重渲染。
@@ -3457,6 +3475,10 @@ export function App() {
           </header>
           {/* Agent 的页面在侧栏里它那一行下面。 */}
           <CustomizeTabs activeTool={activeTool} onNavigate={(next) => void navigate(next)} route={route} />
+          {/* 「用量」「本地服务」的页签条和上面的胶囊一样放在页面内容之外：其中一页被拓展顶替时页签条照常显示，
+              同组的其它页还能直接切过去；「此页由拓展提供 / 查看内置页面」的横幅跟着页面，在页签条下面。 */}
+          {route === "gatewayUsage" || route === "requestLog" ? <UsageTabs onChange={(next) => void navigate(next)} value={route} /> : null}
+          {isLocalServiceRoute(route) ? <LocalServiceTabs onChange={(next) => void navigate(next)} value={route} /> : null}
           {restorableOverride ? (
             <div className="extension-page-banner">
               <span>{tf("拓展「{0}」提供了这一页的替代页面", [restorableOverride.title])}</span>
@@ -3531,8 +3553,6 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "gatewayUsage" || route === "requestLog" ? <UsageTabs onChange={(next) => void navigate(next)} value={route} /> : null}
-          {isLocalServiceRoute(route) ? <LocalServiceTabs onChange={(next) => void navigate(next)} value={route} /> : null}
           {route === "requestLog" ? (
             <RequestLogScreen
               initialAgent={requestLogAgentFilter}
@@ -3640,7 +3660,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} managerPages={extensionPages} managerPageConflicts={pageOverrideConflicts} /> : null}
           {route === "pluginMarket" ? (
             <PluginMarketScreen
               configEntries={pluginConfigEntries}

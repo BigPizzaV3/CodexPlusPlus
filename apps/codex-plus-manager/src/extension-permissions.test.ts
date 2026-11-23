@@ -25,7 +25,7 @@ test("权限摘要报出的每一项都在类型里，管理器与 Codex 页内�
   }
   const panel = read("./CommunityExtensionsPanel.tsx");
   const type = body(panel, "export type Permissions = {", "\n};\n");
-  const manager = body(panel, "export function permissionLines(", "\n}\n");
+  const manager = body(panel, "function describePermissions(", "\n}\n");
   const codex = body(read("../../../assets/inject/renderer-inject/40-backend-settings.js"), "function codexPlusPackagePermissionLines(", "\n  }\n");
   for (const key of keys) {
     assert.match(type, new RegExp(`\\b${key}\\??:`), `Permissions 类型缺少 ${key}`);
@@ -35,7 +35,7 @@ test("权限摘要报出的每一项都在类型里，管理器与 Codex 页内�
 });
 
 test("两处确认框是同一套文案", () => {
-  const manager = body(read("./CommunityExtensionsPanel.tsx"), "export function permissionLines(", "\n}\n");
+  const manager = body(read("./CommunityExtensionsPanel.tsx"), "function describePermissions(", "\n}\n");
   const codex = body(read("../../../assets/inject/renderer-inject/40-backend-settings.js"), "function codexPlusPackagePermissionLines(", "\n  }\n");
   // 取每句文案冒号后的说明部分比较：占位写法两边不同（{0} 与 ${…}），说明文字应当一字不差。
   // 只看带中文的片段，代码里的冒号（三元、类型标注）不算。
@@ -56,4 +56,24 @@ test("只带启动脚本或 MCP 的包在社区列表里也有风险徽标", () 
     assert.match(manager, new RegExp(`permissions\\.${key}\\b`), `管理器徽标没有看 ${key}`);
     assert.match(codex, new RegExp(`permissions\\.${key}\\b`), `Codex 页内徽标没有看 ${key}`);
   }
+});
+
+test("更新已装的拓展时，两处确认框都标出这一版新增的能力", () => {
+  const panel = read("./CommunityExtensionsPanel.tsx");
+  // 管理器：permissionLines 拿到旧版本的能力后，按文案比出新增项；确认框把新增项标出来并给一句汇总。
+  const lines = body(panel, "export function permissionLines(", "\n}\n");
+  assert.match(lines, /previous\?: Permissions \| null/);
+  assert.match(lines, /before\.has\(line\.text\) \? line : \{ \.\.\.line, added: true \}/);
+  const dialog = body(panel, "export function InstallDialog(", "\n}\n");
+  assert.match(dialog, /permissionLines\(prepared\.permissions, prepared\.previousPermissions\)/);
+  assert.match(dialog, /line\.added \? <span className="community-ext-permission-added">/);
+  assert.match(dialog, /这一版新增了 \{0\} 项能力/);
+  // Codex 页内：同样的比法。
+  const settings = read("../../../assets/inject/renderer-inject/40-backend-settings.js");
+  const confirm = body(settings, "function codexPlusConfirmPreparedInstall(", "\n  }\n");
+  assert.match(confirm, /prepared\.previousPermissions \? new Set\(codexPlusPackagePermissionLines\(prepared\.previousPermissions\)\)/);
+  assert.match(confirm, /这一版新增了 \$\{addedCount\} 项能力/);
+  // 后端：暂存时带上本机已装那一版的能力。
+  const rust = read("../../../crates/codex-plus-core/src/extension_discovery.rs");
+  assert.match(rust, /"previousPermissions": installed_permissions\(manager, id\)/);
 });
