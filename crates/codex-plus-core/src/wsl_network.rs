@@ -465,10 +465,10 @@ pub fn ensure_wsl_listener(addr: Ipv4Addr, port: u16) -> anyhow::Result<()> {
                 }
             });
         })
-        .context("启动 WSL 网关监听线程失败")?;
+        .context("启动 WSL 本地服务监听线程失败")?;
     let ready = ready_rx
         .recv_timeout(Duration::from_secs(10))
-        .unwrap_or_else(|_| Err(anyhow::anyhow!("等待 WSL 网关监听 {addr}:{port} 超时")));
+        .unwrap_or_else(|_| Err(anyhow::anyhow!("等待 WSL 本地服务监听 {addr}:{port} 超时")));
     let mut listener = WslListener {
         addr,
         port,

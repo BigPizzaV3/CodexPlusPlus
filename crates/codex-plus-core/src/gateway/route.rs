@@ -1746,7 +1746,7 @@ fn resolve_plan_with(
         .active_binding(agent)
         .with_context(|| format!("Codex++ 本地服务模式没有为 {} 开启", agent.as_str()))?;
     if binding_pool_relays(gateway, binding).is_empty() {
-        bail!("网关的共享供应商是空的或都已关闭：请在网关的「供应商」里添加或打开供应商");
+        bail!("共享供应商是空的或都已关闭：请在本地服务的「供应商」里添加或打开供应商");
     }
     let default_model = binding_default_model(gateway, binding);
     let (model, mapped_to_default) =
@@ -1781,7 +1781,7 @@ fn resolve_plan_with(
             if relays.is_empty() {
                 // 不退回组里其它成员：它们多半不收图，转过去只会报错或把图片丢掉。
                 bail!(
-                    "模型组「{}」的图像输入模型 {} 不可用（池里没有打开的供应商提供它）：请求里带图片，没有改发给组里其它成员。请在网关「路由」里改选图像输入模型",
+                    "模型组「{}」的图像输入模型 {} 不可用（池里没有打开的供应商提供它）：请求里带图片，没有改发给组里其它成员。请在本地服务「路由」里改选图像输入模型",
                     group.name,
                     group.image_input_model.trim()
                 );
@@ -1816,11 +1816,11 @@ fn resolve_plan_with(
         let reason = if !provider.enabled {
             "已关闭".to_string()
         } else {
-            format!("不在 {} 的网关共享供应商里", agent.as_str())
+            format!("不在 {} 的共享供应商里", agent.as_str())
         };
         let rest = model.split_once('/').map(|(_, rest)| rest.trim()).unwrap_or_default();
         bail!(
-            "模型 {model} 指定的供应商「{}」{reason}，池里也没有其它供应商提供 {rest}；为避免换成别的模型，这次请求没有发出。请在网关里打开该供应商或把它加回共享供应商，或改选其它模型",
+            "模型 {model} 指定的供应商「{}」{reason}，池里也没有其它供应商提供 {rest}；为避免换成别的模型，这次请求没有发出。请在本地服务里打开该供应商或把它加回共享供应商，或改选其它模型",
             provider.relay.name
         );
     }
@@ -1842,7 +1842,7 @@ fn resolve_plan_with(
         .collect();
     }
     if relays.is_empty() {
-        bail!("网关的共享供应商里没有供应商提供模型 {model}");
+        bail!("共享供应商里没有供应商提供模型 {model}");
     }
     let mut gate = crate::gateway::quota::DispatchGate::default();
     let mut permitted = Vec::new();
@@ -1882,7 +1882,7 @@ fn resolve_plan_with(
                 "model": model,
                 "provider": permitted.first().map(|(relay, _)| relay.name.as_str()).unwrap_or_default(),
                 "providerId": permitted.first().map(|(relay, _)| relay.id.as_str()).unwrap_or_default(),
-                "hint": "请求的模型不在网关共享供应商里（或所在供应商已关闭），已按「未知模型」策略改发到默认模型；可在网关的 Agent 接入设置里改成原样转发",
+                "hint": "请求的模型不在共享供应商里（或所在供应商已关闭），已按「未知模型」策略改发到默认模型；可在本地服务的 Agent 接入设置里改成原样转发",
             }),
         );
     }
@@ -2932,7 +2932,7 @@ mod tests {
                 "{policy:?}"
             );
             let error = routed_codex(&gateway, "direct-cpa/gpt-6.1-sol").unwrap_err().to_string();
-            assert!(error.contains("direct-cpa") && error.contains("不在 codex 的网关共享供应商里"), "{error}");
+            assert!(error.contains("direct-cpa") && error.contains("不在 codex 的共享供应商里"), "{error}");
 
             // 关掉的供应商同理。
             let mut gateway = codex_gateway(policy);

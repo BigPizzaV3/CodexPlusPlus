@@ -234,7 +234,7 @@ fn context() -> ApplyContext {
 fn parse_agent(agent: &str) -> anyhow::Result<ToolId> {
     let agent = ToolId::parse(agent);
     if !GATEWAY_AGENTS.contains(&agent) && !codex_plus_core::gateway::agents::is_generic(&agent) {
-        anyhow::bail!("{} 不支持网关模式", agent.as_str());
+        anyhow::bail!("{} 不支持本地服务模式", agent.as_str());
     }
     Ok(agent)
 }
@@ -622,9 +622,9 @@ fn native_auth_restart_blocker(
     live_official: bool,
 ) -> Option<&'static str> {
     if managed && !binding_enabled {
-        Some("Codex 网关连接未启用；登录选择已保存，接入后再应用")
+        Some("Codex 本地服务连接未启用；登录选择已保存，接入后再应用")
     } else if managed && taken_over {
-        Some("Codex 配置已由其他工具接管；请先恢复网关连接")
+        Some("Codex 配置已由其他工具接管；请先恢复本地服务连接")
     } else if wsl_account {
         Some("WSL 连接不使用官方登录身份；当前选择无法在此连接生效")
     } else if wants_account != live_official && !managed {

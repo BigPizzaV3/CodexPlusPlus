@@ -492,7 +492,7 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
     let gateway = crate::gateway::apply::enable_binding(&context, &agent, binding)?;
     let binding = gateway
         .binding(&agent)
-        .context("Claude Desktop 网关配置缺失")?;
+        .context("Claude Desktop 本地服务配置缺失")?;
     let wiring = wiring(&gateway, binding, "claude-desktop", port);
     claude_local::private_dir(root)?;
     claude_local::private_dir(&root.join("claude-code-3p"))?;

@@ -59,8 +59,8 @@ test("预览授权绑定Agent与非空token；文件状态和未知诊断证据�
   assert.equal(disconnectPreviewReady({ ...preview(), canDisconnect: false }, "opencode"), false);
   assert.equal(disconnectPreviewReady(null, "opencode"), false);
   assert.deepEqual(["modify", "remove", "create"].map((kind) => disconnectFileLabel(kind as "modify")), ["将修改", "将移除", "将创建"]);
-  assert.equal(diagnosticEvidenceLabel("endpointMatched"), "与网关配置一致");
-  assert.equal(diagnosticEvidenceLabel("endpointPortMismatch"), "端口与网关配置不符");
+  assert.equal(diagnosticEvidenceLabel("endpointMatched"), "与本地服务配置一致");
+  assert.equal(diagnosticEvidenceLabel("endpointPortMismatch"), "端口与本地服务配置不符");
   assert.equal(diagnosticEvidenceLabel("unrecognized_evidence"), "诊断信息待确认");
   assert.equal(diagnosticErrorLabel("authInvalid"), "认证已失效");
   assert.equal(diagnosticErrorLabel("unrecognized_error"), "错误原因待确认");
@@ -426,7 +426,7 @@ test("展开详情才展示配置证据；无证据不声称配置已验证，�
   assert.match(text(tree), /配置已指向本地服务；尚未观察到请求/);
   assert.match(text(tree), /请求 0 · 失败 0 · 进行中 0/);
   assert.match(text(tree), /当前地址.*127.0.0.1:57321/);
-  assert.match(text(tree), /opencode.jsoncprovider与网关配置一致/);
+  assert.match(text(tree), /opencode.jsoncprovider与本地服务配置一致/);
   assert.match(text(tree), /认证已失效 · HTTP 401/);
   assert.doesNotMatch(text(tree), /endpoint_match|auth_invalid/);
 });

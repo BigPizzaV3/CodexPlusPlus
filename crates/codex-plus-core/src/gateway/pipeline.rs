@@ -172,7 +172,7 @@ async fn open_candidates(
     }
     if plan.candidates.is_empty() {
         let Some(wait) = plan.cooling else {
-            anyhow::bail!("网关没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
+            anyhow::bail!("本地服务没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
         };
         // 所有 Key 都在冷却（#2802）：最早的那个很快恢复时等它一等再试，不马上回本地 429——
         // Codex 自己的重试几秒内就用完了，冷却稍长一点就会整轮失败，而直连时这几秒后上游多半已恢复。
@@ -215,7 +215,7 @@ async fn open_candidates(
             ) {
                 crate::gateway::store::GatewayStore::default()
                     .load()
-                    .map_err(|error| anyhow::anyhow!("读取网关额度策略失败：{error}"))?
+                    .map_err(|error| anyhow::anyhow!("读取本地服务额度策略失败：{error}"))?
             } else {
                 crate::gateway::store::GatewaySettings::default()
             };
@@ -448,7 +448,7 @@ async fn open_candidates(
         queued += now.elapsed();
         pending = deferred;
     }
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("网关的所有上游都失败了")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("本地服务的所有上游都失败了")))
 }
 
 /// 把一次失败记进 Key 池，返回要不要换下一个候选。`upstream_model` 是这次发给上游的模型：
@@ -824,7 +824,7 @@ pub(crate) async fn attempt_once(
     if crate::official_login::member_uses_official_login_transport(&candidate.relay) {
         let gateway = crate::gateway::store::GatewayStore::default()
             .load()
-            .context("读取网关额度策略失败")?;
+            .context("读取本地服务额度策略失败")?;
         crate::gateway::quota::dispatch_decision(&gateway, &candidate.relay)?;
     }
     let upstream = match attempt_pipeline(settings, candidate, request).await {
