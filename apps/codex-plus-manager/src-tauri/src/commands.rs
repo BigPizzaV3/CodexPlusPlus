@@ -606,6 +606,15 @@ pub struct MagpieProviderEntry {
     pub imported: bool,
 }
 
+/// 「把 Magpie 当作一个上游」那一条：指向 Magpie 本地网关的地址。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MagpieGatewayEntry {
+    pub source_id: String,
+    pub base_url: String,
+    pub imported: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MagpieProvidersPayload {
@@ -613,7 +622,10 @@ pub struct MagpieProvidersPayload {
     pub path: String,
     /// 这个文件在不在（不在就是没装 Magpie，或还没在里面加过供应商）。
     pub found: bool,
+    /// 可以复制过来的各家供应商。
     pub providers: Vec<MagpieProviderEntry>,
+    /// 把 Magpie 本身当作一个上游；没装 Magpie 时没有。
+    pub gateway: Option<MagpieGatewayEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5886,15 +5898,21 @@ pub fn import_ccs_providers(
 #[tauri::command(async)]
 pub fn load_magpie_providers() -> CommandResult<MagpieProvidersPayload> {
     let path = codex_plus_core::magpie_import::default_providers_path();
+    let settings = SettingsStore::default().load().unwrap_or_default();
+    let imported = codex_plus_core::magpie_import::imported_ids(&settings, &path);
+    let gateway = codex_plus_core::magpie_import::gateway_provider().map(|gateway| MagpieGatewayEntry {
+        imported: imported.contains(&gateway.id),
+        source_id: gateway.id,
+        base_url: gateway.base_url,
+    });
     let payload = |providers| MagpieProvidersPayload {
         path: path.to_string_lossy().to_string(),
         found: path.is_file(),
         providers,
+        gateway: gateway.clone(),
     };
     match codex_plus_core::magpie_import::list_providers_at(&path) {
         Ok(providers) => {
-            let settings = SettingsStore::default().load().unwrap_or_default();
-            let imported = codex_plus_core::magpie_import::imported_ids(&settings, &path);
             let entries: Vec<MagpieProviderEntry> = providers
                 .into_iter()
                 .map(|provider| MagpieProviderEntry {
@@ -5916,7 +5934,8 @@ pub fn load_magpie_providers() -> CommandResult<MagpieProvidersPayload> {
     }
 }
 
-/// 把勾选的 Magpie 供应商导入成直连供应商。已导入过的跳过，已有配置不覆盖。
+/// 把勾选的 Magpie 条目导入成直连供应商：各家供应商是复制，`@gateway` 是把 Magpie 本身当作一个上游。
+/// 已导入过的跳过，已有配置不覆盖。
 #[tauri::command]
 pub fn import_magpie_providers(ids: Vec<String>) -> CommandResult<SettingsPayload> {
     let store = SettingsStore::default();

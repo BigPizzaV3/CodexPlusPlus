@@ -37,6 +37,7 @@ import {
   importCandidates,
   memberStatus,
   pendingImportCount,
+  pendingImports,
   presetAdded,
   presetHost,
   poolExcludeToggle,
@@ -78,6 +79,7 @@ import { ProviderTestDialog } from "./ProviderTestDialog";
 import { takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalShell } from "./use-modal-shell";
+import { MAGPIE_UPSTREAM_ID, togglePoolPick } from "./third-party-import-model";
 import { singleAgent, visibleAgents } from "./agent-focus-model";
 import { useAgentFocus } from "./agent-focus-store";
 import { useSponsorPresets } from "./sponsor-store";
@@ -1439,13 +1441,10 @@ function ImportDialog({
   const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
   const candidates = importCandidates(payload);
   const keyOf = (item: ImportCandidate) => `${item.source}:${item.id}`;
-  const [picked, setPicked] = useState<Set<string>>(() => new Set(candidates.filter((item) => !item.imported).map(keyOf)));
-  const toggle = (key: string) => {
-    const next = new Set(picked);
-    if (next.has(key)) next.delete(key);
-    else next.add(key);
-    setPicked(next);
-  };
+  // 默认勾上还没导入的。Magpie 的两种导入方式（当作一个上游 / 复制它的供应商）二选一：默认是当作上游，勾了一种会取消另一种。
+  const pendingKeys = () => new Set(pendingImports(payload).map(keyOf));
+  const [picked, setPicked] = useState<Set<string>>(pendingKeys);
+  const toggle = (item: ImportCandidate) => setPicked(togglePoolPick(picked, item, candidates));
   const chosen = candidates.filter((item) => picked.has(keyOf(item)));
   const submit = async () => {
     const items = chosen.map((item) => ({ source: item.source, id: item.id }));
@@ -1469,6 +1468,11 @@ function ImportDialog({
         return t("CC Switch 里的 Claude 供应商，复制一份进本地服务");
       case "claudemom":
         return t("ClaudeMom 的上游，Anthropic 协议");
+      case "magpie":
+        // `@gateway` 不是复制某一家，而是把 Magpie 本身当作一个上游（指向它的本地网关）。
+        return item.id === MAGPIE_UPSTREAM_ID
+          ? t("把 Magpie 当作一个上游：请求经 Magpie 转发，用它里面的账号和路由，Magpie 要开着；和下面的复制二选一")
+          : t("Magpie 的供应商，复制一份进本地服务，模型导入后自动获取；和上面的当作上游二选一");
       case "grok":
         return t("Grok 页里配置的供应商");
       default:
@@ -1481,12 +1485,14 @@ function ImportDialog({
     { key: "claude", title: t("Claude Code 的供应商") },
     { key: "ccswitch", title: t("CC Switch 里的 Claude 供应商") },
     { key: "claudemom", title: t("ClaudeMom 的上游") },
+    { key: "magpie", title: t("Magpie 的供应商") },
     { key: "grok", title: t("Grok 的供应商") },
     { key: "opencode", title: t("OpenCode 里保存的 Key") },
   ];
   const official = payload?.codexOfficial ?? [];
   const chatgptLoggedIn = Boolean(payload?.pool.some((entry) => entry.account === "chatgpt"));
-  const pending = candidates.filter((item) => !item.imported);
+  // 「全选未导入的」就是默认会导的那些：Magpie 只含「当作上游」那一条（它和复制二选一）。
+  const pending = pendingImports(payload);
   const allPicked = pending.length > 0 && pending.every((item) => picked.has(keyOf(item)));
   return createPortal(
     <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
@@ -1494,7 +1500,7 @@ function ImportDialog({
         <header>
           <strong id={titleId}>{t("从直连模式导入")}</strong>
           {pending.length ? (
-            <button className="gw-text-button" onClick={() => setPicked(allPicked ? new Set() : new Set(pending.map(keyOf)))} type="button">
+            <button className="gw-text-button" onClick={() => setPicked(allPicked ? new Set() : pendingKeys())} type="button">
               {allPicked ? t("全不选") : t("全选未导入的")}
             </button>
           ) : null}
@@ -1512,7 +1518,7 @@ function ImportDialog({
                   const key = keyOf(item);
                   const on = picked.has(key);
                   return (
-                    <button aria-pressed={on} className="gw-import-item" data-on={on} disabled={busy !== null} key={key} onClick={() => toggle(key)} type="button">
+                    <button aria-pressed={on} className="gw-import-item" data-on={on} disabled={busy !== null} key={key} onClick={() => toggle(item)} type="button">
                       <span className="gw-import-check">{on ? <Check className="h-3.5 w-3.5" /> : null}</span>
                       <Avatar name={item.name} size="sm" />
                       <span>

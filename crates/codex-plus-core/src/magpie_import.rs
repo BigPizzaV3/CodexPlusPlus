@@ -12,6 +12,11 @@
 //!
 //! `baseAPI` 是 `responses` / `chat` / `anthropic`，同名字段里放接口地址；`off` 是在 Magpie 里关掉了。
 //! 没有地址的内置项（订阅登录的 `codex` 那一条）和 `hidden` 的删除记录不是供应商，跳过。
+//!
+//! 导入有两种方式，一次只能选一种（两种一起会有两条路通向同一批账号）：
+//! - **复制它的供应商**：把地址和 Key 抄过来，之后不依赖 Magpie；
+//! - **把 Magpie 当作一个上游**（[`GATEWAY_ID`]）：只加一条指向 Magpie 本地网关的供应商，请求经 Magpie 转发，
+//!   用它里面的账号、路由和额度，Magpie 要开着。网关地址读它的 `gateway.json`（`{"addr": "127.0.0.1:3425"}`）。
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -25,6 +30,16 @@ use crate::settings::{BackendSettings, RelayProfile, RelayProtocol};
 
 /// 导入来源记录（`ccs_import_sources`）里 Magpie 的 `kind`。
 pub const ORIGIN_KIND: &str = "magpie";
+
+/// 「把 Magpie 当作一个上游」那一条的 id。Magpie 自己的供应商 id 只有小写字母、数字、`-`、`_`，不会和它撞。
+pub const GATEWAY_ID: &str = "@gateway";
+
+/// Magpie 本地网关在本机回环上认的固定 Key：它接 Codex 时写进 `config.toml` 的 `experimental_bearer_token` 就是这个。
+/// 在 Magpie 里另设了网关 Key 的，导入后要把这条供应商的 Key 换成那个。
+const GATEWAY_LOOPBACK_KEY: &str = "magpie";
+
+/// `gateway.json` 读不到时用的地址（Magpie 的默认端口）。
+const GATEWAY_DEFAULT_ADDR: &str = "127.0.0.1:3425";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MagpieProvider {
@@ -62,6 +77,52 @@ pub fn default_providers_path() -> PathBuf {
 
 pub fn list_providers() -> anyhow::Result<Vec<MagpieProvider>> {
     list_providers_at(&default_providers_path())
+}
+
+/// 「把 Magpie 当作一个上游」的那一条；没装 Magpie（配置目录不在）时没有。
+pub fn gateway_provider() -> Option<MagpieProvider> {
+    gateway_provider_at(&magpie_config_dir())
+}
+
+fn gateway_provider_at(dir: &Path) -> Option<MagpieProvider> {
+    if !dir.is_dir() {
+        return None;
+    }
+    let addr = std::fs::read(dir.join("gateway.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_slice::<Value>(&raw).ok())
+        .and_then(|book| book.get("addr").and_then(Value::as_str).map(str::trim).map(str::to_string))
+        .and_then(|addr| loopback_addr(&addr))
+        .unwrap_or_else(|| GATEWAY_DEFAULT_ADDR.to_string());
+    Some(MagpieProvider {
+        id: GATEWAY_ID.to_string(),
+        name: "Magpie".to_string(),
+        base_url: format!("http://{addr}/v1"),
+        api_key: GATEWAY_LOOPBACK_KEY.to_string(),
+        protocol: RelayProtocol::Responses,
+        disabled: false,
+    })
+}
+
+/// `gateway.json` 里的监听地址换成本机能连的 `主机:端口`：监听在所有网卡（`0.0.0.0`、`[::]`、只有端口）时连回环。
+/// 不是 `主机:端口` 的（带协议头、带路径、端口不是数字）不认。
+fn loopback_addr(addr: &str) -> Option<String> {
+    let (host, port) = addr.rsplit_once(':')?;
+    if port.is_empty() || !port.chars().all(|ch| ch.is_ascii_digit()) || host.contains('/') {
+        return None;
+    }
+    let host = match host {
+        "" | "0.0.0.0" | "[::]" | "::" => "127.0.0.1",
+        other => other,
+    };
+    Some(format!("{host}:{port}"))
+}
+
+/// 这个文件旁边能导入的全部条目：复制用的各家供应商，加上「把 Magpie 当作一个上游」那一条（排在最前）。
+fn candidates_at(path: &Path) -> anyhow::Result<Vec<MagpieProvider>> {
+    let mut all: Vec<MagpieProvider> = path.parent().and_then(gateway_provider_at).into_iter().collect();
+    all.extend(list_providers_at(path)?);
+    Ok(all)
 }
 
 /// 没装 Magpie（文件不存在）是空列表；文件在但读不了、不是 JSON 才报错。单条坏掉不影响其它条。
@@ -151,11 +212,17 @@ pub fn imported_ids(settings: &BackendSettings, path: &Path) -> HashSet<String> 
         .collect()
 }
 
-/// 直连供应商：名字后面带「（Magpie）」，和 cc-switch 导入的「（ccswitch）」一个做法，列表里看得出来源。
+/// 直连供应商：复制来的名字后面带「（Magpie）」，和 cc-switch 导入的「（ccswitch）」一个做法，列表里看得出来源；
+/// 「把 Magpie 当作一个上游」那一条就叫 Magpie。
 fn direct_profile(provider: &MagpieProvider, existing_ids: &[String]) -> RelayProfile {
+    let (id_base, name) = if provider.id == GATEWAY_ID {
+        ("magpie-gateway".to_string(), provider.name.clone())
+    } else {
+        (format!("magpie-{}", provider.id), format!("{}（Magpie）", provider.name))
+    };
     crate::ccs_import::third_party_relay_profile(
-        &format!("magpie-{}", provider.id),
-        format!("{}（Magpie）", provider.name),
+        &id_base,
+        name,
         &provider.base_url,
         &provider.api_key,
         provider.protocol,
@@ -163,14 +230,16 @@ fn direct_profile(provider: &MagpieProvider, existing_ids: &[String]) -> RelayPr
     )
 }
 
-/// 把勾选的 Magpie 供应商导入成直连供应商。已经导入过（来源记录还在）的跳过，不覆盖已有配置。
+/// 把勾选的条目导入成直连供应商：Magpie 的各家供应商（复制），或 [`GATEWAY_ID`]（把 Magpie 当作一个上游）。
+/// 已经导入过（来源记录还在）的跳过，不覆盖已有配置。
 /// 返回（新导入数，跳过数）。有一个 id 在 Magpie 里找不到就整批不导入。
 pub fn import_into_settings(
     settings: &mut BackendSettings,
     path: &Path,
     selected: &[String],
 ) -> anyhow::Result<(usize, usize)> {
-    let providers = list_providers_at(path)?;
+    ensure_one_way(selected.iter().map(String::as_str))?;
+    let providers = candidates_at(path)?;
     let already = imported_ids(settings, path);
     let mut next = settings.clone();
     let mut handled = HashSet::new();
@@ -196,13 +265,30 @@ pub fn import_into_settings(
     Ok((imported, skipped))
 }
 
-/// 共享供应商「导入」里列出来的 Magpie 条目；没装 Magpie 或读不了时为空。没有 Key 的进不了池，不列。
+/// 「把 Magpie 当作一个上游」和「复制它的供应商」一次只能选一种：两种都在同一批里就拒绝。
+pub fn ensure_one_way<'a>(ids: impl IntoIterator<Item = &'a str>) -> anyhow::Result<()> {
+    let (mut upstream, mut copies) = (false, false);
+    for id in ids {
+        if id == GATEWAY_ID {
+            upstream = true;
+        } else {
+            copies = true;
+        }
+    }
+    if upstream && copies {
+        bail!("把 Magpie 当作一个上游和复制它的供应商只能选一种，这次没有导入");
+    }
+    Ok(())
+}
+
+/// 共享供应商「导入」里列出来的 Magpie 条目：「把 Magpie 当作一个上游」那一条在最前，后面是可以复制的各家。
+/// 没装 Magpie 或读不了时为空。没有 Key 的进不了池，不列。
 pub fn entries() -> Vec<SourceEntry> {
     entries_at(&default_providers_path())
 }
 
 fn entries_at(path: &Path) -> Vec<SourceEntry> {
-    list_providers_at(path)
+    candidates_at(path)
         .unwrap_or_default()
         .into_iter()
         .filter(|provider| !provider.api_key.is_empty())
@@ -216,7 +302,7 @@ pub fn relay(id: &str) -> anyhow::Result<RelayProfile> {
 }
 
 fn relay_at(path: &Path, id: &str) -> anyhow::Result<RelayProfile> {
-    let provider = list_providers_at(path)?
+    let provider = candidates_at(path)?
         .into_iter()
         .find(|provider| provider.id == id)
         .ok_or_else(|| anyhow::anyhow!("Magpie 里没有这个供应商：{id}"))?;
@@ -322,6 +408,56 @@ mod tests {
     }
 
     #[test]
+    fn magpie_itself_can_be_imported_as_one_upstream() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = book(dir.path(), BOOK);
+        // 没有 gateway.json：用默认地址。
+        assert_eq!(gateway_provider_at(dir.path()).unwrap().base_url, "http://127.0.0.1:3425/v1");
+        std::fs::write(dir.path().join("gateway.json"), r#"{ "addr": "0.0.0.0:4567", "pid": 1, "serves": "app" }"#).unwrap();
+        let gateway = gateway_provider_at(dir.path()).unwrap();
+        // 监听在所有网卡时连回环；Key 是 Magpie 在回环上认的固定值。
+        assert_eq!(gateway.base_url, "http://127.0.0.1:4567/v1");
+        assert_eq!(gateway.api_key, "magpie");
+        assert_eq!(gateway.protocol, RelayProtocol::Responses);
+        // 没装 Magpie（目录不在）时没有这一条。
+        assert!(gateway_provider_at(&dir.path().join("missing")).is_none());
+
+        let mut settings = BackendSettings::default();
+        let before = settings.relay_profiles.len();
+        // 两种方式一次只能选一种：一起提交整批拒绝，什么都不导入。
+        let error = import_into_settings(&mut settings, &path, &[GATEWAY_ID.into(), "resp".into()]).unwrap_err();
+        assert!(error.to_string().contains("只能选一种"));
+        assert_eq!(settings.relay_profiles.len(), before);
+        assert_eq!(import_into_settings(&mut settings, &path, &[GATEWAY_ID.into()]).unwrap(), (1, 0));
+        let upstream = settings.relay_profiles.iter().find(|profile| profile.id == "magpie-gateway").unwrap();
+        assert_eq!(upstream.name, "Magpie");
+        assert_eq!(upstream.upstream_base_url, "http://127.0.0.1:4567/v1");
+        assert_eq!(upstream.api_key, "magpie");
+        assert!(imported_ids(&settings, &path).contains(GATEWAY_ID));
+        // 再勾一次：已导入，跳过。
+        assert_eq!(import_into_settings(&mut settings, &path, &[GATEWAY_ID.into()]).unwrap(), (0, 1));
+        assert_eq!(settings.relay_profiles.len(), before + 1);
+        // 之后想改成复制，可以另外再导一次。
+        assert_eq!(import_into_settings(&mut settings, &path, &["resp".into()]).unwrap(), (1, 0));
+        // 复制进共享供应商时也能选它。
+        let relay = relay_at(&path, GATEWAY_ID).unwrap();
+        assert_eq!(relay.name, "Magpie");
+        assert_eq!(relay.upstream_base_url, "http://127.0.0.1:4567/v1");
+    }
+
+    #[test]
+    fn gateway_addr_only_accepts_host_and_port() {
+        assert_eq!(loopback_addr("127.0.0.1:3425").as_deref(), Some("127.0.0.1:3425"));
+        assert_eq!(loopback_addr(":3425").as_deref(), Some("127.0.0.1:3425"));
+        assert_eq!(loopback_addr("[::]:3425").as_deref(), Some("127.0.0.1:3425"));
+        assert_eq!(loopback_addr("192.168.1.8:3425").as_deref(), Some("192.168.1.8:3425"));
+        assert_eq!(loopback_addr("http://127.0.0.1:3425"), None);
+        assert_eq!(loopback_addr("127.0.0.1"), None);
+        assert_eq!(loopback_addr("127.0.0.1:abc"), None);
+        assert_eq!(loopback_addr("evil.example/x:80"), None);
+    }
+
+    #[test]
     fn unknown_id_imports_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let path = book(dir.path(), BOOK);
@@ -336,7 +472,7 @@ mod tests {
     fn pool_entries_need_a_key_and_copies_keep_the_plain_name() {
         let dir = tempfile::tempdir().unwrap();
         let path = book(dir.path(), BOOK);
-        assert_eq!(entries_at(&path).iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["resp", "chat", "claude"]);
+        assert_eq!(entries_at(&path).iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), [GATEWAY_ID, "resp", "chat", "claude"]);
         let relay = relay_at(&path, "chat").unwrap();
         assert_eq!(relay.name, "Chat Relay");
         assert_eq!(relay.upstream_base_url, "https://chat.example.com/api/v4");

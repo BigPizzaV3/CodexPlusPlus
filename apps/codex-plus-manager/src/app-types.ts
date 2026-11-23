@@ -565,6 +565,28 @@ export type CcsProvidersResult = CommandResult<{
   configuredDbPath: string;
   fallbackReason?: string | null;
   providers: CcsProviderImport[];
+  /** 已经导入过的条目（`sourceId`）；旧版后端没有这一项。 */
+  imported?: string[];
+}>;
+
+/** 「从第三方导入」里 Magpie 的供应商（不含 Key）。 */
+export type MagpieProvidersResult = CommandResult<{
+  /** 实际读的 `providers.json`。 */
+  path: string;
+  /** 这个文件在不在（不在就是没装 Magpie）。 */
+  found: boolean;
+  providers: Array<{
+    sourceId: string;
+    name: string;
+    baseUrl: string;
+    protocol: RelayProtocol;
+    /** 在 Magpie 里关掉了。 */
+    disabled: boolean;
+    hasKey: boolean;
+    imported: boolean;
+  }>;
+  /** 把 Magpie 本身当作一个上游（指向它的本地网关）；没装 Magpie 时没有。 */
+  gateway?: { sourceId: string; baseUrl: string; imported: boolean } | null;
 }>;
 
 export type ProviderImportRequest = {
@@ -860,7 +882,9 @@ export type Actions = {
   refreshRelayEnvironment: (silent?: boolean) => Promise<RelayEnvironmentResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshCcsProviders: (silent?: boolean) => Promise<CcsProvidersResult | null>;
-  importCcsProviders: (bindings?: Record<string, string>) => Promise<void>;
+  /** `only` 是导入对话框里勾选的条目（`sourceId`）；不传就是全部。 */
+  importCcsProviders: (bindings?: Record<string, string>, only?: string[]) => Promise<void>;
+  importMagpieProviders: (ids: string[]) => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshAds: () => Promise<void>;

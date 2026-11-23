@@ -2146,7 +2146,21 @@ pub async fn import_gateway_providers(
     let mut failures: Vec<String> = Vec::new();
     // Magpie 的供应商文件里没有模型列表：进池之后在后台从上游获取。
     let mut fetch_models: Vec<String> = Vec::new();
+    // Magpie 的两种导入方式（当作一个上游 / 复制它的供应商）一次只能选一种：两种都勾了就一条 Magpie 的都不导。
+    let magpie_conflict = codex_plus_core::magpie_import::ensure_one_way(
+        items
+            .iter()
+            .filter(|item| item.source == "magpie")
+            .map(|item| item.id.as_str()),
+    )
+    .err();
+    if let Some(error) = &magpie_conflict {
+        failures.push(format!("{error:#}"));
+    }
     for item in &items {
+        if magpie_conflict.is_some() && item.source == "magpie" {
+            continue;
+        }
         let already = GatewayStore::default().load().is_ok_and(|gateway| {
             gateway
                 .providers

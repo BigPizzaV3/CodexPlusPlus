@@ -495,8 +495,8 @@ test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时�
   assert.match(screen, /重新开启只恢复配置写入能力，不会切换直连供应商或断开当前本地服务/);
   // 导入只写旧版供应商列表、不动 Codex 配置，接管期间也要能从 cc-switch 导入。
   const header = screen.slice(screen.indexOf("<PageHeader"), screen.indexOf("{connection}"));
-  assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<div className="third-party-import"/);
-  assert.match(header, /<div className="third-party-import" ref=\{thirdPartyImportTriggerRef\}>/);
+  assert.doesNotMatch(header, /takenOverByGateway \? null : \(?\s*<button className="cx-secondary" onClick=\{\(\) => setThirdPartyImportOpen\(true\)\}/);
+  assert.match(header, /<button className="cx-secondary" onClick=\{\(\) => setThirdPartyImportOpen\(true\)\} type="button">\s*<Download \/>\s*\{t\("从第三方导入"\)\}/);
   assert.doesNotMatch(screen, /disabled=\{takenOverByGateway\}/);
 });
 
@@ -781,23 +781,21 @@ test("「Agent 接入」的 Codex 行复用同一份启动状态；Claude 页把
   assert.match(text, /function sameClaudeRunState\(/);
 });
 
-test("切换页面时正文淡入上移，标题行和页签不动；动画结束后不留 transform", () => {
+test("切换页面时正文在原地淡入、不位移，标题行和页签不动", () => {
   const cursorUi = readSource("./cursor-ui.css");
   // .screen 按 route 重建，入场动画才会在每次切换时重放。
   assert.match(functionSource("App"), /<section\s+className=\{`screen [\s\S]*?key=\{route\}/);
   // 标题行、页签（「统计 / 请求」这类页签也换 route）和右下角悬浮提示不参与。
   const rule = cursorUi.match(/:root \.shell \.screen > :not\(\.cx-page-head, \.tp-tabs, \.cx-float-hint\) \{\n([^}]*)\}/);
   assert.ok(rule, "page enter rule should exist");
-  assert.match(rule[1], /animation: cx-page-enter 220ms var\(--motion-ease\);/);
-  // 只有 from、不带 fill-mode / will-change：结束后正文不成为 position: fixed 弹层的包含块。
+  assert.match(rule[1], /animation: cx-page-enter 320ms ease-out;/);
+  // 不带 fill-mode / will-change；只动透明度、不位移：一挪一现显得生硬，
+  // 而且没有 transform 正文就不会成为 position: fixed 弹层的包含块。
   assert.doesNotMatch(rule[1], /\b(both|forwards)\b|will-change/);
   const keyframes = cursorUi.match(/@keyframes cx-page-enter \{\n([\s\S]*?)\n\}\n/);
   assert.ok(keyframes, "cx-page-enter keyframes should exist");
-  assert.match(keyframes[1], /from \{\n    opacity: 0;\n    transform: translate3d\(0, 6px, 0\);\n  \}/);
-  assert.doesNotMatch(keyframes[1], /\bto \{|100%/);
-  // 正文里已经开着弹层（没走 portal 的抽屉 / 对话框）时不做位移，且这条规则排在入场规则后面才盖得住。
-  const overlayRule = ":root .shell .screen > :has(.modal-backdrop, .mg-drawer-backdrop, .gw-modal-backdrop) {\n  animation: none;\n}";
-  assert.ok(cursorUi.indexOf(overlayRule) > cursorUi.indexOf(rule[0]), "overlay rule should follow the enter rule");
+  assert.match(keyframes[1], /from \{\n    opacity: 0;\n  \}/);
+  assert.doesNotMatch(keyframes[1], /transform|translate|scale|\bto \{|100%/);
   // .screen 容器自身仍不做动画（整页位移会带着吸顶标题一起动）。
   assert.match(styles, /\.shell :is\(\.topbar, \.screen\) \{\n  animation: none;\n  transition: none;\n\}/);
 });
@@ -842,7 +840,7 @@ test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副
   const claude = readSource("./ClaudeProviders.tsx");
   // 导入、添加在标题行右侧，添加是主按钮（Codex 页也是 cx-secondary 导入 + cx-primary 添加）。
   assert.match(claude, /<TopbarActions>\s*<button className="cx-secondary"[^>]*onClick=\{\(\) => setAdding\("import"\)\}[\s\S]*?<button className="cx-primary"[^>]*onClick=\{\(\) => setAdding\("catalog"\)\}[\s\S]*?<\/TopbarActions>/);
-  assert.match(readSource("./RelayScreen.tsx"), /<button className="cx-secondary" onClick=\{openThirdPartyImport\}[\s\S]*?<button className="cx-primary" onClick=\{openCatalog\}/);
+  assert.match(readSource("./RelayScreen.tsx"), /<button className="cx-secondary" onClick=\{\(\) => setThirdPartyImportOpen\(true\)\}[\s\S]*?<button className="cx-primary" onClick=\{openCatalog\}/);
   // 顶部一张卡：Claude Desktop、Claude Code 各一行默认模型；不再混在供应商列表里。
   const agents = claude.match(/<CxSection className="claude-providers-agents">([\s\S]*?)<\/CxSection>/);
   assert.ok(agents, "agents card should exist");
@@ -855,4 +853,11 @@ test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副
   assert.doesNotMatch(list, /AgentModelPicker|t\("默认模型"\)/);
   // Claude Code 那一行并进了顶部的卡，App 里不再单独挂一块。
   assert.doesNotMatch(text, /ClaudeCodeConnection/);
+});
+
+test("Codex 页顶部的登录卡叫「主登录身份」：和各供应商绑定的「供应商登录账号」区分开", () => {
+  const auth = readSource("./NativeAuthControls.tsx");
+  assert.match(auth, /title=\{t\("主登录身份"\)\}/);
+  assert.doesNotMatch(auth, /t\("Codex 登录"\)/);
+  assert.match(auth, /<span>\{t\("供应商登录账号"\)\}<\/span>/);
 });
