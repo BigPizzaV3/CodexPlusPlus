@@ -822,3 +822,18 @@ test("侧栏切换不生硬：子页面列表展开 / 收起有高度过渡，�
   assert.match(indicator, /element\.closest\('\.cx-side-subnav-wrap\[data-open="false"\]'\)/);
   assert.match(indicator, /prefers-reduced-motion: reduce/);
 });
+
+test("标题行右侧的按钮同一种外形：30px 高、8px 圆角、12.5px 字，主按钮实底、次按钮描边", () => {
+  const cursorUi = readSource("./cursor-ui.css");
+  // 主按钮、次按钮、通用 Button（启动 Codex / 启动 Claude）一起收到同一个外形。
+  const shape = cursorUi.match(/:root \.shell \.cx-page-head \.topbar-actions :is\(\.cx-primary, \.cx-secondary, button\.bg-primary\) \{\n([^}]*)\}/);
+  assert.ok(shape, "page head button shape rule should exist");
+  for (const declaration of ["height: 30px;", "padding: 0 12px;", "border-radius: 8px;", "box-shadow: none;", "font-size: 12.5px;"]) {
+    assert.ok(shape[1].includes(declaration), declaration);
+  }
+  // 只统一外形，不动底色和描边：主次之分保留。
+  assert.doesNotMatch(shape[1], /background|border:|border-color|color:/);
+  assert.match(cursorUi, /:root \.shell \.cx-page-head \.topbar-actions :is\(\.mg-icon-button, \.gw-icon-button\) \{\n  width: 30px;\n  height: 30px;\n  border-radius: 8px;\n\}/);
+  // 启动 Codex 是通用 Button 的实底样式，靠 bg-primary 这个类被上面的规则选中。
+  assert.match(readSource("./CodexLaunchButton.tsx"), /className="codex-launch-button"[\s\S]*?variant="default"/);
+});
