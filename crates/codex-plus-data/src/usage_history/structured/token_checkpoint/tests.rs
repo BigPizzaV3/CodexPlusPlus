@@ -512,23 +512,25 @@ fn reopened_duplicate_rollouts_match_the_live_resolver_and_daily_totals() {
 }
 
 #[test]
-fn bounded_batches_commit_beyond_the_in_memory_observation_limit() {
+fn bounded_batches_resolve_beyond_the_in_memory_observation_limit() {
     use crate::usage_history::structured::MAX_EVENTS;
     use std::io::BufWriter;
+    use store::projection::SourceUpdate;
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
     let path = root.join("long.jsonl");
     let db = root.join("tokens.sqlite3");
-    let key = Path::new("long.jsonl");
+    let key = path.as_path();
     let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     let mut file = BufWriter::new(fs::File::create(&path).unwrap());
     file.write_all(&source_rows()[0]).unwrap();
     let at = DateTime::parse_from_rfc3339("2026-01-02T12:00:00Z").unwrap();
     for n in 1..=MAX_EVENTS + 1 {
         let timestamp = at + chrono::Duration::milliseconds(n as i64);
-        let row = json!({"type":"event_msg","timestamp":timestamp.to_rfc3339(),
+        let row = json!({"type":"event_msg","ordinal":n,"timestamp":timestamp.to_rfc3339(),
             "payload":{"type":"token_count","info":{"total_token_usage":{
-                "input_tokens":n,"cached_input_tokens":0,"output_tokens":n}}}});
+                "input_tokens":n,"cached_input_tokens":0,"output_tokens":n},
+                "last_token_usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}}});
         writeln!(file, "{row}").unwrap();
     }
     file.flush().unwrap();
@@ -553,7 +555,20 @@ fn bounded_batches_commit_beyond_the_in_memory_observation_limit() {
         assert!(state.events.len() <= 1024);
         let (next, _) = Checkpoint::capture(&state);
         assert!(next > old_offset);
-        previous = Some(store.save(key, revision, &state, false).unwrap());
+        let prepared = store
+            .prepare(
+                SourceUpdate {
+                    source: key,
+                    state: &state,
+                    previous_revision: revision,
+                    replace: false,
+                },
+                cutoff,
+                BTreeMap::new(),
+                512 * 1024,
+            )
+            .unwrap_or_else(|error| panic!("offset {old_offset}: {error:#}"));
+        previous = Some(store.publish(prepared).unwrap());
         if complete {
             assert_eq!(next, size);
             break;
@@ -567,4 +582,30 @@ fn bounded_batches_commit_beyond_the_in_memory_observation_limit() {
         })
         .unwrap();
     assert_eq!(count, MAX_EVENTS + 1);
+    let mut db = db;
+    let mut resolved = 0;
+    let revision = store::Store::read_committed(&mut db, i64::MIN, i64::MAX, |event| {
+        assert_eq!(event.delta, Tokens::new(1, 0, 1));
+        assert!(!event.count_uncertain && !event.count_incomplete);
+        resolved += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(Some(revision), previous);
+    assert_eq!(resolved, count);
+    let day = at.with_timezone(&chrono::Local).date_naive();
+    let mut summary_records = 0;
+    let mut summary_tokens = 0;
+    let summary_revision =
+        store::Store::read_days(&mut db, day, day.succ_opt().unwrap(), |_, _, groups| {
+            for group in groups {
+                summary_records += group.totals.records;
+                summary_tokens += group.totals.counts.0.total_tokens;
+            }
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(summary_revision, revision);
+    assert_eq!(summary_records, count as u64);
+    assert_eq!(summary_tokens, count as u64 * 2);
 }

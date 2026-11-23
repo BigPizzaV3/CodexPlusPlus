@@ -1,11 +1,11 @@
 use super::{Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{Checkpoint, Counter, Observation};
 use crate::usage_history::structured::{
-    FileState, Index, MAX_FILES, Snapshot, UsageEvent, segments,
+    FileState, Index, MAX_FILES, Snapshot, UsageEvent, segments, usage_provider,
 };
 use anyhow::{Result, ensure};
 use chrono::{DateTime, NaiveDate};
-use rusqlite::{Connection, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
@@ -39,6 +39,8 @@ pub(in super::super) struct Prepared<'a> {
     cutoff: NaiveDate,
     sessions: BTreeSet<String>,
     collisions: HashMap<[u8; 32], i64>,
+    append: bool,
+    linear: bool,
     events: Vec<UsageEvent>,
 }
 
@@ -58,7 +60,7 @@ pub(in super::super) struct DayGroup {
     pub(in super::super) totals: DayTotals,
 }
 
-type Groups<'a> = BTreeMap<(&'a str, &'a str, &'a str, u8), DayTotals>;
+type Groups = BTreeMap<(String, String, String, u8), DayTotals>;
 
 #[derive(Clone, Copy)]
 pub(in super::super) struct SourceUpdate<'a> {
@@ -70,6 +72,49 @@ pub(in super::super) struct SourceUpdate<'a> {
 
 fn revision(db: &Connection) -> Result<i64> {
     Ok(db.query_row("SELECT revision FROM token_revision", [], |row| row.get(0))?)
+}
+
+fn linear_batch<'a>(
+    state: &'a FileState,
+    cutoff: NaiveDate,
+    mut previous: Option<&'a UsageEvent>,
+) -> bool {
+    if state.session.is_empty()
+        || state.continuation
+        || state.history_base.is_some()
+        || !state.inherited_contexts.is_empty()
+        || state.identity_conflict
+        || state.invalid_counts
+        || state.rollout_out_of_order
+        || state.issues != 0
+        || state.events.is_empty()
+    {
+        return false;
+    }
+    for event in &state.events {
+        if event.session != state.session
+            || event.date < cutoff
+            || event.inherited
+            || event.legacy_identity.is_some()
+            || event.provider.trim().eq_ignore_ascii_case("openai")
+            || event.context_conflicts.any()
+            || event.count_uncertain
+            || event.count_incomplete
+            || event.count_pending
+            || previous.is_some_and(|before| {
+                // 同一时间戳可能是副本；相同累计输入输出可能是历史缓存修正。
+                DateTime::parse_from_rfc3339(&event.timestamp).unwrap()
+                    <= DateTime::parse_from_rfc3339(&before.timestamp).unwrap()
+                    || !event.total.is_monotonic_after(before.total)
+                    || (event.total.input_tokens, event.total.output_tokens)
+                        == (before.total.input_tokens, before.total.output_tokens)
+            })
+        {
+            return false;
+        }
+        previous = Some(event);
+    }
+    true
 }
 
 impl Store {
@@ -98,6 +143,86 @@ impl Store {
             .iter()
             .filter_map(|link| link.strip_prefix("s:").map(str::to_owned))
             .collect();
+        let path_key = encode_path(source);
+        let seed_json = serde_json::to_string(&seeds)?;
+        if !replace && let Some(previous_revision) = previous_revision {
+            let tail = read
+                .query_row(
+                    "SELECT o.event_id, o.payload, owner.session FROM token_sources s
+                 JOIN token_linear_sources l ON s.id = l.source_id
+                 JOIN token_observations o ON o.source_id = s.id
+                 JOIN token_sessions owner ON owner.id = o.session_id
+                 WHERE s.source = ?1 AND s.revision = ?2 AND l.revision = ?2 AND l.cutoff = ?3
+                 AND NOT EXISTS (
+                    SELECT 1 FROM token_source_links
+                    WHERE source_id != s.id AND link IN (SELECT value FROM json_each(?4))
+                 )
+                 ORDER BY o.revision DESC, o.position DESC LIMIT 1",
+                    params![path_key, previous_revision, cutoff.to_string(), seed_json],
+                    |row| {
+                        Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, Vec<u8>>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            if let Some((id, payload, owner)) = tail {
+                let tail = serde_json::from_slice::<Observation>(&payload)?.into_event(
+                    id.try_into()
+                        .map_err(|_| anyhow::anyhow!("invalid Token event identity"))?,
+                    owner,
+                )?;
+                let mut collision =
+                    read.prepare_cached("SELECT 1 FROM token_collisions WHERE id = ?1")?;
+                let mut eligible =
+                    tail.session == state.session && linear_batch(state, cutoff, Some(&tail));
+                if eligible {
+                    for event in &state.events {
+                        if collision.exists([event.original_id.as_slice()])? {
+                            eligible = false;
+                            break;
+                        }
+                    }
+                }
+                drop(collision);
+                if eligible {
+                    let (_, checkpoint) = Checkpoint::capture(state);
+                    let mut bytes = serde_json::to_vec(&checkpoint)?.len() + payload.len();
+                    let mut previous = tail.total;
+                    let mut events = Vec::with_capacity(state.events.len());
+                    for raw in &state.events {
+                        bytes += serde_json::to_vec(&Observation::capture(raw))?.len();
+                        ensure!(
+                            bytes <= input_limit,
+                            "Token batch exceeds reconciliation input budget"
+                        );
+                        let mut event = raw.clone();
+                        event.delta = event.session_delta(Some(previous));
+                        event.provider =
+                            usage_provider(&event.model, &event.provider, &index.provider_names)
+                                .to_owned();
+                        previous = event.total;
+                        if event.delta.total_tokens != 0 {
+                            events.push(event);
+                        }
+                    }
+                    read.commit()?;
+                    return Ok(Prepared {
+                        update,
+                        base_revision,
+                        cutoff,
+                        sessions,
+                        collisions: HashMap::new(),
+                        append: true,
+                        linear: true,
+                        events,
+                    });
+                }
+            }
+        }
+        let mut files = 0;
         {
             // 物理前缀和同会话副本都参与计数。同一来源的旧关联和新关联均为种子。
             let mut affected = read.prepare(
@@ -127,13 +252,7 @@ impl Store {
             )?;
             let mut stored_collision =
                 read.prepare("SELECT 1 FROM token_collisions WHERE id = ?1")?;
-            let path_key = encode_path(source);
-            let mut rows = affected.query(params![
-                path_key,
-                serde_json::to_string(&seeds)?,
-                MAX_FILES + 1
-            ])?;
-            let mut files = 0;
+            let mut rows = affected.query(params![path_key, seed_json, MAX_FILES + 1])?;
             let mut remaining = input_limit;
             let mut charge = |bytes: usize| -> Result<()> {
                 remaining = remaining.checked_sub(bytes).ok_or_else(|| {
@@ -202,6 +321,10 @@ impl Store {
         }
 
         let collisions = index.observed_collisions();
+        let linear = files == 0
+            && collisions.is_empty()
+            && index.collision_families.is_empty()
+            && linear_batch(state, cutoff, None);
         index.collision_families.extend(collisions.keys().copied());
         index.apply_collision_ids();
         let mut snapshot = Snapshot::default();
@@ -219,22 +342,59 @@ impl Store {
             cutoff,
             sessions,
             collisions,
+            append: false,
+            linear,
             events: snapshot.events,
         })
     }
 
     pub(in super::super) fn publish(&mut self, prepared: Prepared<'_>) -> Result<i64> {
-        let mut days: BTreeMap<(&str, NaiveDate), Groups<'_>> = BTreeMap::new();
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure!(
+            revision(&tx)? == prepared.base_revision,
+            "Token index changed during reconciliation"
+        );
+        let mut days: BTreeMap<(&str, NaiveDate), Groups> = BTreeMap::new();
+        let mut prior_day = tx.prepare_cached(
+            "SELECT d.groups FROM token_days d JOIN token_sessions s ON s.id = d.session_id
+             WHERE s.session = ?1 AND d.day = ?2",
+        )?;
         for event in &prepared.events {
             let conflict = event.context_conflicts;
             let flags = u8::from(conflict.model)
                 | u8::from(conflict.provider) << 1
                 | u8::from(conflict.role) << 2
                 | u8::from(conflict.turn) << 3;
-            let totals = days
-                .entry((&event.session, event.date))
-                .or_default()
-                .entry((&event.model, &event.provider, &event.role, flags))
+            let groups = match days.entry((&event.session, event.date)) {
+                std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let mut groups = Groups::new();
+                    if prepared.append
+                        && let Some(payload) = prior_day
+                            .query_row(params![event.session, event.date.to_string()], |row| {
+                                row.get::<_, Vec<u8>>(0)
+                            })
+                            .optional()?
+                    {
+                        for group in serde_json::from_slice::<Vec<DayGroup>>(&payload)? {
+                            groups.insert(
+                                (group.model, group.provider, group.role, group.conflicts),
+                                group.totals,
+                            );
+                        }
+                    }
+                    entry.insert(groups)
+                }
+            };
+            let totals = groups
+                .entry((
+                    event.model.clone(),
+                    event.provider.clone(),
+                    event.role.clone(),
+                    flags,
+                ))
                 .or_default();
             if event.count_uncertain || event.count_incomplete {
                 totals.unresolved += 1;
@@ -243,15 +403,16 @@ impl Store {
                 totals.records += 1;
             }
         }
+        drop(prior_day);
         let days = days
             .into_iter()
             .map(|((session, day), groups)| {
                 let groups: Vec<_> = groups
                     .into_iter()
                     .map(|((model, provider, role, conflicts), totals)| DayGroup {
-                        model: model.to_owned(),
-                        provider: provider.to_owned(),
-                        role: role.to_owned(),
+                        model,
+                        provider,
+                        role,
                         conflicts,
                         totals,
                     })
@@ -259,13 +420,6 @@ impl Store {
                 Ok((session, day.to_string(), serde_json::to_vec(&groups)?))
             })
             .collect::<Result<Vec<_>>>()?;
-        let tx = self
-            .db
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        ensure!(
-            revision(&tx)? == prepared.base_revision,
-            "Token index changed during reconciliation"
-        );
         let update = prepared.update;
         let next = Self::stage(
             &tx,
@@ -283,10 +437,24 @@ impl Store {
                  AND day >= ?2",
             )?;
             let cutoff = prepared.cutoff.to_string();
-            for session in prepared.sessions {
-                remove.execute([&session])?;
-                // 保留已过明细截止点的日汇总。
-                remove_days.execute(params![session, cutoff])?;
+            if !prepared.append {
+                let mut invalidate = tx.prepare(
+                    "DELETE FROM token_linear_sources WHERE source_id IN
+                     (SELECT source_id FROM token_source_links WHERE link = ?1)",
+                )?;
+                for session in prepared.sessions {
+                    remove.execute([&session])?;
+                    // 保留已过明细截止点的日汇总。
+                    remove_days.execute(params![session, cutoff])?;
+                    invalidate.execute([format!("s:{session}")])?;
+                }
+            }
+            if prepared.linear {
+                tx.execute(
+                    "INSERT OR REPLACE INTO token_linear_sources
+                     SELECT id, ?2, ?3 FROM token_sources WHERE source = ?1",
+                    params![encode_path(update.source), next, cutoff],
+                )?;
             }
             let mut collide = tx.prepare("INSERT OR IGNORE INTO token_collisions VALUES (?1)")?;
             for id in prepared.collisions.keys() {
@@ -304,7 +472,8 @@ impl Store {
                 ])?;
             }
             let mut insert_day = tx.prepare(
-                "INSERT INTO token_days VALUES ((SELECT id FROM token_sessions WHERE session = ?1), ?2, ?3)",
+                "INSERT INTO token_days VALUES ((SELECT id FROM token_sessions WHERE session = ?1), ?2, ?3)
+                 ON CONFLICT(session_id, day) DO UPDATE SET groups = excluded.groups",
             )?;
             for (session, day, groups) in days {
                 insert_day.execute(params![session, day, groups])?;

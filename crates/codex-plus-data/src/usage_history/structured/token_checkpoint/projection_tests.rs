@@ -4,8 +4,8 @@ use chrono::{DateTime, NaiveDate};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::Path;
+use std::{fs, io::Write};
 
 const PARENT: &str = "00000000-0000-4000-8000-000000000071";
 const CHILD: &str = "00000000-0000-4000-8000-000000000072";
@@ -284,9 +284,91 @@ fn replacing_scope_uses_old_and_new_links_and_failed_publication_keeps_the_old_v
 }
 
 #[test]
+fn ordered_append_matches_full_resolution_after_reopen_and_late_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let a = root.join("rollout-a.jsonl");
+    let copy = root.join("rollout-copy.jsonl");
+    let full = root.join("rollout-full.jsonl");
+    let file = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let head = [header(PARENT, 0), count(1, 1, 1, true)];
+    let initial = parse(&a, &head, cutoff);
+    let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+    let first = store
+        .prepare(new_source(&a, &initial), cutoff, BTreeMap::new(), 8192)
+        .unwrap();
+    store.publish(first).unwrap();
+    drop(store);
+
+    let additional = count(2, 2, 2, true);
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&a).unwrap(),
+        "{additional}"
+    )
+    .unwrap();
+    let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+    let (at, mut state) = store.checkpoint(&a).unwrap().unwrap();
+    assert!(
+        state
+            .read_with_budget(&a, cutoff, &mut Budget::new(std::iter::empty()))
+            .unwrap()
+    );
+    let update = SourceUpdate {
+        source: &a,
+        state: &state,
+        previous_revision: Some(at),
+        replace: false,
+    };
+    let next = store
+        .prepare(update, cutoff, BTreeMap::new(), 8192)
+        .unwrap();
+    let revision = store.publish(next).unwrap();
+    let (_, appended) = read(&mut store.db, i64::MIN, i64::MAX);
+
+    let whole = parse(
+        &full,
+        &[head[0].clone(), head[1].clone(), additional],
+        cutoff,
+    );
+    let mut reference = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let next = reference
+        .prepare(new_source(&full, &whole), cutoff, BTreeMap::new(), 8192)
+        .unwrap();
+    reference.publish(next).unwrap();
+    assert!(read(&mut reference.db, i64::MIN, i64::MAX).1 == appended);
+    assert_eq!(appended.len(), 2);
+
+    let duplicate = parse(&copy, &head, cutoff);
+    assert!(
+        store
+            .prepare(new_source(&copy, &duplicate), cutoff, BTreeMap::new(), 128)
+            .is_err()
+    );
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).0, revision);
+    let next = store
+        .prepare(new_source(&copy, &duplicate), cutoff, BTreeMap::new(), 8192)
+        .unwrap();
+    store.publish(next).unwrap();
+    assert!(read(&mut store.db, i64::MIN, i64::MAX).1 == appended);
+    let proofs: u64 = store
+        .db
+        .query_row("SELECT count(*) FROM token_linear_sources", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(
+        proofs, 0,
+        "a competing source revokes the cheap append certificate"
+    );
+}
+
+#[test]
 fn replacing_recent_details_keeps_older_daily_totals_and_unknown_cache() {
     let dir = tempfile::tempdir().unwrap();
-    let source = fs::canonicalize(dir.path()).unwrap().join("rollout-a.jsonl");
+    let source = fs::canonicalize(dir.path())
+        .unwrap()
+        .join("rollout-a.jsonl");
     let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     let mut usage = count(1, 1, 1, true);
     for key in ["total_token_usage", "last_token_usage"] {

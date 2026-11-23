@@ -82,6 +82,11 @@ impl Store {
                 PRIMARY KEY (source_id, link)
              ) WITHOUT ROWID, STRICT;
              CREATE INDEX IF NOT EXISTS token_link_sources ON token_source_links(link);
+             CREATE TABLE IF NOT EXISTS token_linear_sources (
+                source_id INTEGER PRIMARY KEY REFERENCES token_sources(id),
+                revision INTEGER NOT NULL,
+                cutoff TEXT NOT NULL
+             ) STRICT;
              CREATE TABLE IF NOT EXISTS token_collisions (
                 id BLOB PRIMARY KEY
              ) WITHOUT ROWID, STRICT;
