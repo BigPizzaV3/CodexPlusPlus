@@ -69,7 +69,7 @@ if (codexPlus.supports?.("registerComposerAction") ?? true) { /* 有输入框按
 
 和 Codex 不一样的地方：
 
-- **位置是对着 Chat 页签量的**。按钮和侧栏行照旁边的原生控件做，Claude 改了样式会自动跟着变；Claude 改了结构时，那一处不出现（其余照常），「万物皆拓展」的那一行会标出来。Cowork、Code 页签和本机版界面（3p）还没量过，那里只保证不依赖界面的接口可用。
+- **位置是对着对话页签量的**，合并式主页和经典主页两种布局都量过。按钮和侧栏行照旁边的原生控件做，Claude 改了样式会自动跟着变；Claude 改了结构时，那一处不出现（其余照常），「万物皆拓展」的那一行会标出来。Cowork、Code 页签和本机版界面（3p）还没量过，那里只保证不依赖界面的接口可用。
 - **还没有位置的**：`registerToolView`，以及 `registerSlot` 的 `composer.left` / `composer.right` / `composer.model`、`home.above`、`settings.nav`、`activity.after`、`approval`、`header.title`、`sidebar.section`、`sessionRow.prefix`、`projectRow.suffix`。登记它们不报错、不出现，`codexPlus.supports()` 对它们回 `false`。
 - **在页面里存配置还不行**：`registerSettingsPanel` 拿到的 `saveConfig` 会以 `CodexPlusUnsupportedError` 拒绝；配置在「万物皆拓展」里改，刷新页面生效。
 - **取数据的接口会拒绝**：`ctx.llm.*`、没开放的路由、没声明的后台方法，返回的 Promise 以 `CodexPlusUnsupportedError` 拒绝（`error.code === "unsupported"`）。
