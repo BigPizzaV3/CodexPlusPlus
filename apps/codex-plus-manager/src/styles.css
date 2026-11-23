@@ -3815,7 +3815,7 @@ select {
   animation: none;
 }
 
-/* 页面直接切换，不保留标题或正文的入场过渡。 */
+/* .screen 容器和标题行本身不做入场动画；正文的淡入在 cursor-ui.css 的「页面切换动效」。 */
 .shell :is(.topbar, .screen) {
   animation: none;
   transition: none;

@@ -759,3 +759,24 @@ test("「Agent 接入」的 Codex 行复用同一份启动状态；Claude 页把
   assert.match(entry, /setClaudeLocalRun\(\(current\) => \(sameClaudeRunState\(current, status\) \? current : status\)\)/);
   assert.match(text, /function sameClaudeRunState\(/);
 });
+
+test("切换页面时正文淡入上移，标题行和页签不动；动画结束后不留 transform", () => {
+  const cursorUi = readSource("./cursor-ui.css");
+  // .screen 按 route 重建，入场动画才会在每次切换时重放。
+  assert.match(functionSource("App"), /<section\s+className=\{`screen [\s\S]*?key=\{route\}/);
+  // 标题行、页签（「统计 / 请求」这类页签也换 route）和右下角悬浮提示不参与。
+  const rule = cursorUi.match(/:root \.shell \.screen > :not\(\.cx-page-head, \.tp-tabs, \.cx-float-hint\) \{\n([^}]*)\}/);
+  assert.ok(rule, "page enter rule should exist");
+  assert.match(rule[1], /animation: cx-page-enter 220ms var\(--motion-ease\);/);
+  // 只有 from、不带 fill-mode / will-change：结束后正文不成为 position: fixed 弹层的包含块。
+  assert.doesNotMatch(rule[1], /\b(both|forwards)\b|will-change/);
+  const keyframes = cursorUi.match(/@keyframes cx-page-enter \{\n([\s\S]*?)\n\}\n/);
+  assert.ok(keyframes, "cx-page-enter keyframes should exist");
+  assert.match(keyframes[1], /from \{\n    opacity: 0;\n    transform: translate3d\(0, 6px, 0\);\n  \}/);
+  assert.doesNotMatch(keyframes[1], /\bto \{|100%/);
+  // 正文里已经开着弹层（没走 portal 的抽屉 / 对话框）时不做位移，且这条规则排在入场规则后面才盖得住。
+  const overlayRule = ":root .shell .screen > :has(.modal-backdrop, .mg-drawer-backdrop, .gw-modal-backdrop) {\n  animation: none;\n}";
+  assert.ok(cursorUi.indexOf(overlayRule) > cursorUi.indexOf(rule[0]), "overlay rule should follow the enter rule");
+  // .screen 容器自身仍不做动画（整页位移会带着吸顶标题一起动）。
+  assert.match(styles, /\.shell :is\(\.topbar, \.screen\) \{\n  animation: none;\n  transition: none;\n\}/);
+});
