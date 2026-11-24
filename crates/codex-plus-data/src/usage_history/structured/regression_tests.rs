@@ -565,6 +565,69 @@ fn local_invalid_usage_time_is_partial_and_recovers_after_source_repair() {
 }
 
 #[test]
+fn mixed_cache_breakdown_only_prices_known_records() {
+    let mut fixture = Fixture::new();
+    let start = Local::now().date_naive().and_hms_opt(0, 0, 0).unwrap();
+    fixture.start = start
+        .and_local_timezone(Local)
+        .single()
+        .unwrap()
+        .timestamp_millis();
+    let mut first = fixture.usage(1_000, 1);
+    for key in ["total_token_usage", "last_token_usage"] {
+        first["payload"]["info"][key]["cached_input_tokens"] = json!(0);
+    }
+    let mut second = fixture.usage(2_000, 2);
+    second["payload"]["info"]["total_token_usage"]["cached_input_tokens"] = json!(20);
+    let missing_cache = |at, ordinal| {
+        let mut row = fixture.usage(at, ordinal);
+        for key in ["total_token_usage", "last_token_usage"] {
+            row["payload"]["info"][key]
+                .as_object_mut()
+                .unwrap()
+                .remove("cached_input_tokens");
+        }
+        row
+    };
+    fixture.write_segment(
+        "rollout-a.jsonl",
+        vec![
+            fixture.context(100, "mixed"),
+            first,
+            second,
+            missing_cache(3_000, 3),
+            fixture.context(3_100, "unknown-only"),
+            missing_cache(4_000, 4),
+            fixture.context(4_100, "known-only"),
+            fixture.usage(5_000, 5),
+        ],
+    );
+    let snapshot = fixture.snapshot();
+    let response = snapshot_response(&snapshot);
+    let day = &response["days"][0];
+    assert_eq!(day["recordCount"], 5);
+    assert_eq!(day["usage"]["totalTokens"], 550);
+    assert_eq!(day["usage"]["cachedKnown"], false);
+    let groups = day["breakdowns"].as_array().unwrap();
+    assert_eq!(groups.len(), 3);
+    let group = |model: &str| groups.iter().find(|row| row["model"] == model).unwrap();
+    let mixed = group("mixed");
+    assert_eq!(mixed["recordCount"], 3);
+    assert_eq!(mixed["usage"]["totalTokens"], 330);
+    assert_eq!(mixed["usage"]["cachedKnown"], false);
+    assert_eq!(
+        mixed["priceableUsage"],
+        json!({"inputTokens":200,"cachedInputTokens":20,"outputTokens":20})
+    );
+    for (model, known) in [("known-only", true), ("unknown-only", false)] {
+        let row = group(model);
+        assert_eq!(row["recordCount"], 1);
+        assert_eq!(row["usage"]["cachedKnown"], known);
+        assert!(row.get("priceableUsage").is_none());
+    }
+}
+
+#[test]
 fn local_membership_proofs_bind_counts_and_allow_exact_evidence_reclassification() {
     let mut fixture = Fixture::new();
     let row = fixture.usage(1_000, 1);

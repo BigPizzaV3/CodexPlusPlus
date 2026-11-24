@@ -111,6 +111,12 @@ describe("拓展公开类型契约", () => {
       ${runtimeRoutes().map((route) => `void api.call(${JSON.stringify(route)}); void ctx.call(${JSON.stringify(route)});`).join("\n")}
       const prices: Promise<CodexPlusProviderPrices> = api.call<CodexPlusProviderPrices>("/provider-prices/public");
       const instancePrices: Promise<CodexPlusProviderPrices> = ctx.call<CodexPlusProviderPrices>("/provider-prices/public");
+      void api.call<{ days: Array<{ breakdowns: CodexPlusUsageHistoryBreakdown[] }> }>("/usage/history").then(({ days }) => {
+        const row = days[0].breakdowns[0];
+        const input: number = (row.usage.cachedKnown ? row.usage : row.priceableUsage)?.inputTokens ?? 0;
+        // @ts-expect-error 部分计价明细不是总量。
+        row.priceableUsage?.totalTokens;
+      });
       prices.then(({ providers }) => {
         const defaultPrice: CodexPlusProviderPrice | null = providers[0].price;
         const modelPrice: CodexPlusProviderPrice | undefined = providers[0].modelPrices["model"];

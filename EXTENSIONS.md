@@ -1456,6 +1456,7 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | --- | --- |
 | `/diagnostics/log` | 写一条诊断日志 |
 | `/thread-usage-history` | 读会话用量历史 |
+| `/usage/history` | 读本机 Token 历史和分类汇总；需启用本机用量历史（只读） |
 | `/archived-thread` | 读归档会话 |
 | `/export-markdown` | 导出 Markdown |
 | `/user-scripts/list` | 读拓展清单 |
@@ -1472,6 +1473,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/model-catalog/public` | 当前供应商的模型目录：`models`、`modelMetadata`（每模型的 `contextWindow` 等）、`model`、`default_model`、`provider_name`、`model_provider`、`service_tier`。去掉了来源地址与本机路径（只读） |
 
 **写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
+
+`/usage/history` 的 `days[].breakdowns[]` 中，`usage` 与 `recordCount` 仍统计整组。当 `usage.cachedKnown` 为 `false` 且组内有缓存已知的记录时，`priceableUsage` 单列这些记录的 `inputTokens`、`cachedInputTokens` 和 `outputTokens`，供估算部分费用。明确的零缓存属于已知；字段缺失则不计价。不要将子集加到 `usage`，也不要把部分费用当作完整费用。整组缓存均已知或均未知时，不返回该字段。
 
 `/provider-prices/public` 返回的是 Codex++ 配置价，不是上游实时报价或实际账单，也不会请求上游。`price` 是供应商默认价，未设置时为 `null`；`modelPrices` 按原始上游模型名保存逐模型价，缺项时为空对象。价格包含 `currency`、`input`、`cachedInput`、`output`，单位是每百万 Token。宿主现有配置不能区分价格字段中的未填写和明确免费，两者都可能为 `0`；通过管理器保存的全零价格会被视为未填写，不能据此断言免费或价格完整。
 
