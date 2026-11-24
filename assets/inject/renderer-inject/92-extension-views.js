@@ -129,7 +129,10 @@
     if (typeof definition?.render !== "function") throw new Error("设置分区需要 render({ container, close })");
     const scriptKey = codexPlusCurrentExtensionScriptKey(options);
     const sectionKey = String(options.id || definition.id || codexPlusExtensionIdSeed());
-    const id = `${scriptKey}:settingsSection:${sectionKey}`;
+    // 多实例（清单 instances）时取自 definition.id 的注册 id 也带实例后缀，规则同内核的 registerOptions：
+    // <id>@<实例 id>（options.id 在内核里已经带上了）。sectionKey 只用来挑图标、兜底标题，保持原样。
+    const instanceSuffix = !options.id && definition.id && options.instanceId ? `@${options.instanceId}` : "";
+    const id = `${scriptKey}:settingsSection:${sectionKey}${instanceSuffix}`;
     const dispose = registerCodexPlusExtension("settingsSection", codexPlusRegistry.settingsSections, id, { ...definition, sectionKey }, scriptKey);
     // 设置页宿主在 40-backend-settings.js；单独切出这一段测试时没有它。
     const changed = () => {
@@ -146,11 +149,22 @@
   /**
    * 每个拓展一个设置面板，登记在注册表里（持久）；面板 DOM 由「拓展」详情页每次打开时向拓展要（瞬态）。
    * 注册 / 撤销时通知详情页：正显示着这个拓展时重画，热重载后看到的是新代码画的面板。
+   *
+   * 多实例（清单 instances）时面板仍是整个拓展一个（它画的是包配置，saveConfig 存的也是包配置）：
+   * 先注册的那个实例生效，别的实例再注册时忽略并在控制台留一句提示，不抛错——抛错会让后面的实例建不起来。
+   * 同一个实例重复注册、以及单实例拓展，照旧报「id 已被占用」。
    */
   function codexPlusRegisterSettingsPanel(definition, options = {}) {
     if (typeof definition?.render !== "function") throw new Error("设置面板需要 render({ container, config, saveConfig })");
     const scriptKey = codexPlusCurrentExtensionScriptKey(options);
-    const dispose = registerCodexPlusExtension("settingsPanel", codexPlusRegistry.settingsPanels, `${scriptKey}:settingsPanel`, definition, scriptKey);
+    const id = `${scriptKey}:settingsPanel`;
+    const instanceId = options.instanceId ? String(options.instanceId) : "";
+    const owner = instanceId ? codexPlusRegistry.settingsPanels.get(id)?.instanceId : "";
+    if (owner && owner !== instanceId) {
+      console.info(`[Codex++] 拓展 ${scriptKey} 的设置面板每个拓展一个：已由实例 ${owner} 注册，实例 ${instanceId} 的 registerSettingsPanel 已忽略`);
+      return () => {};
+    }
+    const dispose = registerCodexPlusExtension("settingsPanel", codexPlusRegistry.settingsPanels, id, instanceId ? { ...definition, instanceId } : definition, scriptKey);
     // 详情页宿主在 40-backend-settings.js；单独切出这一段测试时没有它。
     const changed = () => {
       if (typeof codexPlusSettingsPanelChanged === "function") codexPlusSettingsPanelChanged(scriptKey);

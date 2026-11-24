@@ -1087,6 +1087,10 @@ where
             crate::extension_launch::run_scripts("before", &extension_launch_context, &extension_launches).await;
         }
         let launch_args = crate::extension_launch::merged_launch_args(&settings.codex_extra_args, &extension_launches);
+        // 纯 API Key 下解锁 ChatGPT 登录专属入口。放在供应商配置都写完之后：切供应商会去掉
+        // `chatgpt_base_url`，这里每次启动补回。失败不阻断启动，模型请求不经过兼容服务。
+        timeline.mark("chatgpt_compat", 69);
+        reconcile_chatgpt_compat(&home, &settings).await;
         timeline.mark("launch_codex", 70);
         // 启动 Codex 之前清一遍选择器残留：换过模型目录之后，
         // 「最近使用」里会留着上一个目录的模型 ID，用户点到就是必然 400 的模型。
@@ -1208,6 +1212,66 @@ where
             let _ = status_store.save_latest(&failure);
             hooks.write_status("failed").await;
             Err(error)
+        }
+    }
+}
+
+/// 按开关对齐兼容服务：写入 / 还原 `~/.codex`，起 / 停本地服务。只记日志，不返回错误。
+async fn reconcile_chatgpt_compat(home: &Path, settings: &BackendSettings) {
+    match crate::chatgpt_compat_apply::reconcile(home, settings.chatgpt_compat_enabled) {
+        Ok(()) if settings.chatgpt_compat_enabled => {
+            if let Err(error) = crate::chatgpt_compat::start().await {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.chatgpt_compat_start_failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+        Ok(()) => crate::chatgpt_compat::stop(),
+        Err(error) => {
+            crate::chatgpt_compat::stop();
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.chatgpt_compat_skipped",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
+    }
+}
+
+/// 兼容服务开着时，启动桌面要带的环境变量：后端地址、本地证书、token 刷新地址。
+///
+/// 关着时返回空。证书写不出来时记日志并返回空，桌面会因证书校验失败连不上兼容服务，
+/// 但不影响模型请求（模型不经过它）。
+fn chatgpt_compat_launch_env(settings: &BackendSettings) -> Vec<(&'static str, String)> {
+    // 写入被拒绝（当前供应商依赖登录）时不带环境，Codex 按原样启动。
+    if !settings.chatgpt_compat_enabled || !crate::chatgpt_compat_apply::enabled() {
+        return Vec::new();
+    }
+    match crate::chatgpt_compat::launch_env() {
+        Ok(env) => env,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.chatgpt_compat_env_failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// 兼容服务开着时追加的启动参数：信任兼容服务证书的公钥指纹。
+fn chatgpt_compat_launch_args(settings: &BackendSettings) -> Vec<String> {
+    if !settings.chatgpt_compat_enabled || !crate::chatgpt_compat_apply::enabled() {
+        return Vec::new();
+    }
+    match crate::chatgpt_compat::spki_hash() {
+        Ok(hash) => vec![format!("--ignore-certificate-errors-spki-list={hash}")],
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.chatgpt_compat_spki_failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            Vec::new()
         }
     }
 }
@@ -1453,7 +1517,9 @@ impl LaunchHooks for DefaultLaunchHooks {
         instance: &LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
         // 远程控制开着时补上桌面镜像要的开关：Codex 窗口在后台、被挡住时照常出画面，不降帧。
-        let launch_extra_args = crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args));
+        let mut launch_extra_args = crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args));
+        // 兼容服务开着时，让窗口信任它的自签证书（只认这一张，不关闭证书校验）。
+        launch_extra_args.extend(chatgpt_compat_launch_args(_settings));
         let isolated_multi_instance =
             std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").is_some_and(|value| value == "1");
         // 打包版（MSIX/Store）上的多开必须另走一条路。
@@ -1718,7 +1784,16 @@ impl LaunchHooks for DefaultLaunchHooks {
                     MacosCleanupPolicy::QuitIfNotPreviouslyRunning
                 }
             };
-            let command = build_macos_open_command(app_dir, debug_port, &launch_extra_args);
+            let mut command = build_macos_open_command(app_dir, debug_port, &launch_extra_args);
+            // 兼容服务的后端地址和证书用 `open --env` 传给 Codex；必须放在 `--args` 之前，
+            // 之后的内容会原样变成 Codex 的命令行参数。
+            let env_args: Vec<String> = chatgpt_compat_launch_env(_settings)
+                .into_iter()
+                .flat_map(|(key, value)| ["--env".to_string(), format!("{key}={value}")])
+                .collect();
+            if let Some(index) = command.iter().position(|part| part == "--args") {
+                command.splice(index..index, env_args);
+            }
             let executable = command
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
@@ -1746,7 +1821,9 @@ impl LaunchHooks for DefaultLaunchHooks {
         child_command
             .args(&command[1..])
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            // 兼容服务开着时，后端地址和本地证书随进程环境带给桌面。
+            .envs(chatgpt_compat_launch_env(_settings));
         if let Some(user_data_dir) = multi_instance_user_data_dir_from_args(&launch_extra_args) {
             child_command.env("CODEX_ELECTRON_USER_DATA_PATH", user_data_dir);
         } else if isolated_multi_instance {
@@ -2088,6 +2165,12 @@ fn write_dictation_helper_receipt(helper_port: u16) {
         helper_port,
         crate::dictation::helper_token(),
     );
+    // Claude 页面拓展的后台也由这个 helper 托管，凭据同写同删（见 claude_page_host）。
+    write_dictation_helper_receipt_at(
+        &crate::claude_page_host::receipt_path(),
+        helper_port,
+        crate::claude_page_host::token(),
+    );
 }
 
 fn write_dictation_helper_receipt_at(path: &Path, helper_port: u16, token: &str) {
@@ -2125,6 +2208,7 @@ fn write_dictation_helper_receipt_at(path: &Path, helper_port: u16, token: &str)
 /// 误删。凭据整体只在 helper 停止时清理，与旧行为一致。
 fn remove_dictation_helper_receipt_for_port(helper_port: u16) {
     remove_dictation_helper_receipt_at_for_port(&dictation_helper_receipt_path(), helper_port);
+    remove_dictation_helper_receipt_at_for_port(&crate::claude_page_host::receipt_path(), helper_port);
 }
 
 fn remove_dictation_helper_receipt_at_for_port(path: &Path, helper_port: u16) {
@@ -2136,6 +2220,49 @@ fn remove_dictation_helper_receipt_at_for_port(path: &Path, helper_port: u16) {
     if matches {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// `/claude-ext/v1/<op>`：只认带本进程令牌的 POST，不接受网页发来的请求（带 Origin 的一律拒绝）。
+async fn handle_claude_page_host_connection(
+    stream: &mut tokio::net::TcpStream,
+    method: &str,
+    op: &str,
+    request_headers: &str,
+    body: &[u8],
+) -> anyhow::Result<()> {
+    use crate::claude_page_host::{HostError, TOKEN_HEADER, handle, token_matches};
+    let refused = |status: u16, message: &str| HostError {
+        status,
+        code: (status == 403).then_some("unauthorized"),
+        message: message.to_string(),
+    };
+    let from_page = header_value_from_headers(request_headers, "origin").is_some_and(|origin| !origin.trim().is_empty());
+    let authorized = header_value_from_headers(request_headers, TOKEN_HEADER).is_some_and(|given| token_matches(given.trim()));
+    let outcome = if method != "POST" {
+        Err(refused(405, "只接受 POST"))
+    } else if from_page || !authorized {
+        Err(refused(403, "令牌不对"))
+    } else {
+        match serde_json::from_slice::<Value>(body) {
+            Ok(body) if body.is_object() => handle(op, &body).await,
+            _ => Err(refused(400, "请求体必须是 JSON 对象")),
+        }
+    };
+    let (status, reply) = match &outcome {
+        Ok(result) => (200, serde_json::json!({ "ok": true, "result": result })),
+        Err(error) => (error.status, error.reply()),
+    };
+    let status_line = match status {
+        200 => "200 OK".to_string(),
+        400 => "400 Bad Request".to_string(),
+        403 => "403 Forbidden".to_string(),
+        404 => "404 Not Found".to_string(),
+        405 => "405 Method Not Allowed".to_string(),
+        other => format!("{other} Error"),
+    };
+    write_http_response(stream, &status_line, "application/json; charset=utf-8", &serde_json::to_vec(&reply)?).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 /// helper 的连接来自哪个监听。
@@ -2252,6 +2379,10 @@ pub(crate) async fn handle_helper_connection_on(
             .await?;
         stream.shutdown().await?;
         return Ok(());
+    }
+    // Claude 页面拓展的后台调用（claude-local 的本地服务、补丁副本的主进程 hook、Mods 的 MCP 进程转来的）。
+    if let Some(op) = path.strip_prefix(crate::claude_page_host::ROUTE_PREFIX) {
+        return handle_claude_page_host_connection(&mut stream, method, op, &request_headers, &request.body).await;
     }
     // 拓展挂的 HTTP 路由（webhook）：/ext/<拓展 id>/…，交给声明了 backend.http 的拓展后台处理。
     if path.starts_with("/ext/") {
@@ -4369,6 +4500,49 @@ async fn transcribe_until_disconnect(
 mod dictation_receipt_tests {
     use super::*;
 
+    /// Claude 页面拓展的后台接口只认带本进程令牌的 POST；网页（带 Origin）发来的一律拒绝。
+    #[tokio::test]
+    async fn claude_page_host_route_requires_the_token_and_refuses_web_pages() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, remote)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let _ = handle_helper_connection_on(stream, Some(remote), HelperListener::Loopback).await;
+                });
+            }
+        });
+        let token = crate::claude_page_host::token();
+        let send = |method: &'static str, headers: String, body: &'static str| async move {
+            let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "{method} /claude-ext/v1/nope HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{headers}\r\n{body}",
+                body.len()
+            );
+            client.write_all(request.as_bytes()).await.unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).await.unwrap();
+            let status: u16 = response.split_whitespace().nth(1).unwrap().parse().unwrap();
+            let reply: Value = serde_json::from_str(response.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            (status, reply)
+        };
+        let good = format!("X-Codex-Plus-Claude-Ext: {token}\r\n");
+        for (label, method, headers, body, status, code) in [
+            ("没有令牌", "POST", String::new(), "{}", 403, Some("unauthorized")),
+            ("令牌不对", "POST", "X-Codex-Plus-Claude-Ext: wrong\r\n".to_string(), "{}", 403, Some("unauthorized")),
+            ("网页发来的", "POST", format!("{good}Origin: https://claude.ai\r\n"), "{}", 403, Some("unauthorized")),
+            ("不是 POST", "GET", good.clone(), "", 405, None),
+            ("请求体不是对象", "POST", good.clone(), "[]", 400, None),
+            ("没有这个接口", "POST", good.clone(), "{}", 404, None),
+        ] {
+            let (got, reply) = send(method, headers, body).await;
+            assert_eq!(got, status, "{label}: {reply}");
+            assert_eq!(reply["ok"], false, "{label}");
+            assert_eq!(reply.get("code").and_then(Value::as_str), code, "{label}");
+        }
+        assert!(crate::claude_page_host::token_matches(token));
+        assert!(!crate::claude_page_host::token_matches(&token[..token.len() - 1]));
+    }
 
     #[test]
     fn receipt_round_trip_keeps_port_token_and_owner_only_permissions() {

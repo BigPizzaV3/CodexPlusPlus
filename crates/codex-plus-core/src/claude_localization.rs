@@ -945,24 +945,45 @@ pub fn set_enhance_delivery(mode: &str) -> Result<&'static str> {
     Ok(mode)
 }
 
-/// 页面扩展交给副本的主进程 hook：启用中的扩展文件按注入顺序写成一份清单，hook.js 逐个注入页面。
-/// 没有启用的就删掉清单，免得副本拿到上次的。
-const PAGE_EXTENSIONS_FILE: &str = "page-extensions.json";
+/// 要注入页面的内容交给副本的主进程 hook：一份注入计划（旧格式页面扩展、拓展包的页面运行时和每个包、
+/// 页面调后台用的通道名），hook.js 照着执行。计划由 claude-local 渲染，完整功能模式下本地服务用的是同一份规则。
+///
+/// 没有东西要注入时也照写：通道名在里面，副本启动之后才启用的拓展刷新页面就能用上。
+const PAGE_INJECT_FILE: &str = "page-inject.json";
+/// 旧版副本用的清单，现在由注入计划取代；留着会让人以为它还生效。
+const LEGACY_PAGE_EXTENSIONS_FILE: &str = "page-extensions.json";
 
-fn write_page_extensions(root: &Path, assets: &[crate::claude_local_backend::PageAsset]) -> Result<()> {
-    let path = root.join(PAGE_EXTENSIONS_FILE);
-    if assets.is_empty() {
-        return match fs::remove_file(&path) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
-            _ => Ok(()),
-        };
+fn write_page_injection(root: &Path, plan: &claude_local::extensions::PagePlan) -> Result<()> {
+    let _ = fs::remove_file(root.join(LEGACY_PAGE_EXTENSIONS_FILE));
+    let path = root.join(PAGE_INJECT_FILE);
+    let body = serde_json::to_vec(plan)?;
+    if fs::read(&path).is_ok_and(|existing| existing == body) {
+        return Ok(());
     }
-    let list: Vec<Value> = assets
-        .iter()
-        .map(|asset| json!({ "id": asset.id, "file": asset.file, "style": asset.style, "body": asset.body }))
-        .collect();
-    fs::write(path, serde_json::to_vec(&list)?)?;
+    crate::settings::atomic_write(&path, &body)?;
+    // 计划里有给后台的配置（可能含密钥）：只有本人可读。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
+}
+
+/// 「万物皆拓展」里对 Claude 的开关、拓展配置、拓展包的装卸变了之后调：两种生效方式的注入计划都重新生成。
+/// 完整功能模式、补丁副本都是刷新 Claude 页面就按新的来，不用重启（旧格式页面扩展在副本里仍是重启生效）。
+pub fn refresh_page_injection() {
+    crate::claude_local_backend::refresh_page_plan();
+    let root = runtime_dir();
+    // 副本还没制作过就没有这个目录，不为了写计划去建它。
+    if root.is_dir() {
+        if let Err(error) = write_page_injection(&root, &crate::claude_local_backend::page_injection_plan()) {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "claude_localization.page_injection_failed",
+                json!({ "error": format!("{error:#}") }),
+            );
+        }
+    }
 }
 
 fn bash_timeout_settings() -> crate::settings::ClaudeBashTimeoutSettings {
@@ -1367,7 +1388,7 @@ pub fn perform_with_progress(
                         .to_string(),
                 }
             };
-            write_page_extensions(&root, &crate::claude_local_backend::page_extension_assets())?;
+            write_page_injection(&root, &crate::claude_local_backend::page_injection_plan())?;
             let script = if cfg!(target_os = "windows") { "inject-cn.ps1" } else { "inject-cn.js" };
             if let Err(error) = run_script(&launcher, script, &source, &copy, &[if cfg!(windows) { "-Locale" } else { "--locale" }, locale.as_str()], &|_, _| {}) {
                 // 启动失败后只在应用未运行时还原本次外壳语言，避免与 Claude 写盘竞争。
@@ -1436,22 +1457,26 @@ mod tests {
         assert_eq!(enhance_delivery_at(root.path(), &settings), DELIVERY_FULL);
     }
 
-    /// 副本的页面扩展清单：有启用的就按顺序写出，全关了就删掉旧清单。
+    /// 副本的注入计划：照 claude-local 给的原样写出，只有本人可读；旧版的清单文件顺手清掉。
     #[test]
-    fn page_extensions_manifest_is_written_and_cleared() {
+    fn page_injection_plan_is_written_privately_and_replaces_the_old_manifest() {
         let root = tempfile::tempdir().unwrap();
-        let asset = crate::claude_local_backend::PageAsset {
-            id: "wide-chat".into(),
-            file: "wide-chat.js".into(),
-            style: false,
-            body: "window.x = 1;".into(),
-        };
-        write_page_extensions(root.path(), &[asset]).unwrap();
-        let written: Value = serde_json::from_slice(&fs::read(root.path().join(PAGE_EXTENSIONS_FILE)).unwrap()).unwrap();
-        assert_eq!(written, json!([{ "id": "wide-chat", "file": "wide-chat.js", "style": false, "body": "window.x = 1;" }]));
-        write_page_extensions(root.path(), &[]).unwrap();
-        assert!(!root.path().join(PAGE_EXTENSIONS_FILE).exists());
-        write_page_extensions(root.path(), &[]).unwrap();
+        let home = tempfile::tempdir().unwrap();
+        fs::write(root.path().join(LEGACY_PAGE_EXTENSIONS_FILE), "[]").unwrap();
+        let plan = claude_local::extensions::plan::page_plan_in(home.path(), &[], claude_local::extensions::PageTransport::Binding);
+        write_page_injection(root.path(), &plan).unwrap();
+        assert!(!root.path().join(LEGACY_PAGE_EXTENSIONS_FILE).exists());
+        let written: Value = serde_json::from_slice(&fs::read(root.path().join(PAGE_INJECT_FILE)).unwrap()).unwrap();
+        // 没有拓展启用时也有通道名：之后启用的拓展刷新页面就能调后台。
+        assert_eq!(written["transport"], "binding");
+        assert_eq!(written["binding"], json!({ "name": "__codexPlusClaudeCall", "deliver": "__codexPlusClaudeDeliver" }));
+        assert_eq!((written["runtime"].clone(), written["packages"].clone(), written["legacy"].clone()), (Value::Null, json!([]), json!([])));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(root.path().join(PAGE_INJECT_FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        write_page_injection(root.path(), &plan).unwrap();
     }
 
     /// Windows 上 Claude 的 config.json 带 UTF-8 BOM 时也能读、能汉化（#2728）。

@@ -82,7 +82,7 @@ test("使用模式已经取消：页面不再按模式隐藏，也没有顺带�
   assert.doesNotMatch(text, /routeVisible|visibleRoutes|providerRoutes|multiAgentRoutes|providersHidden|singleAgent/);
   assert.match(functionSource("AppSidebar"), /\.flatMap\(\(entry\) => entry\.routes\)/);
   assert.match(text, /if \(!item\) return null;\n\s*if \(item\.tools && routeId !== "userScripts" && !pageVisibleForTool\(item, activeTool\)\) return null;/);
-  assert.match(text, /if \(currentRoute\?\.tools && currentRoute\.id !== "userScripts" && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "overview"\);/);
+  assert.match(text, /if \(currentRoute\?\.tools && currentRoute\.id !== "userScripts" && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "relay"\);/);
   // 「只用增强功能」会在提交前关闭 relayProfilesEnabled；模式没了，这条写设置的路径也没了。
   assert.doesNotMatch(text, /commitAgentFocusSelection|relayProfilesEnabled: false \}\)/);
   assert.doesNotMatch(text, /relayOffRequested/);

@@ -161,18 +161,31 @@ pub async fn fetch_market_manifest(url: &str) -> anyhow::Result<ScriptMarketMani
     parse_market_manifest(raw)
 }
 
+/// 单文件脚本的大小上限。脚本整份拼进注入包交给页面执行，正常的脚本远小于这个数；
+/// 不设上限的话，清单里一个指错的地址就能让管理器把任意大的东西读进内存、写进拓展目录。
+pub const MARKET_SCRIPT_MAX_BYTES: usize = 2 * 1024 * 1024;
+
 pub async fn download_script(url: &str) -> anyhow::Result<Vec<u8>> {
-    Ok(market_http_client(url)?
+    let mut response = market_http_client(url)?
         .get(url)
         .send()
         .await
         .with_context(|| format!("failed to request script {url}"))?
         .error_for_status()
-        .with_context(|| format!("script download returned an error status {url}"))?
-        .bytes()
-        .await
-        .context("failed to read script download body")?
-        .to_vec())
+        .with_context(|| format!("script download returned an error status {url}"))?;
+    let too_large = || anyhow::anyhow!("脚本超过 {} MiB 的大小上限，没有安装：{url}", MARKET_SCRIPT_MAX_BYTES / 1024 / 1024);
+    if response.content_length().is_some_and(|length| length > MARKET_SCRIPT_MAX_BYTES as u64) {
+        return Err(too_large());
+    }
+    // 边读边数：服务器不报长度（分块传输）或报小了，也不会读过上限。
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.context("failed to read script download body")? {
+        if body.len() + chunk.len() > MARKET_SCRIPT_MAX_BYTES {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 pub fn install_market_script_content(

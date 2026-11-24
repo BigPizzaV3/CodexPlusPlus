@@ -28,6 +28,17 @@ pub struct ClaudeDesktopExtension {
     pub events: BTreeMap<String, String>,
     #[serde(default)]
     pub tools: Vec<ClaudeTool>,
+    // 页面部分的三个字段：规则在 claude-local（ClaudeMom 与 Codex++ 共用），这里只收下原值，
+    // 解析结果放在 `page` 里。
+    #[serde(default, skip_serializing)]
+    renderer: Option<Value>,
+    #[serde(default, skip_serializing)]
+    styles: Option<Value>,
+    #[serde(default, skip_serializing)]
+    methods: Option<Value>,
+    /// 页面部分：注入 Claude 页面的脚本、样式，和页面可以调用的后台方法。Chat、Cowork、Code 页面都生效。
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub page: Option<claude_local::extensions::ClaudePage>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -60,10 +71,12 @@ pub struct EnabledClaudeExtension {
 
 impl ClaudeDesktopExtension {
     pub fn parse(value: &Value) -> anyhow::Result<Self> {
+        let page = claude_local::extensions::parse_claude_page(value)?;
         let mut declaration: Self = serde_json::from_value(value.clone())
-            .context("claudeDesktop 必须声明 buttons、events 或 tools，不支持 renderer")?;
-        if declaration.buttons.is_empty() && declaration.events.is_empty() && declaration.tools.is_empty() {
-            anyhow::bail!("claudeDesktop 至少需要一个按钮、事件或工具");
+            .context("claudeDesktop 只能声明 buttons、events、tools（Code 会话）和 renderer、styles、methods（页面）")?;
+        declaration.page = page;
+        if !declaration.has_mods() && declaration.page.is_none() {
+            anyhow::bail!("claudeDesktop 至少需要一个按钮、事件、工具，或页面部分（renderer / styles）");
         }
         if declaration.buttons.len() > 32 || declaration.tools.len() > 32 {
             anyhow::bail!("claudeDesktop 最多声明 32 个按钮和 32 个工具");
@@ -123,6 +136,27 @@ impl ClaudeDesktopExtension {
             && (self.buttons.iter().any(|button| button.method == method)
                 || self.events.values().any(|declared| declared == method)
                 || self.tools.iter().any(|tool| tool.method == method))
+    }
+
+    /// 页面里的拓展脚本能不能调这个后台方法（`claudeDesktop.methods` 里列了才行）。
+    pub fn permits_page(&self, method: &str) -> bool {
+        self.page.as_ref().is_some_and(|page| page.permits(method))
+    }
+
+    /// 声明了 Code 会话里的按钮、事件或工具（走 Claude Code Mods）。
+    pub fn has_mods(&self) -> bool {
+        !self.buttons.is_empty() || !self.events.is_empty() || !self.tools.is_empty()
+    }
+
+    /// 要不要后台：Mods 的按钮、事件、工具都调后台；页面部分只有声明了 `methods` 才调。
+    pub fn needs_backend(&self) -> bool {
+        self.has_mods() || self.page.as_ref().is_some_and(|page| !page.methods.is_empty())
+    }
+
+    /// 只留 Mods 的声明（下发给 Claude 插件的那份不带页面部分）。
+    pub fn mods_only(mut self) -> Self {
+        self.page = None;
+        self
     }
 }
 
@@ -343,6 +377,12 @@ pub async fn call(manager: &UserScriptManager, arguments: &Value) -> anyhow::Res
     } else {
         crate::extension_backend::DEFAULT_CALL_TIMEOUT
     };
+    // 常驻 helper 在线时交给它托管：页面里的拓展脚本调的也是那一个后台实例，状态才对得上。
+    // 之前在本进程里起过的那一份先停掉。helper 不在线（没开 Codex++）时照旧在本进程里托管。
+    if let Some(result) = crate::claude_page_host::forward_mods_call(manager, key, method, &params, timeout, session_id).await {
+        crate::extension_backend::stop_claude(manager, key).await;
+        return result;
+    }
     match tokio::time::timeout(timeout, crate::extension_backend::call_claude(
         manager,
         key,

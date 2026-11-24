@@ -713,9 +713,9 @@ test("Cowork、合并式主页、界面版本：按后端默认值显示，各�
   const toggle = (label: string) => inputs(screen.render()).find((item) => item.props["aria-label"] === label)!;
   const version = () => findElements(screen.render(), "AppSelect").find((item) => item.props.ariaLabel === "界面版本")!;
 
-  // 旧配置里没有这几个字段：Cowork 按开、合并式主页按关、版本按最新。
+  // 旧配置里没有这几个字段：Cowork 和合并式主页按开、版本按最新。
   assert.equal(toggle("本地 Cowork").props.checked, true);
-  assert.equal(toggle("本地合并式主页").props.checked, false);
+  assert.equal(toggle("本地合并式主页").props.checked, true);
   assert.equal(version().props.value, "");
   const day = new Date(1794603257 * 1000);
   const date = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
@@ -736,8 +736,9 @@ test("Cowork、合并式主页、界面版本：按后端默认值显示，各�
   toggle("本地 Cowork").props.onChange({ currentTarget: { checked: false } });
   await expectSaved(0, { cowork: false });
   assert.equal(toggle("本地 Cowork").props.checked, false);
-  toggle("本地合并式主页").props.onChange({ currentTarget: { checked: true } });
-  await expectSaved(1, { hubHome: true });
+  toggle("本地合并式主页").props.onChange({ currentTarget: { checked: false } });
+  await expectSaved(1, { hubHome: false });
+  assert.equal(toggle("本地合并式主页").props.checked, false);
   version().props.onChange("0f183c1216");
   await expectSaved(2, { template: "0f183c1216" });
   assert.equal(version().props.value, "0f183c1216");

@@ -21,7 +21,7 @@ use crate::tools::ToolId;
 
 pub const AGENT_ID: &str = "claude-desktop-local";
 
-fn ensure_host() {
+pub(crate) fn ensure_host() {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         claude_local::install_host(Arc::new(CodexPlusHost));
@@ -105,6 +105,31 @@ pub fn open_page_extension_folder() -> Result<()> {
 pub fn page_extension_assets() -> Vec<PageAsset> {
     ensure_host();
     claude_local::extensions::enabled_assets()
+}
+
+/// 保存一个拓展包（装在 claude-local 目录里的 codexpp.json 包）的配置。
+pub fn set_page_extension_config(id: &str, values: &serde_json::Map<String, Value>) -> Result<Vec<PageExtensionInfo>> {
+    ensure_host();
+    claude_local::extensions::set_config(id, values)
+}
+
+/// 重新生成 Claude 页面的注入计划。「万物皆拓展」里对 Claude 的开关、拓展配置、拓展包的装卸变了之后调：
+/// 完整功能模式下刷新 Claude 页面就按新的来，不用重启。
+pub fn refresh_page_plan() {
+    ensure_host();
+    claude_local::extensions::refresh_page_plan();
+}
+
+/// 补丁副本用的注入计划：页面经主进程 hook 的 binding 调后台。
+pub fn page_injection_plan() -> claude_local::extensions::PagePlan {
+    ensure_host();
+    claude_local::extensions::page_plan(claude_local::extensions::PageTransport::Binding)
+}
+
+/// 页面回报的各拓展加载结果，按脚本 key（`user:<目录名>` 或 `local:<id>`）。
+pub fn page_status() -> serde_json::Map<String, Value> {
+    ensure_host();
+    claude_local::extensions::page_status()
 }
 
 /// 补丁副本里经环境变量生效的增强：Claude Code 的 Bash 时限，以及 Codex++ 的 Claude 拓展插件。
@@ -208,6 +233,16 @@ impl Host for CodexPlusHost {
 
     fn launch_three_p(&self, source: &Path, root: &Path, config: &ClaudeLocalSettings) -> Result<()> {
         launch_three_p(source, root, config)
+    }
+
+    /// 「万物皆拓展」里对 Claude 启用、声明了页面部分（`claudeDesktop.renderer` / `styles`）的拓展包。
+    fn page_packages(&self) -> Vec<claude_local::extensions::HostPagePackage> {
+        crate::user_scripts::default_user_script_manager().enabled_claude_page_packages()
+    }
+
+    /// 拓展后台由常驻 helper 托管（见 claude_page_host）：页面、Code 会话的按钮和工具用同一个后台实例。
+    fn extension_host_receipt(&self) -> Option<PathBuf> {
+        Some(crate::claude_page_host::receipt_path())
     }
 
     fn diagnostic(&self, event: &str, detail: Value) {

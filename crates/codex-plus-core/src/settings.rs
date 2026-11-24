@@ -1157,6 +1157,11 @@ pub struct BackendSettings {
     /// 打开后启动前把容器挪走、项目留在顶层，切回官方登录时再放回。默认关闭。
     #[serde(rename = "keepProjectsWithoutAccount", default)]
     pub keep_projects_without_account: bool,
+    /// 纯 API Key 下解锁 ChatGPT 登录专属入口（代码审查、图像、资料库等）：启动时在
+    /// `https://localhost:8000` 起本地 ChatGPT 兼容服务，并改写 `~/.codex` 的配置和登录，
+    /// 关闭时还原。默认关闭。
+    #[serde(rename = "chatgptCompatEnabled", default)]
+    pub chatgpt_compat_enabled: bool,
     /// 流式请求等上游响应头的上限（秒）。默认 120；首字时间经常超过 120s 的上游
     /// （长推理模型、慢中转，#3130）可在 settings.json 调大，上限 3600，写小不生效。
     #[serde(rename = "upstreamStreamHeaderTimeoutSecs", default)]
@@ -1612,6 +1617,7 @@ impl Default for BackendSettings {
             session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
             keep_projects_without_account: false,
+            chatgpt_compat_enabled: false,
             upstream_stream_header_timeout_secs: None,
             native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
@@ -3052,6 +3058,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         .and_then(Value::as_bool)
     {
         target.insert("keepProjectsWithoutAccount".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source
+        .get("chatgptCompatEnabled")
+        .and_then(Value::as_bool)
+    {
+        target.insert("chatgptCompatEnabled".to_string(), Value::Bool(value));
     }
     if let Some(value) = source.get("ccsDbPath").and_then(Value::as_str) {
         target.insert(

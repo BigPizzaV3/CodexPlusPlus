@@ -3,8 +3,8 @@ import { emit, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { ArrowRight, Languages, Moon, Rocket, Sparkles, Sun, AppWindow, X } from "lucide-react";
 import { setSponsorAds } from "./sponsor-store";
-import { managerExtensionPages, managerPageOverrides, type ManagerExtensionPage } from "./extension-manager-pages";
-import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { keepUserScriptRuntime, managerExtensionPages, managerPageOverrideConflicts, managerPageOverrides, type ManagerExtensionPage } from "./extension-manager-pages";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
 import { Badge as UiBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { mergeRotatedAuthContents, rebaseSettingsEdits } from "./settings-rebase";
@@ -154,7 +154,6 @@ import {
 import { CodexMultiLaunchScreen } from "./MultiLaunchScreen";
 import { SessionRepairPanel } from "./SessionRepairPanel";
 import { HomeScreen } from "./HomeScreen";
-import { OverviewScreen } from "./OverviewScreen";
 import {
   DreamSkinCommunityLinkDialog,
   LiveConflictDialog,
@@ -434,7 +433,19 @@ export function App() {
     resolve: (selectedIds: string[] | null) => void;
   } | null>(null);
   const [overview, setOverview] = useState<OverviewResult | null>(null);
-  const [settings, setSettings] = useState<SettingsResult | null>(null);
+  const [settings, setSettingsWithRuntime] = useState<SettingsResult | null>(null);
+  // 只有 refresh_user_script_inventory / reload_user_scripts 的返回值问过 Codex 页面、带各拓展的运行状态，
+  // 它们用 setSettingsWithRuntime 整份替换。其余命令（保存设置、切「下次启动跳过拓展」、保存拓展配置、
+  // 外部改设置后重新读取……）返回的 user_scripts 只扫了磁盘，启用的拓展一律是兜底的 not_loaded：
+  // 直接替换会把本地列表里的「已加载」全冲成「未加载」，所以默认的 setSettings 沿用上一份清单的运行状态。
+  const setSettings = useCallback((next: SetStateAction<SettingsResult | null>) => {
+    setSettingsWithRuntime((current) => {
+      const value = typeof next === "function" ? next(current) : next;
+      if (!value || !current || value.user_scripts === current.user_scripts) return value;
+      const userScripts = keepUserScriptRuntime(current.user_scripts, value.user_scripts);
+      return userScripts === value.user_scripts ? value : { ...value, user_scripts: userScripts };
+    });
+  }, []);
   const [legacyDisconnectOpen, setLegacyDisconnectOpen] = useState(false);
   /** 断开本地服务成功后要切到的直连供应商：经本地服务时在列表里点了某个直连供应商的「使用」。 */
   const legacyDisconnectThen = useRef<string | null>(null);
@@ -493,7 +504,7 @@ export function App() {
   // 会话页默认看 Codex 的完整会话管理（删除、归档、移动、撤销都在这里）。
   const [sessionTab, setSessionTab] = useState<SessionTab>("codex");
   const [recoveryRefreshRequest, setRecoveryRefreshRequest] = useState(0);
-  /** 请求日志打开时的 Agent 过滤（从 Agent 概览跳过去时设置，用一次就清掉）。 */
+  /** 请求日志打开时的 Agent 过滤（从别的页面带着 Agent 跳过去时设置，用一次就清掉）。 */
   const [requestLogAgentFilter, setRequestLogAgentFilter] = useState<"all" | "codex" | "claude" | "grok">("all");
   const [requestLogFocus, setRequestLogFocus] = useState<RequestLogFocus>({});
   useEffect(() => {
@@ -661,7 +672,7 @@ export function App() {
     if (toolId === activeTool) {
       if (destination) await navigate(destination);
       // 通用页面占据整个右侧，点击当前 Agent 也要能回到它的工作区。
-      else if (globalNavigationRoutes.includes(route)) await navigate("overview");
+      else if (globalNavigationRoutes.includes(route)) await navigate(agentEntryRoute(toolId));
       return;
     }
     const target = toolEntries.find((tool) => tool.id === toolId);
@@ -676,7 +687,7 @@ export function App() {
     // 设置页也只属于 Codex，同样按这条规则跳走。
     const currentRoute = routes.find((candidate) => candidate.id === route);
     if (!pageVisibleForTool(currentRoute, toolId)) {
-      setRoute(agentHomeRoute[toolId] ?? "overview");
+      setRoute(agentHomeRoute[toolId] ?? "relay");
     }
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
@@ -684,7 +695,7 @@ export function App() {
       setSettingsForm(normalizeSettings(result.settings));
       // 先保存 Agent 选择，再离开通用页；失败时保留原页面与布局。
       if (destination) await navigate(destination);
-      else if (globalNavigationRoutes.includes(route)) await navigate("overview");
+      else if (globalNavigationRoutes.includes(route)) await navigate(agentEntryRoute(toolId));
     } else {
       // 写盘失败就回滚 UI，别让侧栏显示一个没保存的状态。
       setActiveTool(activeTool);
@@ -789,7 +800,8 @@ export function App() {
   const refreshUserScriptInventory = async () => {
     const result = await run(() => call<SettingsResult>("refresh_user_script_inventory"));
     if (result) {
-      setSettings(result);
+      // 这份清单带页面运行状态（Codex 没开时就是实打实的「未加载」）：整份替换，不沿用旧状态。
+      setSettingsWithRuntime(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
     }
     return result;
@@ -798,7 +810,8 @@ export function App() {
   const reloadUserScripts = async (silent = false) => {
     const result = await run(() => call<SettingsResult>("reload_user_scripts"));
     if (result) {
-      setSettings(result);
+      // 热重载的结果就是最新的运行状态（失败时是「未加载」/「状态待确认」）：整份替换。
+      setSettingsWithRuntime(result);
       setScriptMarket((current) => syncMarketInstalledState(current, result.user_scripts));
       showResultNotice(t("本地拓展"), result, { silentSuccess: silent });
     }
@@ -1270,7 +1283,8 @@ export function App() {
     // 旧 id 在这里换成现在的页面：关于 → 设置并滚到版本与更新；旧版代理设置 → 「连接与供应商」并展开「高级」。
     if (target === "about") setSettingsFocus("app-settings-update");
     setRelayAdvancedOpen(target === "relayEnvironment");
-    const next = resolveRouteAlias<Route>(target);
+    // 旧的「概览」（托盘、拓展深链还可能传进来）去掉了：回到当前 Agent 上次停的页面或落脚页。
+    const next = target === "overview" ? agentEntryRoute(activeTool) : resolveRouteAlias<Route>(target);
     setRoute(next);
     await loadRouteData(next);
   };
@@ -1283,7 +1297,6 @@ export function App() {
     // 回到会话页时停在原来那一页。
     const sessionsOffset = localSessionsRef.current?.offset ?? 0;
     switch (next) {
-      case "overview":
       case "gatewaySettings":
       case "settings":
         loads.push(refreshOverview(true));
@@ -1314,7 +1327,7 @@ export function App() {
           // 市场和本地清单一起读；清单是最新的本地状态，两个都回来后以它为准。
           const [, inventory] = await Promise.all([refreshScriptMarket(true), refreshUserScriptInventory()]);
           if (inventory) {
-            setSettings(inventory);
+            setSettingsWithRuntime(inventory);
             setScriptMarket((current) => syncMarketInstalledState(current, inventory.user_scripts));
           }
         })());
@@ -3041,6 +3054,8 @@ export function App() {
   // 拓展贡献的管理器页面：侧栏入口与对内置页面的顶替（见 extension-manager-pages.ts）。
   const extensionPages = useMemo(() => managerExtensionPages(settings?.user_scripts), [settings?.user_scripts]);
   const pageOverrides = useMemo(() => managerPageOverrides(extensionPages), [extensionPages]);
+  // 两个拓展顶替同一页时先声明的生效：后者在本地拓展行上提示「顶替未生效」。
+  const pageOverrideConflicts = useMemo(() => managerPageOverrideConflicts(extensionPages), [extensionPages]);
   const openExtensionPage = (key: string) => {
     setExtensionPageKey(key);
     void navigate("extension");
@@ -3250,8 +3265,8 @@ export function App() {
     onStart: () => void claudeLocalRunAction("launch"),
     onStop: () => void claudeLocalRunAction("stop"),
   };
-  // Codex 专属页面与 Codex 概览提供启动入口；共享的拓展管理页只在当前 Agent 为 Codex 时提供。
-  const onCodexPage = (routeTool(route) === "codex" && (route !== "userScripts" || extensionHost === "codex")) || (route === "overview" && activeTool === "codex");
+  // Codex 专属页面提供启动入口；共享的拓展管理页只在当前 Agent 为 Codex 时提供。
+  const onCodexPage = routeTool(route) === "codex" && (route !== "userScripts" || extensionHost === "codex");
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
   // MCP 页的条目：设置里的条目叠上 live config.toml 的启停状态。只在两者变化时重算，免得每次渲染都给 McpPage 一个新数组。
   const mcpPageEntries = useMemo(() => {
@@ -3266,7 +3281,7 @@ export function App() {
   // 停在不属于当前 Agent 的页面上：回到当前 Agent 的落脚页。
   useEffect(() => {
     const currentRoute = routes.find((candidate) => candidate.id === route);
-    if (currentRoute?.tools && currentRoute.id !== "userScripts" && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "overview");
+    if (currentRoute?.tools && currentRoute.id !== "userScripts" && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "relay");
     // navigate 每次渲染都是新函数，只在页面或 Agent 变化时检查。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, activeTool]);
@@ -3435,8 +3450,10 @@ export function App() {
       ) : null}
       {tourOpen && !wizardOpen ? <Suspense fallback={null}><OnboardingTour onClose={closeTour} /></Suspense> : null}
       <main className="workspace">
+        {/* 「请求」页的铺满布局（页签下面的日志卡占满剩余高度、整页不滚动）只给内置页面：拓展页面照普通页面排。
+            切回内置页面时页签下面多一条「使用拓展页面」横幅，has-override-banner 给它单独留一行。 */}
         <section
-          className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" ? "request-log-screen" : ""}`.trim()}
+          className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" && !shownExtensionPage ? "request-log-screen" : ""} ${restorableOverride ? "has-override-banner" : ""}`.trim()}
           data-settings-mode={settingsModeRoutes.has(route) ? "true" : undefined}
           key={route}
           // 滚动后给吸顶的标题行加一条分隔线（macOS 无标题栏时标题行吸顶）；直接改 DOM 属性，不触发重渲染。
@@ -3457,6 +3474,10 @@ export function App() {
           </header>
           {/* Agent 的页面在侧栏里它那一行下面。 */}
           <CustomizeTabs activeTool={activeTool} onNavigate={(next) => void navigate(next)} route={route} />
+          {/* 「用量」「本地服务」的页签条和上面的胶囊一样放在页面内容之外：其中一页被拓展顶替时页签条照常显示，
+              同组的其它页还能直接切过去；「此页由拓展提供 / 查看内置页面」的横幅跟着页面，在页签条下面。 */}
+          {route === "gatewayUsage" || route === "requestLog" ? <UsageTabs onChange={(next) => void navigate(next)} value={route} /> : null}
+          {isLocalServiceRoute(route) ? <LocalServiceTabs onChange={(next) => void navigate(next)} value={route} /> : null}
           {restorableOverride ? (
             <div className="extension-page-banner">
               <span>{tf("拓展「{0}」提供了这一页的替代页面", [restorableOverride.title])}</span>
@@ -3466,22 +3487,6 @@ export function App() {
           {/* 按需加载的页面在这里等代码到位；不常用的页面才走这里，常用页不受影响。 */}
           <Suspense fallback={<PageFallback />}>
           {extensionPageView ?? (<>
-          {route === "overview" ? (
-            <OverviewScreen
-              overview={overview}
-              activeTool={activeTool}
-              toolEntries={toolEntries}
-              form={settingsForm}
-              onNavigate={(next) => void navigate(next)}
-              onOpenList={(kind, agent) => {
-                // 从 Agent 概览跳过去：会话页停在这个 Agent 的页签，请求日志按它过滤。
-                if (kind === "sessions") setSessionTab(agent);
-                else setRequestLogAgentFilter(agent);
-                void navigate(kind);
-              }}
-              actions={actions}
-            />
-          ) : null}
           {/* 「Codex 连接」一页：连接方式（经网关 / 直连）+ 直连供应商（可加入共享供应商）+ 高级（原「旧版代理设置」）。
               旧入口 relayEnvironment 在 navigate 里换成这一页并展开「高级」。 */}
           {route === "relay" ? (
@@ -3531,8 +3536,6 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "gatewayUsage" || route === "requestLog" ? <UsageTabs onChange={(next) => void navigate(next)} value={route} /> : null}
-          {isLocalServiceRoute(route) ? <LocalServiceTabs onChange={(next) => void navigate(next)} value={route} /> : null}
           {route === "requestLog" ? (
             <RequestLogScreen
               initialAgent={requestLogAgentFilter}
@@ -3640,7 +3643,7 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} managerPages={extensionPages} managerPageConflicts={pageOverrideConflicts} /> : null}
           {route === "pluginMarket" ? (
             <PluginMarketScreen
               configEntries={pluginConfigEntries}
@@ -3673,7 +3676,7 @@ export function App() {
               codex={{ running: codexAppRunning, providerName: toolEntries.find((entry) => entry.id === "codex")?.activeRelayName ?? null }}
               notify={actions.showMessage}
               onNavigate={(next) => void navigate(next)}
-              onOpenAgent={(agent) => void switchTool(agent, agentHomeRoute[agent] ?? "overview")}
+              onOpenAgent={(agent) => void switchTool(agent, agentHomeRoute[agent] ?? "relay")}
             />
           ) : null}
           {gatewayTabByRoute[route] ? (

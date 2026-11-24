@@ -7,7 +7,6 @@ import {
   Layers3,
   Languages,
   House,
-  LayoutDashboard,
   List,
   Palette,
   PackageOpen,
@@ -37,7 +36,7 @@ import { t } from "@/i18n";
 /** 左侧 Agent 切换栏的工具标识。后端 `list_tools` 返回同名字符串。 */
 export type ToolId = string;
 
-export type Route = "home" | "overview" | "relay" | "claudeProviders" | "multiLaunch" | "claude" | "claudePatch" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "agentCollaboration" | "computerUse" | "remoteControl" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "settings" | "agentSettings" | "extension";
+export type Route = "home" | "relay" | "claudeProviders" | "multiLaunch" | "claude" | "claudePatch" | "requestLog" | "sessions" | "context" | "skills" | "weixin" | "enhance" | "dreamSkin" | "userScripts" | "pluginMarket" | "agentCache" | "agentCollaboration" | "computerUse" | "remoteControl" | "hub" | "gateway" | "gatewayProviders" | "gatewayRouting" | "gatewayUsage" | "gatewaySettings" | "settings" | "agentSettings" | "extension";
 /** 进来的路由可以是旧 id（见 route-aliases.ts），由 `navigate` 换成现在的页面。 */
 export type RouteTarget = Route | RouteAlias;
 export const isKnownRoute = (target: string): target is Route => routes.some((item) => item.id === target);
@@ -55,8 +54,6 @@ export const isKnownRoute = (target: string): target is Route => routes.some((it
 export const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: string; tools?: readonly string[] }> = [
   // 首页：整个程序的落脚页，专门放赞助商推荐（原「推荐内容」页并进来）。
   { id: "home", get label() { return t("首页"); }, icon: House },
-  // 概览在两个工具下都可见：它承载共用的置顶推荐位，以及各自的状态。
-  { id: "overview", get label() { return t("概览"); }, icon: LayoutDashboard },
   // 「Codex 连接」：连接方式（经网关 / 直连）+ 直连供应商 + 高级；原「旧版供应商配置」「旧版代理设置」合成这一页。
   { id: "relay", get label() { return t("连接与供应商"); }, icon: Cable, tool: "codex" },
   // Claude 的供应商（Claude Desktop 用哪些共享供应商、默认哪个模型）：和 Codex 的「连接与供应商」一样，是 Claude 自己的一页，
@@ -113,8 +110,9 @@ export const routes: Array<{ id: Route; label: string; icon: LucideIcon; tool?: 
  * 每个页面仍按 `routes` 里的 `tool` 归属过滤；只有一个页面的 Agent 不显示页签。
  */
 export const navigationSections: Array<{ id: string; routes: Route[] }> = [
-  // 「连接与供应商」紧跟概览：直连模式的老用户每天在这里切供应商，想改用网关也从这里开始。
-  { id: "overview", routes: ["overview", "relay", "claudeProviders"] },
+  // Agent 不再有概览页：「连接与供应商」排第一，直连模式的老用户每天在这里切供应商，想改用网关也从这里开始。
+  // Codex 的启动 / 重启并挂载在侧栏 Codex 行的播放键上，用量在「用量」页，调试连接状态在设置里。
+  { id: "providers", routes: ["relay", "claudeProviders"] },
   { id: "enhance", routes: ["claude", "claudePatch", "enhance", "pluginMarket", "weixin", "remoteControl", "multiLaunch"] },
   // Codex 设置（含安装维护）在齿轮的设置模式里，不再占 Agent 的页签。
 ];
@@ -151,7 +149,7 @@ export const gatewayRouteByTab = Object.fromEntries(Object.entries(gatewayTabByR
  * Claude Code / Grok 的供应商不再在 Codex++ 里单独配置：要么经网关接入共享供应商（「Agent 接入」），
  * 要么不接入、照它自己的配置文件直连。
  */
-export const agentHomeRoute: Record<string, Route> = { codex: "overview", claude: "claude", grok: "overview" };
+export const agentHomeRoute: Record<string, Route> = { codex: "relay", claude: "claude", grok: "gateway" };
 /**
  * 侧栏 Agent 列表里不显示的工具。Grok 在 Codex++ 里没有专属的增强页面，只经网关接入，
  * 在「Agent 接入」里管理；请求日志、MCP 等跨 Agent 的页面照常支持它。
@@ -160,7 +158,7 @@ export const hiddenSidebarTools = new Set<string>(["grok"]);
 /** 上次停在被隐藏的工具上时回到 Codex，免得侧栏没有任何 Agent 处于选中态。 */
 export const visibleActiveTool = (toolId: string | null | undefined) =>
   toolId && !hiddenSidebarTools.has(toolId) ? toolId : "codex";
-export const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "overview");
+export const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "relay");
 
 /** 进入设置模式的路由：侧栏切成设置目录。 */
 export const settingsModeRoutes = new Set<Route>(["settings", "agentSettings", "agentCache", "computerUse", "agentCollaboration"]);
@@ -171,14 +169,13 @@ export const isLocalServiceRoute = (route: Route) => route === "hub" || localSer
 export const customizeRoutes: Route[] = ["context", "skills"];
 
 export function routeTitle(route: Route) {
-  return routes.find((item) => item.id === route)?.label ?? t("概览");
+  return routes.find((item) => item.id === route)?.label ?? t("首页");
 }
 
 /** 页面副标题。 */
 export function routeSubtitle(route: Route) {
   const subtitles: Record<Route, string> = {
     home: t("赞助商推荐：支持 Codex++ 的服务"),
-    overview: t("检查问题、启动与快速修复"),
     relay: t("管理 API 供应商、协议、Key 与配置文件"),
     claudeProviders: t("Claude 用哪些供应商、默认哪个模型；OpenAI 协议的供应商由本地服务自动转换"),
     multiLaunch: t("为不同供应商启动相互隔离的 Codex 实例"),

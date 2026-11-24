@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Download, Plus } from "lucide-react";
-import { CxBadge, CxCard, CxEmpty, CxLoading, CxRow, CxSection } from "./cx-layout";
+import { CxBadge, CxCard, CxEmpty, CxFilters, CxLoading, CxRow, CxSection } from "./cx-layout";
 import { AgentModelPicker } from "./GatewayAgents";
 import { AgentGlyph } from "./hub-shared";
 import { TopbarActions } from "./TopbarActions";
@@ -25,6 +25,13 @@ const AGENT: GatewayAgentId = "claude-desktop";
 const CLAUDE_IMPORT_SOURCES = new Set(["claude", "ccswitch", "claudemom", "magpie"]);
 
 /**
+ * 供应商列表的分页，和 Codex「连接与供应商」那排筛选标签同一种用法：按 Claude 发过去要不要转协议分。
+ * Anthropic 协议的直接发，OpenAI 协议（Responses / Chat Completions）的由本地服务转换。
+ */
+type ClaudeProviderView = "native" | "converted";
+const viewOf = (protocol: string): ClaudeProviderView => (protocol === "anthropicMessages" ? "native" : "converted");
+
+/**
  * Claude 的「供应商」页：Claude Desktop、Claude Code 各用哪个默认模型，Claude Desktop 用哪些供应商，加供应商、从 CC Switch / ClaudeMom 导入。
  * 供应商存在网关的共享供应商里（和 Codex 等共用一份，网关负责把 Anthropic 请求转成各家的协议），这里只是 Claude 视角的入口：
  * 开关就是 Agent 接入页里 Claude Desktop 的「挑选」，默认模型就是那一行的模型下拉。
@@ -38,9 +45,14 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
   const [busy, setBusy] = useState<string | null>(null);
   const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
   const [adding, setAdding] = useState<"catalog" | "import" | null>(null);
+  // 没选过时落在有供应商的那一页（先「无需转换」）。
+  const [chosenView, setChosenView] = useState<ClaudeProviderView | null>(null);
   const binding = payload?.gateway.bindings[AGENT];
   const exclude = binding?.poolExclude ?? [];
   const pool = payload?.pool ?? [];
+  const viewCount = (view: ClaudeProviderView) => pool.filter((entry) => viewOf(entry.protocol) === view).length;
+  const view: ClaudeProviderView = chosenView ?? (viewCount("native") || !viewCount("converted") ? "native" : "converted");
+  const visiblePool = pool.filter((entry) => viewOf(entry.protocol) === view);
   const pendingCount = pendingImports(payload).filter((item) => CLAUDE_IMPORT_SOURCES.has(item.source)).length;
   // Claude Code（命令行）：和 Agent 接入页那一行同一个模型下拉，选一个共享供应商的模型就是让它经本地服务，
   // 下拉顶部「断开」就还原成它自己的 settings.json。本地服务里没有这个 Agent 时不显示这一行。
@@ -101,6 +113,22 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
         count={pool.length || undefined}
         title={t("供应商")}
       >
+        {payload && pool.length ? (
+          <CxFilters
+            items={(["native", "converted"] as ClaudeProviderView[]).map((id) => ({
+              id,
+              label: (
+                <span title={id === "native" ? t("Anthropic 协议的供应商：Claude 的请求直接发过去，不做转换。") : t("OpenAI 协议（Responses / Chat Completions）的供应商：本地服务把 Claude 的请求转成它们的协议。")}>
+                  {id === "native" ? t("无需转换") : t("需协议转换")}
+                </span>
+              ),
+              count: viewCount(id),
+            }))}
+            label={t("供应商协议")}
+            onChange={setChosenView}
+            value={view}
+          />
+        ) : null}
         <CxCard>
           {!payload ? (
             <CxLoading label={t("正在读取供应商…")} />
@@ -109,7 +137,14 @@ export function ClaudeProviders({ notify, onManage }: { notify: Notify; onManage
               <button className="cx-secondary" onClick={() => setAdding("catalog")} type="button"><Plus />{t("添加供应商")}</button>
               <button className="cx-secondary" onClick={() => setAdding("import")} type="button"><Download />{t("从 CC Switch / ClaudeMom / Magpie 导入")}</button>
             </CxEmpty>
-          ) : pool.map((entry) => {
+          ) : !visiblePool.length ? (
+            <CxEmpty
+              detail={view === "native" ? t("Anthropic 协议的供应商会显示在这里；OpenAI 协议的在「需协议转换」。") : t("OpenAI 协议的供应商会显示在这里，本地服务自动转换；Anthropic 协议的在「无需转换」。")}
+              title={view === "native" ? t("这个分页还没有无需转换的供应商") : t("这个分页还没有需协议转换的供应商")}
+            >
+              <button className="cx-secondary" onClick={() => setAdding("catalog")} type="button"><Plus />{t("添加供应商")}</button>
+            </CxEmpty>
+          ) : visiblePool.map((entry) => {
             const enabled = providerEnabled(entry);
             const on = enabled && !exclude.includes(entry.id);
             return (
