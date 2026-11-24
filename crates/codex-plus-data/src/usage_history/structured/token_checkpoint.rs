@@ -162,6 +162,8 @@ struct Checkpoint {
     model_observations: HashMap<String, SessionModelObservation>,
     legacy_header: Option<(String, String)>,
     scope_parent_candidates: BTreeMap<String, HashSet<Option<String>>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    committed_cursors: BTreeMap<String, (String, Counter)>,
     issues: usize,
     skipping: bool,
 }
@@ -170,6 +172,16 @@ impl Checkpoint {
     fn capture(state: &FileState) -> (u64, Self) {
         // 未处理的尾行留在原会话文件，重开后从该行起点重读。
         let offset = state.offset - state.pending.len() as u64;
+        let mut committed_cursors = BTreeMap::new();
+        for event in &state.events {
+            let cursor = committed_cursors
+                .entry(event.session.clone())
+                .or_insert_with(|| (event.timestamp.clone(), Counter(event.total)));
+            if event.timestamp >= cursor.0 {
+                cursor.0.clone_from(&event.timestamp);
+                cursor.1 = Counter(event.total);
+            }
+        }
         (
             offset,
             Self {
@@ -202,6 +214,7 @@ impl Checkpoint {
                 model_observations: state.model_observations.clone(),
                 legacy_header: state.legacy_header.clone(),
                 scope_parent_candidates: state.scope_parent_candidates.clone(),
+                committed_cursors,
                 issues: state.issues,
                 skipping: state.skipping,
             },

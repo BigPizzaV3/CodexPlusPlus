@@ -1178,6 +1178,98 @@ fn reopened_scope_uses_committed_aliases_and_only_unambiguous_descendants() {
 }
 
 #[test]
+fn requested_session_cursors_follow_the_same_committed_batch_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let path = root.join("rollout-parent.jsonl");
+    let database = root.join("tokens.sqlite");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    parse(&path, &[header(PARENT, 0), count(1, 1, 1, true)], cutoff);
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut source = SourceReader::restore(&store, &path).unwrap();
+    assert!(
+        source
+            .step(
+                &mut store,
+                cutoff,
+                &mut Budget::new(std::iter::empty()),
+                &names,
+                8192
+            )
+            .unwrap()
+    );
+    let mut reader =
+        Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let query = Query::parse(&json!({"includeSessionCursors":true}), cutoff).unwrap();
+    let first = Store::read_selection(&mut reader, &query, None, None).unwrap();
+    let first_cursor = &first.session_cursors.as_ref().unwrap()[0];
+    assert_eq!(first_cursor["sessionId"], PARENT);
+    assert_eq!(first_cursor["total"]["totalTokens"], 110);
+
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&path).unwrap(),
+        "{}",
+        count(2, 2, 2, true)
+    )
+    .unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER reject_cursor_batch BEFORE INSERT ON token_days
+         BEGIN SELECT RAISE(ABORT, 'cursor batch write failed'); END;",
+        )
+        .unwrap();
+    let retry = source.step(
+        &mut store,
+        cutoff,
+        &mut Budget::new(std::iter::empty()),
+        &names,
+        8192,
+    );
+    assert!(
+        retry
+            .unwrap_err()
+            .to_string()
+            .contains("cursor batch write failed")
+    );
+    let failed = Store::read_selection(&mut reader, &query, None, None).unwrap();
+    assert_eq!(failed.revision, first.revision);
+    assert_eq!(failed.session_cursors, first.session_cursors);
+    store
+        .db
+        .execute_batch("DROP TRIGGER reject_cursor_batch")
+        .unwrap();
+    assert!(
+        source
+            .step(
+                &mut store,
+                cutoff,
+                &mut Budget::new(std::iter::empty()),
+                &names,
+                8192
+            )
+            .unwrap()
+    );
+    drop(store);
+    let mut reader =
+        Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let (all, scoped) = Store::read_scoped_selection(&mut reader, &query, None, PARENT).unwrap();
+    assert!(all.revision > first.revision);
+    assert_eq!(all.revision, scoped.usage.revision);
+    assert_eq!(all.days[0]["recordCount"], 2);
+    assert_eq!(all.session_cursors, scoped.usage.session_cursors);
+    assert_eq!(all.session_cursors.unwrap()[0]["total"]["totalTokens"], 220);
+    let plain = Query::parse(&json!({}), cutoff).unwrap();
+    assert!(
+        Store::read_selection(&mut reader, &plain, None, None)
+            .unwrap()
+            .session_cursors
+            .is_none()
+    );
+}
+
+#[test]
 fn scoped_turn_selection_uses_retained_events_without_returning_archived_day_totals() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

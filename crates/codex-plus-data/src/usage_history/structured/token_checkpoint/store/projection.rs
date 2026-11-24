@@ -164,6 +164,7 @@ pub(in super::super) struct Selection {
     pub(in super::super) unresolved: u64,
     pub(in super::super) archived: bool,
     pub(in super::super) needs_source_recovery: bool,
+    pub(in super::super) session_cursors: Option<Vec<Value>>,
 }
 
 pub(in super::super) struct ScopedSelection {
@@ -1216,7 +1217,7 @@ impl Store {
         scopes: [Option<&HashSet<String>>; N],
     ) -> Result<[Selection; N]> {
         ensure!(
-            !query.include_activity && !query.include_session_cursors,
+            !query.include_activity,
             "Token snapshot selection requires the existing compatibility reader for this query"
         );
         let (revision, precise_from): (i64, String) = read.query_row(
@@ -1238,6 +1239,32 @@ impl Store {
                 },
             )
             .optional()?;
+        let mut cursor_totals = BTreeMap::<String, (String, Counter)>::new();
+        if query.include_session_cursors {
+            let mut statement = read.prepare_cached(
+                "SELECT c.key, c.value FROM token_sources s,
+                 json_each(CAST(s.checkpoint AS TEXT), '$.committed_cursors') c
+                 WHERE json_extract(CAST(s.checkpoint AS TEXT), '$.identity_conflict') = 0
+                 AND (?1 IS NULL OR c.key = ?1) ORDER BY s.source",
+            )?;
+            let mut rows = statement.query([query.session_id.as_deref()])?;
+            while let Some(row) = rows.next()? {
+                let (at, total): (String, Counter) =
+                    serde_json::from_str(row.get_ref(1)?.as_str()?)?;
+                let date = DateTime::parse_from_rfc3339(&at)?
+                    .with_timezone(&Local)
+                    .date_naive();
+                if date.to_string().as_str() < precise_from.as_str() {
+                    continue;
+                }
+                let cursor = cursor_totals
+                    .entry(row.get(0)?)
+                    .or_insert_with(|| (at.clone(), total));
+                if at >= cursor.0 {
+                    *cursor = (at, total);
+                }
+            }
+        }
         let usage: RefCell<[_; N]> = RefCell::new(std::array::from_fn(|_| {
             BTreeMap::<NaiveDate, Groups>::new()
         }));
@@ -1307,14 +1334,30 @@ impl Store {
                 .zip(query.to)
                 .is_some_and(|(from, _)| from.to_string().as_str() < precise_from.as_str())
         };
+        let mut scopes = scopes.into_iter();
         Ok(usage.into_inner().map(|groups| {
-            Self::format_selection(
+            let scope = scopes.next().unwrap();
+            let mut selection = Self::format_selection(
                 revision,
                 coverage,
                 &precise_from,
                 needs_source_recovery,
                 groups,
-            )
+            );
+            if query.include_session_cursors {
+                selection.session_cursors = Some(
+                    cursor_totals
+                        .iter()
+                        .filter(|(session, _)| scope.is_none_or(|ids| ids.contains(*session)))
+                        .map(|(session, (at, total))| {
+                            json!({
+                                "sessionId":session, "timestamp":at, "total":total.0.value()
+                            })
+                        })
+                        .collect(),
+                );
+            }
+            selection
         }))
     }
 
@@ -1374,6 +1417,7 @@ impl Store {
             unresolved,
             archived,
             needs_source_recovery,
+            session_cursors: None,
         }
     }
 }

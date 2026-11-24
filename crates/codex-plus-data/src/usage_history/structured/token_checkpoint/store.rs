@@ -1,7 +1,7 @@
-use super::{Checkpoint, FileState, Observation, UsageEvent};
+use super::{Checkpoint, Counter, FileState, Observation, UsageEvent};
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -191,11 +191,12 @@ impl Store {
                 offset > old_offset || offset == old_offset && state.events.is_empty(),
                 "Token source offset did not advance"
             );
-            let prior: Option<String> = tx.query_row(
-                "SELECT json_extract(CAST(checkpoint AS TEXT), '$.expired_count')
+            let (prior, cursors): (Option<String>, Option<String>) = tx.query_row(
+                "SELECT json_extract(CAST(checkpoint AS TEXT), '$.expired_count'),
+                        json_extract(CAST(checkpoint AS TEXT), '$.committed_cursors')
                  FROM token_sources WHERE source = ?1",
                 [&path],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             if let Some(prior) = prior {
                 let prior: ((u64, u64, u64), super::Counter) = serde_json::from_str(&prior)?;
@@ -205,6 +206,19 @@ impl Store {
                     .is_none_or(|(current, _)| prior.0 > *current)
                 {
                     checkpoint.expired_count = Some(prior);
+                }
+            }
+            if let Some(cursors) = cursors {
+                for (session, older) in
+                    serde_json::from_str::<BTreeMap<String, (String, Counter)>>(&cursors)?
+                {
+                    let current = checkpoint
+                        .committed_cursors
+                        .entry(session)
+                        .or_insert_with(|| older.clone());
+                    if older.0 > current.0 {
+                        *current = older;
+                    }
                 }
             }
         }
