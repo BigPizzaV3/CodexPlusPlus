@@ -156,35 +156,41 @@ pub fn stop_windows_main_codex_processes_excluding_and_wait(
         Duration::from_millis(super::RESTART_STOP_WAIT_TIMEOUT_MS),
         || std::thread::sleep(Duration::from_millis(super::RESTART_STOP_WAIT_INTERVAL_MS)),
     )?;
-    if let Some(listener) = listener {
-        anyhow::ensure!(!listener.is_alive()?, "已接管的 Codex 原监听进程尚未退出");
-    }
+    let exited_listener_pid = if let Some(verified) = listener.as_ref() {
+        anyhow::ensure!(!verified.is_alive()?, "已接管的 Codex 原监听进程尚未退出");
+        Some(verified.process_id)
+    } else {
+        None
+    };
     if let Some(port) = owned_debug_port {
-        // 停止后复核（#3074）：短暂的暂态监听者（例如同实例正在退出的残留进程）
-        // 允许有限等待其退出；超时仍占用则失败并附上脱敏身份摘要，明确显示未启动新实例。
+        // Windows 的 TCP 表可能仍列出已经退出的进程。只忽略原监听者的残留记录，
+        // 并保留其句柄防止 PID 在复核期间被复用；启动仍按原规则选择可用端口。
         ensure_debug_port_released(
             port,
+            exited_listener_pid,
             crate::windows_integration::loopback_listener_summaries,
             || std::thread::sleep(Duration::from_millis(super::RESTART_STOP_WAIT_INTERVAL_MS)),
             Duration::from_millis(super::RESTART_STOP_WAIT_TIMEOUT_MS),
         )?;
     }
+    drop(listener);
     Ok(stopped)
 }
 
-/// 停止后复核调试端口：短暂的暂态监听者（例如同实例正在退出的残留进程）允许有限等待其退出；
-/// 超时仍有监听者则失败并附上脱敏身份摘要（PID 与映像文件名），明确显示旧窗口已关闭、未启动新实例，
-/// 不放宽进程归属保护，也不停止未知归属的监听者。
+/// 停止后复核调试端口。调用方须持有已确认退出的原监听进程句柄，才能排除该 PID。
+/// 其他监听者超时仍在时，返回脱敏身份摘要，停止启动流程。
 #[cfg_attr(not(test), allow(dead_code))]
 fn ensure_debug_port_released(
     port: u16,
-    mut listener_summaries: impl FnMut(u16) -> Result<Vec<String>>,
+    exited_listener_pid: Option<u32>,
+    mut listener_summaries: impl FnMut(u16) -> Result<Vec<(u32, String)>>,
     mut wait: impl FnMut(),
     timeout: Duration,
 ) -> Result<()> {
     let deadline = Instant::now() + timeout;
     loop {
-        let summaries = listener_summaries(port)?;
+        let mut summaries = listener_summaries(port)?;
+        summaries.retain(|(pid, _)| Some(*pid) != exited_listener_pid);
         if summaries.is_empty() {
             return Ok(());
         }
@@ -192,7 +198,11 @@ fn ensure_debug_port_released(
             anyhow::bail!(
                 "停止后调试端口仍有 {} 个监听者（{}）：旧窗口已关闭，未启动新实例；请确认监听者身份或结束残留进程后重试",
                 summaries.len(),
-                summaries.join("、")
+                summaries
+                    .into_iter()
+                    .map(|(_, summary)| summary)
+                    .collect::<Vec<_>>()
+                    .join("、")
             );
         }
         wait();
@@ -1792,11 +1802,12 @@ mod tests {
         let waits = std::cell::Cell::new(0_u32);
         ensure_debug_port_released(
             9222,
+            None,
             |_port| {
                 let n = reads.get();
                 reads.set(n + 1);
                 if n < 3 {
-                    Ok(vec!["pid 4242（ChatGPT.exe）".to_owned()])
+                    Ok(vec![(4242, "pid 4242（ChatGPT.exe）".to_owned())])
                 } else {
                     Ok(Vec::new())
                 }
@@ -1813,10 +1824,11 @@ mod tests {
     fn debug_port_released_reports_sanitized_listener_identity_on_timeout() {
         let error = ensure_debug_port_released(
             9222,
+            None,
             |_port| {
                 Ok(vec![
-                    "pid 4242（ChatGPT.exe）".to_owned(),
-                    "pid 512".to_owned(),
+                    (4242, "pid 4242（ChatGPT.exe）".to_owned()),
+                    (512, "pid 512".to_owned()),
                 ])
             },
             || {},
@@ -1831,9 +1843,35 @@ mod tests {
     }
 
     #[test]
+    fn debug_port_released_ignores_only_the_verified_exited_listener() {
+        let old = (4242, "pid 4242".to_owned());
+        ensure_debug_port_released(
+            9222,
+            Some(old.0),
+            |_| Ok(vec![old.clone()]),
+            || panic!("原进程退出后不应等待其残留记录消失"),
+            Duration::ZERO,
+        )
+        .unwrap();
+
+        let error = ensure_debug_port_released(
+            9222,
+            Some(old.0),
+            |_| Ok(vec![old.clone(), (512, "pid 512".to_owned())]),
+            || {},
+            Duration::ZERO,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("1 个监听者（pid 512）"), "{error}");
+        assert!(!error.contains("pid 4242"), "{error}");
+    }
+
+    #[test]
     fn debug_port_released_propagates_listener_query_errors() {
         let result = ensure_debug_port_released(
             9222,
+            Some(4242),
             |_port| Err(anyhow::anyhow!("监听者查询失败")),
             || {},
             Duration::from_millis(100),
