@@ -1087,6 +1087,10 @@ where
             crate::extension_launch::run_scripts("before", &extension_launch_context, &extension_launches).await;
         }
         let launch_args = crate::extension_launch::merged_launch_args(&settings.codex_extra_args, &extension_launches);
+        // 纯 API Key 下解锁 ChatGPT 登录专属入口。放在供应商配置都写完之后：切供应商会去掉
+        // `chatgpt_base_url`，这里每次启动补回。失败不阻断启动，模型请求不经过兼容服务。
+        timeline.mark("chatgpt_compat", 69);
+        reconcile_chatgpt_compat(&home, &settings).await;
         timeline.mark("launch_codex", 70);
         // 启动 Codex 之前清一遍选择器残留：换过模型目录之后，
         // 「最近使用」里会留着上一个目录的模型 ID，用户点到就是必然 400 的模型。
@@ -1208,6 +1212,66 @@ where
             let _ = status_store.save_latest(&failure);
             hooks.write_status("failed").await;
             Err(error)
+        }
+    }
+}
+
+/// 按开关对齐兼容服务：写入 / 还原 `~/.codex`，起 / 停本地服务。只记日志，不返回错误。
+async fn reconcile_chatgpt_compat(home: &Path, settings: &BackendSettings) {
+    match crate::chatgpt_compat_apply::reconcile(home, settings.chatgpt_compat_enabled) {
+        Ok(()) if settings.chatgpt_compat_enabled => {
+            if let Err(error) = crate::chatgpt_compat::start().await {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "launcher.chatgpt_compat_start_failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                );
+            }
+        }
+        Ok(()) => crate::chatgpt_compat::stop(),
+        Err(error) => {
+            crate::chatgpt_compat::stop();
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.chatgpt_compat_skipped",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+        }
+    }
+}
+
+/// 兼容服务开着时，启动桌面要带的环境变量：后端地址、本地证书、token 刷新地址。
+///
+/// 关着时返回空。证书写不出来时记日志并返回空，桌面会因证书校验失败连不上兼容服务，
+/// 但不影响模型请求（模型不经过它）。
+fn chatgpt_compat_launch_env(settings: &BackendSettings) -> Vec<(&'static str, String)> {
+    // 写入被拒绝（当前供应商依赖登录）时不带环境，Codex 按原样启动。
+    if !settings.chatgpt_compat_enabled || !crate::chatgpt_compat_apply::enabled() {
+        return Vec::new();
+    }
+    match crate::chatgpt_compat::launch_env() {
+        Ok(env) => env,
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.chatgpt_compat_env_failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// 兼容服务开着时追加的启动参数：信任兼容服务证书的公钥指纹。
+fn chatgpt_compat_launch_args(settings: &BackendSettings) -> Vec<String> {
+    if !settings.chatgpt_compat_enabled || !crate::chatgpt_compat_apply::enabled() {
+        return Vec::new();
+    }
+    match crate::chatgpt_compat::spki_hash() {
+        Ok(hash) => vec![format!("--ignore-certificate-errors-spki-list={hash}")],
+        Err(error) => {
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "launcher.chatgpt_compat_spki_failed",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            Vec::new()
         }
     }
 }
@@ -1453,7 +1517,9 @@ impl LaunchHooks for DefaultLaunchHooks {
         instance: &LaunchInstance,
     ) -> anyhow::Result<CodexLaunch> {
         // 远程控制开着时补上桌面镜像要的开关：Codex 窗口在后台、被挡住时照常出画面，不降帧。
-        let launch_extra_args = crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args));
+        let mut launch_extra_args = crate::remote_control::with_mirror_launch_args(normalize_codex_extra_args(extra_args));
+        // 兼容服务开着时，让窗口信任它的自签证书（只认这一张，不关闭证书校验）。
+        launch_extra_args.extend(chatgpt_compat_launch_args(_settings));
         let isolated_multi_instance =
             std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").is_some_and(|value| value == "1");
         // 打包版（MSIX/Store）上的多开必须另走一条路。
@@ -1718,7 +1784,16 @@ impl LaunchHooks for DefaultLaunchHooks {
                     MacosCleanupPolicy::QuitIfNotPreviouslyRunning
                 }
             };
-            let command = build_macos_open_command(app_dir, debug_port, &launch_extra_args);
+            let mut command = build_macos_open_command(app_dir, debug_port, &launch_extra_args);
+            // 兼容服务的后端地址和证书用 `open --env` 传给 Codex；必须放在 `--args` 之前，
+            // 之后的内容会原样变成 Codex 的命令行参数。
+            let env_args: Vec<String> = chatgpt_compat_launch_env(_settings)
+                .into_iter()
+                .flat_map(|(key, value)| ["--env".to_string(), format!("{key}={value}")])
+                .collect();
+            if let Some(index) = command.iter().position(|part| part == "--args") {
+                command.splice(index..index, env_args);
+            }
             let executable = command
                 .first()
                 .ok_or_else(|| anyhow::anyhow!("macOS open command is empty"))?;
@@ -1746,7 +1821,9 @@ impl LaunchHooks for DefaultLaunchHooks {
         child_command
             .args(&command[1..])
             .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .stderr(Stdio::null())
+            // 兼容服务开着时，后端地址和本地证书随进程环境带给桌面。
+            .envs(chatgpt_compat_launch_env(_settings));
         if let Some(user_data_dir) = multi_instance_user_data_dir_from_args(&launch_extra_args) {
             child_command.env("CODEX_ELECTRON_USER_DATA_PATH", user_data_dir);
         } else if isolated_multi_instance {

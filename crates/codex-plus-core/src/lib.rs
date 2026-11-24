@@ -60,6 +60,8 @@ pub mod dream_skin_runtime;
 pub mod env_conflicts;
 pub mod foreign_reasoning;
 pub mod gateway;
+pub mod chatgpt_compat;
+pub mod chatgpt_compat_apply;
 pub mod grok_config;
 pub mod global_dictation;
 pub mod history_turn_recovery;

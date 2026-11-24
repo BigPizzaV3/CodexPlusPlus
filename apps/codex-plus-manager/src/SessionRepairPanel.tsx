@@ -134,6 +134,17 @@ export function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionI
                 <ToggleVisual />
               </label>
             </SettingRow>
+            <SettingRow title={t("用 API Key 解锁 ChatGPT 专属入口")} description={t("代码审查、图像、资料库等入口原本只在 ChatGPT 登录下可见。开启后 Codex++ 在本机 8000 端口起一个本地 ChatGPT 兼容服务，并改写 ~/.codex 的配置和登录（先备份，关闭时还原）；模型请求仍走你原来的供应商。只在用 API Key 供应商或本地服务时生效，官方登录时不改动。重新启动 Codex 后生效。")}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t("用 API Key 解锁 ChatGPT 专属入口")}
+                  checked={Boolean(form.chatgptCompatEnabled)}
+                  onChange={(event) => onFormChange({ ...form, chatgptCompatEnabled: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
             <SettingRow title={t("同步目标")}>
               <AppSelect
                 disabled={providerSyncProgress.active || !providerTargets.length}

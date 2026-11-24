@@ -2355,6 +2355,9 @@ export const EN_PLAIN: Record<string, string> = {
   "v2 需上游支持加密子代理载荷，转 Chat 协议的中转请选 v1；仅新会话生效。":
     "v2 requires an upstream that supports encrypted sub-agent payloads; pick v1 for Chat-completions relays. New sessions only.",
   "切换模型后旧会话跟随新默认": "Existing sessions follow the new default model",
+  "用 API Key 解锁 ChatGPT 专属入口": "Unlock ChatGPT-only features with an API key",
+  "代码审查、图像、资料库等入口原本只在 ChatGPT 登录下可见。开启后 Codex++ 在本机 8000 端口起一个本地 ChatGPT 兼容服务，并改写 ~/.codex 的配置和登录（先备份，关闭时还原）；模型请求仍走你原来的供应商。只在用 API Key 供应商或本地服务时生效，官方登录时不改动。重新启动 Codex 后生效。":
+    "Code review, images, and the library are normally visible only with a ChatGPT login. When on, Codex++ runs a local ChatGPT compatibility service on port 8000 and rewrites ~/.codex config and login (backed up first, restored when turned off); model requests still go to your existing provider. Only applies with an API key provider or the local service; nothing changes under an official login. Takes effect after restarting Codex.",
   "切换供应商或默认模型后，下次启动前把仍停在旧默认模型的会话改为新默认；手动选过模型的会话不变。保存设置后生效。":
     "After switching provider or default model, sessions still on the previous default move to the new default before the next launch. Sessions with a manually chosen model are untouched. Takes effect after saving settings.",
   "启用": "Enable",

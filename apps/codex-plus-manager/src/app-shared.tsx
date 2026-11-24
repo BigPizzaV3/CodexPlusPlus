@@ -70,6 +70,7 @@ export const defaultSettings: BackendSettings = {
   sessionIndexRepairEnabled: true,
   threadModelFollowSwitchEnabled: false,
   keepProjectsWithoutAccount: false,
+  chatgptCompatEnabled: false,
   updateAutoCheck: true,
   updateAutoDownload: true,
   updateSkippedVersion: "",
