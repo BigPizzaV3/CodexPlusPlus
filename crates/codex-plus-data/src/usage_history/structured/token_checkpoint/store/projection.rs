@@ -185,19 +185,16 @@ impl Selection {
     ) -> Result<Value> {
         let mut days = BTreeMap::new();
         if complete && let Some((start, end)) = bounds {
-            let local_day = |at| {
-                DateTime::from_timestamp_millis(at)
-                    .map(|time| time.with_timezone(&Local).date_naive())
-                    .context("invalid Token coverage date")
-            };
-            let mut day = local_day(start)?.max(query.from.unwrap_or(NaiveDate::MIN));
+            let mut day = local_time(start)?
+                .date_naive()
+                .max(query.from.unwrap_or(NaiveDate::MIN));
             if !self.precise_from.is_empty() {
                 day = day.max(self.precise_from.parse()?);
             }
             let last = query
                 .to
                 .unwrap_or(NaiveDate::MAX)
-                .min(local_day(end - 1)?)
+                .min(local_time(end - 1)?.date_naive())
                 .min(Local::now().date_naive());
             while day <= last {
                 days.insert(day.to_string(), "complete");
@@ -236,6 +233,17 @@ pub(in super::super) struct SourceUpdate<'a> {
 
 fn revision(db: &Connection) -> Result<i64> {
     Ok(db.query_row("SELECT revision FROM token_revision", [], |row| row.get(0))?)
+}
+
+fn local_time(ms: i64) -> Result<DateTime<Local>> {
+    DateTime::from_timestamp_millis(ms)
+        .map(|time| time.with_timezone(&Local))
+        .context("Token range follows an unsupported timestamp")
+}
+
+fn local_midnight(time: DateTime<Local>) -> bool {
+    time.time() == NaiveTime::MIN
+        && Local.from_local_datetime(&time.naive_local()).single() == Some(time)
 }
 
 fn retract_append_proofs(
@@ -1147,20 +1155,10 @@ impl Store {
         visit_archived_day: Option<impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>>,
     ) -> Result<bool> {
         ensure!(start_ms < end_ms, "invalid Token range");
-        let local = |ms| {
-            DateTime::from_timestamp_millis(ms)
-                .map(|time| time.with_timezone(&Local))
-                .context("Token range follows an unsupported timestamp")
-        };
-        let start = local(start_ms)?;
-        let end = local(end_ms)?;
+        let start = local_time(start_ms)?;
+        let end = local_time(end_ms)?;
         let start_day = start.date_naive();
         let end_day = end.date_naive();
-        let is_midnight = |time: DateTime<Local>| {
-            time.time() == NaiveTime::MIN
-                && Local.from_local_datetime(&time.naive_local()).single() == Some(time)
-        };
-        let start_aligned = is_midnight(start);
         let cutoff: String =
             read.query_row("SELECT precise_from FROM token_revision", [], |row| {
                 row.get(0)
@@ -1168,7 +1166,7 @@ impl Store {
         let mut needs_source_recovery = false;
         if !cutoff.is_empty() {
             let cutoff = NaiveDate::parse_from_str(&cutoff, "%Y-%m-%d")?;
-            let whole_start = if start_aligned {
+            let whole_start = if local_midnight(start) {
                 start_day
             } else {
                 start_day.succ_opt().context("Token start date overflow")?
@@ -1557,7 +1555,30 @@ impl Store {
             }
             Ok(())
         };
-        let needs_source_recovery = if let Some((start, end)) = bounds {
+        let whole_days = if !include_trend
+            && query.turn_id.is_none()
+            && let Some((start, end)) = bounds
+        {
+            ensure!(start < end, "invalid Token range");
+            let start = local_time(start)?;
+            let end = local_time(end)?;
+            (local_midnight(start) && local_midnight(end)).then_some((
+                start.date_naive().max(query.from.unwrap_or(NaiveDate::MIN)),
+                end.date_naive().min(
+                    query
+                        .to
+                        .and_then(|day| day.succ_opt())
+                        .unwrap_or(NaiveDate::MAX),
+                ),
+            ))
+        } else {
+            None
+        };
+        let needs_source_recovery = if let Some((start, end)) = whole_days {
+            // 周/月视图按完整本地日取汇总，无需反序列化这些日期的逐笔明细。
+            Self::visit_days(read, start, end, read_summary)?;
+            start < end && start.to_string().as_str() < precise_from.as_str()
+        } else if let Some((start, end)) = bounds {
             Self::visit_range(
                 read,
                 (start, end),

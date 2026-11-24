@@ -576,16 +576,28 @@ fn activity_checkpoint_restarts_polls_and_publishes_only_committed_receipts() {
 #[test]
 fn response_includes_scoped_trend_and_preserves_archived_day_totals() {
     use crate::usage_history::Query;
-    use chrono::DateTime;
+    use chrono::Local;
 
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
     let sessions = root.join("sessions");
     fs::create_dir(&sessions).unwrap();
-    fs::write(sessions.join("rollout-01.jsonl"), rollout(FIRST)).unwrap();
+    let date = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+    let time = |day: NaiveDate, hour, minute| {
+        day.and_hms_opt(hour, minute, 0)
+            .unwrap()
+            .and_local_timezone(Local)
+            .single()
+            .unwrap()
+    };
+    fs::write(
+        sessions.join("rollout-01.jsonl"),
+        rollout(FIRST).replace("2026-01-02T12:01:00Z", &time(date, 12, 1).to_rfc3339()),
+    )
+    .unwrap();
     fs::write(
         sessions.join("rollout-02.jsonl"),
-        rollout(SECOND).replace("12:01:00", "12:45:00"),
+        rollout(SECOND).replace("2026-01-02T12:01:00Z", &time(date, 12, 45).to_rfc3339()),
     )
     .unwrap();
     let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
@@ -593,13 +605,8 @@ fn response_includes_scoped_trend_and_preserves_archived_day_totals() {
     let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     let names = BTreeMap::new();
     assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
-    let at = |time: &str| {
-        DateTime::parse_from_rfc3339(time)
-            .unwrap()
-            .timestamp_millis()
-    };
-    let request = json!({"startAt":at("2026-01-02T12:00:00Z"),
-        "endAt":at("2026-01-02T13:00:00Z"), "includeTrend":true});
+    let request = json!({"startAt":time(date, 12, 0).timestamp_millis(),
+        "endAt":time(date, 13, 0).timestamp_millis(), "includeTrend":true});
     let query = Query::parse(&request, cutoff).unwrap();
     let result =
         Store::read_response(&mut store.db, &query, &request, Some(FIRST), &names).unwrap();
@@ -620,6 +627,17 @@ fn response_includes_scoped_trend_and_preserves_archived_day_totals() {
     assert_eq!(result["trend"]["buckets"][1]["endAt"], request["endAt"]);
     assert!(result.get("activityRecords").is_none());
 
+    let day_request = json!({
+        "startAt":time(date, 0, 0).timestamp_millis(),
+        "endAt":time(date.succ_opt().unwrap(), 0, 0).timestamp_millis(),
+    });
+    let day =
+        Store::read_response(&mut store.db, &query, &day_request, Some(FIRST), &names).unwrap();
+    assert_eq!(day["coverage"]["precision"], "exact");
+    assert_eq!(day["days"], result["days"]);
+    assert_eq!(day["scopedUsage"]["days"], result["scopedUsage"]["days"]);
+    assert!(day.get("trend").is_none());
+
     let next = NaiveDate::from_ymd_opt(2026, 1, 4).unwrap();
     assert!(scan.round(&mut store, &root, next, &names, 8192).complete);
     let expired =
@@ -628,6 +646,8 @@ fn response_includes_scoped_trend_and_preserves_archived_day_totals() {
     assert_eq!(expired["archiveRecovery"]["status"], "unavailable");
     assert_eq!(expired["trend"], json!(null));
     let calendar =
-        Store::read_response(&mut store.db, &query, &json!({}), Some(FIRST), &names).unwrap();
+        Store::read_response(&mut store.db, &query, &day_request, Some(FIRST), &names).unwrap();
+    assert_eq!(calendar["coverage"]["precision"], "day");
+    assert_eq!(calendar["rangeApplied"], true);
     assert_eq!(calendar["days"][0]["usage"]["totalTokens"], 220);
 }
