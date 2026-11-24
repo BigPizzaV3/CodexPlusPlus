@@ -4338,6 +4338,30 @@ pub fn set_provider_enabled(
     Ok(gateway)
 }
 
+/// 给哪几个 Agent 用池里的某个供应商：只改这些 Agent 绑定的 `pool_exclude`，不接入、不断开。
+/// Claude 的「供应商」页用它一次管 Claude Desktop 和 Claude Code；还没接入的 Agent 也记下，接入后照这份名单用。
+pub fn set_pool_member(
+    store: &GatewayStore,
+    agents: &[ToolId],
+    id: &str,
+    used: bool,
+) -> anyhow::Result<GatewaySettings> {
+    let (gateway, ()) = store.update(|gateway| {
+        if !gateway.providers.iter().any(|provider| provider.relay.id == id) {
+            bail!("供应商不存在：{id}");
+        }
+        for agent in agents {
+            let binding = gateway.bindings.entry(agent.as_str().to_string()).or_default();
+            binding.pool_exclude.retain(|excluded| excluded != id);
+            if !used {
+                binding.pool_exclude.push(id.to_string());
+            }
+        }
+        Ok(())
+    })?;
+    Ok(gateway)
+}
+
 /// 调整池里供应商的顺序（同一个模型有多家时按这个顺序尝试）。没列出的保持原顺序排在后面。
 pub fn reorder_providers(store: &GatewayStore, ids: &[String]) -> anyhow::Result<GatewaySettings> {
     let (gateway, ()) = store.update(|gateway| {

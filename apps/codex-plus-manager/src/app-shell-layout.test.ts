@@ -853,8 +853,18 @@ test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副
   assert.doesNotMatch(text, /ClaudeCodeConnection/);
   // 列表上方和 Codex 页同一排筛选标签（CxFilters）：按要不要转协议分「无需转换 / 需协议转换」，各带数量，列表只列当前分页。
   assert.match(claude, /const viewOf = \(protocol: string\): ClaudeProviderView => \(protocol === "anthropicMessages" \? "native" : "converted"\);/);
-  assert.match(list, /<CxFilters[\s\S]*?\{id === "native" \? t\("无需转换"\) : t\("需协议转换"\)\}[\s\S]*?count: viewCount\(id\)/);
+  assert.match(list, /<CxFilters[\s\S]*?\{id === "native" \? t\("无需转换"\) : id === "converted" \? t\("需协议转换"\) : t\("模型组"\)\}[\s\S]*?count: viewCount\(id\)/);
   assert.match(list, /visiblePool\.map\(\(entry\) =>/);
+  // 「模型组」分页（对应 Codex 的模型聚合 / 故障转移）：列「路由」里的组，三点菜单里设成两个 Claude 的默认模型。
+  assert.match(list, /view === "groups" \? \(/);
+  assert.match(list, /onClick=\{\(\) => void useGroup\(AGENT, group\.id\)\}>\{t\("设为 Claude Desktop 的默认模型"\)\}/);
+  assert.match(list, /onClick=\{\(\) => void useGroup\(CODE, group\.id\)\}>\{t\("设为 Claude Code 的默认模型"\)\}/);
+  assert.match(claude, /const next = \{ \.\.\.draftFromBinding\(previous\), model: groupModelId\(groupId\) \};/);
+  // 开关一次管 Claude Desktop 和 Claude Code，只改排除名单、不接入（不再走 save_gateway_binding）。
+  assert.match(claude, /run\(`exclude:\$\{providerId\}`, "set_gateway_pool_member", \{ agents: \[AGENT, CODE\], id: providerId, used \}/);
+  assert.doesNotMatch(claude, /poolExcludeToggle/);
+  assert.match(list, /const on = enabled && desktopOn && codeOn;/);
+  assert.match(readSource("../src-tauri/src/lib.rs"), /gateway_commands::set_gateway_pool_member,/);
   assert.ok(list.indexOf("<CxFilters") < list.indexOf("<CxCard>"), "筛选标签在列表卡片上方");
 });
 

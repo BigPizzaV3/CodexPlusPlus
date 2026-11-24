@@ -2067,6 +2067,26 @@ pub fn set_gateway_provider_enabled(
     )
 }
 
+/// 给哪几个 Agent 用某个共享供应商（Claude 的「供应商」页一次管 Claude Desktop 和 Claude Code）。
+/// 只改排除名单，不接入也不断开；接入着的 Agent 重写配置，让模型列表跟上。
+#[tauri::command]
+pub fn set_gateway_pool_member(
+    agents: Vec<String>,
+    id: String,
+    used: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = agents
+        .iter()
+        .map(|agent| parse_agent(agent))
+        .collect::<anyhow::Result<Vec<_>>>()
+        .and_then(|agents| apply::set_pool_member(&GatewayStore::default(), &agents, &id, used));
+    respond(
+        if used { "已打开，新开的会话就能用它的模型。" } else { "已关闭，不再用它的模型。" },
+        "保存供应商开关失败",
+        refresh_agents(result),
+    )
+}
+
 /// 调整共享供应商顺序。
 #[tauri::command]
 pub fn reorder_gateway_providers(ids: Vec<String>) -> CommandResult<Option<GatewayPayload>> {

@@ -5,7 +5,8 @@ use codex_plus_core::gateway::apply::{
     copy_claude_provider, copy_codex_provider, create_provider, delete_group, delete_provider,
     disable_binding, enable_binding, note_claude_switched, note_codex_switched, provider_reasoning,
     reapply_if_port_changed, refresh_enabled, reorder_providers, reset_model_selections, save_group,
-    set_provider_enabled, set_provider_metadata, set_provider_windows, update_provider,
+    set_pool_member, set_provider_enabled, set_provider_metadata, set_provider_windows,
+    update_provider,
 };
 use codex_plus_core::gateway::store::{
     AgentBinding, ClaudeRoleModels, DefaultModelSelection, GatewayStore, GroupMember, GroupMode,
@@ -5655,4 +5656,35 @@ fn gateway_rewrite_keeps_live_mcp_edits_with_or_without_preserve_setting() {
         );
         assert!(config.contains("command = \"my-tool\""), "{config}");
     }
+}
+
+/// Claude「供应商」页的开关：一次改 Claude Desktop 和 Claude Code 两份排除名单，不接入、不断开；
+/// 没接入过的 Agent 也记下名单，供应商不存在时报错、什么都不改。
+#[test]
+fn set_pool_member_updates_both_claude_bindings_without_connecting() {
+    // 整个 fixture 留在作用域里：解构时丢掉 `_temp` 会当场删掉临时目录。
+    let fixture = fixture(29597);
+    let ctx = &fixture.ctx;
+    let agents = [ToolId::parse("claude-desktop"), ToolId::Claude];
+    set_pool_member(&ctx.gateway, &agents, "deepseek", false).unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    for agent in &agents {
+        let binding = gateway.binding(agent).unwrap();
+        assert_eq!(binding.pool_exclude, vec!["deepseek".to_string()], "{}", agent.as_str());
+        assert!(!binding.enabled, "只改名单，不接入 {}", agent.as_str());
+    }
+    // Claude Code 的 settings.json 没被写成经本地服务。
+    assert!(!ctx.claude.claude_home.join("settings.json").exists());
+
+    // 再关一次不重复记；重新打开从两份名单里都去掉。
+    set_pool_member(&ctx.gateway, &agents, "deepseek", false).unwrap();
+    assert_eq!(ctx.gateway.load().unwrap().binding(&ToolId::Claude).unwrap().pool_exclude.len(), 1);
+    set_pool_member(&ctx.gateway, &agents, "deepseek", true).unwrap();
+    let gateway = ctx.gateway.load().unwrap();
+    for agent in &agents {
+        assert!(gateway.binding(agent).unwrap().pool_exclude.is_empty(), "{}", agent.as_str());
+    }
+
+    assert!(set_pool_member(&ctx.gateway, &agents, "missing", false).is_err());
+    assert!(ctx.gateway.load().unwrap().binding(&ToolId::Claude).unwrap().pool_exclude.is_empty());
 }
