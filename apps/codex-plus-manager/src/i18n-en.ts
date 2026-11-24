@@ -710,7 +710,7 @@ export const EN_PLAIN: Record<string, string> = {
   "重新走一遍：连接模型、启动 Codex。": "Go through it again: connect a model, then start Codex.",
   "半分钟认识侧栏上的各个入口。": "Get to know the sidebar entries in half a minute.",
   "开始导览": "Start tour",
-  "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……想让几个 Agent 共用一份供应商，到侧栏的「本地服务」里配置。": "One row per agent; open it to see its pages below: overview, connection & providers, built-in extensions, skins and more. To share one set of providers across agents, set it up under Local service in the sidebar.",
+  "每个 Agent 一行，点开后它的页面列在下面：连接与供应商、内置拓展、皮肤……想让几个 Agent 共用一份供应商，到侧栏的「本地服务」里配置。": "One row per agent; open it to see its pages below: connection & providers, built-in extensions, skins and more. To share one set of providers across agents, set it up under Local service in the sidebar.",
   "主题、版本更新、日志诊断和各项高级设置都在齿轮里。想再看一遍这个导览，在「设置 → 通用」里重新打开。": "Theme, updates, logs & diagnostics and advanced settings live behind the gear. To see this tour again, reopen it in Settings → General.",
   "稍后设置": "Set up later",
   "重试保存": "Retry saving",

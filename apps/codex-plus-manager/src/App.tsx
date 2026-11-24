@@ -154,7 +154,6 @@ import {
 import { CodexMultiLaunchScreen } from "./MultiLaunchScreen";
 import { SessionRepairPanel } from "./SessionRepairPanel";
 import { HomeScreen } from "./HomeScreen";
-import { OverviewScreen } from "./OverviewScreen";
 import {
   DreamSkinCommunityLinkDialog,
   LiveConflictDialog,
@@ -505,7 +504,7 @@ export function App() {
   // 会话页默认看 Codex 的完整会话管理（删除、归档、移动、撤销都在这里）。
   const [sessionTab, setSessionTab] = useState<SessionTab>("codex");
   const [recoveryRefreshRequest, setRecoveryRefreshRequest] = useState(0);
-  /** 请求日志打开时的 Agent 过滤（从 Agent 概览跳过去时设置，用一次就清掉）。 */
+  /** 请求日志打开时的 Agent 过滤（从别的页面带着 Agent 跳过去时设置，用一次就清掉）。 */
   const [requestLogAgentFilter, setRequestLogAgentFilter] = useState<"all" | "codex" | "claude" | "grok">("all");
   const [requestLogFocus, setRequestLogFocus] = useState<RequestLogFocus>({});
   useEffect(() => {
@@ -673,7 +672,7 @@ export function App() {
     if (toolId === activeTool) {
       if (destination) await navigate(destination);
       // 通用页面占据整个右侧，点击当前 Agent 也要能回到它的工作区。
-      else if (globalNavigationRoutes.includes(route)) await navigate("overview");
+      else if (globalNavigationRoutes.includes(route)) await navigate(agentEntryRoute(toolId));
       return;
     }
     const target = toolEntries.find((tool) => tool.id === toolId);
@@ -688,7 +687,7 @@ export function App() {
     // 设置页也只属于 Codex，同样按这条规则跳走。
     const currentRoute = routes.find((candidate) => candidate.id === route);
     if (!pageVisibleForTool(currentRoute, toolId)) {
-      setRoute(agentHomeRoute[toolId] ?? "overview");
+      setRoute(agentHomeRoute[toolId] ?? "relay");
     }
     const result = await run(() => call<SettingsResult>("save_settings", { settings: next }));
     if (result) {
@@ -696,7 +695,7 @@ export function App() {
       setSettingsForm(normalizeSettings(result.settings));
       // 先保存 Agent 选择，再离开通用页；失败时保留原页面与布局。
       if (destination) await navigate(destination);
-      else if (globalNavigationRoutes.includes(route)) await navigate("overview");
+      else if (globalNavigationRoutes.includes(route)) await navigate(agentEntryRoute(toolId));
     } else {
       // 写盘失败就回滚 UI，别让侧栏显示一个没保存的状态。
       setActiveTool(activeTool);
@@ -1284,7 +1283,8 @@ export function App() {
     // 旧 id 在这里换成现在的页面：关于 → 设置并滚到版本与更新；旧版代理设置 → 「连接与供应商」并展开「高级」。
     if (target === "about") setSettingsFocus("app-settings-update");
     setRelayAdvancedOpen(target === "relayEnvironment");
-    const next = resolveRouteAlias<Route>(target);
+    // 旧的「概览」（托盘、拓展深链还可能传进来）去掉了：回到当前 Agent 上次停的页面或落脚页。
+    const next = target === "overview" ? agentEntryRoute(activeTool) : resolveRouteAlias<Route>(target);
     setRoute(next);
     await loadRouteData(next);
   };
@@ -1297,7 +1297,6 @@ export function App() {
     // 回到会话页时停在原来那一页。
     const sessionsOffset = localSessionsRef.current?.offset ?? 0;
     switch (next) {
-      case "overview":
       case "gatewaySettings":
       case "settings":
         loads.push(refreshOverview(true));
@@ -3266,8 +3265,8 @@ export function App() {
     onStart: () => void claudeLocalRunAction("launch"),
     onStop: () => void claudeLocalRunAction("stop"),
   };
-  // Codex 专属页面与 Codex 概览提供启动入口；共享的拓展管理页只在当前 Agent 为 Codex 时提供。
-  const onCodexPage = (routeTool(route) === "codex" && (route !== "userScripts" || extensionHost === "codex")) || (route === "overview" && activeTool === "codex");
+  // Codex 专属页面提供启动入口；共享的拓展管理页只在当前 Agent 为 Codex 时提供。
+  const onCodexPage = routeTool(route) === "codex" && (route !== "userScripts" || extensionHost === "codex");
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
   // MCP 页的条目：设置里的条目叠上 live config.toml 的启停状态。只在两者变化时重算，免得每次渲染都给 McpPage 一个新数组。
   const mcpPageEntries = useMemo(() => {
@@ -3282,7 +3281,7 @@ export function App() {
   // 停在不属于当前 Agent 的页面上：回到当前 Agent 的落脚页。
   useEffect(() => {
     const currentRoute = routes.find((candidate) => candidate.id === route);
-    if (currentRoute?.tools && currentRoute.id !== "userScripts" && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "overview");
+    if (currentRoute?.tools && currentRoute.id !== "userScripts" && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "relay");
     // navigate 每次渲染都是新函数，只在页面或 Agent 变化时检查。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, activeTool]);
@@ -3488,22 +3487,6 @@ export function App() {
           {/* 按需加载的页面在这里等代码到位；不常用的页面才走这里，常用页不受影响。 */}
           <Suspense fallback={<PageFallback />}>
           {extensionPageView ?? (<>
-          {route === "overview" ? (
-            <OverviewScreen
-              overview={overview}
-              activeTool={activeTool}
-              toolEntries={toolEntries}
-              form={settingsForm}
-              onNavigate={(next) => void navigate(next)}
-              onOpenList={(kind, agent) => {
-                // 从 Agent 概览跳过去：会话页停在这个 Agent 的页签，请求日志按它过滤。
-                if (kind === "sessions") setSessionTab(agent);
-                else setRequestLogAgentFilter(agent);
-                void navigate(kind);
-              }}
-              actions={actions}
-            />
-          ) : null}
           {/* 「Codex 连接」一页：连接方式（经网关 / 直连）+ 直连供应商（可加入共享供应商）+ 高级（原「旧版代理设置」）。
               旧入口 relayEnvironment 在 navigate 里换成这一页并展开「高级」。 */}
           {route === "relay" ? (
@@ -3693,7 +3676,7 @@ export function App() {
               codex={{ running: codexAppRunning, providerName: toolEntries.find((entry) => entry.id === "codex")?.activeRelayName ?? null }}
               notify={actions.showMessage}
               onNavigate={(next) => void navigate(next)}
-              onOpenAgent={(agent) => void switchTool(agent, agentHomeRoute[agent] ?? "overview")}
+              onOpenAgent={(agent) => void switchTool(agent, agentHomeRoute[agent] ?? "relay")}
             />
           ) : null}
           {gatewayTabByRoute[route] ? (

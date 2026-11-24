@@ -45,8 +45,8 @@ test("本地服务在主侧栏只占一个入口，页内四个页签；Agent �
   assert.match(sidebar, /if \(gateway\) storeCachedGatewayInUse\(gatewayInUse\);/);
   assert.match(sidebar, /\{!gatewayInUse \? null : <i aria-hidden="true" className="side-dot" data-tone=\{access\.tone\} \/>\}/);
   assert.doesNotMatch(sidebar, /aria-label=\{t\("接入 Agent"\)\}/);
-  assert.match(text, /const agentHomeRoute: Record<string, Route> = \{ codex: "overview", claude: "claude", grok: "overview" \}/);
-  assert.match(text, /const agentEntryRoute = \(toolId: ToolId\) => agentTarget\(agentRoutes\(toolId\), lastAgentRoute\.get\(toolId\), agentHomeRoute\[toolId\] \?\? "overview"\)/);
+  assert.match(text, /const agentHomeRoute: Record<string, Route> = \{ codex: "relay", claude: "claude", grok: "gateway" \}/);
+  assert.match(text, /const agentEntryRoute = \(toolId: ToolId\) => agentTarget\(agentRoutes\(toolId\), lastAgentRoute\.get\(toolId\), agentHomeRoute\[toolId\] \?\? "relay"\)/);
   assert.match(functionSource("App"), /onOpenAgent=\{\(toolId, destination\) => void switchTool\(toolId, destination \?\? agentEntryRoute\(toolId\)\)\}/);
   assert.match(functionSource("App"), /if \(!globalNavigationRoutes\.includes\(route\)\) lastAgentRoute\.set\(activeTool, route\);/);
 });
@@ -87,13 +87,14 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.match(text, /const stoppedByUser = result\.latest_launch\?\.phase === "user_stopped";/);
   const lib = readSource("../src-tauri/src/lib.rs");
   assert.match(lib, /commands::stop_codex_plus,/);
-  // 侧栏里当前 Agent 下面缩进列出它的页面（概览 / 增强 / 皮肤 / 插件市场 / 微信 / 多开），按页面的 tool 归属过滤。
+  // 侧栏里当前 Agent 下面缩进列出它的页面（连接与供应商 / 增强 / 皮肤 / 插件市场 / 微信 / 多开），按页面的 tool 归属过滤。
   assert.match(sidebar, /\.flatMap\(\(entry\) => entry\.routes\)\n[^\n]*\n\s*\.filter\(\(routeId\) => routeId !== "claudePatch" \|\| route === "claudePatch"\);\n\s*if \(pages\.length < 2\) return null;/);
-  // 「连接与供应商」（原旧版供应商配置 + 旧版代理设置）紧跟概览，是 Codex 自己的页面：直连用户每天在这里切供应商，
+  // Agent 没有概览页了；「连接与供应商」（原旧版供应商配置 + 旧版代理设置）排第一，是 Codex 自己的页面：直连用户每天在这里切供应商，
   // 不藏进设置；Codex 设置（启动参数、维护）在设置模式里。
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
-  assert.match(sections, /\{ id: "overview", routes: \["overview", "relay", "claudeProviders"\] \}/);
-  for (const id of ["overview", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
+  assert.match(sections, /\{ id: "providers", routes: \["relay", "claudeProviders"\] \}/);
+  assert.doesNotMatch(text, /id: "overview"/);
+  for (const id of ["providers", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
   assert.doesNotMatch(sections, /"agentSettings"|"relayEnvironment"/);
   assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "agentCache", "computerUse", "agentCollaboration"\]\);/);
   assert.doesNotMatch(text, /key: "codexConnection"|key: "legacyProxy"|key: "legacyRelay"/);
@@ -127,7 +128,7 @@ test("启动 Codex 一眼可见：Codex 页面顶栏最右侧一个主按钮，�
   assert.match(button, /variant="default"/);
   // 顶栏：只在 Codex 的页面里、排在页面操作挂载点之后。Codex++ 不只服务 Codex，
   // 网关、全局管理、工具类页面和 Claude Code / Grok 的页面都不放。
-  assert.match(entry, /const onCodexPage = \(routeTool\(route\) === "codex" && \(route !== "userScripts" \|\| extensionHost === "codex"\)\) \|\| \(route === "overview" && activeTool === "codex"\);/);
+  assert.match(entry, /const onCodexPage = routeTool\(route\) === "codex" && \(route !== "userScripts" \|\| extensionHost === "codex"\);/);
   assert.match(
     entry,
     /<div className="topbar-page-actions" data-topbar-actions \/>\n[\s\S]{0,400}\{onCodexPage \? <CodexLaunchButton className="topbar-codex-launch" size="sm" state=\{codexLaunch\} \/> : null\}/,
@@ -307,7 +308,7 @@ test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一
 test("安装维护并进 Codex 设置：在设置模式的「Codex」分类里，设置页下方渲染维护内容，旧路由跳到设置", () => {
   const app = functionSource("App");
   // 旧路由在入口处经 route-aliases 换成现在的页面，渲染分支里不再出现旧 id。
-  assert.match(app, /const next = resolveRouteAlias<Route>\(target\);/);
+  assert.match(app, /const next = target === "overview" \? agentEntryRoute\(activeTool\) : resolveRouteAlias<Route>\(target\);/);
   assert.match(app, /\{route === "agentSettings" \? \(/);
   assert.doesNotMatch(app, /route === "maintenance"|route === "about"|route === "relayEnvironment"|route === "recommendations"/);
   assert.match(text, /\{ key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent"/);
@@ -405,7 +406,6 @@ test("首页：状态、精选推荐、其他赞助商、常用入口；广告�
   assert.match(app, /\{route === "home" \? \(\n\s*<HomeScreen\n\s*ads=\{ads\}/);
   assert.equal((text.match(/<HomeScreen\b/g) ?? []).length, 1);
   assert.doesNotMatch(text, /SponsorBoard|FloatingSponsor/);
-  assert.doesNotMatch(functionSource("OverviewScreen"), /featuredAds|AdGrid/);
   // 侧栏主模式第一项；旧「推荐内容」路由跳到首页，设置模式里不再有这一项。
   assert.match(functionSource("AppSidebar"), /const general: SideEntry\[\] = \[\n\s*\{ key: "home", route: "home", label: t\("首页"\), icon: House, match: \["home"\] \},/);
   assert.match(app, /case "home":\n\s*loads\.push\(refreshAds\(true\)\);/);
@@ -540,23 +540,16 @@ test("用量图表有鼠标交互：整列感应、高亮当天、浮出明细�
   assert.match(css, /\.gw-usage-row:hover/);
 });
 
-test("Codex 概览与 Claude / Grok 同一套仪表板：被网关接管时状态栏只给管理接入、断开并还原，不给切换下拉框", () => {
-  const screen = functionSource("OverviewScreen");
-  assert.match(screen, /<AgentDashboard\n\s*actions=\{codexActions\}\n\s*agent="codex"/);
-  const gatewayBranch = screen.slice(screen.indexOf("const codexActions = gatewayManaged ? ("), screen.indexOf(") : activeProfile ? ("));
-  assert.match(gatewayBranch, /t\("管理接入"\)/);
-  assert.doesNotMatch(gatewayBranch, /AppSelect|switchFromOverview/);
-  // 健康检查放在 Codex 仪表板下面
-  assert.ok(screen.indexOf("overview-health-header") > screen.indexOf("<AgentDashboard"));
-});
-
-test("从 Agent 概览点「全部」「请求日志」：会话页停在这个 Agent 的页签，请求日志按它过滤", () => {
+test("Agent 没有概览页：页签里没有、内容区不再渲染，旧的 overview 跳到当前 Agent 的落脚页", () => {
   const app = functionSource("App");
-  assert.match(app, /if \(kind === "sessions"\) setSessionTab\(agent\);\n\s*else setRequestLogAgentFilter\(agent\);/);
+  assert.doesNotMatch(app, /<OverviewScreen|route === "overview"/);
+  assert.doesNotMatch(readSource("./routes.ts"), /id: "overview"/);
+  assert.match(app, /const next = target === "overview" \? agentEntryRoute\(activeTool\) : resolveRouteAlias<Route>\(target\);/);
+  // 从侧栏点当前 Agent 回到它上次停的页面，不再去概览。
+  assert.match(app, /else if \(globalNavigationRoutes\.includes\(route\)\) await navigate\(agentEntryRoute\(toolId\)\);/);
+  assert.match(readSource("./route-aliases.ts"), /overview: "relay",/);
+  // 请求日志仍可按 Agent 预选过滤（从「用量」跳过去时）。
   assert.match(app, /<RequestLogScreen\s+initialAgent=\{requestLogAgentFilter\}/);
-  const dashboard = readSource("./AgentDashboard.tsx");
-  assert.match(dashboard, /onOpenList\("sessions", agent\)/);
-  assert.match(dashboard, /onOpenList\("requestLog", agent\)/);
 });
 
 test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式一个分类一页，旧的关于入口换到版本与更新", () => {
@@ -653,16 +646,6 @@ test("供应商头像在任何列表里都不参与伸缩：挑选弹层、导�
   assert.doesNotMatch(css, /\.gw-select-item span \{/);
 });
 
-test("Claude Code / Grok 的概览是仪表板：接入状态、今日数据、最近会话与请求、配置摘要", () => {
-  assert.match(functionSource("OverviewScreen"), /<AgentDashboard agent=\{activeTool\}/);
-  const dashboard = readSource("./AgentDashboard.tsx");
-  for (const command of ["load_gateway_usage", "load_request_logs", "list_agent_sessions", "load_agent_mcp", "list_installed_skills", "open_agent_terminal"]) {
-    assert.ok(dashboard.includes(`"${command}"`), command);
-  }
-  const lib = readSource("../src-tauri/src/lib.rs");
-  assert.match(lib, /agent_launch_commands::open_agent_terminal,/);
-});
-
 test("网关页的 Agent 图标：Claude Code / Grok 用遮罩按文字颜色绘制，不再把黑色单色图当 <img>", () => {
   for (const name of ["GatewayAgents.tsx", "TrayPanel.tsx", "GatewayPage.tsx"]) {
     const source = readSource(`./${name}`);
@@ -727,8 +710,6 @@ test("外部启动、没挂载增强脚本的 Codex：健康检查提示并给�
   assert.match(health, /overview\?\.runtime_health\?\.codex_unattached\n    \? \{/);
   assert.match(health, /status: "unattached",\n      ok: false,/);
   assert.match(health, /action: "restart" as const,/);
-  const overview = functionSource("OverviewScreen");
-  assert.match(overview, /item\.action === "restart" \? \(\n\s+<button className="cx-secondary" onClick=\{\(\) => void actions\.restart\(\)\}/);
   assert.match(functionSource("statusLabel"), /unattached: t\("未挂载"\)/);
   assert.match(functionSource("App"), /unattached: Boolean\(overview\?\.runtime_health\?\.codex_unattached\)/);
   assert.match(text, /const unattached = codexRun\.running && codexRun\.unattached;/);

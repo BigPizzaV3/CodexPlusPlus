@@ -20,7 +20,7 @@ import { t, tf } from "./i18n";
 import "./OnboardingTour.css";
 import "./OnboardingSetup.css";
 
-type Destination = "relay" | "agentSettings" | "enhance" | "userScripts" | "claude" | "overview";
+type Destination = "relay" | "agentSettings" | "enhance" | "userScripts" | "claude";
 type RelayTestResult = { status: string; message: string };
 /** 一次供应商测试的结果，只对发起时的那份配置有效。 */
 type VerifiedTest = { fingerprint: string; ok: boolean; message: string };

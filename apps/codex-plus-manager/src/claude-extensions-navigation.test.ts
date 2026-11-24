@@ -98,7 +98,7 @@ function harness() {
     navigations,
     sidebar: (activeTool: string) => context.sidebar({
       tools: [{ id: activeTool, name: activeTool, switchable: true, relayCount: 0 }],
-      activeTool, route: "overview", theme: "light", version: "test",
+      activeTool, route: "relay", theme: "light", version: "test",
       codexRun: { running: true, busy: false, unavailableReason: null, onStart: () => {}, onStop: () => {} },
       claudeRun: { running: false, busy: false, unavailableReason: null, onStart: () => {}, onStop: () => {} },
       onNavigate: (route: string) => navigations.push(route),
@@ -149,8 +149,7 @@ test("Codex 的共享拓展页仍有重启按钮，Claude 下不显示 Codex 重
   assert.equal(context.codexLaunchVisible("userScripts", "codex", "claude"), false);
   assert.equal(context.codexLaunchVisible("userScripts", "claude", "codex"), true);
   assert.equal(context.codexLaunchVisible("enhance", "codex"), true);
-  assert.equal(context.codexLaunchVisible("overview", "codex"), true);
-  assert.equal(context.codexLaunchVisible("overview", "grok"), false);
+  assert.equal(context.codexLaunchVisible("relay", "codex"), true);
   assert.equal(context.codexLaunchVisible("claude", "claude"), false);
   assert.match(text, /onRestart: \(\) => void actions\.restart\(\)/);
 });
@@ -158,8 +157,8 @@ test("Codex 的共享拓展页仍有重启按钮，Claude 下不显示 Codex 重
 test("tools 限定的页面随侧栏 Agent 过滤，万物皆拓展除外", () => {
   const switchTool = declaration("switchTool").getText(app);
   assert.match(switchTool, /if \(!pageVisibleForTool\(currentRoute, toolId\)\)/);
-  assert.match(switchTool, /if \(destination\) await navigate\(destination\);\s*else if \(globalNavigationRoutes\.includes\(route\)\) await navigate\("overview"\)/);
-  assert.match(text, /if \(currentRoute\?\.tools && currentRoute\.id !== "userScripts" && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "overview"\)/);
+  assert.match(switchTool, /if \(destination\) await navigate\(destination\);\s*else if \(globalNavigationRoutes\.includes\(route\)\) await navigate\(agentEntryRoute\(toolId\)\)/);
+  assert.match(text, /if \(currentRoute\?\.tools && currentRoute\.id !== "userScripts" && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "relay"\)/);
   assert.match(declaration("routeCommand").getText(app), /if \(item\.tools && routeId !== "userScripts" && !pageVisibleForTool\(item, activeTool\)\) return null/);
 });
 
