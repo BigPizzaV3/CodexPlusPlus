@@ -1172,6 +1172,13 @@ pub struct BackendSettings {
     /// 关闭时还原。默认关闭。
     #[serde(rename = "chatgptCompatEnabled", default)]
     pub chatgpt_compat_enabled: bool,
+    /// 上面那个本地账号显示的名字、用户名、邮箱。留空用默认值（Local / local / local@codexplus.invalid）。
+    #[serde(rename = "chatgptCompatName", default, skip_serializing_if = "String::is_empty")]
+    pub chatgpt_compat_name: String,
+    #[serde(rename = "chatgptCompatUsername", default, skip_serializing_if = "String::is_empty")]
+    pub chatgpt_compat_username: String,
+    #[serde(rename = "chatgptCompatEmail", default, skip_serializing_if = "String::is_empty")]
+    pub chatgpt_compat_email: String,
     /// 流式请求等上游响应头的上限（秒）。默认 120；首字时间经常超过 120s 的上游
     /// （长推理模型、慢中转，#3130）可在 settings.json 调大，上限 3600，写小不生效。
     #[serde(rename = "upstreamStreamHeaderTimeoutSecs", default)]
@@ -1580,6 +1587,9 @@ impl Default for BackendSettings {
             thread_model_follow_switch_enabled: false,
             keep_projects_without_account: false,
             chatgpt_compat_enabled: false,
+            chatgpt_compat_name: String::new(),
+            chatgpt_compat_username: String::new(),
+            chatgpt_compat_email: String::new(),
             upstream_stream_header_timeout_secs: None,
             native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
@@ -2934,6 +2944,11 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         .and_then(Value::as_bool)
     {
         target.insert("chatgptCompatEnabled".to_string(), Value::Bool(value));
+    }
+    for key in ["chatgptCompatName", "chatgptCompatUsername", "chatgptCompatEmail"] {
+        if let Some(value) = source.get(key).and_then(Value::as_str) {
+            target.insert(key.to_string(), Value::String(value.trim().to_string()));
+        }
     }
     if let Some(value) = source.get("ccsDbPath").and_then(Value::as_str) {
         target.insert(

@@ -5406,6 +5406,8 @@ select {
 .setting-row-control select,
 .setting-row-control > button[role="combobox"],
 .setting-row-control .app-select { width: 100%; }
+/* 「本地账号资料」三栏输入：名字、用户名、邮箱竖排占满右栏。 */
+.chatgpt-compat-profile { display: flex; width: 100%; flex-direction: column; gap: 8px; }
 
 @media (max-width: 760px) {
   .setting-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }

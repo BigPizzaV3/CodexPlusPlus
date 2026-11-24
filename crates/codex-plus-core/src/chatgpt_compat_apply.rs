@@ -138,6 +138,10 @@ fn write_auth(home: &Path) -> anyhow::Result<()> {
     let live_value = json_or_empty(live.as_deref());
     if live_value.pointer("/tokens/account_id").and_then(Value::as_str) == Some(ACCOUNT_ID)
         && live_value.get("auth_mode").and_then(Value::as_str) == Some("chatgpt")
+        && live_value
+            .pointer("/tokens/id_token")
+            .and_then(Value::as_str)
+            .is_some_and(chatgpt_compat::token_matches_profile)
     {
         return Ok(());
     }

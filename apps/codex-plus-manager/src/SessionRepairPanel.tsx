@@ -2,6 +2,7 @@
 import { ChevronDown, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { AppSelect } from "./AppSelect";
 import { enhancementItem } from "./enhancement-catalog";
 import { historyRecoveryStatusLabel } from "./history-recovery-report";
@@ -145,6 +146,33 @@ export function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionI
                 <ToggleVisual />
               </label>
             </SettingRow>
+            {form.chatgptCompatEnabled ? (
+              <SettingRow title={t("本地账号资料")} description={t("Codex 里显示的名字、用户名和邮箱，只在本机使用。留空用默认值。重新启动 Codex 后生效。")}>
+                <div className="chatgpt-compat-profile">
+                  <Input
+                    aria-label={t("名字")}
+                    onChange={(event) => onFormChange({ ...form, chatgptCompatName: event.currentTarget.value })}
+                    placeholder="Local"
+                    value={form.chatgptCompatName ?? ""}
+                  />
+                  <Input
+                    aria-label={t("用户名")}
+                    onChange={(event) => onFormChange({ ...form, chatgptCompatUsername: event.currentTarget.value })}
+                    placeholder="local"
+                    spellCheck={false}
+                    value={form.chatgptCompatUsername ?? ""}
+                  />
+                  <Input
+                    aria-label={t("邮箱")}
+                    onChange={(event) => onFormChange({ ...form, chatgptCompatEmail: event.currentTarget.value })}
+                    placeholder="local@codexplus.invalid"
+                    spellCheck={false}
+                    type="email"
+                    value={form.chatgptCompatEmail ?? ""}
+                  />
+                </div>
+              </SettingRow>
+            ) : null}
             <SettingRow title={t("同步目标")}>
               <AppSelect
                 disabled={providerSyncProgress.active || !providerTargets.length}

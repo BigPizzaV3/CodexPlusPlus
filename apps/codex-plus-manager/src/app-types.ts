@@ -90,6 +90,10 @@ export type BackendSettings = WhaleBalanceSettings & {
   keepProjectsWithoutAccount?: boolean;
   /** 纯 API Key 解锁 ChatGPT 登录专属入口：本地 ChatGPT 兼容服务 + 改写 ~/.codex，关闭时还原。 */
   chatgptCompatEnabled?: boolean;
+  /** 本地账号显示的名字、用户名、邮箱；留空用默认值。 */
+  chatgptCompatName?: string;
+  chatgptCompatUsername?: string;
+  chatgptCompatEmail?: string;
   nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
