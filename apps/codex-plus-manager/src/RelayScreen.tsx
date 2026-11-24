@@ -49,7 +49,6 @@ import { useShowOtherAgents } from "./ProviderOwner";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { aggregateMemberCandidates } from "./aggregate-members";
 import { NativeAuthControl } from "./NativeAuthControls";
-import { ChatgptCompatRows } from "./ChatgptCompatSection";
 import { CodexAggregateList, CodexModeControls, type CodexConnectionMode } from "./CodexConnectionMode";
 import { ThirdPartyImportDialog } from "./ThirdPartyImportDialog";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
@@ -649,10 +648,7 @@ export function RelayScreen({
   // 「更多设置」折起来时，标题旁一句话说开着哪些，不用展开也知道。
   const moreSettingsHint = !normalized.relayProfilesEnabled
     ? t("配置切换已关闭")
-    : [
-        normalized.relayPreserveNonproviderSettings === true ? t("保留实时改动") : null,
-        normalized.chatgptCompatEnabled ? t("已解锁 ChatGPT 入口") : null,
-      ].filter(Boolean).join(" · ") || t("配置切换已开启");
+    : normalized.relayPreserveNonproviderSettings === true ? t("保留实时改动") : t("配置切换已开启");
   // 聚合列表里点 Codex 自己的直连供应商「编辑」：就地打开同一个编辑页。
   const editLinkedProfile = (relayId: string) => {
     if (!normalized.relayProfiles.some((profile) => profile.id === relayId)) return false;
@@ -776,11 +772,11 @@ export function RelayScreen({
           />}
         </CxSection>
       ) : null}
-      {/* 主登录身份（Codex 自己的 ChatGPT 登录）不常改，放在供应商列表后面。 */}
-      <NativeAuthControl onRestart={() => actions.restart()} />
+      {/* Codex 登录身份（ChatGPT 账号 / 本地账号 / 不登录）不常改，放在供应商列表后面。 */}
+      <NativeAuthControl form={normalized} onRestart={() => actions.restart()} onSave={(next) => void saveRelaySettings(next)} />
       {/* 更多设置：都不常改，默认折起来放在列表下面。
           「切换时保留」对直连和网关都生效（网关重写 Codex 配置也走同一条切换流程，#3115）；
-          ChatGPT 专属入口解锁只在 API Key 供应商 / 本地服务下生效；配置切换关掉时承诺不写 config.toml / auth.json，这两项也就不显示。
+          配置切换关掉时承诺不写 config.toml / auth.json，这一项也就不显示。
           配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）都是直连专用：
           被网关接管时不显示；配置切换被关掉时仍显示，好把它重新打开。 */}
       <CxSection>
@@ -812,9 +808,6 @@ export function RelayScreen({
                   <ToggleVisual />
                 </label>
               </CxRow>
-            ) : null}
-            {normalized.relayProfilesEnabled ? (
-              <ChatgptCompatRows form={normalized} onSave={(next) => void saveRelaySettings(next)} />
             ) : null}
             {takenOverByGateway && normalized.relayProfilesEnabled ? null : (
               <>

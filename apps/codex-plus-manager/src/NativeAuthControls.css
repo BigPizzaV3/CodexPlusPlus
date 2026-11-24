@@ -5,7 +5,11 @@
 /* 卡片里的一条提示（未应用的选择、错误、需要重启），贴在登录那一行下面。 */
 .native-auth-control > .native-auth-notice {
   margin: -4px 0 0;
-  padding: 0 14px 12px 0;
+  padding: 0 14px 12px;
+}
+/* 展开的「编辑资料」后面，提示不用再往上贴。 */
+.native-auth-control > .local-account-profile + .native-auth-notice {
+  margin-top: 0;
 }
 .native-auth-row {
   display: flex;
@@ -128,4 +132,12 @@
 .native-auth-current .native-auth-apply > svg {
   width: 14px;
   height: 14px;
+}
+
+/* 选「本地账号」时的「编辑资料」：折在登录那一行下面，展开后三个输入框一排。 */
+:root .shell .native-auth-control > .local-account-profile > .local-account-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 14px 14px;
 }

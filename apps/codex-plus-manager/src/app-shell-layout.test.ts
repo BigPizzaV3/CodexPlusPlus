@@ -891,9 +891,16 @@ test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副
   assert.ok(list.indexOf("<CxFilters") < list.indexOf("<CxCard>"), "筛选标签在列表卡片上方");
 });
 
-test("Codex 页顶部的登录卡叫「主登录身份」：和各供应商绑定的「供应商登录账号」区分开", () => {
+test("Codex 页的登录卡叫「Codex 登录身份」：和各供应商绑定的「供应商登录账号」区分开", () => {
   const auth = readSource("./NativeAuthControls.tsx");
-  assert.match(auth, /title=\{t\("主登录身份"\)\}/);
+  assert.match(auth, /title=\{t\("Codex 登录身份"\)\}/);
+  // 本地账号（API Key 解锁 ChatGPT 入口）是同一个下拉的一项，走统一的后端命令，不再是「更多设置」里的开关。
+  assert.match(auth, /value: "local",/);
+  assert.match(auth, /disabled: Boolean\(state\?\.localLoginBlockedReason\)/);
+  assert.match(auth, /invoke<NativeAuthResult>\("set_codex_login_identity", loginIdentityArgs\(value\)\)/);
+  assert.match(auth, /value === "local" && form && onSave \? <LocalAccountProfile/);
+  assert.doesNotMatch(readSource("./RelayScreen.tsx"), /ChatgptCompatRows/);
+  assert.match(readSource("../src-tauri/src/lib.rs"), /gateway_commands::set_codex_login_identity,/);
   assert.doesNotMatch(auth, /t\("Codex 登录"\)/);
   assert.match(auth, /<span>\{t\("供应商登录账号"\)\}<\/span>/);
 });

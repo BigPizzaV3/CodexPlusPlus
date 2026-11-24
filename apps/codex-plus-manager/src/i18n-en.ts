@@ -305,7 +305,7 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 本地服务连接未启用；登录选择已保存，接入后再应用": "Codex local service connection is off. Sign-in selection is saved; connect it before applying.",
   "Codex 配置已由其他工具接管；请先恢复本地服务连接": "Another tool has taken over the Codex configuration. Restore the local service connection first.",
   "WSL 连接不使用官方登录身份；当前选择无法在此连接生效": "The WSL connection does not use official sign-in identity. This selection cannot apply there.",
-  "主登录身份": "Primary sign-in identity",
+  "Codex 登录身份": "Codex sign-in identity",
   "额度待刷新": "Usage awaiting refresh",
   "待刷新": "Awaiting refresh",
   "尚未取得官方用量": "Official usage is not available yet",
@@ -2351,18 +2351,17 @@ export const EN_PLAIN: Record<string, string> = {
   "v2 需上游支持加密子代理载荷，转 Chat 协议的中转请选 v1；仅新会话生效。":
     "v2 requires an upstream that supports encrypted sub-agent payloads; pick v1 for Chat-completions relays. New sessions only.",
   "切换模型后旧会话跟随新默认": "Existing sessions follow the new default model",
-  "用 API Key 解锁 ChatGPT 专属入口": "Unlock ChatGPT-only features with an API key",
-  "本地账号资料": "Local account profile",
+  "用 API Key 解锁代码审查、图像、资料库等入口，模型仍走所选供应商":
+    "Unlocks code review, images, the library and more with an API key; models still use the chosen provider",
+  "当前用的是官方登录或内置 OpenAI 供应商，模型请求要用真实登录；切到 API Key 供应商或本地服务后才能用本地账号":
+    "The active provider is an official login or the built-in OpenAI provider, which needs a real login for model requests; switch to an API key provider or the local service to use the local account",
+  "编辑资料": "Edit profile",
+  "Codex 里显示的名字、用户名和邮箱，只在本机使用，留空用默认值":
+    "The name, username and email Codex shows. Used only on this computer; leave blank for the defaults",
+  "本地账号": "Local account",
   "邮箱": "Email",
   "用户名": "Username",
   "名字": "Name",
-  "Codex 里显示的名字、用户名和邮箱，只在本机使用。留空用默认值。重新启动 Codex 后生效。":
-    "The name, username, and email Codex shows. Used only on this computer; leave blank for the defaults. Takes effect after restarting Codex.",
-  "代码审查、图像、资料库等入口原本只在 ChatGPT 登录下可见；模型请求仍走你选的供应商。重新启动 Codex 后生效。":
-    "Code review, images, and the library are normally visible only with a ChatGPT login. Model requests still go to the provider you chose. Takes effect after restarting Codex.",
-  "开启后 Codex++ 在本机 8000 端口起一个本地 ChatGPT 兼容服务，并改写 ~/.codex 的配置和登录（先备份，关闭时还原）。只在用 API Key 供应商或本地服务时生效，官方登录时不改动。":
-    "When on, Codex++ runs a local ChatGPT compatibility service on port 8000 and rewrites ~/.codex config and login (backed up first, restored when turned off). Only applies with an API key provider or the local service; nothing changes under an official login.",
-  "解锁": "Unlock",
   "加进来的供应商都会合在一起给 Codex 用；Claude 等其它 Agent 也能用。":
     "Providers you add are combined for Codex, and Claude and other agents can use them too.",
   "这里没有 Codex 自己的供应商": "No providers of Codex's own here",
@@ -2386,7 +2385,6 @@ export const EN_PLAIN: Record<string, string> = {
   "更多供应商操作": "More provider actions",
   "默认模型与连接方式": "Default models and connection",
   "保留实时改动": "Keeps live edits",
-  "已解锁 ChatGPT 入口": "ChatGPT entries unlocked",
   "先在页面底部「更多设置」里打开供应商配置切换": "Turn on provider configuration switching under More settings at the bottom of the page first",
   "聚合：Codex 经 Codex++ 本地服务，下面打开的供应商合在一起，模型都列进 Codex 的模型选择器，不用切换；需要 Codex++ 在后台运行":
     "Combined: Codex goes through the Codex++ local service, every provider turned on below is combined and all their models show up in Codex's model picker, with no switching; needs Codex++ running in the background",

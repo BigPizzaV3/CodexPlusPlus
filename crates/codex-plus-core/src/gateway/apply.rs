@@ -1269,9 +1269,14 @@ fn codex_signed_in(codex_home: &std::path::Path) -> bool {
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .is_some_and(|auth| {
-            auth.pointer("/tokens/access_token")
-                .and_then(Value::as_str)
-                .is_some_and(|token| !token.trim().is_empty())
+            // 本地账号的假登录不算登录：它只给 ChatGPT 入口用，模型请求仍走 API Key 身份。
+            !auth
+                .get("tokens")
+                .is_some_and(crate::chatgpt_compat::is_local_login_tokens)
+                && auth
+                    .pointer("/tokens/access_token")
+                    .and_then(Value::as_str)
+                    .is_some_and(|token| !token.trim().is_empty())
         })
 }
 

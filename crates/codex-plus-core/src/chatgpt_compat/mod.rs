@@ -302,6 +302,11 @@ fn b64(value: &Value) -> String {
         .encode(serde_json::to_vec(value).unwrap_or_default())
 }
 
+/// `auth.json` 的 `tokens` 是否是本地账号的假登录（[`fake_auth_json`] 写的那份）。
+pub fn is_local_login_tokens(tokens: &Value) -> bool {
+    tokens.get("account_id").and_then(Value::as_str) == Some(ACCOUNT_ID)
+}
+
 /// 写入 `~/.codex/auth.json` 的假登录。保留文件里已有的字段（API Key 等），
 /// 只替换登录相关的键。
 pub fn fake_auth_json(existing: Option<&str>) -> String {

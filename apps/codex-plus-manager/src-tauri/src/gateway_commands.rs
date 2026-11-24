@@ -170,6 +170,10 @@ pub struct NativeAuthState {
     pub drift: Option<String>,
     /// 当前连接不能应用所选身份时，提示先处理连接而非反复重启。
     pub restart_blocked_reason: Option<String>,
+    /// 选的是「本地账号」（API Key 解锁 ChatGPT 入口）。
+    pub local_login: bool,
+    /// 「本地账号」现在不能用的原因（官方登录供应商等），下拉里置灰并显示。
+    pub local_login_blocked_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -551,7 +555,17 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
     let has_native_login = codex_plus_core::official_login::official_login_from_auth_contents(&live).is_some();
     let mut accounts = Vec::new();
     let mut actual_account_ref = None;
-    let mut actual_label = if has_native_login { "ChatGPT".to_string() } else { String::new() };
+    let live_local = serde_json::from_str::<serde_json::Value>(&live)
+        .ok()
+        .and_then(|auth| auth.get("tokens").cloned())
+        .is_some_and(|tokens| codex_plus_core::chatgpt_compat::is_local_login_tokens(&tokens));
+    let mut actual_label = if has_native_login {
+        "ChatGPT".to_string()
+    } else if live_local {
+        "本地账号".to_string()
+    } else {
+        String::new()
+    };
     for provider in &gateway.providers {
         if codex_plus_core::official_login::official_login_from_auth_contents(
             &provider.relay.auth_contents,
@@ -617,6 +631,12 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
             drift = Some("当前连接尚未切换到所选登录身份，请重新应用".to_string());
         }
     }
+    let local_login = settings.chatgpt_compat_enabled;
+    let local_login_blocked_reason = codex_plus_core::chatgpt_compat_apply::local_login_blocker(
+        &home,
+        codex_on_gateway(&settings, &gateway),
+    )?
+    .map(str::to_string);
     Ok(NativeAuthState {
         managed: settings.native_auth_selection.is_some(),
         selection: settings.native_auth_selection,
@@ -625,7 +645,17 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         accounts,
         drift,
         restart_blocked_reason: blocked_reason.map(str::to_string),
+        local_login,
+        local_login_blocked_reason,
     })
+}
+
+fn codex_on_gateway(
+    settings: &codex_plus_core::settings::BackendSettings,
+    gateway: &GatewaySettings,
+) -> bool {
+    settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID
+        && gateway.binding(&ToolId::Codex).is_some_and(|binding| binding.enabled)
 }
 
 fn native_auth_restart_blocker(
@@ -661,25 +691,66 @@ pub fn get_native_auth_state() -> CommandResult<NativeAuthState> {
             accounts: Vec::new(),
             drift: Some(error.to_string()),
             restart_blocked_reason: None,
+            local_login: false,
+            local_login_blocked_reason: None,
         }),
     }
 }
 
 #[tauri::command]
 pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<NativeAuthState> {
+    let kind = if account_ref.is_some() { "account" } else { "none" };
+    set_codex_login_identity(kind.to_string(), account_ref)
+}
+
+/// 「Codex 登录身份」三选一：`account`（ChatGPT 账号）、`local`（本地账号，用 API Key 解锁
+/// ChatGPT 入口）、`none`（不登录）。原生登录选择和解锁开关在这里一起改，不再是两个开关：
+/// 先还原假登录再写真账号，两边写 `auth.json` 不会互相覆盖。
+#[tauri::command]
+pub fn set_codex_login_identity(
+    kind: String,
+    account_ref: Option<String>,
+) -> CommandResult<NativeAuthState> {
     let result = (|| -> anyhow::Result<NativeAuthState> {
-        if let Some(account_ref) = account_ref.as_deref() {
-            let gateway = GatewayStore::default().load()?;
-            let provider = gateway
-                .provider(account_ref)
-                .context("所选 ChatGPT 账号不存在")?;
-            if codex_plus_core::official_login::official_login_from_auth_contents(
-                &provider.relay.auth_contents,
-            )
-            .is_none()
-            {
-                anyhow::bail!("所选供应商没有可用的 ChatGPT 登录凭据");
+        let home = codex_plus_core::relay_config::default_codex_home_dir();
+        let account_ref = match kind.as_str() {
+            "account" => {
+                let account_ref = account_ref.context("没有选 ChatGPT 账号")?;
+                let gateway = GatewayStore::default().load()?;
+                let provider = gateway
+                    .provider(&account_ref)
+                    .context("所选 ChatGPT 账号不存在")?;
+                if codex_plus_core::official_login::official_login_from_auth_contents(
+                    &provider.relay.auth_contents,
+                )
+                .is_none()
+                {
+                    anyhow::bail!("所选供应商没有可用的 ChatGPT 登录凭据");
+                }
+                Some(account_ref)
             }
+            "local" => {
+                let settings = SettingsStore::default().load()?;
+                let gateway = GatewayStore::default().load()?;
+                if let Some(reason) = codex_plus_core::chatgpt_compat_apply::local_login_blocker(
+                    &home,
+                    codex_on_gateway(&settings, &gateway),
+                )? {
+                    anyhow::bail!(reason);
+                }
+                None
+            }
+            "none" => None,
+            other => anyhow::bail!("未知的登录身份：{other}"),
+        };
+        let local = kind == "local";
+        // 先还原假登录：之后写原生登录时读到的是接入前的真实 auth.json。
+        codex_plus_core::chatgpt_compat_apply::release(&home)?;
+        let store = SettingsStore::default();
+        let mut settings = store.load()?;
+        if settings.chatgpt_compat_enabled != local {
+            settings.chatgpt_compat_enabled = local;
+            store.save(&settings)?;
         }
         codex_plus_core::native_auth::set_native_auth_selection(account_ref.as_deref())?;
         notify_settings_changed();
@@ -687,12 +758,16 @@ pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<Nat
         if apply::sync_codex_identity_after_selection(&context()).is_err() {
             anyhow::bail!("登录选择已保存，但连接身份同步失败，请重新应用；尚未重启 Codex");
         }
+        // 本地账号现在就写进去（假登录 + 兼容服务地址），兼容服务随下次启动 Codex 起来。
+        if local {
+            codex_plus_core::chatgpt_compat_apply::reconcile(&home, true)?;
+        }
         notify_settings_changed();
         native_auth_state()
     })();
     match result {
-        Ok(state) => ok("原生登录选择已保存。", state),
-        Err(error) => failed(&format!("保存原生登录选择失败：{error}"),
+        Ok(state) => ok("登录身份已保存。", state),
+        Err(error) => failed(&format!("保存登录身份失败：{error}"),
             native_auth_state().unwrap_or(NativeAuthState {
                 managed: false,
                 selection: None,
@@ -701,6 +776,8 @@ pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<Nat
                 accounts: Vec::new(),
                 drift: Some(error.to_string()),
                 restart_blocked_reason: None,
+                local_login: false,
+                local_login_blocked_reason: None,
             })),
     }
 }

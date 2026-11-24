@@ -70,6 +70,21 @@ pub fn reconcile(home: &Path, enabled_in_settings: bool) -> anyhow::Result<()> {
     }
 }
 
+/// 写 ChatGPT 账号登录之前先调：假登录还在 `auth.json` 里就按存档还原，
+/// 免得两边写登录凭证时互相覆盖（真账号写进去后又被假登录盖掉，或假登录被当成旧登录保存）。
+pub fn release(home: &Path) -> anyhow::Result<()> {
+    if enabled() { disable(home) } else { Ok(()) }
+}
+
+/// 「本地账号」当前能不能用：经本地服务时总能用（不登录时网关供应商自带凭据）；
+/// 直连时只有自带凭据的自定义供应商能用，内置 OpenAI / 官方登录供应商不行。
+pub fn local_login_blocker(home: &Path, on_gateway: bool) -> anyhow::Result<Option<&'static str>> {
+    if on_gateway || uses_custom_provider(home)? {
+        return Ok(None);
+    }
+    Ok(Some("当前用的是官方登录或内置 OpenAI 供应商，模型请求要用真实登录；切到 API Key 供应商或本地服务后才能用本地账号"))
+}
+
 /// 生效的 `model_provider` 是不是自带凭据的自定义供应商（不读 `auth.json` 里的登录发模型请求）。
 ///
 /// `requires_openai_auth = true` 又没有 `experimental_bearer_token` / `env_key` 的供应商会拿
@@ -359,6 +374,43 @@ mod tests {
         let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
         assert!(!config.contains("chatgpt_base_url"));
         assert!(config.contains("trust_level"));
+    }
+
+    #[test]
+    fn local_login_is_not_an_official_login_and_release_restores_the_real_one() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+        let real = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"real","account_id":"acc-real"}}"#;
+        std::fs::write(home.join("auth.json"), real).unwrap();
+        assert!(crate::official_login::official_login_from_auth_contents(real).is_some());
+
+        enable(home).unwrap();
+        // 假登录不能被当成 ChatGPT 账号保存或借出。
+        let fake = std::fs::read_to_string(home.join("auth.json")).unwrap();
+        assert!(crate::official_login::official_login_from_auth_contents(&fake).is_none());
+
+        // 选 ChatGPT 账号前先 release：auth.json 回到接入前的真实登录。
+        release(home).unwrap();
+        assert!(!enabled());
+        let restored: Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(restored["tokens"]["access_token"], "real");
+        // 没开着时 release 什么也不做。
+        release(home).unwrap();
+    }
+
+    #[test]
+    fn local_login_blocker_follows_the_active_provider() {
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(home.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+        assert!(local_login_blocker(home, false).unwrap().is_some());
+        // 经本地服务时不登录，网关供应商自带凭据，总能用。
+        assert!(local_login_blocker(home, true).unwrap().is_none());
+        std::fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+        assert!(local_login_blocker(home, false).unwrap().is_none());
     }
 
     #[test]
