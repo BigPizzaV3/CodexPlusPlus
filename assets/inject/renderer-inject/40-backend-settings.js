@@ -1055,7 +1055,10 @@
     const version = prepared.fromDefaultBranch
       ? `${prepared.repo} · 作者未发布版本，将安装默认分支的提交 ${sha}`
       : `${prepared.repo} · 版本 ${prepared.tag || prepared.version}，锁定提交 ${sha}`;
-    const lines = codexPlusPackagePermissionLines(prepared.permissions);
+    // 本机已装着同 id 的包时，旧版本没有的能力标成「新增」（按文案逐条比，与管理器一致）。
+    const before = prepared.previousPermissions ? new Set(codexPlusPackagePermissionLines(prepared.previousPermissions)) : null;
+    const lines = codexPlusPackagePermissionLines(prepared.permissions).map((line) => (before && !before.has(line) ? `【新增】${line}` : line));
+    const addedCount = before ? lines.filter((line) => line.startsWith("【新增】")).length : 0;
     const conflict = prepared.conflict
       ? prepared.conflict.source === "github" && prepared.conflict.channel && prepared.conflict.channel !== "community" && prepared.channel === "community"
         ? `本机已装 ${prepared.conflict.repo || ""} 的${prepared.conflict.channel === "official" ? "官方" : "精选"}版本 ${prepared.id}，社区里的同 id 拓展不能替换它。`
@@ -1069,6 +1072,7 @@
       "",
       "它会获得这些能力：",
       ...(lines.length ? lines.map((line) => `• ${line}`) : ["没有声明任何能力。"]),
+      ...(addedCount ? ["", `相比本机已装的版本，这一版新增了 ${addedCount} 项能力（上面标了【新增】）。`] : []),
       ...(conflict ? ["", conflict] : []),
     ].join("\n");
     const verb = prepared.conflict ? "替换并安装" : "安装";

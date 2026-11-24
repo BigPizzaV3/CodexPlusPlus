@@ -20,7 +20,6 @@ export const APP_SOURCE_FILES = [
   "SessionRepairPanel.tsx",
   "SettingsScreens.tsx",
   "HomeScreen.tsx",
-  "OverviewScreen.tsx",
   "AppDialogs.tsx",
   "RelayScreen.tsx",
   "AppSidebar.tsx",

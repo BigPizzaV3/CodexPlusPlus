@@ -374,6 +374,35 @@ fn an_unreadable_config_is_never_overwritten_with_defaults() {
     assert!(!fs::read_dir(temp.path()).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("fresh.json.corrupt-")));
 }
 
+/// 管理器、启动器、拓展 MCP、钩子进程各有各的管理器实例（各有各的进程内互斥锁），都会读改写同一份配置。
+/// 跨实例靠文件锁互斥：两边同时改不同的项，一项都不能丢。
+#[test]
+fn concurrent_updates_from_separate_managers_do_not_overwrite_each_other() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    let config_path = temp.path().join("config.json");
+    let workers = (0..4)
+        .map(|worker| {
+            let manager = UserScriptManager::new(temp.path().join("builtin"), &user, &config_path);
+            std::thread::spawn(move || {
+                for index in 0..25 {
+                    manager.set_script_enabled(&format!("user:w{worker}-{index}.js"), false).unwrap();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let config = UserScriptManager::new(temp.path().join("builtin"), &user, &config_path).load_config();
+    let missing = (0..4)
+        .flat_map(|worker| (0..25).map(move |index| format!("user:w{worker}-{index}.js")))
+        .filter(|key| config.scripts.get(key) != Some(&false))
+        .collect::<Vec<_>>();
+    assert!(missing.is_empty(), "并发更新丢了 {} 项：{missing:?}", missing.len());
+}
+
 #[test]
 fn global_switch_preserves_individual_script_choices_after_reload() {
     let temp = tempfile::tempdir().unwrap();

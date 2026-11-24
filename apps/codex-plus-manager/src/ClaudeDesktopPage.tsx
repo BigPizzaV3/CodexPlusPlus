@@ -753,7 +753,7 @@ export function ClaudeLocalizationScreen(
                 ["backgroundMode", "后台模式", "本地后台模式", ""],
                 ["forceBackgroundMode", "新系统也开后台模式", "本地后台模式不限系统版本", "Claude 在较新的 macOS 上会提示「暂不支持后台模式」；打开后不再限制系统版本，未经 Claude 验证，可能不稳定"],
                 ["cowork", "Cowork", "本地 Cowork", "关掉后按 Claude 自己的开关，新版 Claude 通常只剩 Chat / Code。系统条件（Windows 需商店版、虚拟化可用）仍由 Claude 检查"],
-                ["hubHome", "合并式主页（实验）", "本地合并式主页", "Claude 正在小范围试验的主页布局：对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。关着时用有切换的经典主页"],
+                ["hubHome", "合并式主页（实验）", "本地合并式主页", "Claude 正在小范围试验的主页布局：对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。默认开；关掉改用有切换的经典主页"],
               ] as const).map(([key, label, ariaLabel, hint]) => (
                 <label
                   className="switch-row compact"
@@ -762,8 +762,8 @@ export function ClaudeLocalizationScreen(
                 >
                   <input
                     aria-label={t(ariaLabel)}
-                    // 只有 Cowork 默认是开的。
-                    checked={local.config[key] ?? key === "cowork"}
+                    // Cowork 和合并式主页默认是开的。
+                    checked={local.config[key] ?? (key === "cowork" || key === "hubHome")}
                     disabled={localDisabled}
                     onChange={(event) => {
                       const checked = event.currentTarget.checked;

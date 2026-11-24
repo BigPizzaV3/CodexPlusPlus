@@ -5109,12 +5109,7 @@ select {
   flex-direction: row-reverse;
 }
 
-/* ── 概览 ───────────────────────────────────────────────────── */
-
-.overview-current-select {
-  min-width: 0;
-  flex: 1;
-}
+/* ── 状态色 ───────────────────────────────────────────────────── */
 
 /* 中性状态（如「等待启动」）：灰色，不算问题。 */
 .idle {
@@ -5311,8 +5306,8 @@ select {
 .relay-billing-refresh:disabled { cursor: default; }
 /* 没识别出中转站时的刷新入口：不占眼，悬停卡片 / 键盘聚焦 / 正在刷新时才显示。 */
 .relay-billing-refresh.relay-billing-retry { flex-shrink: 0; color: hsl(var(--muted-foreground)); opacity: 0; }
-.relay-profile-card:hover .relay-billing-retry,
-.relay-profile-card:focus-within .relay-billing-retry,
+.cx-relay-row:hover .relay-billing-retry,
+.cx-relay-row:focus-within .relay-billing-retry,
 .gw-pool-row:hover .relay-billing-retry,
 .gw-pool-row:focus-within .relay-billing-retry,
 .relay-billing-refresh.relay-billing-retry:disabled { opacity: 0.7; }

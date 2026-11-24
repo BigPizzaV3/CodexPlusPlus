@@ -17,7 +17,8 @@
    * 两种拓展间耦合方式：
    *   - 事件：ctx.on / ctx.emit，一对多通知，处理器抛错互不影响
    *   - waterfall：ctx.intercept / ctx.waterfall，中间件链，handler(value, next)
-   *     调 next(v) 交给下一个，不调即短路；没有中间件时原样返回
+   *     调 next(v) 交给下一个，不调即短路；调了 next 却没 return 时沿用 next 的结果；
+   *     没有中间件时原样返回
    *
    * 宿主后续会在协议层、界面层的关键点调用 codexPlusRunWaterfall /
    * codexPlusEmitExtensionEvent，拓展用同一套 ctx 接口挂上去。设计见
@@ -485,6 +486,27 @@
   }
 
   /**
+   * 交给某个拓展实例的内置服务：建立订阅的那几个方法（返回撤销函数的 observeAll / observeSession / register）
+   * 包一层，把撤销函数登记进该实例的副作用表（track），实例卸载、热重载时自动撤销；拓展没把订阅包进
+   * ctx.effect 也不会留下监听和会话轮询。返回的撤销函数照旧可以提前调，重复调无害。
+   * 只认 Codex++ 自己提供的 sessionQuery / locale；其它拓展 ctx.provide 的服务原样交出去。
+   */
+  function codexPlusScopeServiceToInstance(name, entry, track) {
+    let methods = null;
+    if (entry.owner === "builtin" && name === "sessionQuery") methods = ["observeAll", "observeSession"];
+    else if (entry.owner === "builtin" && name === "locale") methods = ["register"];
+    if (!methods || !entry.value || typeof entry.value !== "object") return entry.value;
+    // 服务对象是冻结的：按属性描述符抄一份（current 这类 getter 原样保留），只换掉订阅方法。
+    const descriptors = Object.getOwnPropertyDescriptors(entry.value);
+    for (const method of methods) {
+      const subscribe = entry.value[method];
+      if (typeof subscribe !== "function") continue;
+      descriptors[method] = { ...descriptors[method], value: (...args) => track(subscribe.apply(entry.value, args)) };
+    }
+    return Object.freeze(Object.defineProperties({}, descriptors));
+  }
+
+  /**
    * 拓展后台声明的服务（codexpp.json 的 backend.provides）：登记成页面服务，值是一个代理，
    * 调用任意方法都经桥接转给提供方后台（没起就先起）。清单随注入包下发，热重载时增删。
    * 页面里已有同名服务时以页面的为准。
@@ -771,6 +793,10 @@
    *
    * 中间件可以是异步的：返回 Promise 时整条链的结果也是 Promise。中间件抛错（或
    * reject）时跳过它——若它已经调过 next，沿用下游的结果，避免下游被执行两次。
+   *
+   * 调过 next 却没有 return（`(v, next) => { next(v); }`，同步、异步都算）时沿用 next 的结果：
+   * 否则这一层交出去的是 undefined，上游的改写和下游的结果一起丢。没调 next 的仍是短路，
+   * 返回什么就是什么（包括 undefined）。
    */
   function codexPlusRunWaterfall(name, value) {
     const chain = [...(codexPlusExtensionInterceptors.get(name) || [])];
@@ -785,15 +811,17 @@
         return downstream;
       };
       const recover = () => (called ? downstream : step(index + 1, current));
+      // 到这一层给出结果的那一刻再看 called：异步中间件可能 await 之后才调 next。
+      const settle = (result) => (result === undefined && called ? downstream : result);
       const outcome = runCodexPlusExtensionCallback(item.scriptKey, `intercept:${name}`, () => item.handler(current, next));
       if (!outcome.ok) return recover();
       if (codexPlusIsThenable(outcome.value)) {
-        return Promise.resolve(outcome.value).catch((error) => {
+        return Promise.resolve(outcome.value).then(settle, (error) => {
           codexPlusMarkExtensionFailure(item.scriptKey, `intercept:${name}: ${String(error?.stack || error?.message || error)}`);
           return recover();
         });
       }
-      return outcome.value;
+      return settle(outcome.value);
     };
     return step(0, value);
   }
@@ -1051,11 +1079,27 @@
       };
     };
 
-    // 多实例时注册项的 id 带上实例 id，同一个拓展的几份不会互相顶掉。
+    // 本实例拿到的服务（ctx.<服务名>、ctx.get）：内置的 sessionQuery / locale 按实例包一层，经它建立的订阅
+    // 随本实例卸载撤销（见 codexPlusScopeServiceToInstance）。同一个提供者只包一次，反复读到的是同一个对象。
+    const scopedServices = new Map();
+    const serviceFor = (name) => {
+      const entry = codexPlusServices.get(name);
+      if (!entry) return undefined;
+      const cached = scopedServices.get(name);
+      if (cached?.token === entry.token) return cached.value;
+      const value = codexPlusScopeServiceToInstance(name, entry, track);
+      if (value !== entry.value) scopedServices.set(name, { token: entry.token, value });
+      return value;
+    };
+
+    // 多实例时注册项的 id 带上实例 id，同一个拓展的几份不会互相顶掉。拓展没给 id、由注册函数按名字起默认 id 的
+    // 几类（命令 cmd-<名字>、主题 theme-<id>、带 definition.id 的设置分区）靠 instanceId 在那边补同样的后缀；
+    // 「每个拓展一个」的设置面板靠它认出多实例。单实例时不带 instanceId，id 与以前完全一样。
     const instanceId = manifest?.instance?.id;
     const registerOptions = (itemOptions) => ({
       ...(itemOptions || {}),
       ...(instanceId && itemOptions?.id ? { id: `${itemOptions.id}@${instanceId}` } : {}),
+      ...(instanceId ? { instanceId } : {}),
       scriptKey,
     });
     // 按拓展隔离的本地存储：键名自动带拓展 id 前缀，值按 JSON 存取。
@@ -1250,7 +1294,7 @@
       },
       /** 取一个服务，不存在时返回 undefined（可选依赖用这个；必需依赖请在 inject 里声明）。 */
       get(name) {
-        return codexPlusServices.get(String(name))?.value;
+        return serviceFor(String(name));
       },
       /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
       inject(deps, apply) {
@@ -1478,7 +1522,7 @@
     // 声明过的服务挂到 ctx 上（读的是当前提供者的值；换了提供者时整个实例会被重建）。
     for (const name of inject) {
       if (Object.prototype.hasOwnProperty.call(ctx, name)) continue;
-      Object.defineProperty(ctx, name, { enumerable: true, get: () => codexPlusServices.get(name)?.value });
+      Object.defineProperty(ctx, name, { enumerable: true, get: () => serviceFor(name) });
     }
     if (fiber) Object.defineProperty(ctx, "fiber", { value: fiber });
     codexPlusExtensionInstances.add(ctx);
@@ -1508,4 +1552,62 @@
       settle();
     }
     return ctx;
+  }
+
+  /**
+   * 同一个文档里重复注入之后，把用户脚本搬到这一代内核上。99-startup 在 window.codexPlus 挂好后调一次。
+   *
+   * Codex++ 重启 / 升级而 Codex 没重启、或看门狗补注入时，注入脚本在同一个页面里再执行一遍：注册表、监听表、
+   * 中间件表都是新闭包，用户脚本（含随包发布的官方拓展）却不会重跑——页面已经初始化过，/user-scripts/load
+   * 对它什么都不执行。它们的实例还挂在上一代内核上：codex/request、agent/pre-step 这类拦截静默失效，
+   * 定时器、监听、扫描步骤却还在跑。这里请求一次显式重载：后端让页面先跑各脚本登记的清理函数
+   * （codexPlus.extension 创建的实例自动登记了，会从旧内核上卸掉），再把脚本在这一代内核上重跑一遍。
+   *
+   * 只在不会整页刷新时才请求：prepareReload（assets/inject/user-scripts-runtime.js）遇到没登记清理函数的脚本
+   * 会退回 window.location.reload()，那会打断用户正在进行的对话。所以按它的同一个条件先查一遍——每个脚本
+   * 都登记了清理函数、且没有等着执行的整页刷新——不满足就保持现状，只记一条诊断。
+   * （清理函数执行时才抛错、或普通函数返回了 Promise，prepareReload 仍会整页刷新，这两种事先看不出来。）
+   * 请求放在微任务里发，不占注入脚本的同步执行；失败只记诊断、不抛错。
+   * 不会循环：重载执行的是用户脚本包，不会重跑注入脚本，注入代际不再涨，本函数每次注入只跑这一回。
+   *
+   * 返回是否发起了重载请求。
+   */
+  /**
+   * 重载请求晚这么久再发。重新注入时新旧两条桥接连接会并存一小会儿，立刻发的话两条连接都会收到并各处理一遍，
+   * 用户脚本就被连着重载两次（在真实的 Codex 上测到过）。等旧连接让位之后再发，只重载一次。
+   */
+  const codexPlusRehomeDelayMs = 1000;
+
+  function codexPlusRehomeUserScriptsAfterReinjection(delayMs = codexPlusRehomeDelayMs) {
+    const note = (message) => codexPlusMarkExtensionFailure("", message);
+    try {
+      // 首次注入：用户脚本还没加载，稍后由 /user-scripts/load 直接跑在这一代内核上。
+      if (codexPlusInjectionGeneration <= 1) return false;
+      const runtime = window.__codexPlusUserScripts;
+      const scripts = Object.values(runtime?.scripts || {});
+      // 没有用户脚本（总开关关着、这次启动跳过了拓展、还没加载）就没有要搬的东西；整页刷新已经排上的也不用管。
+      if (!scripts.length || runtime.refreshPending) return false;
+      // 异步的清理函数 prepareReload 也等不了，同样退回整页刷新：async 函数一眼认得出，一并算进去。
+      const isAsync = (cleanup) => Object.prototype.toString.call(cleanup) === "[object AsyncFunction]";
+      const unsafe = scripts.filter((script) => !script?.cleanups?.length || script.cleanups.some(isAsync));
+      if (unsafe.length) {
+        note(`重复注入后没有重载用户脚本：${unsafe.map((script) => script?.key || script?.name || "?").join("、")} 没有登记清理函数（或登记的是异步清理函数），重载会刷新整个页面；用户脚本留在上一代内核上，重启 Codex 后恢复`);
+        return false;
+      }
+      new Promise((resolve) => setTimeout(resolve, delayMs)).then(() => {
+        // 等的这段时间里又注入了一次：交给更新的那一代去搬。
+        if (window.__codexPlusRuntimeGeneration !== codexPlusInjectionGeneration) return null;
+        const bridge = window.__codexSessionDeleteBridge;
+        if (typeof bridge !== "function") throw new Error("Codex 页面尚未连接");
+        return bridge("/user-scripts/reload", {});
+      }).then((result) => {
+        if (result?.status === "failed" || result?.status === "unknown" || result?.error) {
+          note(`重复注入后重载用户脚本失败：${result.message || result.error || result.status}`);
+        }
+      }, (error) => note(`重复注入后重载用户脚本失败：${String(error?.message || error)}`));
+      return true;
+    } catch (error) {
+      note(`重复注入后重载用户脚本失败：${String(error?.message || error)}`);
+      return false;
+    }
   }

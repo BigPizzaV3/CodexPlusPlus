@@ -1,16 +1,94 @@
 # Claude Desktop 拓展适配
 
-Claude Desktop 的 **Code 本地会话**通过官方 Claude Code Mods 接入 Codex++ 拓展。第一版支持输入框上方的按钮、模型可调用的后台工具，以及会话和回合事件。Chat、Cowork、远程会话和 DOM 注入不在本次适配范围内。
+一个 `codexpp.json` 拓展包在 Claude Desktop 里有两部分，都写在清单的 `claudeDesktop` 块里，可以只用其中一部分：
 
-在「万物皆拓展」顶部切换到 **Claude**，开启「启用 Claude 拓展」，再重新启动增强版 Claude。页面只列出声明 `claudeDesktop` 的本地拓展；Claude 的总开关和每项开关与 Codex 独立，切回 Codex 会保留原来的页签。Claude 总开关默认关闭，统一在此管理。现有市场还没有宿主兼容声明，因此只在 Codex 下展示。
+- **页面部分**（`renderer`、`styles`、`methods`）：脚本和样式注入 Claude 的页面，Chat、Cowork、Code 页面都生效。脚本里用的是和 Codex 同名的 `window.codexPlus` 接口，可以读配置、存数据、调自己的后台。见下文「页面部分」。
+- **Code 会话部分**（`buttons`、`events`、`tools`）：通过官方 Claude Code Mods 接入 Code 本地会话，支持输入框上方的按钮、模型可调用的后台工具，以及会话和回合事件。远程会话不在范围内。
 
-插件通过本次增强版启动进程的 `CLAUDE_CODE_PLUGIN_DIRS` 加载，不写全局 Claude 设置，也不改 Codex 的拓展接口。管理页不会将 Codex 的加载状态当作 Claude 的运行状态；Claude 已启用的条目标记为「重启后应用」。通用 DOM 脚本运行时尚未接入。
+在「万物皆拓展」顶部切换到 **Claude**，开启「启用 Claude 拓展」。「已安装」里列出两类：装在页面扩展目录里的（页面扩展和拓展包，格式与扩展市场和 ClaudeMom 相同），和 Codex++ 拓展目录里声明了 `claudeDesktop` 的拓展包。Claude 的总开关和每项开关与 Codex 独立；Claude 总开关默认关闭，只管 Codex++ 拓展目录里的拓展包。
 
-Claude Code 需支持 Mods 及 `$.mcp.connect`；本次已在 Claude Code 2.1.314 的官方插件校验和测试引擎中验证。请使用带有相应能力的 Claude Desktop，较旧版本不保证兼容。
+两部分的生效时机不同：
 
-## 清单
+- 页面部分：开关、配置、装卸之后刷新 Claude 页面（⌘R / Ctrl+R）就按新的来，完整功能模式和补丁版都一样。
+- Code 会话部分：插件通过启动进程的 `CLAUDE_CODE_PLUGIN_DIRS` 加载，不写全局 Claude 设置；增删拓展或修改清单后要重新启动 Claude。
 
-在现有 `codexpp.json` 中新增 `claudeDesktop`，方法名对应同一份 `backend.script` 返回对象中的方法：
+Claude Code 需支持 Mods 及 `$.mcp.connect`；Code 会话部分已在 Claude Code 2.1.314 的官方插件校验和测试引擎中验证。请使用带有相应能力的 Claude Desktop，较旧版本不保证兼容。
+
+**兼容提醒**：`renderer`、`styles`、`methods` 是 2.9.0 新增的字段。更早的 Codex++ 不认识它们，会把整个包判成清单有误（Codex 那边也不加载）。要兼顾旧版用户时，在清单里写 `"engines": { "codexpp": ">=2.9.0" }`，旧版会给出「版本不满足」而不是「清单有误」。
+
+## 页面部分
+
+```json
+{
+  "id": "my-extension",
+  "name": "My Extension",
+  "permissions": { "routes": ["/backend/status"] },
+  "backend": { "script": "backend.mjs" },
+  "config": { "greeting": { "type": "string", "default": "hi" } },
+  "claudeDesktop": {
+    "renderer": ["renderer.js"],
+    "styles": ["style.css"],
+    "methods": ["status"]
+  }
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `claudeDesktop.renderer` | 字符串或数组，包内的 `.js`；按顺序拼进同一个作用域执行。顶层的 `renderer` 是给 Codex 页面的，不会进 Claude |
+| `claudeDesktop.styles` | 数组，包内的 `.css`。只想换样式的包可以只写这一项 |
+| `claudeDesktop.methods` | 页面可以调用的后台方法（`ctx.backend.call`）。写了它就要同时声明 `backend.script`；只有脚本和样式的包不需要后台 |
+
+文件路径要用包内的相对路径，不能有隐藏文件或 `..`，每类最多 32 个。这三个字段的规则在 ClaudeMom 的 `claude-local` 里，单独使用 ClaudeMom 时也认同样的清单。
+
+### 页面里能用什么
+
+脚本里的全局对象仍是 `window.codexPlus`，成员名、`ctx` 的成员名和 `codexPlus.constants` 的键与 Codex 里一致，所以一份代码两边都能跑。用下面两个成员区分宿主：
+
+```js
+const host = codexPlus.host ?? "codex";            // Claude 里是 "claudeDesktop"
+if (codexPlus.supports?.("registerComposerAction") ?? true) { /* 有输入框按钮这个位置 */ }
+```
+
+在 Claude 里各接口挂在哪：
+
+| 接口 | 位置 |
+| --- | --- |
+| `toast`、`ask`、`registerShortcut`、`registerTheme` | 不依赖 Claude 的界面，任何页面都可用 |
+| `registerPage` / `registerNavEntry` | 侧栏「项目 / Artifacts / 插件」那组导航行后面，点开是整页覆盖层 |
+| `registerFloatingTab` | 右下角的悬浮按钮 |
+| `registerComposerAction` | 输入框工具行左边，挨着加号 |
+| `registerCommand` / `registerInputTrigger` | 输入框：回车时拦下「/名字 参数」；光标前是触发符时弹出候选（`@`、`/` 归 Claude，不能用作触发符） |
+| `registerMessageAction` / `registerMessageDecoration` | 每条消息的操作行里；回复正文和操作行之间、用户消息气泡下面。`message.id` 是这条消息所在那一轮的标识 |
+| `registerSlot` | `composer.above` / `composer.below`、`thread.top` / `thread.bottom`、`turn.after`、`sidebar.top` / `sidebar.bottom`、`titlebar`、`sessionRow.suffix`、`overlay` |
+| `registerRowAction` | 最近对话列表每一行「更多选项」旁边（都画成行上的图标按钮，Claude 的「更多」菜单不动） |
+| `registerSidePanel` | 开关在对话页头部，面板在右侧；没有头部的页面上用返回的句柄打开 |
+| `registerMenuItem` / `registerSettingsSection` / `registerSettingsPanel` | Claude 里没有 Codex++ 的菜单和拓展详情页，这三样集中在侧栏的「拓展」页里 |
+
+拓展实例与生命周期（`codexPlus.extension`、`ctx.effect`、`ctx.on` / `emit`、`ctx.intercept` / `waterfall`、`ctx.provide` / `get` / `inject`、`ctx.listen`、`ctx.setTimeout` / `setInterval`、`ctx.onScan`、`ctx.dispose`）和数据接口（`ctx.config`、`ctx.storage`、`ctx.locale`、`ctx.backend.call` / `on`、`ctx.call`）与 Codex 里同名同义；`ctx.call` 只开放 `/diagnostics/log`、`/backend/status`，同样要在 `permissions.routes` 里声明。
+
+和 Codex 不一样的地方：
+
+- **位置是对着对话页签量的**，合并式主页和经典主页两种布局都量过。按钮和侧栏行照旁边的原生控件做，Claude 改了样式会自动跟着变；Claude 改了结构时，那一处不出现（其余照常），「万物皆拓展」的那一行会标出来。Cowork、Code 页签和本机版界面（3p）还没量过，那里只保证不依赖界面的接口可用。
+- **还没有位置的**：`registerToolView`，以及 `registerSlot` 的 `composer.left` / `composer.right` / `composer.model`、`home.above`、`settings.nav`、`activity.after`、`approval`、`header.title`、`sidebar.section`、`sessionRow.prefix`、`projectRow.suffix`。登记它们不报错、不出现，`codexPlus.supports()` 对它们回 `false`。
+- **在页面里存配置还不行**：`registerSettingsPanel` 拿到的 `saveConfig` 会以 `CodexPlusUnsupportedError` 拒绝；配置在「万物皆拓展」里改，刷新页面生效。
+- **取数据的接口会拒绝**：`ctx.llm.*`、没开放的路由、没声明的后台方法，返回的 Promise 以 `CodexPlusUnsupportedError` 拒绝（`error.code === "unsupported"`）。
+- **密钥类配置不进页面**：`config` 里 `secret: true` 的项在页面的 `ctx.config` 里是 `null`，只有后台拿得到。页面里 Claude 自己的脚本和拓展脚本同权，放进页面就等于交给了页面里的所有代码。
+- **`ctx.storage` 跟着页面的源走**：登录账号的界面（`claude.ai`）和本机版界面（`app://localhost`）各存各的。要长期保存的数据放后台的 `ctx.dataDir`。
+- `ctx.asset()` 目前返回空串；`currentSessionId()` 取地址里的会话 id；`builtins()` 为空。
+
+### 页面调后台
+
+`ctx.backend.call(方法, 参数)` 只能调 `claudeDesktop.methods` 里列的方法，每次调用都会重新核对总开关、拓展开关和声明。后台脚本和 Code 会话部分用的是同一个 `backend.script`；Codex++ 开着时两边调到的是同一个后台实例，状态是通的。Codex++ 没开时：
+
+- 完整功能模式、补丁版的页面调用都会失败，并说明「拓展后台由 Codex++ 托管，但它没有在运行」。
+- Code 会话里的按钮、工具照旧可用（退回各自会话进程里托管）。
+
+一个拓展的脚本有语法错误或运行出错，只影响它自己：别的拓展和 Claude 页面照常工作，原因显示在「万物皆拓展」的那一行。
+
+## Code 会话部分的清单
+
+Code 会话部分同样写在 `claudeDesktop` 里，方法名对应同一份 `backend.script` 返回对象中的方法：
 
 ```json
 {

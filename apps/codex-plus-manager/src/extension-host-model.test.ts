@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  claudeParts,
   extensionEnabledForHost,
   extensionHostForTool,
   extensionsForHost,
@@ -60,4 +61,29 @@ test("Codex status continues to respect its own switch, global setting and runti
   assert.equal(extensionStateForHost({ ...script, status: "loading" }, "codex", true), "loading");
   assert.equal(extensionStateForHost({ ...script, status: "failed" }, "codex", true), "failed");
   assert.equal(extensionStateForHost({ ...script, status: "not_loaded" }, "codex", true), "notLoaded");
+});
+
+test("a package's Claude side splits into the page part and the Code-session part", () => {
+  const page = { scripts: ["page.js"], styles: [], methods: [] };
+  assert.deepEqual(claudeParts({ package: { claudeDesktop: { page } } }), { page: true, mods: false });
+  assert.deepEqual(claudeParts({ package: { claudeDesktop: { buttons: [{ id: "a" }], events: {}, tools: [] } } }), { page: false, mods: true });
+  assert.deepEqual(claudeParts({ package: { claudeDesktop: { page, events: { "session.start": "run" } } } }), { page: true, mods: true });
+  assert.deepEqual(claudeParts({ package: { claudeDesktop: null } }), { page: false, mods: false });
+  assert.deepEqual(claudeParts({}), { page: false, mods: false });
+});
+
+test("Claude reports what the Claude page said about a package's page part, and nothing else", () => {
+  const page = { scripts: ["page.js"], styles: [], methods: [] };
+  const script = { enabled: false, claude_enabled: true, status: "failed", package: { claudeDesktop: { page } } };
+  const status = (extra: object) => ({ status: "loaded", error: "", unsupported: [], loadedAt: "", ...extra });
+  assert.equal(extensionStateForHost(script, "claude", true, status({})), "loaded");
+  assert.equal(extensionStateForHost(script, "claude", true, status({ status: "failed", error: "boom" })), "failed");
+  assert.equal(extensionStateForHost(script, "claude", true, status({ error: "page: boom" })), "failed", "加载成功但运行中出错");
+  assert.equal(extensionStateForHost(script, "claude", true, status({ status: "pending" })), "notLoaded");
+  assert.equal(extensionStateForHost(script, "claude", true, null), "notLoaded");
+  assert.equal(extensionStateForHost(script, "claude", false, status({})), "globalOff");
+  assert.equal(extensionStateForHost({ ...script, claude_enabled: false }, "claude", true, status({})), "off");
+  // 只有 Code 会话那部分的包：页面的回报和它无关。
+  const modsOnly = { ...script, package: { claudeDesktop: { buttons: [{ id: "a" }] } } };
+  assert.equal(extensionStateForHost(modsOnly, "claude", true, status({})), "notLoaded");
 });
