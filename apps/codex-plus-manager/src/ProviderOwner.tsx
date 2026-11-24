@@ -1,4 +1,4 @@
-// 两边供应商页共用的「显示其他 Agent 的供应商」复选框和来源标记（数据规则见 provider-owner.ts）。
+// 两边供应商页共用的「显示其他 Agent 的供应商」记忆（勾选在「供应商」标题行的三点菜单里）和来源标记（数据规则见 provider-owner.ts）。
 import { useState } from "react";
 import { CxBadge } from "./cx-layout";
 import { t } from "./i18n";
@@ -18,16 +18,6 @@ export function useShowOtherAgents(page: ProviderPage): [boolean, (next: boolean
     }
   };
   return [shown, update];
-}
-
-/** 「供应商」标题右侧的复选框：管理器统一外观（tp-check），带文字的 label 整个可点。 */
-export function ShowOtherAgentsToggle({ checked, onChange, title }: { checked: boolean; onChange: (next: boolean) => void; title: string }) {
-  return (
-    <label className="cx-other-agents" title={title}>
-      <input checked={checked} className="tp-check" onChange={(event) => onChange(event.currentTarget.checked)} type="checkbox" />
-      {t("显示其他 Agent 的供应商")}
-    </label>
-  );
 }
 
 /** 行上的来源标记：「来自 Codex」「来自 Claude」，Codex 页自己的直连供应商写「来自直连」。 */

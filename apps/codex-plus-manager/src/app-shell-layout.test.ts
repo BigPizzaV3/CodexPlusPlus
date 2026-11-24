@@ -290,7 +290,9 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   // 经本地服务时点直连供应商的「使用」先断开并还原，成功后再切过去。
   assert.match(relay, /const mode: CodexConnectionMode = takenOverByGateway \? "aggregate" : "direct";/);
   assert.match(relay, /\{mode === "aggregate" \? \(\n\s*<CodexAggregateList/);
-  assert.match(relay, /<CodexModeCard[\s\S]*onAggregate=\{\(\) => onConnectGateway\?\.\(\)\}[\s\S]*onDirect=\{\(\) => onDisconnectGateway\?\.\(\)\}/);
+  // 供应商列表是主体、放最前面；连接方式和聚合时的默认模型在「供应商」分区标题行右侧，不再单独占一张卡。
+  assert.match(relay, /<CxSection\n\s*aside=\{\(\n\s*<>[\s\S]*?<CodexModeControls[\s\S]*onAggregate=\{\(\) => onConnectGateway\?\.\(\)\}[\s\S]*onDirect=\{\(\) => onDisconnectGateway\?\.\(\)\}/);
+  assert.doesNotMatch(relay, /<CodexModeCard/);
   assert.match(relay, /if \(takenOverByGateway && profileId !== CODEX_GATEWAY_RELAY_ID && onDisconnectGateway\) \{\n\s*onDisconnectGateway\(profileId\);/);
   assert.match(relay, /const visibleProfiles = normalized\.relayProfiles\.filter\(\(profile\) => profile\.id !== CODEX_GATEWAY_RELAY_ID\);/);
   assert.doesNotMatch(relay, /providerView|<CxFilters/);
@@ -405,7 +407,8 @@ test("代理设置按归属拆开：本地服务移到网关设置（新旧共�
   assert.match(env, /const failed = result \? checks\.filter\(\(check\) => !check\.passed\) : \[\];/);
   assert.match(env, /\{failed\.map\(\(check\) => \(/);
   // 「高级」全是直连专用：被网关接管时整块不显示（配置切换被关掉时仍显示，好重新打开）。
-  assert.match(functionSource("RelayScreen"), /\{takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(\n\s*<CxSection>\n\s*<CxCard>\n\s*<details className="cx-set-disclosure cx-set-disclosure-first cx-codex-advanced"/);
+  // 现在和「切换时保留」「ChatGPT 入口解锁」一起折在列表下面的「更多设置」里。
+  assert.match(functionSource("RelayScreen"), /<details className="cx-set-disclosure cx-set-disclosure-first cx-codex-advanced"[\s\S]*?\{takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(\n\s*<>\n\s*<CxRow/);
   assert.match(functionSource("App"), /<SharedServiceSettings[\s\S]*?form=\{settingsForm\}/);
 });
 
@@ -498,7 +501,8 @@ test("「显示其他 Agent 的供应商」：Codex 页聚合列表按归属筛�
   assert.match(screen, /const sharedEntries = entriesForPage\(gatewayPayload\?\.pool \?\? \[\], "codex", showOtherAgents\);/);
   // 「供应商 N」：聚合时数列出的共享供应商，直连时数直连供应商。
   assert.match(screen, /count=\{\(mode === "aggregate" \? sharedEntries\.length : visibleProfiles\.length\) \|\| undefined\}/);
-  assert.match(screen, /<ShowOtherAgentsToggle checked=\{showOtherAgents\} onChange=\{setShowOtherAgents\}/);
+  // 勾选收进「供应商」标题行的三点菜单（列表才是主体）。
+  assert.match(screen, /<MenuItem\n\s*checked=\{showOtherAgents\}\n\s*onClick=\{\(\) => setShowOtherAgents\(!showOtherAgents\)\}/);
   assert.match(screen, /entries=\{sharedEntries\}/);
   const list = functionSource("CodexAggregateList");
   assert.match(list, /<OwnerBadge entry=\{entry\} page="codex" \/>/);
@@ -510,7 +514,7 @@ test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时�
   assert.doesNotMatch(screen, /actions=\{takenOverByGateway \? null : \(/);
   // 总开关收进页面底部「高级」；关闭时页面顶部一条提示带「打开配置切换」。
   // 被网关接管时整个「高级」不显示；只有总开关被关掉时才显示，好把它重新打开。
-  assert.match(screen, /\{takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(\r?\n\s*<CxSection>[\s\S]*?className="switch-row compact relay-master-switch/);
+  assert.match(screen, /\{takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(\r?\n\s*<>[\s\S]*?className="switch-row compact relay-master-switch/);
   assert.match(screen, /onClick=\{\(\) => void saveRelaySettings\(\{ \.\.\.normalized, relayProfilesEnabled: true \}\)\}/);
   // 加进来的供应商两种方式都能用（直连供应商以引用的方式就在共享供应商里），按钮不再分「添加直连供应商」。
   assert.match(screen, /onClick=\{openCatalog\}[^>]*>\s*<Plus \/>\s*\{t\("添加供应商"\)\}/);
@@ -851,20 +855,22 @@ test("标题行右侧的按钮同一种外形：30px 高、8px 圆角、12.5px �
   assert.match(readSource("./CodexLaunchButton.tsx"), /className="codex-launch-button"[\s\S]*?variant="default"/);
 });
 
-test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副骨架：标题行右侧导入 / 添加，顶部一张接入卡，列表里只有供应商", () => {
+test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副骨架：标题行右侧导入 / 添加，供应商列表在前，接入卡在列表后面", () => {
   const claude = readSource("./ClaudeProviders.tsx");
   // 导入、添加在标题行右侧，添加是主按钮（Codex 页也是 cx-secondary 导入 + cx-primary 添加）。
   assert.match(claude, /<TopbarActions>\s*<button className="cx-secondary"[^>]*onClick=\{\(\) => setAdding\("import"\)\}[\s\S]*?<button className="cx-primary"[^>]*onClick=\{\(\) => setAdding\("catalog"\)\}[\s\S]*?<\/TopbarActions>/);
   assert.match(readSource("./RelayScreen.tsx"), /<button className="cx-secondary" onClick=\{\(\) => setThirdPartyImportOpen\(true\)\}[\s\S]*?<button className="cx-primary" onClick=\{openCatalog\}/);
   // 顶部一张卡：Claude Desktop、Claude Code 各一行默认模型；不再混在供应商列表里。
-  const agents = claude.match(/<CxSection className="claude-providers-agents">([\s\S]*?)<\/CxSection>/);
+  // 供应商列表是主体、放最前面；这张卡在列表后面。
+  assert.ok(claude.indexOf('className="claude-providers"') < claude.indexOf('className="claude-providers-agents"'));
+  const agents = claude.match(/<CxSection className="claude-providers-agents" title=\{t\("默认模型与连接方式"\)\}>([\s\S]*?)<\/CxSection>/);
   assert.ok(agents, "agents card should exist");
   assert.match(agents[1], /title="Claude Desktop"[\s\S]*?<AgentModelPicker agentId=\{AGENT\}/);
   assert.match(agents[1], /title=\{t\("Claude Code（命令行）"\)\}[\s\S]*?<AgentModelPicker agentId="claude"/);
   // 「供应商 N」是总数（和 Codex 页一样），分区里只有供应商行；「管理共享供应商」在分区标题右侧。
-  const list = claude.slice(claude.indexOf('className="claude-providers"'));
+  const list = claude.slice(claude.indexOf('className="claude-providers"'), claude.indexOf('className="claude-providers-agents"'));
   assert.match(list, /count=\{pool\.length \|\| undefined\}/);
-  assert.match(claude, /\{onManage \? <button className="cx-secondary" onClick=\{onManage\} type="button">\{t\("管理共享供应商"\)\}<\/button> : null\}/);
+  assert.match(claude, /\{onManage \? <MenuItem onClick=\{onManage\}>\{t\("管理共享供应商"\)\}<\/MenuItem> : null\}/);
   assert.doesNotMatch(list, /AgentModelPicker|t\("默认模型"\)/);
   // Claude Code 那一行并进了顶部的卡，App 里不再单独挂一块。
   assert.doesNotMatch(text, /ClaudeCodeConnection/);

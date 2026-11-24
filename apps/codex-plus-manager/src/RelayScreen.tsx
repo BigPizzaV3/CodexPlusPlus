@@ -45,12 +45,12 @@ import { useGatewayPayload } from "./hub-shared";
 import { publishGatewayPayload } from "./gateway-store";
 import { importCandidates, type GatewayResult } from "./gateway-model";
 import { entriesForPage } from "./provider-owner";
-import { OwnerBadge, ShowOtherAgentsToggle, useShowOtherAgents } from "./ProviderOwner";
+import { useShowOtherAgents } from "./ProviderOwner";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { aggregateMemberCandidates } from "./aggregate-members";
 import { NativeAuthControl } from "./NativeAuthControls";
-import { ChatgptCompatSection } from "./ChatgptCompatSection";
-import { CodexAggregateList, CodexModeCard, type CodexConnectionMode } from "./CodexConnectionMode";
+import { ChatgptCompatRows } from "./ChatgptCompatSection";
+import { CodexAggregateList, CodexModeControls, type CodexConnectionMode } from "./CodexConnectionMode";
 import { ThirdPartyImportDialog } from "./ThirdPartyImportDialog";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
@@ -329,7 +329,7 @@ export function LegacyRelayGatewayHint({
         disabled={connecting || viaGateway || !form.relayProfilesEnabled}
         onClick={connect}
         role="radio"
-        title={form.relayProfilesEnabled ? t("Codex 改走 Codex++ 本地服务，用共享供应商里的模型；新开的会话生效") : t("先在页面底部「高级」里打开供应商配置切换")}
+        title={form.relayProfilesEnabled ? t("Codex 改走 Codex++ 本地服务，用共享供应商里的模型；新开的会话生效") : t("先在页面底部「更多设置」里打开供应商配置切换")}
         type="button"
       >
         {connecting ? <Loader2 className="animate-spin" /> : <Waypoints />}
@@ -646,9 +646,13 @@ export function RelayScreen({
   // 聚合列表：不勾「显示其他 Agent 的供应商」时去掉 Claude 的。
   const sharedEntries = entriesForPage(gatewayPayload?.pool ?? [], "codex", showOtherAgents);
   // 「显示其他 Agent 的供应商」只管聚合列表，放在「供应商」标题右侧，和 Claude 页同一个位置。
-  const otherAgentsToggle = mode === "aggregate" && gatewayPayload?.pool.length ? (
-    <ShowOtherAgentsToggle checked={showOtherAgents} onChange={setShowOtherAgents} title={t("Claude 页添加或导入的共享供应商；Codex 经本地服务时也能用。不勾时这里不列它们")} />
-  ) : null;
+  // 「更多设置」折起来时，标题旁一句话说开着哪些，不用展开也知道。
+  const moreSettingsHint = !normalized.relayProfilesEnabled
+    ? t("配置切换已关闭")
+    : [
+        normalized.relayPreserveNonproviderSettings === true ? t("保留实时改动") : null,
+        normalized.chatgptCompatEnabled ? t("已解锁 ChatGPT 入口") : null,
+      ].filter(Boolean).join(" · ") || t("配置切换已开启");
   // 聚合列表里点 Codex 自己的直连供应商「编辑」：就地打开同一个编辑页。
   const editLinkedProfile = (relayId: string) => {
     if (!normalized.relayProfiles.some((profile) => profile.id === relayId)) return false;
@@ -680,7 +684,6 @@ export function RelayScreen({
         <ThirdPartyImportDialog actions={actions} ccsProviders={ccsProviders} form={normalized} onClose={() => setThirdPartyImportOpen(false)} />
       ) : null}
       {connection}
-      <NativeAuthControl onRestart={() => actions.restart()} />
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
       <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
       {!normalized.relayProfilesEnabled ? (
@@ -695,36 +698,49 @@ export function RelayScreen({
           <button className="cx-primary" onClick={() => void saveRelaySettings({ ...normalized, relayProfilesEnabled: true })} type="button">{t("打开配置切换")}</button>
         </CxBanner>
       ) : null}
-      {/* 顶部选连接方式：聚合（经本地服务，打开的供应商合在一起）/ 直连（关掉 Codex++ 也能用）。 */}
-      {normalized.relayProfilesEnabled && !orphan ? (
-        <CodexModeCard
-          busy={poolBusy}
-          canSwitch={normalized.relayProfilesEnabled}
-          connecting={sharedConnecting || actions.relaySwitching}
-          mode={mode}
-          notify={actions.showMessage}
-          onAggregate={() => onConnectGateway?.()}
-          onDirect={() => onDisconnectGateway?.()}
-          payload={gatewayPayload}
-          run={runGateway}
-        />
-      ) : null}
+      {/* 供应商列表是这页的主体，放在最前面。连接方式（聚合 / 直连）和聚合时的默认模型在分区标题行右侧，
+          不常用的（显示其他 Agent、管理共享供应商、新建直连聚合）收进三点菜单。 */}
       {/* 总开关关闭时供应商切换不会写入 Codex：列表没有意义，整块隐藏，只留上方提示条。 */}
       {normalized.relayProfilesEnabled ? (
         <CxSection
           aside={(
             <>
-              {otherAgentsToggle}
-              {mode === "aggregate" && onOpenGateway ? (
-                <button className="cx-secondary" onClick={onOpenGateway} type="button">{t("管理共享供应商")}</button>
+              {/* 孤立状态由顶部的 connection 卡给「切回直连」，这里不放切换。 */}
+              {!orphan ? (
+                <CodexModeControls
+                  busy={poolBusy}
+                  canSwitch={normalized.relayProfilesEnabled}
+                  connecting={sharedConnecting || actions.relaySwitching}
+                  mode={mode}
+                  notify={actions.showMessage}
+                  onAggregate={() => onConnectGateway?.()}
+                  onDirect={() => onDisconnectGateway?.()}
+                  payload={gatewayPayload}
+                  run={runGateway}
+                />
               ) : null}
-              {/* 直连专用的聚合（模型聚合 / 故障转移）不再单独占分页：从这里新建，建好的和别的直连供应商列在一起。 */}
-              {mode === "direct" ? (
-                <Menu label={t("新建直连聚合")}>
-                  <MenuItem onClick={() => createNewAggregateProfile("model")}>{t("新建模型聚合")}</MenuItem>
-                  <MenuItem onClick={() => createNewAggregateProfile("provider")}>{t("新建故障转移")}</MenuItem>
-                </Menu>
-              ) : null}
+              <Menu label={t("更多供应商操作")}>
+                {mode === "aggregate" ? (
+                  <>
+                    {gatewayPayload?.pool.length ? (
+                      <MenuItem
+                        checked={showOtherAgents}
+                        onClick={() => setShowOtherAgents(!showOtherAgents)}
+                        title={t("Claude 页添加或导入的共享供应商；Codex 经本地服务时也能用。不勾时这里不列它们")}
+                      >
+                        {t("显示其他 Agent 的供应商")}
+                      </MenuItem>
+                    ) : null}
+                    {onOpenGateway ? <MenuItem onClick={onOpenGateway}>{t("管理共享供应商")}</MenuItem> : null}
+                  </>
+                ) : (
+                  <>
+                    {/* 直连专用的聚合（模型聚合 / 故障转移）不单独占分页：从这里新建，建好的和别的直连供应商列在一起。 */}
+                    <MenuItem onClick={() => createNewAggregateProfile("model")}>{t("新建模型聚合")}</MenuItem>
+                    <MenuItem onClick={() => createNewAggregateProfile("provider")}>{t("新建故障转移")}</MenuItem>
+                  </>
+                )}
+              </Menu>
             </>
           )}
           count={(mode === "aggregate" ? sharedEntries.length : visibleProfiles.length) || undefined}
@@ -760,75 +776,75 @@ export function RelayScreen({
           />}
         </CxSection>
       ) : null}
-      {/* 「切换时保留」对直连和网关都生效（网关重写 Codex 配置也走同一条切换流程），
-          所以放在两种模式都看得到的地方；以前藏在直连供应商编辑的「通用配置文件」里，网关用户找不到（#3115）。 */}
-      {normalized.relayProfilesEnabled ? (
-        <CxSection>
-          <CxCard>
-            <CxRow
-              className="cx-preserve-row"
-              detail={t("切换供应商或重启 Codex 时，保留你在 config.toml 里改过的 MCP、项目信任和通知设置。")}
-              // 完整规则放悬停：哪些按实时文件保留、哪些始终按目标重写。
-              tooltip={`${t("打开后，切换供应商、接入或重写本地服务、重启 Codex 时：实时 config.toml 里改过的 MCP 服务器（命令、参数、env、超时）以实时文件为准，缺失的项目信任设置和通知命令从实时文件补回。直连和本地服务都适用。")}\n\n${t("始终按目标重写的供应商设置：model_provider、model、供应商地址与凭据、模型目录。不论开关都保留：Codex++ 没有托管的 MCP / 插件条目、[[skills.config]] 技能启停；用共享供应商时 developer_instructions 等根级个人设置也会跟着走。")}`}
-              title={t("切换时保留实时配置里的改动")}
-            >
-              <label className="switch-row compact relay-master-switch relay-master-switch-compact">
-                <input
-                  aria-label={t("切换时保留实时配置里的改动")}
-                  checked={normalized.relayPreserveNonproviderSettings === true}
-                  onChange={(event) => {
-                    const next = { ...normalized, relayPreserveNonproviderSettings: event.currentTarget.checked };
-                    void saveRelaySettings(next);
-                  }}
-                  type="checkbox"
-                />
-                <span>{t("保留")}</span>
-                <ToggleVisual />
-              </label>
-            </CxRow>
-          </CxCard>
-        </CxSection>
-      ) : null}
-      {/* 配置切换关掉时承诺不写 config.toml / auth.json，这个开关也就不显示。 */}
-      {normalized.relayProfilesEnabled ? (
-        <ChatgptCompatSection form={normalized} onSave={(next) => void saveRelaySettings(next)} />
-      ) : null}
-      {/* 高级：配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）。
-          都是直连专用：被网关接管时整块不显示；配置切换被关掉时仍显示，好把它重新打开。 */}
-      {takenOverByGateway && normalized.relayProfilesEnabled ? null : (
+      {/* 主登录身份（Codex 自己的 ChatGPT 登录）不常改，放在供应商列表后面。 */}
+      <NativeAuthControl onRestart={() => actions.restart()} />
+      {/* 更多设置：都不常改，默认折起来放在列表下面。
+          「切换时保留」对直连和网关都生效（网关重写 Codex 配置也走同一条切换流程，#3115）；
+          ChatGPT 专属入口解锁只在 API Key 供应商 / 本地服务下生效；配置切换关掉时承诺不写 config.toml / auth.json，这两项也就不显示。
+          配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）都是直连专用：
+          被网关接管时不显示；配置切换被关掉时仍显示，好把它重新打开。 */}
       <CxSection>
         <CxCard>
           <details className="cx-set-disclosure cx-set-disclosure-first cx-codex-advanced" id="codex-connection-advanced" open={advancedOpen || undefined}>
             <summary>
-              {t("高级")}
-              <span className="cx-set-summary-hint">{normalized.relayProfilesEnabled ? t("配置切换已开启") : t("配置切换已关闭")}</span>
+              {t("更多设置")}
+              <span className="cx-set-summary-hint">{moreSettingsHint}</span>
             </summary>
-            <CxRow
-              detail={t("关闭后 Codex++ 不再写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
-              title={t("供应商配置切换")}
-              tooltip={takenOverByGateway ? t("重新开启配置切换只恢复 Codex++ 写入 Codex 配置的能力，不会切换直连供应商或断开当前本地服务。") : undefined}
-            >
-              <label className="switch-row compact relay-master-switch relay-master-switch-compact">
-                <input
-                  aria-label={t("启用供应商配置切换")}
-                  checked={normalized.relayProfilesEnabled}
-                  onChange={(event) => {
-                    const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
-                    void saveRelaySettings(next);
-                  }}
-                  type="checkbox"
-                />
-                <span>{t("配置切换")}</span>
-                <ToggleVisual />
-              </label>
-            </CxRow>
-            <RelayProfileLinkContext.Provider value={openRelayProfileSection}>
-              {advanced}
-            </RelayProfileLinkContext.Provider>
+            {normalized.relayProfilesEnabled ? (
+              <CxRow
+                className="cx-preserve-row"
+                detail={t("切换供应商或重启 Codex 时，保留你在 config.toml 里改过的 MCP、项目信任和通知设置。")}
+                // 完整规则放悬停：哪些按实时文件保留、哪些始终按目标重写。
+                tooltip={`${t("打开后，切换供应商、接入或重写本地服务、重启 Codex 时：实时 config.toml 里改过的 MCP 服务器（命令、参数、env、超时）以实时文件为准，缺失的项目信任设置和通知命令从实时文件补回。直连和本地服务都适用。")}\n\n${t("始终按目标重写的供应商设置：model_provider、model、供应商地址与凭据、模型目录。不论开关都保留：Codex++ 没有托管的 MCP / 插件条目、[[skills.config]] 技能启停；用共享供应商时 developer_instructions 等根级个人设置也会跟着走。")}`}
+                title={t("切换时保留实时配置里的改动")}
+              >
+                <label className="switch-row compact relay-master-switch relay-master-switch-compact">
+                  <input
+                    aria-label={t("切换时保留实时配置里的改动")}
+                    checked={normalized.relayPreserveNonproviderSettings === true}
+                    onChange={(event) => {
+                      const next = { ...normalized, relayPreserveNonproviderSettings: event.currentTarget.checked };
+                      void saveRelaySettings(next);
+                    }}
+                    type="checkbox"
+                  />
+                  <span>{t("保留")}</span>
+                  <ToggleVisual />
+                </label>
+              </CxRow>
+            ) : null}
+            {normalized.relayProfilesEnabled ? (
+              <ChatgptCompatRows form={normalized} onSave={(next) => void saveRelaySettings(next)} />
+            ) : null}
+            {takenOverByGateway && normalized.relayProfilesEnabled ? null : (
+              <>
+                <CxRow
+                  detail={t("关闭后 Codex++ 不再写入 Codex 的 config.toml / auth.json；启动 Codex 时始终不会自动改这些文件。")}
+                  title={t("供应商配置切换")}
+                  tooltip={takenOverByGateway ? t("重新开启配置切换只恢复 Codex++ 写入 Codex 配置的能力，不会切换直连供应商或断开当前本地服务。") : undefined}
+                >
+                  <label className="switch-row compact relay-master-switch relay-master-switch-compact">
+                    <input
+                      aria-label={t("启用供应商配置切换")}
+                      checked={normalized.relayProfilesEnabled}
+                      onChange={(event) => {
+                        const next = { ...normalized, relayProfilesEnabled: event.currentTarget.checked };
+                        void saveRelaySettings(next);
+                      }}
+                      type="checkbox"
+                    />
+                    <span>{t("配置切换")}</span>
+                    <ToggleVisual />
+                  </label>
+                </CxRow>
+                <RelayProfileLinkContext.Provider value={openRelayProfileSection}>
+                  {advanced}
+                </RelayProfileLinkContext.Provider>
+              </>
+            )}
           </details>
         </CxCard>
       </CxSection>
-      )}
     </div>
   );
 }

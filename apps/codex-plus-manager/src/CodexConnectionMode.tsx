@@ -8,8 +8,7 @@ import { Avatar, Switch, type Notify, type Run } from "./gateway-ui";
 import { presetHost, protocolLabel, providerEnabled, type GatewayPayload, type GatewayPoolEntry } from "./gateway-model";
 import { Menu, MenuItem } from "./ManagementPages";
 import { OwnerBadge } from "./ProviderOwner";
-import { AgentGlyph } from "./hub-shared";
-import { CxBadge, CxCard, CxEmpty, CxLoading, CxRow, CxSection, CxStatusIcon } from "./cx-layout";
+import { CxBadge, CxCard, CxEmpty, CxLoading, CxRow } from "./cx-layout";
 import { t, tf } from "@/i18n";
 
 export type CodexConnectionMode = "aggregate" | "direct";
@@ -68,8 +67,11 @@ export function ConnectionModeSwitch({
   );
 }
 
-/** 顶部「连接方式」卡：两段切换 + 一句说明；聚合时下面一行选默认模型。 */
-export function CodexModeCard({
+/**
+ * 「供应商」分区标题行右侧的连接方式控件：两段切换，聚合时紧跟 Codex 的默认模型下拉。
+ * 不再单独占一张卡：供应商列表是这页的主体，连接方式只是列表的用法。
+ */
+export function CodexModeControls({
   mode,
   connecting,
   canSwitch,
@@ -91,37 +93,28 @@ export function CodexModeCard({
   run: Run;
   notify: Notify;
 }) {
-  const aggregate = mode === "aggregate";
   return (
-    <CxSection>
-      <CxCard className="cx-codex-connection">
-        <CxRow
-          detail={aggregate
-            ? t("打开的供应商合在一起，模型都列进 Codex 的模型选择器，不用切换。需要 Codex++ 在后台运行。")
-            : t("Codex 直接连一家供应商，关掉 Codex++ 也能用（需协议转换的除外）；换供应商点「使用」。")}
-          icon={<CxStatusIcon tone="ok">{aggregate ? <Waypoints /> : <Cable />}</CxStatusIcon>}
-          title={t("连接方式")}
-        >
-          <ConnectionModeSwitch
-            aggregateTitle={canSwitch ? t("Codex 改走 Codex++ 本地服务，用下面打开的全部供应商；新开的会话生效") : t("先在页面底部「高级」里打开供应商配置切换")}
-            canAggregate={canSwitch}
-            connecting={connecting}
-            directTitle={t("断开本地服务，还原接入前的直连配置；会先列出要还原的文件，确认后才改")}
-            label={t("Codex 的连接方式")}
-            mode={mode}
-            onAggregate={onAggregate}
-            onDirect={onDirect}
-          />
-        </CxRow>
-        {aggregate ? (
-          <CxRow detail={t("Codex 启动后默认用这个模型；其余模型在 Codex 的模型选择器里随时换。")} icon={<AgentGlyph agent="codex" />} title="Codex">
-            <Suspense fallback={null}>
-              <AgentModelPicker agentId="codex" busy={busy} notify={notify} payload={payload} run={run} />
-            </Suspense>
-          </CxRow>
-        ) : null}
-      </CxCard>
-    </CxSection>
+    <>
+      <ConnectionModeSwitch
+        aggregateTitle={canSwitch
+          ? t("聚合：Codex 经 Codex++ 本地服务，下面打开的供应商合在一起，模型都列进 Codex 的模型选择器，不用切换；需要 Codex++ 在后台运行")
+          : t("先在页面底部「更多设置」里打开供应商配置切换")}
+        canAggregate={canSwitch}
+        connecting={connecting}
+        directTitle={mode === "aggregate"
+          ? t("直连：断开本地服务，还原接入前的直连配置，关掉 Codex++ 也能用；会先列出要还原的文件，确认后才改")
+          : t("直连：Codex 直接连一家供应商，关掉 Codex++ 也能用（需协议转换的除外）；换供应商点「使用」")}
+        label={t("Codex 的连接方式")}
+        mode={mode}
+        onAggregate={onAggregate}
+        onDirect={onDirect}
+      />
+      {mode === "aggregate" ? (
+        <Suspense fallback={null}>
+          <AgentModelPicker agentId="codex" busy={busy} notify={notify} payload={payload} run={run} />
+        </Suspense>
+      ) : null}
+    </>
   );
 }
 

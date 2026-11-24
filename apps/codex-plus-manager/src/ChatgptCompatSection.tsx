@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { t } from "@/i18n";
 import type { BackendSettings } from "./app-types";
 import { ToggleVisual } from "./app-shared";
-import { CxCard, CxRow, CxSection } from "./cx-layout";
+import { CxRow } from "./cx-layout";
 
 type ProfileKey = "chatgptCompatName" | "chatgptCompatUsername" | "chatgptCompatEmail";
 
@@ -41,14 +41,14 @@ function ProfileInput({ field, form, label, placeholder, type, onSave }: {
   );
 }
 
-export function ChatgptCompatSection({ form, onSave }: {
+/** 「用 API Key 解锁 ChatGPT 专属入口」的两行，放在「连接与供应商」页底部「更多设置」折叠区里。 */
+export function ChatgptCompatRows({ form, onSave }: {
   form: BackendSettings;
   onSave: (next: BackendSettings) => void;
 }) {
   const enabled = Boolean(form.chatgptCompatEnabled);
   return (
-    <CxSection>
-      <CxCard>
+    <>
         <CxRow
           className="cx-preserve-row"
           detail={t("代码审查、图像、资料库等入口原本只在 ChatGPT 登录下可见；模型请求仍走你选的供应商。重新启动 Codex 后生效。")}
@@ -79,7 +79,6 @@ export function ChatgptCompatSection({ form, onSave }: {
             </div>
           </CxRow>
         ) : null}
-      </CxCard>
-    </CxSection>
+    </>
   );
 }

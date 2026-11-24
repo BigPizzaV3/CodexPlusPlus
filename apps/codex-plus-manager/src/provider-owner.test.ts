@@ -49,7 +49,7 @@ test("Claude 页：按归属筛、数目跟着列出的、行上带来源标记�
   // 分页数目、列表、「供应商 N」都从筛过的 pool 算。
   assert.match(source, /pool\.filter\(\(entry\) => viewOf\(entry\.protocol\) === view\)\.length/);
   assert.match(source, /count=\{pool\.length \|\| undefined\}/);
-  assert.match(source, /<ShowOtherAgentsToggle checked=\{showOtherAgents\} onChange=\{setShowOtherAgents\}/);
+  assert.match(source, /<MenuItem checked=\{showOtherAgents\} onClick=\{\(\) => setShowOtherAgents\(!showOtherAgents\)\}/);
   assert.match(source, /<OwnerBadge entry=\{entry\} page="claude" \/>/);
   assert.match(source, /owner="claude"/);
   const adder = readFileSync(path.join(import.meta.dirname, "GatewayProviders.tsx"), "utf8");

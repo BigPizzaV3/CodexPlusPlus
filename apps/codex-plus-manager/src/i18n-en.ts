@@ -2363,14 +2363,6 @@ export const EN_PLAIN: Record<string, string> = {
   "开启后 Codex++ 在本机 8000 端口起一个本地 ChatGPT 兼容服务，并改写 ~/.codex 的配置和登录（先备份，关闭时还原）。只在用 API Key 供应商或本地服务时生效，官方登录时不改动。":
     "When on, Codex++ runs a local ChatGPT compatibility service on port 8000 and rewrites ~/.codex config and login (backed up first, restored when turned off). Only applies with an API key provider or the local service; nothing changes under an official login.",
   "解锁": "Unlock",
-  "打开的供应商合在一起，模型都列进 Codex 的模型选择器，不用切换。需要 Codex++ 在后台运行。":
-    "Every provider you turn on is combined and all their models show up in Codex's model picker, with no switching. Needs Codex++ running in the background.",
-  "Codex 直接连一家供应商，关掉 Codex++ 也能用（需协议转换的除外）；换供应商点「使用」。":
-    "Codex talks to one provider directly and keeps working with Codex++ closed (except providers that need protocol conversion). Click Use to change provider.",
-  "Codex 改走 Codex++ 本地服务，用下面打开的全部供应商；新开的会话生效":
-    "Codex goes through the Codex++ local service and uses every provider turned on below. Applies to new sessions",
-  "Codex 启动后默认用这个模型；其余模型在 Codex 的模型选择器里随时换。":
-    "Codex starts with this model; switch to any other model in Codex's model picker.",
   "加进来的供应商都会合在一起给 Codex 用；Claude 等其它 Agent 也能用。":
     "Providers you add are combined for Codex, and Claude and other agents can use them too.",
   "这里没有 Codex 自己的供应商": "No providers of Codex's own here",
@@ -2391,6 +2383,17 @@ export const EN_PLAIN: Record<string, string> = {
     "Direct to {0}: skips Codex++ and keeps working with Codex++ closed; click Use below to change provider",
   "直连：用它自己的 ~/.claude/settings.json，不经 Codex++；下面 Anthropic 协议的供应商点「使用」改连那一家":
     "Direct: uses its own ~/.claude/settings.json without Codex++; click Use on an Anthropic-protocol provider below to connect to it",
+  "更多供应商操作": "More provider actions",
+  "默认模型与连接方式": "Default models and connection",
+  "保留实时改动": "Keeps live edits",
+  "已解锁 ChatGPT 入口": "ChatGPT entries unlocked",
+  "先在页面底部「更多设置」里打开供应商配置切换": "Turn on provider configuration switching under More settings at the bottom of the page first",
+  "聚合：Codex 经 Codex++ 本地服务，下面打开的供应商合在一起，模型都列进 Codex 的模型选择器，不用切换；需要 Codex++ 在后台运行":
+    "Combined: Codex goes through the Codex++ local service, every provider turned on below is combined and all their models show up in Codex's model picker, with no switching; needs Codex++ running in the background",
+  "直连：断开本地服务，还原接入前的直连配置，关掉 Codex++ 也能用；会先列出要还原的文件，确认后才改":
+    "Direct: disconnects the local service and restores the previous direct setup, which works with Codex++ closed; lists the files to restore and asks before changing them",
+  "直连：Codex 直接连一家供应商，关掉 Codex++ 也能用（需协议转换的除外）；换供应商点「使用」":
+    "Direct: Codex talks to one provider directly and keeps working with Codex++ closed (except providers that need protocol conversion); click Use to change provider",
   "先选默认模型": "Pick a default model first",
   "在 Claude Code 那一行选一个默认模型，就改为聚合。": "Pick a default model on the Claude Code row to switch to Combined.",
   "Claude Code 直连": "Claude Code direct connection",

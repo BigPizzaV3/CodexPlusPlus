@@ -25,7 +25,7 @@ import {
 } from "./gateway-model";
 import { t, tf } from "./i18n";
 import { entriesForPage } from "./provider-owner";
-import { OwnerBadge, ShowOtherAgentsToggle, useShowOtherAgents } from "./ProviderOwner";
+import { OwnerBadge, useShowOtherAgents } from "./ProviderOwner";
 
 /** Claude Desktop 在网关里的绑定：3p 模式直接用它，完整功能模式也按它的模型和「挑选」列模型。 */
 const AGENT: GatewayAgentId = "claude-desktop";
@@ -72,10 +72,9 @@ const directCapable = (entry: GatewayPoolEntry) =>
  * 「模型组」分页列本地服务「路由」里的组，可以直接设成两个 Claude 的默认模型。
  *
  * 版式和 Codex 的「连接与供应商」同一副骨架，两页对照着看得懂：
- * 「导入」「添加供应商」在标题行右侧（添加是主按钮）→ 顶部一张卡说这个 Agent 怎么接的
+ * 「导入」「添加供应商」在标题行右侧（添加是主按钮）→ 「供应商 N」列表是主体，放最前面 → 列表下面一张卡说这个 Agent 怎么接的
  * （Claude Desktop 始终经本地服务；Claude Code 和 Codex 一样有「聚合 / 直连」两种：直连时 Anthropic 协议的供应商点「使用」，
- * 不经 Codex++ 写进它自己的 settings.json）
- * → 「供应商 N」分区里只列供应商，N 是列出来的数目。
+ * 不经 Codex++ 写进它自己的 settings.json）。「供应商 N」分区里只列供应商，N 是列出来的数目。
  *
  * Codex 的直连供应商默认以引用的方式在共享供应商里（标「来自 Codex」，地址、Key、模型在 Codex 那边改）；
  * 不想看到它们，取消勾选「显示其他 Agent 的供应商」（按页记住）。
@@ -180,49 +179,21 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
           <Plus />{t("添加供应商")}
         </button>
       </TopbarActions>
-      {/* 顶部一张卡：两个 Claude 各用哪个默认模型（对应 Codex 页顶部的「Codex 登录」）。 */}
-      <CxSection className="claude-providers-agents">
-        <CxCard>
-          <CxRow
-            detail={t("始终经 Codex++ 本地服务：下面打开的供应商，聊天模型都会列进 Claude 的模型选择器；启动后默认用这个模型。")}
-            icon={<AgentGlyph agent={AGENT} />}
-            title="Claude Desktop"
-          >
-            <AgentModelPicker agentId={AGENT} busy={busy} notify={notify} payload={payload} run={run} />
-          </CxRow>
-          {payload && !claudeCode ? null : (
-            <CxRow
-              badges={claudeCode?.version ? <CxBadge>{claudeCode.version}</CxBadge> : null}
-              detail={claudeCodeDetail}
-              icon={<AgentGlyph agent="claude" />}
-              title={t("Claude Code（命令行）")}
-            >
-              {claudeCode ? (
-                <ConnectionModeSwitch
-                  aggregateTitle={t("Claude Code 改走 Codex++ 本地服务，用下面打开的全部供应商；新开的会话生效")}
-                  connecting={busy === "code:aggregate" || busy === "disable:claude"}
-                  directTitle={t("断开本地服务，还原 Claude Code 自己的 settings.json；会先列出要还原的文件，确认后才改")}
-                  label={t("Claude Code 的连接方式")}
-                  mode={codeMode}
-                  onAggregate={() => void connectCodeAggregate()}
-                  onDirect={() => { setPickingAggregate(false); setDirectTarget("restore"); }}
-                />
-              ) : null}
-              {codeMode === "aggregate" || pickingAggregate || !claudeCode ? (
-                <AgentModelPicker agentId="claude" busy={busy} notify={notify} payload={payload} run={run} />
-              ) : null}
-            </CxRow>
-          )}
-        </CxCard>
-      </CxSection>
       <CxSection
         // Key、额度、路由组在设置的「本地服务 → 共享供应商」里管，「返回」回到这一页。
         aside={(
           <>
-            {allPool.length ? (
-              <ShowOtherAgentsToggle checked={showOtherAgents} onChange={setShowOtherAgents} title={t("Codex 的直连供应商默认共享给 Claude；不勾时这里不列它们")} />
+            {/* 和 Codex 页一样：不常用的收进三点菜单，标题行只留列表本身。 */}
+            {allPool.length || onManage ? (
+              <Menu label={t("更多供应商操作")}>
+                {allPool.length ? (
+                  <MenuItem checked={showOtherAgents} onClick={() => setShowOtherAgents(!showOtherAgents)} title={t("Codex 的直连供应商默认共享给 Claude；不勾时这里不列它们")}>
+                    {t("显示其他 Agent 的供应商")}
+                  </MenuItem>
+                ) : null}
+                {onManage ? <MenuItem onClick={onManage}>{t("管理共享供应商")}</MenuItem> : null}
+              </Menu>
             ) : null}
-            {onManage ? <button className="cx-secondary" onClick={onManage} type="button">{t("管理共享供应商")}</button> : null}
           </>
         )}
         className="claude-providers"
@@ -341,6 +312,41 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
               </CxRow>
             );
           })}
+        </CxCard>
+      </CxSection>
+      {/* 列表下面一张卡：两个 Claude 各用哪个默认模型、Claude Code 怎么连。不常改，放在供应商列表后面。 */}
+      <CxSection className="claude-providers-agents" title={t("默认模型与连接方式")}>
+        <CxCard>
+          <CxRow
+            detail={t("始终经 Codex++ 本地服务：下面打开的供应商，聊天模型都会列进 Claude 的模型选择器；启动后默认用这个模型。")}
+            icon={<AgentGlyph agent={AGENT} />}
+            title="Claude Desktop"
+          >
+            <AgentModelPicker agentId={AGENT} busy={busy} notify={notify} payload={payload} run={run} />
+          </CxRow>
+          {payload && !claudeCode ? null : (
+            <CxRow
+              badges={claudeCode?.version ? <CxBadge>{claudeCode.version}</CxBadge> : null}
+              detail={claudeCodeDetail}
+              icon={<AgentGlyph agent="claude" />}
+              title={t("Claude Code（命令行）")}
+            >
+              {claudeCode ? (
+                <ConnectionModeSwitch
+                  aggregateTitle={t("Claude Code 改走 Codex++ 本地服务，用下面打开的全部供应商；新开的会话生效")}
+                  connecting={busy === "code:aggregate" || busy === "disable:claude"}
+                  directTitle={t("断开本地服务，还原 Claude Code 自己的 settings.json；会先列出要还原的文件，确认后才改")}
+                  label={t("Claude Code 的连接方式")}
+                  mode={codeMode}
+                  onAggregate={() => void connectCodeAggregate()}
+                  onDirect={() => { setPickingAggregate(false); setDirectTarget("restore"); }}
+                />
+              ) : null}
+              {codeMode === "aggregate" || pickingAggregate || !claudeCode ? (
+                <AgentModelPicker agentId="claude" busy={busy} notify={notify} payload={payload} run={run} />
+              ) : null}
+            </CxRow>
+          )}
         </CxCard>
       </CxSection>
       {adding ? (
