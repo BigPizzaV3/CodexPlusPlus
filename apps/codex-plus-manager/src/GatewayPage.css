@@ -2411,6 +2411,13 @@ body.gw-sorting * {
   font-weight: 600;
 }
 
+.shell .gw-chart-format svg { width: 15px; height: 15px; }
+.shell .gw-token-line { fill: none; stroke: hsl(var(--status-success)); stroke-width: 2.25; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; pointer-events: none; }
+.shell .gw-token-cursor { stroke: hsl(var(--muted-foreground) / .55); stroke-dasharray: 3 4; vector-effect: non-scaling-stroke; pointer-events: none; }
+.shell .gw-chart-legend i[data-kind="total"] { background: hsl(var(--status-success)); }
+.shell .gw-bar[data-future] .gw-bar-empty { opacity: .32; }
+.shell .gw-chart-coverage { margin: 8px 0 0; font-size: 11px; color: hsl(var(--muted-foreground)); }
+
 .shell .gw-chart-legend,
 .shell .gw-chart-facts {
   display: flex;

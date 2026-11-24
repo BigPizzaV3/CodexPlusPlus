@@ -1561,11 +1561,13 @@ export type UsageCounts = {
 };
 export type UsageCost = { currency: string; amount: number };
 export type UsageDay = UsageCounts & { date: string };
+export type UsageHour = UsageCounts & { hour: number };
 /** `costs` 只含填了价格的部分，旧版后端没有。 */
 export type UsageGroup = UsageCounts & { key: string; label: string; costs?: UsageCost[] };
 export type UsageSummary = {
   totals: UsageCounts;
   days: UsageDay[];
+  hours?: UsageHour[];
   byAgent: UsageGroup[];
   byProvider: UsageGroup[];
   byModel: UsageGroup[];

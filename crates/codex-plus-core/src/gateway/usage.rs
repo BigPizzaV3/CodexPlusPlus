@@ -84,6 +84,8 @@ struct UsageFile {
     /// `YYYY-MM-DD`（本地日期）→ 当天各组合的累计。
     #[serde(default)]
     days: BTreeMap<String, Vec<UsageRow>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    hourly: BTreeMap<String, BTreeMap<u8, UsageCounts>>,
     /// 不认识的顶层字段原样保留。
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
@@ -127,10 +129,25 @@ impl UsageStore {
 
     /// 记一个请求。`day` 是本地日期 `YYYY-MM-DD`。
     pub fn record(&self, day: &str, row: UsageRow) -> anyhow::Result<()> {
+        self.record_bucket(day, None, row)
+    }
+
+    fn record_bucket(&self, day: &str, hour: Option<u8>, row: UsageRow) -> anyhow::Result<()> {
         let _guard = write_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut file = self.load()?;
+        if let Some(hour) = hour {
+            file.hourly
+                .entry(day.to_string())
+                .or_default()
+                .entry(hour)
+                .or_default()
+                .add(&row.counts);
+            while file.hourly.len() > 2 {
+                file.hourly.pop_first();
+            }
+        }
         let rows = file.days.entry(day.to_string()).or_default();
         match rows.iter_mut().find(|known| {
             known.agent == row.agent
@@ -172,6 +189,18 @@ impl UsageStore {
                 .unwrap_or_else(|| today.to_string()),
         };
         let mut summary = UsageSummary::default();
+        if days == Some(1) {
+            summary.hours = file
+                .hourly
+                .get(today)
+                .into_iter()
+                .flatten()
+                .map(|(&hour, counts)| UsageHour {
+                    hour,
+                    counts: counts.clone(),
+                })
+                .collect();
+        }
         let mut day = first.clone();
         // 逐天补齐，没有请求的日子也画一根空柱子。
         let mut guard = 0;
@@ -331,6 +360,8 @@ pub struct UsageCost {
 pub struct UsageSummary {
     pub totals: UsageCounts,
     pub days: Vec<UsageDay>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hours: Vec<UsageHour>,
     pub by_agent: Vec<UsageGroup>,
     pub by_provider: Vec<UsageGroup>,
     pub by_model: Vec<UsageGroup>,
@@ -338,17 +369,29 @@ pub struct UsageSummary {
     pub costs: Vec<UsageCost>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageHour {
+    pub hour: u8,
+    #[serde(flatten)]
+    pub counts: UsageCounts,
+}
+
 /// 本地日期（`YYYY-MM-DD`）。
 pub fn local_day(timestamp_ms: u64) -> String {
+    local_day_and_hour(timestamp_ms).0
+}
+
+fn local_day_and_hour(timestamp_ms: u64) -> (String, Option<u8>) {
     rusqlite::Connection::open_in_memory()
         .and_then(|connection| {
             connection.query_row(
-                "SELECT date(?1 / 1000, 'unixepoch', 'localtime')",
+                "SELECT date(ts), CAST(strftime('%H', ts) AS INTEGER) FROM (SELECT datetime(?1 / 1000, 'unixepoch', 'localtime') AS ts)",
                 [timestamp_ms as i64],
-                |row| row.get::<_, String>(0),
+                |row| Ok((row.get(0)?, Some(row.get(1)?))),
             )
         })
-        .unwrap_or_else(|_| "1970-01-01".to_string())
+        .unwrap_or_else(|_| ("1970-01-01".to_string(), None))
 }
 
 /// 日期加减天数。
@@ -401,7 +444,8 @@ pub fn record_entry_in(store: &UsageStore, entry: &RequestLogEntry) -> anyhow::R
     } else {
         entry.started_at_ms
     };
-    store.record(&local_day(timestamp), row)
+    let (day, hour) = local_day_and_hour(timestamp);
+    store.record_bucket(&day, hour, row)
 }
 
 #[cfg(test)]
@@ -410,6 +454,48 @@ mod tests {
     use crate::gateway::store::GatewayProvider;
     use crate::request_log::RequestUsage;
     use crate::settings::RelayProfile;
+
+    #[test]
+    fn hourly_buckets_count_only_known_hours_and_keep_daily_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::at(dir.path().join("usage.json"));
+        let row = UsageRow {
+            counts: UsageCounts {
+                calls: 1,
+                input_tokens: 5,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        store
+            .record_bucket("2026-11-22", Some(8), row.clone())
+            .unwrap();
+        store
+            .record_bucket("2026-11-23", Some(8), row.clone())
+            .unwrap();
+        store.record("2026-11-24", row.clone()).unwrap();
+        store
+            .record_bucket("2026-11-24", Some(20), row.clone())
+            .unwrap();
+        store.record_bucket("2026-11-24", Some(20), row).unwrap();
+        let gateway = GatewaySettings::default();
+        let today = store.summary("2026-11-24", Some(1), &gateway).unwrap();
+        assert_eq!(today.totals.calls, 3);
+        assert_eq!(today.hours.len(), 1);
+        assert_eq!(today.hours[0].hour, 20);
+        assert_eq!(today.hours[0].counts.calls, 2);
+        assert_eq!(today.hours[0].counts.input_tokens, 10);
+        let older = store.summary("2026-11-22", Some(1), &gateway).unwrap();
+        assert_eq!(older.totals.calls, 1);
+        assert!(older.hours.is_empty());
+        assert!(
+            store
+                .summary("2026-11-24", None, &gateway)
+                .unwrap()
+                .hours
+                .is_empty()
+        );
+    }
 
     fn entry(
         agent: Option<&str>,

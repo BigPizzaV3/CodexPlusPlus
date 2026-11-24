@@ -5,6 +5,15 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "每小时 token": "Hourly tokens",
+  "每小时用量": "Hourly usage",
+  "图表样式": "Chart style",
+  "柱状图": "Column chart",
+  "折线图": "Line chart",
+  "Token 合计": "Total tokens",
+  "时段尚未开始": "This hour has not started",
+  "无小时记录": "No hourly recording",
+  "今天的用量只有按天汇总，尚无可展示的小时记录。": "Today's usage is available as a daily total only.",
   "Codex config.toml 里的插件：从目录安装的，以及别处装的（如 Codex 自带的）。关掉开关等于停用，不删文件。": "Plugins in Codex's config.toml: ones installed from the catalog and ones installed elsewhere (such as Codex's built-in ones). Turning one off disables it without deleting files.",
   "插件文件在，但 config.toml 里没有它的配置，Codex 不会加载；在目录里点开它重新安装即可。": "The plugin files are here but config.toml has no entry for it, so Codex won't load it. Open it in the catalog and reinstall.",
   "没有配置": "No config",
@@ -3884,6 +3893,8 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "{0} 个小时有已记录请求": "{0} hours with recorded requests",
+  "小时图覆盖 {0}/{1} 次调用，其余只计入当天合计。": "Hourly chart covers {0}/{1} requests. The others are included in the daily total only.",
   "启用插件 {0}": "Enable plugin {0}",
   "已完成 {0} / {1} 步": "{0} of {1} steps done",
   "{0}，测试通过。": "{0}, test passed.",
