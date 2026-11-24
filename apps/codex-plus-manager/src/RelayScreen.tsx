@@ -19,7 +19,6 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
   Cable,
-  CheckCircle2,
   ChevronRight,
   Download,
   GripVertical,
@@ -90,7 +89,6 @@ import {
   providerInitial,
   relayProfileConfigBrief,
   relayProfileModeLabel,
-  relayProfileTagTone,
   relayProtocolShortLabel,
   SettingsAutoSave,
   stringifyError,
@@ -893,7 +891,7 @@ export function RelayScreen({
               </CxEmpty>
             </CxCard>
           ) : null}
-          {providerView === "shared" ? null : <RelayProfileList
+          {providerView === "shared" || !visibleProfiles.length ? null : <RelayProfileList
             form={normalized}
             visibleProfiles={visibleProfiles}
             onEdit={(profileId) => void editRelayProfile(profileId)}
@@ -1198,7 +1196,7 @@ function RelayProfileList({
   return (
     <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
       <SortableContext items={visibleProfiles.map((profile) => profile.id)} strategy={verticalListSortingStrategy}>
-        <div className="relay-profile-list">
+        <CxCard className="cx-relay-list">
           {visibleProfiles.map((profile, index) => (
             <SortableRelayProfileCard
               poolLink={poolLink}
@@ -1213,7 +1211,7 @@ function RelayProfileList({
               profile={profile}
             />
           ))}
-        </div>
+        </CxCard>
       </SortableContext>
     </DndContext>
   );
@@ -1254,9 +1252,12 @@ function SortableRelayProfileCard({
     transition: isDragging ? "none" : transition ?? "transform 200ms ease",
   };
 
+  const name = profile.name || t("未命名供应商");
+  // 和「共享」分页、Claude 的供应商页同一种行（CxRow 的结构）：头像、名字 + 标签、一行说明，右侧控件。
+  // 整行可点开编辑；拖动柄悬停才出现，放在行左侧留白里，不占位，图标和文字与别的列表对齐。
   return (
     <div
-      className={`relay-profile-card ${active ? "active" : ""} ${isDragging ? "dragging" : ""}`}
+      className={`cx-row cx-row-clickable cx-relay-row ${isDragging ? "dragging" : ""}`.trim()}
       data-gateway-managed={gatewayManaged || undefined}
       data-relay-profile-id={profile.id}
       key={profile.id}
@@ -1274,62 +1275,63 @@ function SortableRelayProfileCard({
     >
       <button
         aria-label={t("拖动排序")}
-        className="relay-drag"
+        className="cx-relay-drag"
         title={t("拖动排序")}
         type="button"
         {...attributes}
         {...listeners}
       >
-        <GripVertical className="h-4 w-4" />
+        <GripVertical />
       </button>
-      <span className="relay-index" title={profile.name || t("未命名供应商")}>
-        {providerInitial(profile.name)}
-      </span>
-      <span className="relay-summary">
-        {/* 参照 CC Switch：接入方式、非 Responses 协议做成名字旁的标签，第二行只放地址。 */}
-        <strong>
-          <span className="relay-summary-name">{profile.name || t("未命名供应商")}</span>
-          {gatewayManaged ? (
-            <>
-              <span className="relay-tag" data-tone="gateway">{t("共享供应商")}</span>
-              {codexGatewayKeepsLogin(profile) ? <span className="relay-tag" data-tone="official">{t("ChatGPT 登录")}</span> : null}
-            </>
-          ) : (
-            <span className="relay-tag" data-tone={relayProfileTagTone(profile)}>{relayProfileModeLabel(profile)}</span>
-          )}
-          {!gatewayManaged && !isAggregateRelayProfile(profile) && profile.protocol !== "responses" ? (
-            <span className="relay-tag" data-tone="protocol">{relayProtocolShortLabel(profile.protocol)}</span>
+      <div className="cx-row-main">
+        <span className="cx-row-icon"><Avatar baseUrl={profile.baseUrl} name={name} size="sm" /></span>
+        <span className="cx-row-copy">
+          {/* 参照 CC Switch：接入方式、非 Responses 协议做成名字旁的标签，第二行只放地址。 */}
+          <span className="cx-row-title">
+            <strong title={name}>{name}</strong>
+            {active ? <CxBadge tone="ok">{t("使用中")}</CxBadge> : null}
+            {gatewayManaged ? (
+              <>
+                <CxBadge>{t("共享供应商")}</CxBadge>
+                {codexGatewayKeepsLogin(profile) ? <CxBadge>{t("ChatGPT 登录")}</CxBadge> : null}
+              </>
+            ) : (
+              <CxBadge>{relayProfileModeLabel(profile)}</CxBadge>
+            )}
+            {!gatewayManaged && !isAggregateRelayProfile(profile) && profile.protocol !== "responses" ? (
+              <CxBadge>{relayProtocolShortLabel(profile.protocol)}</CxBadge>
+            ) : null}
+            {!billing.probe && billing.settled ? (
+              <RelayBillingRetry failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} />
+            ) : null}
+          </span>
+          <span className="cx-row-detail">
+            {gatewayManaged
+              ? codexGatewayModelCount(profile)
+                ? tf("经 Codex++ 本地服务，用共享供应商里的 {0} 个模型；在「Agent 接入」里管理", [codexGatewayModelCount(profile)])
+                : t("经 Codex++ 本地服务，用共享供应商里的模型；在「Agent 接入」里管理")
+              : profile.relayMode === "official"
+              ? profile.officialMixApiKey
+                ? profile.baseUrl || t("未填写 URL")
+                : t("使用 Codex 当前登录的 ChatGPT 账号")
+              : relayProfileConfigBrief(profile)}
+          </span>
+          {billing.probe ? (
+            <RelayBillingLine failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} probe={billing.probe} />
           ) : null}
-          {active ? <span className="relay-active-badge">{t("使用中")}</span> : null}
-          {!billing.probe && billing.settled ? (
-            <RelayBillingRetry failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} />
-          ) : null}
-        </strong>
-        <small>
-          {gatewayManaged
-            ? codexGatewayModelCount(profile)
-              ? tf("经 Codex++ 本地服务，用共享供应商里的 {0} 个模型；在「Agent 接入」里管理", [codexGatewayModelCount(profile)])
-              : t("经 Codex++ 本地服务，用共享供应商里的模型；在「Agent 接入」里管理")
-            : profile.relayMode === "official"
-            ? profile.officialMixApiKey
-              ? profile.baseUrl || t("未填写 URL")
-              : t("使用 Codex 当前登录的 ChatGPT 账号")
-            : relayProfileConfigBrief(profile)}
-        </small>
-        {billing.probe ? (
-          <RelayBillingLine failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} probe={billing.probe} />
-        ) : null}
-      </span>
-      <span className="relay-card-actions">
-        <Button
-          className={`relay-use-button ${active ? "active" : ""}`}
+        </span>
+      </div>
+      {/* 右侧和「共享」分页同一个顺序：标记、「使用」、三点菜单。 */}
+      <div className="cx-row-controls">
+        {gatewayManaged || !poolLink ? null : <PoolLinkControl link={poolLink} profileId={profile.id} />}
+        <button
+          className="cx-secondary"
           disabled={disabled}
           onClick={(event) => {
             event.stopPropagation();
             if (disabled) return;
             onSwitchProfile(profile.id);
           }}
-          size="sm"
           title={
             disabled
               ? t("供应商切换中")
@@ -1341,15 +1343,13 @@ function SortableRelayProfileCard({
                     ? t("重新接入 Codex++ 本地服务")
                     : t("设为当前")
           }
-          variant={active ? "secondary" : "outline"}
+          type="button"
         >
-          <CheckCircle2 className="h-4 w-4" />
           {active ? t("使用中") : t("使用")}
-        </Button>
-        {gatewayManaged || !poolLink ? null : <PoolLinkControl link={poolLink} profileId={profile.id} />}
+        </button>
         {/* 次要操作收进三点菜单（原来是一排五个图标按钮）：多开、测试、编辑、复制、删除。点整行也是编辑。 */}
         {gatewayManaged ? null : (
-        <span className="relay-card-extra" onClick={(event) => event.stopPropagation()}>
+        <span className="cx-relay-menu" onClick={(event) => event.stopPropagation()}>
           <Menu label={t("供应商操作")}>
             <MenuItem onClick={() => onEdit(profile.id)}>{t("编辑")}</MenuItem>
             <MenuItem
@@ -1383,7 +1383,7 @@ function SortableRelayProfileCard({
           </Menu>
         </span>
         )}
-      </span>
+      </div>
     </div>
   );
 }

@@ -270,8 +270,13 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   // 列表里托管的网关供应商单独标出，只能「使用」，不能编辑、删除。
   const card = functionSource("SortableRelayProfileCard");
   assert.match(card, /const gatewayManaged = profile\.id === CODEX_GATEWAY_RELAY_ID;/);
-  assert.match(card, /data-tone="gateway">\{t\("共享供应商"\)\}/);
-  assert.match(card, /\{gatewayManaged \? null : \(\s*<span className="relay-card-extra" onClick=\{\(event\) => event\.stopPropagation\(\)\}>/);
+  assert.match(card, /<CxBadge>\{t\("共享供应商"\)\}<\/CxBadge>/);
+  assert.match(card, /\{gatewayManaged \? null : \(\s*<span className="cx-relay-menu" onClick=\{\(event\) => event\.stopPropagation\(\)\}>/);
+  // 和「共享」分页、Claude 的供应商页同一种行：CxRow 的结构、共享头像、CxBadge 标签，右侧「使用」是 cx-secondary。
+  assert.match(card, /className=\{`cx-row cx-row-clickable cx-relay-row/);
+  assert.match(card, /<span className="cx-row-icon"><Avatar baseUrl=\{profile\.baseUrl\} name=\{name\} size="sm" \/><\/span>/);
+  assert.match(card, /<div className="cx-row-controls">\s*\{gatewayManaged \|\| !poolLink \? null : <PoolLinkControl/);
+  assert.doesNotMatch(card, /relay-tag|relay-index|relay-active-badge|relay-summary/);
   // 次要操作在三点菜单里；删除走公共确认（先查占用再二次确认）。
   assert.match(card, /<Menu label=\{t\("供应商操作"\)\}>/);
   assert.match(card, /confirmRemoveRelayProfile\(form, profile, actions, "relay"\)/);

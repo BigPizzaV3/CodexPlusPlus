@@ -825,59 +825,59 @@
 
 /* ── Codex 连接（原旧版供应商配置 + 旧版代理设置） ───────────── */
 
-/* 直连供应商卡片：沿用原卡片结构，去掉外框，和其它列表一样平铺在一张卡里。 */
-:root .shell .cx-codex-connection-page .relay-profile-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  overflow: hidden;
-  border-radius: var(--cx-radius);
+/* 直连供应商行：结构同 CxRow（和「共享」分页、Claude 的供应商页一样），这里只补拖动排序。
+   拖动柄放在行左侧 14px 留白里、悬停或键盘聚焦才出现，不占位，图标和文字与别的列表对齐。 */
+:root .shell .cx-relay-row {
+  position: relative;
+}
+
+:root .shell .cx-relay-row:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: -2px;
+}
+
+:root .shell .cx-relay-row.dragging {
+  z-index: 2;
   background: hsl(var(--card));
+  box-shadow: var(--shadow-lg);
 }
 
-:root .shell .cx-codex-connection-page .relay-profile-card {
-  min-height: 56px;
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-}
-
-:root .shell .cx-codex-connection-page .relay-profile-card + .relay-profile-card {
-  border-top: 1px solid hsl(var(--cx-row-divider));
-}
-
-:root .shell .cx-codex-connection-page .relay-profile-card:hover {
-  background: hsl(var(--accent) / 0.35);
-}
-
-:root .shell .cx-codex-connection-page .relay-profile-card.active {
-  background: hsl(var(--accent) / 0.55);
-  box-shadow: inset 2px 0 0 hsl(var(--status-success));
-}
-
-:root .shell .cx-codex-connection-page .relay-card-actions {
+:root .shell .cx-relay-drag {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  display: inline-flex;
+  width: 14px;
+  height: 28px;
   align-items: center;
-  gap: 8px;
-}
-
-:root .shell .cx-codex-connection-page .relay-tag {
+  justify-content: center;
+  padding: 0;
   border: 0;
-  border-radius: 6px;
-  background: hsl(var(--accent));
-  color: hsl(var(--foreground) / 0.72);
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  cursor: grab;
+  opacity: 0;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease;
 }
 
-:root .shell .cx-codex-connection-page .relay-active-badge {
-  border: 0;
-  border-radius: 6px;
-  background: hsl(var(--status-success) / 0.14);
-  color: hsl(var(--status-success));
+:root .shell .cx-relay-row:hover .cx-relay-drag,
+:root .shell .cx-relay-drag:focus-visible,
+:root .shell .cx-relay-row.dragging .cx-relay-drag {
+  opacity: 1;
 }
 
-:root .shell .cx-codex-connection-page .relay-use-button {
-  border-radius: 8px;
+:root .shell .cx-relay-drag:active {
+  cursor: grabbing;
+}
+
+:root .shell .cx-relay-drag svg {
+  width: 12px;
+  height: 12px;
+}
+
+:root .shell .cx-relay-menu {
+  display: inline-flex;
 }
 
 /* 行里的「加入供应商池」是图标按钮，和三点菜单同尺寸；批量加入在分区标题右侧。 */
@@ -1183,17 +1183,6 @@
 /* 连接方式：一行，切换按钮和菜单在右侧。 */
 :root .shell .cx-codex-connection .cx-row {
   min-height: 60px;
-}
-
-/* 直连供应商卡片：整行可点开编辑，次要操作只剩一个三点菜单，常显（不再悬停才出现）。 */
-:root .shell .cx-codex-connection-page .relay-profile-card {
-  cursor: pointer;
-}
-
-:root .shell .cx-codex-connection-page .relay-profile-card .relay-card-extra {
-  display: inline-flex;
-  opacity: 1;
-  visibility: visible;
 }
 
 /* 聚合两个分页下的一行说明：它是 Codex 专用的小网关，可以迁到网关。 */
