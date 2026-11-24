@@ -48,6 +48,7 @@ import { importCandidates, presetHost, protocolLabel, providerEnabled, type Gate
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { aggregateMemberCandidates } from "./aggregate-members";
 import { NativeAuthControl } from "./NativeAuthControls";
+import { ChatgptCompatSection } from "./ChatgptCompatSection";
 import { ThirdPartyImportDialog } from "./ThirdPartyImportDialog";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
@@ -932,6 +933,10 @@ export function RelayScreen({
             </CxRow>
           </CxCard>
         </CxSection>
+      ) : null}
+      {/* 配置切换关掉时承诺不写 config.toml / auth.json，这个开关也就不显示。 */}
+      {normalized.relayProfilesEnabled ? (
+        <ChatgptCompatSection form={normalized} onSave={(next) => void saveRelaySettings(next)} />
       ) : null}
       {/* 高级：配置切换总开关、目录外模型映射、供应商独立代理、环境检测（原「旧版代理设置」页）。
           都是直连专用：被网关接管时整块不显示；配置切换被关掉时仍显示，好把它重新打开。 */}
