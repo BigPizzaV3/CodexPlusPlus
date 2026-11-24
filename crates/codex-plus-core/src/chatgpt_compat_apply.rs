@@ -170,13 +170,74 @@ fn restore_file(home: &Path, name: &str, stash_name: &str, toml: bool) -> anyhow
         restore::restore_json(
             stash.before.as_deref(),
             live.as_deref(),
-            &stash.changed,
-            |key, _before, current| restore::value_at(current, &key.path) != key.written.as_ref(),
+            &auth_keys_to_restore(&stash.changed),
+            keep_auth_key,
         )?
     };
     restore::write_or_remove(&path, restored.as_deref())?;
     restore::remove_stash(&stash_file);
     Ok(())
+}
+
+/// 登录相关的键按顶层整体还原：存档按两层记了 `tokens.access_token` 这样的子键，
+/// 而 Codex 刷新 token 时会整块改写 `tokens`，逐个子键还原会留下半个登录。
+fn auth_keys_to_restore(changed: &[restore::ChangedKey]) -> Vec<restore::ChangedKey> {
+    let mut out: Vec<restore::ChangedKey> = Vec::new();
+    for key in changed {
+        let key = match key.path.first().map(String::as_str) {
+            Some(top @ ("tokens" | "last_refresh" | "auth_mode")) => restore::ChangedKey {
+                path: vec![top.to_string()],
+                written: None,
+            },
+            _ => key.clone(),
+        };
+        if !out.iter().any(|known| known.path == key.path) {
+            out.push(key);
+        }
+    }
+    out
+}
+
+/// 还原 `auth.json` 时哪些键保留当前值。
+///
+/// 登录相关的键（`tokens` / `last_refresh` / `auth_mode`）看当前登录是不是还是本地假账号：
+/// 开着期间 Codex 会自己刷新 token、改写这几项，不能当成用户改的；只有换成了真实登录才保留。
+/// 其它键（如 API Key）开着期间被改过就保留。
+fn keep_auth_key(key: &restore::ChangedKey, _before: &Value, current: &Value) -> bool {
+    match key.path.first().map(String::as_str) {
+        Some("tokens" | "last_refresh" | "auth_mode") => !login_is_local(current),
+        _ => restore::value_at(current, &key.path) != key.written.as_ref(),
+    }
+}
+
+/// 当前登录是不是本地假账号（或者已经没有登录）。
+fn login_is_local(auth: &Value) -> bool {
+    let Some(tokens) = auth.get("tokens").filter(|tokens| tokens.is_object()) else {
+        return true;
+    };
+    if tokens.get("account_id").and_then(Value::as_str) == Some(ACCOUNT_ID) {
+        return true;
+    }
+    ["access_token", "id_token"].iter().any(|name| {
+        tokens
+            .get(*name)
+            .and_then(Value::as_str)
+            .and_then(jwt_account_id)
+            .is_some_and(|account| account == ACCOUNT_ID)
+    })
+}
+
+fn jwt_account_id(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn stash_path(name: &str) -> std::path::PathBuf {
@@ -361,6 +422,44 @@ mod tests {
     }
 
     #[test]
+    fn disable_removes_tokens_that_codex_refreshed_while_enabled() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk"}"#).unwrap();
+        enable(home).unwrap();
+        // Codex 用本地签发的 token 刷新后改写：没有 account_id，last_refresh 也变了。
+        let mut auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+        let token = auth["tokens"]["access_token"].clone();
+        auth["tokens"] = json!({ "access_token": token, "id_token": token });
+        auth["last_refresh"] = json!("2030-01-01T00:00:00Z");
+        std::fs::write(home.join("auth.json"), auth.to_string()).unwrap();
+
+        disable(home).unwrap();
+        let auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth, json!({ "OPENAI_API_KEY": "sk" }));
+    }
+
+    #[test]
+    fn disable_keeps_a_real_login_made_while_enabled() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk"}"#).unwrap();
+        enable(home).unwrap();
+        let real = json!({ "OPENAI_API_KEY": "sk", "auth_mode": "chatgpt",
+            "tokens": { "access_token": "a.b.c", "account_id": "acc-real" } });
+        std::fs::write(home.join("auth.json"), real.to_string()).unwrap();
+        disable(home).unwrap();
+        let auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth["tokens"]["account_id"], "acc-real");
+        assert_eq!(auth["auth_mode"], "chatgpt");
+    }
+
+    #[test]
     fn disable_keeps_an_api_key_written_while_enabled() {
         let _state = StateGuard::new();
         let dir = home();
@@ -375,6 +474,6 @@ mod tests {
         let auth: Value =
             serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
         assert_eq!(auth["OPENAI_API_KEY"], "sk-new");
-        assert!(auth.get("tokens").is_none());
+        assert!(auth.get("tokens").is_none(), "{auth}");
     }
 }
