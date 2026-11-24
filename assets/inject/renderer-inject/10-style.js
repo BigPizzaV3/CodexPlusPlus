@@ -428,6 +428,20 @@
       .codex-plus-provider-item-actions button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--codex-plus-text-secondary); cursor: pointer; }
       .codex-plus-provider-item-actions button:hover:not(:disabled) { background: var(--codex-plus-bg-hover); }
       .codex-plus-provider-item-actions button:disabled { opacity: .3; cursor: default; }
+      /* 顶部的连接方式（聚合 / 直连），和管理器「连接与供应商」同一个切换；当前那段按下去不能再点。 */
+      .codex-plus-provider-mode-switch { gap: 12px; }
+      .codex-plus-provider-mode-switch button:disabled { cursor: default; }
+      .codex-plus-provider-mode-switch button:disabled:not([aria-selected="true"]) { opacity: .5; }
+      .codex-plus-provider-mode-hint { min-width: 0; overflow: hidden; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+      /* 聚合时每行一个开关；「Codex 登录身份」贴在侧栏底部。 */
+      .codex-plus-provider-item > .codex-plus-toggle { flex: 0 0 auto; }
+      .codex-plus-provider-sidebar { display: flex; flex-direction: column; }
+      .codex-plus-provider-sidebar > * { flex-shrink: 0; }
+      .codex-plus-provider-login { margin-top: auto; padding: 12px 0 2px; border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
+      .codex-plus-provider-login .codex-plus-provider-menu, .codex-plus-provider-login .codex-plus-menu-trigger { width: 100%; }
+      .codex-plus-provider-login .codex-plus-provider-menu { position: relative; padding: 0 4px; box-sizing: border-box; }
+      .codex-plus-provider-login > .codex-plus-provider-help { padding: 6px 8px 0; line-height: 16px; }
+      .codex-plus-provider-menu-popover .codex-plus-menu-item:disabled { opacity: .45; cursor: default; }
       .codex-plus-provider-badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 16px; color: var(--codex-plus-text-secondary); background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); }
       .codex-plus-provider-badge[data-tone="active"] { color: var(--codex-plus-success, #10a37f); }
       .codex-plus-provider-badge[data-tone="new"] { color: var(--codex-plus-warning, #d97706); }

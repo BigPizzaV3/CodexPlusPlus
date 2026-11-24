@@ -608,13 +608,14 @@
     const value = trigger.dataset.value || "";
     trigger.setAttribute("aria-expanded", "true");
     trigger.insertAdjacentHTML("afterend", `<div class="codex-plus-menu-popover codex-plus-provider-menu-popover" role="menu" aria-label="${escapeHtml(trigger.dataset.menuLabel || "")}">${options
-      .map(([id, text]) => `<button type="button" class="codex-plus-menu-item" role="menuitemradio" aria-checked="${String(id === value)}" data-codex-provider-menu-value="${escapeHtml(id)}"><span class="codex-plus-menu-item-label">${escapeHtml(text)}</span>${id === value ? codexPlusMenuIcons.check : ""}</button>`)
+      // 第三项为 true 时置灰（如官方登录供应商下的「本地账号」），键盘也跳过它。
+      .map(([id, text, disabled]) => `<button type="button" class="codex-plus-menu-item" role="menuitemradio" aria-checked="${String(id === value)}" data-codex-provider-menu-value="${escapeHtml(id)}"${disabled ? ' disabled aria-disabled="true"' : ""}><span class="codex-plus-menu-item-label">${escapeHtml(text)}</span>${id === value ? codexPlusMenuIcons.check : ""}</button>`)
       .join("")}</div>`);
     // Codex 在 document 捕获阶段把按键送进输入框，菜单的方向键 / Esc 要在 window 捕获阶段先拿到。
     window.addEventListener("keydown", codexPlusProviderMenuKeydown, true);
     window.addEventListener("pointerdown", codexPlusProviderMenuPointerdown, true);
     const menu = trigger.nextElementSibling;
-    (menu?.querySelector('[aria-checked="true"]') || menu?.querySelector(".codex-plus-menu-item"))?.focus({ preventScroll: true });
+    (menu?.querySelector('[aria-checked="true"]:not(:disabled)') || menu?.querySelector(".codex-plus-menu-item:not(:disabled)"))?.focus({ preventScroll: true });
   }
 
   /** 收起菜单；`refocus` 时焦点回到按钮（键盘操作关掉菜单后不丢焦点）。 */
@@ -640,7 +641,7 @@
   function codexPlusProviderMenuKeydown(event) {
     const menu = document.querySelector(".codex-plus-provider-menu-popover");
     if (!menu) return codexPlusProviderCloseMenu();
-    const items = Array.from(menu.querySelectorAll(".codex-plus-menu-item"));
+    const items = Array.from(menu.querySelectorAll(".codex-plus-menu-item:not(:disabled)"));
     const index = items.indexOf(document.activeElement);
     let next = null;
     if (event.key === "ArrowDown") next = items[(index + 1) % items.length];
@@ -698,7 +699,15 @@
       if (list) codexPlusProviderApplyModelLines(codexPlusProviderModelRowsText(list));
       return;
     }
+    if (kind === "login-identity") {
+      void codexPlusLoginIdentityChoose(value);
+      return;
+    }
     if (kind === "new") {
+      if (value === "toggle-others") {
+        codexPlusGatewayPageState.showOthers = !codexPlusGatewayPageState.showOthers;
+        return renderCodexPlusProviderPage();
+      }
       if (value === "shared") {
         void codexPlusProviderConfirmDiscard().then(async (ok) => {
           if (!ok || !(await codexPlusGatewayConfirmDiscard())) return;
@@ -726,6 +735,7 @@
   /** 菜单的点击（开合、选中）；是它的事件就处理并返回 true。 */
   function codexPlusProviderHandleMenuClick(target) {
     const item = target.closest(".codex-plus-provider-menu-popover .codex-plus-menu-item");
+    if (item?.disabled) return true;
     if (item) {
       codexPlusProviderChooseMenuItem(item);
       return true;
@@ -997,24 +1007,31 @@
       return;
     }
     const scroll = panel.querySelector(".codex-plus-provider-detail")?.scrollTop || 0;
-    // 直连和共享供应商一份列表（和管理器「连接与供应商」一样）：上面直连，下面「共享供应商」（经本地服务）；
-    // 选中哪一类，右侧就是哪一类的详情（state.tab 记的是当前看的是哪一类）。用哪家看哪一行「使用中」。
+    // 和管理器「连接与供应商」一样：顶部选连接方式（聚合 / 直连），下面一份供应商列表。
+    // 聚合时列共享供应商，每家一个开关（打开的合在一起给 Codex 用）；直连时列 Codex 自己的直连供应商，点「使用」换一家。
+    // 看哪一类跟着连接方式走（state.tab），别处改了连接方式，轮询重读后这里也跟着换。
     const gatewayMode = state.data?.gatewayMode === true;
+    state.tab = gatewayMode ? "gateway" : "direct";
     const footer = `<div class="codex-plus-provider-footer" data-codex-provider-footer></div>`;
-    const sharedList = codexPlusGatewayPageState.payload
-      ? renderCodexPlusGatewayList()
-      : `<div class="codex-plus-provider-help">${codexPlusGatewayPageState.busy === "load" ? "正在读取共享供应商…" : escapeHtml(codexPlusGatewayPageState.status || "还没有读取共享供应商")} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`;
-    const detailBody = state.tab === "gateway"
+    const list = gatewayMode
+      ? codexPlusGatewayPageState.payload
+        ? renderCodexPlusGatewayList()
+        : `<div class="codex-plus-provider-help">${codexPlusGatewayPageState.busy === "load" ? "正在读取共享供应商…" : escapeHtml(codexPlusGatewayPageState.status || "还没有读取共享供应商")} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`
+      : renderCodexPlusProviderList();
+    const detailBody = gatewayMode
       ? `${renderCodexPlusGatewayModeBar()}${renderCodexPlusGatewayDetail()}`
-      : `${gatewayMode ? '<div class="codex-plus-provider-note">Codex 现在经本地服务（下面「共享供应商」里标着用的是哪一家）；在这里点「使用」会先断开本地服务并还原。</div>' : ""}${renderCodexPlusProviderDetail()}`;
-    panel.innerHTML = `<div class="codex-plus-provider-shell"><div class="codex-plus-provider-layout">
+      : renderCodexPlusProviderDetail();
+    // 「+ 新建」：聚合时加共享供应商；直连时加直连供应商，或直连专用的模型聚合 / 故障转移。
+    const newOptions = gatewayMode
+      ? [["shared", "添加供应商"], ["toggle-others", codexPlusGatewayPageState.showOthers ? "隐藏其他 Agent 的供应商" : "显示其他 Agent 的供应商"]]
+      : [["direct", "添加供应商"], ["model", "新建模型聚合"], ["failover", "新建故障转移"]];
+    panel.innerHTML = `<div class="codex-plus-provider-shell">${renderCodexPlusProviderModeSwitch(gatewayMode)}<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
         <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
-          ${codexPlusProviderActionMenu("new", "+ 新建", [["direct", "直连供应商"], ["failover", "故障转移（聚合）"], ["model", "模型聚合"], ["shared", "共享供应商（经本地服务）"]], state.busy || codexPlusGatewayPageState.busy ? "disabled" : "")}</div>
+          ${codexPlusProviderActionMenu("new", "+ 新建", newOptions, state.busy || codexPlusGatewayPageState.busy ? "disabled" : "")}</div>
         ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-note">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
-        ${renderCodexPlusProviderList()}
-        <div class="codex-plus-provider-sidebar-header" data-codex-provider-subheader="shared" title="多 Key 轮换、出错换下一家、协议自动转换；Claude 等其它 Agent 也能用"><span>共享供应商</span></div>
-        ${sharedList}
+        ${list}
+        ${renderCodexPlusLoginIdentity()}
       </aside>
       <section class="codex-plus-provider-detail">
         ${detailBody}
@@ -1187,17 +1204,8 @@
     const state = codexPlusProviderPageState;
     if (!target) return;
     if (codexPlusProviderHandleMenuClick(target)) return;
-    // 从直连切到看共享供应商：先确认放弃直连这边没保存的修改；同一家再点一次也要切过去。
-    const sharedSelect = target.closest("[data-codex-gateway-select]");
-    if (sharedSelect && state.tab !== "gateway") {
-      if (!(await codexPlusProviderConfirmDiscard())) return;
-      state.tab = "gateway";
-      if (sharedSelect.dataset.codexGatewaySelect === codexPlusGatewayPageState.selectedId && !codexPlusGatewayPageState.isNew) {
-        codexPlusGatewaySetStatus("");
-        return renderCodexPlusProviderPage();
-      }
-    }
-    if (target.closest("[data-codex-gateway-select], [data-codex-gateway-move], [data-codex-gateway-action], [data-codex-gateway-key-replace], [data-codex-gateway-key-delete]")) {
+    // 一次只列一类（跟着连接方式），共享供应商的点击都交给 44 分片。
+    if (target.closest("[data-codex-gateway-select], [data-codex-gateway-move], [data-codex-gateway-action], [data-codex-gateway-member], [data-codex-gateway-key-replace], [data-codex-gateway-key-delete]")) {
       await codexPlusGatewayHandleClick(target);
       return;
     }
@@ -1210,12 +1218,6 @@
     const select = target.closest("[data-codex-provider-select]");
     if (select) {
       const id = select.dataset.codexProviderSelect;
-      // 从共享供应商切回看直连：先确认放弃共享那边没保存的修改。
-      if (state.tab === "gateway") {
-        if (!(await codexPlusGatewayConfirmDiscard())) return;
-        state.tab = "direct";
-        if (id === state.selectedId && !state.isNew) return renderCodexPlusProviderPage();
-      }
       if (id === state.selectedId && !state.isNew) return;
       if (!(await codexPlusProviderConfirmDiscard())) return;
       codexPlusProviderSelect(id);

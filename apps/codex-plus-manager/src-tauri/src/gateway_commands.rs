@@ -3753,6 +3753,16 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
                 arg(&args, "agent")?,
                 arg(&args, "previewToken")?,
             )),
+            "set_gateway_pool_member" => to_value(set_gateway_pool_member(
+                arg(&args, "agents")?,
+                arg(&args, "id")?,
+                arg(&args, "used")?,
+            )),
+            "get_native_auth_state" => to_value(get_native_auth_state()),
+            "set_codex_login_identity" => to_value(set_codex_login_identity(
+                arg(&args, "kind")?,
+                arg(&args, "accountRef")?,
+            )),
             other => return Err(format!("不支持的网关命令 {other}")),
         })
     };
