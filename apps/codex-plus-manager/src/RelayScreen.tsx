@@ -40,16 +40,17 @@ import { useSponsorPresets } from "./sponsor-store";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Avatar, Switch } from "./gateway-ui";
+import { Avatar, Switch, makeRun, type Run } from "./gateway-ui";
 import { useGatewayPayload } from "./hub-shared";
 import { publishGatewayPayload } from "./gateway-store";
-import { importCandidates, presetHost, protocolLabel, providerEnabled, type GatewayPayload, type GatewayPoolEntry, type GatewayResult } from "./gateway-model";
+import { importCandidates, type GatewayResult } from "./gateway-model";
 import { entriesForPage } from "./provider-owner";
 import { OwnerBadge, ShowOtherAgentsToggle, useShowOtherAgents } from "./ProviderOwner";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { aggregateMemberCandidates } from "./aggregate-members";
 import { NativeAuthControl } from "./NativeAuthControls";
 import { ChatgptCompatSection } from "./ChatgptCompatSection";
+import { CodexAggregateList, CodexModeCard, type CodexConnectionMode } from "./CodexConnectionMode";
 import { ThirdPartyImportDialog } from "./ThirdPartyImportDialog";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
@@ -65,9 +66,8 @@ import {
   relayProviderView,
   aggregateProfileForMode,
   normalizeAggregateConfig,
-  type ProviderViewKind,
 } from "./relay-profile-editing";
-import { CxBadge, CxBanner, CxCard, CxEmpty, CxFilters, CxLoading, CxRow, CxSection, CxStatusIcon } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon } from "./cx-layout";
 import type {
   Actions,
   AggregateMode,
@@ -444,97 +444,6 @@ function PoolLinkControl({ link, profileId }: { link: CodexPoolLink; profileId: 
   );
 }
 
-/** 「共享」分页里的分页类型：直连的四种之外加上本地服务的共享供应商。 */
-type ListView = ProviderViewKind | "shared";
-
-/**
- * 「连接与供应商」列表的「共享」分页：本地服务的共享供应商，一家一行。点「使用」就是 Codex 经本地服务、
- * 默认模型换成这一家的（其余接入设置沿用上次的）；Key、额度、路由组到「本地服务」页里管。
- * Codex 经本地服务时，用着的那家标「使用中」，顶部一行写明现在怎么连，并能改回直连。
- */
-function SharedProviderList({
-  payload,
-  entries,
-  onGateway,
-  busy,
-  onUse,
-  onManage,
-  onDisconnect,
-}: {
-  payload: GatewayPayload | null;
-  /** 要列的共享供应商（按「显示其他 Agent 的供应商」筛过）。 */
-  entries: GatewayPoolEntry[];
-  onGateway: boolean;
-  busy: boolean;
-  onUse?: (model: string) => void;
-  onManage?: () => void;
-  onDisconnect?: () => void;
-}) {
-  if (!payload) return <CxCard><CxLoading label={t("正在读取共享供应商…")} /></CxCard>;
-  const binding = payload.gateway.bindings?.codex;
-  const current = onGateway && binding?.enabled ? binding.model.trim() : "";
-  const activeId = current.includes("/") ? current.slice(0, current.indexOf("/")).toLowerCase() : "";
-  return (
-    <CxCard>
-      {onGateway ? (
-        <CxRow
-          detail={current ? tf("默认模型 {0}；Claude 等其它 Agent 也能用这些供应商", [current]) : t("Claude 等其它 Agent 也能用这些供应商")}
-          icon={<CxStatusIcon tone="ok"><Waypoints /></CxStatusIcon>}
-          title={t("Codex 现在经本地服务")}
-        >
-          {onDisconnect ? <button className="cx-secondary" disabled={busy} onClick={onDisconnect} type="button">{t("改回直连")}</button> : null}
-        </CxRow>
-      ) : null}
-      {entries.length === 0 && payload.pool.length > 0 ? (
-        <CxEmpty detail={t("其他 Agent 的供应商已隐藏；勾上「显示其他 Agent 的供应商」就能看到。")} title={t("这里没有 Codex 自己的共享供应商")} />
-      ) : null}
-      {payload.pool.length === 0 ? (
-        <CxEmpty detail={t("在「本地服务」里添加供应商或登录订阅；Codex、Claude 都能用，支持多 Key 轮换和出错换下一家。")} title={t("还没有共享供应商")}>
-          {onManage ? <button className="cx-secondary" onClick={onManage} type="button">{t("添加共享供应商")}</button> : null}
-        </CxEmpty>
-      ) : null}
-      {entries.map((entry) => {
-        const enabled = providerEnabled(entry);
-        const active = activeId !== "" && activeId === entry.id.toLowerCase();
-        const model = entry.models[0] ?? "";
-        return (
-          <CxRow
-            badges={(
-              <>
-                {active ? <CxBadge tone="ok">{t("使用中")}</CxBadge> : null}
-                {enabled ? null : <CxBadge>{t("已停用")}</CxBadge>}
-                <OwnerBadge entry={entry} page="codex" />
-              </>
-            )}
-            detail={[protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length])].filter(Boolean).join(" · ")}
-            icon={<Avatar baseUrl={entry.baseUrl} name={entry.name} size="sm" />}
-            key={entry.id}
-            muted={!enabled}
-            title={entry.name}
-          >
-            {onUse ? (
-              <button
-                className="cx-secondary"
-                disabled={busy || active || !enabled || !model}
-                onClick={() => onUse(`${entry.id}/${model}`)}
-                title={active ? t("当前正在使用") : !model ? t("这家还没有模型") : t("Codex 经本地服务，默认用这家的模型；新开的会话生效")}
-                type="button"
-              >
-                {active ? t("使用中") : t("使用")}
-              </button>
-            ) : null}
-            {onManage ? (
-              <Menu label={t("供应商操作")}>
-                <MenuItem onClick={onManage}>{t("在「本地服务」里管理")}</MenuItem>
-              </Menu>
-            ) : null}
-          </CxRow>
-        );
-      })}
-    </CxCard>
-  );
-}
-
 export function RelayScreen({
   addDirectProviderRequested,
   onRequestedProviderOpened,
@@ -548,7 +457,7 @@ export function RelayScreen({
   advanced,
   advancedOpen = false,
   onOpenGateway,
-  onUseShared,
+  onConnectGateway,
   sharedConnecting = false,
   onDisconnectGateway,
 }: {
@@ -568,8 +477,8 @@ export function RelayScreen({
   advancedOpen?: boolean;
   /** 打开网关的共享供应商。 */
   onOpenGateway?: () => void;
-  /** 「共享」分页里点「使用」：Codex 经本地服务，默认模型换成这家的（`<供应商 id>/<模型>`）。 */
-  onUseShared?: (model: string) => void;
+  /** 顶部切到「聚合」：Codex 经本地服务，用打开的全部供应商（其余接入设置沿用上次的）。 */
+  onConnectGateway?: () => void;
   sharedConnecting?: boolean;
   /** Codex 经本地服务时点了某个直连供应商的「使用」：先断开并还原（预览确认），成功后切到 `then`。 */
   onDisconnectGateway?: (then?: string) => void;
@@ -579,7 +488,7 @@ export function RelayScreen({
   const takenOverByGateway = normalized.activeRelayId === CODEX_GATEWAY_RELAY_ID;
   // 直连供应商和网关共享供应商打通：能共享的默认就在池里（引用，不复制），每行标出来。
   const poolLink = useCodexPoolLink(actions, normalized.relayProfiles.map((profile) => profile.id));
-  // 「共享」分页里要不要列 Claude 等其他 Agent 的供应商（默认列，按页记住）。hook 必须在下面编辑页 / 目录页的提前返回之前。
+  // 聚合列表里要不要列 Claude 等其他 Agent 的供应商（默认列，按页记住）。hook 必须在下面编辑页 / 目录页的提前返回之前。
   const [showOtherAgents, setShowOtherAgents] = useShowOtherAgents("codex");
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
@@ -593,16 +502,9 @@ export function RelayScreen({
   }, [addDirectProviderRequested, onRequestedProviderOpened]);
   // 目录页的搜索词放在这里：从模板进入编辑页再返回时，目录页会重新挂载，搜索不能丢。
   const [providerCatalogQuery, setProviderCatalogQuery] = useState("");
-  // 进入时停在当前供应商所在的分区；找不到当前供应商时，没有直连项就展示协议转换分区。
-  const initialProviderView = (): ListView => {
-    // 经本地服务时停在「共享」分页：那里标着现在用的是哪一家。
-    if (normalized.activeRelayId === CODEX_GATEWAY_RELAY_ID) return "shared";
-    const active = normalized.relayProfiles.find((profile) => profile.id === normalized.activeRelayId);
-    if (active) return relayProviderView(active);
-    const views = normalized.relayProfiles.map(relayProviderView);
-    return !views.includes("direct") && views.includes("routing") ? "routing" : "direct";
-  };
-  const [providerView, setProviderView] = useState<ListView>(initialProviderView);
+  // 聚合列表的开关、默认模型下拉走网关命令：和 Claude 页同一个 run（按 key 标忙）。
+  const [poolBusy, setPoolBusy] = useState<string | null>(null);
+  const runGateway: Run = makeRun(setPoolBusy, publishGatewayPayload, actions.showMessage);
   const gatewayPayload = useGatewayPayload(15_000);
   const [newAggregateMode, setNewAggregateMode] = useState<AggregateMode | null>(null);
   // 「从第三方导入」对话框（CC Switch、Magpie）：路径、勾选、导入都在对话框里。
@@ -651,26 +553,9 @@ export function RelayScreen({
       );
     }
   };
-  // 托管的「Codex++ 本地服务」条目不单列：经本地服务时「共享」分页里标着用的是哪一家。
-  const visibleProfiles = normalized.relayProfiles.filter((profile) => (
-    profile.id !== CODEX_GATEWAY_RELAY_ID && relayProviderView(profile) === providerView
-  ));
-  // 分区只在首次进入时自动选择；之后尊重用户点击，避免只有协议转换供应商时
-  // 「直连」分页被强制弹回、看起来像切换按钮点不动（#2470/#2481/#2495）。
-  const providerViewAutoSelectedRef = useRef(false);
-  const selectProviderView = (view: ListView) => {
-    providerViewAutoSelectedRef.current = true;
-    setProviderView(view);
-  };
-  useEffect(() => {
-    // 设置读回之前表单是默认值（自带一个 default 供应商），不能据此定分区。
-    if (providerViewAutoSelectedRef.current) return;
-    if (!settings || !normalized.relayProfiles.length) return;
-    providerViewAutoSelectedRef.current = true;
-    setProviderView(initialProviderView());
-  }, [settings, normalized.relayProfiles, normalized.activeRelayId]);
-  // 分页仅控制渲染。卡片的删除、复制和排序必须基于完整配置，避免隐藏的
-  // 当前供应商被 syncLegacyRelayFields 当成不存在，改写成直连列表第一项。
+  // 直连模式的列表：全部直连供应商一份（不再分「无需转换 / 需协议转换 / 聚合」分页）；托管的「Codex++ 本地服务」条目不单列。
+  const visibleProfiles = normalized.relayProfiles.filter((profile) => profile.id !== CODEX_GATEWAY_RELAY_ID);
+  // 卡片的删除、复制和排序必须基于完整配置，避免隐藏的托管条目被 syncLegacyRelayFields 当成不存在。
   const switchRelayProfileFromList = (profileId: string) => {
     // 经本地服务时，切到直连供应商要先断开并还原（后端也会拦下直接切换），确认后再切到这一家。
     if (takenOverByGateway && profileId !== CODEX_GATEWAY_RELAY_ID && onDisconnectGateway) {
@@ -752,32 +637,24 @@ export function RelayScreen({
     );
   }
 
-  const directProfiles = normalized.relayProfiles.filter((profile) => profile.id !== CODEX_GATEWAY_RELAY_ID);
   const openCatalog = () => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); };
-  // 「共享」分页列的：不勾「显示其他 Agent 的供应商」时去掉 Claude 的。
+  // 两种连接方式：Codex 指着托管的本地服务条目就是「聚合」，否则是「直连」。
+  const mode: CodexConnectionMode = takenOverByGateway ? "aggregate" : "direct";
+  // 孤立状态（指着托管条目，本地服务里却没有 Codex 的接入记录）由顶部的 connection 卡给「切回直连」，这里不再放切换卡。
+  const codexBound = gatewayPayload ? gatewayPayload.gateway?.bindings?.codex?.enabled === true : null;
+  const orphan = takenOverByGateway && (codexBound === false || !normalized.relayProfiles.some((profile) => profile.id === CODEX_GATEWAY_RELAY_ID));
+  // 聚合列表：不勾「显示其他 Agent 的供应商」时去掉 Claude 的。
   const sharedEntries = entriesForPage(gatewayPayload?.pool ?? [], "codex", showOtherAgents);
-  const viewCount = (view: ListView) => view === "shared"
-    ? sharedEntries.length
-    : normalized.relayProfiles.filter((profile) => profile.id !== CODEX_GATEWAY_RELAY_ID && relayProviderView(profile) === view).length;
-  // 「供应商 N」：直连供应商加上「共享」分页里列出的；引用直连供应商的那几项就是直连分页里的同一个，不重复算。
-  const sharedOnlyCount = sharedEntries.filter((entry) => !entry.linkedCodexRelay || !directProfiles.some((profile) => profile.id === entry.linkedCodexRelay)).length;
-  const viewTip: Record<ProviderViewKind, string> = {
-    direct: t("直接访问 Responses API 供应商：只写入 Base URL 与 Key，不做协议转换。"),
-    modelAggregation: t("只给 Codex 用：把几家的模型合并到 Codex 的模型列表，选哪个模型就发到哪家。共享供应商默认就是这样分发，而且所有 Agent 都能用。"),
-    routing: t("供应商只支持 Chat Completions（或配置了模型路由）：由本地协议代理转换后转发。"),
-    failover: t("只给 Codex 用：几家组成一个池，出错换下一家、按会话或请求轮换、按权重分。本地服务的「路由」里用模型组做同样的事，而且所有 Agent 都能用。"),
-  };
-  const emptyView: Record<ProviderViewKind, { title: string; detail: string; action: string; run: () => void }> = {
-    direct: { title: t("这个分页还没有直连供应商"), detail: t("直连分页只显示 Responses 直连且未配置模型路由的供应商；其他供应商在其余分页，配置不会丢失。"), action: t("添加供应商"), run: openCatalog },
-    routing: { title: t("这个分页还没有需协议转换的供应商"), detail: t("Chat Completions 协议或配置了模型路由的供应商会显示在这里；其他供应商在其余分页。"), action: t("添加供应商"), run: openCatalog },
-    // 新用户优先推荐网关（所有 Agent 都能用）；只想让 Codex 用的，仍可以在这里建。
-    failover: { title: t("还没有故障转移配置"), detail: t("推荐用本地服务「路由」里的模型组：所有 Agent 都能用。只想给 Codex 直连用，在这里建。"), action: t("创建故障转移配置"), run: () => createNewAggregateProfile("provider") },
-    modelAggregation: { title: t("还没有模型聚合配置"), detail: t("推荐用共享供应商：本身就按模型分发，所有 Agent 都能用。只想给 Codex 直连用，在这里建。"), action: t("创建模型聚合配置"), run: () => createNewAggregateProfile("model") },
-  };
-  // 「显示其他 Agent 的供应商」：只管「共享」分页，放在「供应商」标题右侧，和 Claude 页同一个位置。
-  const otherAgentsToggle = gatewayPayload?.pool.length ? (
-    <ShowOtherAgentsToggle checked={showOtherAgents} onChange={setShowOtherAgents} title={t("Claude 页添加或导入的共享供应商；Codex 经本地服务时也能用。不勾时「共享」分页里不列它们")} />
+  // 「显示其他 Agent 的供应商」只管聚合列表，放在「供应商」标题右侧，和 Claude 页同一个位置。
+  const otherAgentsToggle = mode === "aggregate" && gatewayPayload?.pool.length ? (
+    <ShowOtherAgentsToggle checked={showOtherAgents} onChange={setShowOtherAgents} title={t("Claude 页添加或导入的共享供应商；Codex 经本地服务时也能用。不勾时这里不列它们")} />
   ) : null;
+  // 聚合列表里点 Codex 自己的直连供应商「编辑」：就地打开同一个编辑页。
+  const editLinkedProfile = (relayId: string) => {
+    if (!normalized.relayProfiles.some((profile) => profile.id === relayId)) return false;
+    void editRelayProfile(relayId);
+    return true;
+  };
 
   return (
     <div className="mg-page relay-management-page cx-page cx-codex-connection-page">
@@ -794,7 +671,7 @@ export function RelayScreen({
             </button>
               <button className="cx-primary" onClick={openCatalog} type="button">
                 <Plus />
-                {takenOverByGateway ? t("添加直连供应商") : t("添加供应商")}
+                {t("添加供应商")}
               </button>
           </>
         )}
@@ -818,62 +695,59 @@ export function RelayScreen({
           <button className="cx-primary" onClick={() => void saveRelaySettings({ ...normalized, relayProfilesEnabled: true })} type="button">{t("打开配置切换")}</button>
         </CxBanner>
       ) : null}
-      {/* 总开关关闭时供应商切换不会写入 Codex：分页和列表都没有意义，整块隐藏，只留上方提示条。 */}
+      {/* 顶部选连接方式：聚合（经本地服务，打开的供应商合在一起）/ 直连（关掉 Codex++ 也能用）。 */}
+      {normalized.relayProfilesEnabled && !orphan ? (
+        <CodexModeCard
+          busy={poolBusy}
+          canSwitch={normalized.relayProfilesEnabled}
+          connecting={sharedConnecting || actions.relaySwitching}
+          mode={mode}
+          notify={actions.showMessage}
+          onAggregate={() => onConnectGateway?.()}
+          onDirect={() => onDisconnectGateway?.()}
+          payload={gatewayPayload}
+          run={runGateway}
+        />
+      ) : null}
+      {/* 总开关关闭时供应商切换不会写入 Codex：列表没有意义，整块隐藏，只留上方提示条。 */}
       {normalized.relayProfilesEnabled ? (
         <CxSection
           aside={(
             <>
               {otherAgentsToggle}
-              {(providerView === "failover" || providerView === "modelAggregation") && visibleProfiles.length ? (
-                <button className="cx-secondary" onClick={() => createNewAggregateProfile(providerView === "failover" ? "provider" : "model")} type="button">
-                  <Plus />
-                  {providerView === "failover" ? t("新建故障转移") : t("新建模型聚合")}
-                </button>
+              {mode === "aggregate" && onOpenGateway ? (
+                <button className="cx-secondary" onClick={onOpenGateway} type="button">{t("管理共享供应商")}</button>
+              ) : null}
+              {/* 直连专用的聚合（模型聚合 / 故障转移）不再单独占分页：从这里新建，建好的和别的直连供应商列在一起。 */}
+              {mode === "direct" ? (
+                <Menu label={t("新建直连聚合")}>
+                  <MenuItem onClick={() => createNewAggregateProfile("model")}>{t("新建模型聚合")}</MenuItem>
+                  <MenuItem onClick={() => createNewAggregateProfile("provider")}>{t("新建故障转移")}</MenuItem>
+                </Menu>
               ) : null}
             </>
           )}
-          count={directProfiles.length + sharedOnlyCount}
+          count={(mode === "aggregate" ? sharedEntries.length : visibleProfiles.length) || undefined}
           title={t("供应商")}
         >
-          {/* 直连和共享供应商一份列表：「共享」分页是本地服务的共享供应商，在那里点「使用」就是 Codex 经本地服务、默认用那一家。 */}
-          <CxFilters
-            items={(["direct", "modelAggregation", "routing", "failover", "shared"] as ListView[]).map((view) => ({
-              id: view,
-              label: <span title={view === "shared" ? t("本地服务的共享供应商：多 Key 轮换、出错换下一家、协议自动转换，Claude 等其它 Agent 也能用。") : viewTip[view]}>{/* 「直连」和分区标题撞名：按是否要协议转换来叫，和「需协议转换」对照。 */}{view === "direct" ? t("无需转换") : view === "modelAggregation" ? t("模型聚合") : view === "routing" ? t("需协议转换") : view === "failover" ? t("故障转移") : t("共享")}</span>,
-              count: viewCount(view),
-            }))}
-            label={t("供应商配置模式")}
-            onChange={selectProviderView}
-            value={providerView}
-          />
-          {(providerView === "modelAggregation" || providerView === "failover") && visibleProfiles.length ? (
-            <p className="cx-aggregate-note">
-              <Waypoints aria-hidden="true" />
-              <span>{providerView === "modelAggregation"
-                ? t("模型聚合只给 Codex 用。共享供应商本身就按模型分发，所有 Agent 都能用；能共享的成员默认就在共享供应商里。")
-                : t("故障转移只给 Codex 用。本地服务「路由」里的模型组做的是同一件事，所有 Agent 都能用；点右侧的按钮会建好同名模型组。")}</span>
-              {onOpenGateway ? <button className="cx-link" onClick={onOpenGateway} type="button">{t("打开共享供应商")}</button> : null}
-            </p>
-          ) : null}
-          {providerView === "shared" ? (
-            <SharedProviderList
-              busy={sharedConnecting || actions.relaySwitching}
-              onDisconnect={takenOverByGateway && onDisconnectGateway ? () => onDisconnectGateway() : undefined}
-              onManage={onOpenGateway}
-              onUse={onUseShared}
-              onGateway={takenOverByGateway}
+          {/* 一份供应商、两种用法：聚合时每家一个开关（打开的合在一起），直连时每家一个「使用」（同一时间一家）。 */}
+          {mode === "aggregate" ? (
+            <CodexAggregateList
+              busy={poolBusy}
               entries={sharedEntries}
+              onAdd={openCatalog}
+              onEditLinked={editLinkedProfile}
+              onManage={onOpenGateway}
               payload={gatewayPayload}
+              run={runGateway}
             />
-          ) : null}
-          {providerView !== "shared" && !visibleProfiles.length ? (
+          ) : !visibleProfiles.length ? (
             <CxCard>
-              <CxEmpty detail={emptyView[providerView].detail} title={emptyView[providerView].title}>
-                <button className="cx-secondary" onClick={emptyView[providerView].run} type="button">{emptyView[providerView].action}</button>
+              <CxEmpty detail={t("直连时 Codex 直接请求这一家，关掉 Codex++ 也能用；加进来的供应商切到「聚合」后也能合在一起用。")} title={t("还没有供应商")}>
+                <button className="cx-secondary" onClick={openCatalog} type="button">{t("添加供应商")}</button>
               </CxEmpty>
             </CxCard>
-          ) : null}
-          {providerView === "shared" || !visibleProfiles.length ? null : <RelayProfileList
+          ) : <RelayProfileList
             form={normalized}
             visibleProfiles={visibleProfiles}
             onEdit={(profileId) => void editRelayProfile(profileId)}
@@ -1286,6 +1160,10 @@ function SortableRelayProfileCard({
             )}
             {!gatewayManaged && !isAggregateRelayProfile(profile) && profile.protocol !== "responses" ? (
               <CxBadge>{relayProtocolShortLabel(profile.protocol)}</CxBadge>
+            ) : null}
+            {/* 直连时只有「无需转换」的能脱离 Codex++：协议转换、模型路由、直连聚合都靠 Codex++ 的本地代理。 */}
+            {!gatewayManaged && relayProviderView(profile) !== "direct" ? (
+              <CxBadge title={t("这家要经 Codex++ 的本地代理（协议转换、模型路由或聚合），关掉 Codex++ 就连不上")}>{t("需 Codex++")}</CxBadge>
             ) : null}
             {!billing.probe && billing.settled ? (
               <RelayBillingRetry failure={billing.failure} loading={billing.loading} onRefresh={billing.refresh} />

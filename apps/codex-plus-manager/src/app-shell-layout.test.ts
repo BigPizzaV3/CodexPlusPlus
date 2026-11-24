@@ -286,11 +286,16 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   assert.match(relay, /const takenOverByGateway = normalized\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(relay, /\{normalized\.relayProfilesEnabled \? \(\n\s*<CxSection/);
   assert.doesNotMatch(relay, /className="cx-takeover"/);
-  // 「共享」分页列本地服务的共享供应商；经本地服务时点直连供应商的「使用」先断开并还原，成功后再切过去。
-  assert.match(relay, /providerView === "shared" \? \(\n\s*<SharedProviderList/);
+  // 两种连接方式共用一份供应商：聚合时列共享供应商（每家一个开关），直连时列直连供应商（每家一个「使用」）；
+  // 经本地服务时点直连供应商的「使用」先断开并还原，成功后再切过去。
+  assert.match(relay, /const mode: CodexConnectionMode = takenOverByGateway \? "aggregate" : "direct";/);
+  assert.match(relay, /\{mode === "aggregate" \? \(\n\s*<CodexAggregateList/);
+  assert.match(relay, /<CodexModeCard[\s\S]*onAggregate=\{\(\) => onConnectGateway\?\.\(\)\}[\s\S]*onDirect=\{\(\) => onDisconnectGateway\?\.\(\)\}/);
   assert.match(relay, /if \(takenOverByGateway && profileId !== CODEX_GATEWAY_RELAY_ID && onDisconnectGateway\) \{\n\s*onDisconnectGateway\(profileId\);/);
-  assert.match(relay, /profile\.id !== CODEX_GATEWAY_RELAY_ID && relayProviderView\(profile\) === providerView/);
-  assert.match(functionSource("SharedProviderList"), /onClick=\{\(\) => onUse\(`\$\{entry\.id\}\/\$\{model\}`\)\}/);
+  assert.match(relay, /const visibleProfiles = normalized\.relayProfiles\.filter\(\(profile\) => profile\.id !== CODEX_GATEWAY_RELAY_ID\);/);
+  assert.doesNotMatch(relay, /providerView|<CxFilters/);
+  // 聚合列表的开关改的是 Codex 绑定的排除名单：打开的供应商合在一起用。
+  assert.match(functionSource("CodexAggregateList"), /"set_gateway_pool_member", \{ agents: \["codex"\], id: entry\.id, used: !on \}/);
   assert.match(app, /if \(result\.status === "ok"\) await switchAfterDisconnect\(\);/);
   // 直连供应商默认就在共享供应商里（引用），不再有「加入共享供应商」的提醒和「不再提示」。
   assert.doesNotMatch(relay, /nudgeDismissed|DIRECT_POOL_NUDGE_KEY/);
@@ -448,7 +453,7 @@ test("Codex 经本地服务：沿用上次接入设置（「共享」分页里�
   const app = functionSource("App");
   // 切到本地服务：和「Agent 接入」开关同一条命令，沿用上次的绑定；池空或模型不在池里时说明原因并带去对应页面。
   assert.match(app, /const draft = \{ \.\.\.draftFromBinding\(previous\), \.\.\.\(model \? \{ model \} : \{\}\) \};\n\s*const issue = validateDraft\(draft, payload\);/);
-  assert.match(app, /onUseShared=\{\(model\) => void connectCodexGateway\(model\)\}/);
+  assert.match(app, /onConnectGateway=\{\(\) => void connectCodexGateway\(\)\}/);
   assert.match(app, /invoke<GatewayResult>\("save_gateway_binding", \{ agent: "codex", binding: \{ \.\.\.bindingFromDraft\(draft, previous\), enabled: true \}, reconnect: true \}\)/);
   assert.match(app, /onConnect=\{\(\) => void connectCodexGateway\(\)\}/);
   const hint = functionSource("LegacyRelayGatewayHint");
@@ -487,15 +492,15 @@ test("直连供应商默认以引用的方式在共享供应商里：每行只�
   assert.match(functionSource("SortableRelayProfileCard"), /\{gatewayManaged \|\| !poolLink \? null : <PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>\}/);
 });
 
-test("「显示其他 Agent 的供应商」：Codex 页「共享」分页按归属筛，数目跟着变，来源标记统一", () => {
+test("「显示其他 Agent 的供应商」：Codex 页聚合列表按归属筛，数目跟着变，来源标记统一", () => {
   const screen = functionSource("RelayScreen");
   assert.match(screen, /const \[showOtherAgents, setShowOtherAgents\] = useShowOtherAgents\("codex"\);/);
   assert.match(screen, /const sharedEntries = entriesForPage\(gatewayPayload\?\.pool \?\? \[\], "codex", showOtherAgents\);/);
-  assert.match(screen, /view === "shared"\s*\? sharedEntries\.length/);
-  assert.match(screen, /count=\{directProfiles\.length \+ sharedOnlyCount\}/);
+  // 「供应商 N」：聚合时数列出的共享供应商，直连时数直连供应商。
+  assert.match(screen, /count=\{\(mode === "aggregate" \? sharedEntries\.length : visibleProfiles\.length\) \|\| undefined\}/);
   assert.match(screen, /<ShowOtherAgentsToggle checked=\{showOtherAgents\} onChange=\{setShowOtherAgents\}/);
   assert.match(screen, /entries=\{sharedEntries\}/);
-  const list = functionSource("SharedProviderList");
+  const list = functionSource("CodexAggregateList");
   assert.match(list, /<OwnerBadge entry=\{entry\} page="codex" \/>/);
   assert.doesNotMatch(list, /entry\.source\?\.startsWith\("codex:"\)/);
 });
@@ -507,7 +512,8 @@ test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时�
   // 被网关接管时整个「高级」不显示；只有总开关被关掉时才显示，好把它重新打开。
   assert.match(screen, /\{takenOverByGateway && normalized\.relayProfilesEnabled \? null : \(\r?\n\s*<CxSection>[\s\S]*?className="switch-row compact relay-master-switch/);
   assert.match(screen, /onClick=\{\(\) => void saveRelaySettings\(\{ \.\.\.normalized, relayProfilesEnabled: true \}\)\}/);
-  assert.match(screen, /onClick=\{openCatalog\}[^>]*>[\s\S]*?takenOverByGateway \? t\("添加直连供应商"\)/);
+  // 加进来的供应商两种方式都能用（直连供应商以引用的方式就在共享供应商里），按钮不再分「添加直连供应商」。
+  assert.match(screen, /onClick=\{openCatalog\}[^>]*>\s*<Plus \/>\s*\{t\("添加供应商"\)\}/);
   assert.match(screen, /重新开启只恢复配置写入能力，不会切换直连供应商或断开当前本地服务/);
   // 导入只写旧版供应商列表、不动 Codex 配置，接管期间也要能从 cc-switch 导入。
   const header = screen.slice(screen.indexOf("<PageHeader"), screen.indexOf("{connection}"));

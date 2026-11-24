@@ -3500,7 +3500,7 @@ export function App() {
               form={settingsForm}
               actions={actions}
               onOpenGateway={() => void navigate("gatewayProviders")}
-              onUseShared={(model) => void connectCodexGateway(model)}
+              onConnectGateway={() => void connectCodexGateway()}
               sharedConnecting={codexConnecting}
               onDisconnectGateway={(then) => {
                 legacyDisconnectThen.current = then ?? null;
