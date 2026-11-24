@@ -351,8 +351,9 @@ fn parse_reserve(line: &[u8], skip_activity: bool) -> usize {
         // 与实际入口共用校验；立即拒绝或忽略的行不应占住唯一 reader 等待完整解析空间。
         if !matches!(
             envelope.kind,
-            "session_meta" | "turn_context" | "event_msg" | "response_item"
-        ) {
+            "session_meta" | "turn_context" | "event_msg" | "response_item" | "token_usage_record"
+        ) || envelope.kind == "token_usage_record" && line.len() > super::MAX_NATIVE_RECEIPT_LINE
+        {
             return LINE_OVERHEAD;
         }
         if matches!(envelope.kind, "session_meta" | "turn_context") {
@@ -464,6 +465,7 @@ fn event_heap(event: &super::UsageEvent) -> usize {
     .iter()
     .map(|text| text.capacity())
     .sum::<usize>()
+        + event.native_response_id.as_ref().map_or(0, |id| id.len())
         + event.legacy_identity.as_ref().map_or(0, |id| {
             std::mem::size_of::<super::LegacyIdentity>()
                 + id.session.capacity()
@@ -519,6 +521,10 @@ impl Meter {
         state.retained_charge = std::mem::size_of::<FileState>()
             + cursor_bytes
             + state.pending.capacity()
+            + match &state.pending_response {
+                Some(super::PendingUsageReceipt::One { id, .. }) => id.len(),
+                _ => 0,
+            }
             + strings.iter().map(|text| text.capacity()).sum::<usize>()
             + state
                 .legacy_header
@@ -765,6 +771,15 @@ mod tests {
         budget.used.bytes = 60 * 1024 * 1024;
         budget.activity_limit = activity_limit;
         budget
+    }
+
+    #[test]
+    fn native_receipt_reserves_parse_memory_only_within_its_read_limit() {
+        let row = br#"{"type":"token_usage_record","payload":{"usage":{}}}"#;
+        assert!(parse_reserve(row, true) > LINE_OVERHEAD);
+        let mut oversized = row.to_vec();
+        oversized.resize(super::super::MAX_NATIVE_RECEIPT_LINE + 1, b' ');
+        assert_eq!(parse_reserve(&oversized, true), LINE_OVERHEAD);
     }
 
     #[test]

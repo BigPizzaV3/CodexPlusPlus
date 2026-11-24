@@ -35,6 +35,195 @@ mod actual_attribution {
     }
 
     #[test]
+    fn paired_terminal_receipt_corrects_stale_model_without_changing_accounting() {
+        for case in [
+            "paired",
+            "wrong-id",
+            "wrong-id-same-model",
+            "no-marker",
+            "reused-id",
+            "no-native-id",
+            "native-counts",
+            "native-thread-total",
+            "wrong-turn",
+            "failed-turn",
+            "no-cache",
+            "gateway-counts",
+            "ambiguous-native",
+            "reused-native-id",
+            "rejected-candidate",
+            "conflicting-route",
+            "explicit-provider",
+            "late-outside-window",
+        ] {
+            let mut fixture = Fixture::new();
+            let mut context = fixture.context(500, "cpx-supplier-a/old-model");
+            context["payload"]["turn_id"] = json!("turn-a");
+            if case == "explicit-provider" {
+                context["payload"]["model_provider"] = json!("supplier-a");
+            }
+            let count = fixture.usage(1_000, 1);
+            let info = &count["payload"]["info"];
+            let mut receipt = json!({
+                "type": "token_usage_record", "timestamp": fixture.at(995),
+                "payload": {
+                    "thread_id": SESSION, "turn_id": "turn-a", "response_id": "resp_paired",
+                    "usage": info["last_token_usage"], "thread_token_usage": info["total_token_usage"]
+                }
+            });
+            match case {
+                "no-native-id" => {
+                    receipt["payload"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("response_id");
+                }
+                "native-counts" => receipt["payload"]["usage"]["input_tokens"] = json!(99),
+                "native-thread-total" => {
+                    receipt["payload"]["thread_token_usage"]["input_tokens"] = json!(101)
+                }
+                "wrong-turn" => receipt["payload"]["turn_id"] = json!("turn-b"),
+                _ => {}
+            }
+            let mut rows = vec![context, receipt.clone()];
+            if case == "ambiguous-native" {
+                rows.push(receipt);
+            }
+            if case == "paired" {
+                rows.push(json!({
+                    "type": "event_msg", "timestamp": fixture.at(998),
+                    "payload": {"type": "token_count", "info": null, "rate_limits": {}}
+                }));
+            } else if case == "failed-turn" {
+                rows.push(json!({
+                    "type": "event_msg", "timestamp": fixture.at(998),
+                    "payload": {"type": "task_failed"}
+                }));
+            }
+            rows.push(count);
+            if case == "reused-native-id" {
+                let mut second = fixture.usage(2_000, 3);
+                second["payload"]["info"]["last_token_usage"] =
+                    fixture.usage(2_000, 2)["payload"]["info"]["total_token_usage"].clone();
+                let info = &second["payload"]["info"];
+                rows.push(json!({
+                    "type": "token_usage_record", "timestamp": fixture.at(1_995),
+                    "payload": {
+                        "thread_id": SESSION, "turn_id": "turn-a", "response_id": "resp_paired",
+                        "usage": info["last_token_usage"], "thread_token_usage": info["total_token_usage"]
+                    }
+                }));
+                rows.push(second);
+            }
+            fixture.write_segment("rollout-paired.jsonl", rows);
+            let before = fixture.snapshot().events.remove(0);
+            if case == "paired" {
+                assert_eq!(before.native_response_id.as_deref(), Some("resp_paired"));
+                assert!(
+                    before.delta.cached_known
+                        && !before.count_incomplete
+                        && !before.count_uncertain
+                );
+            }
+            let mut complete = proof(&before);
+            complete.model = "cpx-supplier-b/new-model".into();
+            complete.final_response_id = Some("resp_paired".into());
+            complete.final_response_evidence = Some("final-response-v1".into());
+            if case == "paired" {
+                complete.timestamp_ms += 9_000;
+            }
+            let mut neighbors = [complete.clone(), complete.clone()];
+            for (i, neighbor) in neighbors.iter_mut().enumerate() {
+                neighbor.id = format!("neighbor-{i}");
+                neighbor.timestamp_ms -= 20 + i as i64;
+                neighbor.usage = None;
+                neighbor.final_response_id = None;
+                neighbor.final_response_evidence = None;
+            }
+            match case {
+                "wrong-id" => complete.final_response_id = Some("resp_other".into()),
+                "wrong-id-same-model" => {
+                    complete.final_response_id = Some("resp_other".into());
+                    complete.model.clone_from(&before.model);
+                }
+                "no-marker" => complete.final_response_evidence = None,
+                "reused-id" => neighbors[0].final_response_id = complete.final_response_id.clone(),
+                "no-cache" => complete.usage.as_mut().unwrap().cached_tokens = None,
+                "gateway-counts" => complete.usage.as_mut().unwrap().output_tokens = Some(11),
+                "conflicting-route" => neighbors[0].relay_id = "supplier-c".into(),
+                "late-outside-window" => complete.timestamp_ms += REQUEST_MATCH_WINDOW_MS + 100,
+                _ => {}
+            }
+            if case == "rejected-candidate" {
+                let mut invalid = complete.clone();
+                invalid.usage = None;
+                fixture
+                    .index
+                    .provider_cache
+                    .capture_proxy(&[invalid])
+                    .unwrap();
+            }
+            fs::write(
+                &fixture.log,
+                std::iter::once(complete)
+                    .chain(
+                        neighbors
+                            .into_iter()
+                            .take(if case == "wrong-id-same-model" { 0 } else { 2 }),
+                    )
+                    .map(|row| format!("{}\n", serde_json::to_string(&row).unwrap()))
+                    .collect::<String>(),
+            )
+            .unwrap();
+            let after = fixture.snapshot();
+            assert_eq!(
+                after.events.len(),
+                if case == "reused-native-id" { 2 } else { 1 },
+                "{case}"
+            );
+            let result = &after.events[0];
+            assert_eq!(
+                result.model,
+                if case == "paired" {
+                    "actual-b"
+                } else {
+                    &before.model
+                },
+                "{case}: {}",
+                after.provider_recovery
+            );
+            assert_eq!(result.provider == "supplier-b", case == "paired", "{case}");
+            assert_eq!(
+                result.provider_source.as_deref(),
+                (case == "paired").then_some("request-log-exact"),
+                "{case}"
+            );
+            assert_eq!(
+                result.context_conflicts.provider,
+                case == "explicit-provider",
+                "{case}"
+            );
+            assert_eq!(result.id, before.id, "{case}");
+            assert_eq!(result.timestamp, before.timestamp, "{case}");
+            assert_eq!(result.delta, before.delta, "{case}");
+            assert_eq!(result.total, before.total, "{case}");
+            if case == "paired" {
+                fs::write(&fixture.log, "").unwrap();
+                fixture.index = Index {
+                    settings_path: Some(fixture.settings.clone()),
+                    storage_dir: fixture.index.storage_dir.clone(),
+                    ..Index::default()
+                };
+                let reopened = fixture.snapshot();
+                assert_eq!(reopened.events.len(), 1);
+                assert_eq!(reopened.events[0].model, result.model);
+                assert_eq!(reopened.events[0].provider, result.provider);
+                assert_eq!(reopened.events[0].delta, result.delta);
+            }
+        }
+    }
+
+    #[test]
     fn actual_unknown_group_auto_recover_each_event_without_changing_identity_or_counts() {
         for model in [
             "",
