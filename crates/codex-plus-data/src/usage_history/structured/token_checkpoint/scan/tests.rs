@@ -338,3 +338,52 @@ fn incomplete_discovery_cannot_retire_a_committed_source() {
     assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
     assert!(store.checkpoint(&source).unwrap().is_none());
 }
+
+#[test]
+fn cold_index_does_not_report_an_empty_archived_day_as_exact() {
+    use crate::usage_history::Query;
+    use chrono::{Local, TimeZone};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    fs::write(sessions.join("rollout-01.jsonl"), rollout(FIRST)).unwrap();
+    let db = root.join("tokens.sqlite");
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut scan = Scan::default();
+    let archived = NaiveDate::from_ymd_opt(2026, 1, 2).unwrap();
+    let cutoff = archived + chrono::Days::new(2);
+    assert!(
+        scan.round(&mut store, &root, cutoff, &BTreeMap::new(), 8192)
+            .complete
+    );
+    drop(store);
+    let mut reader =
+        Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+
+    let midnight = |day: NaiveDate| {
+        Local
+            .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .timestamp_millis()
+    };
+    let old = Query::parse(
+        &json!({"from":archived.to_string(),"to":archived.to_string()}),
+        cutoff,
+    )
+    .unwrap();
+    for bounds in [
+        None,
+        Some((midnight(archived), midnight(archived.succ_opt().unwrap()))),
+    ] {
+        let selection = Store::read_selection(&mut reader, &old, bounds, None).unwrap();
+        assert!(selection.days.is_empty());
+        assert!(selection.needs_source_recovery);
+    }
+    let current = Query::parse(&json!({"period":"today"}), cutoff).unwrap();
+    let selection = Store::read_selection(&mut reader, &current, None, None).unwrap();
+    assert!(selection.days.is_empty());
+    assert!(!selection.needs_source_recovery);
+}

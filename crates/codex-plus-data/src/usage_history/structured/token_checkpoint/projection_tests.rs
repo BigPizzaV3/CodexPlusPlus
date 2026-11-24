@@ -1034,7 +1034,7 @@ fn cross_retention_range_reads_one_revision_without_inventing_partial_days() {
         },
     )
     .unwrap();
-    assert_eq!(snapshot, (revision, false));
+    assert_eq!(snapshot, (revision, true));
     assert_eq!(days, vec![(archived, 1, 110)]);
     assert_eq!(exact, vec![(retained, 110)]);
 
@@ -1070,7 +1070,7 @@ fn cross_retention_range_reads_one_revision_without_inventing_partial_days() {
     let summaries = Store::read_selection(&mut reader, &query, None, Some(&scoped)).unwrap();
     assert_eq!(summaries.revision, revision + 1);
     assert_eq!(summaries.unresolved, 0);
-    assert!(summaries.archived && !summaries.needs_source_recovery);
+    assert!(summaries.archived && summaries.needs_source_recovery);
     assert_eq!(summaries.days.len(), 2);
     assert_eq!(summaries.days[0]["usage"]["totalTokens"], 110);
     assert_eq!(summaries.days[1]["usage"]["totalTokens"], 220);

@@ -853,7 +853,7 @@ impl Store {
         Ok(())
     }
 
-    // 旧的完整本地日与保留期内的明细不重叠；残日必须由原会话回读补齐。
+    // 旧的完整本地日与保留期内的明细不重叠；摘要不能证明旧范围完整。
     pub(in super::super) fn read_range(
         db: &mut Connection,
         start_ms: i64,
@@ -863,10 +863,10 @@ impl Store {
     ) -> Result<(i64, bool)> {
         let read = db.transaction()?;
         let current = revision(&read)?;
-        let missing_exact =
+        let needs_source_recovery =
             Self::visit_range(&read, start_ms, end_ms, visit_detail, visit_archived_day)?;
         read.commit()?;
-        Ok((current, missing_exact))
+        Ok((current, needs_source_recovery))
     }
 
     fn visit_range(
@@ -891,12 +891,11 @@ impl Store {
                 && Local.from_local_datetime(&time.naive_local()).single() == Some(time)
         };
         let start_aligned = is_midnight(start);
-        let end_aligned = is_midnight(end);
         let cutoff: String =
             read.query_row("SELECT precise_from FROM token_revision", [], |row| {
                 row.get(0)
             })?;
-        let mut missing_exact = false;
+        let mut needs_source_recovery = false;
         if !cutoff.is_empty() {
             let cutoff = NaiveDate::parse_from_str(&cutoff, "%Y-%m-%d")?;
             let whole_start = if start_aligned {
@@ -908,11 +907,10 @@ impl Store {
             if whole_start < whole_end {
                 Self::visit_days(read, whole_start, whole_end, visit_archived_day)?;
             }
-            missing_exact =
-                !start_aligned && start_day < cutoff || !end_aligned && end_day < cutoff;
+            needs_source_recovery = start_day < cutoff;
         }
         Self::visit_committed(read, start_ms, end_ms, visit_detail)?;
-        Ok(missing_exact)
+        Ok(needs_source_recovery)
     }
 
     pub(in super::super) fn read_selection(
@@ -1067,7 +1065,10 @@ impl Store {
                 query.to.and_then(|day| day.succ_opt()),
                 read_summary,
             )?;
-            false
+            query
+                .from
+                .zip(query.to)
+                .is_some_and(|(from, _)| from.to_string().as_str() < precise_from.as_str())
         };
         Ok(usage.into_inner().map(|groups| {
             Self::format_selection(revision, &precise_from, needs_source_recovery, groups)
