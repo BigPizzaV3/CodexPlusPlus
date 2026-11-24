@@ -19,7 +19,6 @@ mod provider_cache;
 mod provider_capture;
 mod segments;
 mod supplier_evidence;
-#[cfg(test)]
 mod token_checkpoint;
 mod tool_receipts;
 
@@ -1830,8 +1829,9 @@ struct Snapshot {
 
 struct Cache {
     settings_path: PathBuf,
-    index: Option<Index>,
-    snapshot: Arc<Snapshot>,
+    storage: PathBuf,
+    runtime: Option<token_checkpoint::Runtime>,
+    snapshot: Arc<token_checkpoint::ReadState>,
     active: bool,
     refreshed: Option<Instant>,
     touched: Instant,
@@ -1988,12 +1988,12 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
         let storage_dir = provider_cache::storage_dir(home, &settings);
         let cache = Arc::new(Mutex::new(Cache {
             settings_path: settings.clone(),
-            index: Some(Index {
-                settings_path: Some(settings.clone()),
-                storage_dir: Some(storage_dir),
-                ..Index::default()
-            }),
-            snapshot: Arc::new(Snapshot::default()),
+            runtime: Some(token_checkpoint::Runtime::new(
+                storage_dir.clone(),
+                settings.clone(),
+            )),
+            storage: storage_dir,
+            snapshot: Arc::default(),
             active: false,
             refreshed: None,
             touched: Instant::now(),
@@ -2040,24 +2040,24 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
             .refreshed
             .is_none_or(|at| at.elapsed() >= REFRESH_INTERVAL)
     {
-        let mut index = state.index.take().unwrap_or_else(|| Index {
-            settings_path: Some(state.settings_path.clone()),
-            storage_dir: Some(provider_cache::storage_dir(home, &state.settings_path)),
-            ..Index::default()
-        });
+        let mut runtime = state
+            .runtime
+            .take()
+            .expect("idle usage worker owns its runtime");
         state.active = true;
         let shared = cache.clone();
         let home = home.to_owned();
         match std::thread::Builder::new()
             .name("rollout-history".into())
             .spawn(move || {
-                let snapshot =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| index.update(&home)));
+                let snapshot = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    runtime.update(&home)
+                }));
                 if let Ok(mut state) = shared.lock() {
                     if let Ok(snapshot) = snapshot {
                         state.snapshot = Arc::new(snapshot);
                     }
-                    state.index = Some(index);
+                    state.runtime = Some(runtime);
                     state.active = false;
                     state.refreshed = Some(Instant::now());
                 }
@@ -2066,51 +2066,27 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
             Err(error) => {
                 state.active = false;
                 state.refreshed = Some(Instant::now());
+                state.runtime = Some(token_checkpoint::Runtime::new(
+                    state.storage.clone(),
+                    state.settings_path.clone(),
+                ));
                 return json!({"status":"unavailable","complete":false,"message":error.to_string()});
             }
         }
     }
     let snapshot = state.snapshot.clone();
-    let storage = provider_cache::storage_dir(home, &state.settings_path);
+    let storage = state.storage.clone();
     let processing = state.active;
-    // clear 取得 homes 锁后才能完成关闭；同步读缓存也必须留在这条边界内。
-    let live_attributions = live_receipts::match_captured_receipts(
-        &storage,
-        &snapshot.live_requests,
-        &snapshot.aliases,
-        &request["liveReceipts"],
-    );
     drop(state);
     // clear 必须等本次启动登记完成，才能移除缓存并收齐后台任务。
     drop(homes);
-    let mut response = snapshot.response_page(
+    snapshot.read(
+        &storage,
         options,
+        request,
+        scope_session.as_deref(),
         processing,
-        request["activityPage"].as_u64().unwrap_or(1).clamp(1, 24) as usize,
-        request["activityRevision"].as_i64(),
-        request["startAt"].as_i64().zip(request["endAt"].as_i64()),
-    );
-    if let Some(session) = scope_session {
-        response["scopedUsage"] = snapshot.scoped_usage(
-            &session,
-            options,
-            request["startAt"].as_i64().zip(request["endAt"].as_i64()),
-        );
-    }
-    response["liveAttributions"] = live_attributions;
-    if request["includeActivity"] != true {
-        if let Some(response) = response.as_object_mut() {
-            for key in [
-                "activityRecords",
-                "activityPagination",
-                "activityComplete",
-                "activityTruncated",
-            ] {
-                response.remove(key);
-            }
-        }
-    }
-    response
+    )
 }
 
 fn log_file(path: &Path) -> bool {
@@ -2839,15 +2815,12 @@ impl Index {
         seen
     }
 
-    fn update(&mut self, home: &Path) -> Snapshot {
-        let request_log = codex_plus_core::request_log::request_log_path();
-        self.update_with_request_log(home, &request_log)
-    }
-
-    fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> Snapshot {
-        let started = Instant::now();
-        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
-        let mut snapshot = Snapshot::default();
+    fn load_evidence(
+        &mut self,
+        home: &Path,
+        cutoff: NaiveDate,
+        request_log: &Path,
+    ) -> (bool, bool) {
         let mut cache_available = true;
         let mut cache_opened = false;
         match self
@@ -2881,20 +2854,18 @@ impl Index {
             )
             .unwrap_or(false);
         }
-        snapshot.aliases = self.provider_cache.aliases.clone();
-        let mut current_aliases = BTreeMap::new();
-        let settings = self
-            .settings_path
-            .clone()
-            .unwrap_or_else(codex_plus_core::paths::default_settings_path);
-        let stamp = native_endpoints::config_stamp(&settings);
+        (cache_opened, cache_available)
+    }
+
+    fn refresh_provider_profiles(&mut self, settings: &Path) {
+        let stamp = native_endpoints::config_stamp(settings);
         if self.provider_stamp.as_ref() != Some(&stamp) {
             self.provider_endpoints.clear();
             self.provider_names.clear();
             self.provider_endpoint_since = 0;
             self.provider_stamp = None;
-            if let Ok(profiles) = native_endpoints::profiles(&settings)
-                && native_endpoints::config_stamp(&settings) == stamp
+            if let Ok(profiles) = native_endpoints::profiles(settings)
+                && native_endpoints::config_stamp(settings) == stamp
             {
                 self.provider_endpoints = native_endpoints::endpoints(&profiles);
                 self.provider_endpoint_since = self
@@ -2908,6 +2879,21 @@ impl Index {
                 self.provider_stamp = Some(stamp);
             }
         }
+    }
+
+    #[cfg(test)]
+    fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> Snapshot {
+        let started = Instant::now();
+        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+        let mut snapshot = Snapshot::default();
+        let (cache_opened, mut cache_available) = self.load_evidence(home, cutoff, request_log);
+        snapshot.aliases = self.provider_cache.aliases.clone();
+        let mut current_aliases = BTreeMap::new();
+        let settings = self
+            .settings_path
+            .clone()
+            .unwrap_or_else(codex_plus_core::paths::default_settings_path);
+        self.refresh_provider_profiles(&settings);
         snapshot.provider_names = self.provider_names.clone();
         let paths = discover(home, self.files.is_empty(), &mut snapshot.errors);
         let existing: HashSet<_> = paths.iter().cloned().collect();

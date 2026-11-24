@@ -37,6 +37,8 @@ struct EventClassification {
     provider: String,
     provider_source: Option<String>,
     provider_conflict: bool,
+    #[serde(default)]
+    count_uncertain: bool,
 }
 
 impl EventClassification {
@@ -46,6 +48,7 @@ impl EventClassification {
             provider: event.provider.clone(),
             provider_source: event.provider_source.clone(),
             provider_conflict: event.context_conflicts.provider,
+            count_uncertain: event.count_uncertain,
         }
     }
 
@@ -54,6 +57,7 @@ impl EventClassification {
         event.provider.clone_from(&self.provider);
         event.provider_source.clone_from(&self.provider_source);
         event.context_conflicts.provider = self.provider_conflict;
+        event.count_uncertain = self.count_uncertain;
     }
 }
 
@@ -283,7 +287,12 @@ impl Checkpoint {
 }
 
 mod ingest;
+#[cfg(test)]
 mod projection_tests;
 mod scan;
 mod store;
+#[cfg(test)]
 mod tests;
+
+mod runtime;
+pub(super) use runtime::{ReadState, Runtime};

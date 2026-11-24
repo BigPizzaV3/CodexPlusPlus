@@ -9,6 +9,8 @@ use std::path::Path;
 
 mod structured;
 
+const TOKEN_INDEX_DB: &str = "usage-token-index.sqlite";
+
 pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathBuf {
     let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     let id = format!("{:x}", Sha256::digest(home.as_os_str().as_encoded_bytes()));
@@ -23,7 +25,11 @@ pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathB
 pub fn storage_info(home: &Path, settings_path: &Path) -> anyhow::Result<Value> {
     let directory = storage_dir(home, settings_path);
     let mut bytes = 0;
-    for database in ["usage-provider-cache.sqlite", "usage-summary.sqlite"] {
+    for database in [
+        "usage-provider-cache.sqlite",
+        "usage-summary.sqlite",
+        TOKEN_INDEX_DB,
+    ] {
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let path = directory.join(format!("{database}{suffix}"));
             match fs::symlink_metadata(&path) {
@@ -57,11 +63,12 @@ fn storage_info_reports_only_current_usage_database_files() {
         ("usage-provider-cache.sqlite", 2048),
         ("usage-provider-cache.sqlite-shm", 64),
         ("usage-provider-cache.sqlite-journal", 16),
+        (TOKEN_INDEX_DB, 8192),
         ("unrelated.sqlite", 1000),
     ] {
         fs::write(directory.join(name), vec![0; size]).unwrap();
     }
-    assert_eq!(storage_info(&home, &settings).unwrap()["bytes"], 6256);
+    assert_eq!(storage_info(&home, &settings).unwrap()["bytes"], 14448);
     assert_eq!(
         storage_info(&temp.path().join("other-home"), &settings).unwrap()["bytes"],
         0

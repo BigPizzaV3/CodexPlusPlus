@@ -93,3 +93,74 @@ fn invalid_scope_and_half_open_time_bounds_are_rejected() {
     }
     assert!(!homes().lock().unwrap().contains_key(&home));
 }
+
+#[test]
+fn history_route_keeps_committed_usage_readable_while_the_writer_retries() {
+    use std::io::Write;
+
+    let _serial = SERIAL.lock().unwrap();
+    let (_root, home, settings, options) = fixture();
+    let source = home.join("sessions").join("rollout-01.jsonl");
+    let session = "00000000-0000-4000-8000-000000000001";
+    let now = Local::now();
+    let head = json!({
+        "type":"session_meta", "timestamp":now.to_rfc3339(),
+        "payload":{"id":session,"model_provider":"custom"}
+    });
+    let count = |step: u64| {
+        json!({
+            "type":"event_msg", "timestamp":(now + Days::milliseconds(step as i64)).to_rfc3339(),
+            "payload":{"type":"token_count","info":{
+                "total_token_usage":{"input_tokens":100*step,"cached_input_tokens":20*step,"output_tokens":10*step},
+                "last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}
+            }}
+        })
+    };
+    fs::write(&source, format!("{head}\n{}\n", count(1))).unwrap();
+    let first = settled(&home, &settings, &options);
+    assert_eq!(first["source"], "persistent-local-rollout");
+    assert_eq!(first["days"][0]["usage"]["totalTokens"], 110);
+    let db = rusqlite::Connection::open(
+        provider_cache::storage_dir(&home, &settings).join(super::super::TOKEN_INDEX_DB),
+    )
+    .unwrap();
+    db.execute_batch(
+        "CREATE TRIGGER refuse_usage BEFORE INSERT ON token_days
+         BEGIN SELECT RAISE(ABORT, 'simulated storage write failure'); END;",
+    )
+    .unwrap();
+    let mut tail = fs::OpenOptions::new().append(true).open(&source).unwrap();
+    writeln!(tail, "{}", count(2)).unwrap();
+    drop(tail);
+    let cache = homes().lock().unwrap()[&home].clone();
+    cache.lock().unwrap().refreshed = None;
+    let request =
+        json!({"scopeSessionId":session,"includeSessionCursors":true,"includeActivity":true});
+    let query = Query::parse(&request, now.date_naive()).unwrap();
+    let mut blocked = None;
+    for _ in 0..500 {
+        let response = query_with_settings(&home, &query, &request, settings.clone());
+        assert_eq!(response["revision"], first["revision"]);
+        assert_eq!(response["days"][0]["usage"]["totalTokens"], 110);
+        if response["scan"]["processing"] == false && response["scan"]["failedSources"] == 1 {
+            blocked = Some(response);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let blocked = blocked.expect("failed write was visible through the history route");
+    assert_eq!(blocked["complete"], false);
+    assert_eq!(blocked["sessionCursors"][0]["total"]["totalTokens"], 110);
+    assert_eq!(blocked["scopedUsage"]["days"], first["days"]);
+    db.execute_batch("DROP TRIGGER refuse_usage").unwrap();
+    drop(db);
+    cache.lock().unwrap().refreshed = None;
+    let complete = settled(&home, &settings, &options);
+    assert_eq!(complete["days"][0]["usage"]["totalTokens"], 220);
+    drop(cache);
+    clear(&home);
+    let cold = settled(&home, &settings, &options);
+    assert_eq!(cold["revision"], complete["revision"]);
+    assert_eq!(cold["days"], complete["days"]);
+    clear(&home);
+}

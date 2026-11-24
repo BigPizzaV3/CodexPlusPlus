@@ -5,7 +5,7 @@ use crate::usage_history::structured::token_checkpoint::{
 use crate::usage_history::structured::{
     ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index, MAX_ACTIVITY,
     MAX_FILES, Query, RequestSessionAliases, Snapshot, UsageEvent, ordered_scope_ids, segments,
-    usage_provider,
+    unknown_model, unknown_provider, usage_provider,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
@@ -163,6 +163,7 @@ pub(in super::super) struct Selection {
     pub(in super::super) coverage: Option<Coverage>,
     pub(in super::super) days: Vec<Value>,
     pub(in super::super) unresolved: u64,
+    unclassified: u64,
     pub(in super::super) archived: bool,
     pub(in super::super) needs_source_recovery: bool,
     pub(in super::super) session_cursors: Option<Vec<Value>>,
@@ -743,6 +744,16 @@ impl Store {
         Ok(next)
     }
 
+    pub(in super::super) fn recent_sessions(&self, since: i64) -> Result<Vec<String>> {
+        let mut statement = self.db.prepare_cached(
+            "SELECT s.session FROM token_resolved r JOIN token_sessions s ON s.id = r.session_id
+             WHERE r.timestamp_ms >= ?1 AND r.day >= (SELECT precise_from FROM token_revision)
+             GROUP BY r.session_id ORDER BY max(r.timestamp_ms) DESC, s.session",
+        )?;
+        let sessions = statement.query_map([since], |row| row.get(0))?;
+        Ok(sessions.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Re-evaluate a canonical session from its committed native identities, never from
     /// the supplier identities written in the last classification pass.
     pub(in super::super) fn reclassify_session(
@@ -1259,6 +1270,7 @@ impl Store {
             "rangeApplied":bounds.is_some(),
             "coverage":coverage,
             "countStatus":{"complete":complete,"uncertainEvents":all.unresolved},
+            "classificationStatus":{"complete":complete && all.unclassified == 0,"uncertainEvents":all.unclassified},
             "days":all.days,
             "sessionIds":scope.sessions,
             "sessionAliases":scope.aliases,
@@ -1292,6 +1304,7 @@ impl Store {
                 "coverage":coverage,
                 "complete":count_complete,
                 "countStatus":{"complete":count_complete,"uncertainEvents":usage.unresolved},
+                "classificationStatus":{"complete":count_complete && usage.unclassified == 0,"uncertainEvents":usage.unclassified},
             });
             if include_trend {
                 result["scopedUsage"]["trend"] = json!(usage.trend);
@@ -1656,12 +1669,23 @@ impl Store {
         usage: BTreeMap<NaiveDate, Groups>,
     ) -> Selection {
         let mut unresolved = 0;
+        let mut unclassified = 0;
         let mut days = Vec::new();
         let archived = usage
             .keys()
             .next()
             .is_some_and(|date| date.to_string().as_str() < precise_from);
         for (date, groups) in usage {
+            unclassified += groups
+                .iter()
+                .filter(|((model, provider, _, flags), _)| {
+                    *flags & 3 != 0
+                        || unknown_model(model)
+                        || unknown_provider(provider)
+                        || codex_plus_core::aggregate_catalog::is_aggregate_model(model)
+                })
+                .map(|(_, group)| group.records)
+                .sum::<u64>();
             let (mut day, uncertain) = Self::format_day(groups);
             unresolved += uncertain;
             day["date"] = json!(date.to_string());
@@ -1672,6 +1696,7 @@ impl Store {
             coverage,
             days,
             unresolved,
+            unclassified,
             archived,
             needs_source_recovery,
             session_cursors: None,
