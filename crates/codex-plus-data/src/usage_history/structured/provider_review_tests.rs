@@ -63,7 +63,7 @@ fn attribute(cache: &mut RequestEvidenceCache, events: &mut [UsageEvent]) -> Val
 }
 
 #[test]
-fn enriched_disk_observation_survives_reopen_and_rotation() {
+fn enriched_disk_observation_keeps_legacy_projection_after_reopen() {
     let root = tempfile::tempdir().unwrap();
     let at = Local::now().timestamp_millis();
     let cutoff = Local::now().date_naive() - Days::days(1);
@@ -74,19 +74,41 @@ fn enriched_disk_observation_survives_reopen_and_rotation() {
     let mut disk = provider_cache::ProviderCache::default();
     disk.open(root.path(), cutoff).unwrap();
     disk.capture_proxy(std::slice::from_ref(&legacy)).unwrap();
+    let current: RequestEvidence = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        disk.capture_proxy(std::slice::from_ref(&current)).unwrap(),
+        1
+    );
     drop(disk);
     let db =
         rusqlite::Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
-    db.execute(
-        "UPDATE completed_proxy_requests SET data=?1",
-        [wire.to_string()],
-    )
-    .unwrap();
+    let legacy_data: String = db
+        .query_row("SELECT data FROM completed_proxy_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    // 旧程序去掉 relayName 后比较两个完整的 JSON 对象。
+    assert_eq!(
+        serde_json::from_str::<Value>(&legacy_data).unwrap(),
+        serde_json::to_value(&legacy).unwrap()
+    );
+    assert_eq!(
+        db.execute(
+            "INSERT OR IGNORE INTO completed_proxy_requests VALUES(?1,?2,?3,?4)",
+            rusqlite::params![
+                legacy.id,
+                legacy.timestamp_ms,
+                legacy.thread_id,
+                legacy_data
+            ],
+        )
+        .unwrap(),
+        0
+    );
     drop(db);
 
     let mut disk = provider_cache::ProviderCache::default();
     disk.open(root.path(), cutoff).unwrap();
-    let current: RequestEvidence = serde_json::from_value(wire.clone()).unwrap();
     assert!(
         disk.rejected_proxy_ids_read_only([&current])
             .unwrap()
@@ -114,6 +136,97 @@ fn enriched_disk_observation_survives_reopen_and_rotation() {
             .unwrap()
             .contains(&current.id)
     );
+    let db =
+        rusqlite::Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    let extra: usize = db
+        .query_row(
+            "SELECT count(*) FROM completed_proxy_request_extra",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(extra, 0);
+}
+
+#[test]
+fn rotated_legacy_verified_zero_is_reused_only_by_its_original_event() {
+    let at = Local::now().timestamp_millis();
+    let root = tempfile::tempdir().unwrap();
+    let cutoff = Local::now().date_naive() - Days::days(1);
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    let mut legacy = request(at);
+    legacy.usage.as_mut().unwrap().cached_tokens = Some(0);
+    let mut original = event(at);
+    original.delta = Tokens::new(100, 0, 10);
+    original.total = original.delta;
+    let saved = VerifiedAttribution {
+        key: RequestMatchKey {
+            session: original.session.clone(),
+            model: original.model.clone(),
+            input: 100,
+            output: 10,
+            cached: 0,
+        },
+        at,
+        request: legacy.clone(),
+        rejected: false,
+        version: 1,
+    };
+    disk.capture_proxy(std::slice::from_ref(&legacy)).unwrap();
+    disk.save(&HashMap::from([(original.id, saved)]), &BTreeMap::new())
+        .unwrap();
+    drop(disk);
+
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    let mut cache = RequestEvidenceCache::default();
+    cache.restore_verified(disk.load_verified(cutoff).unwrap());
+    let mut events = [original.clone()];
+    cache.supplement_captured(&events, &BTreeMap::new(), &disk);
+    let apply = |cache: &mut RequestEvidenceCache, events: &mut [UsageEvent]| {
+        cache.attribute_with_cache(events, &mut BTreeMap::new(), &BTreeMap::new(), &disk);
+    };
+    apply(&mut cache, &mut events);
+    assert_eq!(
+        events[0].provider_source.as_deref(),
+        Some("request-log-exact")
+    );
+    assert_eq!(events[0].provider, "supplier-a");
+    assert_eq!(events[0].delta, original.delta);
+    assert!(!cache.verified[&original.id].rejected);
+    assert!(
+        cache.verified[&original.id]
+            .request
+            .known_cached()
+            .is_none()
+    );
+
+    let mut other = original.clone();
+    other.id = [8; 32];
+    other.original_id = other.id;
+    let mut events = [other];
+    apply(&mut cache, &mut events);
+    assert!(unknown_provider(&events[0].provider));
+    assert!(!cache.verified.contains_key(&events[0].id));
+
+    let mut conflict = legacy;
+    let usage = conflict.usage.as_mut().unwrap();
+    usage.cached_tokens = Some(1);
+    usage.cached_tokens_known = Some(true);
+    cache.records = vec![conflict];
+    let mut events = [original.clone()];
+    apply(&mut cache, &mut events);
+    assert!(unknown_provider(&events[0].provider));
+    assert!(cache.verified[&original.id].rejected);
+    disk.save(&cache.verified, &BTreeMap::new()).unwrap();
+    drop(disk);
+
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    let mut cache = RequestEvidenceCache::default();
+    cache.restore_verified(disk.load_verified(cutoff).unwrap());
+    assert!(cache.verified[&original.id].rejected);
 }
 
 #[test]

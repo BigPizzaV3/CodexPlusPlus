@@ -15,16 +15,40 @@ pub(super) fn database_path(storage: &Path) -> io::Result<PathBuf> {
     Ok(storage.join("usage-provider-cache.sqlite"))
 }
 
-fn stored_observation(data: &str) -> Option<RequestEvidence> {
-    let row: RequestEvidence = serde_json::from_str(data).ok()?;
-    if !row.valid_capture() {
-        return None;
+#[derive(serde::Serialize, Deserialize)]
+struct ProxyObservationExtra {
+    final_response_id: Option<String>,
+    cached_tokens: Option<u64>,
+    cached_tokens_known: Option<bool>,
+}
+
+fn apply_proxy_extra(row: &mut RequestEvidence, data: Option<&str>) -> anyhow::Result<()> {
+    if let Some(data) = data {
+        let extra: ProxyObservationExtra = serde_json::from_str(data)?;
+        let usage = row
+            .usage
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("proxy observation missing usage"))?;
+        row.final_response_id = extra.final_response_id;
+        usage.cached_tokens = extra.cached_tokens;
+        usage.cached_tokens_known = extra.cached_tokens_known;
     }
+    Ok(())
+}
+
+fn stored_observation(data: &str, extra: Option<&str>) -> anyhow::Result<Option<RequestEvidence>> {
+    let Ok(mut row) = serde_json::from_str::<RequestEvidence>(data) else {
+        return Ok(None);
+    };
     // 数据库只保存投影。未识别的持久证据不能像网关日志里的展示字段那样直接忽略。
     let encoded = serde_json::to_string(&row).expect("serialize request evidence");
-    (encoded == data
-        || serde_json::from_str::<Value>(data).ok()? == serde_json::to_value(&row).unwrap())
-    .then_some(row)
+    if encoded != data
+        && serde_json::from_str::<Value>(data)? != serde_json::to_value(&row).unwrap()
+    {
+        return Ok(None);
+    }
+    apply_proxy_extra(&mut row, extra)?;
+    Ok(row.valid_capture().then_some(row))
 }
 
 pub(super) struct Captured<T> {
@@ -45,6 +69,7 @@ pub(super) struct ProviderCache {
     cutoff: Option<NaiveDate>,
     native_count: Option<usize>,
     proxy_count: Option<usize>,
+    has_proxy_extra: bool,
 }
 
 impl ProviderCache {
@@ -78,6 +103,12 @@ impl ProviderCache {
         if version != 2 {
             anyhow::bail!("unsupported provider cache version");
         }
+        let has_proxy_extra = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table'
+             AND name='completed_proxy_request_extra')",
+            [],
+            |row| row.get(0),
+        )?;
         let mut aliases = BTreeMap::new();
         {
             let mut statement =
@@ -99,6 +130,7 @@ impl ProviderCache {
             db: Some(db),
             aliases,
             cutoff: Some(cutoff),
+            has_proxy_extra,
             ..Self::default()
         })
     }
@@ -159,6 +191,13 @@ impl ProviderCache {
              ) WITHOUT ROWID;
              CREATE INDEX IF NOT EXISTS completed_proxy_session_at ON completed_proxy_requests(session,at);
              CREATE INDEX IF NOT EXISTS completed_proxy_at ON completed_proxy_requests(at);
+             CREATE TABLE IF NOT EXISTS completed_proxy_request_extra(
+                 id TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL
+             ) WITHOUT ROWID;
+             CREATE TRIGGER IF NOT EXISTS completed_proxy_extra_delete AFTER DELETE ON completed_proxy_requests
+             BEGIN DELETE FROM completed_proxy_request_extra WHERE id=old.id; END;
+             CREATE TRIGGER IF NOT EXISTS completed_proxy_extra_invalidate AFTER UPDATE OF data ON completed_proxy_requests
+             BEGIN DELETE FROM completed_proxy_request_extra WHERE id=old.id; END;
              CREATE TABLE IF NOT EXISTS rejected_proxy_ids(
                  id TEXT PRIMARY KEY NOT NULL, at INTEGER NOT NULL
              ) WITHOUT ROWID;
@@ -192,6 +231,7 @@ impl ProviderCache {
             }
         }
         self.db = Some(db);
+        self.has_proxy_extra = true;
         self.expire(cutoff)?;
         Ok(true)
     }
@@ -619,6 +659,7 @@ impl ProviderCache {
             let mut previous = tx.prepare_cached(
                 "SELECT
                 (SELECT data FROM completed_proxy_requests WHERE id=?1),
+                (SELECT data FROM completed_proxy_request_extra WHERE id=?1),
                 EXISTS(SELECT 1 FROM rejected_proxy_ids WHERE id=?1)",
             )?;
             let mut insert = tx.prepare_cached(
@@ -631,15 +672,25 @@ impl ProviderCache {
             let mut invalidate = tx.prepare_cached(
                 "UPDATE completed_proxy_requests SET data=?2 WHERE id=?1 AND data<>?2",
             )?;
+            let mut save_extra = tx.prepare_cached(
+                "INSERT INTO completed_proxy_request_extra VALUES(?1,?2)
+                ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+            )?;
             let now = Local::now().timestamp_millis();
             let today = now.div_euclid(86_400_000) * 86_400_000;
             for row in rows {
                 if row.id.is_empty() || row.id.len() > 256 {
                     continue;
                 }
-                let (old, denied): (Option<String>, bool) =
-                    previous.query_row([&row.id], |entry| Ok((entry.get(0)?, entry.get(1)?)))?;
-                let stored = old.as_deref().and_then(stored_observation);
+                let (old, extra, denied): (Option<String>, Option<String>, bool) = previous
+                    .query_row([&row.id], |entry| {
+                        Ok((entry.get(0)?, entry.get(1)?, entry.get(2)?))
+                    })?;
+                let stored = old
+                    .as_deref()
+                    .map(|data| stored_observation(data, extra.as_deref()))
+                    .transpose()?
+                    .flatten();
                 let merged = stored
                     .as_ref()
                     .and_then(|saved| saved.merge_observation(row));
@@ -658,12 +709,22 @@ impl ProviderCache {
                     timestamp_ms: at,
                     ..Default::default()
                 };
+                let mut extra = None;
                 if old.is_none() {
+                    let projection = if denied {
+                        rejected.clone()
+                    } else {
+                        // 旧程序整段比较这列，重读时也不能更换最初的计数投影。
+                        row.legacy_projection()
+                    };
+                    if !denied && projection != *row {
+                        extra = Some(row);
+                    }
                     let inserted = insert.execute(params![
                         row.id,
                         at,
                         RequestSessionAliases::identity(&rejected.thread_id),
-                        serde_json::to_string(if denied { &rejected } else { row })?
+                        serde_json::to_string(&projection)?
                     ])?;
                     added += inserted;
                     writes += inserted;
@@ -673,9 +734,19 @@ impl ProviderCache {
                     writes += reject.execute(params![row.id, now.max(at), today])?;
                     writes +=
                         invalidate.execute(params![row.id, serde_json::to_string(&rejected)?])?;
-                } else if let Some(std::borrow::Cow::Owned(enriched)) = merged {
-                    writes +=
-                        invalidate.execute(params![row.id, serde_json::to_string(&enriched)?])?;
+                } else {
+                    if let Some(std::borrow::Cow::Owned(enriched)) = &merged {
+                        extra = Some(enriched);
+                    }
+                    if let Some(extra) = extra {
+                        let usage = extra.usage.expect("validated proxy observation");
+                        let data = serde_json::to_string(&ProxyObservationExtra {
+                            final_response_id: extra.final_response_id.clone(),
+                            cached_tokens: usage.cached_tokens,
+                            cached_tokens_known: usage.cached_tokens_known,
+                        })?;
+                        writes += save_extra.execute(params![row.id, data])?;
+                    }
                 }
             }
         }
@@ -702,17 +773,24 @@ impl ProviderCache {
         let mut floor = self
             .capture_floor("completed_proxy_requests")?
             .saturating_add(1);
-        let mut statement = db.prepare(
-            "SELECT at,data FROM completed_proxy_requests
+        let extra = self.proxy_extra_select();
+        let mut statement = db.prepare(&format!(
+            "SELECT at,data,{extra} FROM completed_proxy_requests AS observed
             WHERE session=?1 AND at>=?2 AND at<=?3 AND at>=?4 ORDER BY at DESC,id LIMIT 8193",
-        )?;
+        ))?;
         let rows = statement.query_map(params![session, since, until, floor], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
         })?;
         let mut rows: Vec<(i64, RequestEvidence)> = rows
             .map(|row| {
-                let (at, data) = row?;
-                Ok((at, serde_json::from_str(&data)?))
+                let (at, data, extra) = row?;
+                let mut row = serde_json::from_str(&data)?;
+                apply_proxy_extra(&mut row, extra.as_deref())?;
+                Ok((at, row))
             })
             .collect::<anyhow::Result<_>>()?;
         if rows.len() > MAX_REQUEST_EVIDENCE {
@@ -783,19 +861,24 @@ impl ProviderCache {
             .is_autocommit()
             .then(|| db.unchecked_transaction())
             .transpose()?;
+        let extra = self.proxy_extra_select();
         for batch in ids.chunks(256) {
             let slots = std::iter::repeat_n("?", batch.len())
                 .collect::<Vec<_>>()
                 .join(",");
             let mut statement = db.prepare(&format!(
-                "SELECT id,data FROM completed_proxy_requests WHERE id IN ({slots})"
+                "SELECT id,data,{extra} FROM completed_proxy_requests AS observed WHERE id IN ({slots})"
             ))?;
             let stored = statement.query_map(rusqlite::params_from_iter(batch.iter()), |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
             })?;
             for row in stored {
-                let (id, data) = row?;
-                let matches = stored_observation(&data)
+                let (id, data, extra) = row?;
+                let matches = stored_observation(&data, extra.as_deref())?
                     .is_some_and(|saved| saved.merge_observation(&current[id.as_str()]).is_some());
                 if !matches {
                     rejected.insert(id);
@@ -826,6 +909,14 @@ impl ProviderCache {
             tx.commit()?;
         }
         Ok(rejected)
+    }
+
+    fn proxy_extra_select(&self) -> &'static str {
+        if self.has_proxy_extra {
+            "(SELECT data FROM completed_proxy_request_extra WHERE id=observed.id)"
+        } else {
+            "NULL"
+        }
     }
 
     fn capture_floor(&self, kind: &str) -> anyhow::Result<i64> {
