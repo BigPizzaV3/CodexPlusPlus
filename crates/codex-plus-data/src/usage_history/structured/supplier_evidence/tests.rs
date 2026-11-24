@@ -514,6 +514,47 @@ fn synthetic_reader_replay_preserves_v1_proofs_counts_and_revokes_v2() {
     settings(directory.path(), vec![row(&original, 1)]);
     let supplied = index.update_with_request_log(&home, &request_log);
     assert_eq!(supplied.supplier_evidence["appliedEvents"], 1);
+    let storage = directory.path().join("persistent");
+    let mut worker = token_checkpoint::Runtime::new(storage.clone(), path.clone());
+    let state = worker.update(&home);
+    let at = DateTime::parse_from_rfc3339(&timestamp)
+        .unwrap()
+        .timestamp_millis();
+    let request =
+        json!({"startAt":at-1, "endAt":at+1,"includeTrend":true,"includeSessionCursors":true});
+    let bounded = Query::parse(&request, Local::now().date_naive()).unwrap();
+    let detailed = state.read(&storage, &bounded, &request, Some(&original.session), false);
+    let calendar = state.read(&storage, &bounded, &json!({}), None, false);
+    assert_eq!(detailed["providerEvidence"]["appliedEvents"], 1);
+    assert_eq!(detailed["supplierEvidence"]["appliedEvents"], 1);
+    assert_eq!(calendar["days"], detailed["days"]);
+    assert_eq!(detailed["days"][0]["usage"]["totalTokens"], 214);
+    let scoped = &detailed["scopedUsage"]["days"][0]["breakdowns"][0];
+    assert_eq!(scoped["model"], "recorded-model");
+    assert_eq!(scoped["provider"], "supplier-test");
+    assert_eq!(scoped["supplierClassificationEvidence"], SOURCE);
+    assert!(scoped.get("classificationEvidence").is_none());
+    assert_eq!(detailed["trend"]["buckets"][0]["usage"]["totalTokens"], 214);
+    assert!(detailed["liveAttributions"].as_array().unwrap().is_empty());
+
+    let supplier_path = path.with_file_name("usage-supplier-evidence-v2.json");
+    let saved = supplier_path.with_extension("saved");
+    fs::rename(&supplier_path, &saved).unwrap();
+    let withdrawn = state.read(&storage, &bounded, &request, Some(&original.session), false);
+    assert_eq!(withdrawn["revision"], detailed["revision"]);
+    assert_eq!(withdrawn["countStatus"], detailed["countStatus"]);
+    assert_eq!(withdrawn["sessionCursors"], detailed["sessionCursors"]);
+    assert_eq!(withdrawn["days"][0]["usage"], detailed["days"][0]["usage"]);
+    assert_ne!(
+        withdrawn["scopedUsage"]["days"][0]["breakdowns"][0]["provider"],
+        "supplier-test"
+    );
+    let refreshed = worker
+        .update(&home)
+        .read(&storage, &bounded, &request, None, false);
+    assert_eq!(refreshed["providerEvidence"]["appliedEvents"], 1);
+    assert_eq!(refreshed["supplierEvidence"]["status"], "absent");
+    fs::rename(saved, supplier_path).unwrap();
     for (before, after) in baseline.events.iter().zip(&supplied.events) {
         assert_only_supplier(before, after);
     }

@@ -1,4 +1,5 @@
 use super::{
+    historical::Historical,
     scan::Scan,
     store::{
         Store,
@@ -19,7 +20,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 const RETENTION_DAYS: u64 = 60;
@@ -34,6 +38,7 @@ pub(in super::super) struct Runtime {
     scan: Scan,
     evidence: Index,
     evidence_cursor: usize,
+    historical: Option<Arc<Historical>>,
 }
 
 #[derive(Default)]
@@ -43,6 +48,8 @@ pub(in super::super) struct ReadState {
     classification_error: Option<String>,
     storage_error: Option<String>,
     failed_sources: usize,
+    historical: Option<Arc<Historical>>,
+    historical_error: Option<String>,
 }
 
 fn open_database(storage: &Path, write: bool) -> Result<Connection> {
@@ -83,6 +90,7 @@ impl Runtime {
             store: None,
             scan: Scan::default(),
             evidence_cursor: 0,
+            historical: None,
         }
     }
 
@@ -114,6 +122,20 @@ impl Runtime {
             Ok(_) => {}
             Err(error) => {
                 state.storage_error = Some(format!("{error:#}"));
+            }
+        }
+        if let Some(store) = &mut self.store {
+            match Historical::refresh(
+                self.historical.as_ref(),
+                store,
+                &mut self.evidence,
+                &self.settings,
+            ) {
+                Ok(evidence) => {
+                    self.historical = evidence;
+                    state.historical.clone_from(&self.historical);
+                }
+                Err(error) => state.historical_error = Some(format!("{error:#}")),
             }
         }
         state
@@ -302,6 +324,7 @@ impl ReadState {
                 scope_session,
                 &self.provider_names,
                 archive,
+                self.historical.as_deref(),
             )
         }) {
             Ok(answer) => answer,
@@ -316,6 +339,9 @@ impl ReadState {
         };
         response["scan"]["processing"] = json!(processing);
         response["scan"]["failedSources"] = json!(self.failed_sources);
+        if let Some(error) = &self.historical_error {
+            response["historicalClassificationError"] = json!(error);
+        }
         if let Some(error) = &self.classification_error {
             response["scan"]["classificationError"] = json!(error);
         }

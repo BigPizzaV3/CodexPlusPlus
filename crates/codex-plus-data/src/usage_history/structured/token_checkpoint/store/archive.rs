@@ -431,6 +431,7 @@ mod tests {
             Some(OTHER),
             &names,
             None,
+            None,
         )
         .unwrap();
         assert_eq!(first["archiveRecovery"]["status"], "pending");
@@ -447,6 +448,7 @@ mod tests {
             Some(OTHER),
             &names,
             Some(&answer),
+            None,
         )
         .unwrap();
         assert_eq!(recovered["archiveRecovery"]["status"], "complete");
@@ -494,6 +496,7 @@ mod tests {
             Some(OTHER),
             &names,
             Some(&answer),
+            None,
         )
         .unwrap();
         assert_eq!(mismatch["archiveRecovery"]["status"], "partial");

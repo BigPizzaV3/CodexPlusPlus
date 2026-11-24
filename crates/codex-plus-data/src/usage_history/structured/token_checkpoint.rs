@@ -294,6 +294,7 @@ impl Checkpoint {
     }
 }
 
+mod historical;
 mod ingest;
 #[cfg(test)]
 mod projection_tests;

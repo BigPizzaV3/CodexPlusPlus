@@ -4,7 +4,7 @@ use chrono::{DateTime, Datelike, Duration as Days, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -2239,46 +2239,72 @@ fn discover(home: &Path, cold_start: bool, errors: &mut usize) -> Vec<PathBuf> {
     files.into_iter().map(|(_, path)| path).collect()
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyEvidenceDocument {
+    version: u32,
+    records: Vec<LegacyProviderEvidence>,
+}
+
+impl LegacyEvidenceDocument {
+    fn read(settings: &Path) -> anyhow::Result<Option<Self>> {
+        const LIMIT: u64 = 32 * 1024 * 1024;
+        let path = settings.with_file_name("usage-provider-evidence.json");
+        let metadata = match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(None);
+            }
+            other => other?,
+        };
+        anyhow::ensure!(
+            metadata.is_file() && metadata.len() <= LIMIT,
+            "evidence size/type"
+        );
+        let stamp = |m: &fs::Metadata| (m.len(), m.modified().ok(), file_identity(m));
+        let file = File::open(&path)?;
+        anyhow::ensure!(
+            stamp(&file.metadata()?) == stamp(&metadata),
+            "evidence replaced"
+        );
+        let mut bytes = Vec::new();
+        file.take(LIMIT + 1).read_to_end(&mut bytes)?;
+        anyhow::ensure!(
+            bytes.len() as u64 == metadata.len()
+                && stamp(&fs::symlink_metadata(&path)?) == stamp(&metadata),
+            "evidence changed"
+        );
+        let document: Self = serde_json::from_slice(&bytes)?;
+        anyhow::ensure!(
+            document.version == 1 && document.records.len() <= MAX_EVENTS,
+            "evidence version/count"
+        );
+        Ok(Some(document))
+    }
+
+    fn timestamps(&self, times: &mut BTreeSet<i64>) {
+        times.extend(self.records.iter().filter_map(|record| {
+            DateTime::parse_from_rfc3339(&record.timestamp)
+                .ok()
+                .map(|at| at.timestamp_millis())
+        }));
+    }
+}
+
 impl Index {
     fn supplement_legacy_evidence(&mut self, settings: &Path, snapshot: &mut Snapshot) {
-        // 每轮只读重建补证；不写入请求缓存，删除文件即可撤销，改写身份本轮索引内不再信任。
+        self.apply_legacy_evidence(LegacyEvidenceDocument::read(settings), snapshot);
+    }
+
+    fn apply_legacy_evidence(
+        &mut self,
+        document: anyhow::Result<Option<LegacyEvidenceDocument>>,
+        snapshot: &mut Snapshot,
+    ) {
+        // 不写入请求缓存，删除文件即可撤销，改写身份在本轮索引内不再信任。
         let result = (|| -> anyhow::Result<Value> {
-            const LIMIT: u64 = 32 * 1024 * 1024;
-            #[derive(Deserialize)]
-            #[serde(deny_unknown_fields)]
-            struct Document {
-                version: u32,
-                records: Vec<LegacyProviderEvidence>,
-            }
-            let path = settings.with_file_name("usage-provider-evidence.json");
-            let metadata = match fs::symlink_metadata(&path) {
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    return Ok(json!({"status":"absent"}));
-                }
-                other => other?,
+            let Some(document) = document? else {
+                return Ok(json!({"status":"absent"}));
             };
-            anyhow::ensure!(
-                metadata.is_file() && metadata.len() <= LIMIT,
-                "evidence size/type"
-            );
-            let stamp = |m: &fs::Metadata| (m.len(), m.modified().ok(), file_identity(m));
-            let file = File::open(&path)?;
-            anyhow::ensure!(
-                stamp(&file.metadata()?) == stamp(&metadata),
-                "evidence replaced"
-            );
-            let mut bytes = Vec::new();
-            file.take(LIMIT + 1).read_to_end(&mut bytes)?;
-            anyhow::ensure!(
-                bytes.len() as u64 == metadata.len()
-                    && stamp(&fs::symlink_metadata(&path)?) == stamp(&metadata),
-                "evidence changed"
-            );
-            let document: Document = serde_json::from_slice(&bytes)?;
-            anyhow::ensure!(
-                document.version == 1 && document.records.len() <= MAX_EVENTS,
-                "evidence version/count"
-            );
             let mut records = HashMap::new();
             let mut invalid = 0usize;
             for record in document.records {

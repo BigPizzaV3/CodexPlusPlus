@@ -1,7 +1,7 @@
 use super::archive::{ArchiveKey, Recovered};
 use super::{Coverage, Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{
-    Checkpoint, Counter, EventClassification, Observation,
+    Checkpoint, Counter, EventClassification, Observation, historical::Historical,
 };
 use crate::usage_history::structured::{
     ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index, MAX_ACTIVITY,
@@ -149,7 +149,11 @@ pub(in crate::usage_history::structured) type ArchiveAnswer =
     (ArchiveKey, Result<Recovered, String>);
 
 fn encode_groups(groups: Groups) -> Result<Vec<u8>> {
-    let groups: Vec<_> = groups
+    Ok(serde_json::to_vec(&day_groups(groups))?)
+}
+
+fn day_groups(groups: Groups) -> Vec<DayGroup> {
+    groups
         .into_iter()
         .map(|((model, provider, role, conflicts), totals)| DayGroup {
             model,
@@ -158,8 +162,7 @@ fn encode_groups(groups: Groups) -> Result<Vec<u8>> {
             conflicts,
             totals,
         })
-        .collect();
-    Ok(serde_json::to_vec(&groups)?)
+        .collect()
 }
 
 pub(in super::super) struct Selection {
@@ -1120,6 +1123,78 @@ impl Store {
         Ok(current)
     }
 
+    pub(in super::super) fn historical_candidates(
+        read: &Connection,
+        timestamps: &BTreeSet<i64>,
+    ) -> Result<Vec<UsageEvent>> {
+        let mut events = Vec::new();
+        let mut remaining: usize = 32 * 1024 * 1024;
+        let mut statement = read.prepare_cached(
+            "SELECT r.event_id, s.session, r.payload FROM token_resolved r
+             JOIN token_sessions s ON s.id = r.session_id
+             WHERE r.timestamp_ms = ?1 AND r.day >= (SELECT precise_from FROM token_revision)",
+        )?;
+        for timestamp in timestamps {
+            let mut rows = statement.query([timestamp])?;
+            while let Some(row) = rows.next()? {
+                let raw = row.get_ref(2)?.as_blob()?;
+                remaining = remaining
+                    .checked_sub(raw.len())
+                    .context("historical classification exceeds candidate budget")?;
+                let event: Observation = serde_json::from_slice(raw)?;
+                events.push(event.into_event(row.get_ref(0)?.as_blob()?.try_into()?, row.get(1)?)?);
+            }
+        }
+        Ok(events)
+    }
+
+    pub(in super::super) fn historical_days(
+        read: &Connection,
+        affected: &BTreeSet<(NaiveDate, String)>,
+        changes: &HashMap<[u8; 32], EventClassification>,
+    ) -> Result<BTreeMap<NaiveDate, HashMap<String, Vec<DayGroup>>>> {
+        let mut days = BTreeMap::<_, HashMap<_, _>>::new();
+        let mut statement = read.prepare_cached(
+            "SELECT r.event_id, r.payload FROM token_resolved r
+             WHERE r.session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+             AND r.timestamp_ms >= ?2 AND r.timestamp_ms < ?3 AND r.day = ?4
+             ORDER BY r.timestamp_ms, r.event_id",
+        )?;
+        for (day, session) in affected {
+            let midnight = |day: NaiveDate| {
+                Local
+                    .from_local_datetime(&day.and_time(NaiveTime::MIN))
+                    .earliest()
+                    .map(|at| at.timestamp_millis())
+                    .context("historical date has no local midnight")
+            };
+            let end = day.succ_opt().context("historical date overflow")?;
+            let mut rows = statement.query(params![
+                session,
+                midnight(*day)?,
+                midnight(end)?,
+                day.to_string()
+            ])?;
+            let mut groups = Groups::new();
+            while let Some(row) = rows.next()? {
+                let raw: Observation = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
+                let mut event =
+                    raw.into_event(row.get_ref(0)?.as_blob()?.try_into()?, session.clone())?;
+                if let Some(classification) = changes.get(&event.id) {
+                    classification.apply(&mut event);
+                }
+                groups
+                    .entry(group_key(&event))
+                    .or_default()
+                    .merge(DayTotals::from_event(&event));
+            }
+            days.entry(*day)
+                .or_default()
+                .insert(session.clone(), day_groups(groups));
+        }
+        Ok(days)
+    }
+
     fn visit_days(
         read: &Connection,
         start: NaiveDate,
@@ -1226,7 +1301,7 @@ impl Store {
         sessions: Option<&HashSet<String>>,
     ) -> Result<Selection> {
         let read = db.transaction()?;
-        let [selection] = Self::select(&read, query, bounds, [sessions], false, None)?;
+        let [selection] = Self::select(&read, query, bounds, [sessions], false, None, None)?;
         read.commit()?;
         Ok(selection)
     }
@@ -1240,8 +1315,15 @@ impl Store {
         let read = db.transaction()?;
         let scope = Self::scope(&read, &BTreeMap::new())?;
         let (session, sessions) = scope.scope_members(requested);
-        let [all, usage] =
-            Self::select(&read, query, bounds, [None, Some(&sessions)], false, None)?;
+        let [all, usage] = Self::select(
+            &read,
+            query,
+            bounds,
+            [None, Some(&sessions)],
+            false,
+            None,
+            None,
+        )?;
         read.commit()?;
         Ok((
             all,
@@ -1264,7 +1346,7 @@ impl Store {
         requested: Option<&str>,
         provider_names: &BTreeMap<String, String>,
     ) -> Result<Value> {
-        Self::read_response_with_archive(db, query, request, requested, provider_names, None)
+        Self::read_response_with_archive(db, query, request, requested, provider_names, None, None)
             .map(|(response, _)| response)
     }
 
@@ -1275,6 +1357,7 @@ impl Store {
         requested: Option<&str>,
         provider_names: &BTreeMap<String, String>,
         archived: Option<&ArchiveAnswer>,
+        historical: Option<&Historical>,
     ) -> Result<(Value, Option<ArchiveKey>)> {
         let read = db.transaction()?;
         let bounds = request["startAt"].as_i64().zip(request["endAt"].as_i64());
@@ -1285,6 +1368,16 @@ impl Store {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        let mut historical_error = None;
+        let historical =
+            historical.and_then(|evidence| match evidence.is_current(current_revision) {
+                Ok(true) => Some(evidence),
+                Ok(false) => None,
+                Err(error) => {
+                    historical_error = Some(format!("{error:#}"));
+                    None
+                }
+            });
         let archive_key = if let Some((start, end)) = bounds
             && !cutoff.is_empty()
         {
@@ -1336,10 +1429,19 @@ impl Store {
                 [None, Some(sessions)],
                 include_trend,
                 recovered,
+                historical,
             )?;
             (all, Some(usage))
         } else {
-            let [all] = Self::select(&read, query, bounds, [None], include_trend, recovered)?;
+            let [all] = Self::select(
+                &read,
+                query,
+                bounds,
+                [None],
+                include_trend,
+                recovered,
+                historical,
+            )?;
             (all, None)
         };
         let scan_complete = all.coverage.is_some_and(|coverage| {
@@ -1377,6 +1479,22 @@ impl Store {
         });
         if include_trend {
             result["trend"] = json!(all.trend);
+        }
+        if let Some(evidence) = historical {
+            let mut names = provider_names.clone();
+            for (id, label) in &evidence.provider_names {
+                let name = names.entry(id.clone()).or_default();
+                if name.trim().is_empty() {
+                    name.clone_from(label);
+                }
+            }
+            result["providerNames"] = json!(names);
+            result["classificationRevision"] = json!(evidence.updated_at);
+            result["providerEvidence"] = evidence.legacy_status.clone();
+            result["supplierEvidence"] = evidence.supplier_status.clone();
+        }
+        if let Some(error) = historical_error {
+            result["historicalClassificationError"] = json!(error);
         }
         let has_recovery = recovered.is_some();
         let schedule = if let Some(key) = archive_key {
@@ -1562,6 +1680,7 @@ impl Store {
         scopes: [Option<&HashSet<String>>; N],
         include_trend: bool,
         recovered: Option<(&ArchiveKey, &Recovered)>,
+        historical: Option<&Historical>,
     ) -> Result<[Selection; N]> {
         let (revision, precise_from): (i64, String) = read.query_row(
             "SELECT revision, precise_from FROM token_revision",
@@ -1644,13 +1763,21 @@ impl Store {
                 }
             };
         let read_summary = |session: String, day: NaiveDate, groups: Vec<DayGroup>| {
+            let groups = historical
+                .and_then(|evidence| evidence.days.get(&day)?.get(&session))
+                .unwrap_or(&groups);
             for group in groups {
                 let model = Some(group.model.as_str()).filter(|model| !model.is_empty());
                 if query.accepts_fields(&session, "", model, Some(day)) {
                     accumulate(
                         &session,
                         day,
-                        (group.model, group.provider, group.role, group.conflicts),
+                        (
+                            group.model.clone(),
+                            group.provider.clone(),
+                            group.role.clone(),
+                            group.conflicts,
+                        ),
                         group.totals,
                     );
                 }
@@ -1686,6 +1813,12 @@ impl Store {
             }
             Ok(())
         };
+        let read_retained = |mut event: UsageEvent| {
+            if let Some(evidence) = historical {
+                evidence.apply(&mut event);
+            }
+            read_event(&event, true, true)
+        };
         let whole_days = if !include_trend
             && query.turn_id.is_none()
             && let Some((start, end)) = bounds
@@ -1714,14 +1847,12 @@ impl Store {
                 read,
                 (start, end),
                 Some(query),
-                |event| read_event(&event, true, true),
+                read_retained,
                 // 按日摘要没有回合信息，不能拿它回答某一回合的用量。
                 query.turn_id.is_none().then_some(read_summary),
             )?
         } else if query.turn_id.is_some() {
-            Self::visit_committed(read, i64::MIN, i64::MAX, Some(query), |event| {
-                read_event(&event, true, true)
-            })?;
+            Self::visit_committed(read, i64::MIN, i64::MAX, Some(query), read_retained)?;
             !precise_from.is_empty()
                 && query
                     .from

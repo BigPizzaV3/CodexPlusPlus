@@ -13,9 +13,19 @@ pub(super) struct Cache {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document {
+pub(super) struct Document {
     version: u32,
     records: Vec<SupplierRecord>,
+}
+
+impl Document {
+    pub(super) fn timestamps(&self, times: &mut std::collections::BTreeSet<i64>) {
+        times.extend(self.records.iter().filter_map(|record| {
+            DateTime::parse_from_rfc3339(&record.event.timestamp)
+                .ok()
+                .map(|at| at.timestamp_millis())
+        }));
+    }
 }
 
 #[derive(serde::Serialize, Deserialize)]
@@ -247,7 +257,7 @@ fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<(u
     }
 }
 
-fn read_document(settings: &Path) -> anyhow::Result<Option<Document>> {
+pub(super) fn read_document(settings: &Path) -> anyhow::Result<Option<Document>> {
     let path = settings.with_file_name("usage-supplier-evidence-v2.json");
     let metadata = match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -305,7 +315,15 @@ fn claim(owners: &mut HashMap<String, Option<String>>, id: &str, owner: &str) ->
 
 impl Cache {
     pub(super) fn supplement(&mut self, settings: &Path, snapshot: &mut Snapshot) {
-        let result = self.load(settings, snapshot);
+        self.apply_document(read_document(settings), snapshot);
+    }
+
+    pub(super) fn apply_document(
+        &mut self,
+        document: anyhow::Result<Option<Document>>,
+        snapshot: &mut Snapshot,
+    ) {
+        let result = document.and_then(|doc| self.load(doc, snapshot));
         let mut report = result.unwrap_or_else(|_| json!({"status":"rejected"}));
         report["source"] = json!(SOURCE);
         report["trustBoundary"] = json!("external-offline-record-bound");
@@ -314,8 +332,12 @@ impl Cache {
         snapshot.supplier_evidence = report;
     }
 
-    fn load(&mut self, settings: &Path, snapshot: &mut Snapshot) -> anyhow::Result<Value> {
-        let Some(document) = read_document(settings)? else {
+    fn load(
+        &mut self,
+        document: Option<Document>,
+        snapshot: &mut Snapshot,
+    ) -> anyhow::Result<Value> {
+        let Some(document) = document else {
             return Ok(json!({"status":"absent"}));
         };
         let mut records = HashMap::new();
