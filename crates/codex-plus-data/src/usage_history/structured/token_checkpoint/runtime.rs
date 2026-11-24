@@ -1,5 +1,5 @@
 use super::{
-    historical::Historical,
+    historical::{EvidenceOverlay, EvidenceVerifier, Historical},
     scan::Scan,
     store::{
         Store,
@@ -21,7 +21,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 use std::time::Duration;
@@ -39,6 +39,7 @@ pub(in super::super) struct Runtime {
     evidence: Index,
     evidence_cursor: usize,
     historical: Option<Arc<Historical>>,
+    historical_verifier: Arc<Mutex<EvidenceVerifier>>,
 }
 
 #[derive(Default)]
@@ -50,6 +51,7 @@ pub(in super::super) struct ReadState {
     failed_sources: usize,
     historical: Option<Arc<Historical>>,
     historical_error: Option<String>,
+    historical_verifier: Arc<Mutex<EvidenceVerifier>>,
 }
 
 fn open_database(storage: &Path, write: bool) -> Result<Connection> {
@@ -91,6 +93,7 @@ impl Runtime {
             scan: Scan::default(),
             evidence_cursor: 0,
             historical: None,
+            historical_verifier: Arc::default(),
         }
     }
 
@@ -98,8 +101,15 @@ impl Runtime {
         self.update_with_request_log(home, &codex_plus_core::request_log::request_log_path())
     }
 
+    pub(in super::super) fn initial_state(&self) -> ReadState {
+        ReadState {
+            historical_verifier: Arc::clone(&self.historical_verifier),
+            ..ReadState::default()
+        }
+    }
+
     fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> ReadState {
-        let mut state = ReadState::default();
+        let mut state = self.initial_state();
         let today = Local::now().date_naive();
         let cutoff = today - Days::new(RETENTION_DAYS - 1);
         let proof_cutoff = today - chrono::Duration::days(super::super::RETENTION_DAYS - 1);
@@ -128,7 +138,7 @@ impl Runtime {
             match Historical::refresh(
                 self.historical.as_ref(),
                 store,
-                &mut self.evidence,
+                &self.historical_verifier,
                 &self.settings,
             ) {
                 Ok(evidence) => {
@@ -387,6 +397,7 @@ pub(in super::super) fn recover_archive(
     key: ArchiveKey,
     home: &Path,
     storage: &Path,
+    settings: &Path,
     snapshot: &ReadState,
     cancelled: &AtomicBool,
 ) -> ArchiveAnswer {
@@ -399,7 +410,17 @@ pub(in super::super) fn recover_archive(
                 "archive replay cancelled"
             );
             if replay.step()? {
-                return replay.finish(&db);
+                let mut recovered = replay.finish(&db)?;
+                recovered.evidence = Some(
+                    EvidenceOverlay::for_archive(
+                        &snapshot.historical_verifier,
+                        settings,
+                        &recovered.events,
+                        key.session.is_some(),
+                    )
+                    .map_err(|error| format!("{error:#}")),
+                );
+                return Ok(recovered);
             }
             std::thread::sleep(Duration::from_millis(10));
         }

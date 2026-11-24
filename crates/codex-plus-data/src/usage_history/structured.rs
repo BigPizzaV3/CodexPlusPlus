@@ -1804,7 +1804,7 @@ struct Index {
     native_cache_loaded: bool,
     native_cache_version: Option<i64>,
     provider_cache: provider_cache::ProviderCache,
-    legacy_signatures: HashMap<String, Option<[u8; 32]>>,
+    legacy_evidence: LegacyEvidenceCache,
 }
 
 #[derive(Default)]
@@ -2038,14 +2038,13 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
         cache.clone()
     } else {
         let storage_dir = provider_cache::storage_dir(home, &settings);
+        let runtime = token_checkpoint::Runtime::new(storage_dir.clone(), settings.clone());
+        let snapshot = Arc::new(runtime.initial_state());
         let cache = Arc::new(Mutex::new(Cache {
             settings_path: settings.clone(),
-            runtime: Some(token_checkpoint::Runtime::new(
-                storage_dir.clone(),
-                settings.clone(),
-            )),
+            runtime: Some(runtime),
             storage: storage_dir,
-            snapshot: Arc::default(),
+            snapshot,
             active: false,
             refreshed: None,
             touched: Instant::now(),
@@ -2155,12 +2154,15 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
     {
         let job = key.clone();
         let home = home.to_owned();
+        let settings = state.settings_path.clone();
         let cancelled = state.archive.cancelled.clone();
         // 同一缓存仅允许一个只读回读；不阻塞前台查询或近期索引写者。
         match std::thread::Builder::new()
             .name("rollout-history-archive".into())
             .spawn(move || {
-                token_checkpoint::recover_archive(job, &home, &storage, &snapshot, &cancelled)
+                token_checkpoint::recover_archive(
+                    job, &home, &storage, &settings, &snapshot, &cancelled,
+                )
             }) {
             Ok(worker) => state.archive.worker = Some((key, worker)),
             Err(error) => {
@@ -2292,10 +2294,18 @@ impl LegacyEvidenceDocument {
 
 impl Index {
     fn supplement_legacy_evidence(&mut self, settings: &Path, snapshot: &mut Snapshot) {
-        self.apply_legacy_evidence(LegacyEvidenceDocument::read(settings), snapshot);
+        self.legacy_evidence
+            .apply(LegacyEvidenceDocument::read(settings), snapshot);
     }
+}
 
-    fn apply_legacy_evidence(
+#[derive(Default)]
+struct LegacyEvidenceCache {
+    signatures: HashMap<String, Option<[u8; 32]>>,
+}
+
+impl LegacyEvidenceCache {
+    fn apply(
         &mut self,
         document: anyhow::Result<Option<LegacyEvidenceDocument>>,
         snapshot: &mut Snapshot,
@@ -2311,8 +2321,7 @@ impl Index {
                 let id = record.event_id.to_ascii_lowercase();
                 if id.len() != 64
                     || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    || (!self.legacy_signatures.contains_key(&id)
-                        && self.legacy_signatures.len() >= MAX_EVENTS)
+                    || (!self.signatures.contains_key(&id) && self.signatures.len() >= MAX_EVENTS)
                 {
                     invalid += 1;
                     continue;
@@ -2349,10 +2358,10 @@ impl Index {
                         .is_some_and(|n| n > 0)
                     && !records.contains_key(&id)
                     && self
-                        .legacy_signatures
+                        .signatures
                         .get(&id)
                         .is_none_or(|previous| *previous == Some(signature));
-                self.legacy_signatures
+                self.signatures
                     .insert(id.clone(), valid.then_some(signature));
                 invalid += usize::from(!valid);
                 records.insert(id, valid.then_some(record));
@@ -2450,7 +2459,9 @@ impl Index {
         })();
         snapshot.provider_evidence = result.unwrap_or_else(|_| json!({"status":"rejected"}));
     }
+}
 
+impl Index {
     fn sync_native_evidence(&mut self, cutoff: NaiveDate) -> anyhow::Result<()> {
         for _ in 0..2 {
             let before = self.provider_cache.data_version()?;

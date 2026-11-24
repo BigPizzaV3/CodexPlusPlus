@@ -1,5 +1,5 @@
 use super::{
-    super::{Checkpoint, SourceStamp},
+    super::{Checkpoint, SourceStamp, historical::EvidenceOverlay},
     decode_path,
 };
 use crate::usage_history::structured::{
@@ -52,6 +52,8 @@ pub(in crate::usage_history::structured) struct Recovered {
     revision: i64,
     sources: Vec<Source>,
     pub(in crate::usage_history::structured) events: Vec<UsageEvent>,
+    pub(in crate::usage_history::structured::token_checkpoint) evidence:
+        Option<Result<EvidenceOverlay, String>>,
 }
 
 impl Recovered {
@@ -338,6 +340,7 @@ impl Replay {
             revision,
             sources: self.sources,
             events,
+            evidence: None,
         })
     }
 }
@@ -382,6 +385,142 @@ mod tests {
             count(&first, 1),
             count(&second, 2)
         )
+    }
+
+    #[test]
+    fn archived_evidence_reclassifies_one_event_without_replacing_counts_and_is_revocable() {
+        use crate::usage_history::{
+            Query, structured::token_checkpoint::historical::EvidenceVerifier,
+        };
+        use std::sync::Mutex;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        let archive = home.join("archived_sessions");
+        fs::create_dir(&archive).unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        fs::write(
+            archive.join("rollout-old.jsonl"),
+            session_log(SESSION, day, ""),
+        )
+        .unwrap();
+        let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        let mut scan = Scan::default();
+        let names = BTreeMap::new();
+        assert!(scan.round(&mut store, &home, day, &names, 1 << 20).complete);
+        assert!(
+            scan.round(&mut store, &home, cutoff, &names, 1 << 20)
+                .complete
+        );
+        let request = json!({"startAt":stamp(day, 0).timestamp_millis(),
+            "endAt":stamp(day.succ_opt().unwrap(), 0).timestamp_millis(),
+            "includeTrend":true, "includeActivity":true});
+        let q = Query::parse(&request, cutoff).unwrap();
+        let (first, schedule) = Store::read_response_with_archive(
+            &mut store.db,
+            &q,
+            &request,
+            Some(SESSION),
+            &names,
+            None,
+            None,
+        )
+        .unwrap();
+        let key = schedule.unwrap();
+        let mut replay = key.replay(&store.db, &home, names.clone()).unwrap();
+        assert!(replay.step().unwrap());
+        let mut result = replay.finish(&store.db).unwrap();
+        let event = &result.events[0];
+        let mut record = json!({
+            "eventId":event.id.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "session":event.session, "timestamp":event.timestamp, "role":event.role, "model":event.model,
+            "input":100, "cached":20, "output":10, "provider":"old-relay", "providerName":"Old Relay",
+            "source":"upstream-exact-bidirectional"
+        });
+        let settings = home.join("settings.json");
+        let file = settings.with_file_name("usage-provider-evidence.json");
+        let publish = |record: &serde_json::Value| {
+            fs::write(&file, json!({"version":1,"records":[record]}).to_string()).unwrap()
+        };
+        publish(&record);
+        let verifier = Mutex::new(EvidenceVerifier::default());
+        result.evidence = Some(Ok(EvidenceOverlay::for_archive(
+            &verifier,
+            &settings,
+            &result.events,
+            false,
+        )
+        .unwrap()));
+        let mut answer = (key, Ok(result));
+        let read = |store: &mut Store, answer: &super::super::projection::ArchiveAnswer| {
+            Store::read_response_with_archive(
+                &mut store.db,
+                &q,
+                &request,
+                Some(SESSION),
+                &names,
+                Some(answer),
+                None,
+            )
+            .unwrap()
+        };
+        let (complete, next) = read(&mut store, &answer);
+        assert!(next.is_none());
+        assert_eq!(complete["archiveRecovery"]["status"], "complete");
+        assert_eq!(complete["activityComplete"], false);
+        assert_eq!(complete["revision"], first["revision"]);
+        assert_eq!(complete["days"][0]["usage"], first["days"][0]["usage"]);
+        let amount = |response: &serde_json::Value| {
+            response["days"][0]["breakdowns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["provider"] == "old-relay")
+                .map(|row| row["usage"]["totalTokens"].as_u64().unwrap())
+        };
+        assert_eq!(amount(&complete), Some(110));
+        assert_eq!(complete["scopedUsage"]["days"], complete["days"]);
+        assert_eq!(
+            complete["trend"]["buckets"][24]["breakdowns"][0]["provider"],
+            "old-relay"
+        );
+        assert_eq!(complete["providerNames"]["old-relay"], "Old Relay");
+
+        let saved = file.with_extension("removed");
+        fs::rename(&file, &saved).unwrap();
+        let (withdrawn, reschedule) = read(&mut store, &answer);
+        assert!(reschedule.is_some());
+        assert_eq!(withdrawn["days"], first["days"]);
+        assert_eq!(
+            withdrawn["trend"]["buckets"][24]["usage"]["totalTokens"],
+            110
+        );
+        assert_eq!(amount(&withdrawn), None);
+        assert!(withdrawn["providerNames"]["old-relay"].is_null());
+        record["provider"] = json!("rewritten-relay");
+        publish(&record);
+        let (changed, reschedule) = read(&mut store, &answer);
+        assert!(reschedule.is_some());
+        assert_eq!(changed["days"], withdrawn["days"]);
+        let recovered = answer
+            .1
+            .as_mut()
+            .unwrap_or_else(|error: &mut String| panic!("{error}"));
+        recovered.evidence = Some(Ok(EvidenceOverlay::for_archive(
+            &verifier,
+            &settings,
+            &recovered.events,
+            false,
+        )
+        .unwrap()));
+        let (rejected, next) = read(&mut store, &answer);
+        assert!(next.is_none());
+        assert_eq!(
+            rejected["days"], withdrawn["days"],
+            "mutated event proof cannot claim a new supplier"
+        );
+        assert!(rejected["providerNames"]["rewritten-relay"].is_null());
     }
 
     #[test]

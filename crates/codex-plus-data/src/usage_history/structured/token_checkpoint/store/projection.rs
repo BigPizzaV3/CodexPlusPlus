@@ -1,7 +1,8 @@
 use super::archive::{ArchiveKey, Recovered};
 use super::{Coverage, Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{
-    Checkpoint, Counter, EventClassification, Observation, historical::Historical,
+    Checkpoint, Counter, EventClassification, Observation,
+    historical::{EvidenceOverlay, Historical},
 };
 use crate::usage_history::structured::{
     ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index, MAX_ACTIVITY,
@@ -1402,12 +1403,33 @@ impl Store {
         };
         let mut archive_status = None;
         let mut recovered = None;
+        let mut refresh_archive = false;
         if let (Some(key), Some((cached, answer))) = (&archive_key, archived)
             && cached == key
         {
             match answer {
                 Ok(answer) => match answer.is_current(&read, current_revision, key) {
-                    Ok(true) => recovered = Some((key, answer)),
+                    Ok(true) => {
+                        let evidence = match answer.evidence.as_ref() {
+                            Some(Ok(evidence)) => match evidence.is_current() {
+                                Ok(true) => Some(evidence),
+                                Ok(false) => {
+                                    refresh_archive = true;
+                                    None
+                                }
+                                Err(error) => {
+                                    historical_error = Some(format!("{error:#}"));
+                                    None
+                                }
+                            },
+                            Some(Err(error)) => {
+                                historical_error = Some(error.clone());
+                                None
+                            }
+                            None => None,
+                        };
+                        recovered = Some((key, answer, evidence));
+                    }
                     Ok(false) => {}
                     Err(error) => {
                         archive_status =
@@ -1480,16 +1502,27 @@ impl Store {
         if include_trend {
             result["trend"] = json!(all.trend);
         }
-        if let Some(evidence) = historical {
+        let archive_evidence = recovered.and_then(|(_, _, evidence)| evidence);
+        let retained_evidence = historical.map(|evidence| &evidence.overlay);
+        if retained_evidence.is_some() || archive_evidence.is_some() {
             let mut names = provider_names.clone();
-            for (id, label) in &evidence.provider_names {
+            for (id, label) in [retained_evidence, archive_evidence]
+                .into_iter()
+                .flatten()
+                .flat_map(|evidence| &evidence.provider_names)
+            {
                 let name = names.entry(id.clone()).or_default();
                 if name.trim().is_empty() {
                     name.clone_from(label);
                 }
             }
             result["providerNames"] = json!(names);
-            result["classificationRevision"] = json!(evidence.updated_at);
+            result["classificationRevision"] = json!([
+                retained_evidence.map(|evidence| evidence.updated_at),
+                archive_evidence.map(|evidence| evidence.updated_at)
+            ]);
+        }
+        if let Some(evidence) = retained_evidence {
             result["providerEvidence"] = evidence.legacy_status.clone();
             result["supplierEvidence"] = evidence.supplier_status.clone();
         }
@@ -1497,8 +1530,9 @@ impl Store {
             result["historicalClassificationError"] = json!(error);
         }
         let has_recovery = recovered.is_some();
+        let old_activity = archive_key.is_some();
         let schedule = if let Some(key) = archive_key {
-            if has_recovery {
+            if has_recovery && !refresh_archive {
                 result["archiveRecovery"] =
                     json!({"status":if complete {"complete"} else {"partial"}});
                 None
@@ -1546,7 +1580,7 @@ impl Store {
                 request["activityRevision"].as_i64() == Some(updated_at),
                 &mut result,
             )?;
-            if all.needs_source_recovery {
+            if old_activity || all.needs_source_recovery {
                 result["activityComplete"] = json!(false);
             }
         }
@@ -1679,7 +1713,7 @@ impl Store {
         bounds: Option<(i64, i64)>,
         scopes: [Option<&HashSet<String>>; N],
         include_trend: bool,
-        recovered: Option<(&ArchiveKey, &Recovered)>,
+        recovered: Option<(&ArchiveKey, &Recovered, Option<&EvidenceOverlay>)>,
         historical: Option<&Historical>,
     ) -> Result<[Selection; N]> {
         let (revision, precise_from): (i64, String) = read.query_row(
@@ -1762,15 +1796,12 @@ impl Store {
                     }
                 }
             };
-        let read_summary = |session: String, day: NaiveDate, groups: Vec<DayGroup>| {
-            let groups = historical
-                .and_then(|evidence| evidence.days.get(&day)?.get(&session))
-                .unwrap_or(&groups);
+        let accumulate_summary = |session: &str, day: NaiveDate, groups: &[DayGroup]| {
             for group in groups {
                 let model = Some(group.model.as_str()).filter(|model| !model.is_empty());
-                if query.accepts_fields(&session, "", model, Some(day)) {
+                if query.accepts_fields(session, "", model, Some(day)) {
                     accumulate(
-                        &session,
+                        session,
                         day,
                         (
                             group.model.clone(),
@@ -1782,6 +1813,20 @@ impl Store {
                     );
                 }
             }
+        };
+        let read_summary = |session: String, day: NaiveDate, groups: Vec<DayGroup>| {
+            if recovered.is_some_and(|(key, _, _)| {
+                day >= key.first
+                    && day < key.end
+                    && key.session.as_ref().is_none_or(|id| id == &session)
+            }) {
+                // 先比较回读与原汇总，再决定是否需要重新分组。
+                return Ok(());
+            }
+            let groups = historical
+                .and_then(|evidence| evidence.days.get(&day)?.get(&session))
+                .unwrap_or(&groups);
+            accumulate_summary(&session, day, groups);
             Ok(())
         };
         let read_event = |event: &UsageEvent, include_totals: bool, classification_agrees: bool| {
@@ -1815,7 +1860,7 @@ impl Store {
         };
         let read_retained = |mut event: UsageEvent| {
             if let Some(evidence) = historical {
-                evidence.apply(&mut event);
+                evidence.overlay.apply(&mut event);
             }
             read_event(&event, true, true)
         };
@@ -1871,10 +1916,11 @@ impl Store {
         };
         let mut blocked_sessions = HashSet::new();
         let mut classification_gaps = HashSet::new();
-        if let Some((key, archive)) = recovered
+        if let Some((key, archive, evidence)) = recovered
             && let Some((start, end)) = bounds
         {
             let mut observed = BTreeMap::<_, Groups>::new();
+            let mut affected = HashSet::new();
             for event in &archive.events {
                 observed
                     .entry((event.session.as_str(), event.date))
@@ -1882,6 +1928,9 @@ impl Store {
                     .entry(group_key(event))
                     .or_default()
                     .merge(DayTotals::from_event(event));
+                if evidence.is_some_and(|evidence| evidence.contains(event)) {
+                    affected.insert((event.session.as_str(), event.date));
+                }
             }
             let start_local = local_time(start)?;
             let whole_start = start_local.date_naive()
@@ -1903,18 +1952,13 @@ impl Store {
                 for totals in groups.into_iter().flat_map(BTreeMap::values) {
                     actual.merge(*totals);
                 }
-                if date >= whole_start && date < whole_end && query.turn_id.is_none() {
-                    preserved.insert((session.clone(), date));
-                }
-                if expected.records != actual.records
-                    || expected.counts.0 != actual.counts.0
-                    || expected.unresolved != actual.unresolved
-                    || expected.priceable != actual.priceable
-                {
-                    blocked.insert((session, date));
-                } else if let Some(groups) = groups
-                    && (summary.len() != groups.len()
-                        || summary.iter().any(|group| {
+                let counts_agree = expected.records == actual.records
+                    && expected.counts.0 == actual.counts.0
+                    && expected.unresolved == actual.unresolved
+                    && expected.priceable == actual.priceable;
+                let groups_agree = groups.is_none_or(|groups| {
+                    summary.len() == groups.len()
+                        && summary.iter().all(|group| {
                             groups
                                 .get(&(
                                     group.model.clone(),
@@ -1922,13 +1966,27 @@ impl Store {
                                     group.role.clone(),
                                     group.conflicts,
                                 ))
-                                .is_none_or(|totals| {
-                                    totals.records != group.totals.records
-                                        || totals.counts.0 != group.totals.counts.0
-                                        || totals.priceable != group.totals.priceable
+                                .is_some_and(|totals| {
+                                    totals.records == group.totals.records
+                                        && totals.counts.0 == group.totals.counts.0
+                                        && totals.priceable == group.totals.priceable
+                                        && totals.evidence == group.totals.evidence
                                 })
-                        }))
+                        })
+                });
+                if date >= whole_start
+                    && date < whole_end
+                    && query.turn_id.is_none()
+                    && (!counts_agree
+                        || !groups_agree
+                        || !affected.contains(&(session.as_str(), date)))
                 {
+                    accumulate_summary(&session, date, &summary);
+                    preserved.insert((session.clone(), date));
+                }
+                if !counts_agree {
+                    blocked.insert((session, date));
+                } else if !groups_agree {
                     if query.model.is_some() || !query.search.is_empty() {
                         blocked.insert((session, date));
                     } else {
@@ -1942,11 +2000,16 @@ impl Store {
                 let session_day = (event.session.clone(), event.date);
                 if at >= start && at < end && !blocked.contains(&session_day) {
                     // 已提交的日归类不证明每个分时桶的归类；只接受可验证的计数。
-                    read_event(
-                        event,
-                        !preserved.contains(&session_day),
-                        !disagrees.contains(&session_day),
-                    )?;
+                    let agrees = !disagrees.contains(&session_day);
+                    if agrees
+                        && let Some(evidence) = evidence.filter(|evidence| evidence.contains(event))
+                    {
+                        let mut classified = event.clone();
+                        evidence.apply(&mut classified);
+                        read_event(&classified, !preserved.contains(&session_day), true)?;
+                        continue;
+                    }
+                    read_event(event, !preserved.contains(&session_day), agrees)?;
                 }
             }
             blocked_sessions.extend(blocked.into_iter().map(|(session, _)| session));
