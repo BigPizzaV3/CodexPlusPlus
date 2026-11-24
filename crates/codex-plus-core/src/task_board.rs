@@ -596,8 +596,7 @@ pub fn apply_auto_status(dir: &Path, tasks: &[Task], runs: &[TaskRun]) -> usize 
 
 // ---------- 项目 ----------
 //
-// 详情里的「项目」从列表里选，不手打路径。新版 Codex 把项目存在 app-server 里，本地只有项目 ID，
-// 所以候选取自线程表里最近对话的工作目录（`cwd`），去掉 Codex 自己生成的目录；列表外的用系统窗口选文件夹。
+// 详情里的「项目」以原生项目为主；近期对话的工作目录作补充，列表外的用系统窗口选文件夹。
 
 /// 最多列这么多个最近项目。
 const MAX_RECENT_PROJECTS: usize = 20;
@@ -793,14 +792,22 @@ fn codex_home() -> PathBuf {
 }
 
 fn board_payload(dir: &Path) -> Value {
-    let runs = linked_runs(&codex_home());
+    let home = codex_home();
+    let runs = linked_runs(&home);
     let mut tasks = list_tasks(dir);
     if apply_auto_status(dir, &tasks, &runs) > 0 {
         tasks = list_tasks(dir);
     }
     // 只回传认得出任务的对话。
-    let runs: Vec<&TaskRun> = runs.iter().filter(|run| tasks.iter().any(|task| task.id == run.task_id)).collect();
-    json!({ "dir": dir.display().to_string(), "tasks": tasks, "runs": runs, "projects": recent_projects(&codex_home()) })
+    let runs: Vec<&TaskRun> = runs
+        .iter()
+        .filter(|run| tasks.iter().any(|task| task.id == run.task_id))
+        .collect();
+    json!({
+        "dir": dir.display().to_string(), "tasks": tasks, "runs": runs,
+        "projects": recent_projects(&home),
+        "nativeProjects": crate::codex_app_state::local_project_roots(&home),
+    })
 }
 
 /// Codex 页面（`47-task-board-page.js`）经 bridge 路由 `/task-board` 调用：`{ action, ...args }`。

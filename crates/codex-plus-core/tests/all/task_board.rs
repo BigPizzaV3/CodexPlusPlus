@@ -131,7 +131,19 @@ fn dispatch_round_trips_through_the_frontend_actions() {
     let temp = tempfile::tempdir().unwrap();
     set_tasks_dir_for_tests(Some(temp.path().join("tasks")));
     // 不读真机的 Codex 会话：真机里可能正好有带 [T-1] 的对话，会把状态推走。
-    set_codex_home_for_tests(Some(temp.path().join("codex-home")));
+    let home = temp.path().join("codex-home");
+    std::fs::create_dir(&home).unwrap();
+    let state = home.join(".codex-global-state.json");
+    std::fs::write(
+        &state,
+        json!({
+            "local-projects": {"id1": {"name": "原生名称", "rootPaths": ["D:/repo", "D:/docs"]}},
+            "electron-saved-workspace-roots": ["D:/old"],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    set_codex_home_for_tests(Some(home));
 
     let created = dispatch("create", &json!({ "task": { "title": "从界面建的", "status": "todo" } })).unwrap();
     assert_eq!(created["created"], 1);
@@ -148,6 +160,24 @@ fn dispatch_round_trips_through_the_frontend_actions() {
 
     let listed = dispatch("list", &json!(null)).unwrap();
     assert_eq!(listed["tasks"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["projects"], json!([]));
+    assert_eq!(
+        listed["nativeProjects"],
+        json!([["D:/repo", "原生名称"], ["D:/docs", "原生名称"]]),
+    );
+    std::fs::write(
+        &state,
+        json!({
+            "electron-saved-workspace-roots": ["D:/old"],
+            "electron-workspace-root-labels": {"D:/old": "旧版名称"},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    assert_eq!(
+        dispatch("list", &json!(null)).unwrap()["nativeProjects"],
+        json!([["D:/old", "旧版名称"]]),
+    );
     let deleted = dispatch("delete", &json!({ "id": 1 })).unwrap();
     assert!(deleted["tasks"].as_array().unwrap().is_empty());
 

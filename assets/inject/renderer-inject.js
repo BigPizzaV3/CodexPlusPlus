@@ -19509,8 +19509,20 @@ ${key} = ${value}`]);
   const codexPlusTaskStatusLabel = (status) => codexPlusTaskStatuses.find((entry) => entry.id === status)?.label || status;
   const codexPlusTaskIsOpen = (task) => task.status !== "done" && task.status !== "cancelled";
 
-  function codexPlusTaskProjectName(project) {
+  function codexPlusTaskProjectKey(path) {
+    const normalized = String(path || "").replace(/\\/g, "/").replace(/^\/\/\?\/UNC\//i, "//").replace(/^\/\/\?\//, "");
+    const key = normalized.replace(/\/+$/, "") || normalized;
+    return /^(?:[a-z]:|\/\/)/i.test(key) ? key.toLowerCase() : key;
+  }
+
+  function codexPlusTaskProjectName(project, data = codexPlusTaskBoardState.data) {
     if (!project) return "";
+    const key = codexPlusTaskProjectKey(project);
+    const names = new Set();
+    for (const [path, name] of data?.nativeProjects || []) {
+      if (name.trim() && codexPlusTaskProjectKey(path) === key) names.add(name.trim());
+    }
+    if (names.size) return [...names].join(" / ");
     const parts = String(project).split(/[\\/]+/).filter(Boolean);
     return parts[parts.length - 1] || String(project);
   }
@@ -19530,7 +19542,7 @@ ${key} = ${value}`]);
   function codexPlusTaskMatches(task, query) {
     const words = String(query || "").trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (!words.length) return true;
-    const haystack = [codexPlusTaskKey(task.id), String(task.id), task.title, task.body, task.project || ""].join("\n").toLowerCase();
+    const haystack = [codexPlusTaskKey(task.id), String(task.id), task.title, task.body, task.project || "", codexPlusTaskProjectName(task.project)].join("\n").toLowerCase();
     return words.every((word) => haystack.includes(word));
   }
 
@@ -19777,19 +19789,20 @@ ${key} = ${value}`]);
   }
 
   /**
-   * 项目候选：本任务当前的项目、其它任务用过的项目、core 给的最近在 Codex 里用过的项目（`projects`），去重。
-   * 已经选中的排最前；其余按「任务里用过的」在前、最近对话的在后。
+   * 项目候选：当前选择、原生项目、任务使用过的目录、近期对话目录，按路径去重。
    */
   function codexPlusTaskProjectChoices(task, data = codexPlusTaskBoardState.data) {
-    const key = (path) => String(path).replace(/[\\/]+$/, "");
     const seen = new Set();
     const list = [];
     const add = (path) => {
-      if (!path || typeof path !== "string" || seen.has(key(path))) return;
-      seen.add(key(path));
+      if (typeof path !== "string" || !path.trim()) return;
+      const key = codexPlusTaskProjectKey(path);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
       list.push(path);
     };
     add(task?.project);
+    (data?.nativeProjects || []).forEach(([path]) => add(path));
     const tasks = Array.isArray(data?.tasks) ? [...data.tasks].sort((a, b) => b.updatedAt - a.updatedAt) : [];
     tasks.forEach((item) => add(item.project));
     (Array.isArray(data?.projects) ? data.projects : []).forEach(add);
@@ -19799,9 +19812,12 @@ ${key} = ${value}`]);
   /** 详情里的项目菜单：候选项目、「不指定」、「选择其他文件夹…」。 */
   function codexPlusTaskProjectMenu(task) {
     const choices = codexPlusTaskProjectChoices(task);
-    const current = task.project ? String(task.project).replace(/[\\/]+$/, "") : "";
-    const rows = choices.map((path) => `<button type="button" role="menuitemradio" aria-checked="${String(path.replace(/[\\/]+$/, "") === current)}" data-codex-task-project="${escapeHtml(path)}" title="${escapeHtml(path)}">
-        ${codexPlusTaskIcons.folder}<span class="codex-plus-task-menu-label">${escapeHtml(codexPlusTaskProjectName(path))}</span><span class="codex-plus-task-menu-hint">${escapeHtml(path)}</span></button>`).join("");
+    const current = codexPlusTaskProjectKey(task.project);
+    const rows = choices.map((path) => {
+      const label = escapeHtml(codexPlusTaskProjectName(path));
+      return `<button type="button" role="menuitemradio" aria-checked="${String(codexPlusTaskProjectKey(path) === current)}" data-codex-task-project="${escapeHtml(path)}" title="${label} (${escapeHtml(path)})">
+        ${codexPlusTaskIcons.folder}<span class="codex-plus-task-menu-label">${label}</span><span class="codex-plus-task-menu-hint">${escapeHtml(path)}</span></button>`;
+    }).join("");
     return `<div class="codex-plus-task-menu codex-plus-task-project-menu" role="menu" aria-label="选择项目">
         ${rows || '<p class="codex-plus-task-menu-empty">还没有在 Codex 里用过的项目</p>'}
         <div class="codex-plus-task-menu-separator" role="separator"></div>
@@ -20202,7 +20218,8 @@ ${key} = ${value}`]);
     const state = codexPlusTaskBoardState;
     if (!document.querySelector("[data-codex-task-main]") || document.hidden) return;
     void codexPlusTaskRequest("list").then((data) => {
-      if (JSON.stringify([data.tasks, data.runs]) === JSON.stringify([state.data?.tasks, state.data?.runs])) return;
+      const signature = (board) => JSON.stringify([board?.tasks, board?.runs, board?.projects, board?.nativeProjects]);
+      if (signature(data) === signature(state.data)) return;
       state.data = data;
       state.error = "";
       renderCodexPlusTaskBoard();

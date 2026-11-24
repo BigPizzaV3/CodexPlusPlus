@@ -98,7 +98,7 @@
     {
       "name": "47-task-board-page.js",
       "description": "左侧图标栏「任务面板」页：记下要做什么、拖卡片改状态、详情编辑（经 /task-board 读写 core task_board 的任务文件）",
-      "lines": 874
+      "lines": 891
     },
     {
       "name": "50-navigation.js",

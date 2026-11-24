@@ -617,6 +617,39 @@ fn project_count(state: &Map<String, Value>) -> usize {
         .map_or(0, Map::len)
 }
 
+/// 当前 Codex 侧栏的本地项目根目录及名称；不读取非活动账号的项目。
+pub(crate) fn local_project_roots(home: &Path) -> Vec<(String, String)> {
+    let Some(state) = load_global_state(home).ok().flatten() else {
+        return Vec::new();
+    };
+    if let Some(projects) = state.get("local-projects").and_then(Value::as_object) {
+        return projects
+            .values()
+            .filter_map(|project| {
+                let roots = project["rootPaths"].as_array()?;
+                let name = project["name"].as_str().unwrap_or_default();
+                Some((roots, name))
+            })
+            .flat_map(|(roots, name)| roots.iter().map(move |root| (root, name)))
+            .filter_map(|(root, name)| Some((root.as_str()?.to_owned(), name.to_owned())))
+            .collect();
+    }
+    let labels = state.get("electron-workspace-root-labels");
+    state
+        .get("electron-saved-workspace-roots")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(|root| {
+            let name = labels
+                .and_then(|labels| labels[root].as_str())
+                .unwrap_or_default();
+            (root.to_owned(), name.to_owned())
+        })
+        .collect()
+}
+
 fn write_global_state(home: &Path, state: &Value) -> anyhow::Result<()> {
     let text = serde_json::to_string_pretty(state)?;
     let path = state_path(home);

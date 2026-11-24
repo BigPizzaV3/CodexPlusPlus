@@ -17,12 +17,15 @@ const task = (id: number, patch: Partial<Task> = {}): Task => ({
 });
 
 type Run = { taskId: number; threadId: string; state: string; updatedAt: number; startedAt?: number | null; finishedAt?: number | null };
+type ProjectData = { tasks?: Task[]; projects?: string[]; nativeProjects?: [string, string][] };
 
 /** 分片顶层只有常量和函数声明，直接求值拿出纯函数。 */
 async function loadShard() {
   const source = await read(shardPath);
-  return new Function(`${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates, codexPlusTaskExcerpt, codexPlusTaskChecklist, codexPlusTaskSections, codexPlusTaskProjectChoices };`)() as {
-    codexPlusTaskProjectChoices: (task: Task | null, data: { tasks?: Task[]; projects?: string[] }) => string[];
+  return new Function("escapeHtml", `${source}\nreturn { codexPlusTaskStatuses, codexPlusTaskGroups, codexPlusTaskMatches, codexPlusTaskProjectName, codexPlusTaskKey, codexPlusTaskRunsFor, codexPlusTaskRunStates, codexPlusTaskExcerpt, codexPlusTaskChecklist, codexPlusTaskSections, codexPlusTaskProjectChoices, codexPlusTaskProjectMenu, codexPlusTaskBoardState };`)((value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll('"', "&quot;")) as {
+    codexPlusTaskProjectChoices: (task: Task | null, data: ProjectData) => string[];
+    codexPlusTaskProjectMenu: (task: Task) => string;
+    codexPlusTaskBoardState: { data: ProjectData | null };
     codexPlusTaskSections: (tasks: Task[], filter: string, query: string) => Array<{ status: string; tasks: Task[] }>;
     codexPlusTaskExcerpt: (body: string) => string;
     codexPlusTaskChecklist: (body: string) => { done: number; total: number };
@@ -87,7 +90,7 @@ test("侧栏分类和拖放目标不占用 data-codex-task-status；只有状态
   assert.match(page, /localStorage\.setItem\("codex-plus-task-board-filter", state\.filter\)/, "记住上次选的分类");
 });
 
-test("项目从菜单里选：候选是当前项目、其它任务用过的、Codex 最近用过的，去重；不再有手填输入框", async () => {
+test("项目从菜单里选：没有原生项目数据时保留已用目录和系统文件夹选择", async () => {
   const shard = await loadShard();
   const page = await read(shardPath);
   const core = await read("../../../crates/codex-plus-core/src/task_board.rs");
@@ -103,7 +106,29 @@ test("项目从菜单里选：候选是当前项目、其它任务用过的、Co
   assert.match(page, /data-codex-task-action="pickProject"/, "菜单里能用系统窗口选其他文件夹");
   assert.match(page, /codexPlusTaskRun\("pickProject", \{ id: task\.id \}\)/);
   assert.ok(core.includes(`"pickProject" =>`), "后端有 pickProject 动作");
-  assert.match(core, /"projects": recent_projects\(&codex_home\(\)\)/, "面板数据带最近项目");
+  assert.match(core, /"projects": recent_projects\(&home\)/, "面板数据带最近项目");
+});
+
+test("原生项目不受最近目录数量限制，保留显示名称并合并共享目录", async () => {
+  const shard = await loadShard();
+  const current = task(1, { project: "d:\\Code\\renamed\\" });
+  const data: ProjectData = {
+    nativeProjects: [["D:/code/renamed", "研发 & 文档"], ["D:/code/RENAMED/", "共享项目"],
+      ...Array.from({ length: 34 }, (_, i): [string, string] => [`D:/project-${i}`, `原生项目 ${i}`])],
+    tasks: [task(2, { project: "D:/manual" })],
+    projects: ["D:/recent", "d:\\PROJECT-0"],
+  };
+  shard.codexPlusTaskBoardState.data = data;
+  const choices = shard.codexPlusTaskProjectChoices(current, data);
+  assert.equal(choices.length, 37);
+  assert.equal(choices[0], current.project);
+  assert.deepEqual(choices.slice(-3), ["D:/project-33", "D:/manual", "D:/recent"]);
+  assert.equal(shard.codexPlusTaskProjectName(current.project), "研发 & 文档 / 共享项目");
+  assert.ok(shard.codexPlusTaskMatches(current, "共享项目"));
+  const menu = shard.codexPlusTaskProjectMenu(current);
+  assert.match(menu, /研发 &amp; 文档 \/ 共享项目/);
+  assert.match(menu, /原生项目 33/);
+  assert.equal(menu.match(/aria-checked="true"/g)?.length, 1);
 });
 
 test("卡片摘要去掉 Markdown 标记；清单进度按 - [ ] / - [x] 计数", async () => {
@@ -178,7 +203,8 @@ test("交给 Codex：开始按钮走 core 的 start，对话行跳到那条对�
   assert.match(page, /codexPlusTaskRun\("start", \{ id: task\.id \}\)\) closeCodexPlusPage\(\);/, "开始成功后关掉本页，露出 Codex 的新对话");
   assert.match(page, /await state\.lastWrite;/, "等失焦保存写完，新对话里是最新的标题和正文");
   assert.match(page, /type: "navigate-to-route", path: `\/local\/\$\{threadId\}`/);
-  assert.match(page, /JSON\.stringify\(\[data\.tasks, data\.runs\]\)/, "定时重读也比对对话进展");
+  assert.match(page, /JSON\.stringify\(\[board\?\.tasks, board\?\.runs, board\?\.projects, board\?\.nativeProjects\]\)/,
+    "定时重读也比对对话进展和项目目录");
   assert.match(core, /format!\("\[T-\{\}\] \{\}", task\.id, task\.title\)/, "提示词以 [T-N] 开头，core 才认得回来");
 
   const variants = [...core.matchAll(/^    (Running|Finished|Aborted|Idle),$/gm)].map((match) => match[1].toLowerCase());
