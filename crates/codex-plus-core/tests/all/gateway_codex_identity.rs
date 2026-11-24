@@ -140,7 +140,6 @@ async fn send_through_gateway(
                 client_identity: &identity,
             },
             live_request_id: None,
-            auto_retry: false,
             is_stream: false,
             upstream_path: "/responses",
             client: None,

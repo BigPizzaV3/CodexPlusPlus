@@ -218,8 +218,6 @@ async fn run(
         user_agent: None,
         session_headers: ProxySessionHeaders::default(),
         live_request_id: None,
-        // 不做「请求避震」重试：测试要看上游第一次的真实答复。
-        auto_retry: false,
         is_stream: true,
         upstream_path: "/responses",
         client: None,

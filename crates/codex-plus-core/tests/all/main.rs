@@ -135,7 +135,6 @@ mod protocol_proxy;
 mod protocol_safety;
 mod provider_page;
 mod provider_switch_isolation;
-mod proxy_auto_retry_settings;
 mod pure_api_provider_auth;
 mod real_catalog_probe;
 mod relay_config;

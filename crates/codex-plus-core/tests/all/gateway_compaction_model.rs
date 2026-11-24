@@ -153,7 +153,6 @@ async fn send(gateway: &GatewaySettings, body: Value) -> Vec<String> {
             user_agent: None,
             session_headers: ProxySessionHeaders::default(),
             live_request_id: None,
-            auto_retry: false,
             is_stream: false,
             upstream_path: "/responses",
             client: None,

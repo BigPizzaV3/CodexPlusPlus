@@ -538,400 +538,13 @@ const UPSTREAM_CONNECT_RETRY_DELAYS: [Duration; 2] =
 /// 请求根本没发出去的情况由底层 HTTP 库自己重试，不归这里管。
 const UPSTREAM_STALE_CONNECTION_RETRY_WINDOW: Duration = Duration::from_secs(1);
 
-/// 容量错误自动重试：单次等待上限，避免把 Codex 的请求挂太久。
-const PROXY_AUTO_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
-/// 容量错误重试的总等待预算；用完后把最后一个上游错误原样交给 Codex。
-const PROXY_AUTO_RETRY_TOTAL_BUDGET: Duration = Duration::from_secs(120);
-/// 即使用户把间隔设成 0 秒，也给一个短地板值，避免容量错误被打成热循环。
-const PROXY_AUTO_RETRY_MIN_DELAY: Duration = Duration::from_millis(250);
-
-/// HTTP 错误重试时预读错误体的上限：只用来记请求日志，读不全就退回状态码。
-const PROXY_AUTO_RETRY_ERROR_BODY_LIMIT: usize = 64 * 1024;
-
-/// 自动重试的退避状态：200 流内的过载/容量失败，以及命中用户所选状态码的
-/// HTTP 错误共用同一份次数与等待预算。不跨请求持久化。
-struct ProxyAutoRetry {
-    remaining: u32,
-    next_delay: Duration,
-    waited: Duration,
-    status_codes: Vec<u16>,
-}
-
-impl ProxyAutoRetry {
-    fn from_settings(settings: &crate::settings::BackendSettings) -> Option<Self> {
-        if !settings.protocol_proxy_auto_retry {
-            return None;
-        }
-        let attempts = settings.protocol_proxy_auto_retry_max_attempts;
-        if attempts == 0 {
-            return None;
-        }
-        let base = Duration::from_secs(settings.protocol_proxy_auto_retry_interval_seconds)
-            .max(PROXY_AUTO_RETRY_MIN_DELAY);
-        Some(Self {
-            remaining: attempts,
-            next_delay: base,
-            waited: Duration::ZERO,
-            status_codes: settings.protocol_proxy_auto_retry_status_codes.clone(),
-        })
-    }
-
-    fn retries_status(&self, status_code: u16) -> bool {
-        self.status_codes.contains(&status_code)
-    }
-
-    /// 返回本次应等待的时长；None 表示重试预算已用尽。
-    /// Retry-After 优先，但同样受单次上限与总预算约束。
-    fn schedule(&mut self, retry_after: Option<Duration>) -> Option<Duration> {
-        if self.remaining == 0 {
-            return None;
-        }
-        let delay = retry_after
-            .unwrap_or(self.next_delay)
-            .clamp(PROXY_AUTO_RETRY_MIN_DELAY, PROXY_AUTO_RETRY_MAX_DELAY);
-        if self.waited.saturating_add(delay) > PROXY_AUTO_RETRY_TOTAL_BUDGET {
-            return None;
-        }
-        self.remaining -= 1;
-        self.waited += delay;
-        self.next_delay = self
-            .next_delay
-            .saturating_mul(2)
-            .min(PROXY_AUTO_RETRY_MAX_DELAY);
-        Some(delay)
-    }
-}
-
-/// 等待并在诊断日志里留痕；返回本次退避时长，None 表示不重试。
-async fn schedule_proxy_auto_retry(
-    state: &mut Option<ProxyAutoRetry>,
-    relay: &crate::settings::RelayProfile,
-    request_attempt: usize,
-    reason: &str,
-    retry_after: Option<Duration>,
-    retry_reasons: &mut Vec<String>,
-    live_request_id: Option<&str>,
-) -> Option<Duration> {
-    let Some(state) = state.as_mut() else {
-        return None;
-    };
-    let delay = state.schedule(retry_after)?;
-    wait_scheduled_proxy_auto_retry(
-        delay,
-        state.remaining,
-        relay,
-        request_attempt,
-        reason,
-        retry_reasons,
-        live_request_id,
-    )
-    .await;
-    Some(delay)
-}
-
-/// 已经占用了一次重试预算之后的等待：写诊断日志、更新请求日志并 sleep。
-async fn wait_scheduled_proxy_auto_retry(
-    delay: Duration,
-    retries_remaining: u32,
-    relay: &crate::settings::RelayProfile,
-    request_attempt: usize,
-    reason: &str,
-    retry_reasons: &mut Vec<String>,
-    live_request_id: Option<&str>,
-) {
-    let _ = crate::diagnostic_log::append_diagnostic_log(
-        "protocol_proxy.upstream_auto_retry",
-        json!({
-            "relayId": relay.id,
-            "relayName": relay.name,
-            "reason": reason,
-            "requestAttempt": request_attempt,
-            "delayMs": delay.as_millis(),
-            "retriesRemaining": retries_remaining,
-        }),
-    );
-    if let Some(id) = live_request_id {
-        let mut next_reasons = retry_reasons.clone();
-        next_reasons.push(reason.to_string());
-        crate::request_log::update_running_retry(
-            id,
-            request_attempt as u32,
-            next_reasons.len() as u32,
-            next_reasons,
-        );
-        crate::request_log::update_running_phase(id, "retrying");
-    }
-    tokio::time::sleep(delay).await;
-    retry_reasons.push(reason.to_string());
-}
-
-/// 构造一次失败尝试的日志摘要；message 只保留前 200 字符，避免日志膨胀。
-fn attempt_detail(
-    request_attempt: usize,
-    code: Option<&str>,
-    message: Option<&str>,
-    delay: Duration,
-) -> crate::request_log::RequestAttemptDetail {
-    crate::request_log::RequestAttemptDetail {
-        attempt: request_attempt as u32,
-        code: code.map(str::to_string),
-        message: message.map(|message| message.chars().take(200).collect()),
-        delay_ms: Some(delay.as_millis() as u64),
-    }
-}
 /// 流式响应预读上限：推理阶段可能带加密推理内容，留足空间；超过则直接放行。
 const STREAM_RETRY_PEEK_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// 预读最长等待：超时后放行已读前缀，之后不再具备重试条件。
 const STREAM_RETRY_PEEK_MAX_WAIT: Duration = Duration::from_secs(120);
-/// 整段缓冲模式的上限：超过后回退为流式（已读部分作为前缀转发）。
-const BUFFERED_STREAM_MAX_BYTES: usize = 32 * 1024 * 1024;
-/// 整段缓冲模式的最长等待，避免客户端请求无限挂起。
-const BUFFERED_STREAM_MAX_WAIT: Duration = Duration::from_secs(300);
-
-/// 整段缓冲模式的读取结果。
-enum BufferedResponsesStream {
-    /// 已读到终态事件或 EOF：body 是完整的 SSE 文本。
-    Complete {
-        body: Vec<u8>,
-        first_output_at_ms: Option<u64>,
-        terminal_failure: Option<(Option<String>, Option<String>)>,
-    },
-    /// 超过容量/时间上限：把已读部分作为流式前缀交给调用方继续转发。
-    Overflow {
-        prefix: Vec<u8>,
-        first_output_at_ms: Option<u64>,
-    },
-}
 
 pub(crate) fn estimated_tokens_from_chars(chars: usize) -> u64 {
     ((chars as u64) + 3) / 4
-}
-
-/// 整段读取 Responses SSE：用于 buffered 模式在转发前识别过载并整段重试。
-async fn read_responses_stream_for_buffering(
-    upstream: &mut reqwest::Response,
-    live_request_id: Option<&str>,
-) -> BufferedResponsesStream {
-    let started = Instant::now();
-    let mut buffered: Vec<u8> = Vec::new();
-    let mut scanned = 0usize;
-    let mut first_output_at_ms: Option<u64> = None;
-    let mut estimated_delta_chars = 0usize;
-    let mut last_estimate_update = Instant::now();
-    loop {
-        let remaining = BUFFERED_STREAM_MAX_WAIT.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return BufferedResponsesStream::Overflow {
-                prefix: buffered,
-                first_output_at_ms,
-            };
-        }
-        let chunk = match tokio::time::timeout(remaining, upstream.chunk()).await {
-            Ok(Ok(Some(chunk))) => chunk,
-            Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
-                return BufferedResponsesStream::Complete {
-                    body: buffered,
-                    first_output_at_ms,
-                    terminal_failure: None,
-                };
-            }
-        };
-        buffered.extend_from_slice(&chunk);
-        if buffered.len() > BUFFERED_STREAM_MAX_BYTES {
-            return BufferedResponsesStream::Overflow {
-                prefix: buffered,
-                first_output_at_ms,
-            };
-        }
-        while let Some(boundary) = next_sse_boundary(&buffered, scanned) {
-            let block = String::from_utf8_lossy(&buffered[scanned..boundary]).into_owned();
-            scanned = boundary;
-            let Some(event) = sse_block_type(&block) else {
-                continue;
-            };
-            if !is_pre_output_stream_event(&event) && first_output_at_ms.is_none() {
-                first_output_at_ms = Some(current_epoch_ms());
-                if let Some(id) = live_request_id {
-                    crate::request_log::update_running_first_token(id);
-                }
-            }
-            if event.ends_with(".delta")
-                && let Some(delta) = sse_block_json(&block)
-                    .and_then(|json| json.get("delta").and_then(Value::as_str).map(str::to_string))
-            {
-                estimated_delta_chars += delta.chars().count();
-                if let Some(id) = live_request_id
-                    && last_estimate_update.elapsed() >= Duration::from_millis(300)
-                {
-                    crate::request_log::update_running_output_estimate(
-                        id,
-                        estimated_tokens_from_chars(estimated_delta_chars),
-                    );
-                    last_estimate_update = Instant::now();
-                }
-            }
-            match event.as_str() {
-                "response.completed" => {
-                    if let Some(id) = live_request_id {
-                        crate::request_log::update_running_output_estimate(
-                            id,
-                            estimated_tokens_from_chars(estimated_delta_chars),
-                        );
-                    }
-                    return BufferedResponsesStream::Complete {
-                        body: buffered,
-                        first_output_at_ms,
-                        terminal_failure: None,
-                    };
-                }
-                "response.failed" | "response.incomplete" | "error" => {
-                    let (code, message) = stream_failure_payload(&block);
-                    return BufferedResponsesStream::Complete {
-                        body: buffered,
-                        first_output_at_ms,
-                        terminal_failure: Some((code, message)),
-                    };
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// 流式预读的提交模式。旧模式保留给需要「退回旧行为」的用户。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamCommitMode {
-    /// 旧行为：遇到第一个不可安全重放的事件就立即提交，工具调用参数不缓冲。
-    Immediate,
-    /// 工具调用参数整项缓冲，首段可见输出后再等宽限窗口才提交。
-    VisibleGrace,
-    /// 只按住响应生命周期事件（response.created 等），之后第一个事件就提交。
-    /// 没开「请求避震」时只为识别「先回 200、流里才拒收加密内容」（#2777）预读，
-    /// 不能为此拖慢推理摘要等内容的转发。
-    PreOutputOnly,
-}
-
-/// 流式预读的提交策略：决定什么时候把已缓冲字节交给 Codex。
-///
-/// 「提交」之后响应就不可回滚，上游再报过载只能交给 Codex 原生重试；所以
-/// 新模式下预读会尽量把提交点往后挪，且只在不影响可见延迟的阶段多缓冲。
-#[derive(Debug, Clone, Copy)]
-struct StreamStartCommitPolicy {
-    mode: StreamCommitMode,
-    /// 首段可见输出出现后继续缓冲的时长；0 表示一出现可见输出就提交。
-    first_visible_grace: Duration,
-}
-
-impl StreamStartCommitPolicy {
-    fn from_settings(settings: &crate::settings::BackendSettings) -> Self {
-        let mode = if settings.protocol_proxy_auto_retry_mode == "streaming-legacy" {
-            StreamCommitMode::Immediate
-        } else {
-            StreamCommitMode::VisibleGrace
-        };
-        Self {
-            mode,
-            // 设置加载/部分更新都会夹取；这里再兜一层，避免直接构造的设置
-            // 让 `Instant + Duration` 溢出。
-            first_visible_grace: Duration::from_millis(
-                settings
-                    .protocol_proxy_auto_retry_commit_delay_ms
-                    .min(10_000),
-            ),
-        }
-    }
-
-    /// 重试预算已用尽时退回旧提交时机：继续缓冲不会带来任何重试收益。
-    fn without_retry_budget(self) -> Self {
-        Self {
-            mode: StreamCommitMode::Immediate,
-            ..self
-        }
-    }
-
-    /// 没开「请求避震」、只为识别流内拒收加密内容（#2777）预读时的提交时机。
-    fn pre_output_only() -> Self {
-        Self {
-            mode: StreamCommitMode::PreOutputOnly,
-            first_visible_grace: Duration::ZERO,
-        }
-    }
-}
-
-/// 预读阶段单个事件的分类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StreamStartEventKind {
-    /// 预读可以结束：正常完成、终态失败、或非消息输出项已完成。
-    Terminal,
-    /// 用户可见内容（正文/拒绝/音频/图片）：开始或继续首字提交宽限。
-    Visible,
-    /// 不可见阶段（推理、工具调用参数、工具项生命周期、未知事件）：继续缓冲。
-    Hold,
-}
-
-/// 判断事件属于哪一类。默认「继续按住」：未知事件宁可多缓冲（最坏退化成
-/// 接近整段缓冲），也不要把还能重试的窗口提前关掉；总长度仍受 8 MiB / 120 秒
-/// 预读上限约束，不会无限期扣住响应。
-///
-/// `event` 应使用 data JSON 里的 `type`（没有时回退 SSE `event:` 名），与
-/// `ResponsesSseTransformer` 的判定顺序保持一致。
-fn stream_start_event_kind(
-    block: &str,
-    event: &str,
-    mode: StreamCommitMode,
-) -> StreamStartEventKind {
-    // 只按住生命周期事件：第一个其它事件（含推理增量、失败事件）就结束预读。
-    if mode == StreamCommitMode::PreOutputOnly {
-        return if is_pre_output_stream_event(event) {
-            StreamStartEventKind::Hold
-        } else {
-            StreamStartEventKind::Terminal
-        };
-    }
-    if stream_event_is_retry_safe(block, event) {
-        return StreamStartEventKind::Hold;
-    }
-    // 旧行为：任何不可安全重放的事件（正文、工具调用参数、图片等）都立即提交。
-    if mode == StreamCommitMode::Immediate {
-        return StreamStartEventKind::Terminal;
-    }
-    match event {
-        "response.completed" | "response.failed" | "response.incomplete" | "error" => {
-            return StreamStartEventKind::Terminal;
-        }
-        // 非消息输出项完成（function_call / custom_tool_call / web_search_call …）：
-        // Codex 要等参数完整才会执行工具，此时提交没有可见延迟损失；后续事件
-        // 按普通流式转发，也不再占用重试窗口。
-        "response.output_item.done" => {
-            let item_type = sse_block_json(block)
-                .and_then(|json| {
-                    json.pointer("/item/type")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .unwrap_or_default();
-            return if !item_type.is_empty() && item_type != "reasoning" && item_type != "message" {
-                StreamStartEventKind::Terminal
-            } else {
-                StreamStartEventKind::Hold
-            };
-        }
-        _ => {}
-    }
-    match event {
-        // 正常流式上游会先发 delta；部分兼容上游只在 done 事件里带完整文本，
-        // 这里也算可见输出，避免白等预读上限。
-        "response.output_text.delta"
-        | "response.output_text.done"
-        | "response.refusal.delta"
-        | "response.refusal.done"
-        | "response.audio.delta"
-        | "response.audio.done"
-        | "response.audio.transcript.delta"
-        | "response.audio.transcript.done"
-        | "response.image_generation_call.partial_image" => StreamStartEventKind::Visible,
-        _ => StreamStartEventKind::Hold,
-    }
 }
 
 fn forward_replay_safe(prefix: Vec<u8>, first_output_at_ms: Option<u64>) -> StreamStartPeek {
@@ -950,8 +563,7 @@ enum StreamStartPeek {
     },
     /// 收到终态失败（response.failed / incomplete / error），尚未提交给 Codex。
     ///
-    /// 即使之前已经缓冲了可见输出（宽限窗口内），只要还没提交就仍可重试；
-    /// 不能重试时把 `prefix` 和首字时间一起交回，避免请求日志把首字耗时
+    /// 不重发时把 `prefix` 和首字时间一起交回，避免请求日志把首字耗时
     /// 记成提交时刻。
     Failed {
         prefix: Vec<u8>,
@@ -976,39 +588,6 @@ fn is_pre_output_stream_event(event: &str) -> bool {
         event,
         "response.created" | "response.in_progress" | "response.queued" | "response.metadata"
     )
-}
-
-/// 该事件是否还处于「可以安全重放」的阶段：没有给 Codex 看过可见内容。
-///
-/// 除了响应创建类事件，推理摘要与加密推理项也先按住——官方过载错误经常在
-/// 模型思考阶段才返回；此时客户端还没收到正文，重放不会出现重复内容。
-/// 可见正文/图片等由 [`stream_start_event_kind`] 单独判定，不再「一出现就放行」。
-fn stream_event_is_retry_safe(block: &str, event: &str) -> bool {
-    if is_pre_output_stream_event(event) {
-        return true;
-    }
-    match event {
-        "response.output_item.added" | "response.output_item.done" => sse_block_json(block)
-            .and_then(|json| {
-                json.pointer("/item/type")
-                    .and_then(Value::as_str)
-                    .map(|item_type| item_type == "reasoning")
-            })
-            .unwrap_or(false),
-        "response.reasoning_summary_part.added"
-        | "response.reasoning_summary_text.delta"
-        | "response.reasoning_summary_text.done"
-        | "response.reasoning_text.delta"
-        | "response.reasoning_text.done" => true,
-        "response.content_part.added" => sse_block_json(block)
-            .and_then(|json| {
-                json.pointer("/part/type")
-                    .and_then(Value::as_str)
-                    .map(|part_type| part_type.starts_with("reasoning"))
-            })
-            .unwrap_or(false),
-        _ => false,
-    }
 }
 
 /// 把上游过载错误规范成 Codex 能识别的 `response.failed` 事件。
@@ -1130,49 +709,31 @@ fn stream_failure_is_retryable(code: Option<&str>, message: Option<&str>) -> boo
         || message.contains("overloaded")
 }
 
-/// 预读 Responses 流开头：识别「200 + 流内 response.failed」的容量错误，
-/// 并尽量推迟不可回滚的提交点，给代理重试多留窗口。
+/// 预读 Responses 流开头：识别「先回 200、流里才拒收」的失败（#2777 别家加密内容、
+/// #2917 推理明文 content），这时还没向 Codex 写出任何字节，可以改写请求后重发。
 ///
-/// 提交时机：
-/// - `streaming-legacy`：遇到第一个不可安全重放的事件立即提交（旧行为）；
-/// - 推理、工具调用参数等不可见阶段一直按住，随时可以整体丢弃重发；
-/// - 非消息输出项完成（例如 function_call 参数收齐）立即提交：Codex 本来就要
-///   等参数完整才会执行工具，这里没有可见延迟；
-/// - 第一段可见输出（正文/拒绝/音频/图片）后，再等
-///   [`StreamStartCommitPolicy::first_visible_grace`]；窗口内遇到容量错误仍丢弃
-///   重试，窗口到期才提交；
-/// - response.completed、失败事件、EOF/读失败、8 MiB/120 秒上限都结束预读。
+/// 只按住响应生命周期事件（response.created 等）：第一个其它事件（含推理增量）
+/// 就结束预读并放行，不拖慢推理摘要、正文等内容的转发。失败事件、EOF/读失败、
+/// 8 MiB/120 秒上限同样结束预读。
 async fn peek_responses_stream_start(
     upstream: &mut reqwest::Response,
-    policy: StreamStartCommitPolicy,
     live_request_id: Option<&str>,
 ) -> StreamStartPeek {
     let started = Instant::now();
     let mut buffered: Vec<u8> = Vec::new();
     let mut scanned = 0usize;
     let mut first_output_at_ms: Option<u64> = None;
-    let mut visible_deadline: Option<Instant> = None;
     loop {
         if buffered.len() > STREAM_RETRY_PEEK_MAX_BYTES {
-            return forward_replay_safe(buffered, first_output_at_ms);
-        }
-        let now = Instant::now();
-        if visible_deadline.is_some_and(|deadline| now >= deadline) {
             return forward_replay_safe(buffered, first_output_at_ms);
         }
         let remaining = STREAM_RETRY_PEEK_MAX_WAIT.saturating_sub(started.elapsed());
         if remaining.is_zero() {
             return forward_replay_safe(buffered, first_output_at_ms);
         }
-        // 同时受预读总超时和首字提交宽限约束：宽限到期也要醒来提交，
-        // 不能等上游再发 chunk 才检查。
-        let wait = match visible_deadline {
-            Some(deadline) => remaining.min(deadline.saturating_duration_since(now)),
-            None => remaining,
-        };
-        let chunk = match tokio::time::timeout(wait, upstream.chunk()).await {
+        let chunk = match tokio::time::timeout(remaining, upstream.chunk()).await {
             Ok(Ok(Some(chunk))) => chunk,
-            // EOF、读失败、宽限到期或预读超时：原样放行已缓冲前缀。
+            // EOF、读失败或预读超时：原样放行已缓冲前缀。
             Ok(Ok(None)) | Ok(Err(_)) | Err(_) => {
                 return forward_replay_safe(buffered, first_output_at_ms);
             }
@@ -1185,44 +746,31 @@ async fn peek_responses_stream_start(
                 continue;
             };
             // 与 ResponsesSseTransformer 一致：data JSON 的 type 优先，回退 SSE
-            // event: 名。少数上游两者不一致，只认 event: 会把可见内容当成未知事件。
+            // event: 名。少数上游两者不一致，只认 event: 会误判事件类型。
             let event = sse_block_json(&block)
                 .and_then(|json| json.get("type").and_then(Value::as_str).map(str::to_string))
                 .filter(|event| !event.is_empty())
                 .unwrap_or_else(|| sse_event.clone());
-            if first_output_at_ms.is_none() && !is_pre_output_stream_event(&event) {
-                first_output_at_ms = Some(current_epoch_ms());
-                // 请求日志的「首字耗时」仍按上游第一段输出计；预读可能还要
-                // 继续按住一段时间，这里先让进行中的日志行看到首字。
-                if let Some(id) = live_request_id {
-                    crate::request_log::update_running_first_token(id);
-                }
+            if is_pre_output_stream_event(&event) {
+                continue;
             }
-            match stream_start_event_kind(&block, &event, policy.mode) {
-                StreamStartEventKind::Terminal => {
-                    if matches!(
-                        event.as_str(),
-                        "response.failed" | "response.incomplete" | "error"
-                    ) {
-                        let (code, message) = stream_failure_payload(&block);
-                        return StreamStartPeek::Failed {
-                            prefix: buffered,
-                            code,
-                            message,
-                            first_output_at_ms,
-                        };
-                    }
-                    return forward_replay_safe(buffered, first_output_at_ms);
-                }
-                StreamStartEventKind::Visible => {
-                    if policy.first_visible_grace.is_zero() {
-                        return forward_replay_safe(buffered, first_output_at_ms);
-                    }
-                    visible_deadline
-                        .get_or_insert_with(|| Instant::now() + policy.first_visible_grace);
-                }
-                StreamStartEventKind::Hold => {}
+            first_output_at_ms = Some(current_epoch_ms());
+            if let Some(id) = live_request_id {
+                crate::request_log::update_running_first_token(id);
             }
+            if matches!(
+                event.as_str(),
+                "response.failed" | "response.incomplete" | "error"
+            ) {
+                let (code, message) = stream_failure_payload(&block);
+                return StreamStartPeek::Failed {
+                    prefix: buffered,
+                    code,
+                    message,
+                    first_output_at_ms,
+                };
+            }
+            return forward_replay_safe(buffered, first_output_at_ms);
         }
     }
 }
@@ -2181,8 +1729,6 @@ pub struct ForcedRelay {
     pub relay: crate::settings::RelayProfile,
     /// 发往上游的模型名；`None` 时沿用请求体里的 model。
     pub upstream_model: Option<String>,
-    /// 是否启用「请求避震」自动重试（参数仍读设置）。
-    pub auto_retry: bool,
 }
 
 /// 客户端会话头白名单；不接受鉴权或任意其他客户端请求头。
@@ -3724,7 +3270,7 @@ pub async fn open_responses_proxy_request_for_path_with_session_headers(
 }
 
 /// 与 `open_responses_proxy_request_for_path_with_session_headers` 相同，
-/// 额外带上请求日志 ID，用于在整段缓冲时实时更新输出 token 估算。
+/// 额外带上请求日志 ID，用于实时更新进行中的请求日志（阶段、首字时间等）。
 pub async fn open_responses_proxy_request_for_path_with_session_headers_and_live_id(
     body: &str,
     original_user_agent: Option<&str>,
@@ -4090,33 +3636,20 @@ async fn open_responses_proxy_request_once(
     let strict_aggregate_model = aggregate_model.is_some() || forced.is_some();
     let relay_count = relays.len();
     let mut exec_negotiation_used = false;
-    // 网关模式（#2802）：上游 429 不在这里对同一个 Key 退避重发——那只会让同一个 Key 在限流中
-    // 再挨几次、拖住换 Key；交给网关去冷却这个 Key、换下一个，或都在冷却时等最早恢复的那个。
-    let gateway_forced = forced.is_some();
-    // 拓展用 gateway.replaces 关掉了「请求避震」：上游错误原样交回，要不要重发交给拓展的 gateway.error。
-    let mut auto_retry = if forced.as_ref().is_some_and(|forced| !forced.auto_retry)
-        || crate::extension_gateway::builtin_replaced("builtin:auto-retry")
-    {
-        None
-    } else {
-        ProxyAutoRetry::from_settings(&settings)
-    };
     let mut request_attempt = 0_usize;
-    let buffered_mode = settings.protocol_proxy_auto_retry_mode == "buffered";
-    let commit_policy = StreamStartCommitPolicy::from_settings(&settings);
     let mut retry_reasons: Vec<String> = Vec::new();
-    // 因别家签发的加密内容被拒而重发的次数（#2777），整个请求共用，不占「请求避震」的预算。
+    // 因别家签发的加密内容被拒而重发的次数（#2777），整个请求共用。
     let mut foreign_retries = 0_u32;
     // 这次请求去掉过别家签发的压缩上下文（#2777）：请求日志里单独标出来，较早的对话内容上游已看不到。
     let mut foreign_compaction_dropped = false;
-    // 上游不收推理项的明文 content、已清空后重发过（#2917）：每个请求只重发这一次，不占上面两项的预算。
+    // 上游不收推理项的明文 content、已清空后重发过（#2917）：每个请求只重发这一次，不占上面的次数。
     let mut reasoning_content_retried = false;
     let mut request_trace = crate::request_log::RequestTrace {
         model: source_model.clone(),
         ..Default::default()
     };
-    // 外层循环负责两件事：按候选成员顺序尝试（成员间失败切换仍是立即的），
-    // 以及全部候选都失败且错误可重试时退避后从第一个成员重新开始一轮。
+    // 外层循环按候选成员顺序尝试（成员间失败切换是立即的）；#2777 / #2917 改写请求后
+    // 对同一候选重发也走这里。
     let mut candidate_index = 0_usize;
     'request_attempts: loop {
         if candidate_index >= relay_count {
@@ -5076,8 +4609,6 @@ async fn open_responses_proxy_request_once(
                 "stream": is_stream,
                 "statusCode": status_code,
                 "contentType": content_type,
-                "autoRetryMode": settings.protocol_proxy_auto_retry_mode,
-                "bufferedMode": buffered_mode,
                 "attempt": attempt + 1,
                 "candidateCount": relay_count,
                 "headerTimeoutSeconds": header_timeout.as_secs(),
@@ -5117,68 +4648,25 @@ async fn open_responses_proxy_request_once(
                 );
                 continue;
             }
-            // 已经没有可切换的成员：命中用户所选状态码（默认 429/5xx）就退避后
-            // 从第一个成员重来一轮。此时还没向 Codex 写出任何字节，可以整次重发。
-            // 先占用预算再读错误体，预算用尽时响应体原样交给 Codex。
-            let retry_after = exec_retry_after_duration(upstream.headers(), SystemTime::now());
-            let scheduled = auto_retry
-                .as_mut()
-                .filter(|retry| {
-                    retry.retries_status(status_code) && !(gateway_forced && status_code == 429)
-                })
-                .and_then(|retry| {
-                    retry
-                        .schedule(retry_after)
-                        .map(|delay| (delay, retry.remaining))
-                });
-            if let Some((delay, retries_remaining)) = scheduled {
-                let body = read_limited_upstream_body(
-                    &mut upstream,
-                    PROXY_AUTO_RETRY_ERROR_BODY_LIMIT,
-                )
-                .await
-                .unwrap_or_default();
-                drop(upstream);
-                let (message, _, code, _) =
-                    upstream_error_parts(status_code, &content_type, &body);
-                let code = code.unwrap_or_else(|| status_code.to_string());
-                wait_scheduled_proxy_auto_retry(
-                    delay,
-                    retries_remaining,
-                    &relay,
-                    request_attempt,
-                    &format!("upstream_http_status:{status_code}"),
-                    &mut retry_reasons,
-                    live_request_id,
-                )
-                .await;
-                let detail = attempt_detail(request_attempt, Some(&code), Some(&message), delay);
-                if let Some(id) = live_request_id {
-                    crate::request_log::update_running_attempt_detail(id, detail.clone());
-                }
-                request_trace.attempt_details.push(detail);
-                candidate_index = 0;
-                continue 'request_attempts;
-            }
         }
         if (200..300).contains(&status_code)
             && !local_compaction_request
             && !is_compaction_request
             && let Some(key) = cache_key
         {
-            // buffered 模式会提前返回，也必须记录普通请求的逻辑上下文字段。
+            // 记录普通请求的逻辑上下文字段。
             local_compaction::remember(key, cache_context, exec_adapted);
         }
-        // 200 的流式响应也可能带着 response.failed（官方 server_overloaded
-        // 就是先回 200 再在流里失败）。在向 Codex 写出任何字节前先预读；
-        // 若识别到容量失败就退避后重发同一次上游请求。
-        //
-        // 拒收别家签发的加密内容（#2777）也可能这样发生（ChatGPT 后端、Grok 先回 200 和
-        // response.created，再发 response.failed / error）。只要还没提交给 Codex，同样去掉一批
-        // 加密项后重发；没开「请求避震」时也为此预读，但只按住生命周期事件，不拖慢正常转发。
+        // 拒收别家签发的加密内容（#2777）、拒收推理项的明文 content（#2917）都可能「先回 200 和
+        // response.created，再在流里发 response.failed / error」（ChatGPT 后端、Grok 等）。
+        // 请求里带着这两类内容时，在向 Codex 写出任何字节前先预读流开头（只按住生命周期事件，
+        // 不拖慢正常转发）；识别到这类拒收就改写请求后对同一候选重发。
         let foreign_stream_watch = foreign_reasoning_handled
             && foreign_retries < crate::foreign_reasoning::MAX_RETRIES
             && crate::foreign_reasoning::has_encrypted_items(&upstream_body);
+        let reasoning_content_watch = foreign_reasoning_handled
+            && !reasoning_content_retried
+            && crate::foreign_reasoning::has_reasoning_content(&upstream_body);
         let mut stream_prefix = Vec::new();
         if is_stream
             && (200..300).contains(&status_code)
@@ -5186,149 +4674,9 @@ async fn open_responses_proxy_request_once(
             && !is_compaction_request
             && !experimental_local_compaction
             && !exec_adapted
-            && auto_retry.is_some()
-            && buffered_mode
+            && (foreign_stream_watch || reasoning_content_watch)
         {
-            match read_responses_stream_for_buffering(&mut upstream, live_request_id).await {
-                BufferedResponsesStream::Complete {
-                    body,
-                    first_output_at_ms,
-                    terminal_failure,
-                } => {
-                    if let Some(first_output_at_ms) = first_output_at_ms {
-                        request_trace.first_output_at_ms = Some(first_output_at_ms);
-                    }
-                    // 整段缓冲：还没向 Codex 写出任何字节，流内拒收推理明文（#2917）可以清空后重发。
-                    if foreign_reasoning_handled
-                        && !reasoning_content_retried
-                        && let Some((code, message)) = terminal_failure.as_ref()
-                        && crate::foreign_reasoning::is_reasoning_content_stream_failure(
-                            code.as_deref(),
-                            message.as_deref(),
-                            &upstream_body,
-                        )
-                        && prepare_reasoning_content_retry(
-                            &relay,
-                            &mut upstream_body,
-                            "buffered_stream",
-                            is_stream,
-                            &mut reasoning_content_retried,
-                            &mut retry_reasons,
-                            &foreign_scope,
-                        )
-                    {
-                        candidate_index = attempt;
-                        continue 'request_attempts;
-                    }
-                    // 整段缓冲：还没向 Codex 写出任何字节，流内拒收加密内容可以重发。
-                    if foreign_stream_watch
-                        && let Some((code, message)) = terminal_failure.as_ref()
-                        && crate::foreign_reasoning::is_unverifiable_stream_failure(
-                            code.as_deref(),
-                            message.as_deref(),
-                        )
-                        && prepare_foreign_reasoning_retry(
-                            &relay,
-                            &mut upstream_body,
-                            message.as_deref().or(code.as_deref()).unwrap_or(""),
-                            "buffered_stream",
-                            is_stream,
-                            &mut foreign_retries,
-                            &mut retry_reasons,
-                            &foreign_scope,
-                            &mut foreign_compaction_dropped,
-                        )
-                    {
-                        candidate_index = attempt;
-                        continue 'request_attempts;
-                    }
-                    if let Some((code, message)) = terminal_failure
-                        && stream_failure_is_retryable(code.as_deref(), message.as_deref())
-                    {
-                        let reason = format!(
-                            "upstream_buffered_overload:{}",
-                            code.clone().unwrap_or_default()
-                        );
-                        if let Some(delay) = schedule_proxy_auto_retry(
-                            &mut auto_retry,
-                            &relay,
-                            request_attempt,
-                            &reason,
-                            None,
-                            &mut retry_reasons,
-                            live_request_id,
-                        )
-                        .await
-                        {
-                            let detail = attempt_detail(
-                                request_attempt,
-                                code.as_deref(),
-                                message.as_deref(),
-                                delay,
-                            );
-                            if let Some(id) = live_request_id {
-                                crate::request_log::update_running_attempt_detail(id, detail.clone());
-                            }
-                            request_trace.attempt_details.push(detail);
-                            if !strict_aggregate_model {
-                                crate::relay_rotation::record_relay_request_failure(&settings);
-                            }
-                            candidate_index = 0;
-                            continue 'request_attempts;
-                        }
-                    }
-                    request_trace.attempts = request_attempt as u32;
-                    fill_retry_trace(&mut request_trace, &retry_reasons, foreign_compaction_dropped);
-                    return Ok(UpstreamProxyResponse {
-                        status_code,
-                        is_stream: true,
-                        content_type,
-                        wire_api,
-                        compaction: false,
-                        native_compaction_passthrough: false,
-                        upstream_reasoning_included,
-                        buffered_body: Some(body),
-                        stream_prefix: Vec::new(),
-                        request_trace: Some(request_trace),
-                        exec_adapted: false,
-                        exec_outcome: None,
-                        websocket: None,
-                        response: None,
-                    });
-                }
-                BufferedResponsesStream::Overflow {
-                    prefix,
-                    first_output_at_ms,
-                } => {
-                    stream_prefix = prefix;
-                    if let Some(first_output_at_ms) = first_output_at_ms {
-                        request_trace.first_output_at_ms = Some(first_output_at_ms);
-                    }
-                }
-            }
-        } else if is_stream
-            && (200..300).contains(&status_code)
-            && wire_api == UpstreamWireApi::Responses
-            && !is_compaction_request
-            && !experimental_local_compaction
-            && !exec_adapted
-            && (auto_retry.is_some() || foreign_stream_watch)
-        {
-            // 重试预算已用尽时再缓冲没有收益，直接退回旧提交时机，
-            // 避免为首字白等一个宽限窗口。没开「请求避震」、只为流内拒收加密内容预读时，
-            // 只按住生命周期事件。
-            let attempt_commit_policy = match auto_retry.as_ref() {
-                Some(retry) if retry.remaining > 0 => commit_policy,
-                Some(_) => commit_policy.without_retry_budget(),
-                None => StreamStartCommitPolicy::pre_output_only(),
-            };
-            match peek_responses_stream_start(
-                &mut upstream,
-                attempt_commit_policy,
-                live_request_id,
-            )
-            .await
-            {
+            match peek_responses_stream_start(&mut upstream, live_request_id).await {
                 StreamStartPeek::Forward {
                     prefix,
                     first_output_at_ms,
@@ -5345,8 +4693,7 @@ async fn open_responses_proxy_request_once(
                     first_output_at_ms,
                 } => {
                     // 预读还没提交给 Codex：流内拒收推理明文（#2917）就清空后对同一候选重发。
-                    if foreign_reasoning_handled
-                        && !reasoning_content_retried
+                    if reasoning_content_watch
                         && crate::foreign_reasoning::is_reasoning_content_stream_failure(
                             code.as_deref(),
                             message.as_deref(),
@@ -5386,9 +4733,8 @@ async fn open_responses_proxy_request_once(
                         candidate_index = attempt;
                         continue 'request_attempts;
                     }
-                    // 没开「请求避震」时这里只是为 #2777 预读，其它失败照旧原样交给 Codex。
-                    let retryable = auto_retry.is_some()
-                        && stream_failure_is_retryable(code.as_deref(), message.as_deref());
+                    // 其它流内失败照旧原样交给 Codex（过载由 ResponsesSseTransformer 改写成
+                    // Codex 认得的 server_overloaded，交给 Codex 自己重试）。
                     let _ = crate::diagnostic_log::append_diagnostic_log(
                         "protocol_proxy.upstream_stream_failed",
                         json!({
@@ -5396,54 +4742,10 @@ async fn open_responses_proxy_request_once(
                             "relayName": relay.name,
                             "code": code,
                             "message": message,
-                            "retryable": retryable,
                             "requestAttempt": request_attempt,
                         }),
                     );
-                    if retryable {
-                        if !strict_aggregate_model {
-                            crate::relay_rotation::record_relay_request_failure(&settings);
-                        }
-                        // 聚合还有候选成员时先立即换下一个，别让同一个过载成员占住等待时间。
-                        if has_more_candidates {
-                            continue;
-                        }
-                        // 重试原因带上根因 code，请求日志里能直接看出为什么重试。
-                        let retry_reason = match code
-                            .as_deref()
-                            .map(str::trim)
-                            .filter(|code| !code.is_empty())
-                        {
-                            Some(code) => format!("upstream_stream_failed:{code}"),
-                            None => "upstream_stream_failed:unknown".to_string(),
-                        };
-                        if let Some(delay) = schedule_proxy_auto_retry(
-                            &mut auto_retry,
-                            &relay,
-                            request_attempt,
-                            &retry_reason,
-                            None,
-                            &mut retry_reasons,
-                            live_request_id,
-                        )
-                        .await
-                        {
-                            let detail = attempt_detail(
-                                request_attempt,
-                                code.as_deref(),
-                                message.as_deref(),
-                                delay,
-                            );
-                            if let Some(id) = live_request_id {
-                                crate::request_log::update_running_attempt_detail(id, detail.clone());
-                            }
-                            request_trace.attempt_details.push(detail);
-                            candidate_index = 0;
-                            continue 'request_attempts;
-                        }
-                    }
-                    // 不重试时把预读前缀连同首字时间交回；否则请求日志会把
-                    // 首字耗时记成开始转发的时刻，宽限窗口会虚增这段耗时。
+                    // 把预读前缀连同首字时间交回；否则请求日志会把首字耗时记成开始转发的时刻。
                     stream_prefix = prefix;
                     if first_output_at_ms.is_some() {
                         request_trace.first_output_at_ms = first_output_at_ms;
@@ -5451,7 +4753,7 @@ async fn open_responses_proxy_request_once(
                 }
             }
         }
-        // 成功，或重试预算用尽：把（最后一个）上游响应交给 Codex。
+        // 把（最后一个）上游响应交给 Codex。
         // 请求了 SSE 的兼容上游也可能返回 JSON 摘要；让调用方选择 JSON 包装器。
         request_trace.attempts = request_attempt as u32;
         fill_retry_trace(&mut request_trace, &retry_reasons, foreign_compaction_dropped);
@@ -12933,63 +12235,8 @@ mod unlisted_model_mapping_tests {
 }
 
 #[cfg(test)]
-mod proxy_auto_retry_tests {
+mod stream_start_peek_tests {
     use super::*;
-
-    #[test]
-    fn defaults_are_enabled_with_five_retries_and_two_second_backoff() {
-        let state = ProxyAutoRetry::from_settings(&crate::settings::BackendSettings::default())
-            .expect("默认开启自动重试");
-        assert_eq!(state.remaining, 5);
-        assert_eq!(state.next_delay, Duration::from_secs(2));
-    }
-
-    #[test]
-    fn disabled_switch_or_zero_attempts_disables_retry() {
-        let mut settings = crate::settings::BackendSettings::default();
-        settings.protocol_proxy_auto_retry = false;
-        assert!(ProxyAutoRetry::from_settings(&settings).is_none());
-        settings.protocol_proxy_auto_retry = true;
-        settings.protocol_proxy_auto_retry_max_attempts = 0;
-        assert!(ProxyAutoRetry::from_settings(&settings).is_none());
-    }
-
-    #[test]
-    fn schedule_uses_exponential_backoff_and_stops_at_attempt_limit() {
-        let mut settings = crate::settings::BackendSettings::default();
-        settings.protocol_proxy_auto_retry_interval_seconds = 1;
-        settings.protocol_proxy_auto_retry_max_attempts = 3;
-        let mut state = ProxyAutoRetry::from_settings(&settings).unwrap();
-        assert_eq!(state.schedule(None), Some(Duration::from_secs(1)));
-        assert_eq!(state.schedule(None), Some(Duration::from_secs(2)));
-        assert_eq!(state.schedule(None), Some(Duration::from_secs(4)));
-        assert_eq!(state.schedule(None), None);
-    }
-
-    #[test]
-    fn schedule_prefers_retry_after_but_caps_single_wait() {
-        let mut settings = crate::settings::BackendSettings::default();
-        settings.protocol_proxy_auto_retry_max_attempts = 2;
-        let mut state = ProxyAutoRetry::from_settings(&settings).unwrap();
-        assert_eq!(
-            state.schedule(Some(Duration::from_secs(120))),
-            Some(PROXY_AUTO_RETRY_MAX_DELAY)
-        );
-        // Retry-After 不参与指数序列：下一次仍按设置的基数退避。
-        assert_eq!(state.schedule(None), Some(Duration::from_secs(4)));
-    }
-
-    #[test]
-    fn schedule_respects_total_wait_budget() {
-        let mut settings = crate::settings::BackendSettings::default();
-        settings.protocol_proxy_auto_retry_interval_seconds = 30;
-        settings.protocol_proxy_auto_retry_max_attempts = 20;
-        let mut state = ProxyAutoRetry::from_settings(&settings).unwrap();
-        for _ in 0..4 {
-            assert_eq!(state.schedule(None), Some(PROXY_AUTO_RETRY_MAX_DELAY));
-        }
-        assert_eq!(state.schedule(None), None);
-    }
 
     #[test]
     fn pre_output_events_are_buffered_and_output_events_release() {
@@ -13012,178 +12259,6 @@ mod proxy_auto_retry_tests {
         }
     }
 
-    fn commit_test_block(event: &str, data: &str) -> String {
-        format!("event: {event}\ndata: {data}\n\n")
-    }
-
-    #[test]
-    fn stream_start_commit_boundary_holds_reasoning_and_tool_work() {
-        // 不可见阶段（推理、工具参数、工具项生命周期、未知/非标准事件）都继续
-        // 缓冲：此时丢弃重发不会让 Codex 看到重复内容。
-        for block in [
-            commit_test_block("response.created", "{\"type\":\"response.created\"}"),
-            commit_test_block(
-                "response.output_item.added",
-                "{\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\"}}",
-            ),
-            commit_test_block(
-                "response.function_call_arguments.delta",
-                "{\"type\":\"response.function_call_arguments.delta\",\"delta\":\"{\"}",
-            ),
-            commit_test_block(
-                "response.output_item.added",
-                "{\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}",
-            ),
-            // 推理摘要 part 的 done 此前不在 retry-safe 白名单里；新分类按
-            // 「未知事件继续按住」处理，不再提前结束重试窗口。
-            commit_test_block(
-                "response.reasoning_summary_part.done",
-                "{\"type\":\"response.reasoning_summary_part.done\"}",
-            ),
-            commit_test_block(
-                "response.output_item.done",
-                "{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}",
-            ),
-            commit_test_block(
-                "response.output_item.done",
-                "{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}",
-            ),
-        ] {
-            let event = sse_block_type(&block).expect("event type");
-            assert_eq!(
-                stream_start_event_kind(&block, &event, StreamCommitMode::VisibleGrace),
-                StreamStartEventKind::Hold,
-                "{event}"
-            );
-        }
-    }
-
-    #[test]
-    fn stream_start_commit_boundary_releases_visible_output_and_terminal_events() {
-        for block in [
-            commit_test_block(
-                "response.output_text.delta",
-                "{\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
-            ),
-            commit_test_block(
-                "response.refusal.delta",
-                "{\"type\":\"response.refusal.delta\",\"delta\":\"no\"}",
-            ),
-            commit_test_block(
-                "response.image_generation_call.partial_image",
-                "{\"type\":\"response.image_generation_call.partial_image\",\"partial_image_b64\":\"AAAA\"}",
-            ),
-            // 不吐 delta、只在 done 里给完整文本的兼容上游也算可见输出。
-            commit_test_block(
-                "response.output_text.done",
-                "{\"type\":\"response.output_text.done\",\"text\":\"hello\"}",
-            ),
-            commit_test_block(
-                "response.refusal.done",
-                "{\"type\":\"response.refusal.done\",\"refusal\":\"no\"}",
-            ),
-            commit_test_block(
-                "response.audio.transcript.done",
-                "{\"type\":\"response.audio.transcript.done\",\"transcript\":\"hi\"}",
-            ),
-        ] {
-            let event = sse_block_type(&block).expect("event type");
-            assert_eq!(
-                stream_start_event_kind(&block, &event, StreamCommitMode::VisibleGrace),
-                StreamStartEventKind::Visible,
-                "{event}"
-            );
-        }
-        for block in [
-            commit_test_block("response.completed", "{\"type\":\"response.completed\"}"),
-            commit_test_block("response.failed", "{\"type\":\"response.failed\"}"),
-            commit_test_block("response.incomplete", "{\"type\":\"response.incomplete\"}"),
-            commit_test_block("error", "{\"type\":\"error\"}"),
-            // 非消息输出项完成 = 工具调用参数收齐，提交不会延迟 Codex 执行。
-            commit_test_block(
-                "response.output_item.done",
-                "{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\"}}",
-            ),
-            commit_test_block(
-                "response.output_item.done",
-                "{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"web_search_call\",\"id\":\"ws_1\"}}",
-            ),
-        ] {
-            let event = sse_block_type(&block).expect("event type");
-            assert_eq!(
-                stream_start_event_kind(&block, &event, StreamCommitMode::VisibleGrace),
-                StreamStartEventKind::Terminal,
-                "{event}"
-            );
-        }
-    }
-
-    #[test]
-    fn commit_policy_reads_mode_and_grace_window_from_settings() {
-        let defaults = StreamStartCommitPolicy::from_settings(
-            &crate::settings::BackendSettings::default(),
-        );
-        assert_eq!(defaults.mode, StreamCommitMode::VisibleGrace);
-        assert_eq!(defaults.first_visible_grace, Duration::from_millis(1000));
-
-        let mut settings = crate::settings::BackendSettings::default();
-        settings.protocol_proxy_auto_retry_commit_delay_ms = 0;
-        assert!(
-            StreamStartCommitPolicy::from_settings(&settings)
-                .first_visible_grace
-                .is_zero()
-        );
-
-        settings.protocol_proxy_auto_retry_mode = "streaming-legacy".to_string();
-        let legacy = StreamStartCommitPolicy::from_settings(&settings);
-        assert_eq!(legacy.mode, StreamCommitMode::Immediate);
-
-        // 重试预算用尽时退回旧提交时机。
-        assert_eq!(
-            defaults.without_retry_budget().mode,
-            StreamCommitMode::Immediate
-        );
-    }
-
-    #[test]
-    fn legacy_commit_mode_releases_on_first_unreplayable_event() {
-        // 旧模式：工具调用参数与正文都在第一个事件立即提交。
-        for block in [
-            commit_test_block(
-                "response.output_item.added",
-                "{\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\"}}",
-            ),
-            commit_test_block(
-                "response.output_item.added",
-                "{\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}",
-            ),
-            commit_test_block(
-                "response.output_text.delta",
-                "{\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}",
-            ),
-        ] {
-            let event = sse_block_type(&block).expect("event type");
-            assert_eq!(
-                stream_start_event_kind(&block, &event, StreamCommitMode::Immediate),
-                StreamStartEventKind::Terminal,
-                "{event}"
-            );
-        }
-        // 推理事件仍然可安全重放，旧模式也先按住。
-        let reasoning_delta = commit_test_block(
-            "response.reasoning_summary_text.delta",
-            "{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking\"}",
-        );
-        assert_eq!(
-            stream_start_event_kind(
-                &reasoning_delta,
-                "response.reasoning_summary_text.delta",
-                StreamCommitMode::Immediate,
-            ),
-            StreamStartEventKind::Hold
-        );
-    }
-
     #[test]
     fn overload_error_event_is_rewritten_for_codex_native_retry() {
         let mut t = ResponsesSseTransformer::default();
@@ -13193,26 +12268,6 @@ mod proxy_auto_retry_tests {
         assert!(text.contains("\"code\":\"server_overloaded\""), "{text}");
         assert!(!text.contains("server_is_overloaded"), "{text}");
         assert!(t.finish().is_some());
-    }
-
-    #[test]
-    fn reasoning_events_stay_safe_to_replay_until_real_output() {
-        let reasoning_item = concat!(
-            "event: response.output_item.added\n",
-            "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}\n\n",
-        );
-        assert!(stream_event_is_retry_safe(reasoning_item, "response.output_item.added"));
-        let message_item = concat!(
-            "event: response.output_item.added\n",
-            "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n",
-        );
-        assert!(!stream_event_is_retry_safe(message_item, "response.output_item.added"));
-        let reasoning_delta = "event: response.reasoning_summary_text.delta\ndata: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"thinking\"}\n\n";
-        assert!(stream_event_is_retry_safe(reasoning_delta, "response.reasoning_summary_text.delta"));
-        let text_delta = "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n";
-        assert!(!stream_event_is_retry_safe(text_delta, "response.output_text.delta"));
-        let reasoning_part = "event: response.content_part.added\ndata: {\"type\":\"response.content_part.added\",\"part\":{\"type\":\"reasoning_text\"}}\n\n";
-        assert!(stream_event_is_retry_safe(reasoning_part, "response.content_part.added"));
     }
 
     #[test]

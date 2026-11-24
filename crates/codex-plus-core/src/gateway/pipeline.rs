@@ -77,7 +77,6 @@ pub struct GatewayRequest<'a> {
     pub user_agent: Option<&'a str>,
     pub session_headers: ProxySessionHeaders<'a>,
     pub live_request_id: Option<&'a str>,
-    pub auto_retry: bool,
     pub is_stream: bool,
     /// 发给上游的 Responses 路径：`/responses`，或旧版 Codex 远程压缩的 `/responses/compact`。
     pub upstream_path: &'a str,
@@ -767,7 +766,6 @@ async fn attempt_pipeline(
     let forced = ForcedRelay {
         relay,
         upstream_model: Some(candidate.upstream_model.clone()),
-        auto_retry: request.auto_retry,
     };
     let mut response = match crate::protocol_proxy::open_responses_proxy_request_for_relay(
         &body,

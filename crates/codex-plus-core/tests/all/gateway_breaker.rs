@@ -164,7 +164,6 @@ async fn send(plan: &RoutePlan) -> anyhow::Result<GatewayOutcome> {
                 client_identity: &[],
             },
             live_request_id: None,
-            auto_retry: false,
             is_stream: true,
             upstream_path: "/responses",
             client: None,

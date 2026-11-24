@@ -2061,6 +2061,7 @@ pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &[
     "builtin:relay-rotation",
     "builtin:gateway-failover",
     // 本地代理（中转与网关两种模式都经过）：
+    // 「请求避震」已移除，这一项只为兼容已发布的拓展保留：仍认这个 id，关不关都不再有效果。
     "builtin:auto-retry",
     "builtin:foreign-reasoning",
     "builtin:unlisted-model-mapping",

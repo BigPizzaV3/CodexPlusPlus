@@ -4,7 +4,7 @@
 //! - 429 冷却按上游的 Retry-After / 限流重置头，没给时第一次只冷却 5 秒；
 //! - 所有 Key 都在冷却时，最早的那个很快恢复就等一等再试，而不是马上回本地 429；
 //! - 熔断只在有别的候选可换时拦请求；
-//! - 「请求避震」不对 429 重发同一个 Key，一次请求打到上游的次数有数。
+//! - 不对 429 重发同一个 Key，一次请求打到上游的次数有数。
 //!
 //! 多 Key / 多供应商时 429 仍然立即换下一个。每个用例用自己的供应商 id，进程内的 Key 池状态互不干扰。
 
@@ -201,16 +201,6 @@ fn plan(gateway: &GatewaySettings) -> RoutePlan {
     route::resolve_plan(gateway, &ToolId::Claude, "rl-model", None).unwrap()
 }
 
-/// 「请求避震」开着、而且勾了 429：用来确认网关模式下它不再对 429 重发同一个 Key。
-fn retrying_settings() -> BackendSettings {
-    let mut settings = BackendSettings::default();
-    settings.protocol_proxy_auto_retry = true;
-    settings.protocol_proxy_auto_retry_max_attempts = 5;
-    settings.protocol_proxy_auto_retry_interval_seconds = 0;
-    settings.protocol_proxy_auto_retry_status_codes = vec![429, 500, 502, 503];
-    settings
-}
-
 async fn send(settings: &BackendSettings, plan: &RoutePlan) -> GatewayOutcome {
     pipeline::open(
         settings,
@@ -229,7 +219,6 @@ async fn send(settings: &BackendSettings, plan: &RoutePlan) -> GatewayOutcome {
                 client_identity: &[],
             },
             live_request_id: None,
-            auto_retry: true,
             is_stream: false,
             upstream_path: "/responses",
             client: None,
@@ -257,12 +246,12 @@ fn cooling_ms(relay_id: &str) -> Option<u64> {
 }
 
 /// 单 Key 429 带 Retry-After：Key 冷却时长照上游说的来；客户端拿到的是上游的 429 原文；
-/// 「请求避震」勾了 429 也只打上游一次（以前会对同一个 Key 连发 6 次）。
+/// 只打上游一次，不对同一个 Key 重发。
 #[tokio::test]
 async fn single_key_429_cools_for_retry_after_and_hits_upstream_once() {
     let (base, seen) = mock_upstream(Arc::new(|_, _| rate_limited(&[("retry-after", "7")]))).await;
     let gateway = gateway(vec![provider("rl-retry-after", &base, &["a"])]);
-    let outcome = send(&retrying_settings(), &plan(&gateway)).await;
+    let outcome = send(&BackendSettings::default(), &plan(&gateway)).await;
     assert_eq!(status(&outcome), Some(429), "上游的 429 原样交回");
     let GatewayUpstream::Pipeline(response) = &outcome.upstream else {
         panic!("应是上游响应");
@@ -468,7 +457,7 @@ async fn multi_key_429_still_switches_to_the_next_key() {
     .await;
     let gateway = gateway(vec![provider("rl-multi", &base, &["a", "b"])]);
     let started = Instant::now();
-    let outcome = send(&retrying_settings(), &plan(&gateway)).await;
+    let outcome = send(&BackendSettings::default(), &plan(&gateway)).await;
     assert_eq!(status(&outcome), Some(200));
     assert!(started.elapsed() < Duration::from_secs(5), "换 Key 不等待");
     assert_eq!(
@@ -476,14 +465,14 @@ async fn multi_key_429_still_switches_to_the_next_key() {
         vec!["sk-rl-multi-a".to_string(), "sk-rl-multi-b".to_string()]
     );
     // 第二次请求：a 还在冷却，直接用 b。
-    let outcome = send(&retrying_settings(), &plan(&gateway)).await;
+    let outcome = send(&BackendSettings::default(), &plan(&gateway)).await;
     assert_eq!(status(&outcome), Some(200));
     assert_eq!(seen.lock().unwrap().last().unwrap(), "sk-rl-multi-b");
     assert_eq!(seen.lock().unwrap().len(), 3);
 }
 
 // ---------------------------------------------------------------------------------------------
-// 拓展用 gateway.replaces 关掉内置环节（builtin:key-cooldown / key-breaker / auto-retry）。
+// 拓展用 gateway.replaces 关掉内置环节（builtin:key-cooldown / key-breaker）。
 // 用 with_replaced_segments 把「被关掉的环节」固定在这个 future 里，不读本机的拓展目录。
 // ---------------------------------------------------------------------------------------------
 
@@ -564,21 +553,4 @@ async fn replaced_key_breaker_keeps_failing_provider_in_play() {
     let plan_off = with_replaced_segments_sync(&segments, || plan(&gateway));
     assert_eq!(ids(&plan_off), vec!["rl-replaced-breaker-a", "rl-replaced-breaker-b"]);
     assert_eq!(good_seen.lock().unwrap().len(), 6);
-}
-
-/// 关掉 builtin:auto-retry：「请求避震」勾了 500 也不再重发，上游的错误原样交回（重试交给拓展的 gateway.error）。
-#[tokio::test]
-async fn replaced_auto_retry_returns_the_upstream_error_without_retrying() {
-    let flaky = || -> Responder { Arc::new(|_, hit| if hit == 1 { server_error() } else { ok() }) };
-    // 关掉前：500 后退避重发一次就成功。
-    let (base, seen) = mock_upstream(flaky()).await;
-    let gateway = gateway(vec![provider("rl-replaced-retry-on", &base, &["a"])]);
-    assert_eq!(status(&send(&retrying_settings(), &plan(&gateway)).await), Some(200));
-    assert_eq!(seen.lock().unwrap().len(), 2, "请求避震重发了一次");
-    // 关掉后：只打上游一次，500 原样交回。
-    let (base, seen) = mock_upstream(flaky()).await;
-    let gateway = self::gateway(vec![provider("rl-replaced-retry-off", &base, &["a"])]);
-    let outcome = with_replaced_segments(&["builtin:auto-retry"], send(&retrying_settings(), &plan(&gateway))).await;
-    assert_eq!(status(&outcome), Some(500));
-    assert_eq!(seen.lock().unwrap().len(), 1, "关掉后不重发");
 }

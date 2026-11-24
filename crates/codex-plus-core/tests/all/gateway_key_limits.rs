@@ -166,7 +166,6 @@ async fn send(
                 client_identity: &[],
             },
             live_request_id: None,
-            auto_retry: false,
             is_stream: false,
             upstream_path: "/responses",
             client: None,
