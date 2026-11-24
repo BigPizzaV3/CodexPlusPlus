@@ -63,10 +63,7 @@ impl SourceReader {
         let complete = match self.ready {
             Some(complete) => complete,
             None => {
-                let activity_limit = budget.activity_limit;
-                budget.activity_limit = 0;
                 let result = self.state.read_source_batch(&self.source, cutoff, budget);
-                budget.activity_limit = activity_limit;
                 let (complete, replaced) = match result {
                     Ok(result) => result,
                     Err(error) => {
@@ -105,7 +102,8 @@ impl SourceReader {
         self.revision = Some(store.publish(prepared)?);
         self.offset = self.state.offset - self.state.pending.len() as u64;
         self.committed_complete = complete;
-        self.state.events.clear();
+        self.state.events = Vec::new();
+        self.state.tools = Vec::new();
         self.ready = None;
         self.replacing = false;
         Ok(complete)

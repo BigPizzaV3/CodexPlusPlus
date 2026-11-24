@@ -1425,7 +1425,7 @@ impl LegacyProviderEvidence {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, Deserialize)]
 struct Call {
     timestamp: String,
     session: String,
@@ -1440,6 +1440,7 @@ struct ToolRecord {
     date: NaiveDate,
 }
 
+#[derive(Clone, serde::Serialize, Deserialize)]
 struct ExecSkill {
     call: Call,
     evidence: String,

@@ -21,6 +21,7 @@ pub(super) struct Scan {
     issues: usize,
     maintenance_day: Option<NaiveDate>,
     details_pending: bool,
+    activity_pending: bool,
     observation_cursor: Option<(i64, (i64, i64))>,
 }
 
@@ -38,11 +39,16 @@ impl Scan {
             store.advance_retention(cutoff)?;
             self.maintenance_day = Some(cutoff);
             self.details_pending = true;
+            self.activity_pending = true;
             self.observation_cursor = Some((0, (0, 0)));
         }
         if self.details_pending {
             self.details_pending =
                 store.reclaim_expired_details(RECLAIM_BATCH)? == RECLAIM_BATCH as usize;
+        }
+        if self.activity_pending {
+            self.activity_pending =
+                store.reclaim_expired_activity(cutoff, RECLAIM_BATCH)? == RECLAIM_BATCH as usize;
         }
         if let Some(cursor) = &mut self.observation_cursor
             && !store.reclaim_next_source(cursor, RECLAIM_BATCH)?

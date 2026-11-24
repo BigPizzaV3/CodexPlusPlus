@@ -444,3 +444,190 @@ fn cold_index_does_not_report_an_empty_archived_day_as_exact() {
     assert!(selection.days.is_empty());
     assert!(!selection.needs_source_recovery);
 }
+
+#[test]
+fn activity_checkpoint_restarts_polls_and_publishes_only_committed_receipts() {
+    use crate::usage_history::Query;
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let source = sessions.join("rollout-01.jsonl");
+    let db = root.join("tokens.sqlite");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let tool = |time: &str, payload| {
+        json!({
+            "type":"response_item","timestamp":format!("2026-01-02T12:{time}Z"),"payload":payload,
+        })
+    };
+    let head = rollout(FIRST);
+    let skill = tool(
+        "02:00",
+        json!({"type":"function_call","call_id":"skill",
+        "name":"functions.exec_command","arguments":"{\"cmd\":\"cat /skills/pdf/SKILL.md\"}"}),
+    );
+    let running = tool(
+        "02:01",
+        json!({"type":"function_call_output","call_id":"skill",
+        "output":"Process running with session ID 42\nname: pdf"}),
+    );
+    let poll = tool(
+        "02:02",
+        json!({"type":"function_call","call_id":"poll",
+        "name":"functions.write_stdin","arguments":"{\"session_id\":42,\"chars\":\"\"}"}),
+    );
+    fs::write(&source, format!("{head}{skill}\n{running}\n{poll}\n")).unwrap();
+    let names = BTreeMap::from([("custom".into(), "Example Relay".into())]);
+    let request = json!({"includeActivity":true});
+    let query = Query::parse(&request, cutoff).unwrap();
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    assert!(
+        Scan::default()
+            .round(&mut store, &root, cutoff, &names, 8192)
+            .complete
+    );
+    drop(store);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut read =
+        Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let before = Store::read_response(&mut read, &query, &request, None, &names).unwrap();
+    assert_eq!(before["activityPagination"]["total"], 0);
+    assert_eq!(before["days"][0]["usage"]["totalTokens"], 110);
+
+    let mcp = tool(
+        "01:35",
+        json!({"type":"function_call","call_id":"mcp",
+        "name":"mcp__demo__lookup","arguments":"{}"}),
+    );
+    let mcp_done = tool(
+        "01:36",
+        json!({"type":"function_call_output","call_id":"mcp","output":"ok"}),
+    );
+    let done = tool(
+        "02:03",
+        json!({"type":"function_call_output","call_id":"poll",
+        "output":"Process exited with code 0\n# Skill content observed"}),
+    );
+    let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+    writeln!(file, "{done}\n{mcp}\n{mcp_done}").unwrap();
+    drop(file);
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER refuse_activity BEFORE INSERT ON token_activity
+         BEGIN SELECT RAISE(ABORT, 'activity write failed'); END;",
+        )
+        .unwrap();
+    let mut scan = Scan::default();
+    let blocked = scan.round(&mut store, &root, cutoff, &names, 8192);
+    assert_eq!(blocked.pending_sources, 1);
+    assert_eq!(blocked.errors.len(), 1);
+    let during = Store::read_response(&mut read, &query, &request, None, &names).unwrap();
+    assert_eq!(during["revision"], before["revision"]);
+    assert_eq!(during["activityPagination"]["total"], 0);
+    store
+        .db
+        .execute_batch("DROP TRIGGER refuse_activity")
+        .unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let after = Store::read_response(&mut read, &query, &request, Some(FIRST), &names).unwrap();
+    assert!(after["updatedAt"].as_i64().unwrap() > before["updatedAt"].as_i64().unwrap());
+    assert!(after["updatedAt"].as_i64().unwrap() > 1_700_000_000_000);
+    assert_eq!(after["activityPagination"]["total"], 2);
+    assert_eq!(after["activityRecords"][0]["call"]["call_id"], "mcp");
+    assert_eq!(after["activityRecords"][1]["call"]["call_id"], "skill");
+    assert_eq!(
+        after["activityRecords"][1]["call"]["arguments"]["singleRead"],
+        false
+    );
+    assert_eq!(after["providerNames"]["custom"], "Example Relay");
+    assert_eq!(after["scopedUsage"]["days"], before["days"]);
+    let unchanged = json!({"activityRevision":after["updatedAt"]});
+    let same = Store::read_response(&mut read, &query, &unchanged, None, &names).unwrap();
+    assert_eq!(same["activityRecords"], json!([]));
+    assert_eq!(same["activityPagination"]["unchanged"], true);
+
+    let archives = root.join("archived_sessions");
+    fs::create_dir(&archives).unwrap();
+    let copy = archives.join("rollout-01.jsonl");
+    fs::copy(&source, &copy).unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let copied = Store::read_response(&mut read, &query, &request, None, &names).unwrap();
+    assert_eq!(copied["activityRecords"], after["activityRecords"]);
+    fs::remove_file(&source).unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let moved = Store::read_response(&mut read, &query, &request, None, &names).unwrap();
+    assert_eq!(moved["activityRecords"], after["activityRecords"]);
+
+    let next = NaiveDate::from_ymd_opt(2026, 1, 4).unwrap();
+    assert!(scan.round(&mut store, &root, next, &names, 8192).complete);
+    let count: i64 = store
+        .db
+        .query_row("SELECT count(*) FROM token_activity", [], |row| row.get(0))
+        .unwrap();
+    let expired = Store::read_response(&mut read, &query, &request, None, &names).unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(expired["activityRecords"], json!([]));
+    assert_eq!(expired["days"], after["days"]);
+}
+
+#[test]
+fn response_includes_scoped_trend_and_preserves_archived_day_totals() {
+    use crate::usage_history::Query;
+    use chrono::DateTime;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    fs::write(sessions.join("rollout-01.jsonl"), rollout(FIRST)).unwrap();
+    fs::write(
+        sessions.join("rollout-02.jsonl"),
+        rollout(SECOND).replace("12:01:00", "12:45:00"),
+    )
+    .unwrap();
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let mut scan = Scan::default();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let at = |time: &str| {
+        DateTime::parse_from_rfc3339(time)
+            .unwrap()
+            .timestamp_millis()
+    };
+    let request = json!({"startAt":at("2026-01-02T12:00:00Z"),
+        "endAt":at("2026-01-02T13:00:00Z"), "includeTrend":true});
+    let query = Query::parse(&request, cutoff).unwrap();
+    let result =
+        Store::read_response(&mut store.db, &query, &request, Some(FIRST), &names).unwrap();
+    assert_eq!(result["days"][0]["usage"]["totalTokens"], 220);
+    assert_eq!(
+        result["scopedUsage"]["days"][0]["usage"]["totalTokens"],
+        110
+    );
+    assert_eq!(result["coverage"]["precision"], "exact");
+    assert_eq!(result["coverage"]["days"].as_object().unwrap().len(), 1);
+    assert_eq!(result["trend"]["intervalMs"], 1_800_000);
+    assert_eq!(result["trend"]["buckets"][0]["usage"]["totalTokens"], 110);
+    assert_eq!(result["trend"]["buckets"][1]["usage"]["totalTokens"], 110);
+    assert_eq!(
+        result["scopedUsage"]["trend"]["buckets"][1]["usage"]["totalTokens"],
+        0
+    );
+    assert_eq!(result["trend"]["buckets"][1]["endAt"], request["endAt"]);
+    assert!(result.get("activityRecords").is_none());
+
+    let next = NaiveDate::from_ymd_opt(2026, 1, 4).unwrap();
+    assert!(scan.round(&mut store, &root, next, &names, 8192).complete);
+    let expired =
+        Store::read_response(&mut store.db, &query, &request, Some(FIRST), &names).unwrap();
+    assert_eq!(expired["coverage"]["precision"], "day");
+    assert_eq!(expired["archiveRecovery"]["status"], "unavailable");
+    assert_eq!(expired["trend"], json!(null));
+    let calendar =
+        Store::read_response(&mut store.db, &query, &json!({}), Some(FIRST), &names).unwrap();
+    assert_eq!(calendar["days"][0]["usage"]["totalTokens"], 220);
+}

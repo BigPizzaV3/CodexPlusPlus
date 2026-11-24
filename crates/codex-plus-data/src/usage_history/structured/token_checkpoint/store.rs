@@ -1,5 +1,6 @@
 use super::{Checkpoint, Counter, FileState, Observation, UsageEvent};
 use anyhow::{Result, ensure};
+use chrono::{DateTime, Local};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::ffi::OsString;
@@ -62,9 +63,10 @@ impl Store {
              CREATE TABLE IF NOT EXISTS token_revision (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 revision INTEGER NOT NULL,
-                precise_from TEXT NOT NULL
+                precise_from TEXT NOT NULL,
+                updated_at INTEGER NOT NULL DEFAULT 0
              ) STRICT;
-             INSERT OR IGNORE INTO token_revision VALUES (1, 0, '');
+             INSERT OR IGNORE INTO token_revision (singleton, revision, precise_from) VALUES (1, 0, '');
              CREATE TABLE IF NOT EXISTS token_coverage (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 revision INTEGER NOT NULL,
@@ -77,7 +79,8 @@ impl Store {
                 source BLOB NOT NULL UNIQUE,
                 revision INTEGER NOT NULL,
                 offset INTEGER NOT NULL,
-                checkpoint BLOB NOT NULL
+                checkpoint BLOB NOT NULL,
+                activity_truncated INTEGER NOT NULL
              ) STRICT;
              CREATE TABLE IF NOT EXISTS token_sessions (
                 id INTEGER PRIMARY KEY,
@@ -125,6 +128,17 @@ impl Store {
                 PRIMARY KEY (session_id, day)
              ) WITHOUT ROWID, STRICT;
              CREATE INDEX IF NOT EXISTS token_days_date ON token_days(day);
+             CREATE TABLE IF NOT EXISTS token_activity (
+                source_id INTEGER NOT NULL REFERENCES token_sources(id) ON DELETE CASCADE,
+                session_id INTEGER NOT NULL REFERENCES token_sessions(id),
+                call_id TEXT NOT NULL,
+                timestamp_ms INTEGER NOT NULL,
+                day TEXT NOT NULL,
+                payload BLOB NOT NULL,
+                PRIMARY KEY (source_id, session_id, call_id)
+             ) WITHOUT ROWID, STRICT;
+             CREATE INDEX IF NOT EXISTS token_activity_time ON token_activity(timestamp_ms);
+             CREATE INDEX IF NOT EXISTS token_activity_call ON token_activity(session_id, call_id);
              COMMIT;",
         )?;
         Ok(Self { db })
@@ -223,17 +237,18 @@ impl Store {
             }
         }
         let revision = tx.query_row(
-            "UPDATE token_revision SET revision = revision + 1 RETURNING revision",
-            [],
+            "UPDATE token_revision SET revision = revision + 1,
+                updated_at = max(updated_at + 1, ?1) RETURNING revision",
+            [Local::now().timestamp_millis()],
             |row| row.get::<_, i64>(0),
         )?;
         let source_id = tx.query_row(
-            "INSERT INTO token_sources (source, revision, offset, checkpoint)
-             VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (source) DO UPDATE SET revision = excluded.revision,
-                offset = excluded.offset, checkpoint = excluded.checkpoint
+            "INSERT INTO token_sources (source, revision, offset, checkpoint, activity_truncated)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (source) DO UPDATE SET revision = excluded.revision, offset = excluded.offset,
+                checkpoint = excluded.checkpoint, activity_truncated = excluded.activity_truncated
              RETURNING id",
-            params![path, revision, offset, serde_json::to_vec(&checkpoint)?],
+            params![path, revision, offset, serde_json::to_vec(&checkpoint)?, state.activity_truncated],
             |row| row.get::<_, i64>(0),
         )?;
         if replace {
@@ -243,6 +258,10 @@ impl Store {
             )?;
             tx.execute(
                 "DELETE FROM token_source_links WHERE source_id = ?1",
+                [source_id],
+            )?;
+            tx.execute(
+                "DELETE FROM token_activity WHERE source_id = ?1",
                 [source_id],
             )?;
         }
@@ -270,6 +289,28 @@ impl Store {
                     event.session,
                     event.id.as_slice(),
                     serde_json::to_vec(&Observation::capture(event))?,
+                ])?;
+            }
+            let mut activity = tx.prepare(
+                "INSERT INTO token_activity
+                 SELECT ?1, id, ?3, ?4, ?5, ?6 FROM token_sessions WHERE session = ?2
+                 ON CONFLICT(source_id, session_id, call_id) DO UPDATE SET
+                    timestamp_ms = excluded.timestamp_ms, day = excluded.day, payload = excluded.payload",
+            )?;
+            for tool in state.tools.iter().filter(|_| !state.identity_conflict) {
+                add_session.execute([&tool.call.session])?;
+                activity.execute(params![
+                    source_id,
+                    tool.call.session,
+                    tool.id,
+                    DateTime::parse_from_rfc3339(&tool.call.timestamp)?.timestamp_millis(),
+                    tool.date.to_string(),
+                    serde_json::to_vec(&serde_json::json!({
+                        "conversationKey":tool.call.session,
+                        "timestamp":tool.call.timestamp,
+                        "call":tool.call.payload,
+                        "output":tool.output,
+                    }))?,
                 ])?;
             }
         }

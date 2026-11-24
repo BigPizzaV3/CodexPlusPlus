@@ -1,6 +1,6 @@
 use super::{
-    CacheAccounting, ContextConflicts, FileState, InheritedUsageContext, LegacyIdentity,
-    SessionModelObservation, Tokens, UsageEvent, segments::HistoryBase,
+    CacheAccounting, Call, ContextConflicts, ExecSkill, FileState, InheritedUsageContext,
+    LegacyIdentity, SessionModelObservation, Tokens, UsageEvent, segments::HistoryBase,
 };
 use crate::usage_history::UsageHistoryBoundary;
 use chrono::NaiveDate;
@@ -164,6 +164,14 @@ struct Checkpoint {
     scope_parent_candidates: BTreeMap<String, HashSet<Option<String>>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     committed_cursors: BTreeMap<String, (String, Counter)>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    calls: HashMap<String, Call>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    exec_skills: HashMap<String, ExecSkill>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    exec_polls: HashMap<String, String>,
+    #[serde(default)]
+    activity_truncated: bool,
     issues: usize,
     skipping: bool,
 }
@@ -215,6 +223,10 @@ impl Checkpoint {
                 legacy_header: state.legacy_header.clone(),
                 scope_parent_candidates: state.scope_parent_candidates.clone(),
                 committed_cursors,
+                calls: state.calls.clone(),
+                exec_skills: state.exec_skills.clone(),
+                exec_polls: state.exec_polls.clone(),
+                activity_truncated: state.activity_truncated,
                 issues: state.issues,
                 skipping: state.skipping,
             },
@@ -254,6 +266,10 @@ impl Checkpoint {
             model_observations: self.model_observations,
             legacy_header: self.legacy_header,
             scope_parent_candidates: self.scope_parent_candidates,
+            calls: self.calls,
+            exec_skills: self.exec_skills,
+            exec_polls: self.exec_polls,
+            activity_truncated: self.activity_truncated,
             issues: self.issues,
             skipping: self.skipping,
             ..FileState::default()

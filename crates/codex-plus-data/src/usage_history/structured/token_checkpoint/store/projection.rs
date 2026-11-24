@@ -3,8 +3,9 @@ use crate::usage_history::structured::token_checkpoint::{
     Checkpoint, Counter, EventClassification, Observation,
 };
 use crate::usage_history::structured::{
-    ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index, MAX_FILES, Query,
-    RequestSessionAliases, Snapshot, UsageEvent, ordered_scope_ids, segments, usage_provider,
+    ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index, MAX_ACTIVITY,
+    MAX_FILES, Query, RequestSessionAliases, Snapshot, UsageEvent, ordered_scope_ids, segments,
+    usage_provider,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
@@ -165,12 +166,50 @@ pub(in super::super) struct Selection {
     pub(in super::super) archived: bool,
     pub(in super::super) needs_source_recovery: bool,
     pub(in super::super) session_cursors: Option<Vec<Value>>,
+    trend: Option<Value>,
+    precise_from: String,
 }
 
 pub(in super::super) struct ScopedSelection {
     pub(in super::super) session_id: String,
     pub(in super::super) session_ids: Vec<String>,
     pub(in super::super) usage: Selection,
+}
+
+impl Selection {
+    fn range_coverage(
+        &self,
+        query: &Query,
+        bounds: Option<(i64, i64)>,
+        complete: bool,
+    ) -> Result<Value> {
+        let mut days = BTreeMap::new();
+        if complete && let Some((start, end)) = bounds {
+            let local_day = |at| {
+                DateTime::from_timestamp_millis(at)
+                    .map(|time| time.with_timezone(&Local).date_naive())
+                    .context("invalid Token coverage date")
+            };
+            let mut day = local_day(start)?.max(query.from.unwrap_or(NaiveDate::MIN));
+            if !self.precise_from.is_empty() {
+                day = day.max(self.precise_from.parse()?);
+            }
+            let last = query
+                .to
+                .unwrap_or(NaiveDate::MAX)
+                .min(local_day(end - 1)?)
+                .min(Local::now().date_naive());
+            while day <= last {
+                days.insert(day.to_string(), "complete");
+                day = day.succ_opt().context("invalid Token coverage day")?;
+            }
+        }
+        Ok(json!({
+            "days":days,
+            "precision":if self.needs_source_recovery {"day"} else {"exact"},
+            "reason":if self.needs_source_recovery {"retention-day-only"} else if complete {"indexed"} else {"discovery-unconfirmed"},
+        }))
+    }
 }
 
 fn group_key(event: &UsageEvent) -> (String, String, String, u8) {
@@ -715,7 +754,7 @@ impl Store {
         if !complete {
             return Ok(None);
         }
-        let scope = Self::scope(&read)?;
+        let scope = Self::scope(&read, &BTreeMap::new())?;
         let canonical = RequestSessionAliases::new(&scope.aliases);
         if !scope.sessions.contains(session)
             || canonical.resolve(session).as_deref() != Some(session)
@@ -799,8 +838,9 @@ impl Store {
             }
         }
         let next = tx.query_row(
-            "UPDATE token_revision SET revision = revision + 1 RETURNING revision",
-            [],
+            "UPDATE token_revision SET revision = revision + 1,
+                updated_at = max(updated_at + 1, ?1) RETURNING revision",
+            [Local::now().timestamp_millis()],
             |row| row.get::<_, i64>(0),
         )?;
         tx.execute(
@@ -817,9 +857,10 @@ impl Store {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let next = tx
             .query_row(
-                "UPDATE token_revision SET precise_from = ?1, revision = revision + 1
+                "UPDATE token_revision SET precise_from = ?1, revision = revision + 1,
+                    updated_at = max(updated_at + 1, ?2)
                  WHERE precise_from < ?1 RETURNING revision",
-                [cutoff.to_string()],
+                params![cutoff.to_string(), Local::now().timestamp_millis()],
                 |row| row.get(0),
             )
             .optional()?;
@@ -855,6 +896,21 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(removed)
+    }
+
+    pub(in super::super) fn reclaim_expired_activity(
+        &self,
+        cutoff: NaiveDate,
+        batch: u32,
+    ) -> Result<usize> {
+        // 与 Token 明细共用按本地日淘汰的边界；时间索引限定候选。
+        let latest = cutoff.and_time(NaiveTime::MIN).and_utc().timestamp_millis() + 86_400_000;
+        Ok(self.db.execute(
+            "DELETE FROM token_activity WHERE (source_id, session_id, call_id) IN
+             (SELECT source_id, session_id, call_id FROM token_activity
+              WHERE timestamp_ms < ?1 AND day < ?2 ORDER BY timestamp_ms LIMIT ?3)",
+            params![latest, cutoff.to_string(), batch],
+        )?)
     }
 
     #[cfg(test)]
@@ -1136,7 +1192,7 @@ impl Store {
         sessions: Option<&HashSet<String>>,
     ) -> Result<Selection> {
         let read = db.transaction()?;
-        let [selection] = Self::select(&read, query, bounds, [sessions])?;
+        let [selection] = Self::select(&read, query, bounds, [sessions], false)?;
         read.commit()?;
         Ok(selection)
     }
@@ -1148,9 +1204,9 @@ impl Store {
         requested: &str,
     ) -> Result<(Selection, ScopedSelection)> {
         let read = db.transaction()?;
-        let scope = Self::scope(&read)?;
+        let scope = Self::scope(&read, &BTreeMap::new())?;
         let (session, sessions) = scope.scope_members(requested);
-        let [all, usage] = Self::select(&read, query, bounds, [None, Some(&sessions)])?;
+        let [all, usage] = Self::select(&read, query, bounds, [None, Some(&sessions)], false)?;
         read.commit()?;
         Ok((
             all,
@@ -1165,16 +1221,174 @@ impl Store {
         ))
     }
 
-    fn scope(read: &Connection) -> Result<Snapshot> {
+    pub(in super::super) fn read_response(
+        db: &mut Connection,
+        query: &Query,
+        request: &Value,
+        requested: Option<&str>,
+        provider_names: &BTreeMap<String, String>,
+    ) -> Result<Value> {
+        let read = db.transaction()?;
+        let bounds = request["startAt"].as_i64().zip(request["endAt"].as_i64());
+        let activity_page = request["activityPage"].as_u64().unwrap_or(1).clamp(1, 24) as usize;
+        let include_trend = request["includeTrend"] == true;
+        let scope = Self::scope(&read, provider_names)?;
+        let scoped = requested.map(|session| scope.scope_members(session));
+        let (all, scoped_usage) = if let Some((_, sessions)) = &scoped {
+            let [all, usage] =
+                Self::select(&read, query, bounds, [None, Some(sessions)], include_trend)?;
+            (all, Some(usage))
+        } else {
+            let [all] = Self::select(&read, query, bounds, [None], include_trend)?;
+            (all, None)
+        };
+        let scan_complete = all.coverage.is_some_and(|coverage| {
+            coverage.pending_sources == 0 && coverage.issues == 0 && !coverage.maintenance_blocked
+        });
+        let complete = scan_complete && all.unresolved == 0 && !all.needs_source_recovery;
+        let updated_at: i64 =
+            read.query_row("SELECT updated_at FROM token_revision", [], |row| {
+                row.get(0)
+            })?;
+        let coverage = all.range_coverage(query, bounds, complete)?;
+        let mut result = json!({
+            "status": if complete {"ok"} else {"partial"},
+            "complete":complete,
+            "source":"persistent-local-rollout",
+            "accountingVersion":2,
+            "revision":all.revision,
+            "updatedAt":updated_at,
+            "rangeApplied":bounds.is_some(),
+            "coverage":coverage,
+            "countStatus":{"complete":complete,"uncertainEvents":all.unresolved},
+            "days":all.days,
+            "sessionIds":scope.sessions,
+            "sessionAliases":scope.aliases,
+            "sessionInfo":scope.session_info,
+            "providerNames":provider_names,
+            "scan":{
+                "ready":all.coverage.is_some(),
+                "pendingFiles":all.coverage.map(|c| c.pending_sources),
+                "malformedRecords":all.coverage.map(|c| c.issues),
+                "storageBlocked":all.coverage.is_some_and(|c| c.maintenance_blocked),
+                "uncertainCountEvents":all.unresolved,
+            }
+        });
+        if include_trend {
+            result["trend"] = json!(all.trend);
+        }
+        if all.needs_source_recovery && include_trend {
+            result["archiveRecovery"] = json!({"status":"unavailable"});
+        }
+        if let Some(cursors) = all.session_cursors {
+            result["sessionCursors"] = json!(cursors);
+        }
+        if let (Some((session, sessions)), Some(usage)) = (scoped, scoped_usage) {
+            let count_complete =
+                scan_complete && usage.unresolved == 0 && !usage.needs_source_recovery;
+            let coverage = usage.range_coverage(query, bounds, count_complete)?;
+            result["scopedUsage"] = json!({
+                "sessionId":session,
+                "sessionIds":ordered_scope_ids(session, &sessions),
+                "days":usage.days,
+                "coverage":coverage,
+                "complete":count_complete,
+                "countStatus":{"complete":count_complete,"uncertainEvents":usage.unresolved},
+            });
+            if include_trend {
+                result["scopedUsage"]["trend"] = json!(usage.trend);
+            }
+        }
+        if query.include_activity {
+            Self::add_activity(
+                &read,
+                query,
+                bounds,
+                activity_page,
+                request["activityRevision"].as_i64() == Some(updated_at),
+                &mut result,
+            )?;
+            if all.needs_source_recovery {
+                result["activityComplete"] = json!(false);
+            }
+        }
+        read.commit()?;
+        Ok(result)
+    }
+
+    fn add_activity(
+        read: &Connection,
+        query: &Query,
+        bounds: Option<(i64, i64)>,
+        page: usize,
+        unchanged: bool,
+        result: &mut Value,
+    ) -> Result<()> {
+        const PAGE_SIZE: usize = 512;
+        let (start, end) = bounds.unwrap_or((i64::MIN, i64::MAX));
+        let from = query.from.map(|day| day.to_string());
+        let to = query.to.map(|day| day.to_string());
+        let filter = "FROM token_activity a JOIN token_sources source ON source.id = a.source_id
+            WHERE a.timestamp_ms >= ?1 AND a.timestamp_ms < ?2 AND a.day >= (SELECT precise_from FROM token_revision)
+            AND (?3 IS NULL OR a.day >= ?3) AND (?4 IS NULL OR a.day <= ?4)
+            AND (?5 IS NULL OR a.session_id = (SELECT id FROM token_sessions WHERE session = ?5))
+            AND NOT EXISTS(
+                SELECT 1 FROM token_activity copy JOIN token_sources other ON other.id = copy.source_id
+                WHERE copy.session_id = a.session_id AND copy.call_id = a.call_id AND other.source > source.source
+                AND copy.day >= (SELECT precise_from FROM token_revision)
+            )";
+        let args = params![start, end, from, to, query.session_id];
+        let total: usize =
+            read.query_row(&format!("SELECT count(*) {filter}"), args, |row| row.get(0))?;
+        let visible = total.min(MAX_ACTIVITY);
+        let offset = (page - 1) * PAGE_SIZE;
+        let mut records = Vec::<Value>::new();
+        if !unchanged && offset < visible {
+            let mut statement = read.prepare_cached(&format!(
+                "SELECT a.payload {filter} ORDER BY a.timestamp_ms, a.call_id, a.session_id LIMIT ?6 OFFSET ?7"
+            ))?;
+            let mut rows = statement.query(params![
+                start,
+                end,
+                from,
+                to,
+                query.session_id,
+                PAGE_SIZE,
+                total - visible + offset
+            ])?;
+            while let Some(row) = rows.next()? {
+                records.push(serde_json::from_slice(row.get_ref(0)?.as_blob()?)?);
+            }
+        }
+        let truncated = total > MAX_ACTIVITY
+            || read.query_row(
+                "SELECT EXISTS (SELECT 1 FROM token_sources WHERE activity_truncated)",
+                [],
+                |row| row.get::<_, bool>(0),
+            )?;
+        result["activityRecords"] = json!(records);
+        result["activityPagination"] = json!({
+            "page":page,"pages":visible.div_ceil(PAGE_SIZE).max(1),"total":visible,"unchanged":unchanged,
+        });
+        result["activityTruncated"] = json!(truncated);
+        result["activityComplete"] = json!(result["complete"] == true && !truncated);
+        Ok(())
+    }
+
+    fn scope(read: &Connection, provider_names: &BTreeMap<String, String>) -> Result<Snapshot> {
         #[derive(Deserialize)]
         struct ScopeCheckpoint {
             session: String,
             identity_conflict: bool,
             scope_parent_candidates: BTreeMap<String, HashSet<Option<String>>>,
+            model: String,
+            provider: String,
+            role: String,
         }
 
         let mut scope = Snapshot::default();
-        let mut sources = read.prepare("SELECT source,checkpoint FROM token_sources")?;
+        let mut sources =
+            read.prepare("SELECT source,checkpoint FROM token_sources ORDER BY source")?;
         let mut rows = sources.query([])?;
         let mut candidates = Vec::new();
         while let Some(row) = rows.next()? {
@@ -1197,6 +1411,17 @@ impl Store {
             if let Some(parents) = saved.scope_parent_candidates.remove(&saved.session) {
                 candidates.push((saved.session.clone(), parents));
             }
+            let info = scope
+                .session_info
+                .entry(saved.session.clone())
+                .or_insert(Value::Null);
+            if !saved.model.is_empty() || info["model"].as_str().is_none_or(str::is_empty) {
+                *info = json!({
+                    "model":saved.model,
+                    "provider":usage_provider(&saved.model, &saved.provider, provider_names),
+                    "role":saved.role,
+                });
+            }
             scope.sessions.insert(saved.session);
         }
         for session in &scope.sessions {
@@ -1215,11 +1440,8 @@ impl Store {
         query: &Query,
         bounds: Option<(i64, i64)>,
         scopes: [Option<&HashSet<String>>; N],
+        include_trend: bool,
     ) -> Result<[Selection; N]> {
-        ensure!(
-            !query.include_activity,
-            "Token snapshot selection requires the existing compatibility reader for this query"
-        );
         let (revision, precise_from): (i64, String) = read.query_row(
             "SELECT revision, precise_from FROM token_revision",
             [],
@@ -1268,6 +1490,25 @@ impl Store {
         let usage: RefCell<[_; N]> = RefCell::new(std::array::from_fn(|_| {
             BTreeMap::<NaiveDate, Groups>::new()
         }));
+        let trend_bounds = bounds
+            .filter(|_| include_trend)
+            .map(|(start, end)| {
+                let span = end
+                    .checked_sub(start)
+                    .filter(|span| *span > 0)
+                    .context("invalid Token trend range")?;
+                let minimum = (span - 1) / 120 + 1;
+                let interval = [30, 60, 180, 360, 720, 1440, 2880, 10080, 43200]
+                    .map(|minutes| minutes * 60_000)
+                    .into_iter()
+                    .find(|interval| *interval >= minimum)
+                    .unwrap_or(minimum);
+                Ok::<_, anyhow::Error>((start, end, interval, ((span - 1) / interval + 1) as usize))
+            })
+            .transpose()?;
+        let trend: RefCell<[_; N]> = RefCell::new(std::array::from_fn(|_| {
+            trend_bounds.map_or_else(Vec::new, |(_, _, _, count)| vec![Groups::new(); count])
+        }));
         let accumulate =
             |session: &str, day: NaiveDate, key: (String, String, String, u8), totals| {
                 for (groups, scope) in usage.borrow_mut().iter_mut().zip(scopes) {
@@ -1298,12 +1539,21 @@ impl Store {
         let read_event = |event: UsageEvent| {
             let model = Some(event.model.as_str()).filter(|model| !model.is_empty());
             if query.accepts_fields(&event.session, &event.turn, model, Some(event.date)) {
-                accumulate(
-                    &event.session,
-                    event.date,
-                    group_key(&event),
-                    DayTotals::from_event(&event),
-                );
+                let key = group_key(&event);
+                let totals = DayTotals::from_event(&event);
+                if let Some((start, _, interval, _)) = trend_bounds {
+                    let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
+                    let bucket = ((at - start) / interval) as usize;
+                    for (buckets, scope) in trend.borrow_mut().iter_mut().zip(scopes) {
+                        if scope.is_none_or(|scope| scope.contains(&event.session)) {
+                            buckets[bucket]
+                                .entry(key.clone())
+                                .or_default()
+                                .merge(totals);
+                        }
+                    }
+                }
+                accumulate(&event.session, event.date, key, totals);
             }
             Ok(())
         };
@@ -1335,8 +1585,10 @@ impl Store {
                 .is_some_and(|(from, _)| from.to_string().as_str() < precise_from.as_str())
         };
         let mut scopes = scopes.into_iter();
+        let mut trends = trend.into_inner().into_iter();
         Ok(usage.into_inner().map(|groups| {
             let scope = scopes.next().unwrap();
+            let buckets = trends.next().unwrap();
             let mut selection = Self::format_selection(
                 revision,
                 coverage,
@@ -1344,6 +1596,20 @@ impl Store {
                 needs_source_recovery,
                 groups,
             );
+            if let Some((start, end, interval, _)) = trend_bounds.filter(|_| !needs_source_recovery) {
+                let buckets: Vec<_> = buckets.into_iter().enumerate().map(|(i, groups)| {
+                    let at = start + i as i64 * interval;
+                    let (mut row, _) = Self::format_day(groups);
+                    row["startAt"] = json!(at);
+                    row["endAt"] = json!(at.saturating_add(interval).min(end));
+                    row
+                }).collect();
+                selection.trend = Some(json!({
+                    "startAt":start,"endAt":end,"intervalMs":interval,
+                    "precision":if selection.unresolved > 0 || coverage.is_none_or(|c| c.issues > 0 || c.pending_sources > 0 || c.maintenance_blocked) {"partial"} else {"exact"},
+                    "buckets":buckets,
+                }));
+            }
             if query.include_session_cursors {
                 selection.session_cursors = Some(
                     cursor_totals
@@ -1375,39 +1641,9 @@ impl Store {
             .next()
             .is_some_and(|date| date.to_string().as_str() < precise_from);
         for (date, groups) in usage {
-            let mut totals = DayTotals::default();
-            let mut models = BTreeMap::<String, DayTotals>::new();
-            let mut breakdowns = Vec::new();
-            for ((model, provider, role, conflicts), group) in groups {
-                unresolved += group.unresolved;
-                if group.records == 0 {
-                    continue;
-                }
-                let mut row = group.value();
-                row["model"] = json!(model);
-                row["provider"] = json!(provider);
-                row["role"] = json!(if conflicts & 4 != 0 { "unknown" } else { &role });
-                if conflicts & 2 != 0 {
-                    row["providerConflict"] = json!(true);
-                }
-                group.evidence.write_to(&mut row);
-                breakdowns.push(row);
-                models.entry(model).or_default().merge(group);
-                totals.merge(group);
-            }
-            let mut day = totals.value();
+            let (mut day, uncertain) = Self::format_day(groups);
+            unresolved += uncertain;
             day["date"] = json!(date.to_string());
-            day["models"] = json!(
-                models
-                    .into_iter()
-                    .map(|(model, counts)| {
-                        let mut row = counts.value();
-                        row["model"] = json!(model);
-                        row
-                    })
-                    .collect::<Vec<_>>()
-            );
-            day["breakdowns"] = json!(breakdowns);
             days.push(day);
         }
         Selection {
@@ -1418,6 +1654,45 @@ impl Store {
             archived,
             needs_source_recovery,
             session_cursors: None,
+            trend: None,
+            precise_from: precise_from.to_owned(),
         }
+    }
+
+    fn format_day(groups: Groups) -> (Value, u64) {
+        let mut unresolved = 0;
+        let mut totals = DayTotals::default();
+        let mut models = BTreeMap::<String, DayTotals>::new();
+        let mut breakdowns = Vec::new();
+        for ((model, provider, role, conflicts), group) in groups {
+            unresolved += group.unresolved;
+            if group.records == 0 {
+                continue;
+            }
+            let mut row = group.value();
+            row["model"] = json!(model);
+            row["provider"] = json!(provider);
+            row["role"] = json!(if conflicts & 4 != 0 { "unknown" } else { &role });
+            if conflicts & 2 != 0 {
+                row["providerConflict"] = json!(true);
+            }
+            group.evidence.write_to(&mut row);
+            breakdowns.push(row);
+            models.entry(model).or_default().merge(group);
+            totals.merge(group);
+        }
+        let mut day = totals.value();
+        day["models"] = json!(
+            models
+                .into_iter()
+                .map(|(model, counts)| {
+                    let mut row = counts.value();
+                    row["model"] = json!(model);
+                    row
+                })
+                .collect::<Vec<_>>()
+        );
+        day["breakdowns"] = json!(breakdowns);
+        (day, unresolved)
     }
 }
