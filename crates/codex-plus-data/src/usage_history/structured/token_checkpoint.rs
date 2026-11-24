@@ -303,4 +303,5 @@ mod store;
 mod tests;
 
 mod runtime;
-pub(super) use runtime::{ReadState, Runtime};
+pub(super) use runtime::{ReadState, Runtime, recover_archive};
+pub(super) use store::{archive::ArchiveKey, projection::ArchiveAnswer};

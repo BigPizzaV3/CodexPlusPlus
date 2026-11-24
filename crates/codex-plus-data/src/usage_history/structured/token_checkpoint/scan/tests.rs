@@ -643,7 +643,8 @@ fn response_includes_scoped_trend_and_preserves_archived_day_totals() {
     let expired =
         Store::read_response(&mut store.db, &query, &request, Some(FIRST), &names).unwrap();
     assert_eq!(expired["coverage"]["precision"], "day");
-    assert_eq!(expired["archiveRecovery"]["status"], "unavailable");
+    assert_eq!(expired["archiveRecovery"]["status"], "pending");
+    assert_eq!(expired["countStatus"]["complete"], false);
     assert_eq!(expired["trend"], json!(null));
     let calendar =
         Store::read_response(&mut store.db, &query, &day_request, Some(FIRST), &names).unwrap();

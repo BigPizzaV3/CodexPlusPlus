@@ -1,4 +1,5 @@
 use super::*;
+use chrono::TimeZone;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -163,4 +164,82 @@ fn history_route_keeps_committed_usage_readable_while_the_writer_retries() {
     assert_eq!(cold["revision"], complete["revision"]);
     assert_eq!(cold["days"], complete["days"]);
     clear(&home);
+}
+
+#[test]
+fn history_route_recovers_cold_archive_and_rejects_a_cached_result_after_source_removal() {
+    let _serial = SERIAL.lock().unwrap();
+    let (_root, home, settings, options) = fixture();
+    let session = "00000000-0000-4000-8000-000000000011";
+    let old_day = Local::now()
+        .date_naive()
+        .checked_sub_days(chrono::Days::new(65))
+        .unwrap();
+    let at = Local
+        .from_local_datetime(&old_day.and_hms_opt(12, 0, 0).unwrap())
+        .single()
+        .unwrap();
+    let timestamp = at.to_rfc3339();
+    let count = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":10});
+    let archive = home.join("archived_sessions");
+    fs::create_dir(&archive).unwrap();
+    let original = archive.join("rollout-cold.jsonl");
+    let rows = [
+        json!({"type":"session_meta","timestamp":timestamp,"payload":{"id":session}}),
+        json!({"type":"turn_context","timestamp":timestamp,"payload":{"model":"gpt-fixture","turn_id":"fixture"}}),
+        json!({"type":"event_msg","timestamp":timestamp,"payload":{"type":"token_count","info":{
+            "total_token_usage":count,"last_token_usage":count
+        }}}),
+    ];
+    fs::write(
+        &original,
+        rows.iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>(),
+    )
+    .unwrap();
+    let revision = settled(&home, &settings, &options)["revision"].clone();
+    let request = json!({
+        "scopeSessionId":session, "includeTrend":true,
+        "startAt":at.timestamp_millis(), "endAt":at.timestamp_millis()+60_000
+    });
+    let query = Query::parse(&request, Local::now().date_naive()).unwrap();
+    let read = || query_with_settings(&home, &query, &request, settings.clone());
+    let pending = read();
+    assert_eq!(pending["archiveRecovery"]["status"], "pending");
+    assert_eq!(pending["countStatus"]["complete"], false);
+    assert!(pending["trend"].is_null());
+    let mut recovered = read();
+    for _ in 0..500 {
+        if recovered["archiveRecovery"]["status"] != "pending" {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+        recovered = read();
+    }
+    assert_eq!(recovered["archiveRecovery"]["status"], "complete");
+    assert_eq!(recovered["revision"], revision);
+    assert_eq!(
+        recovered["scopedUsage"]["days"][0]["usage"]["totalTokens"],
+        110
+    );
+    assert_eq!(
+        recovered["trend"]["buckets"][0]["usage"]["totalTokens"],
+        110
+    );
+    assert_eq!(
+        recovered["coverage"]["days"][old_day.to_string()],
+        "complete"
+    );
+    fs::remove_file(&original).unwrap();
+    let stale = read();
+    assert_eq!(stale["revision"], revision);
+    assert_eq!(stale["countStatus"]["complete"], false);
+    assert!(stale["trend"].is_null());
+    let cache = homes().lock().unwrap()[&home].clone();
+    assert!(cache.lock().unwrap().archive.worker.is_some());
+    clear(&home);
+    let state = cache.lock().unwrap();
+    assert!(state.archive.cancelled.load(Ordering::Relaxed));
+    assert!(state.archive.worker.is_none());
 }

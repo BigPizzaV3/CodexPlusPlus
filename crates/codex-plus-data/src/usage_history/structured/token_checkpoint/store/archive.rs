@@ -14,6 +14,78 @@ use std::path::{Path, PathBuf};
 const MAX_SOURCES: usize = 256;
 const REPLAY_WORK_BYTES: usize = 24 * 1024 * 1024;
 
+#[derive(Clone, PartialEq, Eq)]
+pub(in crate::usage_history::structured) struct ArchiveKey {
+    pub(in crate::usage_history::structured) first: NaiveDate,
+    pub(in crate::usage_history::structured) end: NaiveDate,
+    pub(in crate::usage_history::structured) session: Option<String>,
+}
+
+impl ArchiveKey {
+    fn scope(&self) -> Option<HashSet<String>> {
+        self.session.as_ref().map(|id| [id.clone()].into())
+    }
+
+    pub(in crate::usage_history::structured::token_checkpoint) fn replay(
+        &self,
+        db: &Connection,
+        home: &Path,
+        provider_names: BTreeMap<String, String>,
+    ) -> Result<Replay> {
+        ensure!(
+            (self.end - self.first).num_days() <= 16_384,
+            "archive date window exceeds recovery budget"
+        );
+        let midnight = |day: NaiveDate| {
+            Local
+                .from_local_datetime(&day.and_time(chrono::NaiveTime::MIN))
+                .earliest()
+                .map(|time| time.timestamp_millis())
+                .context("archive date has no local midnight")
+        };
+        let (start, end) = (midnight(self.first)?, midnight(self.end)?);
+        Replay::new(db, home, (start, end), self.scope(), provider_names)
+    }
+}
+
+pub(in crate::usage_history::structured) struct Recovered {
+    revision: i64,
+    sources: Vec<Source>,
+    pub(in crate::usage_history::structured) events: Vec<UsageEvent>,
+}
+
+impl Recovered {
+    pub(super) fn is_current(
+        &self,
+        read: &Connection,
+        revision: i64,
+        key: &ArchiveKey,
+    ) -> Result<bool> {
+        if self.revision != revision
+            && self.sources
+                != sources(
+                    read,
+                    (
+                        key.first,
+                        key.end.pred_opt().expect("nonempty archive window"),
+                    ),
+                    key.scope().as_ref(),
+                )?
+        {
+            return Ok(false);
+        }
+        for source in &self.sources {
+            match FileState::source_stamp(&source.path) {
+                Ok(stamp) if stamp == source.stamp => {}
+                Ok(_) => return Ok(false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(true)
+    }
+}
+
 #[derive(PartialEq, Eq)]
 struct Source {
     path: PathBuf,
@@ -23,7 +95,7 @@ struct Source {
     session: String,
 }
 
-pub(super) struct Replay {
+pub(in crate::usage_history::structured::token_checkpoint) struct Replay {
     bounds: (i64, i64),
     scope: Option<HashSet<String>>,
     sources: Vec<Source>,
@@ -114,6 +186,10 @@ impl Replay {
         let sessions = home.join("sessions");
         let archived = home.join("archived_sessions");
         let sources = sources(db, dates(bounds)?, scope.as_ref())?;
+        ensure!(
+            !sources.is_empty(),
+            "no committed original sources for this archive range"
+        );
         for source in &sources {
             ensure!(
                 (source.path.starts_with(&sessions) || source.path.starts_with(&archived))
@@ -135,7 +211,7 @@ impl Replay {
     }
 
     /// Processes one source at a time using the same budgeted parser as ingestion.
-    pub(super) fn step(&mut self) -> Result<bool> {
+    pub(in crate::usage_history::structured::token_checkpoint) fn step(&mut self) -> Result<bool> {
         let Some(source) = self.sources.get(self.next_source) else {
             return Ok(true);
         };
@@ -189,12 +265,16 @@ impl Replay {
         Ok(self.next_source == self.sources.len())
     }
 
-    pub(super) fn finish(mut self, db: &Connection) -> Result<Vec<UsageEvent>> {
+    pub(in crate::usage_history::structured::token_checkpoint) fn finish(
+        mut self,
+        db: &Connection,
+    ) -> Result<Recovered> {
         ensure!(
             self.next_source == self.sources.len(),
             "archive replay is not complete"
         );
         let read = db.unchecked_transaction()?;
+        let revision = read.query_row("SELECT revision FROM token_revision", [], |r| r.get(0))?;
         ensure!(
             self.sources == sources(&read, dates(self.bounds)?, self.scope.as_ref())?,
             "archive source set or cursor changed during replay"
@@ -254,7 +334,11 @@ impl Replay {
                 events.push(event);
             }
         }
-        Ok(events)
+        Ok(Recovered {
+            revision,
+            sources: self.sources,
+            events,
+        })
     }
 }
 
@@ -298,6 +382,129 @@ mod tests {
             count(&first, 1),
             count(&second, 2)
         )
+    }
+
+    #[test]
+    fn recovered_trend_keeps_archived_day_totals_and_does_not_invent_classification() {
+        use crate::usage_history::Query;
+
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().canonicalize().unwrap();
+        let archived = home.join("archived_sessions");
+        fs::create_dir(&archived).unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        fs::write(
+            archived.join("rollout-old.jsonl"),
+            session_log(SESSION, day, ""),
+        )
+        .unwrap();
+        fs::write(
+            archived.join("rollout-recent.jsonl"),
+            session_log(OTHER, cutoff, ""),
+        )
+        .unwrap();
+        let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        let mut scan = Scan::default();
+        let names = BTreeMap::new();
+        assert!(scan.round(&mut store, &home, day, &names, 1 << 20).complete);
+        assert!(
+            scan.round(&mut store, &home, cutoff, &names, 1 << 20)
+                .complete
+        );
+        store
+            .db
+            .execute(
+                "UPDATE token_days SET groups=CAST(json_set(CAST(groups AS TEXT),
+                '$[0].provider','proven-relay', '$[0].totals.evidence','requestExact') AS BLOB)
+             WHERE day=?1",
+                [day.to_string()],
+            )
+            .unwrap();
+        let request = json!({"startAt":stamp(day, 0).timestamp_millis(),
+            "endAt":stamp(cutoff, 14).timestamp_millis(), "includeTrend":true});
+        let query = Query::parse(&request, cutoff).unwrap();
+        let (first, job) = Store::read_response_with_archive(
+            &mut store.db,
+            &query,
+            &request,
+            Some(OTHER),
+            &names,
+            None,
+        )
+        .unwrap();
+        assert_eq!(first["archiveRecovery"]["status"], "pending");
+        assert_eq!(first["days"][0]["usage"]["totalTokens"], 220);
+        assert_eq!(first["days"][1]["usage"]["totalTokens"], 220);
+        let key = job.unwrap();
+        let mut replay = key.replay(&store.db, &home, names.clone()).unwrap();
+        assert!(replay.step().unwrap());
+        let answer = (key, Ok(replay.finish(&store.db).unwrap()));
+        let (recovered, _) = Store::read_response_with_archive(
+            &mut store.db,
+            &query,
+            &request,
+            Some(OTHER),
+            &names,
+            Some(&answer),
+        )
+        .unwrap();
+        assert_eq!(recovered["archiveRecovery"]["status"], "complete");
+        assert_eq!(
+            recovered["days"], first["days"],
+            "the replay never adds to committed summaries"
+        );
+        assert_eq!(
+            recovered["days"][0]["breakdowns"][0]["provider"],
+            "proven-relay"
+        );
+        assert_eq!(recovered["classificationStatus"]["complete"], false);
+        let buckets = recovered["trend"]["buckets"].as_array().unwrap();
+        assert_eq!(
+            buckets
+                .iter()
+                .filter_map(|b| b["usage"]["totalTokens"].as_u64())
+                .sum::<u64>(),
+            440
+        );
+        let archived_group = &buckets
+            .iter()
+            .find(|b| b["recordCount"].as_u64().unwrap() > 0)
+            .unwrap()["breakdowns"][0];
+        assert_eq!(archived_group["provider"], "unknown");
+        assert!(archived_group.get("classificationEvidence").is_none());
+        assert_eq!(
+            recovered["scopedUsage"]["days"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(recovered["scopedUsage"]["trend"]["precision"], "exact");
+
+        store
+            .db
+            .execute(
+                "UPDATE token_days SET groups=CAST(json_set(CAST(groups AS TEXT),
+                '$[0].totals.records',3) AS BLOB) WHERE day=?1",
+                [day.to_string()],
+            )
+            .unwrap();
+        let (mismatch, _) = Store::read_response_with_archive(
+            &mut store.db,
+            &query,
+            &request,
+            Some(OTHER),
+            &names,
+            Some(&answer),
+        )
+        .unwrap();
+        assert_eq!(mismatch["archiveRecovery"]["status"], "partial");
+        assert_eq!(mismatch["countStatus"]["complete"], false);
+        assert_eq!(mismatch["days"][0]["usage"]["totalTokens"], 220);
+        assert!(
+            mismatch["trend"].is_null(),
+            "missing archive counts cannot become empty buckets"
+        );
+        assert_eq!(mismatch["scopedUsage"]["countStatus"]["complete"], true);
+        assert_eq!(mismatch["scopedUsage"]["trend"]["precision"], "exact");
     }
 
     #[test]
@@ -359,7 +566,7 @@ mod tests {
             assert!(steps < 12, "bounded parse should finish this fixture");
         }
         assert!(steps > 2, "at least one source should span multiple rounds");
-        let events = replay.finish(&store.db).unwrap();
+        let events = replay.finish(&store.db).unwrap().events;
         assert_eq!(
             events.len(),
             1,
@@ -442,7 +649,12 @@ mod tests {
         let mut replay = Replay::new(&store.db, &home, bounds, None, BTreeMap::new()).unwrap();
         assert_eq!(replay.sources.len(), 1);
         assert!(replay.step().unwrap());
-        assert_eq!(replay.finish(&store.db).unwrap()[0].delta.total_tokens, 110);
+        assert_eq!(
+            replay.finish(&store.db).unwrap().events[0]
+                .delta
+                .total_tokens,
+            110
+        );
     }
 
     #[test]
@@ -502,7 +714,7 @@ mod tests {
         assert_eq!(replay.sources.len(), 2);
         assert!(!replay.step().unwrap());
         assert!(replay.step().unwrap());
-        let events = replay.finish(&store.db).unwrap();
+        let events = replay.finish(&store.db).unwrap().events;
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].session, SESSION);
         assert_eq!(

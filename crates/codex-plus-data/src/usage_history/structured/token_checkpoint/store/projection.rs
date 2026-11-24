@@ -1,3 +1,4 @@
+use super::archive::{ArchiveKey, Recovered};
 use super::{Coverage, Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{
     Checkpoint, Counter, EventClassification, Observation,
@@ -144,6 +145,9 @@ pub(in super::super) struct DayGroup {
 
 type Groups = BTreeMap<(String, String, String, u8), DayTotals>;
 
+pub(in crate::usage_history::structured) type ArchiveAnswer =
+    (ArchiveKey, Result<Recovered, String>);
+
 fn encode_groups(groups: Groups) -> Result<Vec<u8>> {
     let groups: Vec<_> = groups
         .into_iter()
@@ -169,6 +173,8 @@ pub(in super::super) struct Selection {
     pub(in super::super) session_cursors: Option<Vec<Value>>,
     trend: Option<Value>,
     precise_from: String,
+    recovered_archive: bool,
+    archive_classification_gap: bool,
 }
 
 pub(in super::super) struct ScopedSelection {
@@ -189,7 +195,7 @@ impl Selection {
             let mut day = local_time(start)?
                 .date_naive()
                 .max(query.from.unwrap_or(NaiveDate::MIN));
-            if !self.precise_from.is_empty() {
+            if !self.recovered_archive && !self.precise_from.is_empty() {
                 day = day.max(self.precise_from.parse()?);
             }
             let last = query
@@ -1220,7 +1226,7 @@ impl Store {
         sessions: Option<&HashSet<String>>,
     ) -> Result<Selection> {
         let read = db.transaction()?;
-        let [selection] = Self::select(&read, query, bounds, [sessions], false)?;
+        let [selection] = Self::select(&read, query, bounds, [sessions], false, None)?;
         read.commit()?;
         Ok(selection)
     }
@@ -1234,7 +1240,8 @@ impl Store {
         let read = db.transaction()?;
         let scope = Self::scope(&read, &BTreeMap::new())?;
         let (session, sessions) = scope.scope_members(requested);
-        let [all, usage] = Self::select(&read, query, bounds, [None, Some(&sessions)], false)?;
+        let [all, usage] =
+            Self::select(&read, query, bounds, [None, Some(&sessions)], false, None)?;
         read.commit()?;
         Ok((
             all,
@@ -1249,6 +1256,7 @@ impl Store {
         ))
     }
 
+    #[cfg(test)]
     pub(in super::super) fn read_response(
         db: &mut Connection,
         query: &Query,
@@ -1256,18 +1264,82 @@ impl Store {
         requested: Option<&str>,
         provider_names: &BTreeMap<String, String>,
     ) -> Result<Value> {
+        Self::read_response_with_archive(db, query, request, requested, provider_names, None)
+            .map(|(response, _)| response)
+    }
+
+    pub(in super::super) fn read_response_with_archive(
+        db: &mut Connection,
+        query: &Query,
+        request: &Value,
+        requested: Option<&str>,
+        provider_names: &BTreeMap<String, String>,
+        archived: Option<&ArchiveAnswer>,
+    ) -> Result<(Value, Option<ArchiveKey>)> {
         let read = db.transaction()?;
         let bounds = request["startAt"].as_i64().zip(request["endAt"].as_i64());
         let activity_page = request["activityPage"].as_u64().unwrap_or(1).clamp(1, 24) as usize;
         let include_trend = request["includeTrend"] == true;
+        let (current_revision, cutoff): (i64, String) = read.query_row(
+            "SELECT revision, precise_from FROM token_revision",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let archive_key = if let Some((start, end)) = bounds
+            && !cutoff.is_empty()
+        {
+            ensure!(start < end, "invalid Token archive range");
+            let first = local_time(start)?
+                .date_naive()
+                .max(query.from.unwrap_or(NaiveDate::MIN));
+            let last = local_time(end - 1)?
+                .date_naive()
+                .min(query.to.unwrap_or(NaiveDate::MAX));
+            let end = last
+                .succ_opt()
+                .context("archive range end overflow")?
+                .min(cutoff.parse()?);
+            (first < end).then(|| ArchiveKey {
+                first,
+                end,
+                session: query.session_id.clone(),
+            })
+        } else {
+            None
+        };
+        let mut archive_status = None;
+        let mut recovered = None;
+        if let (Some(key), Some((cached, answer))) = (&archive_key, archived)
+            && cached == key
+        {
+            match answer {
+                Ok(answer) => match answer.is_current(&read, current_revision, key) {
+                    Ok(true) => recovered = Some((key, answer)),
+                    Ok(false) => {}
+                    Err(error) => {
+                        archive_status =
+                            Some(json!({"status":"partial","message":error.to_string()}))
+                    }
+                },
+                Err(message) => {
+                    archive_status = Some(json!({"status":"partial","message":message}))
+                }
+            }
+        }
         let scope = Self::scope(&read, provider_names)?;
         let scoped = requested.map(|session| scope.scope_members(session));
         let (all, scoped_usage) = if let Some((_, sessions)) = &scoped {
-            let [all, usage] =
-                Self::select(&read, query, bounds, [None, Some(sessions)], include_trend)?;
+            let [all, usage] = Self::select(
+                &read,
+                query,
+                bounds,
+                [None, Some(sessions)],
+                include_trend,
+                recovered,
+            )?;
             (all, Some(usage))
         } else {
-            let [all] = Self::select(&read, query, bounds, [None], include_trend)?;
+            let [all] = Self::select(&read, query, bounds, [None], include_trend, recovered)?;
             (all, None)
         };
         let scan_complete = all.coverage.is_some_and(|coverage| {
@@ -1289,7 +1361,7 @@ impl Store {
             "rangeApplied":bounds.is_some(),
             "coverage":coverage,
             "countStatus":{"complete":complete,"uncertainEvents":all.unresolved},
-            "classificationStatus":{"complete":complete && all.unclassified == 0,"uncertainEvents":all.unclassified},
+            "classificationStatus":{"complete":complete && all.unclassified == 0 && !all.archive_classification_gap,"uncertainEvents":all.unclassified},
             "days":all.days,
             "sessionIds":scope.sessions,
             "sessionAliases":scope.aliases,
@@ -1306,9 +1378,27 @@ impl Store {
         if include_trend {
             result["trend"] = json!(all.trend);
         }
-        if all.needs_source_recovery && include_trend {
-            result["archiveRecovery"] = json!({"status":"unavailable"});
-        }
+        let has_recovery = recovered.is_some();
+        let schedule = if let Some(key) = archive_key {
+            if has_recovery {
+                result["archiveRecovery"] =
+                    json!({"status":if complete {"complete"} else {"partial"}});
+                None
+            } else if let Some(status) = archive_status {
+                result["archiveRecovery"] = status;
+                None
+            } else {
+                result["archiveRecovery"] = json!({"status":"pending"});
+                all.coverage
+                    .is_some_and(|coverage| coverage.pending_sources == 0)
+                    .then_some(key)
+            }
+        } else {
+            if all.needs_source_recovery && include_trend {
+                result["archiveRecovery"] = json!({"status":"unavailable"});
+            }
+            None
+        };
         if let Some(cursors) = all.session_cursors {
             result["sessionCursors"] = json!(cursors);
         }
@@ -1323,7 +1413,7 @@ impl Store {
                 "coverage":coverage,
                 "complete":count_complete,
                 "countStatus":{"complete":count_complete,"uncertainEvents":usage.unresolved},
-                "classificationStatus":{"complete":count_complete && usage.unclassified == 0,"uncertainEvents":usage.unclassified},
+                "classificationStatus":{"complete":count_complete && usage.unclassified == 0 && !usage.archive_classification_gap,"uncertainEvents":usage.unclassified},
             });
             if include_trend {
                 result["scopedUsage"]["trend"] = json!(usage.trend);
@@ -1343,7 +1433,7 @@ impl Store {
             }
         }
         read.commit()?;
-        Ok(result)
+        Ok((result, schedule))
     }
 
     fn add_activity(
@@ -1471,6 +1561,7 @@ impl Store {
         bounds: Option<(i64, i64)>,
         scopes: [Option<&HashSet<String>>; N],
         include_trend: bool,
+        recovered: Option<(&ArchiveKey, &Recovered)>,
     ) -> Result<[Selection; N]> {
         let (revision, precise_from): (i64, String) = read.query_row(
             "SELECT revision, precise_from FROM token_revision",
@@ -1566,11 +1657,17 @@ impl Store {
             }
             Ok(())
         };
-        let read_event = |event: UsageEvent| {
+        let read_event = |event: &UsageEvent, include_totals: bool, classification_agrees: bool| {
             let model = Some(event.model.as_str()).filter(|model| !model.is_empty());
             if query.accepts_fields(&event.session, &event.turn, model, Some(event.date)) {
-                let key = group_key(&event);
-                let totals = DayTotals::from_event(&event);
+                let mut key = group_key(event);
+                let mut totals = DayTotals::from_event(event);
+                if !classification_agrees {
+                    key.0 = "unknown".into();
+                    key.1 = "unknown".into();
+                    key.3 |= 3;
+                    totals.evidence = ClassificationEvidence::None;
+                }
                 if let Some((start, _, interval, _)) = trend_bounds {
                     let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
                     let bucket = ((at - start) / interval) as usize;
@@ -1583,7 +1680,9 @@ impl Store {
                         }
                     }
                 }
-                accumulate(&event.session, event.date, key, totals);
+                if include_totals {
+                    accumulate(&event.session, event.date, key, totals);
+                }
             }
             Ok(())
         };
@@ -1615,12 +1714,14 @@ impl Store {
                 read,
                 (start, end),
                 Some(query),
-                read_event,
+                |event| read_event(&event, true, true),
                 // 按日摘要没有回合信息，不能拿它回答某一回合的用量。
                 query.turn_id.is_none().then_some(read_summary),
             )?
         } else if query.turn_id.is_some() {
-            Self::visit_committed(read, i64::MIN, i64::MAX, Some(query), read_event)?;
+            Self::visit_committed(read, i64::MIN, i64::MAX, Some(query), |event| {
+                read_event(&event, true, true)
+            })?;
             !precise_from.is_empty()
                 && query
                     .from
@@ -1637,11 +1738,101 @@ impl Store {
                 .zip(query.to)
                 .is_some_and(|(from, _)| from.to_string().as_str() < precise_from.as_str())
         };
+        let mut blocked_sessions = HashSet::new();
+        let mut classification_gaps = HashSet::new();
+        if let Some((key, archive)) = recovered
+            && let Some((start, end)) = bounds
+        {
+            let mut observed = BTreeMap::<_, Groups>::new();
+            for event in &archive.events {
+                observed
+                    .entry((event.session.as_str(), event.date))
+                    .or_default()
+                    .entry(group_key(event))
+                    .or_default()
+                    .merge(DayTotals::from_event(event));
+            }
+            let start_local = local_time(start)?;
+            let whole_start = start_local.date_naive()
+                + chrono::Days::new(u64::from(!local_midnight(start_local)));
+            let whole_end = local_time(end)?.date_naive();
+            let mut preserved = HashSet::new();
+            let mut blocked = HashSet::new();
+            let mut disagrees = HashSet::new();
+            Self::visit_days(read, key.first, key.end, |session, date, summary| {
+                if key.session.as_ref().is_some_and(|id| id != &session) {
+                    return Ok(());
+                }
+                let mut expected = DayTotals::default();
+                let mut actual = DayTotals::default();
+                let groups = observed.get(&(session.as_str(), date));
+                for group in &summary {
+                    expected.merge(group.totals);
+                }
+                for totals in groups.into_iter().flat_map(BTreeMap::values) {
+                    actual.merge(*totals);
+                }
+                if date >= whole_start && date < whole_end && query.turn_id.is_none() {
+                    preserved.insert((session.clone(), date));
+                }
+                if expected.records != actual.records
+                    || expected.counts.0 != actual.counts.0
+                    || expected.unresolved != actual.unresolved
+                    || expected.priceable != actual.priceable
+                {
+                    blocked.insert((session, date));
+                } else if let Some(groups) = groups
+                    && (summary.len() != groups.len()
+                        || summary.iter().any(|group| {
+                            groups
+                                .get(&(
+                                    group.model.clone(),
+                                    group.provider.clone(),
+                                    group.role.clone(),
+                                    group.conflicts,
+                                ))
+                                .is_none_or(|totals| {
+                                    totals.records != group.totals.records
+                                        || totals.counts.0 != group.totals.counts.0
+                                        || totals.priceable != group.totals.priceable
+                                })
+                        }))
+                {
+                    if query.model.is_some() || !query.search.is_empty() {
+                        blocked.insert((session, date));
+                    } else {
+                        disagrees.insert((session, date));
+                    }
+                }
+                Ok(())
+            })?;
+            for event in &archive.events {
+                let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
+                let session_day = (event.session.clone(), event.date);
+                if at >= start && at < end && !blocked.contains(&session_day) {
+                    // 已提交的日归类不证明每个分时桶的归类；只接受可验证的计数。
+                    read_event(
+                        event,
+                        !preserved.contains(&session_day),
+                        !disagrees.contains(&session_day),
+                    )?;
+                }
+            }
+            blocked_sessions.extend(blocked.into_iter().map(|(session, _)| session));
+            classification_gaps.extend(disagrees.into_iter().map(|(session, _)| session));
+        }
         let mut scopes = scopes.into_iter();
         let mut trends = trend.into_inner().into_iter();
         Ok(usage.into_inner().map(|groups| {
             let scope = scopes.next().unwrap();
             let buckets = trends.next().unwrap();
+            let affects = |sessions: &HashSet<String>| !sessions.is_empty()
+                && scope.is_none_or(|scope| !scope.is_disjoint(sessions));
+            let needs_source_recovery = if recovered.is_some() {
+                affects(&blocked_sessions)
+            } else {
+                needs_source_recovery
+            };
             let mut selection = Self::format_selection(
                 revision,
                 coverage,
@@ -1649,6 +1840,8 @@ impl Store {
                 needs_source_recovery,
                 groups,
             );
+            selection.recovered_archive = recovered.is_some();
+            selection.archive_classification_gap = affects(&classification_gaps);
             if let Some((start, end, interval, _)) = trend_bounds.filter(|_| !needs_source_recovery) {
                 let buckets: Vec<_> = buckets.into_iter().enumerate().map(|(i, groups)| {
                     let at = start + i as i64 * interval;
@@ -1721,6 +1914,8 @@ impl Store {
             session_cursors: None,
             trend: None,
             precise_from: precise_from.to_owned(),
+            recovered_archive: false,
+            archive_classification_gap: false,
         }
     }
 

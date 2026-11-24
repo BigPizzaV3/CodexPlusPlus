@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -1845,6 +1846,39 @@ struct Cache {
     touched: Instant,
     _collector: Option<provider_capture::ProviderCollector>,
     worker: Option<std::thread::JoinHandle<()>>,
+    archive: ArchiveSlot,
+}
+
+#[derive(Default)]
+struct ArchiveSlot {
+    cancelled: Arc<AtomicBool>,
+    worker: Option<(
+        token_checkpoint::ArchiveKey,
+        std::thread::JoinHandle<token_checkpoint::ArchiveAnswer>,
+    )>,
+    result: Option<(Instant, Arc<token_checkpoint::ArchiveAnswer>)>,
+}
+
+impl ArchiveSlot {
+    fn result(&mut self) -> Option<Arc<token_checkpoint::ArchiveAnswer>> {
+        if self
+            .worker
+            .as_ref()
+            .is_some_and(|(_, worker)| worker.is_finished())
+        {
+            let (key, worker) = self.worker.take().expect("finished archive worker");
+            let answer = worker
+                .join()
+                .unwrap_or_else(|_| (key, Err("archive worker panicked".into())));
+            self.result = Some((Instant::now(), Arc::new(answer)));
+        }
+        if self.result.as_ref().is_some_and(|(at, answer)| {
+            at.elapsed() >= Duration::from_secs(if answer.1.is_ok() { 300 } else { 15 })
+        }) {
+            self.result = None;
+        }
+        self.result.as_ref().map(|(_, answer)| Arc::clone(answer))
+    }
 }
 
 type HistoryCaches = Mutex<HashMap<PathBuf, Arc<Mutex<Cache>>>>;
@@ -1855,14 +1889,24 @@ fn homes() -> &'static HistoryCaches {
 }
 
 fn stop_cache(cache: Arc<Mutex<Cache>>) {
-    let (collector, worker) = {
+    let (collector, worker, archive) = {
         let mut state = cache.lock().unwrap_or_else(|error| error.into_inner());
-        (state._collector.take(), state.worker.take())
+        state.archive.cancelled.store(true, Ordering::Relaxed);
+        (
+            state._collector.take(),
+            state.worker.take(),
+            state.archive.worker.take(),
+        )
     };
     // 不持有索引锁等待退出；其他强引用不能延迟后台任务的收尾。
     drop(collector);
     if let Some(worker) = worker {
         let _ = worker.join();
+    }
+    if let Some((_, worker)) = archive {
+        if worker.join().is_err() {
+            eprintln!("usage archive worker panicked while stopping");
+        }
     }
 }
 
@@ -2007,6 +2051,7 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
             touched: Instant::now(),
             _collector: None,
             worker: None,
+            archive: ArchiveSlot::default(),
         }));
         let weak = Arc::downgrade(&cache);
         let identity = home.to_owned();
@@ -2085,16 +2130,47 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
     let snapshot = state.snapshot.clone();
     let storage = state.storage.clone();
     let processing = state.active;
+    let archived = state.archive.result();
     drop(state);
     // clear 必须等本次启动登记完成，才能移除缓存并收齐后台任务。
     drop(homes);
-    snapshot.read(
+    let (mut response, schedule) = snapshot.read_with_archive(
         &storage,
         options,
         request,
         scope_session.as_deref(),
         processing,
-    )
+        archived.as_deref(),
+    );
+    if let Some(key) = schedule
+        && let Ok(mut state) = cache.lock()
+        && !state.archive.cancelled.load(Ordering::Relaxed)
+        && state.archive.worker.is_none()
+        && !state.archive.result.as_ref().is_some_and(|(_, ready)| {
+            ready.0 == key
+                && archived
+                    .as_ref()
+                    .is_none_or(|seen| !Arc::ptr_eq(seen, ready))
+        })
+    {
+        let job = key.clone();
+        let home = home.to_owned();
+        let cancelled = state.archive.cancelled.clone();
+        // 同一缓存仅允许一个只读回读；不阻塞前台查询或近期索引写者。
+        match std::thread::Builder::new()
+            .name("rollout-history-archive".into())
+            .spawn(move || {
+                token_checkpoint::recover_archive(job, &home, &storage, &snapshot, &cancelled)
+            }) {
+            Ok(worker) => state.archive.worker = Some((key, worker)),
+            Err(error) => {
+                let message = error.to_string();
+                response["archiveRecovery"] = json!({"status":"partial","message":message});
+                state.archive.result = Some((Instant::now(), Arc::new((key, Err(message)))));
+            }
+        }
+    }
+    response
 }
 
 fn log_file(path: &Path) -> bool {
@@ -4370,7 +4446,10 @@ impl Snapshot {
     }
 
     fn scope_members<'a>(&'a self, requested: &'a str) -> (&'a str, HashSet<String>) {
-        let session = self.aliases.get(requested).map_or(requested, String::as_str);
+        let session = self
+            .aliases
+            .get(requested)
+            .map_or(requested, String::as_str);
         let mut sessions = HashSet::new();
         if self.sessions.contains(session) {
             sessions.insert(session.to_owned());

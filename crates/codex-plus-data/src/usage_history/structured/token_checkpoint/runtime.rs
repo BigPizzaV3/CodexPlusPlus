@@ -1,4 +1,11 @@
-use super::{scan::Scan, store::Store};
+use super::{
+    scan::Scan,
+    store::{
+        Store,
+        archive::{ArchiveKey, Recovered},
+        projection::ArchiveAnswer,
+    },
+};
 use crate::usage_history::{
     Query, TOKEN_INDEX_DB,
     structured::{Index, RequestEvidence, live_receipts},
@@ -12,6 +19,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const RETENTION_DAYS: u64 = 60;
@@ -264,6 +272,7 @@ fn enforce_working_budget(db: &Connection, storage: &Path, budget: u64) -> Resul
 }
 
 impl ReadState {
+    #[cfg(test)]
     pub(in super::super) fn read(
         &self,
         storage: &Path,
@@ -272,21 +281,38 @@ impl ReadState {
         scope_session: Option<&str>,
         processing: bool,
     ) -> Value {
-        let mut response = match open_database(storage, false).and_then(|mut db| {
-            Store::read_response(
+        self.read_with_archive(storage, options, request, scope_session, processing, None)
+            .0
+    }
+
+    pub(in super::super) fn read_with_archive(
+        &self,
+        storage: &Path,
+        options: &Query,
+        request: &Value,
+        scope_session: Option<&str>,
+        processing: bool,
+        archive: Option<&ArchiveAnswer>,
+    ) -> (Value, Option<ArchiveKey>) {
+        let (mut response, schedule) = match open_database(storage, false).and_then(|mut db| {
+            Store::read_response_with_archive(
                 &mut db,
                 options,
                 request,
                 scope_session,
                 &self.provider_names,
+                archive,
             )
         }) {
-            Ok(response) => response,
-            Err(error) => json!({
-                "status":if processing {"partial"} else {"unavailable"},
-                "complete":false, "message":error.to_string(),
-                "scan":{"ready":false,"discoveryFinished":false},
-            }),
+            Ok(answer) => answer,
+            Err(error) => (
+                json!({
+                    "status":if processing {"partial"} else {"unavailable"},
+                    "complete":false, "message":error.to_string(),
+                    "scan":{"ready":false,"discoveryFinished":false},
+                }),
+                None,
+            ),
         };
         response["scan"]["processing"] = json!(processing);
         response["scan"]["failedSources"] = json!(self.failed_sources);
@@ -327,8 +353,33 @@ impl ReadState {
         } else {
             json!([])
         };
-        response
+        (response, schedule)
     }
+}
+
+pub(in super::super) fn recover_archive(
+    key: ArchiveKey,
+    home: &Path,
+    storage: &Path,
+    snapshot: &ReadState,
+    cancelled: &AtomicBool,
+) -> ArchiveAnswer {
+    let answer = (|| -> Result<Recovered> {
+        let db = open_database(storage, false)?;
+        let mut replay = key.replay(&db, home, snapshot.provider_names.clone())?;
+        loop {
+            ensure!(
+                !cancelled.load(Ordering::Relaxed),
+                "archive replay cancelled"
+            );
+            if replay.step()? {
+                return replay.finish(&db);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })()
+    .map_err(|error| format!("{error:#}"));
+    (key, answer)
 }
 
 #[cfg(test)]
