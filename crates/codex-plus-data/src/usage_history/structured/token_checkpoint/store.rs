@@ -46,6 +46,13 @@ pub(super) struct Store {
     pub(super) db: Connection,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in super::super) struct Coverage {
+    pub(in super::super) pending_sources: usize,
+    pub(in super::super) issues: usize,
+    pub(in super::super) maintenance_blocked: bool,
+}
+
 impl Store {
     pub(super) fn open(db: Connection) -> Result<Self> {
         db.pragma_update(None, "foreign_keys", true)?;
@@ -58,6 +65,13 @@ impl Store {
                 precise_from TEXT NOT NULL
              ) STRICT;
              INSERT OR IGNORE INTO token_revision VALUES (1, 0, '');
+             CREATE TABLE IF NOT EXISTS token_coverage (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                revision INTEGER NOT NULL,
+                pending_sources INTEGER NOT NULL,
+                issues INTEGER NOT NULL,
+                maintenance_blocked INTEGER NOT NULL
+             ) STRICT;
              CREATE TABLE IF NOT EXISTS token_sources (
                 id INTEGER PRIMARY KEY,
                 source BLOB NOT NULL UNIQUE,
@@ -111,6 +125,26 @@ impl Store {
              COMMIT;",
         )?;
         Ok(Self { db })
+    }
+
+    pub(super) fn record_coverage(&self, coverage: Coverage) -> Result<()> {
+        self.db.execute(
+            "INSERT INTO token_coverage
+             SELECT 1, revision, ?1, ?2, ?3 FROM token_revision WHERE singleton = 1
+             ON CONFLICT(singleton) DO UPDATE SET revision = excluded.revision,
+                 pending_sources = excluded.pending_sources, issues = excluded.issues,
+                 maintenance_blocked = excluded.maintenance_blocked
+             WHERE (token_coverage.revision, token_coverage.pending_sources, token_coverage.issues,
+                    token_coverage.maintenance_blocked) IS DISTINCT FROM
+                   (excluded.revision, excluded.pending_sources, excluded.issues,
+                    excluded.maintenance_blocked)",
+            params![
+                coverage.pending_sources,
+                coverage.issues,
+                coverage.maintenance_blocked
+            ],
+        )?;
+        Ok(())
     }
 
     pub(super) fn save(

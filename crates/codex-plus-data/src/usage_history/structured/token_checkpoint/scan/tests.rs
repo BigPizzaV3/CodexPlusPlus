@@ -340,6 +340,63 @@ fn incomplete_discovery_cannot_retire_a_committed_source() {
 }
 
 #[test]
+fn an_interrupted_round_cannot_reuse_coverage_for_a_newer_snapshot() {
+    use crate::usage_history::Query;
+    use rusqlite::OpenFlags;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let database = root.join("tokens.sqlite");
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut scan = Scan::default();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    fs::write(sessions.join("rollout-01.jsonl"), rollout(FIRST)).unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let mut reader =
+        Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let query = Query::parse(&json!({}), cutoff).unwrap();
+    let first = Store::read_selection(&mut reader, &query, None, None).unwrap();
+    assert_eq!(first.days[0]["recordCount"], 1);
+    assert_eq!(
+        first.coverage,
+        Some(Coverage {
+            pending_sources: 0,
+            issues: 0,
+            maintenance_blocked: false,
+        })
+    );
+
+    let path = sessions.join("rollout-02.jsonl");
+    fs::write(&path, rollout(SECOND)).unwrap();
+    let mut source = SourceReader::restore(&store, &path).unwrap();
+    let mut budget = Budget::new(std::iter::empty());
+    assert!(
+        source
+            .step(&mut store, cutoff, &mut budget, &names, 8192)
+            .unwrap()
+    );
+    drop(store);
+    let (all, scoped) = Store::read_scoped_selection(&mut reader, &query, None, FIRST).unwrap();
+    assert!(all.revision > first.revision);
+    assert_eq!(all.revision, scoped.usage.revision);
+    assert_eq!(all.days[0]["recordCount"], 2);
+    assert_eq!(scoped.usage.days[0]["recordCount"], 1);
+    assert!(all.coverage.is_none());
+    assert!(scoped.usage.coverage.is_none());
+
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut scan = Scan::default();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let settled = Store::read_selection(&mut reader, &query, None, None).unwrap();
+    assert_eq!(settled.revision, all.revision);
+    assert_eq!(settled.days, all.days);
+    assert_eq!(settled.coverage, first.coverage);
+}
+
+#[test]
 fn cold_index_does_not_report_an_empty_archived_day_as_exact() {
     use crate::usage_history::Query;
     use chrono::{Local, TimeZone};

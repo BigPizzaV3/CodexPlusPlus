@@ -1178,6 +1178,70 @@ fn reopened_scope_uses_committed_aliases_and_only_unambiguous_descendants() {
 }
 
 #[test]
+fn scoped_turn_selection_uses_retained_events_without_returning_archived_day_totals() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let database = root.join("tokens.sqlite3");
+    let start = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 4).unwrap();
+    let retained = cutoff.succ_opt().unwrap();
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    for (session, turn, include_archive) in [(PARENT, "selected", true), (OTHER, "other", false)] {
+        let path = root.join(format!("rollout-{session}.jsonl"));
+        let mut rows = vec![
+            header(session, 0),
+            json!({"type":"turn_context","ordinal":1,
+                "timestamp":"2026-01-02T12:00:01Z",
+                "payload":{"turn_id":turn,"model":"gpt-fixture"}}),
+        ];
+        if include_archive {
+            rows.push(count(2, 2, 1, true));
+        }
+        let mut recent = count(3, 3, if include_archive { 2 } else { 1 }, true);
+        recent["timestamp"] = json!(format!("{retained}T12:00:03Z"));
+        rows.push(recent);
+        let state = parse(&path, &rows, start);
+        let prepared = store
+            .prepare(new_source(&path, &state), start, BTreeMap::new(), 1 << 16)
+            .unwrap();
+        store.publish(prepared).unwrap();
+    }
+    let revision = store.advance_retention(cutoff).unwrap().unwrap();
+    drop(store);
+    let mut reader =
+        Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let query = Query::parse(&json!({"turnId":"selected"}), retained).unwrap();
+    let midnight = |day: NaiveDate| {
+        Local
+            .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .timestamp_millis()
+    };
+    let bounds = Some((midnight(start), midnight(retained.succ_opt().unwrap())));
+    for bounds in [None, bounds] {
+        let (all, scoped) =
+            Store::read_scoped_selection(&mut reader, &query, bounds, PARENT).unwrap();
+        assert_eq!(all.revision, revision);
+        assert_eq!(scoped.usage.revision, revision);
+        assert_eq!(all.days, scoped.usage.days);
+        assert_eq!(all.days.len(), 1);
+        assert_eq!(all.days[0]["recordCount"], 1);
+        assert_eq!(all.days[0]["usage"]["totalTokens"], 110);
+        assert!(!all.archived);
+        assert!(all.needs_source_recovery);
+    }
+    let query = Query::parse(
+        &json!({"period":"today","turnId":"selected","sessionId":PARENT}),
+        retained,
+    )
+    .unwrap();
+    let current = Store::read_selection(&mut reader, &query, None, None).unwrap();
+    assert_eq!(current.days[0]["recordCount"], 1);
+    assert!(!current.needs_source_recovery);
+}
+
+#[test]
 fn selection_preserves_the_known_priceable_subset_across_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
@@ -1212,6 +1276,84 @@ fn selection_preserves_the_known_priceable_subset_across_sessions() {
         assert_eq!(row["priceableUsage"]["inputTokens"], 100);
         assert_eq!(row["priceableUsage"]["cachedInputTokens"], 20);
         assert_eq!(row["priceableUsage"]["outputTokens"], 10);
+    }
+}
+
+#[test]
+fn archived_classification_matches_live_rollups_without_promoting_mixed_evidence() {
+    use crate::usage_history::structured::Snapshot;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let database = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let archive = cutoff + chrono::Days::new(4);
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    for (session, provider, evidence) in [
+        (PARENT, "supplier-a", Some("request-log-exact")),
+        (CHILD, "supplier-a", None),
+        (
+            OTHER,
+            "supplier-b",
+            Some("upstream-counter-bidirectional-supplier-only"),
+        ),
+    ] {
+        let path = root.join(format!("rollout-{session}.jsonl"));
+        let mut state = parse(&path, &[header(session, 0), count(1, 1, 1, true)], cutoff);
+        state.events[0].provider = provider.to_owned();
+        state.events[0].provider_source = evidence.map(str::to_owned);
+        let prepared = store
+            .prepare(new_source(&path, &state), cutoff, BTreeMap::new(), 8192)
+            .unwrap();
+        store.publish(prepared).unwrap();
+    }
+    let snapshot = Snapshot {
+        events: read(&mut store.db, i64::MIN, i64::MAX).1,
+        count_cache_available: true,
+        ..Default::default()
+    };
+    store.advance_retention(archive).unwrap();
+    assert_eq!(store.reclaim_expired_details(10).unwrap(), 3);
+    drop(store);
+    let mut reader =
+        Connection::open_with_flags(database, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    for session in [None, Some(PARENT), Some(OTHER)] {
+        let query = Query::parse(&json!({"sessionId":session}), archive).unwrap();
+        let live = snapshot.usage_days(&query, None, None);
+        let archived = Store::read_selection(&mut reader, &query, None, None).unwrap();
+        assert!(archived.archived);
+        for (left, right) in live.iter().zip(&archived.days) {
+            assert_eq!(left["usage"], right["usage"]);
+            assert_eq!(left["recordCount"], right["recordCount"]);
+            let live_rows = left["breakdowns"].as_array().unwrap();
+            let archived_rows = right["breakdowns"].as_array().unwrap();
+            assert_eq!(live_rows.len(), archived_rows.len());
+            for (live_row, archive_row) in live_rows.iter().zip(archived_rows) {
+                for field in [
+                    "provider",
+                    "usage",
+                    "classificationEvidence",
+                    "supplierClassificationEvidence",
+                ] {
+                    assert_eq!(live_row[field], archive_row[field]);
+                }
+            }
+        }
+        let first = &archived.days[0]["breakdowns"][0];
+        assert_eq!(
+            first["classificationEvidence"],
+            if session == Some(PARENT) {
+                json!("request-log-exact")
+            } else {
+                Value::Null
+            }
+        );
+        if session == Some(OTHER) {
+            assert_eq!(
+                first["supplierClassificationEvidence"],
+                "upstream-counter-bidirectional-supplier-only"
+            );
+        }
     }
 }
 

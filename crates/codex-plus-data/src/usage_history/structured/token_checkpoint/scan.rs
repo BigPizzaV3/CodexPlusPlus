@@ -1,4 +1,7 @@
-use super::{ingest::SourceReader, store::Store};
+use super::{
+    ingest::SourceReader,
+    store::{Coverage, Store},
+};
 use crate::usage_history::structured::{discover, index_budget::Budget};
 use chrono::NaiveDate;
 use std::collections::{BTreeMap, VecDeque};
@@ -166,10 +169,19 @@ impl Scan {
             + usize::from(self.more_missing)
             + usize::from(self.active.is_some())
             + usize::from(self.deferred.is_some());
-        Report {
-            complete: pending_sources == 0 && self.issues == 0 && maintenance_error.is_none(),
+        let mut issues = self.issues;
+        if let Err(error) = store.record_coverage(Coverage {
             pending_sources,
-            issues: self.issues,
+            issues,
+            maintenance_blocked: maintenance_error.is_some(),
+        }) {
+            issues += 1;
+            errors.push((home.to_owned(), error));
+        }
+        Report {
+            complete: pending_sources == 0 && issues == 0 && maintenance_error.is_none(),
+            pending_sources,
+            issues,
             errors,
             maintenance_error,
         }

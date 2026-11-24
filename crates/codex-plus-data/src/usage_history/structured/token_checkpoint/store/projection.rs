@@ -1,8 +1,8 @@
-use super::{Store, decode_path, encode_path};
+use super::{Coverage, Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{Checkpoint, Counter, Observation};
 use crate::usage_history::structured::{
-    FileState, Index, MAX_FILES, Query, Snapshot, UsageEvent, ordered_scope_ids, segments,
-    usage_provider,
+    ClassificationEvidence, FileState, Index, MAX_FILES, Query, Snapshot, UsageEvent,
+    ordered_scope_ids, segments, usage_provider,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
@@ -55,6 +55,12 @@ pub(in super::super) struct DayTotals {
     // 完整分组直接使用 counts，混合分组只保存可计价的子集。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(in super::super) priceable: Option<[u64; 3]>,
+    #[serde(default, skip_serializing_if = "classification_unproven")]
+    evidence: ClassificationEvidence,
+}
+
+fn classification_unproven(evidence: &ClassificationEvidence) -> bool {
+    *evidence == ClassificationEvidence::None
 }
 
 impl DayTotals {
@@ -68,6 +74,7 @@ impl DayTotals {
             Self {
                 counts: Counter(event.delta),
                 records: 1,
+                evidence: ClassificationEvidence::of(event),
                 ..Self::default()
             }
         } else {
@@ -77,6 +84,11 @@ impl DayTotals {
 
     pub(in super::super) fn merge(&mut self, other: Self) {
         if other.records != 0 {
+            self.evidence = if self.records == 0 {
+                other.evidence
+            } else {
+                self.evidence.intersect(other.evidence)
+            };
             let incoming = other.counts.0;
             if self.counts.0.cached_known && !incoming.cached_known && self.records != 0 {
                 let prior = self.counts.0;
@@ -131,6 +143,7 @@ type Groups = BTreeMap<(String, String, String, u8), DayTotals>;
 
 pub(in super::super) struct Selection {
     pub(in super::super) revision: i64,
+    pub(in super::super) coverage: Option<Coverage>,
     pub(in super::super) days: Vec<Value>,
     pub(in super::super) unresolved: u64,
     pub(in super::super) archived: bool,
@@ -771,7 +784,7 @@ impl Store {
     ) -> Result<i64> {
         let read = db.transaction()?;
         let current = revision(&read)?;
-        Self::visit_committed(&read, start_ms, end_ms, visit)?;
+        Self::visit_committed(&read, start_ms, end_ms, None, visit)?;
         read.commit()?;
         Ok(current)
     }
@@ -780,16 +793,25 @@ impl Store {
         read: &Connection,
         start_ms: i64,
         end_ms: i64,
+        query: Option<&Query>,
         mut visit: impl FnMut(UsageEvent) -> Result<()>,
     ) -> Result<()> {
-        let mut query = read.prepare(
+        let mut statement = read.prepare_cached(
             "SELECT r.event_id, s.session, r.payload FROM token_resolved r
                  JOIN token_sessions s ON s.id = r.session_id
                  WHERE r.timestamp_ms >= ?1 AND r.timestamp_ms < ?2
                  AND r.day >= (SELECT precise_from FROM token_revision)
+                 AND (?3 IS NULL OR r.day >= ?3)
+                 AND (?4 IS NULL OR r.day <= ?4)
+                 AND (?5 IS NULL OR s.session = ?5)
+                 AND (?6 IS NULL OR json_extract(CAST(r.payload AS TEXT), '$.turn') = ?6)
                  ORDER BY r.timestamp_ms, r.event_id",
         )?;
-        let mut rows = query.query([start_ms, end_ms])?;
+        let from = query.and_then(|q| q.from).map(|day| day.to_string());
+        let to = query.and_then(|q| q.to).map(|day| day.to_string());
+        let session = query.and_then(|q| q.session_id.as_deref());
+        let turn = query.and_then(|q| q.turn_id.as_deref());
+        let mut rows = statement.query(params![start_ms, end_ms, from, to, session, turn])?;
         while let Some(row) = rows.next()? {
             let id = row.get_ref(0)?.as_blob()?.try_into()?;
             let event: Observation = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
@@ -863,18 +885,23 @@ impl Store {
     ) -> Result<(i64, bool)> {
         let read = db.transaction()?;
         let current = revision(&read)?;
-        let needs_source_recovery =
-            Self::visit_range(&read, start_ms, end_ms, visit_detail, visit_archived_day)?;
+        let needs_source_recovery = Self::visit_range(
+            &read,
+            (start_ms, end_ms),
+            None,
+            visit_detail,
+            Some(visit_archived_day),
+        )?;
         read.commit()?;
         Ok((current, needs_source_recovery))
     }
 
     fn visit_range(
         read: &Connection,
-        start_ms: i64,
-        end_ms: i64,
+        (start_ms, end_ms): (i64, i64),
+        query: Option<&Query>,
         visit_detail: impl FnMut(UsageEvent) -> Result<()>,
-        visit_archived_day: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+        visit_archived_day: Option<impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>>,
     ) -> Result<bool> {
         ensure!(start_ms < end_ms, "invalid Token range");
         let local = |ms| {
@@ -904,12 +931,14 @@ impl Store {
                 start_day.succ_opt().context("Token start date overflow")?
             };
             let whole_end = end_day.min(cutoff);
-            if whole_start < whole_end {
+            if whole_start < whole_end
+                && let Some(visit_archived_day) = visit_archived_day
+            {
                 Self::visit_days(read, whole_start, whole_end, visit_archived_day)?;
             }
             needs_source_recovery = start_day < cutoff;
         }
-        Self::visit_committed(read, start_ms, end_ms, visit_detail)?;
+        Self::visit_committed(read, start_ms, end_ms, query, visit_detail)?;
         Ok(needs_source_recovery)
     }
 
@@ -1001,7 +1030,7 @@ impl Store {
         scopes: [Option<&HashSet<String>>; N],
     ) -> Result<[Selection; N]> {
         ensure!(
-            query.turn_id.is_none() && !query.include_activity && !query.include_session_cursors,
+            !query.include_activity && !query.include_session_cursors,
             "Token snapshot selection requires the existing compatibility reader for this query"
         );
         let (revision, precise_from): (i64, String) = read.query_row(
@@ -1009,6 +1038,20 @@ impl Store {
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
+        // 发布一批后若扫描进程中断，不能沿用上一版本的完整标记。
+        let coverage = read
+            .query_row(
+                "SELECT pending_sources, issues, maintenance_blocked FROM token_coverage WHERE revision = ?1",
+                [revision],
+                |row| {
+                    Ok(Coverage {
+                        pending_sources: row.get(0)?,
+                        issues: row.get(1)?,
+                        maintenance_blocked: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?;
         let usage: RefCell<[_; N]> = RefCell::new(std::array::from_fn(|_| {
             BTreeMap::<NaiveDate, Groups>::new()
         }));
@@ -1039,25 +1082,33 @@ impl Store {
             }
             Ok(())
         };
+        let read_event = |event: UsageEvent| {
+            let model = Some(event.model.as_str()).filter(|model| !model.is_empty());
+            if query.accepts_fields(&event.session, &event.turn, model, Some(event.date)) {
+                accumulate(
+                    &event.session,
+                    event.date,
+                    group_key(&event),
+                    DayTotals::from_event(&event),
+                );
+            }
+            Ok(())
+        };
         let needs_source_recovery = if let Some((start, end)) = bounds {
             Self::visit_range(
                 read,
-                start,
-                end,
-                |event| {
-                    let model = Some(event.model.as_str()).filter(|model| !model.is_empty());
-                    if query.accepts_fields(&event.session, &event.turn, model, Some(event.date)) {
-                        accumulate(
-                            &event.session,
-                            event.date,
-                            group_key(&event),
-                            DayTotals::from_event(&event),
-                        );
-                    }
-                    Ok(())
-                },
-                read_summary,
+                (start, end),
+                Some(query),
+                read_event,
+                // 按日摘要没有回合信息，不能拿它回答某一回合的用量。
+                query.turn_id.is_none().then_some(read_summary),
             )?
+        } else if query.turn_id.is_some() {
+            Self::visit_committed(read, i64::MIN, i64::MAX, Some(query), read_event)?;
+            !precise_from.is_empty()
+                && query
+                    .from
+                    .is_none_or(|from| from.to_string().as_str() < precise_from.as_str())
         } else {
             Self::visit_summary(
                 read,
@@ -1071,12 +1122,19 @@ impl Store {
                 .is_some_and(|(from, _)| from.to_string().as_str() < precise_from.as_str())
         };
         Ok(usage.into_inner().map(|groups| {
-            Self::format_selection(revision, &precise_from, needs_source_recovery, groups)
+            Self::format_selection(
+                revision,
+                coverage,
+                &precise_from,
+                needs_source_recovery,
+                groups,
+            )
         }))
     }
 
     fn format_selection(
         revision: i64,
+        coverage: Option<Coverage>,
         precise_from: &str,
         needs_source_recovery: bool,
         usage: BTreeMap<NaiveDate, Groups>,
@@ -1103,6 +1161,7 @@ impl Store {
                 if conflicts & 2 != 0 {
                     row["providerConflict"] = json!(true);
                 }
+                group.evidence.write_to(&mut row);
                 breakdowns.push(row);
                 models.entry(model).or_default().merge(group);
                 totals.merge(group);
@@ -1124,6 +1183,7 @@ impl Store {
         }
         Selection {
             revision,
+            coverage,
             days,
             unresolved,
             archived,
