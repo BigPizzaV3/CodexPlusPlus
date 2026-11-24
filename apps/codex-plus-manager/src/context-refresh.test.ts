@@ -26,6 +26,22 @@ function runtime() {
     sandbox: { type: "workspaceWrite", writableRoots: ["C:/data"], networkAccess: true,
       excludeTmpdirEnvVar: true, excludeSlashTmp: false },
   };
+  const storage = new Map();
+  const storageApi = {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  };
+  const view = { id: "thread", label: "Selected", host: "local" };
+  const trigger = {
+    getBoundingClientRect: () => ({ width: 80 }),
+    querySelector: () => ({ textContent: view.label }),
+  };
+  const composer = {
+    getBoundingClientRect: () => ({ width: 300 }),
+    querySelectorAll: () => [trigger],
+    getAttribute: () => "thread",
+  };
   const send = async (method: string, params: any, options: any) => {
     calls.push({ method, params, options });
     if (state.fail === method && (method !== "thread/resume" || params.config)) throw new Error("fixture failure");
@@ -36,7 +52,18 @@ function runtime() {
     return {};
   };
   const context = vm.createContext({
-    window: { __codexSessionDeleteBridge: {} }, Map, Set,
+    window: { __codexSessionDeleteBridge: {}, localStorage: storageApi }, Map, Set,
+    document: {
+      querySelectorAll: () => [composer],
+      querySelector: () => ({ getAttribute: () => view.host }),
+    },
+    codexPlusCurrentSessionId: () => view.id,
+    codexPlusModelMetadata: (model: string) => ({ displayName: `GPT-${model}` }),
+    codexPlusModelPickerNativeLabelKey: (label: string) => label.toLowerCase().replace(/^gpt-/, ""),
+    codexPlusEmitExtensionEvent() {},
+    codexPlusRpcSerializeTurn: (_thread: string, run: () => any) => run(),
+    codexPlusAppServerClient: () => ({ hostId: "local" }),
+    codexPlusRpcContextSendRequest: () => send,
     codexRemoteSessionActiveProfile: () => state.profileEnabled ? { relayMode: state.relayMode } : null,
     codexModelCatalog: { get runtimeContext() { return state.runtime; } },
     loadCodexModelCatalog: async () => ({ model: "selected", runtimeContext: state.runtime }),
@@ -48,12 +75,12 @@ function runtime() {
     sendCodexPlusDiagnostic() {},
   });
   vm.runInContext(reload + helpers
-    + "\nglobalThis.api = { prepare: prepareCodexThreadContextStart, note: noteCodexThreadRuntimeContext, refresh: refreshCodexThreadModelBeforeTurn };", context);
+    + "\nglobalThis.api = { prepare: prepareCodexThreadContextStart, note: noteCodexThreadRuntimeContext, refresh: refreshCodexThreadModelBeforeTurn, session: codexSessionContextService() };", context);
   const api = context.api;
   const client = { hostId: "local" };
   const turn = { threadId: "thread", collaborationMode: { settings: { model: "selected", reasoning_effort: "max" } } };
   const refresh = () => api.refresh(client, send, "turn/start", turn, { clientUserMessageId: "user-message" });
-  return { api, context, calls, state, snapshot, send, client, turn, refresh };
+  return { api, context, calls, state, snapshot, send, client, turn, refresh, view };
 }
 
 describe("runtime context refresh", () => {
@@ -66,6 +93,18 @@ describe("runtime context refresh", () => {
     env.state.turns = 0;
     assert.equal(await env.refresh(), null);
     assert.equal(env.calls.length, 0);
+  });
+
+  it("does not report a cached default as verified after a catalog read fails", async () => {
+    const env = runtime();
+    assert.equal(env.api.session.read().defaultWindow, 131072);
+    env.context.loadCodexModelCatalog = async () => ({ status: "failed", message: "catalog unavailable" });
+    await assert.rejects(env.api.session.refresh(), /catalog unavailable/);
+    env.context.loadCodexModelCatalog = async () => ({ status: "ok", runtimeContext: { status: "unsupported", message: "fixed limit" } });
+    await assert.rejects(env.api.session.refresh(), /fixed limit/);
+    env.state.runtime.models.selected.model_context_window = 500000;
+    env.context.loadCodexModelCatalog = async () => ({ status: "ok", runtimeContext: env.state.runtime });
+    assert.equal((await env.api.session.refresh()).defaultWindow, 500000);
   });
 
   it("applies same-model increases, decreases and compact-only changes once", async () => {
@@ -109,6 +148,76 @@ describe("runtime context refresh", () => {
     env.state.status = "active";
     assert.equal(await env.refresh(), null);
     assert.equal(env.calls.length, 0);
+  });
+
+  it("repairs a stale native window even when the saved context signature matches", async () => {
+    const env = runtime();
+    env.state.runtime.models.selected = { model_context_window: 500000, model_auto_compact_token_limit: 450000 };
+    env.state.runtime.effectiveWindows = { selected: 475000 };
+    const params = await env.api.prepare("thread/start", { model: "selected" }, "local");
+    env.api.note("thread/start", params, { thread: { id: "thread" } }, "local");
+    const observed = env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 258400]]);
+
+    assert.equal(await env.refresh(), true);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 500000);
+    assert.equal(env.calls.at(-1)!.params.config.model_auto_compact_token_limit, 450000);
+    assert.equal(observed.has("thread"), false, "do not treat a pre-resume notification as new evidence");
+
+    env.calls.length = 0;
+    observed.set("thread", 258400);
+    assert.equal(await env.refresh(), null, "a persistent native mismatch must not reload on every send");
+    observed.set("thread", 475000);
+    assert.equal(await env.refresh(), null, "compare the effective window, not the configured size");
+    assert.deepEqual(env.calls, []);
+    observed.set("thread", 258400);
+    assert.equal(await env.refresh(), true, "a new mismatch after convergence is eligible for repair");
+  });
+
+  it("retries a native mismatch when the cold resume fails", async () => {
+    const env = runtime();
+    env.state.runtime.effectiveWindows = { selected: 131072 };
+    assert.equal(await env.refresh(), true);
+    env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 65536]]);
+    env.state.fail = "thread/resume";
+    await assert.rejects(env.refresh(), /fixture failure/);
+    env.state.fail = "";
+    assert.equal(await env.refresh(), true);
+  });
+
+  it("applies and resets the override only for the selected local thread and model", async () => {
+    const env = runtime();
+    const session = env.api.session;
+    env.state.runtime.effectiveWindows = { selected: 124518 };
+    assert.equal(session.read().config.model_context_window, 131072);
+    assert.equal(await session.set("thread", "selected", 200000), true);
+    assert.equal(session.read().effectiveWindow, 190000);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 200000);
+    assert.equal(env.calls.at(-1)!.params.config.model_auto_compact_token_limit, 179998);
+    env.view.label = "Other";
+    assert.equal(session.read().config.model_context_window, 65536);
+    await assert.rejects(session.set("thread", "selected", 250000), /已切换/);
+    env.view.label = "Selected";
+    env.view.id = "another";
+    assert.equal(session.read().config.model_context_window, 131072);
+    env.view.id = "thread";
+    env.view.host = "remote";
+    assert.equal(session.read(), null);
+    env.view.host = "local";
+    assert.equal(session.read().config.model_context_window, 200000);
+    env.state.runtime.models.selected.model_context_window = 150000;
+    await session.set("thread", "selected", null);
+    assert.equal(session.read().config.model_context_window, 150000);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 150000);
+  });
+
+  it("stores a running session's override without interrupting its current turn", async () => {
+    const env = runtime();
+    env.state.status = "active";
+    assert.equal(await env.api.session.set("thread", "selected", 250000), null);
+    assert.deepEqual(env.calls.map((call) => call.method), ["thread/read"]);
+    env.state.status = "idle";
+    assert.equal(await env.refresh(), true);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 250000);
   });
 
   it("still checks thread safety when an account alias changes the actual context limits", async () => {

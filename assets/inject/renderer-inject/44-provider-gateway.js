@@ -80,7 +80,8 @@
 
   function codexPlusGatewaySignature(payload) {
     return JSON.stringify([
-      (payload?.pool || []).map((entry) => [entry.id, entry.name, entry.baseUrl, entry.protocol, entry.enabled, entry.models, entry.keys]),
+      (payload?.pool || []).map((entry) => [entry.id, entry.name, entry.baseUrl, entry.protocol, entry.enabled,
+        entry.models, entry.keys, entry.modelWindows, entry.contextWindow]),
       payload?.gateway?.bindings?.codex?.enabled,
     ]);
   }
@@ -410,7 +411,14 @@
           `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="models" ${busy ? "disabled" : ""}>${state.busy === "models" ? "获取中…" : "获取"}</button>`, true),
         testRow,
       ].join(""))}
-      ${managerRow("价格、代理、限速、窗口、模型组", "这些高级项和订阅登录在 Codex++ 管理器里设置。")}
+      ${entry?.models?.length ? `<details class="codex-plus-provider-card"><summary>上下文窗口</summary>
+        ${entry.models.map((model) => {
+          const window = entry.modelWindows?.[model] ?? entry.contextWindow;
+          return codexPlusProviderActionLine(model, window ? codexPlusProviderWindowLabel(window) : "默认",
+            `<button type="button" class="codex-plus-action-button" aria-label="${escapeHtml(`编辑 ${model} 的上下文窗口`)}"
+                 data-codex-gateway-action="edit-window" data-model="${escapeHtml(model)}" ${busy ? "disabled" : ""}>编辑</button>`);
+        }).join("")}</details>` : ""}
+      ${managerRow("价格、代理、限速、模型组", "这些高级项和订阅登录在 Codex++ 管理器里设置。")}
       ${dangerCard}`;
   }
 
@@ -495,6 +503,31 @@
         renderCodexPlusProviderPage();
         break;
       case "save": await codexPlusGatewaySave(); break;
+      case "edit-window": {
+        if (!await codexPlusGatewayConfirmDiscard()) break;
+        const model = actionNode.dataset.model;
+        const current = entry.modelWindows?.[model];
+        const answer = await codexPlusAsk({
+          title: "供应商上下文窗口",
+          message: `${model}\n适用于使用此供应商模型的会话。留空恢复供应商或模型的默认窗口。`,
+          input: { default: current ? String(current) : "", placeholder: "400K" },
+          options: [{ value: "save", label: "保存" }],
+        });
+        if (!answer) break;
+        const window = codexPlusGatewayModel.parseContextWindow(answer.text);
+        if (window !== null && (!Number.isSafeInteger(window) || window < 1000)) {
+          codexPlusGatewaySetStatus("请输入至少 1000 tokens，例如 400K 或 1M。", "error");
+          break;
+        }
+        const savedEntry = codexPlusGatewaySelected();
+        const windows = { ...savedEntry.modelWindows };
+        if (window === null) delete windows[model];
+        else windows[model] = window;
+        const saved = await codexPlusGatewayMutate("save_gateway_provider_windows",
+          { id: entry.id, windows, fallback: savedEntry.contextWindow ?? null });
+        if (saved) await loadCodexModelCatalog(true);
+        break;
+      }
       case "toggle":
         if (entry) await codexPlusGatewayMutate("set_gateway_provider_enabled", { id: entry.id, enabled: entry.enabled === false }, { success: entry.enabled === false ? `已启用「${entry.name}」。` : `已停用「${entry.name}」。` });
         break;

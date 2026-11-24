@@ -421,6 +421,7 @@ fn commit_route_requires_registered_host() {
 fn gateway_commands_are_whitelisted_and_codex_only() {
     assert!(gateway_command_allowed("load_gateway", &json!({})).is_ok());
     assert!(gateway_command_allowed("update_gateway_provider", &json!({ "id": "x" })).is_ok());
+    assert!(gateway_command_allowed("save_gateway_provider_windows", &json!({ "id": "x" })).is_ok());
     // 白名单外：池以外的写能力（模型组、订阅登录、价格）不给页面。
     for command in ["save_gateway_group", "login_gateway_chatgpt", "save_gateway_provider_extras", "load_settings"] {
         assert!(gateway_command_allowed(command, &json!({})).is_err(), "{command}");

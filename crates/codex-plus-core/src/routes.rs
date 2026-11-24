@@ -1472,10 +1472,9 @@ fn model_catalog_fingerprint(settings: &BackendSettings) -> String {
     };
     settings.relay_profiles_enabled.hash(&mut hasher);
     hash_profile(&profile, &mut hasher);
-    if profile.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID {
-        crate::model_catalog::gateway_catalog_revision(&crate::codex_home::default_codex_home_dir())
-            .hash(&mut hasher);
-    }
+    // 多开可能已经接入网关，但 worker 保留着独立的直连供应商快照。
+    crate::model_catalog::gateway_catalog_revision(&crate::codex_home::default_codex_home_dir())
+        .hash(&mut hasher);
     aggregate
         .as_ref()
         .and_then(|value| serde_json::to_string(value).ok())
@@ -1705,7 +1704,8 @@ mod dictation_privacy_tests {
         std::fs::write(home.path().join("config.toml"),
             "model_catalog_json = 'model-catalogs/codex-plus-gateway.json'\n").unwrap();
         let mut settings = BackendSettings::default();
-        settings.active_relay_id = crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
+        settings.active_relay_id = "previous-direct-provider".into();
+        settings.relay_profiles_enabled = false;
         settings.settings_revision = "worker-snapshot".into();
         let status = || backend_status_value(Ok(json!({"status":"ok"})), Ok(settings.clone()), home.path()).unwrap();
         std::fs::write(&path, r#"{"models":[{"slug":"old"}]}"#).unwrap();
@@ -1767,9 +1767,7 @@ fn backend_status_value(
             .as_ref()
             .map(|settings| {
                 // 多开实例的设置独立保存，但 Agent 发布的网关目录仍可更新。
-                if settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
-                    && let Some(catalog_revision) = crate::model_catalog::gateway_catalog_revision(home)
-                {
+                if let Some(catalog_revision) = crate::model_catalog::gateway_catalog_revision(home) {
                     return format!("{}:{catalog_revision:016x}", settings.settings_revision);
                 }
                 settings.settings_revision.clone()

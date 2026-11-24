@@ -62,6 +62,7 @@ pub const GATEWAY_PAGE_COMMANDS: &[&str] = &[
     "load_gateway",
     "create_gateway_provider",
     "update_gateway_provider",
+    "save_gateway_provider_windows",
     "delete_gateway_provider",
     "set_gateway_provider_enabled",
     "reorder_gateway_providers",

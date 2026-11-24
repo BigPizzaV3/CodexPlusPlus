@@ -289,6 +289,24 @@ it("late responses and reinjection cannot overwrite the current configuration", 
   assert.equal(next.api.catalog().model, "a/current");
 });
 
+it("a send preparation joins a newer settings refresh instead of using the old snapshot", async () => {
+  const r = runtime();
+  const initial = r.api.load();
+  r.pending.shift()!.resolve(catalog(["a/original"]));
+  await initial;
+
+  let finished = false;
+  const preparation = r.api.load(true).then((value: any) => { finished = true; return value; });
+  const obsolete = r.pending.shift()!;
+  r.update({ ...r.settings(), modelCatalogFingerprint: "catalog-2" });
+  const newest = r.pending.shift()!;
+  obsolete.resolve(catalog(["a/original"]));
+  await settle();
+  assert.equal(finished, false);
+  newest.resolve(catalog(["a/new"]));
+  assert.equal((await preparation).model, "a/new");
+});
+
 it("failed and missing catalogs retain a successful snapshot with ten-second backoff", async () => {
   for (const status of ["failed", "missing"]) {
     const r = runtime();

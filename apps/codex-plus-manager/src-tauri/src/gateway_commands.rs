@@ -3540,6 +3540,9 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
                 arg(&args, "skipAgents")?,
             )),
             "update_gateway_provider" => to_value(update_gateway_provider(arg(&args, "id")?, arg(&args, "input")?)),
+            "save_gateway_provider_windows" => to_value(save_gateway_provider_windows(
+                arg(&args, "id")?, arg(&args, "windows")?, arg(&args, "fallback")?, None,
+            )),
             "delete_gateway_provider" => to_value(delete_gateway_provider(arg(&args, "id")?)),
             "set_gateway_provider_enabled" => {
                 to_value(set_gateway_provider_enabled(arg(&args, "id")?, arg(&args, "enabled")?))

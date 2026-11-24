@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 3422
+      "lines": 3428
     },
     {
       "name": "41-extension-detail.js",
@@ -78,7 +78,7 @@
     {
       "name": "44-provider-gateway.js",
       "description": "「供应商」页的网关页签：在 Codex 里管理网关供应商池、接入 / 断开网关（经 /providers/gateway 走管理器的网关命令）",
-      "lines": 547
+      "lines": 580
     },
     {
       "name": "45-remote-control-page.js",
@@ -118,7 +118,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1769
+      "lines": 1872
     },
     {
       "name": "71-model-picker-groups.js",
@@ -178,12 +178,12 @@
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1613
+      "lines": 1616
     },
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 1134
+      "lines": 1137
     },
     {
       "name": "92-extension-host.js",

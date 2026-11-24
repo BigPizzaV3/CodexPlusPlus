@@ -116,6 +116,32 @@ test("heartbeat retries settings revisions after failed or overlapping reads", a
   await settle();
 });
 
+test("visible managed context checks revisions faster than idle and hidden pages", () => {
+  const source = fragment("40-backend-settings.js");
+  let checks = 0;
+  let tick = () => {};
+  const context = vm.createContext({
+    window: { __codexPlusBackendGeneration: 1 }, codexPlusBackendGeneration: 1,
+    document: { hidden: false }, codexModelCatalog: { runtimeContext: null },
+    checkBackendStatus: () => { checks += 1; },
+    setInterval: (fn: () => void, milliseconds: number) => { assert.equal(milliseconds, 1000); tick = fn; },
+  });
+  vm.runInContext(source.slice(source.indexOf("  function scheduleBackendHeartbeat("),
+    source.indexOf("  function userScriptStatusLabel(")), context);
+  context.scheduleBackendHeartbeat();
+  assert.equal(checks, 1);
+  for (let i = 0; i < 4; i++) tick();
+  assert.equal(checks, 1);
+  tick();
+  assert.equal(checks, 2);
+  context.codexModelCatalog.runtimeContext = { status: "ok" };
+  tick();
+  assert.equal(checks, 3);
+  context.document.hidden = true;
+  tick();
+  assert.equal(checks, 3);
+});
+
 test("optimistic backend writes apply to the page before their response arrives", async () => {
   const source = fragment("40-backend-settings.js");
   const applied: unknown[] = [];

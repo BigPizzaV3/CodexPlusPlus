@@ -351,7 +351,13 @@
         window.__codexPlusBackendHeartbeatGeneration === codexPlusBackendGeneration) return;
     if (window.__codexPlusBackendHeartbeat) clearInterval(window.__codexPlusBackendHeartbeat);
     window.__codexPlusBackendHeartbeatGeneration = codexPlusBackendGeneration;
-    window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 5000);
+    let ticks = 0;
+    window.__codexPlusBackendHeartbeat = setInterval(() => {
+      ticks += 1;
+      if (ticks < 5 && (document.hidden || codexModelCatalog.runtimeContext?.status !== "ok")) return;
+      ticks = 0;
+      void checkBackendStatus();
+    }, 1000);
     checkBackendStatus();
   }
 

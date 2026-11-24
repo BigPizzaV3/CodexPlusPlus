@@ -109,6 +109,21 @@
     return typeof codexPerModelContextEnabled === "function" && codexPerModelContextEnabled();
   }
 
+  function codexPlusRpcContextSendRequest(client, signal) {
+    return async (method, params, options) => {
+      signal?.throwIfAborted();
+      if (method === "thread/unsubscribe") {
+        await client.unsubscribeInactiveConversation(params.threadId);
+        signal?.throwIfAborted();
+        // 宿主方法会内部记录并吞掉失败；原始请求幂等，确保原生错误继续传回。
+      }
+      const result = method === "thread/resume" && params.config
+        ? await client.resumeThread(params) : await client.sendRequest(method, params, options);
+      signal?.throwIfAborted();
+      return result;
+    };
+  }
+
   function codexPlusRpcReceiverHost(port, expr) {
     let receivers = codexPlusRpcHostReceivers.get(port);
     if (expr[2][0] === "subscribe") {
@@ -674,19 +689,7 @@
             (method, params, options) => client.sendRequest(method, params, options), client, signal);
         }
         if (!refreshContext) return nextFrame;
-        const sendRequest = async (method, params, options) => {
-          signal?.throwIfAborted();
-          if (method === "thread/unsubscribe") {
-            await client.unsubscribeInactiveConversation(params.threadId);
-            signal?.throwIfAborted();
-            // 宿主方法会内部记录并吞掉失败；原始请求幂等，确保原生错误传回当前发送。
-          }
-          const result = method === "thread/resume" && params.config
-            ? await client.resumeThread(params) : await client.sendRequest(method, params, options);
-          signal?.throwIfAborted();
-          return result;
-        };
-        await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, sendRequest,
+        await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, codexPlusRpcContextSendRequest(client, signal),
           "turn/start", decoded.start.request);
         signal?.throwIfAborted();
         return nextFrame;
