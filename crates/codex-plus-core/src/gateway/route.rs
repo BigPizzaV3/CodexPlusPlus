@@ -365,7 +365,21 @@ pub fn codex_binding_models(gateway: &GatewaySettings, binding: &AgentBinding) -
 /// 绑定里自己声明过这个裸名时它本来就公开列着，不算别名。
 pub fn codex_pinned_default_alias(gateway: &GatewaySettings, binding: &AgentBinding) -> Option<String> {
     let relays = binding_pool_relays(gateway, binding);
-    let (relay, upstream) = qualified_in(&relays, &binding_default_model(gateway, binding))?;
+    let default = binding_default_model(gateway, binding);
+    // 上游自己同时公布 `<本家 id>/模型` 与裸名两份写法时（#3268），整串已被当模型名声明，
+    // [`qualified_in`] 会拒绝：前缀正是声明它的那家、那家也声明了裸名时，仍按固定默认别名处理。
+    let (relay, upstream) = match qualified_in(&relays, &default) {
+        Some(found) => found,
+        None => {
+            let (prefix, rest) = default.split_once('/')?;
+            let relay = relays
+                .iter()
+                .copied()
+                .find(|relay| relay.id.eq_ignore_ascii_case(prefix.trim()))?;
+            let upstream = rest.trim();
+            (relay, upstream.to_string())
+        }
+    };
     let model = chat_models(relay)
         .into_iter()
         .find(|model| model.eq_ignore_ascii_case(&upstream))?;
