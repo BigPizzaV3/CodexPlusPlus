@@ -440,6 +440,7 @@ mod tests {
             attempt_details: Vec::new(),
             state: None,
             first_token_ms: None,
+            upstream_started_at_ms: None,
             estimated_output_tokens: None,
             phase: None,
             error: None,

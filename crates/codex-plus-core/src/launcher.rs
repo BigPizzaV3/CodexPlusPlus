@@ -2875,6 +2875,7 @@ impl ProxyRequestLog {
                 attempt_details: Vec::new(),
                 state: Some("running".to_string()),
                 first_token_ms: None,
+                upstream_started_at_ms: None,
                 estimated_output_tokens: None,
                 phase: Some("requesting".to_string()),
                 error: None,
@@ -2921,6 +2922,7 @@ impl ProxyRequestLog {
         self.entry.auto_retries = trace.auto_retries;
         self.entry.retry_reasons = trace.retry_reasons.clone();
         self.entry.attempt_details = trace.attempt_details.clone();
+        self.entry.upstream_started_at_ms = trace.attempt_started_at_ms;
         if let Some(first_output_at_ms) = trace.first_output_at_ms {
             self.entry.first_token_ms =
                 Some(first_output_at_ms.saturating_sub(self.entry.started_at_ms));
@@ -2956,6 +2958,7 @@ impl ProxyRequestLog {
             self.entry.auto_retries = trace.auto_retries;
             self.entry.retry_reasons = trace.retry_reasons.clone();
             self.entry.attempt_details = trace.attempt_details.clone();
+            self.entry.upstream_started_at_ms = trace.attempt_started_at_ms;
             if let Some(first_output_at_ms) = trace.first_output_at_ms {
                 self.entry.first_token_ms =
                     Some(first_output_at_ms.saturating_sub(self.entry.started_at_ms));

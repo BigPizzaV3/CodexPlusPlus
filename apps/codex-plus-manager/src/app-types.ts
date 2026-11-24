@@ -450,6 +450,8 @@ export type RequestLogEntry = {
   state?: string | null;
   /** 首字耗时（毫秒）。 */
   firstTokenMs?: number | null;
+  /** 成功那次上游请求真正发出的 unix 毫秒时间：转发前排队/重试可据此单独统计（#3267）。旧日志没有该字段。 */
+  upstreamStartedAtMs?: number | null;
   /** 运行中按流式增量粗估的输出 token。 */
   estimatedOutputTokens?: number | null;
   error?: string | null;
