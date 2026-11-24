@@ -478,7 +478,7 @@ Codex++ 自己在发请求前也会做几件事（本地压缩、第三方推理
   `builtin:exec-adapt`（exec 工具适配）、`builtin:relay-rotation`（轮换失败后自动换下一个供应商；关掉后只用选中的那一个，
   配合 route 段自己决定顺序）、`builtin:gateway-failover`（网关模式里一个候选失败后换下一个；关掉后只试排第一的那个）。
   本地代理（中转与网关两种模式都经过）里还能关：
-  - `builtin:auto-retry`：「请求避震」。关掉后上游错误原样交回，不再退避重发；要不要重试交给 `gateway.error`。
+  - `builtin:auto-retry`：已废弃，不再有效果。它对应的「请求避震」已移除，上游错误本来就原样交回、不再退避重发（要不要重试交给 `gateway.error`）；这个 id 仍被接受，只为已发布的拓展照常加载，新拓展不用再写。
   - `builtin:foreign-reasoning`：别家签发的加密推理内容的剥离与拒收后重发。关掉后加密项原样发出，被拒也不重发。
   - `builtin:unlisted-model-mapping`：目录外模型名映射到默认模型。关掉后模型名原样转发，映射在 request 段自己做。
 

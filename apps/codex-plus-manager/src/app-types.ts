@@ -140,15 +140,6 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppDisableWorkView: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppActivityOverlayRight: boolean;
-  /** 协议代理内部自动重试（与 Rust `protocol_proxy_auto_retry` 对应）。 */
-  protocolProxyAutoRetry: boolean;
-  protocolProxyAutoRetryMaxAttempts: number;
-  protocolProxyAutoRetryIntervalSeconds: number;
-  /** 命中这些上游 HTTP 状态码时由代理退避重发；空数组表示不重试。与 Rust `protocol_proxy_auto_retry_status_codes` 对应。 */
-  protocolProxyAutoRetryStatusCodes: number[];
-  protocolProxyAutoRetryMode: "streaming" | "streaming-legacy" | "buffered";
-  /** 流式避震下首段可见输出后到提交的延迟（毫秒）；0 表示一出现可见输出立即提交。与 Rust `protocol_proxy_auto_retry_commit_delay_ms` 对应。 */
-  protocolProxyAutoRetryCommitDelayMs: number;
   /** 把不在当前供应商模型列表里的请求模型（Codex 后台任务的 gpt-* / codex-auto-review）改写为该供应商默认模型。与 Rust `protocol_proxy_map_unlisted_models` 对应。 */
   protocolProxyMapUnlistedModels: boolean;
   /** 本地协议代理单次请求体上限（MiB，32~512，默认 128）。与 Rust `helper_max_request_body_mib` 对应。 */

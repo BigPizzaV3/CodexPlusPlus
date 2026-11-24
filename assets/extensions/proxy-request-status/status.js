@@ -1,9 +1,9 @@
   /**
-   * 输入框上方的「请求避震」状态条：直接显示当前代理请求走到了哪一步。
+   * 输入框上方的请求状态条：直接显示当前代理请求走到了哪一步。
    *
    * 状态由代理侧 `/proxy-status` 路由提供（POST），阶段包括：
    *   requesting（正在请求）、waiting（等待上游返回）、
-   *   retrying（正在重试 ×N）、generating（正在生成，可带输出 token 估算）。
+   *   generating（正在生成，可带输出 token 估算）。
    *
    * 节点放进公开插槽 composer.above 给的容器（输入框上方）；没有插槽容器时挂在输入框之前，
    * 空闲时 display:none，不占位；带 data-codex-plus-ext 让扫描调度器排除自喂循环。
@@ -98,20 +98,16 @@
       ? {
           requesting: "正在请求",
           waiting: "等待上游返回",
-          retrying: (count) => `正在重试 ×${count}`,
           generating: "正在生成",
           fallback: "请求进行中",
-          lastError: "上次",
-          aria: "请求避震状态",
+          aria: "请求状态",
         }
       : {
           requesting: "Requesting",
           waiting: "Waiting for upstream",
-          retrying: (count) => `Retrying ×${count}`,
           generating: "Generating",
           fallback: "Request in progress",
-          lastError: "Last",
-          aria: "Request shock absorption status",
+          aria: "Request status",
         };
   }
 
@@ -125,12 +121,10 @@
       #${codexPlusProxyStatusId}[data-hidden="true"]{display:none}
       #${codexPlusProxyStatusId}[data-idle="true"]{visibility:hidden}
       #${codexPlusProxyStatusId} .codex-plus-proxy-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:#f59e0b;box-shadow:0 0 0 0 rgba(245,158,11,.35);animation:codex-plus-proxy-pulse 1.4s ease-out infinite}
-      #${codexPlusProxyStatusId}[data-phase="retrying"] .codex-plus-proxy-dot{background:#f97316}
       #${codexPlusProxyStatusId}[data-phase="generating"] .codex-plus-proxy-dot{background:#22c55e}
       #${codexPlusProxyStatusId}[data-phase="waiting"] .codex-plus-proxy-dot{background:#60a5fa}
       #${codexPlusProxyStatusId} .codex-plus-proxy-phase{font-weight:500;white-space:nowrap}
       #${codexPlusProxyStatusId} .codex-plus-proxy-meta{opacity:.65;white-space:nowrap;font-variant-numeric:tabular-nums}
-      #${codexPlusProxyStatusId} .codex-plus-proxy-error{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#f87171;opacity:.85}
       @keyframes codex-plus-proxy-pulse{0%{box-shadow:0 0 0 0 rgba(245,158,11,.35)}70%{box-shadow:0 0 0 5px rgba(245,158,11,0)}100%{box-shadow:0 0 0 0 rgba(245,158,11,0)}}
     `;
     document.head?.appendChild(style);
@@ -232,20 +226,12 @@
     codexPlusProxyStatusState.lastShownAtMs = codexPlusProxyStatusState.nowMs;
     const text = codexPlusProxyStatusText();
     const phase = String(request.phase || "");
-    const retries = Number(request.autoRetries) || 0;
+    // 换了聚合成员、或改写请求后重发（#2777 / #2917）时 attempts 会大于 1。
     const attempts = Number(request.attempts) || 0;
     let label = text.fallback;
     if (phase === "requesting") label = text.requesting;
     else if (phase === "waiting") label = text.waiting;
-    else if (phase === "retrying") label = text.retrying(Math.max(1, retries));
     else if (phase === "generating") label = text.generating;
-    else if (retries > 0) label = text.retrying(retries);
-
-    const attemptDetails = Array.isArray(request.attemptDetails) ? request.attemptDetails : [];
-    const lastAttempt = attemptDetails.length ? attemptDetails[attemptDetails.length - 1] : null;
-    const lastErrorCode = String(lastAttempt?.code || "").trim();
-    const lastErrorMessage = String(lastAttempt?.message || "").trim();
-    const lastError = lastErrorCode || lastErrorMessage.slice(0, 80);
 
     const meta = [];
     if (request.model) meta.push(String(request.model));
@@ -257,7 +243,7 @@
     if (visibleRequests.length > 1) meta.push(`+${visibleRequests.length - 1}`);
 
     // 内容和上一轮一样就不重建（倒计时按秒变，500ms 一跳时有一半是重复的）。
-    const signature = JSON.stringify([phase, label, meta, lastError, lastErrorMessage]);
+    const signature = JSON.stringify([phase, label, meta]);
     if (signature === codexPlusProxyStatusState.lastSignature && node.dataset.hidden === "false" && !node.dataset.idle && node.isConnected) return;
     codexPlusProxyStatusState.lastSignature = signature;
     node.dataset.hidden = "false";
@@ -276,13 +262,6 @@
       metaNode.className = "codex-plus-proxy-meta";
       metaNode.textContent = meta.join(" · ");
       node.appendChild(metaNode);
-    }
-    if (lastError) {
-      const errorNode = document.createElement("span");
-      errorNode.className = "codex-plus-proxy-error";
-      errorNode.textContent = `${text.lastError} ${lastError}`;
-      errorNode.title = lastErrorMessage || lastErrorCode;
-      node.appendChild(errorNode);
     }
   }
 

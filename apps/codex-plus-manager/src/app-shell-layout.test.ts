@@ -382,22 +382,21 @@ test("导入供应商弹窗：只有文字那块占满宽度，头像（也是 s
   assert.match(css, /\.gw-import-item > \.gw-avatar \{[^}]*flex: none/);
 });
 
-test("代理设置按归属拆开：本地服务与请求避震移到网关设置（新旧共用），旧版页只留旧版专用的两项", () => {
+test("代理设置按归属拆开：本地服务移到网关设置（新旧共用），旧版页只留旧版专用的两项", () => {
   // 旧版代理设置不再是单独的路由，旧 id 打开「连接与供应商」并展开「高级」。
   assert.doesNotMatch(text, /id: "relayEnvironment", get label/);
   const shared = functionSource("SharedServiceSettings");
-  // 两节：本地服务、请求避震；标题悬停说明新旧共用。
+  // 只有本地服务一节；标题悬停说明新旧共用。
   assert.match(shared, /t\("本地服务"\)/);
   assert.match(shared, /t\("本地服务和旧版本地协议代理共用这些设置"\)/);
   assert.match(shared, /<CxSection /);
-  assert.match(shared, /protocolProxyAutoRetry/);
   assert.match(shared, /helperMaxRequestBodyMib/);
   const legacy = functionSource("ProxySettingsScreen");
-  assert.doesNotMatch(legacy, /helperMaxRequestBodyMib|protocolProxyAutoRetryMaxAttempts/);
+  assert.doesNotMatch(legacy, /helperMaxRequestBodyMib/);
   assert.match(legacy, /const takenOverByGateway = form\.activeRelayId === CODEX_GATEWAY_RELAY_ID;/);
   assert.match(legacy, /t\("目录外模型映射（旧版）"\)/);
   // 跳去网关设置的那一行没用，删掉；环境检测全部正常时只占一行。
-  assert.doesNotMatch(legacy, /本地服务与请求避震|onOpenGatewaySettings/);
+  assert.doesNotMatch(legacy, /onOpenGatewaySettings/);
   const env = functionSource("RelayEnvironmentScreen");
   assert.match(env, /const failed = result \? checks\.filter\(\(check\) => !check\.passed\) : \[\];/);
   assert.match(env, /\{failed\.map\(\(check\) => \(/);

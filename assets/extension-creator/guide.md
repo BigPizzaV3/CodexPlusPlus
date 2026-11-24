@@ -258,11 +258,11 @@ export default (error) => (error.status === 429 && error.attempt < 2 ? { retry: 
 
 拓展要自己接管某一步时，在 `gateway` 参数里写 `"replaces": ["builtin:…"]`，拓展启用时关掉那个内置环节、停用后恢复：
 
-- 两种模式都经过：`builtin:auto-retry`（请求避震，关掉后上游错误原样交回，重试交给 `gateway.error`）、
-  `builtin:foreign-reasoning`（别家加密推理内容的处理）、`builtin:unlisted-model-mapping`（目录外模型名映射）、
+- 两种模式都经过：`builtin:foreign-reasoning`（别家加密推理内容的处理）、`builtin:unlisted-model-mapping`（目录外模型名映射）、
   `builtin:local-compaction`（本地压缩）、`builtin:reasoning-collapse`、`builtin:exec-adapt`、`builtin:relay-rotation`（失败换下一个供应商）。
 - 网关模式：`builtin:gateway-failover`（候选失败换下一个）、`builtin:key-cooldown`（429 后 Key 冷却）、
   `builtin:key-breaker`（供应商熔断）、`builtin:local-rate-limit`（Key 的 RPM / 并发限速）、`builtin:title-model`（起名请求改发起名模型）。
+- `builtin:auto-retry` 已废弃：它对应的「请求避震」已移除，写了也不再有效果，只为已发布的拓展照常加载而保留；新拓展不要写。
 - 关掉冷却 / 熔断后，在冷却的 Key 照常当候选（排在可用的后面），要避开谁在 `route` 段的中间件里自己筛。
 - 也能关请求转换 `builtin:request-conversion`（upstream 段拿到 Responses 形状的请求体，自己转成上游协议；响应仍由 Codex++ 转回）、鉴权头 `builtin:auth-headers`（只有声明它的拓展在 upstream 段拿到 `context.credential.apiKey`，自己往 `context.headers` 写鉴权头）、官方整理 `builtin:official-shaping`、请求日志与用量 `builtin:request-log`（关掉后不记日志、不计用量）。
 - 只在用户明确要接管这一步时才关，并告诉用户关掉了什么；关掉鉴权头意味着拓展脚本会拿到 Key，要提醒用户。
