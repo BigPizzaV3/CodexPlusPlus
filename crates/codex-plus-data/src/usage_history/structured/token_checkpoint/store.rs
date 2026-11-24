@@ -1,6 +1,7 @@
 use super::{Checkpoint, FileState, Observation, UsageEvent};
 use anyhow::{Result, ensure};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use std::collections::{HashSet, VecDeque};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
@@ -240,6 +241,29 @@ impl Store {
             ))
         })
         .transpose()
+    }
+
+    pub(super) fn missing_sources(
+        &self,
+        discovered: &[PathBuf],
+        limit: usize,
+    ) -> Result<(VecDeque<(PathBuf, i64)>, bool)> {
+        let present: HashSet<_> = discovered.iter().map(PathBuf::as_path).collect();
+        let mut statement = self
+            .db
+            .prepare("SELECT source, revision FROM token_sources ORDER BY id")?;
+        let mut rows = statement.query([])?;
+        let mut missing = VecDeque::new();
+        while let Some(row) = rows.next()? {
+            let source = decode_path(row.get(0)?)?;
+            if !present.contains(source.as_path()) {
+                if missing.len() == limit {
+                    return Ok((missing, true));
+                }
+                missing.push_back((source, row.get(1)?));
+            }
+        }
+        Ok((missing, false))
     }
 
     pub(super) fn observations(&self, source: &Path) -> Result<Vec<UsageEvent>> {

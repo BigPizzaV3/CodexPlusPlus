@@ -456,6 +456,33 @@ impl Store {
     }
 
     pub(in super::super) fn publish(&mut self, prepared: Prepared<'_>) -> Result<i64> {
+        self.publish_source(prepared, false)
+    }
+
+    pub(in super::super) fn retire_source(
+        &mut self,
+        source: &Path,
+        previous_revision: i64,
+        cutoff: NaiveDate,
+        provider_names: BTreeMap<String, String>,
+        input_limit: usize,
+    ) -> Result<i64> {
+        let empty = FileState::default();
+        let prepared = self.prepare(
+            SourceUpdate {
+                source,
+                state: &empty,
+                previous_revision: Some(previous_revision),
+                replace: true,
+            },
+            cutoff,
+            provider_names,
+            input_limit,
+        )?;
+        self.publish_source(prepared, true)
+    }
+
+    fn publish_source(&mut self, prepared: Prepared<'_>, retire: bool) -> Result<i64> {
         let tx = self
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -520,6 +547,12 @@ impl Store {
             update.state,
             update.replace,
         )?;
+        if retire {
+            let path = encode_path(update.source);
+            tx.execute("DELETE FROM token_linear_sources WHERE source_id = (SELECT id FROM token_sources WHERE source = ?1)", [&path])?;
+            tx.execute("DELETE FROM token_source_links WHERE source_id = (SELECT id FROM token_sources WHERE source = ?1)", [&path])?;
+            tx.execute("DELETE FROM token_sources WHERE source = ?1", [&path])?;
+        }
         let cutoff = prepared.cutoff.to_string();
         tx.execute("UPDATE token_revision SET precise_from = ?1", [&cutoff])?;
         {
@@ -543,7 +576,7 @@ impl Store {
                     invalidate.execute([format!("s:{session}")])?;
                 }
             }
-            if prepared.linear {
+            if prepared.linear && !retire {
                 tx.execute(
                     "INSERT OR REPLACE INTO token_linear_sources
                      SELECT id, ?2, ?3 FROM token_sources WHERE source = ?1",

@@ -10,6 +10,8 @@ const RECLAIM_BATCH: u32 = 256;
 #[derive(Default)]
 pub(super) struct Scan {
     remaining: VecDeque<PathBuf>,
+    missing: VecDeque<(PathBuf, i64)>,
+    more_missing: bool,
     active: Option<SourceReader>,
     deferred: Option<SourceReader>,
     rescan: bool,
@@ -56,15 +58,29 @@ impl Scan {
         reconciliation_limit: usize,
     ) -> Report {
         let maintenance_error = self.maintain(store, cutoff).err();
-        if self.active.is_none() && self.remaining.is_empty() {
+        let mut errors = Vec::new();
+        if self.active.is_none() && self.remaining.is_empty() && self.missing.is_empty() {
             self.issues = 0;
-            self.remaining = discover(home, !self.rescan, &mut self.issues).into();
+            self.more_missing = false;
+            let paths = discover(home, !self.rescan, &mut self.issues);
+            if self.issues == 0 {
+                match store.missing_sources(&paths, SOURCES_PER_ROUND) {
+                    Ok((missing, more)) => {
+                        self.missing = missing;
+                        self.more_missing = more;
+                    }
+                    Err(error) => {
+                        self.issues += 1;
+                        errors.push((home.to_owned(), error));
+                    }
+                }
+            }
+            self.remaining = paths.into();
             self.rescan = true;
             if let Some(reader) = &self.deferred {
                 self.remaining.retain(|source| source != &reader.source);
             }
         }
-        let mut errors = Vec::new();
         let mut budget = Budget::new(std::iter::empty());
         let mut retry = if self.active.is_none() {
             self.deferred.take()
@@ -76,7 +92,35 @@ impl Scan {
                 Some(source) => source,
                 None => {
                     let Some(path) = self.remaining.pop_front() else {
-                        break;
+                        // 先摄取完整的新来源，再处理旧路径，避免归档移动产生用量空窗。
+                        if self.issues != 0 || self.deferred.is_some() {
+                            self.missing.clear();
+                            self.more_missing = false;
+                            break;
+                        }
+                        let Some((source, revision)) = self.missing.pop_front() else {
+                            break;
+                        };
+                        match std::fs::symlink_metadata(&source) {
+                            Ok(_) => {}
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                if let Err(error) = store.retire_source(
+                                    &source,
+                                    revision,
+                                    cutoff,
+                                    provider_names.clone(),
+                                    reconciliation_limit,
+                                ) {
+                                    self.issues += 1;
+                                    errors.push((source, error));
+                                }
+                            }
+                            Err(error) => {
+                                self.issues += 1;
+                                errors.push((source, error.into()));
+                            }
+                        }
+                        continue;
                     };
                     match SourceReader::restore(store, &path) {
                         Ok(reader) => reader,
@@ -118,6 +162,8 @@ impl Scan {
             }
         }
         let pending_sources = self.remaining.len()
+            + self.missing.len()
+            + usize::from(self.more_missing)
             + usize::from(self.active.is_some())
             + usize::from(self.deferred.is_some());
         Report {
