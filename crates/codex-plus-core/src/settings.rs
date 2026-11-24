@@ -1327,6 +1327,10 @@ pub struct BackendSettings {
     /// 本机用量历史默认关闭，仅显式开启后允许只读查询。
     #[serde(rename = "usageHistoryEnabled", default)]
     pub usage_history_enabled: bool,
+    #[serde(rename = "usageHistoryStorageMiB", default = "default_usage_history_storage_mib")]
+    pub usage_history_storage_mib: u32,
+    #[serde(rename = "usageHistoryPreciseDays", default = "default_usage_history_precise_days")]
+    pub usage_history_precise_days: u64,
     // 默认开启：输入框上方的请求状态条（#2824），纯展示层；关掉后注入层停止轮询 /proxy-status。
     #[serde(rename = "codexAppProxyRequestStatus", default = "default_true")]
     pub codex_app_proxy_request_status: bool,
@@ -1704,6 +1708,8 @@ impl Default for BackendSettings {
             codex_app_markdown_export: true,
             codex_app_usage_status_line: true,
             usage_history_enabled: false,
+            usage_history_storage_mib: default_usage_history_storage_mib(),
+            usage_history_precise_days: default_usage_history_precise_days(),
             codex_app_proxy_request_status: true,
             claude_desktop_local: ClaudeLocalSettings::default(),
             claude_app_auto_takeover: false,
@@ -2296,6 +2302,16 @@ pub const DEFAULT_HELPER_MAX_REQUEST_BODY_MIB: u32 = 128;
 pub const MIN_HELPER_MAX_REQUEST_BODY_MIB: u32 = 32;
 /// 请求体上限上限：helper 会整段缓冲请求体，再高内存开销不可控。
 pub const MAX_HELPER_MAX_REQUEST_BODY_MIB: u32 = 512;
+
+pub const fn default_usage_history_precise_days() -> u64 {
+    60
+}
+
+pub const USAGE_HISTORY_MAX_PRECISE_DAYS: u64 = 365;
+
+pub fn default_usage_history_storage_mib() -> u32 {
+    2048
+}
 
 pub fn default_helper_max_request_body_mib() -> u32 {
     DEFAULT_HELPER_MAX_REQUEST_BODY_MIB
@@ -3104,6 +3120,16 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "codexAppMarkdownExport");
     merge_bool_setting(target, source, "codexAppUsageStatusLine");
     merge_bool_setting(target, source, "usageHistoryEnabled");
+    if let Some(value) = source.get("usageHistoryStorageMiB").and_then(Value::as_u64)
+        && value > 0 && value <= u32::MAX as u64
+    {
+        target.insert("usageHistoryStorageMiB".to_owned(), Value::from(value));
+    }
+    if let Some(value) = source.get("usageHistoryPreciseDays").and_then(Value::as_u64)
+        && (1..=USAGE_HISTORY_MAX_PRECISE_DAYS).contains(&value)
+    {
+        target.insert("usageHistoryPreciseDays".to_owned(), Value::from(value));
+    }
     merge_bool_setting(target, source, "codexAppProxyRequestStatus");
     merge_bool_setting(target, source, "codexAppPasteFix");
     merge_bool_setting(target, source, "codexAppPromptArgs");
@@ -4140,6 +4166,32 @@ fn temp_path_for(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn usage_storage_budget_defaults_and_updates_preserve_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, br#"{"usageHistoryEnabled":true}"#).unwrap();
+        let store = SettingsStore::new(path);
+        assert_eq!(store.load().unwrap().usage_history_storage_mib, 2048);
+        assert_eq!(store.load().unwrap().usage_history_precise_days, 60);
+        store.update(json!({"usageHistoryStorageMiB": 3072, "usageHistoryPreciseDays": 30})).unwrap();
+        let saved = store.load().unwrap();
+        assert_eq!(saved.usage_history_storage_mib, 3072);
+        assert_eq!(saved.usage_history_precise_days, 30);
+        assert!(saved.usage_history_enabled);
+        for invalid in [json!(0), json!(-1), json!(1.5), json!(4294967296u64), json!("2048")] {
+            store.update(json!({"usageHistoryStorageMiB":invalid})).unwrap();
+            assert_eq!(store.load().unwrap().usage_history_storage_mib, 3072);
+        }
+        for invalid in [json!(0), json!(-1), json!(1.5), json!(366), json!("60")] {
+            store.update(json!({"usageHistoryPreciseDays":invalid})).unwrap();
+            assert_eq!(store.load().unwrap().usage_history_precise_days, 30);
+        }
+        store.save(&saved).unwrap();
+        assert_eq!(store.load().unwrap().usage_history_storage_mib, 3072);
+        assert_eq!(store.load().unwrap().usage_history_precise_days, 30);
+    }
 
     #[test]
     fn settings_weixin_outbound_revision_ignores_defaults_and_unrelated_saves() {
