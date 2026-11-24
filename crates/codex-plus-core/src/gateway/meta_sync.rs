@@ -417,6 +417,8 @@ fn with_provider<T>(
         else {
             bail!("供应商不存在：{id}");
         };
+        // 引用 Codex 直连供应商的：窗口、思考等级归直连供应商，在 Codex「连接与供应商」里改。
+        crate::gateway::codex_link::ensure_unlinked(provider)?;
         change(provider)
     })
 }

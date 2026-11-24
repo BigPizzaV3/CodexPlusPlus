@@ -136,6 +136,8 @@ fn providers(relays: Vec<RelayProfile>) -> Vec<GatewayProvider> {
     relays
         .into_iter()
         .map(|relay| GatewayProvider {
+            linked_codex_relay: None,
+            owner: String::new(),
             enabled: true,
             source: String::new(),
             price: None,

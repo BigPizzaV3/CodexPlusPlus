@@ -141,6 +141,8 @@ async fn mock_upstream(responder: Responder) -> (String, Arc<Mutex<Vec<String>>>
 
 fn provider(id: &str, base_url: &str, keys: &[&str]) -> GatewayProvider {
     GatewayProvider {
+        linked_codex_relay: None,
+        owner: String::new(),
         enabled: true,
         source: String::new(),
         price: None,

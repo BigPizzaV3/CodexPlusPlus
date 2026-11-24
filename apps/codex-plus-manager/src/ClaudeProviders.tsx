@@ -21,6 +21,8 @@ import {
   type GroupMode,
 } from "./gateway-model";
 import { t, tf } from "./i18n";
+import { entriesForPage } from "./provider-owner";
+import { OwnerBadge, ShowOtherAgentsToggle, useShowOtherAgents } from "./ProviderOwner";
 
 /** Claude Desktop 在网关里的绑定：3p 模式直接用它，完整功能模式也按它的模型和「挑选」列模型。 */
 const AGENT: GatewayAgentId = "claude-desktop";
@@ -62,7 +64,10 @@ const viewOf = (protocol: string): ClaudeProviderView => (protocol === "anthropi
  *
  * 版式和 Codex 的「连接与供应商」同一副骨架，两页对照着看得懂：
  * 「导入」「添加供应商」在标题行右侧（添加是主按钮）→ 顶部一张卡说这个 Agent 怎么接的（Codex 是登录，这里是两个默认模型）
- * → 「供应商 N」分区里只列供应商，N 是总数。
+ * → 「供应商 N」分区里只列供应商，N 是列出来的数目。
+ *
+ * Codex 的直连供应商默认以引用的方式在共享供应商里（标「来自 Codex」，地址、Key、模型在 Codex 那边改）；
+ * 不想看到它们，取消勾选「显示其他 Agent 的供应商」（按页记住）。
  */
 export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: Notify; onManage?: () => void; onManageGroups?: () => void }) {
   const payload = useGatewayPayload(10_000);
@@ -75,7 +80,10 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
   const codeBinding = payload?.gateway.bindings[CODE];
   const exclude = binding?.poolExclude ?? [];
   const codeExclude = codeBinding?.poolExclude ?? [];
-  const pool = payload?.pool ?? [];
+  const allPool = payload?.pool ?? [];
+  // 「显示其他 Agent 的供应商」：不勾时不列 Codex 的直连供应商（开关不变，只是不列）。
+  const [showOtherAgents, setShowOtherAgents] = useShowOtherAgents("claude");
+  const pool = entriesForPage(allPool, "claude", showOtherAgents);
   // 能给 Claude 用的组：打开着、有成员的（和后端列进模型列表的条件一致，成员全被排除的照样列出，选了也会报错提示）。
   const groups = (payload?.groups ?? []).filter((group) => group.members.length > 0);
   const viewCount = (view: ClaudeProviderView) => view === "groups" ? groups.length : pool.filter((entry) => viewOf(entry.protocol) === view).length;
@@ -152,13 +160,20 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
       </CxSection>
       <CxSection
         // Key、额度、路由组在设置的「本地服务 → 共享供应商」里管，「返回」回到这一页。
-        aside={onManage ? <button className="cx-secondary" onClick={onManage} type="button">{t("管理共享供应商")}</button> : null}
+        aside={(
+          <>
+            {allPool.length ? (
+              <ShowOtherAgentsToggle checked={showOtherAgents} onChange={setShowOtherAgents} title={t("Codex 的直连供应商默认共享给 Claude；不勾时这里不列它们")} />
+            ) : null}
+            {onManage ? <button className="cx-secondary" onClick={onManage} type="button">{t("管理共享供应商")}</button> : null}
+          </>
+        )}
         className="claude-providers"
-        // 和 Codex 页一样是总数：下面列了几家就是几。
+        // 和 Codex 页一样：下面列了几家就是几（不列的其他 Agent 的供应商不算）。
         count={pool.length || undefined}
         title={t("供应商")}
       >
-        {payload && pool.length ? (
+        {payload && allPool.length ? (
           <CxFilters
             items={(["native", "converted", "groups"] as ClaudeProviderView[]).map((id) => ({
               id,
@@ -177,7 +192,7 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
         <CxCard>
           {!payload ? (
             <CxLoading label={t("正在读取供应商…")} />
-          ) : !pool.length ? (
+          ) : !allPool.length ? (
             <CxEmpty detail={t("DeepSeek、Kimi、智谱这些 OpenAI 协议的也能用，本地服务会自动转换。")} title={t("还没有供应商")}>
               <button className="cx-secondary" onClick={() => setAdding("catalog")} type="button"><Plus />{t("添加供应商")}</button>
               <button className="cx-secondary" onClick={() => setAdding("import")} type="button"><Download />{t("从 CC Switch / ClaudeMom / Magpie 导入")}</button>
@@ -232,7 +247,12 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
             const partial = enabled && desktopOn !== codeOn;
             return (
               <CxRow
-                badges={!enabled ? <CxBadge>{t("已停用")}</CxBadge> : partial ? <CxBadge>{desktopOn ? t("仅 Claude Desktop") : t("仅 Claude Code")}</CxBadge> : null}
+                badges={(
+                  <>
+                    {!enabled ? <CxBadge>{t("已停用")}</CxBadge> : partial ? <CxBadge>{desktopOn ? t("仅 Claude Desktop") : t("仅 Claude Code")}</CxBadge> : null}
+                    <OwnerBadge entry={entry} page="claude" />
+                  </>
+                )}
                 detail={[protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length])].filter(Boolean).join(" · ")}
                 icon={<Avatar baseUrl={entry.baseUrl} name={entry.name} size="sm" />}
                 key={entry.id}
@@ -257,6 +277,8 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
           // 新加的供应商默认给两个 Claude 都用，和页上的开关一致。
           includeAgents={claudeCode ? [AGENT, CODE] : [AGENT]}
           notify={notify}
+          // 从这里加的、导入的记成 Claude 的：Codex 页「显示其他 Agent 的供应商」按它筛。
+          owner="claude"
           onClose={() => setAdding(null)}
           payload={payload}
           run={run}

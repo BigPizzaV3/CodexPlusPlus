@@ -5222,6 +5222,19 @@ pub fn save_settings(
         &settings,
     ) {
         Ok(_) => {
+            // 能共享的 Codex 直连供应商改了：共享供应商里引用它们的连接资料读取时就是现值，
+            // 开着的 Agent 配置里写着的模型列表在后台重写一遍。
+            let shared = |settings: &BackendSettings| {
+                settings
+                    .relay_profiles
+                    .iter()
+                    .filter(|relay| codex_plus_core::gateway::codex_link::linkable(relay))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if shared(&previous) != shared(&settings) {
+                crate::gateway_commands::refresh_after_codex_profiles_changed();
+            }
             if !settings.usage_history_enabled {
                 codex_plus_launcher::clear_usage_history();
             }

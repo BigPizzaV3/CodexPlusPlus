@@ -3113,18 +3113,16 @@ pub fn copy_grok_profile(
     Ok(relay)
 }
 
-/// 可以从 Codex 复制过来的供应商：去掉聚合供应商和官方登录账号。
+/// 能共享的 Codex 直连供应商（默认就以引用的方式在共享供应商里，见 [`crate::gateway::codex_link`]）：
+/// 去掉聚合供应商、官方登录账号、本地服务托管的那一条和没有 Key 的。
 ///
 /// 官方登录的 refresh token 每用一次就换新的，刷新结果只写回 Codex 自己那一条；
-/// 复制一份会让两边互相把对方的登录刷失效，所以网关里的订阅账号要单独登录。
+/// 两边共用会互相把对方的登录刷失效，所以网关里的订阅账号要单独登录。
 pub fn codex_importable(settings: &BackendSettings) -> Vec<&RelayProfile> {
     settings
         .relay_profiles
         .iter()
-        .filter(|relay| {
-            relay.relay_mode != RelayMode::Aggregate
-                && !crate::official_login::member_uses_official_login_transport(relay)
-        })
+        .filter(|relay| crate::gateway::codex_link::linkable(relay))
         .collect()
 }
 
@@ -3194,20 +3192,21 @@ pub fn codex_official_accounts(settings: &BackendSettings) -> Vec<&RelayProfile>
         .collect()
 }
 
-/// 已从直连模式导入过的 Codex 供应商在网关里的 id。
-fn imported_codex_provider(gateway: &GatewaySettings, relay_id: &str) -> Option<String> {
-    let source = format!("codex:{relay_id}");
+/// Codex 直连供应商在共享供应商里的 id：引用它的那一项，没有引用时是旧版复制出来的那一项。
+pub fn imported_codex_provider(gateway: &GatewaySettings, relay_id: &str) -> Option<String> {
+    let source = format!("{}{relay_id}", crate::gateway::codex_link::SOURCE_PREFIX);
     gateway
         .providers
         .iter()
-        .find(|provider| provider.source == source)
+        .find(|provider| provider.linked_codex_relay.as_deref() == Some(relay_id))
+        .or_else(|| gateway.providers.iter().find(|provider| provider.source == source))
         .map(|provider| provider.relay.id.clone())
 }
 
 /// 聚合供应商搬进网关的结果。
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct AggregateImport {
-    /// 新导入池里的成员供应商数。
+        /// 新导入池里的成员供应商数。成员都以引用的方式自动在共享供应商里，现在总是 0，留着给旧调用方。
     pub added: usize,
     /// 建好的模型组 id；按模型聚合或没有可用成员时为空。
     pub group: Option<String>,
@@ -3215,16 +3214,18 @@ pub struct AggregateImport {
     pub notes: Vec<String>,
 }
 
-/// 把直连模式的聚合供应商搬进网关：成员导进池（导入过的复用），再按策略建同名模型组。
+/// 把直连模式的聚合供应商搬进网关：成员用它们在共享供应商里的引用，再按策略建同名模型组。
 /// - 故障转移 → 依次；按会话轮换 → 轮换 + 整个会话固定；按请求轮换 → 轮换 + 不固定；加权 → 按权重；
 /// - 按模型聚合不建组：网关池本身就按模型名分发；
 /// - 官方登录成员不能复制，用池里已登录的 ChatGPT 账号代替，没有就提示去登录；
 /// - 模型路由规则网关里没有对应功能，写进 notes。
+///
+/// `_skip_agents` 留着给旧调用方：成员不再新加进池，没有「给哪些 Agent 用」可选。
 pub fn import_codex_aggregate(
     store: &GatewayStore,
     settings: &BackendSettings,
     aggregate_id: &str,
-    skip_agents: Option<&[String]>,
+    _skip_agents: Option<&[String]>,
 ) -> anyhow::Result<AggregateImport> {
     let aggregate = settings
         .aggregate_relay_profiles
@@ -3274,23 +3275,16 @@ pub fn import_codex_aggregate(
                 .push(format!("成员「{}」本身是聚合供应商，跳过", relay.name));
             continue;
         } else {
-            // 单个成员导入失败只记一笔，不影响已经导入的和后面的成员。
-            let imported = (|| -> anyhow::Result<(String, bool)> {
+            // 能共享的成员读 gateway.json 时就以引用的方式进了共享供应商；不能共享的只记一笔原因。
+            let linked = (|| -> anyhow::Result<String> {
                 if let Some(id) = imported_codex_provider(&store.load()?, &relay.id) {
-                    return Ok((id, false));
+                    return Ok(id);
                 }
-                let copy = copy_codex_provider(settings, &relay.id)?;
-                let (_, id) =
-                    add_provider(store, copy, &format!("codex:{}", relay.id), skip_agents)?;
-                Ok((id, true))
+                ensure_codex_linkable(settings, &relay.id)?;
+                bail!("共享供应商里还没有它，稍后再试")
             })();
-            match imported {
-                Ok((id, added)) => {
-                    if added {
-                        result.added += 1;
-                    }
-                    id
-                }
+            match linked {
+                Ok(id) => id,
                 Err(error) => {
                     result.notes.push(member_failure(relay, &error));
                     continue;
@@ -3375,32 +3369,21 @@ fn member_failure(relay: &RelayProfile, error: &anyhow::Error) -> String {
     )
 }
 
-/// 复制一个 Codex 供应商（地址、协议、多 Key、请求头等原样带上）。
-pub fn copy_codex_provider(
-    settings: &BackendSettings,
+/// 这个 Codex 直连供应商能不能共享：能就返回它，不能说明原因（聚合、官方登录、指向本地服务、没有 Key）。
+/// 能共享的不用再复制：读 gateway.json 时它就以引用的方式在共享供应商里了。
+pub fn ensure_codex_linkable<'a>(
+    settings: &'a BackendSettings,
     relay_id: &str,
-) -> anyhow::Result<RelayProfile> {
+) -> anyhow::Result<&'a RelayProfile> {
     let relay = settings
         .relay_profiles
         .iter()
         .find(|relay| relay.id == relay_id)
         .with_context(|| format!("Codex 供应商不存在：{relay_id}"))?;
-    if relay.relay_mode == RelayMode::Aggregate {
-        bail!(
-            "「{}」是聚合供应商，本地服务的组请在「路由」页里新建",
-            relay.name
-        );
+    if let Some(reason) = crate::gateway::codex_link::rejection(relay) {
+        bail!("{reason}");
     }
-    if crate::official_login::member_uses_official_login_transport(relay) {
-        bail!(
-            "「{}」是官方登录账号，不能复制：两边共用登录会互相把对方刷失效，请在本地服务里单独登录",
-            relay.name
-        );
-    }
-    if relay.base_url.contains("/gw/") {
-        bail!("「{}」指向本地服务本身，不能导入", relay.name);
-    }
-    Ok(relay.clone())
+    Ok(relay)
 }
 
 /// 新建 / 编辑网关供应商的输入。`keys` 每个一行；编辑时为空表示沿用原来的 Key。
@@ -3533,6 +3516,22 @@ pub fn add_provider(
     add_provider_with(store, relay, source, skip_agents, |_| Ok(()))
 }
 
+/// 同 [`add_provider`]，再记下是从哪个 Agent 的页面加的（目前只记 `claude`，见
+/// [`crate::gateway::codex_link::clean_owner`]），界面的「显示其他 Agent 的供应商」按它筛。
+pub fn add_provider_owned(
+    store: &GatewayStore,
+    relay: RelayProfile,
+    source: &str,
+    owner: Option<&str>,
+    skip_agents: Option<&[String]>,
+) -> anyhow::Result<(GatewaySettings, String)> {
+    let owner = crate::gateway::codex_link::clean_owner(owner);
+    add_provider_with(store, relay, source, skip_agents, |provider| {
+        provider.owner = owner;
+        Ok(())
+    })
+}
+
 /// 同 [`add_provider`]，加进池的同一次带锁写入里再用 `extra` 补设价格、代理等字段。
 fn add_provider_with(
     store: &GatewayStore,
@@ -3550,26 +3549,7 @@ fn add_provider_with(
             .to_string();
         relay.id = gateway.unique_slug(&slug_base, false);
         let id = relay.id.clone();
-        let mut provider = GatewayProvider {
-            enabled: true,
-            source: source.to_string(),
-            price: None,
-            model_prices: BTreeMap::new(),
-            model_windows: BTreeMap::new(),
-            context_window: None,
-            proxy: String::new(),
-            key_rpm: None,
-            key_concurrency: None,
-            upstream_new: Vec::new(),
-            upstream_gone: Vec::new(),
-            models_checked_at_ms: 0,
-            newapi_access: None,
-            subscription_policy: None,
-            upstream_meta: Default::default(),
-            auto_compact: Default::default(),
-            relay,
-            extra: Default::default(),
-        };
+        let mut provider = GatewayProvider::new(relay, source);
         extra(&mut provider)?;
         gateway.providers.push(provider);
         exclude_new_provider(gateway, &id, skip_agents);
@@ -3578,7 +3558,7 @@ fn add_provider_with(
 }
 
 /// 新供应商不给哪些 Agent 用：勾选优先，没勾选时看 Agent 的 `auto_join_providers`。
-fn exclude_new_provider(gateway: &mut GatewaySettings, id: &str, skip_agents: Option<&[String]>) {
+pub(crate) fn exclude_new_provider(gateway: &mut GatewaySettings, id: &str, skip_agents: Option<&[String]>) {
     match skip_agents {
         Some(agents) => {
             for agent in agents {
@@ -3605,6 +3585,18 @@ pub fn create_provider(
     source: &str,
     skip_agents: Option<&[String]>,
 ) -> anyhow::Result<(GatewaySettings, String)> {
+    create_provider_owned(store, input, source, None, skip_agents)
+}
+
+/// 同 [`create_provider`]，再记下是从哪个 Agent 的页面加的（Claude 页传 `claude`）。
+pub fn create_provider_owned(
+    store: &GatewayStore,
+    input: &ProviderInput,
+    source: &str,
+    owner: Option<&str>,
+    skip_agents: Option<&[String]>,
+) -> anyhow::Result<(GatewaySettings, String)> {
+    let owner = crate::gateway::codex_link::clean_owner(owner);
     let proxy = clean_proxy(input.proxy.as_deref().unwrap_or_default())?;
     // 新供应商没有已保存的头可沿用。
     let headers = crate::gateway::provider_headers::resolve(
@@ -3627,6 +3619,7 @@ pub fn create_provider(
                 .subscription_policy
                 .clone()
                 .map(crate::gateway::store::SubscriptionPolicy::normalized);
+            provider.owner = owner;
             Ok(())
         },
     )
@@ -3671,6 +3664,8 @@ fn update_provider_in(
     else {
         bail!("供应商不存在：{id}");
     };
+    // 引用 Codex 直连供应商的：名称、地址、协议、Key、模型都归直连供应商；价格、代理走「更多设置」里单独的入口。
+    crate::gateway::codex_link::ensure_unlinked(provider)?;
     if crate::official_login::member_uses_official_login_transport(&provider.relay) {
         if let Some(proxy) = &input.proxy {
             provider.proxy = clean_proxy(proxy)?;
@@ -3869,6 +3864,7 @@ fn keyed_relay_mut<'a>(
     else {
         bail!("供应商不存在：{id}");
     };
+    crate::gateway::codex_link::ensure_unlinked(provider)?;
     if !manages_api_keys(&provider.relay) {
         bail!("这个供应商不用 API Key（订阅账号请重新登录）");
     }
@@ -4126,6 +4122,7 @@ pub fn set_provider_windows(
         else {
             bail!("供应商不存在：{id}");
         };
+        crate::gateway::codex_link::ensure_unlinked(provider)?;
         provider.model_windows = windows
             .into_iter()
             .map(|(model, window)| (model.trim().to_string(), window))
@@ -4167,6 +4164,7 @@ pub fn set_provider_auto_compact(
         else {
             bail!("供应商不存在：{id}");
         };
+        crate::gateway::codex_link::ensure_unlinked(provider)?;
         provider.auto_compact = crate::gateway::store::ProviderAutoCompact { models, fallback };
         Ok(())
     })?;
@@ -4244,6 +4242,7 @@ pub fn set_provider_metadata(
         else {
             bail!("供应商不存在：{id}");
         };
+        crate::gateway::codex_link::ensure_unlinked(provider)?;
         provider.relay.model_metadata = metadata.trim().to_string();
         Ok(())
     })?;
@@ -4253,13 +4252,31 @@ pub fn set_provider_metadata(
 /// 删除网关供应商：同时清掉路由组里指向它的成员和 Agent「挑选」里的记录，以及内存里按 id 记的
 /// Key 健康、额度、速度（id 会被之后添加的供应商复用，比如重新登录的 `chatgpt`）。
 /// 直连模式的数据不受影响。
+/// 引用 Codex 直连供应商的不能在这里删（它跟着直连供应商走，见 [`crate::gateway::codex_link`]）。
 pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<GatewaySettings> {
     let _guard = AGENT_CONFIG_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let (gateway, ()) = store.update(|gateway| {
+        let Some(provider) = gateway.provider(id) else {
+            bail!("供应商不存在：{id}");
+        };
+        crate::gateway::codex_link::ensure_deletable(provider)?;
+        forget_provider_in(gateway, id);
+        Ok(())
+    })?;
+    crate::gateway::key_pool::reset(id);
+    crate::gateway::quota::forget(id);
+    crate::gateway::speed::forget(id);
+    Ok(gateway)
+}
+
+/// 从池里去掉一个供应商，连同路由组、Agent 绑定里指向它的引用（删除供应商、直连供应商没了时的引用同步共用）。
+/// 返回它原来在不在池里。只改内存里的状态，写盘和清 Key 健康由调用方负责。
+pub(crate) fn forget_provider_in(gateway: &mut GatewaySettings, id: &str) -> bool {
+    {
         let before = gateway.providers.len();
         gateway.providers.retain(|provider| provider.relay.id != id);
         if gateway.providers.len() == before {
-            bail!("供应商不存在：{id}");
+            return false;
         }
         // `<id>/…` 的成员一般指向它；但模型名本身带 `/`、被别的供应商声明的（如 OpenRouter 的
         // `openai/gpt-5`），以及还能匹配到别家模型的通配符，留着。
@@ -4310,12 +4327,8 @@ pub fn delete_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Gateway
                 }
             }
         }
-        Ok(())
-    })?;
-    crate::gateway::key_pool::reset(id);
-    crate::gateway::quota::forget(id);
-    crate::gateway::speed::forget(id);
-    Ok(gateway)
+    }
+    true
 }
 
 /// 打开或关掉池里的某个供应商：关掉后不参与路由，也不出现在 Agent 的模型列表里。
@@ -4937,8 +4950,12 @@ mod tests {
             }],
             ..BackendSettings::default()
         };
+        // 直连供应商写进同目录的 settings.json：能共享的成员读 gateway.json 时就以引用的方式进了池。
+        crate::settings::SettingsStore::new(temp.path().join("settings.json"))
+            .save(&settings)
+            .unwrap();
         let outcome = import_codex_aggregate(&store, &settings, "agg", None).unwrap();
-        assert_eq!(outcome.added, 2, "出错的成员之外照常导入");
+        assert_eq!(outcome.added, 0, "成员不再复制，用的是引用");
         assert!(
             outcome.notes.iter().any(|note| note.contains("agg-bad")),
             "{:?}",
@@ -4946,8 +4963,9 @@ mod tests {
         );
         let gateway = store.load().unwrap();
         let group = gateway.group(outcome.group.as_deref().unwrap()).unwrap();
-        assert_eq!(group.members.len(), 2);
+        assert_eq!(group.members.len(), 2, "出错的成员之外照常建组");
         assert_eq!(gateway.providers.len(), 2);
+        assert!(gateway.providers.iter().all(|provider| provider.linked_codex_relay.is_some()));
     }
 
     #[test]

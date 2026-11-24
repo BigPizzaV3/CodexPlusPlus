@@ -93,6 +93,8 @@ async fn mock_upstream(failures: usize) -> (String, Arc<AtomicUsize>) {
 
 fn provider(id: &str, base_url: &str) -> GatewayProvider {
     GatewayProvider {
+        linked_codex_relay: None,
+        owner: String::new(),
         enabled: true,
         source: String::new(),
         price: None,

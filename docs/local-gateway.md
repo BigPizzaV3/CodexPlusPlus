@@ -24,6 +24,11 @@ Codex++ 专注做 Codex 与 Claude 的增强，网关在后台做多 Key、故�
   「Desktop 增强 → 供应商与模型」里那一块（`ClaudeProviders`）；Desktop 增强的那个页签改叫「模型」，只留列模型的两个开关和一行跳转。
 - **数据不变**：只是界面合成一份，`gateway.json` 与直连的 `settings.json` 仍是两份（两套引擎：直连切换、官方登录、聚合
   与共享供应商的多 Key 状态、额度、路由组），绑定、路由 id 都没改，已经接入的 Agent 照常工作。
+- **Codex 和 Claude 的供应商默认共享，引用不复制**：能共享的 Codex 直连供应商默认就在共享供应商里（见下文「Codex 直连供应商的引用」），
+  不用再点「加入共享供应商」。两边的供应商页「供应商 N」标题右侧都有「显示其他 Agent 的供应商」复选框（默认勾上，按页记在
+  localStorage）：Claude 页不勾时「无需转换 / 需协议转换」不列 Codex 的（`owner = codex`），Codex 页不勾时「共享」分页不列 Claude 的
+  （`owner = claude`）；数目跟着列出来的变。列出来的别人家的行标「来自 Codex」「来自 Claude」；Codex 页「共享」分页里 Codex 自己的
+  直连供应商标「来自直连」（就是直连分页里的同一个）。
 
 下文按原来的「网关 / 供应商池」叫法描述实现。
 
@@ -33,13 +38,47 @@ Codex++ 专注做 Codex 与 Claude 的增强，网关在后台做多 Key、故�
 - **网关模式**：网关有自己的一份供应商池和组，所有接入的 Agent 共用整个池。Agent 的配置指向 Codex++ 本地 helper，
   请求在网关里按模型名选供应商。
 
-网关的数据只存在 `<状态目录>/gateway.json`，不读也不写 `settings.json` 里直连模式的供应商；
-从直连模式「导入」是复制一份，之后两边各改各的。没接入网关的 Agent 不受任何影响。
+网关的数据只存在 `<状态目录>/gateway.json`，不写 `settings.json`。例外是 Codex 的直连供应商：能共享的以引用的方式出现在
+共享供应商里，连接资料读取时从 `settings.json` 现取（见下一节）。从 Claude Code / Grok / CC Switch 等「导入」仍是复制一份，
+之后两边各改各的。没接入网关的 Agent 不受任何影响。
+
+## Codex 直连供应商的引用
+
+实现在 `gateway/codex_link.rs`。
+
+- **哪些能共享**（`codex_link::rejection` / `linkable`，沿用旧版「加入共享供应商」的规则）：不是聚合供应商（模型聚合 / 故障转移）、
+  不是用 Codex 自己 ChatGPT 登录（auth.json）的官方账号、不是本地服务托管的那一条（`codex-plus-gateway`）、地址不指向本地服务（`/gw/`），
+  并且有能用的连接（地址 + Key，或不校验 Key 的本机服务）。带 API Key 的官方混合供应商照旧能共享。
+- **gateway.json 里只存引用**：`providers[]` 里一条 `linkedCodexRelay: "<直连供应商 id>"`、`source: "codex:<id>"` 的记录，`relay`
+  只留 `id`（共享供应商自己的短名）和 `name`；价格、按模型价格、代理、限速、开关、new-api 访问令牌、上游检查结果、Agent 的排除名单
+  这些共享供应商自己的设置照常存在这条记录上。地址、协议、Key（含多 Key 和标识）、模型列表、模型资料（思考等级等）、上下文窗口、
+  自动压缩阈值归直连供应商所有，写盘时去掉（`codex_link::strip_for_storage`），gateway.json 里没有第二份。
+- **读取时现取**：读 gateway.json 只有 `store::read_store` 一个入口（`GatewayStore::load` / `update`），它按 gateway.json 对应的
+  settings.json（默认位置用默认设置文件，可被设置路径指针改过；别处的 gateway.json 用同目录的 `settings.json`）调用 `codex_link::sync`：
+  1. 引用的直连供应商不在了或不能共享了：去掉这一项，模型组成员、图像输入模型、Agent 绑定里的默认 / 附加 / 分档 / 审批 / 起名 / 压缩模型、
+     默认选择、排除名单里指向它的一并清掉（和删除供应商共用 `apply::forget_provider_in`），写回后清掉内存里按 id 记的 Key 健康、额度、速度；
+  2. 旧版复制品（`source = codex:<id>`、还没有引用）在直连供应商还在、能共享时原地转成引用：id 不变，模型组、绑定里的 `<id>/<模型>` 照常有效，
+     价格等设置留着，复制品里的连接资料下次写盘时去掉；
+  3. 还没进共享供应商的能共享的直连供应商新建引用：id 同旧版复制时的取法（按名字取不重复的短名），关了「添加供应商时自动加入」的 Agent
+     照旧记进排除名单；
+  4. 所有引用从直连供应商取连接资料、窗口和压缩阈值。
+  路由、`/v1/models`、Agent 配置写入、模型目录、测试、额度、管理器的 `load_gateway` 都从这里读，所以在 Codex「连接与供应商」里改了，
+  经本地服务的 Agent 下一个请求就用上。settings.json 文件内容没变时复用上次解析的结果（网关每个请求都会读）；读不了或解析失败时这次不同步
+  （不会因为一次读坏就清掉引用）。结构有变（新引用、转换、去掉）时 `load` 在拿得到写锁时顺手写回，`update` 总会写回；gateway.json 还不存在时
+  不为此新建，引用照样现算。
+- **在共享供应商里只读**：引用记录改名称 / 地址 / 协议 / Key、改模型列表或从上游同步模型、改窗口 / 压缩阈值 / 思考等级、删除都会被拒绝，
+  提示去 Codex「连接与供应商」（`codex_link::ensure_unlinked` / `ensure_deletable`）；界面上这些按钮不显示，卡片详情顶部说明来源。
+  价格、代理、限速、开关、给哪些 Agent 用照常能改。
+- **归属**：界面数据的 `owner`（`codex_link::owner_of`）：引用和旧版复制品是 `codex`；Claude 页添加或导入的（`create_gateway_provider` /
+  `import_gateway_providers` 带 `owner: "claude"`，存在记录的 `owner` 字段）和来源是 `claude:` / `ccswitch:` / `claudemom:` / `magpie:` 的是
+  `claude`；本地服务页加的、登录的订阅账号没有归属。
+- **兼容**：`import_gateway_providers` 仍接受 `codex` 来源（已在池里，算跳过）；聚合供应商搬成模型组时成员直接用引用。降级到不认识
+  `linkedCodexRelay` 的旧版本时，引用记录在旧版里没有地址和 Key，用不了，需要在旧版里重新导入。
 
 ## 能做什么
 
 - **共用供应商池**：内置厂商预设（复用 `presets.ts`，另加 Anthropic、xAI、Ollama、LM Studio）、自定义地址，
-  或从直连模式的 Codex / Claude / Grok 供应商复制。官方登录账号不能复制：refresh token 每用一次就换新，
+  从直连模式的 Claude / Grok 供应商复制，Codex 的直连供应商默认以引用的方式在池里。官方登录账号不能共享：refresh token 每用一次就换新，
   刷新结果只写回原来那一条，复制会让两边互相把对方刷失效，订阅账号需要在网关里单独登录（待做）。
 - **按模型名路由**：裸模型名发给池里提供它的供应商，多家时按池顺序依次尝试；`<供应商 id>/<模型>` 只发给那一家；
   `group/<组 id>` 按组展开；多家都有的裸模型名按它的自动组展开。
@@ -60,8 +99,8 @@ Codex++ 专注做 Codex 与 Claude 的增强，网关在后台做多 Key、故�
   - 会话固定：记住每个会话上次是哪个上游回答的，下次先试它，保住上游提示词缓存。缓存期内固定（默认，10 分钟）、
     整个会话固定、不固定。记录只在内存（`route::remember_answer`）。
 - **从直连模式迁移**：供应商池「添加供应商 → 导入…」（池空时总览和供应商池顶部直接给入口）多选、一次导入：
-  直连 Codex / Claude Code / Grok 的供应商、OpenCode 保存的 Key 复制进池（已导入的跳过）；
-  聚合供应商搬成「成员进池 + 同名模型组」（故障转移 → 依次，按会话轮换 → 轮换 + 整个会话固定，
+  直连 Claude Code / Grok 的供应商、OpenCode 保存的 Key 复制进池（已导入的跳过；Codex 直连供应商默认已在池里，算跳过）；
+  聚合供应商搬成「成员的引用 + 同名模型组」（故障转移 → 依次，按会话轮换 → 轮换 + 整个会话固定，
   按请求轮换 → 轮换 + 不固定，加权 → 按权重；按模型聚合不建组），模型路由规则没有对应功能、会在结果里列出；
   官方登录账号不能复制，列表里直接「去登录」。命令 `import_gateway_providers`，聚合转换见 `apply::import_codex_aggregate`。
 - **订阅额度**：ChatGPT 订阅账号读每次响应的 `x-codex-*` 头，并每 10 分钟查 `wham/usage`；Copilot 查

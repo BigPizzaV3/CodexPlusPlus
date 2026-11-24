@@ -4,7 +4,7 @@
 //! 开启后 Agent 的配置指向本地 helper 的 `/gw/<agent>/...`，请求在这里按绑定选上游，
 //! 复用 Codex 代理已有的协议转换、官方登录与请求日志，并支持多 Key 轮换与模型组。
 //!
-//! - [`store`]：`gateway.json`，各 Agent 的绑定；
+//! - [`store`]：`gateway.json`，各 Agent 的绑定；[`codex_link`]：Codex 直连供应商在共享供应商里的引用（不复制，连接资料现取）；
 //! - [`route`]：绑定 → 模型 → 候选上游；
 //! - [`key_pool`]：多 Key 冷却与熔断；[`accounts`]：在网关里登录订阅账号；
 //! - [`subscriptions`]：私有接口订阅（Cursor、Kiro 等）包成本地 Chat Completions 上游（`/sub/<供应商>`）；
@@ -34,6 +34,7 @@ pub mod balance;
 pub mod chat_inbound;
 pub mod chat_outbound;
 pub mod chatgpt_backend;
+pub mod codex_link;
 pub mod coding_plan;
 pub mod compaction_model;
 pub mod connection_generation;

@@ -16,6 +16,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn provider(id: &str, base_url: &str, model: &str, protocol: RelayProtocol) -> GatewayProvider {
     GatewayProvider {
+        linked_codex_relay: None,
+        owner: String::new(),
         enabled: true,
         source: String::new(),
         price: None,

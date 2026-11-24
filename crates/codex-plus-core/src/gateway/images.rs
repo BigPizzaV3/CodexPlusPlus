@@ -325,6 +325,8 @@ mod tests {
 
     fn provider(id: &str, models: &str) -> GatewayProvider {
         GatewayProvider {
+            linked_codex_relay: None,
+            owner: String::new(),
             enabled: true,
             source: String::new(),
             price: None,

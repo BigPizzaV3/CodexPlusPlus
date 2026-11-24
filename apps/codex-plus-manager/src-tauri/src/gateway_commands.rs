@@ -1,7 +1,8 @@
 //! 网关模式命令：Agent 接入开关、网关自己的共享供应商与路由组、Key 健康状态。
 //!
-//! 网关模式与直连模式完全独立：共享供应商、路由组只存在 `gateway.json`；
-//! 直连模式的 Codex / Claude / Grok 供应商只在「导入」时被读取并复制一份。
+//! 共享供应商、路由组只存在 `gateway.json`。能共享的 Codex 直连供应商默认就在共享供应商里，
+//! 只存引用、连接资料读取时现取（见 `codex_plus_core::gateway::codex_link`）；
+//! Claude / Grok 等其它来源只在「导入」时被读取并复制一份。
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -93,6 +94,11 @@ pub struct GatewayPoolEntry {
     pub newapi_access: Option<apply::NewApiAccessView>,
     /// 自定义请求头（#3075）：敏感头只给打码后的样子；订阅账号、官方登录等不开放编辑的为空。
     pub custom_headers: Vec<codex_plus_core::gateway::provider_headers::ProviderHeaderView>,
+    /// 归哪个 Agent 的页面：`codex`（引用 Codex 直连供应商的）、`claude`（从 Claude 页添加或导入的），
+    /// 在「本地服务」页添加的为空。两边供应商页的「显示其他 Agent 的供应商」按它筛。
+    pub owner: Option<&'static str>,
+    /// 引用的 Codex 直连供应商 id：地址、Key、模型这些要在 Codex「连接与供应商」里改，这里只读。
+    pub linked_codex_relay: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,7 +189,7 @@ pub struct GatewayPayload {
     pub activity: ActivitySnapshot,
     /// 各（供应商, 模型）最近的平均首包耗时，「路由」页、共享供应商「按模型」和「速度优先」用。
     pub speeds: Vec<codex_plus_core::gateway::speed::SpeedView>,
-    /// 可复制进网关的直连模式供应商。
+    /// 能共享的直连模式供应商（都以引用的方式自动在共享供应商里）。
     pub codex_providers: Vec<GatewayPoolEntry>,
     /// 能在网关里登录的私有接口订阅（Cursor、Kiro 等）。
     pub subscriptions: Vec<codex_plus_core::gateway::subscriptions::SubscriptionView>,
@@ -288,6 +294,8 @@ fn pool_entry(
         balance_api: codex_plus_core::gateway::balance::has_balance_api(relay),
         newapi_access: None,
         custom_headers: codex_plus_core::gateway::provider_headers::view(relay),
+        owner: None,
+        linked_codex_relay: None,
     }
 }
 
@@ -356,6 +364,8 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
             auto_compact: provider.auto_compact.clone(),
             key_rpm: provider.key_rpm,
             key_concurrency: provider.key_concurrency,
+            owner: codex_plus_core::gateway::codex_link::owner_of(provider),
+            linked_codex_relay: provider.linked_codex_relay.clone(),
             ..pool_entry(
                 &provider.relay,
                 provider.enabled,
@@ -754,6 +764,16 @@ fn refresh_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
         );
     }
     result
+}
+
+/// Codex 直连供应商改了（保存设置后调用）：引用它们的共享供应商读取时就是现值，路由不用管；
+/// 开着的 Agent 配置里写着模型列表，在后台重写一遍，不拖慢保存。
+pub(crate) fn refresh_after_codex_profiles_changed() {
+    std::thread::spawn(|| {
+        if GatewayStore::default().load().is_ok_and(|gateway| gateway.any_enabled()) {
+            let _ = refresh_agents(Ok(()));
+        }
+    });
 }
 
 fn refresh_group_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
@@ -1393,21 +1413,24 @@ pub fn save_gateway_favorites(models: Vec<String>) -> CommandResult<Option<Gatew
     respond("收藏已保存。", "保存收藏失败", refresh_agents(result))
 }
 
-/// 用内置预设或手填的地址、Key 新建网关供应商。
+/// 用内置预设或手填的地址、Key 新建网关供应商。`owner` 是从哪个 Agent 的页面加的（Claude 页传 `claude`，
+/// 其它页面不传），两边供应商页的「显示其他 Agent 的供应商」按它筛。
 #[tauri::command]
 pub fn create_gateway_provider(
     input: ProviderInput,
     source: String,
     skip_agents: Option<Vec<String>>,
+    owner: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let name = input.name.trim().to_string();
     respond(
         &format!("已添加「{name}」，接入的 Agent 现在能用它的模型了。"),
         "添加供应商失败",
-        refresh_added(apply::create_provider(
+        refresh_added(apply::create_provider_owned(
             &GatewayStore::default(),
             &input,
             &source,
+            owner.as_deref(),
             skip_agents.as_deref(),
         )),
     )
@@ -2098,7 +2121,7 @@ pub fn reorder_gateway_providers(ids: Vec<String>) -> CommandResult<Option<Gatew
 }
 
 /// 把 OpenCode 里保存的 OpenCode Go / Zen Key 加进网关池，模型取目录里网关能用的。
-async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Result<String> {
+async fn import_opencode(id: &str, skip_agents: Option<&[String]>, owner: Option<&str>) -> anyhow::Result<String> {
     use codex_plus_core::gateway::opencode;
     let (entry, key) = opencode::load_stored_keys()
         .into_iter()
@@ -2127,10 +2150,11 @@ async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Re
         disable_tool_search: None,
         custom_headers: None,
     };
-    apply::create_provider(
+    apply::create_provider_owned(
         &GatewayStore::default(),
         &input,
         &format!("opencode:{id}"),
+        owner,
         skip_agents,
     )?;
     Ok(if models.is_empty() {
@@ -2150,12 +2174,14 @@ pub struct ImportItem {
     pub id: String,
 }
 
-/// 从直连模式（和 OpenCode）一次导入多个供应商。已在池里的跳过；聚合供应商搬成「成员进池 + 同名模型组」。
-/// 每项单独成败，结果汇总成一句话，没法照搬的地方附在后面。
+/// 从直连模式（和 OpenCode）一次导入多个供应商。已在池里的跳过；聚合供应商搬成「成员的引用 + 同名模型组」。
+/// Codex 直连供应商不用导：能共享的都以引用的方式自动在共享供应商里，传进来的算「已在池里」。
+/// 每项单独成败，结果汇总成一句话，没法照搬的地方附在后面。`owner` 同 [`create_gateway_provider`]。
 #[tauri::command]
 pub async fn import_gateway_providers(
     items: Vec<ImportItem>,
     skip_agents: Option<Vec<String>>,
+    owner: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     let skip = skip_agents.as_deref();
@@ -2186,13 +2212,15 @@ pub async fn import_gateway_providers(
                 .providers
                 .iter()
                 .any(|provider| provider.source == format!("{}:{}", item.source, item.id))
+                || (item.source == "codex"
+                    && apply::imported_codex_provider(&gateway, &item.id).is_some())
         });
         if already {
             skipped += 1;
             continue;
         }
         let result: anyhow::Result<()> = match item.source.as_str() {
-            "opencode" => import_opencode(&item.id, skip).await.map(|_| added += 1),
+            "opencode" => import_opencode(&item.id, skip, owner.as_deref()).await.map(|_| added += 1),
             "aggregate" => (|| {
                 let settings = SettingsStore::default().load()?;
                 let outcome = apply::import_codex_aggregate(
@@ -2214,7 +2242,7 @@ pub async fn import_gateway_providers(
                 }
                 Ok(())
             })(),
-            source => import_from_direct(source, &item.id, skip).map(|id| {
+            source => import_from_direct(source, &item.id, skip, owner.as_deref()).map(|id| {
                 added += 1;
                 if source == "magpie" {
                     fetch_models.push(id);
@@ -2257,13 +2285,24 @@ fn source_entries(entries: Vec<codex_plus_core::claude_provider_sources::SourceE
     entries.into_iter().map(|entry| GatewaySourceEntry { id: entry.id, name: entry.name }).collect()
 }
 
-/// 从直连模式复制一项进池：`codex` / `claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商、Magpie 的供应商。
-fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow::Result<String> {
+/// 从直连模式复制一项进池：`claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商、Magpie 的供应商。
+/// `codex` 不复制：能共享的已经以引用的方式在共享供应商里，返回它的 id；不能共享的说明原因。
+fn import_from_direct(
+    source: &str,
+    id: &str,
+    skip: Option<&[String]>,
+    owner: Option<&str>,
+) -> anyhow::Result<String> {
+    if source == "codex" {
+        let settings = SettingsStore::default().load()?;
+        apply::ensure_codex_linkable(&settings, id)?;
+        return apply::imported_codex_provider(&GatewayStore::default().load()?, id)
+            .ok_or_else(|| anyhow::anyhow!("共享供应商里还没有它，稍后再试"));
+    }
     let relay = match source {
         "ccswitch" => codex_plus_core::claude_provider_sources::cc_switch_relay(id)?,
         "claudemom" => codex_plus_core::claude_provider_sources::claude_mom_relay(id)?,
         "magpie" => codex_plus_core::magpie_import::relay(id)?,
-        "codex" => apply::copy_codex_provider(&SettingsStore::default().load()?, id)?,
         "claude" => {
             let provider = claude::load(&ClaudeContext::default_paths())?
                 .providers
@@ -2275,10 +2314,11 @@ fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow
         "grok" => apply::copy_grok_profile(&SettingsStore::default().load()?, id)?,
         other => anyhow::bail!("不认识的导入来源：{other}"),
     };
-    let (_, id) = apply::add_provider(
+    let (_, id) = apply::add_provider_owned(
         &GatewayStore::default(),
         relay,
         &format!("{source}:{id}"),
+        owner,
         skip,
     )?;
     Ok(id)
@@ -3558,6 +3598,7 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
                 arg(&args, "input")?,
                 arg::<Option<String>>(&args, "source")?.unwrap_or_else(|| "custom".to_string()),
                 arg(&args, "skipAgents")?,
+                arg(&args, "owner")?,
             )),
             "update_gateway_provider" => to_value(update_gateway_provider(arg(&args, "id")?, arg(&args, "input")?)),
             "delete_gateway_provider" => to_value(delete_gateway_provider(arg(&args, "id")?)),

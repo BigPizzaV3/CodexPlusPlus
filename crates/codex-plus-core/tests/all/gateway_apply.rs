@@ -2,7 +2,8 @@
 
 use codex_plus_core::gateway::apply::{
     ApplyContext, GroupInput, ProviderInput, codex_gateway_profile_on, codex_importable,
-    copy_claude_provider, copy_codex_provider, create_provider, delete_group, delete_provider,
+    ensure_codex_linkable,
+    copy_claude_provider, create_provider, delete_group, delete_provider,
     disable_binding, enable_binding, note_claude_switched, note_codex_switched, provider_reasoning,
     reapply_if_port_changed, refresh_enabled, reorder_providers, reset_model_selections, save_group,
     set_pool_member, set_provider_enabled, set_provider_metadata, set_provider_windows,
@@ -129,10 +130,12 @@ fn codex_metadata_disables_search_tool_for_kimi_and_auto_group() {
     // deepseek-v4-pro 由 DeepSeek 和 Kimi 两家服务，是自动组入口；kimi-k3 只有 Kimi 一家。
     assert!(object.contains_key("deepseek-v4-pro"), "{object:?}");
     assert!(object.contains_key("kimi-k3"), "{object:?}");
+    // 直连供应商默认以引用的方式在共享供应商里，它的模型也进了 Codex 的模型目录。
+    assert!(object.keys().any(|key| key.contains("gpt-direct")), "{object:?}");
     // Kimi 不认 tool_search：它名下每个模型的元数据都带 supports_search_tool=false。
-    for (key, entry) in object {
+    for key in ["deepseek-v4-pro", "kimi-k3"] {
         assert_eq!(
-            entry["supports_search_tool"],
+            object[key]["supports_search_tool"],
             json!(false),
             "{key} 应由 Kimi 上游关掉 tool_search"
         );
@@ -3185,7 +3188,7 @@ fn imports_copy_data_and_leave_the_direct_mode_untouched() {
     assert_eq!(relay.anthropic_auth_header, "authorization");
     assert_eq!(relay.model_list, "kimi-k2.5\nkimi-k2.5-mini");
 
-    // Codex 供应商：普通 API 供应商原样复制；官方登录账号和聚合供应商不能复制。
+    // Codex 供应商：普通 API 供应商能共享（以引用的方式，不复制）；官方登录账号和聚合供应商不能。
     let mut settings = BackendSettings::default();
     settings.relay_profiles = vec![
         RelayProfile {
@@ -3204,9 +3207,10 @@ fn imports_copy_data_and_leave_the_direct_mode_untouched() {
         },
     ];
     let before = settings.clone();
-    let copied = copy_codex_provider(&settings, "api").unwrap();
-    assert_eq!(copied.api_key, "sk-api");
-    assert!(copy_codex_provider(&settings, "agg").is_err());
+    let linkable = ensure_codex_linkable(&settings, "api").unwrap();
+    assert_eq!(linkable.api_key, "sk-api");
+    let error = ensure_codex_linkable(&settings, "agg").unwrap_err().to_string();
+    assert!(error.contains("聚合供应商"), "{error}");
     assert_eq!(
         codex_importable(&settings)
             .iter()
@@ -3214,7 +3218,7 @@ fn imports_copy_data_and_leave_the_direct_mode_untouched() {
             .collect::<Vec<_>>(),
         vec!["api"]
     );
-    assert_eq!(settings, before, "复制不改直连模式的数据");
+    assert_eq!(settings, before, "检查不改直连模式的数据");
 }
 
 #[test]
@@ -3268,7 +3272,7 @@ fn direct_relay(id: &str, model: &str) -> RelayProfile {
 }
 
 #[test]
-fn direct_aggregates_move_into_the_gateway_as_pool_providers_and_a_group() {
+fn direct_aggregates_move_into_the_gateway_as_linked_providers_and_a_group() {
     use codex_plus_core::gateway::apply::{add_provider, codex_aggregates, import_codex_aggregate};
     use codex_plus_core::settings::{
         AggregateRelayMember, AggregateRelayProfile, AggregateRelayRoute, AggregateRelayStrategy,
@@ -3314,25 +3318,25 @@ fn direct_aggregates_move_into_the_gateway_as_pool_providers_and_a_group() {
         ],
         ..BackendSettings::default()
     };
-    // relay-a 之前单独导入过：复用，不再复制一份。
-    let (_, imported_a) = add_provider(
-        store,
-        copy_codex_provider(&settings, "relay-a").unwrap(),
-        "codex:relay-a",
-        None,
-    )
-    .unwrap();
+    // relay-a 是旧版「加入共享供应商」复制进来的：直连供应商写进 settings.json 后原地转成引用，id 不变。
+    let (_, imported_a) =
+        add_provider(store, direct_relay("relay-a", "model-a"), "codex:relay-a", None).unwrap();
+    fixture.ctx.settings.save(&settings).unwrap();
 
     let result = import_codex_aggregate(store, &settings, "agg", None).unwrap();
-    assert_eq!(result.added, 1, "只新导入 relay-b");
+    assert_eq!(result.added, 0, "成员都以引用的方式自动在共享供应商里，不再复制");
     let gateway = store.load().unwrap();
+    assert_eq!(
+        gateway.provider(&imported_a).unwrap().linked_codex_relay.as_deref(),
+        Some("relay-a")
+    );
     let group = gateway.group(result.group.as_deref().unwrap()).unwrap();
     assert_eq!(group.name, "聚合 agg");
     assert_eq!(group.mode, GroupMode::Weighted);
     let imported_b = gateway
         .providers
         .iter()
-        .find(|provider| provider.source == "codex:relay-b")
+        .find(|provider| provider.linked_codex_relay.as_deref() == Some("relay-b"))
         .unwrap()
         .relay
         .id

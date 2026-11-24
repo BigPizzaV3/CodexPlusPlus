@@ -292,9 +292,8 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   assert.match(relay, /profile\.id !== CODEX_GATEWAY_RELAY_ID && relayProviderView\(profile\) === providerView/);
   assert.match(functionSource("SharedProviderList"), /onClick=\{\(\) => onUse\(`\$\{entry\.id\}\/\$\{model\}`\)\}/);
   assert.match(app, /if \(result\.status === "ok"\) await switchAfterDisconnect\(\);/);
-  // 直连用户可以关掉「加入共享供应商」的提醒；网关接管时总是提示。
-  assert.match(relay, /poolLink\.pending\.length && \(takenOverByGateway \|\| !nudgeDismissed\)/);
-  assert.match(relay, /window\.localStorage\.setItem\(DIRECT_POOL_NUDGE_KEY, "1"\)/);
+  // 直连供应商默认就在共享供应商里（引用），不再有「加入共享供应商」的提醒和「不再提示」。
+  assert.doesNotMatch(relay, /nudgeDismissed|DIRECT_POOL_NUDGE_KEY/);
 });
 
 test("Skills 与 MCP 同一种行：每个 Skill 一行，右侧每个 Agent 一枚开关胶囊，不再有页面自己的配色和按钮尺寸", () => {
@@ -467,25 +466,38 @@ test("「连接与供应商」页的 hook 都在编辑页 / 目录页的提前�
   assert.ok(earlyReturn > 0);
   const after = screen.slice(earlyReturn);
   assert.doesNotMatch(after, /\n  (?:const|let) [^\n]*\buse[A-Z]\w*\(/, "提前返回之后不能再调用 hook");
-  assert.ok(screen.indexOf("const [nudgeDismissed") < earlyReturn);
+  assert.ok(screen.indexOf("const [showOtherAgents") < earlyReturn);
 });
 
-test("直连供应商和网关共享供应商打通：每行标出是否已在池里，没进池的可单个或全部加入，接管期间也能迁移", () => {
+test("直连供应商默认以引用的方式在共享供应商里：每行只标「已在共享供应商」，不再有逐个 / 全部加入", () => {
   const link = functionSource("useCodexPoolLink");
-  // 复制走网关「导入供应商」同一条命令；只认直连供应商（codex）和聚合供应商（aggregate）两种来源。
-  assert.match(link, /importCandidates\(payload\)\.filter\(\(item\) => \(item\.source === "codex" \|\| item\.source === "aggregate"\) && profileIds\.includes\(item\.id\)\)/);
-  assert.match(link, /invoke<GatewayResult>\("import_gateway_providers", \{/);
-  assert.match(link, /publishGatewayPayload\(result\);/);
+  // 按池里的引用（linkedCodexRelay，旧版复制品看来源）认，不再列「还能加入」的直连供应商。
+  assert.match(link, /entry\.linkedCodexRelay === profileId \|\| entry\.source === `codex:\$\{profileId\}`/);
+  // 只剩故障转移（聚合）还能按一下搬成模型组，走网关「导入供应商」同一条命令。
+  assert.match(link, /item\.source === "aggregate" && profileIds\.includes\(item\.id\)/);
+  assert.match(link, /invoke<GatewayResult>\("import_gateway_providers", \{ items: \[\{ source: "aggregate", id: profileId \}\]/);
+  assert.doesNotMatch(link, /item\.source === "codex"/);
   const control = functionSource("PoolLinkControl");
   assert.match(control, /t\("已在共享供应商"\)/);
-  assert.match(control, /t\("加入共享供应商"\)/);
+  assert.doesNotMatch(control, /t\("加入共享供应商"\)/);
   const screen = functionSource("RelayScreen");
   assert.match(screen, /const poolLink = useCodexPoolLink\(actions, normalized\.relayProfiles\.map\(\(profile\) => profile\.id\)\);/);
-  assert.match(screen, /onClick=\{\(\) => void poolLink\.addAll\(\)\}/);
-  // 提示收在「直连供应商」标题右侧一行，不再单独一张卡。
-  assert.match(screen, /<span className="cx-pool-hint"/);
-  assert.doesNotMatch(screen, /\{poolBanner\}/);
+  // 「N 个还没加入共享供应商 · 全部加入」的提示去掉了。
+  assert.doesNotMatch(screen, /cx-pool-hint|addAll|nudgeDismissed/);
   assert.match(functionSource("SortableRelayProfileCard"), /\{gatewayManaged \|\| !poolLink \? null : <PoolLinkControl link=\{poolLink\} profileId=\{profile\.id\} \/>\}/);
+});
+
+test("「显示其他 Agent 的供应商」：Codex 页「共享」分页按归属筛，数目跟着变，来源标记统一", () => {
+  const screen = functionSource("RelayScreen");
+  assert.match(screen, /const \[showOtherAgents, setShowOtherAgents\] = useShowOtherAgents\("codex"\);/);
+  assert.match(screen, /const sharedEntries = entriesForPage\(gatewayPayload\?\.pool \?\? \[\], "codex", showOtherAgents\);/);
+  assert.match(screen, /view === "shared"\s*\? sharedEntries\.length/);
+  assert.match(screen, /count=\{directProfiles\.length \+ sharedOnlyCount\}/);
+  assert.match(screen, /<ShowOtherAgentsToggle checked=\{showOtherAgents\} onChange=\{setShowOtherAgents\}/);
+  assert.match(screen, /entries=\{sharedEntries\}/);
+  const list = functionSource("SharedProviderList");
+  assert.match(list, /<OwnerBadge entry=\{entry\} page="codex" \/>/);
+  assert.doesNotMatch(list, /entry\.source\?\.startsWith\("codex:"\)/);
 });
 
 test("Codex 被网关接管时隐藏旧版供应商功能；总开关关闭时保留恢复入口（#2801）", () => {
@@ -846,7 +858,7 @@ test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副
   // 「供应商 N」是总数（和 Codex 页一样），分区里只有供应商行；「管理共享供应商」在分区标题右侧。
   const list = claude.slice(claude.indexOf('className="claude-providers"'));
   assert.match(list, /count=\{pool\.length \|\| undefined\}/);
-  assert.match(claude, /aside=\{onManage \? <button className="cx-secondary" onClick=\{onManage\} type="button">\{t\("管理共享供应商"\)\}<\/button> : null\}/);
+  assert.match(claude, /\{onManage \? <button className="cx-secondary" onClick=\{onManage\} type="button">\{t\("管理共享供应商"\)\}<\/button> : null\}/);
   assert.doesNotMatch(list, /AgentModelPicker|t\("默认模型"\)/);
   // Claude Code 那一行并进了顶部的卡，App 里不再单独挂一块。
   assert.doesNotMatch(text, /ClaudeCodeConnection/);
