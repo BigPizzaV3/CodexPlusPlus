@@ -1823,8 +1823,8 @@ export const EN_PLAIN: Record<string, string> = {
     "When off, Claude's own switch applies, and newer Claude versions usually show only Chat / Code. System requirements (the Store version on Windows, virtualization available) are still checked by Claude.",
   "合并式主页（实验）": "Combined home (experimental)",
   "本地合并式主页": "Local combined home",
-  "Claude 正在小范围试验的主页布局：对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。关着时用有切换的经典主页":
-    "A home layout Claude is testing with a small group: chat and Cowork share one input box, without the Chat | Cowork switch. When off, the classic home with the switch is used.",
+  "Claude 正在小范围试验的主页布局：对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。默认开；关掉改用有切换的经典主页":
+    "A home layout Claude is testing with a small group: chat and Cowork share one input box, without the Chat | Cowork switch. On by default; turn it off for the classic home with the switch.",
   "系统证书": "System certificate",
   "安装系统证书": "Install system certificate",
   "Cowork 虚拟机以系统服务运行，只读取系统级根证书；安装需要管理员授权。": "The Cowork VM runs as a system service and only reads machine-level root certificates; installing one needs administrator approval.",
