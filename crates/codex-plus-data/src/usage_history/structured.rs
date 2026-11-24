@@ -3870,17 +3870,26 @@ fn usage_provider<'a>(
 
 impl Snapshot {
     fn collect_scope_parents<'a>(&mut self, files: impl Iterator<Item = &'a FileState>) {
+        self.collect_scope_candidates(files.filter_map(|file| {
+            file.scope_parent_candidates
+                .get(&file.session)
+                .map(|parents| (file.session.as_str(), parents))
+        }));
+    }
+
+    fn collect_scope_candidates<'a>(
+        &mut self,
+        candidates_by_source: impl Iterator<Item = (&'a str, &'a HashSet<Option<String>>)>,
+    ) {
         let mut candidates: BTreeMap<String, HashSet<Option<String>>> = BTreeMap::new();
-        for file in files {
-            if let Some(parents) = file.scope_parent_candidates.get(&file.session) {
-                let entries = candidates.entry(file.session.clone()).or_default();
-                for parent in parents {
-                    entries.insert(
-                        parent
-                            .as_ref()
-                            .map(|id| self.aliases.get(id).unwrap_or(id).clone()),
-                    );
-                }
+        for (session, parents) in candidates_by_source {
+            let entries = candidates.entry(session.to_owned()).or_default();
+            for parent in parents {
+                entries.insert(
+                    parent
+                        .as_ref()
+                        .map(|id| self.aliases.get(id).unwrap_or(id).clone()),
+                );
             }
         }
         let parents: BTreeMap<String, String> = candidates
@@ -3919,12 +3928,8 @@ impl Snapshot {
         }
     }
 
-    fn scoped_usage(&self, session: &str, query: &Query, bounds: Option<(i64, i64)>) -> Value {
-        let session = self
-            .aliases
-            .get(session)
-            .map(String::as_str)
-            .unwrap_or(session);
+    fn scope_members<'a>(&'a self, requested: &'a str) -> (&'a str, HashSet<String>) {
+        let session = self.aliases.get(requested).map_or(requested, String::as_str);
         let mut sessions = HashSet::new();
         if self.sessions.contains(session) {
             sessions.insert(session.to_owned());
@@ -3941,15 +3946,12 @@ impl Snapshot {
                 }
             }
         }
-        let mut ids: Vec<_> = sessions
-            .iter()
-            .filter(|id| id.as_str() != session)
-            .cloned()
-            .collect();
-        ids.sort();
-        if sessions.contains(session) {
-            ids.insert(0, session.to_owned());
-        }
+        (session, sessions)
+    }
+
+    fn scoped_usage(&self, requested: &str, query: &Query, bounds: Option<(i64, i64)>) -> Value {
+        let (session, sessions) = self.scope_members(requested);
+        let ids = ordered_scope_ids(session, &sessions);
         json!({"sessionId":session,"sessionIds":ids,"days":self.usage_days(query, bounds, Some(&sessions))})
     }
 
@@ -4173,6 +4175,12 @@ impl Snapshot {
         }
         response
     }
+}
+
+fn ordered_scope_ids<'a>(session: &str, sessions: &'a HashSet<String>) -> Vec<&'a str> {
+    let mut ids: Vec<_> = sessions.iter().map(String::as_str).collect();
+    ids.sort_unstable_by(|a, b| (a != &session, a).cmp(&(b != &session, b)));
+    ids
 }
 
 #[cfg(test)]

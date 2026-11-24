@@ -1,5 +1,6 @@
 use super::ingest::SourceReader;
 use super::store::{Store, projection::SourceUpdate};
+use crate::usage_history::Query;
 use crate::usage_history::structured::{FileState, UsageEvent, index_budget::Budget};
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use rusqlite::{Connection, OpenFlags};
@@ -1097,9 +1098,87 @@ fn cross_retention_range_reads_one_revision_without_inventing_partial_days() {
 }
 
 #[test]
-fn selection_preserves_the_known_priceable_subset_across_sessions() {
-    use crate::usage_history::Query;
+fn reopened_scope_uses_committed_aliases_and_only_unambiguous_descendants() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let db = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let unlinked = "00000000-0000-4000-8000-000000000080";
+    let child_path = root.join("rollout-child.jsonl");
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    for (name, session, parent, second) in [
+        (
+            format!("rollout-parent-{PHYSICAL_PREFIX}.jsonl"),
+            PARENT,
+            None,
+            1,
+        ),
+        (
+            "rollout-child.jsonl".into(),
+            CHILD,
+            Some(PHYSICAL_PREFIX),
+            2,
+        ),
+        ("rollout-descendant.jsonl".into(), OTHER, Some(CHILD), 3),
+        ("rollout-unlinked.jsonl".into(), unlinked, None, 4),
+    ] {
+        let path = root.join(name);
+        let mut meta = header(session, 0);
+        if let Some(parent) = parent {
+            meta["payload"]["source"] =
+                json!({"subagent":{"thread_spawn":{"parent_thread_id":parent}}});
+        }
+        let state = parse(&path, &[meta, count(1, second, 1, true)], cutoff);
+        let prepared = store
+            .prepare(new_source(&path, &state), cutoff, BTreeMap::new(), 1 << 16)
+            .unwrap();
+        store.publish(prepared).unwrap();
+    }
+    drop(store);
+    let query = Query::parse(&json!({}), cutoff).unwrap();
+    let mut reader = Connection::open_with_flags(&db, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let (all, scoped) =
+        Store::read_scoped_selection(&mut reader, &query, None, PHYSICAL_PREFIX).unwrap();
+    assert_eq!(scoped.session_id, PARENT);
+    assert_eq!(scoped.session_ids, [PARENT, CHILD, OTHER]);
+    assert_eq!(all.revision, scoped.usage.revision);
+    assert_eq!(all.days[0]["recordCount"], 4);
+    assert_eq!(scoped.usage.days[0]["recordCount"], 3);
 
+    let mut writer = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let (revision, _) = writer.checkpoint(&child_path).unwrap().unwrap();
+    let mut replaced_header = header(CHILD, 0);
+    replaced_header["payload"]["source"] =
+        json!({"subagent":{"thread_spawn":{"parent_thread_id":OTHER}}});
+    let replaced = parse(
+        &child_path,
+        &[replaced_header, count(1, 2, 1, true)],
+        cutoff,
+    );
+    let prepared = writer
+        .prepare(
+            SourceUpdate {
+                source: &child_path,
+                state: &replaced,
+                previous_revision: Some(revision),
+                replace: true,
+            },
+            cutoff,
+            BTreeMap::new(),
+            1 << 16,
+        )
+        .unwrap();
+    let revision = writer.publish(prepared).unwrap();
+    let (all, scoped) =
+        Store::read_scoped_selection(&mut reader, &query, None, PHYSICAL_PREFIX).unwrap();
+    assert_eq!(all.revision, revision);
+    assert_eq!(all.days[0]["recordCount"], 4);
+    assert_eq!(scoped.session_ids, [PARENT]);
+    assert_eq!(scoped.usage.days[0]["recordCount"], 1);
+}
+
+#[test]
+fn selection_preserves_the_known_priceable_subset_across_sessions() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
     let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();

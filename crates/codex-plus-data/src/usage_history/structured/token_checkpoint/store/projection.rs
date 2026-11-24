@@ -1,13 +1,15 @@
 use super::{Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{Checkpoint, Counter, Observation};
 use crate::usage_history::structured::{
-    FileState, Index, MAX_FILES, Query, Snapshot, UsageEvent, segments, usage_provider,
+    FileState, Index, MAX_FILES, Query, Snapshot, UsageEvent, ordered_scope_ids, segments,
+    usage_provider,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -133,6 +135,12 @@ pub(in super::super) struct Selection {
     pub(in super::super) unresolved: u64,
     pub(in super::super) archived: bool,
     pub(in super::super) needs_source_recovery: bool,
+}
+
+pub(in super::super) struct ScopedSelection {
+    pub(in super::super) session_id: String,
+    pub(in super::super) session_ids: Vec<String>,
+    pub(in super::super) usage: Selection,
 }
 
 fn group_key(event: &UsageEvent) -> (String, String, String, u8) {
@@ -880,80 +888,172 @@ impl Store {
         bounds: Option<(i64, i64)>,
         sessions: Option<&HashSet<String>>,
     ) -> Result<Selection> {
+        let read = db.transaction()?;
+        let [selection] = Self::select(&read, query, bounds, [sessions])?;
+        read.commit()?;
+        Ok(selection)
+    }
+
+    pub(in super::super) fn read_scoped_selection(
+        db: &mut Connection,
+        query: &Query,
+        bounds: Option<(i64, i64)>,
+        requested: &str,
+    ) -> Result<(Selection, ScopedSelection)> {
+        let read = db.transaction()?;
+        let scope = Self::scope(&read)?;
+        let (session, sessions) = scope.scope_members(requested);
+        let [all, usage] = Self::select(&read, query, bounds, [None, Some(&sessions)])?;
+        read.commit()?;
+        Ok((
+            all,
+            ScopedSelection {
+                session_id: session.to_owned(),
+                session_ids: ordered_scope_ids(session, &sessions)
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                usage,
+            },
+        ))
+    }
+
+    fn scope(read: &Connection) -> Result<Snapshot> {
+        #[derive(Deserialize)]
+        struct ScopeCheckpoint {
+            session: String,
+            identity_conflict: bool,
+            scope_parent_candidates: BTreeMap<String, HashSet<Option<String>>>,
+        }
+
+        let mut scope = Snapshot::default();
+        let mut sources = read.prepare("SELECT source,checkpoint FROM token_sources")?;
+        let mut rows = sources.query([])?;
+        let mut candidates = Vec::new();
+        while let Some(row) = rows.next()? {
+            let mut saved: ScopeCheckpoint = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
+            if saved.identity_conflict || saved.session.is_empty() {
+                continue;
+            }
+            if let Some(rollout) = segments::rollout_id(&decode_path(row.get(0)?)?) {
+                let alias = rollout.to_string();
+                scope
+                    .aliases
+                    .entry(alias.clone())
+                    .and_modify(|session| {
+                        if *session != saved.session {
+                            session.clone_from(&alias);
+                        }
+                    })
+                    .or_insert_with(|| saved.session.clone());
+            }
+            if let Some(parents) = saved.scope_parent_candidates.remove(&saved.session) {
+                candidates.push((saved.session.clone(), parents));
+            }
+            scope.sessions.insert(saved.session);
+        }
+        for session in &scope.sessions {
+            scope.aliases.insert(session.clone(), session.clone());
+        }
+        scope.collect_scope_candidates(
+            candidates
+                .iter()
+                .map(|(session, parents)| (session.as_str(), parents)),
+        );
+        Ok(scope)
+    }
+
+    fn select<const N: usize>(
+        read: &Connection,
+        query: &Query,
+        bounds: Option<(i64, i64)>,
+        scopes: [Option<&HashSet<String>>; N],
+    ) -> Result<[Selection; N]> {
         ensure!(
             query.turn_id.is_none() && !query.include_activity && !query.include_session_cursors,
             "Token snapshot selection requires the existing compatibility reader for this query"
         );
-        let read = db.transaction()?;
-        let revision = revision(&read)?;
-        let session_in_scope =
-            |session: &str| sessions.is_none_or(|sessions| sessions.contains(session));
-        let mut summary = BTreeMap::<NaiveDate, Groups>::new();
-        let mut detail = BTreeMap::<NaiveDate, Groups>::new();
-        let read_summary = |session: String, day: NaiveDate, groups: Vec<DayGroup>| {
-            if session_in_scope(&session) {
-                for group in groups {
-                    let model = Some(group.model.as_str()).filter(|model| !model.is_empty());
-                    if query.accepts_fields(&session, "", model, Some(day)) {
-                        summary
+        let (revision, precise_from): (i64, String) = read.query_row(
+            "SELECT revision, precise_from FROM token_revision",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let usage: RefCell<[_; N]> = RefCell::new(std::array::from_fn(|_| {
+            BTreeMap::<NaiveDate, Groups>::new()
+        }));
+        let accumulate =
+            |session: &str, day: NaiveDate, key: (String, String, String, u8), totals| {
+                for (groups, scope) in usage.borrow_mut().iter_mut().zip(scopes) {
+                    if scope.is_none_or(|scope| scope.contains(session)) {
+                        groups
                             .entry(day)
                             .or_default()
-                            .entry((group.model, group.provider, group.role, group.conflicts))
+                            .entry(key.clone())
                             .or_default()
-                            .merge(group.totals);
+                            .merge(totals);
                     }
+                }
+            };
+        let read_summary = |session: String, day: NaiveDate, groups: Vec<DayGroup>| {
+            for group in groups {
+                let model = Some(group.model.as_str()).filter(|model| !model.is_empty());
+                if query.accepts_fields(&session, "", model, Some(day)) {
+                    accumulate(
+                        &session,
+                        day,
+                        (group.model, group.provider, group.role, group.conflicts),
+                        group.totals,
+                    );
                 }
             }
             Ok(())
         };
-        let (archived, needs_source_recovery) = if let Some((start, end)) = bounds {
-            let needs_source_recovery = Self::visit_range(
-                &read,
+        let needs_source_recovery = if let Some((start, end)) = bounds {
+            Self::visit_range(
+                read,
                 start,
                 end,
                 |event| {
                     let model = Some(event.model.as_str()).filter(|model| !model.is_empty());
-                    if session_in_scope(&event.session)
-                        && query.accepts_fields(
+                    if query.accepts_fields(&event.session, &event.turn, model, Some(event.date)) {
+                        accumulate(
                             &event.session,
-                            &event.turn,
-                            model,
-                            Some(event.date),
-                        )
-                    {
-                        detail
-                            .entry(event.date)
-                            .or_default()
-                            .entry(group_key(&event))
-                            .or_default()
-                            .merge(DayTotals::from_event(&event));
+                            event.date,
+                            group_key(&event),
+                            DayTotals::from_event(&event),
+                        );
                     }
                     Ok(())
                 },
                 read_summary,
-            )?;
-            (!summary.is_empty(), needs_source_recovery)
+            )?
         } else {
             Self::visit_summary(
-                &read,
+                read,
                 query.from,
                 query.to.and_then(|day| day.succ_opt()),
                 read_summary,
             )?;
-            let precise_from: String =
-                read.query_row("SELECT precise_from FROM token_revision", [], |row| {
-                    row.get(0)
-                })?;
-            let archived = summary
-                .keys()
-                .next()
-                .is_some_and(|date| date.to_string() < precise_from);
-            (archived, false)
+            false
         };
-        read.commit()?;
+        Ok(usage.into_inner().map(|groups| {
+            Self::format_selection(revision, &precise_from, needs_source_recovery, groups)
+        }))
+    }
+
+    fn format_selection(
+        revision: i64,
+        precise_from: &str,
+        needs_source_recovery: bool,
+        usage: BTreeMap<NaiveDate, Groups>,
+    ) -> Selection {
         let mut unresolved = 0;
         let mut days = Vec::new();
-        for (date, groups) in summary.into_iter().chain(detail) {
+        let archived = usage
+            .keys()
+            .next()
+            .is_some_and(|date| date.to_string().as_str() < precise_from);
+        for (date, groups) in usage {
             let mut totals = DayTotals::default();
             let mut models = BTreeMap::<String, DayTotals>::new();
             let mut breakdowns = Vec::new();
@@ -988,12 +1088,12 @@ impl Store {
             day["breakdowns"] = json!(breakdowns);
             days.push(day);
         }
-        Ok(Selection {
+        Selection {
             revision,
             days,
             unresolved,
             archived,
             needs_source_recovery,
-        })
+        }
     }
 }
