@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use fs2::FileExt;
@@ -239,6 +239,7 @@ fn abandon_in(root: &Path, account_id: &str) -> anyhow::Result<bool> {
     };
     remember(&mut journal.settled, [&pending, &pending]);
     save_journal(&path, &journal)?;
+    take_reset_start(&path);
     Ok(true)
 }
 
@@ -249,6 +250,7 @@ struct Redemption {
     request_id: String,
     caller_id: String,
     completed: bool,
+    fresh: bool,
 }
 
 impl Redemption {
@@ -264,6 +266,7 @@ impl Redemption {
         };
         anyhow::ensure!(journal.valid(), "重置操作记录无效，未发送请求");
         let completed = journal.completed.iter().any(|id| id == caller_id);
+        let fresh = journal.pending.is_none() && !completed;
         // 已确定没扣卡或被放弃的标识不再发出去：界面没来得及清掉旧标识时换一个新的。
         let request_id = journal.pending.clone().unwrap_or_else(|| {
             if journal.settled.iter().any(|id| id == caller_id) {
@@ -279,6 +282,7 @@ impl Redemption {
             request_id,
             caller_id: caller_id.to_string(),
             completed,
+            fresh,
         };
         if !completed {
             operation.journal.pending = Some(operation.request_id.clone());
@@ -304,6 +308,60 @@ impl Redemption {
         }
         self.journal.pending = None;
         self.save()
+    }
+}
+
+struct ResetStart {
+    request_id: String,
+    relay_id: String,
+    started_at: Instant,
+}
+
+// 健康状态只存在于本进程；重启后没有证据可把旧操作和当前冷却关联起来。
+static RESET_STARTS: LazyLock<Mutex<HashMap<PathBuf, ResetStart>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn take_reset_start(path: &Path) -> Option<ResetStart> {
+    RESET_STARTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(path)
+}
+
+fn record_reset_start(operation: &Redemption, relay_id: &str, started_at: Instant) {
+    if !operation.fresh {
+        return;
+    }
+    let mut starts = RESET_STARTS.lock().unwrap_or_else(|e| e.into_inner());
+    if starts.len() >= 256
+        && let Some(oldest) = starts
+            .iter()
+            .min_by_key(|(_, start)| start.started_at)
+            .map(|(path, _)| path.clone())
+    {
+        starts.remove(&oldest);
+    }
+    starts.insert(
+        operation.path.clone(),
+        ResetStart {
+            request_id: operation.request_id.clone(),
+            relay_id: relay_id.to_owned(),
+            started_at,
+        },
+    );
+}
+
+fn clear_reset_cooldown(operation: &Redemption, outcome: ConsumeOutcome) {
+    if !outcome.settled() {
+        return;
+    }
+    // 首次发送即已兑换可能是日志之外的重放，不能拿本次时间去清理冷却。
+    if let Some(start) = take_reset_start(&operation.path)
+        && start.request_id == operation.request_id
+        && (outcome == ConsumeOutcome::Reset
+            || (!operation.fresh && outcome == ConsumeOutcome::AlreadyRedeemed))
+    {
+        super::key_pool::clear_official_quota_cooldown(&start.relay_id, start.started_at);
     }
 }
 
@@ -476,16 +534,13 @@ pub async fn consume(relay: &RelayProfile, request_id: &str) -> anyhow::Result<C
         return Ok(ConsumeOutcome::AlreadyRedeemed);
     }
     let url = format!("{CHATGPT_RESET_CREDITS_URL}{CHATGPT_RESET_CONSUME_SUFFIX}");
-    let outcome = send_redemption(
-        &client_for(relay)?,
-        &url,
-        &credential,
-        &operation.request_id,
-    )
-    .await?;
+    let client = client_for(relay)?;
+    record_reset_start(&operation, &relay.id, Instant::now());
+    let outcome = send_redemption(&client, &url, &credential, &operation.request_id).await?;
     // 不论结果都清缓存：下次读到的才是服务端的真实状态。
     forget(&relay.id);
     operation.finish(outcome)?;
+    clear_reset_cooldown(&operation, outcome);
     Ok(outcome)
 }
 

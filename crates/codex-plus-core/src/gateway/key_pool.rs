@@ -251,6 +251,7 @@ fn reset_after_from_body(text: &str) -> Option<Duration> {
 struct KeyHealth {
     /// 整个 Key 的冷却：额度耗尽、官方登录 401，以及不知道上游模型时的 429。
     cooldown_until: Option<Instant>,
+    quota_cooldown_started_at: Option<Instant>,
     /// 停用时 Key 的指纹；指纹变化（用户改了 Key）即解除。
     disabled_fingerprint: Option<u64>,
     /// 不知道上游模型时连续 429 的次数（按模型的计数在 `models` 里）。
@@ -593,6 +594,7 @@ pub fn record_failure(
         FailureClass::RateLimited { retry_after } => {
             let model = model_key(upstream_model);
             if model.is_empty() {
+                entry.quota_cooldown_started_at = None;
                 entry.consecutive_rate_limits = entry.consecutive_rate_limits.saturating_add(1);
                 let backoff = rate_limit_backoff(*retry_after, entry.consecutive_rate_limits);
                 entry.cooldown_until = Some(now + backoff);
@@ -606,9 +608,11 @@ pub fn record_failure(
         }
         FailureClass::QuotaExhausted { reset_after } => {
             entry.cooldown_until = Some(now + reset_after.unwrap_or(QUOTA_DEFAULT_COOLDOWN));
+            entry.quota_cooldown_started_at = Some(now);
         }
         FailureClass::AuthInvalid if key.key_id == OFFICIAL_KEY_ID => {
             entry.cooldown_until = Some(now + OFFICIAL_AUTH_COOLDOWN);
+            entry.quota_cooldown_started_at = None;
         }
         FailureClass::AuthInvalid => {
             entry.disabled_fingerprint = Some(key.fingerprint);
@@ -638,6 +642,7 @@ pub fn record_success(key: &KeyRef, upstream_model: &str, conversation: Option<&
     {
         entry.consecutive_rate_limits = 0;
         entry.cooldown_until = None;
+        entry.quota_cooldown_started_at = None;
         let model = model_key(upstream_model);
         if model.is_empty() {
             entry.models.clear();
@@ -659,6 +664,25 @@ pub fn record_success(key: &KeyRef, upstream_model: &str, conversation: Option<&
             (key.relay_id.clone(), conversation.to_string()),
             key.key_id.clone(),
         );
+    }
+}
+
+/// 只清这次重置前已有的账号额度冷却；模型限流和其他健康记录不动。
+pub(super) fn clear_official_quota_cooldown(relay_id: &str, reset_started_at: Instant) {
+    let mut state = lock();
+    if let Some(entry) = state
+        .keys
+        .get_mut(&(relay_id.into(), OFFICIAL_KEY_ID.into()))
+        && entry
+            .quota_cooldown_started_at
+            .is_some_and(|since| since <= reset_started_at)
+    {
+        entry.cooldown_until = None;
+        entry.quota_cooldown_started_at = None;
+        if entry.last_failure.as_deref() == Some("quota_exhausted") {
+            entry.last_failure = None;
+            entry.last_failure_at_ms = None;
+        }
     }
 }
 
@@ -1427,6 +1451,44 @@ mod tests {
         assert_eq!(available_ids(&relay, "other-model", now), vec!["b"]);
         assert_eq!(available_ids(&relay, "", now), vec!["b"]);
         assert_eq!(cooling_remaining(&key_a, "other-model", now), Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn quota_reset_preserves_model_limits_and_newer_global_failures() {
+        let key = KeyRef {
+            relay_id: "kp-reset-quota-only".into(),
+            key_id: OFFICIAL_KEY_ID.into(),
+            fingerprint: 0,
+        };
+        let start = Instant::now();
+        let later = start + Duration::from_secs(1);
+        let quota = FailureClass::QuotaExhausted {
+            reset_after: Some(Duration::from_secs(60)),
+        };
+        record_failure(&key, "m", &quota, start);
+        record_failure(
+            &key,
+            "m",
+            &FailureClass::RateLimited { retry_after: None },
+            later,
+        );
+        clear_official_quota_cooldown(&key.relay_id, start);
+        assert!(cooling_remaining(&key, "other", later).is_none());
+        assert!(cooling_remaining(&key, "m", later).is_some());
+
+        record_failure(&key, "m", &quota, later);
+        clear_official_quota_cooldown(&key.relay_id, start);
+        assert_eq!(
+            cooling_remaining(&key, "other", later),
+            Some(Duration::from_secs(60))
+        );
+        record_failure(&key, "m", &FailureClass::AuthInvalid, later);
+        clear_official_quota_cooldown(&key.relay_id, later);
+        assert_eq!(
+            cooling_remaining(&key, "other", later),
+            Some(OFFICIAL_AUTH_COOLDOWN)
+        );
+        reset(&key.relay_id);
     }
 
     /// 界面上的「重置」和删 / 改 Key 同样清掉按模型记的冷却。
