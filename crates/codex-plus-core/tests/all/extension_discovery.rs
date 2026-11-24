@@ -2,7 +2,7 @@ use std::io::Write;
 
 use codex_plus_core::extension_discovery::{
     CommunityStore, CuratedFilter, Endpoints, PinnedPackage, SearchRepo, asset_name, community_entry, extract_package,
-    parse_search_page, pick_latest_tag,
+    manifest_permissions, package_permissions, parse_search_page, pick_latest_tag,
 };
 use codex_plus_core::user_scripts::UserScriptManager;
 use serde_json::{Value, json};
@@ -123,6 +123,69 @@ fn latest_tag_prefers_highest_stable_semver() {
     assert_eq!(pick_latest_tag(["v2.0.0-beta.1", "v1.0.0"]).as_deref(), Some("v1.0.0"));
     assert_eq!(pick_latest_tag(["v2.0.0-beta.1", "v2.0.0-beta.2"]).as_deref(), Some("v2.0.0-beta.2"));
     assert_eq!(pick_latest_tag(["1.0.0", "release"]), None);
+}
+
+/// 安装确认框读的就是这份摘要：清单里每一种「装上就会干活」的声明都要出现，
+/// 否则只声明它的包会显示成「没有声明任何能力」。
+#[test]
+fn permissions_cover_every_capability_a_manifest_can_declare() {
+    // 只声明一种能力的清单，以及摘要里应当出现的那一项。
+    let cases: Vec<(Value, &str, Value)> = vec![
+        (json!({ "backend": { "script": "backend/main.mjs", "http": true } }), "backend", json!("backend/main.mjs")),
+        (json!({ "backend": { "script": "backend/main.mjs", "http": true } }), "backendHttp", json!(true)),
+        (json!({ "schedules": [{ "method": "tick", "everyMinutes": 5 }] }), "schedules", json!(1)),
+        (json!({ "launch": { "before": "launch/before.mjs" } }), "launchBefore", json!("launch/before.mjs")),
+        (json!({ "launch": { "after": "launch/after.mjs" } }), "launchAfter", json!("launch/after.mjs")),
+        (json!({ "launch": { "args": ["--force-dark-mode"] } }), "launchArgs", json!(["--force-dark-mode"])),
+        (json!({ "mcpServers": { "files": { "command": "node", "args": ["server.mjs"] } } }), "mcpServers", json!(["files"])),
+        (json!({ "dsh": "plugin" }), "dsh", json!("plugin")),
+        (json!({ "hooks": { "Stop": [{ "script": "hooks/stop.mjs" }] } }), "hooks", json!([{ "event": "Stop", "matcher": "" }])),
+        (json!({ "toolPipeline": { "preExecute": [{ "script": "a.mjs" }], "postExecute": [{ "script": "b.mjs" }] } }), "toolPipeline", json!(2)),
+        (json!({ "gateway": { "request": [{ "script": "g.mjs" }] } }), "gatewayRequest", json!(1)),
+        (json!({ "gateway": { "response": [{ "script": "g.mjs" }] } }), "gatewayResponse", json!(1)),
+        (json!({ "gateway": { "error": [{ "script": "g.mjs" }] } }), "gatewayError", json!(1)),
+        (json!({ "gateway": { "replaces": ["builtin:auth-headers"] } }), "gatewayReplaces", json!(["builtin:auth-headers"])),
+        (json!({ "providers": [{ "id": "acme", "name": "Acme" }] }), "providers", json!(["Acme"])),
+        (json!({ "tools": [{ "name": "count", "script": "tools/count.mjs" }] }), "tools", json!(["count"])),
+        (json!({ "skills": ["skills/review"] }), "skills", json!(["skills/review"])),
+        (json!({ "agents": [{ "name": "reviewer" }] }), "agents", json!(["reviewer"])),
+        (json!({ "prompts": [{ "name": "summarize" }] }), "prompts", json!(["summarize"])),
+        (json!({ "instructions": "Always answer in haiku." }), "instructions", json!(true)),
+        (json!({ "replaces": ["native-fast"] }), "replaces", json!(["native-fast"])),
+        (json!({ "manager": { "page": "panel.html", "replaces": ["gatewayUsage"] } }), "managerReplaces", json!(["gatewayUsage"])),
+        (json!({ "manager": { "page": "panel.html", "data": ["requestLogs"] } }), "managerData", json!(["requestLogs"])),
+        (json!({ "permissions": { "routes": ["/usage/history"] } }), "routes", json!(["/usage/history"])),
+        (json!({ "preload": { "scripts": ["early.js"], "reloadOnLaunch": true } }), "preload", json!(["early.js"])),
+        (json!({ "preload": "early.js" }), "preload", json!(["early.js"])),
+        (json!({ "renderer": ["main.js"] }), "renderer", json!(["main.js"])),
+    ];
+    // 什么都没声明时，每一项都是「空」；下面据此判断某项有没有被报出来。
+    let empty = manifest_permissions(&json!({ "id": "x" }));
+    for (manifest, key, expected) in &cases {
+        let permissions = manifest_permissions(manifest);
+        assert_eq!(&permissions[*key], expected, "{manifest} 应当报出 {key}");
+        assert_ne!(permissions[*key], empty[*key], "{key} 报出来的值不能和「没声明」一样");
+    }
+    // 摘要里的每一项都有用例守着：以后加了新项却没写用例，这里会失败。
+    let covered = cases.iter().map(|(_, key, _)| *key).collect::<std::collections::BTreeSet<_>>();
+    let keys = empty.as_object().unwrap().keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(keys, covered);
+}
+
+/// 清单没写 `skills` 时，包里的 `skills/<名字>/SKILL.md` 装上后也会同步进 Codex，确认框要列出来。
+#[test]
+fn package_permissions_list_skills_discovered_from_the_package_directory() {
+    let temp = tempdir().unwrap();
+    let dir = temp.path();
+    std::fs::create_dir_all(dir.join("skills/review")).unwrap();
+    std::fs::write(dir.join("skills/review/SKILL.md"), "# review").unwrap();
+    std::fs::create_dir_all(dir.join("skills/not-a-skill")).unwrap();
+    let manifest = json!({ "id": "x", "renderer": "main.js" });
+    assert_eq!(manifest_permissions(&manifest)["skills"], json!([]));
+    assert_eq!(package_permissions(&manifest, dir)["skills"], json!(["review"]));
+    // 清单写了 skills 就以清单为准（加载器也是这样）。
+    let declared = json!({ "id": "x", "skills": [] });
+    assert_eq!(package_permissions(&declared, dir)["skills"], json!([]));
 }
 
 #[test]
@@ -326,6 +389,7 @@ async fn installs_release_asset_pinned_to_tag_commit() {
     assert_eq!(prepared["fromDefaultBranch"], false);
     assert_eq!(prepared["conflict"], Value::Null);
     assert_eq!(prepared["permissions"]["hooks"][0]["event"], "PreToolUse");
+    assert_eq!(prepared["previousPermissions"], Value::Null, "本机没装过：没有可比的旧版本");
     // 暂存期间还没进用户目录。
     assert!(!root.path().join("user_scripts/word-count").exists());
 
@@ -377,13 +441,17 @@ async fn falls_back_to_default_branch_and_guards_local_conflicts() {
     let endpoints = endpoints(&server);
     store.list(&endpoints, &manager, false).await;
 
-    // 本机已有一个手写的同 id 拓展。
+    // 本机已有一个手写的同 id 拓展（只有页面脚本，没有钩子）。
     let local = root.path().join("user_scripts/word-count");
     std::fs::create_dir_all(&local).unwrap();
-    std::fs::write(local.join("codexpp.json"), serde_json::to_string(&manifest("word-count", "0.1.0")).unwrap()).unwrap();
+    std::fs::write(local.join("codexpp.json"), json!({ "id": "word-count", "version": "0.1.0", "renderer": "main.js" }).to_string()).unwrap();
     std::fs::write(local.join("main.js"), "// 手写版本").unwrap();
 
     let prepared = store.prepare(&endpoints, &manager, "alice/codexpp-word-count").await.unwrap();
+    // 带上本机那一版的能力，确认框据此标出新版本多了钩子和路由。
+    assert_eq!(prepared["previousPermissions"]["renderer"], json!(["main.js"]));
+    assert_eq!(prepared["previousPermissions"]["hooks"], json!([]));
+    assert_eq!(prepared["permissions"]["hooks"][0]["event"], "PreToolUse");
     assert_eq!(prepared["fromDefaultBranch"], true);
     assert_eq!(prepared["tag"], Value::Null);
     assert_eq!(prepared["sha"], SHA_HEAD);

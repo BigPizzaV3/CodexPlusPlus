@@ -94,8 +94,8 @@ export function normalizeRelayBillingProbe(result: {
 }
 
 /**
- * 供应商池里 new-api 卡片的余额提示（#2793）：Key 不限额度、拿不到余额时，说明配访问令牌能显示余额，
- * 或者配了但查询失败的原因。查到余额、或不是 new-api 时为 null。只给供应商池用（直连模式没有这个设置）。
+ * 共享供应商里 new-api 卡片的余额提示（#2793）：Key 不限额度、拿不到余额时，说明配访问令牌能显示余额，
+ * 或者配了但查询失败的原因。查到余额、或不是 new-api 时为 null。只给共享供应商用（直连模式没有这个设置）。
  */
 export function newApiAccessHint(probe: RelayBillingProbe): { text: string; failed: boolean } | null {
   if (probe.platform !== "newapi" || probe.usage?.kind !== "unlimited") return null;
@@ -172,7 +172,7 @@ export function relayBillingCacheKey(profile: RelayBillingProfile): string {
   return `${profile.id}|${fingerprint(`${upstreamUrl(profile)}\n${activeApiKey(profile)}`)}`;
 }
 
-/** 网关供应商池：前端看不到 Key，按地址、Key 数、代理和 new-api 访问令牌变化重新识别。
+/** 网关共享供应商：前端看不到 Key，按地址、Key 数、代理和 new-api 访问令牌变化重新识别。
  *  订阅登录账号、官方登录，以及有余额接口的厂商（DeepSeek、Kimi 等，余额另走「用量」页那份）不识别。 */
 export function relayBillingGatewayCacheKey(entry: {
   id: string;
@@ -240,7 +240,7 @@ export function relayAppliedPeak(rate: RelayRateInfo | null): number | null {
   return typeof peak === "number" && Number.isFinite(peak) && peak !== 1 ? peak : null;
 }
 
-/** 供应商池右侧徽章：剩余金额，以及有上限时的剩余比例（画额度条）。 */
+/** 共享供应商右侧徽章：剩余金额，以及有上限时的剩余比例（画额度条）。 */
 export function relayBalanceBadge(usage: RelayUsageInfo): { amount: string; ratio: number | null; tone: "ok" | "mid" | "low" } | null {
   if (usage.remaining === null) return null;
   const ratio = usage.kind === "keyQuota" && usage.quotaLimit && usage.quotaLimit > 0

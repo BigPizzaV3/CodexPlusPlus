@@ -1,71 +1,386 @@
-.shell .onboarding-setup {
-  flex: 0 0 auto;
-  min-height: 50px;
-  max-height: 48vh;
-  overflow: auto;
-  border-bottom: 1px solid hsl(var(--border));
-  padding: 12px 20px 14px;
+/* 启动引导：侧栏底部的进度卡（在 .shell 里）和两步向导（挂在 body 下，主题类名在 <html> 上）。 */
+
+/* ── 侧栏进度卡：一行，点它回到向导里没做完的那一步 ── */
+:root .shell .cx-side .onboarding-card {
+  display: flex;
+  flex: none;
+  align-items: stretch;
+  margin: 8px 0 4px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
   background: hsl(var(--card));
 }
 
-.shell .setup-header,
-.shell .setup-header > div,
-.shell .setup-tools,
-.shell .setup-choice,
-.shell .setup-actions,
-.shell .setup-agent {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+:root .shell .cx-side .onboarding-card:hover,
+:root .shell .cx-side .onboarding-card:focus-within {
+  border-color: hsl(var(--input));
 }
 
-.shell .setup-header { justify-content: space-between; gap: 12px; }
-.shell .setup-header > div:first-child { flex-wrap: wrap; min-width: 0; }
-.shell .setup-header strong { font-size: 13px; }
-.shell .setup-header span { font-size: 11px; color: hsl(var(--muted-foreground)); }
-.shell .setup-tools { flex: none; gap: 3px; }
-.shell .setup-tools button {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
+:root .shell .cx-side .onboarding-card-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 2px 9px 11px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 10px 0 0 10px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.9);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+:root .shell .cx-side .onboarding-card-ring {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+:root .shell .cx-side .onboarding-card-ring circle:first-child { stroke: hsl(var(--border)); }
+:root .shell .cx-side .onboarding-card-ring circle:last-child { stroke: hsl(var(--status-success)); }
+
+:root .shell .cx-side .onboarding-card-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+
+:root .shell .cx-side .onboarding-card-text strong {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+:root .shell .cx-side .onboarding-card-text small {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .cx-side .onboarding-card-count {
+  flex: none;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+:root .shell .cx-side .onboarding-card-close {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  border: 0;
+  border-radius: 0 10px 10px 0;
   background: transparent;
   color: hsl(var(--muted-foreground));
   cursor: pointer;
 }
-.shell .setup-tools button:hover { background: hsl(var(--accent)); color: hsl(var(--foreground)); }
-.shell .setup-tools button:focus-visible,
-.shell .setup-text-action:focus-visible { outline: 2px solid hsl(var(--ring)); outline-offset: 2px; }
-.shell .setup-steps { display: grid; grid-template-columns: 0.8fr 1.2fr 1fr; gap: 18px; margin-top: 12px; }
-.shell .setup-step { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
-.shell .setup-number {
-  display: grid;
-  place-items: center;
-  flex: 0 0 22px;
-  height: 22px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 50%;
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
+
+:root .shell .cx-side .onboarding-card-close:hover:not(:disabled) { color: hsl(var(--foreground)); }
+
+:root .shell .cx-side .onboarding-card-main:focus-visible,
+:root .shell .cx-side .onboarding-card-close:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: -2px;
 }
-.shell .setup-number[data-done="true"] { color: hsl(var(--status-success)); border-color: hsl(var(--status-success) / 0.4); background: hsl(var(--status-success) / 0.08); }
-.shell .setup-step-content { display: grid; align-content: start; justify-items: start; gap: 7px; min-width: 0; flex: 1; }
-.shell .setup-step-content > strong { font-size: 12px; line-height: 22px; }
-.shell .setup-step-content p,
-.shell .setup-choice,
-.shell .setup-agent { margin: 0; font-size: 11.5px; line-height: 1.6; overflow-wrap: anywhere; }
-.shell .setup-step-content p { color: hsl(var(--muted-foreground)); }
-.shell .setup-step-content p[role="alert"] { color: hsl(var(--destructive)); }
-.shell .setup-step-content .app-select { width: 100%; min-width: 0; }
-.shell .setup-step-content .app-select-trigger { min-width: 0; max-width: 100%; }
-.shell .setup-step-content button { max-width: 100%; white-space: normal; }
-.shell .setup-actions { flex-wrap: wrap; gap: 6px; }
-.shell .setup-text-action { padding: 0; border: 0; background: transparent; color: hsl(var(--primary)); font: inherit; font-size: 11.5px; cursor: pointer; text-align: left; }
-.shell .setup-agent .hub-agent-glyph { width: 16px; height: 16px; }
-@media (max-width: 1000px) {
-  .shell .setup-steps { grid-template-columns: 1fr; gap: 14px; }
-  .shell .setup-step-content { width: 100%; }
-  .shell .setup-step-content .app-select { max-width: 320px; }
+
+/* ── 向导卡片 ── */
+.ob-card {
+  box-sizing: border-box;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 14px;
+  background: hsl(var(--card));
+  color: hsl(var(--foreground));
+  box-shadow: 0 24px 70px rgb(0 0 0 / 0.4);
+  transform: translate(-50%, -50%);
+}
+
+.ob-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px 12px 16px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+
+.ob-logo {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+}
+
+/* 顶部的步骤：当前步高亮，做完的打勾，可以点着来回跳。 */
+.ob-steps {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ob-steps li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+}
+
+.ob-steps li + li::before {
+  width: 14px;
+  height: 1px;
+  background: hsl(var(--border));
+  content: "";
+}
+
+.ob-steps button {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px 0 4px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ob-steps button:disabled { cursor: default; }
+.ob-steps button:hover:not(:disabled) { color: hsl(var(--foreground)); }
+
+.ob-steps i {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 50%;
+  font-size: 10.5px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.ob-steps li[data-state="current"] button {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+.ob-steps li[data-state="current"] i {
+  border-color: hsl(var(--brand-accent));
+  background: hsl(var(--brand-accent));
+  color: hsl(var(--primary-foreground));
+}
+
+.ob-steps li[data-state="done"] i {
+  border-color: transparent;
+  background: hsl(var(--status-success) / 0.16);
+  color: hsl(var(--status-success));
+}
+
+.ob-head .tour-close { position: static; flex: none; }
+
+/* 两步的内容区同高，换步时卡片不跳。 */
+.ob-body {
+  display: grid;
+  flex: 1;
+  min-height: 300px;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 22px 22px 18px;
+}
+
+.ob-kicker {
+  margin-bottom: -6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.ob-body h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.ob-lead {
+  margin: -6px 0 4px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.ob-hint {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* 一行状态：左边图标，中间说明，右边操作。连接、测试、Codex 的安装与增强都用它。 */
+.ob-status {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+}
+
+.ob-status-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: hsl(var(--accent));
+  color: hsl(var(--muted-foreground));
+}
+
+.ob-status[data-tone="ok"] .ob-status-icon:not(.ob-status-glyph) { background: hsl(var(--status-success) / 0.16); color: hsl(var(--status-success)); }
+.ob-status[data-tone="todo"] .ob-status-icon:not(.ob-status-glyph) { background: hsl(var(--status-warning) / 0.16); color: hsl(var(--status-warning)); }
+.ob-status[data-tone="error"] .ob-status-icon:not(.ob-status-glyph) { background: hsl(var(--destructive) / 0.14); color: hsl(var(--destructive)); }
+.ob-status-glyph { background: transparent; }
+.ob-status-glyph .hub-agent-glyph { width: 20px; height: 20px; }
+
+.ob-status-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+
+.ob-status-text strong { font-size: 12.5px; font-weight: 600; }
+
+.ob-status-text p {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.ob-status-text p[role="alert"] { color: hsl(var(--destructive)); }
+.ob-status[data-tone="ok"] .ob-status-glyph + .ob-status-text p { color: hsl(var(--status-success)); }
+
+.ob-status-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* 按钮：30px 高、8px 圆角、12.5px 字，主按钮实底、次按钮描边，和页面标题行的按钮一个样。 */
+.ob-btn {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 8px;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.ob-btn:hover:not(:disabled) { background: hsl(var(--accent)); }
+.ob-btn-quiet { border-color: transparent; color: hsl(var(--foreground) / 0.78); }
+
+.ob-btn-primary {
+  border-color: transparent;
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.ob-btn-primary:hover:not(:disabled) { background: hsl(var(--primary)); filter: brightness(1.08); }
+
+.ob-btn:disabled,
+.ob-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ob-next {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.ob-next > span { margin-right: 2px; }
+
+.ob-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 13px;
+  background: transparent;
+  color: hsl(var(--foreground) / 0.88);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.ob-chip:hover:not(:disabled) { background: hsl(var(--accent)); }
+.ob-chip .hub-agent-glyph { width: 13px; height: 13px; }
+
+.ob-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+.ob-foot-spacer { flex: 1; }
+
+.ob-btn:focus-visible,
+.ob-chip:focus-visible,
+.ob-steps button:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+@media (max-width: 560px) {
+  .ob-steps button { padding-right: 4px; font-size: 0; gap: 0; }
+  .ob-status { flex-wrap: wrap; }
 }

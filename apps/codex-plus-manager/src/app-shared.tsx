@@ -70,6 +70,7 @@ export const defaultSettings: BackendSettings = {
   sessionIndexRepairEnabled: true,
   threadModelFollowSwitchEnabled: false,
   keepProjectsWithoutAccount: false,
+  chatgptCompatEnabled: false,
   updateAutoCheck: true,
   updateAutoDownload: true,
   updateSkippedVersion: "",
@@ -380,6 +381,7 @@ export function StatusBadge({ status = "unknown", label }: { status?: string; la
   return <CxBadge tone={tone}>{label ?? statusLabel(status)}</CxBadge>;
 }
 
+/** 开关图形。包着它的 `<label>` 行只有点这个图形才切换，点文字不切换（switch-only.ts 统一处理）。 */
 export function ToggleVisual() {
   return (
     <span aria-hidden="true" className="toggle-switch-visual">

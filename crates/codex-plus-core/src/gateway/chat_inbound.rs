@@ -80,7 +80,7 @@ fn user_part(part: &Value) -> anyhow::Result<Option<Value>> {
             Some(Value::Object(converted))
         }
         "input_audio" => bail!(
-            "暂不支持音频输入（input_audio）：网关的 Responses 管道无法转发音频，请先转写成文字"
+            "暂不支持音频输入（input_audio）：本地服务的 Responses 管道无法转发音频，请先转写成文字"
         ),
         other => bail!("不支持的消息内容类型：{other}"),
     })
@@ -376,7 +376,7 @@ pub fn chat_to_responses(request: &Value) -> anyhow::Result<Value> {
     if let Some(n) = object.get("n").and_then(Value::as_u64)
         && n > 1
     {
-        bail!("网关不支持 n>1（一次生成多个候选），请改为 n=1");
+        bail!("本地服务不支持 n>1（一次生成多个候选），请改为 n=1");
     }
     let mut body = Map::new();
     body.insert(

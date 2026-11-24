@@ -1,4 +1,4 @@
-/** 供应商的价格与独立代理：在供应商池的详情里编辑（添加 / 编辑供应商的弹窗只管连接、Key 与模型）。
+/** 供应商的价格与独立代理：在共享供应商的详情里编辑（添加 / 编辑供应商的弹窗只管连接、Key 与模型）。
  * 价格按模型填：同一家的不同模型价格往往差好几倍。 */
 import { useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";

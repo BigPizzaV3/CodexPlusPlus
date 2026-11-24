@@ -1,7 +1,7 @@
 //! Codex++ 的 Claude Desktop 完整功能模式。
 //!
 //! 核心（本地兼容服务、证书、profile 切换、启动 / 停止）在 claude-local（ClaudeMom 仓库，两边共用一份）；
-//! 这里是 Codex++ 的宿主实现：设置存在 settings.json 的 `claudeDesktopLocal`，上游走 Codex++ 网关的
+//! 这里是 Codex++ 的宿主实现：设置存在 settings.json 的 `claudeDesktopLocal`，上游走 Codex++ 本地服务的
 //! `claude-desktop-local` 绑定，听写走常驻 helper，关掉完整功能模式时经网关启动 3p 模式。
 //! 对外仍是原来的 `status` / `configure` / `perform` 等函数，调用方不用改。
 
@@ -21,7 +21,7 @@ use crate::tools::ToolId;
 
 pub const AGENT_ID: &str = "claude-desktop-local";
 
-fn ensure_host() {
+pub(crate) fn ensure_host() {
     static INSTALL: Once = Once::new();
     INSTALL.call_once(|| {
         claude_local::install_host(Arc::new(CodexPlusHost));
@@ -107,6 +107,31 @@ pub fn page_extension_assets() -> Vec<PageAsset> {
     claude_local::extensions::enabled_assets()
 }
 
+/// 保存一个拓展包（装在 claude-local 目录里的 codexpp.json 包）的配置。
+pub fn set_page_extension_config(id: &str, values: &serde_json::Map<String, Value>) -> Result<Vec<PageExtensionInfo>> {
+    ensure_host();
+    claude_local::extensions::set_config(id, values)
+}
+
+/// 重新生成 Claude 页面的注入计划。「万物皆拓展」里对 Claude 的开关、拓展配置、拓展包的装卸变了之后调：
+/// 完整功能模式下刷新 Claude 页面就按新的来，不用重启。
+pub fn refresh_page_plan() {
+    ensure_host();
+    claude_local::extensions::refresh_page_plan();
+}
+
+/// 补丁副本用的注入计划：页面经主进程 hook 的 binding 调后台。
+pub fn page_injection_plan() -> claude_local::extensions::PagePlan {
+    ensure_host();
+    claude_local::extensions::page_plan(claude_local::extensions::PageTransport::Binding)
+}
+
+/// 页面回报的各拓展加载结果，按脚本 key（`user:<目录名>` 或 `local:<id>`）。
+pub fn page_status() -> serde_json::Map<String, Value> {
+    ensure_host();
+    claude_local::extensions::page_status()
+}
+
 /// 补丁副本里经环境变量生效的增强：Claude Code 的 Bash 时限，以及 Codex++ 的 Claude 拓展插件。
 /// Cowork 的 Bash 时限要改主进程代码，只有副本做得到，这里不管。
 fn enhancement_env(
@@ -152,7 +177,7 @@ impl Host for CodexPlusHost {
     fn preview_upstream(&self, config: &ClaudeLocalSettings) -> Result<Upstream> {
         let gateway = GatewayStore::default().load()?.with_extension_providers();
         if available_models(&gateway).is_empty() {
-            anyhow::bail!("供应商池中还没有可用的聊天模型");
+            anyhow::bail!("共享供应商中还没有可用的聊天模型");
         }
         let binding = local_binding(&gateway, config)?;
         let port = crate::protocol_proxy::protocol_proxy_port();
@@ -208,6 +233,16 @@ impl Host for CodexPlusHost {
 
     fn launch_three_p(&self, source: &Path, root: &Path, config: &ClaudeLocalSettings) -> Result<()> {
         launch_three_p(source, root, config)
+    }
+
+    /// 「万物皆拓展」里对 Claude 启用、声明了页面部分（`claudeDesktop.renderer` / `styles`）的拓展包。
+    fn page_packages(&self) -> Vec<claude_local::extensions::HostPagePackage> {
+        crate::user_scripts::default_user_script_manager().enabled_claude_page_packages()
+    }
+
+    /// 拓展后台由常驻 helper 托管（见 claude_page_host）：页面、Code 会话的按钮和工具用同一个后台实例。
+    fn extension_host_receipt(&self) -> Option<PathBuf> {
+        Some(crate::claude_page_host::receipt_path())
     }
 
     fn diagnostic(&self, event: &str, detail: Value) {
@@ -446,7 +481,7 @@ fn local_binding(gateway: &GatewaySettings, config: &ClaudeLocalSettings) -> Res
     let model = crate::gateway::route::binding_default_model(gateway, &binding);
     ensure!(
         !model.is_empty() && crate::gateway::route::model_is_routable(gateway, &binding, &model),
-        "请先在供应商池中添加可用模型，并为 Claude 本地模式选择模型"
+        "请先在共享供应商中添加可用模型，并为 Claude 本地模式选择模型"
     );
     binding.model = model;
     binding.enabled = true;
@@ -486,13 +521,13 @@ fn launch_three_p(source: &Path, root: &Path, config: &ClaudeLocalSettings) -> R
     ensure!(
         !default_model.is_empty()
             && crate::gateway::route::model_is_routable(&gateway, &binding, &default_model),
-        "请先在供应商池中添加可用模型，并为 Claude 选择模型"
+        "请先在共享供应商中添加可用模型，并为 Claude 选择模型"
     );
     binding.model = default_model;
     let gateway = crate::gateway::apply::enable_binding(&context, &agent, binding)?;
     let binding = gateway
         .binding(&agent)
-        .context("Claude Desktop 网关配置缺失")?;
+        .context("Claude Desktop 本地服务配置缺失")?;
     let wiring = wiring(&gateway, binding, "claude-desktop", port);
     claude_local::private_dir(root)?;
     claude_local::private_dir(&root.join("claude-code-3p"))?;

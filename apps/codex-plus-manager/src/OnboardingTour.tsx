@@ -1,5 +1,5 @@
 /**
- * 首次使用引导：压暗整个界面，只露出当前步骤的目标（`[data-tour="..."]`），旁边一张说明卡。
+ * 界面导览：压暗整个界面，只露出当前步骤的目标（`[data-tour="..."]`），旁边一张说明卡。
  * 目标找不到（例如所在分组被折叠）或步骤没有目标时，说明卡显示在屏幕中央。
  */
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
@@ -7,10 +7,7 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, ArrowRight, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { paletteShortcut } from "./command-palette-model";
-import { placeCard, tourSteps } from "./onboarding-model";
-import { providersHidden, singleAgent, type AgentFocus } from "./agent-focus-model";
-import { agentName } from "./gateway-model";
-import { useGatewayPayload } from "./gateway-store";
+import { placeCard, TOUR_STEPS } from "./onboarding-model";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalFocus } from "./use-modal-focus";
 import "./OnboardingTour.css";
@@ -19,12 +16,8 @@ type Rect = { left: number; top: number; right: number; bottom: number; width: n
 
 const PAD = 6;
 
-export function OnboardingTour({ focus, onClose }: { focus: AgentFocus; onClose: (finished: boolean) => void }) {
-  const solo = singleAgent(focus);
-  // 和侧栏同一条规则：有 Agent 接入网关才有网关一组，也才讲网关的三步。
-  const gatewayShown = (useGatewayPayload(10_000)?.agents ?? []).some((agent) => agent.enabled);
-  const steps = tourSteps(solo ? agentName(solo) : null, providersHidden(focus), gatewayShown);
-  const text = (value: string, args?: string[]) => (args ? tf(value, args) : t(value));
+export function OnboardingTour({ onClose }: { onClose: (finished: boolean) => void }) {
+  const steps = TOUR_STEPS;
   useEscapeLayer(true, () => onClose(false));
   const [index, setIndex] = useState(0);
   const [rect, setRect] = useState<Rect | null>(null);
@@ -103,9 +96,9 @@ export function OnboardingTour({ focus, onClose }: { focus: AgentFocus; onClose:
           <X aria-hidden="true" size={14} />
         </button>
         <span className="tour-step">{tf("{0} / {1}", [index + 1, steps.length])}</span>
-        <h3 id="tour-title">{text(step.title, step.plainTitle ? undefined : step.args)}</h3>
+        <h3 id="tour-title">{t(step.title)}</h3>
         {/* 文案里写的是 ⌘K，Windows / Linux 换成真实键位 Ctrl K。 */}
-        <p id="tour-description">{text(step.body, step.args).replace("⌘K", paletteShortcut)}</p>
+        <p id="tour-description">{t(step.body).replace("⌘K", paletteShortcut)}</p>
         <div className="tour-dots" aria-hidden="true">
           {steps.map((item, position) => <i data-active={position === index} key={item.id} />)}
         </div>

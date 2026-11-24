@@ -1157,6 +1157,11 @@ pub struct BackendSettings {
     /// 打开后启动前把容器挪走、项目留在顶层，切回官方登录时再放回。默认关闭。
     #[serde(rename = "keepProjectsWithoutAccount", default)]
     pub keep_projects_without_account: bool,
+    /// 纯 API Key 下解锁 ChatGPT 登录专属入口（代码审查、图像、资料库等）：启动时在
+    /// `https://localhost:8000` 起本地 ChatGPT 兼容服务，并改写 `~/.codex` 的配置和登录，
+    /// 关闭时还原。默认关闭。
+    #[serde(rename = "chatgptCompatEnabled", default)]
+    pub chatgpt_compat_enabled: bool,
     /// 流式请求等上游响应头的上限（秒）。默认 120；首字时间经常超过 120s 的上游
     /// （长推理模型、慢中转，#3130）可在 settings.json 调大，上限 3600，写小不生效。
     #[serde(rename = "upstreamStreamHeaderTimeoutSecs", default)]
@@ -1322,8 +1327,9 @@ pub struct BackendSettings {
     /// Codex App 与 CLI 的本地代理响应信任上报用量，不改 usage；旧会话首次响应前仍可能使用原估算。默认关。
     #[serde(rename = "codexAppReportedUsageCompaction", default)]
     pub codex_app_reported_usage_compaction: bool,
-    /// 管理器的使用模式（"codex" / "enhance" / "all"，空 = 没选过）。页面本地存储会丢（例如管理员身份启动时
-    /// WebView 数据目录不同），这里再存一份，启动时用它补回，问卷不再每次都弹（#2902）。
+    /// 管理器的启动引导出现过没有（空 = 没出现过）。页面本地存储会丢（例如管理员身份启动时 WebView 数据目录不同），
+    /// 这里再留一个记号，启动时两处都看，向导不会每次都弹（#2902）。
+    /// 字段原来记的是使用模式（"codex" / "enhance" / "all"，已取消），旧值照样算出现过；现在只写 "all"。
     #[serde(rename = "managerAgentFocus", default)]
     pub manager_agent_focus: String,
     #[serde(rename = "codexAppPetRealMouseLook", default)]
@@ -1611,6 +1617,7 @@ impl Default for BackendSettings {
             session_index_repair_enabled: default_session_index_repair_enabled(),
             thread_model_follow_switch_enabled: false,
             keep_projects_without_account: false,
+            chatgpt_compat_enabled: false,
             upstream_stream_header_timeout_secs: None,
             native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
@@ -3051,6 +3058,12 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
         .and_then(Value::as_bool)
     {
         target.insert("keepProjectsWithoutAccount".to_string(), Value::Bool(value));
+    }
+    if let Some(value) = source
+        .get("chatgptCompatEnabled")
+        .and_then(Value::as_bool)
+    {
+        target.insert("chatgptCompatEnabled".to_string(), Value::Bool(value));
     }
     if let Some(value) = source.get("ccsDbPath").and_then(Value::as_str) {
         target.insert(
@@ -5421,7 +5434,7 @@ experimental_bearer_token = "sk-existing""#
 
     #[test]
     fn settings_store_update_persists_manager_agent_focus() {
-        // #2902：使用模式存进设置文件，只认已知的三个值。
+        // #2902：记号存进设置文件，只认已知的三个值（沿用旧的使用模式取值）。
         let dir = temp_dir();
         let store = SettingsStore::new(dir.join("settings.json"));
         store.save(&BackendSettings::default()).unwrap();

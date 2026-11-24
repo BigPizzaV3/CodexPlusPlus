@@ -83,11 +83,13 @@ export type BackendSettings = WhaleBalanceSettings & {
   providerSyncEnabled: boolean;
   /** 「启动前修复会话索引」与 providerSyncEnabled 分开（#2846）：只补投影、不改会话归属。 */
   sessionIndexRepairEnabled?: boolean;
-  /** 使用模式在设置文件里的备份（#2902），本地存储丢了时用它补回。 */
+  /** 「启动引导出现过」的记号（#2902）：非空即出现过，本地存储丢了时靠它不再重复弹。原来记的是已取消的使用模式。 */
   managerAgentFocus?: string;
   threadModelFollowSwitchEnabled?: boolean;
   /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
   keepProjectsWithoutAccount?: boolean;
+  /** 纯 API Key 解锁 ChatGPT 登录专属入口：本地 ChatGPT 兼容服务 + 改写 ~/.codex，关闭时还原。 */
+  chatgptCompatEnabled?: boolean;
   nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
@@ -390,11 +392,17 @@ export type UserScriptInventory = {
       managerPage?: ManagerPageSummary | null;
       /** 拓展自己的设置页（codexpp.json 的 settings.page），「设置」打开它而不是通用表单。 */
       settingsPage?: boolean;
+      /** 顶替的内置拓展、关掉的内置网关环节、页面最早期脚本、启动前后脚本与启动参数、dsh 插件。 */
+      replaces?: string[]; gatewayReplaces?: string[]; preload?: { scripts?: number };
+      launch?: { args?: string[]; before?: boolean; after?: boolean }; dsh?: boolean;
     } | null;
     enabled: boolean;
     claude_enabled?: boolean | null;
     status: string;
+    /** 清单本身的错误，或拓展在 Codex 页面里运行时报的错（带运行状态的清单才有后者）。 */
     error: string;
+    /** 只含清单本身的问题，空串表示清单没问题；管理器页面能不能用只看这一项。旧版后端没有。 */
+    manifestError?: string;
     market_id?: string;
     version?: string;
     installed?: boolean;
@@ -565,6 +573,28 @@ export type CcsProvidersResult = CommandResult<{
   configuredDbPath: string;
   fallbackReason?: string | null;
   providers: CcsProviderImport[];
+  /** 已经导入过的条目（`sourceId`）；旧版后端没有这一项。 */
+  imported?: string[];
+}>;
+
+/** 「从第三方导入」里 Magpie 的供应商（不含 Key）。 */
+export type MagpieProvidersResult = CommandResult<{
+  /** 实际读的 `providers.json`。 */
+  path: string;
+  /** 这个文件在不在（不在就是没装 Magpie）。 */
+  found: boolean;
+  providers: Array<{
+    sourceId: string;
+    name: string;
+    baseUrl: string;
+    protocol: RelayProtocol;
+    /** 在 Magpie 里关掉了。 */
+    disabled: boolean;
+    hasKey: boolean;
+    imported: boolean;
+  }>;
+  /** 把 Magpie 本身当作一个上游（指向它的本地网关）；没装 Magpie 时没有。 */
+  gateway?: { sourceId: string; baseUrl: string; imported: boolean } | null;
 }>;
 
 export type ProviderImportRequest = {
@@ -575,7 +605,7 @@ export type ProviderImportRequest = {
   relayMode: string;
   configContents: string;
   authContents: string;
-  /** 空为直连模式供应商；"pool" 为网关供应商池。 */
+  /** 空为直连模式供应商；"pool" 为网关共享供应商。 */
   target?: string;
 };
 
@@ -860,7 +890,9 @@ export type Actions = {
   refreshRelayEnvironment: (silent?: boolean) => Promise<RelayEnvironmentResult | null>;
   removeEnvConflicts: (names: string[]) => Promise<void>;
   refreshCcsProviders: (silent?: boolean) => Promise<CcsProvidersResult | null>;
-  importCcsProviders: (bindings?: Record<string, string>) => Promise<void>;
+  /** `only` 是导入对话框里勾选的条目（`sourceId`）；不传就是全部。 */
+  importCcsProviders: (bindings?: Record<string, string>, only?: string[]) => Promise<void>;
+  importMagpieProviders: (ids: string[]) => Promise<void>;
   refreshLiveContextEntries: () => Promise<LiveContextEntriesResult | null>;
   syncLiveContextEntries: (settings: BackendSettings, silent?: boolean) => Promise<LiveContextEntriesResult | null>;
   refreshAds: () => Promise<void>;
@@ -871,7 +903,9 @@ export type Actions = {
   setUserScriptsEnabled: (enabled: boolean, host?: ExtensionHost) => Promise<void>;
   setUserScriptsSkipNextStart: (skip: boolean) => Promise<void>;
   setUserScriptEnabled: (key: string, enabled: boolean, host?: ExtensionHost) => Promise<void>;
-  setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean }) => Promise<boolean>;
+  setExtensionConfig: (key: string, values: Record<string, unknown>, options?: { silent?: boolean; merge?: boolean }) => Promise<boolean>;
+  /** 拓展面板里的 codexPlusManager.navigate(target)：跳得过去返回 true。 */
+  navigateFromExtension: (target: string) => boolean;
   showExtensionNotice: (title: string, message: string) => void;
   deleteUserScript: (key: string) => Promise<void>;
   refreshLocalSessions: (silent?: boolean, offset?: number, filter?: LocalSessionFilter) => Promise<LocalSessionsResult | null>;

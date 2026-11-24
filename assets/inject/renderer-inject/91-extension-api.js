@@ -61,6 +61,8 @@
     "/backend/status",
     // 只读：设置的公开子集（当前供应商的名称、模式、模型、上下文窗口），不含地址、Key 与配置内容。
     "/settings/public",
+    // 只读：网关供应商的配置价，不含地址、Key 或其他设置。
+    "/provider-prices/public",
     // 只读：模型目录（模型列表与每模型元数据，含上下文窗口），去掉了来源地址与本机路径。
     "/model-catalog/public",
     // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。
@@ -86,8 +88,10 @@
    * 拓展面板普遍用 setInterval 轮询这几个只读接口，每个面板各轮一次就是一次独立的桥
    * 往返，而后端每条请求都要走一遍 JSON 编解码。实测 /request-log/recent 58 次/分钟、
    * /thread-usage-live 37 次/分钟，几乎全是同一 payload 的重复请求。
-   * 窗口内同参调用复用同一个 Promise：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
+   * 窗口内同参调用复用同一次桥请求：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
    * 后端与桥的往返次数按窗口长度下降一个量级。
+   * 共用的只是那一次请求：结果每个调用方各拿一份拷贝（一方原地 sort / reverse 改不到别人），
+   * 超时各算各的（先到者的 options.timeout 不套给后来的）。
    */
   const codexPlusExtensionCoalesceWindowMs = new Map([
     // 实测这些面板的轮询间隔在 1~1.5 秒，窗口必须比它长才有合并效果；
@@ -102,14 +106,50 @@
     ["/cdp/targets", 5000],
   ]);
 
-  /** route + payload 指纹 → { at, promise }。只在窗口内复用，过期即重发。 */
+  /**
+   * route + payload 指纹 → { at, windowMs, request }。request 是那一次桥请求（不带超时），只在窗口内复用，过期即重发。
+   * 过期的条目到点删掉；payload 带变化值（时间戳、游标）时指纹各不相同，另设一个条数上限，超了先丢最早的。
+   */
   const codexPlusExtensionCallCache = new Map();
+  const codexPlusExtensionCallCacheLimit = 64;
 
   function codexPlusExtensionCallCacheKey(route, payload) {
     try {
       return `${route}\u0000${JSON.stringify(payload ?? {})}`;
     } catch {
       return "";
+    }
+  }
+
+  /** 只在缓存里还是这一条时才删：同一个指纹可能已经换成了新一次请求。 */
+  function codexPlusExtensionCallCacheDrop(cacheKey, entry) {
+    if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+  }
+
+  function codexPlusExtensionCallCacheStore(cacheKey, entry) {
+    // 后台标签页里定时器会被钳得很慢：放新条目时顺手把已经过期的清掉。
+    for (const [key, cached] of codexPlusExtensionCallCache) {
+      if (entry.at - cached.at >= cached.windowMs) codexPlusExtensionCallCache.delete(key);
+    }
+    // 先删再放：Map 按插入顺序排，超上限时丢的才是最早的那条。
+    codexPlusExtensionCallCache.delete(cacheKey);
+    codexPlusExtensionCallCache.set(cacheKey, entry);
+    while (codexPlusExtensionCallCache.size > codexPlusExtensionCallCacheLimit) {
+      codexPlusExtensionCallCache.delete(codexPlusExtensionCallCache.keys().next().value);
+    }
+    // 轮询停了以后不会再有新条目来触发清理，所以每条到点自己删，响应体不会一直留着。
+    const timer = setTimeout(() => codexPlusExtensionCallCacheDrop(cacheKey, entry), entry.windowMs);
+    // Node 测试环境里不让这个定时器拖住进程；浏览器的定时器 id 是数字，没有 unref。
+    if (typeof timer?.unref === "function") timer.unref();
+  }
+
+  /** 交给调用方的结果拷贝。桥的结果都是 JSON 形状；万一拷不了，宁可共用也不让调用失败。 */
+  function codexPlusExtensionCopyResult(value) {
+    if (!value || typeof value !== "object") return value;
+    try {
+      return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+    } catch {
+      return value;
     }
   }
 
@@ -132,40 +172,68 @@
     const cacheKey = windowMs ? codexPlusExtensionCallCacheKey(route, payload) : "";
     if (!windowMs || !cacheKey) return codexPlusExtensionCallOnce(route, payload, options, bridge);
     const now = Date.now();
-    const cached = codexPlusExtensionCallCache.get(cacheKey);
-    if (cached && now - cached.at < windowMs) return cached.promise;
-    const promise = codexPlusExtensionCallOnce(route, payload, options, bridge);
-    const entry = { at: now, promise };
-    codexPlusExtensionCallCache.set(cacheKey, entry);
-    // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
-    promise.catch(() => {
-      if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+    let entry = codexPlusExtensionCallCache.get(cacheKey);
+    if (!entry || now - entry.at >= windowMs) {
+      const fresh = { at: now, windowMs, request: codexPlusExtensionBridgeRequest(route, payload, bridge) };
+      entry = fresh;
+      codexPlusExtensionCallCacheStore(cacheKey, fresh);
+      // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
+      fresh.request.catch(() => codexPlusExtensionCallCacheDrop(cacheKey, fresh));
+    }
+    const shared = entry;
+    return codexPlusExtensionAwaitRequest(shared.request, route, options, {
+      // 有人等到超时说明这次请求卡住了：不再让后来的调用方接着等它，下一次调用重新发。
+      onTimeout: () => codexPlusExtensionCallCacheDrop(cacheKey, shared),
     });
-    return promise;
+  }
+
+  /** 发一次桥请求，不带超时。路由层的 {status:"failed"}、浮层面板的 {error} 统一成 reject。 */
+  function codexPlusExtensionBridgeRequest(route, payload, bridge) {
+    return Promise.resolve(bridge(route, payload)).then(
+      (result) => {
+        if (result?.status === "failed" || result?.error) {
+          throw new Error(result.message || result.error || `${route} 调用失败`);
+        }
+        return result;
+      },
+      (error) => {
+        throw error instanceof Error ? error : new Error(String(error));
+      },
+    );
+  }
+
+  /**
+   * 按调用方自己的超时等一次桥请求。给了 shared（这次请求是合并缓存里共用的）时，结果拷一份再交出去，
+   * 超时那一刻回调 shared.onTimeout。
+   */
+  function codexPlusExtensionAwaitRequest(request, route, options, shared = null) {
+    const timeout = Number.isFinite(options?.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
+    return new Promise((resolve, reject) => {
+      let timedOut = false;
+      // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
+      const timer = setTimeout(() => {
+        timedOut = true;
+        shared?.onTimeout();
+        reject(new Error(`调用 ${route} 超时`));
+      }, timeout);
+      request.then(
+        (result) => {
+          // 已经超时放弃的调用方不用再为它拷一份。
+          if (timedOut) return;
+          clearTimeout(timer);
+          resolve(shared ? codexPlusExtensionCopyResult(result) : result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 
   /** 真正发起一次桥调用（不做合并）。 */
   function codexPlusExtensionCallOnce(route, payload, options, bridge) {
-    const timeout = Number.isFinite(options.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
-    // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
-    const request = bridge(route, payload);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`调用 ${route} 超时`)), timeout);
-      Promise.resolve(request).then(
-        (result) => {
-          clearTimeout(timer);
-          if (result?.status === "failed" || result?.error) {
-            reject(new Error(result.message || result.error || `${route} 调用失败`));
-            return;
-          }
-          resolve(result);
-        },
-        (error) => {
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        },
-      );
-    });
+    return codexPlusExtensionAwaitRequest(codexPlusExtensionBridgeRequest(route, payload, bridge), route, options);
   }
 
   /**
@@ -319,6 +387,21 @@
     return {
       version: codexPlusExtensionAdapterVersion,
       apiVersion: codexPlusExtensionApiVersion,
+      /**
+       * 当前宿主。同一份拓展脚本也能跑在 Claude Desktop 里（清单的 claudeDesktop.renderer），那边是 "claudeDesktop"。
+       * 老版本没有这个成员，判断时写 `codexPlus.host ?? "codex"`。
+       */
+      host: "codex",
+      /**
+       * 某个接口 / 挂载点在当前宿主可不可用，例如 supports("registerComposerAction")、supports("registerSlot:composer.above")。
+       * Codex 里公开接口都有；Claude Desktop 里有些挂载点没有对应位置，先问一下再注册。
+       */
+      supports(name) {
+        const [member, detail] = String(name || "").split(":");
+        if (member === "registerSlot" && detail !== undefined) return codexPlusUiSlotNames.includes(detail);
+        // 从挂好的对象上查，不靠 this：拓展可能把 supports 解构出来单独调。
+        return member !== "dshClient" && typeof window.codexPlus?.[member] === "function";
+      },
       constants: codexPlusExtensionConstants,
       // 用 getter 而不是快照：脚本初始化结束后再读也能拿到自己的 key。
       get script() {

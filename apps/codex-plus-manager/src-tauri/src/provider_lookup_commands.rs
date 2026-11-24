@@ -62,7 +62,7 @@ pub async fn fetch_provider_models(
         let mut relay = match (&saved, key.is_empty()) {
             (Some(saved), true) => saved.clone(),
             (None, true) if provider_id.is_some() => {
-                anyhow::bail!("供应商池里没有 {}", provider_id.as_deref().unwrap_or_default())
+                anyhow::bail!("共享供应商里没有 {}", provider_id.as_deref().unwrap_or_default())
             }
             (_, true) => anyhow::bail!("先填 API Key 再获取模型列表"),
             (_, false) => codex_plus_core::provider_import::pool_relay_profile(

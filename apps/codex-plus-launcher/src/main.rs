@@ -1501,6 +1501,40 @@ impl LaunchHooks for LauncherHooks {
         self.core.inject(debug_port, helper_port).await
     }
 
+    fn begin_extension_session(&self) {
+        // 只补回桥接时页面还是原来那个：它要是带着「跳过拓展」启动的，现在仍然没有拓展。
+        if !self.attach_only {
+            self.core.begin_extension_session();
+        }
+    }
+
+    // 下面三个是拓展在页面之外生效的入口（见 codex_plus_core::builtin_takeover / extension_launch）。
+    // LaunchHooks 给它们留了「什么都不做」的默认实现（测试钩子用），这里不转发的话发布版里就悄悄不生效：
+    // 清单里的 launch、preload 不执行，被 replaces 顶替的内置功能在启动期也不让位。
+    fn effective_settings(
+        &self,
+        settings: codex_plus_core::settings::BackendSettings,
+    ) -> codex_plus_core::settings::BackendSettings {
+        self.core.effective_settings(settings)
+    }
+
+    fn extension_launches(&self) -> Vec<(String, Value, codex_plus_core::extension_launch::ExtensionLaunch)> {
+        // 只补回桥接时 Codex 早就起来了：不再跑启动前脚本，也没有启动参数可加；
+        // 它退出时也不跑退出后脚本（那一场的启动前脚本不是这个会话跑的）。
+        if self.attach_only {
+            return Vec::new();
+        }
+        self.core.extension_launches()
+    }
+
+    async fn reload_for_extension_preloads(&self, debug_port: u16) -> anyhow::Result<()> {
+        // 恢复后台服务只补回桥接，不刷新用户正在使用的页面。
+        if self.attach_only {
+            return Ok(());
+        }
+        self.core.reload_for_extension_preloads(debug_port).await
+    }
+
     async fn apply_native_module_patches_on_launch(&self, debug_port: u16) -> anyhow::Result<()> {
         // 恢复后台服务只补回桥接，不刷新用户正在使用的页面。
         if self.attach_only {
@@ -1650,6 +1684,16 @@ impl BridgeDataService for LauncherDataService {
         })
         .await
         .unwrap_or_else(|_| json!({"status":"failed","code":"archive-task-failed"})))
+    }
+
+    async fn usage_history_storage_info(&self) -> anyhow::Result<Value> {
+        tokio::task::spawn_blocking(|| {
+            codex_plus_data::usage_history::storage_info(
+                &codex_plus_core::codex_sqlite::default_codex_home_dir(),
+                &codex_plus_core::paths::default_settings_path(),
+            )
+        })
+        .await?
     }
 
     async fn clear_usage_history(&self) {
@@ -2008,14 +2052,10 @@ async fn try_inject_with_context(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("selected CDP target has no websocket URL"))?;
     runtime.set_websocket_url(websocket_url);
-    let settings = codex_plus_core::settings::SettingsStore::default()
-        .load()
-        .unwrap_or_default();
-    let script = codex_plus_core::assets::injection_script_with_settings(helper_port, &settings);
-    let new_document_scripts = vec![
-        script,
-        codex_plus_core::user_scripts::BOOTSTRAP_SCRIPT.to_string(),
-    ];
+    // 页面脚本与拓展的 preload 和 core 的注入共用一份（被顶替的内置功能在里面按「关」处理），
+    // 再加上本启动器才有的用户脚本启动器。
+    let mut new_document_scripts = codex_plus_core::launcher::injection_document_scripts(helper_port);
+    new_document_scripts.push(codex_plus_core::user_scripts::BOOTSTRAP_SCRIPT.to_string());
     codex_plus_core::bridge::install_bridge(
         websocket_url,
         codex_plus_core::bridge::BRIDGE_BINDING_NAME,
@@ -2151,6 +2191,48 @@ mod tests {
                 .to_string()
                 .contains("process monitoring failed")
         );
+    }
+
+    /// `LaunchHooks` 给不少方法留了「什么都不做」的默认实现（给测试钩子用）。真实启动走的是这里的 `LauncherHooks`，
+    /// 它包着 `DefaultLaunchHooks`：`DefaultLaunchHooks` 实现了、这里却没转发的方法，在发布版里会悄悄落到那个默认实现上。
+    /// 拓展的 launch、preload、启动期顶替就这样漏过一次（测试都用 `DefaultLaunchHooks`，发现不了）。
+    #[test]
+    fn production_hooks_forward_every_method_the_default_hooks_implement() {
+        fn methods(source: &str, header: &str) -> std::collections::BTreeSet<String> {
+            let start = source.find(header).unwrap_or_else(|| panic!("找不到 {header}"));
+            let end = source[start..].find("\n}\n").unwrap() + start;
+            source[start..end]
+                .lines()
+                .filter_map(|line| {
+                    let line = line.strip_prefix("    ")?;
+                    let line = line.strip_prefix("async ").unwrap_or(line);
+                    let name = line.strip_prefix("fn ")?;
+                    Some(name.split(['(', '<']).next().unwrap().to_string())
+                })
+                .collect()
+        }
+        let core = include_str!("../../../crates/codex-plus-core/src/launcher.rs");
+        let default = methods(core, "impl LaunchHooks for DefaultLaunchHooks {");
+        let production = methods(include_str!("main.rs"), "impl LaunchHooks for LauncherHooks {");
+        assert!(default.len() >= 20 && production.len() >= 20, "解析方式失效了：{} / {}", default.len(), production.len());
+        let missing = default.difference(&production).collect::<Vec<_>>();
+        assert!(missing.is_empty(), "LauncherHooks 没有转发这些方法，发布版里它们不生效：{missing:?}");
+        for name in ["effective_settings", "extension_launches", "reload_for_extension_preloads", "begin_extension_session"] {
+            assert!(production.contains(name), "{name}");
+        }
+    }
+
+    /// 发布版的注入和 core 的注入登记同一份新文档脚本（页面脚本 + 拓展的 preload，顶替在里面处理），再加用户脚本启动器。
+    #[test]
+    fn production_injection_registers_the_shared_document_scripts() {
+        let source = include_str!("main.rs");
+        let start = source.find("async fn try_inject_with_context(").unwrap();
+        let end = source[start..].find("codex_plus_core::bridge::install_bridge(").unwrap() + start;
+        let body = &source[start..end];
+        assert!(body.contains("codex_plus_core::launcher::injection_document_scripts(helper_port)"));
+        assert!(body.contains("new_document_scripts.push(codex_plus_core::user_scripts::BOOTSTRAP_SCRIPT.to_string());"));
+        // 不再自己读设置拼页面脚本：那样拿到的是没按顶替处理过的设置。
+        assert!(!body.contains("injection_script_with_settings"));
     }
 
     #[test]

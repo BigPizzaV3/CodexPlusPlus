@@ -6,7 +6,8 @@
  * - `about`：关于并进了设置页（滚到版本与更新）；
  * - `relayEnvironment`：旧版代理设置并进了「连接与供应商」页底部的「高级」（打开时展开）；
  * - `recommendations`：推荐内容并进了首页；
- * - `dreamSkin`：皮肤急救并进了增强页。
+ * - `dreamSkin`：皮肤急救并进了增强页；
+ * - `overview`：Agent 概览页去掉了，回到 Codex 的「连接与供应商」（主窗口里 `navigate` 会换成当前 Agent 的落脚页）。
  */
 export const ROUTE_ALIASES = {
   maintenance: "agentSettings",
@@ -14,6 +15,7 @@ export const ROUTE_ALIASES = {
   relayEnvironment: "relay",
   recommendations: "home",
   dreamSkin: "enhance",
+  overview: "relay",
 } as const;
 
 export type RouteAlias = keyof typeof ROUTE_ALIASES;

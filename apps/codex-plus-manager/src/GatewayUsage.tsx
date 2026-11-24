@@ -31,8 +31,6 @@ import { successRate } from "./hub-overview-model";
 import { openRequestLog } from "./UsageTabs";
 import { TopbarActions } from "./TopbarActions";
 import { cachedProviderBalances, loadProviderBalances, subscribeProviderBalances } from "./provider-balances";
-import { singleAgent } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { CxCard, CxEmpty, CxRow, CxSection, CxStats } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
 import { onTabListKeyDown } from "./tablist-keys";
@@ -42,14 +40,12 @@ const memo: { range: UsageRange; summary: UsageSummary | null } = { range: "30d"
 export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayload | null; busy: string | null; run: Run; notify: Notify }) {
   const [range, setRangeState] = useState<UsageRange>(memo.range);
   const [summary, setSummary] = useState<UsageSummary | null>(memo.summary);
-  // 余额和供应商池卡片共用一份（#2793），谁先查到另一边直接用。
+  // 余额和共享供应商卡片共用一份（#2793），谁先查到另一边直接用。
   const [balances, setBalances] = useState<ProviderBalance[] | null>(cachedProviderBalances().balances);
   const [loadingBalances, setLoadingBalances] = useState(false);
   // 读用量中：第一次进来（没有缓存）不先显示「0 次调用 / 还没有请求」，切换时间段时旧数字变淡。
   const [loading, setLoading] = useState(false);
   const [split, setSplit] = useState<"provider" | "model" | "agent">("provider");
-  // 只管理 Codex 时不按 Agent 拆分：没有占比条，也没有「按 Agent」页签。
-  const codexOnly = singleAgent(useAgentFocus()) === "codex";
 
   // 每次读取的序号：快速切换范围时，先发出的请求可能后回来，只认最后一次的结果。
   const latest = useRef(0);
@@ -95,7 +91,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
     // 进入时读一次；切换范围时由 setRange 读。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  // 供应商池卡片那边刷新了余额，这里跟着更新。
+  // 共享供应商卡片那边刷新了余额，这里跟着更新。
   useEffect(() => subscribeProviderBalances(setBalances), []);
 
   const ranges: Array<{ id: UsageRange; label: string }> = [
@@ -172,14 +168,14 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
 
       <CxCard className="gw-chart-card">
         <UsageChart summary={summary} />
-        {!codexOnly && summary && summary.byAgent.length > 0 ? <AgentShare groups={summary.byAgent} /> : null}
+        {summary && summary.byAgent.length > 0 ? <AgentShare groups={summary.byAgent} /> : null}
       </CxCard>
 
       <CxSection
         aside={
           <>
             <nav aria-label={t("明细")} className="tp-tabs cx-pills gw-split-pills" onKeyDown={onTabListKeyDown} role="tablist">
-              {([["provider", t("按供应商")], ["model", t("按模型")], ["agent", t("按 Agent")]] as const).filter(([id]) => !codexOnly || id !== "agent").map(([id, label]) => (
+              {([["provider", t("按供应商")], ["model", t("按模型")], ["agent", t("按 Agent")]] as const).map(([id, label]) => (
                 <button aria-controls="gw-usage-detail" aria-selected={split === id} data-active={split === id} key={id} onClick={() => setSplit(id)} role="tab" tabIndex={split === id ? 0 : -1} type="button">{label}</button>
               ))}
             </nav>
@@ -266,7 +262,7 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
         </div>
       </CxSection>
 
-      {/* 额度（#3084）：订阅账号和 OpenCode Go、Command Code 等套餐的时间窗口，和供应商池卡片同一份缓存。 */}
+      {/* 额度（#3084）：订阅账号和 OpenCode Go、Command Code 等套餐的时间窗口，和共享供应商卡片同一份缓存。 */}
       {quotas.length ? (
         <CxSection count={quotas.length} title={t("额度")}>
           <CxCard>

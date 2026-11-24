@@ -205,6 +205,10 @@ pub fn parse_search_page(raw: &Value) -> anyhow::Result<(Vec<SearchRepo>, usize)
 }
 
 /// 清单声明了哪些能力，按安装确认框的展示顺序给出。
+///
+/// 清单里每一种「装上就会干活」的声明都要出现在这里：确认框、社区列表徽标、审核框、README 能力表读的都是这一份，
+/// 漏掉一项，对应的包就会显示成「没有声明任何能力」。新增清单字段时在这里补一项，
+/// `tests/all/extension_discovery.rs` 的 `permissions_cover_every_capability_a_manifest_can_declare` 守着。
 pub fn manifest_permissions(manifest: &Value) -> Value {
     let strings = |value: Option<&Value>| -> Vec<String> {
         match value {
@@ -213,6 +217,22 @@ pub fn manifest_permissions(manifest: &Value) -> Value {
             _ => Vec::new(),
         }
     };
+    // 对象数组里每一项的名字（`name`，没有就用 `id`）。
+    let names = |value: Option<&Value>| -> Vec<String> {
+        value
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|item| {
+                item.get("name")
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.trim().is_empty())
+                    .or_else(|| item.get("id").and_then(Value::as_str))
+                    .map(str::to_string)
+            })
+            .collect()
+    };
+    let count = |value: Option<&Value>| value.and_then(Value::as_array).map_or(0, Vec::len);
     let mut hooks = Vec::new();
     if let Some(map) = manifest.get("hooks").and_then(Value::as_object) {
         for (event, items) in map {
@@ -222,29 +242,74 @@ pub fn manifest_permissions(manifest: &Value) -> Value {
             }
         }
     }
-    let gateway = |key: &str| {
-        manifest
-            .get("gateway")
-            .and_then(|gateway| gateway.get(key))
-            .and_then(Value::as_array)
-            .map_or(0, Vec::len)
+    let gateway = manifest.get("gateway");
+    let backend = manifest.get("backend");
+    let launch = manifest.get("launch");
+    let pipeline = manifest.get("toolPipeline");
+    // preload：字符串、字符串数组，或 `{ scripts }`。
+    let preload = match manifest.get("preload") {
+        Some(Value::Object(map)) => strings(map.get("scripts")),
+        other => strings(other),
     };
-    let tools = manifest
-        .get("tools")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
-        .collect::<Vec<_>>();
+    let manager = manifest.get("manager");
+    let pipeline_steps = ["preExecute", "execute", "postExecute"]
+        .iter()
+        .map(|stage| count(pipeline.and_then(|pipeline| pipeline.get(*stage))))
+        .sum::<usize>();
+    let mcp_servers = manifest
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .map(|servers| servers.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
     json!({
-        "backend": manifest.get("backend").and_then(|backend| backend.get("script")).and_then(Value::as_str),
+        "backend": backend.and_then(|backend| backend.get("script")).and_then(Value::as_str),
+        "backendHttp": backend.and_then(|backend| backend.get("http")).and_then(Value::as_bool).unwrap_or(false),
+        "schedules": count(manifest.get("schedules")),
+        "launchBefore": launch.and_then(|launch| launch.get("before")).and_then(Value::as_str),
+        "launchAfter": launch.and_then(|launch| launch.get("after")).and_then(Value::as_str),
+        "launchArgs": strings(launch.and_then(|launch| launch.get("args"))),
+        "mcpServers": mcp_servers,
+        "dsh": manifest.get("dsh").and_then(Value::as_str),
         "hooks": hooks,
-        "gatewayRequest": gateway("request"),
-        "gatewayResponse": gateway("response"),
-        "tools": tools,
+        "toolPipeline": pipeline_steps,
+        "gatewayRequest": count(gateway.and_then(|gateway| gateway.get("request"))),
+        "gatewayResponse": count(gateway.and_then(|gateway| gateway.get("response"))),
+        "gatewayError": count(gateway.and_then(|gateway| gateway.get("error"))),
+        "gatewayReplaces": strings(gateway.and_then(|gateway| gateway.get("replaces"))),
+        "providers": names(manifest.get("providers")),
+        "tools": names(manifest.get("tools")),
+        "skills": strings(manifest.get("skills")),
+        "agents": names(manifest.get("agents")),
+        "prompts": names(manifest.get("prompts")),
+        "instructions": manifest.get("instructions").and_then(Value::as_str).is_some_and(|text| !text.trim().is_empty()),
+        "replaces": strings(manifest.get("replaces")),
+        "managerReplaces": strings(manager.and_then(|manager| manager.get("replaces"))),
+        "managerData": strings(manager.and_then(|manager| manager.get("data"))),
         "routes": strings(manifest.get("permissions").and_then(|permissions| permissions.get("routes"))),
+        "preload": preload,
         "renderer": strings(manifest.get("renderer")),
     })
+}
+
+/// 同 [`manifest_permissions`]，再补上清单里没写、但装上后会从包目录里自动发现的东西：
+/// 没声明 `skills` 时，`skills/<名字>/SKILL.md` 会被同步进 Codex 的技能目录（见 `extension_codex::parse`）。
+pub fn package_permissions(manifest: &Value, package_dir: &Path) -> Value {
+    let mut permissions = manifest_permissions(manifest);
+    if manifest.get("skills").is_none() {
+        let mut found = std::fs::read_dir(package_dir.join("skills"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|entry| {
+                let path = entry.path();
+                std::fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir()) && path.join("SKILL.md").is_file()
+            })
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        found.sort();
+        permissions["skills"] = json!(found);
+    }
+    permissions
 }
 
 /// 由搜索结果与默认分支上的清单组成一条社区拓展；清单不合格时报错（列表里不显示）。
@@ -749,7 +814,9 @@ impl CommunityStore {
                 "fromDefaultBranch": resolved.from_default_branch,
                 "fromAsset": resolved.asset.is_some(),
                 "channel": channel,
-                "permissions": manifest_permissions(&manifest),
+                "permissions": package_permissions(&manifest, &package_dir),
+                // 本机已装着同 id 的包（更新、重新安装、替换）时带上它现在的能力：确认框据此标出这一版新增了哪些。
+                "previousPermissions": installed_permissions(manager, id),
                 "conflict": local_conflict(&self.load_state(), manager, id, repo),
             }))
         })();
@@ -828,10 +895,16 @@ impl CommunityStore {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or(Value::Null);
-        let has_hooks = manifest
-            .get("hooks")
-            .and_then(Value::as_object)
-            .is_some_and(|hooks| !hooks.is_empty());
+        // 装上后要不要同步 Codex 配置（调用方看 `hooks` 这一项决定）。不只是清单里的 hooks：工具管线的
+        // preExecute / execute 也是经钩子分发的，MCP 服务器、Skills、子 Agent、全局指令、提示词、dsh 插件
+        // 同样要写进 Codex 配置才生效。以前只看 hooks，只带这些的包要等下次启停拓展才同步。
+        let permissions = package_permissions(&manifest, &target);
+        let listed = |key: &str| permissions[key].as_array().is_some_and(|items| !items.is_empty());
+        let has_hooks = listed("hooks")
+            || permissions["toolPipeline"].as_u64().unwrap_or(0) > 0
+            || ["mcpServers", "skills", "agents", "prompts"].iter().any(|key| listed(key))
+            || permissions["instructions"] == true
+            || permissions["dsh"].is_string();
         Ok(json!({
             "id": id,
             "key": key,
@@ -919,6 +992,15 @@ pub fn local_source_version(manager: &UserScriptManager, id: &str, repo: &str) -
 }
 
 /// 本机同 id 的拓展是否来自别处（手写、对话生成或另一个仓库）。是的话返回它的来源说明。
+/// 本机已装着的同 id 拓展包声明的能力；没装或清单读不出来时为 null。
+fn installed_permissions(manager: &UserScriptManager, id: &str) -> Value {
+    let directory = manager.user_dir().join(id);
+    std::fs::read(directory.join(EXTENSION_MANIFEST_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .map_or(Value::Null, |manifest| package_permissions(&manifest, &directory))
+}
+
 fn local_conflict(state: &CommunityState, manager: &UserScriptManager, id: &str, repo: &str) -> Value {
     if std::fs::symlink_metadata(manager.user_dir().join(id)).is_err() {
         return Value::Null;

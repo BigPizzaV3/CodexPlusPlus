@@ -1,5 +1,5 @@
 //! 网关供应商的账户余额：有公开余额接口的几家（DeepSeek、Kimi / Moonshot、OpenRouter、SiliconFlow）
-//! 用该供应商的第一个 Key 查；识别为中转站（sub2api / new-api）的，和供应商池卡片走同一条识别链路。
+//! 用该供应商的第一个 Key 查；识别为中转站（sub2api / new-api）的，和共享供应商卡片走同一条识别链路。
 //! 其它供应商不列出。
 
 use std::time::Duration;
@@ -108,7 +108,7 @@ pub fn balance_api(relay: &RelayProfile) -> Option<BalanceApi> {
     }
 }
 
-/// 供应商池卡片据此显示余额（#2793）：有余额接口的供应商（DeepSeek 等）不当中转站识别，
+/// 共享供应商卡片据此显示余额（#2793）：有余额接口的供应商（DeepSeek 等）不当中转站识别，
 /// 余额和「用量」页、托盘面板同一个来源（[`fetch_balances`]），界面共用一份查询结果。
 pub fn has_balance_api(relay: &RelayProfile) -> bool {
     balance_api(relay).is_some()
@@ -164,7 +164,7 @@ async fn vendor_balance(relay: &RelayProfile, api: BalanceApi) -> ProviderBalanc
     }
 }
 
-/// 中转站的余额，取自识别结果（和供应商池卡片同一来源）；没识别出中转站时不列出。
+/// 中转站的余额，取自识别结果（和共享供应商卡片同一来源）；没识别出中转站时不列出。
 fn relay_balance(
     relay: &RelayProfile,
     probe: &crate::relay_billing::RelayBillingProbe,
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn pool_cards_show_balance_only_for_vendors_with_balance_api() {
-        // 供应商池卡片的余额来源（#2793）：DeepSeek 这类走余额接口，不当中转站识别；中转站不走。
+        // 共享供应商卡片的余额来源（#2793）：DeepSeek 这类走余额接口，不当中转站识别；中转站不走。
         assert!(has_balance_api(&relay("https://api.deepseek.com")));
         assert!(has_balance_api(&relay("https://api.siliconflow.cn/v1")));
         assert!(!has_balance_api(&relay("https://jojocode.com/v1")));

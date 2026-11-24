@@ -96,6 +96,10 @@ pub trait BridgeSettingsService: Send + Sync {
         crate::paths::default_app_state_dir().join("whale-balance.sqlite3")
     }
 
+    fn gateway_store(&self) -> crate::gateway::store::GatewayStore {
+        crate::gateway::store::GatewayStore::default()
+    }
+
     /// 有没有启用中的拓展包在清单里声明了这条路由。桌宠 / 大肥鱼的数据路由（图片、音效、用量、余额）
     /// 只在有拓展用它时才干活：Agent 桌宠拓展停用后不联网、不扫会话日志、不查余额。测试可覆盖。
     fn extension_route_declared(&self, route: &str) -> bool {
@@ -162,6 +166,12 @@ pub trait BridgeRuntimeService: Send + Sync {
     /// 保存一个拓展包的配置（Codex 里「拓展」详情页的设置面板用），回 `{status, config}`，config 是生效配置。
     async fn set_extension_config(&self, key: String, values: serde_json::Map<String, Value>) -> anyhow::Result<Value> {
         let config = crate::user_scripts::default_user_script_manager().set_extension_config(&key, &values)?;
+        Ok(json!({ "status": "ok", "config": config }))
+    }
+    /// 同上，但只覆盖给出的项、其余已存的值保留。拓展自己调的 `saveConfig(values)` 走这个：
+    /// 拓展常常只传改动的那一项，整份替换会把别的项（含密钥）悄悄打回默认值。
+    async fn merge_extension_config(&self, key: String, values: serde_json::Map<String, Value>) -> anyhow::Result<Value> {
+        let config = crate::user_scripts::default_user_script_manager().update_extension_config(&key, &values)?;
         Ok(json!({ "status": "ok", "config": config }))
     }
     /// 拓展的 README（Codex 里「拓展」详情页的「细节」页签用），见 [`crate::user_scripts::UserScriptManager::extension_readme`]。
@@ -288,6 +298,9 @@ pub trait BridgeDataService: Send + Sync {
     /// 独立消费者封存，不是原生账单或归属验证，不参与 usage_history。
     async fn usage_archive(&self, _request: Value) -> anyhow::Result<Value> {
         Ok(json!({"status":"unavailable","code":"archive-unavailable"}))
+    }
+    async fn usage_history_storage_info(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable"}))
     }
     /// 关闭查询时释放本进程的只读缓存，默认实现兼容其他数据服务。
     async fn clear_usage_history(&self) {}
@@ -471,6 +484,7 @@ pub async fn handle_bridge_request(
         }
         // 只读：设置项清单（标题、说明、分组等），注入页据此生成设置行。
         "/settings/catalog" => crate::settings_catalog::enhancement_settings_catalog(),
+        "/settings/usage-history-storage" => ctx.data.usage_history_storage_info().await,
         // 只读：Codex 自定义 prompt（<CODEX_HOME>/prompts/*.md），给「prompt 参数展开」发送前展开占位符。
         "/custom-prompts/list" => Ok(json!({
             "status": "ok",
@@ -522,7 +536,7 @@ pub async fn handle_bridge_request(
                 .map_err(anyhow::Error::from)
                 .and_then(|result| result)
         }
-        // 网关供应商池：分发到管理器的网关命令（同步命令里有文件锁、可能联网），放到阻塞线程池。
+        // 网关共享供应商：分发到管理器的网关命令（同步命令里有文件锁、可能联网），放到阻塞线程池。
         "/providers/gateway" => {
             let payload = payload.clone();
             tokio::task::spawn_blocking(move || crate::provider_page::route_gateway(&payload))
@@ -568,6 +582,10 @@ pub async fn handle_bridge_request(
             }
             Err(error) => Err(error),
         },
+        // 供应商配置价只读投影；读取失败仍返回失败，但不向页面暴露状态文件路径。
+        "/provider-prices/public" => ctx.settings.gateway_store().load()
+            .map(|gateway| crate::extension_manager_data::gateway_provider_prices(&gateway))
+            .map_err(|_| anyhow::anyhow!("无法读取供应商配置价")),
         "/user-scripts/list" => {
             ctx.runtime
                 .user_script_inventory_with_runtime_status(payload.clone())
@@ -608,7 +626,13 @@ pub async fn handle_bridge_request(
             if key.is_empty() {
                 Ok(json!({ "status": "failed", "message": "拓展 key 不能为空" }))
             } else {
-                match ctx.runtime.set_extension_config(key, values).await {
+                // merge：拓展自己的设置面板保存（只覆盖给出的项）；通用表单逐项保存时传的是整份，照旧整份替换。
+                let saved = if payload.get("merge").and_then(Value::as_bool).unwrap_or(false) {
+                    ctx.runtime.merge_extension_config(key, values).await
+                } else {
+                    ctx.runtime.set_extension_config(key, values).await
+                };
+                match saved {
                     Ok(value) => Ok(value),
                     Err(error) => Ok(json!({ "status": "failed", "message": format!("{error:#}") })),
                 }

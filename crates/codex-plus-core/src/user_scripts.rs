@@ -70,7 +70,15 @@ pub async fn reload_scripts_at(
     let bundle = manager.build_reload_bundle()?;
     // 拓展重载后旧后台的方法表、配置都过期了：先全部停掉，下次调用按新代码重起。
     crate::extension_backend::stop_all(manager).await;
-    apply_scripts_at(websocket, manager, &bundle, Some(Duration::from_secs(15))).await
+    let inventory = apply_scripts_at(websocket, manager, bundle, Some(Duration::from_secs(15)), |broken| {
+        manager.reload_bundle(broken)
+    })
+    .await?;
+    // 页内重载成功：拓展又在跑了。退回整页刷新（mode 为 page）的由新页面的初始化去记。
+    if inventory["reload_mode"] != "page" {
+        manager.end_skipped_session()?;
+    }
+    Ok(inventory)
 }
 
 pub async fn load_scripts_at(
@@ -79,41 +87,83 @@ pub async fn load_scripts_at(
 ) -> anyhow::Result<Value> {
     // 页面重新加载：上一个页面的后台不再有人用。
     crate::extension_backend::stop_all(manager).await;
-    apply_scripts_at(websocket, manager, &manager.build_initial_bundle()?, None).await
+    // 跳过标记只消费一次：注入包因语法错误重拼时沿用这次的结果。
+    let skip = manager.consume_skip_next_start()?;
+    let bundle = manager.initial_bundle(skip, &BrokenScripts::new())?;
+    let inventory = apply_scripts_at(websocket, manager, bundle, None, |broken| manager.initial_bundle(skip, broken)).await?;
+    if let Some(ran) = inventory.get("initial_ran").and_then(Value::as_bool) {
+        manager.settle_initial_load(inventory["reload_mode"] == "skipped", ran)?;
+    }
+    Ok(inventory)
 }
 
+/// 把注入包交给页面执行。`rebuild`：注入包整体解析失败时，按「语法有错的脚本」表重拼一份。
 async fn apply_scripts_at(
     websocket: &str,
     manager: &UserScriptManager,
-    bundle: &str,
+    bundle: String,
     reload_timeout: Option<Duration>,
+    rebuild: impl Fn(&BrokenScripts) -> anyhow::Result<String>,
 ) -> anyhow::Result<Value> {
-    let response = if let Some(timeout) = reload_timeout {
-        crate::bridge::evaluate_script_with_await_promise_timeout(websocket, bundle, false, timeout)
-            .await
-            .map_err(|error| {
-                if error.is::<crate::bridge::CdpCommandTimeout>() {
-                    error.context(ReloadOutcomeUnknown)
-                } else {
-                    error
-                }
-            })?
-    } else {
-        crate::bridge::evaluate_script(websocket, bundle).await?
+    let response = match evaluate_bundle(websocket, &bundle, reload_timeout).await {
+        // 所有脚本拼在同一段里求值：任何一个脚本有语法错误，整段都解析不了，一个拓展也加载不上。
+        // 页面逐个编译能找出语法有错的脚本，就说明整段确实没解析过去、一行也没执行，可以放心重来：
+        // 把出错的换成报错占位后再执行一次。找不出来的是别的异常（比如旧脚本不支持页内重载），照原样报。
+        Err(error) if error.is::<crate::bridge::RuntimeEvaluateException>() => {
+            let broken = find_syntax_errors(websocket, manager).await;
+            if broken.is_empty() {
+                return Err(error);
+            }
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "user_scripts.syntax_error_isolated",
+                json!({ "scripts": broken }),
+            );
+            evaluate_bundle(websocket, &rebuild(&broken)?, reload_timeout).await?
+        }
+        outcome => outcome?,
     };
-    if let Some(exception) = response.pointer("/result/exceptionDetails") {
-        anyhow::bail!(
-            "脚本重载失败：{}",
-            exception
-                .pointer("/exception/description")
-                .and_then(Value::as_str)
-                .unwrap_or("renderer exception")
-        );
-    }
     let result = parse_live_runtime_status_response(&response)?;
     let mut inventory = manager.inventory_with_runtime_status(result.get("scripts"))?;
     inventory["reload_mode"] = result["mode"].clone();
+    // 首个页面的注入包会报告这次有没有真的初始化页面（见 build_initial_bundle）。
+    if let Some(ran) = result.get("ran") {
+        inventory["initial_ran"] = ran.clone();
+    }
     Ok(inventory)
+}
+
+async fn evaluate_bundle(websocket: &str, bundle: &str, reload_timeout: Option<Duration>) -> anyhow::Result<Value> {
+    let Some(timeout) = reload_timeout else {
+        return crate::bridge::evaluate_script(websocket, bundle).await;
+    };
+    crate::bridge::evaluate_script_with_await_promise_timeout(websocket, bundle, false, timeout)
+        .await
+        .map_err(|error| {
+            if error.is::<crate::bridge::CdpCommandTimeout>() {
+                error.context(ReloadOutcomeUnknown)
+            } else {
+                error
+            }
+        })
+}
+
+/// 让页面逐个编译（只编译、不执行）启用中的脚本，返回语法有错的那些：脚本 key → 报错。
+///
+/// 做法是把脚本包进一个不调用的函数里求值：语法有错时页面报 SyntaxError，没错时得到一个函数、一行也不执行。
+/// 不用 `Runtime.compileScript`：它要求连接先 `Runtime.enable`，而这里每条命令都是新连接，会直接报
+/// 「Runtime agent is not enabled」（在真实的 Chromium 上验证过）。
+/// 问不到页面（连接失败、命令超时）的脚本当作没问题，交给后面的整包执行去报错。
+async fn find_syntax_errors(websocket: &str, manager: &UserScriptManager) -> BrokenScripts {
+    let mut broken = BrokenScripts::new();
+    for (key, block) in manager.enabled_script_blocks().unwrap_or_default() {
+        let probe = format!("void (function(){{\n{block}\n}})");
+        if let Err(error) = crate::bridge::evaluate_script(websocket, &probe).await
+            && let Some(exception) = error.downcast_ref::<crate::bridge::RuntimeEvaluateException>()
+        {
+            broken.insert(key, exception.summary().to_string());
+        }
+    }
+    broken
 }
 
 /// Query the live renderer-side user-script registry through a one-shot CDP
@@ -151,6 +201,12 @@ fn parse_live_runtime_status_response(response: &Value) -> anyhow::Result<Value>
     Ok(status)
 }
 
+/// 见 [`UserScriptManager::lock_for_update`]。文件关闭时文件锁随之释放。
+struct ConfigUpdateGuard<'a> {
+    _process: std::sync::MutexGuard<'a, ()>,
+    _file: Option<fs::File>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UserScriptConfig {
     pub enabled: bool,
@@ -159,11 +215,23 @@ pub struct UserScriptConfig {
     pub claude_scripts: BTreeMap<String, bool>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub skip_next_start: bool,
+    /// 这一场 Codex 会话是带着「跳过拓展」启动的：页面里没有加载任何拓展。
+    /// `skip_next_start` 在页面初始化时就消费掉了，之后靠这一项记住「拓展没在跑」，
+    /// 否则被顶替的内置功能会既没人接管、又被按「关」处理。拓展真正加载进页面（新页面初始化、热重载）时清掉。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub skipped_session: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub market: BTreeMap<String, MarketScriptInstall>,
     /// 拓展包的配置值，键是脚本 key（`user:<id>`）。只存清单 schema 里声明过的键。
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub configs: BTreeMap<String, Map<String, Value>>,
+}
+
+impl UserScriptConfig {
+    /// 拓展这次不加载：等着下次启动跳过，或这一场会话已经是跳过拓展启动的。
+    pub fn extensions_skipped(&self) -> bool {
+        self.skip_next_start || self.skipped_session
+    }
 }
 
 impl Default for UserScriptConfig {
@@ -173,6 +241,7 @@ impl Default for UserScriptConfig {
             scripts: BTreeMap::new(),
             claude_scripts: BTreeMap::new(),
             skip_next_start: false,
+            skipped_session: false,
             market: BTreeMap::new(),
             configs: BTreeMap::new(),
         }
@@ -252,8 +321,8 @@ impl UserScriptManager {
 
     /// 官方拓展包的一次性迁移：配置与开关里都还没有它时写入；返回是否写了。
     fn migrate_bundled(&self, key: &str, values: Map<String, Value>, enabled: bool) -> anyhow::Result<bool> {
-        let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut config = self.load_config_for_update()?;
         if config.configs.contains_key(key) || config.scripts.contains_key(key) {
             return Ok(false);
         }
@@ -295,7 +364,78 @@ impl UserScriptManager {
         let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(&text) else {
             return UserScriptConfig::default();
         };
-        let mut config = config_from_object(&raw);
+        self.config_from_raw(&raw)
+    }
+
+    /// 读改写期间持有的锁：进程内的互斥锁，加上尽力而为的跨进程文件锁。
+    fn lock_for_update(&self) -> ConfigUpdateGuard<'_> {
+        let process = self.config_lock.lock().unwrap();
+        ConfigUpdateGuard { _process: process, _file: self.lock_config_file() }
+    }
+
+    /// 管理器、启动器、拓展 MCP、钩子进程都会读改写这份配置，同一进程里不同的管理器实例也各有各的互斥锁：
+    /// 没有跨进程的锁，两边同时改会互相覆盖（一边切开关、一边在对话里改配置，后写的把先写的冲掉）。
+    /// 最多等 2 秒；等不到、或建不了锁文件，就不加文件锁照常进行——宁可偶尔丢一次并发更新，也不能卡死在一把锁上。
+    fn lock_config_file(&self) -> Option<fs::File> {
+        let mut path = self.config_path.clone().into_os_string();
+        path.push(".lock");
+        if let Some(parent) = self.config_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let file = fs::OpenOptions::new().create(true).read(true).write(true).truncate(false).open(path).ok()?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if fs2::FileExt::try_lock_exclusive(&file).is_ok() {
+                return Some(file);
+            }
+            if std::time::Instant::now() >= deadline {
+                return None;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+    }
+
+    /// 读改写用的加载。只读的地方读不出来可以先按默认值看（[`Self::load_config_unlocked`]），
+    /// 但读改写不行：按默认值改完写回去，停用标记、拓展配置（含密钥）、市场安装记录就全没了。
+    ///
+    /// - 文件不存在（第一次用）：从默认值开始；
+    /// - 读不出来（文件正被占用、权限问题）：报错，这次改动不保存，文件原样留着；
+    /// - 内容不是合法的配置（写坏了、被手改坏了）：先把原文件另存为 `<文件名>.corrupt-<时间戳>` 再从默认值开始，
+    ///   这样既不卡死后续的启停操作，原来的内容也还找得回来。
+    fn load_config_for_update(&self) -> anyhow::Result<UserScriptConfig> {
+        let text = match fs::read_to_string(&self.config_path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(UserScriptConfig::default()),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("读取拓展配置 {} 失败，这次改动没有保存，请稍后重试", self.config_path.display())
+                });
+            }
+        };
+        if let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(&text) {
+            return Ok(self.config_from_raw(&raw));
+        }
+        if !text.trim().is_empty() {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_secs())
+                .unwrap_or_default();
+            let mut backup = self.config_path.clone().into_os_string();
+            backup.push(format!(".corrupt-{stamp}"));
+            let backup = PathBuf::from(backup);
+            fs::copy(&self.config_path, &backup).with_context(|| {
+                format!("拓展配置 {} 已损坏，另存备份失败，这次改动没有保存", self.config_path.display())
+            })?;
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "user_scripts.config_corrupt",
+                json!({ "path": self.config_path.display().to_string(), "backup": backup.display().to_string() }),
+            );
+        }
+        Ok(UserScriptConfig::default())
+    }
+
+    fn config_from_raw(&self, raw: &Map<String, Value>) -> UserScriptConfig {
+        let mut config = config_from_object(raw);
         if !raw.contains_key("claude_scripts") {
             config.claude_scripts = config.scripts.clone();
             // 旧版的整体开关也约束 Claude；迁移后保留当时各项的关闭状态。
@@ -334,16 +474,16 @@ impl UserScriptManager {
     }
 
     pub fn set_global_enabled(&self, enabled: bool) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut config = self.load_config_for_update()?;
         config.enabled = enabled;
         self.save_config_unlocked(&config)?;
         Ok(config)
     }
 
     pub fn set_skip_next_start(&self, skip: bool) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut config = self.load_config_for_update()?;
         config.skip_next_start = skip;
         self.save_config_unlocked(&config)?;
         Ok(config)
@@ -352,8 +492,8 @@ impl UserScriptManager {
     /// Consume the one-shot safe-start marker before building the first-page bundle.
     /// The marker is cleared only after the updated configuration is persisted.
     pub fn consume_skip_next_start(&self) -> anyhow::Result<bool> {
-        let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut config = self.load_config_for_update()?;
         if !config.skip_next_start {
             return Ok(false);
         }
@@ -362,9 +502,46 @@ impl UserScriptManager {
         Ok(true)
     }
 
+    /// 首个页面的注入包执行完之后，按页面里实际发生的事记账（`ran`：这次真的初始化了页面，而不是桥接恢复时的重复请求）。
+    ///
+    /// - 初始化了、且是跳过拓展的空包：这一场会话没有拓展，记下 `skipped_session`；
+    /// - 初始化了、加载的是正常的拓展包：拓展在跑了，清掉 `skipped_session`；
+    /// - 没初始化（页面早就初始化过）却消费了跳过标记：这次什么也没跳过，把标记还回去，留给真正的下一次启动。
+    pub fn settle_initial_load(&self, skipped: bool, ran: bool) -> anyhow::Result<()> {
+        self.update_skip_state(|config| match (ran, skipped) {
+            (true, skipped) => config.skipped_session = skipped,
+            (false, true) => config.skip_next_start = true,
+            (false, false) => {}
+        })
+    }
+
+    /// 拓展重新加载进页面了（热重载成功），或新的一次启动开始：这一场会话不再算「跳过拓展」。
+    pub fn end_skipped_session(&self) -> anyhow::Result<()> {
+        self.update_skip_state(|config| config.skipped_session = false)
+    }
+
+    /// 改「跳过拓展」的两个标记；有变化才写盘，并让顶替状态的缓存立刻失效。
+    fn update_skip_state(&self, update: impl FnOnce(&mut UserScriptConfig)) -> anyhow::Result<()> {
+        let changed = {
+            let _guard = self.lock_for_update();
+            let mut config = self.load_config_for_update()?;
+            let before = (config.skip_next_start, config.skipped_session);
+            update(&mut config);
+            let changed = before != (config.skip_next_start, config.skipped_session);
+            if changed {
+                self.save_config_unlocked(&config)?;
+            }
+            changed
+        };
+        if changed {
+            crate::builtin_takeover::invalidate();
+        }
+        Ok(())
+    }
+
     pub fn set_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut config = self.load_config_for_update()?;
         // 有设置字段的内置拓展：开关就是那个设置项，写设置，不在用户脚本配置里另记一份
         // （顺手清掉旧版本记下的停用标记，免得它在没有入口的地方一直压着功能）。
         let setting = key
@@ -388,8 +565,8 @@ impl UserScriptManager {
 
     /// Claude 只接受显式适配的拓展包；不改 Codex 的单项开关或设置字段。
     pub fn set_claude_script_enabled(&self, key: &str, enabled: bool) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut config = self.load_config_for_update()?;
         let script = self.scan_script_files(&config)?
             .into_iter()
             .find(|script| script.key == key)
@@ -458,8 +635,8 @@ impl UserScriptManager {
             }
         }
 
-        let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut config = self.load_config_for_update()?;
         config.scripts.remove(key);
         config.claude_scripts.remove(key);
         config.market.remove(key);
@@ -472,8 +649,8 @@ impl UserScriptManager {
     }
 
     pub fn record_market_install(&self, script: &MarketScript) -> anyhow::Result<UserScriptConfig> {
-        let _guard = self.config_lock.lock().unwrap();
-        let mut config = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut config = self.load_config_for_update()?;
         let key = format!("user:{}", market_script_filename(&script.id));
         config.scripts.entry(key.clone()).or_insert(true);
         config.market.insert(
@@ -675,8 +852,8 @@ impl UserScriptManager {
             }
             stored.insert(name.clone(), value.clone());
         }
-        let _guard = self.config_lock.lock().unwrap();
-        let mut latest = self.load_config_unlocked();
+        let _guard = self.lock_for_update();
+        let mut latest = self.load_config_for_update()?;
         latest.configs.insert(key.to_string(), stored.clone());
         self.save_config_unlocked(&latest)?;
         Ok(resolve_extension_config(&package.config_schema, Some(&stored)))
@@ -761,21 +938,62 @@ impl UserScriptManager {
             .filter(|script| config.claude_scripts.get(&script.key).copied().unwrap_or(true))
             .filter_map(|script| {
                 let package = script.package.filter(|package| package.error.is_none())?;
+                // 只有页面部分的包不进 Mods 插件；页面部分由注入计划下发（见 enabled_claude_page_packages）。
+                let declaration = package.claude_desktop.filter(|declaration| declaration.has_mods())?;
                 Some(crate::extension_claude::EnabledClaudeExtension {
                     key: script.key,
                     name: package.name.unwrap_or_else(|| package.id.clone()),
                     id: package.id,
-                    declaration: package.claude_desktop?,
+                    declaration: declaration.mods_only(),
                 })
             })
             .collect())
     }
 
     /// 每次 Claude 调用都重新确认宿主开关、拓展身份与清单方法白名单，不沿用 Codex 的扫描缓存。
+    /// 启用中的 Claude 页面拓展包：声明了 `claudeDesktop.renderer` / `styles` 的包，交给 claude-local 并进注入计划。
+    /// 和 Mods 那边同一套开关：Claude 总开关、每个拓展的 Claude 开关、清单无误。
+    pub fn enabled_claude_page_packages(&self) -> Vec<claude_local::extensions::HostPagePackage> {
+        if !self.claude_extensions_enabled() {
+            return Vec::new();
+        }
+        let config = self.load_config();
+        let Ok(scripts) = self.scan_script_files(&config) else {
+            return Vec::new();
+        };
+        scripts
+            .into_iter()
+            .filter(|script| config.claude_scripts.get(&script.key).copied().unwrap_or(true))
+            .filter_map(|script| {
+                let package = script.package.filter(|package| package.error.is_none())?;
+                let page = package.claude_desktop.as_ref()?.page.clone()?;
+                Some(claude_local::extensions::HostPagePackage {
+                    data_dir: crate::extension_backend::claude_data_dir(self, &package.id),
+                    key: script.key,
+                    name: package.name.clone().unwrap_or_else(|| package.id.clone()),
+                    version: package.version.clone(),
+                    description: package.description.clone(),
+                    root: package.root.clone()?,
+                    scripts: page.scripts,
+                    styles: page.styles,
+                    methods: page.methods,
+                    routes: package.routes.clone(),
+                    backend: package.backend.clone(),
+                    config: package.config.clone(),
+                    config_schema: package.config_schema.clone(),
+                    id: package.id,
+                })
+            })
+            .collect()
+    }
+
+    /// `page` 为真是 Claude 页面里的拓展脚本在调（只能调 `claudeDesktop.methods` 里的），否则是 Code 会话里的
+    /// 按钮、工具、事件在调（只能调它们各自声明的方法）。
     pub(crate) fn enabled_claude_extension_backend(
         &self,
         key: &str,
         method: &str,
+        page: bool,
     ) -> anyhow::Result<(String, PathBuf, Value)> {
         if !self.claude_extensions_enabled() {
             anyhow::bail!("Claude Desktop 拓展已关闭");
@@ -793,7 +1011,7 @@ impl UserScriptManager {
             anyhow::bail!("拓展包清单有误：{error}");
         }
         let declaration = package.claude_desktop.context("拓展没有声明 claudeDesktop")?;
-        if !declaration.permits(method) {
+        if !(if page { declaration.permits_page(method) } else { declaration.permits(method) }) {
             anyhow::bail!("Claude Desktop 无权调用拓展 {key} 的方法 {method}");
         }
         Ok((
@@ -1272,10 +1490,10 @@ impl UserScriptManager {
     }
 
     /// 启用中、清单无误的拓展包声明的页面最早期脚本：(脚本 key, 拓展 id, 生效配置, 脚本)，以及有没有拓展要求启动后重载一次。
-    /// 用户脚本总开关关着、或「下次启动跳过拓展」开着时没有（不消费跳过标记，那由页面注入包消费）。
+    /// 用户脚本总开关关着、「下次启动跳过拓展」开着、或这一场会话已经跳过拓展时没有（不消费跳过标记，那由页面注入包消费）。
     pub fn enabled_preloads(&self) -> anyhow::Result<(Vec<(String, String, Value, Vec<PathBuf>)>, bool)> {
         let config = self.load_config();
-        if !config.enabled || config.skip_next_start {
+        if !config.enabled || config.extensions_skipped() {
             return Ok((Vec::new(), false));
         }
         let mut reload = false;
@@ -1295,7 +1513,7 @@ impl UserScriptManager {
     /// 启用中、清单无误的拓展包声明的启动前后：(拓展 id, 生效配置, launch)。
     pub fn enabled_launches(&self) -> anyhow::Result<Vec<(String, Value, crate::extension_launch::ExtensionLaunch)>> {
         let config = self.load_config();
-        if !config.enabled || config.skip_next_start {
+        if !config.enabled || config.extensions_skipped() {
             return Ok(Vec::new());
         }
         Ok(self
@@ -1339,7 +1557,15 @@ impl UserScriptManager {
     /// 内置拓展的停用 / 顶替状态：`{ disabled: [id], replacedBy: { id: 拓展 key } }`。
     /// `disabled` 只含没有设置字段、在用户脚本配置里停用的项；有设置字段的由功能自己读设置判断，
     /// 页面上切设置立刻生效，不必等注入包重发。
+    ///
+    /// 拓展这次没加载（等着跳过、或这一场会话已经跳过）时谁也没被顶替：内置功能照常生效。
     pub fn builtin_extension_state(&self) -> anyhow::Result<Value> {
+        self.builtin_extension_state_with(true)
+    }
+
+    /// `respect_skip` 为 false：给注入包用。注入包只在拓展正要加载进页面时才拼，此时顶替一定算数，
+    /// 不能被上一场会话留下的「已跳过」标记影响（那个标记要等注入包执行完才清）。
+    fn builtin_extension_state_with(&self, respect_skip: bool) -> anyhow::Result<Value> {
         let config = self.load_config();
         let disabled = crate::settings_catalog::builtin_extension_defs()
             .iter()
@@ -1348,7 +1574,7 @@ impl UserScriptManager {
             .filter(|id| config.scripts.get(&builtin_extension_key(id)) == Some(&false))
             .collect::<Vec<_>>();
         let mut replaced_by = Map::new();
-        if config.enabled {
+        if config.enabled && !(respect_skip && config.extensions_skipped()) {
             for script in self.scan_script_files(&config)? {
                 let Some(package) = script.package.as_ref().filter(|package| script.enabled && package.error.is_none()) else {
                     continue;
@@ -1406,11 +1632,34 @@ impl UserScriptManager {
     }
 
     pub fn build_enabled_bundle(&self) -> anyhow::Result<String> {
+        self.build_enabled_bundle_with(&BrokenScripts::new())
+    }
+
+    /// 启用中的每个脚本各自包好的那一段（脚本 key → 注入包里的原文）。注入包整体解析失败时，
+    /// 逐段交给页面编译，找出是哪个脚本的语法有错。
+    pub fn enabled_script_blocks(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let config = self.load_config();
+        if !config.enabled {
+            return Ok(Vec::new());
+        }
+        Ok(self
+            .scan_script_files(&config)?
+            .into_iter()
+            .filter_map(|script| {
+                let source = enabled_script_source(&script)?;
+                Some((script.key.clone(), wrap_script(&script, &source)))
+            })
+            .collect())
+    }
+
+    /// `broken`：语法有错的脚本（key → 报错）。它们的源码不进注入包，换成一句抛出该报错的占位，
+    /// 于是只有这一个脚本显示为加载失败，其余照常加载。
+    fn build_enabled_bundle_with(&self, broken: &BrokenScripts) -> anyhow::Result<String> {
         let config = self.load_config();
         // 内置拓展的停用 / 顶替状态总要下发（用户脚本总开关关着也一样），页面据此装上 / 卸下内置功能。
         let builtin_state = format!(
             "window.__codexPlusBuiltinExtensionState = {}; try {{ window.__codexPlusSyncBuiltinExtensions?.(); }} catch {{}}",
-            self.builtin_extension_state().unwrap_or_else(|_| json!({}))
+            self.builtin_extension_state_with(false).unwrap_or_else(|_| json!({}))
         );
         if !config.enabled {
             return Ok(builtin_state);
@@ -1428,16 +1677,16 @@ impl UserScriptManager {
             Value::Array(services)
         ));
         for script in self.scan_script_files(&config)? {
-            if !script.enabled {
+            let Some(source) = enabled_script_source(&script) else {
                 continue;
-            }
-            let source = match &script.package {
-                // 清单不合法或版本不兼容的包不注入，原因在管理页显示。
-                Some(package) if package.error.is_some() => continue,
-                Some(package) => package_source(package),
-                None => fs::read_to_string(&script.path).unwrap_or_else(|error| {
-                    format!("throw new Error({});", json!(error.to_string()))
-                }),
+            };
+            let source = match broken.get(&script.key) {
+                // 占位自己的调用栈对写拓展的人没用：只留这一句话。
+                Some(error) => format!(
+                    "{{ const error = new Error({}); error.stack = error.message; throw error; }}",
+                    json!(format!("脚本有语法错误，没有加载：{error}"))
+                ),
+                None => source,
             };
             blocks.push(wrap_script(&script, &source));
         }
@@ -1447,20 +1696,27 @@ impl UserScriptManager {
     /// 页面启动与桥接恢复只能初始化一次，不能清理旧脚本或触发刷新。
     pub fn build_initial_bundle(&self) -> anyhow::Result<String> {
         let skip_next_start = self.consume_skip_next_start()?;
+        self.initial_bundle(skip_next_start, &BrokenScripts::new())
+    }
+
+    /// 首个页面的注入包。`skip`：这次跳过拓展（跳过标记由调用方消费，重拼时不再消费第二次）。
+    fn initial_bundle(&self, skip_next_start: bool, broken: &BrokenScripts) -> anyhow::Result<String> {
         let bundle = if skip_next_start {
             String::new()
         } else {
-            self.build_enabled_bundle()?
+            self.build_enabled_bundle_with(broken)?
         };
         Ok(format!(
             r#"(() => {{
   {RUNTIME_SCRIPT}
   const runtime = window.__codexPlusUserScripts;
+  let ran = false;
   if (!runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
     runtime.initialized = true;
+    ran = true;
     {bundle}
   }}
-  return JSON.stringify({{ mode: "{mode}", scripts: runtime.scripts }});
+  return JSON.stringify({{ mode: "{mode}", ran, scripts: runtime.scripts }});
 }})()"#,
             mode = if skip_next_start {
                 "skipped"
@@ -1472,7 +1728,11 @@ impl UserScriptManager {
 
     /// 即便全部禁用也必须清理上一次运行的脚本。
     pub fn build_reload_bundle(&self) -> anyhow::Result<String> {
-        let bundle = self.build_enabled_bundle()?;
+        self.reload_bundle(&BrokenScripts::new())
+    }
+
+    fn reload_bundle(&self, broken: &BrokenScripts) -> anyhow::Result<String> {
+        let bundle = self.build_enabled_bundle_with(broken)?;
         Ok(format!(
             r#"(() => {{
   {RUNTIME_SCRIPT}
@@ -1536,6 +1796,9 @@ impl UserScriptManager {
                     "replacedBy": script.replaced_by,
                     "status": status,
                     "error": error,
+                    // 只是清单本身的问题（坏 JSON、版本不兼容……）。`error` 还混着页面里运行时报的错，
+                    // 管理器判断「这个拓展的清单能不能用」（它的管理器页面、侧栏入口）要看这一项。
+                    "manifestError": package_error.unwrap_or(""),
                     "market_id": market.as_ref().map(|item| item.id.as_str()).unwrap_or(""),
                     "version": market.as_ref().map(|item| item.version.as_str()).unwrap_or(""),
                     "installed": market.is_some(),
@@ -1695,7 +1958,7 @@ struct ExtensionPackage {
     backend_http: bool,
     /// 定时调用后台方法（codexpp.json 的 `schedules`）。
     schedules: Vec<ExtensionSchedule>,
-    /// 拓展声明的模型供应商（codexpp.json 的 `providers`），并入网关的供应商池。
+    /// 拓展声明的模型供应商（codexpp.json 的 `providers`），并入网关的共享供应商。
     providers: Vec<ExtensionProvider>,
     /// 包内 `locale/<语言>.json`：语言 id → 词条（`meta.title` / `meta.description` 是本地化的名称与描述）。
     locales: std::collections::BTreeMap<String, Value>,
@@ -1724,108 +1987,10 @@ struct ExtensionPackage {
     error: Option<String>,
 }
 
-/// 拓展配置项（codexpp.json 的 `config.<key>`）。
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExtensionConfigField {
-    pub key: String,
-    /// string / text（多行）/ number / boolean / select / array / object
-    #[serde(rename = "type")]
-    pub kind: String,
-    /// 字符串，或 `{ en, zh, ... }` 多语言文本（管理器按界面语言显示）。
-    pub title: Value,
-    pub description: Value,
-    pub default: Value,
-    /// select 的可选值：[{ value, label }]
-    pub options: Vec<Value>,
-    /// 界面上按密码框显示。值仍以明文存在本机 user_scripts.json。
-    pub secret: bool,
-    /// number 的取值范围。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub min: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max: Option<f64>,
-    /// array 的元素类型（键为空的字段）。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub items: Option<Box<ExtensionConfigField>>,
-    /// object 的子字段。
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub properties: Vec<ExtensionConfigField>,
-    /// string 的输入方式：`file` 表示本机文件路径，管理器显示「选择…」按钮。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub format: Option<String>,
-    /// `format: "file"` 时选择器只列这些扩展名（不带点）；空表示不限。
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub extensions: Vec<String>,
-}
-
-impl ExtensionConfigField {
-    /// 校验一个值是否合乎类型；select 必须是可选值之一；对象可以缺键（缺的取默认），不能有未声明的键。
-    fn accepts(&self, value: &Value) -> bool {
-        match self.kind.as_str() {
-            "string" | "text" => value.is_string(),
-            "number" => value.as_f64().is_some_and(|number| {
-                self.min.is_none_or(|min| number >= min) && self.max.is_none_or(|max| number <= max)
-            }),
-            "boolean" => value.is_boolean(),
-            "select" => self.options.iter().any(|option| option.get("value") == Some(value)),
-            "array" => value.as_array().is_some_and(|items| {
-                items.len() <= 200 && self.items.as_ref().is_some_and(|field| items.iter().all(|item| field.accepts(item)))
-            }),
-            "object" => value.as_object().is_some_and(|map| {
-                map.iter().all(|(key, item)| {
-                    self.properties.iter().find(|field| &field.key == key).is_some_and(|field| field.accepts(item))
-                })
-            }),
-            _ => false,
-        }
-    }
-
-    /// 生效值：合法的已存值，对象逐个子字段合并默认值；否则取默认值。
-    fn resolve(&self, stored: Option<&Value>) -> Value {
-        match (self.kind.as_str(), stored) {
-            ("object", Some(Value::Object(map))) if self.accepts(&Value::Object(map.clone())) => {
-                Value::Object(self.properties.iter().map(|field| (field.key.clone(), field.resolve(map.get(&field.key)))).collect())
-            }
-            ("object", _) => self.default.clone(),
-            (_, Some(value)) if self.accepts(value) => value.clone(),
-            _ => self.default.clone(),
-        }
-    }
-}
-
-/// 交给模型前 secret 配置项显示成的打码值。
-pub const SECRET_MASK: &str = "******";
-
-/// 把配置里 secret 项（含对象子字段、数组元素里的）换成打码值。`schema` 是序列化后的字段数组，
-/// 交给模型的清单、配置结果都要过一遍，免得 API Key 进模型上下文和会话记录。
-pub fn mask_secret_config(schema: &Value, config: &Value) -> Value {
-    fn mask_field(field: &Value, value: &Value) -> Value {
-        if field["secret"].as_bool() == Some(true) {
-            return match value {
-                Value::Null => Value::Null,
-                Value::String(text) if text.is_empty() => value.clone(),
-                _ => Value::String(SECRET_MASK.into()),
-            };
-        }
-        match (field["type"].as_str(), value) {
-            (Some("object"), Value::Object(_)) => mask_secret_config(&field["properties"], value),
-            (Some("array"), Value::Array(items)) => Value::Array(items.iter().map(|item| mask_field(&field["items"], item)).collect()),
-            _ => value.clone(),
-        }
-    }
-    let (Some(fields), Some(map)) = (schema.as_array(), config.as_object()) else {
-        return config.clone();
-    };
-    Value::Object(
-        map.iter()
-            .map(|(key, value)| {
-                let masked = fields.iter().find(|field| field["key"] == *key).map_or_else(|| value.clone(), |field| mask_field(field, value));
-                (key.clone(), masked)
-            })
-            .collect(),
-    )
-}
+// 拓展配置项的声明、校验、默认值合并和密钥打码在 claude-local 里（ClaudeMom 与 Codex++ 共用一份规则）。
+pub use claude_local::extensions::config::{
+    ExtensionConfigField, SECRET_MASK, mask_secret_config, parse_extension_config_schema, resolve_extension_config,
+};
 
 /// README 最多读这么多字节，超出的截断（页面上提示）。
 const EXTENSION_README_MAX_BYTES: usize = 512 * 1024;
@@ -1843,15 +2008,6 @@ fn find_extension_readme(root: &std::path::Path) -> Option<PathBuf> {
     EXTENSION_README_NAMES
         .iter()
         .find_map(|name| files.iter().find(|(file, _)| file == name).map(|(_, path)| path.clone()))
-}
-
-/// 生效配置：每个声明的键取已存且合法的值，否则取默认值（对象按子字段合并）。
-fn resolve_extension_config(schema: &[ExtensionConfigField], stored: Option<&Map<String, Value>>) -> Value {
-    let mut resolved = Map::new();
-    for field in schema {
-        resolved.insert(field.key.clone(), field.resolve(stored.and_then(|values| values.get(&field.key))));
-    }
-    Value::Object(resolved)
 }
 
 /// 拓展声明的一个模型工具（codexpp.json 的 `tools[]`），由 Codex++ 拓展 MCP 对外提供。
@@ -2498,13 +2654,17 @@ fn load_extension_package(directory: &std::path::Path) -> ExtensionPackage {
 /// 管理器面板页的大小上限：页面整份读进 iframe 的 srcdoc，资源另经 `asset()` 取。
 const EXTENSION_MANAGER_PAGE_MAX_BYTES: u64 = 1024 * 1024;
 
-/// 管理器里能被拓展页面顶替的内置页面（管理器的路由 id）。「万物皆拓展」「内置拓展」「设置」三页不开放：
+/// 管理器里能被拓展页面顶替的内置页面（管理器的路由 id）。「万物皆拓展」「启动急救」「设置」三页不开放：
 /// 它们是停用、改回拓展的入口，顶替后可能回不去。被顶替的页面上方仍有「查看内置页面」。
+/// [`MANAGER_RETIRED_PAGES`] 里的旧 id 仍留在这里，只为老清单不报错。
 pub const MANAGER_REPLACEABLE_PAGES: &[&str] = &[
     "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog",
     "overview", "relay", "multiLaunch", "relayEnvironment", "claude", "sessions", "context", "skills", "weixin",
     "dreamSkin", "pluginMarket", "recommendations", "agentCache", "agentCollaboration", "computerUse",
 ];
+/// 已经并进别的页面的旧 id（代理设置并进「连接与供应商」、推荐内容并进首页、皮肤急救并进「启动急救」）。
+/// 清单里写了不报错，但也不再顶替任何页面：不记进 `replaces`，界面上就不会声称它顶替了什么。
+pub const MANAGER_RETIRED_PAGES: &[&str] = &["relayEnvironment", "recommendations", "dreamSkin"];
 /// 拓展的设置页 / 管理器面板经 `codexPlusManager.call(route, payload)` 能调的数据路由（还要清单声明）。
 pub const EXTENSION_PAGE_ROUTES: &[&str] = &crate::agent_pet::ROUTES;
 /// 拓展页面经 `codexPlusManager.data(name, params)` 能读的管理器数据（都是只读、不含凭据）。
@@ -2620,7 +2780,8 @@ fn parse_extension_manager_page(
         }
         Ok(list)
     };
-    let replaces = names("replaces", MANAGER_REPLACEABLE_PAGES)?;
+    let mut replaces = names("replaces", MANAGER_REPLACEABLE_PAGES)?;
+    replaces.retain(|id| !MANAGER_RETIRED_PAGES.contains(&id.as_str()));
     let data = names("data", MANAGER_DATA_SOURCES)?;
     Ok(Some(ExtensionManagerPage { path, title, nav, icon, replaces, data }))
 }
@@ -2689,13 +2850,15 @@ fn parse_extension_manifest(
     let launch_declared = raw.get("launch").is_some();
     let pipeline_declared = raw.get("toolPipeline").is_some();
     let providers_declared = raw.get("providers").is_some_and(|value| value.as_array().is_some_and(|list| !list.is_empty()));
+    // 只给 Claude Desktop 用的包（claudeDesktop 里的页面脚本、样式）在 Codex 这边没有别的入口，也是一个合法的包。
+    let claude_declared = raw.get("claudeDesktop").is_some();
     let root = directory
         .canonicalize()
         .with_context(|| format!("无法解析拓展目录 {}", directory.display()))?;
     package.root = Some(root.clone());
     package.codex = crate::extension_codex::parse(&root, &raw)?;
-    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && !manager_declared && !preload_declared && !launch_declared && package.codex.is_empty() {
-        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、manager、preload、launch、skills、agents、mcpServers 或 instructions");
+    if entries.is_empty() && !dsh_declared && !hooks_declared && !gateway_declared && !tools_declared && !backend_declared && !pipeline_declared && !providers_declared && !manager_declared && !preload_declared && !launch_declared && !claude_declared && package.codex.is_empty() {
+        anyhow::bail!("清单没有声明 renderer 入口，也没有声明 hooks、gateway、tools、toolPipeline、providers、backend、manager、preload、launch、skills、agents、mcpServers、instructions 或 claudeDesktop");
     }
     package.preload = crate::extension_launch::parse_preload(&root, raw.get("preload"))?;
     package.launch = crate::extension_launch::parse_launch(&root, raw.get("launch"))?;
@@ -2750,7 +2913,8 @@ fn parse_extension_manifest(
     package.claude_desktop = raw.get("claudeDesktop")
         .map(crate::extension_claude::ClaudeDesktopExtension::parse)
         .transpose()?;
-    if package.claude_desktop.is_some() && package.backend.is_none() {
+    // 只有页面脚本和样式的包不需要后台；声明了按钮、事件、工具或页面可调的方法才需要。
+    if package.claude_desktop.as_ref().is_some_and(|declaration| declaration.needs_backend()) && package.backend.is_none() {
         anyhow::bail!("claudeDesktop 调用后台方法，需要同时声明 backend.script");
     }
     package.replaces = parse_extension_replaces(raw.get("replaces"))?;
@@ -3098,147 +3262,6 @@ fn parse_gateway_replaces(value: Option<&Value>) -> anyhow::Result<Vec<String>> 
         .collect()
 }
 
-/// 解析 `config`：`{ "minutes": { "type": "number", "title": "时长", "default": 25 } }`。
-fn parse_extension_config_schema(value: Option<&Value>) -> anyhow::Result<Vec<ExtensionConfigField>> {
-    let Some(value) = value else {
-        return Ok(Vec::new());
-    };
-    let map = value.as_object().context("config 必须是对象：{ 键: { type, title, default } }")?;
-    if map.len() > 32 {
-        anyhow::bail!("config 最多 32 项");
-    }
-    map.iter().map(|(key, field)| parse_config_field(key, &format!("config.{key}"), field, 0)).collect()
-}
-
-/// 解析一个配置字段。`path` 用于报错（如 `config.proxy.host`），`depth` 限制对象嵌套层数。
-fn parse_config_field(key: &str, path: &str, field: &Value, depth: usize) -> anyhow::Result<ExtensionConfigField> {
-    if !key.is_empty() && !key.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-') {
-        anyhow::bail!("配置键 {key:?} 只能包含字母、数字、_、-");
-    }
-    let field = field.as_object().with_context(|| format!("{path} 必须是对象"))?;
-    let kind = field.get("type").and_then(Value::as_str).unwrap_or("string").to_string();
-    if !["string", "text", "number", "boolean", "select", "array", "object"].contains(&kind.as_str()) {
-        anyhow::bail!("{path}.type 只能是 string、text、number、boolean、select、array、object");
-    }
-    // title / description：字符串，或 { 语言: 文本 } 多语言对象。
-    let text = |name: &str, fallback: &str| -> anyhow::Result<Value> {
-        match field.get(name) {
-            None => Ok(json!(fallback)),
-            Some(Value::String(text)) => Ok(json!(text)),
-            Some(Value::Object(map)) if !map.is_empty() && map.values().all(Value::is_string) => Ok(Value::Object(map.clone())),
-            Some(_) => anyhow::bail!("{path}.{name} 必须是字符串或 {{ 语言: 文本 }}"),
-        }
-    };
-    let options = match field.get("options") {
-        None => Vec::new(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|item| match item {
-                Value::Object(object) if object.contains_key("value") => Ok(json!({
-                    "value": object["value"],
-                    "label": object.get("label").and_then(Value::as_str).map(str::to_owned)
-                        .unwrap_or_else(|| object["value"].to_string().trim_matches('"').to_string()),
-                })),
-                Value::String(_) | Value::Number(_) | Value::Bool(_) => Ok(json!({ "value": item, "label": item.to_string().trim_matches('"') })),
-                _ => anyhow::bail!("{path}.options 的每一项要么是值，要么是 {{ value, label }}"),
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?,
-        Some(_) => anyhow::bail!("{path}.options 必须是数组"),
-    };
-    if kind == "select" && options.is_empty() {
-        anyhow::bail!("{path} 是 select，必须给 options");
-    }
-    let bound = |name: &str| -> anyhow::Result<Option<f64>> {
-        match field.get(name) {
-            None => Ok(None),
-            Some(value) => value.as_f64().map(Some).with_context(|| format!("{path}.{name} 必须是数字")),
-        }
-    };
-    let items = if kind == "array" {
-        let items = field.get("items").with_context(|| format!("{path} 是 array，必须给 items（元素类型）"))?;
-        let item = parse_config_field("", &format!("{path}.items"), items, depth + 1)?;
-        if matches!(item.kind.as_str(), "array" | "object") {
-            anyhow::bail!("{path}.items 只能是简单类型（string、text、number、boolean、select）");
-        }
-        Some(Box::new(item))
-    } else {
-        None
-    };
-    let properties = if kind == "object" {
-        if depth >= 2 {
-            anyhow::bail!("{path} 嵌套过深（对象最多 3 层）");
-        }
-        let map = field
-            .get("properties")
-            .and_then(Value::as_object)
-            .filter(|map| !map.is_empty())
-            .with_context(|| format!("{path} 是 object，必须给 properties（子字段）"))?;
-        if map.len() > 32 {
-            anyhow::bail!("{path}.properties 最多 32 项");
-        }
-        map.iter()
-            .map(|(child, value)| parse_config_field(child, &format!("{path}.{child}"), value, depth + 1))
-            .collect::<anyhow::Result<Vec<_>>>()?
-    } else {
-        Vec::new()
-    };
-    let format = match field.get("format") {
-        None => None,
-        Some(Value::String(format)) if format == "file" && kind == "string" => Some(format.clone()),
-        Some(_) => anyhow::bail!("{path}.format 目前只支持 \"file\"，且只能用在 string 上"),
-    };
-    let extensions = match field.get("extensions") {
-        None => Vec::new(),
-        Some(Value::Array(items)) if format.is_some() && items.len() <= 20 => items
-            .iter()
-            .map(|item| match item.as_str() {
-                Some(name) if !name.is_empty() && name.len() <= 10 && name.chars().all(|ch| ch.is_ascii_alphanumeric()) => {
-                    Ok(name.to_ascii_lowercase())
-                }
-                _ => anyhow::bail!("{path}.extensions 的每一项是不带点的扩展名，如 \"png\""),
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?,
-        Some(_) => anyhow::bail!("{path}.extensions 只能和 format: \"file\" 一起用，最多 20 项"),
-    };
-    let mut result = ExtensionConfigField {
-        key: key.to_string(),
-        kind: kind.clone(),
-        title: text("title", key)?,
-        description: text("description", "")?,
-        default: Value::Null,
-        options,
-        secret: field.get("secret").and_then(Value::as_bool).unwrap_or(false),
-        min: bound("min")?,
-        max: bound("max")?,
-        items,
-        properties,
-        format,
-        extensions,
-    };
-    result.default = match kind.as_str() {
-        // 对象的默认值由子字段默认值组成；清单里写的 default 只用来覆盖其中的键。
-        "object" => {
-            let given = field.get("default").and_then(Value::as_object).cloned().unwrap_or_default();
-            Value::Object(result.properties.iter().map(|child| (child.key.clone(), child.resolve(given.get(&child.key)))).collect())
-        }
-        _ => {
-            let fallback = match kind.as_str() {
-                "number" => match result.min { Some(min) if min > 0.0 => json!(min), _ => json!(0) },
-                "boolean" => json!(false),
-                "select" => result.options[0]["value"].clone(),
-                "array" => json!([]),
-                _ => json!(""),
-            };
-            match field.get("default") {
-                Some(value) if result.accepts(value) => value.clone(),
-                Some(_) => anyhow::bail!("{path}.default 与 type 不符"),
-                None => fallback,
-            }
-        }
-    };
-    Ok(result)
-}
-
 /// 解析 `tools`：`[{ "name": "lookup", "description": "…", "inputSchema": {…}, "script": "tools/lookup.mjs", "timeout": 30 }]`。
 fn parse_extension_tools(
     root: &std::path::Path,
@@ -3335,6 +3358,23 @@ fn resolve_package_entry(root: &std::path::Path, entry: &str) -> anyhow::Result<
         anyhow::bail!("renderer 入口 {entry} 必须是包内的文件");
     }
     Ok(resolved)
+}
+
+/// 语法有错、没有进注入包的脚本：脚本 key → 页面编译时的报错。
+type BrokenScripts = BTreeMap<String, String>;
+
+/// 一个脚本进注入包的源码；停用的、清单不合法或版本不兼容的包不注入（原因在管理页显示），返回 None。
+fn enabled_script_source(script: &UserScriptFile) -> Option<String> {
+    if !script.enabled {
+        return None;
+    }
+    match &script.package {
+        Some(package) if package.error.is_some() => None,
+        Some(package) => Some(package_source(package)),
+        None => Some(fs::read_to_string(&script.path).unwrap_or_else(|error| {
+            format!("throw new Error({});", json!(error.to_string()))
+        })),
+    }
 }
 
 /// 包的各个入口按清单顺序拼进同一个作用域，相当于一次简单打包。
@@ -3440,6 +3480,7 @@ fn config_from_object(raw: &Map<String, Value>) -> UserScriptConfig {
             })
             .unwrap_or_default(),
         skip_next_start,
+        skipped_session: raw.get("skipped_session").and_then(Value::as_bool).unwrap_or(false),
         market,
         configs,
     }

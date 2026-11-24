@@ -49,7 +49,7 @@ pub type ProviderSwitchHook = Arc<
 pub struct ProviderPageHost {
     pub save: ProviderSaveHook,
     pub switch: ProviderSwitchHook,
-    /// 网关供应商池：`(命令名, 参数) -> 命令返回的 JSON`。管理器按名字分发到它自己的
+    /// 网关共享供应商：`(命令名, 参数) -> 命令返回的 JSON`。管理器按名字分发到它自己的
     /// `gateway_commands::*`（生效、价格填充、断开预览 token 都在那边），这里只做白名单与脱敏。
     pub gateway: ProviderGatewayHook,
 }
@@ -87,12 +87,12 @@ const GATEWAY_AGENT_COMMANDS: &[&str] = &[
 /// 白名单内、且按 Agent 生效的命令只作用在 Codex 上（页面挂在 Codex 里，不该替别的 Agent 接入或断开）。
 pub fn gateway_command_allowed(command: &str, args: &Value) -> Result<(), String> {
     if !GATEWAY_PAGE_COMMANDS.contains(&command) {
-        return Err(format!("Codex 页面不支持网关命令 {command}"));
+        return Err(format!("Codex 页面不支持本地服务命令 {command}"));
     }
     if GATEWAY_AGENT_COMMANDS.contains(&command)
         && args.get("agent").and_then(Value::as_str) != Some(ToolId::Codex.as_str())
     {
-        return Err("Codex 页面只能接入或断开 Codex 自己的网关连接".to_string());
+        return Err("Codex 页面只能接入或断开 Codex 自己的本地服务连接".to_string());
     }
     Ok(())
 }

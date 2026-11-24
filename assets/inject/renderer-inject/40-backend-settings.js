@@ -704,14 +704,16 @@
     if (!panel) return;
     const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
     const config = local?.package?.config || window.__codexPlusUserScripts?.scripts?.[key]?.manifest?.config || {};
-    const saveConfig = (values) => saveCodexPlusExtensionConfig(key, values);
+    // 拓展自己调的 saveConfig 只覆盖给出的项：它常常只传改动的那一项，整份替换会把别的项打回默认值。
+    const saveConfig = (values) => saveCodexPlusExtensionConfig(key, values, true);
     const result = runCodexPlusExtensionCallback(key, "settingsPanel.render", () => panel.render({ container: slot, config: { ...config }, saveConfig }));
     codexPlusMountedSettingsPanel = { key, node: slot, panel, cleanup: result.ok ? result.value : null };
   }
 
   /** 拓展设置面板保存配置：后台只收清单里声明过的项；拓展用 onConfigUpdate 接住时原地生效，否则整体热重载。 */
-  async function saveCodexPlusExtensionConfig(key, values) {
-    const result = await postJson("/user-scripts/set-config", { key, values: values && typeof values === "object" ? values : {} });
+  /** merge 为 true：只覆盖给出的项，其余已存的值保留；默认整份替换（通用表单逐项保存时传的是整份）。 */
+  async function saveCodexPlusExtensionConfig(key, values, merge = false) {
+    const result = await postJson("/user-scripts/set-config", { key, values: values && typeof values === "object" ? values : {}, merge });
     if (!result || result.status !== "ok") throw new Error(result?.message || "拓展配置没有保存");
     const config = result.config && typeof result.config === "object" ? result.config : {};
     const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
@@ -998,17 +1000,43 @@
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
   }
 
-  /** 安装确认框里的能力清单，按风险从高到低（与管理器 permissionLines 同一套文案）。 */
+  /** 安装确认框里的能力清单，按风险从高到低（与管理器 permissionLines 同一套文案，改一边要同步改另一边）。 */
   function codexPlusPackagePermissionLines(permissions = {}) {
     const lines = [];
-    if (permissions.backend) lines.push(`常驻后台进程 ${permissions.backend}：可读写本机文件、访问网络`);
+    const list = (items) => (Array.isArray(items) ? items : []).join("、");
+    if (permissions.backend) {
+      lines.push(`常驻后台进程 ${permissions.backend}：可读写本机文件、访问网络`);
+      if (permissions.backendHttp) lines.push("后台处理本机 HTTP 请求：本机其它程序可以调用它");
+      if (permissions.schedules) lines.push(`定时任务 ${permissions.schedules} 条：按时调用它的后台`);
+    }
+    if (permissions.launchBefore) lines.push(`启动前脚本 ${permissions.launchBefore}：每次启动 Codex 前在本机运行，可读写本机文件、访问网络`);
+    if (permissions.launchAfter) lines.push(`退出后脚本 ${permissions.launchAfter}：每次 Codex 退出后在本机运行，可读写本机文件、访问网络`);
+    if (permissions.mcpServers?.length) lines.push(`MCP 服务器 ${list(permissions.mcpServers)}：写进 Codex 配置，由 Codex 在本机启动它指定的命令`);
+    if (permissions.dsh) lines.push(`dsh 插件 ${permissions.dsh}：插件代码在本机常驻进程里运行`);
     for (const hook of permissions.hooks || []) {
       lines.push(hook.matcher ? `Codex 钩子 ${hook.event}（匹配 ${hook.matcher}）：可拦截或改写工具调用` : `Codex 钩子 ${hook.event}：可拦截或改写工具调用`);
     }
+    if (permissions.toolPipeline) lines.push(`工具调用管线 ${permissions.toolPipeline} 个：可改参数、拦截、代为执行工具调用或改写结果`);
     if (permissions.gatewayRequest) lines.push(`网关请求中间件 ${permissions.gatewayRequest} 个：可读取并改写发往模型的完整请求`);
     if (permissions.gatewayResponse) lines.push(`网关响应中间件 ${permissions.gatewayResponse} 个：可读取并改写模型回复`);
+    if (permissions.gatewayError) lines.push(`网关失败重试 ${permissions.gatewayError} 个：请求失败后可改写并重发`);
+    if (permissions.gatewayReplaces?.length) {
+      lines.push(permissions.gatewayReplaces.includes("builtin:auth-headers")
+        ? `关掉内置网关环节 ${list(permissions.gatewayReplaces)}：由它接管，其中鉴权头会把供应商 Key 交给它`
+        : `关掉内置网关环节 ${list(permissions.gatewayReplaces)}：由它接管`);
+    }
+    if (permissions.providers?.length) lines.push(`模型供应商 ${list(permissions.providers)}：并入供应商池，选用时请求发往它指定的地址`);
     if (permissions.tools?.length) lines.push(`模型工具：${permissions.tools.join("、")}`);
+    if (permissions.launchArgs?.length) lines.push(`Codex 启动参数：${permissions.launchArgs.join(" ")}`);
+    if (permissions.instructions) lines.push("全局指令：追加到 Codex 的系统指令");
+    if (permissions.skills?.length) lines.push(`Skills：${list(permissions.skills)}（同步进 Codex 的技能目录）`);
+    if (permissions.agents?.length) lines.push(`子 Agent：${list(permissions.agents)}`);
+    if (permissions.prompts?.length) lines.push(`提示词：${list(permissions.prompts)}`);
+    if (permissions.replaces?.length) lines.push(`顶替内置拓展 ${list(permissions.replaces)}：对应的内置功能停用，由它接管`);
+    if (permissions.managerReplaces?.length) lines.push(`顶替管理器页面：${list(permissions.managerReplaces)}`);
+    if (permissions.managerData?.length) lines.push(`读取管理器数据：${list(permissions.managerData)}`);
     for (const route of permissions.routes || []) lines.push(`本地路由 ${route}`);
+    if (permissions.preload?.length) lines.push(`页面最早期脚本 ${list(permissions.preload)}：在 Codex 自己的脚本之前运行`);
     if (permissions.renderer?.length) lines.push(`在 Codex 页面里运行脚本：${permissions.renderer.join("、")}`);
     return lines;
   }
@@ -1027,7 +1055,10 @@
     const version = prepared.fromDefaultBranch
       ? `${prepared.repo} · 作者未发布版本，将安装默认分支的提交 ${sha}`
       : `${prepared.repo} · 版本 ${prepared.tag || prepared.version}，锁定提交 ${sha}`;
-    const lines = codexPlusPackagePermissionLines(prepared.permissions);
+    // 本机已装着同 id 的包时，旧版本没有的能力标成「新增」（按文案逐条比，与管理器一致）。
+    const before = prepared.previousPermissions ? new Set(codexPlusPackagePermissionLines(prepared.previousPermissions)) : null;
+    const lines = codexPlusPackagePermissionLines(prepared.permissions).map((line) => (before && !before.has(line) ? `【新增】${line}` : line));
+    const addedCount = before ? lines.filter((line) => line.startsWith("【新增】")).length : 0;
     const conflict = prepared.conflict
       ? prepared.conflict.source === "github" && prepared.conflict.channel && prepared.conflict.channel !== "community" && prepared.channel === "community"
         ? `本机已装 ${prepared.conflict.repo || ""} 的${prepared.conflict.channel === "official" ? "官方" : "精选"}版本 ${prepared.id}，社区里的同 id 拓展不能替换它。`
@@ -1041,6 +1072,7 @@
       "",
       "它会获得这些能力：",
       ...(lines.length ? lines.map((line) => `• ${line}`) : ["没有声明任何能力。"]),
+      ...(addedCount ? ["", `相比本机已装的版本，这一版新增了 ${addedCount} 项能力（上面标了【新增】）。`] : []),
       ...(conflict ? ["", conflict] : []),
     ].join("\n");
     const verb = prepared.conflict ? "替换并安装" : "安装";
@@ -2091,6 +2123,14 @@
     root.querySelectorAll('[data-codex-plus-panel="home"] > [data-codex-plus-settings-group]').forEach((node) => {
       const value = String(node.getAttribute("data-codex-plus-settings-group") === active);
       if (node.dataset.active !== value) node.dataset.active = value;
+      if (node.getAttribute("data-codex-plus-settings-group") === "ext-permissions") {
+        const details = node.querySelector("[data-codex-plus-usage-storage]");
+        const visible = value === "true" || !node.closest('[data-codex-plus-settings-paged="true"]');
+        if (details && details.dataset.active !== String(visible)) {
+          details.dataset.active = String(visible);
+          if (visible && !details.dataset.loading) void loadCodexPlusUsageStorage(details);
+        }
+      }
     });
     root.querySelectorAll("[data-codex-plus-settings-nav]").forEach((button) => {
       const current = button.getAttribute("data-codex-plus-settings-nav") === active;
@@ -2355,6 +2395,27 @@
     return escapeHtml(experimental ? item.title.replace(codexPlusExperimentalTitle, "") : item.title) + tags;
   }
 
+  async function loadCodexPlusUsageStorage(details) {
+    const size = details.querySelector("[data-usage-storage-bytes]");
+    const path = details.querySelector("[data-usage-storage-directory]");
+    details.dataset.loading = "true";
+    try {
+      const result = await postJson("/settings/usage-history-storage", {});
+      if (result.status !== "ok" || !Number.isSafeInteger(result.bytes) || result.bytes < 0 || typeof result.directory !== "string") {
+        throw new Error(result.message || "未取得用量库存储信息");
+      }
+      size.textContent = result.bytes < 1024 ** 2
+        ? `${result.bytes.toLocaleString()} B`
+        : `${(result.bytes / 1024 ** 2).toLocaleString(undefined, { maximumFractionDigits: 2 })} MiB`;
+      path.textContent = result.directory;
+    } catch (error) {
+      size.textContent = "读取失败";
+      path.textContent = error.message;
+    } finally {
+      delete details.dataset.loading;
+    }
+  }
+
   function renderCodexPlusSettingsCatalogRow(item, options = {}) {
     const title = escapeHtml(item.title);
     let control = "";
@@ -2373,11 +2434,18 @@
     const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
     const builtin = item.builtin ? ` data-codex-plus-builtin="${escapeHtml(item.builtin)}"` : "";
     const param = options.param ? " data-codex-plus-builtin-param=\"true\"" : "";
+    const storage = item.key === "usageHistoryEnabled" ? `
+                <div class="codex-plus-row" data-codex-plus-usage-storage>
+                  <div role="status">
+                    <div class="codex-plus-row-title">用量库占用 <span data-usage-storage-bytes>正在读取</span></div>
+                    <div class="codex-plus-row-description">保存目录 <span data-usage-storage-directory></span></div>
+                  </div>
+                </div>` : "";
     return `
                 <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}"${builtin}${param}>
                   <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div>${item.key === "codexAppNativeFastUnlock" ? '<div class="codex-plus-row-description" data-codex-plus-native-fast-status="true" role="status" hidden></div>' : ""}</div>
                   ${control}
-                </div>`;
+                </div>${storage}`;
   }
 
   /**
@@ -2551,7 +2619,7 @@
               <h2 class="codex-plus-settings-section-title">工具与关于</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">增强总开关、供应商、网关与会话维护在管理工具里设置。</div></div>
+                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">增强总开关、供应商、本地服务与会话维护在管理工具里设置。</div></div>
                   <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
                 </div>
                 <div class="codex-plus-row">

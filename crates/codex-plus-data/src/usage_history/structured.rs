@@ -1916,7 +1916,8 @@ fn log_file(path: &Path) -> bool {
         })
 }
 
-fn discover(home: &Path, files: &mut Vec<PathBuf>, errors: &mut usize) {
+fn discover(home: &Path, cold_start: bool, errors: &mut usize) -> Vec<PathBuf> {
+    let mut files = Vec::new();
     let mut pending = vec![home.join("sessions"), home.join("archived_sessions")];
     while let Some(directory) = pending.pop() {
         let entries = match fs::read_dir(&directory) {
@@ -1951,13 +1952,25 @@ fn discover(home: &Path, files: &mut Vec<PathBuf>, errors: &mut usize) {
                     continue;
                 }
                 match fs::canonicalize(entry.path()) {
-                    Ok(path) if path.starts_with(home) => files.push(path),
+                    Ok(path) if path.starts_with(home) => {
+                        // 修改时间只用于冷启动排序；读取时仍校验路径和文件身份。
+                        let modified = if cold_start {
+                            entry
+                                .metadata()
+                                .and_then(|metadata| metadata.modified())
+                                .ok()
+                        } else {
+                            None
+                        };
+                        files.push((std::cmp::Reverse(modified), path));
+                    }
                     _ => *errors += 1,
                 }
             }
         }
     }
-    files.sort();
+    files.sort_unstable();
+    files.into_iter().map(|(_, path)| path).collect()
 }
 
 impl Index {
@@ -2250,8 +2263,7 @@ impl Index {
             }
         }
         snapshot.provider_names = self.provider_names.clone();
-        let mut paths = Vec::new();
-        discover(home, &mut paths, &mut snapshot.errors);
+        let paths = discover(home, self.files.is_empty(), &mut snapshot.errors);
         let existing: HashSet<_> = paths.iter().cloned().collect();
         self.files.retain(|path, _| existing.contains(path));
         let mut budget = index_budget::Budget::new(self.files.values());

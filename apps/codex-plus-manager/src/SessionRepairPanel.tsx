@@ -123,12 +123,23 @@ export function SessionRepairPanel({ dirty, form, providerSyncProgress, sessionI
                 <ToggleVisual />
               </label>
             </SettingRow>
-            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、网关或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
+            <SettingRow title={t("非官方登录时保留本地项目")} description={t("登录过 ChatGPT 后改用 API Key、本地服务或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。")}>
               <label className="relay-bare-switch">
                 <input
                   aria-label={t("非官方登录时保留本地项目")}
                   checked={Boolean(form.keepProjectsWithoutAccount)}
                   onChange={(event) => onFormChange({ ...form, keepProjectsWithoutAccount: event.currentTarget.checked })}
+                  type="checkbox"
+                />
+                <ToggleVisual />
+              </label>
+            </SettingRow>
+            <SettingRow title={t("用 API Key 解锁 ChatGPT 专属入口")} description={t("代码审查、图像、资料库等入口原本只在 ChatGPT 登录下可见。开启后 Codex++ 在本机 8000 端口起一个本地 ChatGPT 兼容服务，并改写 ~/.codex 的配置和登录（先备份，关闭时还原）；模型请求仍走你原来的供应商。只在用 API Key 供应商或本地服务时生效，官方登录时不改动。重新启动 Codex 后生效。")}>
+              <label className="relay-bare-switch">
+                <input
+                  aria-label={t("用 API Key 解锁 ChatGPT 专属入口")}
+                  checked={Boolean(form.chatgptCompatEnabled)}
+                  onChange={(event) => onFormChange({ ...form, chatgptCompatEnabled: event.currentTarget.checked })}
                   type="checkbox"
                 />
                 <ToggleVisual />

@@ -21,7 +21,7 @@ test("模型列表可以手动编辑、从上游同步，后台发现的差异�
   assert.doesNotMatch(providers, /只属于网关，直连模式里看不到/);
 });
 
-test("供应商池顶栏的搜索框和按钮同高、不带按钮自己的上边距", () => {
+test("共享供应商顶栏的搜索框和按钮同高、不带按钮自己的上边距", () => {
   assert.match(read("GatewayPage.css"), /\.shell \.gw-provider-search-row \.gw-primary-button \{\s*margin-top: 0;/);
 });
 

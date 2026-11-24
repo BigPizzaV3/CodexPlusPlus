@@ -2272,7 +2272,7 @@ function RelayProfileEditor({
                   onChange={(value) => updateDraft({ multiAgent: value === "v1" || value === "v2" ? value : "" })}
                 />
                 <p className="field-hint">
-                  {t("子代理协议的供应商级默认；模型元数据里的 multi_agent_version 声明优先于它。选 v1 会在使用该供应商期间压下 [features] multi_agent_v2，切走时自动还原。仅对直连供应商生效，Codex 经新版网关接入时由网关配置决定。仅新会话生效。")}
+                  {t("子代理协议的供应商级默认；模型元数据里的 multi_agent_version 声明优先于它。选 v1 会在使用该供应商期间压下 [features] multi_agent_v2，切走时自动还原。仅对直连供应商生效，Codex 经本地服务时由本地服务的接入设置决定。仅新会话生效。")}
                 </p>
               </Field>
             ) : null}
@@ -2365,7 +2365,7 @@ function RelayProfileEditor({
                     />
                     <span>
                       <strong>{t("本地压缩缓存复用（实验）")}</strong>
-                      <small>{t("仅支持旧版直连供应商，暂不支持 2.0 网关。实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。缓存按 Key 隔离，切换或轮换 Key 可能降低命中率。未命中供应商缓存时，补回的工具声明会增加输入 token 开销；上游若忽略禁用工具调用要求，可能返回空摘要。默认关闭。")}</small>
+                      <small>{t("仅支持直连供应商，暂不支持经本地服务。实测可改善压缩请求的缓存命中概率，但不保证每次命中，也不保证后置压缩提示不影响摘要质量。缓存按 Key 隔离，切换或轮换 Key 可能降低命中率。未命中供应商缓存时，补回的工具声明会增加输入 token 开销；上游若忽略禁用工具调用要求，可能返回空摘要。默认关闭。")}</small>
                     </span>
                     <ToggleVisual />
                   </label>

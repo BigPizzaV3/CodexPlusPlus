@@ -1,4 +1,4 @@
-//! 拓展声明的模型供应商：清单校验、Key 取自拓展配置、并入网关供应商池（不落盘、已有同名优先）。
+//! 拓展声明的模型供应商：清单校验、Key 取自拓展配置、并入网关共享供应商（不落盘、已有同名优先）。
 
 use codex_plus_core::gateway::store::GatewaySettings;
 use codex_plus_core::user_scripts::UserScriptManager;

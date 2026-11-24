@@ -12,14 +12,34 @@ import { errorText } from "./lib/utils";
 import { useModalShell } from "./use-modal-shell";
 import "./CommunityExtensionsPanel.css";
 
-// 与 crates/codex-plus-core/src/extension_discovery.rs 对应。
+// 与 crates/codex-plus-core/src/extension_discovery.rs 的 manifest_permissions 对应。
+// 后加的字段都是可选的：社区列表有缓存，旧缓存里的条目没有它们。
 export type Permissions = {
   backend: string | null;
+  backendHttp?: boolean;
+  schedules?: number;
+  launchBefore?: string | null;
+  launchAfter?: string | null;
+  launchArgs?: string[];
+  mcpServers?: string[];
+  dsh?: string | null;
   hooks: { event: string; matcher: string }[];
+  toolPipeline?: number;
   gatewayRequest: number;
   gatewayResponse: number;
+  gatewayError?: number;
+  gatewayReplaces?: string[];
+  providers?: string[];
   tools: string[];
+  skills?: string[];
+  agents?: string[];
+  prompts?: string[];
+  instructions?: boolean;
+  replaces?: string[];
+  managerReplaces?: string[];
+  managerData?: string[];
   routes: string[];
+  preload?: string[];
   renderer: string[];
 };
 // channel 为 "local"：本机就是这个仓库的源码（自己写的、从这里发布的），不是从 GitHub 装的。
@@ -68,6 +88,8 @@ export type Prepared = {
   fromDefaultBranch: boolean;
   fromAsset: boolean;
   permissions: Permissions;
+  /** 本机已装着的同 id 包声明的能力（更新、重新安装、替换时有）；没装时为 null。 */
+  previousPermissions?: Permissions | null;
   channel?: Channel;
   conflict: { source: "local" | "github"; repo?: string; channel?: Channel } | null;
 };
@@ -83,26 +105,71 @@ function engineWarning(engine: Entry["engine"]): string {
     : tf("需要 Codex++ {0}，当前版本不兼容", [engine]);
 }
 
-/** 按风险从高到低列出声明的能力；空数组表示只是页面脚本以外什么也没有。 */
-export function permissionLines(permissions: Permissions): { risk: "high" | "medium" | "low"; text: string }[] {
-  const lines: { risk: "high" | "medium" | "low"; text: string }[] = [];
-  if (permissions.backend) lines.push({ risk: "high", text: tf("常驻后台进程 {0}：可读写本机文件、访问网络", [permissions.backend]) });
+/**
+ * 按风险从高到低列出声明的能力；空数组表示清单什么也没声明。
+ * 高：在页面之外以你的用户权限运行，或能看到 / 改写模型请求与工具调用；中：改 Codex 的配置与行为；低：只在页面里。
+ * Codex 页内的安装确认框（40-backend-settings.js 的 codexPlusPackagePermissionLines）是同一套文案，改这里要同步改那边。
+ */
+export function permissionLines(permissions: Permissions, previous?: Permissions | null): PermissionLine[] {
+  const lines = describePermissions(permissions);
+  if (!previous) return lines;
+  // 已装着旧版本：按文案逐条比，旧版本没有的就是这一版新增（或改了内容）的能力。
+  const before = new Set(describePermissions(previous).map((line) => line.text));
+  return lines.map((line) => (before.has(line.text) ? line : { ...line, added: true }));
+}
+
+export type PermissionLine = { risk: "high" | "medium" | "low"; text: string; added?: boolean };
+
+function describePermissions(permissions: Permissions): PermissionLine[] {
+  const lines: PermissionLine[] = [];
+  const list = (items?: string[]) => (items ?? []).join("、");
+  if (permissions.backend) {
+    lines.push({ risk: "high", text: tf("常驻后台进程 {0}：可读写本机文件、访问网络", [permissions.backend]) });
+    if (permissions.backendHttp) lines.push({ risk: "high", text: t("后台处理本机 HTTP 请求：本机其它程序可以调用它") });
+    if (permissions.schedules) lines.push({ risk: "medium", text: tf("定时任务 {0} 条：按时调用它的后台", [permissions.schedules]) });
+  }
+  if (permissions.launchBefore) lines.push({ risk: "high", text: tf("启动前脚本 {0}：每次启动 Codex 前在本机运行，可读写本机文件、访问网络", [permissions.launchBefore]) });
+  if (permissions.launchAfter) lines.push({ risk: "high", text: tf("退出后脚本 {0}：每次 Codex 退出后在本机运行，可读写本机文件、访问网络", [permissions.launchAfter]) });
+  if (permissions.mcpServers?.length) lines.push({ risk: "high", text: tf("MCP 服务器 {0}：写进 Codex 配置，由 Codex 在本机启动它指定的命令", [list(permissions.mcpServers)]) });
+  if (permissions.dsh) lines.push({ risk: "high", text: tf("dsh 插件 {0}：插件代码在本机常驻进程里运行", [permissions.dsh]) });
   for (const hook of permissions.hooks) {
     lines.push({ risk: "high", text: hook.matcher ? tf("Codex 钩子 {0}（匹配 {1}）：可拦截或改写工具调用", [hook.event, hook.matcher]) : tf("Codex 钩子 {0}：可拦截或改写工具调用", [hook.event]) });
   }
+  if (permissions.toolPipeline) lines.push({ risk: "high", text: tf("工具调用管线 {0} 个：可改参数、拦截、代为执行工具调用或改写结果", [permissions.toolPipeline]) });
   if (permissions.gatewayRequest) lines.push({ risk: "high", text: tf("网关请求中间件 {0} 个：可读取并改写发往模型的完整请求", [permissions.gatewayRequest]) });
   if (permissions.gatewayResponse) lines.push({ risk: "high", text: tf("网关响应中间件 {0} 个：可读取并改写模型回复", [permissions.gatewayResponse]) });
+  if (permissions.gatewayError) lines.push({ risk: "high", text: tf("网关失败重试 {0} 个：请求失败后可改写并重发", [permissions.gatewayError]) });
+  if (permissions.gatewayReplaces?.length) {
+    lines.push({
+      risk: "high",
+      text: permissions.gatewayReplaces.includes("builtin:auth-headers")
+        ? tf("关掉内置网关环节 {0}：由它接管，其中鉴权头会把供应商 Key 交给它", [list(permissions.gatewayReplaces)])
+        : tf("关掉内置网关环节 {0}：由它接管", [list(permissions.gatewayReplaces)]),
+    });
+  }
+  if (permissions.providers?.length) lines.push({ risk: "high", text: tf("模型供应商 {0}：并入供应商池，选用时请求发往它指定的地址", [list(permissions.providers)]) });
   if (permissions.tools.length) lines.push({ risk: "medium", text: tf("模型工具：{0}", [permissions.tools.join("、")]) });
+  if (permissions.launchArgs?.length) lines.push({ risk: "medium", text: tf("Codex 启动参数：{0}", [permissions.launchArgs.join(" ")]) });
+  if (permissions.instructions) lines.push({ risk: "medium", text: t("全局指令：追加到 Codex 的系统指令") });
+  if (permissions.skills?.length) lines.push({ risk: "medium", text: tf("Skills：{0}（同步进 Codex 的技能目录）", [list(permissions.skills)]) });
+  if (permissions.agents?.length) lines.push({ risk: "medium", text: tf("子 Agent：{0}", [list(permissions.agents)]) });
+  if (permissions.prompts?.length) lines.push({ risk: "medium", text: tf("提示词：{0}", [list(permissions.prompts)]) });
+  if (permissions.replaces?.length) lines.push({ risk: "medium", text: tf("顶替内置拓展 {0}：对应的内置功能停用，由它接管", [list(permissions.replaces)]) });
+  if (permissions.managerReplaces?.length) lines.push({ risk: "medium", text: tf("顶替管理器页面：{0}", [list(permissions.managerReplaces)]) });
+  if (permissions.managerData?.length) lines.push({ risk: "medium", text: tf("读取管理器数据：{0}", [list(permissions.managerData)]) });
   for (const route of permissions.routes) lines.push({ risk: "medium", text: tf("本地路由 {0}", [route]) });
+  if (permissions.preload?.length) lines.push({ risk: "medium", text: tf("页面最早期脚本 {0}：在 Codex 自己的脚本之前运行", [list(permissions.preload)]) });
   if (permissions.renderer.length) lines.push({ risk: "low", text: tf("在 Codex 页面里运行脚本：{0}", [permissions.renderer.join("、")]) });
   return lines;
 }
 
 export function riskBadges(permissions: Permissions): string[] {
   const badges: string[] = [];
-  if (permissions.backend) badges.push(t("后台进程"));
-  if (permissions.hooks.length) badges.push(t("钩子"));
-  if (permissions.gatewayRequest || permissions.gatewayResponse) badges.push(t("网关"));
+  if (permissions.backend || permissions.dsh) badges.push(t("后台进程"));
+  if (permissions.launchBefore || permissions.launchAfter) badges.push(t("启动脚本"));
+  if (permissions.mcpServers?.length) badges.push("MCP");
+  if (permissions.hooks.length || permissions.toolPipeline) badges.push(t("钩子"));
+  if (permissions.gatewayRequest || permissions.gatewayResponse || permissions.gatewayError || permissions.gatewayReplaces?.length || permissions.providers?.length) badges.push(t("网关"));
   if (permissions.tools.length) badges.push(t("模型工具"));
   return badges;
 }
@@ -347,7 +414,8 @@ export function CommunityExtensionsPanel({
 export function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Prepared; onCancel: () => void; onInstall: (enable: boolean) => void }) {
   // 装上就启用：大多数人装了就是要用，不想用的可以在这里取消勾选。
   const [enable, setEnable] = useState(true);
-  const lines = permissionLines(prepared.permissions);
+  const lines = permissionLines(prepared.permissions, prepared.previousPermissions);
+  const addedCount = lines.filter((line) => line.added).length;
   // 精选 / 官方拓展审核过，不用危险样式吓人；社区拓展保持红色确认。
   const reviewed = prepared.channel === "official" || prepared.channel === "curated";
   // 已装的官方 / 精选版本不能被社区里同 id 的拓展替换：后端会拒绝（extension_discovery.rs），这里只给「关闭」。
@@ -383,11 +451,18 @@ export function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Pre
           <div className="community-ext-dialog-section">{t("它会获得这些能力：")}</div>
           {lines.length ? (
             <ul className="community-ext-permissions">
-              {lines.map((line, index) => <li data-risk={line.risk} key={index}>{line.text}</li>)}
+              {lines.map((line, index) => (
+                <li data-added={line.added ? "true" : undefined} data-risk={line.risk} key={index}>
+                  {line.added ? <span className="community-ext-permission-added">{t("新增")}</span> : null}{line.text}
+                </li>
+              ))}
             </ul>
           ) : (
             <p className="community-ext-dialog-section">{t("没有声明任何能力。")}</p>
           )}
+          {addedCount ? (
+            <p className="community-ext-dialog-warning">{tf("相比本机已装的版本，这一版新增了 {0} 项能力（上面标了「新增」）。", [addedCount])}</p>
+          ) : null}
           {prepared.conflict ? (
             <p className="community-ext-dialog-warning">
               {blocked

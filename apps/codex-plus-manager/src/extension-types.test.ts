@@ -109,6 +109,20 @@ describe("拓展公开类型契约", () => {
       const api = window.codexPlus;
       declare const ctx: CodexPlusExtensionContext;
       ${runtimeRoutes().map((route) => `void api.call(${JSON.stringify(route)}); void ctx.call(${JSON.stringify(route)});`).join("\n")}
+      const prices: Promise<CodexPlusProviderPrices> = api.call<CodexPlusProviderPrices>("/provider-prices/public");
+      const instancePrices: Promise<CodexPlusProviderPrices> = ctx.call<CodexPlusProviderPrices>("/provider-prices/public");
+      prices.then(({ providers }) => {
+        const defaultPrice: CodexPlusProviderPrice | null = providers[0].price;
+        const modelPrice: CodexPlusProviderPrice | undefined = providers[0].modelPrices["model"];
+        if (modelPrice) {
+          const currency: string = modelPrice.currency;
+          const cachedInput: number = modelPrice.cachedInput;
+        }
+        // @ts-expect-error 配置价投影不公开供应商地址。
+        providers[0].baseUrl;
+        // @ts-expect-error 配置价投影不公开供应商密钥。
+        providers[0].apiKey;
+      });
       const session = api.currentSession();
       const sessionId: string = session.id;
       const title: string = session.title;

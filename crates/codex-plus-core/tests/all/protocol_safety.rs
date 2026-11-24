@@ -401,7 +401,7 @@ fn same_named_client_search_survives_json_and_sse_round_trip() {
 }
 
 /// #2759：原生压缩要整段读完才回响应头；经本地代理再转给网关时，网关那一跳还会按住推理
-/// 阶段等首段可见输出。压缩请求、发给 Codex++ 网关的请求等响应头放宽到 600 秒，
+/// 阶段等首段可见输出。压缩请求、发给 Codex++ 本地服务的请求等响应头放宽到 600 秒，
 /// 发给普通供应商的流式请求仍按 120 秒。
 #[tokio::test]
 async fn compaction_requests_wait_longer_for_upstream_headers() {

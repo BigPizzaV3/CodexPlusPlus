@@ -3,20 +3,16 @@
 import { t } from "./i18n";
 import type { SessionAgent } from "./gateway-model";
 import { AgentGlyph } from "./hub-shared";
-import { agentVisible } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 
 export type SessionTab = SessionAgent | "all";
 
 export function SessionAgentTabs({ value, onChange }: { value: SessionTab; onChange: (next: SessionTab) => void }) {
-  // 当前使用模式下隐藏的 Agent（如只用增强功能时的 Grok）不出页签。
-  const focus = useAgentFocus();
-  const tabs = ([
+  const tabs: Array<{ id: SessionTab; label: string }> = [
     { id: "codex", label: "Codex" },
     { id: "claude", label: "Claude Code" },
     { id: "grok", label: "Grok" },
     { id: "all", label: t("全部") },
-  ] as Array<{ id: SessionTab; label: string }>).filter((tab) => tab.id === "all" || agentVisible(focus, tab.id));
+  ];
   return (
     // 一组切换按钮（aria-pressed），和「按项目 / 按时间」一样；不是完整的 tab 模式，不声明 tablist / tab。
     <div aria-label={t("按 Agent 查看会话")} className="tp-tabs" role="group">

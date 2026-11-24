@@ -31,6 +31,8 @@ mod bundled_extensions;
 mod bundled_builtins;
 mod capacity_auto_retry_settings;
 mod cdp_bridge;
+mod claude_page_api_contract;
+mod claude_page_extensions;
 mod codex_app_state;
 mod codex_sqlite;
 mod composer_readiness;

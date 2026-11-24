@@ -5399,6 +5399,7 @@ async fn install_bridge_routes_binding_while_waiting_for_command_response() {
     let log_path = temp.path().join("codex-plus.log");
     codex_plus_core::diagnostic_log::set_diagnostic_log_path_for_tests(Some(log_path.clone()));
     let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        acknowledge_page_enable(&mut socket).await;
         for expected_id in 1..=4 {
             let command = recv_json(&mut socket).await;
             assert_eq!(command["id"], expected_id);
@@ -5470,6 +5471,7 @@ async fn install_bridge_routes_binding_while_waiting_for_command_response() {
 #[tokio::test]
 async fn install_bridge_immediately_evaluates_new_document_scripts() {
     let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        acknowledge_page_enable(&mut socket).await;
         for expected_id in 1..=5 {
             let command = recv_json(&mut socket).await;
             assert_eq!(command["id"], expected_id);
@@ -5529,6 +5531,7 @@ async fn install_bridge_immediately_evaluates_new_document_scripts() {
 #[tokio::test]
 async fn install_bridge_returns_after_installing_and_keeps_message_pump_alive() {
     let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        acknowledge_page_enable(&mut socket).await;
         for expected_id in 1..=5 {
             let command = recv_json(&mut socket).await;
             assert_eq!(command["id"], expected_id);
@@ -5610,6 +5613,7 @@ async fn install_bridge_returns_after_installing_and_keeps_message_pump_alive() 
 #[tokio::test]
 async fn install_bridge_command_error_mentions_method_and_id() {
     let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        acknowledge_page_enable(&mut socket).await;
         let command = recv_json(&mut socket).await;
         assert_eq!(command["method"], "Runtime.enable");
         send_json(
@@ -5645,6 +5649,7 @@ async fn install_bridge_command_error_mentions_method_and_id() {
 #[tokio::test]
 async fn install_bridge_rejects_bad_payload_with_id_and_continues_after_unparseable_payload() {
     let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        acknowledge_page_enable(&mut socket).await;
         for expected_id in 1..=5 {
             let command = recv_json(&mut socket).await;
             assert_eq!(command["id"], expected_id);
@@ -5722,6 +5727,7 @@ async fn install_bridge_rejects_bad_payload_with_id_and_continues_after_unparsea
 #[tokio::test]
 async fn install_bridge_queues_consecutive_bindings_without_recursive_dispatch() {
     let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        acknowledge_page_enable(&mut socket).await;
         for expected_id in 1..=5 {
             let command = recv_json(&mut socket).await;
             assert_eq!(command["id"], expected_id);
@@ -5783,6 +5789,7 @@ async fn install_bridge_queues_consecutive_bindings_without_recursive_dispatch()
 #[tokio::test]
 async fn install_bridge_does_not_wait_for_resolve_runtime_evaluate_ack() {
     let (url, request_rx) = spawn_cdp_server(|mut socket| async move {
+        acknowledge_page_enable(&mut socket).await;
         for expected_id in 1..=5 {
             let command = recv_json(&mut socket).await;
             assert_eq!(command["id"], expected_id);
@@ -6166,6 +6173,7 @@ async fn spawn_failed_reinstall_cdp_server(
         let mut failed = accept_async(failed_stream)
             .await
             .expect("failed websocket should upgrade");
+        acknowledge_page_enable(&mut failed).await;
         for expected_id in 1..=2 {
             let command = recv_json(&mut failed).await;
             assert_eq!(command["id"], expected_id);
@@ -6215,7 +6223,15 @@ async fn spawn_failed_reinstall_cdp_server(
     (websocket_url(address), active_rx, failed_rx)
 }
 
+/// 安装桥接的第一条命令：本连接先启用 Page 域，后面登记的新文档脚本在页面刷新后才会执行。
+async fn acknowledge_page_enable(socket: &mut TestSocket) {
+    let command = recv_json(socket).await;
+    assert_eq!(command["method"], "Page.enable", "桥接安装必须先发 Page.enable：{command}");
+    send_json(socket, json!({ "id": command["id"], "result": {} })).await;
+}
+
 async fn acknowledge_bridge_install(socket: &mut TestSocket) {
+    acknowledge_page_enable(socket).await;
     for expected_id in 1..=5 {
         let command = recv_json(socket).await;
         assert_eq!(command["id"], expected_id);

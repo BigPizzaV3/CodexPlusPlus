@@ -1,4 +1,4 @@
-//! 网关模式开启 / 关闭对 Agent 配置文件的改写与恢复，以及网关自己的供应商池、路由组。
+//! 网关模式开启 / 关闭对 Agent 配置文件的改写与恢复，以及网关自己的共享供应商、路由组。
 
 use codex_plus_core::gateway::apply::{
     ApplyContext, GroupInput, ProviderInput, codex_gateway_profile_on, codex_importable,
@@ -2610,7 +2610,7 @@ fn disabled_pool_account_login_is_stripped_from_codex_auth() {
     enable_binding(ctx, &ToolId::Codex, binding()).unwrap();
     assert_eq!(read_auth()["tokens"]["account_id"], "acc-pool", "已借出");
 
-    // 用户在供应商池里停用了这个账号。
+    // 用户在共享供应商里停用了这个账号。
     ctx.gateway
         .update(|gateway| {
             let provider = gateway
@@ -3702,7 +3702,7 @@ fn gateway_declared_fallback_keeps_model_capability_restrictions() {
     }
 }
 
-/// #3042：供应商池里声明的图片能力要一路带到 Codex 原生目录和注入层的 modelMetadata；
+/// #3042：共享供应商里声明的图片能力要一路带到 Codex 原生目录和注入层的 modelMetadata；
 /// 纯文本模型不能借通用模板宣称收图，多家共用的一项（自动组、模型组）取各家交集。
 #[test]
 fn gateway_catalog_forwards_declared_image_input_capability() {

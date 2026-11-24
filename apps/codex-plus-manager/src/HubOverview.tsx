@@ -23,8 +23,6 @@ import { AgentGlyph, useTodayUsage } from "./hub-shared";
 import { AgentConnectDialog } from "./GatewayAgents";
 import { busyLinks, liveFlowRoutes, flowRoutePosition, flowAgent, pulseHops, type FlowEntry, type LiveFlowRoute } from "./request-flow-model";
 import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
-import { agentVisible, singleAgent } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { ProviderAdder } from "./GatewayProviders";
 import "./HubOverview.css";
 import { CxCard, CxEmpty, CxSection, CxStats } from "./cx-layout";
@@ -56,16 +54,13 @@ export function HubOverview({
     () => (usage ? new Map(usage.byProvider.map((group) => [group.key, group.calls])) : null),
     [usage],
   );
-  // 没勾选的 Agent 不在总览里出现；单 Agent 模式下网关就是这一个 Agent 专用的供应商池。
-  const focus = useAgentFocus();
-  const solo = singleAgent(focus);
-  const agents = hubAgents(payload, codex).filter((agent) => agentVisible(focus, agent.id));
+  const agents = hubAgents(payload, codex);
   const providers = hubProviders(payload, callsByProvider);
   // 连线的「活跃」改由真实请求决定：有请求在进行的连线流动，每条请求一颗来回的光点。
   const links = hubLinks(agents, providers).map((link) => (link.tone === "live" ? { ...link, tone: "idle" as const } : link));
   const totals = hubTotals(payload);
   const requestFlow = useRequestFlow(FLOW_REFRESH_MS);
-  const flowEntries = requestFlow.entries.filter((entry) => agentVisible(focus, flowAgent(entry)));
+  const flowEntries = requestFlow.entries;
   const flow = useMemo(
     () => ({ busy: busyLinks(flowEntries), routes: liveFlowRoutes(flowEntries) }),
     // 连线随进行中的请求、路由和响应阶段变化。
@@ -90,7 +85,7 @@ export function HubOverview({
     gatewayJump.agent = id;
     onNavigate("gateway");
   };
-  // 点拓扑里的某家供应商：到供应商池并展开、滚到那一家。
+  // 点拓扑里的某家供应商：到共享供应商并展开、滚到那一家。
   const openProvider = (id: string) => {
     gatewayJump.provider = id;
     onNavigate("gatewayProviders");
@@ -104,7 +99,7 @@ export function HubOverview({
         aside={<button className="hub-link" onClick={() => onNavigate("gatewayUsage")} type="button">{t("用量明细")}<ArrowUpRight className="h-3.5 w-3.5" /></button>}
         title={t("今日")}
       >
-        <UsageStats showAgents={!solo} usage={usage} />
+        <UsageStats showAgents usage={usage} />
       </CxSection>
 
       {/* 网关状态一次都没读到：说明原因、给重试，不再一直「读取中…」。 */}
@@ -117,12 +112,10 @@ export function HubOverview({
             {agents.map((agent) => (
               <AgentNode agent={agent} key={agent.id} onOpen={() => openAgent(agent.id)} />
             ))}
-            {solo ? null : (
-              <button className="hub-node hub-node-ghost" onClick={() => setAdding("agent")} type="button">
-                <Plus aria-hidden="true" className="h-4 w-4" />
-                {t("接入 Agent")}
-              </button>
-            )}
+            <button className="hub-node hub-node-ghost" onClick={() => setAdding("agent")} type="button">
+              <Plus aria-hidden="true" className="h-4 w-4" />
+              {t("接入 Agent")}
+            </button>
           </div>
 
           <div className="hub-core" data-node="hub" data-running={payload?.helperRunning ?? false}>
@@ -140,10 +133,8 @@ export function HubOverview({
             <p
               className="hub-caps"
               title={!payload
-                ? t("正在读取网关状态…")
-                : solo
-                  ? tf("{0} 通过 Codex++ 使用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [agentName(solo), providers.length])
-                  : tf("{0} 个 Agent 通过 Codex++ 共用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [connected, providers.length])}
+                ? t("正在读取本地服务状态…")
+                : tf("{0} 个 Agent 通过 Codex++ 共用 {1} 个供应商。请求按模型名路由，Key 冷却或供应商熔断时自动换上游。", [connected, providers.length])}
             >
               {[
                 t("按模型名路由"),
@@ -161,9 +152,9 @@ export function HubOverview({
           </div>
 
           <div className="hub-col">
-            <div className="hub-col-head"><span>{t("供应商池")}</span><span>{t("今日调用")}</span></div>
+            <div className="hub-col-head"><span>{t("共享供应商")}</span><span>{t("今日调用")}</span></div>
             {poolState === "loading" ? <p className="hub-empty">{error ? t("读取失败") : t("读取中…")}</p> : null}
-            {poolState === "empty" ? <p className="hub-empty">{t("供应商池还是空的。")}</p> : null}
+            {poolState === "empty" ? <p className="hub-empty">{t("共享供应商还是空的。")}</p> : null}
             {poolState === "allOff" ? <p className="hub-empty">{tf("池里的 {0} 个供应商都已关闭。", [payload?.pool.length ?? 0])}</p> : null}
             {poolState === "empty" && pendingImports ? (
               <button className="hub-node hub-node-ghost hub-node-import" onClick={() => setAdding("import")} type="button">
@@ -202,7 +193,7 @@ export function HubOverview({
           {!requestFlow.loaded ? (
             <CxEmpty title={t("读取中…")} />
           ) : feed.length === 0 ? (
-            <CxEmpty title={t("还没有请求经过网关")} detail={t("在已接入的 Agent 里发一条消息试试。")} />
+            <CxEmpty title={t("还没有请求经过本地服务")} detail={t("在已接入的 Agent 里发一条消息试试。")} />
           ) : (
             <ul className="hub-flow-list">{feed.map((entry) => <FeedRow entry={entry} key={entry.id} payload={payload} record={routeRecords.get(entry.id) ?? null} />)}</ul>
           )}
@@ -230,7 +221,7 @@ export function HubOverview({
 function AgentNode({ agent, onOpen }: { agent: ReturnType<typeof hubAgents>[number]; onOpen: () => void }) {
   const detail = agent.direct
     ? (agent.detail ? tf("直连 · {0}", [agent.detail]) : t("直连模式"))
-    : agent.enabled ? agent.detail || t("已接入") : t("未接入网关");
+    : agent.enabled ? agent.detail || t("已接入") : t("未接入本地服务");
   return (
     <button className="hub-node" data-node={`agent:${agent.id}`} data-off={!agent.enabled && !agent.direct} onClick={onOpen} title={`${agent.name} · ${detail}`} type="button">
       <span className="hub-node-icon"><AgentGlyph agent={agent.id} /></span>
@@ -273,7 +264,7 @@ function UsageStats({ usage, showAgents }: { usage: UsageSummary | null; showAge
   const rate = totals ? successRate(totals) : null;
   const cache = totals ? cacheHitRate(totals) : null;
   const cost = (usage?.costs ?? []).filter((item) => item.amount > 0).map((item) => formatMoney(item.amount, item.currency)).join(" + ");
-  const empty = !usage ? t("读取中…") : totals?.calls === 0 ? t("今天还没有经过网关的请求。") : null;
+  const empty = !usage ? t("读取中…") : totals?.calls === 0 ? t("今天还没有经过本地服务的请求。") : null;
   return (
     <CxStats
       items={[
@@ -286,10 +277,9 @@ function UsageStats({ usage, showAgents }: { usage: UsageSummary | null; showAge
   );
 }
 
-/** 今日调用按 Agent 拆分，一行文字（「Codex 56% · Claude Code 44%」）；单 Agent 模式下没有意义，不画。 */
+/** 今日调用按 Agent 拆分，一行文字（「Codex 56% · Claude Code 44%」）。 */
 function AgentSplit({ usage }: { usage: UsageSummary }) {
-  const focus = useAgentFocus();
-  const groups = usage.byAgent.filter((group) => agentVisible(focus, group.key));
+  const groups = usage.byAgent;
   const agentTotal = groups.reduce((sum, group) => sum + group.calls, 0) || 1;
   if (!groups.length) return null;
   return (

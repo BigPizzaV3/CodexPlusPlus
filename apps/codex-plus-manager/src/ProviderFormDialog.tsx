@@ -81,7 +81,7 @@ export function ProviderFormDialog({
   const [draft, setDraft] = useState<ProviderDraft>(() => {
     return form.mode === "edit" ? providerDraftFromEntry(form.entry) : providerDraftFromPreset(preset);
   });
-  // 价格在供应商池的详情里按模型编辑；新添加时按公开价格表给每个模型悄悄填上（查不到的不填）。
+  // 价格在共享供应商的详情里按模型编辑；新添加时按公开价格表给每个模型悄悄填上（查不到的不填）。
   const autoPrice = useRef(!editing && !hasPrice(draft));
   const [fetching, setFetching] = useState(false);
   const [fetchNote, setFetchNote] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
@@ -158,7 +158,7 @@ export function ProviderFormDialog({
 
   const title = form.mode === "edit" ? tf("编辑 {0}", [maskAccountName(form.entry.name)]) : preset ? tf("添加 {0}", [preset.name]) : t("添加自定义供应商");
   const subtitle = subscriptionEditing ? t("ChatGPT 订阅账号") : preset?.apiKeyUrl ? tf("在 {0} 获取 Key", [presetHost(preset.apiKeyUrl)]) : editing ? tf("现有 {0} 个 Key", [form.entry.keyCount]) : t("任意 OpenAI / Anthropic 兼容接口");
-  // 编辑时已保存的 Key 只列打码后的样子，增删、替换在供应商池详情的「Key」一行里单独做（#2782）；
+  // 编辑时已保存的 Key 只列打码后的样子，增删、替换在共享供应商详情的「Key」一行里单独做（#2782）；
   // 旧版后端没给 Key 列表时仍是「留空表示不改」的输入框。
   const savedKeys = form.mode === "edit" ? form.entry.keys ?? [] : [];
   const keyHint = editing ? (savedKeys.length ? t("在供应商详情的「Key」一行里单独替换、删除或添加") : t("留空表示不改")) : preset?.defaultKey ? t("本机服务不校验 Key，保留默认值即可") : t("多个自动轮换");
@@ -332,7 +332,7 @@ export function ProviderFormDialog({
         <footer className="pf-foot">
           <span className="pf-error">{validation ? t(validation) : ""}</span>
           <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
-          <Button disabled={busy !== null || Boolean(validation)} size="sm" type="submit">{busy ? t("保存中") : editing ? t("保存") : t("添加到供应商池")}</Button>
+          <Button disabled={busy !== null || Boolean(validation)} size="sm" type="submit">{busy ? t("保存中") : editing ? t("保存") : t("添加到共享供应商")}</Button>
         </footer>
       </form>
     </div>,

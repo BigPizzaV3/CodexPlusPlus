@@ -97,6 +97,11 @@ struct Inner {
     last_success: Option<Instant>,
     last_failure: Option<Instant>,
     consecutive_failures: u32,
+    /// 上一次重启之后，还没有哪次探测确认「已接管」。重启命令返回成功不等于接管成功：
+    /// 没确认就又要重启时，按一次失败计入退避（#3188）。
+    restart_unconfirmed: bool,
+    /// App 在跑但 CDP 探测失败的连续次数。
+    cdp_miss_streak: u32,
     /// 我们自己刚发起启动的时刻（宽限期起点，必须在调用 start() **之前**打点）。
     our_launch_at: Option<Instant>,
     /// 最近一次系统唤醒（睡眠/唤醒后给 CDP 恢复宽限）。
@@ -368,7 +373,24 @@ fn tick() -> Duration {
         }
     };
 
-    let decision = codex_plus_core::auto_takeover::decide(&inputs);
+    let attached = inputs.cdp_ready && inputs.session.is_running();
+    let cdp_misses = with_inner(|state| {
+        if attached {
+            // 探测确认已接管：上一次重启算成功，退避清零。
+            state.restart_unconfirmed = false;
+            state.consecutive_failures = 0;
+        }
+        if matches!(inputs.app, AppProbe::Running(_)) && !inputs.cdp_ready {
+            state.cdp_miss_streak = state.cdp_miss_streak.saturating_add(1);
+        } else {
+            state.cdp_miss_streak = 0;
+        }
+        state.cdp_miss_streak
+    });
+    let decision = codex_plus_core::auto_takeover::confirm_cdp_miss(
+        codex_plus_core::auto_takeover::decide(&inputs),
+        cdp_misses,
+    );
     publish(&inputs, decision);
 
     if decision.is_takeover() {
@@ -435,7 +457,10 @@ fn collect_inputs() -> Result<TakeoverInputs, String> {
             state.last_attempt,
             state.our_launch_at,
             state.last_wake_at,
-            state.consecutive_failures,
+            // 还没确认接管成功的那次重启，先按一次失败参与退避。
+            state
+                .consecutive_failures
+                .saturating_add(u32::from(state.restart_unconfirmed)),
             state.restart_history_ms.clone(),
             state.paused_instance.clone(),
         )
@@ -711,6 +736,11 @@ fn spawn_takeover(actual_port: u16) {
     // 后者不动用户窗口，不能算进重启额度，也不能记成重启（否则日志与预算都会失真）。
     let restarting = !codex_plus_core::cdp::endpoint_available(actual_port);
     with_inner(|state| {
+        // 上一次重启一直没被确认就又要接管：那次算失败，退避档位上调。
+        if std::mem::take(&mut state.restart_unconfirmed) {
+            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        }
+        state.cdp_miss_streak = 0;
         state.our_launch_at = Some(started_at);
         state.last_attempt = Some(started_at);
         state.state = "taking_over";
@@ -771,7 +801,12 @@ fn spawn_takeover(actual_port: u16) {
         match result {
             Ok(()) => {
                 with_inner(|state| {
-                    state.consecutive_failures = 0;
+                    if restarting {
+                        // 启动命令成功只说明 App 拉起来了；等探测确认已接管再清退避。
+                        state.restart_unconfirmed = true;
+                    } else {
+                        state.consecutive_failures = 0;
+                    }
                     state.last_success = Some(Instant::now());
                     state.our_launch_at = Some(Instant::now());
                     state.state = "probing";

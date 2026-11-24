@@ -53,7 +53,7 @@ pub struct ModelEntry {
     pub id: String,
     /// 当前显示名，模型组改名不改变请求 ID。
     pub display_name: String,
-    /// 上下文窗口（供应商池里写了的才有）。
+    /// 上下文窗口（共享供应商里写了的才有）。
     pub context_window: Option<u64>,
     /// 思考档位（由低到高，模型组取成员的并集）；没有资料时为空。
     pub reasoning_levels: Vec<String>,
@@ -85,7 +85,7 @@ impl Wiring {
         self.models.iter().map(|model| model.id.as_str())
     }
 
-    /// 模型的上下文窗口（供应商池里写了的才有）。
+    /// 模型的上下文窗口（共享供应商里写了的才有）。
     pub fn window(&self, model: &str) -> Option<u64> {
         self.models
             .iter()

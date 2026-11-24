@@ -88,7 +88,7 @@ test("Codex 接入网关后只画网关节点；在网关列表里但没打开�
   assert.equal(direct[0].detail, "DeepSeek 官方");
 });
 
-test("供应商池只列打开的供应商，带上今日调用量", () => {
+test("共享供应商只列打开的供应商，带上今日调用量", () => {
   const providers = hubProviders(payload(), new Map([["ds", 40]]));
   assert.deepEqual(providers.map((provider) => provider.id), ["ds", "kimi"]);
   assert.equal(providers[0].calls, 40);

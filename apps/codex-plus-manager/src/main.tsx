@@ -38,6 +38,7 @@ import "./cx-tray.css";
 import "./display-preferences.css";
 import { loadDisplayPreferences } from "./display-preferences";
 import { applyManagerDisplay } from "./DisplaySettings";
+import { installSwitchOnlyClicks } from "./switch-only";
 
 /* ── Bundled fonts (offline, no Google Fonts request) ──
      Fontsource packages ship woff2 files that Vite bundles into dist/.
@@ -103,6 +104,8 @@ const app = document.getElementById("app");
 
 if (app instanceof HTMLElement) {
   const hash = window.location.hash;
+  // 开关行只有开关本身可点：所有窗口统一拦掉 label 的整行切换。
+  installSwitchOnlyClicks();
   // 只有主窗口去掉了系统标题栏；托盘面板、悬浮预览本来就没有标题栏。
   if (hash !== "#tray-panel" && hash !== "#cu-pip") {
     applyMacTitlebarClass();

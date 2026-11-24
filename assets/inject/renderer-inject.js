@@ -743,7 +743,11 @@
    * 脚本本身抛错在用户看来是同一件事，不需要第二套排查入口。
    */
   function codexPlusMarkExtensionFailure(scriptKey, message) {
-    if (!scriptKey) return;
+    if (!scriptKey) {
+      // 没有归属脚本的失败（RPC 拦截层、请求中间件这些内核环节）没有脚本状态可写，记进诊断日志。
+      codexPlusLogKernelFailure(message);
+      return;
+    }
     const record = window.__codexPlusUserScripts?.scripts?.[scriptKey];
     if (record) {
       record.error = message;
@@ -753,6 +757,46 @@
     window.__codexPlusExtensionFailures = window.__codexPlusExtensionFailures || [];
     window.__codexPlusExtensionFailures.push({ script_key: scriptKey, message, at: Date.now() });
     if (window.__codexPlusExtensionFailures.length > 100) window.__codexPlusExtensionFailures.shift();
+  }
+
+  /** 内核失败日志的限流窗口：同一条 message 一个窗口内只记一次，一个窗口最多记这么多条。 */
+  const codexPlusKernelFailureWindowMs = 60_000;
+  const codexPlusKernelFailureWindowLimit = 20;
+  const codexPlusKernelFailureWindow = { startedAt: 0, seen: new Set(), suppressed: 0 };
+
+  /**
+   * 把没有归属脚本的失败写进诊断日志（事件 `extension.kernel_failure`）。
+   *
+   * 调用点在 RPC 帧拦截这类热路径上，每一帧都可能触发，所以必须限流；被限流掉的条数
+   * 记在下一条写出去的日志里（suppressed）。先登记再发送：发送途中即使又绕回这里，
+   * 同一条 message 也已经在窗口里，不会递归。本函数不抛错，也不回调 codexPlusMarkExtensionFailure。
+   */
+  function codexPlusLogKernelFailure(message) {
+    try {
+      const text = String(message ?? "").slice(0, 2000);
+      const state = codexPlusKernelFailureWindow;
+      const now = Date.now();
+      if (now - state.startedAt >= codexPlusKernelFailureWindowMs || now < state.startedAt) {
+        state.startedAt = now;
+        state.seen.clear();
+      }
+      if (state.seen.has(text) || state.seen.size >= codexPlusKernelFailureWindowLimit) {
+        state.suppressed += 1;
+        return;
+      }
+      state.seen.add(text);
+      const detail = { message: text, suppressed: state.suppressed };
+      state.suppressed = 0;
+      // 完整产物里走统一的诊断上报（桥没连上时它会退到本地服务）；单独执行本分片时直接走桥。
+      if (typeof sendCodexPlusDiagnostic === "function") {
+        Promise.resolve(sendCodexPlusDiagnostic("extension.kernel_failure", detail)).catch(() => {});
+        return;
+      }
+      window.__codexSessionDeleteBridge?.("/diagnostics/log", {
+        event: "extension.kernel_failure",
+        detail,
+      })?.catch?.(() => {});
+    } catch {}
   }
   /**
    * 原生悬浮侧栏开合用的弹簧（motion 的 spring，bounce 0.1）按同一条曲线采样成 linear()；
@@ -5594,7 +5638,7 @@
       }
       if (!codexPlusBackendSettings.providerSyncEnabled && sourceProvider !== targetProvider
           && sourceProvider !== "codex_plus_managed" && targetProvider !== "codex_plus_managed") {
-        throw new Error("会话供应商与当前网关不一致，请开启供应商同步后重试");
+        throw new Error("会话供应商与当前本地服务不一致，请开启供应商同步后重试");
       }
       if (needsIndex) {
         const result = await postJson("/thread-provider/prepare", {
@@ -5670,7 +5714,7 @@
           const currentGateway = await readCodexGatewayGenerationForRecovery();
           signal?.throwIfAborted();
           if (currentGateway && (!currentGateway.active || currentGateway.generation !== gateway.generation)) {
-            throw new Error("网关连接已变化，请重新发送");
+            throw new Error("本地服务连接已变化，请重新发送");
           }
           if (currentGateway) {
             const connection = codexGatewayPreparations.get(threadId) || { tail: null };
@@ -5719,7 +5763,7 @@
       codexBridgePreparationReadTimeoutMs);
     if (connection?.status !== "ok" || typeof connection.active !== "boolean"
         || typeof connection.generation !== "string") {
-      throw new Error(connection?.message || "读取网关连接状态失败，请稍后重试");
+      throw new Error(connection?.message || "读取本地服务连接状态失败，请稍后重试");
     }
     return connection;
   }
@@ -5817,7 +5861,7 @@
             || cached?.threadRuntimeStatus?.type === "active") {
           sendCodexPlusDiagnostic("gateway_recovery_active", {});
           if (typeof showToast === "function") {
-            showToast("网关连接已变化；活动回复会继续，此时发送可能仍使用旧连接。", { type: "warn" });
+            showToast("本地服务连接已变化；活动回复会继续，此时发送可能仍使用旧连接。", { type: "warn" });
           }
           return;
         }
@@ -5833,7 +5877,7 @@
         if (read.thread.modelProvider !== provider) {
           sendCodexPlusDiagnostic("gateway_recovery_provider_mismatch", {});
           if (typeof showToast === "function") {
-            showToast("当前会话供应商与网关不一致，消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
+            showToast("当前会话供应商与本地服务不一致，消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
           }
           return;
         }
@@ -5906,7 +5950,7 @@
             if (!unloaded) await new Promise((resolve) => setTimeout(resolve, 500));
             signal.throwIfAborted();
           }
-          if (!unloaded) throw new Error("会话仍被占用，无法重新连接网关，请稍后重新发送");
+          if (!unloaded) throw new Error("会话仍被占用，无法重新连接本地服务，请稍后重新发送");
           if (!resumed) {
             mayContinueNatively = false;
             state.resuming = --codexGatewayResumeSequence;
@@ -5932,7 +5976,7 @@
           signal.throwIfAborted();
           if (!currentGateway) return;
           if (!currentGateway.active || currentGateway.generation !== gateway.generation) {
-            throw new Error("网关连接已变化，请重新发送");
+            throw new Error("本地服务连接已变化，请重新发送");
           }
           state.generation = gateway.generation;
         } finally {
@@ -5947,7 +5991,7 @@
             || window.__codexPlusConnectionRecoveryPending?.has(threadId)) throw error;
         sendCodexPlusDiagnostic("gateway_recovery_preflight_failed", { errorMessage: String(error?.message || error) });
         if (typeof showToast === "function") {
-          showToast("网关连接检查未完成，本次消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
+          showToast("本地服务连接检查未完成，本次消息将交由原生会话处理，可能仍使用旧连接。", { type: "warn" });
         }
       } finally {
         release();
@@ -5960,7 +6004,7 @@
     try {
       await Promise.race([work, new Promise((_, reject) => {
         timer = setTimeout(() => {
-          const error = new Error("网关连接准备超时，请重新发送");
+          const error = new Error("本地服务连接准备超时，请重新发送");
           controller.abort(error);
           reject(error);
         }, codexGatewayPreparationTimeoutMs);
@@ -8237,14 +8281,16 @@
     if (!panel) return;
     const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
     const config = local?.package?.config || window.__codexPlusUserScripts?.scripts?.[key]?.manifest?.config || {};
-    const saveConfig = (values) => saveCodexPlusExtensionConfig(key, values);
+    // 拓展自己调的 saveConfig 只覆盖给出的项：它常常只传改动的那一项，整份替换会把别的项打回默认值。
+    const saveConfig = (values) => saveCodexPlusExtensionConfig(key, values, true);
     const result = runCodexPlusExtensionCallback(key, "settingsPanel.render", () => panel.render({ container: slot, config: { ...config }, saveConfig }));
     codexPlusMountedSettingsPanel = { key, node: slot, panel, cleanup: result.ok ? result.value : null };
   }
 
   /** 拓展设置面板保存配置：后台只收清单里声明过的项；拓展用 onConfigUpdate 接住时原地生效，否则整体热重载。 */
-  async function saveCodexPlusExtensionConfig(key, values) {
-    const result = await postJson("/user-scripts/set-config", { key, values: values && typeof values === "object" ? values : {} });
+  /** merge 为 true：只覆盖给出的项，其余已存的值保留；默认整份替换（通用表单逐项保存时传的是整份）。 */
+  async function saveCodexPlusExtensionConfig(key, values, merge = false) {
+    const result = await postJson("/user-scripts/set-config", { key, values: values && typeof values === "object" ? values : {}, merge });
     if (!result || result.status !== "ok") throw new Error(result?.message || "拓展配置没有保存");
     const config = result.config && typeof result.config === "object" ? result.config : {};
     const local = (codexPlusUserScripts.scripts || []).find((script) => script.key === key);
@@ -8531,17 +8577,43 @@
     if (codexPlusActiveEntry() === "extensions") refreshCodexPlusExtensionsView();
   }
 
-  /** 安装确认框里的能力清单，按风险从高到低（与管理器 permissionLines 同一套文案）。 */
+  /** 安装确认框里的能力清单，按风险从高到低（与管理器 permissionLines 同一套文案，改一边要同步改另一边）。 */
   function codexPlusPackagePermissionLines(permissions = {}) {
     const lines = [];
-    if (permissions.backend) lines.push(`常驻后台进程 ${permissions.backend}：可读写本机文件、访问网络`);
+    const list = (items) => (Array.isArray(items) ? items : []).join("、");
+    if (permissions.backend) {
+      lines.push(`常驻后台进程 ${permissions.backend}：可读写本机文件、访问网络`);
+      if (permissions.backendHttp) lines.push("后台处理本机 HTTP 请求：本机其它程序可以调用它");
+      if (permissions.schedules) lines.push(`定时任务 ${permissions.schedules} 条：按时调用它的后台`);
+    }
+    if (permissions.launchBefore) lines.push(`启动前脚本 ${permissions.launchBefore}：每次启动 Codex 前在本机运行，可读写本机文件、访问网络`);
+    if (permissions.launchAfter) lines.push(`退出后脚本 ${permissions.launchAfter}：每次 Codex 退出后在本机运行，可读写本机文件、访问网络`);
+    if (permissions.mcpServers?.length) lines.push(`MCP 服务器 ${list(permissions.mcpServers)}：写进 Codex 配置，由 Codex 在本机启动它指定的命令`);
+    if (permissions.dsh) lines.push(`dsh 插件 ${permissions.dsh}：插件代码在本机常驻进程里运行`);
     for (const hook of permissions.hooks || []) {
       lines.push(hook.matcher ? `Codex 钩子 ${hook.event}（匹配 ${hook.matcher}）：可拦截或改写工具调用` : `Codex 钩子 ${hook.event}：可拦截或改写工具调用`);
     }
+    if (permissions.toolPipeline) lines.push(`工具调用管线 ${permissions.toolPipeline} 个：可改参数、拦截、代为执行工具调用或改写结果`);
     if (permissions.gatewayRequest) lines.push(`网关请求中间件 ${permissions.gatewayRequest} 个：可读取并改写发往模型的完整请求`);
     if (permissions.gatewayResponse) lines.push(`网关响应中间件 ${permissions.gatewayResponse} 个：可读取并改写模型回复`);
+    if (permissions.gatewayError) lines.push(`网关失败重试 ${permissions.gatewayError} 个：请求失败后可改写并重发`);
+    if (permissions.gatewayReplaces?.length) {
+      lines.push(permissions.gatewayReplaces.includes("builtin:auth-headers")
+        ? `关掉内置网关环节 ${list(permissions.gatewayReplaces)}：由它接管，其中鉴权头会把供应商 Key 交给它`
+        : `关掉内置网关环节 ${list(permissions.gatewayReplaces)}：由它接管`);
+    }
+    if (permissions.providers?.length) lines.push(`模型供应商 ${list(permissions.providers)}：并入供应商池，选用时请求发往它指定的地址`);
     if (permissions.tools?.length) lines.push(`模型工具：${permissions.tools.join("、")}`);
+    if (permissions.launchArgs?.length) lines.push(`Codex 启动参数：${permissions.launchArgs.join(" ")}`);
+    if (permissions.instructions) lines.push("全局指令：追加到 Codex 的系统指令");
+    if (permissions.skills?.length) lines.push(`Skills：${list(permissions.skills)}（同步进 Codex 的技能目录）`);
+    if (permissions.agents?.length) lines.push(`子 Agent：${list(permissions.agents)}`);
+    if (permissions.prompts?.length) lines.push(`提示词：${list(permissions.prompts)}`);
+    if (permissions.replaces?.length) lines.push(`顶替内置拓展 ${list(permissions.replaces)}：对应的内置功能停用，由它接管`);
+    if (permissions.managerReplaces?.length) lines.push(`顶替管理器页面：${list(permissions.managerReplaces)}`);
+    if (permissions.managerData?.length) lines.push(`读取管理器数据：${list(permissions.managerData)}`);
     for (const route of permissions.routes || []) lines.push(`本地路由 ${route}`);
+    if (permissions.preload?.length) lines.push(`页面最早期脚本 ${list(permissions.preload)}：在 Codex 自己的脚本之前运行`);
     if (permissions.renderer?.length) lines.push(`在 Codex 页面里运行脚本：${permissions.renderer.join("、")}`);
     return lines;
   }
@@ -8560,7 +8632,10 @@
     const version = prepared.fromDefaultBranch
       ? `${prepared.repo} · 作者未发布版本，将安装默认分支的提交 ${sha}`
       : `${prepared.repo} · 版本 ${prepared.tag || prepared.version}，锁定提交 ${sha}`;
-    const lines = codexPlusPackagePermissionLines(prepared.permissions);
+    // 本机已装着同 id 的包时，旧版本没有的能力标成「新增」（按文案逐条比，与管理器一致）。
+    const before = prepared.previousPermissions ? new Set(codexPlusPackagePermissionLines(prepared.previousPermissions)) : null;
+    const lines = codexPlusPackagePermissionLines(prepared.permissions).map((line) => (before && !before.has(line) ? `【新增】${line}` : line));
+    const addedCount = before ? lines.filter((line) => line.startsWith("【新增】")).length : 0;
     const conflict = prepared.conflict
       ? prepared.conflict.source === "github" && prepared.conflict.channel && prepared.conflict.channel !== "community" && prepared.channel === "community"
         ? `本机已装 ${prepared.conflict.repo || ""} 的${prepared.conflict.channel === "official" ? "官方" : "精选"}版本 ${prepared.id}，社区里的同 id 拓展不能替换它。`
@@ -8574,6 +8649,7 @@
       "",
       "它会获得这些能力：",
       ...(lines.length ? lines.map((line) => `• ${line}`) : ["没有声明任何能力。"]),
+      ...(addedCount ? ["", `相比本机已装的版本，这一版新增了 ${addedCount} 项能力（上面标了【新增】）。`] : []),
       ...(conflict ? ["", conflict] : []),
     ].join("\n");
     const verb = prepared.conflict ? "替换并安装" : "安装";
@@ -9624,6 +9700,14 @@
     root.querySelectorAll('[data-codex-plus-panel="home"] > [data-codex-plus-settings-group]').forEach((node) => {
       const value = String(node.getAttribute("data-codex-plus-settings-group") === active);
       if (node.dataset.active !== value) node.dataset.active = value;
+      if (node.getAttribute("data-codex-plus-settings-group") === "ext-permissions") {
+        const details = node.querySelector("[data-codex-plus-usage-storage]");
+        const visible = value === "true" || !node.closest('[data-codex-plus-settings-paged="true"]');
+        if (details && details.dataset.active !== String(visible)) {
+          details.dataset.active = String(visible);
+          if (visible && !details.dataset.loading) void loadCodexPlusUsageStorage(details);
+        }
+      }
     });
     root.querySelectorAll("[data-codex-plus-settings-nav]").forEach((button) => {
       const current = button.getAttribute("data-codex-plus-settings-nav") === active;
@@ -9888,6 +9972,27 @@
     return escapeHtml(experimental ? item.title.replace(codexPlusExperimentalTitle, "") : item.title) + tags;
   }
 
+  async function loadCodexPlusUsageStorage(details) {
+    const size = details.querySelector("[data-usage-storage-bytes]");
+    const path = details.querySelector("[data-usage-storage-directory]");
+    details.dataset.loading = "true";
+    try {
+      const result = await postJson("/settings/usage-history-storage", {});
+      if (result.status !== "ok" || !Number.isSafeInteger(result.bytes) || result.bytes < 0 || typeof result.directory !== "string") {
+        throw new Error(result.message || "未取得用量库存储信息");
+      }
+      size.textContent = result.bytes < 1024 ** 2
+        ? `${result.bytes.toLocaleString()} B`
+        : `${(result.bytes / 1024 ** 2).toLocaleString(undefined, { maximumFractionDigits: 2 })} MiB`;
+      path.textContent = result.directory;
+    } catch (error) {
+      size.textContent = "读取失败";
+      path.textContent = error.message;
+    } finally {
+      delete details.dataset.loading;
+    }
+  }
+
   function renderCodexPlusSettingsCatalogRow(item, options = {}) {
     const title = escapeHtml(item.title);
     let control = "";
@@ -9906,11 +10011,18 @@
     const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
     const builtin = item.builtin ? ` data-codex-plus-builtin="${escapeHtml(item.builtin)}"` : "";
     const param = options.param ? " data-codex-plus-builtin-param=\"true\"" : "";
+    const storage = item.key === "usageHistoryEnabled" ? `
+                <div class="codex-plus-row" data-codex-plus-usage-storage>
+                  <div role="status">
+                    <div class="codex-plus-row-title">用量库占用 <span data-usage-storage-bytes>正在读取</span></div>
+                    <div class="codex-plus-row-description">保存目录 <span data-usage-storage-directory></span></div>
+                  </div>
+                </div>` : "";
     return `
                 <div class="codex-plus-row" data-codex-plus-setting-row="${escapeHtml(item.key)}"${builtin}${param}>
                   <div><div class="codex-plus-row-title">${renderCodexPlusSettingsCatalogTitle(item, rawDescription)}</div><div class="codex-plus-row-description"${descriptionData}>${description}</div>${item.key === "codexAppNativeFastUnlock" ? '<div class="codex-plus-row-description" data-codex-plus-native-fast-status="true" role="status" hidden></div>' : ""}</div>
                   ${control}
-                </div>`;
+                </div>${storage}`;
   }
 
   /**
@@ -10084,7 +10196,7 @@
               <h2 class="codex-plus-settings-section-title">工具与关于</h2>
               <div class="codex-plus-settings-card">
                 <div class="codex-plus-row">
-                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">增强总开关、供应商、网关与会话维护在管理工具里设置。</div></div>
+                  <div><div class="codex-plus-row-title">管理工具</div><div class="codex-plus-row-description">增强总开关、供应商、本地服务与会话维护在管理工具里设置。</div></div>
                   <button type="button" class="codex-plus-action-button" data-codex-open-manager="true">打开管理工具</button>
                 </div>
                 <div class="codex-plus-row">
@@ -11752,9 +11864,11 @@
   /** 按风险列出的徽标（与管理器 riskBadges 一致）。 */
   function codexPlusRiskBadges(permissions = {}) {
     const badges = [];
-    if (permissions.backend) badges.push("后台进程");
-    if (permissions.hooks?.length) badges.push("钩子");
-    if (permissions.gatewayRequest || permissions.gatewayResponse) badges.push("网关");
+    if (permissions.backend || permissions.dsh) badges.push("后台进程");
+    if (permissions.launchBefore || permissions.launchAfter) badges.push("启动脚本");
+    if (permissions.mcpServers?.length) badges.push("MCP");
+    if (permissions.hooks?.length || permissions.toolPipeline) badges.push("钩子");
+    if (permissions.gatewayRequest || permissions.gatewayResponse || permissions.gatewayError || permissions.gatewayReplaces?.length || permissions.providers?.length) badges.push("网关");
     if (permissions.tools?.length) badges.push("模型工具");
     return badges;
   }
@@ -14027,6 +14141,7 @@ ${key} = ${value}`]);
     GATEWAY_AGENT_NAMES: () => GATEWAY_AGENT_NAMES,
     GATEWAY_CLAUDE_PROVIDER_ID: () => GATEWAY_CLAUDE_PROVIDER_ID,
     GROUP_MODEL_PREFIX: () => GROUP_MODEL_PREFIX,
+    MAGPIE_UPSTREAM_ID: () => MAGPIE_UPSTREAM_ID,
     MAX_GATEWAY_PORT: () => MAX_GATEWAY_PORT,
     MIN_GATEWAY_PORT: () => MIN_GATEWAY_PORT,
     QUEUE_REASON_PREFIX: () => QUEUE_REASON_PREFIX,
@@ -14091,6 +14206,7 @@ ${key} = ${value}`]);
     parseWeight: () => parseWeight,
     patternMatches: () => patternMatches,
     pendingImportCount: () => pendingImportCount,
+    pendingImports: () => pendingImports,
     pickerSections: () => pickerSections,
     poolExcludeToggle: () => poolExcludeToggle,
     presetAdded: () => presetAdded,
@@ -14595,12 +14711,12 @@ ${key} = ${value}`]);
   }
   function validateDraft(draft, payload, retainedModel, retainedSelection) {
     if (payload) {
-      if (!agentPoolProviders(payload, draft.poolExclude).length) return "供应商池是空的，先在「供应商池」里添加供应商";
+      if (!agentPoolProviders(payload, draft.poolExclude).length) return "共享供应商是空的，先在「共享供应商」里添加供应商";
       const model = draft.model.trim();
       const retainedDisabledModel = draft.model === retainedModel && disabledGroup(payload, model);
       const retainedProvider = retainedSelection && payload.pool.find((entry) => entry.id === retainedSelection.providerId);
       const retainedUnavailableModel = draft.model === retainedModel && retainedSelection && modelSlugFromRowName(model).toLowerCase() === `${retainedSelection.providerId}/${modelSlugFromRowName(retainedSelection.upstreamModel)}`.toLowerCase() && (retainedSelection.providerRemoved || !retainedProvider || !providerEnabled(retainedProvider) || draft.poolExclude.includes(retainedProvider.id));
-      if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "供应商池里没有这个模型";
+      if (model && !retainedDisabledModel && !retainedUnavailableModel && !modelRoutable(payload, model, draft.poolExclude)) return "共享供应商里没有这个模型";
     }
     const window = parseContextWindow(draft.contextWindow);
     if (window !== null && (!Number.isFinite(window) || window < 1e3)) return "上下文窗口格式不对，例如 200000、200k 或 1M";
@@ -15383,12 +15499,26 @@ ${key} = ${value}`]);
       ...plain("claude", payload?.claudeProviders),
       ...plain("ccswitch", payload?.ccSwitchClaude),
       ...plain("claudemom", payload?.claudeMomProfiles),
+      ...plain("magpie", payload?.magpieProviders),
       ...plain("grok", payload?.grokProfiles),
       ...plain("opencode", payload?.opencodeKeys)
     ];
   }
+  var MAGPIE_UPSTREAM_ID = "@gateway";
+  function pendingImports(payload) {
+    const candidates = importCandidates(payload);
+    const magpie = candidates.filter((item) => item.source === "magpie");
+    const magpieDone = magpie.some((item) => item.imported);
+    const upstream = magpie.find((item) => item.id === MAGPIE_UPSTREAM_ID);
+    return candidates.filter((item) => {
+      if (item.imported) return false;
+      if (item.source !== "magpie") return true;
+      if (magpieDone) return false;
+      return upstream ? item === upstream : true;
+    });
+  }
   function pendingImportCount(payload) {
-    return importCandidates(payload).filter((item) => !item.imported).length;
+    return pendingImports(payload).length;
   }
   function pinnedBare(payload, model) {
     const slash = model.indexOf("/");
@@ -15523,13 +15653,13 @@ ${key} = ${value}`]);
   }
   function diagnosticEvidenceLabel(code) {
     const labels = {
-      matches: "与网关配置一致",
-      matched: "与网关配置一致",
+      matches: "与本地服务配置一致",
+      matched: "与本地服务配置一致",
       missing: "配置项缺失",
       missingFile: "文件不存在",
       missing_file: "文件不存在",
       changed: "配置项已改变",
-      mismatch: "与网关配置不符",
+      mismatch: "与本地服务配置不符",
       endpointChanged: "地址已改变",
       endpoint_changed: "地址已改变",
       unreadable: "无法读取",
@@ -15539,21 +15669,21 @@ ${key} = ${value}`]);
       credential_changed: "本地凭据已改变",
       credentialMissing: "本地凭据缺失",
       credential_missing: "本地凭据缺失",
-      endpointMatched: "与网关配置一致",
-      endpointPortMismatch: "端口与网关配置不符",
-      endpointHostMismatch: "主机与网关配置不符",
-      endpointPathMismatch: "路径与网关配置不符",
+      endpointMatched: "与本地服务配置一致",
+      endpointPortMismatch: "端口与本地服务配置不符",
+      endpointHostMismatch: "主机与本地服务配置不符",
+      endpointPathMismatch: "路径与本地服务配置不符",
       endpointMissing: "地址缺失",
       selectionChanged: "当前供应商或模型已改变",
       fileMissing: "文件不存在",
       fileUnreadable: "无法读取",
       invalidConfig: "配置格式无效",
       unsupportedConfig: "此配置暂无法验证",
-      endpoint_match: "与网关配置一致",
-      credential_match: "与网关配置一致",
+      endpoint_match: "与本地服务配置一致",
+      credential_match: "与本地服务配置一致",
       credential_sealed: "凭据已由系统安全存储加密保存",
-      selection_match: "与网关配置一致",
-      managed_config_match: "与网关配置一致",
+      selection_match: "与本地服务配置一致",
+      managed_config_match: "与本地服务配置一致",
       config_missing: "配置缺失",
       config_unreadable: "无法读取",
       config_invalid: "配置格式无效",
@@ -15561,9 +15691,9 @@ ${key} = ${value}`]);
       unsupported_agent: "此 Agent 暂无法验证",
       endpoint_missing: "地址缺失",
       endpoint_invalid: "地址格式无效",
-      endpoint_host_mismatch: "主机与网关配置不符",
-      endpoint_port_mismatch: "端口与网关配置不符",
-      endpoint_path_mismatch: "路径与网关配置不符",
+      endpoint_host_mismatch: "主机与本地服务配置不符",
+      endpoint_port_mismatch: "端口与本地服务配置不符",
+      endpoint_path_mismatch: "路径与本地服务配置不符",
       selection_changed: "当前供应商或模型已改变",
       managed_config_changed: "托管配置已改变"
     };
@@ -15598,12 +15728,12 @@ ${key} = ${value}`]);
    *     （codexPlusProviderEditing，来源 apps/codex-plus-manager/src/relay-profile-editing.ts），
    *     行为与管理器的「连接与供应商」页一致；
    *   - 保存 / 切换经 bridge 路由 /providers/*（core provider_page），最终跑的是管理器自己的
-   *     save_settings / switch_relay_profile：归一化、切换锁、live 文件、网关绑定都只有一份。
+   *     save_settings / switch_relay_profile：归一化、切换锁、live 文件、本地服务绑定都只有一份。
    *   - 命名 Key 只下发打码预览，提交时由服务端按 id 还原；选中别的已存 Key 不改文件，
    *     由服务端归一化时按选中的那把重写，所以页面里永远拿不到备用 Key 的明文。
    *
    * 本页编辑直连供应商（官方 / 官方+API / 纯 API）与聚合供应商（故障转移 / 模型聚合：成员、权重、
-   * 策略、路由、默认成员、审批成员，同样用共用函数归一化与校验）；网关接管条目只能「使用」。
+   * 策略、路由、默认成员、审批成员，同样用共用函数归一化与校验）；本地服务接管条目只能「使用」。
    * 直连供应商的模型路由、请求头、兼容选项仍在管理器里编辑（「在 Codex++ 中打开」）。
    *
    * 页面 DOM 每次打开重建，状态只放在 codexPlusProviderPageState 里（见 01-registry 的生命周期约定）。
@@ -15646,7 +15776,7 @@ ${key} = ${value}`]);
     return !!profile && !profile.gatewayManaged && !codexPlusProviderIsAggregate(profile);
   }
 
-  /** 能在本页保存的条目：直连与聚合都行，网关接管条目不行。 */
+  /** 能在本页保存的条目：直连与聚合都行，本地服务接管条目不行。 */
   function codexPlusProviderCanEdit(profile) {
     return !!profile && !profile.gatewayManaged;
   }
@@ -15659,7 +15789,7 @@ ${key} = ${value}`]);
   }
 
   function codexPlusProviderModeLabel(profile) {
-    if (profile?.gatewayManaged) return "网关";
+    if (profile?.gatewayManaged) return "本地服务";
     const mode = codexPlusProviderModeKey(profile);
     if (mode === "aggregate") return profile.aggregate?.modelAggregationEnabled === true ? "模型聚合" : "故障转移";
     return { pureApi: "纯 API", mixedApi: "官方 + API", official: "官方登录" }[mode];
@@ -15747,7 +15877,8 @@ ${key} = ${value}`]);
     codexPlusProviderApplyList(result, { keepSelection });
     if (!state.tab) state.tab = result.gatewayMode === true ? "gateway" : "direct";
     renderCodexPlusProviderPage();
-    if (state.tab === "gateway" && !codexPlusGatewayPageState.payload && !codexPlusGatewayPageState.busy) void codexPlusGatewayLoad();
+    // 共享供应商和直连供应商在同一个列表里：打开页面就读一次。
+    if (!codexPlusGatewayPageState.payload && !codexPlusGatewayPageState.busy) void codexPlusGatewayLoad();
     return true;
   }
 
@@ -15810,7 +15941,7 @@ ${key} = ${value}`]);
   /**
    * 没改过的供应商原样提交服务端下发的版本：页面读取时做过与管理器相同的归一化，
    * 原样回传归一化结果可能和库里有细微差别，服务端会误判「当前供应商变了」而去重写 live 文件
-   * （网关接管时那次切换还会被拒，连带改别的供应商也保存不了）。
+   * （本地服务接管时那次切换还会被拒，连带改别的供应商也保存不了）。
    */
   function codexPlusProviderProfilesForCommit(profiles) {
     const state = codexPlusProviderPageState;
@@ -15886,7 +16017,7 @@ ${key} = ${value}`]);
   async function codexPlusProviderUse(id) {
     const state = codexPlusProviderPageState;
     if (state.data?.gatewayMode === true) {
-      // 管理器在网关接管时会拒绝直接切换：先给出还原预览，确认断开后再切到这个供应商。
+      // 管理器在本地服务接管时会拒绝直接切换：先给出还原预览，确认断开后再切到这个供应商。
       await codexPlusGatewayOpenDisconnect(() => codexPlusProviderUse(id));
       return;
     }
@@ -16128,10 +16259,11 @@ ${key} = ${value}`]);
 
   function renderCodexPlusProviderList() {
     const state = codexPlusProviderPageState;
-    const profiles = state.settings?.relayProfiles || [];
+    // 托管的「Codex++ 本地服务」条目不单列：经本地服务时，下面「共享供应商」里标着用的是哪一家。
+    const profiles = (state.settings?.relayProfiles || []).filter((profile) => !profile.gatewayManaged);
     const rows = profiles.map((profile, index) => {
       const active = profile.id === state.settings.activeRelayId;
-      const selected = profile.id === state.selectedId && !state.isNew;
+      const selected = profile.id === state.selectedId && !state.isNew && state.tab !== "gateway";
       return `<div class="codex-plus-provider-item" role="listitem" data-selected="${selected}" data-codex-provider-select="${escapeHtml(profile.id)}">
         <div class="codex-plus-provider-item-main">
           <div class="codex-plus-provider-item-name">${active ? '<span class="codex-plus-provider-item-dot" aria-hidden="true"></span>' : ""}${escapeHtml(profile.name || profile.id)}</div>
@@ -16289,7 +16421,19 @@ ${key} = ${value}`]);
       return;
     }
     if (kind === "new") {
-      void codexPlusProviderConfirmDiscard().then((ok) => { if (ok) codexPlusProviderStartNew(value); });
+      if (value === "shared") {
+        void codexPlusProviderConfirmDiscard().then(async (ok) => {
+          if (!ok || !(await codexPlusGatewayConfirmDiscard())) return;
+          codexPlusProviderPageState.tab = "gateway";
+          codexPlusGatewayStartNew();
+        });
+        return;
+      }
+      void codexPlusProviderConfirmDiscard().then((ok) => {
+        if (!ok) return;
+        codexPlusProviderPageState.tab = "direct";
+        codexPlusProviderStartNew(value);
+      });
       return;
     }
     if (kind === "agg-strategy") codexPlusProviderUpdateAggregate({ strategy: value });
@@ -16297,7 +16441,7 @@ ${key} = ${value}`]);
     else if (kind === "agg-review") codexPlusProviderUpdateAggregate({ autoReviewRelayId: value });
     else if (kind === "agg-route-target") codexPlusProviderUpdateRoute(Number(trigger.dataset.aggRouteIndex), { profileId: value });
     if (kind.startsWith("agg-")) return renderCodexPlusProviderPage();
-    // 网关页签：协议写进草稿（与输入框一样不重绘）；测试用模型只在点「测试」时读按钮上的值。
+    // 本地服务页签：协议写进草稿（与输入框一样不重绘）；测试用模型只在点「测试」时读按钮上的值。
     if (kind === "gw-protocol") codexPlusGatewayHandleInput({ target: { dataset: { codexGatewayField: "protocol" }, value } });
   }
 
@@ -16364,8 +16508,8 @@ ${key} = ${value}`]);
       isActive ? "当前使用的供应商不能删除，先切换到别的供应商。" : "它的 Key 和配置快照会一起删掉。",
       `<button type="button" class="codex-plus-action-button" data-codex-provider-action="delete" data-danger="true" ${busy || isActive ? "disabled" : ""}>删除</button>`));
     if (!canEdit) {
-      return `${header}${statusBanner}${codexPlusProviderCard("编辑", codexPlusProviderActionLine("由网关维护",
-        "这是 Codex++ 网关接管 Codex 时生成的条目，由网关维护，这里只能切换。",
+      return `${header}${statusBanner}${codexPlusProviderCard("编辑", codexPlusProviderActionLine("由本地服务维护",
+        "这是 Codex++ 本地服务接管 Codex 时生成的条目，由本地服务维护，这里只能切换。",
         '<button type="button" class="codex-plus-action-button" data-codex-provider-action="open-manager">在 Codex++ 中打开</button>'))}`;
     }
     if (!editable) return `${header}${statusBanner}${renderCodexPlusProviderAggregateDetail(draft)}${dangerCard}`;
@@ -16575,31 +16719,27 @@ ${key} = ${value}`]);
       return;
     }
     const scroll = panel.querySelector(".codex-plus-provider-detail")?.scrollTop || 0;
+    // 直连和共享供应商一份列表（和管理器「连接与供应商」一样）：上面直连，下面「共享供应商」（经本地服务）；
+    // 选中哪一类，右侧就是哪一类的详情（state.tab 记的是当前看的是哪一类）。用哪家看哪一行「使用中」。
     const gatewayMode = state.data?.gatewayMode === true;
-    const tabs = `<div class="codex-plus-provider-tabs" role="tablist" aria-label="供应商类型">
-      <div class="codex-plus-provider-tab-group">
-        <button type="button" role="tab" data-codex-provider-tab="gateway" aria-selected="${state.tab === "gateway"}">网关供应商池${gatewayMode ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</button>
-        <button type="button" role="tab" data-codex-provider-tab="direct" aria-selected="${state.tab !== "gateway"}">直连供应商${gatewayMode ? "" : '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>'}</button>
-      </div>
-    </div>`;
     const footer = `<div class="codex-plus-provider-footer" data-codex-provider-footer></div>`;
-    if (state.tab === "gateway") {
-      panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}${renderCodexPlusGatewayPane()}${footer}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
-      const gatewayDetail = panel.querySelector(".codex-plus-provider-detail");
-      if (gatewayDetail) gatewayDetail.scrollTop = scroll;
-      codexPlusProviderSyncFooter();
-      return;
-    }
-    panel.innerHTML = `<div class="codex-plus-provider-shell">${tabs}<div class="codex-plus-provider-layout">
+    const sharedList = codexPlusGatewayPageState.payload
+      ? renderCodexPlusGatewayList()
+      : `<div class="codex-plus-provider-help">${codexPlusGatewayPageState.busy === "load" ? "正在读取共享供应商…" : escapeHtml(codexPlusGatewayPageState.status || "还没有读取共享供应商")} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`;
+    const detailBody = state.tab === "gateway"
+      ? `${renderCodexPlusGatewayModeBar()}${renderCodexPlusGatewayDetail()}`
+      : `${gatewayMode ? '<div class="codex-plus-provider-note">Codex 现在经本地服务（下面「共享供应商」里标着用的是哪一家）；在这里点「使用」会先断开本地服务并还原。</div>' : ""}${renderCodexPlusProviderDetail()}`;
+    panel.innerHTML = `<div class="codex-plus-provider-shell"><div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
         <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
-          ${codexPlusProviderActionMenu("new", "+ 新建", [["direct", "直连供应商"], ["failover", "故障转移（聚合）"], ["model", "模型聚合"]], state.busy ? "disabled" : "")}</div>
+          ${codexPlusProviderActionMenu("new", "+ 新建", [["direct", "直连供应商"], ["failover", "故障转移（聚合）"], ["model", "模型聚合"], ["shared", "共享供应商（经本地服务）"]], state.busy || codexPlusGatewayPageState.busy ? "disabled" : "")}</div>
         ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-note">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
         ${renderCodexPlusProviderList()}
+        <div class="codex-plus-provider-sidebar-header" data-codex-provider-subheader="shared" title="多 Key 轮换、出错换下一家、协议自动转换；Claude 等其它 Agent 也能用"><span>共享供应商</span></div>
+        ${sharedList}
       </aside>
       <section class="codex-plus-provider-detail">
-        ${gatewayMode ? '<div class="codex-plus-provider-note">Codex 正经网关接入，直连供应商暂时不起作用；在这里点「使用」会先断开网关并还原。</div>' : ""}
-        ${renderCodexPlusProviderDetail()}
+        ${detailBody}
       </section></div>${footer}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
     const detail = panel.querySelector(".codex-plus-provider-detail");
     if (detail) detail.scrollTop = scroll;
@@ -16769,14 +16909,15 @@ ${key} = ${value}`]);
     const state = codexPlusProviderPageState;
     if (!target) return;
     if (codexPlusProviderHandleMenuClick(target)) return;
-    const tab = target.closest("[data-codex-provider-tab]");
-    if (tab) {
-      const next = tab.dataset.codexProviderTab === "gateway" ? "gateway" : "direct";
-      if (next === state.tab) return;
-      state.tab = next;
-      renderCodexPlusProviderPage();
-      if (next === "gateway" && !codexPlusGatewayPageState.payload && !codexPlusGatewayPageState.busy) void codexPlusGatewayLoad();
-      return;
+    // 从直连切到看共享供应商：先确认放弃直连这边没保存的修改；同一家再点一次也要切过去。
+    const sharedSelect = target.closest("[data-codex-gateway-select]");
+    if (sharedSelect && state.tab !== "gateway") {
+      if (!(await codexPlusProviderConfirmDiscard())) return;
+      state.tab = "gateway";
+      if (sharedSelect.dataset.codexGatewaySelect === codexPlusGatewayPageState.selectedId && !codexPlusGatewayPageState.isNew) {
+        codexPlusGatewaySetStatus("");
+        return renderCodexPlusProviderPage();
+      }
     }
     if (target.closest("[data-codex-gateway-select], [data-codex-gateway-move], [data-codex-gateway-action], [data-codex-gateway-key-replace], [data-codex-gateway-key-delete]")) {
       await codexPlusGatewayHandleClick(target);
@@ -16791,6 +16932,12 @@ ${key} = ${value}`]);
     const select = target.closest("[data-codex-provider-select]");
     if (select) {
       const id = select.dataset.codexProviderSelect;
+      // 从共享供应商切回看直连：先确认放弃共享那边没保存的修改。
+      if (state.tab === "gateway") {
+        if (!(await codexPlusGatewayConfirmDiscard())) return;
+        state.tab = "direct";
+        if (id === state.selectedId && !state.isNew) return renderCodexPlusProviderPage();
+      }
       if (id === state.selectedId && !state.isNew) return;
       if (!(await codexPlusProviderConfirmDiscard())) return;
       codexPlusProviderSelect(id);
@@ -16904,11 +17051,11 @@ ${key} = ${value}`]);
     void codexPlusProviderLoad({ keepSelection: Boolean(state.selectedId) });
   }
   /**
-   * 「供应商」页的网关页签：在 Codex 里管理 Codex++ 网关的供应商池，并在网关 / 直连之间切换。
+   * 「供应商」页的本地服务页签：在 Codex 里管理 Codex++ 本地服务的共享供应商，并在本地服务 / 直连之间切换。
    *
-   * - 全部操作经 /providers/gateway 转给管理器自己的网关命令（core provider_page 做白名单与脱敏），
+   * - 全部操作经 /providers/gateway 转给管理器自己的本地服务命令（core provider_page 做白名单与脱敏），
    *   所以生效方式与管理器完全一致：路由每次请求重读 gateway.json，模型变化由 refresh_agents 重写
-   *   Codex 的网关目录、心跳指纹变化后页面自动重载 model/list；已打开的对话下一条请求就用新的池。
+   *   Codex 的本地服务目录、心跳指纹变化后页面自动重载 model/list；已打开的对话下一条请求就用新的池。
    * - 表单逻辑用与管理器共用的 gateway-model.ts（42 分片的 codexPlusProviderEditing.gateway）。
    * - Key 只有打码视图：编辑时 Key 留空表示不改，新增 / 替换 / 删除各走单独命令。
    * - 账号 / 订阅类、Codex 原生登录、拓展提供的条目只读（管理器同样不给编辑），去 Codex++ 里管。
@@ -16951,7 +17098,7 @@ ${key} = ${value}`]);
   function codexPlusGatewaySetStatus(message, tone = "") {
     codexPlusGatewayPageState.status = String(message || "");
     codexPlusGatewayPageState.statusTone = tone;
-    // 同步底部状态栏（如果当前是网关页签）
+    // 同步底部状态栏（如果当前是本地服务页签）
     if (codexPlusProviderPageState.tab === "gateway") {
       const footer = document.querySelector("[data-codex-provider-footer]");
       if (footer) {
@@ -16971,7 +17118,7 @@ ${key} = ${value}`]);
     state.draft = entry && codexPlusGatewayEditable(entry) ? codexPlusGatewayModel.providerDraftFromEntry(entry) : null;
   }
 
-  /** 网关命令的返回（CommandResult 里平铺了 GatewayPayload）。没带 payload 的结果不覆盖现有列表。 */
+  /** 本地服务命令的返回（CommandResult 里平铺了 GatewayPayload）。没带 payload 的结果不覆盖现有列表。 */
   function codexPlusGatewayApplyResult(result, { keepSelection = true } = {}) {
     const state = codexPlusGatewayPageState;
     if (result?.gateway && Array.isArray(result.pool)) {
@@ -16999,7 +17146,7 @@ ${key} = ${value}`]);
     const result = await codexPlusGatewayCall("load_gateway");
     state.busy = "";
     if (result?.status !== "ok" || !result.gateway) {
-      codexPlusGatewaySetStatus(result?.message || "读取网关供应商池失败", "error");
+      codexPlusGatewaySetStatus(result?.message || "读取共享供应商失败", "error");
     } else {
       codexPlusGatewayApplyResult(result);
     }
@@ -17017,8 +17164,8 @@ ${key} = ${value}`]);
     if (ok) {
       state.isNew = false;
       codexPlusGatewayApplyResult(result);
-      codexPlusGatewaySetStatus(`${success || result.message || "已保存。"} 已打开的对话下一条请求就用新的供应商池。`, "ok");
-      showToast(success || "网关供应商池已更新", { type: "success" });
+      codexPlusGatewaySetStatus(`${success || result.message || "已保存。"} 已打开的对话下一条请求就用新的共享供应商。`, "ok");
+      showToast(success || "共享供应商已更新", { type: "success" });
     } else {
       codexPlusGatewaySetStatus(result?.message || "操作失败", "error");
     }
@@ -17063,8 +17210,8 @@ ${key} = ${value}`]);
 
   async function codexPlusGatewayDelete(entry) {
     const answer = await codexPlusAsk({
-      title: "从网关删除供应商",
-      message: `确定从网关供应商池删除「${entry.name}」？它的 Key、模型和用量设置一起删除，模型组和各 Agent 里对它的引用也会清掉。`,
+      title: "从共享供应商删除供应商",
+      message: `确定从共享供应商删除「${entry.name}」？它的 Key、模型和用量设置一起删除，模型组和各 Agent 里对它的引用也会清掉。`,
       options: [{ value: "delete", label: "删除" }],
     });
     if (!answer) return;
@@ -17123,19 +17270,20 @@ ${key} = ${value}`]);
     renderCodexPlusProviderPage();
   }
 
-  /** 让 Codex 经网关接入：与管理器「连接与供应商 → 经网关」同一条命令，沿用上次的接入设置。 */
-  async function codexPlusGatewayConnect() {
+  /** 让 Codex 经共享供应商接入：与管理器「连接与供应商」的「共享」分页同一条命令，沿用上次的接入设置；
+   * 传了 `model`（`<供应商 id>/<模型>`）就把默认模型换成它。 */
+  async function codexPlusGatewayConnect(model = "") {
     const state = codexPlusGatewayPageState;
     const payload = state.payload;
     const previous = payload?.gateway?.bindings?.codex;
-    const draft = codexPlusGatewayModel.draftFromBinding(previous);
+    const draft = { ...codexPlusGatewayModel.draftFromBinding(previous), ...(model ? { model } : {}) };
     const issue = codexPlusGatewayModel.validateDraft(draft, payload);
     if (issue) {
-      codexPlusGatewaySetStatus(`${issue}（请先在供应商池里添加可用的供应商，或在 Codex++「Agent 接入」里调整默认模型）`, "error");
+      codexPlusGatewaySetStatus(`${issue}（请先在共享供应商里添加可用的供应商，或在 Codex++「Agent 接入」里调整默认模型）`, "error");
       return renderCodexPlusProviderPage();
     }
     const binding = { ...codexPlusGatewayModel.bindingFromDraft(draft, previous), enabled: true };
-    const result = await codexPlusGatewayMutate("save_gateway_binding", { agent: "codex", binding, reconnect: true }, { busy: "connect", success: "Codex 已经由网关接入。" });
+    const result = await codexPlusGatewayMutate("save_gateway_binding", { agent: "codex", binding, reconnect: true }, { busy: "connect", success: "Codex 已经经共享供应商接入。" });
     if (result) await codexPlusProviderLoad({ quiet: true });
   }
 
@@ -17164,7 +17312,7 @@ ${key} = ${value}`]);
     state.disconnect = { ...state.disconnect, applying: true };
     renderCodexPlusProviderPage();
     const command = fullSwitch ? "disable_gateway_binding_full_switch" : "disable_gateway_binding";
-    const result = await codexPlusGatewayMutate(command, { agent: "codex", previewToken: preview.previewToken }, { busy: "disconnect", success: "已断开网关，Codex 改回直连。" });
+    const result = await codexPlusGatewayMutate(command, { agent: "codex", previewToken: preview.previewToken }, { busy: "disconnect", success: "已断开本地服务，Codex 改回直连。" });
     state.disconnect = null;
     await codexPlusProviderLoad({ quiet: true });
     if (result && typeof then === "function") await then();
@@ -17181,10 +17329,10 @@ ${key} = ${value}`]);
         <div class="codex-plus-gateway-diff-head"><code>${escapeHtml(file.path)}</code><span>${escapeHtml(codexPlusGatewaySafety.disconnectFileLabel(file.kind))}</span></div>
         <pre>${file.diff ? file.diff.split("\n").map((line) => `<span data-kind="${line.startsWith("+") && !line.startsWith("+++") ? "add" : line.startsWith("-") && !line.startsWith("---") ? "remove" : "context"}">${escapeHtml(line)}\n</span>`).join("") : "文件内容无需修改"}</pre>
       </section>`).join("");
-    return `<div class="codex-plus-gateway-modal" data-codex-plus-ext="builtin-provider" role="dialog" aria-modal="true" aria-label="断开网关并还原">
+    return `<div class="codex-plus-gateway-modal" data-codex-plus-ext="builtin-provider" role="dialog" aria-modal="true" aria-label="断开本地服务并还原">
       <div class="codex-plus-gateway-modal-box">
-        <div class="codex-plus-provider-title">断开网关并还原为直连</div>
-        <div class="codex-plus-provider-help">Codex 会恢复接入网关之前的设置，下面是要改回的内容。</div>
+        <div class="codex-plus-provider-title">断开本地服务并还原为直连</div>
+        <div class="codex-plus-provider-help">Codex 会恢复接入本地服务之前的设置，下面是要改回的内容。</div>
         ${dialog.loading ? '<div class="codex-plus-provider-note">正在检查文件与还原差异…</div>' : ""}
         ${dialog.error ? `<div class="codex-plus-provider-status" data-tone="error">${escapeHtml(dialog.error)}</div>` : ""}
         ${preview?.warnings?.length ? `<ul class="codex-plus-gateway-warnings">${preview.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>` : ""}
@@ -17202,14 +17350,22 @@ ${key} = ${value}`]);
     const gatewayMode = codexPlusProviderPageState.data?.gatewayMode === true;
     const busy = Boolean(codexPlusGatewayPageState.busy);
     const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+    // 选中的这一家能不能直接「使用」：有模型、开着、不是正在用的那家。
+    const entry = codexPlusGatewayPageState.isNew ? null : codexPlusGatewaySelected();
+    const entryModel = entry?.models?.[0] || "";
+    const active = gatewayMode && entry && model.toLowerCase().startsWith(`${entry.id}/`.toLowerCase());
+    const useButton = entry && entryModel && entry.enabled !== false && !active
+      ? `<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="use-selected" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在切换…" : "让 Codex 用这家"}</button>`
+      : "";
     return gatewayMode
       ? `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="gateway">
-          <span>Codex 正经 Codex++ 网关接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。已打开的对话下一条请求就生效。</span>
+          <span>Codex 正经 Codex++ 本地服务接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。已打开的对话下一条请求就生效。</span>
+          ${useButton}
           <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="disconnect" ${busy ? "disabled" : ""}>断开并还原为直连</button>
         </div>`
       : `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="direct">
-          <span>Codex 现在是直连，这里的供应商池暂时不起作用。</span>
-          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="connect" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在接入…" : "让 Codex 经网关接入"}</button>
+          <span>Codex 现在是直连。在这里「使用」一家，Codex 就经本地服务、默认用这家的模型。</span>
+          ${useButton}
         </div>`;
   }
 
@@ -17221,7 +17377,7 @@ ${key} = ${value}`]);
     const activeModel = state.payload?.gateway?.bindings?.codex?.model || "";
     const activeProviderId = gatewayMode && activeModel.includes("/") ? activeModel.split("/")[0] : "";
     const rows = entries.map((entry, index) => {
-      const selected = entry.id === state.selectedId && !state.isNew;
+      const selected = entry.id === state.selectedId && !state.isNew && codexPlusProviderPageState.tab === "gateway";
       const enabled = entry.enabled !== false;
       const isActive = gatewayMode && entry.id === activeProviderId;
       const tag = entry.account ? (entry.plan || "账号") : String(entry.source || "").startsWith("extension:") ? "拓展" : String(entry.source || "").startsWith("native:") ? "原生登录" : ({ responses: "Responses", chatCompletions: "Chat", anthropicMessages: "Anthropic" }[entry.protocol] || entry.protocol);
@@ -17239,7 +17395,7 @@ ${key} = ${value}`]);
     const draftRow = state.isNew
       ? `<div class="codex-plus-provider-item" role="listitem" data-selected="true"><div class="codex-plus-provider-item-main"><div class="codex-plus-provider-item-name">${escapeHtml(state.draft?.name || "新供应商")}</div><div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge" data-tone="new">未保存</span></div></div></div>`
       : "";
-    return `<div class="codex-plus-provider-list" role="list" aria-label="网关供应商池">${rows}${draftRow}${rows || draftRow ? "" : '<div class="codex-plus-provider-help">供应商池是空的。</div>'}</div>`;
+    return `<div class="codex-plus-provider-list" role="list" aria-label="共享供应商">${rows}${draftRow}${rows || draftRow ? "" : '<div class="codex-plus-provider-help">共享供应商是空的。</div>'}</div>`;
   }
 
   function renderCodexPlusGatewayDetail() {
@@ -17251,7 +17407,7 @@ ${key} = ${value}`]);
     const enabled = entry ? entry.enabled !== false : true;
     const header = `<div class="codex-plus-provider-detail-header">
       <div><div class="codex-plus-provider-title">${escapeHtml(state.isNew ? (state.draft?.name || "新供应商") : entry.name)}</div>
-        <div class="codex-plus-provider-subtitle">网关供应商${entry && !enabled ? " · 已停用" : ""}${state.dirty ? " · 有未保存的修改" : ""}</div></div>
+        <div class="codex-plus-provider-subtitle">共享供应商${entry && !enabled ? " · 已停用" : ""}${state.dirty ? " · 有未保存的修改" : ""}</div></div>
       <div class="codex-plus-provider-actions">
         ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="toggle" ${busy ? "disabled" : ""}>${enabled ? "停用" : "启用"}</button>` : ""}
         ${editable ? `<button type="button" class="codex-plus-action-button" data-primary="true" data-codex-gateway-action="save" ${busy || !state.dirty ? "disabled" : ""}>${state.busy === "save" ? "保存中…" : "保存"}</button>` : ""}
@@ -17259,7 +17415,7 @@ ${key} = ${value}`]);
         ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>' : ""}
       </div></div>`;
     // 删除放到页面底部的「危险操作」卡片，与直连页一致。
-    const dangerCard = entry ? codexPlusProviderCard("危险操作", codexPlusProviderActionLine("从供应商池删除", "它的 Key 和模型配置会一起删掉；只想暂时不用可以点右上角「停用」。",
+    const dangerCard = entry ? codexPlusProviderCard("危险操作", codexPlusProviderActionLine("从共享供应商删除", "它的 Key 和模型配置会一起删掉；只想暂时不用可以点右上角「停用」。",
       `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`)) : "";
     // 与直连页同一套卡片：小节标题 + 圆角卡片，卡片里一行一项（左标题右控件）。
     const testRow = entry
@@ -17274,7 +17430,7 @@ ${key} = ${value}`]);
           codexPlusProviderActionLine("模型列表", (entry.models || []).join("、") || "（无）", ""),
           testRow,
         ].join(""), entry.account
-          ? "登录得到的账号（订阅额度、Token 刷新都由网关维护），在 Codex 里只能启停、排序和测试。"
+          ? "登录得到的账号（订阅额度、Token 刷新都由本地服务维护），在 Codex 里只能启停、排序和测试。"
           : "这一项由 Codex 原生登录或拓展提供，在 Codex 里只能启停、排序和测试。")}
         ${managerRow("账号与订阅", "登录、额度和刷新在 Codex++ 管理器里管理。")}
         ${dangerCard}`;
@@ -17313,12 +17469,12 @@ ${key} = ${value}`]);
   function renderCodexPlusGatewayPane() {
     const state = codexPlusGatewayPageState;
     if (!state.payload) {
-      return `<div class="codex-plus-provider-empty">${state.busy === "load" ? "正在读取网关供应商池…" : escapeHtml(state.status || "还没有读取网关供应商池")}
+      return `<div class="codex-plus-provider-empty">${state.busy === "load" ? "正在读取共享供应商…" : escapeHtml(state.status || "还没有读取共享供应商")}
         <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`;
     }
     return `<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
-        <div class="codex-plus-provider-sidebar-header"><span>供应商池</span>
+        <div class="codex-plus-provider-sidebar-header"><span>共享供应商</span>
           <button type="button" class="codex-plus-action-button" data-codex-gateway-action="new" ${state.busy ? "disabled" : ""}>+ 新建</button></div>
         ${renderCodexPlusGatewayList()}
       </aside>
@@ -17330,11 +17486,11 @@ ${key} = ${value}`]);
 
   async function codexPlusGatewayConfirmDiscard() {
     if (!codexPlusGatewayPageState.dirty) return true;
-    const answer = await codexPlusAsk({ title: "放弃修改？", message: "当前网关供应商有未保存的修改。", options: [{ value: "discard", label: "放弃修改" }] });
+    const answer = await codexPlusAsk({ title: "放弃修改？", message: "当前共享供应商有未保存的修改。", options: [{ value: "discard", label: "放弃修改" }] });
     return Boolean(answer);
   }
 
-  /** 网关页签的输入：只改草稿，不重绘（保持焦点）。 */
+  /** 本地服务页签的输入：只改草稿，不重绘（保持焦点）。 */
   function codexPlusGatewayHandleInput(event) {
     const target = event.target;
     const field = target?.dataset?.codexGatewayField;
@@ -17347,7 +17503,7 @@ ${key} = ${value}`]);
     return true;
   }
 
-  /** 网关页签的点击；处理了返回 true。 */
+  /** 本地服务页签的点击；处理了返回 true。 */
   async function codexPlusGatewayHandleClick(target) {
     const state = codexPlusGatewayPageState;
     const move = target.closest("[data-codex-gateway-move]");
@@ -17412,6 +17568,11 @@ ${key} = ${value}`]);
         break;
       }
       case "connect": await codexPlusGatewayConnect(); break;
+      case "use-selected": {
+        const model = entry?.models?.[0] || "";
+        if (entry && model) await codexPlusGatewayConnect(`${entry.id}/${model}`);
+        break;
+      }
       case "disconnect": await codexPlusGatewayOpenDisconnect(); break;
       case "disconnect-cancel":
         state.disconnect = null;
@@ -31015,6 +31176,8 @@ ${key} = ${value}`]);
     "/backend/status",
     // 只读：设置的公开子集（当前供应商的名称、模式、模型、上下文窗口），不含地址、Key 与配置内容。
     "/settings/public",
+    // 只读：网关供应商的配置价，不含地址、Key 或其他设置。
+    "/provider-prices/public",
     // 只读：模型目录（模型列表与每模型元数据，含上下文窗口），去掉了来源地址与本机路径。
     "/model-catalog/public",
     // Agent 桌宠（官方拓展包）的数据服务：图片 / 音效下载、大肥鱼的素材、挂件数据、本机用量。
@@ -31040,8 +31203,10 @@ ${key} = ${value}`]);
    * 拓展面板普遍用 setInterval 轮询这几个只读接口，每个面板各轮一次就是一次独立的桥
    * 往返，而后端每条请求都要走一遍 JSON 编解码。实测 /request-log/recent 58 次/分钟、
    * /thread-usage-live 37 次/分钟，几乎全是同一 payload 的重复请求。
-   * 窗口内同参调用复用同一个 Promise：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
+   * 窗口内同参调用复用同一次桥请求：拓展拿到的仍是真实数据，最多晚一个窗口的延迟，
    * 后端与桥的往返次数按窗口长度下降一个量级。
+   * 共用的只是那一次请求：结果每个调用方各拿一份拷贝（一方原地 sort / reverse 改不到别人），
+   * 超时各算各的（先到者的 options.timeout 不套给后来的）。
    */
   const codexPlusExtensionCoalesceWindowMs = new Map([
     // 实测这些面板的轮询间隔在 1~1.5 秒，窗口必须比它长才有合并效果；
@@ -31056,14 +31221,50 @@ ${key} = ${value}`]);
     ["/cdp/targets", 5000],
   ]);
 
-  /** route + payload 指纹 → { at, promise }。只在窗口内复用，过期即重发。 */
+  /**
+   * route + payload 指纹 → { at, windowMs, request }。request 是那一次桥请求（不带超时），只在窗口内复用，过期即重发。
+   * 过期的条目到点删掉；payload 带变化值（时间戳、游标）时指纹各不相同，另设一个条数上限，超了先丢最早的。
+   */
   const codexPlusExtensionCallCache = new Map();
+  const codexPlusExtensionCallCacheLimit = 64;
 
   function codexPlusExtensionCallCacheKey(route, payload) {
     try {
       return `${route}\u0000${JSON.stringify(payload ?? {})}`;
     } catch {
       return "";
+    }
+  }
+
+  /** 只在缓存里还是这一条时才删：同一个指纹可能已经换成了新一次请求。 */
+  function codexPlusExtensionCallCacheDrop(cacheKey, entry) {
+    if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+  }
+
+  function codexPlusExtensionCallCacheStore(cacheKey, entry) {
+    // 后台标签页里定时器会被钳得很慢：放新条目时顺手把已经过期的清掉。
+    for (const [key, cached] of codexPlusExtensionCallCache) {
+      if (entry.at - cached.at >= cached.windowMs) codexPlusExtensionCallCache.delete(key);
+    }
+    // 先删再放：Map 按插入顺序排，超上限时丢的才是最早的那条。
+    codexPlusExtensionCallCache.delete(cacheKey);
+    codexPlusExtensionCallCache.set(cacheKey, entry);
+    while (codexPlusExtensionCallCache.size > codexPlusExtensionCallCacheLimit) {
+      codexPlusExtensionCallCache.delete(codexPlusExtensionCallCache.keys().next().value);
+    }
+    // 轮询停了以后不会再有新条目来触发清理，所以每条到点自己删，响应体不会一直留着。
+    const timer = setTimeout(() => codexPlusExtensionCallCacheDrop(cacheKey, entry), entry.windowMs);
+    // Node 测试环境里不让这个定时器拖住进程；浏览器的定时器 id 是数字，没有 unref。
+    if (typeof timer?.unref === "function") timer.unref();
+  }
+
+  /** 交给调用方的结果拷贝。桥的结果都是 JSON 形状；万一拷不了，宁可共用也不让调用失败。 */
+  function codexPlusExtensionCopyResult(value) {
+    if (!value || typeof value !== "object") return value;
+    try {
+      return typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
+    } catch {
+      return value;
     }
   }
 
@@ -31086,40 +31287,68 @@ ${key} = ${value}`]);
     const cacheKey = windowMs ? codexPlusExtensionCallCacheKey(route, payload) : "";
     if (!windowMs || !cacheKey) return codexPlusExtensionCallOnce(route, payload, options, bridge);
     const now = Date.now();
-    const cached = codexPlusExtensionCallCache.get(cacheKey);
-    if (cached && now - cached.at < windowMs) return cached.promise;
-    const promise = codexPlusExtensionCallOnce(route, payload, options, bridge);
-    const entry = { at: now, promise };
-    codexPlusExtensionCallCache.set(cacheKey, entry);
-    // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
-    promise.catch(() => {
-      if (codexPlusExtensionCallCache.get(cacheKey) === entry) codexPlusExtensionCallCache.delete(cacheKey);
+    let entry = codexPlusExtensionCallCache.get(cacheKey);
+    if (!entry || now - entry.at >= windowMs) {
+      const fresh = { at: now, windowMs, request: codexPlusExtensionBridgeRequest(route, payload, bridge) };
+      entry = fresh;
+      codexPlusExtensionCallCacheStore(cacheKey, fresh);
+      // 失败不留在缓存里：否则一次偶发错误会在一个窗口内被放大给所有轮询者。
+      fresh.request.catch(() => codexPlusExtensionCallCacheDrop(cacheKey, fresh));
+    }
+    const shared = entry;
+    return codexPlusExtensionAwaitRequest(shared.request, route, options, {
+      // 有人等到超时说明这次请求卡住了：不再让后来的调用方接着等它，下一次调用重新发。
+      onTimeout: () => codexPlusExtensionCallCacheDrop(cacheKey, shared),
     });
-    return promise;
+  }
+
+  /** 发一次桥请求，不带超时。路由层的 {status:"failed"}、浮层面板的 {error} 统一成 reject。 */
+  function codexPlusExtensionBridgeRequest(route, payload, bridge) {
+    return Promise.resolve(bridge(route, payload)).then(
+      (result) => {
+        if (result?.status === "failed" || result?.error) {
+          throw new Error(result.message || result.error || `${route} 调用失败`);
+        }
+        return result;
+      },
+      (error) => {
+        throw error instanceof Error ? error : new Error(String(error));
+      },
+    );
+  }
+
+  /**
+   * 按调用方自己的超时等一次桥请求。给了 shared（这次请求是合并缓存里共用的）时，结果拷一份再交出去，
+   * 超时那一刻回调 shared.onTimeout。
+   */
+  function codexPlusExtensionAwaitRequest(request, route, options, shared = null) {
+    const timeout = Number.isFinite(options?.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
+    return new Promise((resolve, reject) => {
+      let timedOut = false;
+      // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
+      const timer = setTimeout(() => {
+        timedOut = true;
+        shared?.onTimeout();
+        reject(new Error(`调用 ${route} 超时`));
+      }, timeout);
+      request.then(
+        (result) => {
+          // 已经超时放弃的调用方不用再为它拷一份。
+          if (timedOut) return;
+          clearTimeout(timer);
+          resolve(shared ? codexPlusExtensionCopyResult(result) : result);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+    });
   }
 
   /** 真正发起一次桥调用（不做合并）。 */
   function codexPlusExtensionCallOnce(route, payload, options, bridge) {
-    const timeout = Number.isFinite(options.timeout) ? Number(options.timeout) : codexPlusExtensionCallTimeoutMs;
-    // 桥接协议没有 cancel 通道，超时只能放弃等待，服务端任务仍会跑完。
-    const request = bridge(route, payload);
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`调用 ${route} 超时`)), timeout);
-      Promise.resolve(request).then(
-        (result) => {
-          clearTimeout(timer);
-          if (result?.status === "failed" || result?.error) {
-            reject(new Error(result.message || result.error || `${route} 调用失败`));
-            return;
-          }
-          resolve(result);
-        },
-        (error) => {
-          clearTimeout(timer);
-          reject(error instanceof Error ? error : new Error(String(error)));
-        },
-      );
-    });
+    return codexPlusExtensionAwaitRequest(codexPlusExtensionBridgeRequest(route, payload, bridge), route, options);
   }
 
   /**
@@ -31273,6 +31502,21 @@ ${key} = ${value}`]);
     return {
       version: codexPlusExtensionAdapterVersion,
       apiVersion: codexPlusExtensionApiVersion,
+      /**
+       * 当前宿主。同一份拓展脚本也能跑在 Claude Desktop 里（清单的 claudeDesktop.renderer），那边是 "claudeDesktop"。
+       * 老版本没有这个成员，判断时写 `codexPlus.host ?? "codex"`。
+       */
+      host: "codex",
+      /**
+       * 某个接口 / 挂载点在当前宿主可不可用，例如 supports("registerComposerAction")、supports("registerSlot:composer.above")。
+       * Codex 里公开接口都有；Claude Desktop 里有些挂载点没有对应位置，先问一下再注册。
+       */
+      supports(name) {
+        const [member, detail] = String(name || "").split(":");
+        if (member === "registerSlot" && detail !== undefined) return codexPlusUiSlotNames.includes(detail);
+        // 从挂好的对象上查，不靠 this：拓展可能把 supports 解构出来单独调。
+        return member !== "dshClient" && typeof window.codexPlus?.[member] === "function";
+      },
       constants: codexPlusExtensionConstants,
       // 用 getter 而不是快照：脚本初始化结束后再读也能拿到自己的 key。
       get script() {
@@ -31482,7 +31726,8 @@ ${key} = ${value}`]);
    * 两种拓展间耦合方式：
    *   - 事件：ctx.on / ctx.emit，一对多通知，处理器抛错互不影响
    *   - waterfall：ctx.intercept / ctx.waterfall，中间件链，handler(value, next)
-   *     调 next(v) 交给下一个，不调即短路；没有中间件时原样返回
+   *     调 next(v) 交给下一个，不调即短路；调了 next 却没 return 时沿用 next 的结果；
+   *     没有中间件时原样返回
    *
    * 宿主后续会在协议层、界面层的关键点调用 codexPlusRunWaterfall /
    * codexPlusEmitExtensionEvent，拓展用同一套 ctx 接口挂上去。设计见
@@ -31950,6 +32195,27 @@ ${key} = ${value}`]);
   }
 
   /**
+   * 交给某个拓展实例的内置服务：建立订阅的那几个方法（返回撤销函数的 observeAll / observeSession / register）
+   * 包一层，把撤销函数登记进该实例的副作用表（track），实例卸载、热重载时自动撤销；拓展没把订阅包进
+   * ctx.effect 也不会留下监听和会话轮询。返回的撤销函数照旧可以提前调，重复调无害。
+   * 只认 Codex++ 自己提供的 sessionQuery / locale；其它拓展 ctx.provide 的服务原样交出去。
+   */
+  function codexPlusScopeServiceToInstance(name, entry, track) {
+    let methods = null;
+    if (entry.owner === "builtin" && name === "sessionQuery") methods = ["observeAll", "observeSession"];
+    else if (entry.owner === "builtin" && name === "locale") methods = ["register"];
+    if (!methods || !entry.value || typeof entry.value !== "object") return entry.value;
+    // 服务对象是冻结的：按属性描述符抄一份（current 这类 getter 原样保留），只换掉订阅方法。
+    const descriptors = Object.getOwnPropertyDescriptors(entry.value);
+    for (const method of methods) {
+      const subscribe = entry.value[method];
+      if (typeof subscribe !== "function") continue;
+      descriptors[method] = { ...descriptors[method], value: (...args) => track(subscribe.apply(entry.value, args)) };
+    }
+    return Object.freeze(Object.defineProperties({}, descriptors));
+  }
+
+  /**
    * 拓展后台声明的服务（codexpp.json 的 backend.provides）：登记成页面服务，值是一个代理，
    * 调用任意方法都经桥接转给提供方后台（没起就先起）。清单随注入包下发，热重载时增删。
    * 页面里已有同名服务时以页面的为准。
@@ -32236,6 +32502,10 @@ ${key} = ${value}`]);
    *
    * 中间件可以是异步的：返回 Promise 时整条链的结果也是 Promise。中间件抛错（或
    * reject）时跳过它——若它已经调过 next，沿用下游的结果，避免下游被执行两次。
+   *
+   * 调过 next 却没有 return（`(v, next) => { next(v); }`，同步、异步都算）时沿用 next 的结果：
+   * 否则这一层交出去的是 undefined，上游的改写和下游的结果一起丢。没调 next 的仍是短路，
+   * 返回什么就是什么（包括 undefined）。
    */
   function codexPlusRunWaterfall(name, value) {
     const chain = [...(codexPlusExtensionInterceptors.get(name) || [])];
@@ -32250,15 +32520,17 @@ ${key} = ${value}`]);
         return downstream;
       };
       const recover = () => (called ? downstream : step(index + 1, current));
+      // 到这一层给出结果的那一刻再看 called：异步中间件可能 await 之后才调 next。
+      const settle = (result) => (result === undefined && called ? downstream : result);
       const outcome = runCodexPlusExtensionCallback(item.scriptKey, `intercept:${name}`, () => item.handler(current, next));
       if (!outcome.ok) return recover();
       if (codexPlusIsThenable(outcome.value)) {
-        return Promise.resolve(outcome.value).catch((error) => {
+        return Promise.resolve(outcome.value).then(settle, (error) => {
           codexPlusMarkExtensionFailure(item.scriptKey, `intercept:${name}: ${String(error?.stack || error?.message || error)}`);
           return recover();
         });
       }
-      return outcome.value;
+      return settle(outcome.value);
     };
     return step(0, value);
   }
@@ -32427,6 +32699,9 @@ ${key} = ${value}`]);
     // apply 里提供服务会触发全体复查，又回到这个句柄：正在检查时只记下「需要再查一次」。
     let checking = false;
     let recheck = false;
+    // apply 抛错那一次的依赖 token 串。依赖没变就不重试：apply 里先 provide 再抛错时，provide 和回滚时的
+    // 撤销各触发一次复查，照旧重试会同步地一直 apply 到栈溢出。提供方重载或消失后回来（token 变了）再试。
+    let failedTokens = null;
     const fiber = {
       id: extensionId,
       scriptKey,
@@ -32460,12 +32735,15 @@ ${key} = ${value}`]);
           ctx.dispose();
         }
         if (!fiber.ctx && ready && fiber.state !== "disposed") {
+          if (fiber.state === "failed" && current === failedTokens) return;
           tokens = current;
+          failedTokens = null;
           fiber.state = "active";
           try {
             fiber.ctx = codexPlusInstantiateExtension({ apply, scriptKey, manifest, extensionId, inject, fiber });
           } catch (error) {
             fiber.state = "failed";
+            failedTokens = tokens;
             codexPlusMarkExtensionFailure(scriptKey, `${extensionId}: ${String(error?.stack || error?.message || error)}`);
           }
         }
@@ -32510,11 +32788,27 @@ ${key} = ${value}`]);
       };
     };
 
-    // 多实例时注册项的 id 带上实例 id，同一个拓展的几份不会互相顶掉。
+    // 本实例拿到的服务（ctx.<服务名>、ctx.get）：内置的 sessionQuery / locale 按实例包一层，经它建立的订阅
+    // 随本实例卸载撤销（见 codexPlusScopeServiceToInstance）。同一个提供者只包一次，反复读到的是同一个对象。
+    const scopedServices = new Map();
+    const serviceFor = (name) => {
+      const entry = codexPlusServices.get(name);
+      if (!entry) return undefined;
+      const cached = scopedServices.get(name);
+      if (cached?.token === entry.token) return cached.value;
+      const value = codexPlusScopeServiceToInstance(name, entry, track);
+      if (value !== entry.value) scopedServices.set(name, { token: entry.token, value });
+      return value;
+    };
+
+    // 多实例时注册项的 id 带上实例 id，同一个拓展的几份不会互相顶掉。拓展没给 id、由注册函数按名字起默认 id 的
+    // 几类（命令 cmd-<名字>、主题 theme-<id>、带 definition.id 的设置分区）靠 instanceId 在那边补同样的后缀；
+    // 「每个拓展一个」的设置面板靠它认出多实例。单实例时不带 instanceId，id 与以前完全一样。
     const instanceId = manifest?.instance?.id;
     const registerOptions = (itemOptions) => ({
       ...(itemOptions || {}),
       ...(instanceId && itemOptions?.id ? { id: `${itemOptions.id}@${instanceId}` } : {}),
+      ...(instanceId ? { instanceId } : {}),
       scriptKey,
     });
     // 按拓展隔离的本地存储：键名自动带拓展 id 前缀，值按 JSON 存取。
@@ -32709,7 +33003,7 @@ ${key} = ${value}`]);
       },
       /** 取一个服务，不存在时返回 undefined（可选依赖用这个；必需依赖请在 inject 里声明）。 */
       get(name) {
-        return codexPlusServices.get(String(name))?.value;
+        return serviceFor(String(name));
       },
       /** 子作用域：deps 里的服务齐全时以子 ctx 调用 apply，服务消失时卸载、回来时重新应用。 */
       inject(deps, apply) {
@@ -32937,7 +33231,7 @@ ${key} = ${value}`]);
     // 声明过的服务挂到 ctx 上（读的是当前提供者的值；换了提供者时整个实例会被重建）。
     for (const name of inject) {
       if (Object.prototype.hasOwnProperty.call(ctx, name)) continue;
-      Object.defineProperty(ctx, name, { enumerable: true, get: () => codexPlusServices.get(name)?.value });
+      Object.defineProperty(ctx, name, { enumerable: true, get: () => serviceFor(name) });
     }
     if (fiber) Object.defineProperty(ctx, "fiber", { value: fiber });
     codexPlusExtensionInstances.add(ctx);
@@ -32968,6 +33262,64 @@ ${key} = ${value}`]);
     }
     return ctx;
   }
+
+  /**
+   * 同一个文档里重复注入之后，把用户脚本搬到这一代内核上。99-startup 在 window.codexPlus 挂好后调一次。
+   *
+   * Codex++ 重启 / 升级而 Codex 没重启、或看门狗补注入时，注入脚本在同一个页面里再执行一遍：注册表、监听表、
+   * 中间件表都是新闭包，用户脚本（含随包发布的官方拓展）却不会重跑——页面已经初始化过，/user-scripts/load
+   * 对它什么都不执行。它们的实例还挂在上一代内核上：codex/request、agent/pre-step 这类拦截静默失效，
+   * 定时器、监听、扫描步骤却还在跑。这里请求一次显式重载：后端让页面先跑各脚本登记的清理函数
+   * （codexPlus.extension 创建的实例自动登记了，会从旧内核上卸掉），再把脚本在这一代内核上重跑一遍。
+   *
+   * 只在不会整页刷新时才请求：prepareReload（assets/inject/user-scripts-runtime.js）遇到没登记清理函数的脚本
+   * 会退回 window.location.reload()，那会打断用户正在进行的对话。所以按它的同一个条件先查一遍——每个脚本
+   * 都登记了清理函数、且没有等着执行的整页刷新——不满足就保持现状，只记一条诊断。
+   * （清理函数执行时才抛错、或普通函数返回了 Promise，prepareReload 仍会整页刷新，这两种事先看不出来。）
+   * 请求放在微任务里发，不占注入脚本的同步执行；失败只记诊断、不抛错。
+   * 不会循环：重载执行的是用户脚本包，不会重跑注入脚本，注入代际不再涨，本函数每次注入只跑这一回。
+   *
+   * 返回是否发起了重载请求。
+   */
+  /**
+   * 重载请求晚这么久再发。重新注入时新旧两条桥接连接会并存一小会儿，立刻发的话两条连接都会收到并各处理一遍，
+   * 用户脚本就被连着重载两次（在真实的 Codex 上测到过）。等旧连接让位之后再发，只重载一次。
+   */
+  const codexPlusRehomeDelayMs = 1000;
+
+  function codexPlusRehomeUserScriptsAfterReinjection(delayMs = codexPlusRehomeDelayMs) {
+    const note = (message) => codexPlusMarkExtensionFailure("", message);
+    try {
+      // 首次注入：用户脚本还没加载，稍后由 /user-scripts/load 直接跑在这一代内核上。
+      if (codexPlusInjectionGeneration <= 1) return false;
+      const runtime = window.__codexPlusUserScripts;
+      const scripts = Object.values(runtime?.scripts || {});
+      // 没有用户脚本（总开关关着、这次启动跳过了拓展、还没加载）就没有要搬的东西；整页刷新已经排上的也不用管。
+      if (!scripts.length || runtime.refreshPending) return false;
+      // 异步的清理函数 prepareReload 也等不了，同样退回整页刷新：async 函数一眼认得出，一并算进去。
+      const isAsync = (cleanup) => Object.prototype.toString.call(cleanup) === "[object AsyncFunction]";
+      const unsafe = scripts.filter((script) => !script?.cleanups?.length || script.cleanups.some(isAsync));
+      if (unsafe.length) {
+        note(`重复注入后没有重载用户脚本：${unsafe.map((script) => script?.key || script?.name || "?").join("、")} 没有登记清理函数（或登记的是异步清理函数），重载会刷新整个页面；用户脚本留在上一代内核上，重启 Codex 后恢复`);
+        return false;
+      }
+      new Promise((resolve) => setTimeout(resolve, delayMs)).then(() => {
+        // 等的这段时间里又注入了一次：交给更新的那一代去搬。
+        if (window.__codexPlusRuntimeGeneration !== codexPlusInjectionGeneration) return null;
+        const bridge = window.__codexSessionDeleteBridge;
+        if (typeof bridge !== "function") throw new Error("Codex 页面尚未连接");
+        return bridge("/user-scripts/reload", {});
+      }).then((result) => {
+        if (result?.status === "failed" || result?.status === "unknown" || result?.error) {
+          note(`重复注入后重载用户脚本失败：${result.message || result.error || result.status}`);
+        }
+      }, (error) => note(`重复注入后重载用户脚本失败：${String(error?.message || error)}`));
+      return true;
+    } catch (error) {
+      note(`重复注入后重载用户脚本失败：${String(error?.message || error)}`);
+      return false;
+    }
+  }
   /**
    * 拓展的 RPC 层拦截点：`agent/pre-step`、`agent/request` 和 `codex/request`。
    *
@@ -32994,7 +33346,7 @@ ${key} = ${value}`]);
    *   - `agent/request`：params `{ agent, turn, step, signal }`，返回 `{ provider, model, reasoningEffort }`。
    * 同一条用户消息只跑一次这两条链（按 clientUserMessageId 缓存），结果套用到它的所有候选帧上。
    */
-  const codexPlusRpcInterceptorVersion = 21;
+  const codexPlusRpcInterceptorVersion = 22;
   const codexPlusRpcMiddlewareTimeoutMs = (typeof codexPlusRpcMiddlewareTimeoutMsOverride === "number"
     && codexPlusRpcMiddlewareTimeoutMsOverride > 0)
     ? codexPlusRpcMiddlewareTimeoutMsOverride : 5000;
@@ -33015,6 +33367,50 @@ ${key} = ${value}`]);
   const codexPlusRpcAnswers = window.__codexPlusRpcAnswers ||= { trackers: new WeakMap(), frames: new WeakMap(), seq: 0 };
   const codexPlusRpcAnswerTimeoutMs = 15_000;
   const codexPlusRpcAnswerPendingMs = 90_000;
+  // 中间件熔断阈值：连续这么多个改写计划等满超时，就认定有拓展的中间件挂住了。
+  const codexPlusRpcBreakerThreshold = 3;
+  // 熔断冷却时间：这段时间内当作没有拓展中间件，帧原样放行；到点后再试，头一个计划又超时就立刻重新熔断。
+  const codexPlusRpcBreakerCooldownMs = 60_000;
+
+  /**
+   * 中间件熔断。超时是逐帧等的（codexPlusRpcRunPlan），一个不 resolve 的中间件会让端口队列里每一帧
+   * 各等满一次；连续超时到阈值后，冷却期内下面几个「有没有拓展要拦」的判断一律答没有：
+   * 只为拓展拦的帧同步放行，上下文刷新、供应商预检这些原生环节照常走。
+   *
+   * 状态挂在 window.__codexPlusRpcFrameInterceptor.breaker 上、每次安装都换新的：同版本重新注入时
+   * 已打补丁的 postMessage（连同它的发送循环）还是上一代闭包，判断帧的却是新一代，两边得读同一份。
+   */
+  function codexPlusRpcNewBreaker() {
+    return { timeouts: 0, openUntil: 0 };
+  }
+
+  function codexPlusRpcBreakerOpen() {
+    const breaker = window.__codexPlusRpcFrameInterceptor?.breaker;
+    return !!breaker && Date.now() < breaker.openUntil;
+  }
+
+  /** 每个计划的中间件阶段结束时记一次：超时累加，没超时（正常完成或出错放行）清零。 */
+  function codexPlusRpcNoteMiddlewareOutcome(timedOut) {
+    const breaker = window.__codexPlusRpcFrameInterceptor?.breaker;
+    if (!breaker) return;
+    const now = Date.now();
+    // 熔断前就在等的计划（别的端口）此时才回来：冷却期内不计数，也不再记日志。
+    if (now < breaker.openUntil) return;
+    if (!timedOut) {
+      breaker.timeouts = 0;
+      return;
+    }
+    breaker.timeouts += 1;
+    if (breaker.timeouts < codexPlusRpcBreakerThreshold) {
+      codexPlusMarkExtensionFailure("", "rpc 拓展中间件超时，已跳过它的改写");
+      return;
+    }
+    // 计数停在阈值前一格：冷却结束后头一个计划又超时就直接重新熔断，不必再等满三次。
+    breaker.timeouts = codexPlusRpcBreakerThreshold - 1;
+    breaker.openUntil = now + codexPlusRpcBreakerCooldownMs;
+    codexPlusMarkExtensionFailure("",
+      `rpc 拓展中间件持续超时，接下来 ${Math.round(codexPlusRpcBreakerCooldownMs / 1000)} 秒跳过拓展拦截、原样放行`);
+  }
 
   async function codexPlusRpcSerializeTurn(threadId, prepare) {
     if (typeof threadId !== "string" || !threadId) return prepare();
@@ -33083,7 +33479,7 @@ ${key} = ${value}`]);
 
   function codexPlusRpcHasListeners(name) {
     try {
-      return !!codexPlusExtensionListeners.get(name)?.size;
+      return !codexPlusRpcBreakerOpen() && !!codexPlusExtensionListeners.get(name)?.size;
     } catch {
       return false;
     }
@@ -33091,7 +33487,7 @@ ${key} = ${value}`]);
 
   function codexPlusRpcWantsRequestChain() {
     try {
-      return codexPlusExtensionInterceptors.has("codex/request");
+      return !codexPlusRpcBreakerOpen() && codexPlusExtensionInterceptors.has("codex/request");
     } catch {
       return false;
     }
@@ -33369,7 +33765,8 @@ ${key} = ${value}`]);
    */
   async function codexPlusRpcProcessTurn({ messageId, carriers, settings, settingsHolders, signal }) {
     const primary = carriers[0];
-    const outcome = await codexPlusRpcTurnHooksOnce(messageId, () => codexPlusRpcRunTurnHooks({
+    // 熔断期间不碰缓存：同一条消息挂住的那次 hooks 还缓存在里面，等它就又是一次超时。
+    const outcome = codexPlusRpcBreakerOpen() ? {} : await codexPlusRpcTurnHooksOnce(messageId, () => codexPlusRpcRunTurnHooks({
       messageId,
       conversationId: primary.conversationId,
       input: primary.params.input,
@@ -33589,7 +33986,7 @@ ${key} = ${value}`]);
         } catch (error) {
           signal?.throwIfAborted();
           if (refreshContext) throw error;
-          codexPlusMarkExtensionFailure("", `网关连接检查不可用：${String(error?.message || error)}`);
+          codexPlusMarkExtensionFailure("", `本地服务连接检查不可用：${String(error?.message || error)}`);
           return nextFrame;
         }
         signal?.throwIfAborted();
@@ -33721,12 +34118,14 @@ ${key} = ${value}`]);
   async function codexPlusRpcRunPlan(plan, frame, deferContext = false) {
     const controller = new AbortController();
     let timer = null;
+    let timedOut = false;
     let replaced = null;
     try {
       replaced = await Promise.race([
         Promise.resolve().then(() => plan(controller.signal)),
         new Promise((resolve) => {
           timer = setTimeout(() => {
+            timedOut = true;
             controller.abort(new Error("Codex++ 拓展中间件超时"));
             resolve(null);
           }, codexPlusRpcMiddlewareTimeoutMs);
@@ -33737,6 +34136,9 @@ ${key} = ${value}`]);
     } finally {
       clearTimeout(timer);
     }
+    try {
+      codexPlusRpcNoteMiddlewareOutcome(timedOut);
+    } catch {}
     if (!plan.context || deferContext || replaced?.[codexPlusRpcPushFailure]) return replaced;
     // plan.context 里会等 app-server 往返（网关预检、模型刷新）；一旦挂住，
     // 端口队列会卡死后续所有帧，渲染层首批请求就永远停在 fetching（issue #3098）。
@@ -33815,6 +34217,23 @@ ${key} = ${value}`]);
     return transformed;
   }
 
+  /**
+   * 发出改写后的帧；发不出去（中间件给的参数里带函数、DOM 节点这类不可克隆的值，postMessage 抛
+   * DataCloneError）就退回原帧。import 序号按 push 顺序隐式分配，丢一帧后面的回包全部错位，
+   * 所以宁可不要这次改写。没改写过的帧只发一次，原帧也发不出去时照旧抛给调用方。
+   * 改写结果是「拒绝本轮」时不退回：改发原帧会把本该拦下的消息发出去。
+   */
+  function codexPlusRpcSendFrame(original, port, replaced, message, rest) {
+    if (!replaced || replaced === message) return original.call(port, message, ...rest);
+    try {
+      return original.call(port, replaced, ...rest);
+    } catch (error) {
+      if (replaced[0] === "reject" && message[0] !== "reject") throw error;
+      codexPlusMarkExtensionFailure("", `rpc 改写后的帧发送失败，已改发原帧：${String(error?.message || error)}`);
+    }
+    return original.call(port, message, ...rest);
+  }
+
   /** 某个端口开始等中间件：之后的帧全部排队，按原顺序逐个处理、发出。 */
   async function codexPlusRpcDrainPort(port, original, first) {
     let finish;
@@ -33827,6 +34246,8 @@ ${key} = ${value}`]);
         const deferContext = message[0] === "resolve" && plan?.before && plan.context;
         const replaced = plan ? await codexPlusRpcRunPlan(plan, message, deferContext) : null;
         try {
+          // 带拒绝标记的帧是原帧的副本（内容没改写），下面两支发送失败时不改发原帧：
+          // 原帧同样发不出去，发得出去也不行，那是把要拒绝的请求真发给对端。
           const failure = replaced?.[codexPlusRpcPushFailure];
           const readInputs = failure && replaced[1][2][0] === "startConversation"
             && replaced[1][3][1]?.readThreadCreationInputs;
@@ -33864,18 +34285,36 @@ ${key} = ${value}`]);
             gates.pending.add(id);
             const controller = new AbortController();
             (gates.controllers ||= new Map()).set(id, controller);
-            const next = replaced || message;
-            const resolving = next[0] === "resolve";
-            const expr = next[1];
-            const args = resolving ? { ...next[2] } : [...expr[3]];
-            const params = args[plan.resumeIndex];
-            const dataOnly = codexPlusRpcDataOnly(params);
-            // 含 export 的参数留在原 push 导入，失败时由 Capnweb 正常释放。
-            if (resolving || dataOnly) args[plan.resumeIndex] = ["promise", id];
-            else args.push(["promise", id]);
-            original.call(port, resolving
-              ? ["resolve", next[1], args, ...next.slice(3)]
-              : ["push", [...expr.slice(0, 3), args, ...expr.slice(4)], ...next.slice(2)], ...rest);
+            const sendGated = (next) => {
+              const resolving = next[0] === "resolve";
+              const expr = next[1];
+              const args = resolving ? { ...next[2] } : [...expr[3]];
+              const params = args[plan.resumeIndex];
+              const dataOnly = codexPlusRpcDataOnly(params);
+              // 含 export 的参数留在原 push 导入，失败时由 Capnweb 正常释放。
+              if (resolving || dataOnly) {
+                // 留在闸门后面的参数要等预检完才随 resolve 发出，那时这一帧已经占了序号、退不回原帧，
+                // 所以改写过的现在就验一遍能不能克隆。
+                if (next !== message && typeof structuredClone === "function") structuredClone(params);
+                args[plan.resumeIndex] = ["promise", id];
+              } else {
+                args.push(["promise", id]);
+              }
+              original.call(port, resolving
+                ? ["resolve", next[1], args, ...next.slice(3)]
+                : ["push", [...expr.slice(0, 3), args, ...expr.slice(4)], ...next.slice(2)], ...rest);
+              return { next, resolving, args, params, dataOnly };
+            };
+            let gated;
+            try {
+              gated = sendGated(replaced || message);
+            } catch (error) {
+              if (!replaced || replaced === message) throw error;
+              // 改写后的帧发不出去：用原帧按同一个闸门重发，理由见 codexPlusRpcSendFrame。
+              codexPlusMarkExtensionFailure("", `rpc 改写后的帧发送失败，已改发原帧：${String(error?.message || error)}`);
+              gated = sendGated(message);
+            }
+            const { next, resolving, args, params, dataOnly } = gated;
             // 先释放整个发送队列，再让预检经同一端口发出。
             void state.done.then(async () => {
               let timer;
@@ -33917,7 +34356,7 @@ ${key} = ${value}`]);
               },
             ).catch((error) => codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`));
           } else {
-            original.call(port, replaced || message, ...rest);
+            codexPlusRpcSendFrame(original, port, replaced, message, rest);
           }
         } catch (error) {
           // 已经是异步发送，异常没法还给调用方；记下来，后面的帧照常发。
@@ -33946,6 +34385,8 @@ ${key} = ${value}`]);
     if (installed?.version === codexPlusRpcInterceptorVersion && proto.postMessage === installed.patched) {
       installed.planFrame = codexPlusRpcPlanFrame;
       installed.noteFrame = codexPlusRpcNoteFrame;
+      // 熔断状态跟注入代际走：重新注入后从头计数。
+      installed.breaker = codexPlusRpcNewBreaker();
       return true;
     }
     // 重复注入时包原生的那个，不叠层。
@@ -33989,7 +34430,7 @@ ${key} = ${value}`]);
             return proto.postMessage.call(port, message, ...rest);
           }
           const replaced = await codexPlusRpcRunPlan(plan, message);
-          original.call(port, replaced || message, ...rest);
+          codexPlusRpcSendFrame(original, port, replaced, message, rest);
         })().catch((error) => {
           codexPlusMarkExtensionFailure("", `rpc 帧发送失败：${String(error?.message || error)}`);
         });
@@ -34005,7 +34446,8 @@ ${key} = ${value}`]);
     };
     proto.postMessage = patched;
     window.__codexPlusRpcFrameInterceptor = { version: codexPlusRpcInterceptorVersion, original, patched,
-      planFrame: codexPlusRpcPlanFrame, noteFrame: codexPlusRpcNoteFrame, pushFailure: codexPlusRpcPushFailure };
+      planFrame: codexPlusRpcPlanFrame, noteFrame: codexPlusRpcNoteFrame, pushFailure: codexPlusRpcPushFailure,
+      breaker: codexPlusRpcNewBreaker() };
     return true;
   }
 
@@ -34348,7 +34790,10 @@ ${key} = ${value}`]);
     const name = String(definition?.name || "").trim();
     if (!/^[A-Za-z0-9][\w-]{0,31}$/.test(name)) throw new Error("命令名只能是字母、数字、_、-，最长 32 个字符");
     if (typeof definition?.run !== "function") throw new Error(`命令 /${name} 必须提供 run(args, context)`);
-    const dispose = codexPlusRegisterExtensionItem("command", codexPlusRegistry.commands, { ...definition, name }, { ...options, id: options.id || `cmd-${name}` });
+    // 多实例（清单 instances）时默认 id 也带实例后缀，规则同内核的 registerOptions：<id>@<实例 id>；
+    // 否则第二个实例撞上「id 已被占用」。同名命令仍是先注册的生效。
+    const defaultId = `cmd-${name}${options.instanceId ? `@${options.instanceId}` : ""}`;
+    const dispose = codexPlusRegisterExtensionItem("command", codexPlusRegistry.commands, { ...definition, name }, { ...options, id: options.id || defaultId });
     installCodexPlusCommandHandlers();
     return dispose;
   }
@@ -35611,7 +36056,10 @@ ${key} = ${value}`]);
     const themeId = String(definition?.id || "").trim();
     if (!/^[\w-]{1,48}$/.test(themeId)) throw new Error("主题 id 只能是字母、数字、_、-");
     if (!definition.variables && typeof definition.css !== "string") throw new Error(`主题 ${themeId} 需要 variables 或 css`);
-    const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || `theme-${themeId}` });
+    // 多实例（清单 instances）时默认 id 也带实例后缀，规则同内核的 registerOptions：<id>@<实例 id>。
+    // 主题 id（themeId）本身不变：几个实例注册同一个主题 id 时，生效的是排在前面的那一份。
+    const defaultId = `theme-${themeId}${options.instanceId ? `@${options.instanceId}` : ""}`;
+    const dispose = codexPlusRegisterExtensionItem("theme", codexPlusRegistry.themes, { ...definition, themeId, name: definition.name || themeId }, { ...options, id: options.id || defaultId });
     applyCodexPlusExtensionTheme();
     return () => {
       dispose();
@@ -35864,7 +36312,10 @@ ${key} = ${value}`]);
     if (typeof definition?.render !== "function") throw new Error("设置分区需要 render({ container, close })");
     const scriptKey = codexPlusCurrentExtensionScriptKey(options);
     const sectionKey = String(options.id || definition.id || codexPlusExtensionIdSeed());
-    const id = `${scriptKey}:settingsSection:${sectionKey}`;
+    // 多实例（清单 instances）时取自 definition.id 的注册 id 也带实例后缀，规则同内核的 registerOptions：
+    // <id>@<实例 id>（options.id 在内核里已经带上了）。sectionKey 只用来挑图标、兜底标题，保持原样。
+    const instanceSuffix = !options.id && definition.id && options.instanceId ? `@${options.instanceId}` : "";
+    const id = `${scriptKey}:settingsSection:${sectionKey}${instanceSuffix}`;
     const dispose = registerCodexPlusExtension("settingsSection", codexPlusRegistry.settingsSections, id, { ...definition, sectionKey }, scriptKey);
     // 设置页宿主在 40-backend-settings.js；单独切出这一段测试时没有它。
     const changed = () => {
@@ -35881,11 +36332,22 @@ ${key} = ${value}`]);
   /**
    * 每个拓展一个设置面板，登记在注册表里（持久）；面板 DOM 由「拓展」详情页每次打开时向拓展要（瞬态）。
    * 注册 / 撤销时通知详情页：正显示着这个拓展时重画，热重载后看到的是新代码画的面板。
+   *
+   * 多实例（清单 instances）时面板仍是整个拓展一个（它画的是包配置，saveConfig 存的也是包配置）：
+   * 先注册的那个实例生效，别的实例再注册时忽略并在控制台留一句提示，不抛错——抛错会让后面的实例建不起来。
+   * 同一个实例重复注册、以及单实例拓展，照旧报「id 已被占用」。
    */
   function codexPlusRegisterSettingsPanel(definition, options = {}) {
     if (typeof definition?.render !== "function") throw new Error("设置面板需要 render({ container, config, saveConfig })");
     const scriptKey = codexPlusCurrentExtensionScriptKey(options);
-    const dispose = registerCodexPlusExtension("settingsPanel", codexPlusRegistry.settingsPanels, `${scriptKey}:settingsPanel`, definition, scriptKey);
+    const id = `${scriptKey}:settingsPanel`;
+    const instanceId = options.instanceId ? String(options.instanceId) : "";
+    const owner = instanceId ? codexPlusRegistry.settingsPanels.get(id)?.instanceId : "";
+    if (owner && owner !== instanceId) {
+      console.info(`[Codex++] 拓展 ${scriptKey} 的设置面板每个拓展一个：已由实例 ${owner} 注册，实例 ${instanceId} 的 registerSettingsPanel 已忽略`);
+      return () => {};
+    }
+    const dispose = registerCodexPlusExtension("settingsPanel", codexPlusRegistry.settingsPanels, id, instanceId ? { ...definition, instanceId } : definition, scriptKey);
     // 详情页宿主在 40-backend-settings.js；单独切出这一段测试时没有它。
     const changed = () => {
       if (typeof codexPlusSettingsPanelChanged === "function") codexPlusSettingsPanelChanged(scriptKey);
@@ -43139,6 +43601,9 @@ ${key} = ${value}`]);
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
+  // 同页重复注入：已经在跑的用户脚本还挂在上一代内核上，请求一次重载把它们搬过来（只在不会整页刷新时才做，
+  // 见 91-extension-runtime.js 的 codexPlusRehomeUserScriptsAfterReinjection）。请求是异步发的，这里不等。
+  codexPlusRehomeUserScriptsAfterReinjection();
   // 内置功能挂到拓展内核上（见 96-builtin-extensions.js）。旧版直接挂在 body 上的多开身份提示先摘掉，
   // 现在由内置拓展经 overlay 插槽画。用户脚本注入包下发停用 / 顶替状态后会再调一次。
   document.querySelector('body > #codex-plus-instance-identity[data-codex-plus-ext="instance-identity"]')?.remove();

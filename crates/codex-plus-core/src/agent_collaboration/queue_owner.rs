@@ -117,6 +117,19 @@ fn sweep_stale(dir: &Path) {
 mod tests {
     use super::*;
 
+    /// 等锁真正放开再下结论。锁是跟着「打开的文件」走的：测试并行跑时，别的线程正在启动子进程的那一瞬间，
+    /// 子进程带着这个描述符的副本，这边关掉之后锁要等那份也关掉才空出来（实测 4000 次里约 46 次）。
+    /// 这时 `is_alive` 报「还在」是对的，生产里下一轮检查就会更正；测试要的是最终结果，所以等一等。
+    fn eventually(mut attempt: impl FnMut() -> bool) -> bool {
+        for _ in 0..400 {
+            if attempt() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        attempt()
+    }
+
     /// 另一个进程持有的标记：锁着时算存活，锁释放（进程退出）后算已退出并删掉标记文件。
     #[test]
     fn foreign_owner_is_alive_only_while_its_marker_is_locked() {
@@ -131,7 +144,7 @@ mod tests {
         assert!(path.exists());
 
         drop(marker);
-        assert!(!is_alive(&dir, &token));
+        assert!(eventually(|| !is_alive(&dir, &token)));
         assert!(!path.exists(), "已退出持有者的标记文件应被清掉");
         assert!(!is_alive(&dir, &token), "标记文件不存在时同样算已退出");
     }

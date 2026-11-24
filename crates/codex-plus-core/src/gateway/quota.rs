@@ -5,7 +5,7 @@
 //! 两个来源：ChatGPT 后端每次响应都带的 `x-codex-*` 响应头，以及后台定期查询额度接口
 //! （ChatGPT `wham/usage`、Copilot `copilot_internal/user`、SuperGrok `billing`、套餐用量接口）。
 //! 只存在内存，重启后重新查；同一官方账号的不同供应商别名按身份作用域共享。
-//! 模型组「额度优先」按剩余额度排先后，供应商池在账号行上显示。
+//! 模型组「额度优先」按剩余额度排先后，共享供应商在账号行上显示。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};

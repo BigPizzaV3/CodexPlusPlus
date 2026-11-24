@@ -7,6 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { AppSelect } from "./AppSelect";
+import { onTabListKeyDown } from "./tablist-keys";
 import { formatTokens } from "./gateway-model";
 import { announceBackendSettingsChanged } from "./settings-events";
 import { Menu, MenuItem } from "./ManagementPages";
@@ -23,9 +24,11 @@ import type {
 } from "./app-types";
 import { clampNumber, claudeLocalizationMemo, claudeLocalMemo, stringifyError, ToggleVisual } from "./app-shared";
 import type { Route } from "./routes";
-import { ClaudeProviders } from "./ClaudeProviders";
 import { ClaudeAutoTakeoverRow } from "./ClaudeAutoTakeover";
 import { patchClaudeEnhance, saveClaudeBashTimeout, setClaudeDelivery, useClaudeEnhance, type ClaudeDelivery } from "./claude-enhance";
+
+/** Desktop 增强页的设置页签。 */
+type ClaudeSettingsTab = "providers" | "account" | "features" | "environment";
 
 /** Claude 在供应商没有声明窗口时自己用的默认上下文窗口。 */
 const CLAUDE_DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -81,6 +84,7 @@ export function ClaudeLocalizationScreen(
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<ClaudeSettingsTab>("providers");
   /** 补丁页里副本块恒开；启动模式选了补丁副本时，Desktop 增强页直接把副本块搬进来；其余情况不轮询副本状态，避免白跑检测。 */
   const copyInline = !patchOnly && delivery === "copy";
   const advancedShown = patchOnly || advancedOpen || copyInline;
@@ -418,6 +422,24 @@ export function ClaudeLocalizationScreen(
   const defaultModelWindow = local?.contextWindow != null && local.contextWindow > 0
     ? formatContextWindow(local.contextWindow)
     : formatContextWindow(CLAUDE_DEFAULT_CONTEXT_WINDOW);
+  // 设置页签：补丁副本没有这些设置；证书与环境、功能只在完整功能模式下有。证书没信任或缺 Node 时那个页签带个点。
+  const fullLocal = claudeLaunch === "full" && Boolean(local);
+  const settingsTabs: Array<{ id: ClaudeSettingsTab; label: string; attention?: boolean }> = claudeLaunch === "copy" ? [] : [
+    { id: "providers", label: t("模型") },
+    { id: "account", label: t("账号与会话") },
+    ...(fullLocal ? [
+      { id: "features" as const, label: t("功能") },
+      { id: "environment" as const, label: t("证书与环境"), attention: Boolean(local && (!local.caTrusted || !local.nodeAvailable)) },
+    ] : []),
+  ];
+  const activeTab = settingsTabs.some((tab) => tab.id === settingsTab) ? settingsTab : settingsTabs[0]?.id ?? "providers";
+  const settingsPanel = (id: ClaudeSettingsTab) => ({
+    "aria-labelledby": `claude-local-tab-${id}`,
+    className: "claude-local-panel",
+    hidden: activeTab !== id,
+    id: `claude-local-panel-${id}`,
+    role: "tabpanel",
+  });
   return (
     <div className="claude-localization-page cx-page">
       {!patchOnly && topbarSlot
@@ -467,18 +489,14 @@ export function ClaudeLocalizationScreen(
           </div>
         </CxRow>
       </CxCard> : null}
-      {/* 供应商：Claude 用哪些、默认哪个模型，加 / 导入供应商。补丁副本走 Claude 自己的登录，不经网关，不显示。 */}
-      {!patchOnly && claudeLaunch !== "copy" && notify ? <ClaudeProviders notify={notify} /> : null}
-      {/* 窗口比默认模型小的模型不会列给 Claude（Claude 按默认模型的窗口压所有模型）；说清楚它们去哪了。 */}
-      {!patchOnly ? <CxSection className="claude-local-settings" title={t("启动设置")}>
-        <CxCard>
+      {!patchOnly ? <CxCard className="claude-local-launch">
           {/* 一个下拉管启动方式，也就定了增强怎么生效：3p 不注入，完整功能模式经本地服务注入官方 Claude，补丁副本在副本里注入。 */}
           <CxRow
             detail={claudeLaunch === "copy"
               ? t("启动改过代码的副本，汉化、听写、页面扩展在副本里注入；官方 Claude 不动。")
               : claudeLaunch === "full"
                 ? t("经本地服务启动官方 Claude，汉化、听写、页面扩展都由它注入。已打开的 Claude 需完全退出重开。")
-                : t("用安装包自带的界面直连网关，不注入汉化、听写和页面扩展。已打开的 Claude 需完全退出重开。")}
+                : t("用安装包自带的界面直连本地服务，不注入汉化、听写和页面扩展。已打开的 Claude 需完全退出重开。")}
             title={t("启动模式")}
           >
             <AppSelect
@@ -493,7 +511,36 @@ export function ClaudeLocalizationScreen(
               value={claudeLaunch}
             />
           </CxRow>
-          {claudeLaunch !== "copy" ? <>
+      </CxCard> : null}
+      {/* 其余设置按用途分页签。没选中的页签只是藏起来，不卸载：切页签不丢输入框里的草稿，供应商列表也不用重读。补丁副本没有这些设置。 */}
+      {!patchOnly && settingsTabs.length > 0 ? <div className="claude-local-settings">
+        <nav aria-label={t("Desktop 增强设置")} className="tp-tabs claude-local-tabs" onKeyDown={onTabListKeyDown} role="tablist">
+          {settingsTabs.map((tab) => (
+            <button
+              aria-controls={`claude-local-panel-${tab.id}`}
+              aria-selected={activeTab === tab.id}
+              data-active={activeTab === tab.id}
+              id={`claude-local-tab-${tab.id}`}
+              key={tab.id}
+              onClick={() => setSettingsTab(tab.id)}
+              role="tab"
+              tabIndex={activeTab === tab.id ? 0 : -1}
+              type="button"
+            >
+              {tab.label}
+              {tab.attention ? <span aria-label={t("需要处理")} className="claude-local-tab-dot" role="img" /> : null}
+            </button>
+          ))}
+        </nav>
+        {/* 模型：模型选择器里列哪些模型。供应商和默认模型在 Claude 的「供应商」页（补丁副本走 Claude 自己的登录，没有这一页）。 */}
+        <div {...settingsPanel("providers")}>
+          <CxCard>
+          {onNavigate ? (
+            <CxRow detail={t("Claude 用哪些供应商、默认哪个模型，在 Claude 的「供应商」页里设置。")} title={t("供应商与默认模型")}>
+              <button className="cx-secondary" onClick={() => onNavigate("claudeProviders")} type="button">{t("打开供应商")}</button>
+            </CxRow>
+          ) : null}
+          {/* 窗口比默认模型小的模型不会列给 Claude（Claude 按默认模型的窗口压所有模型）；说清楚它们去哪了。 */}
           <CxRow
             detail={t("默认只列窗口不小于默认模型的模型（Claude 的窗口是启动时一份全局值，切到更小的模型不会跟着变小）；打开后池里的聊天模型全列出来，代价是切到小窗口模型可能超上限。")}
             title={t("列出全部模型")}
@@ -513,7 +560,7 @@ export function ClaudeLocalizationScreen(
             </label>
           </CxRow>
           <CxRow
-            detail={t("Claude 自带的 Opus、Sonnet、Haiku 等条目不对应任何供应商，选了也会被换成默认模型。打开后选择器里只留供应商池里的模型；改完需要重新启动本地服务。")}
+            detail={t("Claude 自带的 Opus、Sonnet、Haiku 等条目不对应任何供应商，选了也会被换成默认模型。打开后选择器里只留共享供应商里的模型；改完需要重新启动本地服务。")}
             title={t("隐藏无供应商的模型")}
           >
             <label className="switch-row compact">
@@ -530,6 +577,11 @@ export function ClaudeLocalizationScreen(
               <ToggleVisual />
             </label>
           </CxRow>
+          </CxCard>
+        </div>
+        {/* 账号与会话：Claude 里显示的账号信息，以及和命令行 Claude Code 怎么共用会话。 */}
+        <div {...settingsPanel("account")}>
+          <CxCard>
           <CxRow detail={t("只改 Claude 里显示的账号信息，从这里启动后生效。")} title={t("用户名")}>
             <Input
               aria-label={t("用户名")}
@@ -577,10 +629,12 @@ export function ClaudeLocalizationScreen(
               value={local?.config.plan || "ultra"}
             />
           </CxRow>
+          </CxCard>
+          <CxCard>
           <CxRow
             detail={(local?.config.codeShareHome ?? true)
-              ? t("Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于网关。从这里启动后生效。")
-              : t("Code 页签用独立目录，请求走 Codex++ 网关；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。")}
+              ? t("Code 页签和命令行的 Claude Code 共用 ~/.claude：会话、MCP、插件是同一份；~/.claude/settings.json 里的接口地址（env）会优先于本地服务。从这里启动后生效。")
+              : t("Code 页签用独立目录，请求走 Codex++ 本地服务；平时在命令行 / 3p 模式建的会话要靠会话同步才能打开。")}
             title={t("和命令行共用 ~/.claude")}
           >
             <label className="switch-row compact">
@@ -634,10 +688,12 @@ export function ClaudeLocalizationScreen(
           </CxRow>
           {/* 自动接管只在完整功能模式下动作，所以只在这个模式下显示（首页 Claude 行下面也有一份）。 */}
           {claudeLaunch === "full" ? <ClaudeAutoTakeoverRow /> : null}
-          </> : null}
-        </CxCard>
+          </CxCard>
+        </div>
         {claudeLaunch === "full" && local ? (
           <>
+            {/* 证书与环境：本地服务要用的证书、听写、Node 与界面版本。 */}
+            <div {...settingsPanel("environment")}>
             <CxCard>
               <CxRow badges={<CxBadge tone={local.caTrusted ? "ok" : "neutral"}>{local.caTrusted ? t("已信任") : local.caReady ? t("未信任") : t("未准备")}</CxBadge>} title={t("本地证书")}>
                 <div className="claude-l10n-actions">
@@ -686,6 +742,9 @@ export function ClaudeLocalizationScreen(
                 </CxRow>
               ) : null}
             </CxCard>
+            </div>
+            {/* 功能：完整功能模式往官方 Claude 里注入的各项能力，以及 Bash 时限。 */}
+            <div {...settingsPanel("features")}>
             <CxCard className="claude-l10n-feature-grid">
               {([
                 ["localization", "界面汉化", "本地界面汉化", ""],
@@ -694,7 +753,7 @@ export function ClaudeLocalizationScreen(
                 ["backgroundMode", "后台模式", "本地后台模式", ""],
                 ["forceBackgroundMode", "新系统也开后台模式", "本地后台模式不限系统版本", "Claude 在较新的 macOS 上会提示「暂不支持后台模式」；打开后不再限制系统版本，未经 Claude 验证，可能不稳定"],
                 ["cowork", "Cowork", "本地 Cowork", "关掉后按 Claude 自己的开关，新版 Claude 通常只剩 Chat / Code。系统条件（Windows 需商店版、虚拟化可用）仍由 Claude 检查"],
-                ["hubHome", "合并式主页（实验）", "本地合并式主页", "Claude 正在小范围试验的主页布局：对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。关着时用有切换的经典主页"],
+                ["hubHome", "合并式主页（实验）", "本地合并式主页", "Claude 正在小范围试验的主页布局：对话和 Cowork 合在一个输入框里，没有「对话 | Cowork」切换。默认开；关掉改用有切换的经典主页"],
               ] as const).map(([key, label, ariaLabel, hint]) => (
                 <label
                   className="switch-row compact"
@@ -703,8 +762,8 @@ export function ClaudeLocalizationScreen(
                 >
                   <input
                     aria-label={t(ariaLabel)}
-                    // 只有 Cowork 默认是开的。
-                    checked={local.config[key] ?? key === "cowork"}
+                    // Cowork 和合并式主页默认是开的。
+                    checked={local.config[key] ?? (key === "cowork" || key === "hubHome")}
                     disabled={localDisabled}
                     onChange={(event) => {
                       const checked = event.currentTarget.checked;
@@ -720,9 +779,10 @@ export function ClaudeLocalizationScreen(
               ))}
             </CxCard>
             {enhance ? <FullModeBashTimeout timeout={enhance.bashTimeout} /> : null}
+            </div>
           </>
         ) : null}
-      </CxSection> : null}
+      </div> : null}
       {advancedShown ? <section className={`claude-local-advanced${patchOnly || copyInline ? " claude-local-advanced-page" : ""}`}>
         <fieldset className="claude-local-advanced-body" disabled={localBusy !== null}>
       {patchOnly && delivery === "full" ? (

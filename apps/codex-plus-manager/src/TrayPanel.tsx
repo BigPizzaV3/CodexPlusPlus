@@ -69,7 +69,7 @@ import { AGENT_ICONS, APP_LOGO_URL, AutoTag, Avatar, AgentIcon, ModelViewGlyph }
 import { HubTopology } from "./HubOverview";
 import type { HubLink } from "./hub-overview-model";
 import { FlowRequestRow, useRequestFlow } from "./RequestFlow";
-import { busyLinks, liveFlowRoutes, flowAgent, flowColumns, flowStatus } from "./request-flow-model";
+import { busyLinks, liveFlowRoutes, flowColumns, flowStatus } from "./request-flow-model";
 import {
   activeRelayItem,
   codexEnhanced,
@@ -92,8 +92,6 @@ import {
   type TraySettings,
   type TrayTabId,
 } from "./tray-panel-model";
-import { agentVisible, providersHidden, singleAgent, visibleAgents } from "./agent-focus-model";
-import { useAgentFocus } from "./agent-focus-store";
 import { applyResolvedTheme, loadThemePreference, resolveTheme, systemPrefersDark, watchSystemTheme } from "./theme-mode";
 import "./GatewayPage.css";
 import "./TrayPanel.css";
@@ -131,7 +129,8 @@ const REQUEST_TIMEOUT_MS = 90_000;
 const TAB_META: Record<TrayTabId, { label: string; icon: LucideIcon }> = {
   home: { label: "概览", icon: House },
   usage: { label: "用量", icon: ChartColumn },
-  gateway: { label: "网关", icon: Waypoints },
+  // 各 Agent 经本地服务用的模型（原「网关」页签）。
+  gateway: { label: "模型", icon: Waypoints },
   flow: { label: "实时", icon: Radio },
 };
 
@@ -139,10 +138,7 @@ type Pending = { id: string; kind: TrayRequest["kind"]; target?: string };
 type Flash = { tone: "ok" | "error"; text: string };
 
 export function TrayPanel() {
-  const [storedTab, setTabState] = useState<TrayTabId>(() => readStoredTrayTab());
-  // 只用增强功能：用量、网关、请求流都和供应商有关，只留「概览」，也不画页签条。
-  const enhanceOnly = providersHidden(useAgentFocus());
-  const tab: TrayTabId = enhanceOnly ? "home" : storedTab;
+  const [tab, setTabState] = useState<TrayTabId>(() => readStoredTrayTab());
   const [overview, setOverview] = useState<TrayOverview | null>(null);
   const [settings, setSettings] = useState<TraySettings | null>(null);
   const [payload, setPayload] = useState<GatewayPayload | null>(null);
@@ -368,7 +364,7 @@ export function TrayPanel() {
         </button>
       </header>
 
-      {enhanceOnly ? null : <nav aria-label={t("快捷面板页签")} className="tp-tabs" role="tablist">
+      <nav aria-label={t("快捷面板页签")} className="tp-tabs" role="tablist">
         {TRAY_TABS.map((id) => {
           const meta = TAB_META[id];
           const Icon = meta.icon;
@@ -377,11 +373,11 @@ export function TrayPanel() {
             <button aria-selected={tab === id} className="tp-tab" data-active={tab === id} key={id} onClick={() => setTab(id)} role="tab" type="button">
               <Icon aria-hidden="true" />
               <span>{t(meta.label)}</span>
-              {badge ? <i className="tp-tab-badge" title={t("有 Agent 已接入网关")} /> : null}
+              {badge ? <i className="tp-tab-badge" title={t("有 Agent 已接入本地服务")} /> : null}
             </button>
           );
         })}
-      </nav>}
+      </nav>
 
       <div className="tp-body" role="tabpanel">
         {tab === "home" ? (
@@ -468,18 +464,11 @@ function LinkButton({ label, onClick }: { label: string; onClick: () => void }) 
 
 /* —————————————— 概览 —————————————— */
 
-/** 只用增强功能时的快速打开：只有和供应商无关的页面。 */
-const ENHANCE_QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: LucideIcon }> = [
-  { route: "overview", label: "Codex 概览", icon: House },
-  { route: "sessions", label: "会话", icon: MessagesSquare },
-  { route: "settings", label: "设置", icon: Settings },
-];
-
 const QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: LucideIcon }> = [
   { route: "sessions", label: "会话", icon: MessagesSquare },
   { route: "requestLog", label: "请求日志", icon: ScrollText },
-  { route: "gateway", label: "网关接入", icon: Waypoints },
-  { route: "gatewayProviders", label: "供应商池", icon: Layers },
+  { route: "gateway", label: "Agent 接入", icon: Waypoints },
+  { route: "gatewayProviders", label: "共享供应商", icon: Layers },
   { route: "gatewayRouting", label: "路由", icon: Split },
   { route: "gatewayUsage", label: "用量统计", icon: Activity },
 ];
@@ -506,21 +495,16 @@ function HomeTab({
   const glance = usageGlance(today);
   const busy = pending !== null;
   const busyKind = pending && pending.kind !== "navigate" ? pending.kind : null;
-  // 没勾选 Codex 时不放 Codex 的状态卡和启停按钮。
-  const focus = useAgentFocus();
-  const showCodex = agentVisible(focus, "codex");
-  // 只用增强功能：不讲供应商连接，不放用量速览，快速打开只给和供应商无关的页面。
-  const enhanceOnly = providersHidden(focus);
   const connection = settings?.relayProfilesEnabled === false
     ? t("供应商配置已关闭")
     : !active
       ? t("还没有配置供应商")
       : active.kind === "gateway"
-        ? t("经 Codex++ 网关")
+        ? t("经 Codex++ 本地服务")
         : tf("直连 · {0}", [active.name || t("未命名供应商")]);
   return (
     <>
-      {showCodex ? <div className="tp-card tp-codex">
+      <div className="tp-card tp-codex">
         <div className="tp-codex-top">
           <img alt="" src={AGENT_ICONS.codexApp} />
           <div className="tp-codex-name">
@@ -533,12 +517,10 @@ function HomeTab({
           </span>
         </div>
         <div className="tp-codex-facts">
-          {enhanceOnly ? null : (
-            <span title={active?.detail}>
-              <Plug aria-hidden="true" />
-              {connection}
-            </span>
-          )}
+          <span title={active?.detail}>
+            <Plug aria-hidden="true" />
+            {connection}
+          </span>
           {state === "running" ? (
             <span>
               <Check aria-hidden="true" />
@@ -565,18 +547,18 @@ function HomeTab({
             </button>
           )}
         </div>
-      </div> : null}
+      </div>
 
-      {enhanceOnly ? null : <button className="tp-card tp-today" onClick={onShowUsage} title={t("查看用量")} type="button">
+      <button className="tp-card tp-today" onClick={onShowUsage} title={t("查看用量")} type="button">
         <Stat label={t("今日请求")} value={glance ? String(glance.calls) : "—"} />
         <Stat label="Token" value={glance ? formatTokens(glance.inputTokens + glance.outputTokens) : "—"} />
         <Stat label={t("成功率")} value={glance?.successRate != null ? `${Math.round(glance.successRate * 100)}%` : "—"} />
         <ChevronRight aria-hidden="true" className="tp-today-arrow" />
-      </button>}
+      </button>
 
       <Section title={t("快速打开")}>
         <div className="tp-quick">
-          {(enhanceOnly ? ENHANCE_QUICK_LINKS : QUICK_LINKS).map((link) => {
+          {QUICK_LINKS.map((link) => {
             const Icon = link.icon;
             return (
               <button className="tp-quick-item" key={link.route} onClick={() => void onOpenRoute(link.route)} type="button">
@@ -663,7 +645,7 @@ function UsageTab({
           </div>
         </Section>
       ) : null}
-      {glance && glance.calls === 0 ? <p className="tp-note">{t("只统计经过 Codex++ 的请求（网关或协议转换）。直连时请求不经过 Codex++，这里不会有记录。")}</p> : null}
+      {glance && glance.calls === 0 ? <p className="tp-note">{t("只统计经过 Codex++ 的请求（本地服务或协议转换）。直连时请求不经过 Codex++，这里不会有记录。")}</p> : null}
 
       {quotas.length ? (
         <Section title={t("订阅额度")}>
@@ -703,7 +685,7 @@ function UsageTab({
           {balancesFailed ? (
             <p className="tp-note">{t("余额查询失败，请稍后重试。")}</p>
           ) : balances === null ? (
-            <p className="tp-note">{t("会联网查询网关供应商池里中转站和 DeepSeek 等厂商的余额。")}</p>
+            <p className="tp-note">{t("会联网查询共享供应商里中转站和 DeepSeek 等厂商的余额。")}</p>
           ) : balances.length === 0 ? (
             <p className="tp-note">{t("没有可以查询余额的供应商。")}</p>
           ) : (
@@ -739,8 +721,6 @@ function GatewayTab({
   onOpenRoute: (route: TrayRoute) => Promise<void>;
 }) {
   const [message, setMessage] = useState("");
-  const focus = useAgentFocus();
-  const solo = singleAgent(focus);
   const run = async (command: string, args: Record<string, unknown>) => {
     try {
       const result = await invoke<GatewayResult>(command, args);
@@ -757,31 +737,29 @@ function GatewayTab({
     return (
       <div className="tp-card tp-intro">
         <Waypoints aria-hidden="true" className="tp-intro-icon" />
-        <strong>{t("还没用上网关")}</strong>
-        <p>{solo
-          ? tf("网关把 {0} 接到 Codex++ 的供应商池：一处管理 Key 和模型，在这里就能随时换模型。", [agentName(solo)])
-          : t("网关把 Codex、Claude Code、Grok 接到同一个供应商池：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
+        <strong>{t("还没用上本地服务")}</strong>
+        <p>{t("本地服务把 Codex、Claude Code、Grok 接到同一个共享供应商：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
         <div className="tp-intro-actions">
           <button className="tp-button" data-variant="primary" onClick={() => void onOpenRoute("gatewayProviders")} type="button">{t("添加供应商")}</button>
-          <button className="tp-button" onClick={() => void onOpenRoute("gateway")} type="button">{t("了解网关")}</button>
+          <button className="tp-button" onClick={() => void onOpenRoute("gateway")} type="button">{t("了解本地服务")}</button>
         </div>
       </div>
     );
   }
 
   const now = Date.now();
-  const recent = logs.filter((entry) => agentVisible(focus, entry.agent || "codex")).slice(0, 8);
+  const recent = logs.slice(0, 8);
   return (
     <>
       <div className="tp-gateway-status">
         <i className="tp-dot" data-tone={payload?.helperRunning ? "on" : "off"} />
-        <span>{payload?.helperRunning ? tf("网关运行中 · 127.0.0.1:{0}", [payload.port]) : t("网关没有运行")}</span>
+        <span>{payload?.helperRunning ? tf("本地服务运行中 · 127.0.0.1:{0}", [payload.port]) : t("本地服务没有运行")}</span>
         <LinkButton label={t("管理")} onClick={() => void onOpenRoute("gateway")} />
       </div>
 
-      <Section title={solo ? tf("{0} 用的模型", [agentName(solo)]) : t("各 Agent 用的模型")}>
+      <Section title={t("各 Agent 用的模型")}>
         <div className="tp-card tp-list">
-          {visibleAgents(focus, glanceAgents(payload?.agents)).map((agent) => (
+          {glanceAgents(payload?.agents).map((agent) => (
             <PanelAgentRow agent={agent} key={agent.agent} onRun={run} payload={payload} onAddDirectProvider={() => void onOpenRoute("addDirectProvider")} />
           ))}
         </div>
@@ -825,9 +803,7 @@ function GatewayTab({
  * 回答完再走回来（成功绿、失败红），进行中的连线一直流动。下面是最近的请求。
  */
 function FlowTab({ today, payload, onOpenRoute }: { today: UsageSummary | null; payload: GatewayPayload | null; onOpenRoute: (route: TrayRoute) => Promise<void> }) {
-  const focus = useAgentFocus();
-  const { entries, loaded } = useRequestFlow(FLOW_REFRESH_MS);
-  const visible = entries.filter((entry) => agentVisible(focus, flowAgent(entry)));
+  const { entries: visible, loaded } = useRequestFlow(FLOW_REFRESH_MS);
   const columns = flowColumns(visible);
   const runningCount = visible.filter((entry) => flowStatus(entry) === "running").length;
   const maxCount = Math.max(1, ...columns.agents.map((node) => node.count), ...columns.providers.map((node) => node.count));
@@ -931,9 +907,9 @@ function PanelAgentRow({
       ? { ...baseDisplay, issue: undefined }
       : baseDisplay;
   const inactiveHint = inactive && agent.enabled
-    ? tf("原模型组「{0}」已停用，网关默认回退为 {1}", [inactive.name, display.title || t("未设置")])
+    ? tf("原模型组「{0}」已停用，本地服务默认回退为 {1}", [inactive.name, display.title || t("未设置")])
     : unavailable && agent.enabled
-      ? tf("原默认模型「{0}」不可用，网关默认回退为 {1}", [original.title, display.title || t("未设置")])
+      ? tf("原默认模型「{0}」不可用，本地服务默认回退为 {1}", [original.title, display.title || t("未设置")])
     : undefined;
   // 没接入、用着自带的某个模型（直连）：按钮上显示它。
   const own = agent.enabled ? null : ownCurrent(agent);

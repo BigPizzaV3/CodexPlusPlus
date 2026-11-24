@@ -1,6 +1,6 @@
-//! 网关模式命令：Agent 接入开关、网关自己的供应商池与路由组、Key 健康状态。
+//! 网关模式命令：Agent 接入开关、网关自己的共享供应商与路由组、Key 健康状态。
 //!
-//! 网关模式与直连模式完全独立：供应商池、路由组只存在 `gateway.json`；
+//! 网关模式与直连模式完全独立：共享供应商、路由组只存在 `gateway.json`；
 //! 直连模式的 Codex / Claude / Grok 供应商只在「导入」时被读取并复制一份。
 
 use anyhow::Context;
@@ -113,7 +113,7 @@ pub struct GatewayAgentView {
     pub default_model: String,
     /// 当前默认选择在实际路由快照中的状态。
     pub default_selection_status: Option<&'static str>,
-    /// 网关默认模型的成员与可编辑供应商池不一致时，界面只显示模型 ID。
+    /// 网关默认模型的成员与可编辑共享供应商不一致时，界面只显示模型 ID。
     pub default_model_differs: bool,
     pub models: Vec<String>,
     /// 开着网关、但配置已被别的工具改掉（请求不再经过 Codex++）。
@@ -167,7 +167,7 @@ pub struct NativeAuthState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GatewayPayload {
-    /// 绑定与选项；供应商池单独放在 `pool`（不带 Key），这里的 `providers` 总是空的。
+    /// 绑定与选项；共享供应商单独放在 `pool`（不带 Key），这里的 `providers` 总是空的。
     pub gateway: GatewaySettings,
     pub port: u16,
     pub helper_running: bool,
@@ -181,7 +181,7 @@ pub struct GatewayPayload {
     pub health: PoolSnapshot,
     /// 路由动态：各 Agent 最近一次请求怎么走的、计数、正在回答的上游。
     pub activity: ActivitySnapshot,
-    /// 各（供应商, 模型）最近的平均首包耗时，「路由」页、供应商池「按模型」和「速度优先」用。
+    /// 各（供应商, 模型）最近的平均首包耗时，「路由」页、共享供应商「按模型」和「速度优先」用。
     pub speeds: Vec<codex_plus_core::gateway::speed::SpeedView>,
     /// 可复制进网关的直连模式供应商。
     pub codex_providers: Vec<GatewayPoolEntry>,
@@ -192,6 +192,8 @@ pub struct GatewayPayload {
     pub cc_switch_claude: Vec<GatewaySourceEntry>,
     /// ClaudeMom 的上游，可以复制进网关。
     pub claude_mom_profiles: Vec<GatewaySourceEntry>,
+    /// Magpie 的供应商（三种协议都收），可以复制进网关。
+    pub magpie_providers: Vec<GatewaySourceEntry>,
     pub grok_profiles: Vec<GatewaySourceEntry>,
     /// OpenCode 自己保存的 OpenCode Go / Zen Key（不含 Key 本身）。
     pub opencode_keys: Vec<GatewaySourceEntry>,
@@ -232,7 +234,7 @@ fn context() -> ApplyContext {
 fn parse_agent(agent: &str) -> anyhow::Result<ToolId> {
     let agent = ToolId::parse(agent);
     if !GATEWAY_AGENTS.contains(&agent) && !codex_plus_core::gateway::agents::is_generic(&agent) {
-        anyhow::bail!("{} 不支持网关模式", agent.as_str());
+        anyhow::bail!("{} 不支持本地服务模式", agent.as_str());
     }
     Ok(agent)
 }
@@ -508,6 +510,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
         claude_providers,
         cc_switch_claude: source_entries(codex_plus_core::claude_provider_sources::cc_switch_entries()),
         claude_mom_profiles: source_entries(codex_plus_core::claude_provider_sources::claude_mom_entries()),
+        magpie_providers: source_entries(codex_plus_core::magpie_import::entries()),
         grok_profiles,
         opencode_keys: codex_plus_core::gateway::opencode::load_stored_keys()
             .into_iter()
@@ -619,9 +622,9 @@ fn native_auth_restart_blocker(
     live_official: bool,
 ) -> Option<&'static str> {
     if managed && !binding_enabled {
-        Some("Codex 网关连接未启用；登录选择已保存，接入后再应用")
+        Some("Codex 本地服务连接未启用；登录选择已保存，接入后再应用")
     } else if managed && taken_over {
-        Some("Codex 配置已由其他工具接管；请先恢复网关连接")
+        Some("Codex 配置已由其他工具接管；请先恢复本地服务连接")
     } else if wsl_account {
         Some("WSL 连接不使用官方登录身份；当前选择无法在此连接生效")
     } else if wants_account != live_official && !managed {
@@ -739,7 +742,7 @@ fn respond<T>(
     }
 }
 
-/// 供应商池或路由组变了：开着的 Agent 重写配置，让它的模型列表跟上。重写失败只记日志。
+/// 共享供应商或路由组变了：开着的 Agent 重写配置，让它的模型列表跟上。重写失败只记日志。
 fn refresh_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
     notify_settings_changed();
     if result.is_ok()
@@ -972,7 +975,7 @@ pub fn save_gateway_binding(
     })();
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
-        &format!("{name} 已接入 Codex++ 网关，新开的会话生效。"),
+        &format!("{name} 已接入 Codex++ 本地服务，新开的会话生效。"),
         "接入网关失败",
         result,
     )
@@ -1429,7 +1432,7 @@ pub fn update_gateway_provider(
     respond("供应商已保存。", "保存供应商失败", result)
 }
 
-/// 给网关供应商再加一个 Key（#2782，在供应商池的详情里操作）。
+/// 给网关供应商再加一个 Key（#2782，在共享供应商的详情里操作）。
 #[tauri::command]
 pub fn add_gateway_provider_key(id: String, key: String) -> CommandResult<Option<GatewayPayload>> {
     respond(
@@ -1488,7 +1491,7 @@ fn probe_slot() -> std::sync::MutexGuard<'static, Option<(u64, Box<dyn FnOnce() 
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// 测试供应商池里的一家供应商：发一条很短的请求（见 `gateway::probe`），不计入路由与统计。
+/// 测试共享供应商里的一家供应商：发一条很短的请求（见 `gateway::probe`），不计入路由与统计。
 /// `key_id` 给了就只用这个 Key（按标识选，完整 Key 不经过界面）；`model` 为空时用默认模型。
 /// 在后台任务里跑、最多 60 秒，可用 [`cancel_gateway_provider_test`] 取消。
 #[tauri::command]
@@ -1554,7 +1557,7 @@ pub fn cancel_gateway_provider_test() -> CommandResult<()> {
     )
 }
 
-/// 只改供应商的价格与独立代理（在供应商池的详情里编辑）。
+/// 只改供应商的价格与独立代理（在共享供应商的详情里编辑）。
 #[tauri::command]
 pub fn save_gateway_provider_extras(
     id: String,
@@ -1585,7 +1588,7 @@ pub fn save_gateway_provider_limits(
     )
 }
 
-/// 改 new-api 供应商的访问令牌与用户 ID（#2793，在供应商池的详情里编辑）。
+/// 改 new-api 供应商的访问令牌与用户 ID（#2793，在共享供应商的详情里编辑）。
 /// `token` 留空沿用已保存的；`clear` 删掉令牌，之后不再查账户余额。令牌不写进返回的消息。
 #[tauri::command]
 pub fn save_gateway_provider_newapi_access(
@@ -1790,7 +1793,7 @@ fn refresh_added<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
     refresh_agents(result)
 }
 
-/// 网页导入链接（`target=pool`）加进供应商池之后：重写开着的 Agent 配置，
+/// 网页导入链接（`target=pool`）加进共享供应商之后：重写开着的 Agent 配置，
 /// 并在后台从上游获取模型列表（导入链接不带模型），拿到后再补价格。
 pub(crate) fn after_url_pool_import(id: String) {
     let _ = refresh_added(Ok(()));
@@ -1874,7 +1877,7 @@ pub fn start_model_watch() {
     ));
 }
 
-/// 按 id 取供应商池里的中转配置。
+/// 按 id 取共享供应商里的中转配置。
 fn pool_relay(id: &str) -> Option<codex_plus_core::settings::RelayProfile> {
     GatewayStore::default()
         .load()
@@ -2064,7 +2067,7 @@ pub fn set_gateway_provider_enabled(
     )
 }
 
-/// 调整供应商池顺序。
+/// 调整共享供应商顺序。
 #[tauri::command]
 pub fn reorder_gateway_providers(ids: Vec<String>) -> CommandResult<Option<GatewayPayload>> {
     respond(
@@ -2141,7 +2144,23 @@ pub async fn import_gateway_providers(
     let mut groups: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
+    // Magpie 的供应商文件里没有模型列表：进池之后在后台从上游获取。
+    let mut fetch_models: Vec<String> = Vec::new();
+    // Magpie 的两种导入方式（当作一个上游 / 复制它的供应商）一次只能选一种：两种都勾了就一条 Magpie 的都不导。
+    let magpie_conflict = codex_plus_core::magpie_import::ensure_one_way(
+        items
+            .iter()
+            .filter(|item| item.source == "magpie")
+            .map(|item| item.id.as_str()),
+    )
+    .err();
+    if let Some(error) = &magpie_conflict {
+        failures.push(format!("{error:#}"));
+    }
     for item in &items {
+        if magpie_conflict.is_some() && item.source == "magpie" {
+            continue;
+        }
         let already = GatewayStore::default().load().is_ok_and(|gateway| {
             gateway
                 .providers
@@ -2175,13 +2194,26 @@ pub async fn import_gateway_providers(
                 }
                 Ok(())
             })(),
-            source => import_from_direct(source, &item.id, skip).map(|_| added += 1),
+            source => import_from_direct(source, &item.id, skip).map(|id| {
+                added += 1;
+                if source == "magpie" {
+                    fetch_models.push(id);
+                }
+            }),
         };
         if let Err(error) = result {
             failures.push(format!("{error:#}"));
         }
     }
     let _ = refresh_added(Ok(()));
+    for id in fetch_models {
+        tauri::async_runtime::spawn(async move {
+            let result = model_sync::fetch_provider_models(&GatewayStore::default(), &id).await;
+            if refresh_agents(result).is_ok() {
+                autofill_prices(Some(id));
+            }
+        });
+    }
     prefetch_changed_quotas(&before).await;
     let mut message = format!("已导入 {added} 个供应商");
     if !groups.is_empty() {
@@ -2205,11 +2237,12 @@ fn source_entries(entries: Vec<codex_plus_core::claude_provider_sources::SourceE
     entries.into_iter().map(|entry| GatewaySourceEntry { id: entry.id, name: entry.name }).collect()
 }
 
-/// 从直连模式复制一项进池：`codex` / `claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商。
+/// 从直连模式复制一项进池：`codex` / `claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商、Magpie 的供应商。
 fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow::Result<String> {
     let relay = match source {
         "ccswitch" => codex_plus_core::claude_provider_sources::cc_switch_relay(id)?,
         "claudemom" => codex_plus_core::claude_provider_sources::claude_mom_relay(id)?,
+        "magpie" => codex_plus_core::magpie_import::relay(id)?,
         "codex" => apply::copy_codex_provider(&SettingsStore::default().load()?, id)?,
         "claude" => {
             let provider = claude::load(&ClaudeContext::default_paths())?
@@ -3047,7 +3080,7 @@ mod login_tests {
     }
 }
 
-/// 在网关里登录 ChatGPT 订阅：浏览器登录后加进网关的供应商池。同一个账号再登录只更新 token。
+/// 在网关里登录 ChatGPT 订阅：浏览器登录后加进网关的共享供应商。同一个账号再登录只更新 token。
 /// 与 Codex 自己的登录是两次独立的登录，互不影响。
 #[tauri::command]
 pub async fn login_gateway_chatgpt(

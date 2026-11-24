@@ -1,3 +1,5 @@
+import type { ExtensionConfigField } from "./extension-config-schema.ts";
+
 /** Claude 页面扩展（与 claude-local 的 extensions::ExtensionInfo、Codex++ 的 claude_page_market::MarketEntry 对应）。 */
 export type PageExtension = {
   id: string;
@@ -8,7 +10,34 @@ export type PageExtension = {
   builtin: boolean;
   enabled: boolean;
   error?: string | null;
+  /** manifest：页面扩展（js / css）；codexpp：Codex++ 拓展包（带页面接口、配置、后台）。老版本没有这个字段，按 manifest。 */
+  format?: "manifest" | "codexpp";
+  /** page / styles / backend / mods / codexOnly */
+  capabilities?: string[];
+  notes?: string[];
+  configSchema?: ExtensionConfigField[];
+  /** 生效配置，密钥项已打码。 */
+  config?: Record<string, unknown> | null;
+  runtime?: PageRuntime | null;
 };
+
+/** Claude 页面上次加载一个拓展包的结果。 */
+export type PageRuntime = { status: string; error: string; unsupported: string[]; loadedAt: string };
+
+/**
+ * 一个拓展包在 Claude 页面里的运行情况（给列表那一行用）。页面扩展、没启用的、清单有误的不显示。
+ * `kind`：pending 还没在页面里跑过，failed 没加载上，error 加载了但运行中出错，partial 加载了但用了 Claude 里还没有的接口，loaded 正常。
+ */
+export function pageRuntimeSummary(item: PageExtension): { kind: "pending" | "failed" | "error" | "partial" | "loaded"; detail: string } | null {
+  if (item.format !== "codexpp" || !item.enabled || item.error) return null;
+  const runtime = item.runtime;
+  if (!runtime || (runtime.status !== "loaded" && runtime.status !== "failed")) return { kind: "pending", detail: "" };
+  const firstLine = (text: string) => text.split("\n")[0].slice(0, 300);
+  if (runtime.status === "failed") return { kind: "failed", detail: firstLine(runtime.error) };
+  if (runtime.error) return { kind: "error", detail: firstLine(runtime.error) };
+  if (runtime.unsupported.length) return { kind: "partial", detail: runtime.unsupported.join("、") };
+  return { kind: "loaded", detail: "" };
+}
 
 export type PageMarketEntry = {
   id: string;

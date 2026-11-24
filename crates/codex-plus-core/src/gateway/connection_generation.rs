@@ -18,7 +18,7 @@ pub fn publish(home: &Path) -> anyhow::Result<String> {
         .read(true)
         .write(true)
         .open(home.join(format!("{FILE_NAME}.lock")))?;
-    lock.lock_exclusive().context("获取网关连接代际写锁失败")?;
+    lock.lock_exclusive().context("获取本地服务连接代际写锁失败")?;
     let generation = uuid::Uuid::new_v4().to_string();
     crate::settings::atomic_write(&home.join(FILE_NAME), generation.as_bytes())?;
     FileExt::unlock(&lock)?;

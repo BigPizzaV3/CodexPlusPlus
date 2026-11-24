@@ -27,6 +27,19 @@ pub fn gateway_providers(gateway: &GatewaySettings) -> Value {
     json!({"providers": providers})
 }
 
+/// Codex 页面拓展只需配置价格，不开放管理器的其他供应商字段。
+pub fn gateway_provider_prices(gateway: &GatewaySettings) -> Value {
+    let providers: Vec<Value> = gateway.providers.iter().map(|provider| {
+        json!({
+            "id": provider.relay.id,
+            "name": provider.relay.name,
+            "price": provider.price.as_ref().map(price),
+            "modelPrices": provider.model_prices.iter().map(|(model, value)| (model.clone(), price(value))).collect::<serde_json::Map<String, Value>>(),
+        })
+    }).collect();
+    json!({"providers": providers})
+}
+
 fn price(value: &crate::gateway::store::ProviderPrice) -> Value {
     json!({"currency": value.currency, "input": value.input, "cachedInput": value.cached_input, "output": value.output})
 }
