@@ -2336,6 +2336,14 @@ pub fn upstream_http_client() -> anyhow::Result<reqwest::Client> {
         .context("failed to build upstream HTTP client")
 }
 
+/// 上游在响应头超时内一个字节都没回。单独建类型：失败切换 / 「请求避震」要能把它
+/// 与其它上游失败一样对待（#3260），而不是只能靠错误文案识别。
+#[derive(Debug, thiserror::Error)]
+#[error("上游请求超过 {secs} 秒未返回响应头")]
+pub struct UpstreamHeaderTimeoutError {
+    pub secs: u64,
+}
+
 pub async fn send_upstream_request(
     request: reqwest::RequestBuilder,
 ) -> anyhow::Result<reqwest::Response> {
@@ -2445,10 +2453,10 @@ pub async fn send_upstream_request_with_header_timeout(
                 return Err(anyhow::Error::new(error).context("上游请求失败"));
             }
             Err(_) => {
-                return Err(anyhow::anyhow!(
-                    "上游请求超过 {} 秒未返回响应头",
-                    timeout.as_secs()
-                ));
+                return Err(UpstreamHeaderTimeoutError {
+                    secs: timeout.as_secs(),
+                }
+                .into());
             }
         }
     }
@@ -4545,6 +4553,36 @@ async fn open_responses_proxy_request_once(
                 }
                 if has_more_candidates {
                     continue;
+                }
+
+                // 响应头超时（#3260）：一个响应字节都没收到，与 5xx 状态一样可以走
+                // 「请求避震」退避后从第一个候选重来一轮；预算用尽才原样报 502。
+                if error.is::<UpstreamHeaderTimeoutError>() {
+                    let message = error.to_string();
+                    if let Some(delay) = schedule_proxy_auto_retry(
+                        &mut auto_retry,
+                        &relay,
+                        request_attempt,
+                        "upstream_header_timeout",
+                        None,
+                        &mut retry_reasons,
+                        live_request_id,
+                    )
+                    .await
+                    {
+                        let detail = attempt_detail(
+                            request_attempt,
+                            Some("upstream_header_timeout"),
+                            Some(&message),
+                            delay,
+                        );
+                        if let Some(id) = live_request_id {
+                            crate::request_log::update_running_attempt_detail(id, detail.clone());
+                        }
+                        request_trace.attempt_details.push(detail);
+                        candidate_index = 0;
+                        continue 'request_attempts;
+                    }
                 }
 
                 return Err(error).with_context(|| {
