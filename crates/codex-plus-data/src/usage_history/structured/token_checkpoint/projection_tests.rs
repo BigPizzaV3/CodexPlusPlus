@@ -1358,6 +1358,254 @@ fn archived_classification_matches_live_rollups_without_promoting_mixed_evidence
 }
 
 #[test]
+fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
+    use super::scan::Scan;
+    use crate::usage_history::structured::{RequestEvidence, RequestEvidenceCache, provider_cache};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let source = sessions.join("rollout-parent.jsonl");
+    let database = root.join("tokens.sqlite3");
+    let now = chrono::Utc::now();
+    let cutoff = now.with_timezone(&Local).date_naive();
+    let mut meta = header(PARENT, 0);
+    meta["timestamp"] = json!(now.to_rfc3339());
+    meta["payload"]["model_provider"] = json!("custom");
+    let turn = json!({"type":"turn_context","ordinal":1,"timestamp":now.to_rfc3339(),
+        "payload":{"turn_id":"turn-one","model":"gpt-fixture"}});
+    let mut usage = count(2, 2, 1, true);
+    usage["timestamp"] = json!(now.to_rfc3339());
+    parse(&source, &[meta, turn, usage], cutoff);
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    assert!(
+        Scan::default()
+            .round(&mut store, &root, cutoff, &BTreeMap::new(), 8192)
+            .complete
+    );
+
+    let bounds = (now.timestamp_millis() - 1, now.timestamp_millis() + 1);
+    let mut reader =
+        Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    let (_, before) = read(&mut reader, bounds.0, bounds.1);
+    assert_eq!(before.len(), 1);
+    let checkpoint = store.checkpoint(&source).unwrap().unwrap();
+    let original = before[0].provider.clone();
+    let provider_dir = root.join("evidence");
+    let mut proof_db = provider_cache::ProviderCache::default();
+    proof_db.open(&provider_dir, cutoff).unwrap();
+    let request: RequestEvidence = serde_json::from_value(json!({
+        "id":"test-request","threadId":PARENT,"model":"gpt-fixture",
+        "upstreamModel":"gpt-fixture","relayId":"relay-proof","relayName":"Relay Proof",
+        "success":true,"state":"success","statusCode":200,"timestampMs":now.timestamp_millis(),
+        "startedAtMs":now.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+        "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}
+    }))
+    .unwrap();
+    let mut evidence = RequestEvidenceCache {
+        records: vec![request.clone()],
+        ..Default::default()
+    };
+    let mut classify = |events: &mut [UsageEvent], aliases: &BTreeMap<String, String>| {
+        evidence.attribute_with_cache(events, &mut BTreeMap::new(), aliases, &proof_db);
+        Ok(())
+    };
+    assert!(store.reclassify_session(PARENT, 1, &mut classify).is_err());
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER abort_classification BEFORE UPDATE ON token_days
+        BEGIN SELECT RAISE(ABORT, 'classification test write failure'); END;",
+        )
+        .unwrap();
+    let error = store
+        .reclassify_session(PARENT, 8192, &mut classify)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("classification test write failure")
+    );
+    assert_eq!(
+        read(&mut reader, bounds.0, bounds.1).1[0].provider,
+        original
+    );
+    store
+        .db
+        .execute_batch("DROP TRIGGER abort_classification")
+        .unwrap();
+
+    let revision = store
+        .reclassify_session(PARENT, 8192, &mut classify)
+        .unwrap()
+        .unwrap();
+    let query = Query::parse(&json!({"period":"today"}), cutoff).unwrap();
+    let view = Store::read_selection(&mut reader, &query, None, None).unwrap();
+    assert_eq!(view.revision, revision);
+    assert_eq!(view.days[0]["breakdowns"][0]["provider"], "relay-proof");
+    assert_eq!(
+        view.days[0]["breakdowns"][0]["classificationEvidence"],
+        "request-log-exact"
+    );
+    assert_eq!(view.days[0]["usage"]["totalTokens"], 110);
+    let latest = read(&mut reader, bounds.0, bounds.1).1.pop().unwrap();
+    assert_eq!(latest.id, before[0].id);
+    assert_eq!(latest.timestamp, before[0].timestamp);
+    assert_eq!(latest.total.value(), before[0].total.value());
+    assert_eq!(latest.delta.value(), before[0].delta.value());
+
+    proof_db.save(&evidence.verified, &BTreeMap::new()).unwrap();
+    drop(store);
+    drop(proof_db);
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let mut proof_db = provider_cache::ProviderCache::default();
+    proof_db.open(&provider_dir, cutoff).unwrap();
+    let mut evidence = RequestEvidenceCache::default();
+    evidence.restore_verified(proof_db.load_verified(cutoff).unwrap());
+    let mut classify = |events: &mut [UsageEvent], aliases: &BTreeMap<String, String>| {
+        evidence.attribute_with_cache(events, &mut BTreeMap::new(), aliases, &proof_db);
+        Ok(())
+    };
+    assert!(
+        store
+            .reclassify_session(PARENT, 8192, &mut classify)
+            .unwrap()
+            .is_none()
+    );
+
+    let mut conflict = request.clone();
+    conflict.id = "other-request".into();
+    conflict.relay_id = "unverified-relay".into();
+    evidence.records = vec![request, conflict];
+    let next = store
+        .reclassify_session(PARENT, 8192, |events, aliases| {
+            evidence.attribute_with_cache(events, &mut BTreeMap::new(), aliases, &proof_db);
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    assert!(next > revision);
+    let view = Store::read_selection(&mut reader, &query, None, None).unwrap();
+    assert_eq!(view.days[0]["breakdowns"][0]["provider"], original);
+    assert!(
+        view.days[0]["breakdowns"][0]
+            .get("classificationEvidence")
+            .is_none()
+    );
+    assert_eq!(view.days[0]["recordCount"], 1);
+    assert_eq!(view.days[0]["usage"]["totalTokens"], 110);
+    let after = store.checkpoint(&source).unwrap().unwrap();
+    assert_eq!(after.0, checkpoint.0);
+    assert_eq!(after.1.offset, checkpoint.1.offset);
+}
+
+#[test]
+fn append_retracts_only_nearby_proofs_in_the_same_transaction_as_the_new_count() {
+    use super::scan::Scan;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let source = sessions.join("rollout-parent.jsonl");
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let point = DateTime::parse_from_rfc3339("2026-01-02T12:00:00Z").unwrap();
+    let counts_at = |n, seconds| {
+        let mut row = count(n, n, n as u64, true);
+        row["timestamp"] = json!((point + chrono::TimeDelta::seconds(seconds)).to_rfc3339());
+        row
+    };
+    parse(&source, &[header(PARENT, 0), counts_at(1, 1)], cutoff);
+    let mut scan = Scan::default();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let proof = |events: &mut [UsageEvent], _: &BTreeMap<String, String>| {
+        for event in events {
+            event.provider = "relay-proof".into();
+            event.provider_source = Some("request-log-exact".into());
+        }
+        Ok(())
+    };
+    store
+        .reclassify_session(PARENT, 8192, proof)
+        .unwrap()
+        .unwrap();
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        counts_at(2, 600)
+    )
+    .unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let (_, distant) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(distant.len(), 2);
+    assert_eq!(distant[0].provider, "relay-proof");
+    assert_ne!(distant[1].provider, "relay-proof");
+    store
+        .reclassify_session(PARENT, 8192, proof)
+        .unwrap()
+        .unwrap();
+
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        counts_at(3, 605)
+    )
+    .unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER abort_append BEFORE INSERT ON token_days
+         BEGIN SELECT RAISE(ABORT, 'append test write failure'); END;",
+        )
+        .unwrap();
+    let failed = scan.round(&mut store, &root, cutoff, &names, 8192);
+    assert!(!failed.complete);
+    assert!(
+        failed.errors[0]
+            .1
+            .to_string()
+            .contains("append test write failure")
+    );
+    let (_, unchanged) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(unchanged.len(), 2);
+    assert_eq!(unchanged[1].provider, "relay-proof");
+    store.db.execute_batch("DROP TRIGGER abort_append").unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let (_, updated) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(updated.len(), 3);
+    assert_eq!(updated[0].provider, "relay-proof");
+    assert_eq!(
+        updated[0].provider_source.as_deref(),
+        Some("request-log-exact")
+    );
+    assert_eq!(updated[1].provider, distant[1].provider);
+    assert_eq!(updated[2].provider, distant[1].provider);
+    assert_eq!(
+        updated
+            .iter()
+            .map(|event| event.delta.total_tokens)
+            .sum::<u64>(),
+        330
+    );
+    let query = Query::parse(&json!({}), cutoff).unwrap();
+    let day = &Store::read_selection(&mut store.db, &query, None, None)
+        .unwrap()
+        .days[0];
+    assert_eq!(day["recordCount"], 3);
+    assert_eq!(day["usage"]["totalTokens"], 330);
+    let groups = day["breakdowns"].as_array().unwrap();
+    assert_eq!(groups.len(), 2);
+    let exact = groups
+        .iter()
+        .find(|row| row["provider"] == "relay-proof")
+        .unwrap();
+    assert_eq!(exact["recordCount"], 1);
+}
+
+#[test]
 fn replacing_recent_details_keeps_older_daily_totals_and_unknown_cache() {
     let dir = tempfile::tempdir().unwrap();
     let source = fs::canonicalize(dir.path())

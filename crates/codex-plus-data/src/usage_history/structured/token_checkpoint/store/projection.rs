@@ -1,8 +1,10 @@
 use super::{Coverage, Store, decode_path, encode_path};
-use crate::usage_history::structured::token_checkpoint::{Checkpoint, Counter, Observation};
+use crate::usage_history::structured::token_checkpoint::{
+    Checkpoint, Counter, EventClassification, Observation,
+};
 use crate::usage_history::structured::{
-    ClassificationEvidence, FileState, Index, MAX_FILES, Query, Snapshot, UsageEvent,
-    ordered_scope_ids, segments, usage_provider,
+    ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index, MAX_FILES, Query,
+    RequestSessionAliases, Snapshot, UsageEvent, ordered_scope_ids, segments, usage_provider,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
@@ -141,6 +143,20 @@ pub(in super::super) struct DayGroup {
 
 type Groups = BTreeMap<(String, String, String, u8), DayTotals>;
 
+fn encode_groups(groups: Groups) -> Result<Vec<u8>> {
+    let groups: Vec<_> = groups
+        .into_iter()
+        .map(|((model, provider, role, conflicts), totals)| DayGroup {
+            model,
+            provider,
+            role,
+            conflicts,
+            totals,
+        })
+        .collect();
+    Ok(serde_json::to_vec(&groups)?)
+}
+
 pub(in super::super) struct Selection {
     pub(in super::super) revision: i64,
     pub(in super::super) coverage: Option<Coverage>,
@@ -180,6 +196,63 @@ pub(in super::super) struct SourceUpdate<'a> {
 
 fn revision(db: &Connection) -> Result<i64> {
     Ok(db.query_row("SELECT revision FROM token_revision", [], |row| row.get(0))?)
+}
+
+fn retract_append_proofs(
+    db: &Connection,
+    first: &UsageEvent,
+) -> Result<BTreeMap<NaiveDate, Groups>> {
+    let at = DateTime::parse_from_rfc3339(&first.timestamp)?.timestamp_millis();
+    let lower = at.saturating_sub(2 * DELAYED_REQUEST_MATCH_WINDOW_MS);
+    let mut days = BTreeMap::<NaiveDate, Groups>::new();
+    let mut retracted = Vec::new();
+    {
+        let mut select = db.prepare_cached(
+            "SELECT event_id, payload FROM token_resolved INDEXED BY token_classified_time
+             WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+             AND timestamp_ms >= ?2 AND timestamp_ms < ?3
+             AND day >= (SELECT precise_from FROM token_revision)
+             AND json_type(CAST(payload AS TEXT), '$.classification_origin') = 'object'",
+        )?;
+        let mut rows = select.query(params![first.session, lower, at])?;
+        while let Some(row) = rows.next()? {
+            let id: [u8; 32] = row.get_ref(0)?.as_blob()?.try_into()?;
+            let mut stored: Observation = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
+            let origin = stored
+                .classification_origin
+                .take()
+                .context("missing classification origin")?;
+            let mut event = stored.into_event(id, first.session.clone())?;
+            origin.apply(&mut event);
+            days.entry(event.date).or_default();
+            retracted.push((id, serde_json::to_vec(&Observation::capture(&event))?));
+        }
+    }
+    if retracted.is_empty() {
+        return Ok(days);
+    }
+    let mut update =
+        db.prepare_cached("UPDATE token_resolved SET payload = ?2 WHERE event_id = ?1")?;
+    for (id, data) in retracted {
+        update.execute(params![id.as_slice(), data])?;
+    }
+    let mut read = db.prepare_cached(
+        "SELECT event_id, payload FROM token_resolved
+         WHERE day = ?2 AND session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
+    )?;
+    for (day, groups) in &mut days {
+        let mut rows = read.query(params![first.session, day.to_string()])?;
+        while let Some(row) = rows.next()? {
+            let id = row.get_ref(0)?.as_blob()?.try_into()?;
+            let stored: Observation = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
+            let event = stored.into_event(id, first.session.clone())?;
+            groups
+                .entry(group_key(&event))
+                .or_default()
+                .merge(DayTotals::from_event(&event));
+        }
+    }
+    Ok(days)
 }
 
 fn linear_batch<'a>(
@@ -503,7 +576,17 @@ impl Store {
             revision(&tx)? == prepared.base_revision,
             "Token index changed during reconciliation"
         );
-        let mut days: BTreeMap<(&str, NaiveDate), Groups> = BTreeMap::new();
+        let mut days = if prepared.append
+            && let Some(first) = prepared.events.first()
+        {
+            // A newly committed competitor can make a nearby request non-unique.
+            retract_append_proofs(&tx, first)?
+                .into_iter()
+                .map(|(day, groups)| ((first.session.as_str(), day), groups))
+                .collect::<BTreeMap<_, _>>()
+        } else {
+            BTreeMap::new()
+        };
         let mut prior_day = tx.prepare_cached(
             "SELECT d.groups FROM token_days d JOIN token_sessions s ON s.id = d.session_id
              WHERE s.session = ?1 AND d.day = ?2",
@@ -538,19 +621,7 @@ impl Store {
         drop(prior_day);
         let days = days
             .into_iter()
-            .map(|((session, day), groups)| {
-                let groups: Vec<_> = groups
-                    .into_iter()
-                    .map(|((model, provider, role, conflicts), totals)| DayGroup {
-                        model,
-                        provider,
-                        role,
-                        conflicts,
-                        totals,
-                    })
-                    .collect();
-                Ok((session, day.to_string(), serde_json::to_vec(&groups)?))
-            })
+            .map(|((session, day), groups)| Ok((session, day.to_string(), encode_groups(groups)?)))
             .collect::<Result<Vec<_>>>()?;
         let update = prepared.update;
         let next = Self::stage(
@@ -622,6 +693,121 @@ impl Store {
         }
         tx.commit()?;
         Ok(next)
+    }
+
+    /// Re-evaluate a canonical session from its committed native identities, never from
+    /// the supplier identities written in the last classification pass.
+    pub(in super::super) fn reclassify_session(
+        &mut self,
+        session: &str,
+        input_limit: usize,
+        classify: impl FnOnce(&mut [UsageEvent], &BTreeMap<String, String>) -> Result<()>,
+    ) -> Result<Option<i64>> {
+        let read = self.db.transaction()?;
+        let base = revision(&read)?;
+        let complete = read.query_row(
+            "SELECT EXISTS(SELECT 1 FROM token_coverage WHERE revision = ?1
+                           AND pending_sources = 0 AND issues = 0)",
+            [base],
+            |row| row.get::<_, bool>(0),
+        )?;
+        if !complete {
+            return Ok(None);
+        }
+        let scope = Self::scope(&read)?;
+        let canonical = RequestSessionAliases::new(&scope.aliases);
+        if !scope.sessions.contains(session)
+            || canonical.resolve(session).as_deref() != Some(session)
+        {
+            return Ok(None);
+        }
+        let mut previous = Vec::new();
+        let mut candidates = Vec::new();
+        {
+            let mut budget = input_limit;
+            let mut loaded = read.prepare_cached(
+                "SELECT event_id, payload FROM token_resolved
+                 WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+                 AND day >= (SELECT precise_from FROM token_revision)
+                 ORDER BY timestamp_ms, event_id",
+            )?;
+            let mut rows = loaded.query([session])?;
+            while let Some(row) = rows.next()? {
+                let bytes = row.get_ref(1)?.as_blob()?;
+                budget = budget
+                    .checked_sub(bytes.len())
+                    .context("Token classification exceeds session input budget")?;
+                let stored: Observation = serde_json::from_slice(bytes)?;
+                let origin = stored.classification_origin.clone();
+                let event = stored
+                    .into_event(row.get_ref(0)?.as_blob()?.try_into()?, session.to_owned())?;
+                let mut candidate = event.clone();
+                if let Some(origin) = &origin {
+                    origin.apply(&mut candidate);
+                }
+                previous.push((event, origin));
+                candidates.push(candidate);
+            }
+        }
+        read.commit()?;
+        classify(&mut candidates, &scope.aliases)?;
+        let mut changed = Vec::new();
+        let mut changed_days = BTreeMap::<NaiveDate, Groups>::new();
+        for ((event, origin), candidate) in previous.iter_mut().zip(candidates) {
+            let prior = EventClassification::of(event);
+            let next = EventClassification::of(&candidate);
+            if prior != next {
+                let native = origin.take().unwrap_or(prior);
+                next.apply(event);
+                let mut stored = Observation::capture(event);
+                stored.classification_origin = (native != next).then_some(native);
+                changed.push((event.id, serde_json::to_vec(&stored)?));
+                changed_days.entry(event.date).or_default();
+            }
+        }
+        if changed.is_empty() {
+            return Ok(None);
+        }
+        for (event, _) in &previous {
+            if let Some(groups) = changed_days.get_mut(&event.date) {
+                groups
+                    .entry(group_key(event))
+                    .or_default()
+                    .merge(DayTotals::from_event(event));
+            }
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        ensure!(
+            revision(&tx)? == base,
+            "Token index changed during classification"
+        );
+        {
+            let mut update =
+                tx.prepare("UPDATE token_resolved SET payload = ?2 WHERE event_id = ?1")?;
+            for (id, bytes) in changed {
+                update.execute(params![id.as_slice(), bytes])?;
+            }
+            let mut update_days = tx.prepare(
+                "UPDATE token_days SET groups = ?3 WHERE day = ?2
+                 AND session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
+            )?;
+            for (date, groups) in changed_days {
+                update_days.execute(params![session, date.to_string(), encode_groups(groups)?])?;
+            }
+        }
+        let next = tx.query_row(
+            "UPDATE token_revision SET revision = revision + 1 RETURNING revision",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        tx.execute(
+            "UPDATE token_coverage SET revision = ?1 WHERE revision = ?2",
+            params![next, base],
+        )?;
+        tx.commit()?;
+        Ok(Some(next))
     }
 
     pub(in super::super) fn advance_retention(&mut self, cutoff: NaiveDate) -> Result<Option<i64>> {

@@ -115,6 +115,9 @@ impl Store {
              ) WITHOUT ROWID, STRICT;
              CREATE INDEX IF NOT EXISTS token_resolved_time ON token_resolved(timestamp_ms);
              CREATE INDEX IF NOT EXISTS token_resolved_session ON token_resolved(session_id);
+             CREATE INDEX IF NOT EXISTS token_classified_time
+                ON token_resolved(session_id, timestamp_ms)
+                WHERE json_type(CAST(payload AS TEXT), '$.classification_origin') = 'object';
              CREATE TABLE IF NOT EXISTS token_days (
                 session_id INTEGER NOT NULL REFERENCES token_sessions(id),
                 day TEXT NOT NULL,

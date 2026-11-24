@@ -30,6 +30,32 @@ struct StoredTokens {
 #[serde(transparent)]
 struct Counter(#[serde(with = "StoredTokens")] Tokens);
 
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct EventClassification {
+    model: String,
+    provider: String,
+    provider_source: Option<String>,
+    provider_conflict: bool,
+}
+
+impl EventClassification {
+    fn of(event: &UsageEvent) -> Self {
+        Self {
+            model: event.model.clone(),
+            provider: event.provider.clone(),
+            provider_source: event.provider_source.clone(),
+            provider_conflict: event.context_conflicts.provider,
+        }
+    }
+
+    fn apply(&self, event: &mut UsageEvent) {
+        event.model.clone_from(&self.model);
+        event.provider.clone_from(&self.provider);
+        event.provider_source.clone_from(&self.provider_source);
+        event.context_conflicts.provider = self.provider_conflict;
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Observation {
@@ -52,6 +78,8 @@ struct Observation {
     inherited: bool,
     legacy_identity: Option<Box<LegacyIdentity>>,
     context_conflicts: ContextConflicts,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    classification_origin: Option<EventClassification>,
 }
 
 impl Observation {
@@ -76,6 +104,7 @@ impl Observation {
             inherited: event.inherited,
             legacy_identity: event.legacy_identity.clone(),
             context_conflicts: event.context_conflicts,
+            classification_origin: None,
         }
     }
 
