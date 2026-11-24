@@ -963,30 +963,15 @@ mod completion_lag_tests {
 }
 
 fn request_signature(record: &RequestEvidence) -> String {
-    let mut comparable = record.clone();
+    // 回执的签名仍按旧投影生成；新增观察字段在缓存比对时检查。
+    let mut comparable = record.legacy_projection();
     comparable.relay_name.clear();
-    if let Some(usage) = &mut comparable.usage {
-        usage.cached_tokens_known = None;
-    }
-    if comparable.known_cached() != record.known_cached() {
-        comparable.usage = record.usage;
-    }
     legacy_request_signature(&comparable)
 }
 
 fn request_signature_matches(saved: &str, record: &RequestEvidence) -> bool {
-    if saved == request_signature(record) || saved == legacy_request_signature(record) {
-        return true;
-    }
-    // 旧版本的签名未包含这两个字段，只在旧格式也足以证明缓存数时复验。
-    let mut old = record.clone();
-    old.final_response_id = None;
-    if let Some(usage) = old.usage.as_mut() {
-        usage.cached_tokens_known = None;
-    }
-    old != *record
-        && old.valid_request_counts()
-        && (saved == request_signature(&old) || saved == legacy_request_signature(&old))
+    saved == request_signature(record)
+        || saved == legacy_request_signature(&record.legacy_projection())
 }
 
 fn legacy_request_signature(record: &RequestEvidence) -> String {

@@ -237,6 +237,15 @@ fn unknown_model(model: &str) -> bool {
 }
 
 impl RequestEvidence {
+    fn legacy_projection(&self) -> Self {
+        let mut projection = self.clone();
+        projection.final_response_id = None;
+        if let Some(usage) = &mut projection.usage {
+            usage.cached_tokens_known = None;
+        }
+        projection
+    }
+
     fn known_cached(&self) -> Option<u64> {
         let usage = self.usage?;
         let cached = usage.cached_tokens?;
@@ -376,13 +385,16 @@ impl RequestEvidence {
     }
 
     fn keys(&self) -> Vec<RequestMatchKey> {
-        if !self.valid_request_counts() {
+        self.keys_with_cached(self.known_cached())
+    }
+
+    fn keys_with_cached(&self, cached: Option<u64>) -> Vec<RequestMatchKey> {
+        let Some(cached) = cached.filter(|_| self.valid_capture()) else {
             return Vec::new();
-        }
+        };
         let RequestEvidenceUsage {
             input_tokens: Some(input),
             output_tokens: Some(output),
-            cached_tokens: Some(cached),
             ..
         } = self.usage.unwrap()
         else {
@@ -848,7 +860,18 @@ impl RequestEvidenceCache {
             }
         }
         let current: HashSet<_> = requests.keys().cloned().collect();
-        for saved in self.verified.values() {
+        let mut legacy_zero_proofs = HashMap::new();
+        for (event_id, saved) in &self.verified {
+            // 旧版已验过的零只用于原事件；未知零不能为其他事件建立证明。
+            if !saved.rejected
+                && saved.key.cached == 0
+                && saved.request.usage.is_some_and(|usage| {
+                    usage.cached_tokens == Some(0) && usage.cached_tokens_known.is_none()
+                })
+                && saved.request.known_cached().is_none()
+            {
+                legacy_zero_proofs.insert(saved.request.id.clone(), *event_id);
+            }
             if let Some(record) = requests.get_mut(&saved.request.id) {
                 match record.merge_observation(&saved.request) {
                     None => {
@@ -861,13 +884,18 @@ impl RequestEvidenceCache {
                 requests.insert(saved.request.id.clone(), saved.request.clone());
             }
         }
+        let cached_for_matching = |record: &RequestEvidence| {
+            record
+                .known_cached()
+                .or_else(|| legacy_zero_proofs.contains_key(&record.id).then_some(0))
+        };
         let mut uncertain_requests: HashMap<String, Vec<RequestEvidence>> = HashMap::new();
         for record in &self.records {
             if record.could_be_success()
                 && (blocked.contains(&record.id)
                     || requests
                         .get(&record.id)
-                        .is_none_or(|r| !r.valid_request_counts()))
+                        .is_none_or(|r| cached_for_matching(r).is_none()))
             {
                 if let Some(session) = aliases.resolve(&record.thread_id) {
                     uncertain_requests
@@ -886,7 +914,7 @@ impl RequestEvidenceCache {
             .iter()
             .map(|request| {
                 request
-                    .keys()
+                    .keys_with_cached(cached_for_matching(request))
                     .into_iter()
                     .filter_map(|mut key| {
                         key.session = aliases.resolve(&key.session)?;
@@ -1045,6 +1073,11 @@ impl RequestEvidenceCache {
                 }
                 let i = entries[start].1;
                 let request = &requests[i];
+                if request.known_cached().is_none()
+                    && legacy_zero_proofs.get(&request.id) != Some(&event.id)
+                {
+                    return None;
+                }
                 // 以请求时间为中心，与反向唯一性使用同一窗口。
                 if let Some(times) = uncertain_times.get(&key.session) {
                     let first = times.partition_point(|at| {
