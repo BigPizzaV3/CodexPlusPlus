@@ -851,6 +851,11 @@ test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副
   assert.doesNotMatch(list, /AgentModelPicker|t\("默认模型"\)/);
   // Claude Code 那一行并进了顶部的卡，App 里不再单独挂一块。
   assert.doesNotMatch(text, /ClaudeCodeConnection/);
+  // 列表上方和 Codex 页同一排筛选标签（CxFilters）：按要不要转协议分「无需转换 / 需协议转换」，各带数量，列表只列当前分页。
+  assert.match(claude, /const viewOf = \(protocol: string\): ClaudeProviderView => \(protocol === "anthropicMessages" \? "native" : "converted"\);/);
+  assert.match(list, /<CxFilters[\s\S]*?\{id === "native" \? t\("无需转换"\) : t\("需协议转换"\)\}[\s\S]*?count: viewCount\(id\)/);
+  assert.match(list, /visiblePool\.map\(\(entry\) =>/);
+  assert.ok(list.indexOf("<CxFilters") < list.indexOf("<CxCard>"), "筛选标签在列表卡片上方");
 });
 
 test("Codex 页顶部的登录卡叫「主登录身份」：和各供应商绑定的「供应商登录账号」区分开", () => {
