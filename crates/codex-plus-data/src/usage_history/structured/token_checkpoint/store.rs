@@ -7,6 +7,8 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 pub(super) mod projection;
+#[cfg(test)]
+mod archive;
 
 #[cfg(unix)]
 fn encode_path(path: &Path) -> Vec<u8> {

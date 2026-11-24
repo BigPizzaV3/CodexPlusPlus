@@ -1,7 +1,7 @@
 //! 共享后台索引：正文留在后台，只向拓展提供用量和已完成工具回执。
 use super::{Aggregate, CacheAccounting, Query, Record, Tokens, file_identity};
-use chrono::{DateTime, Duration as Days, Local, NaiveDate};
-use serde::Deserialize;
+use chrono::{DateTime, Datelike, Duration as Days, Local, NaiveDate};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1737,6 +1737,12 @@ enum PendingUsageReceipt {
     },
 }
 
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+struct TokenDaySpan {
+    first: Option<i32>,
+    last: Option<i32>,
+}
+
 #[derive(Default)]
 struct FileState {
     pending_response: Option<PendingUsageReceipt>,
@@ -1764,6 +1770,7 @@ struct FileState {
     rollout_extent: Option<(u64, u64, u64)>,
     rollout_out_of_order: bool,
     expired_count: Option<((u64, u64, u64), Tokens)>,
+    token_day_span: Option<TokenDaySpan>,
     events: Vec<UsageEvent>,
     calls: HashMap<String, Call>,
     exec_skills: HashMap<String, ExecSkill>,
@@ -3322,6 +3329,9 @@ impl FileState {
             meter = index_budget::Meter::new(self);
             meter.refresh(self, 0);
         }
+        if self.stamp.is_none() && self.offset == 0 {
+            self.token_day_span = Some(TokenDaySpan::default());
+        }
         if self.reader.is_none() {
             if !budget.can_open(self) {
                 return Ok((false, replaced));
@@ -3900,6 +3910,14 @@ impl FileState {
         let info = &payload["info"];
         let raw_cumulative = &info["total_token_usage"];
         let raw_request = &info["last_token_usage"];
+        // 先记录范围，再按保留期丢弃明细；冷索引也能找到历史原会话。
+        if let Some(span) = &mut self.token_day_span
+            && (!raw_cumulative.is_null() || !raw_request.is_null())
+        {
+            let date = date.num_days_from_ce();
+            span.first = Some(span.first.map_or(date, |day| day.min(date)));
+            span.last = Some(span.last.map_or(date, |day| day.max(date)));
+        }
         let Some(raw_total) = Tokens::parse(raw_cumulative) else {
             if info.is_object()
                 && (!info["total_token_usage"].is_null() || !info["last_token_usage"].is_null())

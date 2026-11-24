@@ -1,7 +1,7 @@
 use super::{
     CacheAccounting, Call, ContextConflicts, ExecSkill, FileState, InheritedUsageContext,
-    LegacyIdentity, NativeResponseIdentity, SessionModelObservation, Tokens, UsageEvent,
-    segments::HistoryBase,
+    LegacyIdentity, NativeResponseIdentity, SessionModelObservation, TokenDaySpan, Tokens,
+    UsageEvent, segments::HistoryBase,
 };
 use crate::usage_history::UsageHistoryBoundary;
 use chrono::NaiveDate;
@@ -166,6 +166,8 @@ struct Checkpoint {
     rollout_extent: Option<(u64, u64, u64)>,
     rollout_out_of_order: bool,
     expired_count: Option<((u64, u64, u64), Counter)>,
+    #[serde(default)]
+    token_day_span: Option<TokenDaySpan>,
     provider: String,
     role: String,
     history_boundary: UsageHistoryBoundary,
@@ -227,6 +229,7 @@ impl Checkpoint {
                 expired_count: state
                     .expired_count
                     .map(|(position, count)| (position, Counter(count))),
+                token_day_span: state.token_day_span,
                 provider: state.provider.clone(),
                 role: state.role.clone(),
                 history_boundary: state.history_boundary.clone(),
@@ -272,6 +275,7 @@ impl Checkpoint {
             expired_count: self
                 .expired_count
                 .map(|(position, count)| (position, count.0)),
+            token_day_span: self.token_day_span,
             provider: self.provider,
             role: self.role,
             history_boundary: self.history_boundary,
