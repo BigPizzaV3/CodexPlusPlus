@@ -30,7 +30,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "agents",
     target: "agents",
     title: "Agent",
-    body: "每个 Agent 一行，点开后它的页面列在下面：概览、连接与供应商、内置拓展、皮肤……想让几个 Agent 共用一份供应商，到侧栏的「本地服务」里配置。",
+    body: "每个 Agent 一行，点开后它的页面列在下面：连接与供应商、内置拓展、皮肤……想让几个 Agent 共用一份供应商，到侧栏的「本地服务」里配置。",
   },
   {
     id: "palette",

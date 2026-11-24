@@ -88,6 +88,8 @@ export type BackendSettings = WhaleBalanceSettings & {
   threadModelFollowSwitchEnabled?: boolean;
   /** 非官方登录时保留本地项目（#2947 / #3018）：启动前挪走 Codex 的账号隔离容器，切回官方登录时放回。 */
   keepProjectsWithoutAccount?: boolean;
+  /** 纯 API Key 解锁 ChatGPT 登录专属入口：本地 ChatGPT 兼容服务 + 改写 ~/.codex，关闭时还原。 */
+  chatgptCompatEnabled?: boolean;
   nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
@@ -397,7 +399,10 @@ export type UserScriptInventory = {
     enabled: boolean;
     claude_enabled?: boolean | null;
     status: string;
+    /** 清单本身的错误，或拓展在 Codex 页面里运行时报的错（带运行状态的清单才有后者）。 */
     error: string;
+    /** 只含清单本身的问题，空串表示清单没问题；管理器页面能不能用只看这一项。旧版后端没有。 */
+    manifestError?: string;
     market_id?: string;
     version?: string;
     installed?: boolean;

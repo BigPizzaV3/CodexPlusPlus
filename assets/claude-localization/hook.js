@@ -23,52 +23,66 @@ const DIR = __dirname;
 const LOG = path.join(DIR, 'hook.log');
 const SHIM_FILE = path.join(DIR, 'page-shim.js');
 const DICTATION_FILE = path.join(DIR, 'page-dictation.js');
-/** 启用中的页面扩展（Codex++ 启动副本前写，见 claude_localization.rs 的 write_page_extensions）。 */
-const PAGE_EXTENSIONS_FILE = path.join(DIR, 'page-extensions.json');
-
 /**
- * 页面扩展的注入脚本，一个文件一段：某个扩展出错也只坏它自己。
+ * 要注入页面的内容（Codex++ 写，见 claude_localization.rs 的 write_page_injection）：一份注入计划。
  *
- * 完整功能模式下本地服务把扩展插在页面 <head> 里、官方脚本之前；这里在新文档创建时注入，
- * 那时还没有 <head>，所以等 <head> 出现再执行，效果与那边一致。只进顶层页面，同一页面只跑一次。
+ * 计划由 claude-local 渲染（ClaudeMom 仓库 crates/claude-local/src/extensions/plan.rs），页面运行时、每个拓展包的
+ * 包装、旧格式页面扩展的包装都已经在里面；这里只做「读文件、拼接、执行」，不认识清单也不认识包装：
+ *   - legacy：旧格式（manifest.json）页面扩展，一个文件一段，在页面脚本之前执行；
+ *   - runtime + packages：Codex++ 拓展包（codexpp.json）的页面运行时和每个包，页面解析完后执行；
+ *   - binding：页面调后台用的 binding 名和结果回投函数名。
+ * 一段脚本由若干片拼成：{ text } 原样拼上，{ file } 读包里的文件拼上（json 为真时先 JSON.stringify）。
  */
-function pageExtensionSources() {
-  let assets;
+const PAGE_INJECT_FILE = path.join(DIR, 'page-inject.json');
+const PACKAGE_FILE = /^(?:[\w-][\w.-]*\/)*[\w-][\w.-]*$/;
+
+function readPagePlan() {
   try {
-    assets = JSON.parse(fs.readFileSync(PAGE_EXTENSIONS_FILE, 'utf8'));
+    const plan = JSON.parse(fs.readFileSync(PAGE_INJECT_FILE, 'utf8'));
+    if (!plan || plan.version !== 1 || plan.transport !== 'binding') return null;
+    return plan;
   } catch (e) {
-    return [];
+    return null;
   }
-  if (!Array.isArray(assets)) return [];
-  return assets
-    .filter((asset) => asset && typeof asset.id === 'string' && typeof asset.file === 'string' && typeof asset.body === 'string')
-    .map((asset) => {
-      const tag = JSON.stringify(asset.id + '/' + asset.file);
-      const body = asset.style
-        ? "const node = document.createElement('style'); node.setAttribute('data-codex-plus-page-ext', " + tag + '); ' +
-          'node.textContent = ' + JSON.stringify(asset.body) + '; document.head.appendChild(node);'
-        : asset.body;
-      return '(() => {\n' +
-        '  if (window.top !== window) return;\n' +
-        '  const done = (window.__codexPlusPageExtensions = window.__codexPlusPageExtensions || {});\n' +
-        '  if (done[' + tag + ']) return;\n' +
-        '  done[' + tag + '] = true;\n' +
-        '  const run = () => {\n' +
-        '    try {\n' +
-        '      (function () {\n' + body + '\n      }).call(window);\n' +
-        '    } catch (error) {\n' +
-        "      console.error('[Codex++ 页面扩展] ' + " + tag + ', error);\n' +
-        '    }\n' +
-        '  };\n' +
-        '  if (document.head) return run();\n' +
-        '  const observer = new MutationObserver(() => {\n' +
-        '    if (!document.head) return;\n' +
-        '    observer.disconnect();\n' +
-        '    run();\n' +
-        '  });\n' +
-        '  observer.observe(document, { childList: true, subtree: true });\n' +
-        '})();';
-    });
+}
+
+/** 读包里的一个文件：只认合法的相对路径，不跟符号链接，不出包自己的文件夹。读不到返回 null。 */
+function readInside(root, file) {
+  if (typeof root !== 'string' || !root || typeof file !== 'string' || file.length > 256 || !PACKAGE_FILE.test(file)) return null;
+  try {
+    const full = path.join(root, file);
+    if (!fs.lstatSync(full).isFile()) return null;
+    const real = fs.realpathSync(full);
+    if (!real.startsWith(fs.realpathSync(root) + path.sep)) return null;
+    return fs.readFileSync(real, 'utf8');
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 把若干片拼成一段脚本；有文件读不到时返回 null。 */
+function renderPieces(pieces, root) {
+  if (!Array.isArray(pieces)) return null;
+  let out = '';
+  for (const piece of pieces) {
+    if (piece && typeof piece.text === 'string') {
+      out += piece.text;
+    } else if (piece && typeof piece.file === 'string') {
+      const body = readInside(root, piece.file);
+      if (body === null) return null;
+      out += piece.json ? JSON.stringify(body) : body;
+    } else {
+      return null;
+    }
+  }
+  return out;
+}
+
+/** 旧格式页面扩展的注入脚本，一个文件一段：某个扩展出错也只坏它自己。启动时读一次，和以前一样重启副本生效。 */
+function pageExtensionSources(plan) {
+  return (plan && Array.isArray(plan.legacy) ? plan.legacy : [])
+    .map((segment) => renderPieces(segment && segment.pieces, segment && segment.root))
+    .filter((source) => typeof source === 'string');
 }
 
 /**
@@ -87,6 +101,95 @@ const RECEIPTS = [
 ].filter((file, index, all) => all.indexOf(file) === index);
 /** 页面调用主进程的 binding 名（page-dictation.js 按同名字面量调用）。 */
 const BINDING = '__claudeCnDictationCall';
+
+/**
+ * 拓展后台的凭据：Codex++ 的常驻 helper 写的端口和令牌。
+ * 文件名必须与 crates/codex-plus-core/src/claude_page_host.rs 的 RECEIPT_FILE 一致；位置同听写凭据。
+ */
+const EXT_RECEIPT_NAME = 'claude-ext-host.json';
+const EXT_RECEIPTS = [
+  path.join(path.dirname(DIR), EXT_RECEIPT_NAME),
+  path.join(os.homedir(), '.codex-session-delete', EXT_RECEIPT_NAME),
+].filter((file, index, all) => all.indexOf(file) === index);
+/** 页面能发的操作（与 claude-local 的页面接口同一组）。 */
+const EXT_OPS = ['call', 'events', 'stop', 'route', 'status', 'config'];
+const EXT_MAX_BODY = 1024 * 1024;
+const EXT_MAX_REPLY = 4 * 1024 * 1024;
+
+function readExtReceipt() {
+  for (const file of EXT_RECEIPTS) {
+    try {
+      const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (
+        value &&
+        Number.isInteger(value.port) &&
+        value.port > 0 &&
+        value.port < 65536 &&
+        typeof value.token === 'string' &&
+        /^[0-9a-f-]{36}$/i.test(value.token)
+      ) {
+        return value;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+
+/**
+ * 把页面的一次调用转给 Codex++ 的 helper（POST /claude-ext/v1/<op>），回它的答复。
+ * 这里只是通道：拓展有没有启用、方法有没有声明，都由 helper 按清单校验。
+ */
+function forwardExtensionCall(op, body) {
+  return new Promise((resolve) => {
+    const receipt = readExtReceipt();
+    if (!receipt) {
+      resolve({ ok: false, error: '拓展后台由 Codex++ 托管，但它没有在运行：请先启动 Codex++', code: 'host_offline' });
+      return;
+    }
+    let payload;
+    try {
+      payload = Buffer.from(JSON.stringify(body == null ? {} : body));
+    } catch (e) {
+      resolve({ ok: false, error: '请求内容无法序列化' });
+      return;
+    }
+    if (payload.length > EXT_MAX_BODY) {
+      resolve({ ok: false, error: '请求体太大' });
+      return;
+    }
+    const request = http.request(
+      {
+        host: '127.0.0.1',
+        port: receipt.port,
+        method: 'POST',
+        path: '/claude-ext/v1/' + op,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': payload.length, 'X-Codex-Plus-Claude-Ext': receipt.token },
+      },
+      (response) => {
+        const chunks = [];
+        let size = 0;
+        response.on('data', (chunk) => {
+          size += chunk.length;
+          if (size > EXT_MAX_REPLY) request.destroy(new Error('后台返回的内容太大'));
+          else chunks.push(chunk);
+        });
+        response.on('end', () => {
+          let reply = null;
+          try {
+            reply = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          } catch (e) {}
+          if (reply && typeof reply === 'object' && typeof reply.ok === 'boolean') resolve(reply);
+          else resolve({ ok: false, error: 'Codex++ 返回 ' + response.statusCode });
+        });
+      },
+    );
+    request.on('error', (error) =>
+      resolve({ ok: false, error: '连不上 Codex++ 的拓展后台：' + ((error && error.message) || error), code: 'host_offline' }),
+    );
+    request.setTimeout(30000, () => request.destroy(new Error('超时')));
+    request.end(payload);
+  });
+}
 
 function log(msg) {
   try {
@@ -350,8 +453,13 @@ function install() {
     SHIM = '';
     log('localization disabled by settings');
   }
-  const EXTENSIONS = pageExtensionSources();
+  const PLAN = readPagePlan();
+  const EXTENSIONS = pageExtensionSources(PLAN);
   if (EXTENSIONS.length) log('page extensions: ' + EXTENSIONS.length + ' file(s)');
+  // 拓展包调后台的通道：名字由计划给出。计划每次页面加载现读，所以之后才启用的拓展也用得上这条通道。
+  const EXT_BINDING = PLAN && PLAN.binding && typeof PLAN.binding.name === 'string' && typeof PLAN.binding.deliver === 'string'
+    ? PLAN.binding
+    : null;
 
   const HOST = /(^|\.)claude\.(ai|com)$/;
   const hostOf = (url) => {
@@ -446,6 +554,77 @@ function install() {
       });
   };
 
+  /** 把答复投回页面的拓展运行时；页面按 id 匹配自己那一次调用。 */
+  const deliverExtension = (wc, id, reply) => {
+    try {
+      if (!wc || wc.isDestroyed() || !EXT_BINDING) return;
+      const fn = 'globalThis[' + JSON.stringify(EXT_BINDING.deliver) + ']';
+      // 和听写一样用 executeJavaScript 回投：在 bindingCalled 的回调里走 debugger 发命令，页面收不到。
+      Promise.resolve(wc.executeJavaScript(fn + ' && ' + fn + '(' + JSON.stringify(id) + ',' + JSON.stringify(reply) + ')')).catch((error) =>
+        log('extension deliver failed ' + id + ': ' + ((error && error.message) || error)),
+      );
+    } catch (e) {
+      log('extension deliver error ' + id + ': ' + (e && e.message));
+    }
+  };
+
+  /** 页面里的拓展调后台：{ id, op, body } → 转给 Codex++，把答复投回去。 */
+  const handleExtensionCall = (wc, raw) => {
+    let message = null;
+    try {
+      message = JSON.parse(String(raw || ''));
+    } catch (e) {}
+    const id = message && typeof message.id === 'string' && message.id.length <= 64 ? message.id : '';
+    if (!id) return;
+    if (EXT_OPS.indexOf(message.op) === -1) {
+      deliverExtension(wc, id, { ok: false, error: '没有这个接口' });
+      return;
+    }
+    forwardExtensionCall(message.op, message.body).then((reply) => deliverExtension(wc, id, reply));
+  };
+
+  /**
+   * 给页面注入拓展运行时和每个拓展包：页面解析完后执行，每次现读计划（改了开关、配置刷新页面就生效）。
+   * 一个包一段：语法错误、运行出错都只坏它自己，原因记到运行时里那个包的状态上。
+   */
+  const injectPackages = (wc, why) => {
+    try {
+      if (!wc || wc.isDestroyed() || !ARMED.has(wc) || !hostOf(wc.getURL())) return;
+      const plan = readPagePlan();
+      if (!plan || !plan.runtime || !Array.isArray(plan.packages) || !plan.packages.length) return;
+      const runtime = renderPieces(plan.runtime.pieces, null);
+      if (runtime === null) return;
+      const markFailed = (key, reason) =>
+        wc.executeJavaScript(
+          'window.__codexPlusUserScripts && window.__codexPlusUserScripts.markFailed && window.__codexPlusUserScripts.markFailed(' +
+            JSON.stringify(key) + ',' + JSON.stringify(String(reason).slice(0, 2000)) + ')',
+        ).catch(() => {});
+      let chain = Promise.resolve(wc.executeJavaScript(runtime)).then(
+        () => true,
+        (error) => {
+          log('extension runtime failed: ' + ((error && error.message) || error));
+          return false;
+        },
+      );
+      for (const item of plan.packages) {
+        chain = chain.then((ready) => {
+          if (!ready || wc.isDestroyed()) return false;
+          const source = renderPieces(item.pieces, item.root);
+          if (source === null) return markFailed(item.key, '读不到拓展包里的文件').then(() => true);
+          return Promise.resolve(wc.executeJavaScript(source)).then(
+            () => true,
+            (error) => markFailed(item.key, (error && error.message) || error).then(() => true),
+          );
+        });
+      }
+      chain.then((ready) => {
+        if (ready) log('extension packages injected (' + why + '): ' + plan.packages.length);
+      });
+    } catch (e) {
+      log('extension inject error: ' + (e && e.message));
+    }
+  };
+
   const arm = (wc, why) => {
     try {
       if (!wc || wc.isDestroyed() || ARMED.has(wc)) return;
@@ -469,6 +648,42 @@ function install() {
           }
         });
       }
+      // 拓展包调后台的通道。只认顶层页面主世界发来的调用：同站的子框架也看得到这个 binding，
+      // 这里按执行上下文认出它们并丢掉。
+      if (EXT_BINDING) {
+        let mainFrame = null;
+        const contexts = new Map();
+        dbg.sendCommand('Page.getFrameTree').then((tree) => {
+          mainFrame = (tree && tree.frameTree && tree.frameTree.frame && tree.frameTree.frame.id) || null;
+        }).catch(() => {});
+        dbg.sendCommand('Runtime.addBinding', { name: EXT_BINDING.name }).catch((e) => {
+          log('extension binding failed: ' + (e && e.message));
+        });
+        dbg.on('message', (_event, method, params) => {
+          if (!params) return;
+          if (method === 'Runtime.executionContextCreated' && params.context) {
+            const aux = params.context.auxData || {};
+            contexts.set(params.context.id, { frame: aux.frameId || null, main: aux.isDefault === true });
+          } else if (method === 'Runtime.executionContextDestroyed') {
+            contexts.delete(params.executionContextId);
+          } else if (method === 'Runtime.executionContextsCleared') {
+            contexts.clear();
+          } else if (method === 'Page.frameNavigated' && params.frame && !params.frame.parentId) {
+            mainFrame = params.frame.id;
+          } else if (method === 'Runtime.bindingCalled' && params.name === EXT_BINDING.name) {
+            const context = contexts.get(params.executionContextId);
+            if (!context || !context.main || !mainFrame || context.frame !== mainFrame) {
+              log('extension call ignored: not the top page');
+              return;
+            }
+            try {
+              handleExtensionCall(wc, params.payload);
+            } catch (e) {
+              log('extension dispatch error: ' + (e && e.message));
+            }
+          }
+        });
+      }
       dbg.sendCommand('Page.enable').catch(() => {});
       dbg
         .sendCommand('Page.addScriptToEvaluateOnNewDocument', {
@@ -481,6 +696,8 @@ function install() {
           if (DICTATION) {
             dbg.sendCommand('Runtime.evaluate', { expression: DICTATION }).catch(() => {});
           }
+          // 拓展包同理：页面已经解析完就补跑一次（运行时和每个包都只会生效一次）。
+          if (!wc.isLoading()) injectPackages(wc, 'armed');
           verify(wc, '(armed)');
         })
         .catch((e) => {
@@ -508,6 +725,8 @@ function install() {
       wc.on('did-finish-load', () => {
         if (hostOf(wc.getURL())) verify(wc, '(load)');
       });
+      // 顶层页面每次解析完都注入一遍拓展包（刷新页面、换地址都会重新来）。
+      wc.on('dom-ready', () => injectPackages(wc, 'dom-ready'));
     } catch (e) {
       log('watch error: ' + (e && e.message));
     }

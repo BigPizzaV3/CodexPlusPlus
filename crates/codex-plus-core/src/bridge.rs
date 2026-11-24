@@ -599,6 +599,9 @@ async fn install_isolated_api_quota_gate_target_url(
         biased;
         _ = shutdown.wait_for(|stop| *stop) => Ok(()),
         result = async {
+            // 先 Page.enable：下面登记的新文档脚本只有本连接启用了 Page 域，页面刷新后才会执行（见 install_bridge）。
+            // 不发的话刷新后的页面里没有额度策略，而这条连接并不会因刷新而断开重装，发送键就一直锁着。
+            session.send_command(next_message_id(), "Page.enable", json!({})).await?;
             session.send_command(next_message_id(), "Runtime.enable", json!({})).await?;
             binding_added = true;
             session.send_command(
@@ -2176,7 +2179,7 @@ mod native_quota_lifecycle_tests {
     async fn native_quota_cancellation_during_initialization_closes_session() {
         assert_eq!(
             cancelled_session("Runtime.enable").await,
-            ["Runtime.enable"]
+            ["Page.enable", "Runtime.enable"]
         );
     }
 
@@ -2195,6 +2198,7 @@ mod native_quota_lifecycle_tests {
         assert_eq!(
             commands,
             [
+                "Page.enable",
                 "Runtime.enable",
                 "Runtime.addBinding",
                 "Page.addScriptToEvaluateOnNewDocument",

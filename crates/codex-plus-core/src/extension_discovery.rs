@@ -815,6 +815,8 @@ impl CommunityStore {
                 "fromAsset": resolved.asset.is_some(),
                 "channel": channel,
                 "permissions": package_permissions(&manifest, &package_dir),
+                // 本机已装着同 id 的包（更新、重新安装、替换）时带上它现在的能力：确认框据此标出这一版新增了哪些。
+                "previousPermissions": installed_permissions(manager, id),
                 "conflict": local_conflict(&self.load_state(), manager, id, repo),
             }))
         })();
@@ -893,10 +895,16 @@ impl CommunityStore {
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or(Value::Null);
-        let has_hooks = manifest
-            .get("hooks")
-            .and_then(Value::as_object)
-            .is_some_and(|hooks| !hooks.is_empty());
+        // 装上后要不要同步 Codex 配置（调用方看 `hooks` 这一项决定）。不只是清单里的 hooks：工具管线的
+        // preExecute / execute 也是经钩子分发的，MCP 服务器、Skills、子 Agent、全局指令、提示词、dsh 插件
+        // 同样要写进 Codex 配置才生效。以前只看 hooks，只带这些的包要等下次启停拓展才同步。
+        let permissions = package_permissions(&manifest, &target);
+        let listed = |key: &str| permissions[key].as_array().is_some_and(|items| !items.is_empty());
+        let has_hooks = listed("hooks")
+            || permissions["toolPipeline"].as_u64().unwrap_or(0) > 0
+            || ["mcpServers", "skills", "agents", "prompts"].iter().any(|key| listed(key))
+            || permissions["instructions"] == true
+            || permissions["dsh"].is_string();
         Ok(json!({
             "id": id,
             "key": key,
@@ -984,6 +992,15 @@ pub fn local_source_version(manager: &UserScriptManager, id: &str, repo: &str) -
 }
 
 /// 本机同 id 的拓展是否来自别处（手写、对话生成或另一个仓库）。是的话返回它的来源说明。
+/// 本机已装着的同 id 拓展包声明的能力；没装或清单读不出来时为 null。
+fn installed_permissions(manager: &UserScriptManager, id: &str) -> Value {
+    let directory = manager.user_dir().join(id);
+    std::fs::read(directory.join(EXTENSION_MANIFEST_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .map_or(Value::Null, |manifest| package_permissions(&manifest, &directory))
+}
+
 fn local_conflict(state: &CommunityState, manager: &UserScriptManager, id: &str, repo: &str) -> Value {
     if std::fs::symlink_metadata(manager.user_dir().join(id)).is_err() {
         return Value::Null;

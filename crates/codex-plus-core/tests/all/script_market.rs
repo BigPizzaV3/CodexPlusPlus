@@ -70,6 +70,27 @@ async fn download_script_returns_body() {
     assert_eq!(body, b"console.log('ok');");
 }
 
+/// 单文件脚本有大小上限：超了不读完、不安装。
+#[tokio::test]
+async fn download_script_rejects_oversized_bodies() {
+    let server = MockServer::start().await;
+    let limit = codex_plus_core::script_market::MARKET_SCRIPT_MAX_BYTES;
+    Mock::given(method("GET"))
+        .and(path("/huge.js"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'a'; limit + 1]))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/edge.js"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'a'; limit]))
+        .mount(&server)
+        .await;
+
+    let error = download_script(&format!("{}/huge.js", server.uri())).await.unwrap_err();
+    assert!(error.to_string().contains("大小上限"), "{error:#}");
+    assert_eq!(download_script(&format!("{}/edge.js", server.uri())).await.unwrap().len(), limit);
+}
+
 // 市场清单逐条脚本的更新时间（#2781）：兼容 updated_at / updatedAt，缺省为空，
 // 并原样透传到给前端的 payload，供卡片显示和按更新时间排序。
 #[test]

@@ -158,6 +158,9 @@ enum BackendHost {
     ClaudeDesktop,
 }
 
+/// 往后台写一条调用最多等多久。
+const BACKEND_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// 在跑的后台，按 [`slot`] 登记：同一进程里不同拓展目录的同名拓展各起各的，停一个目录的后台也不波及别的目录。
 static BACKENDS: std::sync::LazyLock<Mutex<HashMap<String, Backend>>> =
     std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -193,6 +196,11 @@ fn data_dir(manager: &UserScriptManager, extension: &str, host: BackendHost) -> 
         .join(extension)
 }
 
+/// Claude Desktop 下一个拓展后台的数据目录（交给 claude-local 的注入计划用）。
+pub(crate) fn claude_data_dir(manager: &UserScriptManager, extension: &str) -> PathBuf {
+    data_dir(manager, extension, BackendHost::ClaudeDesktop)
+}
+
 /// 后台脚本路径、修改时间与生效配置的指纹。
 fn fingerprint(script: &std::path::Path, config: &Value) -> String {
     let modified = std::fs::metadata(script)
@@ -208,14 +216,21 @@ async fn spawn(
     manager: &UserScriptManager,
     (extension, script, config): (String, PathBuf, Value),
     host: BackendHost,
+    data_override: Option<PathBuf>,
 ) -> anyhow::Result<Backend> {
     let fingerprint = fingerprint(&script, &config);
     let node = crate::extension_node::require_node()?;
-    let data = data_dir(manager, &extension, host);
+    let data = data_override.unwrap_or_else(|| data_dir(manager, &extension, host));
     std::fs::create_dir_all(&data).with_context(|| format!("无法创建拓展数据目录 {}", data.display()))?;
     let mut command = tokio::process::Command::new(node);
+    // Claude Desktop 的后台用 claude-local 里那份运行器：单独的 ClaudeMom 托管后台时用的也是它，
+    // 后台脚本拿到的 ctx 两边才一样。
+    let runner = match host {
+        BackendHost::Codex => crate::extension_node::with_host_client(RUNNER),
+        BackendHost::ClaudeDesktop => claude_local::extensions::BACKEND_RUNNER_JS.to_string(),
+    };
     command
-        .args(["--input-type=module", "-e", &crate::extension_node::with_host_client(RUNNER)])
+        .args(["--input-type=module", "-e", &runner])
         .current_dir(&data)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -591,6 +606,7 @@ async fn ensure_started(
     declared: (String, PathBuf, Value),
     wanted: &str,
     host: BackendHost,
+    data_override: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     let key = &host_slot(manager, key, host);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
@@ -618,7 +634,7 @@ async fn ensure_started(
         };
         if starter {
             let _guard = StartingGuard { key: key.to_string(), notify };
-            let backend = spawn(manager, declared, host).await?;
+            let backend = spawn(manager, declared, host, data_override).await?;
             BACKENDS.lock().await.insert(key.to_string(), backend);
             return Ok(());
         }
@@ -657,7 +673,36 @@ pub(crate) async fn call_claude(
     timeout: Duration,
     instance: Option<&str>,
 ) -> anyhow::Result<Value> {
-    call_for_host(manager, key, method, params, timeout, instance, BackendHost::ClaudeDesktop).await
+    let declared = manager.enabled_claude_extension_backend(key, method, false);
+    call_declared(manager, key, method, params, timeout, instance, BackendHost::ClaudeDesktop, declared, None).await
+}
+
+/// Claude 页面里的拓展脚本调后台：只能调 `claudeDesktop.methods` 里列的方法。
+/// 和 Mods 用的是同一个槽位，所以页面、按钮、工具、事件看到的是同一个后台实例。
+pub async fn call_claude_page(
+    manager: &UserScriptManager,
+    key: &str,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+    instance: Option<&str>,
+) -> anyhow::Result<Value> {
+    let declared = manager.enabled_claude_extension_backend(key, method, true);
+    call_declared(manager, key, method, params, timeout, instance, BackendHost::ClaudeDesktop, declared, None).await
+}
+
+/// claude-local 目录里的拓展包（不在 Codex++ 的拓展目录里）的后台：声明和数据目录由调用方按注入计划给出，
+/// 调用方已经核对过拓展启用着、方法声明过。
+pub(crate) async fn call_claude_local(
+    manager: &UserScriptManager,
+    key: &str,
+    declared: (String, PathBuf, Value),
+    data_dir: PathBuf,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+) -> anyhow::Result<Value> {
+    call_declared(manager, key, method, params, timeout, None, BackendHost::ClaudeDesktop, Ok(declared), Some(data_dir)).await
 }
 
 async fn call_for_host(
@@ -669,14 +714,31 @@ async fn call_for_host(
     instance: Option<&str>,
     host: BackendHost,
 ) -> anyhow::Result<Value> {
+    // 扫描拓展目录在锁外做。
+    let declared = match host {
+        BackendHost::Codex => declared_backend(manager, key),
+        BackendHost::ClaudeDesktop => manager.enabled_claude_extension_backend(key, method, false),
+    };
+    call_declared(manager, key, method, params, timeout, instance, host, declared, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_declared(
+    manager: &UserScriptManager,
+    key: &str,
+    method: &str,
+    params: Value,
+    timeout: Duration,
+    instance: Option<&str>,
+    host: BackendHost,
+    declared: anyhow::Result<(String, PathBuf, Value)>,
+    data_override: Option<PathBuf>,
+) -> anyhow::Result<Value> {
     if method.is_empty() || method.len() > 128 {
         anyhow::bail!("方法名无效");
     }
-    // 扫描拓展目录在锁外做；拓展已停用就停掉还在跑的后台。
-    let declared = match match host {
-        BackendHost::Codex => declared_backend(manager, key),
-        BackendHost::ClaudeDesktop => manager.enabled_claude_extension_backend(key, method),
-    } {
+    // 拓展已停用就停掉还在跑的后台。
+    let declared = match declared {
         Ok(declared) => declared,
         Err(error) => {
             BACKENDS.lock().await.remove(&host_slot(manager, key, host));
@@ -684,7 +746,7 @@ async fn call_for_host(
         }
     };
     let wanted = fingerprint(&declared.1, &declared.2);
-    ensure_started(manager, key, declared, &wanted, host).await?;
+    ensure_started(manager, key, declared, &wanted, host, data_override).await?;
     let key = &host_slot(manager, key, host);
     let receiver = {
         let mut backends = BACKENDS.lock().await;
@@ -699,12 +761,18 @@ async fn call_for_host(
         let (sender, receiver) = oneshot::channel();
         backend.pending.lock().await.insert(id, sender);
         let request = json!({ "id": id, "method": method, "params": params });
-        let written = {
-            let mut writer = backend.stdin.lock().await;
-            writer.write_all(format!("{request}\n").as_bytes()).await.is_ok() && writer.flush().await.is_ok()
-        };
+        // 限时写。后台卡死（同步死循环）后不再读 stdin，管道一满写入就一直等；而这里还持着全局的 BACKENDS 锁，
+        // 所有拓展的后台调用、事件轮询、停止（热重载、页面加载都会先停后台）都会跟着卡住。
+        let stdin = backend.stdin.clone();
+        let line = format!("{request}\n");
+        let written = tokio::time::timeout(BACKEND_WRITE_TIMEOUT, async move {
+            let mut writer = stdin.lock().await;
+            writer.write_all(line.as_bytes()).await.is_ok() && writer.flush().await.is_ok()
+        })
+        .await
+        .unwrap_or(false);
         if !written {
-            // 进程已经没了：移除，下次调用重新拉起。
+            // 进程已经没了，或卡住不读输入了：移除（随之结束进程），下次调用重新拉起。
             backends.remove(key);
             anyhow::bail!("拓展后台已退出，请重试");
         }
@@ -730,7 +798,30 @@ async fn call_for_host(
 
 /// 取走 `since` 之后的事件；没有就最多等 `wait`。后台没起时直接返回空（不为取事件而启动后台）。
 pub async fn events(manager: &UserScriptManager, key: &str, since: u64, wait: Duration) -> Value {
-    let key = &slot(manager, key);
+    events_in(&slot(manager, key), since, wait).await
+}
+
+/// Claude Desktop 下一个拓展后台的事件。`since` 为 `None` 表示从队尾开始：只回当前最新的序号，不回放旧事件。
+pub(crate) async fn claude_events(manager: &UserScriptManager, key: &str, since: Option<u64>, wait: Duration) -> Value {
+    let slot = host_slot(manager, key, BackendHost::ClaudeDesktop);
+    let Some(since) = since else {
+        let queue = match BACKENDS.lock().await.get(&slot) {
+            Some(backend) => backend.events.clone(),
+            None => return json!({ "events": [], "next": 0, "running": false }),
+        };
+        let next = queue.lock().await.back().map(|(seq, _)| *seq).unwrap_or(0);
+        return json!({ "events": [], "next": next, "running": true });
+    };
+    events_in(&slot, since, wait).await
+}
+
+/// 只留 `keep` 里的 Claude Desktop 后台（拓展被停用、删除之后调）。
+pub(crate) async fn retain_claude(manager: &UserScriptManager, keep: &std::collections::BTreeSet<String>) {
+    let prefix = format!("claudeDesktop\u{0}{}", slot_prefix(manager));
+    BACKENDS.lock().await.retain(|slot, _| slot.strip_prefix(&prefix).is_none_or(|key| keep.contains(key)));
+}
+
+async fn events_in(key: &str, since: u64, wait: Duration) -> Value {
     let wait = wait.min(MAX_EVENT_WAIT);
     let deadline = tokio::time::Instant::now() + wait;
     loop {
