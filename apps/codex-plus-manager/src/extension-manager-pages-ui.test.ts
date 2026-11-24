@@ -153,5 +153,5 @@ test("被顶替的页面仍显示所在分组的页签条", () => {
   // 切回内置的「请求」页时多一条横幅：它单独占一行，日志卡仍占满剩余高度。
   const css = read("./cx-pages-gateway.css");
   assert.match(appText, /\$\{restorableOverride \? "has-override-banner" : ""\}/);
-  assert.match(css, /\.screen\.request-log-screen\.has-override-banner \{\n\s*grid-template-rows: auto auto auto minmax\(0, 1fr\);/);
+  assert.match(css, /\.screen\.request-log-screen\.has-override-banner \{\r?\n\s*grid-template-rows: auto auto auto minmax\(0, 1fr\);/);
 });
