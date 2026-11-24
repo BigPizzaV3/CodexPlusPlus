@@ -4,8 +4,10 @@
 //! `linkedCodexRelay` 指向直连供应商的 id，外加价格、代理、限速、开关这些只属于共享供应商的设置；
 //! 地址、协议、Key、模型列表、模型资料、上下文窗口和自动压缩阈值归直连供应商所有，每次读 gateway.json
 //! 时从 settings.json 现取（[`sync`]），写盘时去掉（[`strip_for_storage`]），gateway.json 里没有第二份。
-//! 在 Codex「连接与供应商」里改了，Claude 等经本地服务的 Agent 下一个请求就用上；删掉直连供应商
-//! （或改成聚合、官方登录这些不能共享的），共享里的这一项连同模型组、Agent 绑定里指向它的引用一起清掉。
+//! 在 Codex「连接与供应商」里改了，Claude 等经本地服务的 Agent 下一个请求就用上；删掉直连供应商，
+//! 共享里的这一项连同模型组、Agent 绑定里指向它的引用一起清掉。直连供应商还在、只是暂时不能共享
+//! （Key 清空了、改成了聚合或官方登录）时引用留着、不填连接资料（没有模型，不会被路由到），
+//! 模型组和 Agent 默认模型不受影响，改回来就恢复；真不要了可以在共享供应商里删掉这一项。
 //!
 //! 旧版「加入共享供应商」复制出来的（来源 `codex:<id>`）在直连供应商还在、能共享时原地转成引用，
 //! id 不变，模型组成员、绑定里的 `<id>/<模型>` 照常有效。
@@ -110,8 +112,9 @@ pub fn ensure_unlinked(provider: &GatewayProvider) -> anyhow::Result<()> {
 }
 
 /// 引用记录不能从共享供应商里单独删：它跟着直连供应商走。
+/// 例外是直连供应商暂时不能共享、引用里没填连接资料（没有地址）的：那时可以删，免得留一条空的。
 pub fn ensure_deletable(provider: &GatewayProvider) -> anyhow::Result<()> {
-    if provider.linked_codex_relay.is_some() {
+    if provider.linked_codex_relay.is_some() && !provider.relay.base_url.trim().is_empty() {
         bail!(
             "「{}」引用的是 Codex 直连供应商，不能在这里删除：在 Codex「连接与供应商」里删掉它，这里会一起去掉；只是不想给某个 Agent 用，关掉它的开关即可",
             provider.relay.name
@@ -125,12 +128,13 @@ pub fn ensure_deletable(provider: &GatewayProvider) -> anyhow::Result<()> {
 pub struct SyncReport {
     /// 引用记录有增删或旧复制品转成了引用：要写回 gateway.json。
     pub changed: bool,
-    /// 因为直连供应商不在了（或不能共享了）被去掉的引用的 id；写回后清掉内存里按 id 记的 Key 健康、额度、速度。
+    /// 因为直连供应商被删掉而去掉的引用的 id；写回后清掉内存里按 id 记的 Key 健康、额度、速度。
     pub removed: Vec<String>,
 }
 
 /// 按直连供应商列表整理共享供应商里的引用，并把连接资料现取进来（幂等，每次读 gateway.json 都跑）：
-/// 1. 引用的直连供应商不在了或不能共享了：去掉这一项，模型组、绑定里指向它的引用一并清掉（同删除）；
+/// 1. 引用的直连供应商被删掉了：去掉这一项，模型组、绑定里指向它的引用一并清掉（同删除）；
+///    还在但暂时不能共享的留着，第 4 步不给它填连接资料；
 /// 2. 旧版复制品（来源 `codex:<id>`）在直连供应商还在、能共享、还没有别的引用时原地转成引用，id 不变；
 /// 3. 还没进共享供应商的、能共享的直连供应商新建一条引用（id 同旧版复制时的取法，按名字取不重复的短名），
 ///    关了「添加供应商时自动加入」的 Agent 照旧记进排除名单；
@@ -146,7 +150,7 @@ pub fn sync(gateway: &mut GatewaySettings, profiles: &[RelayProfile]) -> SyncRep
             provider
                 .linked_codex_relay
                 .as_deref()
-                .is_some_and(|relay_id| usable(relay_id).is_none())
+                .is_some_and(|relay_id| !profiles.iter().any(|relay| relay.id == relay_id))
         })
         .map(|provider| provider.relay.id.clone())
         .collect();
@@ -265,7 +269,7 @@ thread_local! {
 }
 
 /// 读 gateway.json 对应的直连供应商列表。网关每个请求都会走到这里：文件内容没变就用上次解析的结果。
-/// 文件不存在时是空列表（引用全部去掉）；读不了、解析不了时返回 None，这次不动引用（免得一次读坏就清掉引用）。
+/// 文件不存在、读不了、解析不了时返回 None，这次不动引用（免得设置文件一时不在或读坏就清掉引用和模型组）。
 pub(crate) fn codex_profiles_for(gateway_path: &Path) -> Option<Arc<Vec<RelayProfile>>> {
     if LOADING.with(|loading| loading.get()) {
         return None;
@@ -273,9 +277,6 @@ pub(crate) fn codex_profiles_for(gateway_path: &Path) -> Option<Arc<Vec<RelayPro
     let path = settings_path_for(gateway_path);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Some(Arc::new(Vec::new()));
-        }
         Err(_) => return None,
     };
     {

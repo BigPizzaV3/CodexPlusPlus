@@ -431,3 +431,57 @@ fn unreadable_settings_leave_links_alone() {
     assert_eq!(gateway.provider(&id).unwrap().linked_codex_relay.as_deref(), Some("relay-a"));
     assert!(gateway_text(&fixture).contains("linkedCodexRelay"));
 }
+
+#[test]
+fn temporarily_unshareable_profiles_keep_their_link_and_references() {
+    let fixture = fixture();
+    save_profiles(&fixture, vec![direct("relay-a", "Relay A", "sk-a", &["model-a"])]);
+    let id = linked_id(&fixture.gateway, "relay-a");
+    save_group(
+        &fixture.gateway,
+        &GroupInput {
+            name: "Fast".into(),
+            members: vec![GroupMember { model: format!("{id}/model-a"), weight: 1 }],
+            ..GroupInput::default()
+        },
+    )
+    .unwrap();
+    fixture
+        .gateway
+        .update(|gateway| {
+            gateway.bindings.entry("claude".into()).or_default().model = format!("{id}/model-a");
+            Ok(())
+        })
+        .unwrap();
+
+    // 在 Codex 里改成聚合：暂时不能共享，但引用、模型组、默认模型都留着，只是没有模型。
+    edit_profile(&fixture, "relay-a", |relay| relay.relay_mode = RelayMode::Aggregate);
+    let gateway = fixture.gateway.load().unwrap();
+    let provider = gateway.provider(&id).expect("引用留着");
+    assert_eq!(provider.linked_codex_relay.as_deref(), Some("relay-a"));
+    assert!(provider.relay.base_url.is_empty() && provider.relay.model_list.is_empty(), "不填连接资料");
+    assert_eq!(gateway.groups[0].members[0].model, format!("{id}/model-a"));
+    assert_eq!(gateway.binding(&ToolId::Claude).unwrap().model, format!("{id}/model-a"));
+
+    // 改回直连就恢复，id 不变。
+    edit_profile(&fixture, "relay-a", |relay| relay.relay_mode = RelayMode::PureApi);
+    let gateway = fixture.gateway.load().unwrap();
+    assert_eq!(gateway.provider(&id).unwrap().relay.api_key, "sk-a");
+    assert_eq!(linked_id(&fixture.gateway, "relay-a"), id);
+
+    // 已填上连接资料的不能删；空引用可以删。
+    assert!(delete_provider(&fixture.gateway, &id).is_err());
+    edit_profile(&fixture, "relay-a", |relay| relay.relay_mode = RelayMode::Aggregate);
+    delete_provider(&fixture.gateway, &id).unwrap();
+    assert!(fixture.gateway.load().unwrap().provider(&id).is_none());
+}
+
+#[test]
+fn missing_settings_file_leaves_links_alone() {
+    let fixture = fixture();
+    save_profiles(&fixture, vec![direct("relay-a", "Relay A", "sk-a", &["model-a"])]);
+    let id = linked_id(&fixture.gateway, "relay-a");
+    std::fs::remove_file(fixture.gateway.path.with_file_name("settings.json")).unwrap();
+    let gateway = fixture.gateway.load().unwrap();
+    assert_eq!(gateway.provider(&id).unwrap().linked_codex_relay.as_deref(), Some("relay-a"));
+}
