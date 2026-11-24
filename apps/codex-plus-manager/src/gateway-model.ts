@@ -270,6 +270,8 @@ export type GatewayAgentView = {
   diagnostics?: GatewayAgentDiagnostics | null;
   /** Agent 自带的模型：用它自己的登录或 Key 直连厂商，不经 Codex++；选中即断开网关。 */
   ownModels?: OwnModels | null;
+  /** Claude Code 没接入、正直连共享供应商里的一家时，那一家的 id。 */
+  directPoolProvider?: string | null;
 };
 
 export type OwnModel = { id: string; label: string };

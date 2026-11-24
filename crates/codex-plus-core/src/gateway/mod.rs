@@ -34,6 +34,7 @@ pub mod balance;
 pub mod chat_inbound;
 pub mod chat_outbound;
 pub mod chatgpt_backend;
+pub mod claude_direct;
 pub mod codex_link;
 pub mod coding_plan;
 pub mod compaction_model;

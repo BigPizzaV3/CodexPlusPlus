@@ -128,6 +128,8 @@ pub struct GatewayAgentView {
     pub diagnostics: Option<codex_plus_core::gateway::diagnostics::AgentDiagnostics>,
     /// Agent 自带的模型（用它自己的登录或 Key 直连厂商，不经 Codex++）；没有时为 None。
     pub own_models: Option<codex_plus_core::gateway::own_models::OwnModels>,
+    /// Claude Code 没接入、正直连共享供应商里的一家时，那一家的 id（Claude 页「直连」标「使用中」）。
+    pub direct_pool_provider: Option<String>,
 }
 
 /// 界面上的自动组：组本身 + 是否隐藏 + 有没有改过设置。
@@ -451,6 +453,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 own_models: codex_plus_core::gateway::own_models::own_models(
                     &drift_ctx, agent, binding,
                 ),
+                direct_pool_provider: (*agent == ToolId::Claude && !enabled)
+                    .then(|| codex_plus_core::gateway::claude_direct::current_pool_provider(&drift_ctx))
+                    .flatten(),
             }
         })
         .collect();
@@ -1050,6 +1055,36 @@ pub fn use_gateway_own_model(
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
         &format!("{name} 已改用自带的 {}，直连、不经 Codex++，新开的会话生效。", model.trim()),
+        "切换失败",
+        result,
+    )
+}
+
+/// Claude 页的「直连」：Claude Code 直接连共享供应商里的一家（Anthropic 协议、用 Key 的），不经 Codex++。
+/// 接入着时和「断开并还原」一样要先拿断开预览的 token。
+#[tauri::command]
+pub fn use_claude_code_pool_provider(
+    id: String,
+    model: Option<String>,
+    preview_token: Option<String>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = (|| {
+        let agent = ToolId::Claude;
+        let settings = SettingsStore::default().load()?;
+        let connected = GatewayStore::default()
+            .load()?
+            .binding(&agent)
+            .is_some_and(|binding| binding.enabled);
+        let managed = claude::current_provider_id(&ClaudeContext::default_paths())? == GATEWAY_PROVIDER_ID;
+        let (ctx, settings) = if connected || managed || preview_token.is_some() {
+            validate_disconnect_preview(&agent, preview_token.as_deref())?
+        } else {
+            (context(), settings)
+        };
+        codex_plus_core::gateway::claude_direct::use_pool_provider(&ctx, &settings, &id, model.as_deref())
+    })();
+    respond(
+        "Claude Code 已改为直连这家供应商，不经 Codex++，新开的会话生效。",
         "切换失败",
         result,
     )

@@ -2363,6 +2363,45 @@ export const EN_PLAIN: Record<string, string> = {
   "开启后 Codex++ 在本机 8000 端口起一个本地 ChatGPT 兼容服务，并改写 ~/.codex 的配置和登录（先备份，关闭时还原）。只在用 API Key 供应商或本地服务时生效，官方登录时不改动。":
     "When on, Codex++ runs a local ChatGPT compatibility service on port 8000 and rewrites ~/.codex config and login (backed up first, restored when turned off). Only applies with an API key provider or the local service; nothing changes under an official login.",
   "解锁": "Unlock",
+  "打开的供应商合在一起，模型都列进 Codex 的模型选择器，不用切换。需要 Codex++ 在后台运行。":
+    "Every provider you turn on is combined and all their models show up in Codex's model picker, with no switching. Needs Codex++ running in the background.",
+  "Codex 直接连一家供应商，关掉 Codex++ 也能用（需协议转换的除外）；换供应商点「使用」。":
+    "Codex talks to one provider directly and keeps working with Codex++ closed (except providers that need protocol conversion). Click Use to change provider.",
+  "Codex 改走 Codex++ 本地服务，用下面打开的全部供应商；新开的会话生效":
+    "Codex goes through the Codex++ local service and uses every provider turned on below. Applies to new sessions",
+  "Codex 启动后默认用这个模型；其余模型在 Codex 的模型选择器里随时换。":
+    "Codex starts with this model; switch to any other model in Codex's model picker.",
+  "加进来的供应商都会合在一起给 Codex 用；Claude 等其它 Agent 也能用。":
+    "Providers you add are combined for Codex, and Claude and other agents can use them too.",
+  "这里没有 Codex 自己的供应商": "No providers of Codex's own here",
+  "给 Codex 用 {0}": "Use {0} in Codex",
+  "Claude 页添加或导入的共享供应商；Codex 经本地服务时也能用。不勾时这里不列它们":
+    "Shared providers added or imported on the Claude page; Codex can use them through the local service. Unchecked hides them here",
+  "新建直连聚合": "New direct aggregate",
+  "直连时 Codex 直接请求这一家，关掉 Codex++ 也能用；加进来的供应商切到「聚合」后也能合在一起用。":
+    "In direct mode Codex calls this provider itself and works with Codex++ closed; providers you add can also be combined after switching to Combined.",
+  "这家要经 Codex++ 的本地代理（协议转换、模型路由或聚合），关掉 Codex++ 就连不上":
+    "This provider goes through the Codex++ local proxy (protocol conversion, model routing or aggregation) and stops working when Codex++ is closed",
+  "需 Codex++": "Needs Codex++",
+  "始终经 Codex++ 本地服务：下面打开的供应商，聊天模型都会列进 Claude 的模型选择器；启动后默认用这个模型。":
+    "Always goes through the Codex++ local service: chat models of the providers turned on below show up in Claude's model picker; Claude starts with this model.",
+  "聚合：经本地服务用下面打开的供应商，OpenAI 协议的自动转换；需要 Codex++ 在后台运行":
+    "Combined: uses the providers turned on below through the local service, converting OpenAI-protocol ones automatically; needs Codex++ running in the background",
+  "直连 {0}：不经 Codex++，关掉 Codex++ 也能用；换一家在下面点「使用」":
+    "Direct to {0}: skips Codex++ and keeps working with Codex++ closed; click Use below to change provider",
+  "直连：用它自己的 ~/.claude/settings.json，不经 Codex++；下面 Anthropic 协议的供应商点「使用」改连那一家":
+    "Direct: uses its own ~/.claude/settings.json without Codex++; click Use on an Anthropic-protocol provider below to connect to it",
+  "先选默认模型": "Pick a default model first",
+  "在 Claude Code 那一行选一个默认模型，就改为聚合。": "Pick a default model on the Claude Code row to switch to Combined.",
+  "Claude Code 直连": "Claude Code direct connection",
+  "Claude Code 直连中": "Claude Code direct",
+  "Claude Code 的连接方式": "Claude Code connection mode",
+  "Claude Code 改走 Codex++ 本地服务，用下面打开的全部供应商；新开的会话生效":
+    "Claude Code goes through the Codex++ local service and uses every provider turned on below. Applies to new sessions",
+  "断开本地服务，还原 Claude Code 自己的 settings.json；会先列出要还原的文件，确认后才改":
+    "Disconnects the local service and restores Claude Code's own settings.json; lists the files to restore and asks before changing them",
+  "Claude Code 不经 Codex++ 直接连这一家（地址和 Key 写进它自己的 settings.json），关掉 Codex++ 也能用":
+    "Claude Code talks to this provider directly without Codex++ (the address and key go into its own settings.json) and keeps working with Codex++ closed",
   "切换供应商或默认模型后，下次启动前把仍停在旧默认模型的会话改为新默认；手动选过模型的会话不变。保存设置后生效。":
     "After switching provider or default model, sessions still on the previous default move to the new default before the next launch. Sessions with a manually chosen model are untouched. Takes effect after saving settings.",
   "启用": "Enable",

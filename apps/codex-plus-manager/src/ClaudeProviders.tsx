@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Download, Layers3, Plus } from "lucide-react";
 import { CxBadge, CxCard, CxEmpty, CxFilters, CxLoading, CxRow, CxSection } from "./cx-layout";
+import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
+import { ConnectionModeSwitch, type CodexConnectionMode } from "./CodexConnectionMode";
 import { AgentModelPicker } from "./GatewayAgents";
 import { AgentGlyph } from "./hub-shared";
 import { Menu, MenuItem } from "./ManagementPages";
@@ -18,6 +20,7 @@ import {
   providerEnabled,
   validateDraft,
   type GatewayAgentId,
+  type GatewayPoolEntry,
   type GroupMode,
 } from "./gateway-model";
 import { t, tf } from "./i18n";
@@ -55,6 +58,12 @@ function groupModeLabel(mode: GroupMode): string {
   }
 }
 const viewOf = (protocol: string): ClaudeProviderView => (protocol === "anthropicMessages" ? "native" : "converted");
+/**
+ * Claude Code 能不能不经 Codex++ 直连这一家：Anthropic 协议、用 Key 的普通供应商（订阅账号要代登录），
+ * 地址末尾不带 `#`（Claude Code 自己补 /v1，表达不了「不补」）。后端 `claude_direct::rejection` 同一套规则。
+ */
+const directCapable = (entry: GatewayPoolEntry) =>
+  entry.protocol === "anthropicMessages" && !entry.account && Boolean(entry.baseUrl.trim()) && !entry.baseUrl.trim().endsWith("#");
 
 /**
  * Claude 的「供应商」页：Claude Desktop、Claude Code 各用哪个默认模型，Claude Desktop 用哪些供应商，加供应商、从 CC Switch / ClaudeMom 导入。
@@ -63,7 +72,9 @@ const viewOf = (protocol: string): ClaudeProviderView => (protocol === "anthropi
  * 「模型组」分页列本地服务「路由」里的组，可以直接设成两个 Claude 的默认模型。
  *
  * 版式和 Codex 的「连接与供应商」同一副骨架，两页对照着看得懂：
- * 「导入」「添加供应商」在标题行右侧（添加是主按钮）→ 顶部一张卡说这个 Agent 怎么接的（Codex 是登录，这里是两个默认模型）
+ * 「导入」「添加供应商」在标题行右侧（添加是主按钮）→ 顶部一张卡说这个 Agent 怎么接的
+ * （Claude Desktop 始终经本地服务；Claude Code 和 Codex 一样有「聚合 / 直连」两种：直连时 Anthropic 协议的供应商点「使用」，
+ * 不经 Codex++ 写进它自己的 settings.json）
  * → 「供应商 N」分区里只列供应商，N 是列出来的数目。
  *
  * Codex 的直连供应商默认以引用的方式在共享供应商里（标「来自 Codex」，地址、Key、模型在 Codex 那边改）；
@@ -93,13 +104,46 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
   // Claude Code（命令行）：和 Agent 接入页那一行同一个模型下拉，选一个共享供应商的模型就是让它经本地服务，
   // 下拉顶部「断开」就还原成它自己的 settings.json。本地服务里没有这个 Agent 时不显示这一行。
   const claudeCode = payload?.agents.find((item) => item.agent === "claude");
+  // Claude Code 的两种连接方式，和 Codex 页一样：聚合 = 经本地服务用下面打开的全部供应商；
+  // 直连 = 不经 Codex++，用它自己的 settings.json，或直连下面 Anthropic 协议的某一家（点「使用」）。
+  const codeMode: CodexConnectionMode = claudeCode?.enabled ? "aggregate" : "direct";
+  const directPoolId = codeMode === "direct" ? claudeCode?.directPoolProvider ?? null : null;
+  const directEntry = directPoolId ? allPool.find((entry) => entry.id === directPoolId) : undefined;
+  // 直连时点「聚合」但还没选过默认模型：先把模型下拉亮出来，选一个就接入。
+  const [pickingAggregate, setPickingAggregate] = useState(false);
+  // 要断开本地服务的操作（还原 / 直连某一家）先看断开预览，确认后才改文件。
+  const [directTarget, setDirectTarget] = useState<"restore" | { id: string; name: string } | null>(null);
   const claudeCodeDetail = !claudeCode
     ? t("正在读取…")
     : claudeCode.drift
       ? claudeCode.drift.by ? tf("配置被 {0} 改掉了，没有经过本地服务", [claudeCode.drift.by]) : t("配置被别的工具改掉了，没有经过本地服务")
       : claudeCode.enabled
-        ? t("经本地服务：用下面这些共享供应商，OpenAI 协议的自动转换")
-        : t("直连：用它自己的 ~/.claude/settings.json；选一个模型就改为经本地服务");
+        ? t("聚合：经本地服务用下面打开的供应商，OpenAI 协议的自动转换；需要 Codex++ 在后台运行")
+        : directEntry
+          ? tf("直连 {0}：不经 Codex++，关掉 Codex++ 也能用；换一家在下面点「使用」", [directEntry.name])
+          : t("直连：用它自己的 ~/.claude/settings.json，不经 Codex++；下面 Anthropic 协议的供应商点「使用」改连那一家");
+
+  /** Claude Code 改为聚合：用上次的默认模型接入本地服务；没选过就先亮出模型下拉。 */
+  const connectCodeAggregate = async () => {
+    const draft = draftFromBinding(codeBinding);
+    const error = draft.model.trim() ? validateDraft(draft, payload, undefined, null) : null;
+    if (!draft.model.trim() || error) {
+      setPickingAggregate(true);
+      void notify(t("先选默认模型"), error ? t(error) : t("在 Claude Code 那一行选一个默认模型，就改为聚合。"), "warning");
+      return;
+    }
+    if (await run("code:aggregate", "save_gateway_binding", { agent: CODE, binding: bindingFromDraft(draft, codeBinding) }, t("保存本地服务绑定"))) {
+      setPickingAggregate(false);
+    }
+  };
+  /** Claude Code 直连共享供应商里的一家；接入着要先看断开预览。 */
+  const goDirect = (entry: GatewayPoolEntry) => {
+    if (claudeCode?.requiresDisconnectPreview) {
+      setDirectTarget({ id: entry.id, name: entry.name });
+      return;
+    }
+    void run(`direct:${entry.id}`, "use_claude_code_pool_provider", { id: entry.id }, t("Claude Code 直连"));
+  };
 
   /**
    * 开关一家供应商给不给 Claude 用：Claude Desktop 和 Claude Code 一起改（两份排除名单）。
@@ -140,7 +184,7 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
       <CxSection className="claude-providers-agents">
         <CxCard>
           <CxRow
-            detail={t("Claude 启动后默认用这个模型；下面打开的供应商，它们的聊天模型都会列进 Claude 的模型选择器。")}
+            detail={t("始终经 Codex++ 本地服务：下面打开的供应商，聊天模型都会列进 Claude 的模型选择器；启动后默认用这个模型。")}
             icon={<AgentGlyph agent={AGENT} />}
             title="Claude Desktop"
           >
@@ -153,7 +197,20 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
               icon={<AgentGlyph agent="claude" />}
               title={t("Claude Code（命令行）")}
             >
-              <AgentModelPicker agentId="claude" busy={busy} notify={notify} payload={payload} run={run} />
+              {claudeCode ? (
+                <ConnectionModeSwitch
+                  aggregateTitle={t("Claude Code 改走 Codex++ 本地服务，用下面打开的全部供应商；新开的会话生效")}
+                  connecting={busy === "code:aggregate" || busy === "disable:claude"}
+                  directTitle={t("断开本地服务，还原 Claude Code 自己的 settings.json；会先列出要还原的文件，确认后才改")}
+                  label={t("Claude Code 的连接方式")}
+                  mode={codeMode}
+                  onAggregate={() => void connectCodeAggregate()}
+                  onDirect={() => { setPickingAggregate(false); setDirectTarget("restore"); }}
+                />
+              ) : null}
+              {codeMode === "aggregate" || pickingAggregate || !claudeCode ? (
+                <AgentModelPicker agentId="claude" busy={busy} notify={notify} payload={payload} run={run} />
+              ) : null}
             </CxRow>
           )}
         </CxCard>
@@ -245,11 +302,15 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
             const codeOn = !claudeCode || !codeExclude.includes(entry.id);
             const on = enabled && desktopOn && codeOn;
             const partial = enabled && desktopOn !== codeOn;
+            // 直连模式下：Claude Code 正直连的这一家标出来，别的能直连的给个「使用」。
+            const codeDirect = directPoolId === entry.id;
+            const canUseDirect = Boolean(claudeCode) && codeMode === "direct" && !codeDirect && enabled && directCapable(entry);
             return (
               <CxRow
                 badges={(
                   <>
                     {!enabled ? <CxBadge>{t("已停用")}</CxBadge> : partial ? <CxBadge>{desktopOn ? t("仅 Claude Desktop") : t("仅 Claude Code")}</CxBadge> : null}
+                    {codeDirect ? <CxBadge tone="ok">{t("Claude Code 直连中")}</CxBadge> : null}
                     <OwnerBadge entry={entry} page="claude" />
                   </>
                 )}
@@ -259,6 +320,17 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
                 muted={!on && !partial}
                 title={entry.name}
               >
+                {canUseDirect ? (
+                  <button
+                    className="cx-secondary"
+                    disabled={busy !== null}
+                    onClick={() => goDirect(entry)}
+                    title={t("Claude Code 不经 Codex++ 直接连这一家（地址和 Key 写进它自己的 settings.json），关掉 Codex++ 也能用")}
+                    type="button"
+                  >
+                    {t("使用")}
+                  </button>
+                ) : null}
                 <Switch
                   disabled={!enabled}
                   label={tf("给 Claude Desktop 和 Claude Code 用 {0}", [entry.name])}
@@ -283,6 +355,19 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
           payload={payload}
           run={run}
           startWith={adding}
+        />
+      ) : null}
+      {directTarget && claudeCode ? (
+        <AgentDisconnectDialog
+          agent={claudeCode}
+          busy={busy !== null}
+          onApply={(previewToken) => directTarget === "restore"
+            ? run("disable:claude", "disable_gateway_binding", { agent: CODE, previewToken }, t("断开并还原"))
+            : run(`direct:${directTarget.id}`, "use_claude_code_pool_provider", { id: directTarget.id, previewToken }, t("断开并直连"))}
+          onFullSwitch={directTarget === "restore"
+            ? (previewToken) => run("disable:claude", "disable_gateway_binding_full_switch", { agent: CODE, previewToken }, t("断开并还原"))
+            : undefined}
+          onClose={() => setDirectTarget(null)}
         />
       ) : null}
     </>

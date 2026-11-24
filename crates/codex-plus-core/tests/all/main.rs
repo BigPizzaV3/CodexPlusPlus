@@ -69,6 +69,7 @@ mod gateway_agents;
 mod gateway_apply;
 mod gateway_auto_compact;
 mod gateway_breaker;
+mod gateway_claude_direct;
 mod gateway_codex_identity;
 mod gateway_codex_link;
 mod gateway_coding_plan_quota;
