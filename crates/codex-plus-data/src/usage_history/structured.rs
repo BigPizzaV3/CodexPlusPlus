@@ -1757,6 +1757,7 @@ struct FileState {
     previous: Option<Tokens>,
     previous_cache_accounting: Option<CacheAccounting>,
     invalid_counts: bool,
+    malformed_token_counts: usize,
     identity_conflict: bool,
     continuation: bool,
     history_base: Option<segments::HistoryBase>,
@@ -3904,6 +3905,7 @@ impl FileState {
                 && (!info["total_token_usage"].is_null() || !info["last_token_usage"].is_null())
             {
                 self.issues += 1;
+                self.malformed_token_counts += usize::from(!inherited);
                 self.invalid_counts = true;
             }
             return;

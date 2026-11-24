@@ -45,6 +45,13 @@ impl SourceReader {
         self.state.issues != 0 || self.state.invalid_counts || self.state.identity_conflict
     }
 
+    pub(super) fn has_only_malformed_token_counts(&self) -> bool {
+        !self.state.session.is_empty()
+            && !self.state.identity_conflict
+            && self.state.issues != 0
+            && self.state.issues == self.state.malformed_token_counts
+    }
+
     pub(super) fn step(
         &mut self,
         store: &mut Store,

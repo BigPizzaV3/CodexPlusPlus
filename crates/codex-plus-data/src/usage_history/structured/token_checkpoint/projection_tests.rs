@@ -5,7 +5,7 @@ use crate::usage_history::structured::{FileState, UsageEvent, index_budget::Budg
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::{fs, io::Write};
 
@@ -1473,6 +1473,54 @@ fn archived_classification_matches_live_rollups_without_promoting_mixed_evidence
 }
 
 #[test]
+fn attribution_still_waits_for_count_gaps_in_related_or_unidentified_sources() {
+    use super::scan::Scan;
+
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    for (owner, alias, unparsed) in [
+        (PARENT, false, false),
+        (OTHER, true, false),
+        (OTHER, false, true),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let sessions = root.join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        let parent = sessions.join(format!("rollout-parent-{PHYSICAL_PREFIX}.jsonl"));
+        let parent_state = parse(&parent, &[header(PARENT, 0), count(1, 1, 1, true)], cutoff);
+        let gap = sessions.join("rollout-gap.jsonl");
+        let mut meta = header(owner, if alias { 2 } else { 0 });
+        if alias {
+            meta["payload"]["history_base"] = json!({
+                "thread_id":PHYSICAL_PREFIX,"end_ordinal_exclusive":2,
+                "end_byte_offset":parent_state.offset
+            });
+        }
+        let mut malformed = count(if alias { 3 } else { 1 }, 3, 2, true);
+        malformed["payload"]["info"]["total_token_usage"]["input_tokens"] = json!("invalid");
+        if unparsed {
+            fs::write(&gap, b"{not a JSON envelope}\n").unwrap();
+        } else {
+            parse(&gap, &[meta, malformed], cutoff);
+        }
+        let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        let mut scan = Scan::default();
+        let report = scan.round(&mut store, &root, cutoff, &BTreeMap::new(), 8192);
+        assert_eq!(report.pending_sources, 0);
+        assert_eq!(report.issues, 1);
+        assert_eq!(scan.scoped_count_gaps().contains(&gap), !unparsed);
+        assert_eq!(
+            store
+                .reclassify_session(PARENT, 8192, scan.scoped_count_gaps(), |_, _| {
+                    panic!("unresolved source was admitted: {owner}, alias={alias}, unparsed={unparsed}")
+                })
+                .unwrap(),
+            None
+        );
+    }
+}
+
+#[test]
 fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
     use super::scan::Scan;
     use crate::usage_history::structured::{RequestEvidence, RequestEvidenceCache, provider_cache};
@@ -1526,7 +1574,11 @@ fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
         evidence.attribute_with_cache(events, &mut BTreeMap::new(), aliases, &proof_db);
         Ok(())
     };
-    assert!(store.reclassify_session(PARENT, 1, &mut classify).is_err());
+    assert!(
+        store
+            .reclassify_session(PARENT, 1, &BTreeSet::new(), &mut classify)
+            .is_err()
+    );
     store
         .db
         .execute_batch(
@@ -1535,7 +1587,7 @@ fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
         )
         .unwrap();
     let error = store
-        .reclassify_session(PARENT, 8192, &mut classify)
+        .reclassify_session(PARENT, 8192, &BTreeSet::new(), &mut classify)
         .unwrap_err();
     assert!(
         error
@@ -1552,7 +1604,7 @@ fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
         .unwrap();
 
     let revision = store
-        .reclassify_session(PARENT, 8192, &mut classify)
+        .reclassify_session(PARENT, 8192, &BTreeSet::new(), &mut classify)
         .unwrap()
         .unwrap();
     let query = Query::parse(&json!({"period":"today"}), cutoff).unwrap();
@@ -1584,7 +1636,7 @@ fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
     };
     assert!(
         store
-            .reclassify_session(PARENT, 8192, &mut classify)
+            .reclassify_session(PARENT, 8192, &BTreeSet::new(), &mut classify)
             .unwrap()
             .is_none()
     );
@@ -1594,7 +1646,7 @@ fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
     conflict.relay_id = "unverified-relay".into();
     evidence.records = vec![request, conflict];
     let next = store
-        .reclassify_session(PARENT, 8192, |events, aliases| {
+        .reclassify_session(PARENT, 8192, &BTreeSet::new(), |events, aliases| {
             evidence.attribute_with_cache(events, &mut BTreeMap::new(), aliases, &proof_db);
             Ok(())
         })
@@ -1644,7 +1696,7 @@ fn append_retracts_only_nearby_proofs_in_the_same_transaction_as_the_new_count()
         Ok(())
     };
     store
-        .reclassify_session(PARENT, 8192, proof)
+        .reclassify_session(PARENT, 8192, &BTreeSet::new(), proof)
         .unwrap()
         .unwrap();
     writeln!(
@@ -1659,7 +1711,7 @@ fn append_retracts_only_nearby_proofs_in_the_same_transaction_as_the_new_count()
     assert_eq!(distant[0].provider, "relay-proof");
     assert_ne!(distant[1].provider, "relay-proof");
     store
-        .reclassify_session(PARENT, 8192, proof)
+        .reclassify_session(PARENT, 8192, &BTreeSet::new(), proof)
         .unwrap()
         .unwrap();
 

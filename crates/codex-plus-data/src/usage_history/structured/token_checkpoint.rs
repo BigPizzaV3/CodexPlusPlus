@@ -158,6 +158,8 @@ struct Checkpoint {
     previous: Option<Counter>,
     previous_cache_accounting: Option<CacheAccounting>,
     invalid_counts: bool,
+    #[serde(default)]
+    malformed_token_counts: usize,
     identity_conflict: bool,
     continuation: bool,
     history_base: Option<([u8; 16], u64, u64)>,
@@ -213,6 +215,7 @@ impl Checkpoint {
                 previous: state.previous.map(Counter),
                 previous_cache_accounting: state.previous_cache_accounting,
                 invalid_counts: state.invalid_counts,
+                malformed_token_counts: state.malformed_token_counts,
                 identity_conflict: state.identity_conflict,
                 continuation: state.continuation,
                 history_base: state
@@ -254,6 +257,7 @@ impl Checkpoint {
             previous: self.previous.map(|value| value.0),
             previous_cache_accounting: self.previous_cache_accounting,
             invalid_counts: self.invalid_counts,
+            malformed_token_counts: self.malformed_token_counts,
             identity_conflict: self.identity_conflict,
             continuation: self.continuation,
             history_base: self

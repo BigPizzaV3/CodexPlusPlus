@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(super) fn links(path: &Path, state: &FileState) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
@@ -760,18 +760,37 @@ impl Store {
         &mut self,
         session: &str,
         input_limit: usize,
+        scoped_count_gaps: &BTreeSet<PathBuf>,
         classify: impl FnOnce(&mut [UsageEvent], &BTreeMap<String, String>) -> Result<()>,
     ) -> Result<Option<i64>> {
         let read = self.db.transaction()?;
         let base = revision(&read)?;
-        let complete = read.query_row(
+        let eligible = read.query_row(
             "SELECT EXISTS(SELECT 1 FROM token_coverage WHERE revision = ?1
-                           AND pending_sources = 0 AND issues = 0)",
-            [base],
+                           AND pending_sources = 0 AND issues = ?2 AND NOT maintenance_blocked)",
+            params![base, scoped_count_gaps.len()],
             |row| row.get::<_, bool>(0),
         )?;
-        if !complete {
+        if !eligible {
             return Ok(None);
+        }
+        if !scoped_count_gaps.is_empty() {
+            let mut related = read.prepare_cached(
+                "WITH RECURSIVE component(id, link) AS (
+                    SELECT NULL, ?1
+                    UNION SELECT NULL, own.link FROM component
+                        JOIN token_source_links own ON own.source_id = component.id
+                    UNION SELECT neighbor.source_id, NULL FROM component
+                        JOIN token_source_links neighbor ON neighbor.link = component.link
+                 )
+                 SELECT source FROM component JOIN token_sources s ON s.id = component.id",
+            )?;
+            let mut rows = related.query([format!("s:{session}")])?;
+            while let Some(row) = rows.next()? {
+                if scoped_count_gaps.contains(&decode_path(row.get(0)?)?) {
+                    return Ok(None);
+                }
+            }
         }
         let scope = Self::scope(&read, &BTreeMap::new())?;
         let canonical = RequestSessionAliases::new(&scope.aliases);

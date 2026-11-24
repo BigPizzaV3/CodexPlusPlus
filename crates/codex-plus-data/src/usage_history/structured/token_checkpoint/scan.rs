@@ -4,7 +4,7 @@ use super::{
 };
 use crate::usage_history::structured::{discover, index_budget::Budget};
 use chrono::NaiveDate;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 const SOURCES_PER_ROUND: usize = 64;
@@ -19,6 +19,7 @@ pub(super) struct Scan {
     deferred: Option<SourceReader>,
     rescan: bool,
     issues: usize,
+    scoped_count_gaps: BTreeSet<PathBuf>,
     maintenance_day: Option<NaiveDate>,
     details_pending: bool,
     activity_pending: bool,
@@ -34,6 +35,10 @@ pub(super) struct Report {
 }
 
 impl Scan {
+    pub(super) fn scoped_count_gaps(&self) -> &BTreeSet<PathBuf> {
+        &self.scoped_count_gaps
+    }
+
     fn maintain(&mut self, store: &mut Store, cutoff: NaiveDate) -> anyhow::Result<()> {
         if self.maintenance_day.is_none_or(|day| day < cutoff) {
             store.advance_retention(cutoff)?;
@@ -70,6 +75,7 @@ impl Scan {
         let mut errors = Vec::new();
         if self.active.is_none() && self.remaining.is_empty() && self.missing.is_empty() {
             self.issues = 0;
+            self.scoped_count_gaps.clear();
             self.more_missing = false;
             let paths = discover(home, !self.rescan, &mut self.issues);
             if self.issues == 0 {
@@ -103,6 +109,9 @@ impl Scan {
                     let Some(path) = self.remaining.pop_front() else {
                         // 先摄取完整的新来源，再处理旧路径，避免归档移动产生用量空窗。
                         if self.issues != 0 || self.deferred.is_some() {
+                            if !self.missing.is_empty() || self.more_missing {
+                                self.scoped_count_gaps.clear();
+                            }
                             self.missing.clear();
                             self.more_missing = false;
                             break;
@@ -149,7 +158,14 @@ impl Scan {
                 provider_names,
                 reconciliation_limit,
             ) {
-                Ok(true) => self.issues += usize::from(reader.has_count_gap()),
+                Ok(true) => {
+                    if reader.has_only_malformed_token_counts() {
+                        self.scoped_count_gaps.insert(reader.source);
+                        self.issues += 1;
+                    } else {
+                        self.issues += usize::from(reader.has_count_gap());
+                    }
+                }
                 Ok(false)
                     if reader.has_open_reader()
                         && allowance != (budget.read_left, budget.source_left) =>

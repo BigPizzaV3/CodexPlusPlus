@@ -143,8 +143,11 @@ impl Runtime {
         let index = &mut self.evidence;
         let mut failure = None;
         for session in sessions.iter().cycle().skip(offset).take(count) {
-            let result =
-                store.reclassify_session(session, RECONCILIATION_BYTES, |events, aliases| {
+            let result = store.reclassify_session(
+                session,
+                RECONCILIATION_BYTES,
+                self.scan.scoped_count_gaps(),
+                |events, aliases| {
                     ensure!(
                         index.native_evidence.observe_count_conflicts(events, true),
                         "native count evidence exceeds capacity"
@@ -175,7 +178,8 @@ impl Runtime {
                     );
                     index.native_evidence.apply_count_conflicts(events);
                     Ok(())
-                });
+                },
+            );
             if let Err(error) = result {
                 failure.get_or_insert(error);
             }
@@ -213,7 +217,10 @@ impl Runtime {
             RECONCILIATION_BYTES,
         );
         state.failed_sources = report.errors.len();
-        let complete = report.complete;
+        let can_classify = report.complete
+            || (report.pending_sources == 0
+                && report.issues != 0
+                && report.issues == self.scan.scoped_count_gaps().len());
         if let Some(error) = report.maintenance_error {
             return Err(error.context("maintaining usage index"));
         }
@@ -226,7 +233,7 @@ impl Runtime {
         }) {
             return Err(error.context("writing usage index"));
         }
-        Ok(complete)
+        Ok(can_classify)
     }
 }
 
@@ -378,7 +385,7 @@ mod tests {
     }
 
     #[test]
-    fn late_gateway_attribution_is_committed_by_the_runtime_and_survives_restart() {
+    fn late_gateway_attribution_with_an_unrelated_count_gap_survives_restart() {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().join("home");
         fs::create_dir_all(home.join("sessions")).unwrap();
@@ -405,6 +412,15 @@ mod tests {
             format!("{head}\n{context}\n{event}\n"),
         )
         .unwrap();
+        let mut unrelated = head;
+        unrelated["payload"]["id"] = json!("00000000-0000-4000-8000-000000000002");
+        let mut malformed = event;
+        malformed["payload"]["info"]["total_token_usage"]["input_tokens"] = json!("invalid");
+        fs::write(
+            home.join("sessions/rollout-02.jsonl"),
+            format!("{unrelated}\n{malformed}\n"),
+        )
+        .unwrap();
         let request = json!({"period":"today","includeSessionCursors":true});
         let query = Query::parse(&request, now.date_naive()).unwrap();
         let mut worker = Runtime::new(storage.clone(), settings.clone());
@@ -412,6 +428,8 @@ mod tests {
             .update_with_request_log(&home, &request_log)
             .read(&storage, &query, &request, None, false);
         assert_eq!(before["days"][0]["usage"]["totalTokens"], 110);
+        assert_eq!(before["scan"]["malformedRecords"], 1);
+        assert_eq!(before["countStatus"]["complete"], false);
         let row = json!({"id":"test-proof","threadId":session,"model":"gpt-fixture","upstreamModel":"gpt-fixture",
             "relayId":"fixture-relay","relayName":"Fixture Relay","success":true,"state":"success",
             "statusCode":200,"timestampMs":now.timestamp_millis(),"startedAtMs":now.timestamp_millis()-100,
