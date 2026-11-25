@@ -605,7 +605,6 @@ fn fixed_schema_rejects_unknown_fields_counts_non_uuid_ids_and_oversized_payload
         ("/entry/core/sessions/0/summary/calls", json!(2)),
         ("/entry/core/sessions/0/sessionId", json!("../home")),
         ("/entry/core/pendingLiveEvents", json!(1)),
-        ("/entry/core/all/models/0/model", json!("x".repeat(257))),
         ("/entry/date", json!("2026-02-30")),
     ] {
         let mut value = base.clone();
@@ -615,12 +614,6 @@ fn fixed_schema_rejects_unknown_fields_counts_non_uuid_ids_and_oversized_payload
     let mut mismatched = base.clone();
     mismatched["date"] = json!("2026-11-03");
     bad.push(mismatched);
-    let mut too_many = base.clone();
-    too_many["entry"]["core"]["sessions"] = json!(vec![
-        base["entry"]["core"]["sessions"][0].clone();
-        MAX_SESSIONS + 1
-    ]);
-    bad.push(too_many);
     let mut too_large = base.clone();
     too_large["entry"]["detail"] = json!("x".repeat(MAX_DETAIL_BYTES + 1));
     bad.push(too_large);
@@ -633,6 +626,19 @@ fn fixed_schema_rejects_unknown_fields_counts_non_uuid_ids_and_oversized_payload
             .count(),
         0
     );
+}
+
+#[test]
+fn archive_round_trips_more_than_4096_session_aliases_within_the_payload_budget() {
+    let fixture = Fixture::new();
+    let mut value = entry(TODAY, "opaque");
+    for n in 2..=4097 {
+        let alias = format!("00000000-0000-4000-8000-{n:012x}");
+        value["core"]["aliases"][alias] = json!(SESSION);
+    }
+    let result = fixture.call(&request(value.clone(), None));
+    assert_eq!(result["status"], "ok");
+    assert_eq!(fixture.read(TODAY)["entry"]["core"], value["core"]);
 }
 
 #[test]
@@ -675,9 +681,12 @@ fn declared_optional_classification_fields_round_trip_without_promoting_them_to_
     let mut value = entry(TODAY, "not parsed or executed");
     value["core"]["sourceAccountingFingerprint"] = json!("consumer supplied");
     for summary in [&mut value["core"]["all"]] {
+        summary["models"][0]["model"] = json!("模型".repeat(200));
         summary["models"][0]["modelInferred"] = json!(true);
         summary["models"][0]["inferredModelTokens"] = json!(15);
         let row = &mut summary["breakdowns"][0];
+        row["model"] = json!("模型".repeat(200));
+        row["provider"] = json!("provider".repeat(80));
         for key in [
             "modelConflict",
             "providerConflict",
@@ -690,13 +699,14 @@ fn declared_optional_classification_fields_round_trip_without_promoting_them_to_
             row[key] = json!(15);
         }
         for key in ["providerName", "providerSource", "modelSource"] {
-            row[key] = json!("consumer supplied");
+            row[key] = json!("consumer supplied".repeat(32));
         }
     }
     let stored = fixture.call(&request(value.clone(), None));
     assert_eq!(stored["status"], "ok");
     assert_eq!(stored["entry"]["core"], value["core"]);
     assert_eq!(stored["entry"]["detail"], value["detail"]);
+    assert_eq!(fixture.read(TODAY)["entry"]["core"], value["core"]);
 }
 
 #[test]

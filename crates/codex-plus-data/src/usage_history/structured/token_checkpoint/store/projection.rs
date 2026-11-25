@@ -6,7 +6,7 @@ use crate::usage_history::structured::token_checkpoint::{
 };
 use crate::usage_history::structured::{
     AttributionScope, ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index,
-    MAX_ACTIVITY, Query, RequestSessionAliases, Snapshot, UsageEvent, native_endpoints,
+    MAX_ACTIVITY, Query, RequestSessionAliases, SessionModelObservation, Snapshot, UsageEvent, native_endpoints,
     ordered_scope_ids, segments, terminal_receipts, unknown_model, unknown_provider,
     usage_provider,
 };
@@ -2678,6 +2678,7 @@ impl Store {
             session: String,
             identity_conflict: bool,
             scope_parent_candidates: BTreeMap<String, HashSet<Option<String>>>,
+            model_observations: HashMap<String, SessionModelObservation>,
             model: String,
             provider: String,
             role: String,
@@ -2688,6 +2689,7 @@ impl Store {
             read.prepare("SELECT source,checkpoint FROM token_sources ORDER BY source")?;
         let mut rows = sources.query([])?;
         let mut candidates = Vec::new();
+        let mut observations = Vec::new();
         while let Some(row) = rows.next()? {
             let mut saved: ScopeCheckpoint = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
             if saved.identity_conflict || saved.session.is_empty() {
@@ -2708,6 +2710,7 @@ impl Store {
             if let Some(parents) = saved.scope_parent_candidates.remove(&saved.session) {
                 candidates.push((saved.session.clone(), parents));
             }
+            observations.extend(saved.model_observations);
             let info = scope
                 .session_info
                 .entry(saved.session.clone())
@@ -2724,6 +2727,11 @@ impl Store {
         for session in &scope.sessions {
             scope.aliases.insert(session.clone(), session.clone());
         }
+        scope.apply_session_models(
+            &RequestSessionAliases::new(&scope.aliases),
+            observations.iter().map(|(session, model)| (session, model)),
+            provider_names,
+        );
         scope.collect_scope_candidates(
             candidates
                 .iter()

@@ -710,7 +710,7 @@ impl ProviderCache {
             let now = Local::now().timestamp_millis();
             let today = now.div_euclid(86_400_000) * 86_400_000;
             for row in rows {
-                if row.id.is_empty() || row.id.len() > 256 {
+                if row.id.is_empty() {
                     continue;
                 }
                 let (old, extra, denied): (Option<String>, Option<String>, bool) = previous
@@ -736,7 +736,7 @@ impl ProviderCache {
                 };
                 let rejected = RequestEvidence {
                     id: row.id.clone(),
-                    thread_id: row.thread_id.chars().take(256).collect(),
+                    thread_id: row.thread_id.clone(),
                     timestamp_ms: at,
                     ..Default::default()
                 };
@@ -910,7 +910,7 @@ impl ProviderCache {
         let mut current = BTreeMap::<&str, std::borrow::Cow<RequestEvidence>>::new();
         let mut rejected = HashSet::new();
         for row in rows {
-            if row.id.is_empty() || row.id.len() > 256 {
+            if row.id.is_empty() {
                 continue;
             }
             let prior = current

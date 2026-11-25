@@ -200,6 +200,8 @@ struct Checkpoint {
     skipping: bool,
     #[serde(default)]
     large_meter_checked: bool,
+    #[serde(default)]
+    legacy_identity_prefix: Option<u64>,
 }
 
 impl Checkpoint {
@@ -259,6 +261,7 @@ impl Checkpoint {
                 issues: state.issues,
                 skipping: state.skipping,
                 large_meter_checked: !state.recheck_large_meter,
+                legacy_identity_prefix: Some(state.legacy_identity_prefix),
             },
         )
     }
@@ -272,6 +275,7 @@ impl Checkpoint {
             offset,
             resume_pending: self.resume_pending || recheck_large_meter,
             recheck_large_meter,
+            legacy_identity_prefix: self.legacy_identity_prefix.unwrap_or(offset),
             session: self.session,
             model: self.model,
             model_unavailable: self.model_unavailable,

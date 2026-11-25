@@ -337,16 +337,7 @@ impl RequestEvidence {
     }
 
     fn valid_request(&self) -> bool {
-        let strings = [
-            &self.id,
-            &self.thread_id,
-            &self.model,
-            &self.upstream_model,
-            &self.relay_id,
-            &self.relay_name,
-        ];
-        if strings.iter().any(|s| s.len() > 256)
-            || self.id.is_empty()
+        if self.id.is_empty()
             || self.thread_id.is_empty()
             || !self.agent.is_empty()
             || !self.success
@@ -370,7 +361,7 @@ impl RequestEvidence {
             || self
                 .final_response_id
                 .as_ref()
-                .is_some_and(|id| id.is_empty() || id.len() > 256)
+                .is_some_and(String::is_empty)
         {
             return false;
         }
@@ -669,12 +660,7 @@ impl RequestEvidenceCache {
                             ..Default::default()
                         })
                 });
-            timed_rows &= record.as_ref().is_some_and(|r| {
-                !r.id.is_empty()
-                    && r.id.len() <= 256
-                    && r.thread_id.len() <= 256
-                    && r.timestamp_ms > 0
-            });
+            timed_rows &= record.as_ref().is_some_and(|r| !r.id.is_empty() && r.timestamp_ms > 0);
             if let Some(record) = record {
                 self.records.push(record);
             }
@@ -893,7 +879,7 @@ impl RequestEvidenceCache {
         let mut requests = BTreeMap::new();
         let mut blocked = self.captured_rejected.clone();
         for record in &self.records {
-            if record.id.is_empty() || record.id.len() > 256 {
+            if record.id.is_empty() {
                 continue;
             }
             if !record.valid_capture()
@@ -1811,8 +1797,9 @@ struct FileState {
     retained_charge: usize,
     pending: index_budget::PendingLine,
     oversized: Option<oversized::Spool>,
-    projected_line_bytes: Option<u64>,
     recheck_large_meter: bool,
+    legacy_identity_prefix: u64,
+    identity_probe: Option<bool>,
     skipping: bool,
     skipped_ordinal: Option<u64>,
     nul_padding_end: Option<u64>,
@@ -2497,8 +2484,7 @@ impl LegacyEvidenceCache {
                 &record.provider,
             ]
             .iter()
-            .all(|s| !s.trim().is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
-                && record.provider_name.len() <= 256
+            .all(|s| !s.trim().is_empty() && !s.chars().any(char::is_control))
                 && !record.provider_name.chars().any(char::is_control)
                 && record.provider.trim() == record.provider
                 && record.model.trim() == record.model
@@ -3251,70 +3237,13 @@ impl Index {
             &self.provider_cache,
         );
         let aliases = RequestSessionAliases::new(&snapshot.aliases);
-        let mut observations =
-            HashMap::<String, (&SessionModelObservation, bool, bool, bool)>::new();
-        let mut unavailable_session_models = HashSet::new();
-        for state in self
-            .files
-            .values()
-            .filter(|state| !state.identity_conflict && !state.session.is_empty())
-        {
-            for (session, observation) in &state.model_observations {
-                let Some(session) = aliases.resolve(session) else {
-                    if observation.had_unavailable {
-                        unavailable_session_models.insert(session.clone());
-                    }
-                    continue;
-                };
-                let entry =
-                    observations
-                        .entry(session)
-                        .or_insert((observation, false, false, false));
-                entry.1 |= observation.had_unavailable;
-                entry.3 |= observation.unordered;
-                if observation.at > entry.0.at {
-                    entry.0 = observation;
-                    entry.2 = false;
-                } else if observation.at == entry.0.at
-                    && (observation.model != entry.0.model
-                        || observation.provider != entry.0.provider
-                        || observation.role != entry.0.role
-                        || observation.unavailable != entry.0.unavailable)
-                {
-                    entry.2 = true;
-                }
-            }
-        }
-        for (session, (latest, had_unavailable, tied, unordered)) in observations {
-            if !had_unavailable {
-                continue;
-            }
-            if latest.unavailable || unknown_model(&latest.model) || tied || unordered {
-                if let Some(info) = snapshot.session_info.get_mut(&session) {
-                    info["model"] = json!("");
-                    if tied || unordered {
-                        info["provider"] = json!("");
-                        info["role"] = json!("unknown");
-                    } else {
-                        info["provider"] = json!(usage_provider(
-                            &latest.model,
-                            &latest.provider,
-                            &self.provider_names
-                        ));
-                        info["role"] = json!(latest.role);
-                    }
-                }
-                unavailable_session_models.insert(session);
-            } else if let Some(info) = snapshot.session_info.get_mut(&session) {
-                info["model"] = json!(latest.model);
-                info["provider"] = json!(usage_provider(
-                    &latest.model,
-                    &latest.provider,
-                    &self.provider_names
-                ));
-                info["role"] = json!(latest.role);
-            }
-        }
+        let unavailable_session_models = snapshot.apply_session_models(
+            &aliases,
+            self.files.values()
+                .filter(|state| !state.identity_conflict && !state.session.is_empty())
+                .flat_map(|state| &state.model_observations),
+            &self.provider_names,
+        );
         self.request_evidence.supplement_missing_session_models(
             &mut snapshot.session_info,
             &unavailable_session_models,
@@ -3665,13 +3594,15 @@ impl FileState {
                 if let Some(spool) = &mut self.oversized
                     && spool.complete
                 {
+                    let physical_bytes = spool.bytes;
                     match spool.finish(path, self.offset, stamp.2, &self.session, &self.turn)? {
                         oversized::Projected::Line(line) => {
-                            if !self.pending.try_extend(&line) {
+                            if budget.event_blocked(self, &line) {
                                 return Ok(false);
                             }
-                            self.projected_line_bytes = Some(spool.bytes);
-                            self.retained_charge += self.pending.capacity();
+                            // 投影已经只剩计量字段，直接消费并保留原始字节范围。
+                            self.accept_record(&line, cutoff, physical_bytes);
+                            meter.refresh(self, index_budget::CURSOR_BYTES);
                         }
                         oversized::Projected::Skipped {
                             affects_usage,
@@ -3859,7 +3790,6 @@ impl FileState {
                 self.pending.clear();
             }
         }
-        self.projected_line_bytes = None;
         self.skipping = false;
         meter.refresh(self, index_budget::CURSOR_BYTES);
         true
@@ -3871,7 +3801,6 @@ impl FileState {
                 .oversized
                 .as_ref()
                 .map(|spool| spool.bytes)
-                .or(self.projected_line_bytes)
                 .unwrap_or(self.pending.len() as u64)
     }
 
@@ -3887,6 +3816,10 @@ impl FileState {
     }
 
     fn accept(&mut self, line: &[u8], cutoff: NaiveDate) {
+        self.accept_record(line, cutoff, line.len() as u64);
+    }
+
+    fn accept_record(&mut self, line: &[u8], cutoff: NaiveDate, line_bytes: u64) {
         if self.identity_conflict {
             return;
         }
@@ -3899,7 +3832,6 @@ impl FileState {
             #[serde(borrow)]
             payload: &'a RawValue,
         }
-        let line_bytes = self.projected_line_bytes.unwrap_or(line.len() as u64);
         let line_start = self.offset.checked_sub(line_bytes);
         let preceding_padding = self.nul_padding_end.take();
         let Ok(envelope) = serde_json::from_slice::<Envelope>(line) else {
@@ -3978,6 +3910,9 @@ impl FileState {
                     date,
                 )
             {
+                if let Some(found) = &mut self.identity_probe {
+                    *found |= receipt.terminal_response.as_ref().is_some_and(|id| id.len() > 256);
+                }
                 self.record_token_day(date);
                 if date >= cutoff {
                     if self.events.len() >= MAX_EVENTS {
@@ -4006,6 +3941,9 @@ impl FileState {
             return;
         }
         // 忽略消息/推理正文，而不是把多 MB 的文本分配成 Value。
+        if envelope.kind == "response_item" && self.identity_probe.is_some() {
+            return;
+        }
         if envelope.kind == "response_item" {
             let Ok(item) =
                 serde_json::from_str::<execution_observations::Item>(envelope.payload.get())
@@ -4089,6 +4027,12 @@ impl FileState {
             self.issues += 1;
             return;
         };
+        if line_bytes > MAX_LINE as u64 && let Some(found) = &mut self.identity_probe {
+            let kind = payload["type"].as_str().unwrap_or("");
+            *found |= matches!(envelope.kind, "session_meta" | "turn_context")
+                || envelope.kind == "event_msg" && (kind.starts_with("thread_settings")
+                    || matches!(kind, "task_started" | "turn_started"));
+        }
         if envelope.kind == "session_meta" {
             let id = payload["id"]
                 .as_str()
@@ -4204,6 +4148,19 @@ impl FileState {
         let timestamp = time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let date = time.with_timezone(&Local).date_naive();
         if envelope.kind == "turn_context" || event_type.starts_with("thread_settings") {
+            let updated_provider = payload["model_provider"]
+                .as_str()
+                .or_else(|| payload["modelProvider"].as_str())
+                .or_else(|| payload["thread_settings"]["model_provider"].as_str())
+                .or_else(|| payload["thread_settings"]["modelProvider"].as_str())
+                .filter(|provider| !provider.is_empty());
+            let updated_model = payload["model"]
+                .as_str()
+                .or_else(|| payload["thread_settings"]["model"].as_str());
+            if let Some(found) = &mut self.identity_probe {
+                *found |= updated_model.is_some_and(|s| s.len() > 256)
+                    || updated_provider.is_some_and(|s| s.len() > 200);
+            }
             let observation = {
                 let (session, role, provider, model, model_unavailable, turn, ambiguous) =
                     if inherited {
@@ -4228,26 +4185,12 @@ impl FileState {
                             false,
                         )
                     };
-                let updated_provider = payload["model_provider"]
-                    .as_str()
-                    .or_else(|| payload["modelProvider"].as_str())
-                    .or_else(|| payload["thread_settings"]["model_provider"].as_str())
-                    .or_else(|| payload["thread_settings"]["modelProvider"].as_str())
-                    .filter(|provider| !provider.is_empty() && provider.len() <= 200);
                 if let Some(value) = updated_provider {
                     *provider = value.to_owned();
                 }
-                let updated_model = payload["model"]
-                    .as_str()
-                    .or_else(|| payload["thread_settings"]["model"].as_str());
                 if let Some(value) = updated_model {
-                    if value.len() <= 256 {
-                        *model = value.to_owned();
-                        *model_unavailable = false;
-                    } else {
-                        model.clear();
-                        *model_unavailable = true;
-                    }
+                    *model = value.to_owned();
+                    *model_unavailable = false;
                 }
                 if let Some(value) = payload["turn_id"].as_str() {
                     *turn = value.to_owned();
@@ -4705,6 +4648,58 @@ fn usage_provider<'a>(
 }
 
 impl Snapshot {
+    fn apply_session_models<'a>(
+        &mut self,
+        aliases: &RequestSessionAliases,
+        source_observations: impl Iterator<Item = (&'a String, &'a SessionModelObservation)>,
+        provider_names: &BTreeMap<String, String>,
+    ) -> HashSet<String> {
+        let mut observations = HashMap::new();
+        let mut unavailable = HashSet::new();
+        for (session, observation) in source_observations {
+            let Some(session) = aliases.resolve(session) else {
+                if observation.had_unavailable {
+                    unavailable.insert(session.clone());
+                }
+                continue;
+            };
+            let (latest, had_unavailable, tied, unordered) = observations
+                .entry(session)
+                .or_insert((observation, false, false, false));
+            *had_unavailable |= observation.had_unavailable;
+            *unordered |= observation.unordered;
+            if observation.at > latest.at {
+                *latest = observation;
+                *tied = false;
+            } else if observation.at == latest.at
+                && (observation.model != latest.model || observation.provider != latest.provider
+                    || observation.role != latest.role || observation.unavailable != latest.unavailable)
+            {
+                *tied = true;
+            }
+        }
+        for (session, (latest, had_unavailable, tied, unordered)) in observations {
+            // 仅有未知型号时沿用已有回退；冲突或时间无序时不能选任一来源。
+            let unknown = unknown_model(&latest.model);
+            if unknown && !had_unavailable && !tied && !unordered {
+                continue;
+            }
+            let ambiguous = tied || unordered;
+            let missing = latest.unavailable || unknown || ambiguous;
+            if let Some(info) = self.session_info.get_mut(&session) {
+                info["model"] = json!(if missing { "" } else { latest.model.as_str() });
+                info["provider"] = if ambiguous { json!("") } else {
+                    json!(usage_provider(&latest.model, &latest.provider, provider_names))
+                };
+                info["role"] = json!(if ambiguous { "unknown" } else { latest.role.as_str() });
+            }
+            if missing {
+                unavailable.insert(session);
+            }
+        }
+        unavailable
+    }
+
     fn collect_scope_parents<'a>(&mut self, files: impl Iterator<Item = &'a FileState>) {
         self.collect_scope_candidates(files.filter_map(|file| {
             file.scope_parent_candidates

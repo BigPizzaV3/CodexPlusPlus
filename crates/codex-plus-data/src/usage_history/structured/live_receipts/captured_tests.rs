@@ -16,6 +16,40 @@ fn check(root: &Path, records: &[RequestEvidence], input: &Value) -> Value {
 }
 
 #[test]
+fn long_identifiers_survive_capture_reopen_and_late_competition() {
+    let (root, mut cache, at) = fixture();
+    let mut row = request(&"request".repeat(100), at, -10, 10, 2, 3);
+    row.thread_id = "session".repeat(70);
+    row.model = "模型".repeat(130);
+    row.upstream_model = row.model.clone();
+    row.relay_id = "supplier".repeat(64);
+    row.relay_name = "供应商".repeat(64);
+    row.final_response_id = Some("response".repeat(80));
+    let mut input = json!([receipt(&"receipt".repeat(100), at, 10, 2, 3)]);
+    input[0]["sessionId"] = json!(row.thread_id);
+    cache.capture_proxy(std::slice::from_ref(&row)).unwrap();
+    drop(cache);
+    let proof = check(root.path(), &[], &input);
+    assert_eq!(proof[0]["id"], input[0]["id"]);
+    assert_eq!(proof[0]["model"], row.upstream_model);
+    assert_eq!(proof[0]["provider"], row.relay_id);
+    assert_eq!(proof[0]["providerName"], row.relay_name);
+    assert_eq!(proof[0]["requestIds"], json!([row.id]));
+    for key in ["model", "provider", "requestIds", "requestSignatures"] {
+        input[0][key] = proof[0][key].clone();
+    }
+    assert_eq!(check(root.path(), &[], &input), proof);
+    let mut cache = provider_cache::ProviderCache::default();
+    cache.open(root.path(), Local::now().date_naive() - Days::days(1)).unwrap();
+    row.id.push('2');
+    row.final_response_id = None;
+    row.usage = None;
+    cache.capture_proxy(&[row]).unwrap();
+    drop(cache);
+    assert_eq!(check(root.path(), &[], &input)[0]["rejected"], true);
+}
+
+#[test]
 fn cache_only_receipts_survive_rotation_without_scanned_events_or_writes() {
     let (root, mut cache, at) = fixture();
     let record = request("one", at, 97, 10, 2, 3);

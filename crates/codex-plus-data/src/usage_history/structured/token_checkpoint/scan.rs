@@ -158,8 +158,8 @@ impl Scan {
             }
             if self.issues == 0 {
                 match store.sealed_queued_sources(self.remaining.make_contiguous()) {
-                    Ok((sealed, gaps, growing)) => {
-                        for (path, &stamp) in &sealed {
+                    Ok((sealed, gaps, growing, unchecked)) => {
+                        for (path, &stamp) in sealed.iter().chain(&unchecked) {
                             if path.starts_with(&sessions_dir)
                                 && path.extension().is_some_and(|ext| ext == "jsonl")
                                 && stamp.0 > 0 && !gaps.contains(path)
@@ -452,7 +452,7 @@ impl Scan {
                 .chain(&self.revisiting)
                 .chain(&self.deferred)
                 .chain(&retry);
-            let mut slot_budget = budget.checkpoint_slot(parked.map(|r| &r.state));
+            let mut slot_budget = budget.checkpoint_slot(parked.flat_map(|r| r.states()));
             if revisit {
                 slot_budget.read_left = slot_budget.read_left.min(live_bytes);
                 slot_budget.source_left = slot_budget.source_left.min(live_source_bytes);

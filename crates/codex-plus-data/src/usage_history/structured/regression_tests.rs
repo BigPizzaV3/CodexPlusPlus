@@ -1471,13 +1471,13 @@ fn assert_accounting(snapshot: &Snapshot, count: usize) {
 }
 
 #[test]
-fn model_lengths_are_indexed_and_filtered_by_utf8_bytes() {
+fn long_model_names_are_indexed_and_queryable_after_reopen() {
     let mut fixture = Fixture::new();
     let models = [
         "a".repeat(200),
         "b".repeat(201),
-        "c".repeat(256),
-        format!("{}a", "模".repeat(85)),
+        "c".repeat(640),
+        format!("{}a", "模".repeat(240)),
     ];
     let mut rows = Vec::new();
     for (position, model) in models.iter().enumerate() {
@@ -1503,25 +1503,18 @@ fn model_lengths_are_indexed_and_filtered_by_utf8_bytes() {
             "{phase}"
         );
     }
-    assert!(Query::parse(&json!({"model":"a".repeat(257)}), Local::now().date_naive()).is_none());
-    assert!(
-        Query::parse(
-            &json!({"turnId":"a".repeat(201)}),
-            Local::now().date_naive()
-        )
-        .is_none()
-    );
-    assert!(
-        Query::parse(
-            &json!({"search":"a".repeat(201)}),
-            Local::now().date_naive()
-        )
-        .is_none()
-    );
+    let long = &models[3];
+    let filters = Query::parse(
+        &json!({"turnId":long,"search":long}),
+        Local::now().date_naive(),
+    )
+    .unwrap();
+    assert_eq!(filters.turn_id.as_deref(), Some(long.as_str()));
+    assert_eq!(&filters.search, long);
 }
 
 #[test]
-fn oversized_model_blocks_old_context_evidence_and_duplicate_recovery() {
+fn conflicting_models_stay_ambiguous_when_one_name_is_long() {
     let mut fixture = Fixture::new();
     let oversized = "x".repeat(257);
     let rows = vec![
@@ -1558,12 +1551,15 @@ fn oversized_model_blocks_old_context_evidence_and_duplicate_recovery() {
         assert_eq!(events[0].model, "old-model", "{phase}");
         assert!(events[1].model.is_empty(), "{phase}");
         assert!(events[1].context_conflicts.model, "{phase}");
-        assert_eq!(snapshot.session_info[SESSION]["model"], "", "{phase}");
+        assert_eq!(snapshot.session_info[SESSION]["model"], oversized, "{phase}");
     }
+    fixture.write_segment("rollout-c.jsonl", vec![fixture.context(1_500, "other-model")]);
+    let tied = fixture.snapshot();
+    assert_eq!(tied.session_info[SESSION]["model"], "");
 }
 
 #[test]
-fn oversized_context_recovers_on_a_later_continuation() {
+fn long_model_context_survives_continuation_until_the_next_model_change() {
     let mut fixture = Fixture::new();
     let prefix = fixture.paged_segment(
         SESSION,
@@ -1595,7 +1591,7 @@ fn oversized_context_recovers_on_a_later_continuation() {
         let mut events = snapshot.events.clone();
         events.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
         assert_eq!(events[0].model, "old-model", "{phase}");
-        assert!(events[1].model.is_empty(), "{phase}");
+        assert_eq!(events[1].model, "x".repeat(257), "{phase}");
         assert_eq!(events[2].model, "new-model", "{phase}");
         assert_eq!(
             snapshot.session_info[SESSION]["model"], "new-model",

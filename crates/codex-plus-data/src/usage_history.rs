@@ -429,12 +429,12 @@ impl Query {
         if from.zip(to).is_some_and(|(f, t)| f > t) {
             return None;
         }
-        let text = |name: &str, limit: usize| -> Option<Option<String>> {
+        let text = |name: &str| -> Option<Option<String>> {
             if value[name].is_null() {
                 return Some(None);
             }
             let text = value[name].as_str()?;
-            (text.len() <= limit).then(|| Some(text.to_owned()).filter(|s| !s.is_empty()))
+            Some((!text.is_empty()).then(|| text.to_owned()))
         };
         let session_id = if value["sessionId"].is_null() {
             None
@@ -442,9 +442,6 @@ impl Query {
             Some(normalize_session_id(value["sessionId"].as_str()?)?)
         };
         let search = value["search"].as_str().unwrap_or("").trim().to_lowercase();
-        if search.len() > 200 {
-            return None;
-        }
         let include_session_cursors = match value.get("includeSessionCursors") {
             None => false,
             Some(value) => value.as_bool()?,
@@ -452,9 +449,9 @@ impl Query {
         Some(Self {
             from,
             to,
-            model: text("model", 256)?,
+            model: text("model")?,
             session_id,
-            turn_id: text("turnId", 200)?,
+            turn_id: text("turnId")?,
             search,
             include_session_cursors,
             include_activity: value["includeActivity"] == true,

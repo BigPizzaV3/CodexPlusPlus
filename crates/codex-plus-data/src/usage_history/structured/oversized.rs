@@ -67,7 +67,7 @@ impl Spool {
             &mut original
         };
         let mut json = serde_json::Deserializer::from_reader(BufReader::new(file.take(self.bytes)));
-        let mut record = match Columns::Envelope(session, turn)
+        let mut record = match Columns::Envelope(session)
             .deserialize(&mut json)
             .and_then(|value| {
                 json.end()?;
@@ -80,11 +80,28 @@ impl Spool {
         };
         let terminal = record["type"] == "token_usage_record";
         let event = record["type"] == "event_msg";
+        let context = matches!(
+            record["type"].as_str(),
+            Some("session_meta" | "turn_context")
+        );
         let bad_payload = terminal && record["payload"]["duplicate_terminal"] == true
+            || context && record["payload"]["duplicate_context"] == true
             || event && record["payload"]["duplicate_event_type"] == true;
-        if bad_payload || terminal || event && record["payload"]["type"] == "token_count" {
+        if bad_payload
+            || terminal
+            || context
+            || event
+                && record["payload"]["type"]
+                    .as_str()
+                    .is_some_and(projected_event)
+        {
             if bad_payload {
                 record["payload"] = Value::Bool(false);
+            } else if terminal
+                && record["payload"]["turn_id"].is_string()
+                && record["payload"]["turn_id"] != turn
+            {
+                record["payload"]["turn_id"] = Value::Bool(false);
             }
             let mut line = serde_json::to_vec(&record)?;
             line.push(b'\n');
@@ -108,10 +125,16 @@ impl Spool {
 
 #[derive(Clone, Copy)]
 enum Columns<'a> {
-    Envelope(&'a str, &'a str),
-    Payload(&'a str, &'a str),
+    Envelope(&'a str),
+    Payload(&'a str),
     Info,
     Counts,
+    HistoryBase,
+    Source,
+    Subagent,
+    ThreadSpawn,
+    ThreadSettings,
+    Text,
     Kind,
     Timestamp,
     Id(&'a str),
@@ -171,6 +194,12 @@ impl<'de> Visitor<'de> for Columns<'_> {
                 Err(_) => Value::from(""),
             },
             Self::Id(expected) if s == expected => Value::from(s),
+            Self::Text => Value::from(s),
+            Self::Source => Value::from(if s.to_ascii_lowercase().contains("subagent") {
+                "subagent"
+            } else {
+                ""
+            }),
             Self::Response if super::terminal_receipts::valid_response_id(s) => Value::from(s),
             _ => Value::Bool(false),
         })
@@ -182,7 +211,15 @@ impl<'de> Visitor<'de> for Columns<'_> {
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Value, M::Error> {
         if !matches!(
             self,
-            Self::Envelope(_, _) | Self::Payload(_, _) | Self::Info | Self::Counts
+            Self::Envelope(_)
+                | Self::Payload(_)
+                | Self::Info
+                | Self::Counts
+                | Self::HistoryBase
+                | Self::Source
+                | Self::Subagent
+                | Self::ThreadSpawn
+                | Self::ThreadSettings
         ) {
             while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
             return Ok(Value::Bool(false));
@@ -191,24 +228,37 @@ impl<'de> Visitor<'de> for Columns<'_> {
         while let Some(key) = map.next_key::<String>()? {
             let field = (self, key.as_str());
             let value = match field {
-                (Self::Envelope(session, turn), "payload") => {
-                    map.next_value_seed(Self::Payload(session, turn))?
+                (Self::Envelope(session), "payload") => {
+                    map.next_value_seed(Self::Payload(session))?
                 }
-                (Self::Payload(_, _), "info") => map.next_value_seed(Self::Info)?,
-                (Self::Payload(_, _), "usage" | "thread_token_usage")
+                (Self::Payload(_), "info") => map.next_value_seed(Self::Info)?,
+                (Self::Payload(_), "usage" | "thread_token_usage")
                 | (Self::Info, "total_token_usage" | "last_token_usage") => {
                     map.next_value_seed(Self::Counts)?
                 }
-                (Self::Envelope(_, _) | Self::Payload(_, _), "type") => {
+                (Self::Envelope(_) | Self::Payload(_), "type") => {
                     map.next_value_seed(Self::Kind)?
                 }
-                (Self::Envelope(_, _), "timestamp") => map.next_value_seed(Self::Timestamp)?,
-                (Self::Payload(session, _), "thread_id") => {
-                    map.next_value_seed(Self::Id(session))?
+                (Self::Envelope(_), "timestamp") => map.next_value_seed(Self::Timestamp)?,
+                (Self::Payload(session), "thread_id") => map.next_value_seed(Self::Id(session))?,
+                (Self::Payload(_), "history_base") => map.next_value_seed(Self::HistoryBase)?,
+                (Self::Payload(_), "source") => map.next_value_seed(Self::Source)?,
+                (Self::Source, "subagent") => map.next_value_seed(Self::Subagent)?,
+                (Self::Subagent, "thread_spawn") => map.next_value_seed(Self::ThreadSpawn)?,
+                (Self::Payload(_), "thread_settings") => {
+                    map.next_value_seed(Self::ThreadSettings)?
                 }
-                (Self::Payload(_, turn), "turn_id") => map.next_value_seed(Self::Id(turn))?,
-                (Self::Payload(_, _), "response_id") => map.next_value_seed(Self::Response)?,
-                (Self::Envelope(_, _), "ordinal")
+                (Self::Payload(_), "id" | "session_id" | "forked_from_id" | "turn_id")
+                | (Self::Payload(_) | Self::ThreadSpawn, "parent_thread_id")
+                | (
+                    Self::Payload(_) | Self::ThreadSettings,
+                    "model_provider" | "modelProvider" | "model",
+                )
+                | (Self::HistoryBase, "thread_id") => map.next_value_seed(Self::Text)?,
+                (Self::Payload(_), "response_id") => map.next_value_seed(Self::Response)?,
+                (Self::Envelope(_), "ordinal")
+                | (Self::Payload(_), "subagent_history_start_ordinal")
+                | (Self::HistoryBase, "end_ordinal_exclusive" | "end_byte_offset")
                 | (
                     Self::Counts,
                     "input_tokens"
@@ -224,20 +274,25 @@ impl<'de> Visitor<'de> for Columns<'_> {
                 }
             };
             if fields.contains_key(&key) {
-                match field {
-                    (Self::Envelope(_, _), _) => {
-                        return Err(serde::de::Error::custom("duplicate envelope field"));
-                    }
-                    (
-                        Self::Payload(_, _),
-                        "thread_id" | "turn_id" | "response_id" | "usage" | "thread_token_usage",
-                    ) => {
+                if matches!(self, Self::Envelope(_)) {
+                    return Err(serde::de::Error::custom("duplicate envelope field"));
+                }
+                if matches!(self, Self::Payload(_)) {
+                    if matches!(
+                        key.as_str(),
+                        "thread_id" | "turn_id" | "response_id" | "usage" | "thread_token_usage"
+                    ) {
                         fields.insert("duplicate_terminal".into(), Value::Bool(true));
                     }
-                    (Self::Payload(_, _), "type") => {
+                    if key == "type" {
                         fields.insert("duplicate_event_type".into(), Value::Bool(true));
                     }
-                    _ => (),
+                    if !matches!(
+                        key.as_str(),
+                        "thread_id" | "response_id" | "usage" | "thread_token_usage"
+                    ) {
+                        fields.insert("duplicate_context".into(), Value::Bool(true));
+                    }
                 }
             }
             fields.insert(key, value);
@@ -246,14 +301,16 @@ impl<'de> Visitor<'de> for Columns<'_> {
     }
 }
 
-fn relevant_event(kind: &str) -> bool {
+fn projected_event(kind: &str) -> bool {
     kind.starts_with("thread_settings")
+        || matches!(kind, "token_count" | "task_started" | "turn_started")
+}
+
+fn relevant_event(kind: &str) -> bool {
+    projected_event(kind)
         || matches!(
             kind,
-            "token_count"
-                | "task_started"
-                | "turn_started"
-                | "task_complete"
+            "task_complete"
                 | "turn_completed"
                 | "task_failed"
                 | "turn_aborted"
@@ -287,13 +344,13 @@ impl<'de> serde::de::Visitor<'de> for UsagePrefix<'_> {
                 let kind = map.next_value::<String>()?;
                 if self.payload {
                     let relevant = relevant_event(&kind);
-                    self.may_meter.set(kind == "token_count");
+                    self.may_meter.set(projected_event(&kind));
                     self.result.set(Some(relevant));
                     return Ok(relevant);
                 }
                 match kind.as_str() {
                     "session_meta" | "turn_context" | "token_usage_record" => {
-                        self.may_meter.set(kind == "token_usage_record");
+                        self.may_meter.set(true);
                         self.result.set(Some(true));
                         return Ok(true);
                     }
@@ -346,6 +403,10 @@ pub(super) fn inspect(prefix: &[u8]) -> (bool, Option<u64>, bool) {
     );
     (result.get().unwrap_or(true), ordinal.get(), may_meter.get())
 }
+
+#[cfg(test)]
+#[path = "oversized_context_tests.rs"]
+mod context_tests;
 
 #[cfg(test)]
 mod tests {
@@ -415,7 +476,8 @@ mod tests {
                         .collect::<Vec<_>>(),
                 ))
             };
-            assert_eq!(parse("", &"x".repeat(257))?, parse(&big, &big)?);
+            let id = "x".repeat(257);
+            assert_eq!(parse("", &id)?, parse(&big, &id)?, "{row}");
         }
         Ok(())
     }
@@ -432,7 +494,7 @@ mod tests {
         let rows = [
             json!({"type":"session_meta","ordinal":0,"timestamp":at,"payload":{"id":session}}),
             json!({"type":"turn_context","ordinal":1,"timestamp":at,"payload":{"turn_id":"a"}}),
-            json!({"large":big,"payload":{"extra":big,"response_id":"resp","thread_id":session,
+            json!({"large":big,"payload":{"extra":big,"response_id":big,"thread_id":session,
                 "turn_id":"a","usage":usage,"thread_token_usage":usage},"type":"token_usage_record","timestamp":at,"ordinal":2}),
             json!({"type":"event_msg","payload":{"large":big,"type":"token_count","info":{
                 "last_token_usage":usage,"total_token_usage":usage}},"timestamp":"2026-01-02T12:00:01Z","ordinal":3}),
@@ -466,7 +528,7 @@ mod tests {
                 }
             }
             assert_eq!(state.events.len(), 2);
-            assert_eq!(state.events[0].terminal_response.as_deref(), Some("resp"));
+            assert!(state.events[0].terminal_response.as_deref() == Some(big.as_str()));
             assert!(state.events[1].terminal_response.is_none());
             assert_eq!(state.events[1].total, state.events[0].total);
             assert_eq!(state.events[0].rollout_position, Some((2, first, second)));

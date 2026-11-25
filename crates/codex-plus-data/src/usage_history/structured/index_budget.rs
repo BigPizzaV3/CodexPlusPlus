@@ -62,15 +62,6 @@ impl PendingLine {
         *self = Self::default();
     }
 
-    pub(super) fn shrink_to_fit(&mut self) {
-        self.bytes.shrink_to_fit();
-        let capacity = self.bytes.capacity();
-        if capacity < self.reserved {
-            PENDING_BYTES.fetch_sub(self.reserved - capacity, Ordering::AcqRel);
-            self.reserved = capacity;
-        }
-    }
-
     fn reserve(bytes: usize) -> bool {
         PENDING_BYTES
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
@@ -201,7 +192,7 @@ impl Budget {
     }
 
     pub(super) fn accept_line(&self, state: &FileState) -> bool {
-        if self.event_limit_reached(state) && may_record_event(&state.pending) {
+        if self.event_blocked(state, &state.pending) {
             return false;
         }
         let reserve = self.line_reserve(state);
@@ -281,7 +272,7 @@ impl Budget {
         if skips_tool_before_parsing(&state.pending) {
             return false;
         }
-        if self.event_limit_reached(state) && may_record_event(&state.pending) {
+        if self.event_blocked(state, &state.pending) {
             return false;
         }
         self.line_reserve(state)
@@ -290,8 +281,9 @@ impl Budget {
             > self.memory_limit
     }
 
-    fn event_limit_reached(&self, state: &FileState) -> bool {
+    pub(super) fn event_blocked(&self, state: &FileState, line: &[u8]) -> bool {
         self.used.events.saturating_add(state.events.len()) >= self.event_limit
+            && may_record_event(line)
     }
 
     fn line_reserve(&self, state: &FileState) -> usize {
@@ -391,9 +383,8 @@ fn parse_reserve(line: &[u8], skip_activity: bool) -> usize {
             fields
                 .iter()
                 .filter_map(|(_, value)| *value)
-                .map(|value| value.get().len().saturating_add(128))
+                .map(|value| value_parse_reserve(value.get().as_bytes()).saturating_add(128))
                 .sum::<usize>()
-                .saturating_mul(64)
                 .saturating_add(line.len().saturating_mul(2))
                 .saturating_add(LINE_OVERHEAD)
         };
@@ -447,13 +438,16 @@ fn parse_reserve(line: &[u8], skip_activity: bool) -> usize {
     } else {
         return LINE_OVERHEAD;
     }
-    // 字符串正文只需要解码/复制空间；对象、数组仍按容器最坏开销预留。
-    // 全行乘 64 会让不到 1 MiB 的普通工具输出永久等不到解析配额。
+    LINE_OVERHEAD.saturating_add(nested_reserve)
+        .saturating_add(line.len().saturating_mul(2))
+        .saturating_add(value_parse_reserve(line))
+}
+
+// 字符串只需解码和复制空间，对象和数组另计容器开销。
+fn value_parse_reserve(line: &[u8]) -> usize {
     let mut quoted = false;
     let mut escaped = false;
-    let mut reserve = LINE_OVERHEAD
-        .saturating_add(nested_reserve)
-        .saturating_add(line.len().saturating_mul(2));
+    let mut reserve = 0usize;
     for &byte in line {
         reserve = reserve.saturating_add(if quoted { 4 } else { 64 });
         if escaped {

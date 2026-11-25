@@ -55,15 +55,8 @@ impl Receipt {
         };
         (self.timestamp > 0
             && !self.id.is_empty()
-            && self.id.len() <= 512
             && !self.session_id.is_empty()
-            && self.session_id.len() <= 256
-            && self.model.len() <= 256
-            && self.provider.len() <= 256
-            && self
-                .request_ids
-                .iter()
-                .all(|id| !id.is_empty() && id.len() <= 256)
+            && self.request_ids.iter().all(|id| !id.is_empty())
             && counts.cached <= counts.input
             && counts.input.checked_add(counts.output)? > 0
             && self.before.cached <= self.before.input

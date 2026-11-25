@@ -782,7 +782,7 @@ pub(crate) fn final_response_usage(value: &Value) -> Option<FinalResponseUsage> 
     let usage = response.get("usage")?;
     let parsed = usage_from_responses_usage(usage)?;
     let response_id = response.get("id").and_then(Value::as_str)
-        .filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_graphic()))
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_graphic()))
         .map(str::to_owned);
     (parsed.cached_tokens <= parsed.input_tokens
         && parsed.reasoning_tokens <= parsed.output_tokens
@@ -812,7 +812,7 @@ pub(crate) fn converted_final_response_usage(
         return None;
     }
     let response_id = response["id"].as_str()
-        .filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_graphic()))?;
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_graphic()))?;
     Some(FinalResponseUsage { usage, response_id: Some(response_id.to_owned()) })
 }
 
@@ -977,7 +977,8 @@ mod tests {
             "input_tokens":12,"output_tokens":3,"input_tokens_details":{"cached_tokens":0}
         }});
         assert_eq!(final_response_usage(&complete).unwrap().usage.cached_tokens, 0);
-        for (id, expected) in [("resp_ok", Some("resp_ok")), ("", None), ("two words", None), (&"x".repeat(257), None)] {
+        let long = "response".repeat(96);
+        for (id, expected) in [("resp_ok", Some("resp_ok")), ("", None), ("two words", None), (long.as_str(), Some(long.as_str()))] {
             let mut response = complete.clone();
             response["id"] = json!(id);
             assert_eq!(final_response_usage(&response).unwrap().response_id.as_deref(), expected);

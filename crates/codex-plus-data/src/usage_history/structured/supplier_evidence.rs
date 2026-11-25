@@ -112,7 +112,6 @@ struct ModelBinding {
 
 fn text(value: &str) -> bool {
     !value.is_empty()
-        && value.len() <= 256
         && value.trim() == value
         && !value.chars().any(char::is_control)
 }

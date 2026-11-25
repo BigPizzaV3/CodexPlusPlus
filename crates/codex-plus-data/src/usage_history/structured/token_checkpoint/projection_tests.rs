@@ -941,6 +941,184 @@ fn continuation_receipts_require_reconciliation_in_the_incoming_or_prior_batch()
 }
 
 #[test]
+fn legacy_identity_prefix_repairs_zero_issue_rows_and_marks_clean_sources_once() -> anyhow::Result<()> {
+    for affected in ["response", "model", "provider", "unrelated"] {
+        let root = tempfile::tempdir()?;
+        let source = root.path().canonicalize()?.join("rollout-legacy.jsonl");
+        let database = root.path().join("usage.sqlite");
+        let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let long = "x".repeat(310);
+        let context = json!({"type":"turn_context", "ordinal":1, "timestamp":"2026-01-02T12:00:01Z",
+            "payload":{"turn_id":"turn", "model":if affected=="model" {&long} else {"normal"},
+                "model_provider":if affected=="provider" {&long} else {"relay"}}});
+        let second = count(3, 3, 2, true);
+        let info = &second["payload"]["info"];
+        let receipt = json!({"type":"token_usage_record","ordinal":3,"timestamp":"2026-01-02T12:00:03Z",
+            "payload":{"thread_id":PARENT,"turn_id":"turn","response_id":&long,
+                "usage":info["last_token_usage"],"thread_token_usage":info["total_token_usage"]}});
+        let mut rows = vec![header(PARENT, 0), context, count(2, 2, 1, true)];
+        if affected == "response" {
+            rows.push(receipt);
+        } else {
+            rows.push(json!({"type":"response_item","ordinal":3,"timestamp":"2026-01-02T12:00:03Z",
+                "payload":{"type":"message","model":&long,"response_id":&long}}));
+        }
+        let mut old = parse(&source, &rows, cutoff);
+        if affected == "response" {
+            old.events.retain(|event| event.terminal_response.is_none());
+        } else if affected == "model" {
+            old.model.clear();
+            old.model_unavailable = true;
+            old.events[0].model.clear();
+            old.events[0].context_conflicts.model = true;
+        } else if affected == "provider" {
+            old.provider = "supplier-a".into();
+            old.events[0].provider = old.provider.clone();
+        }
+        assert_eq!(old.issues, 0);
+        let mut store = Store::open(Connection::open(&database)?)?;
+        let prepared = store.prepare(new_source(&source, &old), cutoff, BTreeMap::new(), 1 << 20)?;
+        store.publish(prepared)?;
+        store.db.execute("UPDATE token_sources SET checkpoint=CAST(json_remove(checkpoint, '$.legacy_identity_prefix') AS BLOB)", [])?;
+        let before = read(&mut store.db, i64::MIN, i64::MAX);
+        assert!(store.sealed_queued_sources(std::slice::from_ref(&source))?.0.is_empty());
+        drop(store);
+        let mut store = Store::open(Connection::open(&database)?)?;
+        let mut reader = SourceReader::restore(&store, &source)?;
+        let step = |reader: &mut SourceReader, store: &mut Store, bytes| {
+            let mut budget = Budget::new(std::iter::empty());
+            budget.read_left = bytes;
+            reader.step(store, cutoff, &mut budget, &BTreeMap::new(), 1 << 20)
+        };
+        assert!(!step(&mut reader, &mut store, 100)?);
+        assert!(before == read(&mut store.db, i64::MIN, i64::MAX));
+        store.db.pragma_update(None, "query_only", true)?;
+        assert!(step(&mut reader, &mut store, 1 << 20).is_err());
+        assert!(before == read(&mut store.db, i64::MIN, i64::MAX));
+        store.db.pragma_update(None, "query_only", false)?;
+        assert!(step(&mut reader, &mut store, 1 << 20)?);
+        let after = read(&mut store.db, i64::MIN, i64::MAX);
+        let final_state = store.checkpoint(&source)?.unwrap().1;
+        assert_eq!(final_state.legacy_identity_prefix, 0);
+        assert!(store.sealed_queued_sources(std::slice::from_ref(&source))?.0.contains_key(&source));
+        match affected {
+            "response" => assert!(after.1.iter().any(|e| e.terminal_response.as_deref() == Some(&long))),
+            "model" => assert_eq!(after.1[0].model, long),
+            "provider" => assert_eq!(after.1[0].provider, long),
+            _ => assert!(before == after),
+        }
+        drop(store);
+        let mut store = Store::open(Connection::open(&database)?)?;
+        let mut reader = SourceReader::restore(&store, &source)?;
+        assert!(step(&mut reader, &mut store, 1)?);
+        assert!(after == read(&mut store.db, i64::MIN, i64::MAX));
+    }
+    Ok(())
+}
+
+#[test]
+fn legacy_identity_prefix_allows_append_during_check_and_compressed_cold_reopen() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let path = root.path().canonicalize()?.join("rollout-old.jsonl");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    for compressed in [false, true] {
+        let rows = [header(PARENT, 0), count(1, 1, 1, true),
+            json!({"type":"response_item","ordinal":2,"payload":{"type":"message","content":"x".repeat(1500)}})];
+        let state = parse(&path, &rows, cutoff);
+        let source = if compressed {
+            let archive = path.with_extension("jsonl.zst");
+            fs::write(&archive, zstd::encode_all(fs::File::open(&path)?, 1)?)?;
+            archive
+        } else { path.clone() };
+        let mut state = state;
+        state.stamp = Some(FileState::source_stamp(&source)?);
+        let end = state.offset;
+        let db = root.path().join(if compressed {"compressed.sqlite"} else {"plain.sqlite"});
+        let mut store = Store::open(Connection::open(&db)?)?;
+        let prepared = store.prepare(new_source(&source, &state), cutoff, BTreeMap::new(), 1 << 20)?;
+        store.publish(prepared)?;
+        store.db.execute("UPDATE token_sources SET checkpoint=CAST(json_remove(checkpoint, '$.legacy_identity_prefix') AS BLOB)", [])?;
+        let mut reader = SourceReader::restore(&store, &source)?;
+        let step = |r: &mut SourceReader, s: &mut Store, size| {
+            let mut budget = Budget::new(std::iter::empty());
+            budget.read_left = size;
+            r.step(s, cutoff, &mut budget, &BTreeMap::new(), 1 << 20)
+        };
+        assert!(!step(&mut reader, &mut store, 128)?);
+        if !compressed {
+            writeln!(fs::OpenOptions::new().append(true).open(&source)?, "{}", count(3, 3, 2, true))?;
+            assert!(!step(&mut reader, &mut store, 2048)?);
+            assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).1.len(), 2);
+            assert_eq!(store.checkpoint(&source)?.unwrap().1.legacy_identity_prefix, end);
+        }
+        let before_finish = read(&mut store.db, i64::MIN, i64::MAX);
+        for _ in 0..32 {
+            if step(&mut reader, &mut store, 128)? { break; }
+        }
+        assert_eq!(store.checkpoint(&source)?.unwrap().1.legacy_identity_prefix, 0);
+        drop(store);
+        let mut store = Store::open(Connection::open(&db)?)?;
+        let mut reader = SourceReader::restore(&store, &source)?;
+        assert!(step(&mut reader, &mut store, 1)?);
+        assert!(before_finish == read(&mut store.db, i64::MIN, i64::MAX));
+    }
+    Ok(())
+}
+
+#[test]
+fn legacy_identity_prefix_scan_commits_live_growth_while_an_archive_is_unverified() -> anyhow::Result<()> {
+    use super::scan::Scan;
+
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    let archived = root.join("archived_sessions");
+    fs::create_dir(&sessions)?;
+    fs::create_dir(&archived)?;
+    let live = sessions.join(format!("rollout-{PARENT}.jsonl"));
+    let archive = archived.join(format!("rollout-{OTHER}.jsonl.zst"));
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    parse(&live, &[header(PARENT, 0), count(1, 1, 1, true)], cutoff);
+    let padding = "x".repeat(90 * 1024);
+    let mut z = zstd::Encoder::new(fs::File::create(&archive)?, 1)?;
+    writeln!(z, "{}", header(OTHER, 0))?;
+    writeln!(z, "{}", count(1, 1, 1, true))?;
+    for i in 2..165 {
+        writeln!(z, "{}", json!({"type":"response_item","ordinal":i,
+            "payload":{"type":"message","content":padding}}))?;
+    }
+    z.finish()?;
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    let round = |scan: &mut Scan, store: &mut Store| {
+        let report = scan.round(store, &root, cutoff, &BTreeMap::new(), 1 << 20);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.maintenance_error.is_none(), "{:?}", report.maintenance_error);
+        report.complete
+    };
+    for _ in 0..12 {
+        if round(&mut scan, &mut store) { break; }
+    }
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).1.len(), 2);
+    store.db.execute("UPDATE token_sources SET checkpoint=CAST(json_remove(checkpoint, '$.legacy_identity_prefix') AS BLOB)", [])?;
+    let mut scan = Scan::default();
+    assert!(!round(&mut scan, &mut store));
+    for n in 2..=3 {
+        writeln!(fs::OpenOptions::new().append(true).open(&live)?, "{}", count(n, n, n as u64, true))?;
+        assert!(!round(&mut scan, &mut store));
+        assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).1.len(), n + 1);
+        assert_ne!(store.checkpoint(&archive)?.unwrap().1.legacy_identity_prefix, 0);
+        assert!(store.sealed_queued_sources(std::slice::from_ref(&archive))?.0.is_empty());
+    }
+    for _ in 0..12 {
+        if round(&mut scan, &mut store) { break; }
+    }
+    assert_eq!(store.checkpoint(&archive)?.unwrap().1.legacy_identity_prefix, 0);
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).1.len(), 4);
+    Ok(())
+}
+
+#[test]
 fn legacy_large_line_issue_replays_once_and_replaces_the_old_snapshot_atomically()
 -> anyhow::Result<()> {
     let root = tempfile::tempdir()?;
@@ -1123,7 +1301,8 @@ fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_ne
         read(&mut store.db, i64::MIN, i64::MAX).1
     };
     let head = json!({"type":"session_meta","timestamp":at(0),"payload":{"id":PARENT,"model_provider":"fixture-supplier"}});
-    let mut first = terminal(2, "turn-a", "resp-a", usage(10, 3, 2), usage(10, 3, 2));
+    let response_id = "resp-a".repeat(100);
+    let mut first = terminal(2, "turn-a", response_id.as_str(), usage(10, 3, 2), usage(10, 3, 2));
     first["payload"]["extra"] = json!("x".repeat(1100 * 1024));
     let mut wrong_turn = first.clone();
     wrong_turn["payload"]["turn_id"] = json!("turn-b");
@@ -1131,7 +1310,7 @@ fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_ne
     append(&[head.clone(), context(1, "turn-a"), wrong_turn, first.clone()]);
     let initial = step(&rollout);
     assert_eq!(initial.len(), 1);
-    assert_eq!(initial[0].terminal_response.as_deref(), Some("resp-a"));
+    assert_eq!(initial[0].terminal_response.as_deref(), Some(response_id.as_str()));
     assert!(step(&rollout) == initial);
     assert_eq!(
         initial[0].delta,
@@ -3073,6 +3252,39 @@ fn cross_retention_range_reads_one_revision_without_inventing_partial_days() {
             .days
             .is_empty()
     );
+}
+
+#[test]
+fn history_session_model_uses_context_time_across_sources_after_reopen() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let database = root.join("tokens.sqlite");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let request = json!({"from":"2026-01-02","to":"2026-01-02"});
+    let query = Query::parse(&request, cutoff).unwrap();
+    let model = "long-model/".repeat(32);
+    for (file, second, value) in [
+        ("rollout-z.jsonl", 1, "first"),
+        ("rollout-a.jsonl", 2, model.as_str()),
+        ("rollout-b.jsonl", 2, "conflicting"),
+        ("rollout-c.jsonl", 3, "last"),
+    ] {
+        let path = root.join(file);
+        let context = json!({"type":"turn_context", "ordinal":1,
+            "timestamp":format!("2026-01-02T12:00:{second:02}Z"),
+            "payload":{"model":value,"model_provider":"supplier-a"}});
+        let state = parse(&path, &[header(PARENT, 0), context], cutoff);
+        let mut store = Store::open(Connection::open(&database)?)?;
+        let prepared = store.prepare(new_source(&path, &state), cutoff, names.clone(), 1 << 16)?;
+        store.publish(prepared)?;
+        drop(store);
+        let mut reader = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let result = Store::read_response(&mut reader, &query, &request, Some(PARENT), &names)?;
+        let expected = if value == "conflicting" { "" } else { value };
+        assert_eq!(result["sessionInfo"][PARENT]["model"], expected, "{file}");
+    }
+    Ok(())
 }
 
 #[test]

@@ -25,7 +25,7 @@ pub(super) fn fields(raw: &str) -> serde_json::Result<[(&'static str, Option<&Ra
 }
 
 pub(super) fn valid_response_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 256 && id.bytes().all(|c| c.is_ascii_graphic())
+    !id.is_empty() && id.bytes().all(|c| c.is_ascii_graphic())
 }
 
 pub(super) fn parse(

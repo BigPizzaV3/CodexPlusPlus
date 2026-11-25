@@ -18,7 +18,6 @@ const MAX_CORE_BYTES: usize = 512 * 1024;
 const MAX_DETAIL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPRESSED_DETAIL_BYTES: usize = MAX_DETAIL_BYTES + 64 * 1024;
 const MAX_TOTAL_DETAIL_BYTES: usize = 128 * 1024 * 1024;
-const MAX_SESSIONS: usize = 4096;
 
 type Result<T> = std::result::Result<T, ArchiveError>;
 
@@ -183,10 +182,6 @@ usage_record!(BreakdownRow {
     model_source: Option<String>,
 });
 
-fn text(value: &str) -> Result<()> {
-    require(value.chars().count() <= 256, "string-limit")
-}
-
 fn role(value: &str) -> Result<()> {
     require(
         matches!(value, "main" | "subagent" | "unknown"),
@@ -239,7 +234,6 @@ impl Summary {
         self.validate_counts()?;
         for row in &self.models {
             row.validate_counts()?;
-            text(&row.model)?;
             require(
                 row.inferred_model_tokens.is_none_or(|n| n <= row.total),
                 "invalid-inferred-counts",
@@ -247,16 +241,7 @@ impl Summary {
         }
         for row in &self.breakdowns {
             row.validate_counts()?;
-            for value in [&row.model, &row.provider] {
-                text(value)?;
-            }
             role(&row.role)?;
-            for value in [&row.provider_name, &row.provider_source, &row.model_source]
-                .into_iter()
-                .flatten()
-            {
-                text(value)?;
-            }
             require(
                 [row.inferred_tokens, row.inferred_model_tokens]
                     .into_iter()
@@ -275,16 +260,7 @@ impl Summary {
 
 impl Core {
     fn validate(&self) -> Result<()> {
-        require(
-            self.sessions.len() <= MAX_SESSIONS
-                && self.session_info.len() <= MAX_SESSIONS
-                && self.aliases.len() <= MAX_SESSIONS,
-            "session-limit",
-        )?;
         require(self.pending_live_events <= MAX_INTEGER, "invalid-counts")?;
-        if let Some(value) = &self.source_accounting_fingerprint {
-            text(value)?;
-        }
         self.all.validate()?;
         let mut seen = HashSet::new();
         for session in &self.sessions {
