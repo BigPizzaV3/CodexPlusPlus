@@ -74,6 +74,10 @@ impl Comparison {
         &self.source
     }
 
+    pub(in crate::usage_history::structured::token_checkpoint) fn compares(&self, path: &Path) -> bool {
+        self.source == path || self.owner.path == path
+    }
+
     pub(in crate::usage_history::structured::token_checkpoint) fn holds(
         &self,
         path: &Path,

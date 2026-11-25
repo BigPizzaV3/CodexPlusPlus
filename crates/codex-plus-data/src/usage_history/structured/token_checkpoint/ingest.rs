@@ -3,7 +3,10 @@ use super::store::{
     observation_encoding::Batch,
     projection::{ComponentInputLimit, SourceUpdate},
 };
-use crate::usage_history::structured::{FileState, index_budget::Budget};
+use crate::usage_history::structured::{
+    FileState,
+    index_budget::{Budget, CURSOR_BYTES, Meter},
+};
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use std::collections::BTreeMap;
@@ -19,7 +22,7 @@ enum Encoding {
 // 一份在读来源只保留当前批次。发生写入错误时下一轮重试同一批。
 pub(super) struct SourceReader {
     pub(super) source: PathBuf,
-    state: FileState,
+    pub(super) state: FileState,
     revision: Option<i64>,
     offset: u64,
     committed_complete: bool,
@@ -51,9 +54,24 @@ impl SourceReader {
         self.state.reader.is_some()
     }
 
-    pub(super) fn scanned_stamp(&self) -> Option<(u64, std::time::SystemTime)> {
-        let (size, modified, _) = self.state.stamp?;
-        Some((size, modified?))
+    pub(super) fn waiting_for_newline(&self) -> bool {
+        !self.has_open_reader()
+            && (!self.state.pending.is_empty() || self.state.skipping)
+            && self.source.extension().is_some_and(|ext| ext == "jsonl")
+            && self
+                .state
+                .stamp
+                .is_some_and(|(size, _, _)| size == self.state.offset)
+    }
+
+    pub(super) fn can_yield_plain_batch(&self) -> bool {
+        self.source.extension().is_some_and(|ext| ext == "jsonl")
+            && self.revision.is_some()
+            && !self.replacing
+            && self.ready.is_none()
+            && matches!(self.encoding, Encoding::Idle)
+            && !self.state.skipping
+            && self.offset == self.state.offset - self.state.pending.len() as u64
     }
 
     pub(super) fn can_retry_write(&self) -> bool {
@@ -91,7 +109,14 @@ impl SourceReader {
         reconciliation_limit: usize,
     ) -> Result<bool> {
         if self.ready.is_some() {
-            let stamp = FileState::source_stamp(&self.source)?;
+            let stamp = match FileState::source_stamp(&self.source) {
+                Ok(stamp) => stamp,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    *self = Self::restore(store, &self.source)?;
+                    return Err(error.into());
+                }
+                Err(error) => return Err(error.into()),
+            };
             let compressed = self.source.extension().is_some_and(|ext| ext == "zst");
             if self.state.source_replaced(stamp, compressed) {
                 *self = Self::restore(store, &self.source)?;
@@ -188,6 +213,9 @@ impl SourceReader {
         self.state.events = Vec::new();
         self.state.tools = Vec::new();
         self.state.executions.as_mut().unwrap().rows = Vec::new();
+        if !complete && self.has_open_reader() {
+            Meter::new(&self.state).refresh(&mut self.state, CURSOR_BYTES);
+        }
         self.ready = None;
         self.replacing = false;
         self.encoding = Encoding::Idle;

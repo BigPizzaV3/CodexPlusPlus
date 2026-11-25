@@ -4,6 +4,8 @@ use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
 
+mod live_tail;
+
 const FIRST: &str = "00000000-0000-4000-8000-000000000001";
 const SECOND: &str = "00000000-0000-4000-8000-000000000002";
 
@@ -156,6 +158,113 @@ fn growing_live_source_refreshes_while_historical_queue_advances() {
         first.pending_sources - next.pending_sources,
         SOURCES_PER_ROUND - 1
     );
+}
+
+#[test]
+fn growing_live_source_refreshes_during_cold_archive_prefix_and_suffix() -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    let archives = root.join("archived_sessions");
+    fs::create_dir(&sessions)?;
+    fs::create_dir(&archives)?;
+    let live = sessions.join("rollout-live.jsonl");
+    let archive = archives.join("rollout-history.jsonl.zst");
+    let stamp = UNIX_EPOCH + Duration::from_secs(1_770_000_000);
+    let mut file = fs::File::create(&live)?;
+    file.write_all(rollout(FIRST).as_bytes())?;
+    file.set_modified(stamp + Duration::from_secs(2))?;
+    let mut compressed = zstd::stream::write::Encoder::new(fs::File::create(&archive)?, 1)?;
+    compressed.write_all(rollout(SECOND).as_bytes())?;
+    let filler = format!(
+        "{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n",
+        "x".repeat(65536)
+    );
+    for _ in 0..384 {
+        compressed.write_all(filler.as_bytes())?;
+    }
+    compressed.finish()?.set_modified(stamp)?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let db = root.join("index.sqlite");
+    let mut store = Store::open(Connection::open(&db)?)?;
+    let mut read = Connection::open_with_flags(&db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut scan = Scan::default();
+    for _ in 0..3 {
+        assert!(
+            !scan
+                .round(&mut store, &root, cutoff, &names, 32 << 20)
+                .complete
+        );
+    }
+    let seed = store.checkpoint(&archive)?.unwrap().1.offset;
+    assert!(seed > 8 << 20);
+    let mut scan = Scan::default();
+    assert!(
+        !scan
+            .round(&mut store, &root, cutoff, &names, 32 << 20)
+            .complete
+    );
+    let mut total = 100;
+    for (timestamp, delta) in [("2026-01-02T12:02:00Z", 101), ("2026-01-02T12:03:00Z", 103)] {
+        total += delta;
+        writeln!(
+            file,
+            "{}",
+            json!({"type":"event_msg","timestamp":timestamp,
+            "payload":{"type":"token_count","info":{
+                "total_token_usage":{"input_tokens":total,"cached_input_tokens":20,"output_tokens":10},
+                "last_token_usage":{"input_tokens":delta,"cached_input_tokens":0,"output_tokens":0}
+            }}})
+        )?;
+        let report = scan.round(&mut store, &root, cutoff, &names, 32 << 20);
+        assert!(!report.complete && report.errors.is_empty() && report.issues == 0);
+        assert_eq!(
+            store.checkpoint(&live)?.unwrap().1.offset,
+            file.metadata()?.len()
+        );
+        let mut visible = Vec::new();
+        Store::read_committed(&mut read, i64::MIN, i64::MAX, |event| {
+            if event.session == FIRST {
+                visible.push(event.delta.input_tokens);
+            }
+            Ok(())
+        })?;
+        assert_eq!(visible, if delta == 101 { vec![100, 101] } else { vec![100, 101, 103] });
+        if delta == 101 {
+            assert_eq!(store.checkpoint(&archive)?.unwrap().1.offset, seed);
+            for _ in 0..5 {
+                if store.checkpoint(&archive)?.unwrap().1.offset > seed {
+                    break;
+                }
+                scan.round(&mut store, &root, cutoff, &names, 32 << 20);
+            }
+            let progress = store.checkpoint(&archive)?.unwrap().1;
+            assert!(progress.resume_pending && progress.offset > seed);
+        }
+    }
+    for _ in 0..8 {
+        if scan
+            .round(&mut store, &root, cutoff, &names, 32 << 20)
+            .complete
+        {
+            break;
+        }
+    }
+    assert!(!store.checkpoint(&archive)?.unwrap().1.resume_pending);
+    let mut counts = Vec::new();
+    Store::read_committed(&mut read, i64::MIN, i64::MAX, |event| {
+        if event.session == FIRST {
+            counts.push(event.delta.input_tokens);
+        }
+        Ok(())
+    })?;
+    counts.sort();
+    assert_eq!(counts, [100, 101, 103]);
+    Ok(())
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use super::{
+    SourceStamp,
     ingest::SourceReader,
     store::{
         Coverage, Store,
@@ -6,11 +7,10 @@ use super::{
         replicas::{Comparison, Probe},
     },
 };
-use crate::usage_history::structured::{discover, index_budget::Budget};
+use crate::usage_history::structured::{FileState, discover, index_budget::Budget};
 use chrono::NaiveDate;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 const SOURCES_PER_ROUND: usize = 64;
 const LIVE_REVISIT_SOURCES: usize = 8;
@@ -22,10 +22,12 @@ pub(super) struct Scan {
     missing: VecDeque<(PathBuf, i64)>,
     more_missing: bool,
     active: Option<SourceReader>,
+    revisiting: Option<SourceReader>,
     comparing: Option<Box<Comparison>>,
     deferred: Option<SourceReader>,
     rescan: bool,
-    live: BTreeMap<PathBuf, (u64, SystemTime)>,
+    live: BTreeMap<PathBuf, SourceStamp>,
+    waiting_for_newline: BTreeMap<PathBuf, (SourceStamp, bool)>,
     next_live: usize,
     issues: usize,
     unknown_count_scope: bool,
@@ -120,9 +122,23 @@ impl Scan {
                     }
                 }
             }
-            self.remaining = paths.into();
+            let waiting = std::mem::take(&mut self.waiting_for_newline);
+            self.remaining = paths
+                .into_iter()
+                .filter(|path| {
+                    // 有计数缺口的前缀需从持久检查点恢复诊断，只有干净的半行可以跳过。
+                    if let Some(&(stamp, false)) = waiting.get(path)
+                        && FileState::source_stamp(path).is_ok_and(|current| current == stamp)
+                    {
+                        self.waiting_for_newline.insert(path.clone(), (stamp, false));
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .collect();
             self.rescan = true;
-            if let Some(reader) = &self.deferred {
+            for reader in self.deferred.iter().chain(&self.revisiting) {
                 self.remaining.retain(|source| source != &reader.source);
             }
             if self.issues == 0 {
@@ -149,40 +165,35 @@ impl Scan {
         let mut compared = false;
         let mut verify_later = Vec::new();
         let sessions_dir = home.join("sessions");
-        let queued = self.remaining.len();
-        'sources: for slot in 0..SOURCES_PER_ROUND {
-            if budget.read_left == 0 || budget.source_left == 0 {
-                break;
-            }
-            // One revisit may use a normal slot after the history queue has had its turn.
-            if slot == 1
-                && backlogged
-                && (self.remaining.len() < queued
-                    || self
-                        .deferred
-                        .as_ref()
-                        .is_some_and(SourceReader::encoding_pending))
-                && !self.remaining.is_empty()
-                && !self.live.is_empty()
-                && self.active.is_none()
-                && self.comparing.is_none()
-                && retry.is_none()
-            {
+        let mut live_path = None;
+        if (backlogged || self.active.is_some() || self.comparing.is_some())
+            && self.revisiting.is_none()
+        {
+            for _ in 0..self.live.len() {
                 let index = self.next_live % self.live.len();
                 self.next_live = index + 1;
-                let (path, (size, _)) = self.live.iter().nth(index).unwrap();
+                let (path, stamp) = self.live.iter().nth(index).unwrap();
+                if self
+                    .active
+                    .iter()
+                    .chain(&retry)
+                    .chain(&self.deferred)
+                    .any(|r| &r.source == path)
+                    || self.comparing.as_ref().is_some_and(|probe| probe.compares(path))
+                {
+                    continue;
+                }
+                let stamp = self.waiting_for_newline.get(path).map_or(*stamp, |tail| tail.0);
                 let path = path.clone();
-                match std::fs::symlink_metadata(&path) {
-                    Ok(meta)
-                        if meta.is_file()
-                            && meta.len() > *size
-                            && self
-                                .deferred
-                                .as_ref()
-                                .is_none_or(|reader| reader.source != path) =>
-                    {
+                match FileState::source_stamp(&path) {
+                    Ok(current) if current != stamp => {
                         self.remaining.retain(|p| p != &path);
-                        self.remaining.push_front(path);
+                        if let Some((_, true)) = self.waiting_for_newline.remove(&path) {
+                            self.issues -= 1;
+                            self.scoped_count_gaps.remove(&path);
+                        }
+                        live_path = Some(path);
+                        break;
                     }
                     Ok(_) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -196,24 +207,37 @@ impl Scan {
                     }
                 }
             }
-            let mut reader = match self.active.take().or_else(|| retry.take()) {
+        }
+        'sources: for slot in 0..SOURCES_PER_ROUND {
+            if budget.read_left == 0 || budget.source_left == 0 {
+                break;
+            }
+            let revisit = slot == 0 && (live_path.is_some() || self.revisiting.is_some());
+            let resumed = if revisit {
+                self.revisiting.take()
+            } else {
+                self.active.take().or_else(|| retry.take())
+            };
+            let mut reader = match resumed {
                 Some(source) => source,
                 None => {
-                    let comparing = if compared {
+                    let comparing = if compared || revisit {
                         None
                     } else {
                         self.comparing.take()
                     };
-                    let path = comparing
-                        .as_ref()
-                        .map(|check| check.path().to_owned())
+                    let path = live_path
+                        .take()
+                        .or_else(|| comparing.as_ref().map(|check| check.path().to_owned()))
                         .or_else(|| self.remaining.pop_front());
                     let Some(path) = path else {
                         // 先摄取完整的新来源，再处理旧路径，避免归档移动产生用量空窗。
                         if self.comparing.is_some() || !verify_later.is_empty() {
                             break;
                         }
-                        if self.issues != 0 || self.deferred.is_some() {
+                        if self.issues != 0 || self.deferred.is_some() || self.revisiting.is_some()
+                            || !self.waiting_for_newline.is_empty()
+                        {
                             if !self.missing.is_empty() || self.more_missing {
                                 self.unknown_count_scope = true;
                                 self.scoped_count_gaps.clear();
@@ -280,7 +304,7 @@ impl Scan {
                             }
                         }
                         store.probe_copy(&path).and_then(|probe| match probe {
-                            Probe::Compare(comparison) if !compared => {
+                            Probe::Compare(comparison) if !compared && self.comparing.is_none() => {
                                 compared = true;
                                 comparison.step(store, &mut budget)
                             }
@@ -337,15 +361,37 @@ impl Scan {
                     }
                 }
             };
-            let allowance = (budget.read_left, budget.source_left);
-            match reader.step(
+            let parked = self
+                .active
+                .iter()
+                .chain(&self.revisiting)
+                .chain(&self.deferred)
+                .chain(&retry);
+            let other_work = self.active.is_some() || retry.is_some() || self.comparing.is_some() || !self.remaining.is_empty();
+            let mut slot_budget =
+                budget.checkpoint_slot(parked.map(|r| &r.state), revisit && other_work);
+            let allowance = (slot_budget.read_left, slot_budget.source_left);
+            let result = reader.step(
                 store,
                 cutoff,
-                &mut budget,
+                &mut slot_budget,
                 provider_names,
                 reconciliation_limit,
-            ) {
-                Ok(true) => {
+            );
+            let consumed = (
+                allowance.0 - slot_budget.read_left,
+                allowance.1 - slot_budget.source_left,
+            );
+            budget.read_left -= consumed.0;
+            budget.source_left -= consumed.1;
+            match result {
+                Ok(complete) if complete || reader.waiting_for_newline() => {
+                    if !complete {
+                        self.waiting_for_newline.insert(
+                            reader.source.clone(),
+                            (reader.state.stamp.unwrap(), reader.has_count_gap()),
+                        );
+                    }
                     if reader.has_only_malformed_token_counts() {
                         self.scoped_count_gaps.insert(reader.source);
                         self.issues += 1;
@@ -354,7 +400,7 @@ impl Scan {
                         self.unknown_count_scope = true;
                     } else if reader.source.starts_with(&sessions_dir)
                         && reader.source.extension().is_some_and(|ext| ext == "jsonl")
-                        && let Some(stamp) = reader.scanned_stamp()
+                        && let Some(stamp) = reader.state.stamp
                         && stamp.0 > 0
                     {
                         self.live.insert(reader.source, stamp);
@@ -370,6 +416,17 @@ impl Scan {
                         }
                     }
                 }
+                Ok(false) if revisit && consumed != (0, 0) && reader.can_yield_plain_batch() => {
+                    // 已提交的普通前缀可直接 seek；下一轮把实时名额交给下一个变化的源。
+                    verify_later.push(reader.source);
+                }
+                Ok(false)
+                    if revisit
+                        && (reader.encoding_pending()
+                            || reader.has_open_reader() && consumed != (0, 0)) =>
+                {
+                    self.revisiting = Some(reader);
+                }
                 Ok(false) if reader.encoding_pending() => {
                     if self.deferred.is_none() {
                         self.deferred = Some(reader);
@@ -377,14 +434,11 @@ impl Scan {
                         verify_later.push(reader.source);
                     }
                 }
-                Ok(false)
-                    if reader.has_open_reader()
-                        && allowance != (budget.read_left, budget.source_left) =>
-                {
+                Ok(false) if reader.has_open_reader() && consumed != (0, 0) => {
                     self.active = Some(reader);
                     break;
                 }
-                Ok(false) => {
+                Ok(_) => {
                     self.issues += 1;
                     self.unknown_count_scope = true;
                 }
@@ -392,7 +446,9 @@ impl Scan {
                     self.issues += 1;
                     self.unknown_count_scope |= !reader.can_retry_write();
                     errors.push((reader.source.clone(), error));
-                    if reader.can_retry_write() && self.deferred.is_none() {
+                    if revisit && reader.can_retry_write() {
+                        self.revisiting = Some(reader);
+                    } else if reader.can_retry_write() && self.deferred.is_none() {
                         self.deferred = Some(reader);
                     }
                 }
@@ -400,18 +456,21 @@ impl Scan {
         }
         self.remaining.extend(verify_later);
         let pending_sources = self.remaining.len()
+            + self.waiting_for_newline.len()
             + self.missing.len()
             + usize::from(self.more_missing)
             + usize::from(self.active.is_some())
+            + usize::from(self.revisiting.is_some())
             + usize::from(self.comparing.is_some())
             + usize::from(self.deferred.is_some());
         let mut issues = self.issues;
         // The previous snapshot stays intact until this known append actually commits.
-        let unpublished_append = usize::from(
-            self.deferred
-                .as_ref()
-                .is_some_and(SourceReader::retrying_closed_append),
-        );
+        let unpublished_append = self
+            .deferred
+            .iter()
+            .chain(&self.revisiting)
+            .filter(|reader| reader.retrying_closed_append())
+            .count();
         if let Err(error) = store.record_coverage(
             Coverage {
                 pending_sources,
