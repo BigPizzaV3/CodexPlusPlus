@@ -64,6 +64,152 @@ fn new_source<'a>(source: &'a Path, state: &'a FileState) -> SourceUpdate<'a> {
 }
 
 #[test]
+fn cross_session_parent_prefix_requires_a_unique_committed_native_anchor() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    let parent = root.join(format!("rollout-{PHYSICAL_PREFIX}.jsonl"));
+    let child = root.join(format!("rollout-{CHILD}.jsonl"));
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let parent_rows = std::iter::once(header(PARENT, 0))
+        .chain((1..=48).map(|n| count(n, n, n as u64, true)))
+        .collect::<Vec<_>>();
+    let origin = parse(&parent, &parent_rows, cutoff);
+    let offset = origin.events[46].rollout_position.unwrap().2;
+    for case in [
+        "unique",
+        "cache alternate",
+        "physical copy",
+        "overlapping boundary",
+        "graph rejoins",
+    ] {
+        let db = root.join(format!("{case}.sqlite"));
+        let mut store = Store::open(Connection::open(&db)?)?;
+        let ready = store.prepare(
+            new_source(&parent, &origin),
+            cutoff,
+            BTreeMap::new(),
+            1 << 20,
+        )?;
+        store.publish(ready)?;
+        if matches!(case, "cache alternate" | "physical copy" | "graph rejoins") {
+            let other = if case == "physical copy" {
+                root.join(format!("copy-{PHYSICAL_PREFIX}.jsonl"))
+            } else {
+                root.join(format!("other-{OTHER}.jsonl"))
+            };
+            let mut counter = count(1, 47, 47, true);
+            counter["payload"]["info"]["total_token_usage"]["cached_input_tokens"] = json!(2);
+            let mut meta = header(PARENT, 0);
+            if case == "graph rejoins" {
+                meta = header(CHILD, 48);
+                meta["payload"]["history_base"] = json!({"thread_id":PHYSICAL_PREFIX,
+                    "end_ordinal_exclusive":48,"end_byte_offset":offset});
+                counter = count(49, 50, 50, true);
+            }
+            let competing = parse(&other, &[meta, counter], cutoff);
+            let ready = store.prepare(
+                new_source(&other, &competing),
+                cutoff,
+                BTreeMap::new(),
+                1 << 20,
+            )?;
+            store.publish(ready)?;
+        }
+        let mut meta = header(CHILD, 48);
+        meta["payload"]["history_base"] = json!({"thread_id":PHYSICAL_PREFIX,
+            "end_ordinal_exclusive":48,"end_byte_offset":if case=="overlapping boundary" {offset-1} else {offset}});
+        let incoming = parse(&child, &[meta, count(49, 49, 49, false)], cutoff);
+        let update = new_source(&child, &incoming);
+        let small = store.prepare(update, cutoff, BTreeMap::new(), 12_000);
+        if case == "unique" {
+            let mut reference = Store::open(Connection::open_in_memory()?)?;
+            let ready = reference.prepare(
+                new_source(&parent, &origin),
+                cutoff,
+                BTreeMap::new(),
+                1 << 20,
+            )?;
+            reference.publish(ready)?;
+            let full = reference.prepare(
+                SourceUpdate {
+                    replace: true,
+                    ..update
+                },
+                cutoff,
+                BTreeMap::new(),
+                1 << 20,
+            )?;
+            reference.publish(full)?;
+            store.publish(small?)?;
+            drop(store);
+            let mut reopened = Store::open(Connection::open(&db)?)?;
+            let actual = read(&mut reopened.db, i64::MIN, i64::MAX).1;
+            assert_eq!(actual.len(), 49);
+            assert!(actual == read(&mut reference.db, i64::MIN, i64::MAX).1);
+            assert_eq!(
+                actual
+                    .iter()
+                    .find(|e| e.session == CHILD)
+                    .unwrap()
+                    .delta
+                    .total_tokens,
+                220
+            );
+        } else {
+            assert!(
+                small
+                    .err()
+                    .is_some_and(|e| e.to_string().contains("component exceeds")),
+                "{case}"
+            );
+            assert!(store.checkpoint(&child)?.is_none());
+            let ready = store.prepare(update, cutoff, BTreeMap::new(), 1 << 20)?;
+            store.publish(ready)?;
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn tiny_parent_still_fits_the_original_full_read_budget() -> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let parent = root.join(format!("rollout-{PHYSICAL_PREFIX}.jsonl"));
+    let other = root.join("prior.jsonl");
+    let child = root.join(format!("rollout-{CHILD}.jsonl"));
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let origin = parse(&parent, &[header(PARENT, 0), count(1, 1, 1, true)], cutoff);
+    let prior = parse(&other, &[header(CHILD, 0), count(1, 3, 2, true)], cutoff);
+    for (path, state) in [(&parent, &origin), (&other, &prior)] {
+        let ready = store.prepare(new_source(path, state), cutoff, BTreeMap::new(), 1 << 20)?;
+        store.publish(ready)?;
+    }
+    let mut meta = header(CHILD, 2);
+    meta["payload"]["history_base"] = json!({"thread_id":PHYSICAL_PREFIX,
+        "end_ordinal_exclusive":2,"end_byte_offset":origin.offset});
+    let incoming = parse(&child, &[meta, count(3, 4, 3, false)], cutoff);
+    let update = new_source(&child, &incoming);
+    let full = SourceUpdate {
+        replace: true,
+        ..update
+    };
+    let (mut low, mut high) = (0, 1 << 20);
+    while low < high {
+        let middle = (low + high) / 2;
+        match store.prepare(full, cutoff, BTreeMap::new(), middle) {
+            Ok(_) => high = middle,
+            Err(error) if error.to_string().contains("input budget") => low = middle + 1,
+            Err(error) => return Err(error),
+        }
+    }
+    let ready = store.prepare(update, cutoff, BTreeMap::new(), high)?;
+    store.publish(ready)?;
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).1.len(), 3);
+    Ok(())
+}
+
+#[test]
 fn long_continuation_appends_within_budget_after_reopen_and_refuses_a_child() -> anyhow::Result<()>
 {
     let dir = tempfile::tempdir()?;

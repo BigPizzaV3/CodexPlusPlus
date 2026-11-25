@@ -21,6 +21,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+mod prefix;
+
 pub(super) fn links(path: &Path, state: &FileState, include_contexts: bool) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
     for session in std::iter::once(&state.session)
@@ -1060,16 +1062,17 @@ impl Store {
                      count_links(source_id, link) AS NOT MATERIALIZED (
                         SELECT l.source_id, l.link FROM token_source_links l
                         JOIN token_sources s ON s.id = l.source_id
-                        WHERE substr(l.link, 1, 2) = 'r:'
+                        WHERE (l.link != ?3 OR s.source != ?1)
+                          AND (substr(l.link, 1, 2) = 'r:'
                            OR substr(l.link, 3) = json_extract(CAST(s.checkpoint AS TEXT), '$.session')
                            OR json_extract(CAST(s.checkpoint AS TEXT), '$.invalid_counts') = 1
                            OR EXISTS (SELECT 1 FROM token_observations o
                                WHERE o.source_id = l.source_id AND o.session_id = (
-                                   SELECT id FROM token_sessions WHERE session = substr(l.link, 3)))
+                                   SELECT id FROM token_sessions WHERE session = substr(l.link, 3))))
                      ),
                      component(id, link) AS (
                         SELECT id, NULL FROM token_sources WHERE source = ?1
-                        UNION SELECT NULL, value FROM json_each(?2)
+                        UNION SELECT NULL, value FROM json_each(?2) WHERE value != ?3
                         UNION SELECT NULL, own.link FROM component
                            JOIN count_links own ON own.source_id = component.id
                         UNION SELECT neighbor.source_id, NULL FROM component
@@ -1085,58 +1088,94 @@ impl Store {
             )?;
             let mut stored_collision =
                 read.prepare("SELECT 1 FROM token_collisions WHERE id = ?1")?;
-            let mut rows = affected.query(params![path_key, seed_json])?;
             let mut remaining = input_limit;
-            let mut charge = |bytes: usize| -> Result<()> {
-                remaining = remaining.checked_sub(bytes).ok_or_else(|| {
+            let charge = |remaining: &mut usize, bytes: usize| -> Result<()> {
+                *remaining = remaining.checked_sub(bytes).ok_or_else(|| {
                     anyhow::anyhow!("Token component exceeds reconciliation input budget")
                 })?;
                 Ok(())
             };
-            while let Some(row) = rows.next()? {
-                if let Some(link) = row.get::<_, Option<String>>(0)? {
-                    charge(link.len())?;
-                    if let Some(session) = link.strip_prefix("s:") {
-                        sessions.insert(session.to_owned());
-                    }
-                    continue;
-                }
-                files += 1;
-                ensure!(files <= MAX_FILES, "Token component exceeds source budget");
-                let id: i64 = row.get(1)?;
-                let path = decode_path(row.get(2)?)?;
-                if path == source {
-                    source_revision = Some(row.get(3)?);
-                    ensure!(
-                        source_revision == previous_revision,
-                        "Token source changed before reconciliation"
-                    );
-                    if replace {
+            let (offset, checkpoint) = Checkpoint::capture(state);
+            charge(&mut remaining, serde_json::to_vec(&checkpoint)?.len())?;
+            for event in &state.events {
+                charge(
+                    &mut remaining,
+                    serde_json::to_vec(&Observation::capture(event))?.len(),
+                )?;
+            }
+            let mut parent = if cutoff_key == precise_from {
+                prefix::ParentPrefix::read(&read, update, cutoff, remaining)?
+            } else {
+                None
+            };
+            let probing = parent.is_some();
+            let mut seen_links = HashSet::new();
+            let mut seen_sources = HashSet::new();
+            loop {
+                let skip = parent.as_ref().map_or("", |p| p.link.as_str());
+                let mut rows = affected.query(params![path_key, seed_json, skip])?;
+                while let Some(row) = rows.next()? {
+                    if let Some(link) = row.get::<_, Option<String>>(0)? {
+                        if probing && !seen_links.insert(link.clone()) {
+                            continue;
+                        }
+                        charge(&mut remaining, link.len())?;
+                        if let Some(session) = link.strip_prefix("s:") {
+                            sessions.insert(session.to_owned());
+                        }
                         continue;
                     }
-                }
-                let record = row.get_ref(5)?.as_blob()?;
-                charge(record.len())?;
-                let mut old = serde_json::from_slice::<Checkpoint>(record)?.restore(row.get(4)?);
-                let mut records = observation.query([id])?;
-                while let Some(record) = records.next()? {
-                    let bytes = record.get_ref(2)?.as_blob()?;
-                    charge(bytes.len())?;
-                    let event_id = record.get_ref(0)?.as_blob()?.try_into()?;
-                    let event: Observation = serde_json::from_slice(bytes)?;
-                    if stored_collision.exists([event.original_id.as_slice()])? {
-                        index.collision_families.insert(event.original_id);
+                    let id: i64 = row.get(1)?;
+                    if probing && !seen_sources.insert(id) {
+                        continue;
                     }
-                    old.events.push(event.into_event(event_id, record.get(1)?)?);
+                    files += 1;
+                    ensure!(files <= MAX_FILES, "Token component exceeds source budget");
+                    let path = decode_path(row.get(2)?)?;
+                    if path == source {
+                        source_revision = Some(row.get(3)?);
+                        ensure!(
+                            source_revision == previous_revision,
+                            "Token source changed before reconciliation"
+                        );
+                        if replace {
+                            continue;
+                        }
+                    }
+                    let record = row.get_ref(5)?.as_blob()?;
+                    charge(&mut remaining, record.len())?;
+                    let mut old =
+                        serde_json::from_slice::<Checkpoint>(record)?.restore(row.get(4)?);
+                    let mut records = observation.query([id])?;
+                    while let Some(record) = records.next()? {
+                        let bytes = record.get_ref(2)?.as_blob()?;
+                        charge(&mut remaining, bytes.len())?;
+                        let event_id = record.get_ref(0)?.as_blob()?.try_into()?;
+                        let event: Observation = serde_json::from_slice(bytes)?;
+                        if stored_collision.exists([event.original_id.as_slice()])? {
+                            index.collision_families.insert(event.original_id);
+                        }
+                        old.events.push(event.into_event(event_id, record.get(1)?)?);
+                    }
+                    index.files.insert(path, old);
                 }
-                index.files.insert(path, old);
+                let Some(prefix) = parent.take() else {
+                    break;
+                };
+                if prefix.bytes <= remaining
+                    && !seen_links.contains(&prefix.link)
+                    && prefix.independent(&index.files, update, cutoff)
+                {
+                    ensure!(files < MAX_FILES, "Token component exceeds source budget");
+                    index.files.insert(prefix.path, prefix.state);
+                    break;
+                }
+                // Rejoin the original graph, reusing every source already decoded.
             }
             ensure!(
                 source_revision == previous_revision,
                 "Token source changed before reconciliation"
             );
-            let (offset, checkpoint) = Checkpoint::capture(state);
-            charge(serde_json::to_vec(&checkpoint)?.len())?;
             let mut incoming = checkpoint.restore(offset);
             if let Some(old) = index.files.remove(source) {
                 if let Some((position, total)) = old.expired_count
@@ -1149,7 +1188,6 @@ impl Store {
                 incoming.events = old.events;
             }
             for event in &state.events {
-                charge(serde_json::to_vec(&Observation::capture(event))?.len())?;
                 if stored_collision.exists([event.original_id.as_slice()])? {
                     index.collision_families.insert(event.original_id);
                 }
