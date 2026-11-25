@@ -1164,11 +1164,21 @@ impl Store {
                  SELECT component.link, s.id, s.source, s.revision, s.offset, s.checkpoint
                  FROM component LEFT JOIN token_sources s ON s.id = component.id",
             )?;
-            let mut observation = read.prepare(
-                "SELECT o.event_id, s.session, o.payload FROM token_observations o
+            // 只传一次相同的计数标记。SQLite 的 JSON 函数会忽略原始 NUL 之后的内容。
+            const FLAGS: &str = "'$.count_uncertain','$.count_incomplete','$.count_pending','$.inherited','$.context_conflicts'";
+            const CLEAR: &[u8] = br#"{"count_uncertain":false,"count_incomplete":false,"count_pending":false,"inherited":false,"context_conflicts":{"model":false,"provider":false,"role":false,"turn":false},"#;
+            let mut observation = read.prepare(&format!(
+                "SELECT o.event_id, s.session,
+                    CASE WHEN typeof(o.payload)!='blob' THEN NULL
+                         WHEN instr(o.payload,x'00')=0 AND json_valid(CAST(o.payload AS TEXT))
+                          AND json_extract(CAST(o.payload AS TEXT),{FLAGS})
+                           ='[false,false,false,false,{{\"model\":false,\"provider\":false,\"role\":false,\"turn\":false}}]'
+                    THEN json_remove(CAST(o.payload AS TEXT),{FLAGS}) ELSE o.payload END
+                 FROM token_observations o
                  JOIN token_sessions s ON s.id = o.session_id
                  WHERE o.source_id = ?1 ORDER BY o.revision, o.position",
-            )?;
+            ))?;
+            let mut restored = Vec::new();
             let mut stored_collision =
                 read.prepare("SELECT 1 FROM token_collisions WHERE id = ?1")?;
             let mut remaining = input_limit;
@@ -1231,8 +1241,21 @@ impl Store {
                         serde_json::from_slice::<Checkpoint>(record)?.restore(row.get(4)?);
                     let mut records = observation.query([id])?;
                     while let Some(record) = records.next()? {
-                        let bytes = record.get_ref(2)?.as_blob()?;
-                        charge(&mut remaining, bytes.len())?;
+                        let field = record.get_ref(2)?;
+                        let bytes = match field {
+                            rusqlite::types::ValueRef::Text(packed) => {
+                                charge(&mut remaining, packed.len())?;
+                                restored.clear();
+                                restored.extend_from_slice(CLEAR);
+                                restored.extend_from_slice(&packed[1..]);
+                                &restored[..]
+                            }
+                            value => {
+                                let bytes = value.as_blob()?;
+                                charge(&mut remaining, bytes.len())?;
+                                bytes
+                            }
+                        };
                         let event_id = record.get_ref(0)?.as_blob()?.try_into()?;
                         let event: Observation = serde_json::from_slice(bytes)?;
                         if stored_collision.exists([event.original_id.as_slice()])? {

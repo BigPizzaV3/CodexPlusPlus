@@ -64,6 +64,62 @@ fn new_source<'a>(source: &'a Path, state: &'a FileState) -> SourceUpdate<'a> {
 }
 
 #[test]
+fn full_component_reads_clear_flags_once_and_keeps_the_stored_observations() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let first = root.join(format!("rollout-{PARENT}.jsonl"));
+    let peer = root.join(format!("rollout-{OTHER}.jsonl"));
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let rows: Vec<_> = std::iter::once(header(PARENT, 0))
+        .chain((1..=40).map(|n| count(n, n, n as u64, true)))
+        .collect();
+    let state = parse(&first, &rows, cutoff);
+    let names = BTreeMap::new();
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let prepared = store.prepare(new_source(&first, &state), cutoff, names.clone(), 1 << 20)?;
+    store.publish(prepared)?;
+    let state = parse(&peer, &[header(PARENT, 0), count(1, 41, 41, true)], cutoff);
+    let raw_bytes: usize = store.db.query_row(
+        "SELECT sum(length(payload)) FROM token_observations",
+        [],
+        |row| row.get(0),
+    )?;
+    assert!(
+        store
+            .prepare(new_source(&peer, &state), cutoff, names.clone(), 1024)
+            .is_err()
+    );
+    let prepared = store.prepare(new_source(&peer, &state), cutoff, names.clone(), raw_bytes)?;
+    drop(prepared);
+    let explicit: usize = store.db.query_row(
+        "SELECT count(*) FROM token_observations WHERE json_type(CAST(payload AS TEXT),'$.count_pending')='false'",
+        [], |row| row.get(0)
+    )?;
+    assert_eq!(explicit, 40);
+    store.db.execute(
+        "UPDATE token_observations
+         SET payload=CAST(json_set(CAST(payload AS TEXT),'$.unrecognized',1) AS BLOB)",
+        [],
+    )?;
+    let error = store
+        .prepare(new_source(&peer, &state), cutoff, names.clone(), 1 << 20)
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("unknown field"));
+    store.db.execute(
+        "UPDATE token_observations
+         SET payload=CAST(json_remove(CAST(payload AS TEXT),'$.unrecognized') || x'006a756e6b' AS BLOB)",
+        [],
+    )?;
+    let error = store
+        .prepare(new_source(&peer, &state), cutoff, names, 1 << 20)
+        .err()
+        .expect("NUL and trailing bytes must reach the strict observation decoder");
+    assert!(error.to_string().contains("trailing characters"));
+    Ok(())
+}
+
+#[test]
 fn registered_compressed_prefix_can_introduce_another_sessions_counts_in_its_suffix()
 -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
