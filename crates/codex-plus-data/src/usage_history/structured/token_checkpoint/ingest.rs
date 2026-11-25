@@ -38,6 +38,11 @@ impl SourceReader {
         self.state.reader.is_some()
     }
 
+    pub(super) fn scanned_stamp(&self) -> Option<(u64, std::time::SystemTime)> {
+        let (size, modified, _) = self.state.stamp?;
+        Some((size, modified?))
+    }
+
     pub(super) fn can_retry_write(&self) -> bool {
         self.ready.is_some()
     }

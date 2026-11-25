@@ -10,8 +10,10 @@ use crate::usage_history::structured::{discover, index_budget::Budget};
 use chrono::NaiveDate;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 const SOURCES_PER_ROUND: usize = 64;
+const LIVE_REVISIT_SOURCES: usize = 8;
 pub(super) const RECLAIM_BATCH: u32 = 256;
 
 #[derive(Default)]
@@ -23,6 +25,8 @@ pub(super) struct Scan {
     comparing: Option<Box<Comparison>>,
     deferred: Option<SourceReader>,
     rescan: bool,
+    live: BTreeMap<PathBuf, (u64, SystemTime)>,
+    next_live: usize,
     issues: usize,
     scoped_count_gaps: BTreeSet<PathBuf>,
     maintenance_day: Option<NaiveDate>,
@@ -85,6 +89,7 @@ impl Scan {
     ) -> Report {
         let maintenance_error = self.maintain(store, cutoff).err();
         let mut errors = Vec::new();
+        let backlogged = !self.remaining.is_empty();
         if self.active.is_none()
             && self.comparing.is_none()
             && self.remaining.is_empty()
@@ -120,9 +125,48 @@ impl Scan {
         };
         let mut compared = false;
         let mut verify_later = Vec::new();
-        'sources: for _ in 0..SOURCES_PER_ROUND {
+        let sessions_dir = home.join("sessions");
+        let queued = self.remaining.len();
+        'sources: for slot in 0..SOURCES_PER_ROUND {
             if budget.read_left == 0 || budget.source_left == 0 {
                 break;
+            }
+            // One revisit may use a normal slot after the history queue has had its turn.
+            if slot == 1
+                && backlogged
+                && self.remaining.len() < queued
+                && !self.remaining.is_empty()
+                && !self.live.is_empty()
+                && self.active.is_none()
+                && self.comparing.is_none()
+                && retry.is_none()
+            {
+                let index = self.next_live % self.live.len();
+                self.next_live = index + 1;
+                let (path, (size, _)) = self.live.iter().nth(index).unwrap();
+                let path = path.clone();
+                match std::fs::symlink_metadata(&path) {
+                    Ok(meta)
+                        if meta.is_file()
+                            && meta.len() > *size
+                            && self
+                                .deferred
+                                .as_ref()
+                                .is_none_or(|reader| reader.source != path) =>
+                    {
+                        self.remaining.retain(|p| p != &path);
+                        self.remaining.push_front(path);
+                    }
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        self.live.remove(&path);
+                    }
+                    Err(error) => {
+                        self.live.remove(&path);
+                        self.issues += 1;
+                        errors.push((path, error.into()));
+                    }
+                }
             }
             let mut reader = match self.active.take().or_else(|| retry.take()) {
                 Some(source) => source,
@@ -268,8 +312,24 @@ impl Scan {
                     if reader.has_only_malformed_token_counts() {
                         self.scoped_count_gaps.insert(reader.source);
                         self.issues += 1;
-                    } else {
-                        self.issues += usize::from(reader.has_count_gap());
+                    } else if reader.has_count_gap() {
+                        self.issues += 1;
+                    } else if reader.source.starts_with(&sessions_dir)
+                        && reader.source.extension().is_some_and(|ext| ext == "jsonl")
+                        && let Some(stamp) = reader.scanned_stamp()
+                        && stamp.0 > 0
+                    {
+                        self.live.insert(reader.source, stamp);
+                        if self.live.len() > LIVE_REVISIT_SOURCES {
+                            let oldest = self
+                                .live
+                                .iter()
+                                .min_by_key(|(_, stamp)| stamp.1)
+                                .unwrap()
+                                .0
+                                .clone();
+                            self.live.remove(&oldest);
+                        }
                     }
                 }
                 Ok(false)

@@ -103,6 +103,62 @@ fn deferred_batch_is_discarded_when_its_source_is_replaced() {
 }
 
 #[test]
+fn growing_live_source_refreshes_while_historical_queue_advances() {
+    use std::io::Write;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    let archived = root.join("archived_sessions");
+    fs::create_dir(&sessions).unwrap();
+    fs::create_dir(&archived).unwrap();
+    let mtime = UNIX_EPOCH + Duration::from_secs(1_770_000_000);
+    for i in 0..3 * SOURCES_PER_ROUND {
+        fs::File::create(archived.join(format!("rollout-{i}.jsonl")))
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+    let live = sessions.join("rollout-live.jsonl");
+    let mut file = fs::File::create(&live).unwrap();
+    file.write_all(rollout(FIRST).as_bytes()).unwrap();
+    file.set_modified(mtime + Duration::from_secs(1)).unwrap();
+    let mut scan = Scan::default();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let first = scan.round(&mut store, &root, cutoff, &BTreeMap::new(), 8192);
+    assert_eq!(first.pending_sources, 2 * SOURCES_PER_ROUND + 1);
+    assert!(store.checkpoint(&live).unwrap().is_some());
+
+    let second = rollout(FIRST);
+    let mut row: serde_json::Value = serde_json::from_str(second.lines().nth(1).unwrap()).unwrap();
+    row["timestamp"] = json!("2026-01-02T12:02:00Z");
+    row["payload"]["info"]["total_token_usage"]["input_tokens"] = json!(200);
+    row["payload"]["info"]["last_token_usage"] =
+        json!({"input_tokens":100,"cached_input_tokens":0,"output_tokens":0});
+    writeln!(file, "{row}").unwrap();
+    file.set_modified(mtime + Duration::from_secs(1)).unwrap();
+    let next = scan.round(&mut store, &root, cutoff, &BTreeMap::new(), 8192);
+    assert!(next.errors.is_empty() && next.pending_sources > 0);
+    assert_eq!(
+        store.checkpoint(&live).unwrap().unwrap().1.offset,
+        file.metadata().unwrap().len()
+    );
+    let mut tokens = 0;
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+        tokens += event.delta.total_tokens;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(tokens, 210);
+    assert_eq!(
+        first.pending_sources - next.pending_sources,
+        SOURCES_PER_ROUND - 1
+    );
+}
+
+#[test]
 fn source_round_limits_work_and_reports_unfinished_discovery_queue() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
