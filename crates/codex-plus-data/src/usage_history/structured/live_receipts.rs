@@ -1,8 +1,6 @@
 //! 实时回执只补分类，不产生用量。证据必须逐字段匹配，且不能被两个回执复用。
 use super::*;
 
-const MAX_RECEIPTS: usize = 128;
-const MAX_MERGED: usize = 8;
 const COMPLETION_LAG_MS: i64 = 1_000;
 
 fn final_response_eligible(record: &RequestEvidence) -> bool {
@@ -62,8 +60,6 @@ impl Receipt {
             && self.session_id.len() <= 256
             && self.model.len() <= 256
             && self.provider.len() <= 256
-            && self.request_ids.len() <= MAX_MERGED
-            && self.request_signatures.len() <= MAX_MERGED
             && self
                 .request_ids
                 .iter()
@@ -113,10 +109,7 @@ pub(super) fn match_captured_receipts(
     aliases: &BTreeMap<String, String>,
     input: &Value,
 ) -> Value {
-    let Some(rows) = input
-        .as_array()
-        .filter(|rows| !rows.is_empty() && rows.len() <= MAX_RECEIPTS)
-    else {
+    let Some(rows) = input.as_array().filter(|rows| !rows.is_empty()) else {
         return json!([]);
     };
     let receipts: Vec<_> = rows
@@ -305,10 +298,7 @@ pub(super) fn match_receipts(
     aliases: &BTreeMap<String, String>,
     input: &Value,
 ) -> Value {
-    let Some(rows) = input
-        .as_array()
-        .filter(|rows| !rows.is_empty() && rows.len() <= MAX_RECEIPTS)
-    else {
+    let Some(rows) = input.as_array().filter(|rows| !rows.is_empty()) else {
         return json!([]);
     };
     let aliases = RequestSessionAliases::new(aliases);
@@ -460,94 +450,72 @@ pub(super) fn match_receipts(
         let last_end = records.partition_point(|record| {
             record.timestamp_ms <= receipt.timestamp.saturating_add(COMPLETION_LAG_MS)
         });
+        let target = [delta.input, delta.output, delta.cached].map(u128::from);
+        let counts = |record: &RequestEvidence| {
+            let usage = record.usage.unwrap();
+            [usage.input_tokens.unwrap(), usage.output_tokens.unwrap(), usage.cached_tokens.unwrap()]
+                .map(u128::from)
+        };
+        // 有效请求至少贡献一个输入或输出 Token，同一终点至多有一个等量的连续区间。
+        let mut start = first_end;
+        let mut sum = [0u128; 3];
         for end in first_end..last_end {
             let last = records[end];
-            if !within_receipt_window(last, receipt.timestamp, DELAYED_REQUEST_MATCH_WINDOW_MS) {
+            if !eligible.contains(last.id.as_str())
+                || !within_receipt_window(last, receipt.timestamp, DELAYED_REQUEST_MATCH_WINDOW_MS)
+            {
+                start = end + 1;
+                sum = [0; 3];
                 continue;
             }
-            let mut sum = Counts {
-                input: 0,
-                output: 0,
-                cached: 0,
-            };
-            let mut model: Option<&str> = None;
-            let mut provider: Option<&str> = None;
-            let mut matching_model = true;
-            let mut request_ids = Vec::new();
-            for start in (end.saturating_sub(MAX_MERGED - 1)..=end).rev() {
-                let record = records[start];
-                if !eligible.contains(record.id.as_str())
-                    || !within_receipt_window(
-                        record,
-                        receipt.timestamp,
-                        DELAYED_REQUEST_MATCH_WINDOW_MS,
-                    )
-                    || (start < end && record.timestamp_ms > records[start + 1].started_at_ms)
+            if start < end {
+                let previous = records[end - 1];
+                if previous.timestamp_ms > last.started_at_ms
+                    || previous.upstream_model != last.upstream_model
+                    || previous.relay_id != last.relay_id
                 {
-                    break;
+                    start = end;
+                    sum = [0; 3];
                 }
-                let Some(normalized) = record.actual_model() else {
-                    break;
-                };
-                if model.is_some_and(|previous| previous != normalized)
-                    || provider.is_some_and(|previous| previous != record.relay_id)
-                {
-                    break;
+            }
+            for (total, value) in sum.iter_mut().zip(counts(last)) {
+                *total += value;
+            }
+            while sum.iter().zip(target).any(|(&total, wanted)| total > wanted) {
+                for (total, value) in sum.iter_mut().zip(counts(records[start])) {
+                    *total -= value;
                 }
-                model = Some(normalized);
-                provider = Some(&record.relay_id);
-                matching_model &= receipt_model_matches(receipt, normalized, record);
-                let usage = record.usage.unwrap();
-                let Some(input) = sum.input.checked_add(usage.input_tokens.unwrap()) else {
-                    break;
-                };
-                let Some(output) = sum.output.checked_add(usage.output_tokens.unwrap()) else {
-                    break;
-                };
-                let Some(cached) = sum.cached.checked_add(usage.cached_tokens.unwrap()) else {
-                    break;
-                };
-                sum = Counts {
-                    input,
-                    output,
-                    cached,
-                };
-                request_ids.push(record.id.clone());
-                if sum.input > delta.input || sum.output > delta.output || sum.cached > delta.cached
-                {
-                    break;
-                }
-                if sum == delta {
-                    for id in &request_ids {
-                        claim(&mut owners, id, index);
-                    }
-                    // 延迟组合仍须占用竞争证据，仅单个已验证最终响应可以补认。
-                    if !within_receipt_window(last, receipt.timestamp, REQUEST_MATCH_WINDOW_MS)
-                        && (request_ids.len() != 1
-                            || last.final_response_evidence.as_deref() != Some("final-response-v1"))
-                    {
-                        rejected.insert(index);
-                        continue;
-                    }
-                    // 已知模型与请求不一致也保留占用，不能把证据转给另一个回执。
-                    if (unknown_model(&receipt.model) || matching_model)
-                        && (unknown_provider(&receipt.provider)
-                            || receipt.provider == record.relay_id)
-                    {
-                        candidates[index].0 += 1;
-                        if candidates[index].0 == 1 {
-                            candidates[index].1 = request_ids.clone();
-                        }
-                        if !receipt.request_ids.is_empty()
-                            && receipt.request_ids.iter().collect::<HashSet<_>>()
-                                != request_ids.iter().collect::<HashSet<_>>()
-                        {
-                            rejected.insert(index);
-                        }
-                    } else {
-                        rejected.insert(index);
-                    }
-                }
+                start += 1;
+            }
+            if sum != target {
+                continue;
+            }
+            let matched = &records[start..=end];
+            for record in matched {
+                claim(&mut owners, &record.id, index);
+            }
+            // 延迟组合或已知模型不符仍占用竞争证据。
+            if (!within_receipt_window(last, receipt.timestamp, REQUEST_MATCH_WINDOW_MS)
+                && (matched.len() != 1
+                    || last.final_response_evidence.as_deref() != Some("final-response-v1")))
+                || (!unknown_provider(&receipt.provider) && receipt.provider != last.relay_id)
+                || (!unknown_model(&receipt.model)
+                    && !matched.iter().all(|record| {
+                        receipt_model_matches(receipt, &record.upstream_model, record)
+                    }))
+            {
+                rejected.insert(index);
+                continue;
+            }
+            candidates[index].0 += 1;
+            if candidates[index].0 == 1 {
+                candidates[index].1 = matched.iter().rev().map(|record| record.id.clone()).collect();
+            }
+            if !receipt.request_ids.is_empty()
+                && receipt.request_ids.iter().collect::<HashSet<_>>()
+                    != matched.iter().map(|record| &record.id).collect::<HashSet<_>>()
+            {
+                rejected.insert(index);
             }
         }
     }

@@ -398,15 +398,50 @@ fn older_cache_without_observation_extras_remains_readable() {
 }
 
 #[test]
-fn cached_requests_cannot_be_reused_by_two_receipts_or_cross_the_batch_limit() {
+fn large_receipt_batch_keeps_unique_proofs_and_rejects_competitors_at_both_ends() {
     let (root, mut cache, at) = fixture();
-    cache
-        .capture_proxy(&[request("a", at, 0, 10, 2, 3)])
-        .unwrap();
-    let input = json!([receipt("one", at, 10, 2, 3), receipt("two", at, 10, 2, 3)]);
-    assert!(!positive(&check(root.path(), &[], &input)));
-    let too_many: Vec<_> = (0..=MAX_RECEIPTS)
-        .map(|index| receipt(&format!("live-{index}"), at, 10, 2, 3))
+    let requests: Vec<_> = (0..129)
+        .map(|index| request(&format!("request-{index}"), at, 0, 10 + index, 2, 3))
         .collect();
-    assert_eq!(check(root.path(), &[], &json!(too_many)), json!([]));
+    cache.capture_proxy(&requests).unwrap();
+    let mut receipts: Vec<_> = (0..129)
+        .map(|index| receipt(&format!("live-{index}"), at, 10 + index, 2, 3))
+        .collect();
+    receipts.push(receipt("last", at, 10, 2, 3));
+    let result = check(root.path(), &[], &json!(receipts));
+    let rows = result.as_array().unwrap();
+    assert_eq!(rows.len(), 130);
+    assert_eq!(rows[0]["rejected"], true);
+    assert_eq!(rows[129]["rejected"], true);
+    for index in 1..129 {
+        assert_eq!(rows[index]["id"], format!("live-{index}"));
+        assert_eq!(rows[index]["requestIds"], json!([format!("request-{index}")]));
+    }
+}
+
+#[test]
+fn nine_sequential_requests_revalidate_after_reopen_and_yield_to_competition() {
+    let (root, mut cache, at) = fixture();
+    let requests: Vec<_> = (0..9)
+        .map(|index| {
+            let mut row = request(&format!("request-{index}"), at, index * 100 - 900, 10, 2, 3);
+            row.started_at_ms = row.timestamp_ms - 50;
+            row
+        })
+        .collect();
+    cache.capture_proxy(&requests).unwrap();
+    let mut input = json!([receipt("nine", at, 90, 18, 27)]);
+    let proof = check(root.path(), &[], &input);
+    assert!(positive(&proof), "{proof}");
+    let ids: Vec<_> = requests.iter().rev().map(|row| &row.id).collect();
+    assert_eq!(proof[0]["requestIds"], json!(ids));
+    for key in ["model", "provider", "requestIds", "requestSignatures"] {
+        input[0][key] = proof[0][key].clone();
+    }
+    drop(cache);
+    assert_eq!(check(root.path(), &[], &input), proof);
+    let mut reopened = provider_cache::ProviderCache::default();
+    reopened.open(root.path(), Local::now().date_naive() - Days::days(1)).unwrap();
+    reopened.capture_proxy(&[request("competing", at, 0, 90, 18, 27)]).unwrap();
+    assert_eq!(check(root.path(), &[], &input)[0]["rejected"], true);
 }
