@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Codex++ 宣传片</title>
+<link rel="stylesheet" href="promo.css">
+</head>
+<body>
+<div id="stage">
+  <canvas id="bg" width="1920" height="1080"></canvas>
+
+  <!-- 1 开场 0–12 -->
+  <section class="scene" id="s-intro">
+    <div class="term"><div class="l1"><span class="prompt">›</span> <span class="tx"></span></div><div class="l2"><span class="tx"></span><span class="caret"></span></div></div>
+    <div class="brand">
+      <div class="ring r1"></div><div class="ring r2"></div><div class="ring r3"></div>
+      <img class="logo" src="/repo/apps/codex-plus-manager/src-tauri/icons/icon.png" alt="">
+      <h1 class="title"><span class="codex">Codex</span><span class="pp">++</span></h1>
+      <p class="tag">给你的 AI 编程 Agent 加一点「++」</p>
+      <p class="sub">万物皆拓展 <i></i> 本地服务 <i></i> 50+ Agent 共用一份供应商池</p>
+    </div>
+  </section>
+
+  <!-- 2 Agent 快切 12–20 -->
+  <section class="scene" id="s-agents">
+    <div class="marquee"></div>
+    <div class="word-wrap"><div class="word-index"></div><div class="word"></div><div class="word ghost"></div></div>
+    <div class="big50"><span class="num">50</span><span class="plus">+</span><div class="cap">个 Agent，一份供应商池</div></div>
+    <div class="unify"><h2>一个 Codex++，全部接管</h2><div class="pills"><span>共享供应商</span><span>统一会话</span><span>万物皆拓展</span></div></div>
+  </section>
+
+  <!-- 章节卡 -->
+  <section class="scene chapter" id="s-ch1" data-num="01" data-title="万物皆拓展" data-sub="说一句话，拓展就写好了"></section>
+  <section class="scene chapter" id="s-ch2" data-num="02" data-title="本地服务" data-sub="50 多个 Agent，共用一份供应商池"></section>
+  <section class="scene chapter" id="s-ch3" data-num="03" data-title="每个模型，各有空间" data-sub="按模型设置上下文窗口、价格与思考等级"></section>
+  <section class="scene chapter" id="s-ch4" data-num="04" data-title="用量与请求" data-sub="费用、token、缓存命中，每条请求都看得见"></section>
+
+  <!-- 3 对话造拓展 21.5–32 -->
+  <section class="scene" id="s-chat">
+    <div class="chat-win">
+      <div class="chat-bar"><i></i><i></i><i></i><span>新对话 · Codex</span></div>
+      <div class="chat-body">
+        <div class="msg user u1"><span>把发送按钮改成一个🐶狗头</span></div>
+        <div class="work w1">
+          <div class="work-head">工作中 <b class="secs"></b></div>
+          <div class="step"><span class="ico"></span>读取 Codex 页面结构</div>
+          <div class="step"><span class="ico"></span>写入拓展包 <code>dog-send-button/codexpp.json</code></div>
+          <div class="step"><span class="ico"></span>热重载拓展</div>
+          <div class="step"><span class="ico"></span>截图确认效果</div>
+        </div>
+        <div class="msg bot b1"><span class="tx"></span></div>
+        <div class="msg user u2"><span>再把上下文圆环改成彩虹渐变进度条</span></div>
+        <div class="msg bot b2"><span class="tx"></span></div>
+      </div>
+      <div class="composer">
+        <div class="input"><span class="tx"></span><span class="caret"></span><span class="ph">说说你想让拓展做什么…</span></div>
+        <div class="tools">
+          <span class="plus">＋</span><span class="perm">⚠ 完全访问</span>
+          <span class="grow"></span>
+          <span class="ctx-ring"><svg viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" class="trk"/><circle cx="10" cy="10" r="7.5" class="val"/></svg></span>
+          <span class="ctx-bar"><i></i></span><span class="ctx-pct">24%</span>
+          <span class="model">GPT-5.5 · 高 ⌄</span>
+          <span class="send"><span class="arrow">↑</span><span class="dog">🐶</span><span class="burst"></span></span>
+        </div>
+      </div>
+    </div>
+    <div class="callout c-send"><b>发送按钮</b> → 🐶</div>
+    <div class="callout c-ctx"><b>上下文圆环</b> → 彩虹进度条</div>
+    <div class="caption">agent 查看 Codex 页面结构 → 写出拓展 → 热重载 → 截图确认</div>
+  </section>
+
+  <!-- 4 拓展页 32–40 -->
+  <section class="scene" id="s-ext">
+    <div class="carousel"></div>
+    <div class="ext-label"><span class="k"></span><span class="v"></span></div>
+    <div class="chips"></div>
+    <div class="chips-title">能接管的，不止界面</div>
+  </section>
+
+  <!-- 5 网关拓扑 41.5–52 -->
+  <section class="scene" id="s-net">
+    <svg class="net" viewBox="0 0 1920 1080" width="1920" height="1080">
+      <defs>
+        <filter id="glow" x="-200%" y="-200%" width="500%" height="500%"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <linearGradient id="wire" x1="0" x2="1"><stop offset="0" stop-color="#7ba7ff" stop-opacity=".55"/><stop offset="1" stop-color="#9c86ff" stop-opacity=".55"/></linearGradient>
+      </defs>
+      <g class="wires"></g>
+      <g class="packets" filter="url(#glow)"></g>
+    </svg>
+    <div class="col-title left">Agent</div><div class="col-title right">共享供应商</div>
+    <div class="nodes"></div>
+    <div class="hub">
+      <div class="hub-head"><img src="/repo/apps/codex-plus-manager/src-tauri/icons/icon.png" alt=""><div><b>Codex++ 本地服务</b><span><i class="dot"></i>127.0.0.1:63130</span></div></div>
+      <div class="hub-sub">按模型名路由 · 协议互转 · 会话粘性 Key</div>
+      <div class="hub-stats"><div><small>请求</small><b class="n-req">0</b></div><div><small>换上游</small><b class="n-switch">0</b></div><div><small>冷却 Key</small><b>1</b></div><div><small>熔断</small><b>0</b></div></div>
+    </div>
+    <div class="toast"><b>智谱 GLM</b> 429 限流 → 自动换 <b>Kimi</b></div>
+    <div class="net-tags"><span>Anthropic ⇄ Chat ⇄ Responses ⇄ Gemini 协议互转</span><span>多 Key 轮换与冷却</span><span>ChatGPT / Copilot / SuperGrok 订阅登录进池</span></div>
+  </section>
+
+  <!-- 6/8/9 截图讲解（网关、窗口、用量） -->
+  <section class="scene shots" id="s-shots">
+    <div class="shot-holder"></div>
+    <div class="marks"></div>
+    <div class="side"></div>
+  </section>
+
+  <!-- 7 每模型窗口 65.5–76 -->
+  <section class="scene" id="s-window">
+    <div class="editor ed-list"><div class="ed-bar"><i></i><i></i><i></i><span>Codex → 连接与供应商 · 模型列表</span></div><pre class="code"></pre></div>
+    <div class="flow-arrow"><span>Codex++ 生成</span></div>
+    <div class="editor ed-toml"><div class="ed-bar"><i></i><i></i><i></i><span>~/.codex/config.toml</span></div><pre class="code"></pre></div>
+    <div class="editor ed-json"><div class="ed-bar"><i></i><i></i><i></i><span>model-catalogs/relay-default.json</span></div><pre class="code"></pre></div>
+    <div class="bars"></div>
+    <div class="window-note">Codex 按模型识别各自的窗口，自动压缩阈值跟着变</div>
+  </section>
+
+  <!-- 10 功能快剪 92–108 -->
+  <section class="scene" id="s-montage">
+    <div class="m-holder"></div>
+    <div class="m-label"><span class="idx"></span><span class="name"></span><span class="desc"></span></div>
+    <div class="wall"></div>
+    <div class="wall-text"><div class="w1">所有增强都能单独开关</div><div class="w2">不修改任何官方应用的安装文件</div></div>
+  </section>
+
+  <!-- 11 片尾 108–120 -->
+  <section class="scene" id="s-outro">
+    <div class="ring r1"></div><div class="ring r2"></div>
+    <img class="logo" src="/repo/apps/codex-plus-manager/src-tauri/icons/icon.png" alt="">
+    <h1 class="title"><span class="codex">Codex</span><span class="pp">++</span></h1>
+    <p class="tag">让 AI 编程 Agent 更顺手</p>
+    <div class="facts"><span>Windows · macOS · Linux</span><span>Rust + Tauri</span><span>AGPL-3.0 开源</span></div>
+    <div class="links"><span class="gh">github.com/BigPizzaV3/CodexPlusPlus</span><span class="site">codexpp.cc</span></div>
+  </section>
+
+  <div id="hud"><div class="tl"><b>CODEX++</b> <span>2.8.0</span></div><div class="tr"><span class="chap"></span></div><div class="bl"><span class="tc"></span></div><div class="prog"><i></i></div></div>
+  <div id="glitch"></div>
+  <div id="flash"></div>
+  <div id="vignette"></div>
+  <div id="fade"></div>
+</div>
+<div id="player"><button id="play">▶ 播放</button><input id="scrub" type="range" min="0" max="120" step="0.01" value="0"><span id="clock">0.00</span></div>
+<script src="promo.js"></script>
+</body>
+</html>
