@@ -811,7 +811,8 @@
       return { ok: false, modules: [], diagnostics: { reason: "unsupported-document-url", rewriters: {} } };
     }
     const active = activeRewriters();
-    if (!active.length) return { ok: false, modules: [], diagnostics: { reason: "disabled", rewriters: {} } };
+    const features = { fast: runtime.status().enabled, picker: root.__codexPlusGatewayPickerPatchRequested === true };
+    if (!active.length && !features.picker) return { ok: false, modules: [], diagnostics: { reason: "disabled", rewriters: {} } };
     // Rspack 的 runtime 排在所有入口脚本最后：26.1111 起入口从 4 个变成 5 个，
     // 只取前 4 个会漏掉 runtime 而退回 Vite 发现（missing-app-initial，issue #3103）。上限只防异常页面。
     const entries = [...(document?.scripts ?? [])].map((script) => script.src).filter((src) => {
@@ -825,7 +826,7 @@
       }
     }).slice(0, 12);
     const rspack = root.__codexPlusNativeFastRspack;
-    if (runtime.status().enabled && rspack) {
+    if ((features.fast || features.picker) && rspack) {
       const candidates = [];
       for (const url of entries.filter(url => /\/\d+\.[a-f\d]+\.js$/.test(url))) {
         let source;
@@ -836,11 +837,11 @@
       if (candidates.length === 1) {
         const { url, source } = candidates[0];
         try {
-          const factories = await (options.readRspackFactories ?? rspack.readFactories)(url);
+          const factories = await (options.readRspackFactories ?? rspack.readFactories)(url, 50, features);
           const chunkUrl = rspack.registrationChunk(source, url);
           if (!chunkUrl) return { ok: false, modules: [], diagnostics: { reason: "unsupported-rspack-register", rewriters: { fast: "unsupported-rspack-register" } } };
           const chunk = await (options.fetchText ?? defaultFetchText)(chunkUrl);
-          const prepared = rspack.prepare(chunk, chunkUrl, factories, rewriteModuleBase, entryModuleSource);
+          const prepared = rspack.prepare(chunk, chunkUrl, factories, rewriteModuleBase, entryModuleSource, features);
           for (const rewriter of active.filter(item => item.id !== "fast")) prepared.diagnostics.rewriters[rewriter.id] = "unsupported-rspack";
           return prepared;
         } catch {
@@ -968,7 +969,7 @@
     const diagnostics = { url, reason: "response-interception-armed" };
     if (details?.rewriters && typeof details.rewriters === "object") diagnostics.rewriters = { ...details.rewriters };
     const document = root.document;
-    if (!activeRewriters().length) return { ok: false, diagnostics: { url, reason: "disabled" } };
+    if (!activeRewriters().length && !root.__codexPlusGatewayPickerPatchRequested) return { ok: false, diagnostics: { url, reason: "disabled" } };
     if (!moduleUrl(url) || !document) return { ok: false, diagnostics: { url, reason: "unsupported-document-url" } };
     root.__codexPlusNativeFastModuleDiagnostics = diagnostics;
     let watchdog = null;

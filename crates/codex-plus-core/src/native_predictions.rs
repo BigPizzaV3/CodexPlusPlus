@@ -34,8 +34,7 @@ pub(crate) fn runtime_settings_with_local_api(
 
 /// 任一原生模块补丁开启时才需要模块补丁通道。
 pub(crate) fn native_modules_requested(settings: &BackendSettings) -> bool {
-    settings.enhancements_enabled
-        && (settings.codex_app_native_fast_unlock || settings.codex_app_native_predictions)
+    settings.native_model_modules_requested()
 }
 
 #[cfg(test)]
@@ -48,6 +47,11 @@ mod tests {
         let mut settings = BackendSettings::default();
         assert!(!settings.codex_app_native_predictions);
         assert!(!native_modules_requested(&settings));
+        let mut gateway = settings.clone();
+        gateway.active_relay_id = crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
+        assert!(native_modules_requested(&gateway));
+        gateway.enhancements_enabled = false;
+        assert!(!native_modules_requested(&gateway));
         settings.codex_app_native_predictions = true;
         assert!(native_modules_requested(&settings));
         settings.enhancements_enabled = false;

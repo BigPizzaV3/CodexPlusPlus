@@ -173,6 +173,9 @@ it("默认模型名称只使用后端有效配置身份，缺失时明确显示�
     },
   };
   assert.equal(resolveName(catalog), "Model B（供应商 B）");
+  const gateway = { ...catalog, model_provider: "codex-plus-gateway", effective_config_model: "provider-a/model-a", default_model: "provider-b/model-b" };
+  assert.equal(resolveName(gateway), "Model B（供应商 B）");
+  assert.equal(resolveName({ ...gateway, default_model: "" }), "未获取到默认模型");
   assert.equal(resolveName({ ...catalog, effective_config_model: "group/123" }), "group/123");
   assert.equal(resolveName({ ...catalog, effective_config_model: "" }), "未获取到默认模型");
   assert.equal(resolveName({ ...catalog, effective_config_model: null }), "未获取到默认模型");

@@ -73,7 +73,37 @@
       || source.includes("query.setData") && source.includes("personalAccessToken");
   }
 
-  async function readFactories(url, attempts = 50) {
+  function planPickerFactory(factories) {
+    const candidates = factories.filter(({ source }) => source.includes("onSelectDefault:") && source.includes("?.modelHostId??"));
+    if (candidates.length !== 1) return null;
+    const { key, source } = candidates[0];
+    const host = [...source.matchAll(/\b(?<host>[\w$]+)=[\w$]+\?\.modelHostId\?\?(?<conversationHost>[\w$]+)/g)];
+    const query = [...source.matchAll(/\{data:(?<data>[\w$]+),status:[\w$]+,isEnabled:[\w$]+,isFetching:[\w$]+,refetch:[\w$]+\}=.{0,80}?,[\w$]+=/g)];
+    const slider = [...source.matchAll(/(?<row>[\w$]+)=(?<models>[\w$]+)\?\.find\([\w$]+\),(?<options>[\w$]+)=(?<call>\(0,[\w$]+\.[\w$]+\)\((?<eligible>[\w$]+),\{sliderModelsConfig:[^{}]+,stripGptPrefix:[^{}]+\}\))/g)];
+    if (host.length !== 1 || query.length !== 1 || slider.length !== 1 || /\bimport\s*[.(]/.test(source)) return null;
+    const { row, models, options, call, eligible } = slider[0].groups;
+    const team = query[0].groups.data;
+    if (!source.includes(team + "?.isTeamCatalog") || !source.includes("0===" + options + ".length?void 0:()=>{let ") || !source.includes(row + ".defaultReasoningEffort}")) return null;
+    const target = "__codexPlusResetSlug";
+    const { host: modelHost, conversationHost } = host[0].groups;
+    const readSlug = `(window.__codexPlusGatewayPickerDefault ? window.__codexPlusGatewayPickerDefault(${conversationHost},${modelHost},${team}?.isTeamCatalog) : (${conversationHost}==="local"&&${modelHost}==="local"&&!${team}?.isTeamCatalog?"":undefined))`;
+    const originalRow = slider[0][0].slice(row.length + 1, slider[0][0].indexOf("," + options + "="));
+    const replacement = `${target}=${readSlug},${row}=${target}===undefined?${originalRow}:${eligible}?.find(model=>model.model===${target}),`
+      + `${options}=window.__codexPlusNativeFastRspack.pickerOptions(${target},${row},${call})`;
+    return { key, source: source.replace(slider[0][0], () => replacement) };
+  }
+
+  function pickerOptions(slug, row, options) {
+    if (slug === undefined) return options;
+    if (!row) return [];
+    const effort = row.defaultReasoningEffort;
+    if (!row.supportedReasoningEfforts.some(item => item.reasoningEffort === effort)) return [];
+    const id = row.model + ":" + effort;
+    if (options.some(option => option.id === id)) return options;
+    return [...options, { id, model: row.model, modelLabel: row.displayName, reasoningEffort: effort, powerSettingIndex: options.length }];
+  }
+
+  async function readFactories(url, attempts = 50, features = { fast: true }) {
     // 只读取当前文档已经执行的入口的模块表，不执行工厂，也不扫描所有懒加载分块。
     const namespace = await import(url);
     const modules = namespace.__webpack_require__?.m;
@@ -84,12 +114,12 @@
         const original = factory.__codexPlusNativeFastOriginal ?? factory;
         if (typeof original !== "function") return [];
         const source = Function.prototype.toString.call(original);
-        return relevant(source) ? [{ key, source }] : [];
+        return (features.fast && relevant(source) || features.picker && source.includes("onSelectDefault:") && source.includes("?.modelHostId??")) ? [{ key, source }] : [];
       });
       // 冷启动时入口已经执行，界面分块仍可能在加载；短暂等待，不执行工厂或触发额外请求。
-      const planned = planFactories(factories);
-      if (planned.ok || attempt + 1 >= attempts
-        || !["incomplete-gates", "invalid-factories"].includes(planned.diagnostics.reason)) return factories;
+      const planned = features.fast ? planFactories(factories.filter(factory => relevant(factory.source))) : null;
+      if (attempt + 1 >= attempts || (!features.picker || planPickerFactory(factories))
+        && (!planned || planned.ok || !["incomplete-gates", "invalid-factories"].includes(planned.diagnostics.reason))) return factories;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
@@ -158,18 +188,23 @@
     return dependency ? new URL(dependency.groups.path, url).href : null;
   }
 
-  function prepare(source, url, factories, rewriteModuleBase, entryModuleSource) {
+  function prepare(source, url, factories, rewriteModuleBase, entryModuleSource, features = { fast: true }) {
     const failed = reason => ({ ok: false, modules: [], diagnostics: { reason, rewriters: { fast: reason } } });
     if (typeof source !== "string" || source.length > 24 * 1024 * 1024
       || !/(?:export const __rspack_esm_id=\d+;)?export const __rspack_esm_ids=\[\d+\];export const __webpack_modules__=\{/.test(source)
       || source.includes("__rspack_esm_runtime") || source.includes("__codexPlusFastFactories")) return failed("unsupported-rspack-chunk");
-    const planned = planFactories(factories);
-    if (!planned.ok) return { ...failed(planned.diagnostics.reason), diagnostics: { ...planned.diagnostics, rewriters: { fast: planned.diagnostics.reason } } };
+    const fast = features.fast ? planFactories(features.picker ? factories.filter(factory => relevant(factory.source)) : factories) : null;
+    const picker = features.picker ? planPickerFactory(factories) : null;
+    const rewriters = {};
+    if (fast) rewriters.fast = fast.ok ? "patched" : fast.diagnostics.reason;
+    if (features.picker) rewriters.gatewayPicker = picker ? "patched" : "unsupported-picker";
+    const patched = [...(fast?.ok ? fast.factories : []), ...(picker ? [picker] : [])];
+    if (!patched.length) return { ok: false, modules: [], diagnostics: { reason: fast?.diagnostics.reason ?? "unsupported-picker", rewriters } };
     // script[src] 不走 import map；入口的静态依赖会走。依赖的原生 runtime 回调在入口启动前
     // 安装模块表代理，所有后续分块（包括重复工厂）仍由原生注册器处理，不改加载器或模块缓存。
     // 分块求值时先写下自己的地址：页面超时守护据此区分「没拦截到」和「回填了但补丁没执行」。
     const hook = `\nwindow.__codexPlusNativeFastResponseLoaded=${JSON.stringify(url)};\nexport const __rspack_esm_runtime = (__codexPlusRequire) => {
-      const __codexPlusFastFactories={${planned.factories.map(f => f.source.startsWith("function(")
+      const __codexPlusFastFactories={${patched.map(f => f.source.startsWith("function(")
         ? `[${JSON.stringify(f.key)}]:${f.source}` : f.source).join(",")}};
       __codexPlusRequire.m=new Proxy(__codexPlusRequire.m,{
         set(target,key,value,receiver){
@@ -188,14 +223,14 @@
       return {
         ok: true,
         modules: [{ url, patchedSource: rewritten.source + hook }],
-        diagnostics: { reason: "modules-prepared", format: "rspack", rewriters: { fast: "patched" }, matches: planned.diagnostics.matches, factories: planned.factories.map(f => f.key) },
+        diagnostics: { reason: "modules-prepared", format: "rspack", rewriters, matches: fast?.diagnostics.matches, factories: patched.map(f => f.key) },
       };
     } catch (error) {
       return failed(error instanceof Error ? error.message : "unsupported-rspack-syntax");
     }
   }
 
-  const api = { isRuntime, readFactories, planFactories, registrationChunk, prepare };
+  const api = { isRuntime, readFactories, planFactories, planPickerFactory, pickerOptions, registrationChunk, prepare };
   if (typeof module === "object" && module.exports) module.exports = api;
   if (typeof window === "object") window.__codexPlusNativeFastRspack = api;
 })();

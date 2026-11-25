@@ -536,6 +536,17 @@
     return matches.length === 1 && matches[0]?.relayMode === "pureApi" ? matches[0] : null;
   }
 
+  window.__codexPlusGatewayPickerDefault = (conversationHost, modelHost, teamCatalog) => {
+    if (conversationHost !== "local" || modelHost !== "local" || teamCatalog) return undefined;
+    if (!codexPlusBackendSettingsLoaded) return "";
+    const profile = codexModelCatalogActiveProfile();
+    if (profile?.id !== "codex-plus-gateway") return undefined;
+    if (codexPlusBackendSettings.codexMultiInstance && codexModelCatalog.model_provider === profile.id) {
+      return codexModelCatalog.default_model;
+    }
+    return codexPlusBackendSettings.activeRelayProfilePublic?.model ?? profile.model;
+  };
+
   function codexModelCatalogBelongsToProfile(profile) {
     const profileId = String(profile?.id || "").trim();
     return !!profileId && (codexModelCatalog.model_provider === profileId

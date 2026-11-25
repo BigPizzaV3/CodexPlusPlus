@@ -45,6 +45,7 @@ struct InterceptorState {
 
 #[derive(Clone, Copy)]
 struct ModuleSettings {
+    gateway_picker: bool,
     fast: crate::native_fast::RuntimeSettings,
     predictions: crate::native_predictions::RuntimeSettings,
 }
@@ -52,6 +53,7 @@ struct ModuleSettings {
 impl ModuleSettings {
     fn load(settings: &crate::settings::BackendSettings) -> Self {
         Self {
+            gateway_picker: settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID,
             fast: crate::native_fast::runtime_settings(settings),
             predictions: crate::native_predictions::runtime_settings(settings),
         }
@@ -61,6 +63,7 @@ impl ModuleSettings {
     fn prefixes(&self) -> Vec<&'static str> {
         let mut prefixes = Vec::new();
         let groups = [
+            (self.gateway_picker, FAST_PREFIXES),
             (
                 self.fast.enhancements_enabled && self.fast.codex_app_native_fast_unlock,
                 FAST_PREFIXES,
@@ -88,7 +91,8 @@ impl ModuleSettings {
 fn bootstrap_script(settings: ModuleSettings) -> String {
     // 只发送功能开关和本机 API 身份投影，不能序列化含供应商凭据的后端 settings。
     format!(
-        "{}\n;window.__codexPlusNativeFastUnlock.runtime.update({});\n{}\n;window.__codexPlusNativePredictions.runtime.update({});\nwindow.__codexPlusNativeFastPatchState='armed';\nwindow.__codexPlusNativeFastAssetPatchReady=true;",
+        "window.__codexPlusGatewayPickerPatchRequested={};\n{}\n;window.__codexPlusNativeFastUnlock.runtime.update({});\n{}\n;window.__codexPlusNativePredictions.runtime.update({});\nwindow.__codexPlusNativeFastPatchState='armed';\nwindow.__codexPlusNativeFastAssetPatchReady=true;",
+        settings.gateway_picker,
         crate::assets::native_fast_unlock_script(),
         json!(settings.fast),
         crate::assets::native_predictions_script(),
@@ -174,14 +178,30 @@ async fn initialize_module(
     );
     let current_bootstrap =
         bootstrap.replace("window.__codexPlusNativeFastAssetPatchReady=true;", "");
-    evaluate(session, &current_bootstrap).await?;
-    // 发现、改写与跨块完整性校验都在补丁脚本里完成；这里只校验地址与体积后登记新文档脚本。
-    let prepared = evaluate_with_timeout(
-        session,
-        "window.__codexPlusNativeFastUnlock.prepareDocumentModules().then(r=>({ok:r.ok===true,modules:r.ok===true?r.modules:[],diagnostics:r.diagnostics??null}))",
-        Duration::from_secs(30),
-    )
-    .await?;
+    let mut navigation_retries = 0;
+    let prepared = loop {
+        let preparation = async {
+            evaluate(session, &current_bootstrap).await?;
+            evaluate_with_timeout(
+                session,
+                "window.__codexPlusNativeFastUnlock.prepareDocumentModules().then(r=>({ok:r.ok===true,modules:r.ok===true?r.modules:[],diagnostics:r.diagnostics??null}))",
+                Duration::from_secs(30),
+            )
+            .await
+        }
+        .await;
+        match preparation {
+            Err(error) if navigation_retries < 2
+                && bridge_generation_is_current(generation)
+                && error.to_string().ends_with("(code Some(-32000)): Inspected target navigated or closed") =>
+            {
+                navigation_retries += 1;
+                diagnostic("bridge.native_module_preparation_navigation_retry", json!({ "attempt": navigation_retries }));
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            result => break result?,
+        }
+    };
     let value = prepared
         .pointer("/result/result/value")
         .context("native module preparation returned no value")?;
@@ -838,6 +858,7 @@ mod tests {
 
     fn module_settings(fast: bool, local_api: bool, predictions: bool) -> ModuleSettings {
         ModuleSettings {
+            gateway_picker: false,
             fast: crate::native_fast::RuntimeSettings {
                 enhancements_enabled: true,
                 codex_app_native_fast_unlock: fast,
@@ -860,6 +881,7 @@ mod tests {
             assert!(publish_bridge_generation(&generation));
             let server_generation = generation.clone();
             let server = tokio::spawn(async move {
+                let mut navigation_interrupted = false;
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
                 let mut commands = Vec::new();
@@ -873,6 +895,14 @@ mod tests {
                         "Runtime.evaluate" => {
                             let expression = request["params"]["expression"].as_str().unwrap();
                             if expression.contains("prepareDocumentModules()") {
+                                if prepared && !superseded && !navigation_interrupted {
+                                    navigation_interrupted = true;
+                                    socket.send(Message::Text(json!({
+                                        "id": request["id"],
+                                        "error": { "code": -32000, "message": "Inspected target navigated or closed" }
+                                    }).to_string().into())).await.unwrap();
+                                    continue;
+                                }
                                 if superseded {
                                     release_bridge_generation(&server_generation);
                                 }

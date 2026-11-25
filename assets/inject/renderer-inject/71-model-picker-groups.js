@@ -276,10 +276,10 @@
     saved.delete(name);
   }
 
-  /** 完整默认身份只读有效配置字段；缺失时不按供应商或目录顺序猜测。 */
   function codexPlusModelPickerDefaultModelName() {
-    const model = typeof codexModelCatalog?.effective_config_model === "string"
-      ? codexModelCatalog.effective_config_model.trim() : "";
+    const configured = codexModelCatalog?.model_provider === "codex-plus-gateway"
+      ? codexModelCatalog.default_model : codexModelCatalog?.effective_config_model;
+    const model = typeof configured === "string" ? configured.trim() : "";
     if (!model) return codexPlusModelPickerText().defaultUnavailable;
     const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
     const entry = metadata?.[model];

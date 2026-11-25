@@ -1750,6 +1750,12 @@ impl Default for BackendSettings {
 }
 
 impl BackendSettings {
+    pub fn native_model_modules_requested(&self) -> bool {
+        self.enhancements_enabled && (self.codex_app_native_fast_unlock
+            || self.codex_app_native_predictions
+            || self.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID)
+    }
+
     /// 当前设置对应的本地代理请求体上限（字节），已夹取到 32~512 MiB。
     pub fn helper_max_request_body_bytes(&self) -> usize {
         clamp_helper_max_request_body_mib(self.helper_max_request_body_mib) as usize * 1024 * 1024
