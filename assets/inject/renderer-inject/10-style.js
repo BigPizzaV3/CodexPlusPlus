@@ -432,6 +432,8 @@
       .codex-plus-provider-mode-switch { gap: 12px; }
       .codex-plus-provider-mode-switch button:disabled { cursor: default; }
       .codex-plus-provider-mode-switch button:disabled:not([aria-selected="true"]) { opacity: .5; }
+      .codex-plus-provider-default-model { display: inline-flex; flex: none; align-items: center; gap: 6px; color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-provider-default-model .codex-plus-menu-trigger { max-width: 260px; }
       .codex-plus-provider-mode-hint { min-width: 0; overflow: hidden; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
       /* 聚合时每行一个开关；「Codex 登录身份」贴在侧栏底部。 */
       .codex-plus-provider-item > .codex-plus-toggle { flex: 0 0 auto; }
@@ -495,10 +497,6 @@
       .codex-plus-provider-footer[data-tone="error"] { color: var(--codex-plus-danger, #dc2626); }
       .codex-plus-provider-footer[data-tone="warn"] { color: var(--codex-plus-warning, #d97706); }
       /* 网关 / 直连模式 banner：更醒目的全宽横幅（比普通 note 更有存在感）。 */
-      .codex-plus-provider-mode-bar { padding: 7px 16px; font-size: 12px; display: flex; align-items: center; gap: 8px; }
-      .codex-plus-provider-mode-bar[data-codex-gateway-mode="gateway"] { background: rgba(16,163,127,.07); border-bottom: 1px solid rgba(16,163,127,.18); color: var(--codex-plus-text); }
-      .codex-plus-provider-mode-bar[data-codex-gateway-mode="direct"] { background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); color: var(--codex-plus-text-secondary); }
-      .codex-plus-provider-mode-bar button { margin-left: auto; }
       .codex-plus-provider-note { padding: 8px 10px; border-radius: 6px; background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); color: var(--codex-plus-text-secondary); font-size: 12px; }
       .codex-plus-provider-empty { padding: 48px 24px; color: var(--codex-plus-text-secondary); }
       /* 详情改版：照 Codex 原生设置页——居中窄栏、14px 小节标题、圆角卡片里一行一项（左标题右控件）。 */
@@ -575,7 +573,7 @@
       details.codex-plus-provider-group > summary:hover { color: var(--codex-plus-text); }
       details.codex-plus-provider-group > summary::after { content: "config.toml / auth.json"; margin-left: 4px; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; font-weight: 400; }
       details.codex-plus-provider-group:not([open]) > summary { padding-bottom: 0; }
-      .codex-plus-provider-detail > .codex-plus-provider-mode-bar, .codex-plus-provider-detail > .codex-plus-provider-note { box-sizing: border-box; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); }
+      .codex-plus-provider-detail > .codex-plus-provider-note { box-sizing: border-box; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); }
       .codex-plus-provider-sidebar-header { padding: 4px 8px 10px; color: var(--codex-plus-text-secondary); font-weight: 500; letter-spacing: 0; }
       .codex-plus-provider-sidebar-header .codex-plus-action-button { min-height: 24px; padding: 0 8px; font-size: 12px; }
       /*

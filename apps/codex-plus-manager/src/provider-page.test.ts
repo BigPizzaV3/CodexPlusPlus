@@ -497,6 +497,24 @@ describe("供应商页的网关页签（44 分片）", () => {
     assert.match(aggregate, /data-codex-gateway-action="mode-direct"/);
   });
 
+  it("聚合时顶部可以选完整的默认模型，候选与管理器一致", async () => {
+    const pool = [poolEntry("gw-a"), poolEntry("gw-b", { models: ["b-1"] }), poolEntry("gw-c", { models: ["c-1"] })];
+    const result = gatewayResult(pool);
+    (result.gateway.bindings.codex as { poolExclude: string[] }).poolExclude = ["gw-c"];
+    const page = loadPage({ postJson: (path, payload) => (payload?.command ? result : listResult()) });
+    page.gwApply(result);
+    const bar = page.modeSwitch(true).replaceAll("&quot;", '"');
+    assert.match(bar, /data-codex-provider-menu-toggle="default-model" data-value="gw-a\/m-1"/);
+    assert.match(bar, /\["gw-a\/m-1","gw-a\/m-1"\],\["m-1","m-1"\],\["m-2","m-2"\],\["b-1","b-1"\]/);
+    assert.doesNotMatch(bar, /c-1/, "排除的供应商不进候选");
+    assert.doesNotMatch(bar, /不可用/);
+    assert.doesNotMatch(page.modeSwitch(false), /default-model/, "直连时不显示");
+    page.menuChanged("default-model", "b-1", null);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === "save_gateway_binding")!;
+    assert.equal(sent.payload.args.binding.model, "b-1");
+  });
+
   it("聚合时每家一个开关，只改 Codex 用哪些；别的 Agent 的默认不列", async () => {
     const pool = [poolEntry("gw-a"), poolEntry("gw-b"), poolEntry("kimi", { owner: "claude" })];
     const result = gatewayResult(pool);

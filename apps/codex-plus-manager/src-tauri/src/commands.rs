@@ -10280,9 +10280,20 @@ pub fn switch_relay_profile(
                 }
                 (None, None) => "供应商已切换。".to_string(),
             };
+            // 切到官方登录 / 内置 OpenAI 供应商后本地账号用不了：退回「不登录」并说一声。
+            let (message, settings) = match codex_plus_core::chatgpt_compat_apply::fall_back_when_blocked(&home, &store) {
+                Ok(true) => {
+                    crate::gateway_commands::notify_settings_changed();
+                    (
+                        format!("{message}{}", codex_plus_core::chatgpt_compat_apply::FELL_BACK_NOTICE),
+                        store.load().unwrap_or(result.settings),
+                    )
+                }
+                _ => (message, result.settings),
+            };
             ok(
                 &message,
-                relay_switch_payload(result.settings, status, result.backup_path),
+                relay_switch_payload(settings, status, result.backup_path),
             )
         }
         Err(error) => {

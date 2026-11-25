@@ -703,6 +703,11 @@
       void codexPlusLoginIdentityChoose(value);
       return;
     }
+    if (kind === "default-model") {
+      const current = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+      if (value && value !== current) void codexPlusGatewayConnect(value);
+      return;
+    }
     if (kind === "new") {
       if (value === "toggle-others") {
         codexPlusGatewayPageState.showOthers = !codexPlusGatewayPageState.showOthers;
@@ -1019,7 +1024,7 @@
         : `<div class="codex-plus-provider-help">${codexPlusGatewayPageState.busy === "load" ? "正在读取共享供应商…" : escapeHtml(codexPlusGatewayPageState.status || "还没有读取共享供应商")} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`
       : renderCodexPlusProviderList();
     const detailBody = gatewayMode
-      ? `${renderCodexPlusGatewayModeBar()}${renderCodexPlusGatewayDetail()}`
+      ? `${renderCodexPlusGatewayDetail()}`
       : renderCodexPlusProviderDetail();
     // 「+ 新建」：聚合时加共享供应商；直连时加直连供应商，或直连专用的模型聚合 / 故障转移。
     const newOptions = gatewayMode
@@ -1276,6 +1281,7 @@
     const state = codexPlusProviderPageState;
     if (!document.querySelector("[data-codex-provider-panel]")) return;
     if (state.tab === "gateway") codexPlusGatewayPoll();
+    codexPlusLoginIdentityPoll();
     if (state.dirty || state.busy || document.hidden) return;
     void postJson("/providers/list", {}).then((result) => {
       if (result?.status !== "ok" || result.revision === state.data?.revision) return;

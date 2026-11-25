@@ -18,6 +18,8 @@ export type NativeAuthState = {
   localLogin?: boolean;
   /** 「本地账号」现在不能用的原因（官方登录供应商等）。 */
   localLoginBlockedReason?: string | null;
+  /** 选了「本地账号」但没开自动接管：提醒要从 Codex++ 启动 Codex。 */
+  localLoginLaunchHint?: string | null;
 };
 
 export type NativeAuthResult = NativeAuthState & { status: string; message: string };

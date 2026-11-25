@@ -1218,14 +1218,21 @@ where
 
 /// 按开关对齐兼容服务：写入 / 还原 `~/.codex`，起 / 停本地服务。只记日志，不返回错误。
 async fn reconcile_chatgpt_compat(home: &Path, settings: &BackendSettings) {
+    // 当前供应商用不了本地账号：设置也退回「不登录」，不再每次启动都试着写、再被拒。
+    let fell_back = crate::chatgpt_compat_apply::fall_back_when_blocked(
+        home,
+        &crate::settings::SettingsStore::default(),
+    )
+    .unwrap_or(false);
+    let enabled = settings.chatgpt_compat_enabled && !fell_back;
     // 资料要在写假登录之前定：登录 token 里也带邮箱和名字。
     crate::chatgpt_compat::set_profile(crate::chatgpt_compat::Profile::from_settings(
         &settings.chatgpt_compat_name,
         &settings.chatgpt_compat_username,
         &settings.chatgpt_compat_email,
     ));
-    match crate::chatgpt_compat_apply::reconcile(home, settings.chatgpt_compat_enabled) {
-        Ok(()) if settings.chatgpt_compat_enabled => {
+    match crate::chatgpt_compat_apply::reconcile(home, enabled) {
+        Ok(()) if enabled => {
             if let Err(error) = crate::chatgpt_compat::start().await {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "launcher.chatgpt_compat_start_failed",

@@ -2359,6 +2359,8 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 里显示的名字、用户名和邮箱，只在本机使用，留空用默认值":
     "The name, username and email Codex shows. Used only on this computer; leave blank for the defaults",
   "本地账号": "Local account",
+  "现在的供应商要用真实登录，本地账号用不了，Codex 登录身份已退回「不登录」。": " The current provider needs a real sign-in, so the local account can't be used; Codex sign-in identity is back to \"Not signed in\".",
+  "本地账号要从 Codex++ 启动 Codex 才生效；想直接打开 Codex 也生效，请先在首页打开「自动接管官方 App」": "The local account only works when Codex is launched from Codex++. To have it work when you open Codex directly, turn on \"Auto-takeover of the official app\" on the home page first.",
   "邮箱": "Email",
   "用户名": "Username",
   "名字": "Name",

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Check, Loader2, RefreshCw, RotateCw } from "lucide-react";
 import { t } from "./i18n";
 import { loginIdentityArgs, nativeAuthSelection, savedAuthLabel, type NativeAuthResult, type NativeAuthState } from "./native-auth-model";
@@ -32,7 +33,17 @@ function useSavedAuthAccounts() {
   };
   useEffect(() => {
     void reload();
-    return () => { sequence.current += 1; };
+    // 别处改了登录身份（Codex 里的供应商页、另一个窗口）：后端发设置变更事件，这里跟着重读。
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen("codex-plus-settings-changed", () => { if (!disposed) void reload(); })
+      .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      stop?.();
+      sequence.current += 1;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return { state, setState, loading, error, setError, reload };
@@ -88,7 +99,7 @@ export function NativeAuthControl({ onRestart, form, onSave }: {
       setRestarting(false);
     }
   };
-  // 提示一次只显示一条，放进卡片里，不再在卡片外面散成几行：未应用的选择 > 错误 > 配置不一致 > 不能重启的原因 > 需要重启。
+  // 提示一次只显示一条，放进卡片里，不再在卡片外面散成几行：未应用的选择 > 错误 > 配置不一致 > 不能重启的原因 > 本地账号要从 Codex++ 启动 > 需要重启。
   const notice: { text: string; tone: "error" | "muted"; role?: "alert" | "status" } | null = pending
     ? { text: t("选择还没生效，点「应用」后才会写入 Codex 的登录凭证。"), tone: "muted", role: "status" }
     : error
@@ -97,6 +108,8 @@ export function NativeAuthControl({ onRestart, form, onSave }: {
         ? { text: state.drift, tone: "error", role: "status" }
         : state?.restartBlockedReason
           ? { text: t(state.restartBlockedReason), tone: "muted", role: "status" }
+          : state?.localLoginLaunchHint && value === "local"
+            ? { text: t(state.localLoginLaunchHint), tone: "muted", role: "status" }
           : state?.managed
             ? { text: t("更改登录选择后，请关闭所有 Codex 实例并重新启动。"), tone: "muted", role: "status" }
             : null;

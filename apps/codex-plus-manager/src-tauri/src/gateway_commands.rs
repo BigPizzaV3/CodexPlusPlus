@@ -174,6 +174,8 @@ pub struct NativeAuthState {
     pub local_login: bool,
     /// 「本地账号」现在不能用的原因（官方登录供应商等），下拉里置灰并显示。
     pub local_login_blocked_reason: Option<String>,
+    /// 选了「本地账号」但没开自动接管：从 Dock 直接打开的 Codex 没有本地后端，要提醒从 Codex++ 启动。
+    pub local_login_launch_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -637,6 +639,8 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         codex_on_gateway(&settings, &gateway),
     )?
     .map(str::to_string);
+    let local_login_launch_hint = (local_login && !settings.codex_app_auto_takeover)
+        .then(|| LOCAL_LOGIN_LAUNCH_HINT.to_string());
     Ok(NativeAuthState {
         managed: settings.native_auth_selection.is_some(),
         selection: settings.native_auth_selection,
@@ -647,8 +651,12 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         restart_blocked_reason: blocked_reason.map(str::to_string),
         local_login,
         local_login_blocked_reason,
+        local_login_launch_hint,
     })
 }
+
+const LOCAL_LOGIN_LAUNCH_HINT: &str =
+    "本地账号要从 Codex++ 启动 Codex 才生效；想直接打开 Codex 也生效，请先在首页打开「自动接管官方 App」";
 
 fn codex_on_gateway(
     settings: &codex_plus_core::settings::BackendSettings,
@@ -693,6 +701,7 @@ pub fn get_native_auth_state() -> CommandResult<NativeAuthState> {
             restart_blocked_reason: None,
             local_login: false,
             local_login_blocked_reason: None,
+            local_login_launch_hint: None,
         }),
     }
 }
@@ -778,6 +787,7 @@ pub fn set_codex_login_identity(
                 restart_blocked_reason: None,
                 local_login: false,
                 local_login_blocked_reason: None,
+                local_login_launch_hint: None,
             })),
     }
 }
@@ -819,6 +829,18 @@ pub const SETTINGS_CHANGED_EVENT: &str = "codex-plus-settings-changed";
 pub(crate) fn notify_settings_changed() {
     if let Some(app) = APP.get() {
         let _ = tauri::Emitter::emit(app, SETTINGS_CHANGED_EVENT, ());
+    }
+}
+
+/// Codex 断开网关后若落到官方登录 / 内置 OpenAI 供应商，本地账号用不了：退回「不登录」，返回要追加的提示。
+fn codex_login_fallback_notice(agent: &str) -> &'static str {
+    if agent != "codex" {
+        return "";
+    }
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    match codex_plus_core::chatgpt_compat_apply::fall_back_when_blocked(&home, &SettingsStore::default()) {
+        Ok(true) => codex_plus_core::chatgpt_compat_apply::FELL_BACK_NOTICE,
+        _ => "",
     }
 }
 
@@ -1044,9 +1066,10 @@ pub fn disable_gateway_binding_full_switch(
         );
         apply::disable_binding(&ctx, &settings, &agent)
     })();
+    let notice = if result.is_ok() { codex_login_fallback_notice(&agent) } else { "" };
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
-        &format!("{name} 已断开并切回直连，新开的会话生效。"),
+        &format!("{name} 已断开并切回直连，新开的会话生效。{notice}"),
         "断开失败",
         result,
     )
@@ -1094,9 +1117,10 @@ pub fn disable_gateway_binding(
         let (ctx, settings) = validate_disconnect_preview(&agent, preview_token.as_deref())?;
         apply::disable_binding(&ctx, &settings, &agent)
     })();
+    let notice = if result.is_ok() { codex_login_fallback_notice(&agent) } else { "" };
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
-        &format!("{name} 已断开并还原，新开的会话生效。"),
+        &format!("{name} 已断开并还原，新开的会话生效。{notice}"),
         "断开失败",
         result,
     )
@@ -1129,9 +1153,10 @@ pub fn use_gateway_own_model(
         };
         codex_plus_core::gateway::own_models::use_own_model(&ctx, &settings, &agent, &model)
     })();
+    let notice = if result.is_ok() { codex_login_fallback_notice(&agent) } else { "" };
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
-        &format!("{name} 已改用自带的 {}，直连、不经 Codex++，新开的会话生效。", model.trim()),
+        &format!("{name} 已改用自带的 {}，直连、不经 Codex++，新开的会话生效。{notice}", model.trim()),
         "切换失败",
         result,
     )

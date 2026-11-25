@@ -76,6 +76,35 @@ pub fn release(home: &Path) -> anyhow::Result<()> {
     if enabled() { disable(home) } else { Ok(()) }
 }
 
+/// 换供应商后本地账号用不了了（切到官方登录 / 内置 OpenAI 供应商）：还原假登录，设置里的「本地账号」
+/// 退回「不登录」，免得一直挂着一个生效不了的选择。返回是否退回了，调用方据此提示用户。
+pub fn fall_back_when_blocked(home: &Path, store: &crate::settings::SettingsStore) -> anyhow::Result<bool> {
+    let mut settings = store.load()?;
+    if !settings.chatgpt_compat_enabled {
+        return Ok(false);
+    }
+    let on_gateway = settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+        && crate::gateway::store::GatewayStore::default()
+            .load()
+            .ok()
+            .and_then(|gateway| gateway.binding(&crate::tools::ToolId::Codex).map(|binding| binding.enabled))
+            .unwrap_or(false);
+    if local_login_blocker(home, on_gateway)?.is_none() {
+        return Ok(false);
+    }
+    release(home)?;
+    settings.chatgpt_compat_enabled = false;
+    store.save(&settings)?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "chatgpt_compat.fell_back",
+        json!({ "activeRelayId": settings.active_relay_id }),
+    );
+    Ok(true)
+}
+
+/// 本地账号退回「不登录」时给用户看的一句话。
+pub const FELL_BACK_NOTICE: &str = "现在的供应商要用真实登录，本地账号用不了，Codex 登录身份已退回「不登录」。";
+
 /// 「本地账号」当前能不能用：经本地服务时总能用（不登录时网关供应商自带凭据）；
 /// 直连时只有自带凭据的自定义供应商能用，内置 OpenAI / 官方登录供应商不行。
 pub fn local_login_blocker(home: &Path, on_gateway: bool) -> anyhow::Result<Option<&'static str>> {
@@ -411,6 +440,29 @@ mod tests {
         assert!(local_login_blocker(home, true).unwrap().is_none());
         std::fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
         assert!(local_login_blocker(home, false).unwrap().is_none());
+    }
+
+    #[test]
+    fn fall_back_when_blocked_resets_local_login_after_switching_to_builtin_openai() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        let store = crate::settings::SettingsStore::new(home.join("settings.json"));
+        let mut settings = store.load().unwrap();
+        settings.chatgpt_compat_enabled = true;
+        store.save(&settings).unwrap();
+        std::fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+        reconcile(home, true).unwrap();
+        // 还是自定义供应商：不动。
+        assert!(!fall_back_when_blocked(home, &store).unwrap());
+        assert!(enabled());
+        // 换成内置 OpenAI：还原假登录，设置退回「不登录」。
+        std::fs::write(home.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+        assert!(fall_back_when_blocked(home, &store).unwrap());
+        assert!(!enabled());
+        assert!(!store.load().unwrap().chatgpt_compat_enabled);
+        // 已退回过，再调不重复提示。
+        assert!(!fall_back_when_blocked(home, &store).unwrap());
     }
 
     #[test]

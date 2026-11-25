@@ -320,29 +320,34 @@
     const hint = connecting
       ? "正在切换…"
       : gatewayMode
-        ? `打开的供应商合在一起给 Codex 用，模型都列进模型选择器${model ? `；默认模型 ${model}` : ""}。需要 Codex++ 在后台运行。`
+        ? "打开的供应商合在一起给 Codex 用，模型都列进模型选择器。需要 Codex++ 在后台运行。"
         : "Codex 直接连一家，关掉 Codex++ 也能用（需协议转换的除外）；换一家点「使用」。";
     return `<div class="codex-plus-provider-tabs codex-plus-provider-mode-switch">
       <div class="codex-plus-provider-tab-group" role="radiogroup" aria-label="Codex 的连接方式">
         ${button("aggregate", "聚合", canSwitch ? "聚合：Codex 经 Codex++ 本地服务，下面打开的供应商合在一起，不用切换" : "先在 Codex++「连接与供应商」的「更多设置」里打开供应商配置切换", gatewayMode, canSwitch)}
         ${button("direct", "直连", "直连：断开本地服务，还原接入前的直连配置；会先列出要还原的文件，确认后才改", !gatewayMode, true)}
       </div>
+      ${gatewayMode ? renderCodexPlusGatewayDefaultModel(model, busy) : ""}
       <span class="codex-plus-provider-mode-hint">${escapeHtml(hint)}</span>
     </div>`;
   }
 
-  /** 聚合时选中的那家：不是默认模型所在的那家，就给一个「设为默认模型」。 */
-  function renderCodexPlusGatewayModeBar() {
-    const busy = Boolean(codexPlusGatewayPageState.busy);
-    const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
-    const entry = codexPlusGatewayPageState.isNew ? null : codexPlusGatewaySelected();
-    const entryModel = entry?.models?.[0] || "";
-    const isDefault = entry && model.toLowerCase().startsWith(`${entry.id}/`.toLowerCase());
-    if (!entry || !entryModel || entry.enabled === false || isDefault) return "";
-    return `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="gateway">
-        <span>新对话默认用${model ? ` ${escapeHtml(model)}` : "的模型还没选"}。</span>
-        <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="use-selected" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在切换…" : `设为默认模型（${escapeHtml(entryModel)}）`}</button>
-      </div>`;
+  /** 聚合时的「默认模型」：和管理器顶部同一份候选（打开、没排除的供应商的模型 + 模型组），选了就改 Codex 绑定的默认模型。 */
+  function renderCodexPlusGatewayDefaultModel(model, busy) {
+    const payload = codexPlusGatewayPageState.payload;
+    const exclude = payload?.gateway?.bindings?.codex?.poolExclude || [];
+    const models = codexPlusGatewayModel.agentModels(payload, exclude);
+    const options = [
+      ...(model ? [] : [["", "选择默认模型"]]),
+      // 「供应商 id/模型」这种带前缀的写法不在候选里，但能路由就照常显示。
+      ...(model && !models.some((item) => item.toLowerCase() === model.toLowerCase())
+        ? [[model, codexPlusGatewayModel.modelRoutable(payload, model, exclude) ? model : `${model}（不可用）`]]
+        : []),
+      ...models.map((item) => [item, item]),
+    ];
+    if (!options.length || (!model && !models.length)) return "";
+    const current = models.find((item) => item.toLowerCase() === model.toLowerCase()) || model;
+    return `<span class="codex-plus-provider-default-model"><span>默认模型</span>${codexPlusProviderMenu("default-model", current, options, "Codex 默认模型", busy ? "disabled" : "")}</span>`;
   }
 
   function renderCodexPlusGatewayList() {
@@ -460,7 +465,6 @@
         ${renderCodexPlusGatewayList()}
       </aside>
       <section class="codex-plus-provider-detail">
-        ${renderCodexPlusGatewayModeBar()}
         ${renderCodexPlusGatewayDetail()}
       </section></div>${renderCodexPlusGatewayDisconnectDialog()}`;
   }
@@ -562,11 +566,6 @@
         break;
       }
       case "connect": await codexPlusGatewayConnect(); break;
-      case "use-selected": {
-        const model = entry?.models?.[0] || "";
-        if (entry && model) await codexPlusGatewayConnect(`${entry.id}/${model}`);
-        break;
-      }
       case "disconnect": await codexPlusGatewayOpenDisconnect(); break;
       case "mode-aggregate":
         if (await codexPlusProviderConfirmDiscard()) await codexPlusGatewayConnect();
@@ -638,13 +637,27 @@
       ["none", "不登录"],
     ];
     const help = value === "local"
-      ? `代码审查、图像、资料库等入口已解锁，模型仍走所选供应商。<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="edit-local-profile">编辑资料</button>`
+      ? `代码审查、图像、资料库等入口已解锁，模型仍走所选供应商。${login.localLoginLaunchHint ? escapeHtml(login.localLoginLaunchHint) + "。" : ""}<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="edit-local-profile">编辑资料</button>`
       : escapeHtml(login.drift || login.restartBlockedReason || (blocked ? `本地账号暂不可用：${blocked}` : "选「本地账号」可以用 API Key 解锁 ChatGPT 专属入口。"));
     return `<div class="codex-plus-provider-login">
       <div class="codex-plus-provider-sidebar-header"><span>Codex 登录身份</span></div>
       ${codexPlusProviderMenu("login-identity", value, options, "Codex 登录身份", state.loginBusy ? "disabled" : "")}
       <div class="codex-plus-provider-help">${state.loginBusy ? "正在保存…" : help}${state.loginBusy ? "" : " 改完重启 Codex 后生效。"}</div>
     </div>`;
+  }
+
+  /** 别处（管理器）改了登录身份：变了才重绘；正在保存或菜单开着时不打断。 */
+  function codexPlusLoginIdentityPoll() {
+    const state = codexPlusGatewayPageState;
+    if (state.loginBusy || document.hidden) return;
+    void codexPlusGatewayCall("get_native_auth_state").then((result) => {
+      if (result?.status !== "ok" || state.loginBusy) return;
+      const pick = (login) => JSON.stringify([login?.selection, login?.localLogin, login?.localLoginBlockedReason, login?.localLoginLaunchHint, login?.drift, login?.restartBlockedReason, login?.actualLabel, (login?.accounts || []).map((account) => account.id)]);
+      if (pick(result) === pick(state.login)) return;
+      state.login = result;
+      if (document.querySelector(".codex-plus-provider-menu-popover")) return;
+      renderCodexPlusProviderPage();
+    });
   }
 
   /** 别处改了池子：没有未保存修改、也没有弹窗时静默刷新。 */
