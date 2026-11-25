@@ -54,7 +54,7 @@ describe("session more menu lifecycle", () => {
       "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
       "codexPlusRegistry", "codexPlusExtensionItems", "HTMLElement", "actionButtonClass",
       "appendCodexPlusExtensionRowActions", "syncActionGroupLayout", "setTimeout",
-      `${source.split("  function tryAttachButton(row)")[0]}
+      `${source.split(/^  function tryAttachButton\(/m)[0]}
        return { pruneSessionMoreMenus, pruneRemovedSessionActions, attachButton, closeSessionMoreMenus, installSessionMoreMenuAutoClose };`,
     )(
       {
@@ -353,7 +353,7 @@ describe("session row action buttons", () => {
       "codexDeleteVersion", "codexActionGroupVersion", "actionGroupFromRow", "sessionRefFromRow",
       "codexPlusRegistry", "codexPlusExtensionItems", "appendCodexPlusExtensionRowActions", "syncActionGroupLayout",
       "runCodexPlusExtensionCallback", "releaseDeleteFocus", "actionTooltipClass",
-      `${source.split("  function tryAttachButton(row)")[0]}
+      `${source.split(/^  function tryAttachButton\(/m)[0]}
        return { attachButton, trashIconSvg };`,
     )(
       document, { setTimeout: () => 0, clearTimeout: () => {}, requestAnimationFrame: () => 0 }, FakeElement,
@@ -1483,9 +1483,9 @@ return (loaded) => { codexPlusBackendSettingsLoaded = loaded; renderCodexPlusMen
 
 /** 从注入脚本里取出 `shouldScheduleScan`，配上可控的依赖来跑。 */
 function shouldScheduleScanRuntime(renderer: string) {
-  const start = renderer.indexOf("  function shouldScheduleScan(");
+  const start = renderer.indexOf("  function isVirtualizedTurnMutation(");
   const end = renderer.indexOf("\n  function runScheduledScan(", start);
-  assert.ok(start >= 0 && end > start, "shouldScheduleScan not found in renderer-inject.js");
+  assert.ok(start >= 0 && end > start, "scan scheduling functions not found in renderer-inject.js");
   const source = renderer.slice(start, end);
   const factory = new Function(
     "isChatContentMutation",
