@@ -561,8 +561,8 @@ impl Scan {
                     break;
                 }
                 Ok(_) => {
-                    self.issues += 1;
-                    self.unknown_count_scope = true;
+                    // 本轮没有读取名额时保留队列，不把等待当作来源损坏。
+                    verify_later.push(reader.source);
                 }
                 Err(error) => {
                     self.issues += 1;

@@ -40,6 +40,45 @@ fn next_count() -> String {
 }
 
 #[test]
+fn occupied_reader_slots_defer_live_sources_without_reporting_corruption() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions)?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let live = sessions.join(format!("rollout-{FIRST}.jsonl"));
+    fs::write(&live, rollout(FIRST))?;
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    assert!(scan.round(&mut store, &root, cutoff, &names, LIMIT).complete);
+    let padding = format!("{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n", "x".repeat(65536));
+    for (i, slot) in [&mut scan.active, &mut scan.deferred].into_iter().enumerate() {
+        let path = root.join(format!("history-{i}.jsonl"));
+        fs::write(&path, format!("{}{}", rollout(SECOND), padding.repeat(96)))?;
+        let mut reader = SourceReader::restore(&store, &path)?;
+        let mut budget = Budget::new(std::iter::empty());
+        budget.read_left = 65536;
+        assert!(!reader.step(&mut store, cutoff, &mut budget, &names, LIMIT)?);
+        assert!(reader.has_open_reader());
+        *slot = Some(reader);
+    }
+    writeln!(fs::OpenOptions::new().append(true).open(&live)?, "{}", next_count())?;
+    let report = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert_eq!(report.issues, 0, "waiting for a reader is not a source error");
+    assert!(scan.remaining.contains(&live), "the deferred append must remain queued");
+    for _ in 0..16 {
+        let report = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+        assert_eq!(report.issues, 0);
+        if store.checkpoint(&live)?.unwrap().1.offset == live.metadata()?.len() {
+            return Ok(());
+        }
+    }
+    anyhow::bail!("deferred live append did not resume")
+}
+
+#[test]
 fn older_open_logs_publish_concurrent_appends_while_history_advances() -> anyhow::Result<()> {
     use std::time::{Duration, UNIX_EPOCH};
 
