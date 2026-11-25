@@ -2,7 +2,11 @@ use super::super::SourceStamp;
 use super::{Store, decode_path};
 use crate::usage_history::{
     normalize_session_id,
-    structured::{FileState, MAX_LINE, exec_receipt, execution_observations::DETAIL_MS, log_file},
+    structured::{
+        FileState, MAX_LINE, exec_receipt,
+        execution_observations::{DETAIL_MS, LIST_MS},
+        log_file,
+    },
 };
 use anyhow::{Context, Result, ensure};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -14,10 +18,14 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::LazyLock;
 
 const MAX_DETAIL_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ARCHIVE_DETAIL_OFFSET: u64 = 32 * 1024 * 1024;
 const MAX_OUTPUTS: usize = 64;
+pub(super) const COMPACTABLE_METADATA: &str =
+    "name IS NOT NULL AND name != 'write_stdin' AND substr(name,-12) != '.write_stdin'
+     AND substr(name, 1, 5) != 'mcp__' AND substr(COALESCE(namespace,''), 1, 5) != 'mcp__'";
 
 pub(in super::super) struct CompactionCursor(i64, i64, String);
 
@@ -30,6 +38,25 @@ fn local_midnight(day: NaiveDate) -> Result<i64> {
 }
 
 impl Store {
+    pub(in super::super) fn compact_execution_metadata(
+        &mut self,
+        now_ms: i64,
+        batch: u32,
+    ) -> Result<()> {
+        // 技能名称单独存于 token_activity，MCP 名称和轮询识别仍需保留。
+        self.db
+            .prepare_cached(&format!(
+                "UPDATE execution_observations SET name=NULL, namespace=NULL
+             WHERE (source_id, position) IN (
+                 SELECT source_id, position FROM execution_observations
+                 WHERE is_output = 0 AND {COMPACTABLE_METADATA} AND timestamp_ms <= ?1
+                 ORDER BY timestamp_ms LIMIT ?2
+             )"
+            ))?
+            .execute(params![now_ms - LIST_MS, batch])?;
+        Ok(())
+    }
+
     pub(in super::super) fn compact_executions(
         &mut self,
         cutoff: NaiveDate,
@@ -68,8 +95,10 @@ impl Store {
                 break;
             }
             let (count, first, last, consistent, closed, partial, skill, mcp, poll) = tx.query_row(
-                "WITH rows AS (
-                    SELECT e.timestamp_ms, e.name, e.namespace,
+                &format!("WITH rows AS (
+                    SELECT e.timestamp_ms,
+                        CASE WHEN {COMPACTABLE_METADATA} THEN NULL ELSE e.name END AS name,
+                        CASE WHEN {COMPACTABLE_METADATA} THEN NULL ELSE e.namespace END AS namespace,
                         COALESCE(CAST(s.checkpoint AS TEXT) ->> '$.resume_pending', 1) = 0 AS closed,
                         s.activity_truncated AS partial
                     FROM execution_observations e JOIN token_sources s ON s.id = e.source_id
@@ -84,7 +113,7 @@ impl Store {
                         ORDER BY a.source_id DESC LIMIT 1
                     ), 0),
                     COALESCE(substr(min(name),1,5) = 'mcp__' OR substr(min(namespace),1,5) = 'mcp__', 0),
-                    COALESCE(min(name) = 'write_stdin' OR min(name) LIKE '%.write_stdin', 0) FROM rows",
+                    COALESCE(min(name) = 'write_stdin' OR substr(min(name),-12) = '.write_stdin', 0) FROM rows"),
                 params![session, id, batch + 1],
                 |row| Ok((row.get::<_, usize>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
                     row.get::<_, bool>(3)?, row.get::<_, bool>(4)?, row.get::<_, bool>(5)?,
@@ -215,22 +244,24 @@ impl ExecutionQuery {
 }
 
 // 先按时间索引找到调用身份，再检查该身份的所有副本。跨范围的冲突不能被过滤掉。
-const CALLS: &str = "
+static CALLS: LazyLock<String> = LazyLock::new(|| {
+    format!("
 WITH candidates AS (
     SELECT DISTINCT e.session_id, e.call_id FROM execution_observations e
     WHERE e.is_output = 0 AND e.timestamp_ms >= ?1 AND e.timestamp_ms < ?2
       AND (?3 IS NULL OR e.session_id IN (
           SELECT s.id FROM json_each(?3) j JOIN token_sessions s ON s.session = j.value
       ))
-), identities AS (
-    SELECT e.session_id, e.call_id, MIN(e.timestamp_ms) AS at,
-        MIN(COALESCE(e.name, '')) AS name, MIN(COALESCE(e.namespace, '')) AS namespace,
-        MIN(e.timestamp_ms) != MAX(e.timestamp_ms)
-          OR MIN(COALESCE(e.name, '')) != MAX(COALESCE(e.name, ''))
-          OR MIN(COALESCE(e.namespace, '')) != MAX(COALESCE(e.namespace, '')) AS conflict
+), copies AS (
+    SELECT e.session_id, e.call_id, e.timestamp_ms,
+        CASE WHEN e.timestamp_ms <= ?4 AND {COMPACTABLE_METADATA} THEN '' ELSE COALESCE(e.name,'') END AS name,
+        CASE WHEN e.timestamp_ms <= ?4 AND {COMPACTABLE_METADATA} THEN '' ELSE COALESCE(e.namespace,'') END AS namespace
     FROM candidates c JOIN execution_observations e
       ON e.session_id = c.session_id AND e.call_id = c.call_id AND e.is_output = 0
-    GROUP BY e.session_id, e.call_id
+), identities AS (
+    SELECT session_id, call_id, MIN(timestamp_ms) AS at, MIN(name) AS name, MIN(namespace) AS namespace,
+        MIN(timestamp_ms) != MAX(timestamp_ms) OR MIN(name) != MAX(name) OR MIN(namespace) != MAX(namespace) AS conflict
+    FROM copies GROUP BY session_id, call_id
 ), annotated AS (
     SELECT i.*, s.session, (
         SELECT json_extract(CAST(a.payload AS TEXT), '$.call.arguments.skillNames')
@@ -238,7 +269,7 @@ WITH candidates AS (
         ORDER BY a.source_id DESC LIMIT 1
     ) AS skills
     FROM identities i JOIN token_sessions s ON s.id = i.session_id
-    WHERE i.conflict OR (i.name != 'write_stdin' AND i.name NOT LIKE '%.write_stdin')
+    WHERE i.conflict OR (i.name != 'write_stdin' AND substr(i.name,-12) != '.write_stdin')
 ), calls AS (
     SELECT *, CASE
         WHEN json_array_length(skills) > 0 THEN 'skill'
@@ -248,14 +279,15 @@ WITH candidates AS (
     FROM annotated
 ), visible AS (
     SELECT at, session, call_id, kind, skills,
-        CASE WHEN kind = 'tool' AND at <= ?4 THEN '' ELSE name END AS name,
-        CASE WHEN kind = 'tool' AND at <= ?4 THEN '' ELSE namespace END AS namespace
+        COALESCE(NULLIF(name,''),json_extract(skills,'$[0]'),'') AS name, namespace
     FROM calls WHERE NOT conflict
 ), filtered AS (
     SELECT * FROM visible WHERE (?5 IS NULL OR kind = ?5)
+      AND (kind != 'tool' OR at > ?4)
       AND (instr(lower(name), lower(?6)) > 0 OR instr(lower(namespace), lower(?6)) > 0
            OR instr(lower(COALESCE(skills,'')), lower(?6)) > 0)
-)";
+ )")
+});
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -305,21 +337,31 @@ impl Store {
         let capture_missing = capture_since.is_some_and(|since| query.start_at < since);
         let from = query.start_at.max(cutoff.unwrap_or(query.end_at));
         let until = query.end_at.min(now_ms.saturating_add(1));
+        let calls = CALLS.as_str();
         let detail_from = now_ms - DETAIL_MS;
+        let list_from = now_ms - LIST_MS;
         let aggregate = tx.query_row(
             &format!(
-                "{CALLS}
+                "{calls}
                 SELECT json_object('total', count(*),
                     'conflicts', (SELECT count(*) FROM calls WHERE conflict),
                     'matched', (SELECT count(*) FROM filtered),
                     'skill', count(*) FILTER (WHERE kind = 'skill'),
                     'mcp', count(*) FILTER (WHERE kind = 'mcp'),
                     'tool', count(*) FILTER (WHERE kind = 'tool'),
-                    'recentSkill', count(*) FILTER (WHERE kind = 'skill' AND at > ?4),
-                    'recentMcp', count(*) FILTER (WHERE kind = 'mcp' AND at > ?4),
-                    'recentTool', count(*) FILTER (WHERE kind = 'tool' AND at > ?4)) FROM visible"
+                    'recentSkill', count(*) FILTER (WHERE kind = 'skill' AND at > ?7),
+                    'recentMcp', count(*) FILTER (WHERE kind = 'mcp' AND at > ?7),
+                    'recentTool', count(*) FILTER (WHERE kind = 'tool' AND at > ?7)) FROM visible"
             ),
-            params![from, until, scope, detail_from, query.kind, query.search],
+            params![
+                from,
+                until,
+                scope,
+                list_from,
+                query.kind,
+                query.search,
+                detail_from
+            ],
             |row| row.get::<_, String>(0),
         )?;
         let mut summary: Value = serde_json::from_str(&aggregate)?;
@@ -374,9 +416,6 @@ impl Store {
                     classification_complete: !partial && count == skill + mcp + tool,
                 });
             }
-            if query.search.is_empty() && query.kind.is_none() {
-                summary["matched"] = summary["total"].clone();
-            }
         }
         let indexed: bool = tx.query_row(
             "SELECT EXISTS(
@@ -401,7 +440,7 @@ impl Store {
         let mut next = None;
         {
             let mut statement = tx.prepare(&format!(
-                "{CALLS}
+                "{calls}
                 SELECT at, session, call_id, kind, name, namespace
                 FROM filtered WHERE (?7 IS NULL OR (at, session, call_id) < (?7, ?8, ?9))
                 ORDER BY at DESC, session DESC, call_id DESC LIMIT ?10"
@@ -410,7 +449,7 @@ impl Store {
                 from,
                 until,
                 scope,
-                detail_from,
+                list_from,
                 query.kind,
                 query.search,
                 cursor.as_ref().map(|cursor| cursor.0),
@@ -441,7 +480,7 @@ impl Store {
                 from,
                 until,
                 scope.as_deref(),
-                detail_from,
+                list_from,
                 complete,
             )?)
         } else {
@@ -809,12 +848,13 @@ fn activity_summary(
     from: i64,
     until: i64,
     scope: Option<&str>,
-    detail_from: i64,
+    list_from: i64,
     complete: bool,
 ) -> Result<Value> {
     let span = query.end_at - query.start_at;
     let bucket = span / 64 + i64::from(span % 64 != 0);
-    let sql = format!("{CALLS},
+    let calls = CALLS.as_str();
+    let sql = format!("{calls},
         activity AS (
             SELECT at, kind, j.value AS name, '' AS namespace FROM filtered JOIN json_each(skills) j
             WHERE kind = 'skill'
@@ -835,7 +875,7 @@ fn activity_summary(
         from,
         until,
         scope,
-        detail_from,
+        list_from,
         query.kind,
         query.search,
         query.start_at,
@@ -999,7 +1039,7 @@ mod tests {
         assert!(read(&mut store, start + 1, end)["summary"]["total"].is_null());
         let mixed = read(&mut store, start, end + 100);
         assert_eq!(mixed["summary"]["total"], 4);
-        assert_eq!(mixed["items"][0]["id"], "new");
+        assert_eq!(mixed["items"], json!([]));
     }
 
     #[test]
@@ -1070,6 +1110,143 @@ mod tests {
         db.execute("UPDATE token_revision SET revision=2", [])
             .unwrap();
         assert_eq!(read(db, &later)["status"], "stale");
+    }
+
+    #[test]
+    fn seven_day_metadata_expiry_preserves_totals_activity_and_late_copy_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("usage.sqlite");
+        let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+        let today = Local::now().date_naive();
+        let now = local_midnight(today).unwrap();
+        let edge = now - LIST_MS;
+        store
+            .db
+            .execute_batch(
+                "INSERT INTO token_sources VALUES(1,x'01',1,20,x'00',0);
+             INSERT INTO token_sources VALUES(2,x'02',1,20,x'00',0);
+             INSERT INTO token_coverage VALUES(1,1,0,0,0);",
+            )
+            .unwrap();
+        store
+            .db
+            .execute(
+                "UPDATE token_revision SET revision=1,precise_from=?1",
+                [(today - chrono::Days::new(59)).to_string()],
+            )
+            .unwrap();
+        store
+            .db
+            .execute("INSERT INTO token_sessions VALUES(1,?1)", [SESSION])
+            .unwrap();
+        for (source, position, id, at, name, namespace) in [
+            (1, 1, "expired", edge, "exec_command", "functions"),
+            (1, 2, "listed", edge + 1, "apply_patch", "functions"),
+            (1, 3, "mcp", edge - 20, "query", "mcp__example"),
+            (1, 4, "skill", edge - 10, "exec_command", "functions"),
+            (1, 5, "poll", edge - 9, "functions.write_stdin", ""),
+            (
+                2,
+                1,
+                "different-time",
+                edge - 60,
+                "exec_command",
+                "functions",
+            ),
+            (
+                1,
+                6,
+                "different-time",
+                edge - 59,
+                "exec_command",
+                "functions",
+            ),
+        ] {
+            store
+                .db
+                .execute(
+                    "INSERT INTO execution_observations VALUES(?1,1,?2,?3,?4,NULL,0,?5,?6)",
+                    params![source, position, at, id, name, namespace],
+                )
+                .unwrap();
+        }
+        store
+            .db
+            .execute(
+                "INSERT INTO token_activity VALUES(1,1,'skill',?1,?2,?3)",
+                params![
+                    edge - 10,
+                    (today - chrono::Days::new(8)).to_string(),
+                    br#"{"call":{"arguments":{"skillNames":["alpha","beta"]}}}"#.as_slice()
+                ],
+            )
+            .unwrap();
+        let request = json!({
+            "startAt": edge - 120, "endAt": edge + 120,
+            "includeActivitySummary": true
+        });
+        let read = |store: &mut Store, request: &Value| {
+            Store::read_execution_page(
+                &mut store.db,
+                &ExecutionQuery::parse(request).unwrap(),
+                now,
+                false,
+                None,
+            )
+            .unwrap()
+        };
+        let before = read(&mut store, &request);
+        assert_eq!(before["summary"]["total"], 4);
+        assert_eq!(before["summary"]["tool"], 2);
+        assert_eq!(before["summary"]["conflicts"], 1);
+        assert_eq!(before["summary"]["matched"], 3);
+        assert_eq!(before["items"][0]["id"], "listed");
+        assert_eq!(before["items"][1]["name"], "alpha");
+        assert_eq!(before["items"][2]["namespace"], "mcp__example");
+        assert_eq!(
+            before["activitySummary"]["groups"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+
+        store.compact_execution_metadata(now, 1).unwrap();
+        let read_name = |store: &Store, id| {
+            store
+                .db
+                .query_row(
+                    "SELECT name FROM execution_observations WHERE source_id=1 AND call_id=?1",
+                    [id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            read_name(&store, "expired").as_deref(),
+            Some("exec_command")
+        );
+        store.compact_execution_metadata(now, 256).unwrap();
+        drop(store);
+        let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+        assert_eq!(read_name(&store, "expired"), None);
+        assert_eq!(read_name(&store, "listed").as_deref(), Some("apply_patch"));
+        assert_eq!(read_name(&store, "mcp").as_deref(), Some("query"));
+        assert_eq!(
+            read_name(&store, "poll").as_deref(),
+            Some("functions.write_stdin")
+        );
+        assert_eq!(read(&mut store, &request), before);
+        store.db.execute(
+            "INSERT INTO execution_observations VALUES(2,1,2,?1,'expired',NULL,0,'exec_command','functions')",
+            [edge],
+        ).unwrap();
+        assert_eq!(read(&mut store, &request), before);
+        let mut filtered = request;
+        filtered["search"] = json!("exec_command");
+        let result = read(&mut store, &filtered);
+        assert_eq!(result["summary"]["total"], 4);
+        assert_eq!(result["summary"]["matched"], 0);
     }
 
     #[test]

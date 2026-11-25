@@ -46,7 +46,9 @@ impl Scan {
     }
 
     fn maintain(&mut self, store: &mut Store, cutoff: NaiveDate) -> anyhow::Result<()> {
-        store.expire_execution_locators(chrono::Local::now().timestamp_millis(), RECLAIM_BATCH)?;
+        let now = chrono::Local::now().timestamp_millis();
+        store.expire_execution_locators(now, RECLAIM_BATCH)?;
+        store.compact_execution_metadata(now, RECLAIM_BATCH)?;
         if self.maintenance_day.is_none_or(|day| day < cutoff) {
             store.advance_retention(cutoff)?;
             self.maintenance_day = Some(cutoff);

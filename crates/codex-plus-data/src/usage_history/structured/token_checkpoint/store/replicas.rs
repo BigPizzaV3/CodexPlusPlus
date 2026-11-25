@@ -393,9 +393,12 @@ impl Store {
                 WHERE copy.source_id = ?2 AND NOT EXISTS (
                     SELECT 1 FROM execution_observations own WHERE own.source_id = ?1
                       AND own.position = copy.position AND own.session_id = copy.session_id
-                      AND (own.timestamp_ms, own.call_id, own.end, own.is_output, own.name, own.namespace)
+                      AND (own.timestamp_ms, own.call_id, own.end, own.is_output)
                           IS NOT DISTINCT FROM
-                          (copy.timestamp_ms, copy.call_id, copy.end, copy.is_output, copy.name, copy.namespace)
+                          (copy.timestamp_ms, copy.call_id, copy.end, copy.is_output)
+                      AND ((own.name, own.namespace) IS NOT DISTINCT FROM (copy.name, copy.namespace)
+                           OR (own.is_output = 0 AND own.timestamp_ms <= ?3
+                               AND (own.name IS NULL OR copy.name IS NULL)))
                 )
              ) OR EXISTS (
                 SELECT 1 FROM execution_process copy
@@ -404,7 +407,12 @@ impl Store {
                       AND own.position = copy.position AND own.process = copy.process
                 )
              )",
-        )?.exists(params![owner_id, copy_id])?;
+        )?.exists(params![
+            owner_id,
+            copy_id,
+            chrono::Local::now().timestamp_millis()
+                - crate::usage_history::structured::execution_observations::LIST_MS
+        ])?;
         if unique_activity
             || FileState::source_stamp(&owner.path)? != owner_stamp
             || FileState::source_stamp(&copy.path)? != stamp

@@ -62,7 +62,8 @@ impl Store {
     pub(super) fn open(db: Connection) -> Result<Self> {
         db.pragma_update(None, "foreign_keys", true)?;
         db.pragma_update(None, "journal_mode", "WAL")?;
-        db.execute_batch(
+        let compactable_metadata = executions::COMPACTABLE_METADATA;
+        db.execute_batch(&format!(
             "BEGIN IMMEDIATE;
              CREATE TABLE IF NOT EXISTS token_revision (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -183,6 +184,9 @@ impl Store {
                 ON execution_observations (session_id, call_id);
              CREATE INDEX IF NOT EXISTS execution_locator_expiry
                 ON execution_observations (is_output, timestamp_ms) WHERE end IS NOT NULL;
+             CREATE INDEX IF NOT EXISTS execution_metadata_expiry
+                ON execution_observations (timestamp_ms)
+                WHERE is_output = 0 AND {compactable_metadata};
              CREATE TABLE IF NOT EXISTS execution_process (
                 source_id INTEGER NOT NULL,
                 position INTEGER NOT NULL,
@@ -210,7 +214,7 @@ impl Store {
                 SELECT 1, CASE WHEN EXISTS (SELECT 1 FROM token_sources)
                     THEN CAST(unixepoch('subsec') * 1000 AS INTEGER) END;
              COMMIT;",
-        )?;
+        ))?;
         Ok(Self { db })
     }
 

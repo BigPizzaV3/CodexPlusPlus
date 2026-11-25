@@ -3,6 +3,7 @@ use serde::Deserialize;
 use serde_json::value::RawValue;
 
 pub(super) const DETAIL_MS: i64 = 86_400_000;
+pub(super) const LIST_MS: i64 = 7 * DETAIL_MS;
 
 #[derive(Deserialize)]
 pub(super) struct Item<'a> {
@@ -70,7 +71,7 @@ impl Batch {
         else {
             return false;
         };
-        let name = (!is_output).then(|| {
+        let mut name = (!is_output).then(|| {
             bounded(item.name).unwrap_or_else(|| {
                 if item.kind == "local_shell_call" {
                     "local_shell".into()
@@ -79,14 +80,24 @@ impl Batch {
                 }
             })
         });
+        let mut namespace = (!is_output).then(|| bounded(item.namespace).unwrap_or_default());
+        let poll = name
+            .as_deref()
+            .is_some_and(|name| name.rsplit('.').next() == Some("write_stdin"));
+        if !is_output
+            && timestamp_ms <= self.now_ms - LIST_MS
+            && !poll
+            && !name.as_deref().unwrap().starts_with("mcp__")
+            && !namespace.as_deref().unwrap().starts_with("mcp__")
+        {
+            name = None;
+            namespace = None;
+        }
         let process = if !recent {
             None
         } else if is_output {
             running_process(item.output)
-        } else if name
-            .as_deref()
-            .is_some_and(|name| name.rsplit('.').next() == Some("write_stdin"))
-        {
+        } else if poll {
             #[derive(Deserialize)]
             struct Poll {
                 session_id: u64,
@@ -114,7 +125,7 @@ impl Batch {
             end: recent.then_some(end),
             is_output,
             name,
-            namespace: (!is_output).then(|| bounded(item.namespace).unwrap_or_default()),
+            namespace,
             process,
         });
         true
