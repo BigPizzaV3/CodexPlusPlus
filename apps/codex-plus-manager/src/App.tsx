@@ -3496,8 +3496,8 @@ export function App() {
         {/* 「请求」页的铺满布局（页签下面的日志卡占满剩余高度、整页不滚动）只给内置页面：拓展页面照普通页面排。
             切回内置页面时页签下面多一条「使用拓展页面」横幅，has-override-banner 给它单独留一行。 */}
         <section
-          style={relayCommonOpen ? { display: "none" } : undefined}
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" && !shownExtensionPage ? "request-log-screen" : ""} ${restorableOverride ? "has-override-banner" : ""}`.trim()}
+          style={relayCommonOpen ? { display: "none" } : undefined}
           data-settings-mode={settingsModeRoutes.has(route) ? "true" : undefined}
           key={route}
           // 滚动后给吸顶的标题行加一条分隔线（macOS 无标题栏时标题行吸顶）；直接改 DOM 属性，不触发重渲染。

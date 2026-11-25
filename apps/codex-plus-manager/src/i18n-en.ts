@@ -2817,7 +2817,6 @@ export const EN_PLAIN: Record<string, string> = {
   "选择会话": "Select session",
   "选择应用目录": "Select app directory",
   "通用配置文件": "Common config file",
-  "编辑配置": "Edit configuration",
   "配置来源": "Configuration source",
   "配置只读": "Read-only configuration",
   "关闭窗口": "Close",
