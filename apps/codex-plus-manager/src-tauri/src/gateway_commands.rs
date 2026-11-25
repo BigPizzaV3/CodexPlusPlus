@@ -11,6 +11,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use codex_plus_core::gateway::activity::{self, ActivitySnapshot};
+use codex_plus_core::gateway::agents::editor::{self, ConfigSnapshot, ConfigView};
 use codex_plus_core::gateway::apply::{self, ApplyContext, GroupInput, ProviderInput};
 use codex_plus_core::gateway::key_pool::{self, PoolSnapshot};
 use codex_plus_core::gateway::meta_sync;
@@ -2492,6 +2493,43 @@ pub fn delete_gateway_group(id: String) -> CommandResult<Option<GatewayPayload>>
         "删除模型组失败",
         refresh_agents(apply::delete_group(&GatewayStore::default(), &id)),
     )
+}
+
+/// 返回模板编辑页的设置快照；有草稿时先校验语法，并在内存中清理旧调优值副本。
+#[tauri::command(async)]
+pub fn read_relay_common_config(draft: Option<String>) -> Result<BackendSettings, String> {
+    let draft = draft
+        .map(|draft| {
+            draft.parse::<toml_edit::DocumentMut>().map_err(|error| {
+                codex_plus_core::gateway::restore::toml_syntax_error("config.toml", &draft, error.span())
+                    .to_string()
+            })
+        })
+        .transpose()?;
+    let mut settings = SettingsStore::default()
+        .load()
+        .map_err(|error| format!("{error:#}"))?;
+    if let Some(draft) = draft {
+        codex_plus_core::session_tuning::forget_changed_template_copies(&mut settings, &draft);
+    }
+    Ok(settings)
+}
+
+/// 读取 Agent 配置编辑器的初始视图，不接入网关。
+#[tauri::command]
+pub fn read_agent_config(agent: String) -> Result<ConfigView, String> {
+    editor::config(&context(), &agent, None).map_err(|error| format!("{error:#}"))
+}
+
+/// 保存用户偏好；来源或可编辑内容与快照不一致时拒绝保存。
+#[tauri::command]
+pub fn save_agent_config(
+    agent: String,
+    original: ConfigSnapshot,
+    contents: String,
+) -> Result<ConfigView, String> {
+    editor::config(&context(), &agent, Some((&original, &contents)))
+        .map_err(|error| format!("{error:#}"))
 }
 
 /// 在访达 / 资源管理器里显示网关改动的 Agent 配置文件。

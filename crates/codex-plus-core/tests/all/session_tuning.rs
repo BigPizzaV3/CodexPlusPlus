@@ -1,6 +1,6 @@
 use codex_plus_core::relay_config::apply_relay_profile_to_home_with_switch_rules;
 use codex_plus_core::settings::{BackendSettings, RelayMode, RelayProfile, RelayProtocol, SettingsStore};
-use codex_plus_core::session_tuning::{read, write};
+use codex_plus_core::session_tuning::{forget_changed_template_copies, read, write};
 use serde_json::{Value, json};
 
 // 「上下文与压缩」后端：把压缩 / 精简系统提示等键同步进通用配置。只碰临时目录。
@@ -95,6 +95,31 @@ fn reports_when_active_profile_skips_common_config() {
     let state = read(&store).unwrap();
     assert_eq!(state["commonConfigApplies"], false);
     assert_eq!(state["activeProfileName"], "own");
+}
+
+#[test]
+fn full_template_edits_clear_only_matching_copies_of_changed_tuning_values() {
+    let mut own = profile("own", "qwen-4", "tool_output_token_limit = 4000\n");
+    own.use_common_config = false;
+    let (_temp, store) = store_with(
+        "tool_output_token_limit = 4000\ninclude_apps_instructions = true\ninclude_permissions_instructions = false\nmodel_reasoning_effort = 'high'\n",
+        vec![
+            profile("copy", "glm-5.2", "tool_output_token_limit = 4_000\ninclude_apps_instructions = true\ninclude_permissions_instructions = false\nmodel_reasoning_effort = 'high'\n"),
+            profile("override", "kimi-k3", "tool_output_token_limit = 9000\n"),
+            own,
+        ],
+    );
+    let mut settings = store.load().unwrap();
+    let draft = "include_apps_instructions = false\ninclude_permissions_instructions = false\n";
+    forget_changed_template_copies(&mut settings, &draft.parse().unwrap());
+    let snapshot = |id| &settings.relay_profiles.iter().find(|p| p.id == id).unwrap().config_contents;
+    assert!(!snapshot("copy").contains("tool_output_token_limit"));
+    assert!(!snapshot("copy").contains("include_apps_instructions"));
+    assert!(snapshot("copy").contains("include_permissions_instructions = false"));
+    assert!(snapshot("copy").contains("model_reasoning_effort"));
+    assert!(snapshot("override").contains("tool_output_token_limit = 9000"));
+    assert!(snapshot("own").contains("tool_output_token_limit = 4000"));
+    assert!(settings.relay_common_config_contents.contains("tool_output_token_limit = 4000"));
 }
 
 /// 写进通用配置的键在切换供应商后仍在；改掉 / 删掉时，各快照里和旧值相同的副本一并清掉，

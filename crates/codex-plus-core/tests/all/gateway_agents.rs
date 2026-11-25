@@ -94,6 +94,189 @@ fn snapshot(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
 }
 
 #[test]
+fn editor_preserves_user_fields_through_gateway_refresh_and_disconnect() {
+    use agents::editor::config;
+    for (id, first, changed, forbidden) in [
+        (
+            "pi", r#"{"theme":"light"}"#, r#"{"theme":"dark"}"#,
+            r#"{"defaultProvider":"override"}"#,
+        ),
+        (
+            "opencode", r#"{"autoupdate":false}"#, r#"{"autoupdate":true}"#,
+            r#"{"provider":"override"}"#,
+        ),
+        (
+            "jcode", "theme = 'light'", "theme = 'dark'",
+            "model = 'override'",
+        ),
+    ] {
+        let fixture = fixture();
+        let ctx = &fixture.ctx;
+        let agent = ToolId::Unknown(id.to_owned());
+        let spec = agents::spec(id).unwrap();
+        let path = (spec.config_path)(&ctx.agent_env);
+        let initial = config(ctx, id, None).unwrap();
+        let saved = config(ctx, id, Some((&initial.snapshot, first))).unwrap();
+        enable_binding(ctx, &agent, binding()).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(config(ctx, id, Some((&saved.snapshot, forbidden))).is_err(), "{id}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let bindings = ctx.gateway.load().unwrap().bindings;
+        let edited = config(ctx, id, Some((&saved.snapshot, changed))).unwrap();
+        assert!(config(ctx, id, Some((&saved.snapshot, first))).is_err(), "{id}: stale snapshot");
+        assert_eq!(ctx.gateway.load().unwrap().bindings, bindings);
+        codex_plus_core::gateway::apply::refresh_enabled(ctx).unwrap();
+        assert!(agents::connect::points_at_gateway(ctx, spec), "{id}");
+        assert_eq!(config(ctx, id, None).unwrap().snapshot.contents, edited.snapshot.contents, "{id}");
+        disable_binding(ctx, &BackendSettings::default(), &agent).unwrap();
+        assert_eq!(config(ctx, id, None).unwrap().snapshot.contents, edited.snapshot.contents, "{id}");
+    }
+}
+
+#[test]
+fn editor_shows_resolved_read_only_sources_without_granting_writes() {
+    use agents::editor::config;
+    for (id, initial) in [
+        ("hermes", "display:\n  skin: dark\n"),
+        ("omp", "theme: dark\n"),
+        ("openclaw", "{theme:'dark',}"),
+        ("openchamber", r#"{"version":1,"fields":{"theme":{"value":"dark","updatedAt":1}}}"#),
+        ("stepcode", "theme = 'dark'\n"),
+        ("jetbrains-air", r#"{"agent_servers":{}}"#),
+    ] {
+        let fixture = fixture();
+        let ctx = &fixture.ctx;
+        let resolved = (agents::spec(id).unwrap().config_path)(&ctx.agent_env);
+        let dir = resolved.parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        let path = match id {
+            "hermes" => {
+                std::fs::write(dir.join("active_profile"), "work\n").unwrap();
+                dir.join("profiles/work/config.yaml")
+            }
+            "omp" => dir.join("config.yaml"),
+            _ => resolved,
+        };
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, initial).unwrap();
+        let view = config(ctx, id, None).unwrap();
+        assert_eq!(std::path::Path::new(&view.snapshot.source), path, "{id}");
+        assert!(!view.editable && view.snapshot.contents.is_empty(), "{id}");
+        assert!(
+            config(ctx, id, Some((&view.snapshot, "{}"))).is_err(),
+            "{id}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), initial);
+        if id == "jetbrains-air" {
+            assert!(!path.with_file_name("codexplus-opencode.json").exists());
+        }
+    }
+}
+
+#[test]
+fn editor_vscode_writes_only_default_user_settings() {
+    use agents::editor::config;
+    let fixture = fixture();
+    let ctx = &fixture.ctx;
+    for id in ["vscode", "vscode-insiders", "vscodium"] {
+        let models = (agents::spec(id).unwrap().config_path)(&ctx.agent_env);
+        let user_dir = models.parent().unwrap();
+        let default_settings = user_dir.join("settings.json");
+        let profile_settings = user_dir.join("profiles/work/settings.json");
+        let initial = r#"{"editor.fontSize":12}"#;
+        std::fs::create_dir_all(profile_settings.parent().unwrap()).unwrap();
+        std::fs::write(&profile_settings, initial).unwrap();
+        std::fs::write(&default_settings, initial).unwrap();
+        let before = config(ctx, id, None).unwrap();
+        assert!(before.snapshot.source.contains("默认 User/settings.json"));
+        assert!(
+            before
+                .snapshot
+                .source
+                .contains(default_settings.to_str().unwrap())
+        );
+        config(
+            ctx,
+            id,
+            Some((&before.snapshot, r#"{"editor.fontSize":16}"#)),
+        )
+        .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(default_settings).unwrap()).unwrap();
+        assert_eq!(saved["editor.fontSize"], 16);
+        assert_eq!(std::fs::read_to_string(profile_settings).unwrap(), initial);
+        assert!(!models.exists());
+    }
+}
+
+#[test]
+fn editor_opens_supported_adapters_without_connecting_or_creating_files() {
+    let fixture = fixture();
+    let before = snapshot(&fixture.home);
+    let ctx = &fixture.ctx;
+    let bindings = ctx.gateway.load().unwrap().bindings;
+    assert!(agents::editor::config(ctx, "codex", None).is_err());
+    let revision = ctx.settings.revision().unwrap();
+    let codex = agents::editor::ConfigSnapshot { source: String::new(), contents: String::new() };
+    assert!(agents::editor::config(ctx, "codex", Some((&codex, "personality = 'friendly'"))).is_err());
+    assert_eq!(ctx.settings.revision().unwrap(), revision);
+    for id in agents::all().iter().map(|spec| spec.id).chain([
+        "claude",
+        "grok",
+        "claude-desktop-local",
+    ]) {
+        let view =
+            agents::editor::config(ctx, id, None).unwrap_or_else(|error| panic!("{id}: {error:#}"));
+        assert!(!view.snapshot.source.is_empty(), "{id}");
+    }
+    assert_eq!(bindings, ctx.gateway.load().unwrap().bindings);
+    assert_eq!(before, snapshot(&fixture.home));
+}
+
+#[test]
+fn editor_preserves_siblings_and_rejects_ambiguous_drafts() {
+    use agents::editor::config;
+    let fixture = fixture();
+    let ctx = &fixture.ctx;
+    for (id, original, updated, draft, invalid) in [
+        (
+            "jcode",
+            "[display]\ntheme  =  'dark' # mine\n[provider]\nname = 'mine'\n",
+            "[display]\ntheme  =  \"light\" # mine\n[provider]\nname = 'mine'\n",
+            "theme = 'light' # draft only",
+            "theme = 'a'\ntheme = 'b'",
+        ),
+        (
+            "gemini-cli",
+            "{\r\n  // mine\r\n  \"ui\": {\"theme\": \"dark\", \"other\": [1, 2,],},\r\n}\r\n",
+            "{\r\n  // mine\r\n  \"ui\": {\"theme\": \"light\", \"other\": [1, 2,],},\r\n}\r\n",
+            "{/* draft */ \"theme\": \"light\",}",
+            "{\"theme\":\"a\",\"theme\":\"b\"}",
+        ),
+    ] {
+        let path = (agents::spec(id).unwrap().config_path)(&ctx.agent_env);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, original).unwrap();
+        let view = config(ctx, id, None).unwrap();
+        assert!(
+            !view.snapshot.contents.contains("mine") && view.snapshot.contents.contains("dark")
+        );
+        assert!(config(ctx, id, Some((&view.snapshot, invalid))).is_err());
+        if id == "gemini-cli" {
+            assert!(config(ctx, id, Some((&view.snapshot, "// no object"))).is_err());
+            assert!(config(ctx, id, Some((&view.snapshot, "{} /* unclosed"))).is_err());
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let saved = config(ctx, id, Some((&view.snapshot, draft))).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), updated);
+        assert_eq!(
+            config(ctx, id, None).unwrap().snapshot.contents,
+            saved.snapshot.contents
+        );
+    }
+}
+
+#[test]
 fn every_generic_agent_connects_and_restores_exactly() {
     for spec in agents::all() {
         let fixture = fixture();

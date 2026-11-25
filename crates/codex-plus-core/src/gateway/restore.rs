@@ -214,8 +214,8 @@ pub fn restore_toml(
     current: Option<&str>,
     paths: &[KeyPath],
 ) -> anyhow::Result<Option<String>> {
-    let before_doc = parse_toml(before)?;
-    let mut doc = parse_toml(current)?;
+    let before_doc = parse_toml("配置", before.unwrap_or_default())?;
+    let mut doc = parse_toml("配置", current.unwrap_or_default())?;
     for path in paths {
         let original = toml_item_at(before_doc.as_item(), path).cloned();
         set_toml_path(&mut doc, &before_doc, path, original);
@@ -227,10 +227,9 @@ pub fn restore_toml(
     Ok(Some(restored))
 }
 
-fn parse_toml(text: Option<&str>) -> anyhow::Result<toml_edit::DocumentMut> {
-    let text = text.unwrap_or_default();
+pub(crate) fn parse_toml(label: &str, text: &str) -> anyhow::Result<toml_edit::DocumentMut> {
     text.parse::<toml_edit::DocumentMut>()
-        .map_err(|error| toml_syntax_error("配置", text, error.span()))
+        .map_err(|error| toml_syntax_error(label, text, error.span()))
 }
 
 fn toml_item_at<'a>(item: &'a toml_edit::Item, path: &[String]) -> Option<&'a toml_edit::Item> {

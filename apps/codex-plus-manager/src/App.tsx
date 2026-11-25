@@ -26,6 +26,7 @@ import { CodexLaunchButton, type CodexLaunchState } from "./CodexLaunchButton";
 import { OnboardingSetup } from "./OnboardingSetup";
 import { hasCodexEnhancements } from "./onboarding-setup-model";
 import { markSetupSeen, resolveSetupAutoOpen, saveSetupState, setupAutoOpenPossible, setupCardNeeded } from "./onboarding-setup-store";
+import { AgentConfigDialog, OpenAgentConfig, type ConfigTarget } from "./AgentConfigEditor";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { TOUR_STORAGE_KEY, TOUR_VERSION } from "./onboarding-model";
 import "./ToolPages.css";
@@ -163,6 +164,7 @@ import {
   UpdateDialog,
 } from "./AppDialogs";
 import { LegacyRelayGatewayHint, ProxySettingsScreen, RelayScreen } from "./RelayScreen";
+import { RelayCommonConfigScreen } from "./RelayEditor";
 import { activeSettingsEntry, AppSidebar, CustomizeTabs, settingsNavEntries } from "./AppSidebar";
 import { lazyNamed, PageFallback, preloadLazyPages } from "./lazy-page";
 
@@ -405,11 +407,12 @@ const FOCUS_REFRESH_MIN_INTERVAL_MS = 5_000;
 const codexRunningPollMs = 5_000;
 
 export function App() {
+  const [configTarget, setConfigTarget] = useState<ConfigTarget | null>(null);
   useSyncExternalStore(subscribeLanguage, getLanguage, getLanguage);
   const [themePreference, setThemePreference] = useState<ThemePreference>(() => loadThemePreference());
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark());
   const theme: Theme = resolveTheme(themePreference, systemDark);
-  const [route, setRoute] = useState<Route>(() => loadInitialRoute());
+  const [route, setRouteState] = useState<Route>(() => loadInitialRoute());
   // 启动后空闲时把按需加载的页面代码预先读进来：第一次切到这些页面也不用等（见 lazy-page.tsx）。
   useEffect(() => preloadLazyPages(), []);
   // 轮询、事件回调里读当前页用（闭包里的 route 可能是旧的）。
@@ -421,6 +424,11 @@ export function App() {
   const [settingsSections, setSettingsSections] = useState<string[]>(() => settingsSectionsFor(initialSettingsFocus() ?? "app-settings-general"));
   /** 从旧的「旧版代理设置」入口进来：「连接与供应商」页直接展开「高级」。 */
   const [relayAdvancedOpen, setRelayAdvancedOpen] = useState(() => initialPreviewRoute() === "relayEnvironment");
+  const [relayCommonOpen, setRelayCommonOpen] = useState(false);
+  const setRoute = useCallback((next: Route) => {
+    setRelayCommonOpen(false);
+    setRouteState(next);
+  }, []);
   /** 进设置模式前停的页面：侧栏「返回」回到这里。 */
   const lastMainRoute = useRef<Route>("home");
   const [notice, setNotice] = useState<NoticeState | null>(null);
@@ -1856,6 +1864,34 @@ export function App() {
     if (result) showNotice(t("设置保存"), result.message, result.status);
     // 保留草稿供用户重载后合并，不能拿最新版本号自动重试旧快照。
     return null;
+  };
+
+  const saveCommonTemplate = async (original: string, contents: string) => {
+    const current = await run(() => invoke<BackendSettings>("read_relay_common_config", { draft: contents }));
+    if (!current) return null;
+    if ((current.relayCommonConfigContents ?? "") !== original) {
+      showNotice(t("通用配置文件"), t("供应商配置已变更。请保留需要的草稿，再返回列表重新打开。"), "failed");
+      return null;
+    }
+    // 模板草稿不能用全局保存的自动重试覆盖刚被外部修改的模板。
+    const result = await run(() => invoke<SettingsResult>("save_settings", {
+      settings: { ...current, relayCommonConfigContents: contents },
+      expectedRevision: current.revision,
+    }));
+    if (!result || !isSuccessStatus(result.status)) {
+      if (result) showNotice(t("设置保存"), result.message, result.status);
+      return null;
+    }
+    const saved = normalizeSettings(result.settings);
+    const previous = normalizeSettings(settingsRef.current?.settings ?? current);
+    setSettings(result);
+    setSettingsForm(form => {
+      if (form.revision !== previous.revision) return form;
+      const merged = mergeRotatedAuthContents(rebaseSettingsEdits(form, previous, saved), previous, saved);
+      return { ...merged, relayCommonConfigContents: saved.relayCommonConfigContents };
+    });
+    showNotice(t("通用配置文件"), t("已保存。请重新应用使用通用配置的供应商。"), "ok");
+    return result;
   };
 
   /// 自动保存：不弹成功提示；校验不过就不保存，把原因交给页面显示，避免输入到一半就弹窗。
@@ -3380,6 +3416,10 @@ export function App() {
         ) : null;
 
   return (
+    <OpenAgentConfig.Provider value={target => {
+      if (target.agent === "codex") setRelayCommonOpen(true);
+      else setConfigTarget(target);
+    }}>
     <div className={`shell ${theme}`}>
       <AppSidebar
         setupSlotRef={setSetupSlot}
@@ -3450,10 +3490,14 @@ export function App() {
       ) : null}
       {tourOpen && !wizardOpen ? <Suspense fallback={null}><OnboardingTour onClose={closeTour} /></Suspense> : null}
       <main className="workspace">
+        {relayCommonOpen ? (
+          <RelayCommonConfigScreen onSave={saveCommonTemplate} onBack={() => setRelayCommonOpen(false)} />
+        ) : null}
         {/* 「请求」页的铺满布局（页签下面的日志卡占满剩余高度、整页不滚动）只给内置页面：拓展页面照普通页面排。
             切回内置页面时页签下面多一条「使用拓展页面」横幅，has-override-banner 给它单独留一行。 */}
         <section
           className={`screen ${isManagementScreen ? "management-screen" : ""} ${route === "requestLog" && !shownExtensionPage ? "request-log-screen" : ""} ${restorableOverride ? "has-override-banner" : ""}`.trim()}
+          style={relayCommonOpen ? { display: "none" } : undefined}
           data-settings-mode={settingsModeRoutes.has(route) ? "true" : undefined}
           key={route}
           // 滚动后给吸顶的标题行加一条分隔线（macOS 无标题栏时标题行吸顶）；直接改 DOM 属性，不触发重渲染。
@@ -3819,6 +3863,7 @@ export function App() {
         />
       ) : null}
       <AppDialogHost />
+      {configTarget ? <AgentConfigDialog key={configTarget.agent} {...configTarget} onClose={() => setConfigTarget(null)} /> : null}
       {liveConflictDialog ? (
         <LiveConflictDialog
           profileName={liveConflictDialog.profileName}
@@ -3857,6 +3902,7 @@ export function App() {
         />
       ) : null}
     </div>
+    </OpenAgentConfig.Provider>
   );
 }
 

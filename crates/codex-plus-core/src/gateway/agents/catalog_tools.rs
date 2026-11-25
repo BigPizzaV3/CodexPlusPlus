@@ -16,8 +16,8 @@ use toml_edit::{ArrayOfTables, DocumentMut, InlineTable, Item, Table};
 use crate::gateway::agents::catalog_core::output_limit;
 use crate::gateway::agents::files::{parse_jsonc, yaml_block};
 use crate::gateway::agents::{
-    AgentEnv, AgentSpec, AgentWire, FileSet, Os, PROVIDER_ID, PROVIDER_NAME, Wiring, YamlDoc,
-    object_entry,
+    AgentEnv, AgentSpec, AgentWire, FileSet, Os, PROVIDER_ID, PROVIDER_NAME, PreferenceKind,
+    Preferences, Wiring, YamlDoc, object_entry,
 };
 
 pub static SPECS: &[AgentSpec] = &[
@@ -86,6 +86,7 @@ fn write_gemini(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::R
 
 pub const GEMINI_CLI: AgentSpec = AgentSpec {
     id: "gemini-cli",
+    preferences: Preferences::GEMINI,
     name: "Gemini CLI",
     binary: "gemini",
     wire: AgentWire::Gemini,
@@ -171,6 +172,7 @@ fn write_goose(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const GOOSE: AgentSpec = AgentSpec {
     id: "goose",
+    preferences: Preferences::ReadOnly,
     name: "Goose",
     binary: "goose",
     wire: AgentWire::Chat,
@@ -489,6 +491,7 @@ fn write_reasonix(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow:
 
 pub const REASONIX: AgentSpec = AgentSpec {
     id: "reasonix",
+    preferences: Preferences::ReadOnly,
     name: "Reasonix Studio",
     binary: "reasonix",
     wire: AgentWire::Chat,
@@ -500,6 +503,7 @@ pub const REASONIX: AgentSpec = AgentSpec {
 
 pub const DSH: AgentSpec = AgentSpec {
     id: "dsh",
+    preferences: Preferences::ReadOnly,
     name: "DeepSeek Harness",
     binary: "dsh",
     wire: AgentWire::Chat,
@@ -559,6 +563,7 @@ fn write_hermes(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::R
 
 pub const HERMES: AgentSpec = AgentSpec {
     id: "hermes",
+    preferences: Preferences::ReadOnly,
     name: "Hermes Agent",
     binary: "hermes",
     wire: AgentWire::Chat,
@@ -598,6 +603,7 @@ fn write_morph(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const MISTER_MORPH: AgentSpec = AgentSpec {
     id: "mister-morph",
+    preferences: Preferences::ReadOnly,
     name: "Mister Morph",
     // morph 这个命令名别的工具也在用
     binary: "",
@@ -648,6 +654,10 @@ fn write_jcode(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const JCODE: AgentSpec = AgentSpec {
     id: "jcode",
+    preferences: Preferences::Editable {
+        section: Some("display"),
+        fields: &[("theme", PreferenceKind::Text)],
+    },
     name: "jcode",
     binary: "jcode",
     wire: AgentWire::Chat,
@@ -712,6 +722,7 @@ fn write_empryo(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::R
 
 pub const EMPRYO: AgentSpec = AgentSpec {
     id: "empryo",
+    preferences: Preferences::ReadOnly,
     name: "Empryo",
     binary: "empryo",
     wire: AgentWire::Chat,
@@ -765,6 +776,7 @@ fn write_minimax(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
 
 pub const MINIMAX_CODE: AgentSpec = AgentSpec {
     id: "minimax-code",
+    preferences: Preferences::ReadOnly,
     name: "MiniMax Code",
     binary: "mcode",
     wire: AgentWire::Anthropic,
@@ -849,6 +861,10 @@ fn write_droid(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const DROID: AgentSpec = AgentSpec {
     id: "droid",
+    preferences: Preferences::Editable {
+        section: None,
+        fields: &[("includeCoAuthoredByDroid", PreferenceKind::Bool)],
+    },
     name: "Droid",
     binary: "droid",
     wire: AgentWire::Chat,
@@ -933,6 +949,7 @@ fn write_cline(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const CLINE: AgentSpec = AgentSpec {
     id: "cline",
+    preferences: Preferences::ReadOnly,
     name: "Cline",
     binary: "cline",
     wire: AgentWire::Chat,
@@ -990,6 +1007,7 @@ fn write_qoder_at(path: &Path, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const QODER: AgentSpec = AgentSpec {
     id: "qoder",
+    preferences: Preferences::ReadOnly,
     name: "Qoder CLI",
     binary: "qodercli",
     wire: AgentWire::Chat,
@@ -1002,6 +1020,7 @@ pub const QODER: AgentSpec = AgentSpec {
 
 pub const QODER_CN: AgentSpec = AgentSpec {
     id: "qoder-cn",
+    preferences: Preferences::ReadOnly,
     name: "Qoder CN CLI",
     binary: "qoderclicn",
     wire: AgentWire::Chat,
@@ -1085,6 +1104,7 @@ fn write_grok_app(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow:
 
 pub const GROK_APP: AgentSpec = AgentSpec {
     id: "grok-app",
+    preferences: Preferences::ReadOnly,
     name: "Grok App",
     binary: "",
     wire: AgentWire::Chat,
@@ -1192,6 +1212,7 @@ fn write_zcode(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const ZCODE: AgentSpec = AgentSpec {
     id: "zcode",
+    preferences: Preferences::ReadOnly,
     name: "ZCode",
     binary: "",
     wire: AgentWire::Anthropic,
@@ -1377,6 +1398,7 @@ fn workbuddy_ai_path(env: &AgentEnv) -> PathBuf {
 
 pub const WORKBUDDY: AgentSpec = AgentSpec {
     id: "workbuddy",
+    preferences: Preferences::ReadOnly,
     name: "WorkBuddy",
     binary: "",
     wire: AgentWire::Chat,
@@ -1388,6 +1410,7 @@ pub const WORKBUDDY: AgentSpec = AgentSpec {
 
 pub const WORKBUDDY_AI: AgentSpec = AgentSpec {
     id: "workbuddy-ai",
+    preferences: Preferences::ReadOnly,
     name: "WorkBuddy AI",
     binary: "",
     wire: AgentWire::Chat,
@@ -1416,6 +1439,7 @@ fn write_codebuddy(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow
 
 pub const CODEBUDDY: AgentSpec = AgentSpec {
     id: "codebuddy",
+    preferences: Preferences::ReadOnly,
     name: "CodeBuddy",
     binary: "codebuddy",
     wire: AgentWire::Chat,
@@ -1468,6 +1492,7 @@ fn write_atomcode(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow:
 
 pub const ATOMCODE: AgentSpec = AgentSpec {
     id: "atomcode",
+    preferences: Preferences::ReadOnly,
     name: "AtomCode",
     binary: "atomcode",
     wire: AgentWire::Chat,
@@ -1558,6 +1583,7 @@ fn write_snow(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Res
 
 pub const SNOW: AgentSpec = AgentSpec {
     id: "snow",
+    preferences: Preferences::ReadOnly,
     name: "Snow CLI",
     binary: "snow",
     wire: AgentWire::Chat,
@@ -1611,6 +1637,7 @@ fn write_ante(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Res
 
 pub const ANTE: AgentSpec = AgentSpec {
     id: "ante",
+    preferences: Preferences::ReadOnly,
     name: "Ante",
     binary: "ante",
     wire: AgentWire::Chat,
