@@ -542,6 +542,24 @@ fn identical_archive_copy_must_not_stall_the_original_append() {
             .unwrap(),
         0
     );
+
+    // If discovery first sees the copy after the original is gone, the file
+    // name and size alone must not let it inherit the committed cursor.
+    fs::copy(&copy, &source).unwrap();
+    fs::remove_file(&copy).unwrap();
+    drop(store);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let unavailable = Scan::default().round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(!unavailable.complete);
+    assert!(store.checkpoint(&source).unwrap().is_none());
+    assert!(store.checkpoint(&copy).unwrap().is_some());
+    assert_eq!(read(&mut store), extended_counts);
+
+    let reread = Scan::default().round(&mut store, &root, cutoff, &names, 1 << 20);
+    assert!(reread.complete, "{:?}", reread.errors);
+    assert!(store.checkpoint(&source).unwrap().is_some());
+    assert!(store.checkpoint(&copy).unwrap().is_none());
+    assert_eq!(read(&mut store), extended_counts);
 }
 
 #[test]
