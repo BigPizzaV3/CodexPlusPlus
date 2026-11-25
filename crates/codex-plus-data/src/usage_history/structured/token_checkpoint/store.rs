@@ -4,6 +4,7 @@ use chrono::{DateTime, Local};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 pub(super) mod archive;
@@ -369,6 +370,53 @@ impl Store {
             }
         }
         Ok((missing, false))
+    }
+
+    pub(super) fn relocate_source(
+        &mut self,
+        old: &Path,
+        expected_revision: i64,
+        new: &Path,
+    ) -> Result<bool> {
+        if old.file_name() != new.file_name() || self.checkpoint(new)?.is_some() {
+            return Ok(false);
+        }
+        let Some((revision, state)) = self.checkpoint(old)? else {
+            return Ok(false);
+        };
+        if revision != expected_revision {
+            return Ok(false);
+        }
+        let Some(stamp @ (_, Some(_), Some(_))) = state.stamp else {
+            return Ok(false);
+        };
+        match std::fs::symlink_metadata(old) {
+            Ok(_) => return Ok(false),
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        // 文件名保留物理 rollout 标识；句柄身份、长度和写入时间均须匹配。
+        if FileState::source_stamp(new)? != stamp {
+            return Ok(false);
+        }
+        let tx = self
+            .db
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = tx.execute(
+            "UPDATE token_sources SET source = ?1 WHERE source = ?2 AND revision = ?3
+             AND NOT EXISTS (SELECT 1 FROM token_sources WHERE source = ?1)",
+            params![encode_path(new), encode_path(old), revision],
+        )?;
+        if changed == 1 {
+            // 内容与计数未变，但必须让旧路径上的异步回读判定过期。
+            tx.execute(
+                "UPDATE token_revision SET revision = revision + 1,
+                    updated_at = max(updated_at + 1, ?1)",
+                [Local::now().timestamp_millis()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(changed == 1)
     }
 
     pub(super) fn observations(&self, source: &Path) -> Result<Vec<UsageEvent>> {

@@ -102,7 +102,7 @@ impl Scan {
         } else {
             None
         };
-        for _ in 0..SOURCES_PER_ROUND {
+        'sources: for _ in 0..SOURCES_PER_ROUND {
             let mut reader = match self.active.take().or_else(|| retry.take()) {
                 Some(source) => source,
                 None => {
@@ -140,6 +140,21 @@ impl Scan {
                         }
                         continue;
                     };
+                    for i in 0..self.missing.len() {
+                        let (missing, revision) = &self.missing[i];
+                        match store.relocate_source(missing, *revision, &path) {
+                            Ok(true) => {
+                                self.missing.remove(i);
+                                break;
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                self.issues += 1;
+                                errors.push((path.clone(), error));
+                                continue 'sources;
+                            }
+                        }
+                    }
                     match SourceReader::restore(store, &path) {
                         Ok(reader) => reader,
                         Err(error) => {

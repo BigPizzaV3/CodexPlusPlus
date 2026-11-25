@@ -210,7 +210,9 @@ fn source_move_and_removal_keep_archived_days_without_duplicating_recent_usage()
     let names = BTreeMap::new();
     assert!(scan.round(&mut store, &root, start, &names, 8192).complete);
 
-    fs::rename(&source, &moved).unwrap();
+    // A new physical file still exercises ingestion-before-retirement, not relocation.
+    fs::copy(&source, &moved).unwrap();
+    fs::remove_file(&source).unwrap();
     store
         .db
         .execute_batch(
@@ -258,6 +260,126 @@ fn source_move_and_removal_keep_archived_days_without_duplicating_recent_usage()
     })
     .unwrap();
     assert_eq!(archived, [(SECOND.into(), 110)]);
+}
+
+#[test]
+fn physical_archive_move_keeps_a_long_sources_committed_index_and_append_baseline() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let active = root.join("sessions");
+    let archived = root.join("archived_sessions");
+    fs::create_dir(&active).unwrap();
+    fs::create_dir(&archived).unwrap();
+    let name = format!("rollout-{FIRST}.jsonl");
+    let source = active.join(&name);
+    let moved = archived.join(&name);
+    let initial = rollout(FIRST);
+    let line = |n: i64| {
+        let at = chrono::DateTime::parse_from_rfc3339("2026-01-02T12:01:00Z").unwrap()
+            + chrono::Duration::seconds(n);
+        json!({"type":"event_msg","timestamp":at.to_rfc3339(),
+        "payload":{"type":"token_count","info":{
+          "total_token_usage":{"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n},
+          "last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}
+        }}})
+    };
+    fs::write(&source, initial).unwrap();
+    let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+    for n in 2..=80 {
+        writeln!(file, "{}", line(n)).unwrap();
+    }
+    drop(file);
+    let db = root.join("usage.sqlite");
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    assert!(
+        Scan::default()
+            .round(&mut store, &root, cutoff, &names, 1 << 20)
+            .complete
+    );
+    let checkpoint = store.checkpoint(&source).unwrap().unwrap();
+    let source_id: i64 = store
+        .db
+        .query_row("SELECT id FROM token_sources", [], |row| row.get(0))
+        .unwrap();
+    let observation_bytes: u64 = store
+        .db
+        .query_row(
+            "SELECT sum(length(payload)) FROM token_observations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    const BUDGET: usize = 8192;
+    assert!(observation_bytes > BUDGET as u64);
+    let read = |store: &mut Store| {
+        let mut counts = Vec::new();
+        let revision = Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+            counts.push((event.id, event.delta.total_tokens));
+            Ok(())
+        })
+        .unwrap();
+        (revision, counts)
+    };
+    let before = read(&mut store);
+    assert_eq!(before.1.len(), 80);
+
+    fs::rename(&source, &moved).unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER stop_move BEFORE UPDATE OF source ON token_sources
+         BEGIN SELECT RAISE(ABORT, 'test relocation failure'); END;",
+        )
+        .unwrap();
+    let failed = Scan::default().round(&mut store, &root, cutoff, &names, BUDGET);
+    assert_eq!(failed.errors.len(), 1);
+    assert!(
+        failed.errors[0]
+            .1
+            .to_string()
+            .contains("test relocation failure")
+    );
+    assert_eq!(read(&mut store), before);
+    assert!(store.checkpoint(&source).unwrap().is_some());
+    assert!(store.checkpoint(&moved).unwrap().is_none());
+    store.db.execute_batch("DROP TRIGGER stop_move").unwrap();
+    drop(store);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+
+    let mut scan = Scan::default();
+    let report = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(report.complete, "{:?}", report.errors);
+    assert!(store.checkpoint(&source).unwrap().is_none());
+    let (source_revision, state) = store.checkpoint(&moved).unwrap().unwrap();
+    assert_eq!(
+        (source_revision, state.offset),
+        (checkpoint.0, checkpoint.1.offset)
+    );
+    let moved_id: i64 = store
+        .db
+        .query_row("SELECT id FROM token_sources", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(moved_id, source_id);
+    let relocated = read(&mut store);
+    assert_eq!(relocated.0, before.0 + 1);
+    assert_eq!(relocated.1, before.1);
+
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&moved).unwrap(),
+        "{}",
+        line(81)
+    )
+    .unwrap();
+    let report = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(report.complete, "{:?}", report.errors);
+    let after = read(&mut store).1;
+    assert_eq!(after.len(), 81);
+    assert_eq!(after[..80], before.1);
+    assert_eq!(after[80].1, 110);
 }
 
 #[test]
