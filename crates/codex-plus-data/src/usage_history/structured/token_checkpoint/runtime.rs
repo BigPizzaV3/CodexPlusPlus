@@ -30,6 +30,7 @@ use std::time::Duration;
 
 const RECONCILIATION_BYTES: usize = 32 * 1024 * 1024;
 const CLASSIFICATION_SESSIONS_PER_ROUND: usize = 6;
+const HISTORICAL_CLASSIFICATION_WINDOWS_PER_ROUND: usize = 2;
 const CLASSIFICATION_SLICE_MS: i64 = 300_000;
 
 pub(in super::super) struct Runtime {
@@ -41,6 +42,7 @@ pub(in super::super) struct Runtime {
     evidence: Index,
     evidence_cursor: usize,
     evidence_before: BTreeMap<String, i64>,
+    historical_cursor: Option<(i64, i64)>,
     historical: Option<Arc<Historical>>,
     historical_verifier: Arc<Mutex<EvidenceVerifier>>,
 }
@@ -98,6 +100,7 @@ impl Runtime {
             retry_full: false,
             evidence_cursor: 0,
             evidence_before: BTreeMap::new(),
+            historical_cursor: Some((0, i64::MAX)),
             historical: None,
             historical_verifier: Arc::default(),
         }
@@ -148,7 +151,7 @@ impl Runtime {
             &mut state,
         ) {
             Ok(true) if evidence_available => {
-                if let Err(error) = self.classify_recent(home, proof_cutoff, &mut state) {
+                if let Err(error) = self.classify_retained(home, proof_cutoff, &mut state) {
                     state.classification_error = Some(format!("{error:#}"));
                 }
             }
@@ -187,7 +190,7 @@ impl Runtime {
         state
     }
 
-    fn classify_recent(
+    fn classify_retained(
         &mut self,
         home: &Path,
         cutoff: NaiveDate,
@@ -197,19 +200,15 @@ impl Runtime {
             .store
             .as_mut()
             .expect("successful scan owns a usage index");
-        let now = Local::now().timestamp_millis();
-        let sessions = store.recent_sessions(now - 86_400_000)?;
+        let recent_since = Local::now().timestamp_millis() - 86_400_000;
+        let sessions = store.recent_sessions(recent_since)?;
         let active: std::collections::BTreeSet<_> = sessions.iter().map(|(id, _)| id).collect();
         self.evidence_before.retain(|id, _| active.contains(id));
-        if sessions.is_empty() {
-            self.evidence_cursor = 0;
-            return Ok(());
-        }
-        let offset = self.evidence_cursor % sessions.len();
+        let offset = self.evidence_cursor % sessions.len().max(1);
         let count = CLASSIFICATION_SESSIONS_PER_ROUND.min(sessions.len());
         self.evidence_cursor = offset + count;
-        let index = &mut self.evidence;
-        let mut failure = None;
+        let mut windows =
+            Vec::with_capacity(2 * count + HISTORICAL_CLASSIFICATION_WINDOWS_PER_ROUND);
         for (session, latest) in sessions.iter().cycle().skip(offset).take(count) {
             let tail = latest.saturating_sub(CLASSIFICATION_SLICE_MS - 1)..latest.saturating_add(1);
             let before = self
@@ -220,51 +219,77 @@ impl Runtime {
                 .classification_before(session, (*before).min(tail.start))?
                 .map(|at| at.saturating_sub(CLASSIFICATION_SLICE_MS - 1)..at.saturating_add(1));
             *before = older.as_ref().map_or(tail.start, |window| window.start);
-            for window in older.into_iter().chain(std::iter::once(tail)) {
-                let result = store.reclassify_window(
-                    session,
-                    Some(window),
-                    RECONCILIATION_BYTES,
-                    self.scan.scoped_count_gaps(),
-                    |events, aliases, scope| {
-                        ensure!(
-                            index.native_evidence.observe_count_conflicts(events, true),
-                            "native count evidence exceeds capacity"
-                        );
-                        index.request_evidence.supplement_captured_scoped(
-                            events,
-                            aliases,
-                            &index.provider_cache,
-                            Some(scope),
-                        );
-                        index.request_evidence.attribute_with_cache_scoped(
-                            events,
-                            &mut state.provider_names,
-                            aliases,
-                            &index.provider_cache,
-                            Some(scope),
-                        );
-                        ensure!(
-                            !index.request_evidence.captured_id_check_failed,
-                            "captured request validation failed"
-                        );
-                        index.native_evidence.attribute(
-                            home,
-                            events,
-                            &index.provider_endpoints,
-                            index.provider_endpoint_since,
-                            aliases,
-                            &index.provider_cache,
-                            true,
-                            Some(scope),
-                        );
-                        index.native_evidence.apply_count_conflicts(events);
-                        Ok(())
-                    },
-                );
-                if let Err(error) = result {
-                    failure.get_or_insert(error);
-                }
+            windows.extend(
+                older
+                    .into_iter()
+                    .chain(std::iter::once(tail))
+                    .map(|window| (session.clone(), window)),
+            );
+        }
+        // 旧会话只在后台按已提交明细推进，不占用近期会话的归类名额。
+        for _ in 0..HISTORICAL_CLASSIFICATION_WINDOWS_PER_ROUND {
+            let Some((session_id, before)) = self.historical_cursor else {
+                break;
+            };
+            let Some((id, session, at)) =
+                store.historical_classification_before(session_id, before, recent_since)?
+            else {
+                self.historical_cursor = None;
+                break;
+            };
+            let window = at.saturating_sub(CLASSIFICATION_SLICE_MS - 1)..at.saturating_add(1);
+            self.historical_cursor = Some((id, window.start));
+            windows.push((session, window));
+        }
+        if windows.is_empty() {
+            return Ok(());
+        }
+        let index = &mut self.evidence;
+        let mut failure = None;
+        for (session, window) in windows {
+            let result = store.reclassify_window(
+                &session,
+                Some(window),
+                RECONCILIATION_BYTES,
+                self.scan.scoped_count_gaps(),
+                |events, aliases, scope| {
+                    ensure!(
+                        index.native_evidence.observe_count_conflicts(events, true),
+                        "native count evidence exceeds capacity"
+                    );
+                    index.request_evidence.supplement_captured_scoped(
+                        events,
+                        aliases,
+                        &index.provider_cache,
+                        Some(scope),
+                    );
+                    index.request_evidence.attribute_with_cache_scoped(
+                        events,
+                        &mut state.provider_names,
+                        aliases,
+                        &index.provider_cache,
+                        Some(scope),
+                    );
+                    ensure!(
+                        !index.request_evidence.captured_id_check_failed,
+                        "captured request validation failed"
+                    );
+                    index.native_evidence.attribute(
+                        home,
+                        events,
+                        &index.provider_endpoints,
+                        index.provider_endpoint_since,
+                        aliases,
+                        &index.provider_cache,
+                        true,
+                        Some(scope),
+                    );
+                    index.native_evidence.apply_count_conflicts(events);
+                    Ok(())
+                },
+            );
+            if let Err(error) = result {
+                failure.get_or_insert(error);
             }
         }
         index
@@ -772,6 +797,87 @@ mod tests {
             .unwrap()
             .query_row("SELECT revision FROM token_revision", [], |row| row.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn cold_historical_attribution_is_batched_and_preserves_counts_and_conflicts() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        fs::create_dir_all(home.join("sessions")).unwrap();
+        let home = fs::canonicalize(home).unwrap();
+        let settings = root.path().join("settings.json");
+        fs::write(&settings, r#"{"usageHistoryEnabled":true}"#).unwrap();
+        let request_log = root.path().join("requests.jsonl");
+        let storage = root.path().join("history");
+        let now = Local::now();
+        let at = now - chrono::Duration::days(3);
+        let stamp = at.to_rfc3339();
+        let usage = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":10});
+        let mut log = String::new();
+        for i in 1..=4 {
+            let session = format!("00000000-0000-4000-8000-{i:012}");
+            let model = format!("gpt-fixture-{i}");
+            let meta = json!({"type":"session_meta","timestamp":stamp,
+                "payload":{"id":session,"model_provider":"custom","source":"vscode"}});
+            let turn = json!({"type":"turn_context","timestamp":stamp,
+                "payload":{"turn_id":"test-turn","model":model}});
+            let count = json!({"type":"event_msg","timestamp":stamp,"payload":{
+                "type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}});
+            fs::write(
+                home.join(format!("sessions/rollout-{i}.jsonl")),
+                format!("{meta}\n{turn}\n{count}\n"),
+            )
+            .unwrap();
+            let mut proof = json!({"id":format!("proof-{i}"),"threadId":session,"model":model,
+                "upstreamModel":model,"relayId":"fixture-relay","relayName":"Fixture",
+                "success":true,"state":"success","statusCode":200,"timestampMs":at.timestamp_millis(),
+                "startedAtMs":at.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+                "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}});
+            log.push_str(&format!("{proof}\n"));
+            if i == 4 {
+                proof["id"] = json!("competing-proof");
+                proof["relayId"] = json!("competing-relay");
+                log.push_str(&format!("{proof}\n"));
+            }
+        }
+        fs::write(&request_log, log).unwrap();
+        let day = at.date_naive().to_string();
+        let request = json!({"from":day,"to":day});
+        let query = Query::parse(&request, now.date_naive()).unwrap();
+        let mut worker = Runtime::new(storage.clone(), settings.clone());
+        let exact_providers = |result: &Value| {
+            result["days"][0]["breakdowns"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|row| row["classificationEvidence"] == "request-log-exact")
+                .count()
+        };
+        let pass = |worker: &mut Runtime| {
+            let state = worker.update_with_request_log(&home, &request_log);
+            assert!(
+                state.classification_error.is_none(),
+                "{:?}",
+                state.classification_error
+            );
+            state.read(&storage, &query, &request, None, false)
+        };
+        let first = pass(&mut worker);
+        assert_eq!(exact_providers(&first), 2, "{first}");
+        let second = pass(&mut worker);
+        assert_eq!(exact_providers(&second), 3, "{second}");
+        assert_eq!(second["days"][0]["usage"], first["days"][0]["usage"]);
+        assert_eq!(second["days"][0]["usage"]["totalTokens"], 440);
+        assert_eq!(second["days"][0]["usage"]["cachedInputTokens"], 80);
+        assert_eq!(second["days"][0]["recordCount"], 4);
+        assert_eq!(second["classificationStatus"]["uncertainEvents"], 1);
+        let complete = pass(&mut worker);
+        assert!(worker.historical_cursor.is_none());
+        assert_eq!(complete["revision"], second["revision"]);
+        drop(worker);
+        let reopened = pass(&mut Runtime::new(storage.clone(), settings));
+        assert_eq!(reopened["days"], second["days"]);
+        assert_eq!(reopened["revision"], second["revision"]);
     }
 
     #[test]

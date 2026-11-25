@@ -1148,6 +1148,34 @@ impl Store {
             .optional()?)
     }
 
+    pub(in super::super) fn historical_classification_before(
+        &self,
+        session_id: i64,
+        before: i64,
+        recent_since: i64,
+    ) -> Result<Option<(i64, String, i64)>> {
+        Ok(self
+            .db
+            .prepare_cached(
+                "SELECT s.id, s.session, (
+                SELECT r.timestamp_ms FROM token_resolved r
+                WHERE r.session_id = s.id
+                  AND r.timestamp_ms < CASE WHEN s.id = ?1 THEN min(?2, ?3) ELSE ?3 END
+                  AND r.day >= (SELECT precise_from FROM token_revision)
+                ORDER BY r.timestamp_ms DESC LIMIT 1
+             ) AS latest
+             FROM token_sessions s
+             WHERE s.id >= ?1 AND latest IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM token_resolved current
+                   WHERE current.session_id = s.id AND current.timestamp_ms >= ?3)
+             ORDER BY s.id LIMIT 1",
+            )?
+            .query_row(params![session_id, before, recent_since], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .optional()?)
+    }
+
     /// Re-evaluate a canonical session from its committed native identities, never from
     /// the supplier identities written in the last classification pass.
     #[cfg(test)]
