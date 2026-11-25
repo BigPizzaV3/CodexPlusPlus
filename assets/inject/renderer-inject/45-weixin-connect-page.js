@@ -459,6 +459,8 @@
     const permissionSection = `<section class="codex-plus-settings-section" aria-label="权限">
       <h2 class="codex-plus-settings-section-title">权限</h2>
       <div class="codex-plus-settings-card">
+        ${codexPlusWeixinRow("允许微信专注操作桌面会话", "远程控制关闭时，仅在此项开启后，已扫码绑定的微信用户仍可进入桌面会话、发消息和处理审批。不会开启网页访问。",
+          codexPlusWeixinToggle("weixinFocusEnabled", Boolean(data.weixinFocusEnabled), "允许微信专注操作桌面会话"))}
         ${codexPlusWeixinRow("沙箱权限", "Codex 在工作目录里能做什么。",
           codexPlusWeixinMenu("weixinConnectSandbox", settings.weixinConnectSandbox || "read-only", codexPlusWeixinSandboxOptions, "沙箱权限"))}
         ${codexPlusWeixinRow("工作区附件回传", outboundBlocked ? "先填允许的微信用户 ID（不能是 *）并填好工作目录，才能打开。" : "允许向指定微信用户回传工作区文件。",
@@ -530,7 +532,9 @@
     if (toggle) {
       if (toggle.disabled) return;
       const field = toggle.getAttribute("data-codex-weixin-toggle");
-      await codexPlusWeixinSave({ [field]: toggle.getAttribute("aria-checked") !== "true" });
+      const enabled = toggle.getAttribute("aria-checked") !== "true";
+      if (field === "weixinFocusEnabled") await codexPlusWeixinRun("setWeixinFocus", { enabled });
+      else await codexPlusWeixinSave({ [field]: enabled });
       return;
     }
     const button = target.closest("[data-codex-weixin-action]");

@@ -248,8 +248,10 @@
     const main = `<section class="codex-plus-settings-section" aria-label="远程控制">
       <h2 class="codex-plus-settings-section-title">远程控制</h2>
       <div class="codex-plus-settings-card">
-        ${codexPlusRemoteRow("启用远程控制", "在浏览器或手机上查看 Codex 的会话、发消息、停止，处理命令审批和模型提问，切换模型、权限和计划模式。",
+        ${codexPlusRemoteRow("启用远程控制", `在浏览器或手机上查看 Codex 的会话、发消息、停止，处理命令审批和模型提问，切换模型、权限和计划模式。${data.weixinFocusEnabled && !data.running ? "开启远程控制会中断正在独立后台运行的微信专注轮次。" : ""}`,
           `${data.running ? '<span class="codex-plus-provider-badge" data-tone="active">运行中</span>' : ""}${codexPlusRemoteToggle(data.enabled ? "disable" : "enable", Boolean(data.enabled), "启用远程控制")}`)}
+        ${codexPlusRemoteRow("允许微信专注操作桌面会话", "远程控制关闭时，仅在此项开启后，已扫码绑定的微信用户仍可进入桌面会话、发消息和处理审批。不会开启网页访问。",
+          codexPlusRemoteToggle("setWeixinFocus", Boolean(data.weixinFocusEnabled), "允许微信专注操作桌面会话"))}
         ${url ? codexPlusRemoteRow("本机访问链接", `<code class="codex-plus-remote-url">${escapeHtml(url.replace(/#token=.*/, "#token=…"))}</code><br>链接里带着访问令牌，拿到链接就能操控 Codex，不要发给别人。`,
           `<button type="button" class="codex-plus-action-button" data-codex-remote-action="copy">${state.copied ? "已复制" : "复制"}</button>
            <button type="button" class="codex-plus-action-button" data-codex-remote-action="openBrowser">在浏览器打开</button>`) : ""}
@@ -397,6 +399,9 @@
         return;
       case "startPairing":
         await codexPlusRemoteRun("startPairing", { role: state.pairRole });
+        return;
+      case "setWeixinFocus":
+        await codexPlusRemoteRun("setWeixinFocus", { enabled: !state.data?.weixinFocusEnabled });
         return;
       case "revoke": {
         const name = button.getAttribute("data-codex-remote-name") || "这台设备";

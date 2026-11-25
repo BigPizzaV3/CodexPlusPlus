@@ -66,6 +66,7 @@ const baseState = (patch: PageState = {}): PageState => ({
       loggedIn: true,
     },
     remoteControlRunning: false,
+    weixinFocusEnabled: false,
   },
   ...patch,
 });
@@ -100,6 +101,7 @@ test("宿主路由在管理器登记，每个动作调管理器微信页同一�
   // 设置只合并白名单字段；改完通知管理器界面重新读取。
   assert.match(bridge, /page::apply_page_settings\(&mut settings, patch\)\?;/);
   assert.match(bridge, /notify_external_settings_change\(\)/);
+  assert.match(bridge, /"setWeixinFocus" => tokio::task::spawn_blocking\(move \|\| \{\s*codex_plus_core::remote_control::bridge_route\(&payload\)\?/);
   // 页面拿不到登录凭据。
   assert.doesNotMatch(await read("../../../crates/codex-plus-core/src/connect/page.rs"), /"weixinConnectToken":/);
 });
@@ -114,11 +116,21 @@ test("分片登记进清单，行数与文件一致；页面的动作都在后�
   const source = await read(shardPath);
   assert.equal(fragments[index].lines, source.split("\n").length - 1);
   const bridge = await read("../src-tauri/src/weixin_connect_bridge.rs");
-  for (const action of ["state", "save", "qrStart", "qrStatus", "start", "stop", "catalog", "projects", "resetSession"]) {
+  for (const action of ["state", "save", "setWeixinFocus", "qrStart", "qrStatus", "start", "stop", "catalog", "projects", "resetSession"]) {
     assert.ok(source.includes(`"${action}"`), `页面缺少动作 ${action}`);
     assert.ok(bridge.includes(`"${action}"`), `后端缺少动作 ${action}`);
   }
   assert.match(source, /postJson\("\/weixin-connect", \{ action, \.\.\.args \}\)/);
+});
+
+test("微信专注开关按独立授权显示，不随网页入口开关变化", async () => {
+  const { codexPlusWeixinPageHtml } = await loadShard();
+  const state = baseState();
+  assert.match(codexPlusWeixinPageHtml(state), /aria-checked="false"[^>]*data-codex-weixin-toggle="weixinFocusEnabled"/);
+  state.data.weixinFocusEnabled = true;
+  const html = codexPlusWeixinPageHtml(state);
+  assert.match(html, /aria-checked="true"[^>]*data-codex-weixin-toggle="weixinFocusEnabled"/);
+  assert.match(html, /远程控制未开/);
 });
 
 test("Codex 左侧图标栏的「微信连接」入口：紧跟远程控制，登记进所有写死内置 id 的地方", async () => {
