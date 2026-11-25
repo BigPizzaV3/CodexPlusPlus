@@ -204,7 +204,7 @@ pub fn attachments_from(body: &Value) -> anyhow::Result<Vec<Attachment>> {
 }
 
 fn home_dir() -> PathBuf {
-    directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()).unwrap_or_else(|| PathBuf::from("/"))
+    crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()).unwrap_or_else(|| PathBuf::from("/"))
 }
 
 /// 列出一个文件夹里的子文件夹（新建会话选工作目录用）。不给路径时从主目录开始。

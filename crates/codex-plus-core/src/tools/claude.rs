@@ -749,7 +749,7 @@ fn host_label(base_url: &str) -> Option<String> {
 fn find_claude_cli(claude_home: &Path) -> Option<PathBuf> {
     let binary = if cfg!(windows) { "claude.exe" } else { "claude" };
     let mut candidates = vec![claude_home.join("local").join(binary)];
-    if let Some(dirs) = directories::BaseDirs::new() {
+    if let Some(dirs) = crate::user_dirs::BaseDirs::new() {
         candidates.push(dirs.home_dir().join(".local").join("bin").join(binary));
     }
     if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {

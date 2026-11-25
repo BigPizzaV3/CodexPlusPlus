@@ -90,15 +90,12 @@ fn write_settings(
     url: &str,
     enabled: bool,
     master: bool,
-    buffered: bool,
     local: bool,
     search: bool,
 ) {
     let settings = json!({
         "enhancementsEnabled":master,
         "codexAppReportedUsageCompaction":enabled,
-        "protocolProxyAutoRetry":buffered,
-        "protocolProxyAutoRetryMode":if buffered {"buffered"} else {"streaming"},
         "relayProfilesEnabled":true,"activeRelayId":"usage-fixture",
         "relayProfiles":[{"id":"usage-fixture","name":"Usage fixture",
             "upstreamBaseUrl":format!("{url}/v1"),"baseUrl":format!("{url}/v1"),
@@ -118,84 +115,78 @@ async fn helper_reported_usage_scopes_to_codex_clients_and_preserves_genuine_mar
         path.clone(),
     )));
     for streaming in [false, true] {
-        for buffered in [false, true] {
-            if buffered && !streaming {
-                continue;
-            }
-            for (has_marker, local_upstream) in [(false, false), (true, false), (true, true)] {
-                let genuine = has_marker && !local_upstream;
-                for (originator, enabled, master) in [
-                    ("Codex Desktop", true, true),
-                    ("codex_cli_rs", true, true),
-                    ("codex_exec", true, true),
-                    ("fixture-other", true, true),
-                    ("Codex Desktop", false, true),
-                    ("Codex Desktop", true, false),
-                ] {
-                    let upstream = MockServer::start().await;
-                    let mut reply = ResponseTemplate::new(200)
-                        .set_body_string(response(streaming))
-                        .insert_header(
-                            "Content-Type",
-                            if streaming {
-                                "text/event-stream"
-                            } else {
-                                "application/json"
-                            },
-                        );
-                    if has_marker {
-                        reply = reply.insert_header("X-Reasoning-Included", "true");
-                    }
-                    if local_upstream {
-                        reply = reply.insert_header("X-CodexPlus-Compaction-Usage", "reported");
-                    }
-                    Mock::given(method("POST"))
-                        .respond_with(reply)
-                        .expect(1)
-                        .mount(&upstream)
-                        .await;
-                    write_settings(
-                        &path,
-                        &upstream.uri(),
-                        enabled,
-                        master,
-                        buffered,
-                        false,
-                        false,
+        for (has_marker, local_upstream) in [(false, false), (true, false), (true, true)] {
+            let genuine = has_marker && !local_upstream;
+            for (originator, enabled, master) in [
+                ("Codex Desktop", true, true),
+                ("codex_cli_rs", true, true),
+                ("codex_exec", true, true),
+                ("fixture-other", true, true),
+                ("Codex Desktop", false, true),
+                ("Codex Desktop", true, false),
+            ] {
+                let upstream = MockServer::start().await;
+                let mut reply = ResponseTemplate::new(200)
+                    .set_body_string(response(streaming))
+                    .insert_header(
+                        "Content-Type",
+                        if streaming {
+                            "text/event-stream"
+                        } else {
+                            "application/json"
+                        },
                     );
-                    let body = request(streaming, false);
-                    let (headers, received) = helper_request(&body, originator).await;
-                    assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
-                    let local = originator != "fixture-other" && enabled && master;
-                    assert_eq!(
-                        header_value_from_headers(&headers, "x-reasoning-included").is_some(),
-                        local || genuine
-                    );
-                    assert_eq!(
-                        header_value_from_headers(&headers, "x-codexplus-compaction-usage"),
-                        (local && !genuine).then_some("reported".into())
-                    );
-                    let received: Value = if streaming {
-                        let text = String::from_utf8(received).unwrap();
-                        text.lines()
-                            .filter_map(|line| line.strip_prefix("data: "))
-                            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                            .find(|event| event["type"] == "response.completed")
-                            .unwrap()["response"]
-                            .clone()
-                    } else {
-                        serde_json::from_slice(&received).unwrap()
-                    };
-                    assert_eq!(
-                        received["usage"],
-                        usage(),
-                        "Never rewrite reported usage or cached tokens"
-                    );
-                    let sent = upstream.received_requests().await.unwrap();
-                    assert_eq!(sent[0].body_json::<Value>().unwrap(), body);
-                    assert!(!sent[0].headers.contains_key("x-reasoning-included"));
-                    assert!(!sent[0].headers.contains_key("x-codexplus-compaction-usage"));
+                if has_marker {
+                    reply = reply.insert_header("X-Reasoning-Included", "true");
                 }
+                if local_upstream {
+                    reply = reply.insert_header("X-CodexPlus-Compaction-Usage", "reported");
+                }
+                Mock::given(method("POST"))
+                    .respond_with(reply)
+                    .expect(1)
+                    .mount(&upstream)
+                    .await;
+                write_settings(
+                    &path,
+                    &upstream.uri(),
+                    enabled,
+                    master,
+                    false,
+                    false,
+                );
+                let body = request(streaming, false);
+                let (headers, received) = helper_request(&body, originator).await;
+                assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
+                let local = originator != "fixture-other" && enabled && master;
+                assert_eq!(
+                    header_value_from_headers(&headers, "x-reasoning-included").is_some(),
+                    local || genuine
+                );
+                assert_eq!(
+                    header_value_from_headers(&headers, "x-codexplus-compaction-usage"),
+                    (local && !genuine).then_some("reported".into())
+                );
+                let received: Value = if streaming {
+                    let text = String::from_utf8(received).unwrap();
+                    text.lines()
+                        .filter_map(|line| line.strip_prefix("data: "))
+                        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                        .find(|event| event["type"] == "response.completed")
+                        .unwrap()["response"]
+                        .clone()
+                } else {
+                    serde_json::from_slice(&received).unwrap()
+                };
+                assert_eq!(
+                    received["usage"],
+                    usage(),
+                    "Never rewrite reported usage or cached tokens"
+                );
+                let sent = upstream.received_requests().await.unwrap();
+                assert_eq!(sent[0].body_json::<Value>().unwrap(), body);
+                assert!(!sent[0].headers.contains_key("x-reasoning-included"));
+                assert!(!sent[0].headers.contains_key("x-codexplus-compaction-usage"));
             }
         }
     }
@@ -228,7 +219,7 @@ async fn helper_reported_usage_requires_codex_client_identity() {
             .expect(1)
             .mount(&upstream)
             .await;
-        write_settings(&path, &upstream.uri(), true, true, false, false, false);
+        write_settings(&path, &upstream.uri(), true, true, false, false);
         let (headers, _) = helper_request_with_identity(&request(false, false), identity).await;
         assert!(headers.starts_with("HTTP/1.1 200 OK"), "{headers}");
         assert_eq!(
@@ -270,7 +261,7 @@ async fn helper_reported_usage_coexists_with_local_cache_and_search_repair() {
                 .expect(2)
                 .mount(&upstream)
                 .await;
-            write_settings(&path, &upstream.uri(), true, true, false, local, search);
+            write_settings(&path, &upstream.uri(), true, true, local, search);
             helper_request(&request(streaming, false), "Codex Desktop").await;
             let compact = request(streaming, true);
             let (headers, received) = helper_request(&compact, "Codex Desktop").await;
@@ -331,7 +322,7 @@ async fn helper_reported_usage_does_not_mask_compaction_errors_or_retry() {
             .expect(1)
             .mount(&upstream)
             .await;
-        write_settings(&path, &upstream.uri(), true, true, false, true, true);
+        write_settings(&path, &upstream.uri(), true, true, true, true);
         let (headers, received) =
             helper_request(&request(status == 200, true), "Codex Desktop").await;
         assert!(

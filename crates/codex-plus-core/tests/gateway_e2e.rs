@@ -136,6 +136,8 @@ fn providers(relays: Vec<RelayProfile>) -> Vec<GatewayProvider> {
     relays
         .into_iter()
         .map(|relay| GatewayProvider {
+            linked_codex_relay: None,
+            owner: String::new(),
             enabled: true,
             source: String::new(),
             price: None,
@@ -1858,4 +1860,10 @@ async fn gateway_end_to_end() {
     assert_eq!(generic_seen.lock().unwrap().last().unwrap().1["model"], "deepseek-v4-pro");
 
     codex_plus_core::resident_helper::stop_resident_helper();
+}
+
+/// 测试不许碰用户的真实目录：main 之前进家目录沙箱（见 `codex_plus_core::test_sandbox`）。
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    codex_plus_core::test_sandbox::enter();
 }

@@ -58,7 +58,7 @@ Friendly link: <a href="https://linux.do">LINUX DO</a>
 
 | Agent | What Codex++ does |
 | --- | --- |
-| **Codex desktop** | Providers through the gateway or direct mode, protocol conversion, request shock absorption, session management, UI enhancements, multi-launch, extensions, and the Agent pet |
+| **Codex desktop** | Providers through the gateway or direct mode, protocol conversion, session management, UI enhancements, multi-launch, extensions, and the Agent pet |
 | **Claude Code** | Providers of any protocol through the gateway (Anthropic requests are converted to Chat / Responses); Computer Use connection |
 | **Claude Desktop** | Enhanced copy (Chinese UI, dictation, Computer Use); Computer Use connection |
 | **Grok CLI** | The shared provider pool through the gateway, including SuperGrok subscriptions |

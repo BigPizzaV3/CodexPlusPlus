@@ -1,7 +1,8 @@
 //! 网关模式命令：Agent 接入开关、网关自己的共享供应商与路由组、Key 健康状态。
 //!
-//! 网关模式与直连模式完全独立：共享供应商、路由组只存在 `gateway.json`；
-//! 直连模式的 Codex / Claude / Grok 供应商只在「导入」时被读取并复制一份。
+//! 共享供应商、路由组只存在 `gateway.json`。能共享的 Codex 直连供应商默认就在共享供应商里，
+//! 只存引用、连接资料读取时现取（见 `codex_plus_core::gateway::codex_link`）；
+//! Claude / Grok 等其它来源只在「导入」时被读取并复制一份。
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -93,6 +94,11 @@ pub struct GatewayPoolEntry {
     pub newapi_access: Option<apply::NewApiAccessView>,
     /// 自定义请求头（#3075）：敏感头只给打码后的样子；订阅账号、官方登录等不开放编辑的为空。
     pub custom_headers: Vec<codex_plus_core::gateway::provider_headers::ProviderHeaderView>,
+    /// 归哪个 Agent 的页面：`codex`（引用 Codex 直连供应商的）、`claude`（从 Claude 页添加或导入的），
+    /// 在「本地服务」页添加的为空。两边供应商页的「显示其他 Agent 的供应商」按它筛。
+    pub owner: Option<&'static str>,
+    /// 引用的 Codex 直连供应商 id：地址、Key、模型这些要在 Codex「连接与供应商」里改，这里只读。
+    pub linked_codex_relay: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,6 +128,8 @@ pub struct GatewayAgentView {
     pub diagnostics: Option<codex_plus_core::gateway::diagnostics::AgentDiagnostics>,
     /// Agent 自带的模型（用它自己的登录或 Key 直连厂商，不经 Codex++）；没有时为 None。
     pub own_models: Option<codex_plus_core::gateway::own_models::OwnModels>,
+    /// Claude Code 没接入、正直连共享供应商里的一家时，那一家的 id（Claude 页「直连」标「使用中」）。
+    pub direct_pool_provider: Option<String>,
 }
 
 /// 界面上的自动组：组本身 + 是否隐藏 + 有没有改过设置。
@@ -162,6 +170,12 @@ pub struct NativeAuthState {
     pub drift: Option<String>,
     /// 当前连接不能应用所选身份时，提示先处理连接而非反复重启。
     pub restart_blocked_reason: Option<String>,
+    /// 选的是「本地账号」（API Key 解锁 ChatGPT 入口）。
+    pub local_login: bool,
+    /// 「本地账号」现在不能用的原因（官方登录供应商等），下拉里置灰并显示。
+    pub local_login_blocked_reason: Option<String>,
+    /// 选了「本地账号」但没开自动接管：从 Dock 直接打开的 Codex 没有本地后端，要提醒从 Codex++ 启动。
+    pub local_login_launch_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -183,7 +197,7 @@ pub struct GatewayPayload {
     pub activity: ActivitySnapshot,
     /// 各（供应商, 模型）最近的平均首包耗时，「路由」页、共享供应商「按模型」和「速度优先」用。
     pub speeds: Vec<codex_plus_core::gateway::speed::SpeedView>,
-    /// 可复制进网关的直连模式供应商。
+    /// 能共享的直连模式供应商（都以引用的方式自动在共享供应商里）。
     pub codex_providers: Vec<GatewayPoolEntry>,
     /// 能在网关里登录的私有接口订阅（Cursor、Kiro 等）。
     pub subscriptions: Vec<codex_plus_core::gateway::subscriptions::SubscriptionView>,
@@ -288,6 +302,8 @@ fn pool_entry(
         balance_api: codex_plus_core::gateway::balance::has_balance_api(relay),
         newapi_access: None,
         custom_headers: codex_plus_core::gateway::provider_headers::view(relay),
+        owner: None,
+        linked_codex_relay: None,
     }
 }
 
@@ -356,6 +372,8 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
             auto_compact: provider.auto_compact.clone(),
             key_rpm: provider.key_rpm,
             key_concurrency: provider.key_concurrency,
+            owner: codex_plus_core::gateway::codex_link::owner_of(provider),
+            linked_codex_relay: provider.linked_codex_relay.clone(),
             ..pool_entry(
                 &provider.relay,
                 provider.enabled,
@@ -441,6 +459,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 own_models: codex_plus_core::gateway::own_models::own_models(
                     &drift_ctx, agent, binding,
                 ),
+                direct_pool_provider: (*agent == ToolId::Claude && !enabled)
+                    .then(|| codex_plus_core::gateway::claude_direct::current_pool_provider(&drift_ctx))
+                    .flatten(),
             }
         })
         .collect();
@@ -536,7 +557,17 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
     let has_native_login = codex_plus_core::official_login::official_login_from_auth_contents(&live).is_some();
     let mut accounts = Vec::new();
     let mut actual_account_ref = None;
-    let mut actual_label = if has_native_login { "ChatGPT".to_string() } else { String::new() };
+    let live_local = serde_json::from_str::<serde_json::Value>(&live)
+        .ok()
+        .and_then(|auth| auth.get("tokens").cloned())
+        .is_some_and(|tokens| codex_plus_core::chatgpt_compat::is_local_login_tokens(&tokens));
+    let mut actual_label = if has_native_login {
+        "ChatGPT".to_string()
+    } else if live_local {
+        "本地账号".to_string()
+    } else {
+        String::new()
+    };
     for provider in &gateway.providers {
         if codex_plus_core::official_login::official_login_from_auth_contents(
             &provider.relay.auth_contents,
@@ -602,6 +633,14 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
             drift = Some("当前连接尚未切换到所选登录身份，请重新应用".to_string());
         }
     }
+    let local_login = settings.chatgpt_compat_enabled;
+    let local_login_blocked_reason = codex_plus_core::chatgpt_compat_apply::local_login_blocker(
+        &home,
+        codex_on_gateway(&settings, &gateway),
+    )?
+    .map(str::to_string);
+    let local_login_launch_hint = (local_login && !settings.codex_app_auto_takeover)
+        .then(|| LOCAL_LOGIN_LAUNCH_HINT.to_string());
     Ok(NativeAuthState {
         managed: settings.native_auth_selection.is_some(),
         selection: settings.native_auth_selection,
@@ -610,7 +649,21 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
         accounts,
         drift,
         restart_blocked_reason: blocked_reason.map(str::to_string),
+        local_login,
+        local_login_blocked_reason,
+        local_login_launch_hint,
     })
+}
+
+const LOCAL_LOGIN_LAUNCH_HINT: &str =
+    "本地账号要从 Codex++ 启动 Codex 才生效；想直接打开 Codex 也生效，请先在首页打开「自动接管官方 App」";
+
+fn codex_on_gateway(
+    settings: &codex_plus_core::settings::BackendSettings,
+    gateway: &GatewaySettings,
+) -> bool {
+    settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID
+        && gateway.binding(&ToolId::Codex).is_some_and(|binding| binding.enabled)
 }
 
 fn native_auth_restart_blocker(
@@ -646,25 +699,67 @@ pub fn get_native_auth_state() -> CommandResult<NativeAuthState> {
             accounts: Vec::new(),
             drift: Some(error.to_string()),
             restart_blocked_reason: None,
+            local_login: false,
+            local_login_blocked_reason: None,
+            local_login_launch_hint: None,
         }),
     }
 }
 
 #[tauri::command]
 pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<NativeAuthState> {
+    let kind = if account_ref.is_some() { "account" } else { "none" };
+    set_codex_login_identity(kind.to_string(), account_ref)
+}
+
+/// 「Codex 登录身份」三选一：`account`（ChatGPT 账号）、`local`（本地账号，用 API Key 解锁
+/// ChatGPT 入口）、`none`（不登录）。原生登录选择和解锁开关在这里一起改，不再是两个开关：
+/// 先还原假登录再写真账号，两边写 `auth.json` 不会互相覆盖。
+#[tauri::command]
+pub fn set_codex_login_identity(
+    kind: String,
+    account_ref: Option<String>,
+) -> CommandResult<NativeAuthState> {
     let result = (|| -> anyhow::Result<NativeAuthState> {
-        if let Some(account_ref) = account_ref.as_deref() {
-            let gateway = GatewayStore::default().load()?;
-            let provider = gateway
-                .provider(account_ref)
-                .context("所选 ChatGPT 账号不存在")?;
-            if codex_plus_core::official_login::official_login_from_auth_contents(
-                &provider.relay.auth_contents,
-            )
-            .is_none()
-            {
-                anyhow::bail!("所选供应商没有可用的 ChatGPT 登录凭据");
+        let home = codex_plus_core::relay_config::default_codex_home_dir();
+        let account_ref = match kind.as_str() {
+            "account" => {
+                let account_ref = account_ref.context("没有选 ChatGPT 账号")?;
+                let gateway = GatewayStore::default().load()?;
+                let provider = gateway
+                    .provider(&account_ref)
+                    .context("所选 ChatGPT 账号不存在")?;
+                if codex_plus_core::official_login::official_login_from_auth_contents(
+                    &provider.relay.auth_contents,
+                )
+                .is_none()
+                {
+                    anyhow::bail!("所选供应商没有可用的 ChatGPT 登录凭据");
+                }
+                Some(account_ref)
             }
+            "local" => {
+                let settings = SettingsStore::default().load()?;
+                let gateway = GatewayStore::default().load()?;
+                if let Some(reason) = codex_plus_core::chatgpt_compat_apply::local_login_blocker(
+                    &home,
+                    codex_on_gateway(&settings, &gateway),
+                )? {
+                    anyhow::bail!(reason);
+                }
+                None
+            }
+            "none" => None,
+            other => anyhow::bail!("未知的登录身份：{other}"),
+        };
+        let local = kind == "local";
+        // 先还原假登录：之后写原生登录时读到的是接入前的真实 auth.json。
+        codex_plus_core::chatgpt_compat_apply::release(&home)?;
+        let store = SettingsStore::default();
+        let mut settings = store.load()?;
+        if settings.chatgpt_compat_enabled != local {
+            settings.chatgpt_compat_enabled = local;
+            store.save(&settings)?;
         }
         codex_plus_core::native_auth::set_native_auth_selection(account_ref.as_deref())?;
         notify_settings_changed();
@@ -672,12 +767,16 @@ pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<Nat
         if apply::sync_codex_identity_after_selection(&context()).is_err() {
             anyhow::bail!("登录选择已保存，但连接身份同步失败，请重新应用；尚未重启 Codex");
         }
+        // 本地账号现在就写进去（假登录 + 兼容服务地址），兼容服务随下次启动 Codex 起来。
+        if local {
+            codex_plus_core::chatgpt_compat_apply::reconcile(&home, true)?;
+        }
         notify_settings_changed();
         native_auth_state()
     })();
     match result {
-        Ok(state) => ok("原生登录选择已保存。", state),
-        Err(error) => failed(&format!("保存原生登录选择失败：{error}"),
+        Ok(state) => ok("登录身份已保存。", state),
+        Err(error) => failed(&format!("保存登录身份失败：{error}"),
             native_auth_state().unwrap_or(NativeAuthState {
                 managed: false,
                 selection: None,
@@ -686,6 +785,9 @@ pub fn set_native_auth_account(account_ref: Option<String>) -> CommandResult<Nat
                 accounts: Vec::new(),
                 drift: Some(error.to_string()),
                 restart_blocked_reason: None,
+                local_login: false,
+                local_login_blocked_reason: None,
+                local_login_launch_hint: None,
             })),
     }
 }
@@ -730,6 +832,18 @@ pub(crate) fn notify_settings_changed() {
     }
 }
 
+/// Codex 断开网关后若落到官方登录 / 内置 OpenAI 供应商，本地账号用不了：退回「不登录」，返回要追加的提示。
+fn codex_login_fallback_notice(agent: &str) -> &'static str {
+    if agent != "codex" {
+        return "";
+    }
+    let home = codex_plus_core::relay_config::default_codex_home_dir();
+    match codex_plus_core::chatgpt_compat_apply::fall_back_when_blocked(&home, &SettingsStore::default()) {
+        Ok(true) => codex_plus_core::chatgpt_compat_apply::FELL_BACK_NOTICE,
+        _ => "",
+    }
+}
+
 fn respond<T>(
     success: &str,
     failure: &str,
@@ -754,6 +868,16 @@ fn refresh_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
         );
     }
     result
+}
+
+/// Codex 直连供应商改了（保存设置后调用）：引用它们的共享供应商读取时就是现值，路由不用管；
+/// 开着的 Agent 配置里写着模型列表，在后台重写一遍，不拖慢保存。
+pub(crate) fn refresh_after_codex_profiles_changed() {
+    std::thread::spawn(|| {
+        if GatewayStore::default().load().is_ok_and(|gateway| gateway.any_enabled()) {
+            let _ = refresh_agents(Ok(()));
+        }
+    });
 }
 
 fn refresh_group_agents<T>(result: anyhow::Result<T>) -> anyhow::Result<T> {
@@ -942,9 +1066,10 @@ pub fn disable_gateway_binding_full_switch(
         );
         apply::disable_binding(&ctx, &settings, &agent)
     })();
+    let notice = if result.is_ok() { codex_login_fallback_notice(&agent) } else { "" };
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
-        &format!("{name} 已断开并切回直连，新开的会话生效。"),
+        &format!("{name} 已断开并切回直连，新开的会话生效。{notice}"),
         "断开失败",
         result,
     )
@@ -992,9 +1117,10 @@ pub fn disable_gateway_binding(
         let (ctx, settings) = validate_disconnect_preview(&agent, preview_token.as_deref())?;
         apply::disable_binding(&ctx, &settings, &agent)
     })();
+    let notice = if result.is_ok() { codex_login_fallback_notice(&agent) } else { "" };
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
-        &format!("{name} 已断开并还原，新开的会话生效。"),
+        &format!("{name} 已断开并还原，新开的会话生效。{notice}"),
         "断开失败",
         result,
     )
@@ -1027,9 +1153,40 @@ pub fn use_gateway_own_model(
         };
         codex_plus_core::gateway::own_models::use_own_model(&ctx, &settings, &agent, &model)
     })();
+    let notice = if result.is_ok() { codex_login_fallback_notice(&agent) } else { "" };
     let name = codex_plus_core::tools::tool_display_name(&ToolId::parse(&agent));
     respond(
-        &format!("{name} 已改用自带的 {}，直连、不经 Codex++，新开的会话生效。", model.trim()),
+        &format!("{name} 已改用自带的 {}，直连、不经 Codex++，新开的会话生效。{notice}", model.trim()),
+        "切换失败",
+        result,
+    )
+}
+
+/// Claude 页的「直连」：Claude Code 直接连共享供应商里的一家（Anthropic 协议、用 Key 的），不经 Codex++。
+/// 接入着时和「断开并还原」一样要先拿断开预览的 token。
+#[tauri::command]
+pub fn use_claude_code_pool_provider(
+    id: String,
+    model: Option<String>,
+    preview_token: Option<String>,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = (|| {
+        let agent = ToolId::Claude;
+        let settings = SettingsStore::default().load()?;
+        let connected = GatewayStore::default()
+            .load()?
+            .binding(&agent)
+            .is_some_and(|binding| binding.enabled);
+        let managed = claude::current_provider_id(&ClaudeContext::default_paths())? == GATEWAY_PROVIDER_ID;
+        let (ctx, settings) = if connected || managed || preview_token.is_some() {
+            validate_disconnect_preview(&agent, preview_token.as_deref())?
+        } else {
+            (context(), settings)
+        };
+        codex_plus_core::gateway::claude_direct::use_pool_provider(&ctx, &settings, &id, model.as_deref())
+    })();
+    respond(
+        "Claude Code 已改为直连这家供应商，不经 Codex++，新开的会话生效。",
         "切换失败",
         result,
     )
@@ -1393,21 +1550,24 @@ pub fn save_gateway_favorites(models: Vec<String>) -> CommandResult<Option<Gatew
     respond("收藏已保存。", "保存收藏失败", refresh_agents(result))
 }
 
-/// 用内置预设或手填的地址、Key 新建网关供应商。
+/// 用内置预设或手填的地址、Key 新建网关供应商。`owner` 是从哪个 Agent 的页面加的（Claude 页传 `claude`，
+/// 其它页面不传），两边供应商页的「显示其他 Agent 的供应商」按它筛。
 #[tauri::command]
 pub fn create_gateway_provider(
     input: ProviderInput,
     source: String,
     skip_agents: Option<Vec<String>>,
+    owner: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let name = input.name.trim().to_string();
     respond(
         &format!("已添加「{name}」，接入的 Agent 现在能用它的模型了。"),
         "添加供应商失败",
-        refresh_added(apply::create_provider(
+        refresh_added(apply::create_provider_owned(
             &GatewayStore::default(),
             &input,
             &source,
+            owner.as_deref(),
             skip_agents.as_deref(),
         )),
     )
@@ -2067,6 +2227,26 @@ pub fn set_gateway_provider_enabled(
     )
 }
 
+/// 给哪几个 Agent 用某个共享供应商（Claude 的「供应商」页一次管 Claude Desktop 和 Claude Code）。
+/// 只改排除名单，不接入也不断开；接入着的 Agent 重写配置，让模型列表跟上。
+#[tauri::command]
+pub fn set_gateway_pool_member(
+    agents: Vec<String>,
+    id: String,
+    used: bool,
+) -> CommandResult<Option<GatewayPayload>> {
+    let result = agents
+        .iter()
+        .map(|agent| parse_agent(agent))
+        .collect::<anyhow::Result<Vec<_>>>()
+        .and_then(|agents| apply::set_pool_member(&GatewayStore::default(), &agents, &id, used));
+    respond(
+        if used { "已打开，新开的会话就能用它的模型。" } else { "已关闭，不再用它的模型。" },
+        "保存供应商开关失败",
+        refresh_agents(result),
+    )
+}
+
 /// 调整共享供应商顺序。
 #[tauri::command]
 pub fn reorder_gateway_providers(ids: Vec<String>) -> CommandResult<Option<GatewayPayload>> {
@@ -2078,7 +2258,7 @@ pub fn reorder_gateway_providers(ids: Vec<String>) -> CommandResult<Option<Gatew
 }
 
 /// 把 OpenCode 里保存的 OpenCode Go / Zen Key 加进网关池，模型取目录里网关能用的。
-async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Result<String> {
+async fn import_opencode(id: &str, skip_agents: Option<&[String]>, owner: Option<&str>) -> anyhow::Result<String> {
     use codex_plus_core::gateway::opencode;
     let (entry, key) = opencode::load_stored_keys()
         .into_iter()
@@ -2107,10 +2287,11 @@ async fn import_opencode(id: &str, skip_agents: Option<&[String]>) -> anyhow::Re
         disable_tool_search: None,
         custom_headers: None,
     };
-    apply::create_provider(
+    apply::create_provider_owned(
         &GatewayStore::default(),
         &input,
         &format!("opencode:{id}"),
+        owner,
         skip_agents,
     )?;
     Ok(if models.is_empty() {
@@ -2130,12 +2311,14 @@ pub struct ImportItem {
     pub id: String,
 }
 
-/// 从直连模式（和 OpenCode）一次导入多个供应商。已在池里的跳过；聚合供应商搬成「成员进池 + 同名模型组」。
-/// 每项单独成败，结果汇总成一句话，没法照搬的地方附在后面。
+/// 从直连模式（和 OpenCode）一次导入多个供应商。已在池里的跳过；聚合供应商搬成「成员的引用 + 同名模型组」。
+/// Codex 直连供应商不用导：能共享的都以引用的方式自动在共享供应商里，传进来的算「已在池里」。
+/// 每项单独成败，结果汇总成一句话，没法照搬的地方附在后面。`owner` 同 [`create_gateway_provider`]。
 #[tauri::command]
 pub async fn import_gateway_providers(
     items: Vec<ImportItem>,
     skip_agents: Option<Vec<String>>,
+    owner: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     let skip = skip_agents.as_deref();
@@ -2166,13 +2349,15 @@ pub async fn import_gateway_providers(
                 .providers
                 .iter()
                 .any(|provider| provider.source == format!("{}:{}", item.source, item.id))
+                || (item.source == "codex"
+                    && apply::imported_codex_provider(&gateway, &item.id).is_some())
         });
         if already {
             skipped += 1;
             continue;
         }
         let result: anyhow::Result<()> = match item.source.as_str() {
-            "opencode" => import_opencode(&item.id, skip).await.map(|_| added += 1),
+            "opencode" => import_opencode(&item.id, skip, owner.as_deref()).await.map(|_| added += 1),
             "aggregate" => (|| {
                 let settings = SettingsStore::default().load()?;
                 let outcome = apply::import_codex_aggregate(
@@ -2194,7 +2379,7 @@ pub async fn import_gateway_providers(
                 }
                 Ok(())
             })(),
-            source => import_from_direct(source, &item.id, skip).map(|id| {
+            source => import_from_direct(source, &item.id, skip, owner.as_deref()).map(|id| {
                 added += 1;
                 if source == "magpie" {
                     fetch_models.push(id);
@@ -2237,13 +2422,24 @@ fn source_entries(entries: Vec<codex_plus_core::claude_provider_sources::SourceE
     entries.into_iter().map(|entry| GatewaySourceEntry { id: entry.id, name: entry.name }).collect()
 }
 
-/// 从直连模式复制一项进池：`codex` / `claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商、Magpie 的供应商。
-fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow::Result<String> {
+/// 从直连模式复制一项进池：`claude` / `grok`，以及 CC Switch、ClaudeMom 里的 Claude 供应商、Magpie 的供应商。
+/// `codex` 不复制：能共享的已经以引用的方式在共享供应商里，返回它的 id；不能共享的说明原因。
+fn import_from_direct(
+    source: &str,
+    id: &str,
+    skip: Option<&[String]>,
+    owner: Option<&str>,
+) -> anyhow::Result<String> {
+    if source == "codex" {
+        let settings = SettingsStore::default().load()?;
+        apply::ensure_codex_linkable(&settings, id)?;
+        return apply::imported_codex_provider(&GatewayStore::default().load()?, id)
+            .ok_or_else(|| anyhow::anyhow!("共享供应商里还没有它，稍后再试"));
+    }
     let relay = match source {
         "ccswitch" => codex_plus_core::claude_provider_sources::cc_switch_relay(id)?,
         "claudemom" => codex_plus_core::claude_provider_sources::claude_mom_relay(id)?,
         "magpie" => codex_plus_core::magpie_import::relay(id)?,
-        "codex" => apply::copy_codex_provider(&SettingsStore::default().load()?, id)?,
         "claude" => {
             let provider = claude::load(&ClaudeContext::default_paths())?
                 .providers
@@ -2255,10 +2451,11 @@ fn import_from_direct(source: &str, id: &str, skip: Option<&[String]>) -> anyhow
         "grok" => apply::copy_grok_profile(&SettingsStore::default().load()?, id)?,
         other => anyhow::bail!("不认识的导入来源：{other}"),
     };
-    let (_, id) = apply::add_provider(
+    let (_, id) = apply::add_provider_owned(
         &GatewayStore::default(),
         relay,
         &format!("{source}:{id}"),
+        owner,
         skip,
     )?;
     Ok(id)
@@ -3538,6 +3735,7 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
                 arg(&args, "input")?,
                 arg::<Option<String>>(&args, "source")?.unwrap_or_else(|| "custom".to_string()),
                 arg(&args, "skipAgents")?,
+                arg(&args, "owner")?,
             )),
             "update_gateway_provider" => to_value(update_gateway_provider(arg(&args, "id")?, arg(&args, "input")?)),
             "delete_gateway_provider" => to_value(delete_gateway_provider(arg(&args, "id")?)),
@@ -3579,6 +3777,16 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
             "disable_gateway_binding_full_switch" => to_value(disable_gateway_binding_full_switch(
                 arg(&args, "agent")?,
                 arg(&args, "previewToken")?,
+            )),
+            "set_gateway_pool_member" => to_value(set_gateway_pool_member(
+                arg(&args, "agents")?,
+                arg(&args, "id")?,
+                arg(&args, "used")?,
+            )),
+            "get_native_auth_state" => to_value(get_native_auth_state()),
+            "set_codex_login_identity" => to_value(set_codex_login_identity(
+                arg(&args, "kind")?,
+                arg(&args, "accountRef")?,
             )),
             other => return Err(format!("不支持的网关命令 {other}")),
         })

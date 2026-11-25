@@ -836,6 +836,16 @@ pub const AGENT_PET_KIND_WHALE_WIDGET: &str = "whaleWidget";
 /// 余额相关的 `codexAppWhaleBalance*` 仍是大肥鱼的配置，照常保留。
 const LEGACY_PET_WIDGET_KEY: &str = "codexAppWhaleWidgetEnabled";
 const LEGACY_PET_WIDGET_KEYS: [&str; 1] = [LEGACY_PET_WIDGET_KEY];
+/// 已移除的「请求避震」（本地协议代理自动重试）设置项：旧 settings.json 里的这几项读入时忽略，
+/// 保存时不再写回。
+const RETIRED_PROTOCOL_PROXY_AUTO_RETRY_KEYS: [&str; 6] = [
+    "protocolProxyAutoRetry",
+    "protocolProxyAutoRetryMaxAttempts",
+    "protocolProxyAutoRetryIntervalSeconds",
+    "protocolProxyAutoRetryStatusCodes",
+    "protocolProxyAutoRetryMode",
+    "protocolProxyAutoRetryCommitDelayMs",
+];
 
 /// Agent 桌宠设置。反序列化是宽松的：任一字段类型不对只回落该字段默认值，
 /// 不能因为桌宠配置写坏就让整份 settings.json 解析失败。
@@ -1162,6 +1172,13 @@ pub struct BackendSettings {
     /// 关闭时还原。默认关闭。
     #[serde(rename = "chatgptCompatEnabled", default)]
     pub chatgpt_compat_enabled: bool,
+    /// 上面那个本地账号显示的名字、用户名、邮箱。留空用默认值（Local / local / local@codexplus.invalid）。
+    #[serde(rename = "chatgptCompatName", default, skip_serializing_if = "String::is_empty")]
+    pub chatgpt_compat_name: String,
+    #[serde(rename = "chatgptCompatUsername", default, skip_serializing_if = "String::is_empty")]
+    pub chatgpt_compat_username: String,
+    #[serde(rename = "chatgptCompatEmail", default, skip_serializing_if = "String::is_empty")]
+    pub chatgpt_compat_email: String,
     /// 流式请求等上游响应头的上限（秒）。默认 120；首字时间经常超过 120s 的上游
     /// （长推理模型、慢中转，#3130）可在 settings.json 调大，上限 3600，写小不生效。
     #[serde(rename = "upstreamStreamHeaderTimeoutSecs", default)]
@@ -1526,54 +1543,6 @@ pub struct BackendSettings {
     pub active_aggregate_relay_id: String,
     #[serde(rename = "relayTestModel", default = "default_relay_test_model")]
     pub relay_test_model: String,
-    /// 协议代理自动重试：200 流内的过载/容量错误，以及用户在
-    /// `protocolProxyAutoRetryStatusCodes` 里勾选的 HTTP 错误，先在本地代理内部
-    /// 退避重试，不立刻把错误交给 Codex。只影响经过本地协议代理的请求。
-    /// 默认开启：用户看到的失败横幅会显著减少；关闭后恢复「失败立即返回」行为。
-    #[serde(rename = "protocolProxyAutoRetry", default = "default_true")]
-    pub protocol_proxy_auto_retry: bool,
-    /// 最多自动重试次数（不含首次请求）。0 与关闭开关等价。
-    #[serde(
-        rename = "protocolProxyAutoRetryMaxAttempts",
-        default = "default_protocol_proxy_auto_retry_max_attempts"
-    )]
-    pub protocol_proxy_auto_retry_max_attempts: u32,
-    /// 首次重试等待秒数；之后按 2 倍指数退避，单次上限 30 秒。
-    #[serde(
-        rename = "protocolProxyAutoRetryIntervalSeconds",
-        default = "default_protocol_proxy_auto_retry_interval_seconds"
-    )]
-    pub protocol_proxy_auto_retry_interval_seconds: u64,
-    /// 上游直接返回这些 HTTP 状态码时由代理退避重发（Retry-After 优先），
-    /// 与重试次数、总等待预算共用。默认空列表：HTTP 错误一律直接交给 Codex，
-    /// 需要的用户自行加入 429 等（issue #2653）。
-    #[serde(
-        rename = "protocolProxyAutoRetryStatusCodes",
-        default = "default_protocol_proxy_auto_retry_status_codes",
-        deserialize_with = "deserialize_protocol_proxy_auto_retry_status_codes"
-    )]
-    pub protocol_proxy_auto_retry_status_codes: Vec<u16>,
-    /// 过载错误处理模式：
-    /// - `streaming`（默认，流式；推理/工具调用参数先缓冲，首段可见输出后再等
-    ///   `protocolProxyAutoRetryCommitDelayMs`，窗口内仍由代理重试）；
-    /// - `streaming-legacy`（旧流式：遇到第一个输出事件立即提交，不再为工具
-    ///   参数或首字窗口缓冲）；
-    /// - `buffered`（整段缓冲后转发；任何时点的过载都由代理重试，但失去流式）。
-    #[serde(
-        rename = "protocolProxyAutoRetryMode",
-        default = "default_protocol_proxy_auto_retry_mode"
-    )]
-    pub protocol_proxy_auto_retry_mode: String,
-    /// 流式避震的「首字提交延迟」：出现第一段可见输出后，代理继续缓冲多少毫秒
-    /// 再交给 Codex。窗口内遇到容量/过载错误仍可丢弃重试；0 表示一出现可见输出
-    /// 就提交。推理与工具调用参数阶段本来就不向客户端提交，不占这个延迟，所以
-    /// 工具调用可以整项缓冲到完成后再提交。注意 `streaming-legacy` 模式忽略该
-    /// 字段，始终保持旧行为。
-    #[serde(
-        rename = "protocolProxyAutoRetryCommitDelayMs",
-        default = "default_protocol_proxy_auto_retry_commit_delay_ms"
-    )]
-    pub protocol_proxy_auto_retry_commit_delay_ms: u64,
     /// 目录外模型名映射（#1183 / #1446 / #1457）：Codex 客户端的自动审查
     /// （codex-auto-review）与标题/摘要等后台任务固定使用 gpt-* 等内部模型名，
     /// 不经用户选模；第三方上游没有这些名字，原样转发只会得到
@@ -1618,6 +1587,9 @@ impl Default for BackendSettings {
             thread_model_follow_switch_enabled: false,
             keep_projects_without_account: false,
             chatgpt_compat_enabled: false,
+            chatgpt_compat_name: String::new(),
+            chatgpt_compat_username: String::new(),
+            chatgpt_compat_email: String::new(),
             upstream_stream_header_timeout_secs: None,
             native_auth_selection: None,
             provider_sync_saved_providers: Vec::new(),
@@ -1731,16 +1703,6 @@ impl Default for BackendSettings {
             aggregate_relay_profiles: Vec::new(),
             active_aggregate_relay_id: String::new(),
             relay_test_model: default_relay_test_model(),
-            protocol_proxy_auto_retry: true,
-            protocol_proxy_auto_retry_max_attempts:
-                default_protocol_proxy_auto_retry_max_attempts(),
-            protocol_proxy_auto_retry_interval_seconds:
-                default_protocol_proxy_auto_retry_interval_seconds(),
-            protocol_proxy_auto_retry_status_codes:
-                default_protocol_proxy_auto_retry_status_codes(),
-            protocol_proxy_auto_retry_mode: default_protocol_proxy_auto_retry_mode(),
-            protocol_proxy_auto_retry_commit_delay_ms:
-                default_protocol_proxy_auto_retry_commit_delay_ms(),
             protocol_proxy_map_unlisted_models: false,
             helper_max_request_body_mib: default_helper_max_request_body_mib(),
             tools: BTreeMap::new(),
@@ -2226,92 +2188,6 @@ pub fn default_active_relay_id() -> String {
 
 pub fn default_relay_test_model() -> String {
     "gpt-5.4-mini".to_string()
-}
-
-/// 协议代理默认最多自动重试 5 次：2+4+8+16+30 秒封顶，合计约 60 秒。
-pub fn default_protocol_proxy_auto_retry_max_attempts() -> u32 {
-    5
-}
-
-pub fn clamp_protocol_proxy_auto_retry_max_attempts(value: u32) -> u32 {
-    value.min(20)
-}
-
-pub fn default_protocol_proxy_auto_retry_interval_seconds() -> u64 {
-    2
-}
-
-pub fn clamp_protocol_proxy_auto_retry_interval_seconds(value: u64) -> u64 {
-    value.min(30)
-}
-
-/// 默认不重试任何 HTTP 状态码：HTTP 错误重试曾按使用反馈整体下线（bd4e90d1），
-/// 现在改为由用户按需选择，升级不改变既有行为。
-pub fn default_protocol_proxy_auto_retry_status_codes() -> Vec<u16> {
-    Vec::new()
-}
-
-/// 只保留 400~599 的错误码，去重排序，最多 20 个；成功码与非法值直接丢弃。
-pub fn normalize_protocol_proxy_auto_retry_status_codes(values: &[u64]) -> Vec<u16> {
-    let mut codes: Vec<u16> = values
-        .iter()
-        .filter(|code| (400..=599).contains(*code))
-        .map(|code| *code as u16)
-        .collect();
-    codes.sort_unstable();
-    codes.dedup();
-    codes.truncate(20);
-    codes
-}
-
-/// 手改的 settings.json 可能写进字符串、负数或超出 u16 的值；
-/// 这里逐项容错，不能让一个坏值把整份设置读失败。
-fn deserialize_protocol_proxy_auto_retry_status_codes<'de, D>(
-    deserializer: D,
-) -> Result<Vec<u16>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let Some(Value::Array(items)) = Option::<Value>::deserialize(deserializer)? else {
-        return Ok(default_protocol_proxy_auto_retry_status_codes());
-    };
-    Ok(normalize_protocol_proxy_auto_retry_status_codes(
-        &status_code_values(&items),
-    ))
-}
-
-fn status_code_values(items: &[Value]) -> Vec<u64> {
-    items
-        .iter()
-        .filter_map(|item| {
-            item.as_u64()
-                .or_else(|| item.as_str().and_then(|text| text.trim().parse().ok()))
-        })
-        .collect()
-}
-
-pub fn default_protocol_proxy_auto_retry_mode() -> String {
-    "streaming".to_string()
-}
-
-pub fn normalize_protocol_proxy_auto_retry_mode(value: &str) -> String {
-    match value.trim() {
-        "buffered" => "buffered".to_string(),
-        // 旧版「流式」行为保留为独立选项，方便随时退回。
-        "streaming-legacy" => "streaming-legacy".to_string(),
-        _ => default_protocol_proxy_auto_retry_mode(),
-    }
-}
-
-/// 流式避震默认在首段可见输出后再缓冲 1 秒：能覆盖「刚开始吐字上游就过载」
-/// 这一大类，首字延迟仍控制在 1 秒内；短回复在 response.completed 到达时
-/// 立即提交，不会白等满 1 秒。
-pub fn default_protocol_proxy_auto_retry_commit_delay_ms() -> u64 {
-    1000
-}
-
-pub fn clamp_protocol_proxy_auto_retry_commit_delay_ms(value: u64) -> u64 {
-    value.min(10_000)
 }
 
 /// 本地协议代理请求体默认上限：128 MiB。
@@ -3001,6 +2877,10 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     merge_bool_setting(target, source, "relayPreserveNonproviderSettings");
     target.remove("codexAppPluginAutoExpand");
     target.remove("computerUseGuardEnabled");
+    // 「请求避震」已移除：旧设置里的这几项不再保留。
+    for key in RETIRED_PROTOCOL_PROXY_AUTO_RETRY_KEYS {
+        target.remove(key);
+    }
     if let Some(value) = source.get("codexAppPath").and_then(Value::as_str) {
         target.insert("codexAppPath".to_string(), Value::String(value.to_string()));
     }
@@ -3065,6 +2945,11 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
     {
         target.insert("chatgptCompatEnabled".to_string(), Value::Bool(value));
     }
+    for key in ["chatgptCompatName", "chatgptCompatUsername", "chatgptCompatEmail"] {
+        if let Some(value) = source.get(key).and_then(Value::as_str) {
+            target.insert(key.to_string(), Value::String(value.trim().to_string()));
+        }
+    }
     if let Some(value) = source.get("ccsDbPath").and_then(Value::as_str) {
         target.insert(
             "ccsDbPath".to_string(),
@@ -3085,58 +2970,8 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::String(value.trim().to_string()),
         );
     }
-    merge_bool_setting(target, source, "protocolProxyAutoRetry");
-    // 目录外模型映射开关同上：漏登记会让 /settings/set 补丁「保存了但没生效」。
+    // 目录外模型映射开关：漏登记会让 /settings/set 补丁「保存了但没生效」。
     merge_bool_setting(target, source, "protocolProxyMapUnlistedModels");
-    if let Some(value) = source
-        .get("protocolProxyAutoRetryMaxAttempts")
-        .and_then(Value::as_u64)
-    {
-        target.insert(
-            "protocolProxyAutoRetryMaxAttempts".to_string(),
-            Value::from(clamp_protocol_proxy_auto_retry_max_attempts(
-                value as u32,
-            )),
-        );
-    }
-    if let Some(value) = source
-        .get("protocolProxyAutoRetryIntervalSeconds")
-        .and_then(Value::as_u64)
-    {
-        target.insert(
-            "protocolProxyAutoRetryIntervalSeconds".to_string(),
-            Value::from(clamp_protocol_proxy_auto_retry_interval_seconds(value)),
-        );
-    }
-    if let Some(items) = source
-        .get("protocolProxyAutoRetryStatusCodes")
-        .and_then(Value::as_array)
-    {
-        target.insert(
-            "protocolProxyAutoRetryStatusCodes".to_string(),
-            serde_json::json!(normalize_protocol_proxy_auto_retry_status_codes(
-                &status_code_values(items)
-            )),
-        );
-    }
-    if let Some(value) = source
-        .get("protocolProxyAutoRetryMode")
-        .and_then(Value::as_str)
-    {
-        target.insert(
-            "protocolProxyAutoRetryMode".to_string(),
-            Value::String(normalize_protocol_proxy_auto_retry_mode(value)),
-        );
-    }
-    if let Some(value) = source
-        .get("protocolProxyAutoRetryCommitDelayMs")
-        .and_then(Value::as_u64)
-    {
-        target.insert(
-            "protocolProxyAutoRetryCommitDelayMs".to_string(),
-            Value::from(clamp_protocol_proxy_auto_retry_commit_delay_ms(value)),
-        );
-    }
     // 请求体上限也走同一份 settings.json；漏登记会让「保存了但没生效」。
     if let Some(value) = source.get("helperMaxRequestBodyMib").and_then(Value::as_u64) {
         let clamped = value.min(u64::from(MAX_HELPER_MAX_REQUEST_BODY_MIB)) as u32;
@@ -3879,6 +3714,7 @@ fn preserve_unknown_settings_fields(
     ]
     .into_iter()
     .chain(LEGACY_PET_WIDGET_KEYS)
+    .chain(RETIRED_PROTOCOL_PROXY_AUTO_RETRY_KEYS)
     {
         known[key] = Value::Null;
     }
@@ -4004,26 +3840,6 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         clamp_stepwise_max_output_tokens(settings.codex_app_stepwise_max_output_tokens);
     settings.codex_app_stepwise_timeout_ms =
         clamp_stepwise_timeout_ms(settings.codex_app_stepwise_timeout_ms);
-    settings.protocol_proxy_auto_retry_max_attempts =
-        clamp_protocol_proxy_auto_retry_max_attempts(settings.protocol_proxy_auto_retry_max_attempts);
-    settings.protocol_proxy_auto_retry_interval_seconds =
-        clamp_protocol_proxy_auto_retry_interval_seconds(
-            settings.protocol_proxy_auto_retry_interval_seconds,
-        );
-    settings.protocol_proxy_auto_retry_mode =
-        normalize_protocol_proxy_auto_retry_mode(&settings.protocol_proxy_auto_retry_mode);
-    settings.protocol_proxy_auto_retry_status_codes =
-        normalize_protocol_proxy_auto_retry_status_codes(
-            &settings
-                .protocol_proxy_auto_retry_status_codes
-                .iter()
-                .map(|code| u64::from(*code))
-                .collect::<Vec<_>>(),
-        );
-    settings.protocol_proxy_auto_retry_commit_delay_ms =
-        clamp_protocol_proxy_auto_retry_commit_delay_ms(
-            settings.protocol_proxy_auto_retry_commit_delay_ms,
-        );
     settings.helper_max_request_body_mib =
         clamp_helper_max_request_body_mib(settings.helper_max_request_body_mib);
     // 上游首字等待上限：下限 120 兜底真正卡死的连接（与 protocol_proxy::UPSTREAM_STREAM_HEADER_TIMEOUT
@@ -6105,6 +5921,40 @@ experimental_bearer_token = "sk-existing""#
         assert!(saved.get("codexAppPluginAutoExpand").is_none());
         assert!(saved.get("computerUseGuardEnabled").is_none());
         assert_eq!(saved["customField"], json!(1));
+    }
+
+    #[test]
+    fn settings_store_drops_retired_protocol_proxy_auto_retry_fields() {
+        // 「请求避震」已移除：旧 settings.json 里的六项照常能读，保存（save / update）后不再写回。
+        let old = r#"{"providerSyncEnabled":false,"protocolProxyAutoRetry":true,"protocolProxyAutoRetryMaxAttempts":5,"protocolProxyAutoRetryIntervalSeconds":2,"protocolProxyAutoRetryStatusCodes":[429],"protocolProxyAutoRetryMode":"buffered","protocolProxyAutoRetryCommitDelayMs":1000,"customField":1}"#;
+        let assert_dropped = |saved: &Value| {
+            for key in RETIRED_PROTOCOL_PROXY_AUTO_RETRY_KEYS {
+                assert!(saved.get(key).is_none(), "{key}: {saved}");
+            }
+            assert_eq!(saved["customField"], json!(1));
+        };
+
+        let dir = temp_dir();
+        let path = dir.join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        std::fs::write(&path, old).unwrap();
+        let loaded = store.load().unwrap();
+        assert!(!loaded.provider_sync_enabled);
+        store.save(&loaded).unwrap();
+        assert_dropped(&serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap());
+
+        std::fs::write(&path, old).unwrap();
+        // 旧版管理器还可能把这几项放进补丁里发来：同样不写回。
+        store
+            .update(json!({
+                "providerSyncEnabled": true,
+                "protocolProxyAutoRetry": false,
+                "protocolProxyAutoRetryMaxAttempts": 3
+            }))
+            .unwrap();
+        let saved: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["providerSyncEnabled"], json!(true));
+        assert_dropped(&saved);
     }
 
     #[test]

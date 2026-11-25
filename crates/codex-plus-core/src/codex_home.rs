@@ -162,7 +162,7 @@ fn lexically_normalize(path: &Path) -> PathBuf {
 }
 
 fn default_user_codex_home_dir() -> PathBuf {
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".codex"))
         .unwrap_or_else(|| PathBuf::from(".codex"))
 }

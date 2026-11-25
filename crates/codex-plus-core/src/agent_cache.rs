@@ -103,7 +103,7 @@ pub struct CacheCleanResult {
 }
 
 pub fn scan_default() -> Result<CachePlan> {
-    let home = directories::BaseDirs::new()
+    let home = crate::user_dirs::BaseDirs::new()
         .context("无法识别用户目录")?
         .home_dir()
         .canonicalize()?;

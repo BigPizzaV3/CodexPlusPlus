@@ -143,7 +143,6 @@ async fn try_send_once(relay: &RelayProfile, user_agent: Option<&str>) -> anyhow
         ForcedRelay {
             relay: relay.clone(),
             upstream_model: None,
-            auto_retry: false,
         },
         user_agent,
         "/responses",

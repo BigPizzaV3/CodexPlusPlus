@@ -34,7 +34,7 @@ pub const DEFAULT_MODELS: &[&str] = &[
 ];
 
 fn gemini_dir() -> Option<PathBuf> {
-    directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".gemini"))
+    crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().join(".gemini"))
 }
 
 /// dotenv 文件里某个键的值（忽略注释、`export ` 前缀和引号）。

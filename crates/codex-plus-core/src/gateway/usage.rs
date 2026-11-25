@@ -629,6 +629,8 @@ mod tests {
         let day = local_day(1_790_000_000_000);
         let mut gateway = GatewaySettings::default();
         gateway.providers.push(GatewayProvider {
+            linked_codex_relay: None,
+            owner: String::new(),
             enabled: true,
             source: String::new(),
             model_prices: Default::default(),

@@ -678,8 +678,9 @@ test("全应用不用原生下拉框，统一用 AppSelect", () => {
     const source = readFileSync(new URL(file, dir), "utf8");
     assert.doesNotMatch(source, /<select[\s>]/, file);
   }
-  const shared = appDeclarationSource("SharedServiceSettings");
-  assert.match(shared, /<AppSelect/);
+  // 设置页的下拉（界面主题）也用 AppSelect。
+  const settings = appDeclarationSource("GlobalSettingsScreen");
+  assert.match(settings, /<AppSelect/);
 });
 
 test("全应用不用系统原生的确认 / 提示 / 输入框，统一用 app-dialog", () => {

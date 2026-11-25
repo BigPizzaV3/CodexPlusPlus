@@ -89,7 +89,7 @@ fn inspect_clash_verge_tun(paths: &[PathBuf]) -> ClashVergeTunCheck {
 
 fn clash_verge_config_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Some(base_dirs) = directories::BaseDirs::new() {
+    if let Some(base_dirs) = crate::user_dirs::BaseDirs::new() {
         candidates.push(
             base_dirs
                 .data_dir()

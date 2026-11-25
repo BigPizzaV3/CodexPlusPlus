@@ -344,6 +344,7 @@ pub fn apply_upstream_sync(
         else {
             bail!("供应商不存在：{id}");
         };
+        crate::gateway::codex_link::ensure_unlinked(provider)?;
         apply_model_changes(provider, remove, add)
     })
 }
@@ -368,6 +369,7 @@ pub fn sync_upstream_models(
         else {
             bail!("供应商不存在：{id}");
         };
+        crate::gateway::codex_link::ensure_unlinked(provider)?;
         let diff = diff_models(
             &crate::gateway::route::relay_models(&provider.relay),
             &upstream,
@@ -477,6 +479,8 @@ pub fn set_provider_models(
         else {
             bail!("供应商不存在：{id}");
         };
+        // 引用 Codex 直连供应商的：模型列表归直连供应商，在 Codex「连接与供应商」里改。
+        crate::gateway::codex_link::ensure_unlinked(provider)?;
         // 当前默认模型按 config 快照优先的口径取，和读盘、路由看到的一致。
         let current = crate::relay_config::relay_profile_model(&provider.relay);
         // 指定了默认模型（且在列表里）就用它；否则原来的默认模型还在就保留，不在就换成第一个。
@@ -633,6 +637,8 @@ mod tests {
         let store = GatewayStore::at(temp.path().join("gateway.json"));
         let mut gateway = GatewaySettings::default();
         gateway.providers.push(GatewayProvider {
+            linked_codex_relay: None,
+            owner: String::new(),
             enabled: true,
             source: String::new(),
             price: None,
@@ -684,6 +690,8 @@ mod tests {
 
     fn provider_with(relay: RelayProfile) -> GatewayProvider {
         GatewayProvider {
+            linked_codex_relay: None,
+            owner: String::new(),
             enabled: true,
             source: String::new(),
             price: None,

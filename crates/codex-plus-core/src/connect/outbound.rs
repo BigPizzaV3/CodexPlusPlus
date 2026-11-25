@@ -233,7 +233,7 @@ pub(super) fn outbound_workspace(workspace: &Path) -> anyhow::Result<PathBuf> {
     if !root.is_dir() || root.parent().is_none() {
         bail!("附件工作区必须是非根目录");
     }
-    let mut homes = directories::BaseDirs::new()
+    let mut homes = crate::user_dirs::BaseDirs::new()
         .map(|dirs| vec![dirs.home_dir().to_path_buf()])
         .unwrap_or_default();
     homes.extend(
@@ -1234,7 +1234,7 @@ mod tests {
     #[test]
     fn outbound_rejects_broad_roots_and_sensitive_components() {
         assert!(outbound_workspace(Path::new("")).is_err());
-        if let Some(dirs) = directories::BaseDirs::new() {
+        if let Some(dirs) = crate::user_dirs::BaseDirs::new() {
             let home = dirs.home_dir().canonicalize().unwrap();
             for ancestor in home.ancestors() {
                 assert!(outbound_workspace(ancestor).is_err(), "{ancestor:?}");

@@ -2265,6 +2265,8 @@ mod tests {
         gateway
             .providers
             .push(crate::gateway::store::GatewayProvider {
+                linked_codex_relay: None,
+                owner: String::new(),
                 enabled: true,
                 source: "login:chatgpt".to_string(),
                 price: None,
@@ -2650,6 +2652,8 @@ mod tests {
         gateway
             .providers
             .push(crate::gateway::store::GatewayProvider {
+                linked_codex_relay: None,
+                owner: String::new(),
                 enabled: true,
                 source: "login:test".to_string(),
                 price: None,

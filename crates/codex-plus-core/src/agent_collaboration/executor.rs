@@ -195,7 +195,7 @@ fn auto_detect_executable(provider: Provider, local_appdata: Option<&Path>) -> O
         Provider::DeepSeek => "dsh",
         Provider::Antigravity => "agy",
     };
-    if let Some(home) = directories::BaseDirs::new() {
+    if let Some(home) = crate::user_dirs::BaseDirs::new() {
         candidates.push(home.home_dir().join(".local/bin").join(command));
         candidates.push(home.home_dir().join(".cargo/bin").join(command));
     }

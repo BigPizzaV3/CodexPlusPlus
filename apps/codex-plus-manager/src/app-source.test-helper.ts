@@ -22,6 +22,7 @@ export const APP_SOURCE_FILES = [
   "HomeScreen.tsx",
   "AppDialogs.tsx",
   "RelayScreen.tsx",
+  "CodexConnectionMode.tsx",
   "AppSidebar.tsx",
 ] as const;
 

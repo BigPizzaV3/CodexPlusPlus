@@ -70,7 +70,14 @@ pub(super) fn profiles(
         read::<codex_plus_core::gateway::store::GatewaySettings>(&gateway_config_path(path))?
     {
         // 导入后两份配置可各自修改；source 和显示名不能证明它们仍是同一供应商。
-        profiles.extend(gateway.providers.into_iter().map(|provider| provider.relay));
+        // 引用 Codex 直连供应商的记录在 gateway.json 里没有地址（连接资料只在 settings.json），上面已经读过直连那份。
+        profiles.extend(
+            gateway
+                .providers
+                .into_iter()
+                .filter(|provider| provider.linked_codex_relay.is_none())
+                .map(|provider| provider.relay),
+        );
     }
     anyhow::ensure!(
         before == config_stamp(path),

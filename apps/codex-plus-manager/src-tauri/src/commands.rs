@@ -1742,7 +1742,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
             );
         }
     };
-    let shared_config_home = directories::BaseDirs::new()
+    let shared_config_home = codex_plus_core::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".config"))
         .unwrap_or_else(|| PathBuf::from(".config"));
     let mut command = std::process::Command::new(manager_executable);
@@ -3179,7 +3179,7 @@ fn multi_instance_user_data_roots_with(
 }
 
 fn legacy_multi_instance_user_data_dir(slug: &str) -> PathBuf {
-    directories::BaseDirs::new()
+    codex_plus_core::user_dirs::BaseDirs::new()
         .map(|dirs| {
             dirs.data_local_dir()
                 .join("CodexPlusPlus")
@@ -5222,6 +5222,19 @@ pub fn save_settings(
         &settings,
     ) {
         Ok(_) => {
+            // 能共享的 Codex 直连供应商改了：共享供应商里引用它们的连接资料读取时就是现值，
+            // 开着的 Agent 配置里写着的模型列表在后台重写一遍。
+            let shared = |settings: &BackendSettings| {
+                settings
+                    .relay_profiles
+                    .iter()
+                    .filter(|relay| codex_plus_core::gateway::codex_link::linkable(relay))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if shared(&previous) != shared(&settings) {
+                crate::gateway_commands::refresh_after_codex_profiles_changed();
+            }
             if !settings.usage_history_enabled {
                 codex_plus_launcher::clear_usage_history();
             }
@@ -8919,7 +8932,7 @@ pub(crate) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager
     ]);
     let shared = std::env::var_os("CODEX_PLUS_SHARED_SKILLS_DIR")
         .map(std::path::PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".agents").join("skills")));
+        .or_else(|| codex_plus_core::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().join(".agents").join("skills")));
     match shared {
         Some(path) => manager.with_shared_skills_dir(path),
         None => manager,
@@ -10274,9 +10287,20 @@ pub fn switch_relay_profile(
                 }
                 (None, None) => "供应商已切换。".to_string(),
             };
+            // 切到官方登录 / 内置 OpenAI 供应商后本地账号用不了：退回「不登录」并说一声。
+            let (message, settings) = match codex_plus_core::chatgpt_compat_apply::fall_back_when_blocked(&home, &store) {
+                Ok(true) => {
+                    crate::gateway_commands::notify_settings_changed();
+                    (
+                        format!("{message}{}", codex_plus_core::chatgpt_compat_apply::FELL_BACK_NOTICE),
+                        store.load().unwrap_or(result.settings),
+                    )
+                }
+                _ => (message, result.settings),
+            };
             ok(
                 &message,
-                relay_switch_payload(result.settings, status, result.backup_path),
+                relay_switch_payload(settings, status, result.backup_path),
             )
         }
         Err(error) => {
@@ -12513,7 +12537,7 @@ mod tests {
 
     #[test]
     fn multi_instance_user_data_without_override_keeps_default_layout() {
-        let expected = directories::BaseDirs::new()
+        let expected = codex_plus_core::user_dirs::BaseDirs::new()
             .map(|dirs| {
                 dirs.data_local_dir()
                     .join("CodexPlusPlus")

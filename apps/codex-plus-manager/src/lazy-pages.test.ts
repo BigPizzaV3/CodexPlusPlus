@@ -97,7 +97,7 @@ test("页面代码或数据还没到时用和内容形状接近的占位，不�
   assert.match(layout, /<div aria-busy="true" aria-label=\{t\("读取中…"\)\} className="cx-page cx-page-skeleton" role="status">/);
   assert.match(css, /:root \.shell \.cx-skeleton,\r?\n:root \.shell \.cx-row-icon\.cx-skeleton \{[^}]*animation: cx-skeleton-shift 1\.4s ease-in-out infinite;/);
   // 各页面数据没到时都用它，不再拿空状态（CxEmpty）写一行「正在读取…」。
-  for (const file of ["AgentSessions.tsx", "ClaudePageExtensions.tsx", "ClaudeProviders.tsx", "GatewayAgents.tsx", "GatewayPage.tsx", "ManagementPages.tsx", "RelayScreen.tsx", "RequestLogScreen.tsx", "SkillsPage.tsx"]) {
+  for (const file of ["AgentSessions.tsx", "ClaudePageExtensions.tsx", "ClaudeProviders.tsx", "GatewayAgents.tsx", "GatewayPage.tsx", "ManagementPages.tsx", "CodexConnectionMode.tsx", "RequestLogScreen.tsx", "SkillsPage.tsx"]) {
     const text = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
     assert.match(text, /<CxLoading\b/, file);
     assert.doesNotMatch(text, /<CxEmpty title=\{t\("正在读取[^"]*"\)\} \/>/, file);

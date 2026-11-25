@@ -325,8 +325,16 @@ fn scratch_dirs_are_not_offered_as_projects() {
 #[test]
 fn recent_projects_come_from_thread_working_dirs() {
     let _lock = crate::common::global_state_lock();
-    // 不放系统临时目录：那里的目录会被当成临时目录过滤掉。
-    let temp = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    // 不放系统临时目录：那里的目录会被当成临时目录过滤掉。编译目录本身在 /tmp 下（CARGO_TARGET_DIR=/tmp/...）时
+    // CARGO_TARGET_TMPDIR 也是临时目录，改放仓库的 target/（已忽略）。
+    let base = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let base = if is_scratch_dir(&base.to_string_lossy()) || is_scratch_dir(&base.canonicalize().unwrap_or(base.clone()).to_string_lossy()) {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/test-tmp")
+    } else {
+        base
+    };
+    std::fs::create_dir_all(&base).unwrap();
+    let temp = tempfile::tempdir_in(base.canonicalize().unwrap()).unwrap();
     let home = temp.path().join("codex-home");
     assert!(recent_projects(&home).is_empty(), "没有数据库时为空");
 

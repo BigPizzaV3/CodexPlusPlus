@@ -11,3 +11,9 @@ mod storage_safety_regressions;
 mod usage_candidate_db;
 mod usage_history;
 mod wsl_rollout_path;
+
+/// 测试不许碰用户的真实目录：main 之前进家目录沙箱（见 `codex_plus_core::test_sandbox`）。
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    codex_plus_core::test_sandbox::enter();
+}

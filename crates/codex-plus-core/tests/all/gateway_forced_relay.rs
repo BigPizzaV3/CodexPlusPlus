@@ -82,7 +82,6 @@ async fn forced_relay_ignores_active_relay_and_applies_model_override() {
         ForcedRelay {
             relay: relay("forced", base),
             upstream_model: Some("forced-model".into()),
-            auto_retry: false,
         },
         None,
         "/responses",
@@ -121,7 +120,6 @@ async fn forced_relay_without_override_keeps_client_model_and_skips_unlisted_map
         ForcedRelay {
             relay: forced,
             upstream_model: None,
-            auto_retry: false,
         },
         None,
         "/responses",

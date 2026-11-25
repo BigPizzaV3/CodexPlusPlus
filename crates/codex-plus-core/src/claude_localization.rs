@@ -491,7 +491,7 @@ pub(crate) fn is_claude_msix_path(path: &Path) -> bool {
 }
 
 fn home_dir() -> PathBuf {
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_default()
 }

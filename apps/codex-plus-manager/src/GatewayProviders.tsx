@@ -1,6 +1,7 @@
 /** 本地网关 · 供应商：网关自己的共享供应商（可开关、排序、编辑、删除），右上角「添加供应商」打开目录弹窗。
  *
- * 与直连模式完全独立：这里的增删改只动 gateway.json；「导入…」是把直连模式的供应商复制一份过来。
+ * 这里的增删改只动 gateway.json；「导入…」是把 Claude、Grok 等来源的供应商复制一份过来。Codex 的直连供应商不用导：
+ * 能共享的默认就以引用的方式在这里（卡片上标「来自 Codex」），地址、Key、模型在 Codex「连接与供应商」里改，这里只读、不能删。
  */
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
@@ -680,6 +681,7 @@ export function ProviderAdder({
   onClose,
   startWith = "catalog",
   includeAgents = [],
+  owner,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -690,6 +692,8 @@ export function ProviderAdder({
   startWith?: "catalog" | "import";
   /** 不管「添加供应商时自动加入」怎么设都预先勾上的 Agent（从 Claude 页添加时勾上 Claude Desktop）。 */
   includeAgents?: GatewayAgentId[];
+  /** 从哪个 Agent 的页面加的：Claude 页传 `claude`，记进供应商，两边的「显示其他 Agent 的供应商」按它筛。 */
+  owner?: "claude";
 }) {
   // 这次添加给哪些 Agent 用：按各 Agent 的「添加供应商时自动加入」预选，再加上调用方指定的。
   const [picked, setPicked] = useState<GatewayAgentId[]>(() => [...new Set([...defaultProviderAgents(payload), ...includeAgents])]);
@@ -703,7 +707,7 @@ export function ProviderAdder({
   const submit = async (draft: ProviderDraft) => {
     if (!form || form.mode === "edit") return;
     const input = providerInput(draft);
-    if (await run("add:create", "create_gateway_provider", { input, source: form.mode === "preset" ? `preset:${form.preset.key}` : "custom", skipAgents }, t("添加供应商"))) onClose();
+    if (await run("add:create", "create_gateway_provider", { input, source: form.mode === "preset" ? `preset:${form.preset.key}` : "custom", skipAgents, ...(owner ? { owner } : {}) }, t("添加供应商"))) onClose();
   };
   return (
     <>
@@ -720,6 +724,7 @@ export function ProviderAdder({
             void login(kind, skipAgents).finally(onClose);
           }}
           onPreset={(preset) => { setCatalogOpen(false); setForm({ mode: "preset", preset }); }}
+          owner={owner}
           payload={payload}
           run={run}
           skipAgents={skipAgents}
@@ -735,6 +740,7 @@ export function ProviderAdder({
             setLoggingIn(true);
             void login("chatgpt", skipAgents).finally(onClose);
           }}
+          owner={owner}
           payload={payload}
           run={run}
           skipAgents={skipAgents}
@@ -772,6 +778,9 @@ function PoolRow({
   loggingIn: boolean;
 }) {
   const enabled = providerEnabled(entry);
+  // 引用 Codex 直连供应商的：地址、Key、模型、窗口、思考等级、请求头都归直连供应商，这里只读，也不能单独删；
+  // 价格、代理、限速、开关是共享供应商自己的，照常能改。
+  const linked = Boolean(entry.linkedCodexRelay);
   // 拖动中跟手移动，松手时 200ms 滑到新位置；拖着的那一行本身不加过渡，免得跟不上指针。
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: entry.id });
   const status = memberStatus(payload, entry.id);
@@ -793,7 +802,7 @@ function PoolRow({
   };
   const sub = (entry.account
     ? [t("订阅登录"), tf("{0} 个模型", [entry.models.length])]
-    : [protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length])]
+    : [linked ? t("来自 Codex") : "", protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length])]
   ).filter(Boolean).join(" · ");
   // 价格、代理各开各的弹窗。
   const [extrasOpen, setExtrasOpen] = useState<"price" | "proxy" | null>(null);
@@ -878,7 +887,7 @@ function PoolRow({
           {entry.account === "chatgpt" ? <ResetCardsChip entry={entry} /> : null}
         </div>
         <span className="gw-pool-status">
-          {newModels ? (
+          {newModels && !linked ? (
             <button className="gw-new-models" onClick={() => setModelsOpen("sync")} title={t("后台检查发现上游有新模型，点开查看")} type="button">
               {tf("+{0} 新模型", [newModels])}
             </button>
@@ -897,7 +906,7 @@ function PoolRow({
         </span>
         <span className="gw-pool-actions">
           {/* 普通订阅没有可编辑的连接；ChatGPT 订阅可编辑独立的额度策略。 */}
-          {entry.account && entry.account !== "chatgpt" ? (
+          {(entry.account && entry.account !== "chatgpt") || linked ? (
             <span aria-hidden="true" className="gw-pool-edit-slot" />
           ) : (
             <button
@@ -923,6 +932,14 @@ function PoolRow({
       </div>
       {expanded ? (
         <div className="gw-agent-detail gw-pool-detail">
+          {linked ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("来源")}</span>
+              <div className="gw-detail-value gw-detail-hint">
+                {t("Codex 的直连供应商，默认共享给所有 Agent：地址、Key、模型、上下文窗口和思考等级在 Codex「连接与供应商」里改，这里跟着变；在 Codex 里删掉它，这里也一起去掉")}
+              </div>
+            </div>
+          ) : null}
           {/* 模型单独一块：标题行带数量和操作，下面是模型名标签（Agent 里的完整名「供应商/模型」在悬停提示里）。 */}
           <div className="gw-detail-row gw-detail-models">
             <span className="gw-detail-label">{t("模型")}<span className="gw-detail-count">{chatModels.length}</span></span>
@@ -935,7 +952,7 @@ function PoolRow({
                 </button>
               ) : null}
             </div>
-            <span className="gw-detail-actions">
+            {linked ? null : <span className="gw-detail-actions">
               <EditIcon disabled={busy !== null} label={t("编辑模型列表")} onClick={() => setModelsOpen("edit")} />
               {/* 从上游同步（#2785）：打开模型弹窗就拉上游、列出差异，勾选要删、要加的再保存；拉取失败不改列表。 */}
               <button
@@ -948,7 +965,7 @@ function PoolRow({
                 <RefreshCw className={busy === `sync-models:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
                 {t("从上游同步")}
               </button>
-            </span>
+            </span>}
           </div>
           {imageModels.length ? (
             <div className="gw-detail-row">
@@ -964,7 +981,7 @@ function PoolRow({
           <div className="gw-detail-row">
             <span className="gw-detail-label">{entry.account ? t("套餐") : "Key"}</span>
             <div className="gw-detail-value gw-chip-row">
-              {entry.account ? <span>{entry.plan || t("未知")}</span> : entry.keys?.length ? <ProviderKeyList busy={busy} entry={entry} onTest={(keyId) => setTestKey(keyId)} run={run} /> : <KeyCount count={entry.keyCount} />}
+              {entry.account ? <span>{entry.plan || t("未知")}</span> : linked && entry.keys?.length ? entry.keys.map((key) => <code className="gw-chip" key={key.id}>{key.masked}</code>) : entry.keys?.length ? <ProviderKeyList busy={busy} entry={entry} onTest={(keyId) => setTestKey(keyId)} run={run} /> : <KeyCount count={entry.keyCount} />}
               {failures.map((key) => (
                 <span className="gw-key-failure" key={key.keyId}>
                   {`${keyLabel(entry.keys, key.keyId)}${t("：")}${[t(failureLabel(key.lastFailure)) || t(key.state === "disabled" ? "已停用" : "冷却中"), formatRemaining(key.remainingMs)].filter(Boolean).join(" · ")}`}
@@ -1057,8 +1074,8 @@ function PoolRow({
               <span className={windows ? undefined : "gw-muted"}>{windows || t("未填写，用模型自带资料")}</span>
             </div>
             <span className="gw-detail-actions">
-              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑上下文窗口")} onClick={() => setWindowsOpen("edit")} />
-              {metaSyncable ? (
+              {linked ? null : <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑上下文窗口")} onClick={() => setWindowsOpen("edit")} />}
+              {metaSyncable && !linked ? (
                 <MetaSyncButton
                   busy={busy}
                   busyKey={`windows-sync:${entry.id}`}
@@ -1074,8 +1091,8 @@ function PoolRow({
               <span className={reasoning ? undefined : "gw-muted"}>{reasoning || t("按内置资料")}</span>
             </div>
             <span className="gw-detail-actions">
-              <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑思考等级")} onClick={() => setReasoningOpen("edit")} />
-              {metaSyncable ? (
+              {linked ? null : <EditIcon disabled={busy !== null || entry.models.length === 0} label={t("编辑思考等级")} onClick={() => setReasoningOpen("edit")} />}
+              {metaSyncable && !linked ? (
                 <MetaSyncButton
                   busy={busy}
                   busyKey={`reasoning-sync:${entry.id}`}
@@ -1113,7 +1130,7 @@ function PoolRow({
                 {headersSummary ? <code className="gw-chip" title={t("测试连接、获取模型和实际请求都会带上")}>{headersSummary}</code> : <span className="gw-muted">{t("未设置")}</span>}
               </div>
               <span className="gw-detail-actions">
-                <EditIcon disabled={busy !== null} label={t("编辑自定义请求头")} onClick={() => onEdit("headers")} />
+                {linked ? null : <EditIcon disabled={busy !== null} label={t("编辑自定义请求头")} onClick={() => onEdit("headers")} />}
               </span>
             </div>
           ) : null}
@@ -1140,9 +1157,11 @@ function PoolRow({
                   </button>
                 ) : null}
               </span>
-              <button className="gw-danger-link" disabled={busy !== null} onClick={() => void remove()} type="button">
-                {t("删除")}
-              </button>
+              {linked ? null : (
+                <button className="gw-danger-link" disabled={busy !== null} onClick={() => void remove()} type="button">
+                  {t("删除")}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1299,6 +1318,7 @@ function ProviderCatalog({
   onLogin,
   agentPicks,
   skipAgents,
+  owner,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -1310,6 +1330,8 @@ function ProviderCatalog({
   onLogin: (kind: AccountKind) => void;
   agentPicks: ReactNode;
   skipAgents: GatewayAgentId[];
+  /** 同 ProviderAdder 的 `owner`。 */
+  owner?: "claude";
 }) {
   const [query, setQuery] = useState("");
   const [importing, setImporting] = useState(false);
@@ -1400,6 +1422,7 @@ function ProviderCatalog({
           busy={busy}
           onClose={() => setImporting(false)}
           onLogin={() => { setImporting(false); onLogin("chatgpt"); }}
+          owner={owner}
           payload={payload}
           run={run}
           skipAgents={skipAgents}
@@ -1422,6 +1445,7 @@ function ImportDialog({
   onLogin,
   skipAgents,
   agentPicks,
+  owner,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -1430,6 +1454,8 @@ function ImportDialog({
   onLogin: () => void;
   skipAgents: GatewayAgentId[];
   agentPicks?: ReactNode;
+  /** 同 ProviderAdder 的 `owner`。 */
+  owner?: "claude";
 }) {
   const titleId = useId();
   const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
@@ -1442,7 +1468,7 @@ function ImportDialog({
   const chosen = candidates.filter((item) => picked.has(keyOf(item)));
   const submit = async () => {
     const items = chosen.map((item) => ({ source: item.source, id: item.id }));
-    if (await run("import:batch", "import_gateway_providers", { items, skipAgents }, t("导入供应商"))) onClose();
+    if (await run("import:batch", "import_gateway_providers", { items, skipAgents, ...(owner ? { owner } : {}) }, t("导入供应商"))) onClose();
   };
   const codexEntry = (id: string) => payload?.codexProviders.find((entry) => entry.id === id);
   const aggregate = (id: string) => payload?.codexAggregates?.find((item) => item.id === id);

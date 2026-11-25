@@ -70,6 +70,50 @@ pub fn reconcile(home: &Path, enabled_in_settings: bool) -> anyhow::Result<()> {
     }
 }
 
+/// 写 ChatGPT 账号登录之前先调：假登录还在 `auth.json` 里就按存档还原，
+/// 免得两边写登录凭证时互相覆盖（真账号写进去后又被假登录盖掉，或假登录被当成旧登录保存）。
+pub fn release(home: &Path) -> anyhow::Result<()> {
+    if enabled() { disable(home) } else { Ok(()) }
+}
+
+/// 换供应商后本地账号用不了了（切到官方登录 / 内置 OpenAI 供应商）：还原假登录，设置里的「本地账号」
+/// 退回「不登录」，免得一直挂着一个生效不了的选择。返回是否退回了，调用方据此提示用户。
+pub fn fall_back_when_blocked(home: &Path, store: &crate::settings::SettingsStore) -> anyhow::Result<bool> {
+    let mut settings = store.load()?;
+    if !settings.chatgpt_compat_enabled {
+        return Ok(false);
+    }
+    let on_gateway = settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+        && crate::gateway::store::GatewayStore::default()
+            .load()
+            .ok()
+            .and_then(|gateway| gateway.binding(&crate::tools::ToolId::Codex).map(|binding| binding.enabled))
+            .unwrap_or(false);
+    if local_login_blocker(home, on_gateway)?.is_none() {
+        return Ok(false);
+    }
+    release(home)?;
+    settings.chatgpt_compat_enabled = false;
+    store.save(&settings)?;
+    let _ = crate::diagnostic_log::append_diagnostic_log(
+        "chatgpt_compat.fell_back",
+        json!({ "activeRelayId": settings.active_relay_id }),
+    );
+    Ok(true)
+}
+
+/// 本地账号退回「不登录」时给用户看的一句话。
+pub const FELL_BACK_NOTICE: &str = "现在的供应商要用真实登录，本地账号用不了，Codex 登录身份已退回「不登录」。";
+
+/// 「本地账号」当前能不能用：经本地服务时总能用（不登录时网关供应商自带凭据）；
+/// 直连时只有自带凭据的自定义供应商能用，内置 OpenAI / 官方登录供应商不行。
+pub fn local_login_blocker(home: &Path, on_gateway: bool) -> anyhow::Result<Option<&'static str>> {
+    if on_gateway || uses_custom_provider(home)? {
+        return Ok(None);
+    }
+    Ok(Some("当前用的是官方登录或内置 OpenAI 供应商，模型请求要用真实登录；切到 API Key 供应商或本地服务后才能用本地账号"))
+}
+
 /// 生效的 `model_provider` 是不是自带凭据的自定义供应商（不读 `auth.json` 里的登录发模型请求）。
 ///
 /// `requires_openai_auth = true` 又没有 `experimental_bearer_token` / `env_key` 的供应商会拿
@@ -138,6 +182,10 @@ fn write_auth(home: &Path) -> anyhow::Result<()> {
     let live_value = json_or_empty(live.as_deref());
     if live_value.pointer("/tokens/account_id").and_then(Value::as_str) == Some(ACCOUNT_ID)
         && live_value.get("auth_mode").and_then(Value::as_str) == Some("chatgpt")
+        && live_value
+            .pointer("/tokens/id_token")
+            .and_then(Value::as_str)
+            .is_some_and(chatgpt_compat::token_matches_profile)
     {
         return Ok(());
     }
@@ -170,13 +218,74 @@ fn restore_file(home: &Path, name: &str, stash_name: &str, toml: bool) -> anyhow
         restore::restore_json(
             stash.before.as_deref(),
             live.as_deref(),
-            &stash.changed,
-            |key, _before, current| restore::value_at(current, &key.path) != key.written.as_ref(),
+            &auth_keys_to_restore(&stash.changed),
+            keep_auth_key,
         )?
     };
     restore::write_or_remove(&path, restored.as_deref())?;
     restore::remove_stash(&stash_file);
     Ok(())
+}
+
+/// 登录相关的键按顶层整体还原：存档按两层记了 `tokens.access_token` 这样的子键，
+/// 而 Codex 刷新 token 时会整块改写 `tokens`，逐个子键还原会留下半个登录。
+fn auth_keys_to_restore(changed: &[restore::ChangedKey]) -> Vec<restore::ChangedKey> {
+    let mut out: Vec<restore::ChangedKey> = Vec::new();
+    for key in changed {
+        let key = match key.path.first().map(String::as_str) {
+            Some(top @ ("tokens" | "last_refresh" | "auth_mode")) => restore::ChangedKey {
+                path: vec![top.to_string()],
+                written: None,
+            },
+            _ => key.clone(),
+        };
+        if !out.iter().any(|known| known.path == key.path) {
+            out.push(key);
+        }
+    }
+    out
+}
+
+/// 还原 `auth.json` 时哪些键保留当前值。
+///
+/// 登录相关的键（`tokens` / `last_refresh` / `auth_mode`）看当前登录是不是还是本地假账号：
+/// 开着期间 Codex 会自己刷新 token、改写这几项，不能当成用户改的；只有换成了真实登录才保留。
+/// 其它键（如 API Key）开着期间被改过就保留。
+fn keep_auth_key(key: &restore::ChangedKey, _before: &Value, current: &Value) -> bool {
+    match key.path.first().map(String::as_str) {
+        Some("tokens" | "last_refresh" | "auth_mode") => !login_is_local(current),
+        _ => restore::value_at(current, &key.path) != key.written.as_ref(),
+    }
+}
+
+/// 当前登录是不是本地假账号（或者已经没有登录）。
+fn login_is_local(auth: &Value) -> bool {
+    let Some(tokens) = auth.get("tokens").filter(|tokens| tokens.is_object()) else {
+        return true;
+    };
+    if tokens.get("account_id").and_then(Value::as_str) == Some(ACCOUNT_ID) {
+        return true;
+    }
+    ["access_token", "id_token"].iter().any(|name| {
+        tokens
+            .get(*name)
+            .and_then(Value::as_str)
+            .and_then(jwt_account_id)
+            .is_some_and(|account| account == ACCOUNT_ID)
+    })
+}
+
+fn jwt_account_id(token: &str) -> Option<String> {
+    use base64::Engine;
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .pointer("/https:~1~1api.openai.com~1auth/chatgpt_account_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
 }
 
 fn stash_path(name: &str) -> std::path::PathBuf {
@@ -297,6 +406,66 @@ mod tests {
     }
 
     #[test]
+    fn local_login_is_not_an_official_login_and_release_restores_the_real_one() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+        let real = r#"{"auth_mode":"chatgpt","tokens":{"access_token":"real","account_id":"acc-real"}}"#;
+        std::fs::write(home.join("auth.json"), real).unwrap();
+        assert!(crate::official_login::official_login_from_auth_contents(real).is_some());
+
+        enable(home).unwrap();
+        // 假登录不能被当成 ChatGPT 账号保存或借出。
+        let fake = std::fs::read_to_string(home.join("auth.json")).unwrap();
+        assert!(crate::official_login::official_login_from_auth_contents(&fake).is_none());
+
+        // 选 ChatGPT 账号前先 release：auth.json 回到接入前的真实登录。
+        release(home).unwrap();
+        assert!(!enabled());
+        let restored: Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(restored["tokens"]["access_token"], "real");
+        // 没开着时 release 什么也不做。
+        release(home).unwrap();
+    }
+
+    #[test]
+    fn local_login_blocker_follows_the_active_provider() {
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(home.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+        assert!(local_login_blocker(home, false).unwrap().is_some());
+        // 经本地服务时不登录，网关供应商自带凭据，总能用。
+        assert!(local_login_blocker(home, true).unwrap().is_none());
+        std::fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+        assert!(local_login_blocker(home, false).unwrap().is_none());
+    }
+
+    #[test]
+    fn fall_back_when_blocked_resets_local_login_after_switching_to_builtin_openai() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        let store = crate::settings::SettingsStore::new(home.join("settings.json"));
+        let mut settings = store.load().unwrap();
+        settings.chatgpt_compat_enabled = true;
+        store.save(&settings).unwrap();
+        std::fs::write(home.join("config.toml"), "model_provider = \"custom\"\n").unwrap();
+        reconcile(home, true).unwrap();
+        // 还是自定义供应商：不动。
+        assert!(!fall_back_when_blocked(home, &store).unwrap());
+        assert!(enabled());
+        // 换成内置 OpenAI：还原假登录，设置退回「不登录」。
+        std::fs::write(home.join("config.toml"), "model = \"gpt-5\"\n").unwrap();
+        assert!(fall_back_when_blocked(home, &store).unwrap());
+        assert!(!enabled());
+        assert!(!store.load().unwrap().chatgpt_compat_enabled);
+        // 已退回过，再调不重复提示。
+        assert!(!fall_back_when_blocked(home, &store).unwrap());
+    }
+
+    #[test]
     fn reconcile_is_idempotent() {
         let _state = StateGuard::new();
         let dir = home();
@@ -361,6 +530,44 @@ mod tests {
     }
 
     #[test]
+    fn disable_removes_tokens_that_codex_refreshed_while_enabled() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk"}"#).unwrap();
+        enable(home).unwrap();
+        // Codex 用本地签发的 token 刷新后改写：没有 account_id，last_refresh 也变了。
+        let mut auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+        let token = auth["tokens"]["access_token"].clone();
+        auth["tokens"] = json!({ "access_token": token, "id_token": token });
+        auth["last_refresh"] = json!("2030-01-01T00:00:00Z");
+        std::fs::write(home.join("auth.json"), auth.to_string()).unwrap();
+
+        disable(home).unwrap();
+        let auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth, json!({ "OPENAI_API_KEY": "sk" }));
+    }
+
+    #[test]
+    fn disable_keeps_a_real_login_made_while_enabled() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(home.join("auth.json"), r#"{"OPENAI_API_KEY":"sk"}"#).unwrap();
+        enable(home).unwrap();
+        let real = json!({ "OPENAI_API_KEY": "sk", "auth_mode": "chatgpt",
+            "tokens": { "access_token": "a.b.c", "account_id": "acc-real" } });
+        std::fs::write(home.join("auth.json"), real.to_string()).unwrap();
+        disable(home).unwrap();
+        let auth: Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
+        assert_eq!(auth["tokens"]["account_id"], "acc-real");
+        assert_eq!(auth["auth_mode"], "chatgpt");
+    }
+
+    #[test]
     fn disable_keeps_an_api_key_written_while_enabled() {
         let _state = StateGuard::new();
         let dir = home();
@@ -375,6 +582,6 @@ mod tests {
         let auth: Value =
             serde_json::from_str(&std::fs::read_to_string(home.join("auth.json")).unwrap()).unwrap();
         assert_eq!(auth["OPENAI_API_KEY"], "sk-new");
-        assert!(auth.get("tokens").is_none());
+        assert!(auth.get("tokens").is_none(), "{auth}");
     }
 }

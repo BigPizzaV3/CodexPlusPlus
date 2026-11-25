@@ -207,7 +207,7 @@ fn candidate_binaries() -> Vec<PathBuf> {
     }
     candidates.extend(path_cli_candidates(
         std::env::var_os("PATH").as_deref(),
-        directories::BaseDirs::new()
+        crate::user_dirs::BaseDirs::new()
             .map(|dirs| dirs.home_dir().to_path_buf())
             .as_deref(),
     ));

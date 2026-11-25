@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { Check, Loader2, RefreshCw, RotateCw } from "lucide-react";
 import { t } from "./i18n";
-import { nativeAuthSelection, savedAuthLabel, type NativeAuthResult, type NativeAuthState } from "./native-auth-model";
+import { loginIdentityArgs, nativeAuthSelection, savedAuthLabel, type NativeAuthResult, type NativeAuthState } from "./native-auth-model";
 import { AppSelect } from "./AppSelect";
 import { CxCard, CxRow } from "./cx-layout";
 import { AgentIcon } from "./gateway-ui";
+import { LocalAccountProfile } from "./ChatgptCompatSection";
+import type { BackendSettings } from "./app-types";
 import "./NativeAuthControls.css";
 
 function useSavedAuthAccounts() {
@@ -30,13 +33,32 @@ function useSavedAuthAccounts() {
   };
   useEffect(() => {
     void reload();
-    return () => { sequence.current += 1; };
+    // 别处改了登录身份（Codex 里的供应商页、另一个窗口）：后端发设置变更事件，这里跟着重读。
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void listen("codex-plus-settings-changed", () => { if (!disposed) void reload(); })
+      .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten; })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      stop?.();
+      sequence.current += 1;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   return { state, setState, loading, error, setError, reload };
 }
 
-export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boolean> }) {
+/**
+ * 「Codex 登录身份」：三选一，ChatGPT 账号 / 本地账号（用 API Key 解锁 ChatGPT 专属入口）/ 不登录。
+ * 后端 `set_codex_login_identity` 一起改原生登录选择和解锁开关，两边写 auth.json 不互相覆盖。
+ */
+export function NativeAuthControl({ onRestart, form, onSave }: {
+  onRestart?: () => Promise<boolean>;
+  /** 有这两项才显示本地账号的「编辑资料」。 */
+  form?: BackendSettings;
+  onSave?: (next: BackendSettings) => void;
+}) {
   const { state, setState, loading, error, setError, reload } = useSavedAuthAccounts();
   const [chosen, setChosen] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -51,9 +73,7 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
     setSaving(true);
     setError("");
     try {
-      const result = await invoke<NativeAuthResult>("set_native_auth_account", {
-        accountRef: value === "none" ? null : value.slice("account:".length),
-      });
+      const result = await invoke<NativeAuthResult>("set_codex_login_identity", loginIdentityArgs(value));
       if (result.status !== "ok") throw new Error(result.message);
       setState(result);
       setChosen(null);
@@ -79,7 +99,7 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
       setRestarting(false);
     }
   };
-  // 提示一次只显示一条，放进卡片里，不再在卡片外面散成几行：未应用的选择 > 错误 > 配置不一致 > 不能重启的原因 > 需要重启。
+  // 提示一次只显示一条，放进卡片里，不再在卡片外面散成几行：未应用的选择 > 错误 > 配置不一致 > 不能重启的原因 > 本地账号要从 Codex++ 启动 > 需要重启。
   const notice: { text: string; tone: "error" | "muted"; role?: "alert" | "status" } | null = pending
     ? { text: t("选择还没生效，点「应用」后才会写入 Codex 的登录凭证。"), tone: "muted", role: "status" }
     : error
@@ -88,6 +108,8 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
         ? { text: state.drift, tone: "error", role: "status" }
         : state?.restartBlockedReason
           ? { text: t(state.restartBlockedReason), tone: "muted", role: "status" }
+          : state?.localLoginLaunchHint && value === "local"
+            ? { text: t(state.localLoginLaunchHint), tone: "muted", role: "status" }
           : state?.managed
             ? { text: t("更改登录选择后，请关闭所有 Codex 实例并重新启动。"), tone: "muted", role: "status" }
             : null;
@@ -97,8 +119,8 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
         className="native-auth-current"
         detail={state ? `${t("已写入凭证：")}${state.actualLabel || t("未登录")}` : undefined}
         icon={<AgentIcon agent="codex" />}
-        // 「主登录身份」：Codex 自己用哪个账号登录；和各供应商绑定的「供应商登录账号」区分开。
-        title={t("主登录身份")}
+        // 「Codex 登录身份」：Codex 自己用哪个身份登录；和各供应商绑定的「供应商登录账号」区分开。
+        title={t("Codex 登录身份")}
       >
         <AppSelect
           ariaLabel={t("Codex 当前登录")}
@@ -108,6 +130,13 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
           size="sm"
           options={[
             ...(!current ? [{ value: "", label: state?.actualLabel || t("尚未指定") }] : []),
+            {
+              value: "local",
+              label: t("本地账号"),
+              // 官方登录供应商下模型请求要用真实登录，换成本地账号就连不上：置灰并说明原因。
+              hint: state?.localLoginBlockedReason ? t(state.localLoginBlockedReason) : t("用 API Key 解锁代码审查、图像、资料库等入口，模型仍走所选供应商"),
+              disabled: Boolean(state?.localLoginBlockedReason) && current !== "local",
+            },
             { value: "none", label: t("不登录"), hint: t("保留已保存账号") },
             ...(state?.accounts.map((account) => ({ value: `account:${account.id}`, label: savedAuthLabel(account) })) ?? []),
             ...(current.startsWith("account:") && !state?.accounts.some((account) => `account:${account.id}` === current) ? [{ value: current, label: t("已选账号不可用") }] : []),
@@ -130,6 +159,7 @@ export function NativeAuthControl({ onRestart }: { onRestart?: () => Promise<boo
           <RefreshCw className={loading ? "animate-spin" : ""} />
         </button>
       </CxRow>
+      {value === "local" && form && onSave ? <LocalAccountProfile form={form} onSave={onSave} /> : null}
       {notice ? <p className={notice.tone === "error" ? "native-auth-error native-auth-notice" : "native-auth-pending native-auth-notice"} role={notice.role}>{notice.text}</p> : null}
     </CxCard>
   );
