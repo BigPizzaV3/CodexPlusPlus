@@ -67,7 +67,7 @@ import {
   type SubscriptionView,
 } from "./gateway-model";
 import { AgentIcon, Avatar, KeyCount, MemberStatusLabel, QuotaWindows, Switch, type Notify, type Run } from "./gateway-ui";
-import { AccountQuotaDetails, ProviderQuotaTimeline } from "./ProviderQuotaPanel";
+import { AccountQuotaDetails } from "./ProviderQuotaPanel";
 import { ProviderFormDialog, type ProviderFormState } from "./ProviderFormDialog";
 import { ProviderExtrasDialog, ProviderLimitsDialog, ProviderNewApiAccessDialog, keyLimitSummary, priceSummary } from "./ProviderExtrasDialog";
 import { ProviderWindowsDialog, windowSummary, withUnlistedWindows, type WindowSyncPick } from "./ProviderWindowsDialog";
@@ -420,7 +420,6 @@ export function ProvidersView({
           ) : null}
         </div>
       ) : null}
-      <ProviderQuotaTimeline entries={visible} />
       {localLogins.length && localDismissed !== localKey ? (
         <LocalLoginsCard busy={busy !== null} found={localLogins} onDismiss={() => setLocalDismissed(localKey)} onImport={importLocal} pending={loginPending} />
       ) : null}

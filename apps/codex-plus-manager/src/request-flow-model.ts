@@ -4,7 +4,16 @@
  * 沿 Agent → Codex++ → 供应商的完整路线流动，响应反向，结束即停止。
  * 页面只负责画和动画。
  */
-import { maskAccountName } from "./gateway-model.ts";
+import { maskAccountName, type RouteRecordView } from "./gateway-model.ts";
+
+export type ContextPartKind = "instructions" | "tools" | "user" | "assistant" | "toolCalls" | "toolResults" | "other";
+export type ContextPart = { kind: ContextPartKind; items: number; estimatedTokens: number };
+export type ContextSummary = {
+  parts: ContextPart[];
+  turns: { number: number; parts: ContextPart[] }[];
+  omittedTurns: number;
+  partial: boolean;
+};
 
 /** `load_request_flow` 返回的一条请求（请求日志条目里用得到的字段）。 */
 export type FlowEntry = {
@@ -14,6 +23,9 @@ export type FlowEntry = {
   timestampMs: number;
   durationMs: number;
   model: string;
+  path?: string;
+  threadId?: string | null;
+  threadTitle?: string | null;
   upstreamModel?: string;
   relayId?: string;
   relayName?: string;
@@ -23,8 +35,11 @@ export type FlowEntry = {
   phase?: string | null;
   attempts?: number;
   firstTokenMs?: number | null;
+  stream?: boolean;
   estimatedOutputTokens?: number | null;
-  usage?: { inputTokens: number; outputTokens: number } | null;
+  usage?: { inputTokens: number; outputTokens: number; cachedTokens?: number; cachedTokensKnown?: boolean } | null;
+  contextSummary?: ContextSummary | null;
+  route?: RouteRecordView | null;
   error?: string | null;
 };
 

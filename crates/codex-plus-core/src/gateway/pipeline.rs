@@ -116,7 +116,10 @@ pub async fn open(
     plan: &RoutePlan,
     request: GatewayRequest<'_>,
 ) -> anyhow::Result<GatewayOutcome> {
-    let mut recorder = RouteRecorder::new(plan);
+    if let Some(id) = request.live_request_id {
+        crate::request_log::update_running_context(id, &request.responses_body);
+    }
+    let mut recorder = RouteRecorder::new(plan, request.live_request_id);
     let mut result = open_candidates(settings, plan, request, &mut recorder).await;
     if let Ok(outcome) = &mut result
         && let GatewayUpstream::Pipeline(response) = &mut outcome.upstream
@@ -170,6 +173,7 @@ async fn open_candidates(
     if crate::extension_gateway::builtin_replaced("builtin:gateway-failover") {
         pending.truncate(1);
     }
+    recorder.candidates(&pending);
     if plan.candidates.is_empty() {
         let Some(wait) = plan.cooling else {
             anyhow::bail!("本地服务没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
@@ -177,7 +181,10 @@ async fn open_candidates(
         // 所有 Key 都在冷却（#2802）：最早的那个很快恢复时等它一等再试，不马上回本地 429——
         // Codex 自己的重试几秒内就用完了，冷却稍长一点就会整轮失败，而直连时这几秒后上游多半已恢复。
         match wait_for_cooling_key(plan, &request).await? {
-            Some(ready) => pending = vec![ready],
+            Some(ready) => {
+                pending = vec![ready];
+                recorder.candidates(&pending);
+            }
             None => {
                 recorder.cooling(wait.as_millis() as u64);
                 // 请求没发出去（attempts 仍为 0），但请求日志要能看出本来要发给哪家、哪个模型（#3229）：

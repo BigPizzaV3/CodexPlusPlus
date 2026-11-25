@@ -4,6 +4,10 @@ import { t } from "./i18n";
 import type { UsageRange } from "./gateway-model";
 import { onTabListKeyDown } from "./tablist-keys";
 
+export function requestLogAgent(agent: string | undefined): RequestLogFocus["agent"] {
+  return agent === "codex" || agent === "claude" || agent === "grok" ? agent : undefined;
+}
+
 export type UsageRoute = "gatewayUsage" | "requestLog";
 
 /** 统计表里点一行，切到「请求」页签并按它筛选：Agent、供应商（id 与显示名）或模型，时间段跟着统计页。 */

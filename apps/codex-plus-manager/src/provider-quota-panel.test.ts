@@ -23,11 +23,13 @@ function harness() {
       }, useEffect: () => {},
     },
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
-    "lucide-react": { ChevronLeft: "ChevronLeft", ChevronRight: "ChevronRight" },
+    "@tauri-apps/api/core": { invoke: () => assert.fail("collapsed quota details must not read history") },
+    "lucide-react": { RefreshCw: "RefreshCw" },
     "./components/ui/button": { Button: "button" },
     "./i18n": { getLanguage: () => "zh", t: (s: string) => s, tf: (s: string, args: unknown[]) => s.replace(/\{(\d+)\}/g, (_, n) => String(args[Number(n)])) },
     "./gateway-model": gateway,
     "./quota-timeline": timeline,
+    "./QuotaCalendar": { QuotaCalendar: "calendar" },
     "./ProviderQuotaPanel.css": {},
   };
   const exports: Record<string, any> = {};
@@ -61,49 +63,21 @@ test("原有账号详情显示剩余比例和具体重置日期，未知 Credit 
   assert.equal(elements(tree).find(e => e.props?.role === "progressbar")!.props["aria-valuenow"], undefined);
 });
 
-test("时间轴支持切换窗口、前后翻页和回到今天；未来窗口明确标记推算", () => {
-  const ui = harness();
+test("供应商详情按实际时长显示窗口，用量页日历由账号卡片挂载", () => {
   const entry = account();
-  const render = () => ui.render("ProviderQuotaTimeline", { entries: [entry] });
-  let tree = render();
-  const initial = text(tree);
-  assert.match(initial, /后续窗口（推算）/);
-  assert.match(initial, /剩余 0%/);
-  const click = (label: string) => {
-    const button = elements(tree).find(e => e.type === "button" && (e.props["aria-label"] === label || text(e) === label));
-    assert.ok(button, label); button.props.onClick(); tree = render();
-  };
-  click("下一时段");
-  assert.notEqual(text(tree), initial);
-  click("今天");
-  assert.equal(text(tree), initial);
-  click("5 小时");
-  assert.match(text(tree), /24 小时/);
-  assert.match(text(tree), /剩余 100%/);
-  assert.equal(elements(tree).find(e => e.type === "button" && text(e) === "5 小时")!.props["aria-pressed"], true);
-  assert.equal(elements(tree).find(e => e.type === "tr" && e.props["data-off"] !== undefined)!.props["data-off"], false, "旧账号没写 enabled 时仍视为开启");
-});
-
-test("空池隐藏时间轴，缺少窗口时不给出虚假比例", () => {
-  assert.equal(harness().render("ProviderQuotaTimeline", { entries: [] }), null);
-  const entry = account(); entry.quota = null;
-  const tree = harness().render("ProviderQuotaTimeline", { entries: [entry] });
-  assert.match(text(tree), /未提供重置时间/);
-  assert.doesNotMatch(text(tree), /剩余 \d+%/);
-});
-
-test("普通订阅刷新后立即显示额度，不需要查询或持有重置卡", () => {
-  const ui = harness();
-  const entry = account();
-  const quota = { ...entry.quota!, windows: [entry.quota!.windows[0]] };
-  const apiEntry = { ...entry, id: "api", account: null, name: "API only" };
-  assert.equal(ui.render("ProviderQuotaTimeline", { entries: [apiEntry] }), null);
-  const before = ui.render("ProviderQuotaTimeline", { entries: [{ ...entry, quota: null }, apiEntry] });
-  assert.match(text(before), /额度待刷新/);
-
-  const after = ui.render("ProviderQuotaTimeline", { entries: [{ ...entry, quota, resetCredits: null }, apiEntry] });
-  assert.match(text(after), /24 小时/);
-  assert.match(text(after), /剩余 100%/);
-  assert.doesNotMatch(text(after), /API only|重置卡到期/);
-  assert.ok(elements(after).some(element => element.props.title?.includes("自然重置")));
+  entry.quota!.windows = [
+    { windowMinutes: 180, usedPercent: 20, resetsAtMs: null },
+    { windowMinutes: 2880, usedPercent: 30, resetsAtMs: null },
+  ];
+  const tree = harness().render("AccountQuotaDetails", { entry });
+  assert.match(text(tree), /3 小时/);
+  assert.match(text(tree), /2 天/);
+  assert.doesNotMatch(text(tree), /5 小时|每周/);
+  const providers = readFileSync(new URL("./GatewayProviders.tsx", import.meta.url), "utf8");
+  const usage = readFileSync(new URL("./GatewayUsage.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(providers, /QuotaCards|QuotaCalendar|ProviderQuotaTimeline/);
+  assert.match(usage, /<QuotaCards entries=\{quotas\}/);
+  assert.doesNotMatch(usage, /QuotaCalendar/);
+  const panel = readFileSync(new URL("./ProviderQuotaPanel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /<QuotaCalendar\s[^>]+entry=\{entry\}\s+minutes=\{calendarWindow.minutes\}/);
 });
