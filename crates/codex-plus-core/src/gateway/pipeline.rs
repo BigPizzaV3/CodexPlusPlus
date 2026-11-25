@@ -558,7 +558,7 @@ fn queue_reason(queued: Duration) -> String {
 }
 
 /// 等到客户端断开才返回；没给连接、或客户端还连着（读到了多余数据）时一直挂着。
-async fn client_gone(client: Option<&tokio::net::TcpStream>) {
+pub(crate) async fn client_gone(client: Option<&tokio::net::TcpStream>) {
     let Some(stream) = client else {
         return std::future::pending().await;
     };

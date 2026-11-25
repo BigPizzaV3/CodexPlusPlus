@@ -80,13 +80,8 @@ pub struct ActivitySnapshot {
 #[derive(Default)]
 struct ActivityState {
     agents: BTreeMap<String, AgentActivity>,
-    /// 计数带上首次进入的时刻：guard 若因极端路径泄漏（客户端断开、任务中止没走 Drop 等），
-    /// 快照里超过 [`IN_FLIGHT_STALE`] 的条目按陈旧清除，不再让「正在回答」永远挂着。
-    in_flight: HashMap<(String, String), (u32, Instant)>,
+    in_flight: HashMap<(String, String), u32>,
 }
-
-/// 正在回答标记超过这个时长仍未撤销，就当作泄漏清掉（正常一次流式响应远短于此）。
-const IN_FLIGHT_STALE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 fn lock() -> std::sync::MutexGuard<'static, ActivityState> {
     static STATE: OnceLock<Mutex<ActivityState>> = OnceLock::new();
@@ -113,7 +108,7 @@ impl Drop for InFlight {
     fn drop(&mut self) {
         let mut state = lock();
         let key = (self.agent.clone(), self.relay_id.clone());
-        if let Some((count, _)) = state.in_flight.get_mut(&key) {
+        if let Some(count) = state.in_flight.get_mut(&key) {
             *count = count.saturating_sub(1);
             if *count == 0 {
                 state.in_flight.remove(&key);
@@ -177,14 +172,10 @@ impl RouteRecorder {
     pub fn begin(&mut self, candidate: &GatewayCandidate) -> InFlight {
         self.attempt_started = Some(Instant::now());
         let mut state = lock();
-        state
+        *state
             .in_flight
             .entry((self.agent.clone(), candidate.relay.id.clone()))
-            .and_modify(|(count, _started)| {
-                // 并发请求只延长计数，保留最早进入的时刻，陈旧判断不被新请求重置。
-                *count += 1;
-            })
-            .or_insert((1, Instant::now()));
+            .or_default() += 1;
         InFlight {
             agent: self.agent.clone(),
             relay_id: candidate.relay.id.clone(),
@@ -268,14 +259,9 @@ impl RouteRecorder {
 }
 
 pub fn snapshot() -> ActivitySnapshot {
-    let mut state = lock();
-    // 泄漏的「正在回答」标记：guard 没被正常 Drop（客户端断开等极端路径）时计数永远不归零。
-    // 超过阈值的条目直接清掉，路由页不再永远显示「正在回答」。
-    state
-        .in_flight
-        .retain(|_, (_, started)| started.elapsed() < IN_FLIGHT_STALE);
+    let state = lock();
     let mut agents = state.agents.clone();
-    for ((agent, relay_id), (count, _)) in &state.in_flight {
+    for ((agent, relay_id), count) in &state.in_flight {
         let entry = agents
             .entry(agent.clone())
             .or_insert_with(|| AgentActivity {
