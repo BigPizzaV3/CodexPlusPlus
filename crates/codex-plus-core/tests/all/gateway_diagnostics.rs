@@ -119,10 +119,13 @@ fn activity(agent: &ToolId, time: u64, success: bool) -> ActivitySnapshot {
                     failure: (!success).then(|| "auth_invalid".into()),
                     status: Some(if success { 200 } else { 401 }),
                     elapsed_ms: 1,
+                    attempt_ms: None,
                 }],
                 result: if success { "answered" } else { "failed" }.into(),
                 cooling_ms: None,
                 finished_at_ms: time,
+                context_window: None,
+                truncated: false,
                 elapsed_ms: 1,
             }),
             ..AgentActivity::default()
