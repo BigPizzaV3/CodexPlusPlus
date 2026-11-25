@@ -27955,16 +27955,23 @@ ${key} = ${value}`]);
   }
 
   function updateDeleteButtonOffsets() {
-    sessionRows().forEach((row) => {
+    const offsets = sessionRows().filter((row) => row.dataset.codexDeleteRow === "true").map((row) => {
+      let right;
       const hasArchiveConfirm = Array.from(row.querySelectorAll("button")).some((button) => {
-        const rect = button.getBoundingClientRect();
+        if (button.hasAttribute("data-codex-plus-row-action")) return false;
         const label = button.getAttribute("aria-label") || "";
+        if (/^(?:归档对话|置顶对话|Archive (?:chat|thread)|Pin (?:chat|thread))$/i.test(label)) return false;
         const text = (button.textContent || "").trim();
-        if (button.hasAttribute("data-codex-plus-row-action") || label === "归档对话" || label === "置顶对话") return false;
-        return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
+        if (!text) return false;
+        if (text === "确认") return true;
+        const rect = button.getBoundingClientRect();
+        return rect.width > 0 && rect.width <= 36 && rect.x > (right ??= row.getBoundingClientRect().right) - 50;
       });
-      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+      return [row, hasArchiveConfirm];
     });
+    for (const [row, hasArchiveConfirm] of offsets) {
+      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+    }
   }
 
   /**
@@ -30366,7 +30373,7 @@ ${key} = ${value}`]);
     };
   }
 
-  function attachButton(row) {
+  function attachButton(row, pendingLayouts) {
     const ref = sessionRefFromRow(row);
     const uncreated = !ref.session_id && isClientNewThreadId(row.getAttribute("data-app-action-sidebar-thread-id"));
     const items = sessionRowActionItems().filter((item) => ref.session_id
@@ -30460,12 +30467,13 @@ ${key} = ${value}`]);
     // 先套上原生按钮外观再量布局，避免尺寸在测量后才变化。
     syncNativeSessionActionStyle(row);
     installNativeSessionActionStyleSync(row);
-    syncActionGroupLayout(row, group);
+    if (pendingLayouts) pendingLayouts.push({ row, group });
+    else syncActionGroupLayout(row, group);
   }
 
-  function tryAttachButton(row) {
+  function tryAttachButton(row, pendingLayouts) {
     try {
-      attachButton(row);
+      attachButton(row, pendingLayouts);
     } catch (error) {
       window.__codexSessionDeleteAttachButtonFailures = window.__codexSessionDeleteAttachButtonFailures || [];
       window.__codexSessionDeleteAttachButtonFailures.push(String(error?.stack || error));
@@ -37595,7 +37603,9 @@ ${key} = ${value}`]);
     // 已删会话的行过滤（会话删除）、对话宽度、滚动位置恢复也都是内置拓展经公开的 ctx.onScan 登记的步骤。
     runCodexPlusScanSteps();
     // 会话行的操作按钮组、归档页的行按钮是删除、导出与第三方拓展 rowAction 共用的宿主，留在内核里扫描。
-    sessionRows().forEach(tryAttachButton);
+    const layouts = [];
+    for (const row of sessionRows()) tryAttachButton(row, layouts);
+    syncActionGroupLayouts(layouts);
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     removeLegacyCodexServiceTierBadges();
@@ -43397,9 +43407,23 @@ ${key} = ${value}`]);
       !Array.from(mutation.removedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node));
   }
 
+  function isVirtualizedTurnMutation({ type, target, addedNodes, removedNodes, attributeName }) {
+    if (!target.closest?.(".thread-scroll-container")) return false;
+    const turn = "[data-measured-turn], [data-virtualized-turn], [data-turn-key]";
+    const withinTurn = target.closest(turn);
+    if (type !== "childList") return !!withinTurn && attributeName !== "data-above-composer-conversation-id";
+    const nodes = [...addedNodes, ...removedNodes].filter((node) => node.nodeType === 1);
+    if (!withinTurn && (!nodes.length || !nodes.every((node) => node.matches(turn)))) return false;
+    // 审批与嵌入式输入区仍可能需要全局注册的动作。
+    const controls = "[data-codex-approval-surface], .composer-footer, [data-above-composer-conversation-id]";
+    return !target.closest(controls) && !nodes.some((node) => node.matches(controls) || node.querySelector(controls));
+  }
+
   function shouldScheduleScan(mutations) {
     if (!mutations) return true;
     return mutations.some((mutation) => {
+      // 挂卸原生回合和展开其输出不需要再扫侧栏；消息插槽有自己的对话区观察器。
+      if (isVirtualizedTurnMutation(mutation)) return false;
       if (isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;

@@ -68,9 +68,23 @@
       !Array.from(mutation.removedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node));
   }
 
+  function isVirtualizedTurnMutation({ type, target, addedNodes, removedNodes, attributeName }) {
+    if (!target.closest?.(".thread-scroll-container")) return false;
+    const turn = "[data-measured-turn], [data-virtualized-turn], [data-turn-key]";
+    const withinTurn = target.closest(turn);
+    if (type !== "childList") return !!withinTurn && attributeName !== "data-above-composer-conversation-id";
+    const nodes = [...addedNodes, ...removedNodes].filter((node) => node.nodeType === 1);
+    if (!withinTurn && (!nodes.length || !nodes.every((node) => node.matches(turn)))) return false;
+    // 审批与嵌入式输入区仍可能需要全局注册的动作。
+    const controls = "[data-codex-approval-surface], .composer-footer, [data-above-composer-conversation-id]";
+    return !target.closest(controls) && !nodes.some((node) => node.matches(controls) || node.querySelector(controls));
+  }
+
   function shouldScheduleScan(mutations) {
     if (!mutations) return true;
     return mutations.some((mutation) => {
+      // 挂卸原生回合和展开其输出不需要再扫侧栏；消息插槽有自己的对话区观察器。
+      if (isVirtualizedTurnMutation(mutation)) return false;
       if (isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;

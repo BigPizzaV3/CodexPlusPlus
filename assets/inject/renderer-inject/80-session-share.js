@@ -445,16 +445,23 @@
   }
 
   function updateDeleteButtonOffsets() {
-    sessionRows().forEach((row) => {
+    const offsets = sessionRows().filter((row) => row.dataset.codexDeleteRow === "true").map((row) => {
+      let right;
       const hasArchiveConfirm = Array.from(row.querySelectorAll("button")).some((button) => {
-        const rect = button.getBoundingClientRect();
+        if (button.hasAttribute("data-codex-plus-row-action")) return false;
         const label = button.getAttribute("aria-label") || "";
+        if (/^(?:归档对话|置顶对话|Archive (?:chat|thread)|Pin (?:chat|thread))$/i.test(label)) return false;
         const text = (button.textContent || "").trim();
-        if (button.hasAttribute("data-codex-plus-row-action") || label === "归档对话" || label === "置顶对话") return false;
-        return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
+        if (!text) return false;
+        if (text === "确认") return true;
+        const rect = button.getBoundingClientRect();
+        return rect.width > 0 && rect.width <= 36 && rect.x > (right ??= row.getBoundingClientRect().right) - 50;
       });
-      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+      return [row, hasArchiveConfirm];
     });
+    for (const [row, hasArchiveConfirm] of offsets) {
+      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+    }
   }
 
   /**
