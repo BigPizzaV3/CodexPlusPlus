@@ -15,6 +15,7 @@
 .shell .community-ext-permissions li::before { content:""; position:absolute; left:2px; top:7px; width:6px; height:6px; border-radius:50%; background:hsl(var(--muted-foreground)); }
 .shell .community-ext-permissions li[data-risk=high]::before { background:hsl(var(--status-error, 0 72% 51%)); }
 .shell .community-ext-permissions li[data-risk=medium]::before { background:hsl(var(--status-warning)); }
+.shell .community-ext-permission-added { display:inline-block; margin-right:6px; padding:0 5px; border-radius:4px; font-size:11px; line-height:16px; font-weight:600; color:hsl(var(--status-warning)); background:hsl(var(--status-warning) / .14); }
 .shell .community-ext-dialog-enable { display:inline-flex; align-items:center; gap:8px; font-size:12px; }
 .shell .community-ext-dialog-trusted { margin:0; padding:8px 10px; border-radius:8px; font-size:12px; line-height:1.5; color:hsl(var(--status-success, 142 60% 36%)); border:1px solid hsl(var(--status-success, 142 60% 36%) / .4); }
 .shell .extension-publish-field { display:flex; align-items:center; gap:10px; font-size:12px; }

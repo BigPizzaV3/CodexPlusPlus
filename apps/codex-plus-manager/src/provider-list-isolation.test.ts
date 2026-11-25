@@ -13,7 +13,7 @@ const code=ts.transpileModule(source,{compilerOptions:{jsx:ts.JsxEmit.React,jsxF
 const ctx=vm.createContext({
   jsx:(type:any,props:any,...children:any[])=>({type,props,children}),
   useSensors:(...v:any[])=>v,useSensor:()=>null,PointerSensor:0,KeyboardSensor:0,sortableKeyboardCoordinates:0,
-  DndContext:"dnd",SortableContext:"sortable",SortableRelayProfileCard:"card",verticalListSortingStrategy:0,closestCenter:0,
+  DndContext:"dnd",SortableContext:"sortable",CxCard:"cx-card",SortableRelayProfileCard:"card",verticalListSortingStrategy:0,closestCenter:0,
   isAggregateRelayProfile:(p:any)=>p.relayMode==="aggregate",normalizeAggregateRelayProfile:(p:any)=>p,
   normalizeAggregateDefaultRelayId,normalizeAggregateMembers,normalizeAggregateRoutes:(v:any)=>v??[],clampAggregateWeight:(v:any)=>v,clampAggregateRoutePriority:(v:any)=>v,
   aggregateStrategyOptions:[{value:"failover"},{value:"conversationRoundRobin"},{value:"requestRoundRobin"},{value:"weightedRoundRobin"}],normalizeRelayModelRoutes:(v:any)=>v??[],

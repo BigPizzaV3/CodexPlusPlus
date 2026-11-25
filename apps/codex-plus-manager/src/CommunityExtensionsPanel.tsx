@@ -88,6 +88,8 @@ export type Prepared = {
   fromDefaultBranch: boolean;
   fromAsset: boolean;
   permissions: Permissions;
+  /** 本机已装着的同 id 包声明的能力（更新、重新安装、替换时有）；没装时为 null。 */
+  previousPermissions?: Permissions | null;
   channel?: Channel;
   conflict: { source: "local" | "github"; repo?: string; channel?: Channel } | null;
 };
@@ -108,8 +110,18 @@ function engineWarning(engine: Entry["engine"]): string {
  * 高：在页面之外以你的用户权限运行，或能看到 / 改写模型请求与工具调用；中：改 Codex 的配置与行为；低：只在页面里。
  * Codex 页内的安装确认框（40-backend-settings.js 的 codexPlusPackagePermissionLines）是同一套文案，改这里要同步改那边。
  */
-export function permissionLines(permissions: Permissions): { risk: "high" | "medium" | "low"; text: string }[] {
-  const lines: { risk: "high" | "medium" | "low"; text: string }[] = [];
+export function permissionLines(permissions: Permissions, previous?: Permissions | null): PermissionLine[] {
+  const lines = describePermissions(permissions);
+  if (!previous) return lines;
+  // 已装着旧版本：按文案逐条比，旧版本没有的就是这一版新增（或改了内容）的能力。
+  const before = new Set(describePermissions(previous).map((line) => line.text));
+  return lines.map((line) => (before.has(line.text) ? line : { ...line, added: true }));
+}
+
+export type PermissionLine = { risk: "high" | "medium" | "low"; text: string; added?: boolean };
+
+function describePermissions(permissions: Permissions): PermissionLine[] {
+  const lines: PermissionLine[] = [];
   const list = (items?: string[]) => (items ?? []).join("、");
   if (permissions.backend) {
     lines.push({ risk: "high", text: tf("常驻后台进程 {0}：可读写本机文件、访问网络", [permissions.backend]) });
@@ -402,7 +414,8 @@ export function CommunityExtensionsPanel({
 export function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Prepared; onCancel: () => void; onInstall: (enable: boolean) => void }) {
   // 装上就启用：大多数人装了就是要用，不想用的可以在这里取消勾选。
   const [enable, setEnable] = useState(true);
-  const lines = permissionLines(prepared.permissions);
+  const lines = permissionLines(prepared.permissions, prepared.previousPermissions);
+  const addedCount = lines.filter((line) => line.added).length;
   // 精选 / 官方拓展审核过，不用危险样式吓人；社区拓展保持红色确认。
   const reviewed = prepared.channel === "official" || prepared.channel === "curated";
   // 已装的官方 / 精选版本不能被社区里同 id 的拓展替换：后端会拒绝（extension_discovery.rs），这里只给「关闭」。
@@ -438,11 +451,18 @@ export function InstallDialog({ prepared, onCancel, onInstall }: { prepared: Pre
           <div className="community-ext-dialog-section">{t("它会获得这些能力：")}</div>
           {lines.length ? (
             <ul className="community-ext-permissions">
-              {lines.map((line, index) => <li data-risk={line.risk} key={index}>{line.text}</li>)}
+              {lines.map((line, index) => (
+                <li data-added={line.added ? "true" : undefined} data-risk={line.risk} key={index}>
+                  {line.added ? <span className="community-ext-permission-added">{t("新增")}</span> : null}{line.text}
+                </li>
+              ))}
             </ul>
           ) : (
             <p className="community-ext-dialog-section">{t("没有声明任何能力。")}</p>
           )}
+          {addedCount ? (
+            <p className="community-ext-dialog-warning">{tf("相比本机已装的版本，这一版新增了 {0} 项能力（上面标了「新增」）。", [addedCount])}</p>
+          ) : null}
           {prepared.conflict ? (
             <p className="community-ext-dialog-warning">
               {blocked

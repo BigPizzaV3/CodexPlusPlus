@@ -8,7 +8,7 @@ window.codexPlus
 
 本文档描述**当前已经可用**的接口。接口版本：`apiVersion = 1`（适配层 `1.2.0`）。
 
-- Claude Desktop 的 Code 本地会话使用独立的 `claudeDesktop` 声明接入按钮、后台工具和会话事件，见 [Claude 适配指南](docs/claude-desktop-extensions.md)。它不注入 `window.codexPlus`，不改变本文的 Codex 接口。
+- 同一个拓展包也能进 Claude Desktop：清单的 `claudeDesktop` 块里声明注入 Claude 页面的脚本和样式（脚本里用的是同名的 `window.codexPlus`，目前是本文接口的一个子集），以及 Code 本地会话里的按钮、后台工具和会话事件。见 [Claude 适配指南](docs/claude-desktop-extensions.md)。用 `codexPlus.host`（Codex 里是 `"codex"`）和 `codexPlus.supports("registerComposerAction")` 判断当前宿主、某个挂载点有没有。
 - 想了解设计取舍与已知限制的来龙去脉，见 [docs/specs/2026-09-30-ui-extension-api-design.md](docs/specs/2026-09-30-ui-extension-api-design.md)
 - 类型声明：起 `types/codex-plus-extensions.d.ts`，在脚本开头加 `/// <reference types="./codex-plus-extensions" />` 即可获得编辑器补全
 
@@ -501,6 +501,8 @@ Codex++ 自己在发请求前也会做几件事（本地压缩、第三方推理
     转给 Codex++ 本机网关那一跳的令牌仍由 Codex++ 带；网关模式的 Anthropic 原生直通改走协议代理链路（直通不经过 upstream 段）。
   - `builtin:official-shaping`：官方登录 / ChatGPT 后端的请求整理（请求体改成 Codex CLI 的样子、UA 与版本头、ChatGPT API 账号的
     请求整理、官方请求自动补 web_search 声明）。关掉后由拓展在 upstream 段整理（上下文 `official: true`）；会话头与官方凭据仍由 Codex++ 处理。
+  - 上面三项（请求转换、鉴权头、官方整理）只在请求一跳到上游时由拓展接手。Codex 经启动器再转给本机网关（两跳）时，
+    拓展的 upstream 段只在外层那一跳跑、拿不到真实上游的 Key，网关这一层仍由 Codex++ 自己做转换和带鉴权头。
   - `builtin:request-log`：请求日志与用量统计。关掉后经代理的请求不再写请求日志、不计入用量，「请求状态条」也看不到进行中的请求；
     要记就在响应流中间件里自己记（`response.completed` 事件带 usage）。
 
@@ -1182,6 +1184,7 @@ user_scripts/
 | `gateway` | 网关请求中间件声明，见上文「网关请求中间件」 |
 | `tools` | 给模型的工具声明，见上文「给模型加工具」 |
 | `config` | 配置项声明，见上文「拓展配置」 |
+| `claudeDesktop` | 这个包在 Claude Desktop 里的部分：`renderer` / `styles` / `methods`（注入 Claude 页面）和 `buttons` / `events` / `tools`（Code 本地会话），见 [Claude 适配指南](docs/claude-desktop-extensions.md)。只写这一项的包也是合法的包 |
 | `permissions.routes` | `ctx.call` 能调的路由，需在[路由白名单](#后端调用与路由白名单)内。这是声明约束而不是安全边界 |
 
 包根目录放一个 `README.md`（也认 `README.zh-CN.md` / `README.zh.md`，中文版优先，不分大小写），Codex「拓展」页面的详情
@@ -1456,6 +1459,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | --- | --- |
 | `/diagnostics/log` | 写一条诊断日志 |
 | `/thread-usage-history` | 读会话用量历史 |
+| `/usage/history` | 读本机用量历史（要先在设置里开启用量历史，没开时返回 `{ status: "unavailable" }`） |
+| `/usage/archive` | 用量历史的封存接口，给按日固定 schema 的消费者用；写入只影响它自己的独立数据库（同样要求开启用量历史） |
 | `/archived-thread` | 读归档会话 |
 | `/export-markdown` | 导出 Markdown |
 | `/user-scripts/list` | 读拓展清单 |
@@ -1463,6 +1468,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/cdp/evaluate` | 在匹配的 Codex 页面执行 JS 表达式 |
 | `/system/cursor-position` | 系统鼠标位置 `{ x, y }`（与 `window.screenX` 同一坐标系，只读；Windows、macOS） |
 | `/agent-pet/catalog`、`/agent-pet/image`、`/agent-pet/sound`、`/agent-pet/import-sound` | Agent 桌宠的图库、图片、音效与导入自定义音效（拓展要在清单 `permissions.routes` 里声明，且启用中才干活） |
+| `/whale/media`、`/whale/full`、`/whale/history`、`/whale/session` | 大肥鱼（Agent 桌宠的一种）的素材、挂件数据与本机用量；条件同 `/agent-pet/*` |
+| `/image-overlay/image` | 读背景图拓展自己配置里的那张本机图片（只读） |
 | `/request-log/recent` | 最近已完成的模型请求 `{ entries }`，按开始时间倒序；`limit` 默认 20、最多 100。每条有 `id`、`model` / `upstreamModel`、`relayName`、`durationMs`、`success`、`statusCode`、`usage.inputTokens` / `outputTokens`、`timestampMs` 等（只读，与托盘「实时请求」同源） |
 | `/proxy-status` | 进行中的模型请求 `{ requests }`，每条有 `id`、`model`、`threadId`、`relayName`、`startedAtMs`、`phase`、`firstTokenMs`、`attempts`、`autoRetries`、`retryReasons`、`estimatedOutputTokens`（只读，与官方拓展包「请求状态条」同源） |
 | `/thread-usage-live` | 会话最近的 token 事件 `{ session_id, events }`，参数同 `/thread-usage-history`。只读 rollout 尾部，可以秒级轮询（只读，与官方拓展包「用量状态栏」同源） |

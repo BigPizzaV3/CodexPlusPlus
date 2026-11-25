@@ -334,7 +334,10 @@
     const name = String(definition?.name || "").trim();
     if (!/^[A-Za-z0-9][\w-]{0,31}$/.test(name)) throw new Error("命令名只能是字母、数字、_、-，最长 32 个字符");
     if (typeof definition?.run !== "function") throw new Error(`命令 /${name} 必须提供 run(args, context)`);
-    const dispose = codexPlusRegisterExtensionItem("command", codexPlusRegistry.commands, { ...definition, name }, { ...options, id: options.id || `cmd-${name}` });
+    // 多实例（清单 instances）时默认 id 也带实例后缀，规则同内核的 registerOptions：<id>@<实例 id>；
+    // 否则第二个实例撞上「id 已被占用」。同名命令仍是先注册的生效。
+    const defaultId = `cmd-${name}${options.instanceId ? `@${options.instanceId}` : ""}`;
+    const dispose = codexPlusRegisterExtensionItem("command", codexPlusRegistry.commands, { ...definition, name }, { ...options, id: options.id || defaultId });
     installCodexPlusCommandHandlers();
     return dispose;
   }

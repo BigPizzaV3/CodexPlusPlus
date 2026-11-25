@@ -166,6 +166,17 @@ interface CodexPlusExtensionApi {
   readonly version: string;
   /** 接口契约版本。后端契约变化时增加，脚本可据此提示用户升级。 */
   readonly apiVersion: number;
+  /**
+   * 当前宿主：Codex 里是 `"codex"`，Claude Desktop 里（清单的 `claudeDesktop.renderer`）是 `"claudeDesktop"`。
+   * 老版本没有这个成员，判断时写 `codexPlus.host ?? "codex"`。
+   */
+  readonly host: "codex" | "claudeDesktop";
+  /**
+   * 某个接口 / 挂载点在当前宿主可不可用，例如 `supports("registerComposerAction")`、
+   * `supports("registerSlot:composer.above")`。Claude Desktop 里有些挂载点没有对应位置：注册它们不会报错，
+   * 只是不出现；要按有没有来走不同的路时先问这里。
+   */
+  supports(name: string): boolean;
   /** 当前脚本的标识，形如 `user:my-script.js`；拓展包附带清单，单文件脚本为 null。 */
   readonly script: { readonly key: string; readonly manifest: CodexPlusExtensionManifest | null };
 
@@ -802,6 +813,8 @@ interface CodexPlusManagerPanelApi {
   data(name: "requestFlow" | "requestLogs" | "gatewayUsage" | "localSessions", params?: Record<string, unknown>): Promise<unknown>;
   /** 跳到管理器的另一个页面：路由 id（如 "hub"），或 "ext:<拓展 key>" 打开另一个拓展页面。 */
   navigate(target: string): Promise<null>;
+  /** 调本拓展清单 `permissions.routes` 声明过、且开放给拓展页面的 Codex++ 数据路由（目前是 `/agent-pet/*`）。 */
+  call<T = unknown>(route: string, payload?: Record<string, unknown>): Promise<T>;
 }
 
 interface Window {
