@@ -31,6 +31,9 @@
 若仅有日汇总，或原会话回读无法核对成员，则为 `unavailable`，并省略这两个字段。
 只展示用量的调用方可传 `includeFingerprints: false`，避免为完整日期重新读取逐笔记录。
 分组的 `providerName` 来自同一响应的 `providerNames`，查不到名称时为 `null`。
+未按会话、轮次、模型或关键字筛选的查询，可用 `includeLegacySummary: true`
+读取本机已有的旧版日摘要。`legacyDays` 是独立的部分覆盖结果，不计入原生 `days`，
+也不提供逐笔指纹或分时明细。
 分段基线修正会改变受影响历史范围的计数和指纹；响应格式、计量单位不变，
 因此仍返回 `accountingVersion:2`。调用方应按新指纹替换旧结果，而非叠加。
 

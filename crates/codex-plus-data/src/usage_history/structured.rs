@@ -2126,6 +2126,7 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
         processing,
         archived.as_deref(),
     );
+    super::legacy_summary::attach(&mut response, &storage, options, request);
     if let Some(key) = schedule
         && let Ok(mut state) = cache.lock()
         && !state.archive.cancelled.load(Ordering::Relaxed)

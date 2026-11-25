@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, Metadata};
 use std::path::Path;
 
+mod legacy_summary;
 mod structured;
 
 const TOKEN_INDEX_DB: &str = "usage-token-index.sqlite";
