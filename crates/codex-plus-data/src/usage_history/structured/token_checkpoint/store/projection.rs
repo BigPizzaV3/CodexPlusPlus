@@ -50,6 +50,7 @@ pub(in super::super) struct Prepared<'a> {
     append: bool,
     linear: Option<NativeTail>,
     superseded: Vec<SupersededReceipt>,
+    receipt_origins: HashMap<[u8; 32], Counter>,
     events: Vec<UsageEvent>,
 }
 
@@ -263,9 +264,19 @@ fn local_midnight(time: DateTime<Local>) -> bool {
         && Local.from_local_datetime(&time.naive_local()).single() == Some(time)
 }
 
-fn retract_append_proofs(db: &Connection, first: &UsageEvent) -> Result<BTreeSet<NaiveDate>> {
+fn retract_append_proofs(
+    db: &Connection,
+    first: &UsageEvent,
+    correction: bool,
+) -> Result<BTreeSet<NaiveDate>> {
     let at = DateTime::parse_from_rfc3339(&first.timestamp)?.timestamp_millis();
     let lower = at.saturating_sub(2 * DELAYED_REQUEST_MATCH_WINDOW_MS);
+    let upper = if correction {
+        at.saturating_add(2 * DELAYED_REQUEST_MATCH_WINDOW_MS)
+            .saturating_add(1)
+    } else {
+        at
+    };
     let mut days = BTreeSet::new();
     let mut retracted = Vec::new();
     {
@@ -276,7 +287,7 @@ fn retract_append_proofs(db: &Connection, first: &UsageEvent) -> Result<BTreeSet
              AND day >= (SELECT precise_from FROM token_revision)
              AND json_type(CAST(payload AS TEXT), '$.classification_origin') = 'object'",
         )?;
-        let mut rows = select.query(params![first.session, lower, at])?;
+        let mut rows = select.query(params![first.session, lower, upper])?;
         while let Some(row) = rows.next()? {
             let id: [u8; 32] = row.get_ref(0)?.as_blob()?.try_into()?;
             let mut stored: Observation = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
@@ -284,10 +295,13 @@ fn retract_append_proofs(db: &Connection, first: &UsageEvent) -> Result<BTreeSet
                 .classification_origin
                 .take()
                 .context("missing classification origin")?;
+            let receipt_origin = stored.receipt_count_origin;
             let mut event = stored.into_event(id, first.session.clone())?;
             origin.apply(&mut event);
             days.insert(event.date);
-            retracted.push((id, serde_json::to_vec(&Observation::capture(&event))?));
+            let mut restored = Observation::capture(&event);
+            restored.receipt_count_origin = receipt_origin;
+            retracted.push((id, serde_json::to_vec(&restored)?));
         }
     }
     if retracted.is_empty() {
@@ -349,6 +363,134 @@ fn linear_batch<'a>(
 
 type SupersededReceipt = ([u8; 32], NaiveDate);
 
+fn correct_sealed_counters(
+    read: &Connection,
+    tail: &UsageEvent,
+    cutoff: NaiveDate,
+    incoming: &[&UsageEvent],
+    mut budget: usize,
+) -> Result<Option<Vec<(UsageEvent, Option<Counter>)>>> {
+    let mut targets = BTreeMap::<_, (Observation, Vec<&UsageEvent>)>::new();
+    let cutoff = cutoff.to_string();
+    for &receipt in incoming {
+        let last = receipt.last.expect("terminal receipt has last usage");
+        let same_tail = (tail.total.input_tokens, tail.total.output_tokens)
+            == (receipt.total.input_tokens, receipt.total.output_tokens);
+        let payload = if same_tail {
+            read.query_row(
+                "SELECT event_id, payload FROM token_resolved WHERE event_id = ?1 AND day >= ?2",
+                params![tail.id.as_slice(), cutoff],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?
+        } else {
+            // A certified stream has at most one counter with these cumulative totals.
+            let at = DateTime::parse_from_rfc3339(&receipt.timestamp)?.timestamp_millis();
+            read.query_row(
+                "SELECT event_id, payload FROM token_resolved INDEXED BY token_resolved_time
+                 WHERE timestamp_ms BETWEEN ?1 AND ?2 AND day >= ?3
+                   AND session_id = (SELECT id FROM token_sessions WHERE session = ?4)
+                   AND json_type(CAST(payload AS TEXT), '$.terminal_response') IS NULL
+                   AND json_extract(CAST(payload AS TEXT), '$.turn') = ?5
+                   AND CAST(payload AS TEXT) -> '$.total.i' = ?6
+                   AND CAST(payload AS TEXT) -> '$.total.o' = ?7
+                   AND CAST(payload AS TEXT) -> '$.last.i' = ?8
+                   AND CAST(payload AS TEXT) -> '$.last.o' = ?9",
+                params![
+                    at.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS),
+                    at.saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS),
+                    cutoff,
+                    tail.session,
+                    receipt.turn,
+                    receipt.total.input_tokens.to_string(),
+                    receipt.total.output_tokens.to_string(),
+                    last.input_tokens.to_string(),
+                    last.output_tokens.to_string(),
+                ],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?
+        };
+        let Some((id, payload)) = payload else {
+            return Ok(None);
+        };
+        budget = budget
+            .checked_sub(payload.len())
+            .context("Token counter corrections exceed reconciliation input budget")?;
+        let id: [u8; 32] = id.as_slice().try_into()?;
+        let target = serde_json::from_slice::<Observation>(&payload)?;
+        if target.turn != receipt.turn
+            || !target.last.is_some_and(|counter| {
+                (counter.0.input_tokens, counter.0.output_tokens)
+                    == (last.input_tokens, last.output_tokens)
+            })
+        {
+            return Ok(None);
+        }
+        let (_, receipts) = targets.entry(id).or_insert_with(|| (target, Vec::new()));
+        receipts.push(receipt);
+    }
+    let mut corrected = Vec::new();
+    let mut claims = read.prepare_cached(
+        "SELECT 1 FROM token_observations INDEXED BY token_terminal_claim
+         WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+           AND json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text'
+           AND json_extract(CAST(payload AS TEXT), '$.turn') = ?2
+           AND CAST(payload AS TEXT) -> '$.total.i' = ?3
+           AND CAST(payload AS TEXT) -> '$.total.o' = ?4
+           AND CAST(payload AS TEXT) -> '$.last.i' = ?5
+           AND CAST(payload AS TEXT) -> '$.last.o' = ?6
+           AND json_extract(CAST(payload AS TEXT), '$.date') >= ?7 LIMIT 1",
+    )?;
+    for (id, (mut stored, receipts)) in targets {
+        let receipt = receipts[0];
+        let last = receipt.last.expect("terminal receipt has last usage");
+        let had_claim = claims.exists(params![
+            tail.session,
+            receipt.turn,
+            receipt.total.input_tokens.to_string(),
+            receipt.total.output_tokens.to_string(),
+            last.input_tokens.to_string(),
+            last.output_tokens.to_string(),
+            cutoff,
+        ])?;
+        let before = stored.delta.0;
+        let old_origin = stored.receipt_count_origin;
+        let native = match old_origin {
+            Some(base) => base.0,
+            None if had_claim => {
+                // An index from before origin persistence may already contain an overlay.
+                if id != tail.id
+                    || !terminal_receipts::wholly_accounted_in_batch(
+                        std::slice::from_ref(receipt),
+                        std::slice::from_ref(tail),
+                    )
+                {
+                    return Ok(None);
+                }
+                continue;
+            }
+            None => before,
+        };
+        let classification = stored.classification_origin.take();
+        let mut event = stored.into_event(id, tail.session.clone())?;
+        if let Some(origin) = classification {
+            origin.apply(&mut event);
+        }
+        event.delta = native;
+        let added = !had_claim
+            && receipts.len() == 1
+            && terminal_receipts::apply_receipt_counts(&mut event, receipt);
+        if event.delta != before {
+            corrected.push((
+                event,
+                old_origin.or_else(|| added.then_some(Counter(native))),
+            ));
+        }
+    }
+    Ok(Some(corrected))
+}
+
 fn reconcile_append_receipts(
     read: &Connection,
     tail: &UsageEvent,
@@ -356,6 +498,7 @@ fn reconcile_append_receipts(
     counters: &mut Vec<UsageEvent>,
     incoming: &[&UsageEvent],
     provider_names: &BTreeMap<String, String>,
+    origins: &mut HashMap<[u8; 32], Counter>,
     mut remaining: usize,
 ) -> Result<Option<Vec<SupersededReceipt>>> {
     if counters.is_empty() && incoming.is_empty() {
@@ -386,18 +529,13 @@ fn reconcile_append_receipts(
         open.push(event);
     }
     let mut candidates = open.iter().collect::<Vec<_>>();
+    let mut sealed = Vec::new();
     for &receipt in incoming {
         if receipt.session != tail.session || receipt.date < cutoff {
             return Ok(None);
         }
         if tail.total.is_monotonic_after(receipt.total) {
-            // 只接受不会改变已提交原生尾记录的迟到回执。
-            if !terminal_receipts::wholly_accounted_in_batch(
-                std::slice::from_ref(receipt),
-                std::slice::from_ref(tail),
-            ) {
-                return Ok(None);
-            }
+            sealed.push(receipt);
         } else if !receipt.total.is_monotonic_after(tail.total) {
             return Ok(None);
         } else {
@@ -414,13 +552,16 @@ fn reconcile_append_receipts(
     {
         return Ok(None);
     }
-    if candidates.is_empty() {
-        return Ok(Some(Vec::new()));
-    }
     let latest = counters.last().unwrap_or(tail).total;
-    counters.insert(0, tail.clone());
-    terminal_receipts::reconcile(candidates.iter().copied(), counters, provider_names);
-    counters.remove(0);
+    if !candidates.is_empty() {
+        counters.insert(0, tail.clone());
+        origins.extend(
+            terminal_receipts::reconcile(candidates.iter().copied(), counters, provider_names)
+                .into_iter()
+                .map(|(id, native)| (id, Counter(native))),
+        );
+        counters.remove(0);
+    }
     let mut emitted = HashSet::new();
     for event in counters
         .iter()
@@ -441,12 +582,25 @@ fn reconcile_append_receipts(
     }
     let previous: HashSet<_> = open.iter().map(|event| event.id).collect();
     counters.retain(|event| !previous.contains(&event.id));
-    Ok(Some(
-        open.into_iter()
-            .filter(|event| !emitted.contains(&event.id))
-            .map(|event| (event.id, event.date))
-            .collect(),
-    ))
+    let mut superseded: Vec<_> = open
+        .into_iter()
+        .filter(|event| !emitted.contains(&event.id))
+        .map(|event| (event.id, event.date))
+        .collect();
+    if !sealed.is_empty() {
+        let Some(corrected) = correct_sealed_counters(read, tail, cutoff, &sealed, remaining)?
+        else {
+            return Ok(None);
+        };
+        for (event, base) in corrected {
+            superseded.push((event.id, event.date));
+            if let Some(base) = base {
+                origins.insert(event.id, base);
+            }
+            counters.push(event);
+        }
+    }
+    Ok(Some(superseded))
 }
 
 impl Store {
@@ -566,6 +720,7 @@ impl Store {
                     } else {
                         NativeTail::Advance
                     };
+                    let mut receipt_origins = HashMap::new();
                     if state.previous == Some(previous)
                         && let Some(superseded) = reconcile_append_receipts(
                             &read,
@@ -574,6 +729,7 @@ impl Store {
                             &mut events,
                             &incoming,
                             &index.provider_names,
+                            &mut receipt_origins,
                             input_limit.saturating_sub(bytes),
                         )?
                     {
@@ -588,6 +744,7 @@ impl Store {
                             append: true,
                             linear: Some(linear),
                             superseded,
+                            receipt_origins,
                             events,
                         });
                     }
@@ -707,7 +864,10 @@ impl Store {
         index.resolve_counts(&mut snapshot);
         let linear = linear_candidate
             && terminal_receipts::wholly_accounted_in_batch(&state.events, &snapshot.events);
-        terminal_receipts::project(&index, &mut snapshot);
+        let receipt_origins = terminal_receipts::project(&index, &mut snapshot)
+            .into_iter()
+            .map(|(id, native)| (id, Counter(native)))
+            .collect();
         snapshot.events.retain(|event| {
             event.delta.total_tokens > 0
                 || event.count_uncertain
@@ -723,6 +883,7 @@ impl Store {
             append: false,
             linear: linear.then_some(NativeTail::Advance),
             superseded: Vec::new(),
+            receipt_origins,
             events: snapshot.events,
         })
     }
@@ -771,11 +932,20 @@ impl Store {
                 rebuilt.insert(*day);
             }
         }
-        if prepared.append
-            && let Some(first) = prepared.events.iter().min_by_key(|event| &event.timestamp)
-        {
+        if prepared.append {
+            let previous: HashSet<_> = prepared.superseded.iter().map(|(id, _)| *id).collect();
+            let mut first_new: Option<&UsageEvent> = None;
+            for event in &prepared.events {
+                if previous.contains(&event.id) {
+                    rebuilt.extend(retract_append_proofs(&tx, event, true)?);
+                } else if first_new.is_none_or(|first| event.timestamp < first.timestamp) {
+                    first_new = Some(event);
+                }
+            }
             // A newly committed competitor can make a nearby request non-unique.
-            rebuilt.extend(retract_append_proofs(&tx, first)?);
+            if let Some(first) = first_new {
+                rebuilt.extend(retract_append_proofs(&tx, first, false)?);
+            }
         }
         let mut days = BTreeMap::new();
         if !rebuilt.is_empty() {
@@ -895,12 +1065,14 @@ impl Store {
                 "INSERT INTO token_resolved VALUES (?1, (SELECT id FROM token_sessions WHERE session = ?2), ?3, ?4, ?5)",
             )?;
             for event in &prepared.events {
+                let mut stored = Observation::capture(event);
+                stored.receipt_count_origin = prepared.receipt_origins.get(&event.id).copied();
                 insert.execute(params![
                     event.id.as_slice(),
                     event.session,
                     DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis(),
                     event.date.to_string(),
-                    serde_json::to_vec(&Observation::capture(event))?
+                    serde_json::to_vec(&stored)?
                 ])?;
             }
             let mut insert_day = tx.prepare(
@@ -996,13 +1168,14 @@ impl Store {
                     .context("Token classification exceeds session input budget")?;
                 let stored: Observation = serde_json::from_slice(bytes)?;
                 let origin = stored.classification_origin.clone();
+                let receipt_origin = stored.receipt_count_origin;
                 let event = stored
                     .into_event(row.get_ref(0)?.as_blob()?.try_into()?, session.to_owned())?;
                 let mut candidate = event.clone();
                 if let Some(origin) = &origin {
                     origin.apply(&mut candidate);
                 }
-                previous.push((event, origin));
+                previous.push((event, origin, receipt_origin));
                 candidates.push(candidate);
             }
         }
@@ -1010,7 +1183,7 @@ impl Store {
         classify(&mut candidates, &scope.aliases)?;
         let mut changed = Vec::new();
         let mut changed_days = BTreeMap::<NaiveDate, Groups>::new();
-        for ((event, origin), candidate) in previous.iter_mut().zip(candidates) {
+        for ((event, origin, receipt_origin), candidate) in previous.iter_mut().zip(candidates) {
             let prior = EventClassification::of(event);
             let next = EventClassification::of(&candidate);
             if prior != next {
@@ -1018,6 +1191,7 @@ impl Store {
                 next.apply(event);
                 let mut stored = Observation::capture(event);
                 stored.classification_origin = (native != next).then_some(native);
+                stored.receipt_count_origin = *receipt_origin;
                 changed.push((event.id, serde_json::to_vec(&stored)?));
                 changed_days.entry(event.date).or_default();
             }
@@ -1025,7 +1199,7 @@ impl Store {
         if changed.is_empty() {
             return Ok(None);
         }
-        for (event, _) in &previous {
+        for (event, _, _) in &previous {
             if let Some(groups) = changed_days.get_mut(&event.date) {
                 groups
                     .entry(group_key(event))

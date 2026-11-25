@@ -1,5 +1,5 @@
 use super::ingest::SourceReader;
-use super::store::{Store, projection::SourceUpdate};
+use super::store::{Coverage, Store, projection::SourceUpdate};
 use crate::usage_history::Query;
 use crate::usage_history::structured::{FileState, UsageEvent, index_budget::Budget};
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
@@ -502,6 +502,136 @@ fn delayed_counters_replace_committed_receipts_without_reloading_the_long_prefix
             .days
     );
     assert_eq!(days[0]["usage"]["totalTokens"], 67 * 110);
+}
+
+#[test]
+fn late_receipt_repairs_a_sealed_counter_and_competition_revokes_only_its_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let source = home.join("rollout-sealed.jsonl");
+    let db = home.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let base = DateTime::parse_from_rfc3339("2026-01-02T12:00:00Z").unwrap();
+    let at = |second| (base + chrono::Duration::seconds(second)).to_rfc3339();
+    let usage = |n| json!({"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n});
+    let mut input = vec![
+        json!({"type":"session_meta","timestamp":at(0),"payload":{"id":PARENT,"model_provider":"supplier-a"}}),
+        json!({"type":"turn_context","timestamp":at(0),"payload":{"turn_id":"same-turn","model":"fixture"}}),
+    ];
+    for n in 1..=66 {
+        let mut last = usage(1);
+        let mut total = usage(n);
+        if n == 65 {
+            last.as_object_mut().unwrap().remove("cached_input_tokens");
+            total.as_object_mut().unwrap().remove("cached_input_tokens");
+        }
+        input.push(
+            json!({"type":"event_msg","timestamp":at(n),"payload":{"type":"token_count",
+            "info":{"last_token_usage":last,"total_token_usage":total}}}),
+        );
+    }
+    let initial = parse(&source, &input, cutoff);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let staged = store
+        .prepare(
+            new_source(&source, &initial),
+            cutoff,
+            BTreeMap::new(),
+            1 << 20,
+        )
+        .unwrap();
+    let native_revision = store.publish(staged).unwrap();
+    let size: usize = store
+        .db
+        .query_row(
+            "SELECT sum(length(payload)) FROM token_observations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    const BUDGET: usize = 8192;
+    assert!(size > BUDGET);
+    let native = read(&mut store.db, i64::MIN, i64::MAX).1;
+    assert!(!native[64].delta.cached_known);
+    assert!(native[65].delta.cached_known);
+    drop(store);
+
+    for n in 1..=3 {
+        let receipt = json!({"type":"token_usage_record","timestamp":at(66+n),
+            "payload":{"thread_id":PARENT,"turn_id":"same-turn","response_id":format!("claim-{n}"),
+                       "usage":usage(1),"thread_token_usage":usage(65)}});
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&source).unwrap(),
+            "{receipt}"
+        )
+        .unwrap();
+        input.push(receipt);
+        let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+        let mut reader = SourceReader::restore(&store, &source).unwrap();
+        assert!(
+            reader
+                .step(
+                    &mut store,
+                    cutoff,
+                    &mut Budget::new(std::iter::empty()),
+                    &BTreeMap::new(),
+                    BUDGET
+                )
+                .unwrap()
+        );
+        let certificate: i64 = store
+            .db
+            .query_row("SELECT revision FROM token_linear_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(certificate, native_revision);
+        let actual = read(&mut store.db, i64::MIN, i64::MAX).1;
+        assert_eq!(actual.len(), 66);
+        assert_eq!(actual[64].id, native[64].id);
+        assert_eq!(actual[64].delta.total_tokens, 110);
+        assert_eq!(actual[64].delta.cached_known, n == 1);
+        let mut replay = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        let copy = home.join("rollout-replay.jsonl");
+        let full = parse(&copy, &input, cutoff);
+        let staged = replay
+            .prepare(new_source(&copy, &full), cutoff, BTreeMap::new(), 1 << 20)
+            .unwrap();
+        replay.publish(staged).unwrap();
+        assert!(actual == read(&mut replay.db, i64::MIN, i64::MAX).1);
+        let query = Query::parse(&json!({}), cutoff).unwrap();
+        let daily = Store::read_selection(&mut store.db, &query, None, None)
+            .unwrap()
+            .days;
+        assert_eq!(
+            daily,
+            Store::read_selection(&mut replay.db, &query, None, None)
+                .unwrap()
+                .days
+        );
+        assert_eq!(daily[0]["usage"]["totalTokens"], 66 * 110);
+        if n == 1 {
+            store
+                .record_coverage(Coverage {
+                    pending_sources: 0,
+                    issues: 0,
+                    maintenance_blocked: false,
+                })
+                .unwrap();
+            assert!(
+                store
+                    .reclassify_session(PARENT, 1 << 20, &BTreeSet::new(), |rows, _| {
+                        for row in &mut rows[64..] {
+                            row.provider = "fixture-proof".into();
+                            row.provider_source = Some("request-log-exact".into());
+                        }
+                        Ok(())
+                    })
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
 }
 
 #[test]

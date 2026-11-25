@@ -89,6 +89,8 @@ struct Observation {
     context_conflicts: ContextConflicts,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     classification_origin: Option<EventClassification>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    receipt_count_origin: Option<Counter>,
 }
 
 impl Observation {
@@ -116,6 +118,7 @@ impl Observation {
             legacy_identity: event.legacy_identity.clone(),
             context_conflicts: event.context_conflicts,
             classification_origin: None,
+            receipt_count_origin: None,
         }
     }
 

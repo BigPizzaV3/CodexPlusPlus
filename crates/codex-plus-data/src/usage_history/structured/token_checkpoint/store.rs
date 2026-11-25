@@ -99,6 +99,11 @@ impl Store {
              CREATE INDEX IF NOT EXISTS token_terminal_response_identity
                 ON token_observations(event_id)
                 WHERE json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text';
+             CREATE INDEX IF NOT EXISTS token_terminal_claim
+                ON token_observations(session_id,
+                   json_extract(CAST(payload AS TEXT), '$.turn'),
+                   CAST(payload AS TEXT) -> '$.total.i', CAST(payload AS TEXT) -> '$.total.o')
+                WHERE json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text';
              CREATE TABLE IF NOT EXISTS token_source_links (
                 source_id INTEGER NOT NULL REFERENCES token_sources(id),
                 link TEXT NOT NULL,

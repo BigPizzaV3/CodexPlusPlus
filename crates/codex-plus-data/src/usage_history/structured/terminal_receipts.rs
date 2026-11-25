@@ -139,7 +139,7 @@ pub(super) fn wholly_accounted_in_batch(raw: &[UsageEvent], projected: &[UsageEv
         })
 }
 
-pub(super) fn project(index: &Index, snapshot: &mut Snapshot) {
+pub(super) fn project(index: &Index, snapshot: &mut Snapshot) -> HashMap<[u8; 32], Tokens> {
     reconcile(
         index
             .files
@@ -148,7 +148,7 @@ pub(super) fn project(index: &Index, snapshot: &mut Snapshot) {
             .flat_map(|state| &state.events),
         &mut snapshot.events,
         &index.provider_names,
-    );
+    )
 }
 
 pub(super) fn unique_claims<'a>(mut receipts: impl Iterator<Item = &'a UsageEvent>) -> bool {
@@ -160,7 +160,8 @@ pub(super) fn reconcile<'a>(
     observations: impl Iterator<Item = &'a UsageEvent>,
     events: &mut Vec<UsageEvent>,
     provider_names: &BTreeMap<String, String>,
-) {
+) -> HashMap<[u8; 32], Tokens> {
+    let mut origins = HashMap::new();
     let mut receipts = BTreeMap::<_, (UsageEvent, bool)>::new();
     for event in observations.filter(|event| event.terminal_response.is_some()) {
         receipts
@@ -177,7 +178,7 @@ pub(super) fn reconcile<'a>(
             .or_insert_with(|| (event.clone(), false));
     }
     if receipts.is_empty() {
-        return;
+        return origins;
     }
     let mut matches = HashMap::new();
     let mut latest = HashMap::<&str, (&str, Tokens)>::new();
@@ -223,24 +224,11 @@ pub(super) fn reconcile<'a>(
     for (receipt, conflict, paired, after_last_counter) in decisions {
         if let Some(i) = paired {
             let event = &mut events[i];
-            if !conflict
-                && claims[&i] == 1
-                && !event.count_uncertain
-                && !event.count_incomplete
-                && close_in_time(receipt, event)
-                && !event.context_conflicts.turn
-                && compatible(event.total, receipt.total)
-                && event
-                    .last
-                    .is_some_and(|last| compatible(last, receipt.delta))
-                && compatible(event.delta, receipt.delta)
-            {
-                event.delta.cached_input_tokens = receipt.delta.cached_input_tokens;
-                event.delta.cached_known = true;
-                event.delta.reasoning_output_tokens = event
-                    .delta
-                    .reasoning_output_tokens
-                    .or(receipt.delta.reasoning_output_tokens);
+            if !conflict && claims[&i] == 1 {
+                let native = event.delta;
+                if apply_receipt_counts(event, receipt) {
+                    origins.insert(event.id, native);
+                }
             }
             continue;
         }
@@ -262,4 +250,29 @@ pub(super) fn reconcile<'a>(
         event.provider = usage_provider(&event.model, &event.provider, provider_names).to_owned();
         events.push(event);
     }
+    origins
+}
+
+pub(super) fn apply_receipt_counts(event: &mut UsageEvent, receipt: &UsageEvent) -> bool {
+    if signature(event) != signature(receipt)
+        || event.count_uncertain
+        || event.count_incomplete
+        || !close_in_time(receipt, event)
+        || event.context_conflicts.turn
+        || !compatible(event.total, receipt.total)
+        || !event
+            .last
+            .is_some_and(|last| compatible(last, receipt.delta))
+        || !compatible(event.delta, receipt.delta)
+    {
+        return false;
+    }
+    let native = event.delta;
+    event.delta.cached_input_tokens = receipt.delta.cached_input_tokens;
+    event.delta.cached_known = true;
+    event.delta.reasoning_output_tokens = event
+        .delta
+        .reasoning_output_tokens
+        .or(receipt.delta.reasoning_output_tokens);
+    event.delta != native
 }
