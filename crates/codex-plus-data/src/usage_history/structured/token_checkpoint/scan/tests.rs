@@ -159,6 +159,64 @@ fn growing_live_source_refreshes_while_historical_queue_advances() {
 }
 
 #[test]
+fn legacy_encoding_yields_to_growing_live_source_with_a_backlog() -> anyhow::Result<()> {
+    use std::io::Write;
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    let archives = root.join("archived_sessions");
+    fs::create_dir(&sessions)?;
+    fs::create_dir(&archives)?;
+    let history = archives.join("rollout-history.jsonl");
+    let live = sessions.join("rollout-live.jsonl");
+    fs::write(&history, rollout(FIRST))?;
+    fs::write(&live, rollout(SECOND))?;
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut scan = Scan::default();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    store.db.execute("DELETE FROM token_linear_sources", [])?;
+    store.db.execute(
+        "WITH RECURSIVE n(i) AS (VALUES (1) UNION ALL SELECT i+1 FROM n WHERE i<768)
+         INSERT INTO token_observations
+         SELECT o.source_id,o.revision,o.position+n.i,o.session_id,o.event_id,
+                CAST(json_set(CAST(o.payload AS TEXT),'$.legacy_identity',NULL) AS BLOB)
+         FROM token_observations o JOIN token_sessions s ON s.id=o.session_id CROSS JOIN n
+         WHERE s.session=?1",
+        [FIRST],
+    )?;
+    for path in [&history, &live] {
+        writeln!(
+            fs::OpenOptions::new().append(true).open(path)?,
+            "{{\"type\":\"turn_context\",\"payload\":{{\"model\":\"next\"}}}}"
+        )?;
+    }
+    let mut reader = SourceReader::restore(&store, &history)?;
+    assert!(!reader.step(
+        &mut store,
+        cutoff,
+        &mut Budget::new(std::iter::empty()),
+        &names,
+        8192
+    )?);
+    assert!(reader.encoding_pending());
+    scan.deferred = Some(reader);
+    for n in 0..2 * SOURCES_PER_ROUND {
+        let path = archives.join(format!("rollout-empty-{n}.jsonl"));
+        fs::File::create(&path)?;
+        scan.remaining.push_back(path);
+    }
+    let next = scan.round(&mut store, &root, cutoff, &names, 8192);
+    assert!(next.errors.is_empty() && next.pending_sources > 0);
+    assert_eq!(
+        store.checkpoint(&live)?.unwrap().1.offset,
+        fs::metadata(live)?.len()
+    );
+    Ok(())
+}
+
+#[test]
 fn source_round_limits_work_and_reports_unfinished_discovery_queue() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

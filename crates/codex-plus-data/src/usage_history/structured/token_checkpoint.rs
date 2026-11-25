@@ -82,9 +82,11 @@ struct Observation {
     count_pending: bool,
     rollout_position: Option<(u64, u64, u64)>,
     provider: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     provider_source: Option<String>,
     role: String,
     inherited: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     legacy_identity: Option<Box<LegacyIdentity>>,
     context_conflicts: ContextConflicts,
     #[serde(default, skip_serializing_if = "Option::is_none")]

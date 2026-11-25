@@ -23,6 +23,17 @@ use std::path::{Path, PathBuf};
 
 mod prefix;
 
+#[derive(Debug)]
+pub(in super::super) struct ComponentInputLimit;
+
+impl std::fmt::Display for ComponentInputLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Token component exceeds reconciliation input budget")
+    }
+}
+
+impl std::error::Error for ComponentInputLimit {}
+
 pub(super) fn links(path: &Path, state: &FileState, include_contexts: bool) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
     for session in std::iter::once(&state.session)
@@ -1090,9 +1101,9 @@ impl Store {
                 read.prepare("SELECT 1 FROM token_collisions WHERE id = ?1")?;
             let mut remaining = input_limit;
             let charge = |remaining: &mut usize, bytes: usize| -> Result<()> {
-                *remaining = remaining.checked_sub(bytes).ok_or_else(|| {
-                    anyhow::anyhow!("Token component exceeds reconciliation input budget")
-                })?;
+                *remaining = remaining
+                    .checked_sub(bytes)
+                    .ok_or_else(|| anyhow::Error::new(ComponentInputLimit))?;
                 Ok(())
             };
             let (offset, checkpoint) = Checkpoint::capture(state);

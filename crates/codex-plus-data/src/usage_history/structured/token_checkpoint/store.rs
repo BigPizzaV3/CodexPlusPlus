@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub(super) mod archive;
 pub(super) mod executions;
+pub(super) mod observation_encoding;
 pub(super) mod projection;
 pub(super) mod replicas;
 
@@ -100,6 +101,10 @@ impl Store {
                 payload BLOB NOT NULL,
                 PRIMARY KEY (source_id, revision, position)
              ) WITHOUT ROWID, STRICT;
+             CREATE TABLE IF NOT EXISTS token_observation_encoding (
+                source_id INTEGER PRIMARY KEY REFERENCES token_sources(id) ON DELETE CASCADE,
+                revision INTEGER NOT NULL, position INTEGER NOT NULL
+             ) STRICT;
              CREATE INDEX IF NOT EXISTS token_terminal_response_identity
                 ON token_observations(event_id)
                 WHERE json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text';

@@ -134,7 +134,11 @@ impl Scan {
             // One revisit may use a normal slot after the history queue has had its turn.
             if slot == 1
                 && backlogged
-                && self.remaining.len() < queued
+                && (self.remaining.len() < queued
+                    || self
+                        .deferred
+                        .as_ref()
+                        .is_some_and(SourceReader::encoding_pending))
                 && !self.remaining.is_empty()
                 && !self.live.is_empty()
                 && self.active.is_none()
@@ -330,6 +334,13 @@ impl Scan {
                                 .clone();
                             self.live.remove(&oldest);
                         }
+                    }
+                }
+                Ok(false) if reader.encoding_pending() => {
+                    if self.deferred.is_none() {
+                        self.deferred = Some(reader);
+                    } else {
+                        verify_later.push(reader.source);
                     }
                 }
                 Ok(false)

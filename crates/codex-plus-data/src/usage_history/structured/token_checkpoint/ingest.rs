@@ -1,9 +1,20 @@
-use super::store::{Store, projection::SourceUpdate};
+use super::store::{
+    Store,
+    observation_encoding::Batch,
+    projection::{ComponentInputLimit, SourceUpdate},
+};
 use crate::usage_history::structured::{FileState, index_budget::Budget};
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+enum Encoding {
+    Idle,
+    Compacting(i64),
+    Retry,
+    Exhausted,
+}
 
 // 一份在读来源只保留当前批次。发生写入错误时下一轮重试同一批。
 pub(super) struct SourceReader {
@@ -14,6 +25,7 @@ pub(super) struct SourceReader {
     committed_complete: bool,
     replacing: bool,
     ready: Option<bool>,
+    encoding: Encoding,
 }
 
 impl SourceReader {
@@ -31,6 +43,7 @@ impl SourceReader {
             revision,
             replacing: false,
             ready: None,
+            encoding: Encoding::Idle,
         })
     }
 
@@ -44,7 +57,11 @@ impl SourceReader {
     }
 
     pub(super) fn can_retry_write(&self) -> bool {
-        self.ready.is_some()
+        self.ready.is_some() && !matches!(self.encoding, Encoding::Exhausted)
+    }
+
+    pub(super) fn encoding_pending(&self) -> bool {
+        matches!(self.encoding, Encoding::Compacting(_) | Encoding::Retry)
     }
 
     pub(super) fn has_count_gap(&self) -> bool {
@@ -71,6 +88,20 @@ impl SourceReader {
             let compressed = self.source.extension().is_some_and(|ext| ext == "zst");
             if self.state.source_replaced(stamp, compressed) {
                 *self = Self::restore(store, &self.source)?;
+            }
+        }
+        if let Encoding::Compacting(revision) = self.encoding {
+            match store.compact_source_observations(
+                &self.source,
+                revision,
+                &mut budget.read_left,
+            )? {
+                Batch::More => (),
+                Batch::Finished { .. } => self.encoding = Encoding::Retry,
+                Batch::SourceChanged => *self = Self::restore(store, &self.source)?,
+            }
+            if matches!(self.encoding, Encoding::Compacting(_) | Encoding::Retry) {
+                return Ok(false);
             }
         }
         let complete = match self.ready {
@@ -103,7 +134,7 @@ impl SourceReader {
                 complete
             }
         };
-        let prepared = store.prepare(
+        let prepared = match store.prepare(
             SourceUpdate {
                 source: &self.source,
                 state: &self.state,
@@ -113,7 +144,37 @@ impl SourceReader {
             cutoff,
             provider_names.clone(),
             reconciliation_limit,
-        )?;
+        ) {
+            Ok(prepared) => prepared,
+            Err(error) if error.is::<ComponentInputLimit>() => {
+                if let Some(revision) = self.revision
+                    && !self.replacing
+                {
+                    if matches!(self.encoding, Encoding::Idle)
+                        && store.has_encoding_work(&self.source, revision)?
+                    {
+                        match store.compact_source_observations(
+                            &self.source,
+                            revision,
+                            &mut budget.read_left,
+                        )? {
+                            Batch::More | Batch::SourceChanged => {
+                                self.encoding = Encoding::Compacting(revision);
+                                return Ok(false);
+                            }
+                            Batch::Finished { changed: true } => {
+                                self.encoding = Encoding::Retry;
+                                return Ok(false);
+                            }
+                            Batch::Finished { changed: false } => (),
+                        }
+                    }
+                    self.encoding = Encoding::Exhausted;
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         self.revision = Some(store.publish(prepared)?);
         self.offset = self.state.offset - self.state.pending.len() as u64;
         self.committed_complete = complete;
@@ -122,6 +183,7 @@ impl SourceReader {
         self.state.executions.as_mut().unwrap().rows = Vec::new();
         self.ready = None;
         self.replacing = false;
+        self.encoding = Encoding::Idle;
         Ok(complete)
     }
 }
