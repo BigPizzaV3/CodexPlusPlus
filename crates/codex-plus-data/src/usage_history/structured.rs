@@ -4182,8 +4182,10 @@ impl Snapshot {
         }
         let mut days: BTreeMap<NaiveDate, Aggregate> = BTreeMap::new();
         let mut models: BTreeMap<(NaiveDate, String), Aggregate> = BTreeMap::new();
-        let mut breakdowns: BTreeMap<(NaiveDate, String, String, String, bool), Aggregate> =
-            BTreeMap::new();
+        let mut breakdowns: BTreeMap<
+            (NaiveDate, String, String, String, bool),
+            (Aggregate, Tokens),
+        > = BTreeMap::new();
         let mut day_proofs = BTreeMap::<NaiveDate, Sha256>::new();
         let mut breakdown_proofs =
             BTreeMap::<(NaiveDate, String, String, String, bool), (Sha256, bool, bool, bool)>::new(
@@ -4229,7 +4231,11 @@ impl Snapshot {
                 },
                 event.context_conflicts.provider,
             );
-            breakdowns.entry(key.clone()).or_default().add(&record);
+            let (aggregate, priceable) = breakdowns.entry(key.clone()).or_default();
+            aggregate.add(&record);
+            if event.delta.cached_known {
+                priceable.add(event.delta);
+            }
             event.update_membership_digest(day_proofs.entry(event.date).or_default());
             let (digest, exact, request_proof, supplier_proof) = breakdown_proofs
                 .entry(key)
@@ -4268,12 +4274,22 @@ impl Snapshot {
                         .iter()
                         .filter(|((day, _, _, _, _), _)| day == &date)
                         .map(
-                            |(key @ (_, model, provider, role, provider_conflict), aggregate)| {
+                            |(
+                                key @ (_, model, provider, role, provider_conflict),
+                                (aggregate, priceable),
+                            )| {
                                 let mut row = aggregate.value();
                                 row["model"] = json!(model);
                                 row["provider"] = json!(provider);
                                 row["providerName"] = json!(self.provider_names.get(provider));
                                 row["role"] = json!(role);
+                                if !aggregate.usage.cached_known && priceable.total_tokens != 0 {
+                                    row["priceableUsage"] = json!({
+                                        "inputTokens":priceable.input_tokens,
+                                        "cachedInputTokens":priceable.cached_input_tokens,
+                                        "outputTokens":priceable.output_tokens,
+                                    });
+                                }
                                 if *provider_conflict {
                                     row["providerConflict"] = json!(true);
                                 }

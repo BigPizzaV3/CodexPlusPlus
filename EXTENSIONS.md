@@ -1480,6 +1480,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 
 **写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
 
+`/usage/history` 的 `days[].breakdowns[]` 中，`usage` 与 `recordCount` 仍统计整组。当 `usage.cachedKnown` 为 `false` 且组内有缓存已知的记录时，`priceableUsage` 单列这些记录的 `inputTokens`、`cachedInputTokens` 和 `outputTokens`，供估算部分费用。明确的零缓存属于已知；字段缺失则不计价。不要将子集加到 `usage`，也不要把部分费用当作完整费用。整组缓存均已知或均未知时，不返回该字段。
+
 `/provider-prices/public` 返回的是 Codex++ 配置价，不是上游实时报价或实际账单，也不会请求上游。`price` 是供应商默认价，未设置时为 `null`；`modelPrices` 按原始上游模型名保存逐模型价，缺项时为空对象。价格包含 `currency`、`input`、`cachedInput`、`output`，单位是每百万 Token。宿主现有配置不能区分价格字段中的未填写和明确免费，两者都可能为 `0`；通过管理器保存的全零价格会被视为未填写，不能据此断言免费或价格完整。
 
 查找模型价格时，宿主先将模型名及配置键两端去空白，剥去末尾合法的窗口后缀（例如 `[1M]`），按 ASCII 大小写不敏感比较。命中逐模型价时使用整条价格，不能用默认价填补其中的字段；未命中才使用 `price`。多个配置键归一化后匹配同一模型时，宿主按原始键的 UTF-8 字节顺序取第一条，不优先精确大小写。返回值保留全部原始键，调用方应维持同样规则；无价格和非目标币种均不等于零费用。

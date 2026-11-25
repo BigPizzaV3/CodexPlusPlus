@@ -58,6 +58,23 @@ interface CodexPlusProviderPrices {
   }>;
 }
 
+interface CodexPlusUsageHistoryBreakdown {
+  model: string;
+  provider: string;
+  providerName: string | null;
+  role: string;
+  recordCount: number;
+  usage: CodexPlusUsagePricingTokens & { cachedKnown: boolean; totalTokens: number };
+  /** 缓存部分未知时，只含缓存已知记录的用量；已包含在 usage 中。 */
+  priceableUsage?: CodexPlusUsagePricingTokens;
+}
+
+interface CodexPlusUsagePricingTokens {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+}
+
 interface CodexPlusToastOptions {
   type?: CodexPlusToastType;
 }
