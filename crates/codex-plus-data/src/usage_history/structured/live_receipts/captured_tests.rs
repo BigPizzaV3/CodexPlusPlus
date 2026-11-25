@@ -217,6 +217,34 @@ fn cached_extra_evidence_is_still_a_conflict_after_name_normalization() {
 }
 
 #[test]
+fn pre_enrichment_receipt_signature_survives_a_rename_but_not_a_changed_response_id() {
+    let (root, mut cache, at) = fixture();
+    let mut record = request("old-format", at, -10, 10, 2, 3);
+    let mut input = json!([receipt("live", at, 10, 2, 3)]);
+    input[0]["model"] = json!(record.model);
+    input[0]["provider"] = json!(record.relay_id);
+    input[0]["requestIds"] = json!([record.id]);
+    input[0]["requestSignatures"] = json!({record.id.clone(): legacy_request_signature(&record)});
+    let mut legacy = record.clone();
+    legacy.relay_name.clear();
+    let previous_signature = legacy_request_signature(&legacy);
+    cache.capture_proxy(std::slice::from_ref(&record)).unwrap();
+    record.final_response_id = Some("response-a".into());
+    record.usage.as_mut().unwrap().cached_tokens_known = Some(true);
+    cache.capture_proxy(std::slice::from_ref(&record)).unwrap();
+    record.relay_name = "Renamed".into();
+    let proof = check(root.path(), std::slice::from_ref(&record), &input);
+    assert!(positive(&proof), "{proof}");
+    assert_eq!(
+        proof[0]["requestSignatures"][&record.id],
+        previous_signature
+    );
+    input[0]["requestSignatures"] = proof[0]["requestSignatures"].clone();
+    record.final_response_id = Some("response-b".into());
+    assert!(!positive(&check(root.path(), &[record], &input)));
+}
+
+#[test]
 fn persisted_aliases_include_all_competitors_and_conflicting_aliases_fail_closed() {
     let (root, mut cache, at) = fixture();
     let mut record = request("a", at, 0, 10, 2, 3);
@@ -333,6 +361,33 @@ fn reads_use_one_snapshot_and_never_create_or_migrate_storage() {
     );
     db.pragma_update(None, "user_version", 3).unwrap();
     assert_eq!(check(root.path(), &[], &input), json!([]));
+}
+
+#[test]
+fn older_cache_without_observation_extras_remains_readable() {
+    let (root, mut cache, at) = fixture();
+    cache
+        .capture_proxy(&[request("legacy", at, 0, 10, 2, 3)])
+        .unwrap();
+    drop(cache);
+    let db = Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    db.execute_batch(
+        "DROP TRIGGER completed_proxy_extra_delete;
+         DROP TRIGGER completed_proxy_extra_invalidate;
+         DROP TABLE completed_proxy_request_extra;",
+    )
+    .unwrap();
+    let input = json!([receipt("live", at, 10, 2, 3)]);
+    assert!(positive(&check(root.path(), &[], &input)));
+    assert_eq!(
+        db.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE name='completed_proxy_request_extra'",
+            [],
+            |row| row.get::<_, usize>(0),
+        )
+        .unwrap(),
+        0
+    );
 }
 
 #[test]

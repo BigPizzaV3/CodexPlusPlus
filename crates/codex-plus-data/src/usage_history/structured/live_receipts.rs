@@ -155,7 +155,8 @@ pub(super) fn match_captured_receipts(
     let mut combined = records.to_vec();
     let mut observed: HashMap<_, _> = records
         .iter()
-        .map(|row| (row.id.clone(), row.clone()))
+        .enumerate()
+        .map(|(index, row)| (row.id.clone(), index))
         .collect();
     let mut revalidated_legacy = HashMap::new();
     let mut incomplete_sessions = HashSet::new();
@@ -210,16 +211,27 @@ pub(super) fn match_captured_receipts(
             }
         }
         for row in captured.into_iter().filter(|row| row.timestamp_ms >= floor) {
-            if let Some(prior) = observed.get(&row.id) {
-                if prior.same_request(&row) {
+            if let Some(&index) = observed.get(&row.id) {
+                let prior = &combined[index];
+                if let Some(merged) = prior.merge_observation(&row) {
                     if prior.relay_name != row.relay_name {
-                        if let Some(signatures) = saved_signatures.get(row.id.as_str()) {
-                            let legacy = legacy_request_signature(&row);
-                            if signatures.contains(&legacy.as_str()) {
-                                revalidated_legacy
-                                    .insert(row.id.clone(), (legacy, request_signature(&row)));
-                            }
+                        if let Some(legacy) =
+                            saved_signatures
+                                .get(row.id.as_str())
+                                .and_then(|signatures| {
+                                    signatures
+                                        .iter()
+                                        .find(|s| request_signature_matches(s, &row))
+                                })
+                        {
+                            revalidated_legacy.insert(
+                                row.id.clone(),
+                                (legacy.to_string(), request_signature(&merged)),
+                            );
                         }
+                    }
+                    if let std::borrow::Cow::Owned(merged) = merged {
+                        combined[index] = merged;
                     }
                     continue;
                 }
@@ -227,7 +239,7 @@ pub(super) fn match_captured_receipts(
             if combined.len() >= MAX_ROWS_CAPTURED_PROXY {
                 return json!([]);
             }
-            observed.insert(row.id.clone(), row.clone());
+            observed.insert(row.id.clone(), combined.len());
             combined.push(row);
         }
     }
@@ -951,13 +963,15 @@ mod completion_lag_tests {
 }
 
 fn request_signature(record: &RequestEvidence) -> String {
-    let mut comparable = record.clone();
+    // 回执的签名仍按旧投影生成；新增观察字段在缓存比对时检查。
+    let mut comparable = record.legacy_projection();
     comparable.relay_name.clear();
     legacy_request_signature(&comparable)
 }
 
 fn request_signature_matches(saved: &str, record: &RequestEvidence) -> bool {
-    saved == request_signature(record) || saved == legacy_request_signature(record)
+    saved == request_signature(record)
+        || saved == legacy_request_signature(&record.legacy_projection())
 }
 
 fn legacy_request_signature(record: &RequestEvidence) -> String {

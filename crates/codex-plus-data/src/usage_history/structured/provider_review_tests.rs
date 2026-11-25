@@ -47,10 +47,12 @@ fn request(at: i64) -> RequestEvidence {
         attempts: Some(1),
         auto_retries: Some(0),
         final_response_evidence: None,
+        final_response_id: None,
         usage: Some(RequestEvidenceUsage {
             input_tokens: Some(100),
             output_tokens: Some(10),
             cached_tokens: Some(20),
+            cached_tokens_known: None,
         }),
         agent: String::new(),
     }
@@ -58,6 +60,268 @@ fn request(at: i64) -> RequestEvidence {
 
 fn attribute(cache: &mut RequestEvidenceCache, events: &mut [UsageEvent]) -> Value {
     cache.attribute(events, &mut BTreeMap::new(), &BTreeMap::new())
+}
+
+#[test]
+fn enriched_disk_observation_keeps_legacy_projection_after_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let at = Local::now().timestamp_millis();
+    let cutoff = Local::now().date_naive() - Days::days(1);
+    let legacy = request(at);
+    let mut wire = serde_json::to_value(&legacy).unwrap();
+    wire["finalResponseId"] = json!("response-a");
+    wire["usage"]["cachedTokensKnown"] = json!(true);
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    disk.capture_proxy(std::slice::from_ref(&legacy)).unwrap();
+    let current: RequestEvidence = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        disk.capture_proxy(std::slice::from_ref(&current)).unwrap(),
+        1
+    );
+    drop(disk);
+    let db =
+        rusqlite::Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    let legacy_data: String = db
+        .query_row("SELECT data FROM completed_proxy_requests", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    // 旧程序去掉 relayName 后比较两个完整的 JSON 对象。
+    assert_eq!(
+        serde_json::from_str::<Value>(&legacy_data).unwrap(),
+        serde_json::to_value(&legacy).unwrap()
+    );
+    assert_eq!(
+        db.execute(
+            "INSERT OR IGNORE INTO completed_proxy_requests VALUES(?1,?2,?3,?4)",
+            rusqlite::params![
+                legacy.id,
+                legacy.timestamp_ms,
+                legacy.thread_id,
+                legacy_data
+            ],
+        )
+        .unwrap(),
+        0
+    );
+    drop(db);
+
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    assert!(
+        disk.rejected_proxy_ids_read_only([&current])
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        disk.capture_proxy(std::slice::from_ref(&current)).unwrap(),
+        0
+    );
+    assert_eq!(disk.capture_proxy(&[legacy]).unwrap(), 0);
+    let mut cache = RequestEvidenceCache::default(); // 轮转后仅剩 SQLite 证据。
+    let original = event(at);
+    let mut events = [original.clone()];
+    cache.supplement_captured(&events, &BTreeMap::new(), &disk);
+    cache.attribute_with_cache(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &disk);
+    assert_eq!(events[0].provider, "supplier-a");
+    assert_eq!(events[0].id, original.id);
+    assert_eq!(events[0].delta, original.delta);
+
+    wire["finalResponseId"] = json!("response-b");
+    let conflicting: RequestEvidence = serde_json::from_value(wire).unwrap();
+    disk.capture_proxy(&[conflicting]).unwrap();
+    assert!(
+        disk.rejected_proxy_ids_read_only([&current])
+            .unwrap()
+            .contains(&current.id)
+    );
+    let db =
+        rusqlite::Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    let extra: usize = db
+        .query_row(
+            "SELECT count(*) FROM completed_proxy_request_extra",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(extra, 0);
+}
+
+#[test]
+fn rotated_legacy_verified_zero_is_reused_only_by_its_original_event() {
+    let at = Local::now().timestamp_millis();
+    let root = tempfile::tempdir().unwrap();
+    let cutoff = Local::now().date_naive() - Days::days(1);
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    let mut legacy = request(at);
+    legacy.usage.as_mut().unwrap().cached_tokens = Some(0);
+    let mut original = event(at);
+    original.delta = Tokens::new(100, 0, 10);
+    original.total = original.delta;
+    let saved = VerifiedAttribution {
+        key: RequestMatchKey {
+            session: original.session.clone(),
+            model: original.model.clone(),
+            input: 100,
+            output: 10,
+            cached: 0,
+        },
+        at,
+        request: legacy.clone(),
+        rejected: false,
+        version: 1,
+    };
+    disk.capture_proxy(std::slice::from_ref(&legacy)).unwrap();
+    disk.save(&HashMap::from([(original.id, saved)]), &BTreeMap::new())
+        .unwrap();
+    drop(disk);
+
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    let mut cache = RequestEvidenceCache::default();
+    cache.restore_verified(disk.load_verified(cutoff).unwrap());
+    let mut events = [original.clone()];
+    cache.supplement_captured(&events, &BTreeMap::new(), &disk);
+    let apply = |cache: &mut RequestEvidenceCache, events: &mut [UsageEvent]| {
+        cache.attribute_with_cache(events, &mut BTreeMap::new(), &BTreeMap::new(), &disk);
+    };
+    apply(&mut cache, &mut events);
+    assert_eq!(
+        events[0].provider_source.as_deref(),
+        Some("request-log-exact")
+    );
+    assert_eq!(events[0].provider, "supplier-a");
+    assert_eq!(events[0].delta, original.delta);
+    assert!(!cache.verified[&original.id].rejected);
+    assert!(
+        cache.verified[&original.id]
+            .request
+            .known_cached()
+            .is_none()
+    );
+
+    let mut other = original.clone();
+    other.id = [8; 32];
+    other.original_id = other.id;
+    let mut events = [other];
+    apply(&mut cache, &mut events);
+    assert!(unknown_provider(&events[0].provider));
+    assert!(!cache.verified.contains_key(&events[0].id));
+
+    let mut conflict = legacy;
+    let usage = conflict.usage.as_mut().unwrap();
+    usage.cached_tokens = Some(1);
+    usage.cached_tokens_known = Some(true);
+    cache.records = vec![conflict];
+    let mut events = [original.clone()];
+    apply(&mut cache, &mut events);
+    assert!(unknown_provider(&events[0].provider));
+    assert!(cache.verified[&original.id].rejected);
+    disk.save(&cache.verified, &BTreeMap::new()).unwrap();
+    drop(disk);
+
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    let mut cache = RequestEvidenceCache::default();
+    cache.restore_verified(disk.load_verified(cutoff).unwrap());
+    assert!(cache.verified[&original.id].rejected);
+}
+
+#[test]
+fn missing_cache_waits_for_evidence_and_never_replaces_a_known_count() {
+    let at = Local::now().timestamp_millis();
+    for exact in [0, 20] {
+        let root = tempfile::tempdir().unwrap();
+        let cutoff = Local::now().date_naive() - Days::days(1);
+        let mut disk = provider_cache::ProviderCache::default();
+        disk.open(root.path(), cutoff).unwrap();
+        let mut pending = request(at);
+        pending.usage.as_mut().unwrap().cached_tokens = Some(0);
+        let mut confirmed = pending.clone();
+        confirmed.usage.as_mut().unwrap().cached_tokens = Some(exact);
+        confirmed.usage.as_mut().unwrap().cached_tokens_known = Some(true);
+        confirmed.final_response_id = Some("response-a".into());
+        let mut original = event(at);
+        original.delta = Tokens::new(100, exact, 10);
+        original.total = original.delta;
+        for flag in [None, Some(false)] {
+            pending.usage.as_mut().unwrap().cached_tokens_known = flag;
+            assert!(pending.keys().is_empty());
+            disk.capture_proxy(std::slice::from_ref(&pending)).unwrap();
+            let mut cache = RequestEvidenceCache::default();
+            let mut events = [original.clone()];
+            cache.supplement_captured(&events, &BTreeMap::new(), &disk);
+            cache.attribute_with_cache(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &disk);
+            assert!(unknown_provider(&events[0].provider));
+            assert!(
+                disk.rejected_proxy_ids_read_only([&pending])
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+        disk.capture_proxy(std::slice::from_ref(&confirmed))
+            .unwrap();
+        drop(disk);
+        let mut disk = provider_cache::ProviderCache::default();
+        disk.open(root.path(), cutoff).unwrap();
+        assert_eq!(
+            disk.capture_proxy(std::slice::from_ref(&pending)).unwrap(),
+            0
+        );
+        let mut cache = RequestEvidenceCache::default();
+        cache.records.push(pending.clone());
+        let mut events = [original.clone()];
+        cache.supplement_captured(&events, &BTreeMap::new(), &disk);
+        cache.attribute_with_cache(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &disk);
+        assert_eq!(
+            events[0].provider_source.as_deref(),
+            Some("request-log-exact")
+        );
+        assert_eq!(events[0].id, original.id);
+        assert_eq!(events[0].delta, original.delta);
+        assert_eq!(cache.records.len(), 1);
+        let mut conflict = confirmed.clone();
+        conflict.usage.as_mut().unwrap().cached_tokens = Some(exact + 1);
+        assert!(
+            disk.rejected_proxy_ids([&conflict, &pending])
+                .unwrap()
+                .contains(&pending.id)
+        );
+        assert!(
+            disk.rejected_proxy_ids_read_only([&confirmed])
+                .unwrap()
+                .contains(&pending.id)
+        );
+    }
+}
+
+#[test]
+fn sparse_observation_cannot_bridge_contradictory_receipts() {
+    let at = Local::now().timestamp_millis();
+    let root = tempfile::tempdir().unwrap();
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), Local::now().date_naive()).unwrap();
+    let sparse = request(at);
+    let mut a = sparse.clone();
+    a.final_response_id = Some("response-a".into());
+    let mut b = sparse.clone();
+    b.final_response_id = Some("response-b".into());
+    for rows in [[&a, &sparse, &b], [&sparse, &b, &a], [&b, &a, &sparse]] {
+        assert!(
+            disk.rejected_proxy_ids_read_only(rows)
+                .unwrap()
+                .contains(&a.id)
+        );
+    }
+    assert!(disk.rejected_proxy_ids_read_only([&a]).unwrap().is_empty());
+    disk.capture_proxy(&[a.clone(), a.clone()]).unwrap();
+    assert!(
+        disk.rejected_proxy_ids_read_only([&a])
+            .unwrap()
+            .contains(&a.id)
+    );
 }
 
 #[test]
