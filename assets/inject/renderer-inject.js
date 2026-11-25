@@ -23885,6 +23885,19 @@ ${key} = ${value}`]);
         changed = true;
       }
     });
+    if (hostId === "local" && codexModelCatalog?.model_provider === "codex-plus-gateway") {
+      const defaultModel = typeof codexModelCatalog.default_model === "string"
+        ? codexModelCatalog.default_model.trim() : "";
+      if (defaultModel) {
+        models.forEach((item) => {
+          const nextDefault = item.model === defaultModel;
+          if (item.isDefault !== nextDefault) {
+            item.isDefault = nextDefault;
+            changed = true;
+          }
+        });
+      }
+    }
     finishModelCollection(models);
     return changed;
   }
@@ -25420,6 +25433,7 @@ ${key} = ${value}`]);
     saved.delete(name);
   }
 
+  /** 完整默认身份只读有效配置字段；缺失时不按供应商或目录顺序猜测。 */
   function codexPlusModelPickerDefaultModelName() {
     const configured = codexModelCatalog?.model_provider === "codex-plus-gateway"
       ? codexModelCatalog.default_model : codexModelCatalog?.effective_config_model;

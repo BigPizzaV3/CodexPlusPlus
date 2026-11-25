@@ -117,9 +117,10 @@
         return (features.fast && relevant(source) || features.picker && source.includes("onSelectDefault:") && source.includes("?.modelHostId??")) ? [{ key, source }] : [];
       });
       // 冷启动时入口已经执行，界面分块仍可能在加载；短暂等待，不执行工厂或触发额外请求。
+      if (features.picker && !planPickerFactory(factories)) return factories;
       const planned = features.fast ? planFactories(factories.filter(factory => relevant(factory.source))) : null;
-      if (attempt + 1 >= attempts || (!features.picker || planPickerFactory(factories))
-        && (!planned || planned.ok || !["incomplete-gates", "invalid-factories"].includes(planned.diagnostics.reason))) return factories;
+      if (attempt + 1 >= attempts
+        || !planned || planned.ok || !["incomplete-gates", "invalid-factories"].includes(planned.diagnostics.reason)) return factories;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }

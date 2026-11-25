@@ -276,6 +276,7 @@
     saved.delete(name);
   }
 
+  /** 完整默认身份只读有效配置字段；缺失时不按供应商或目录顺序猜测。 */
   function codexPlusModelPickerDefaultModelName() {
     const configured = codexModelCatalog?.model_provider === "codex-plus-gateway"
       ? codexModelCatalog.default_model : codexModelCatalog?.effective_config_model;

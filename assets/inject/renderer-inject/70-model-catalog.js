@@ -521,6 +521,19 @@
         changed = true;
       }
     });
+    if (hostId === "local" && codexModelCatalog?.model_provider === "codex-plus-gateway") {
+      const defaultModel = typeof codexModelCatalog.default_model === "string"
+        ? codexModelCatalog.default_model.trim() : "";
+      if (defaultModel) {
+        models.forEach((item) => {
+          const nextDefault = item.model === defaultModel;
+          if (item.isDefault !== nextDefault) {
+            item.isDefault = nextDefault;
+            changed = true;
+          }
+        });
+      }
+    }
     finishModelCollection(models);
     return changed;
   }

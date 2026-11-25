@@ -47,11 +47,6 @@ mod tests {
         let mut settings = BackendSettings::default();
         assert!(!settings.codex_app_native_predictions);
         assert!(!native_modules_requested(&settings));
-        let mut gateway = settings.clone();
-        gateway.active_relay_id = crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
-        assert!(native_modules_requested(&gateway));
-        gateway.enhancements_enabled = false;
-        assert!(!native_modules_requested(&gateway));
         settings.codex_app_native_predictions = true;
         assert!(native_modules_requested(&settings));
         settings.enhancements_enabled = false;

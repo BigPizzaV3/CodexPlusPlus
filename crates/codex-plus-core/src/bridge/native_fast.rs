@@ -45,7 +45,6 @@ struct InterceptorState {
 
 #[derive(Clone, Copy)]
 struct ModuleSettings {
-    gateway_picker: bool,
     fast: crate::native_fast::RuntimeSettings,
     predictions: crate::native_predictions::RuntimeSettings,
 }
@@ -53,7 +52,6 @@ struct ModuleSettings {
 impl ModuleSettings {
     fn load(settings: &crate::settings::BackendSettings) -> Self {
         Self {
-            gateway_picker: settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID,
             fast: crate::native_fast::runtime_settings(settings),
             predictions: crate::native_predictions::runtime_settings(settings),
         }
@@ -63,7 +61,6 @@ impl ModuleSettings {
     fn prefixes(&self) -> Vec<&'static str> {
         let mut prefixes = Vec::new();
         let groups = [
-            (self.gateway_picker, FAST_PREFIXES),
             (
                 self.fast.enhancements_enabled && self.fast.codex_app_native_fast_unlock,
                 FAST_PREFIXES,
@@ -91,8 +88,7 @@ impl ModuleSettings {
 fn bootstrap_script(settings: ModuleSettings) -> String {
     // 只发送功能开关和本机 API 身份投影，不能序列化含供应商凭据的后端 settings。
     format!(
-        "window.__codexPlusGatewayPickerPatchRequested={};\n{}\n;window.__codexPlusNativeFastUnlock.runtime.update({});\n{}\n;window.__codexPlusNativePredictions.runtime.update({});\nwindow.__codexPlusNativeFastPatchState='armed';\nwindow.__codexPlusNativeFastAssetPatchReady=true;",
-        settings.gateway_picker,
+        "{}\n;window.__codexPlusNativeFastUnlock.runtime.update({});\n{}\n;window.__codexPlusNativePredictions.runtime.update({});\nwindow.__codexPlusNativeFastPatchState='armed';\nwindow.__codexPlusNativeFastAssetPatchReady=true;",
         crate::assets::native_fast_unlock_script(),
         json!(settings.fast),
         crate::assets::native_predictions_script(),
@@ -858,7 +854,6 @@ mod tests {
 
     fn module_settings(fast: bool, local_api: bool, predictions: bool) -> ModuleSettings {
         ModuleSettings {
-            gateway_picker: false,
             fast: crate::native_fast::RuntimeSettings {
                 enhancements_enabled: true,
                 codex_app_native_fast_unlock: fast,

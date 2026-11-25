@@ -112,6 +112,14 @@ test("Rspack factory discovery keeps originals on re-prepare without executing m
   assert.deepEqual(found, [{ key: "UI", source: 'UI(e,t){throw Error("readServiceTier must not execute")}' }]);
 });
 
+test("Rspack picker discovery abandons an absent picker immediately", async () => {
+  const source = 'export const __webpack_require__={m:{UI:()=>null}};';
+  const started = performance.now();
+  const found = await rspack.readFactories('data:text/javascript,' + encodeURIComponent(source), 50, { fast: false, picker: true });
+  assert.deepEqual(found, []);
+  assert.ok(performance.now() - started < 100);
+});
+
 test("Rspack cold-start discovery waits for lazy factories without invoking them", async () => {
   const source = `export const __webpack_require__={m:{}};setTimeout(()=>Object.assign(__webpack_require__.m,{${fixtures().map(f=>f.source).join(",")}}),20);`;
   const found = await rspack.readFactories('data:text/javascript,' + encodeURIComponent(source), 5);
