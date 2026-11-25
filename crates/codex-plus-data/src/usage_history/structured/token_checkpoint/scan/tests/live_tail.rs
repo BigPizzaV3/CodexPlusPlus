@@ -178,6 +178,47 @@ fn parked_reader_charges_only_retained_state_after_publishing() -> anyhow::Resul
 }
 
 #[test]
+fn unfinished_line_allows_oversized_prefix_to_retry_its_write() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = fs::canonicalize(dir.path())?;
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions)?;
+    let source = sessions.join(format!("rollout-{FIRST}.jsonl"));
+    fs::write(&source, rollout(FIRST))?;
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    assert!(scan.round(&mut store, &root, cutoff, &names, LIMIT).complete);
+    let previous = store.checkpoint(&source)?.unwrap().1.offset;
+    let mut file = fs::OpenOptions::new().append(true).open(&source)?;
+    writeln!(file, "{}", next_count())?;
+    let boundary = file.metadata()?.len();
+    file.write_all(b"{")?;
+    let deferred = scan.round(&mut store, &root, cutoff, &names, 128);
+    assert!(deferred.errors.is_empty() && !deferred.complete);
+    assert_eq!(store.checkpoint(&source)?.unwrap().1.offset, previous);
+
+    store.db.execute_batch("CREATE TEMP TRIGGER block_prefix BEFORE INSERT ON token_days
+        BEGIN SELECT RAISE(ABORT, 'blocked prefix'); END;")?;
+    let rejected = scan.round(&mut store, &root, cutoff, &names, 128);
+    assert!(rejected.errors.iter().any(|(_, error)| error.to_string().contains("blocked prefix")));
+    assert_eq!(store.checkpoint(&source)?.unwrap().1.offset, previous);
+    store.db.execute_batch("DROP TRIGGER block_prefix")?;
+    let recovered = scan.round(&mut store, &root, cutoff, &names, 128);
+    assert!(recovered.errors.is_empty() && !recovered.complete);
+    assert_eq!(store.checkpoint(&source)?.unwrap().1.offset, boundary);
+    assert!(scan.waiting_for_newline.contains_key(&source));
+    let mut deltas = Vec::new();
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+        deltas.push(event.delta.input_tokens);
+        Ok(())
+    })?;
+    assert_eq!(deltas, [100, 102]);
+    Ok(())
+}
+
+#[test]
 fn incomplete_live_line_waits_for_one_newline_without_accumulating_issues() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let root = fs::canonicalize(dir.path())?;

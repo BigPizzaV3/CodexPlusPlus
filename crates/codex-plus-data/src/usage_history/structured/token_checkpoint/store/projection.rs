@@ -549,7 +549,7 @@ fn correct_sealed_counters(
         };
         budget = budget
             .checked_sub(payload.len())
-            .context("Token counter corrections exceed reconciliation input budget")?;
+            .ok_or(ComponentInputLimit)?;
         let id: [u8; 32] = id.as_slice().try_into()?;
         let target = serde_json::from_slice::<Observation>(&payload)?;
         if target.turn != receipt.turn
@@ -648,7 +648,7 @@ fn reconcile_append_receipts(
         let payload = row.get_ref(1)?.as_blob()?;
         remaining = remaining
             .checked_sub(payload.len())
-            .context("Token receipt suffix exceeds reconciliation input budget")?;
+            .ok_or(ComponentInputLimit)?;
         let mut observation: Observation = serde_json::from_slice(payload)?;
         let origin = observation.classification_origin.take();
         let mut event =
@@ -1096,7 +1096,7 @@ impl Store {
                         bytes += serde_json::to_vec(&Observation::capture(raw))?.len();
                         ensure!(
                             bytes <= input_limit,
-                            "Token batch exceeds reconciliation input budget"
+                            ComponentInputLimit
                         );
                         if raw.terminal_response.is_some() {
                             incoming.push(raw);
@@ -1402,7 +1402,6 @@ impl Store {
         previous_revision: i64,
         cutoff: NaiveDate,
         provider_names: BTreeMap<String, String>,
-        input_limit: usize,
     ) -> Result<i64> {
         let empty = FileState::default();
         let prepared = self.prepare(
@@ -1414,7 +1413,7 @@ impl Store {
             },
             cutoff,
             provider_names,
-            input_limit,
+            usize::MAX,
         )?;
         self.publish_source(prepared, true)
     }

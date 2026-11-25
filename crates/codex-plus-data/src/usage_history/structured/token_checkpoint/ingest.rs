@@ -16,7 +16,7 @@ enum Encoding {
     Idle,
     Compacting(i64),
     Retry,
-    Exhausted,
+    FullComponent,
 }
 
 // 一份在读来源只保留当前批次。发生写入错误时下一轮重试同一批。
@@ -55,7 +55,8 @@ impl SourceReader {
     }
 
     pub(super) fn waiting_for_newline(&self) -> bool {
-        !self.has_open_reader()
+        self.ready.is_none()
+            && !self.has_open_reader()
             && (!self.state.pending.is_empty() || self.state.skipping)
             && self.source.extension().is_some_and(|ext| ext == "jsonl")
             && self
@@ -75,7 +76,7 @@ impl SourceReader {
     }
 
     pub(super) fn can_retry_write(&self) -> bool {
-        self.ready.is_some() && !matches!(self.encoding, Encoding::Exhausted)
+        self.ready.is_some()
     }
 
     pub(super) fn retrying_closed_append(&self) -> bool {
@@ -86,7 +87,7 @@ impl SourceReader {
     }
 
     pub(super) fn encoding_pending(&self) -> bool {
-        matches!(self.encoding, Encoding::Compacting(_) | Encoding::Retry)
+        !matches!(self.encoding, Encoding::Idle)
     }
 
     pub(super) fn has_count_gap(&self) -> bool {
@@ -175,35 +176,39 @@ impl SourceReader {
             },
             cutoff,
             provider_names.clone(),
-            reconciliation_limit,
+            if matches!(self.encoding, Encoding::FullComponent) {
+                usize::MAX
+            } else {
+                reconciliation_limit
+            },
         ) {
             Ok(prepared) => prepared,
-            Err(error) if error.is::<ComponentInputLimit>() => {
+            Err(error) if error.is::<ComponentInputLimit>()
+                && !matches!(self.encoding, Encoding::FullComponent) => {
                 if let Some(revision) = self.revision
                     && !self.replacing
+                    && matches!(self.encoding, Encoding::Idle)
+                    && store.has_encoding_work(&self.source, revision)?
                 {
-                    if matches!(self.encoding, Encoding::Idle)
-                        && store.has_encoding_work(&self.source, revision)?
-                    {
-                        match store.compact_source_observations(
-                            &self.source,
-                            revision,
-                            &mut budget.read_left,
-                        )? {
-                            Batch::More | Batch::SourceChanged => {
-                                self.encoding = Encoding::Compacting(revision);
-                                return Ok(false);
-                            }
-                            Batch::Finished { changed: true } => {
-                                self.encoding = Encoding::Retry;
-                                return Ok(false);
-                            }
-                            Batch::Finished { changed: false } => (),
+                    match store.compact_source_observations(
+                        &self.source,
+                        revision,
+                        &mut budget.read_left,
+                    )? {
+                        Batch::More | Batch::SourceChanged => {
+                            self.encoding = Encoding::Compacting(revision);
+                            return Ok(false);
                         }
+                        Batch::Finished { changed: true } => {
+                            self.encoding = Encoding::Retry;
+                            return Ok(false);
+                        }
+                        Batch::Finished { changed: false } => (),
                     }
-                    self.encoding = Encoding::Exhausted;
                 }
-                return Err(error);
+                // 整组必须一并核对。保留当前批次，下一轮按完整输入计算。
+                self.encoding = Encoding::FullComponent;
+                return Ok(false);
             }
             Err(error) => return Err(error),
         };

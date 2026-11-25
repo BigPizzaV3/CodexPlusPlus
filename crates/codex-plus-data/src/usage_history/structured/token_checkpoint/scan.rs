@@ -343,7 +343,6 @@ impl Scan {
                                     revision,
                                     cutoff,
                                     provider_names.clone(),
-                                    reconciliation_limit,
                                 ) {
                                     self.issues += 1;
                                     self.unknown_count_scope = true;

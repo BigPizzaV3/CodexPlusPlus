@@ -21,6 +21,100 @@ fn rollout(session: &str) -> String {
 }
 
 #[test]
+fn oversized_component_yields_then_publishes_atomically_after_reopen() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let first = root.join("rollout-first.jsonl");
+    let second = root.join("rollout-second.jsonl");
+    fs::write(&first, rollout(FIRST))?;
+    fs::write(&second, rollout(FIRST).replace("12:01:00", "12:02:00").replace("100", "200"))?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let database = root.join("index.sqlite");
+    let mut reference = Store::open(Connection::open_in_memory()?)?;
+    let mut store = Store::open(Connection::open(&database)?)?;
+    let step = |reader: &mut SourceReader, target: &mut Store, limit| {
+        reader.step(target, cutoff, &mut Budget::new(std::iter::empty()), &names, limit)
+    };
+    for target in [&mut reference, &mut store] {
+        assert!(step(&mut SourceReader::restore(target, &first)?, target, 64 << 20)?);
+    }
+    assert!(step(&mut SourceReader::restore(&reference, &second)?, &mut reference, 64 << 20)?);
+    let rows = |store: &Store| -> rusqlite::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        store.db.prepare("SELECT event_id,payload FROM token_resolved ORDER BY event_id")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect()
+    };
+    let before = rows(&store)?;
+    let expected = rows(&reference)?;
+    assert!(expected.len() > before.len());
+    let mut reader = SourceReader::restore(&store, &second)?;
+    assert!(!step(&mut reader, &mut store, 128)?);
+    assert!(store.checkpoint(&second)?.is_none());
+    assert_eq!(rows(&store)?, before);
+    store.db.execute_batch("CREATE TRIGGER block_component BEFORE INSERT ON token_sources
+        BEGIN SELECT RAISE(ABORT, 'blocked component'); END;")?;
+    let error = step(&mut reader, &mut store, 128).unwrap_err();
+    assert!(error.to_string().contains("blocked component"), "{error:#}");
+    assert!(store.checkpoint(&second)?.is_none());
+    assert_eq!(rows(&store)?, before);
+    store.db.execute_batch("DROP TRIGGER block_component")?;
+    drop(store);
+    let mut store = Store::open(Connection::open(&database)?)?;
+    let mut reader = SourceReader::restore(&store, &second)?;
+    assert!(!step(&mut reader, &mut store, 128)?);
+    assert!(step(&mut reader, &mut store, 128)?);
+    assert_eq!(store.checkpoint(&second)?.unwrap().1.offset, fs::metadata(&second)?.len());
+    assert_eq!(rows(&store)?, expected);
+    let mut reader = SourceReader::restore(&store, &second)?;
+    assert!(step(&mut reader, &mut store, 128)?);
+    assert_eq!(rows(&store)?, expected);
+    Ok(())
+}
+
+#[test]
+fn oversized_live_appends_and_retirement_finish_in_normal_scan() -> anyhow::Result<()> {
+    use std::io::Write;
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions)?;
+    let files = [sessions.join("rollout-01.jsonl"), sessions.join("rollout-02.jsonl")];
+    for (path, session) in files.iter().zip([FIRST, SECOND]) {
+        fs::write(path, rollout(session))?;
+    }
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    for (path, session) in files.iter().zip([FIRST, SECOND]) {
+        let mut row: serde_json::Value = serde_json::from_str(rollout(session).lines().nth(1).unwrap())?;
+        row["timestamp"] = json!("2026-01-02T12:02:00Z");
+        row["payload"]["info"]["total_token_usage"]["input_tokens"] = json!(200);
+        writeln!(fs::OpenOptions::new().append(true).open(path)?, "{row}")?;
+    }
+    for _ in 0..4 {
+        let report = scan.round(&mut store, &root, cutoff, &names, 128);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        if report.complete { break; }
+    }
+    for path in &files {
+        assert_eq!(store.checkpoint(path)?.unwrap().1.offset, fs::metadata(path)?.len());
+    }
+    fs::remove_file(&files[0])?;
+    let report = Scan::default().round(&mut store, &root, cutoff, &names, 128);
+    assert!(report.complete, "{:?}", report.errors);
+    assert!(store.checkpoint(&files[0])?.is_none());
+    let mut counts = Vec::new();
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+        counts.push((event.session.clone(), event.delta.input_tokens));
+        Ok(())
+    })?;
+    assert_eq!(counts, [(SECOND.to_owned(), 100), (SECOND.to_owned(), 100)]);
+    Ok(())
+}
+
+#[test]
 fn blocked_source_does_not_delay_other_sources_and_can_retry_without_rescan() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

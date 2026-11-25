@@ -659,12 +659,7 @@ fn long_continuation_appends_within_budget_after_reopen_and_refuses_a_child() ->
     let mut late = count(53, 53, 52, true);
     late["timestamp"] = json!("2026-01-02T15:00:53Z");
     append(&late)?;
-    assert!(
-        append_next(&mut reader, &mut store)
-            .unwrap_err()
-            .to_string()
-            .contains("Token component exceeds")
-    );
+    assert!(!append_next(&mut reader, &mut store)?);
     let (retained_revision, retained) = store.checkpoint(&leaf)?.unwrap();
     assert_eq!(
         (retained_revision, retained.offset),
@@ -913,16 +908,11 @@ fn continuation_receipts_require_reconciliation_in_the_incoming_or_prior_batch()
         };
         let bounded = step(&mut reader, &mut store, append_budget);
         if prior_receipt || incoming_receipt {
-            assert!(
-                bounded
-                    .unwrap_err()
-                    .to_string()
-                    .contains("component exceeds reconciliation input budget")
-            );
+            assert!(!bounded?);
             assert!(read(&mut store.db, i64::MIN, i64::MAX) == before);
             let (unchanged, retained) = store.checkpoint(&leaf)?.unwrap();
             assert_eq!((unchanged, retained.offset), (revision, checkpoint.offset));
-            assert!(step(&mut reader, &mut store, full_budget)?);
+            assert!(step(&mut reader, &mut store, append_budget)?);
         } else {
             assert!(bounded?);
         }
@@ -1990,7 +1980,7 @@ fn context_only_fork_reconciles_within_budget_until_it_affects_parent_counts() -
     };
     let day = parent_day(&store.db)?;
     let (_, classified) = read(&mut store.db, i64::MIN, i64::MAX);
-    store.retire_source(&child_path, revision, cutoff, BTreeMap::new(), 8192)?;
+    store.retire_source(&child_path, revision, cutoff, BTreeMap::new())?;
     let (_, remaining) = read(&mut store.db, i64::MIN, i64::MAX);
     assert!(remaining == classified[..24]);
     assert_eq!(parent_day(&store.db)?, day);
