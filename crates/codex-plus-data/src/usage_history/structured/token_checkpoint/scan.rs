@@ -478,6 +478,13 @@ impl Scan {
                 live_source_bytes -= consumed.1;
             }
             match result {
+                Ok(true) if reader.state.legacy_identity_prefix != 0 => {
+                    // 尾部已提交，旧前缀由历史队列复核，实时名额留给下一次追加。
+                    if let Some(stamp) = self.live.get_mut(&reader.source) {
+                        *stamp = reader.state.stamp.unwrap();
+                    }
+                    verify_later.push(reader.source);
+                }
                 Ok(complete) if complete || reader.waiting_for_newline() => {
                     if !complete {
                         self.waiting_for_newline.insert(

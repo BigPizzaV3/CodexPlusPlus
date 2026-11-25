@@ -97,6 +97,45 @@ fn older_open_logs_publish_concurrent_appends_while_history_advances() -> anyhow
 }
 
 #[test]
+fn legacy_prefix_recheck_leaves_the_live_slot_available_for_other_appends() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions)?;
+    let first = sessions.join(format!("rollout-{FIRST}.jsonl"));
+    let second = sessions.join(format!("rollout-{SECOND}.jsonl"));
+    let padding = format!("{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n", "x".repeat(65536));
+    fs::write(&first, format!("{}{}", rollout(FIRST), padding.repeat(160)))?;
+    fs::write(&second, rollout(SECOND))?;
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut scan = Scan::default();
+    assert!((0..8).any(|_| scan.round(&mut store, &root, cutoff, &names, LIMIT).complete));
+    let (revision, _) = store.checkpoint(&first)?.unwrap();
+    store.db.execute(
+        "UPDATE token_sources SET checkpoint=CAST(json_set(CAST(checkpoint AS TEXT),
+         '$.legacy_identity_prefix',offset) AS BLOB) WHERE revision=?",
+        [revision],
+    )?;
+    writeln!(fs::OpenOptions::new().append(true).open(&first)?, "{}", next_count())?;
+    let mut scan = Scan::default();
+    start_archive(&root, &mut scan, &mut store, cutoff)?;
+    assert_eq!(store.checkpoint(&first)?.unwrap().1.offset, first.metadata()?.len());
+    let probing = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+    assert!(probing.errors.is_empty() && !probing.complete);
+    writeln!(fs::OpenOptions::new().append(true).open(&second)?, "{}", next_count())?;
+    let appended = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+    assert!(appended.errors.is_empty(), "{:?}", appended.errors);
+    assert_eq!(store.checkpoint(&second)?.unwrap().1.offset, second.metadata()?.len());
+    for _ in 0..24 {
+        if scan.round(&mut store, &root, cutoff, &names, LIMIT).complete { break; }
+    }
+    assert_eq!(store.checkpoint(&first)?.unwrap().1.legacy_identity_prefix, 0);
+    Ok(())
+}
+
+#[test]
 fn concurrent_appends_beyond_one_round_stay_pending_and_rotate() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().canonicalize()?;
