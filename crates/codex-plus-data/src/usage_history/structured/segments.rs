@@ -79,7 +79,10 @@ pub(super) fn referenced_prefixes(
                     .rollout_position
                     .is_some_and(|(ordinal, _, _)| ordinal < base.end_ordinal)
             });
-            let previous = split.checked_sub(1).map(|i| &source.events[i]);
+            let previous = source.events[..split]
+                .iter()
+                .rev()
+                .find(|event| event.terminal_response.is_none());
             let older = source.expired_count;
             if previous.is_some_and(|event| {
                 event
@@ -121,7 +124,8 @@ pub(super) fn referenced_prefixes(
                 || state.rollout_out_of_order
                 || !state
                     .events
-                    .first()
+                    .iter()
+                    .find(|event| event.terminal_response.is_none())
                     .is_some_and(|event| !event.has_file_baseline)
             {
                 return None;

@@ -64,6 +64,8 @@ impl EventClassification {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Observation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_response: Option<Box<str>>,
     original_id: [u8; 32],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     native_response_id: Option<NativeResponseIdentity>,
@@ -92,6 +94,7 @@ struct Observation {
 impl Observation {
     fn capture(event: &UsageEvent) -> Self {
         Self {
+            terminal_response: event.terminal_response.clone(),
             original_id: event.original_id,
             native_response_id: event.native_response_id.clone(),
             turn: event.turn.clone(),
@@ -118,6 +121,7 @@ impl Observation {
 
     fn into_event(self, id: [u8; 32], session: String) -> anyhow::Result<UsageEvent> {
         Ok(UsageEvent {
+            terminal_response: self.terminal_response,
             id,
             original_id: self.original_id,
             native_response_id: self.native_response_id,

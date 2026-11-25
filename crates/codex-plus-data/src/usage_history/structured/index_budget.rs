@@ -323,6 +323,9 @@ fn may_record_event(line: &[u8]) -> bool {
     let Ok(envelope) = serde_json::from_slice::<AcceptEnvelope<'_>>(line) else {
         return false;
     };
+    if envelope.kind == "token_usage_record" {
+        return line.len() <= super::terminal_receipts::MAX_LINE;
+    }
     if !matches!(envelope.kind, "event_msg" | "turn_context") {
         return false;
     }
@@ -469,6 +472,7 @@ fn event_heap(event: &super::UsageEvent) -> usize {
             .native_response_id
             .as_ref()
             .map_or(0, |proof| proof.id.len())
+        + event.terminal_response.as_ref().map_or(0, |response| response.len())
         + event.legacy_identity.as_ref().map_or(0, |id| {
             std::mem::size_of::<super::LegacyIdentity>()
                 + id.session.capacity()

@@ -64,6 +64,98 @@ fn new_source<'a>(source: &'a Path, state: &'a FileState) -> SourceUpdate<'a> {
 }
 
 #[test]
+fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_next_turn() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().canonicalize().unwrap();
+    let database = home.join("usage.sqlite");
+    let rollout = home.join("rollout-fixture.jsonl");
+    let copied = home.join("rollout-copy.jsonl");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let at = |second| format!("2026-01-02T12:00:{second:02}Z");
+    let usage = |input, cached, output| json!({"input_tokens":input,"cached_input_tokens":cached,"output_tokens":output});
+    let context = |second, turn| json!({"type":"turn_context","timestamp":at(second),"payload":{"turn_id":turn,"model":"fixture"}});
+    let terminal = |second, turn, response, last, total| {
+        json!({"type":"token_usage_record","timestamp":at(second),
+        "payload":{"thread_id":PARENT,"turn_id":turn,"response_id":response,"usage":last,"thread_token_usage":total}})
+    };
+    let counter = |second, last, total| {
+        json!({"type":"event_msg","timestamp":at(second),
+        "payload":{"type":"token_count","info":{"last_token_usage":last,"total_token_usage":total}}})
+    };
+    let append = |rows: &[Value]| {
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&rollout)
+            .unwrap();
+        for row in rows {
+            writeln!(file, "{row}").unwrap();
+        }
+    };
+    let step = |source: &Path| {
+        let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+        let mut reader = SourceReader::restore(&store, source).unwrap();
+        assert!(
+            reader
+                .step(
+                    &mut store,
+                    cutoff,
+                    &mut Budget::new(std::iter::empty()),
+                    &BTreeMap::new(),
+                    1 << 20
+                )
+                .unwrap()
+        );
+        read(&mut store.db, i64::MIN, i64::MAX).1
+    };
+    let head = json!({"type":"session_meta","timestamp":at(0),"payload":{"id":PARENT,"model_provider":"fixture-supplier"}});
+    let first = terminal(2, "turn-a", "resp-a", usage(10, 3, 2), usage(10, 3, 2));
+    append(&[head.clone(), context(1, "turn-a"), first.clone()]);
+    let initial = step(&rollout);
+    assert_eq!(initial.len(), 1);
+    assert_eq!(
+        initial[0].delta,
+        crate::usage_history::Tokens::new(10, 3, 2)
+    );
+
+    let partial = json!({"input_tokens":10,"output_tokens":2});
+    append(&[counter(3, partial.clone(), partial)]);
+    let paired = step(&rollout);
+    assert_eq!(paired.len(), 1);
+    assert_eq!(paired[0].delta, initial[0].delta);
+    assert!(paired[0].terminal_response.is_none());
+
+    // A new response with the same individual token counts still counts.
+    append(&[terminal(
+        4,
+        "turn-a",
+        "resp-b",
+        usage(10, 3, 2),
+        usage(20, 6, 4),
+    )]);
+    let second = step(&rollout);
+    assert_eq!(second.len(), 2);
+    assert_eq!(second[1].terminal_response.as_deref(), Some("resp-b"));
+
+    // The subsequent native delta includes the unreported cumulative portion.
+    // The earlier terminal receipt cannot be added again or become its baseline.
+    append(&[
+        context(5, "turn-b"),
+        counter(6, usage(95, 10, 4), usage(105, 13, 6)),
+    ]);
+    let last = step(&rollout);
+    assert_eq!(last.len(), 2);
+    assert_eq!(last[1].delta, crate::usage_history::Tokens::new(95, 10, 4));
+    fs::write(
+        &copied,
+        format!("{head}\n{}\n{first}\n", context(1, "turn-a")),
+    )
+    .unwrap();
+    let duplicate = step(&copied);
+    assert!(duplicate == last);
+}
+
+#[test]
 fn source_ingest_retries_a_failed_batch_then_completes_the_split_line_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

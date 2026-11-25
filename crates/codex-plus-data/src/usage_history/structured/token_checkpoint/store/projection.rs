@@ -7,7 +7,7 @@ use crate::usage_history::structured::token_checkpoint::{
 use crate::usage_history::structured::{
     ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index, MAX_ACTIVITY,
     MAX_FILES, Query, RequestSessionAliases, Snapshot, UsageEvent, ordered_scope_ids, segments,
-    unknown_model, unknown_provider, usage_provider,
+    terminal_receipts, unknown_model, unknown_provider, usage_provider,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
@@ -333,6 +333,7 @@ fn linear_batch<'a>(
     }
     for event in &state.events {
         if event.session != state.session
+            || event.terminal_response.is_some()
             || event.date < cutoff
             || event.inherited
             || event.legacy_identity.is_some()
@@ -582,6 +583,7 @@ impl Store {
         let mut snapshot = Snapshot::default();
         index.select_observations(cutoff, &mut snapshot, &mut BTreeMap::new(), usize::MAX);
         index.resolve_counts(&mut snapshot);
+        terminal_receipts::project(&index, &mut snapshot);
         snapshot.events.retain(|event| {
             event.delta.total_tokens > 0
                 || event.count_uncertain
@@ -1040,7 +1042,8 @@ impl Store {
                 let observation: Observation = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
                 if observation.date < cutoff {
                     expired.push(key);
-                    if let Some(position) = observation.rollout_position
+                    if observation.terminal_response.is_none()
+                        && let Some(position) = observation.rollout_position
                         && checkpoint
                             .expired_count
                             .as_ref()

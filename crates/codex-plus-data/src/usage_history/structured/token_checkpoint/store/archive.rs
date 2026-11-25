@@ -3,7 +3,7 @@ use super::{
     decode_path,
 };
 use crate::usage_history::structured::{
-    FileState, Index, Snapshot, UsageEvent, index_budget::Budget,
+    FileState, Index, Snapshot, UsageEvent, index_budget::Budget, terminal_receipts,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone};
@@ -312,6 +312,7 @@ impl Replay {
             usize::MAX,
         );
         self.index.resolve_counts(&mut snapshot);
+        terminal_receipts::project(&self.index, &mut snapshot);
         ensure!(
             snapshot.issues == 0,
             "archive replay has inconsistent Token order"

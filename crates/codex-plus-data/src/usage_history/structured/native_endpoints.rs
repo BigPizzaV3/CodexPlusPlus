@@ -1194,6 +1194,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [71; 32],
             original_id: [71; 32],
             session: "session".into(),
@@ -1473,6 +1474,7 @@ mod tests {
         };
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [7; 32],
             original_id: [7; 32],
             session: key.session.clone(),
@@ -1542,6 +1544,7 @@ mod tests {
         };
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [8; 32],
             original_id: [8; 32],
             session: key.session.clone(),
@@ -1645,6 +1648,7 @@ mod tests {
         };
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [9; 32],
             original_id: [9; 32],
             session: key.session.clone(),
@@ -1713,6 +1717,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let mut event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [254; 32],
             original_id: [254; 32],
             session: "session".into(),
@@ -1758,6 +1763,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let mut event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [253; 32],
             original_id: [253; 32],
             session: "session".into(),
@@ -1798,6 +1804,7 @@ mod tests {
         let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [98; 32],
             original_id: [98; 32],
             session: "session".into(),
@@ -1879,6 +1886,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [255; 32],
             original_id: [255; 32],
             session: "session".into(),
@@ -1937,6 +1945,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [10; 32],
             original_id: [10; 32],
             session: "session".into(),
@@ -2015,6 +2024,7 @@ mod tests {
         };
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [7; 32],
             original_id: [7; 32],
             session: key.session.clone(),

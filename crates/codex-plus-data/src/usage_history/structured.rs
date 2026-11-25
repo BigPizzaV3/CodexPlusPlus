@@ -20,6 +20,7 @@ mod provider_cache;
 mod provider_capture;
 mod segments;
 mod supplier_evidence;
+mod terminal_receipts;
 mod token_checkpoint;
 mod tool_receipts;
 
@@ -1417,6 +1418,7 @@ struct NativeResponseIdentity {
 #[derive(Clone, PartialEq, Eq)]
 struct UsageEvent {
     native_response_id: Option<NativeResponseIdentity>,
+    terminal_response: Option<Box<str>>,
     id: [u8; 32],
     original_id: [u8; 32],
     session: String,
@@ -2593,7 +2595,7 @@ impl Index {
                 }
             }
             for event in &state.events {
-                if event.date < cutoff {
+                if event.date < cutoff || event.terminal_response.is_some() {
                     continue;
                 }
                 if let Some(&position) = seen.get(&event.id) {
@@ -3299,7 +3301,8 @@ impl FileState {
             if event.date >= cutoff {
                 return true;
             }
-            if let Some(position) = event.rollout_position
+            if event.terminal_response.is_none()
+                && let Some(position) = event.rollout_position
                 && self
                     .expired_count
                     .is_none_or(|(previous, _)| position > previous)
@@ -3667,53 +3670,68 @@ impl FileState {
         }
         let inherited = self.history_boundary.contains(ordinal);
         if envelope.kind == "token_usage_record" {
-            #[derive(Deserialize)]
-            struct Receipt<'a> {
-                thread_id: &'a str,
-                turn_id: &'a str,
-                response_id: &'a str,
-                usage: Value,
-                thread_token_usage: Value,
+            if inherited || line.len() > MAX_NATIVE_RECEIPT_LINE {
+                self.pending_response = Some(PendingUsageReceipt::Unusable);
+                return;
             }
-            // 只为下一条累计用量保留证据，不从回执新增消费或改变累计基线。
+            let (Ok(payload), Some(time)) = (
+                serde_json::from_str::<Value>(envelope.payload.get()),
+                envelope.timestamp.and_then(|at| DateTime::parse_from_rfc3339(at).ok()),
+            ) else {
+                self.pending_response = Some(PendingUsageReceipt::Unusable);
+                return;
+            };
+            // 保留相邻累计记录的供应商证据；持久索引独立配对回执与迟到的计数。
             let parsed = (|| {
                 if self.pending_response.is_some()
-                    || inherited
-                    || line.len() > MAX_NATIVE_RECEIPT_LINE
-                {
-                    return None;
-                }
-                let receipt: Receipt<'_> = serde_json::from_str(envelope.payload.get()).ok()?;
-                if receipt.thread_id != self.session
+                    || payload["thread_id"] != self.session
                     || self.turn.is_empty()
-                    || receipt.turn_id != self.turn
-                    || receipt.response_id.is_empty()
-                    || receipt.response_id.len() > 256
-                    || !receipt
-                        .response_id
-                        .bytes()
-                        .all(|byte| byte.is_ascii_graphic())
+                    || payload["turn_id"] != self.turn
                 {
                     return None;
                 }
-                let at = DateTime::parse_from_rfc3339(envelope.timestamp?)
-                    .ok()?
-                    .timestamp_millis();
-                let usage = Tokens::parse(&receipt.usage)?;
+                let response = payload["response_id"].as_str().filter(|id| {
+                    !id.is_empty() && id.len() <= 256 && id.bytes().all(|byte| byte.is_ascii_graphic())
+                })?;
+                let usage = Tokens::parse(&payload["usage"])?;
                 let usage = usage.normalize_cache_input(
-                    CacheAccounting::parse(&receipt.usage, usage),
+                    CacheAccounting::parse(&payload["usage"], usage),
                     None,
                     None,
                 );
-                let total = Tokens::parse(&receipt.thread_token_usage)?;
                 Some(PendingUsageReceipt::One {
-                    id: receipt.response_id.into(),
-                    at,
+                    id: response.into(),
+                    at: time.timestamp_millis(),
                     usage,
-                    total,
+                    total: Tokens::parse(&payload["thread_token_usage"])?,
                 })
             })();
             self.pending_response = Some(parsed.unwrap_or(PendingUsageReceipt::Unusable));
+            let date = time.with_timezone(&Local).date_naive();
+            if (self.history_boundary.parent.is_none() || ordinal.is_some())
+                && let Some(mut receipt) = terminal_receipts::parse(
+                    self,
+                    &payload,
+                    time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    date,
+                )
+            {
+                self.record_token_day(date);
+                if date >= cutoff {
+                    if self.events.len() >= MAX_EVENTS {
+                        self.issues += 1;
+                    } else {
+                        receipt.rollout_position = ordinal.map(|ordinal| {
+                            (
+                                ordinal,
+                                self.offset.saturating_sub(line.len() as u64),
+                                self.offset,
+                            )
+                        });
+                        self.events.push(receipt);
+                    }
+                }
+            }
             return;
         }
         if matches!(envelope.kind, "session_meta" | "turn_context") {
@@ -4024,12 +4042,8 @@ impl FileState {
         let raw_cumulative = &info["total_token_usage"];
         let raw_request = &info["last_token_usage"];
         // 先记录范围，再按保留期丢弃明细；冷索引也能找到历史原会话。
-        if let Some(span) = &mut self.token_day_span
-            && (!raw_cumulative.is_null() || !raw_request.is_null())
-        {
-            let date = date.num_days_from_ce();
-            span.first = Some(span.first.map_or(date, |day| day.min(date)));
-            span.last = Some(span.last.map_or(date, |day| day.max(date)));
+        if !raw_cumulative.is_null() || !raw_request.is_null() {
+            self.record_token_day(date);
         }
         let Some(raw_total) = Tokens::parse(raw_cumulative) else {
             if info.is_object()
@@ -4157,6 +4171,7 @@ impl FileState {
                     && last.is_some_and(|tokens| compatible(tokens, usage)))
                 .then_some(NativeResponseIdentity { id, full_counts })
             }),
+            terminal_response: None,
             id,
             original_id: id,
             session: owner,
@@ -4182,6 +4197,14 @@ impl FileState {
                 ..ContextConflicts::default()
             },
         });
+    }
+
+    fn record_token_day(&mut self, date: NaiveDate) {
+        if let Some(span) = &mut self.token_day_span {
+            let date = date.num_days_from_ce();
+            span.first = Some(span.first.map_or(date, |day| day.min(date)));
+            span.last = Some(span.last.map_or(date, |day| day.max(date)));
+        }
     }
 
     fn accept_tool(&mut self, mut payload: Value, timestamp: String, date: NaiveDate) {
