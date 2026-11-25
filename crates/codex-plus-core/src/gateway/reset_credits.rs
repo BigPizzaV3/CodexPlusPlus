@@ -249,6 +249,7 @@ struct Redemption {
     request_id: String,
     caller_id: String,
     completed: bool,
+    retrying_pending: bool,
 }
 
 impl Redemption {
@@ -264,6 +265,7 @@ impl Redemption {
         };
         anyhow::ensure!(journal.valid(), "重置操作记录无效，未发送请求");
         let completed = journal.completed.iter().any(|id| id == caller_id);
+        let retrying_pending = journal.pending.is_some();
         // 已确定没扣卡或被放弃的标识不再发出去：界面没来得及清掉旧标识时换一个新的。
         let request_id = journal.pending.clone().unwrap_or_else(|| {
             if journal.settled.iter().any(|id| id == caller_id) {
@@ -279,6 +281,7 @@ impl Redemption {
             request_id,
             caller_id: caller_id.to_string(),
             completed,
+            retrying_pending,
         };
         if !completed {
             operation.journal.pending = Some(operation.request_id.clone());
@@ -293,6 +296,12 @@ impl Redemption {
 
     /// 记下确定结果并结束未确认操作；`Unknown` 保留同一标识等下次重试。
     fn finish(&mut self, outcome: ConsumeOutcome) -> anyhow::Result<()> {
+        if self.retrying_pending
+            && let ConsumeOutcome::Rejected(status) = outcome
+        {
+            // 拒绝本次核实请求不能证明第一次消费未发生。
+            anyhow::bail!("核实请求被拒绝（HTTP {status}），上次重置结果仍未知；请稍后重试");
+        }
         if !outcome.settled() {
             return Ok(());
         }
@@ -810,6 +819,41 @@ mod tests {
         );
         assert_eq!(outcome_of_code(Some("other")), ConsumeOutcome::Unknown);
         assert_eq!(outcome_of_code(None), ConsumeOutcome::Unknown);
+    }
+
+    #[tokio::test]
+    async fn rejected_verification_keeps_the_original_pending_id() {
+        let (url, server) = serve(vec![
+            None,
+            Some((429, json!({ "error": "slow down" }))),
+            Some((200, json!({ "code": "already_redeemed" }))),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let credential = test_credential();
+        let client = test_client();
+        let first = Redemption::open(root.path(), &credential.account_id, "original").unwrap();
+        assert!(
+            send_redemption(&client, &url, &credential, &first.request_id)
+                .await
+                .is_err()
+        );
+        drop(first);
+
+        let mut retry = Redemption::open(root.path(), &credential.account_id, "retry").unwrap();
+        let outcome = send_redemption(&client, &url, &credential, &retry.request_id)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ConsumeOutcome::Rejected(429));
+        assert!(retry.finish(outcome).is_err());
+        drop(retry);
+
+        let mut retry = Redemption::open(root.path(), &credential.account_id, "later").unwrap();
+        let outcome = send_redemption(&client, &url, &credential, &retry.request_id)
+            .await
+            .unwrap();
+        assert_eq!(outcome, ConsumeOutcome::AlreadyRedeemed);
+        retry.finish(outcome).unwrap();
+        assert_eq!(server.join().unwrap(), ["original", "original", "original"]);
     }
 
     /// 没扣卡的确定结果（无卡、无需重置、4xx 拒绝）清掉未确认操作，且旧标识不再发出去。
