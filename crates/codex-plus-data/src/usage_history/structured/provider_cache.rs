@@ -200,7 +200,18 @@ impl ProviderCache {
              CREATE TABLE IF NOT EXISTS capture_retention(
                  kind TEXT PRIMARY KEY NOT NULL, floor INTEGER NOT NULL
              ) WITHOUT ROWID;
+             CREATE TABLE IF NOT EXISTS proxy_replayed_windows(
+                 first INTEGER PRIMARY KEY, last INTEGER NOT NULL
+             );
              "
+        )?;
+        db.execute(
+            "INSERT OR IGNORE INTO capture_retention VALUES('proxy_legacy_until',?1)",
+            [if version == 0 {
+                0
+            } else {
+                Local::now().timestamp_millis()
+            }],
         )?;
         if version < 2 {
             let tx = db.transaction()?;
@@ -251,6 +262,7 @@ impl ProviderCache {
         tx.execute("DELETE FROM native_attributions WHERE at<?1", [since])?;
         tx.execute("DELETE FROM completed_native_requests WHERE at<?1", [since])?;
         tx.execute("DELETE FROM completed_proxy_requests WHERE at<?1", [since])?;
+        tx.execute("DELETE FROM proxy_replayed_windows WHERE last<?1", [since])?;
         tx.execute("DELETE FROM rejected_proxy_ids WHERE at<?1", [since])?;
         tx.execute("DELETE FROM native_capture_cursors WHERE at<?1", [since])?;
         tx.execute("DELETE FROM aliases WHERE last_seen<?1", [since])?;
@@ -651,7 +663,16 @@ impl ProviderCache {
         )?)
     }
 
+    #[cfg(test)]
     pub(super) fn capture_proxy(&mut self, rows: &[RequestEvidence]) -> anyhow::Result<usize> {
+        self.capture_proxy_log(rows, None)
+    }
+
+    pub(super) fn capture_proxy_log(
+        &mut self,
+        rows: &[RequestEvidence],
+        replay: Option<(i64, i64)>,
+    ) -> anyhow::Result<usize> {
         let db = self
             .db
             .as_mut()
@@ -757,8 +778,66 @@ impl ProviderCache {
                 }
             }
         }
+        if let Some((first, last)) = replay {
+            let legacy_until: i64 = tx.query_row(
+                "SELECT floor FROM capture_retention WHERE kind='proxy_legacy_until'",
+                [],
+                |r| r.get(0),
+            )?;
+            if first <= legacy_until {
+                let (first, last): (i64, i64) = tx.query_row(
+                    "SELECT min(?1,coalesce(min(first),?1)),max(?2,coalesce(max(last),?2))
+                     FROM proxy_replayed_windows WHERE last>=?1 AND first<=?2",
+                    params![first, last.min(legacy_until)],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )?;
+                tx.execute(
+                    "DELETE FROM proxy_replayed_windows WHERE first>?1 AND last<=?2",
+                    params![first, last],
+                )?;
+                tx.execute(
+                    "INSERT INTO proxy_replayed_windows VALUES(?1,?2)
+                     ON CONFLICT(first) DO UPDATE SET last=excluded.last WHERE last<excluded.last",
+                    params![first, last],
+                )?;
+            }
+        }
         tx.commit()?;
         Ok(writes)
+    }
+
+    pub(super) fn proxy_coverage(&self) -> anyhow::Result<Vec<(i64, i64)>> {
+        use rusqlite::OptionalExtension;
+        let db = self
+            .db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
+        let until: Option<i64> = db
+            .query_row(
+                "SELECT floor FROM capture_retention WHERE kind='proxy_legacy_until'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        // 未迁移的只读库尚未复证旧读取器可能跳过的日志范围。
+        let Some(until) = until else {
+            return Ok(Vec::new());
+        };
+        let mut windows = vec![(until.saturating_add(1), i64::MAX)];
+        if until > 0 {
+            let mut stmt =
+                db.prepare("SELECT first,last FROM proxy_replayed_windows ORDER BY first DESC")?;
+            for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+                let (first, last) = row?;
+                let next = windows.last_mut().unwrap();
+                if last.saturating_add(1) >= next.0 {
+                    next.0 = first.min(next.0);
+                } else {
+                    windows.push((first, last));
+                }
+            }
+        }
+        Ok(windows)
     }
 
     pub(super) fn captured_proxy(

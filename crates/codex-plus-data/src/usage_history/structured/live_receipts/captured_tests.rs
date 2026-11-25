@@ -317,7 +317,7 @@ fn physical_retention_rejects_missing_windows_but_dense_complete_milliseconds_ar
     .unwrap();
     let limited = check(root.path(), &[], &input);
     assert_eq!(limited[0]["rejected"], true);
-    db.execute("DELETE FROM capture_retention", []).unwrap();
+    db.execute("DELETE FROM capture_retention WHERE kind='completed_proxy_requests'", []).unwrap();
     let rows: Vec<_> = (0..20_001)
         .map(|index| request(&format!("other-{index}"), at, -5, 100, 20, 30))
         .collect();

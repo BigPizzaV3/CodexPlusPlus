@@ -429,10 +429,21 @@ pub fn append_request_log(entry: &RequestLogEntry) -> std::io::Result<()> {
 pub fn append_request_log_at(path: &Path, entry: &RequestLogEntry) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
 
-    let mut line = serde_json::to_vec(entry)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    line.push(b'\n');
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PhysicalEntry<'a> {
+        #[serde(flatten)]
+        entry: &'a RequestLogEntry,
+        appended_at_ms: u64,
+    }
     let _guard = lock_request_log()?;
+    // 完成时间取在锁外；只有这里的时间才能界定被轮转的物理前缀。
+    let mut line = serde_json::to_vec(&PhysicalEntry {
+        entry,
+        appended_at_ms: crate::launcher::current_time_ms(),
+    })
+    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    line.push(b'\n');
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -1056,6 +1067,29 @@ mod tests {
         trace.bind_upstream_model(&json!({}));
         assert!(!trace.upstream_model_bound);
         assert!(trace.upstream_model.is_empty());
+    }
+
+    #[test]
+    fn appending_records_physical_time_without_reordering_completion_times() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("request-log.jsonl");
+        let before = crate::launcher::current_time_ms();
+        for completed in [200, 100] {
+            let mut row = entry(&completed.to_string());
+            row.timestamp_ms = completed;
+            append_request_log_at(&path, &row).unwrap();
+        }
+        let after = crate::launcher::current_time_ms();
+        let rows: Vec<Value> = std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows[0]["timestampMs"], 200);
+        assert_eq!(rows[1]["timestampMs"], 100);
+        let first = rows[0]["appendedAtMs"].as_u64().unwrap();
+        let last = rows[1]["appendedAtMs"].as_u64().unwrap();
+        assert!(before <= first && first <= last && last <= after);
     }
 
     #[test]

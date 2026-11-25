@@ -65,6 +65,195 @@ fn attribute(cache: &mut RequestEvidenceCache, events: &mut [UsageEvent]) -> Val
 }
 
 #[test]
+fn legacy_proxy_replay_recovers_long_competitors_and_keeps_rotated_windows_unproven() {
+    let root = tempfile::tempdir().unwrap();
+    let cutoff = Local::now().date_naive();
+    let at = Local::now().timestamp_millis() - 600_000;
+    let rotated_at = at - 1_000_000;
+    let original = request(at);
+    let mut unique = request(at + 300_000);
+    unique.id = "unique".into();
+    let mut rotated = request(rotated_at);
+    rotated.id = "rotated".into();
+    rotated.final_response_id = Some("terminal-a".into());
+    rotated.final_response_evidence = Some("final-response-v1".into());
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    disk.capture_proxy(&[original.clone(), unique.clone(), rotated.clone()])
+        .unwrap();
+    let mut old = RequestEvidenceCache::default();
+    old.records.push(rotated.clone());
+    let mut earlier = event(rotated_at);
+    earlier.id = [3; 32];
+    attribute(&mut old, std::slice::from_mut(&mut earlier));
+    assert_eq!(earlier.provider, "supplier-a");
+    disk.save(&old.verified, &BTreeMap::new()).unwrap();
+    drop(disk);
+    let db =
+        rusqlite::Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    db.execute_batch("DELETE FROM capture_retention WHERE kind='proxy_legacy_until'; DROP TABLE proxy_replayed_windows;").unwrap();
+    let receipt = |t| {
+        json!([{
+            "id":"live","sessionId":SESSION,"timestamp":t,
+            "before":{"input":0,"output":0,"cached":0},"after":{"input":100,"output":10,"cached":20}
+        }])
+    };
+    let check =
+        |t| live_receipts::match_captured_receipts(root.path(), &[], &BTreeMap::new(), &receipt(t));
+    assert_eq!(check(at)[0]["rejected"], true);
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    assert_eq!(check(rotated_at)[0]["rejected"], true);
+
+    let mut competitor = original.clone();
+    competitor.id = "long-line".into();
+    competitor.relay_id = "supplier-b".into();
+    let mut first = request(at - 130_000);
+    first.thread_id = "other-session".into();
+    first.id = "first".into();
+    let mut last = request(at + 430_000);
+    last.thread_id = "other-session".into();
+    last.id = "last".into();
+    let mut long = serde_json::to_value(&competitor).unwrap();
+    long["displayOnly"] = json!("x".repeat(17_000));
+    let mut rows = [
+        json!(first),
+        json!(original),
+        long,
+        json!(unique),
+        json!(last),
+    ];
+    let path = root.path().join("request-log.jsonl");
+    let mut classifier = RequestEvidenceCache::default();
+    for stamped in [false, true] {
+        for row in &mut rows {
+            if stamped {
+                row["appendedAtMs"] = row["timestampMs"].clone();
+            }
+        }
+        let raw: String = rows.iter().map(|v| v.to_string() + "\n").collect();
+        fs::write(&path, raw).unwrap();
+        classifier.refresh(&path);
+        assert_eq!(classifier.replay_window.is_some(), stamped);
+        disk.capture_proxy_log(&classifier.records, classifier.replay_window)
+            .unwrap();
+        assert_eq!(check(at)[0]["rejected"], true);
+        assert_eq!(check(at + 300_000)[0]["provider"] == "supplier-a", stamped);
+    }
+    fs::remove_file(&path).unwrap();
+    classifier.refresh(&path);
+    drop(disk);
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    assert_eq!(check(at)[0]["rejected"], true);
+    assert_eq!(check(at + 300_000)[0]["provider"], "supplier-a");
+    assert_eq!(check(rotated_at)[0]["rejected"], true);
+    let uncovered = receipt(rotated_at)[0].clone();
+    let mut covered = receipt(at + 300_000)[0].clone();
+    covered["id"] = json!("independent-live");
+    let mixed = live_receipts::match_captured_receipts(
+        root.path(), &[], &BTreeMap::new(), &json!([uncovered, covered]),
+    );
+    let mixed = mixed.as_array().unwrap();
+    assert!(mixed.iter().any(|r| r["id"] == "live" && r["rejected"] == true));
+    assert!(mixed.iter().any(|r| r["id"] == "independent-live" && r["provider"] == "supplier-a"));
+
+    classifier.restore_verified(disk.load_verified(cutoff).unwrap());
+    earlier.provider.clear();
+    earlier.provider_source = None;
+    for response in [None, Some("terminal-a")] {
+        let mut row = earlier.clone();
+        row.terminal_response = response.map(Into::into);
+        classifier.supplement_captured(std::slice::from_ref(&row), &BTreeMap::new(), &disk);
+        classifier.attribute_with_cache(
+            std::slice::from_mut(&mut row),
+            &mut BTreeMap::new(),
+            &BTreeMap::new(),
+            &disk,
+        );
+        assert!(unknown_provider(&row.provider));
+        assert!(!classifier.verified[&row.id].rejected);
+    }
+    let mut competing = rotated;
+    competing.id = "another-rotated".into();
+    competing.final_response_id = Some("another-terminal".into());
+    competing.relay_id = "supplier-b".into();
+    disk.capture_proxy(&[competing]).unwrap();
+    earlier.terminal_response = Some("terminal-a".into());
+    classifier.supplement_captured(std::slice::from_ref(&earlier), &BTreeMap::new(), &disk);
+    classifier.attribute_with_cache(
+        std::slice::from_mut(&mut earlier),
+        &mut BTreeMap::new(),
+        &BTreeMap::new(),
+        &disk,
+    );
+    assert!(unknown_provider(&earlier.provider));
+    assert!(classifier.verified[&earlier.id].rejected);
+}
+
+#[test]
+fn legacy_proxy_coverage_read_error_uses_existing_validation_diagnostic() {
+    let root = tempfile::tempdir().unwrap();
+    let cutoff = Local::now().date_naive();
+    let at = Local::now().timestamp_millis();
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    disk.capture_proxy(&[request(at)]).unwrap();
+    let db =
+        rusqlite::Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    db.execute_batch(
+        "UPDATE capture_retention SET floor=1 WHERE kind='proxy_legacy_until';
+         ALTER TABLE proxy_replayed_windows RENAME TO unavailable;",
+    )
+    .unwrap();
+    let mut classifier = RequestEvidenceCache::default();
+    let mut row = event(at);
+    for unavailable in [true, false] {
+        if !unavailable {
+            db.execute_batch("ALTER TABLE unavailable RENAME TO proxy_replayed_windows;")
+                .unwrap();
+        }
+        let (_, limited) =
+            classifier.supplement_captured(std::slice::from_ref(&row), &BTreeMap::new(), &disk);
+        assert_eq!(limited, unavailable);
+        classifier.attribute_with_cache(
+            std::slice::from_mut(&mut row),
+            &mut BTreeMap::new(),
+            &BTreeMap::new(),
+            &disk,
+        );
+        assert_eq!(classifier.captured_id_check_failed, unavailable);
+        assert_eq!(unknown_provider(&row.provider), unavailable);
+    }
+}
+
+#[test]
+fn legacy_proxy_replay_rejects_out_of_order_physical_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("request-log.jsonl");
+    let at = Local::now().timestamp_millis();
+    let mut later = json!(request(at + 10_000));
+    later["id"] = json!("later");
+    later["appendedAtMs"] = json!(at + 10_000);
+    let mut earlier = json!(request(at));
+    earlier["id"] = json!("earlier");
+    earlier["appendedAtMs"] = json!(at);
+    fs::write(
+        &path,
+        format!(
+            "{}\n{}\n",
+            serde_json::to_string(&later).unwrap(),
+            serde_json::to_string(&earlier).unwrap()
+        ),
+    )
+    .unwrap();
+    let mut cache = RequestEvidenceCache::default();
+    cache.refresh(&path);
+    assert_eq!(cache.records.len(), 2);
+    assert_eq!(cache.replay_window, None);
+}
+
+#[test]
 fn captured_gateway_includes_all_target_sessions_and_their_aliases() {
     let at = Local::now().timestamp_millis();
     let root = tempfile::tempdir().unwrap();

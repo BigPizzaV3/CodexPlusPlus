@@ -234,7 +234,10 @@ impl Collector {
         let before = self.requests.reads;
         self.requests.refresh(request_log);
         if self.requests.reads != before && self.requests.stamp.is_some() {
-            if let Err(error) = self.cache.capture_proxy(&self.requests.records) {
+            if let Err(error) = self
+                .cache
+                .capture_proxy_log(&self.requests.records, self.requests.replay_window)
+            {
                 self.requests.stamp = None;
                 return Err(error);
             }

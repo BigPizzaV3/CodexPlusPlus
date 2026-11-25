@@ -137,6 +137,9 @@ pub(super) fn match_captured_receipts(
     let Ok(cache) = provider_cache::ProviderCache::read_snapshot(storage, cutoff) else {
         return json!([]);
     };
+    let Ok(coverage) = cache.proxy_coverage() else {
+        return json!([]);
+    };
     // 保留矛盾边的两个目标，整组别名一起失效，不能隐藏旧目标里的竞争请求。
     let resolved = RequestSessionAliases::from_pairs(cache.aliases.iter().chain(aliases.iter()));
     let mut combined_aliases = cache.aliases.clone();
@@ -159,7 +162,7 @@ pub(super) fn match_captured_receipts(
         .map(|(index, row)| (row.id.clone(), index))
         .collect();
     let mut revalidated_legacy = HashMap::new();
-    let mut incomplete_sessions = HashSet::new();
+    let mut incomplete = HashSet::new();
     for (session, receipts) in targets {
         let since = receipts
             .iter()
@@ -195,13 +198,31 @@ pub(super) fn match_captured_receipts(
             floor = floor.max(batch.floor);
             captured.extend(batch.rows);
         }
-        for receipt in receipts {
+        let mut uncovered_times = Vec::new();
+        for receipt in &receipts {
             if receipt
                 .timestamp
                 .saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
                 < floor
+                || !coverage.iter().any(|&(first, last)| {
+                    first <= receipt.timestamp.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                        && last >= receipt.timestamp.saturating_add(COMPLETION_LAG_MS)
+                })
             {
-                incomplete_sessions.insert(session.clone());
+                uncovered_times.push(receipt.timestamp);
+            }
+        }
+        // 缺证回执仍可能占用重叠窗口内的请求，不能释放给邻近回执。
+        uncovered_times.sort_unstable();
+        for receipt in receipts {
+            let reach = DELAYED_REQUEST_MATCH_WINDOW_MS + COMPLETION_LAG_MS;
+            let first = uncovered_times
+                .partition_point(|&at| at < receipt.timestamp.saturating_sub(reach));
+            if uncovered_times
+                .get(first)
+                .is_some_and(|&at| at <= receipt.timestamp.saturating_add(reach))
+            {
+                incomplete.insert(receipt.id.clone());
             }
         }
         for row in captured.into_iter().filter(|row| row.timestamp_ms >= floor) {
@@ -269,15 +290,6 @@ pub(super) fn match_captured_receipts(
         normalized_input.as_ref().unwrap_or(input),
     );
     let output = result.as_array_mut().unwrap();
-    let incomplete: HashSet<_> = receipts
-        .iter()
-        .filter(|row| {
-            resolved
-                .resolve(&row.session_id)
-                .is_some_and(|session| incomplete_sessions.contains(&session))
-        })
-        .map(|row| row.id.clone())
-        .collect();
     output.retain(|row| row["id"].as_str().is_none_or(|id| !incomplete.contains(id)));
     for receipt in receipts.iter().filter(|row| incomplete.contains(&row.id)) {
         let delta = receipt.delta().unwrap();

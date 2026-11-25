@@ -457,9 +457,12 @@ struct RequestEvidenceCache {
     path: PathBuf,
     stamp: Option<(u64, Option<SystemTime>, Option<(u64, u64)>)>,
     records: Vec<RequestEvidence>,
+    replay_window: Option<(i64, i64)>,
     captured_start: Option<usize>,
     captured_complete: Option<HashSet<[u8; 32]>>,
+    legacy_uncovered: HashSet<[u8; 32]>,
     captured_rejected: HashSet<String>,
+    captured_coverage_failed: bool,
     captured_id_check_failed: bool,
     verified: HashMap<[u8; 32], VerifiedAttribution>,
     reads: u64,
@@ -589,6 +592,7 @@ impl RequestEvidenceCache {
         self.bytes_read = 0;
         let Ok(guard) = codex_plus_core::request_log::lock_request_log() else {
             self.records.clear();
+            self.replay_window = None;
             self.stamp = None;
             return;
         };
@@ -601,6 +605,7 @@ impl RequestEvidenceCache {
         }
         self.stamp = stamp;
         self.records.clear();
+        self.replay_window = None;
         let Some(metadata) = metadata else {
             return;
         };
@@ -629,12 +634,33 @@ impl RequestEvidenceCache {
         struct Identity {
             id: String,
         }
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct PhysicalEntry {
+            #[serde(flatten)]
+            request: RequestEvidence,
+            appended_at_ms: Option<i64>,
+        }
+        let mut timed_rows = contents.ends_with(b"\n") && contents.len() as u64 == metadata.len();
+        let mut first_append = None;
+        let mut last_append = None;
         for line in contents.split_inclusive(|&byte| byte == b'\n') {
             if !line.ends_with(b"\n") {
                 break;
             }
-            let record = serde_json::from_slice::<RequestEvidence>(line)
+            let record = serde_json::from_slice::<PhysicalEntry>(line)
                 .ok()
+                .map(|entry| {
+                    if let Some(at) = entry.appended_at_ms {
+                        timed_rows &= at >= entry.request.timestamp_ms
+                            && last_append.is_none_or(|prior| prior <= at);
+                        first_append.get_or_insert(at);
+                        last_append = Some(at);
+                    } else if first_append.is_some() {
+                        timed_rows = false;
+                    }
+                    entry.request
+                })
                 .or_else(|| {
                     // 字段损坏但身份明确时，撤销该 ID 的旧证明。
                     serde_json::from_slice::<Identity>(line)
@@ -644,6 +670,12 @@ impl RequestEvidenceCache {
                             ..Default::default()
                         })
                 });
+            timed_rows &= record.as_ref().is_some_and(|r| {
+                !r.id.is_empty()
+                    && r.id.len() <= 256
+                    && r.thread_id.len() <= 256
+                    && r.timestamp_ms > 0
+            });
             if let Some(record) = record {
                 self.records.push(record);
             }
@@ -655,6 +687,11 @@ impl RequestEvidenceCache {
         if after != stamp {
             self.records.clear();
             self.stamp = None;
+        } else if timed_rows && let (Some(first), Some(last)) = (first_append, last_append) {
+            // 首尾毫秒允许同刻追加；旧格式单份尾部无法证明何时裁去了前缀。
+            let first = first.saturating_add(1);
+            let last = last.saturating_sub(1);
+            self.replay_window = (first <= last).then_some((first, last));
         }
     }
 
@@ -678,6 +715,8 @@ impl RequestEvidenceCache {
             self.records.truncate(start);
         }
         self.captured_complete = Some(HashSet::new());
+        self.legacy_uncovered.clear();
+        self.captured_coverage_failed = false;
         let aliases = RequestSessionAliases::new(aliases);
         let mut source_aliases: HashMap<String, Vec<String>> = HashMap::new();
         for alias in aliases.canonical.keys() {
@@ -710,6 +749,13 @@ impl RequestEvidenceCache {
         if targets.is_empty() {
             return (0, false);
         }
+        let Ok(mut coverage) = cache.proxy_coverage() else {
+            self.captured_coverage_failed = true;
+            self.legacy_uncovered
+                .extend(targets_slice.iter().map(|event| event.id));
+            return (0, true);
+        };
+        coverage.extend(self.replay_window);
         // refresh 每轮丢弃旧补充；文件 stamp 不承担完成缓存的更新通知。
         self.captured_start = Some(self.records.len());
         let mut observed: HashMap<_, _> = self
@@ -747,6 +793,7 @@ impl RequestEvidenceCache {
                         rows.extend(batch.rows);
                     }
                     Err(_) => {
+                        self.captured_coverage_failed = true;
                         complete = false;
                         break;
                     }
@@ -768,6 +815,13 @@ impl RequestEvidenceCache {
                 recovered += 1;
             }
             for (at, id) in events {
+                if !coverage.iter().any(|&(first, last)| {
+                    first <= at.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                        && last >= at.saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                }) {
+                    self.legacy_uncovered.insert(id);
+                    limited = true;
+                }
                 if complete && at.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS) >= floor {
                     self.captured_complete.as_mut().unwrap().insert(id);
                 } else {
@@ -801,7 +855,7 @@ impl RequestEvidenceCache {
                 .iter()
                 .chain(self.verified.values().map(|saved| &saved.request)),
         );
-        self.captured_id_check_failed = checked.is_err();
+        self.captured_id_check_failed = self.captured_coverage_failed || checked.is_err();
         self.captured_rejected = checked.unwrap_or_default();
         self.attribute_scoped(events, names, aliases, scope)
     }
@@ -1242,6 +1296,9 @@ impl RequestEvidenceCache {
                 continue;
             };
             let request = &requests[i];
+            if self.legacy_uncovered.contains(&event.id) {
+                continue;
+            }
             let legacy = self
                 .verified
                 .get(&event.id)
