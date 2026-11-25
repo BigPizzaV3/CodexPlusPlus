@@ -1028,6 +1028,13 @@ export function ModelList({
       Boolean(providerModel && qualifiedProvider(payload, current, exclude) && providerModel.toLowerCase() === current.toLowerCase()));
   };
   const choose = (item: PickerItem) => (item.direct && onPickOwn ? onPickOwn(item) : onPick(item));
+  // 当前选中的模型在哪一组：那一组默认展开；选中的在共享供应商里时，Agent 自带（直连）那组默认折叠（#3263）。
+  const selectedSection = displaySections.find((section) => section.items.some(isSelected))?.key;
+  const expandedByDefault = (key: string) => {
+    if (selectedSection && key === selectedSection) return true;
+    if (key === "own" && selectedSection) return false;
+    return !key.startsWith("provider:");
+  };
 
   const filters = useMemo(
     () => withOwnSection(pickerSections(payload, "", avatarOf, exclude, skipGroup), ownPickerSection(ownList, "", avatarOf)).filter((section) => section.key !== "custom"),
@@ -1073,7 +1080,7 @@ export function ModelList({
         ) : null}
         {displaySections.map((section) => {
           const provider = providersBySection.get(section.key);
-          const expanded = searching ? !closedSearchSections.includes(section.key) : openSections[section.key] ?? !section.key.startsWith("provider:");
+          const expanded = searching ? !closedSearchSections.includes(section.key) : openSections[section.key] ?? expandedByDefault(section.key);
           return (
           <section className="gw-mp-section" data-section={section.key} key={section.key}>
             <div className="gw-mp-heading">
