@@ -306,6 +306,15 @@ const RequestLogRow = memo(function RequestLogRow({ entry, model, upstream, expa
               <div><dt>{t("上游协议")}</dt><dd>{entry.wireApi || "-"}</dd></div>
               <div><dt>{t("上游模型")}</dt><dd>{upstream || "-"}</dd></div>
               <div><dt>{t("首字耗时")}</dt><dd>{entry.firstTokenMs == null ? (running ? t("进行中") : "-") : formatRequestLogDuration(entry.firstTokenMs)}</dd></div>
+              {entry.upstreamStartedAtMs != null ? (
+                <div>
+                  <dt>{t("转发前耗时")}</dt>
+                  <dd>
+                    {formatRequestLogDuration(Math.max(0, entry.upstreamStartedAtMs - entry.startedAtMs))}
+                    {entry.firstTokenMs != null ? `（${tf("上游首字 {0}", [formatRequestLogDuration(Math.max(0, entry.firstTokenMs - Math.max(0, entry.upstreamStartedAtMs - entry.startedAtMs)))])}）` : ""}
+                  </dd>
+                </div>
+              ) : null}
               <div><dt>{t("尝试次数")}</dt><dd>{entry.attempts || "-"}</dd></div>
               <div><dt>{t("自动重试")}</dt><dd>{entry.autoRetries}</dd></div>
               <div><dt>{t("重试原因")}</dt><dd>{requestLogRetryReasons(entry) || "-"}</dd></div>

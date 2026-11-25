@@ -93,6 +93,9 @@ pub struct RequestTrace {
     /// 上游第一段输出到达的 unix 毫秒时间（用于计算首字耗时）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_output_at_ms: Option<u64>,
+    /// 成功那次上游请求真正发出的 unix 毫秒时间：首字耗时里转发前的排队/重试可据此单独统计（#3267）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_started_at_ms: Option<u64>,
     #[serde(default)]
     pub retry_reasons: Vec<String>,
     /// 每次自动重试前的失败尝试摘要。
@@ -134,6 +137,9 @@ pub struct RequestLogEntry {
     /// 首字耗时（从请求开始到第一段上游输出），毫秒。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_token_ms: Option<u64>,
+    /// 成功那次上游请求真正发出的 unix 毫秒时间：首字耗时 - (它 - started_at_ms) 即上游真实首字（#3267）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_started_at_ms: Option<u64>,
     /// 请求进行中按流式 delta 粗估的输出 token，完成后清空并写入准确 usage。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub estimated_output_tokens: Option<u64>,
@@ -888,6 +894,7 @@ mod tests {
             attempt_details: Vec::new(),
             state: None,
             first_token_ms: Some(120),
+            upstream_started_at_ms: None,
             estimated_output_tokens: None,
             phase: None,
             error: None,
@@ -1139,6 +1146,12 @@ mod tests {
             json!("server_is_overloaded")
         );
         assert_eq!(raw["attemptDetails"][0]["delayMs"], json!(250));
+        retried.upstream_started_at_ms = Some(1_700_000_000_123);
+        retried.started_at_ms = 1_700_000_000_123 - 9_000;
+        let raw = serde_json::to_value(&retried).unwrap();
+        assert_eq!(raw["upstreamStartedAtMs"], json!(1_700_000_000_123u64));
+        let parsed: RequestLogEntry = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(parsed.upstream_started_at_ms, retried.upstream_started_at_ms);
         let parsed: RequestLogEntry = serde_json::from_value(raw).unwrap();
         assert_eq!(parsed.attempt_details, retried.attempt_details);
 

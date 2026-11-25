@@ -292,6 +292,8 @@ async fn open_candidates(
             let candidate = &prepared;
             let busy = recorder.begin(candidate);
             let started = Instant::now();
+            // 记下这次上游请求真正发出的时刻：请求日志据此把「转发前耗时」与上游真实首字分开统计（#3267）。
+            trace.attempt_started_at_ms = Some(crate::launcher::current_time_ms());
             // Anthropic → Anthropic 原生直通不经过拓展的 upstream 段：拓展关掉了 builtin:auth-headers 时
             // 改走协议代理链路，鉴权头才由拓展给。
             let native = request

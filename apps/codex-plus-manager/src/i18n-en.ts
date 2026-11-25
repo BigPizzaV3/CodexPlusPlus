@@ -2167,6 +2167,8 @@ export const EN_PLAIN: Record<string, string> = {
   "全部会话": "All conversations",
   "会话 ID": "Conversation ID",
   "首字耗时": "Time to first token",
+  "转发前耗时": "Pre-forward time",
+  "上游首字 {0}": "Upstream first token {0}",
   "首字 {0}": "First token {0}",
   "搜索模型 / 供应商 / 路径 / 错误 / 状态码": "Search model / provider / path / error / status code",
   "状态筛选": "Status filter",
