@@ -198,12 +198,14 @@ struct Checkpoint {
     activity_truncated: bool,
     issues: usize,
     skipping: bool,
+    #[serde(default)]
+    large_meter_checked: bool,
 }
 
 impl Checkpoint {
     fn capture(state: &FileState) -> (u64, Self) {
         // 未处理的尾行留在原会话文件，重开后从该行起点重读。
-        let offset = state.offset - state.pending.len() as u64;
+        let offset = state.committed_offset();
         let mut committed_cursors = BTreeMap::new();
         for event in &state.events {
             let cursor = committed_cursors
@@ -220,7 +222,7 @@ impl Checkpoint {
                 stamp: state.stamp,
                 resume_pending: state.resume_pending
                     || state.reader.is_some()
-                    || !state.pending.is_empty(),
+                    || offset < state.offset,
                 session: state.session.clone(),
                 model: state.model.clone(),
                 model_unavailable: state.model_unavailable,
@@ -256,15 +258,20 @@ impl Checkpoint {
                 activity_truncated: state.activity_truncated,
                 issues: state.issues,
                 skipping: state.skipping,
+                large_meter_checked: !state.recheck_large_meter,
             },
         )
     }
 
     fn restore(self, offset: u64) -> FileState {
+        let recheck_large_meter = !self.large_meter_checked
+            && offset > super::MAX_LINE as u64
+            && self.issues > self.malformed_token_counts;
         FileState {
             stamp: self.stamp,
             offset,
-            resume_pending: self.resume_pending,
+            resume_pending: self.resume_pending || recheck_large_meter,
+            recheck_large_meter,
             session: self.session,
             model: self.model,
             model_unavailable: self.model_unavailable,

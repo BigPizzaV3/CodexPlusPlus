@@ -1801,6 +1801,9 @@ struct FileState {
     reader: Option<index_budget::ReadCursor>,
     retained_charge: usize,
     pending: index_budget::PendingLine,
+    oversized: Option<oversized::Spool>,
+    projected_line_bytes: Option<u64>,
+    recheck_large_meter: bool,
     skipping: bool,
     skipped_ordinal: Option<u64>,
     nul_padding_end: Option<u64>,
@@ -3585,7 +3588,10 @@ impl FileState {
         };
         meter.refresh(self, cursor_bytes);
         if self.stamp == Some(stamp) && self.reader.is_none() && !self.resume_pending {
-            return Ok((self.pending.is_empty() && !self.skipping, false));
+            return Ok((
+                self.committed_offset() == self.offset && !self.skipping,
+                false,
+            ));
         }
         let replaced = self.source_replaced(stamp, compressed);
         if replaced {
@@ -3647,6 +3653,32 @@ impl FileState {
                     budget.charge_read(length as usize);
                     continue;
                 }
+                if let Some(spool) = &mut self.oversized
+                    && spool.complete
+                {
+                    match spool.finish(path, self.offset, stamp.2, &self.session, &self.turn)? {
+                        oversized::Projected::Line(line) => {
+                            if !self.pending.try_extend(&line) {
+                                return Ok(false);
+                            }
+                            self.projected_line_bytes = Some(spool.bytes);
+                            self.retained_charge += self.pending.capacity();
+                        }
+                        oversized::Projected::Skipped {
+                            affects_usage,
+                            ordinal,
+                        } => {
+                            self.issues += usize::from(affects_usage);
+                            self.activity_truncated |= !affects_usage;
+                            self.observe_rollout_position(if affects_usage {
+                                None
+                            } else {
+                                ordinal
+                            });
+                        }
+                    }
+                    self.oversized = None;
+                }
                 if self.pending.last() == Some(&b'\n') {
                     if !self.accept_pending_line(cutoff, budget, &mut meter) {
                         return Ok(false);
@@ -3657,13 +3689,23 @@ impl FileState {
                 }
                 let bytes = input.fill_buf()?;
                 if bytes.is_empty() {
+                    if compressed && let Some(spool) = &mut self.oversized {
+                        spool.complete = true;
+                        continue;
+                    }
                     if compressed && !self.pending.is_empty() {
                         if !self.accept_pending_line(cutoff, budget, &mut meter) {
                             return Ok(false);
                         }
                     }
-                    waiting_for_append = !compressed && (!self.pending.is_empty() || self.skipping);
-                    return Ok(self.pending.is_empty() && !self.skipping);
+                    if compressed && self.skipping {
+                        self.skipping = false;
+                        let ordinal = self.skipped_ordinal.take();
+                        self.observe_rollout_position(ordinal);
+                    }
+                    let complete = self.committed_offset() == self.offset && !self.skipping;
+                    waiting_for_append = !compressed && !complete;
+                    return Ok(complete);
                 }
                 let length = bytes
                     .iter()
@@ -3676,19 +3718,33 @@ impl FileState {
                 let part = &bytes[..length];
                 let complete = part.last() == Some(&b'\n');
                 let pending_capacity = self.pending.capacity();
-                if !self.skipping {
+                if let Some(spool) = &mut self.oversized {
+                    spool.extend(part)?;
+                } else if !self.skipping {
                     if self.pending.len() + part.len() <= MAX_LINE {
                         if !self.pending.try_extend(part) {
                             return Ok(false);
                         }
                     } else {
-                        let (affects_usage, ordinal) = oversized::inspect(&self.pending);
-                        self.issues += usize::from(affects_usage);
-                        self.activity_truncated |= !affects_usage;
-                        self.pending_response = None;
-                        self.skipped_ordinal = if affects_usage { None } else { ordinal };
+                        let (affects_usage, ordinal, may_meter) = oversized::inspect(&self.pending);
+                        if may_meter
+                            && self
+                                .pending
+                                .iter()
+                                .find(|b| !b.is_ascii_whitespace())
+                                .is_none_or(|b| *b == b'{')
+                        {
+                            let mut spool = oversized::Spool::new(&self.pending, compressed)?;
+                            spool.extend(part)?;
+                            self.oversized = Some(spool);
+                        } else {
+                            self.issues += usize::from(affects_usage);
+                            self.activity_truncated |= !affects_usage;
+                            self.pending_response = None;
+                            self.skipped_ordinal = if affects_usage { None } else { ordinal };
+                            self.skipping = true;
+                        }
                         self.pending.clear();
-                        self.skipping = true;
                     }
                 }
                 self.offset += length as u64;
@@ -3758,14 +3814,15 @@ impl FileState {
         stamp: (u64, Option<SystemTime>, Option<(u64, u64)>),
         compressed: bool,
     ) -> bool {
-        self.stamp.is_some_and(|old| {
-            old != stamp
-                && (compressed
-                    || self.invalid_counts
-                    || old.0 > stamp.0
-                    || old.2 != stamp.2
-                    || old.0 == stamp.0 && old.1 != stamp.1)
-        })
+        self.recheck_large_meter
+            || self.stamp.is_some_and(|old| {
+                old != stamp
+                    && (compressed
+                        || self.invalid_counts
+                        || old.0 > stamp.0
+                        || old.2 != stamp.2
+                        || old.0 == stamp.0 && old.1 != stamp.1)
+            })
     }
 
     fn accept_pending_line(
@@ -3793,9 +3850,20 @@ impl FileState {
                 self.pending.clear();
             }
         }
+        self.projected_line_bytes = None;
         self.skipping = false;
         meter.refresh(self, index_budget::CURSOR_BYTES);
         true
+    }
+
+    fn committed_offset(&self) -> u64 {
+        self.offset
+            - self
+                .oversized
+                .as_ref()
+                .map(|spool| spool.bytes)
+                .or(self.projected_line_bytes)
+                .unwrap_or(self.pending.len() as u64)
     }
 
     fn observe_rollout_position(&mut self, ordinal: Option<u64>) {
@@ -3822,7 +3890,8 @@ impl FileState {
             #[serde(borrow)]
             payload: &'a RawValue,
         }
-        let line_start = self.offset.checked_sub(line.len() as u64);
+        let line_bytes = self.projected_line_bytes.unwrap_or(line.len() as u64);
+        let line_start = self.offset.checked_sub(line_bytes);
         let preceding_padding = self.nul_padding_end.take();
         let Ok(envelope) = serde_json::from_slice::<Envelope>(line) else {
             if !line.iter().all(u8::is_ascii_whitespace) {
@@ -3874,9 +3943,9 @@ impl FileState {
                 {
                     return None;
                 }
-                let response = payload["response_id"].as_str().filter(|id| {
-                    !id.is_empty() && id.len() <= 256 && id.bytes().all(|byte| byte.is_ascii_graphic())
-                })?;
+                let response = payload["response_id"]
+                    .as_str()
+                    .filter(|id| terminal_receipts::valid_response_id(id))?;
                 let usage = Tokens::parse(&payload["usage"])?;
                 let usage = usage.normalize_cache_input(
                     CacheAccounting::parse(&payload["usage"], usage),
@@ -3908,7 +3977,7 @@ impl FileState {
                         receipt.rollout_position = ordinal.map(|ordinal| {
                             (
                                 ordinal,
-                                self.offset.saturating_sub(line.len() as u64),
+                                self.offset.saturating_sub(line_bytes),
                                 self.offset,
                             )
                         });
@@ -3940,7 +4009,7 @@ impl FileState {
                 && !batch.capture(
                     &item,
                     envelope.timestamp,
-                    self.offset - line.len() as u64,
+                    self.offset - line_bytes,
                     self.offset,
                     cutoff,
                     self.skip_activity,
@@ -4258,13 +4327,8 @@ impl FileState {
         let delta = total.usage_delta(self.previous, last);
         self.previous = Some(total);
         self.previous_cache_accounting = cumulative;
-        let rollout_position = ordinal.map(|ordinal| {
-            (
-                ordinal,
-                self.offset.saturating_sub(line.len() as u64),
-                self.offset,
-            )
-        });
+        let rollout_position =
+            ordinal.map(|ordinal| (ordinal, self.offset.saturating_sub(line_bytes), self.offset));
         if date < cutoff {
             if let Some(position) = rollout_position {
                 self.expired_count = Some((position, total));

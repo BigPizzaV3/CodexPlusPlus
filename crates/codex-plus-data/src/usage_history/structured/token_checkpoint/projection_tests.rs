@@ -941,6 +941,143 @@ fn continuation_receipts_require_reconciliation_in_the_incoming_or_prior_batch()
 }
 
 #[test]
+fn legacy_large_line_issue_replays_once_and_replaces_the_old_snapshot_atomically()
+-> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let source = root.path().canonicalize()?.join("rollout-legacy.jsonl");
+    let database = root.path().join("usage.sqlite");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut second = count(2, 2, 2, true);
+    second["payload"]["extra"] = json!("x".repeat(2 << 20));
+    let mut state = parse(
+        &source,
+        &[header(PARENT, 0), count(1, 1, 1, true), second],
+        cutoff,
+    );
+    state.events.pop();
+    state.previous = Some(state.events[0].total);
+    state.issues = 1;
+    state.rollout_out_of_order = true;
+    let mut store = Store::open(Connection::open(&database)?)?;
+    let prepared = store.prepare(
+        new_source(&source, &state),
+        cutoff,
+        BTreeMap::new(),
+        1 << 20,
+    )?;
+    store.publish(prepared)?;
+    store.db.execute("UPDATE token_sources SET checkpoint = CAST(json_remove(checkpoint, '$.large_meter_checked') AS BLOB)", [])?;
+    let (original_revision, original) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(original.len(), 1);
+    drop(store);
+    let mut store = Store::open(Connection::open(&database)?)?;
+    let mut reader = SourceReader::restore(&store, &source)?;
+    store.db.pragma_update(None, "query_only", true)?;
+    assert!(
+        reader
+            .step(
+                &mut store,
+                cutoff,
+                &mut Budget::new(std::iter::empty()),
+                &BTreeMap::new(),
+                1 << 20
+            )
+            .is_err()
+    );
+    assert!(read(&mut store.db, i64::MIN, i64::MAX) == (original_revision, original));
+    store.db.pragma_update(None, "query_only", false)?;
+    assert!(reader.step(
+        &mut store,
+        cutoff,
+        &mut Budget::new(std::iter::empty()),
+        &BTreeMap::new(),
+        1 << 20
+    )?);
+    let (revision, events) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1].delta.input_tokens, 100);
+    assert_eq!(store.checkpoint(&source)?.unwrap().1.issues, 0);
+    let mut reader = SourceReader::restore(&store, &source)?;
+    assert!(reader.step(
+        &mut store,
+        cutoff,
+        &mut Budget::new(std::iter::empty()),
+        &BTreeMap::new(),
+        1 << 20
+    )?);
+    assert!(read(&mut store.db, i64::MIN, i64::MAX) == (revision, events));
+    Ok(())
+}
+
+#[test]
+fn oversized_unfinished_meter_reopens_at_its_start_and_publishes_only_once() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().canonicalize()?;
+    let path = home.join("rollout-partial.jsonl");
+    let database = home.join("usage.sqlite");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let prefix = format!("{}\n{}\n", header(PARENT, 0), count(1, 1, 1, true));
+    let mut second = count(2, 2, 2, false);
+    second["payload"]["extra"] = json!("x".repeat(5 << 20));
+    fs::write(&path, format!("{prefix}{second}"))?;
+    let mut store = Store::open(Connection::open(&database)?)?;
+    let mut reader = SourceReader::restore(&store, &path)?;
+    for _ in 0..2 {
+        assert!(!reader.step(
+            &mut store,
+            cutoff,
+            &mut Budget::new(std::iter::empty()),
+            &BTreeMap::new(),
+            1 << 20
+        )?);
+    }
+    assert!(reader.waiting_for_newline());
+    assert_eq!(
+        store.checkpoint(&path)?.unwrap().1.offset,
+        prefix.len() as u64
+    );
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).1.len(), 1);
+    drop(reader);
+    drop(store);
+    writeln!(fs::OpenOptions::new().append(true).open(&path)?)?;
+    let mut store = Store::open(Connection::open(&database)?)?;
+    let mut reader = SourceReader::restore(&store, &path)?;
+    for _ in 0..3 {
+        if reader.step(
+            &mut store,
+            cutoff,
+            &mut Budget::new(std::iter::empty()),
+            &BTreeMap::new(),
+            1 << 20,
+        )? {
+            break;
+        }
+    }
+    let events = read(&mut store.db, i64::MIN, i64::MAX).1;
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[1].rollout_position,
+        Some((2, prefix.len() as u64, path.metadata()?.len()))
+    );
+    assert_eq!(events[1].total.input_tokens, 200);
+    assert_eq!(events[1].delta.input_tokens, 100);
+    assert_eq!(
+        store.checkpoint(&path)?.unwrap().1.offset,
+        path.metadata()?.len()
+    );
+    let mut reader = SourceReader::restore(&store, &path)?;
+    assert!(reader.step(
+        &mut store,
+        cutoff,
+        &mut Budget::new(std::iter::empty()),
+        &BTreeMap::new(),
+        1 << 20
+    )?);
+    assert!(events == read(&mut store.db, i64::MIN, i64::MAX).1);
+    Ok(())
+}
+
+#[test]
 fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_next_turn() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().canonicalize().unwrap();
@@ -987,7 +1124,7 @@ fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_ne
     };
     let head = json!({"type":"session_meta","timestamp":at(0),"payload":{"id":PARENT,"model_provider":"fixture-supplier"}});
     let mut first = terminal(2, "turn-a", "resp-a", usage(10, 3, 2), usage(10, 3, 2));
-    first["payload"]["extra"] = json!("x".repeat(32 * 1024));
+    first["payload"]["extra"] = json!("x".repeat(1100 * 1024));
     let mut wrong_turn = first.clone();
     wrong_turn["payload"]["turn_id"] = json!("turn-b");
     wrong_turn["payload"]["response_id"] = json!("wrong-turn");

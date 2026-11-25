@@ -15,6 +15,7 @@ rusqlite.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order", "raw_value"] }
 sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 uuid.workspace = true
@@ -22,8 +23,6 @@ zstd.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
-
 [dev-dependencies]
 # 测试程序在 main 之前进家目录沙箱（codex_plus_core::test_sandbox），不碰用户的真实目录。
 ctor = "0.8"
-tempfile.workspace = true

@@ -57,7 +57,7 @@ impl SourceReader {
     pub(super) fn waiting_for_newline(&self) -> bool {
         self.ready.is_none()
             && !self.has_open_reader()
-            && (!self.state.pending.is_empty() || self.state.skipping)
+            && (self.state.committed_offset() < self.state.offset || self.state.skipping)
             && self.source.extension().is_some_and(|ext| ext == "jsonl")
             && self
                 .state
@@ -72,7 +72,9 @@ impl SourceReader {
             && self.ready.is_none()
             && matches!(self.encoding, Encoding::Idle)
             && !self.state.skipping
-            && self.offset == self.state.offset - self.state.pending.len() as u64
+            && self.state.oversized.is_none()
+            && self.state.projected_line_bytes.is_none()
+            && self.offset == self.state.committed_offset()
     }
 
     pub(super) fn can_retry_write(&self) -> bool {
@@ -156,7 +158,7 @@ impl SourceReader {
                 if self.state.skipping || self.replacing && !complete {
                     return Ok(false);
                 }
-                let offset = self.state.offset - self.state.pending.len() as u64;
+                let offset = self.state.committed_offset();
                 if !self.replacing
                     && offset == self.offset
                     && (!complete || self.committed_complete)
@@ -213,7 +215,7 @@ impl SourceReader {
             Err(error) => return Err(error),
         };
         self.revision = Some(store.publish(prepared)?);
-        self.offset = self.state.offset - self.state.pending.len() as u64;
+        self.offset = self.state.committed_offset();
         self.committed_complete = complete;
         self.state.events = Vec::new();
         self.state.tools = Vec::new();
