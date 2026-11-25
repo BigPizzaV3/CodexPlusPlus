@@ -1742,7 +1742,7 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
             );
         }
     };
-    let shared_config_home = directories::BaseDirs::new()
+    let shared_config_home = codex_plus_core::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".config"))
         .unwrap_or_else(|| PathBuf::from(".config"));
     let mut command = std::process::Command::new(manager_executable);
@@ -3179,7 +3179,7 @@ fn multi_instance_user_data_roots_with(
 }
 
 fn legacy_multi_instance_user_data_dir(slug: &str) -> PathBuf {
-    directories::BaseDirs::new()
+    codex_plus_core::user_dirs::BaseDirs::new()
         .map(|dirs| {
             dirs.data_local_dir()
                 .join("CodexPlusPlus")
@@ -8932,7 +8932,7 @@ pub(crate) fn default_skills_manager() -> codex_plus_core::skills::SkillsManager
     ]);
     let shared = std::env::var_os("CODEX_PLUS_SHARED_SKILLS_DIR")
         .map(std::path::PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".agents").join("skills")));
+        .or_else(|| codex_plus_core::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().join(".agents").join("skills")));
     match shared {
         Some(path) => manager.with_shared_skills_dir(path),
         None => manager,
@@ -12530,7 +12530,7 @@ mod tests {
 
     #[test]
     fn multi_instance_user_data_without_override_keeps_default_layout() {
-        let expected = directories::BaseDirs::new()
+        let expected = codex_plus_core::user_dirs::BaseDirs::new()
             .map(|dirs| {
                 dirs.data_local_dir()
                     .join("CodexPlusPlus")

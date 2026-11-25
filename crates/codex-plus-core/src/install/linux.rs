@@ -40,7 +40,7 @@ pub fn install_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
     let _ = fs::set_permissions(&desktop_shortcut, fs::Permissions::from_mode(0o755));
 
     // 2. 同时确保 ~/.local/share/applications/ 下存在桌面入口，供应用菜单和 MIME handler 识别
-    if let Some(base_dirs) = directories::BaseDirs::new() {
+    if let Some(base_dirs) = crate::user_dirs::BaseDirs::new() {
         let app_dir = base_dirs.data_local_dir().join("applications");
         if fs::create_dir_all(&app_dir).is_ok() {
             let app_entry = app_dir.join("codex-plus-plus.desktop");
@@ -80,7 +80,7 @@ pub fn uninstall_shortcuts(options: &InstallOptions) -> anyhow::Result<()> {
         }
     }
 
-    if let Some(base_dirs) = directories::BaseDirs::new() {
+    if let Some(base_dirs) = crate::user_dirs::BaseDirs::new() {
         let app_entry = base_dirs.data_local_dir().join("applications/codex-plus-plus.desktop");
         if app_entry.is_file() {
             let _ = fs::remove_file(&app_entry);

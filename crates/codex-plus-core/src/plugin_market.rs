@@ -337,7 +337,7 @@ fn read_state(home: &Path) -> anyhow::Result<InstalledState> {
 }
 
 fn gh_binary() -> PathBuf {
-    if let Some(base) = directories::BaseDirs::new() {
+    if let Some(base) = crate::user_dirs::BaseDirs::new() {
         for local in [
             base.home_dir().join(".local/bin/gh"),
             PathBuf::from("/opt/homebrew/bin/gh"),

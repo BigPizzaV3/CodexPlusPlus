@@ -143,7 +143,7 @@ pub fn default_claude_home_dir() -> PathBuf {
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty() && !path.to_string_lossy().trim().is_empty())
         .unwrap_or_else(|| {
-            directories::BaseDirs::new()
+            crate::user_dirs::BaseDirs::new()
                 .map(|dirs| dirs.home_dir().join(".claude"))
                 .unwrap_or_else(|| PathBuf::from(".claude"))
         })

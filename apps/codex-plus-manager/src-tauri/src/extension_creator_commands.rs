@@ -105,7 +105,7 @@ pub(crate) fn debug_ports(state_dir: &Path) -> Vec<u16> {
             .and_then(|status| status.debug_port)
     };
     push(latest(state_dir.join("latest-status.json")));
-    if let Some(base) = directories::BaseDirs::new() {
+    if let Some(base) = codex_plus_core::user_dirs::BaseDirs::new() {
         push(latest(base.home_dir().join(".codex-session-delete/latest-status.json")));
     }
     push(Some(9229));

@@ -9,7 +9,8 @@
 //! `CODEX_HOME`、`CODEX_PLUS_STATE_DIR`……），默认路径于是全落在沙箱里。测试自己再设这些变量照常有效。
 //!
 //! 新增测试程序（`src` 下的单元测试根、`tests/*.rs`）都要接上，`tests/all/test_sandbox.rs` 的契约测试会查。
-//! Windows 上 `directories` 走系统的已知文件夹接口、不看环境变量，这里只能顾到读环境变量的那些路径。
+//! Windows 上 `directories` 走系统的已知文件夹接口、不看环境变量：所以代码里的用户目录统一走
+//! [`crate::user_dirs`]，它看到 [`active_home`] 就改按沙箱推导（契约测试也查没有绕过它的）。
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -80,6 +81,18 @@ pub fn enter() -> &'static Path {
         }
         root
     })
+}
+
+/// 沙箱里的家目录：本进程（或起它的测试进程）进了沙箱、家目录也还在沙箱根下时返回，否则 None。
+///
+/// 按环境变量判断而不是只看本进程有没有调过 [`enter`]：测试起的子进程（launcher、helper 等非测试程序）
+/// 也要落在沙箱里。正式运行时没有这个标记，开销只是读一次环境变量。
+pub fn active_home() -> Option<PathBuf> {
+    let root = PathBuf::from(std::env::var_os(MARKER)?);
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)?;
+    home.starts_with(&root).then_some(home)
 }
 
 /// 当前进程的沙箱根目录（没进沙箱时为 None）。

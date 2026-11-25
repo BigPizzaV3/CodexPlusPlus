@@ -247,7 +247,7 @@ fn read_ide() -> anyhow::Result<Value> {
 }
 
 fn cli_db() -> std::path::PathBuf {
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.data_dir().to_path_buf())
         .unwrap_or_else(|| editor_kit::home().join(".local").join("share"))
         .join("kiro-cli")

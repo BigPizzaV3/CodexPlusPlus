@@ -161,9 +161,7 @@ pub fn remove_owned_data() -> std::io::Result<()> {
 pub fn default_install_root() -> Option<PathBuf> {
     #[cfg(windows)]
     {
-        return crate::windows_integration::desktop_dir().or_else(|| {
-            directories::UserDirs::new().and_then(|dirs| dirs.desktop_dir().map(PathBuf::from))
-        });
+        return crate::user_dirs::desktop_dir();
     }
 
     #[cfg(target_os = "macos")]
@@ -186,7 +184,7 @@ pub fn default_install_root() -> Option<PathBuf> {
 
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        directories::UserDirs::new().and_then(|dirs| dirs.desktop_dir().map(PathBuf::from))
+        crate::user_dirs::desktop_dir()
     }
 }
 
@@ -278,7 +276,7 @@ fn entrypoint_candidates(root: &Option<PathBuf>) -> Vec<PathBuf> {
             root.join(format!("{name}.desktop")),
             root.join("codex-plus-plus.desktop"),
         ];
-        if let Some(base_dirs) = directories::BaseDirs::new() {
+        if let Some(base_dirs) = crate::user_dirs::BaseDirs::new() {
             list.push(base_dirs.data_local_dir().join("applications/codex-plus-plus.desktop"));
         }
         list.push(PathBuf::from("/usr/share/applications/codex-plus-plus.desktop"));
@@ -437,7 +435,7 @@ fn is_macos_applications_dir(path: &Path) -> bool {
     if path == Path::new("/Applications") {
         return true;
     }
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| path == dirs.home_dir().join("Applications"))
         .unwrap_or(false)
 }

@@ -127,6 +127,7 @@ pub mod sub2api;
 pub mod task_board;
 #[doc(hidden)]
 pub mod test_sandbox;
+pub mod user_dirs;
 pub mod tools;
 pub mod update;
 pub mod extension_backend;

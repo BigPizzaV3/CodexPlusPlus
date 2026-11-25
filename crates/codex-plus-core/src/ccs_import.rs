@@ -621,7 +621,7 @@ fn unique_profile_id(base: &str, existing_ids: &[String]) -> String {
 }
 
 fn home_dir() -> PathBuf {
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(PathBuf::from))

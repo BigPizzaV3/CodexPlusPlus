@@ -89,6 +89,8 @@
 - 测试不许碰用户的真实目录：每个测试程序在 main 之前进家目录沙箱（`codex_plus_core::test_sandbox`，
   `#[ctor::ctor]` 调 `test_sandbox::enter()`，HOME 指到临时目录、清掉 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` /
   `CODEX_PLUS_STATE_DIR` 等）。新增测试程序照 `tests/all/main.rs` 末尾接上，契约测试 `test_sandbox::` 会查
+- 代码里取家目录 / 配置 / 数据 / 桌面目录统一走 `codex_plus_core::user_dirs`，不直接用 `directories`：
+  Windows 上 `directories` 走已知文件夹接口、不看环境变量，绕过它沙箱就挡不住（契约测试同样会查）
 - 断言读 config.toml 文本，如 `assert!(config.contains("model_catalog_json"))`
 - 改行为要同步改/加对应测试
 

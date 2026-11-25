@@ -22,7 +22,7 @@ use codex_plus_core::remote_control::{set_state_path_for_tests, tls};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let home = PathBuf::from(std::env::var("P1_HOME")?);
-    let default_home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".codex"));
+    let default_home = codex_plus_core::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().join(".codex"));
     if Some(&home) == default_home.as_ref() {
         anyhow::bail!("P1_HOME 不能是 ~/.codex：只在隔离实例上跑");
     }
