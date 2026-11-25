@@ -808,7 +808,6 @@ mod tests {
         let settings = root.path().join("settings.json");
         fs::write(&settings, r#"{"usageHistoryEnabled":true}"#).unwrap();
         let request_log = root.path().join("requests.jsonl");
-        let storage = root.path().join("history");
         let now = Local::now();
         let at = now - chrono::Duration::days(3);
         let stamp = at.to_rfc3339();
@@ -844,40 +843,69 @@ mod tests {
         let day = at.date_naive().to_string();
         let request = json!({"from":day,"to":day});
         let query = Query::parse(&request, now.date_naive()).unwrap();
-        let mut worker = Runtime::new(storage.clone(), settings.clone());
-        let exact_providers = |result: &Value| {
-            result["days"][0]["breakdowns"]
+        let exact_models = |result: &Value| {
+            let mut models: Vec<_> = result["days"][0]["breakdowns"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .filter(|row| row["classificationEvidence"] == "request-log-exact")
-                .count()
+                .map(|row| row["model"].as_str().unwrap().to_owned())
+                .collect();
+            models.sort_unstable();
+            models
         };
-        let pass = |worker: &mut Runtime| {
-            let state = worker.update_with_request_log(&home, &request_log);
-            assert!(
-                state.classification_error.is_none(),
-                "{:?}",
-                state.classification_error
+        // 冷启动按文件修改时间摄取，使有竞争证明的会话分别落在第二批、第一批。
+        for (order, expected_first) in [
+            ([1, 2, 3, 4], &["gpt-fixture-1", "gpt-fixture-2"][..]),
+            ([3, 4, 1, 2], &["gpt-fixture-3"][..]),
+        ] {
+            for (rank, i) in order.iter().enumerate() {
+                let path = home.join(format!("sessions/rollout-{i}.jsonl"));
+                let modified =
+                    std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 - rank as u64 * 60);
+                fs::File::options()
+                    .write(true)
+                    .open(path)
+                    .unwrap()
+                    .set_modified(modified)
+                    .unwrap();
+            }
+            let storage = root.path().join(format!("history-{}", order[0]));
+            let mut worker = Runtime::new(storage.clone(), settings.clone());
+            let pass = |worker: &mut Runtime| {
+                let state = worker.update_with_request_log(&home, &request_log);
+                assert!(
+                    state.classification_error.is_none(),
+                    "{:?}",
+                    state.classification_error
+                );
+                state.read(&storage, &query, &request, None, false)
+            };
+            let first = pass(&mut worker);
+            assert_eq!(exact_models(&first), expected_first, "{first}");
+            assert_eq!(worker.historical_cursor.unwrap().0, 2);
+            let second = pass(&mut worker);
+            assert_eq!(
+                exact_models(&second),
+                ["gpt-fixture-1", "gpt-fixture-2", "gpt-fixture-3"],
+                "{second}"
             );
-            state.read(&storage, &query, &request, None, false)
-        };
-        let first = pass(&mut worker);
-        assert_eq!(exact_providers(&first), 2, "{first}");
-        let second = pass(&mut worker);
-        assert_eq!(exact_providers(&second), 3, "{second}");
-        assert_eq!(second["days"][0]["usage"], first["days"][0]["usage"]);
-        assert_eq!(second["days"][0]["usage"]["totalTokens"], 440);
-        assert_eq!(second["days"][0]["usage"]["cachedInputTokens"], 80);
-        assert_eq!(second["days"][0]["recordCount"], 4);
-        assert_eq!(second["classificationStatus"]["uncertainEvents"], 1);
-        let complete = pass(&mut worker);
-        assert!(worker.historical_cursor.is_none());
-        assert_eq!(complete["revision"], second["revision"]);
-        drop(worker);
-        let reopened = pass(&mut Runtime::new(storage.clone(), settings));
-        assert_eq!(reopened["days"], second["days"]);
-        assert_eq!(reopened["revision"], second["revision"]);
+            assert_eq!(second["days"][0]["usage"], first["days"][0]["usage"]);
+            let usage = &second["days"][0]["usage"];
+            assert_eq!(usage["inputTokens"], 400);
+            assert_eq!(usage["cachedInputTokens"], 80);
+            assert_eq!(usage["outputTokens"], 40);
+            assert_eq!(usage["totalTokens"], 440);
+            assert_eq!(second["days"][0]["recordCount"], 4);
+            assert_eq!(second["classificationStatus"]["uncertainEvents"], 1);
+            let complete = pass(&mut worker);
+            assert!(worker.historical_cursor.is_none());
+            assert_eq!(complete["revision"], second["revision"]);
+            drop(worker);
+            let reopened = pass(&mut Runtime::new(storage.clone(), settings.clone()));
+            assert_eq!(reopened["days"], second["days"]);
+            assert_eq!(reopened["revision"], second["revision"]);
+        }
     }
 
     #[test]
