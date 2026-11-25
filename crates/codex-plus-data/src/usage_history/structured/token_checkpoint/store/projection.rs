@@ -24,6 +24,12 @@ use std::path::{Path, PathBuf};
 mod prefix;
 mod request_proofs;
 
+const CLASSIFICATION_RIGHT_MS: i64 = 2 * DELAYED_REQUEST_MATCH_WINDOW_MS;
+
+pub(in super::super) fn classification_lookback_ms() -> i64 {
+    native_endpoints::WINDOW_MS.max(CLASSIFICATION_RIGHT_MS)
+}
+
 #[derive(Debug)]
 pub(in super::super) struct ComponentInputLimit;
 
@@ -1582,9 +1588,11 @@ impl Store {
     }
 
     pub(in super::super) fn recent_sessions(&self, since: i64) -> Result<Vec<(String, i64)>> {
+        // 先按时间取近期记录，避免 SQLite 为 GROUP BY 顺着会话索引遍历全部历史。
         let mut statement = self.db.prepare_cached(
             "SELECT s.session, max(r.timestamp_ms) AS latest
-             FROM token_resolved r JOIN token_sessions s ON s.id = r.session_id
+             FROM token_resolved r INDEXED BY token_resolved_time
+             JOIN token_sessions s ON s.id = r.session_id
              WHERE r.timestamp_ms >= ?1 AND r.day >= (SELECT precise_from FROM token_revision)
              GROUP BY r.session_id ORDER BY latest DESC, s.session",
         )?;
@@ -1607,6 +1615,46 @@ impl Store {
             )?
             .query_row(params![session, before], |row| row.get(0))
             .optional()?)
+    }
+
+    pub(in super::super) fn classification_page(
+        &self,
+        session: &str,
+        earliest: i64,
+        latest: i64,
+        share: usize,
+        available: usize,
+    ) -> Result<Option<(Range<i64>, usize)>> {
+        let left = classification_lookback_ms();
+        let end = latest.saturating_add(1);
+        let mut statement = self.db.prepare_cached(
+            "SELECT timestamp_ms, sum(length(payload)) FROM token_resolved
+             WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+             AND day >= (SELECT precise_from FROM token_revision)
+             AND timestamp_ms >= ?2 AND timestamp_ms < ?3
+             GROUP BY timestamp_ms ORDER BY timestamp_ms DESC",
+        )?;
+        let mut rows = statement.query(params![
+            session,
+            earliest.saturating_sub(left),
+            end.saturating_add(CLASSIFICATION_RIGHT_MS)
+        ])?;
+        let mut bytes = 0;
+        let mut start = earliest;
+        while let Some(row) = rows.next()? {
+            let at: i64 = row.get(0)?;
+            let next = bytes + row.get::<_, usize>(1)?;
+            // 首个目标的竞争记录必须完整。其余目标按本会话本轮的字节份额分段。
+            if next > share && at < latest.saturating_sub(left) {
+                start = earliest.max(at.saturating_add(left).saturating_add(1));
+                break;
+            }
+            if next > available {
+                return Ok(None);
+            }
+            bytes = next;
+        }
+        Ok(Some((start..end, bytes)))
     }
 
     pub(in super::super) fn historical_classification_before(
@@ -1718,8 +1766,7 @@ impl Store {
                 .earliest()
                 .context("invalid classification retention date")?
                 .timestamp_millis();
-            let left = native_endpoints::WINDOW_MS.max(2 * DELAYED_REQUEST_MATCH_WINDOW_MS);
-            let right = 2 * DELAYED_REQUEST_MATCH_WINDOW_MS;
+            let left = classification_lookback_ms();
             // A clipped competition window cannot certify a supplier or withdraw one.
             let start = window.start.max(first.saturating_add(left));
             if start >= window.end {
@@ -1738,7 +1785,7 @@ impl Store {
             let native_blocked = gateway_blocked || gaps.exists(params![session, cutoff, 0])?;
             (
                 start..window.end,
-                start.saturating_sub(left)..window.end.saturating_add(right),
+                start.saturating_sub(left)..window.end.saturating_add(CLASSIFICATION_RIGHT_MS),
                 gateway_blocked,
                 native_blocked,
             )

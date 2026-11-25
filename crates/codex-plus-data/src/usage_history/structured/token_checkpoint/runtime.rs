@@ -5,7 +5,7 @@ use super::{
         Store,
         archive::{ArchiveKey, Recovered},
         executions::{DetailQuery, ExecutionQuery},
-        projection::ArchiveAnswer,
+        projection::{ArchiveAnswer, classification_lookback_ms},
     },
 };
 use crate::usage_history::{
@@ -28,9 +28,13 @@ use std::sync::{
 };
 use std::time::Duration;
 
-const CLASSIFICATION_SESSIONS_PER_ROUND: usize = 6;
 const HISTORICAL_CLASSIFICATION_WINDOWS_PER_ROUND: usize = 2;
-const CLASSIFICATION_SLICE_MS: i64 = 300_000;
+
+struct RecentClassification {
+    latest: i64,
+    before: i64,
+    older_next: bool,
+}
 
 pub(in super::super) struct Runtime {
     storage: PathBuf,
@@ -40,7 +44,7 @@ pub(in super::super) struct Runtime {
     retry_full: bool,
     evidence: Index,
     evidence_cursor: usize,
-    evidence_before: BTreeMap<String, i64>,
+    evidence_before: BTreeMap<String, RecentClassification>,
     historical_cursor: Option<(i64, i64)>,
     historical: Option<Arc<Historical>>,
     historical_verifier: Arc<Mutex<EvidenceVerifier>>,
@@ -150,7 +154,9 @@ impl Runtime {
             &mut state,
         ) {
             Ok(true) if evidence_available => {
-                if let Err(error) = self.classify_retained(home, proof_cutoff, &mut state) {
+                if let Err(error) =
+                    self.classify_retained(home, proof_cutoff, MAX_RETAINED_BYTES, &mut state)
+                {
                     state.classification_error = Some(format!("{error:#}"));
                 }
             }
@@ -193,6 +199,7 @@ impl Runtime {
         &mut self,
         home: &Path,
         cutoff: NaiveDate,
+        byte_budget: usize,
         state: &mut ReadState,
     ) -> Result<()> {
         let store = self
@@ -203,53 +210,30 @@ impl Runtime {
         let sessions = store.recent_sessions(recent_since)?;
         let active: std::collections::BTreeSet<_> = sessions.iter().map(|(id, _)| id).collect();
         self.evidence_before.retain(|id, _| active.contains(id));
-        let offset = self.evidence_cursor % sessions.len().max(1);
-        let count = CLASSIFICATION_SESSIONS_PER_ROUND.min(sessions.len());
-        self.evidence_cursor = offset + count;
-        let mut windows =
-            Vec::with_capacity(2 * count + HISTORICAL_CLASSIFICATION_WINDOWS_PER_ROUND);
-        for (session, latest) in sessions.iter().cycle().skip(offset).take(count) {
-            let tail = latest.saturating_sub(CLASSIFICATION_SLICE_MS - 1)..latest.saturating_add(1);
-            let before = self
-                .evidence_before
-                .entry(session.clone())
-                .or_insert(tail.start);
-            let older = store
-                .classification_before(session, (*before).min(tail.start))?
-                .map(|at| at.saturating_sub(CLASSIFICATION_SLICE_MS - 1)..at.saturating_add(1));
-            *before = older.as_ref().map_or(tail.start, |window| window.start);
-            windows.extend(
-                older
-                    .into_iter()
-                    .chain(std::iter::once(tail))
-                    .map(|window| (session.clone(), window)),
-            );
-        }
-        // 旧会话只在后台按已提交明细推进，不占用近期会话的归类名额。
-        for _ in 0..HISTORICAL_CLASSIFICATION_WINDOWS_PER_ROUND {
-            let Some((session_id, before)) = self.historical_cursor else {
-                break;
-            };
-            let Some((id, session, at)) =
-                store.historical_classification_before(session_id, before, recent_since)?
-            else {
-                self.historical_cursor = None;
-                break;
-            };
-            let window = at.saturating_sub(CLASSIFICATION_SLICE_MS - 1)..at.saturating_add(1);
-            self.historical_cursor = Some((id, window.start));
-            windows.push((session, window));
-        }
-        if windows.is_empty() {
+        let slots = sessions.len() + usize::from(self.historical_cursor.is_some());
+        if slots == 0 {
             return Ok(());
         }
+        let offset = self.evidence_cursor % slots;
+        self.evidence_cursor = offset + 1;
         let index = &mut self.evidence;
-        let mut failure = None;
-        for (session, window) in windows {
-            let result = store.reclassify_window(
-                &session,
+        let mut remaining = byte_budget;
+        let mut classify_page = |store: &mut Store, session: &str, from, to, shares: usize| {
+            let Some((window, bytes)) =
+                store.classification_page(session, from, to, remaining / shares, remaining)?
+            else {
+                ensure!(
+                    remaining < byte_budget,
+                    "Token classification competition window exceeds input budget"
+                );
+                return Ok(None);
+            };
+            remaining -= bytes;
+            let start = window.start;
+            store.reclassify_window(
+                session,
                 Some(window),
-                MAX_RETAINED_BYTES,
+                bytes,
                 self.scan.scoped_count_gaps(),
                 self.scan.sealed_pending(),
                 |events, aliases, scope| {
@@ -287,9 +271,72 @@ impl Runtime {
                     index.native_evidence.apply_count_conflicts(events);
                     Ok(())
                 },
-            );
-            if let Err(error) = result {
-                failure.get_or_insert(error);
+            )?;
+            Ok::<_, anyhow::Error>(Some(start))
+        };
+        let mut failure = None;
+        for step in 0..slots {
+            let slot = (offset + step) % slots;
+            let shares = slots - step;
+            if let Some((session, latest)) = sessions.get(slot) {
+                let cursor = self.evidence_before.get(session);
+                let older = match cursor.filter(|cursor| cursor.older_next) {
+                    Some(cursor) => store.classification_before(session, cursor.before)?,
+                    None => None,
+                };
+                // 先覆盖最近一天，再交替回访尾部和向前翻页；每次从真实事件继续。
+                let (from, to) = match (cursor, older) {
+                    (_, Some(at)) => (i64::MIN, at),
+                    (Some(cursor), None) => (
+                        cursor
+                            .latest
+                            .min(*latest)
+                            .saturating_sub(classification_lookback_ms()),
+                        *latest,
+                    ),
+                    (None, None) => (recent_since, *latest),
+                };
+                match classify_page(store, session, from, to, shares) {
+                    Ok(Some(start)) => {
+                        let before = match cursor {
+                            Some(cursor) if !cursor.older_next => cursor.before,
+                            _ => start,
+                        };
+                        self.evidence_before.insert(
+                            session.clone(),
+                            RecentClassification {
+                                latest: match (cursor, older) {
+                                    (Some(cursor), Some(_)) => cursor.latest,
+                                    _ => *latest,
+                                },
+                                before,
+                                older_next: older.is_none(),
+                            },
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        failure.get_or_insert(error);
+                    }
+                }
+            } else {
+                for left in (1..=HISTORICAL_CLASSIFICATION_WINDOWS_PER_ROUND).rev() {
+                    let (session_id, before) = self.historical_cursor.unwrap();
+                    let Some((id, session, at)) =
+                        store.historical_classification_before(session_id, before, recent_since)?
+                    else {
+                        self.historical_cursor = None;
+                        break;
+                    };
+                    match classify_page(store, &session, i64::MIN, at, shares * left) {
+                        Ok(Some(start)) => self.historical_cursor = Some((id, start)),
+                        Ok(None) => break,
+                        Err(error) => {
+                            failure.get_or_insert(error);
+                            break;
+                        }
+                    }
+                }
             }
         }
         index
@@ -599,6 +646,9 @@ pub(in super::super) fn recover_archive(
     .map_err(|error| format!("{error:#}"));
     (key, answer)
 }
+
+#[cfg(test)]
+mod classification_tests;
 
 #[cfg(test)]
 mod tests {
