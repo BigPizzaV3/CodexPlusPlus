@@ -78,6 +78,7 @@ export function CodexModeControls({
   onAggregate,
   onDirect,
   payload,
+  hiddenProviders,
   busy,
   run,
   notify,
@@ -89,6 +90,8 @@ export function CodexModeControls({
   onAggregate: () => void;
   onDirect: () => void;
   payload: GatewayPayload | null;
+  /** 列表里隐藏了的供应商（别的 Agent 的）：默认模型下拉也不列它们的模型。 */
+  hiddenProviders?: string[];
   busy: string | null;
   run: Run;
   notify: Notify;
@@ -111,7 +114,7 @@ export function CodexModeControls({
       />
       {mode === "aggregate" ? (
         <Suspense fallback={null}>
-          <AgentModelPicker agentId="codex" busy={busy} notify={notify} payload={payload} run={run} />
+          <AgentModelPicker agentId="codex" busy={busy} hiddenProviders={hiddenProviders} notify={notify} payload={payload} run={run} />
         </Suspense>
       ) : null}
     </>

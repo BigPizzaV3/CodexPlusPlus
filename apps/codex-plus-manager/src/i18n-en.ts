@@ -2359,7 +2359,6 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex 里显示的名字、用户名和邮箱，只在本机使用，留空用默认值":
     "The name, username and email Codex shows. Used only on this computer; leave blank for the defaults",
   "本地账号": "Local account",
-  "现在的供应商要用真实登录，本地账号用不了，Codex 登录身份已退回「不登录」。": " The current provider needs a real sign-in, so the local account can't be used; Codex sign-in identity is back to \"Not signed in\".",
   "本地账号要从 Codex++ 启动 Codex 才生效；想直接打开 Codex 也生效，请先在首页打开「自动接管官方 App」": "The local account only works when Codex is launched from Codex++. To have it work when you open Codex directly, turn on \"Auto-takeover of the official app\" on the home page first.",
   "邮箱": "Email",
   "用户名": "Username",
@@ -4830,6 +4829,13 @@ export const EN_BACKEND: Record<string, string> = {
   "已从备份恢复删除的会话。": "Restored the deleted sessions from backup.",
   "找不到 Codex 会话数据库，无法撤销删除。": "Cannot undo: the Codex session database was not found.",
   "MCP&插件已保存并同步。": "MCP & plugins saved and synced.",
+};
+
+// 后端接在别的消息后面的提示（如切换供应商后「Codex 登录身份已退回不登录」）：
+// 前半句照常翻译，后半句按这里翻译，中间补一个空格。
+export const EN_APPENDED: Record<string, string> = {
+  "现在的供应商要用真实登录，本地账号用不了，Codex 登录身份已退回「不登录」。":
+    "The current provider needs a real sign-in, so the local account can't be used; Codex sign-in identity is back to \"Not signed in\".",
 };
 
 // Pattern-based backend translations: [regex, replacement template].

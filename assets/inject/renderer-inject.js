@@ -17416,11 +17416,16 @@ ${key} = ${value}`]);
     </div>`;
   }
 
-  /** 聚合时的「默认模型」：和管理器顶部同一份候选（打开、没排除的供应商的模型 + 模型组），选了就改 Codex 绑定的默认模型。 */
+  /**
+   * 聚合时的「默认模型」：和管理器顶部同一份候选（打开、没排除的供应商的模型 + 模型组），选了就改 Codex 绑定的默认模型。
+   * 候选跟列表一致：不勾「显示其他 Agent 的供应商」时不列别的 Agent 的供应商的模型；已选的模型能不能用仍按真实排除名单判断。
+   */
   function renderCodexPlusGatewayDefaultModel(model, busy) {
     const payload = codexPlusGatewayPageState.payload;
     const exclude = payload?.gateway?.bindings?.codex?.poolExclude || [];
-    const models = codexPlusGatewayModel.agentModels(payload, exclude);
+    const visible = new Set(codexPlusGatewayVisibleEntries().map((entry) => entry.id));
+    const hidden = codexPlusGatewayEntries().filter((entry) => !visible.has(entry.id)).map((entry) => entry.id);
+    const models = codexPlusGatewayModel.agentModels(payload, [...exclude, ...hidden]);
     const options = [
       ...(model ? [] : [["", "选择默认模型"]]),
       // 「供应商 id/模型」这种带前缀的写法不在候选里，但能路由就照常显示。
@@ -17704,7 +17709,7 @@ ${key} = ${value}`]);
     renderCodexPlusProviderPage();
   }
 
-  /** 侧栏底部的「Codex 登录身份」：ChatGPT 账号 / 本地账号（API Key 解锁）/ 不登录，和管理器同一个选择。 */
+  /** 侧栏底部的「Codex 登录身份」：ChatGPT 账号 / 本地账号 / 不登录，和管理器同一个选择。 */
   function renderCodexPlusLoginIdentity() {
     const state = codexPlusGatewayPageState;
     const login = state.login;
@@ -17717,7 +17722,7 @@ ${key} = ${value}`]);
       ...accounts.map((account) => [`account:${account.id}`, account.name || account.email || account.id]),
       ...(value.startsWith("account:") && !accounts.some((account) => `account:${account.id}` === value) ? [[value, "已选账号不可用"]] : []),
       // 官方登录供应商下模型请求要用真实登录：本地账号置灰，原因写在下面。
-      ["local", "本地账号（API Key 解锁）", Boolean(blocked) && value !== "local"],
+      ["local", "本地账号", Boolean(blocked) && value !== "local"],
       ["none", "不登录"],
     ];
     const help = value === "local"

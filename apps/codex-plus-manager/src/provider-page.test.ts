@@ -516,6 +516,22 @@ describe("供应商页的网关页签（44 分片）", () => {
     assert.equal(sent.payload.args.binding.model, "b-1");
   });
 
+  it("默认模型候选跟列表一致：别的 Agent 的供应商隐藏时不列它的模型，已选的照常显示", () => {
+    const pool = [poolEntry("gw-a"), poolEntry("kimi", { owner: "claude", models: ["k-1"] })];
+    const result = gatewayResult(pool);
+    const page = loadPage({ postJson: (path, payload) => (payload?.command ? result : listResult()) });
+    page.gwApply(result);
+    assert.doesNotMatch(page.modeInfo(true), /k-1/, "Claude 的供应商默认不列，模型也不进候选");
+    page.gw.showOthers = true;
+    assert.match(page.modeInfo(true).replaceAll("&quot;", '"'), /\["k-1","k-1"\]/);
+    page.gw.showOthers = false;
+    (result.gateway.bindings.codex as { model: string }).model = "k-1";
+    page.gwApply(result);
+    const bar = page.modeInfo(true).replaceAll("&quot;", '"');
+    assert.match(bar, /\["k-1","k-1"\]/, "已选的模型还能路由，照常显示");
+    assert.doesNotMatch(bar, /不可用/);
+  });
+
   it("聚合时每家一个开关，只改 Codex 用哪些；别的 Agent 的默认不列", async () => {
     const pool = [poolEntry("gw-a"), poolEntry("gw-b"), poolEntry("kimi", { owner: "claude" })];
     const result = gatewayResult(pool);
@@ -541,7 +557,7 @@ describe("供应商页的网关页签（44 分片）", () => {
     const blocked = page.login();
     assert.match(blocked, /Codex 登录身份/);
     assert.match(blocked, /本地账号暂不可用：当前用的是官方登录/);
-    assert.match(blocked.replaceAll("&quot;", '"'), /\["local","本地账号（API Key 解锁）",true\]/);
+    assert.match(blocked.replaceAll("&quot;", '"'), /\["local","本地账号",true\]/);
     page.gw.login = login;
     await page.loginChoose("local");
     await page.loginChoose("account:chatgpt-1");

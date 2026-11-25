@@ -644,6 +644,8 @@ export function RelayScreen({
   const orphan = takenOverByGateway && (codexBound === false || !normalized.relayProfiles.some((profile) => profile.id === CODEX_GATEWAY_RELAY_ID));
   // 聚合列表：不勾「显示其他 Agent 的供应商」时去掉 Claude 的。
   const sharedEntries = entriesForPage(gatewayPayload?.pool ?? [], "codex", showOtherAgents);
+  // 默认模型的候选跟列表一致：隐藏了的别的 Agent 的供应商，模型也不列。
+  const hiddenProviders = (gatewayPayload?.pool ?? []).filter((entry) => !sharedEntries.includes(entry)).map((entry) => entry.id);
   // 「显示其他 Agent 的供应商」只管聚合列表，放在「供应商」标题右侧，和 Claude 页同一个位置。
   // 「更多设置」折起来时，标题旁一句话说开着哪些，不用展开也知道。
   const moreSettingsHint = !normalized.relayProfilesEnabled
@@ -707,6 +709,7 @@ export function RelayScreen({
                   busy={poolBusy}
                   canSwitch={normalized.relayProfilesEnabled}
                   connecting={sharedConnecting || actions.relaySwitching}
+                  hiddenProviders={hiddenProviders}
                   mode={mode}
                   notify={actions.showMessage}
                   onAggregate={() => onConnectGateway?.()}
