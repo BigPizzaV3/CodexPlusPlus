@@ -874,19 +874,51 @@ fn codex_group_suffix(relay: &RelayProfile, group: &str, relays: &[&RelayProfile
             .to_string()
     };
     let short = head(group);
-    let unique = relays
-        .iter()
-        .filter(|other| other.id != relay.id)
-        .all(|other| {
-            head(&crate::gateway::accounts::mask_account_name(
-                other.name.trim(),
-            )) != short
-        });
-    if !short.is_empty() && short.chars().count() <= CODEX_GROUP_SUFFIX_MAX && unique {
+    let unique = |candidate: &str| {
+        relays
+            .iter()
+            .filter(|other| other.id != relay.id)
+            .all(|other| {
+                let full = head(&crate::gateway::accounts::mask_account_name(
+                    other.name.trim(),
+                ));
+                // 别家也可能走「去掉账号前缀」这条路：两种候选都要避开，免得两行后缀撞车。
+                full != candidate
+                    && account_suffix_candidates(&full)
+                        .iter()
+                        .all(|other_candidate| other_candidate != candidate)
+            })
+    };
+    if !short.is_empty() && short.chars().count() <= CODEX_GROUP_SUFFIX_MAX && unique(&short) {
         short
     } else {
-        relay.id.clone()
+        account_suffix_candidates(&short)
+            .into_iter()
+            .find(|candidate| {
+                !candidate.is_empty()
+                    && candidate.chars().count() <= CODEX_GROUP_SUFFIX_MAX
+                    && unique(candidate)
+            })
+            .unwrap_or_else(|| relay.id.clone())
     }
+}
+
+/// 账号名打码后（长邮箱）仍可能超过选择器认的 24 字后缀：只对账号类名字
+/// 去掉「ChatGPT 」这类前缀再生成候选，让选择器显示登录号而不是退回不可读的供应商 id。
+/// 候选按「完整打码名 -> 去前缀名」的顺序给出，调用方挑第一个不超长且不撞名的。
+fn account_suffix_candidates(masked_head: &str) -> Vec<String> {
+    let prefixes = ["GitHub Copilot", "ChatGPT", "Copilot", "SuperGrok"];
+    prefixes
+        .iter()
+        .find_map(|prefix| {
+            masked_head
+                .strip_prefix(*prefix)
+                .map(|rest| rest.trim().to_string())
+                .filter(|rest| !rest.is_empty())
+        })
+        .into_iter()
+        .chain(std::iter::once(masked_head.to_string()))
+        .collect()
 }
 
 /// 池里第 `index` 家的成员目录里这个上游模型的条目（不分大小写）；每家的目录只生成一次。
@@ -4561,6 +4593,49 @@ mod tests {
     use crate::settings::{
         AggregateRelayMember, AggregateRelayProfile, AggregateRelayStrategy, RelaySessionProvider,
     };
+
+    fn relay_with_name(id: &str, name: &str) -> RelayProfile {
+        RelayProfile {
+            id: id.into(),
+            name: name.into(),
+            ..RelayProfile::default()
+        }
+    }
+
+    #[test]
+    fn codex_group_suffix_strips_account_prefix_when_masked_name_exceeds_limit() {
+        // 打码后的长邮箱账号名（#3283）：超过 24 字后缀上限时退回了不可读的供应商 id。
+        let relay = relay_with_name("native-54860db6", "ChatGPT wuzhongwu26@gmail.com");
+        let group = crate::gateway::accounts::mask_account_name(relay.name.trim());
+        assert!(group.chars().count() > CODEX_GROUP_SUFFIX_MAX);
+        let suffix = codex_group_suffix(&relay, &group, &[&relay]);
+        assert_eq!(suffix, "wu****26@gmail.com");
+        assert!(suffix.chars().count() <= CODEX_GROUP_SUFFIX_MAX);
+    }
+
+    #[test]
+    fn codex_group_suffix_stripped_candidate_must_stay_unique() {
+        // 两个账号打码后去前缀撞名：宁可退回供应商 id，也不能让两行后缀分不开。
+        let first = relay_with_name("native-one", "ChatGPT wuzhongwu26@gmail.com");
+        let second = relay_with_name("native-two", "ChatGPT wuzhongwu26@gmail.com");
+        let group = crate::gateway::accounts::mask_account_name(first.name.trim());
+        assert_eq!(
+            codex_group_suffix(&first, &group, &[&first, &second]),
+            first.id
+        );
+    }
+
+    #[test]
+    fn codex_group_suffix_keeps_short_names_and_id_fallback() {
+        let relay = relay_with_name("ds", "DeepSeek 官方中转服务（很长很长的名字哦哦）");
+        let group = crate::gateway::accounts::mask_account_name(relay.name.trim());
+        // 非账号类名字不剥前缀：超长且没有可用候选时仍退回供应商 id。
+        assert_eq!(codex_group_suffix(&relay, &group, &[&relay]), relay.id);
+
+        let short = relay_with_name("ds", "DeepSeek");
+        let group = crate::gateway::accounts::mask_account_name(short.name.trim());
+        assert_eq!(codex_group_suffix(&short, &group, &[&short]), group);
+    }
 
     #[test]
     fn codex_rejects_unwritable_default_from_an_overriding_extension() {
