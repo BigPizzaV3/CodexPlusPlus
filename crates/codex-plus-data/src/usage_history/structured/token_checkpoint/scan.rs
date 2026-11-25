@@ -57,6 +57,14 @@ impl Scan {
         &self.scoped_count_gaps
     }
 
+    fn retirement_blocked(&self) -> bool {
+        self.unknown_count_scope
+            || self.issues != self.scoped_count_gaps.len()
+            || self.deferred.is_some()
+            || self.revisiting.is_some()
+            || !self.waiting_for_newline.is_empty()
+    }
+
     pub(super) fn maintain(&mut self, store: &mut Store, cutoff: NaiveDate) -> anyhow::Result<()> {
         let now = chrono::Local::now().timestamp_millis();
         store.expire_execution_locators(now, RECLAIM_BATCH)?;
@@ -98,14 +106,18 @@ impl Scan {
         let maintenance_error = self.maintain(store, cutoff).err();
         let mut errors = Vec::new();
         let backlogged = !self.remaining.is_empty();
+        let recheck_missing = !self.missing.is_empty()
+            && self.remaining.len() == self.sealed_queue.len()
+            && !self.retirement_blocked();
+        let mut current_inventory = false;
         if self.active.is_none()
             && self.comparing.is_none()
-            && self.remaining.is_empty()
-            && self.missing.is_empty()
+            && (self.remaining.is_empty() || recheck_missing)
         {
             self.issues = 0;
-            self.sealed_queue.clear();
+            let previous_queue = std::mem::take(&mut self.sealed_queue);
             self.scoped_count_gaps.clear();
+            self.missing.clear();
             self.more_missing = false;
             let paths = discover(home, !self.rescan, &mut self.issues);
             self.unknown_count_scope = self.issues != 0;
@@ -147,6 +159,26 @@ impl Scan {
                         self.sealed_queue = sealed;
                         self.issues += gaps.len();
                         self.scoped_count_gaps = gaps;
+                        current_inventory = true;
+                        if recheck_missing {
+                            // 已处理过、且本轮仍证实封存的路径无需重新排队。
+                            self.remaining.retain(|path| {
+                                !self.sealed_queue.contains(path) || previous_queue.contains(path)
+                            });
+                            self.sealed_queue
+                                .retain(|path| previous_queue.contains(path));
+                        }
+                        if !self.missing.is_empty() {
+                            let names: HashSet<_> = self.missing.iter()
+                                .filter_map(|(path, _)| path.file_name())
+                                .collect();
+                            self.remaining.make_contiguous().sort_by_key(|path| {
+                                (
+                                    self.sealed_queue.contains(path),
+                                    !path.file_name().is_some_and(|name| names.contains(name)),
+                                )
+                            });
+                        }
                     }
                     Err(error) => {
                         self.issues += 1;
@@ -226,24 +258,35 @@ impl Scan {
                     } else {
                         self.comparing.take()
                     };
+                    let blocked_retirement = self.retirement_blocked();
+                    // 只在本轮已核实所有潜在迁移目的地时优先处理缺失路径。
+                    let retire_first = current_inventory
+                        && !blocked_retirement
+                        && !self.missing.is_empty()
+                        && self.remaining.len() == self.sealed_queue.len()
+                        && self.comparing.is_none()
+                        && verify_later.is_empty();
                     let path = live_path
                         .take()
                         .or_else(|| comparing.as_ref().map(|check| check.path().to_owned()))
-                        .or_else(|| self.remaining.pop_front());
+                        .or_else(|| {
+                            if retire_first { None } else { self.remaining.pop_front() }
+                        });
                     let Some(path) = path else {
                         // 先摄取完整的新来源，再处理旧路径，避免归档移动产生用量空窗。
                         if self.comparing.is_some() || !verify_later.is_empty() {
                             break;
                         }
-                        if self.issues != 0 || self.deferred.is_some() || self.revisiting.is_some()
-                            || !self.waiting_for_newline.is_empty()
-                        {
+                        if blocked_retirement {
                             if !self.missing.is_empty() || self.more_missing {
                                 self.unknown_count_scope = true;
                                 self.scoped_count_gaps.clear();
                             }
                             self.missing.clear();
                             self.more_missing = false;
+                            break;
+                        }
+                        if !current_inventory {
                             break;
                         }
                         let Some((source, revision)) = self.missing.pop_front() else {

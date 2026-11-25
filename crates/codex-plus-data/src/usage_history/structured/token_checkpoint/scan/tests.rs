@@ -1024,14 +1024,179 @@ fn missing_sources_are_retired_in_batches_and_reappearance_is_not_a_deletion() {
             .count(),
         3
     );
-    assert!(!scan.round(&mut store, &root, cutoff, &names, 8192).complete);
-    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let final_retirement = scan.round(&mut store, &root, cutoff, &names, 8192);
+    assert!(final_retirement.complete && final_retirement.errors.is_empty());
     for path in removed {
         assert_eq!(
             store.checkpoint(&path).unwrap().is_some(),
             path == reappeared
         );
     }
+}
+
+#[test]
+fn missing_owner_is_retired_while_verified_sources_remain_queued() {
+    for malformed in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        let sessions = root.join("sessions");
+        fs::create_dir(&sessions).unwrap();
+        for n in 0..SOURCES_PER_ROUND + 2 {
+            fs::write(sessions.join(format!("rollout-{n:03}.jsonl")), "").unwrap();
+        }
+        if malformed {
+            let bad =
+                rollout(SECOND).replace("\"input_tokens\":100", "\"input_tokens\":\"invalid\"");
+            fs::write(sessions.join("rollout-gap.jsonl"), bad).unwrap();
+        }
+        let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+        let names = BTreeMap::new();
+        let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        let mut scan = Scan::default();
+        while scan
+            .round(&mut store, &root, cutoff, &names, 8192)
+            .pending_sources
+            != 0
+        {}
+        let old = sessions.join("rollout-000.jsonl");
+        fs::remove_file(&old).unwrap();
+        let mut scan = Scan::default();
+        let report = scan.round(&mut store, &root, cutoff, &names, 8192);
+        assert!(report.errors.is_empty() && report.maintenance_error.is_none());
+        assert!(store.checkpoint(&old).unwrap().is_none());
+        assert!(report.pending_sources > 0);
+        assert_eq!(report.pending_sources, scan.sealed_pending());
+        assert_eq!(report.issues, usize::from(malformed));
+        assert_eq!(report.issues, scan.scoped_count_gaps().len());
+    }
+}
+
+#[test]
+fn retirement_checks_unknown_and_replaced_archives_after_discovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    let archives = root.join("archived_sessions");
+    fs::create_dir(&sessions).unwrap();
+    fs::create_dir(&archives).unwrap();
+    for n in 0..4 * SOURCES_PER_ROUND {
+        fs::write(sessions.join(format!("rollout-{n:03}.jsonl")), "").unwrap();
+    }
+    let old = sessions.join("rollout-000.jsonl");
+    fs::write(&old, rollout(FIRST)).unwrap();
+    let changed = archives.join("rollout-changed.jsonl.zst");
+    fs::write(
+        &changed,
+        zstd::stream::encode_all(rollout(SECOND).as_bytes(), 1).unwrap(),
+    )
+    .unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let mut scan = Scan::default();
+    while scan
+        .round(&mut store, &root, cutoff, &names, 1 << 25)
+        .pending_sources
+        != 0
+    {}
+    fs::remove_file(&old).unwrap();
+    let large = rollout(SECOND)
+        + &format!(
+            "{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n",
+            "z".repeat(16384)
+        )
+        .repeat(400);
+    let bytes = zstd::stream::encode_all(large.as_bytes(), 1).unwrap();
+    let ongoing = archives.join("rollout-unread.jsonl.zst");
+    fs::write(&ongoing, &bytes).unwrap();
+    let mut scan = Scan::default();
+    assert!(
+        !scan
+            .round(&mut store, &root, cutoff, &names, 1 << 25)
+            .complete
+    );
+    assert!(store.checkpoint(&old).unwrap().is_some());
+    fs::write(&changed, &bytes).unwrap();
+    let new = archives.join("rollout-new.jsonl.zst");
+    fs::write(&new, &bytes).unwrap();
+    for _ in 0..32 {
+        let report = scan.round(&mut store, &root, cutoff, &names, 1 << 25);
+        assert!(report.errors.is_empty() && report.maintenance_error.is_none());
+        if store.checkpoint(&old).unwrap().is_none() {
+            for path in [&ongoing, &changed, &new] {
+                let (_, state) = store.checkpoint(path).unwrap().unwrap();
+                assert!(!state.resume_pending);
+                assert_eq!(state.stamp, Some(FileState::source_stamp(path).unwrap()));
+                assert_eq!(state.offset, large.len() as u64);
+            }
+            return;
+        }
+    }
+    panic!("missing source still retained after the archives closed");
+}
+
+#[test]
+fn formerly_empty_queue_rediscovers_late_archive_before_retiring_its_old_source()
+-> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = fs::canonicalize(dir.path())?;
+    let sessions = root.join("sessions");
+    let archives = root.join("archived_sessions");
+    fs::create_dir(&sessions)?;
+    fs::create_dir(&archives)?;
+    let old = sessions.join("rollout-old.jsonl");
+    fs::write(&old, rollout(FIRST))?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut scan = Scan::default();
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    const LIMIT: usize = 32 << 20;
+    assert!(
+        scan.round(&mut store, &root, cutoff, &names, LIMIT)
+            .complete
+    );
+
+    fs::remove_file(&old)?;
+    let padding = format!(
+        "{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n",
+        "x".repeat(16384)
+    )
+    .repeat(440);
+    let running = archives.join("rollout-running.jsonl.zst");
+    let active = rollout(SECOND) + &padding;
+    fs::write(&running, zstd::stream::encode_all(active.as_bytes(), 1)?)?;
+    let mut scan = Scan::default();
+    assert!(
+        !scan
+            .round(&mut store, &root, cutoff, &names, LIMIT)
+            .complete
+    );
+    assert_eq!(scan.remaining.len(), 0);
+    assert_eq!(scan.sealed_pending(), 0);
+    assert!(store.checkpoint(&old)?.is_some());
+
+    let moved = archives.join("rollout-late.jsonl.zst");
+    let original = rollout(FIRST) + &padding;
+    fs::write(&moved, zstd::stream::encode_all(original.as_bytes(), 1)?)?;
+    for _ in 0..8 {
+        let report = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let mut deltas = Vec::new();
+        Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+            if event.session == FIRST {
+                deltas.push(event.delta.input_tokens);
+            }
+            Ok(())
+        })?;
+        assert_eq!(deltas, [100]);
+        if store.checkpoint(&old)?.is_none() {
+            let state = store.checkpoint(&moved)?.unwrap().1;
+            assert!(!state.resume_pending);
+            assert_eq!(state.offset, original.len() as u64);
+            return Ok(());
+        }
+    }
+    panic!("old source outlived its replacement archive");
 }
 
 #[test]
