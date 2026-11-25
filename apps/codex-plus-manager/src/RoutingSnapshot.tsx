@@ -3,20 +3,14 @@ import { ArrowRight, CircleCheck, CircleMinus, CircleX, GitBranch, Server, Termi
 import { agentName, formatTokens, maskAccountName, type GatewayPayload } from "./gateway-model";
 import { t, tf } from "./i18n";
 import { flowAgent, type FlowEntry } from "./request-flow-model";
-import { requestContext } from "./routing-session-model";
+import { requestContext, routingPathTargets } from "./routing-session-model";
 import { requestRouteTiming } from "./request-route-timing";
 
 export function RoutingPath({ entry, payload }: { entry: FlowEntry; payload: GatewayPayload | null }) {
   const [expanded, setExpanded] = useState(false);
   const route = entry.route;
-  const used = route?.steps.filter(step => step.outcome === "answered").at(-1);
-  const plan = route?.planned ?? [];
-  const targets = plan.length ? plan : entry.relayId
-    ? [{ relayId: entry.relayId, relayName: entry.relayName ?? "", model: entry.upstreamModel || entry.model }]
-    : [];
+  const { targets, compact, used } = routingPathTargets(entry);
   const group = payload?.groups.find(item => item.id === route?.groupId)?.name;
-  const compact = targets.filter((target, index) => index < 3
-    || used?.relayId === target.relayId && used?.model === target.model);
   const show = expanded ? targets : compact;
   return <div className="route-path-map" role="group" aria-label={t("路由路径")}>
     <div className="route-path-node"><Terminal aria-hidden="true" /><div><b>{agentName(flowAgent(entry))}</b><code>{entry.model || t("未知模型")}</code></div></div>

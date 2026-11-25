@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { FlowEntry } from "./request-flow-model.ts";
-import { contextSeries, groupRoutingRequests, isContextCompaction, requestContext, routingSessionKey, selectRoutingRequest } from "./routing-session-model.ts";
+import { contextSeries, groupRoutingRequests, isContextCompaction, requestContext, routingPathTargets, routingSessionKey, selectRoutingRequest } from "./routing-session-model.ts";
 
 const request = (id: string, time: number, extra: Partial<FlowEntry> = {}): FlowEntry => ({
   id, startedAtMs: time, timestampMs: time + 1, model: "m", durationMs: 1, success: true, ...extra,
@@ -52,4 +52,20 @@ test("锁定历史请求不受新会话刷新影响，逐条模式不选被过�
   assert.equal(selectRoutingRequest(groups, latest, pinned, true).pinned, true);
   assert.equal(selectRoutingRequest(groups, latest, pinned, false).entry, latest);
   assert.equal(selectRoutingRequest(groups, latest, undefined, true).pinned, false);
+});
+
+test("路由图保留超出候选记录上限的已接受上游，且不重复已有候选", () => {
+  const accepted: NonNullable<FlowEntry["route"]>["steps"][number] = {
+    relayId: "winner", relayName: "Winner", keyId: "", model: "actual", outcome: "answered", elapsedMs: 12,
+  };
+  const planned = Array.from({ length: 32 }, (_, index) => ({ relayId: `relay-${index}`, relayName: "Candidate", model: "m" }));
+  const entry = request("truncated", 1, { route: { ...route, truncated: true, planned, steps: [accepted] } });
+  const { targets, compact, used } = routingPathTargets(entry);
+  assert.deepEqual(targets.slice(0, -1), planned);
+  assert.equal(targets.at(-1)?.relayId, "winner");
+  assert.deepEqual(compact.map(target => target.relayId), ["relay-0", "relay-1", "relay-2", "winner"]);
+  assert.equal(used, accepted);
+  assert.equal(routingPathTargets(request("complete", 1, {
+    route: { ...route, planned: [accepted], steps: [accepted] },
+  })).targets.length, 1);
 });

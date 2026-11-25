@@ -28,6 +28,22 @@ export function isContextCompaction(entry: FlowEntry) {
   return /\/responses\/compact\/?(?:\?|$)/.test(entry.path ?? "");
 }
 
+export function routingPathTargets(entry: FlowEntry) {
+  const used = entry.route?.steps.filter(step => step.outcome === "answered").at(-1);
+  const isUsed = (target: { relayId: string; model: string }) =>
+    used?.relayId === target.relayId && used.model === target.model;
+  const plan = entry.route?.planned ?? [];
+  const targets = plan.length ? [...plan] : [];
+  if (used && !targets.some(isUsed)) {
+    const { relayId, relayName, model } = used;
+    targets.push({ relayId, relayName, model });
+  } else if (!targets.length && entry.relayId) {
+    targets.push({ relayId: entry.relayId, relayName: entry.relayName ?? "", model: entry.upstreamModel || entry.model });
+  }
+  const compact = targets.filter((target, index) => index < 3 || isUsed(target));
+  return { targets, compact, used };
+}
+
 export function requestContext(entry: FlowEntry) {
   const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
   const input = valid(entry.usage?.inputTokens) ? entry.usage.inputTokens : null;
