@@ -192,6 +192,41 @@ fn legacy_proxy_replay_recovers_long_competitors_and_keeps_rotated_windows_unpro
 }
 
 #[test]
+fn concurrent_collector_preserves_fresh_rejections_and_retries_new_ones() {
+    let root = tempfile::tempdir().unwrap();
+    let cutoff = Local::now().date_naive();
+    let now = Local::now().timestamp_millis();
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    let writer =
+        rusqlite::Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    let first = request(now);
+    let mut second = request(now + 1);
+    second.id = "second".into();
+    disk.capture_proxy(&[first.clone(), second.clone()]).unwrap();
+    let mut changed_first = first.clone();
+    changed_first.relay_id = "conflict".into();
+    let mut changed_second = second.clone();
+    changed_second.relay_id = "conflict".into();
+    let initial = disk.rejected_proxy_ids([&changed_first]).unwrap();
+    assert_eq!(initial, HashSet::from([first.id.clone()]));
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    assert_eq!(disk.rejected_proxy_ids([&first]).unwrap(), initial);
+    let error = disk.rejected_proxy_ids([&first, &changed_second]).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<rusqlite::Error>().unwrap().sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy)
+    );
+    assert_eq!(disk.rejected_proxy_ids_read_only([&first, &second]).unwrap(), initial);
+    writer.execute_batch("COMMIT").unwrap();
+    let both = HashSet::from([first.id.clone(), second.id.clone()]);
+    assert_eq!(disk.rejected_proxy_ids([&first, &changed_second]).unwrap(), both);
+    drop(disk);
+    let reopened = provider_cache::ProviderCache::read_snapshot(root.path(), cutoff).unwrap();
+    assert_eq!(reopened.rejected_proxy_ids_read_only([&first, &second]).unwrap(), both);
+}
+
+#[test]
 fn legacy_proxy_coverage_read_error_uses_existing_validation_diagnostic() {
     let root = tempfile::tempdir().unwrap();
     let cutoff = Local::now().date_naive();
@@ -222,7 +257,10 @@ fn legacy_proxy_coverage_read_error_uses_existing_validation_diagnostic() {
             &BTreeMap::new(),
             &disk,
         );
-        assert_eq!(classifier.captured_id_check_failed, unavailable);
+        assert_eq!(classifier.captured_id_check_error.is_some(), unavailable);
+        if let Some(error) = &classifier.captured_id_check_error {
+            assert!(error.contains("read proxy coverage") && error.contains("proxy_replayed_windows"));
+        }
         assert_eq!(unknown_provider(&row.provider), unavailable);
     }
 }

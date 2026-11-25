@@ -461,8 +461,8 @@ struct RequestEvidenceCache {
     captured_complete: Option<HashSet<[u8; 32]>>,
     legacy_uncovered: HashSet<[u8; 32]>,
     captured_rejected: HashSet<String>,
-    captured_coverage_failed: bool,
-    captured_id_check_failed: bool,
+    captured_coverage_error: Option<String>,
+    captured_id_check_error: Option<String>,
     verified: HashMap<[u8; 32], VerifiedAttribution>,
     reads: u64,
     bytes_read: u64,
@@ -715,7 +715,7 @@ impl RequestEvidenceCache {
         }
         self.captured_complete = Some(HashSet::new());
         self.legacy_uncovered.clear();
-        self.captured_coverage_failed = false;
+        self.captured_coverage_error = None;
         let aliases = RequestSessionAliases::new(aliases);
         let mut source_aliases: HashMap<String, Vec<String>> = HashMap::new();
         for alias in aliases.canonical.keys() {
@@ -748,11 +748,14 @@ impl RequestEvidenceCache {
         if targets.is_empty() {
             return (0, false);
         }
-        let Ok(mut coverage) = cache.proxy_coverage() else {
-            self.captured_coverage_failed = true;
-            self.legacy_uncovered
-                .extend(targets_slice.iter().map(|event| event.id));
-            return (0, true);
+        let mut coverage = match cache.proxy_coverage() {
+            Ok(coverage) => coverage,
+            Err(error) => {
+                self.captured_coverage_error = Some(format!("read proxy coverage: {error:#}"));
+                self.legacy_uncovered
+                    .extend(targets_slice.iter().map(|event| event.id));
+                return (0, true);
+            }
         };
         coverage.extend(self.replay_window);
         // refresh 每轮丢弃旧补充；文件 stamp 不承担完成缓存的更新通知。
@@ -791,8 +794,8 @@ impl RequestEvidenceCache {
                         floor = floor.max(batch.floor);
                         rows.extend(batch.rows);
                     }
-                    Err(_) => {
-                        self.captured_coverage_failed = true;
+                    Err(error) => {
+                        self.captured_coverage_error = Some(format!("read captured requests: {error:#}"));
                         complete = false;
                         break;
                     }
@@ -854,8 +857,14 @@ impl RequestEvidenceCache {
                 .iter()
                 .chain(self.verified.values().map(|saved| &saved.request)),
         );
-        self.captured_id_check_failed = self.captured_coverage_failed || checked.is_err();
-        self.captured_rejected = checked.unwrap_or_default();
+        self.captured_id_check_error = self.captured_coverage_error.clone();
+        match checked {
+            Ok(rejected) => self.captured_rejected = rejected,
+            Err(error) => {
+                self.captured_id_check_error = Some(format!("validate rejected request IDs: {error:#}"));
+                self.captured_rejected.clear();
+            }
+        }
         self.attribute_scoped(events, names, aliases, scope)
     }
 
@@ -1115,7 +1124,7 @@ impl RequestEvidenceCache {
                     saved.rejected = true;
                 }
             }
-            if !self.captured_id_check_failed
+            if self.captured_id_check_error.is_none()
                 && !event.count_uncertain
                 && !event.count_incomplete
                 && !self
@@ -1153,7 +1162,7 @@ impl RequestEvidenceCache {
                 }
                 continue;
             }
-            if self.captured_id_check_failed
+            if self.captured_id_check_error.is_some()
                 || scope.is_some_and(|scope| scope.gateway_blocked)
                 || event.count_uncertain
                 || event.count_incomplete
@@ -3323,7 +3332,7 @@ impl Index {
         );
         snapshot.live_requests = self.request_evidence.records.clone();
         for record in &mut snapshot.live_requests {
-            if self.request_evidence.captured_id_check_failed
+            if self.request_evidence.captured_id_check_error.is_some()
                 || self.request_evidence.captured_rejected.contains(&record.id)
             {
                 // 拒绝记录仍作为合并屏障和竞争证据，不能过滤后拼接两侧请求。

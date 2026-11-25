@@ -187,7 +187,7 @@ impl Runtime {
             .clone_from(&self.evidence.request_evidence.records);
         for request in &mut state.requests {
             let evidence = &self.evidence.request_evidence;
-            if evidence.captured_id_check_failed || evidence.captured_rejected.contains(&request.id)
+            if evidence.captured_id_check_error.is_some() || evidence.captured_rejected.contains(&request.id)
             {
                 request.success = false;
             }
@@ -259,10 +259,9 @@ impl Runtime {
                         &index.provider_cache,
                         Some(scope),
                     );
-                    ensure!(
-                        !index.request_evidence.captured_id_check_failed,
-                        "captured request validation failed"
-                    );
+                    if let Some(error) = &index.request_evidence.captured_id_check_error {
+                        anyhow::bail!("captured request validation failed: {error}");
+                    }
                     index.native_evidence.attribute(
                         || super::super::native_endpoints::log_paths_for_home(home),
                         events,

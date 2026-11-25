@@ -932,6 +932,9 @@ impl ProviderCache {
         }
         // 批量检查三类输入，避免逐事件查询；也发现采集线程尚未处理的 ID 复用。
         let ids: Vec<_> = current.keys().copied().collect();
+        let now = Local::now().timestamp_millis();
+        let today = now.div_euclid(86_400_000) * 86_400_000;
+        let mut fresh = HashSet::new();
         let tx = db
             .is_autocommit()
             .then(|| db.unchecked_transaction())
@@ -960,27 +963,33 @@ impl ProviderCache {
                 }
             }
             let mut statement = db.prepare(&format!(
-                "SELECT id FROM rejected_proxy_ids WHERE id IN ({slots})"
+                "SELECT id,at FROM rejected_proxy_ids WHERE id IN ({slots})"
             ))?;
             let denied = statement.query_map(rusqlite::params_from_iter(batch.iter()), |row| {
-                row.get::<_, String>(0)
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })?;
-            for id in denied {
-                rejected.insert(id?);
-            }
-        }
-        if persist {
-            let now = Local::now().timestamp_millis();
-            let today = now.div_euclid(86_400_000) * 86_400_000;
-            let mut statement = db.prepare_cached(
-                "INSERT INTO rejected_proxy_ids VALUES(?1,?2)
-                ON CONFLICT(id) DO UPDATE SET at=excluded.at WHERE at<?3",
-            )?;
-            for id in &rejected {
-                statement.execute(params![id, now, today])?;
+            for row in denied {
+                let (id, at) = row?;
+                if persist && at >= today {
+                    fresh.insert(id.clone());
+                }
+                rejected.insert(id);
             }
         }
         if let Some(tx) = tx {
+            tx.commit()?;
+        }
+        // 拒绝证据只会累加。先释放读快照，再在单独的短事务中登记或续期。
+        if persist && rejected.len() > fresh.len() {
+            let tx = db.unchecked_transaction()?;
+            let mut statement = tx.prepare_cached(
+                "INSERT INTO rejected_proxy_ids VALUES(?1,?2)
+                ON CONFLICT(id) DO UPDATE SET at=excluded.at WHERE at<?3",
+            )?;
+            for id in rejected.difference(&fresh) {
+                statement.execute(params![id, now, today])?;
+            }
+            drop(statement);
             tx.commit()?;
         }
         Ok(rejected)
