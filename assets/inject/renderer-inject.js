@@ -43625,6 +43625,7 @@ ${key} = ${value}`]);
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
+  window.dispatchEvent(new Event("codex-plus-extension-api-ready"));
   // 同页重复注入：已经在跑的用户脚本还挂在上一代内核上，请求一次重载把它们搬过来（只在不会整页刷新时才做，
   // 见 91-extension-runtime.js 的 codexPlusRehomeUserScriptsAfterReinjection）。请求是异步发的，这里不等。
   codexPlusRehomeUserScriptsAfterReinjection();
