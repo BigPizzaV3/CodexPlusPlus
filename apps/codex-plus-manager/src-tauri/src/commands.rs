@@ -29,17 +29,34 @@ pub fn dictation_local_model_status() -> Value {
     codex_plus_core::dictation::local_model_status()
 }
 
+/// 听写当前用着（或配好了 Key 的）远程服务：换成本地 SenseVoice 会覆盖它的地址和模型，要先问用户。
+fn dictation_has_remote_setup(dictation: &codex_plus_core::settings::DictationSettings) -> bool {
+    dictation.provider != codex_plus_core::settings::DictationProvider::SenseVoice
+        && (dictation.enabled
+            || !dictation.api_key.trim().is_empty()
+            || !dictation.api_key_env.trim().is_empty())
+}
+
 /// 在 Claude Desktop 页面内启用共享的离线语音服务；只更新听写字段，不覆盖其它设置。
+/// 已在用远程语音服务时不直接覆盖：返回 `needsReplaceConfirm`，用户确认后带 `replaceRemote` 再调。
 #[tauri::command]
-pub fn enable_local_sensevoice_for_claude() -> CommandResult<Value> {
+pub fn enable_local_sensevoice_for_claude(replace_remote: Option<bool>) -> CommandResult<Value> {
     match SettingsStore::default().load() {
-        Ok(settings) if settings.enhancements_enabled => {}
-        Ok(_) => {
+        Ok(settings) if !settings.enhancements_enabled => {
             return failed(
                 "请先在 Codex++ 设置中启用增强总开关，再准备共享语音服务。",
                 json!({}),
             );
         }
+        Ok(settings)
+            if dictation_has_remote_setup(&settings.dictation) && replace_remote != Some(true) =>
+        {
+            return failed(
+                "语音识别当前用的是远程服务，换成本地 SenseVoice 会替换它的地址和模型。",
+                json!({ "needsReplaceConfirm": true, "model": settings.dictation.model }),
+            );
+        }
+        Ok(_) => {}
         Err(error) => return failed(&format!("读取 Codex++ 设置失败：{error}"), json!({})),
     }
     match SettingsStore::default().update(json!({
@@ -12511,6 +12528,27 @@ fn default_log_lines() -> usize {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn claude_sensevoice_entry_asks_before_replacing_a_remote_dictation_setup() {
+        use codex_plus_core::settings::{DictationProvider, DictationSettings};
+        // 默认（没开、没 Key）：没有可丢的配置，直接换。
+        let mut dictation = DictationSettings::default();
+        assert!(!super::dictation_has_remote_setup(&dictation));
+        // 开着远程服务，或填过 Key / Key 环境变量：先问。
+        dictation.enabled = true;
+        assert!(super::dictation_has_remote_setup(&dictation));
+        dictation.enabled = false;
+        dictation.api_key = "sk-test".into();
+        assert!(super::dictation_has_remote_setup(&dictation));
+        dictation.api_key.clear();
+        dictation.api_key_env = "GROQ_API_KEY".into();
+        assert!(super::dictation_has_remote_setup(&dictation));
+        // 已经是 SenseVoice：重新校验不用问。
+        dictation.enabled = true;
+        dictation.provider = DictationProvider::SenseVoice;
+        assert!(!super::dictation_has_remote_setup(&dictation));
+    }
+
     #[test]
     fn multi_instance_user_data_respects_explicit_electron_root() {
         let temp = tempfile::tempdir().unwrap();

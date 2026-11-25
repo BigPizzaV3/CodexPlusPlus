@@ -10,6 +10,7 @@ import { AppSelect } from "./AppSelect";
 import { onTabListKeyDown } from "./tablist-keys";
 import { formatTokens } from "./gateway-model";
 import { announceBackendSettingsChanged } from "./settings-events";
+import { appConfirm } from "./app-dialog";
 import { Menu, MenuItem } from "./ManagementPages";
 import { t, tf } from "@/i18n";
 import * as AgentCx from "./cx-layout"; // cx-pages:agents：Agent 页面在函数内解构，避免和别的分组的具名导入重名
@@ -220,7 +221,17 @@ export function ClaudeLocalizationScreen(
       }
     };
     try {
-      const configured = await invoke<CommandResult<Record<string, unknown>>>("enable_local_sensevoice_for_claude");
+      type EnableResult = CommandResult<{ needsReplaceConfirm?: boolean; model?: string }>;
+      let configured = await invoke<EnableResult>("enable_local_sensevoice_for_claude");
+      // 语音识别是 Codex++ 共享设置：已经在用远程服务时，先问再替换，不悄悄改掉用户配好的服务。
+      if (configured.status !== "ok" && configured.needsReplaceConfirm) {
+        const replace = await appConfirm(
+          tf("语音识别现在用的是远程服务（{0}），Codex 里的听写也在用它。换成本地 SenseVoice 会替换服务地址和模型（Key 会保留），之后两边都改用本地识别。", [configured.model || t("远程服务")]),
+          { title: t("换成本地 SenseVoice？"), confirmText: t("换成 SenseVoice") },
+        );
+        if (!replace) return;
+        configured = await invoke<EnableResult>("enable_local_sensevoice_for_claude", { replaceRemote: true });
+      }
       if (configured.status !== "ok") throw new Error(configured.message);
       if (local.config.voiceInput !== true) {
         const voiceInput = await invoke<CommandResult<ClaudeLocalizationStatus>>(
