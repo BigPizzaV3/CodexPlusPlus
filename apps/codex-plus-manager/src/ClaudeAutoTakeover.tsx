@@ -85,8 +85,11 @@ export function ClaudeAutoTakeoverRow({
   showIcon = false,
   loginReminder = false,
   onEnableLogin,
+  title,
 }: {
   showIcon?: boolean;
+  /** 行标题；首页和 Codex 那行并排，写成「自动接管 Claude」。默认「自动接管官方 App」。 */
+  title?: string;
   /** 首页：没开登录自启时提醒并给开关。 */
   loginReminder?: boolean;
   onEnableLogin?: () => Promise<unknown> | void;
@@ -157,8 +160,8 @@ export function ClaudeAutoTakeoverRow({
   const needsLogin = loginReminder && enabled && loginEnabled === false;
   const platform = enhancementPlatformFromUserAgent(navigator.userAgent);
   const offDetail = platform === "windows"
-    ? t("仅在启动模式为完整功能模式时生效：打开后，你自己打开官方 Claude（开始菜单、任务栏）也会先退出再经完整功能模式重开，汉化、听写、页面扩展照常生效。")
-    : t("仅在启动模式为完整功能模式时生效：打开后，你自己打开官方 Claude（Dock、启动台）也会先退出再经完整功能模式重开，汉化、听写、页面扩展照常生效。");
+    ? t("打开后，直接打开 Claude（开始菜单、任务栏）也会自动接管，汉化、听写、页面扩展照常生效。")
+    : t("打开后，直接打开 Claude（Dock、启动台）也会自动接管，汉化、听写、页面扩展照常生效。");
   const detail = (notice && t(notice)) || (enabled && state
     ? [detailText(state, summary), needsLogin ? t("Codex++ 没有设为登录时打开，退出 Codex++ 后不会接管。") : ""].filter(Boolean).join(" ")
     : offDetail);
@@ -168,7 +171,7 @@ export function ClaudeAutoTakeoverRow({
       badges={enabled ? <CxBadge tone={toneOf[summary.tone]}>{labelText(summary)}</CxBadge> : null}
       detail={detail}
       icon={showIcon ? <CxStatusIcon tone={enabled ? iconToneOf[summary.tone] : "off"}><Plug /></CxStatusIcon> : undefined}
-      title={t("自动接管官方 App")}
+      title={title ?? t("自动接管官方 App")}
       tooltip={t("只在完整功能模式下生效：官方 Claude 不是经本地服务启动的，会先退出再重开（可能中断正在进行的对话）。3p 模式和补丁副本不接管。")}
     >
       {needsLogin ? (

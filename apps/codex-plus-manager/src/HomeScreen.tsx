@@ -100,7 +100,8 @@ export function HomeScreen({
           : t("打开后，直接打开 Codex（Dock、启动台）也会自动接管并注入增强，不用再从 Codex++ 启动。")}
       icon={<CxStatusIcon tone={autoTakeoverOn ? (takeover.status === "ok" ? "ok" : takeover.status === "failed" ? "danger" : "warn") : "off"}><Plug /></CxStatusIcon>}
       key="codex-auto-takeover"
-      title={t("自动接管官方 App")}
+      // 首页 Codex、Claude 各有一行自动接管：标题写明是哪一个。
+      title={t("自动接管 Codex")}
       tooltip={t("官方 App 已在运行且没有调试端口时，会先退出再带参数重开（可能中断正在进行的操作）。")}
     >
       {takeoverNeedsLogin ? (
@@ -155,7 +156,7 @@ export function HomeScreen({
     );
     // Claude 那一行下面跟它的自动接管（只在完整功能模式下动作），和 Codex 行一样。
     return tool.id === "claude"
-      ? [row, <ClaudeAutoTakeoverRow key="claude-auto-takeover" loginReminder onEnableLogin={() => actions.setWatcherEnabled(true)} showIcon />]
+      ? [row, <ClaudeAutoTakeoverRow key="claude-auto-takeover" loginReminder onEnableLogin={() => actions.setWatcherEnabled(true)} title={t("自动接管 Claude")} showIcon />]
       : row;
   };
 

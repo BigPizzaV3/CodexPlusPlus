@@ -5,6 +5,10 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "打开后，直接打开 Claude（Dock、启动台）也会自动接管，汉化、听写、页面扩展照常生效。": "Once on, opening Claude directly (Dock, Launchpad) is taken over too, with localization, dictation and page extensions working as usual.",
+  "打开后，直接打开 Claude（开始菜单、任务栏）也会自动接管，汉化、听写、页面扩展照常生效。": "Once on, opening Claude directly (Start menu, taskbar) is taken over too, with localization, dictation and page extensions working as usual.",
+  "自动接管 Claude": "Auto-take over Claude",
+  "自动接管 Codex": "Auto-take over Codex",
   "拖动调整先后：排在前面的先用": "Drag to reorder: earlier ones are used first",
   "拖动调先后，排在前面的先用；停用的不再分请求，凭据保留": "Drag to reorder; earlier ones are used first. Paused ones get no requests but are kept",
   "跟随全局": "Follow global",
@@ -2842,8 +2846,6 @@ export const EN_PLAIN: Record<string, string> = {
   "还没有可用的上游模型，完整功能模式起不来，没有退出 Claude。": "There is no usable upstream model yet, so full mode can't start; Claude was left running.",
   "官方 Claude 没有完全退出，稍后自动重试。": "Official Claude didn't quit completely; it retries automatically in a while.",
   "完整功能模式没有启动成功，已把官方 Claude 开回去。": "Full mode didn't start, so official Claude was reopened.",
-  "仅在启动模式为完整功能模式时生效：打开后，你自己打开官方 Claude（Dock、启动台）也会先退出再经完整功能模式重开，汉化、听写、页面扩展照常生效。": "Only applies when the launch mode is full mode: once enabled, opening official Claude yourself (Dock, Launchpad) quits it and reopens it in full mode, so localization, dictation and page extensions keep working.",
-  "仅在启动模式为完整功能模式时生效：打开后，你自己打开官方 Claude（开始菜单、任务栏）也会先退出再经完整功能模式重开，汉化、听写、页面扩展照常生效。": "Only applies when the launch mode is full mode: once enabled, opening official Claude yourself (Start menu, taskbar) quits it and reopens it in full mode, so localization, dictation and page extensions keep working.",
   "只在完整功能模式下生效：官方 Claude 不是经本地服务启动的，会先退出再重开（可能中断正在进行的对话）。3p 模式和补丁副本不接管。": "Only in full mode: if official Claude wasn't started through the local service, it is quit and reopened (this may interrupt a conversation in progress). 3p mode and the patched copy are never taken over.",
   "本次跳过": "Skipped this time",
   "Codex++ 没有设为登录时打开，退出 Codex++ 后不会接管。": "Codex++ doesn't open at login, so nothing takes over once Codex++ is quit.",
