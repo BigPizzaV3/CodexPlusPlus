@@ -29,6 +29,44 @@ pub fn dictation_local_model_status() -> Value {
     codex_plus_core::dictation::local_model_status()
 }
 
+/// 在 Claude Desktop 页面内启用共享的离线语音服务；只更新听写字段，不覆盖其它设置。
+#[tauri::command]
+pub fn enable_local_sensevoice_for_claude() -> CommandResult<Value> {
+    match SettingsStore::default().load() {
+        Ok(settings) if settings.enhancements_enabled => {}
+        Ok(_) => {
+            return failed(
+                "请先在 Codex++ 设置中启用增强总开关，再准备共享语音服务。",
+                json!({}),
+            );
+        }
+        Err(error) => return failed(&format!("读取 Codex++ 设置失败：{error}"), json!({})),
+    }
+    match SettingsStore::default().update(json!({
+        "dictation": {
+            "enabled": true,
+            "provider": "sensevoice",
+            "baseUrl": "local://sensevoice",
+            "model": "SenseVoiceSmall (INT8)",
+        }
+    })) {
+        Ok(settings) => {
+            codex_plus_core::settings::notify_external_settings_change();
+            sync_resident_helper();
+            ok(
+                "已启用本地 SenseVoice 语音服务。",
+                json!({
+                    "enabled": settings.dictation.enabled,
+                    "provider": settings.dictation.provider,
+                    "baseUrl": settings.dictation.base_url,
+                    "model": settings.dictation.model,
+                }),
+            )
+        }
+        Err(error) => failed(&format!("启用本地 SenseVoice 失败：{error}"), json!({})),
+    }
+}
+
 /// 只注册为管理器命令，不开放给用户脚本或公开 HTTP 路由。
 #[tauri::command]
 pub async fn download_dictation_local_model() -> CommandResult<Value> {

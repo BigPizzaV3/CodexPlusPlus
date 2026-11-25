@@ -30,6 +30,15 @@ import { patchClaudeEnhance, saveClaudeBashTimeout, setClaudeDelivery, useClaude
 /** Desktop 增强页的设置页签。 */
 type ClaudeSettingsTab = "providers" | "account" | "features" | "environment";
 
+type DictationLocalModelStatus = {
+  phase?: string;
+  modelReady?: boolean;
+  completedBytes?: number;
+  totalBytes?: number;
+  resource?: string;
+  message?: string;
+};
+
 /** Claude 在供应商没有声明窗口时自己用的默认上下文窗口。 */
 const CLAUDE_DEFAULT_CONTEXT_WINDOW = 200_000;
 
@@ -91,6 +100,7 @@ export function ClaudeLocalizationScreen(
   const [localStatus, setLocalStatus] = useState<CommandResult<ClaudeLocalStatus> | null>(claudeLocalMemo.status);
   const [localBusy, setLocalBusy] = useState<string | null>(claudeLocalMemo.autoDetected ? null : "detect");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [dictationModelStatus, setDictationModelStatus] = useState<DictationLocalModelStatus | null>(null);
   const localPending = useRef(false);
   const localGeneration = useRef(0);
   /** 制作增强版时宿主推送的阶段进度（0-100）。 */
@@ -191,6 +201,50 @@ export function ClaudeLocalizationScreen(
     } catch (cause) { if (mounted.current) setLocalError(stringifyError(cause)); }
     finally {
       localPending.current = false;
+      if (mounted.current) setLocalBusy(null);
+    }
+  };
+  const prepareClaudeDictation = async () => {
+    if (localPending.current || pending.current || !local) return;
+    localPending.current = true;
+    pending.current = true;
+    setLocalBusy("dictation");
+    setLocalError(null);
+    let pollTimer: ReturnType<typeof setInterval> | undefined;
+    const refreshModelStatus = async () => {
+      try {
+        const model = await invoke<DictationLocalModelStatus>("dictation_local_model_status");
+        if (mounted.current) setDictationModelStatus(model);
+      } catch {
+        // 下载命令会返回具体错误；轮询失败时保留上次状态。
+      }
+    };
+    try {
+      const configured = await invoke<CommandResult<Record<string, unknown>>>("enable_local_sensevoice_for_claude");
+      if (configured.status !== "ok") throw new Error(configured.message);
+      if (local.config.voiceInput !== true) {
+        const voiceInput = await invoke<CommandResult<ClaudeLocalizationStatus>>(
+          "claude_localization_set_voice_input",
+          { enabled: true },
+        );
+        if (voiceInput.status !== "ok") throw new Error(voiceInput.message);
+        const refreshedLocal = await invoke<CommandResult<ClaudeLocalStatus>>("claude_local_status");
+        if (refreshedLocal.status !== "ok") throw new Error(refreshedLocal.message);
+        acceptLocal(refreshedLocal);
+      }
+      announceBackendSettingsChanged();
+      await refreshModelStatus();
+      pollTimer = setInterval(() => void refreshModelStatus(), 750);
+      const downloaded = await invoke<CommandResult<DictationLocalModelStatus>>("download_dictation_local_model");
+      if (downloaded.status !== "ok") throw new Error(downloaded.message);
+      setDictationModelStatus(downloaded);
+      acceptLocal(await invoke<CommandResult<ClaudeLocalStatus>>("claude_local_status"));
+    } catch (cause) {
+      if (mounted.current) setLocalError(stringifyError(cause));
+    } finally {
+      if (pollTimer) clearInterval(pollTimer);
+      localPending.current = false;
+      pending.current = false;
       if (mounted.current) setLocalBusy(null);
     }
   };
@@ -721,7 +775,31 @@ export function ClaudeLocalizationScreen(
                   ) : null}
                 </CxRow>
               ) : null}
-              <CxRow badges={<CxBadge tone={local.dictationReady ? "ok" : "neutral"}>{local.dictationReady ? t("已就绪") : t("未就绪")}</CxBadge>} title={t("语音识别")} />
+              <CxRow
+                badges={<CxBadge tone={local.dictationReady ? "ok" : "neutral"}>{local.dictationReady ? t("已就绪") : t("未就绪")}</CxBadge>}
+                detail={dictationModelStatus?.phase === "downloading"
+                  ? tf("正在下载 {0}：{1} / {2} MB", [
+                    dictationModelStatus.resource || "SenseVoice",
+                    Math.round((dictationModelStatus.completedBytes || 0) / 1_000_000),
+                    Math.round((dictationModelStatus.totalBytes || 239_549_735) / 1_000_000),
+                  ])
+                  : t("从此页启用并下载本地 SenseVoice；必要时会同时打开 Claude 麦克风入口。语音服务是 Codex++ 共享设置，模型约 240 MB，识别在本机运行。")}
+                title={t("语音识别")}
+              >
+                <button
+                  className="cx-secondary"
+                  disabled={localDisabled || !local.supported}
+                  onClick={() => void prepareClaudeDictation()}
+                  type="button"
+                >
+                  <PackageOpen />
+                  {localBusy === "dictation"
+                    ? t("正在准备 SenseVoice…")
+                    : local.dictationReady
+                      ? t("重新校验 SenseVoice")
+                      : t("启用并准备 SenseVoice")}
+                </button>
+              </CxRow>
               <CxRow badges={<CxBadge tone={local.nodeAvailable ? "ok" : "warn"}>{local.nodeAvailable ? t("已就绪") : t("缺少 Node.js")}</CxBadge>} title={t("运行环境")} />
               {localTemplates.length > 1 ? (
                 <CxRow

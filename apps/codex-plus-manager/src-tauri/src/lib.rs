@@ -417,6 +417,7 @@ pub fn run() {
             commands::load_request_flow,
             commands::clear_request_logs,
             commands::dictation_local_model_status,
+            commands::enable_local_sensevoice_for_claude,
             commands::download_dictation_local_model,
             commands::load_global_dictation_hotkey,
             commands::set_global_dictation_hotkey,
