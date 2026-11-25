@@ -7,6 +7,7 @@ fn sandbox() -> tempfile::TempDir {
 fn event(number: u8) -> UsageEvent {
     let counts = Tokens::new(100, 80, 7);
     UsageEvent {
+        native_response_id: None,
         id: [number; 32],
         original_id: [number; 32],
         session: "00000000-0000-4000-8000-000000000001".into(),
