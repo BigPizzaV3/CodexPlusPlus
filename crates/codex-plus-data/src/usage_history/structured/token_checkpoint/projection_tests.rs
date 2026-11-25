@@ -5,7 +5,7 @@ use crate::usage_history::structured::{FileState, UsageEvent, index_budget::Budg
 use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::{fs, io::Write};
 
@@ -632,6 +632,119 @@ fn late_receipt_repairs_a_sealed_counter_and_competition_revokes_only_its_cache(
             );
         }
     }
+}
+
+#[test]
+fn compatibility_fingerprints_bind_the_selected_events_and_allow_a_summary_only_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let first_path = home.join("first.jsonl");
+    let second_path = home.join("second.jsonl");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    for (path, session, shift) in [(&first_path, PARENT, 0), (&second_path, CHILD, 4)] {
+        let mut metadata = header(session, 0);
+        if session == CHILD {
+            metadata["payload"]["model_provider"] = json!("supplier-b");
+        }
+        let state = parse(
+            path,
+            &[
+                metadata,
+                count(1, 1 + shift, 1, true),
+                count(2, 2 + shift, 2, true),
+            ],
+            cutoff,
+        );
+        let staged = store
+            .prepare(new_source(path, &state), cutoff, BTreeMap::new(), 8192)
+            .unwrap();
+        store.publish(staged).unwrap();
+    }
+    let events = read(&mut store.db, i64::MIN, i64::MAX).1;
+    let day = events[0].date;
+    let end = day.succ_opt().unwrap();
+    let midnight = |day: NaiveDate| {
+        Local
+            .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
+            .single()
+            .unwrap()
+            .timestamp_millis()
+    };
+    let old = crate::usage_history::structured::Snapshot {
+        count_cache_available: true,
+        events,
+        ..Default::default()
+    };
+    let names = BTreeMap::new();
+    let from = old.events[0]
+        .timestamp
+        .parse::<DateTime<chrono::FixedOffset>>()
+        .unwrap()
+        .timestamp_millis();
+    for (request, bounds) in [
+        (json!({"from":day.to_string(),"to":day.to_string()}), None),
+        (
+            json!({"startAt":midnight(day),"endAt":midnight(end)}),
+            Some((midnight(day), midnight(end))),
+        ),
+        (
+            json!({"startAt":from+1,"endAt":from+5000,"includeTrend":true}),
+            Some((from + 1, from + 5000)),
+        ),
+    ] {
+        let query = Query::parse(&request, cutoff).unwrap();
+        let projected =
+            Store::read_response(&mut store.db, &query, &request, Some(PARENT), &names).unwrap();
+        let selected = HashSet::from([PARENT.to_owned()]);
+        for (actual, expected) in [
+            (&projected["days"][0], old.usage_days(&query, bounds, None)),
+            (
+                &projected["scopedUsage"]["days"][0],
+                old.usage_days(&query, bounds, Some(&selected)),
+            ),
+        ] {
+            assert_eq!(actual["fingerprintCoverage"], "events");
+            assert_eq!(
+                actual["accountingFingerprint"],
+                expected[0]["accountingFingerprint"]
+            );
+            let breakdowns = |day: &Value| {
+                day["breakdowns"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|row| {
+                        (
+                            row["provider"].as_str().unwrap().to_owned(),
+                            row["membershipFingerprint"].clone(),
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>()
+            };
+            assert_eq!(breakdowns(actual), breakdowns(&expected[0]));
+            assert_eq!(actual["recordCount"], expected[0]["recordCount"]);
+        }
+        let mut fast = request;
+        fast["includeFingerprints"] = json!(false);
+        let result =
+            Store::read_response(&mut store.db, &query, &fast, Some(PARENT), &names).unwrap();
+        assert!(result["days"][0].get("fingerprintCoverage").is_none());
+        assert_eq!(result["days"][0]["usage"], projected["days"][0]["usage"]);
+    }
+
+    store.advance_retention(end).unwrap().unwrap();
+    let request = json!({"from":day.to_string(),"to":day.to_string()});
+    let query = Query::parse(&request, cutoff).unwrap();
+    let after = Store::read_response(&mut store.db, &query, &request, None, &names).unwrap();
+    assert_eq!(after["days"][0]["usage"]["totalTokens"], 440);
+    assert_eq!(after["days"][0]["fingerprintCoverage"], "unavailable");
+    assert!(after["days"][0].get("accountingFingerprint").is_none());
+    assert!(
+        after["days"][0]["breakdowns"][0]
+            .get("membershipFingerprint")
+            .is_none()
+    );
 }
 
 #[test]

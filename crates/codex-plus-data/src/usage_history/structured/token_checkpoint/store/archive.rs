@@ -492,7 +492,13 @@ mod tests {
         fs::rename(&file, &saved).unwrap();
         let (withdrawn, reschedule) = read(&mut store, &answer);
         assert!(reschedule.is_some());
-        assert_eq!(withdrawn["days"], first["days"]);
+        assert_eq!(first["days"][0]["fingerprintCoverage"], "unavailable");
+        assert_eq!(withdrawn["days"][0]["fingerprintCoverage"], "events");
+        assert_eq!(withdrawn["days"][0]["usage"], first["days"][0]["usage"]);
+        assert_eq!(
+            withdrawn["days"][0]["accountingFingerprint"],
+            complete["days"][0]["accountingFingerprint"]
+        );
         assert_eq!(
             withdrawn["trend"]["buckets"][24]["usage"]["totalTokens"],
             110
@@ -552,6 +558,14 @@ mod tests {
             scan.round(&mut store, &home, cutoff, &names, 1 << 20)
                 .complete
         );
+        let original_groups: Vec<u8> = store
+            .db
+            .query_row(
+                "SELECT groups FROM token_days WHERE day = ?1",
+                [day.to_string()],
+                |row| row.get(0),
+            )
+            .unwrap();
         store
             .db
             .execute(
@@ -577,6 +591,8 @@ mod tests {
         assert_eq!(first["archiveRecovery"]["status"], "pending");
         assert_eq!(first["days"][0]["usage"]["totalTokens"], 220);
         assert_eq!(first["days"][1]["usage"]["totalTokens"], 220);
+        assert_eq!(first["days"][0]["fingerprintCoverage"], "unavailable");
+        assert_eq!(first["days"][1]["fingerprintCoverage"], "events");
         let key = job.unwrap();
         let mut replay = key.replay(&store.db, &home, names.clone()).unwrap();
         assert!(replay.step().unwrap());
@@ -648,6 +664,37 @@ mod tests {
         );
         assert_eq!(mismatch["scopedUsage"]["countStatus"]["complete"], true);
         assert_eq!(mismatch["scopedUsage"]["trend"]["precision"], "exact");
+        assert_eq!(mismatch["days"][0]["fingerprintCoverage"], "unavailable");
+        store
+            .db
+            .execute(
+                "UPDATE token_days SET groups = ?1 WHERE day = ?2",
+                rusqlite::params![original_groups, day.to_string()],
+            )
+            .unwrap();
+        let (verified, _) = Store::read_response_with_archive(
+            &mut store.db,
+            &query,
+            &request,
+            Some(OTHER),
+            &names,
+            Some(&answer),
+            None,
+        )
+        .unwrap();
+        assert_eq!(verified["days"][0]["fingerprintCoverage"], "events");
+        assert_eq!(verified["days"][0]["usage"], first["days"][0]["usage"]);
+        assert_eq!(
+            verified["days"][0]["accountingFingerprint"]
+                .as_str()
+                .unwrap()
+                .len(),
+            64
+        );
+        assert_eq!(
+            verified["days"][0]["accountingFingerprint"],
+            verified["days"][0]["breakdowns"][0]["membershipFingerprint"]
+        );
     }
 
     #[test]

@@ -25,6 +25,9 @@
 `reasoningKnown` 为 false 时不能把缺失计数当作精确的零。
 `accountingFingerprint` 和 `membershipFingerprint` 绑定事件与计数，
 不能单独证明扫描完整或分类正确。
+默认返回可从逐笔记录核验的指纹；日期行的 `fingerprintCoverage` 为 `events`。
+若仅有日汇总，或原会话回读无法核对成员，则为 `unavailable`，并省略这两个字段。
+只展示用量的调用方可传 `includeFingerprints: false`，避免为完整日期重新读取逐笔记录。
 分段基线修正会改变受影响历史范围的计数和指纹；响应格式、计量单位不变，
 因此仍返回 `accountingVersion:2`。调用方应按新指纹替换旧结果，而非叠加。
 

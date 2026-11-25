@@ -480,7 +480,7 @@ fn activity_checkpoint_restarts_polls_and_publishes_only_committed_receipts() {
     );
     fs::write(&source, format!("{head}{skill}\n{running}\n{poll}\n")).unwrap();
     let names = BTreeMap::from([("custom".into(), "Example Relay".into())]);
-    let request = json!({"includeActivity":true});
+    let request = json!({"includeActivity":true,"includeFingerprints":false});
     let query = Query::parse(&request, cutoff).unwrap();
     let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
     assert!(
