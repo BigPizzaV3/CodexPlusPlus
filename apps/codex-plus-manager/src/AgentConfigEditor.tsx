@@ -31,6 +31,8 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & {
   const editorId = useId();
   const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLDivElement>({
     labelledBy: titleId,
+    // 改了没保存时，Esc / 点遮罩 / 点「关闭」先确认，和其他编辑弹窗一致。
+    dirty: view !== null && draft !== view.contents,
     onClose: () => { if (!saving) onClose(); },
   });
   useEffect(() => {

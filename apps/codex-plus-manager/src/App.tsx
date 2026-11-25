@@ -425,9 +425,20 @@ export function App() {
   /** 从旧的「旧版代理设置」入口进来：「连接与供应商」页直接展开「高级」。 */
   const [relayAdvancedOpen, setRelayAdvancedOpen] = useState(() => initialPreviewRoute() === "relayEnvironment");
   const [relayCommonOpen, setRelayCommonOpen] = useState(false);
+  /** 通用配置页有没保存的修改：侧栏切页离开前先确认，不悄悄丢掉草稿。 */
+  const relayCommonDirty = useRef(false);
   const setRoute = useCallback((next: Route) => {
-    setRelayCommonOpen(false);
-    setRouteState(next);
+    const leave = () => {
+      relayCommonDirty.current = false;
+      setRelayCommonOpen(false);
+      setRouteState(next);
+    };
+    if (!relayCommonDirty.current) {
+      leave();
+      return;
+    }
+    void appConfirm(t("有未保存的修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true })
+      .then(discard => { if (discard) leave(); });
   }, []);
   /** 进设置模式前停的页面：侧栏「返回」回到这里。 */
   const lastMainRoute = useRef<Route>("home");
@@ -3491,7 +3502,11 @@ export function App() {
       {tourOpen && !wizardOpen ? <Suspense fallback={null}><OnboardingTour onClose={closeTour} /></Suspense> : null}
       <main className="workspace">
         {relayCommonOpen ? (
-          <RelayCommonConfigScreen onSave={saveCommonTemplate} onBack={() => setRelayCommonOpen(false)} />
+          <RelayCommonConfigScreen
+            onSave={saveCommonTemplate}
+            onDirtyChange={dirty => { relayCommonDirty.current = dirty; }}
+            onBack={() => { relayCommonDirty.current = false; setRelayCommonOpen(false); }}
+          />
         ) : null}
         {/* 「请求」页的铺满布局（页签下面的日志卡占满剩余高度、整页不滚动）只给内置页面：拓展页面照普通页面排。
             切回内置页面时页签下面多一条「使用拓展页面」横幅，has-override-banner 给它单独留一行。 */}

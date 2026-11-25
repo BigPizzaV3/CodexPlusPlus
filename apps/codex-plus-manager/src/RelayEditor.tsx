@@ -3086,14 +3086,21 @@ function SyncedTextarea({
   );
 }
 
-export function RelayCommonConfigScreen({ onSave, onBack }: {
+export function RelayCommonConfigScreen({ onSave, onBack, onDirtyChange }: {
   onSave: (original: string, contents: string) => Promise<SettingsResult | null>;
   onBack: () => void;
+  /** 草稿有无变化时告诉外层，侧栏切页时由外层确认是否放弃。 */
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const [contents, setContents] = useState<string | null>(null);
   const [draft, setDraft] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  useEffect(() => { onDirtyChange?.(draft !== null); }, [draft, onDirtyChange]);
+  const back = async () => {
+    if (draft !== null && !(await appConfirm(t("有未保存的修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true }))) return;
+    onBack();
+  };
   useEffect(() => {
     let cancelled = false;
     void invoke<BackendSettings>("read_relay_common_config").then(settings => {
@@ -3123,7 +3130,7 @@ export function RelayCommonConfigScreen({ onSave, onBack }: {
             <Save className="h-4 w-4" />
             {t("保存")}
           </Button> : null}
-          <Button variant="ghost" onClick={onBack}>{t("返回列表")}</Button>
+          <Button variant="ghost" disabled={saving} onClick={() => void back()}>{t("返回列表")}</Button>
         </div>
       </header>
       {contents !== null

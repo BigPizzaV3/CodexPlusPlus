@@ -45,6 +45,7 @@ function screenHooks() {
 test("Pi 配置弹窗读取原文，保存失败保留草稿，成功才关闭", async (t) => {
   const hooks = screenHooks();
   const close = t.mock.fn();
+  let shellDirty: boolean | undefined;
   const draft = '{"theme":"dark"}';
   const saveArgs = { agent: "pi", original: { source: "pi", contents: "{}" }, contents: draft };
   let conflict = true;
@@ -64,10 +65,13 @@ test("Pi 配置弹窗读取原文，保存失败保留草稿，成功才关闭",
     "./i18n": translate,
     "./cx-layout": { CxLoading: "loading" },
     "./use-modal-shell": {
-      useModalShell: ({ onClose, labelledBy }: { onClose: () => void; labelledBy: string }) => ({
-        backdropProps: { onMouseDown: onClose }, dialogProps: { role: "dialog", "aria-labelledby": labelledBy },
-        requestClose: onClose,
-      }),
+      useModalShell: ({ onClose, labelledBy, dirty }: { onClose: () => void; labelledBy: string; dirty?: boolean }) => {
+        shellDirty = dirty;
+        return {
+          backdropProps: { onMouseDown: onClose }, dialogProps: { role: "dialog", "aria-labelledby": labelledBy },
+          requestClose: onClose,
+        };
+      },
     },
     "@/components/ui/button": { Button: "button" },
     "@tauri-apps/api/core": { invoke },
@@ -85,7 +89,11 @@ test("Pi 配置弹窗读取原文，保存失败保留草稿，成功才关闭",
   assert.ok(!render().some(node => node.type === "loading"));
   assert.equal(textarea().value, "{}");
   assert.equal(save().disabled, true);
+  assert.equal(shellDirty, false);
   textarea().onChange({ currentTarget: { value: draft } });
+  // 有草稿时把 dirty 交给弹窗外壳：Esc / 点遮罩 / 关闭前先确认。
+  render();
+  assert.equal(shellDirty, true);
   save().onClick();
   render().find(node => node.props.onMouseDown).props.onMouseDown();
   await settle();
@@ -190,4 +198,69 @@ test("Codex 模板保存冲突时保留草稿，不重试，成功后才提示�
   assert.equal(form.theme, "unsaved");
   assert.match(notices.at(-1)!, /^ok: .*请重新应用使用通用配置的供应商/);
   assert.equal(button().disabled, true);
+});
+
+test("通用配置页有未保存的修改时，返回列表和侧栏切页都先确认，取消就留在原页", async () => {
+  const confirms: string[] = [];
+  let answer = false;
+  const appConfirm = async (message: string) => { confirms.push(message); return answer; };
+
+  // 页面自己的「返回列表」。
+  const hooks = screenHooks();
+  const backs: number[] = [];
+  const dirtyReports: boolean[] = [];
+  const context = vm.createContext({
+    ...translate, appConfirm,
+    useState: hooks.useState, useEffect: hooks.useEffect, exports: {}, require: () => jsxRuntime,
+    Button: "button", CxLoading: "loading", Save: "svg", SyncedTextarea: "textarea", errorText: String,
+    invoke: async () => ({ relayCommonConfigContents: "a = 1\n" }),
+  });
+  const page = relayEditor.statements.filter(ts.isFunctionDeclaration).find(node => node.name?.text === "RelayCommonConfigScreen")!;
+  const expression = ts.factory.createFunctionExpression(undefined, undefined, page.name, page.typeParameters, page.parameters, page.type, page.body!);
+  const screen = vm.runInContext(compile(`(${ts.createPrinter().printNode(ts.EmitHint.Expression, expression, relayEditor)})`), context);
+  const render = () => hooks.render(() => screen({
+    onSave: async () => null, onBack: () => backs.push(1), onDirtyChange: (dirty: boolean) => dirtyReports.push(dirty),
+  }));
+  const back = () => render().find(node => node.type === "button" && node.props.children === "返回列表").props;
+  render();
+  await settle();
+  assert.deepEqual(dirtyReports, [false]);
+  back().onClick();
+  await settle();
+  assert.deepEqual(confirms, []);
+  assert.equal(backs.length, 1);
+  render().find(node => node.type === "textarea").props.onValueChange("a = 2\n");
+  back().onClick();
+  await settle();
+  assert.equal(confirms.length, 1);
+  assert.equal(backs.length, 1);
+  answer = true;
+  back().onClick();
+  await settle();
+  assert.equal(backs.length, 2);
+
+  // App 的 setRoute：通用配置页有草稿时侧栏切页先确认。
+  confirms.length = 0;
+  answer = false;
+  const routes: string[] = [];
+  const closed: boolean[] = [];
+  const relayCommonDirty = { current: true };
+  const setRoute = vm.runInNewContext(compile(`(${appInitializer("setRoute")})`), {
+    ...translate, appConfirm, relayCommonDirty,
+    useCallback: (fn: unknown) => fn,
+    setRelayCommonOpen: (open: boolean) => closed.push(open), setRouteState: (route: string) => routes.push(route),
+  });
+  setRoute("home");
+  await settle();
+  assert.equal(confirms.length, 1);
+  assert.deepEqual(routes, []);
+  answer = true;
+  setRoute("home");
+  await settle();
+  assert.deepEqual(routes, ["home"]);
+  assert.deepEqual(closed, [false]);
+  assert.equal(relayCommonDirty.current, false);
+  setRoute("settings");
+  assert.equal(confirms.length, 2);
+  assert.deepEqual(routes, ["home", "settings"]);
 });
