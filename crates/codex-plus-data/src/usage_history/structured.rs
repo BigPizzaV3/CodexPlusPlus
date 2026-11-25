@@ -29,7 +29,6 @@ mod tool_receipts;
 const RETENTION_DAYS: i64 = 365;
 const MAX_ACTIVITY: usize = 12_000;
 const MAX_EVENTS: usize = 100_000;
-const MAX_FILES: usize = 4096;
 // 单行保护与文件大小无关；所有文件均可增量读取。巨大正文不传入渲染进程。
 const MAX_LINE: usize = 1024 * 1024;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
@@ -2326,10 +2325,6 @@ fn discover(home: &Path, cold_start: bool, errors: &mut usize) -> Vec<PathBuf> {
                     pending.push(entry.path());
                 }
             } else if kind.is_file() && log_file(&entry.path()) {
-                if files.len() >= MAX_FILES {
-                    *errors += 1;
-                    continue;
-                }
                 match fs::canonicalize(entry.path()) {
                     Ok(path) if path.starts_with(home) => {
                         // 修改时间只用于冷启动排序；读取时仍校验路径和文件身份。

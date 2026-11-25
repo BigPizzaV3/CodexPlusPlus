@@ -4,6 +4,35 @@ const BASE_ROLLOUT: &str = "00000000-0000-4000-8000-000000000081";
 const NEXT_ROLLOUT: &str = "00000000-0000-4000-8000-000000000082";
 
 #[test]
+fn discovers_active_and_archived_rollouts_beyond_4096_sources() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let home = dir.path().canonicalize()?;
+    let active = home.join("sessions");
+    let archive = home.join("archived_sessions");
+    fs::create_dir(&active)?;
+    fs::create_dir(&archive)?;
+    let mut expected = Vec::new();
+    for index in 0..4097 {
+        let path = if index % 2 == 0 {
+            active.join(format!("rollout-{index:04}.jsonl"))
+        } else {
+            archive.join(format!("rollout-{index:04}.jsonl.zst"))
+        };
+        File::create(&path)?;
+        expected.push(path);
+    }
+    expected.sort_unstable();
+    for cold in [true, false] {
+        let mut errors = 0;
+        let mut paths = discover(&home, cold, &mut errors);
+        assert_eq!(errors, 0);
+        paths.sort_unstable();
+        assert_eq!(paths, expected);
+    }
+    Ok(())
+}
+
+#[test]
 fn cold_scan_reads_recently_changed_rollout_before_historical_backlog() {
     let mut fixture = Fixture::new();
     let older = fixture.home.join("sessions/rollout-a.jsonl");

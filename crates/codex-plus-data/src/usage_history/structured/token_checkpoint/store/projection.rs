@@ -6,7 +6,7 @@ use crate::usage_history::structured::token_checkpoint::{
 };
 use crate::usage_history::structured::{
     AttributionScope, ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index,
-    MAX_ACTIVITY, MAX_FILES, Query, RequestSessionAliases, Snapshot, UsageEvent, native_endpoints,
+    MAX_ACTIVITY, Query, RequestSessionAliases, Snapshot, UsageEvent, native_endpoints,
     ordered_scope_ids, segments, terminal_receipts, unknown_model, unknown_provider,
     usage_provider,
 };
@@ -1137,7 +1137,7 @@ impl Store {
                 }
             }
         }
-        let mut files = 0;
+        let mut has_prior_source = false;
         {
             // 来源和关联分别去重，避免同一会话的每份副本都重新展开整组来源。
             let mut affected = read.prepare(
@@ -1227,8 +1227,7 @@ impl Store {
                     if probing && !seen_sources.insert(id) {
                         continue;
                     }
-                    files += 1;
-                    ensure!(files <= MAX_FILES, "Token component exceeds source budget");
+                    has_prior_source = true;
                     let path = decode_path(row.get(2)?)?;
                     if path == source {
                         source_revision = Some(row.get(3)?);
@@ -1282,7 +1281,6 @@ impl Store {
                     && !seen_links.contains(&prefix.link)
                     && prefix.independent(&index.files, update, cutoff)
                 {
-                    ensure!(files < MAX_FILES, "Token component exceeds source budget");
                     index.files.insert(prefix.path, prefix.state);
                     break;
                 }
@@ -1318,7 +1316,7 @@ impl Store {
         }
 
         let collisions = index.observed_collisions();
-        let linear_candidate = files == 0
+        let linear_candidate = !has_prior_source
             && collisions.is_empty()
             && index.collision_families.is_empty()
             && linear_batch(state, cutoff, None);

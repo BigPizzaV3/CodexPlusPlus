@@ -93,6 +93,69 @@ fn historical_candidates_stream_all_rows_at_one_timestamp() -> anyhow::Result<()
 }
 
 #[test]
+fn reconciles_linked_rollouts_beyond_4096_sources_within_the_input_budget() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let prior_path = root.join("rollout-prior.jsonl");
+    let new_path = root.join("rollout-new.jsonl");
+    let prior = parse(
+        &prior_path,
+        &[header(PARENT, 0), count(1, 1, 1, true)],
+        cutoff,
+    );
+    let incoming = parse(
+        &new_path,
+        &[header(PARENT, 0), count(1, 2, 2, true)],
+        cutoff,
+    );
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let tx = store.db.transaction()?;
+    let header_only = FileState {
+        session: PARENT.to_owned(),
+        ..FileState::default()
+    };
+    for index in 0..4096 {
+        let path = root.join(format!("rollout-{index}.jsonl"));
+        Store::stage(&tx, &path, None, &header_only, false)?;
+    }
+    let before = Store::stage(&tx, &prior_path, None, &prior, false)?;
+    tx.commit()?;
+
+    let error = store
+        .prepare(
+            new_source(&new_path, &incoming),
+            cutoff,
+            BTreeMap::new(),
+            64 * 1024,
+        )
+        .err()
+        .expect("the component must exhaust the low input budget");
+    assert!(error.is::<super::store::projection::ComponentInputLimit>());
+    assert!(store.checkpoint(&new_path)?.is_none());
+    let (revision, events) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(revision, before);
+    assert!(events.is_empty());
+
+    let prepared = store.prepare(
+        new_source(&new_path, &incoming),
+        cutoff,
+        BTreeMap::new(),
+        32 << 20,
+    )?;
+    assert_eq!(store.publish(prepared)?, before + 1);
+    let (_, events) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| (event.id, event.total))
+            .collect::<Vec<_>>(),
+        [&prior.events[0], &incoming.events[0]].map(|event| (event.id, event.total))
+    );
+    Ok(())
+}
+
+#[test]
 fn full_component_reads_clear_flags_once_and_keeps_the_stored_observations() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().canonicalize()?;
