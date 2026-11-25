@@ -105,6 +105,13 @@ export function SharedServiceSettings({
           >
             {number(form.helperMaxRequestBodyMib, 32, 512, "MiB", (next) => onFormChange({ ...form, helperMaxRequestBodyMib: next }), 16)}
           </CxRow>
+          <CxRow
+            detail={t("默认 120 秒；首字经常超过 120s 的上游（长推理模型、慢中转）可调到 300~600，超时仍会先换其他供应商。保存后立即对本地代理生效。")}
+            title={t("上游首字等待上限")}
+            tooltip={t("流式请求等上游返回响应头的上限，超时后网关报 502。下限 120 秒（兜底真正卡死的连接），上限 3600 秒。")}
+          >
+            {number(form.upstreamStreamHeaderTimeoutSecs ?? 120, 120, 3600, t("秒"), (next) => onFormChange({ ...form, upstreamStreamHeaderTimeoutSecs: next }))}
+          </CxRow>
         </CxCard>
       </CxSection>
 

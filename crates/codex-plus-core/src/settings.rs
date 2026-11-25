@@ -3145,6 +3145,21 @@ fn merge_known_setting_fields(target: &mut Map<String, Value>, source: &Map<Stri
             Value::from(clamp_helper_max_request_body_mib(clamped)),
         );
     }
+    // 流式请求等上游响应头的上限（#3130 / #3260）：null 表示用默认 120，数值按 120~3600 夹取。
+    // 同样漏登记会让「保存了但没生效」。
+    if let Some(value) = source.get("upstreamStreamHeaderTimeoutSecs") {
+        if value.is_null() {
+            target.insert(
+                "upstreamStreamHeaderTimeoutSecs".to_string(),
+                Value::Null,
+            );
+        } else if let Some(secs) = value.as_u64() {
+            target.insert(
+                "upstreamStreamHeaderTimeoutSecs".to_string(),
+                Value::from(secs.clamp(120, 3600)),
+            );
+        }
+    }
     if let Some(value) = source.get("enhancementsEnabled").and_then(Value::as_bool) {
         target.insert("enhancementsEnabled".to_string(), Value::Bool(value));
     }
@@ -4011,6 +4026,11 @@ fn normalize_settings_config_sections(mut settings: BackendSettings) -> BackendS
         );
     settings.helper_max_request_body_mib =
         clamp_helper_max_request_body_mib(settings.helper_max_request_body_mib);
+    // 上游首字等待上限：下限 120 兜底真正卡死的连接（与 protocol_proxy::UPSTREAM_STREAM_HEADER_TIMEOUT
+    // 一致），上限 3600（与运行时 stream_header_timeout 的收口一致）。
+    settings.upstream_stream_header_timeout_secs = settings
+        .upstream_stream_header_timeout_secs
+        .map(|secs| secs.clamp(120, 3600));
     // 扁平字段始终是 Codex 的唯一事实来源，这里把它镜像进 tools.codex；
     // 其它工具的分片原样保留。放在函数末尾，所有 load / save / update 路径
     // 都会经过，两边不会漂移。

@@ -118,6 +118,7 @@ export const defaultSettings: BackendSettings = {
   protocolProxyAutoRetryCommitDelayMs: 1000,
   protocolProxyMapUnlistedModels: false,
   helperMaxRequestBodyMib: 128,
+  upstreamStreamHeaderTimeoutSecs: null,
   codexAppCapacityAutoRetry: false,
   codexAppTurnRewind: false,
   codexAppStepwiseEnabled: false,
@@ -739,6 +740,11 @@ export function normalizeSettings(settings: BackendSettings): BackendSettings {
     protocolProxyAutoRetryIntervalSeconds: clampNumber(settings.protocolProxyAutoRetryIntervalSeconds ?? 2, 0, 30),
     protocolProxyAutoRetryStatusCodes: normalizeRetryStatusCodes(settings.protocolProxyAutoRetryStatusCodes),
     helperMaxRequestBodyMib: clampNumber(settings.helperMaxRequestBodyMib ?? 128, 32, 512),
+    // 未设置（null / 缺失）表示用后端默认 120；设置了就按后端同样的 120~3600 区间收口。
+    upstreamStreamHeaderTimeoutSecs:
+      typeof settings.upstreamStreamHeaderTimeoutSecs === "number"
+        ? clampNumber(settings.upstreamStreamHeaderTimeoutSecs, 120, 3600)
+        : null,
     codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,
     codexAppDreamSkinThemeConfig: normalizeDreamSkinTheme(settings.codexAppDreamSkinThemeConfig),
     codexAppDreamSkinImagePath: (settings.codexAppDreamSkinImagePath || "").trim(),
