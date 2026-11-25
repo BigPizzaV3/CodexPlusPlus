@@ -271,8 +271,8 @@ impl Checkpoint {
                 issues: state.issues,
                 skipping: state.skipping,
                 large_meter_checked: !state.recheck_large_meter,
-                legacy_identity_prefix: Some(state.legacy_identity_prefix),
-                large_tools_checked: true,
+                legacy_identity_prefix: Some(if state.legacy_tools_only { 0 } else { state.legacy_identity_prefix }),
+                large_tools_checked: !state.legacy_tools_only,
             },
         )
     }
@@ -281,12 +281,14 @@ impl Checkpoint {
         let recheck_large_meter = !self.large_meter_checked
             && offset > super::MAX_LINE as u64
             && self.issues > self.malformed_token_counts;
+        let prefix = recheck_prefix(offset, self.legacy_identity_prefix, self.large_tools_checked, self.activity_truncated);
         FileState {
             stamp: self.stamp,
             offset,
             resume_pending: self.resume_pending || recheck_large_meter,
             recheck_large_meter,
-            legacy_identity_prefix: recheck_prefix(offset, self.legacy_identity_prefix, self.large_tools_checked, self.activity_truncated),
+            legacy_identity_prefix: prefix,
+            legacy_tools_only: prefix != 0 && self.legacy_identity_prefix == Some(0),
             session: self.session,
             model: self.model,
             model_unavailable: self.model_unavailable,

@@ -316,23 +316,29 @@ fn local_midnight(time: DateTime<Local>) -> bool {
         && Local.from_local_datetime(&time.naive_local()).single() == Some(time)
 }
 
-pub(super) fn retract_unscoped_attribution(db: &Connection) -> Result<()> {
+pub(super) fn retract_attribution(db: &Connection, sessions: Option<&str>) -> Result<()> {
     let mut changed_days = BTreeSet::new();
     let mut cursor = (0_i64, i64::MIN, [0_u8; 32]);
-    let mut select = db.prepare_cached(
+    let selected = if sessions.is_some() {
+        "r.session_id IN (SELECT value FROM json_each(?4))"
+    } else {
+        "?4 IS NULL"
+    };
+    let mut select = db.prepare_cached(&format!(
         "SELECT r.session_id, r.timestamp_ms, r.event_id, s.session, r.payload
          FROM token_resolved r INDEXED BY token_classified_time
          JOIN token_sessions s ON s.id = r.session_id
          WHERE json_type(CAST(r.payload AS TEXT), '$.classification_origin') = 'object'
+           AND {selected}
            AND r.day >= (SELECT precise_from FROM token_revision)
            AND (r.session_id, r.timestamp_ms, r.event_id) > (?1, ?2, ?3)
-         ORDER BY r.session_id, r.timestamp_ms, r.event_id LIMIT 128",
-    )?;
+         ORDER BY r.session_id, r.timestamp_ms, r.event_id LIMIT 128"
+    ))?;
     let mut write =
         db.prepare_cached("UPDATE token_resolved SET payload = ?2 WHERE event_id = ?1")?;
     loop {
         let mut updates = Vec::new();
-        let mut rows = select.query(params![cursor.0, cursor.1, cursor.2.as_slice()])?;
+        let mut rows = select.query(params![cursor.0, cursor.1, cursor.2.as_slice(), sessions])?;
         let mut loaded = 0;
         while let Some(row) = rows.next()? {
             loaded += 1;
@@ -1719,16 +1725,21 @@ impl Store {
     ) -> Result<Option<i64>> {
         let read = self.db.transaction()?;
         let base = revision(&read)?;
-        let eligible = read.query_row(
-            "SELECT EXISTS(SELECT 1 FROM token_coverage WHERE revision = ?1
-                           AND pending_sources = ?3 AND issues = ?2 AND NOT maintenance_blocked)",
-            params![base, scoped_count_gaps.len(), sealed_pending],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if !eligible {
+        let admission = read.query_row(
+            "SELECT CASE WHEN a.singleton IS NULL THEN
+                    c.pending_sources=?3 AND c.issues=?2
+                ELSE a.revision=c.revision AND NOT EXISTS(SELECT 1 FROM json_each(a.blocked_sessions)
+                    WHERE value=(SELECT id FROM token_sessions WHERE session=?4)) END,
+                a.singleton IS NOT NULL
+             FROM token_coverage c LEFT JOIN token_attribution_coverage a USING(singleton)
+             WHERE c.revision=?1 AND NOT c.maintenance_blocked",
+            params![base, scoped_count_gaps.len(), sealed_pending, session],
+            |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+        ).optional()?;
+        let Some((true, published_scope)) = admission else {
             return Ok(None);
-        }
-        if !scoped_count_gaps.is_empty() {
+        };
+        if !published_scope && !scoped_count_gaps.is_empty() {
             let mut related = read.prepare_cached(
                 "WITH RECURSIVE component(id, link) AS (
                     SELECT NULL, ?1
@@ -1921,6 +1932,10 @@ impl Store {
         )?;
         tx.execute(
             "UPDATE token_coverage SET revision = ?1 WHERE revision = ?2",
+            params![next, base],
+        )?;
+        tx.execute(
+            "UPDATE token_attribution_coverage SET revision = ?1 WHERE revision = ?2",
             params![next, base],
         )?;
         tx.commit()?;

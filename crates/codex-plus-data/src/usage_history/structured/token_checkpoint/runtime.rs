@@ -424,9 +424,6 @@ impl Runtime {
             MAX_RETAINED_BYTES,
         );
         state.failed_sources = report.errors.len();
-        let can_classify = report.complete
-            || (report.pending_sources == self.scan.sealed_pending()
-                && report.issues == self.scan.scoped_count_gaps().len());
         if let Some(error) = report.maintenance_error {
             self.retry_full = disk_full(&error);
             return Err(error.context("maintaining usage index"));
@@ -439,7 +436,7 @@ impl Runtime {
             self.retry_full = true;
             return Err(error.context("writing usage index"));
         }
-        Ok(can_classify)
+        Ok(report.can_classify)
     }
 }
 

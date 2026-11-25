@@ -137,6 +137,101 @@ fn recent_sessions_cover_the_day_then_their_own_history_and_revisit_late_proofs(
 }
 
 #[test]
+fn unrelated_legacy_prefix_allows_first_request_log_proof_during_normal_update() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(home.join("sessions"))?;
+    let home = fs::canonicalize(home)?;
+    let settings = root.path().join("settings.json");
+    let storage = root.path().join("history");
+    let log = root.path().join("requests.jsonl");
+    fs::write(&settings, r#"{"usageHistoryEnabled":true}"#)?;
+    fs::write(&log, "")?;
+    let at = Local::now() - TimeDelta::minutes(5);
+    let sessions = ["00000000-0000-4000-8000-000000000031", "00000000-0000-4000-8000-000000000032"];
+    let counts = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":10});
+    let mut proofs = String::new();
+    let large = home.join(format!("sessions/rollout-{}.jsonl", sessions[0]));
+    for session in sessions {
+        let meta = json!({"type":"session_meta","timestamp":at.to_rfc3339(),
+            "payload":{"id":session,"model_provider":"custom","source":"vscode"}});
+        let turn = json!({"type":"turn_context","timestamp":at.to_rfc3339(),
+            "payload":{"turn_id":"turn","model":"gpt-fixture"}});
+        let count = json!({"type":"event_msg","timestamp":at.to_rfc3339(),"payload":{
+            "type":"token_count","info":{"total_token_usage":counts,"last_token_usage":counts}}});
+        let mut rows = format!("{meta}\n{turn}\n{count}\n");
+        if session == sessions[0] {
+            let padding = format!("{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n", "x".repeat(65_536));
+            rows.push_str(&padding.repeat(145));
+        }
+        fs::write(home.join(format!("sessions/rollout-{session}.jsonl")), rows)?;
+        let proof = json!({"id":format!("proof-{session}"),"threadId":session,"model":"gpt-fixture",
+            "upstreamModel":"gpt-fixture-final","relayId":"fixture-relay","success":true,"state":"success",
+            "statusCode":200,"timestampMs":at.timestamp_millis(),"startedAtMs":at.timestamp_millis()-100,
+            "finalResponseEvidence":"final-response-v1","finalResponseId":format!("resp-{session}"),
+            "attempts":1,"autoRetries":0,"usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}});
+        writeln!(proofs, "{proof}")?;
+    }
+    let pass = |worker: &mut Runtime| {
+        let state = worker.update_with_request_log(&home, &log);
+        assert!(state.storage_error.is_none(), "{:?}", state.storage_error);
+        assert!(state.classification_error.is_none(), "{:?}", state.classification_error);
+    };
+    let pending = |worker: &Runtime| {
+        worker.store.as_ref().unwrap().db.query_row(
+            "SELECT pending_sources FROM token_coverage WHERE singleton=1", [], |row| row.get::<_, usize>(0),
+        ).unwrap()
+    };
+    let classifications = |worker: &mut Runtime| -> Result<[bool; 2]> {
+        let mut actual = BTreeMap::new();
+        Store::read_committed(&mut worker.store.as_mut().unwrap().db, i64::MIN, i64::MAX, |event| {
+            let delta = event.delta;
+            assert_eq!((delta.input_tokens, delta.cached_input_tokens, delta.output_tokens, delta.total_tokens,
+                delta.cached_known), (100, 20, 10, 110, true));
+            let exact = event.provider_source.as_deref() == Some("request-log-exact");
+            if exact {
+                assert_eq!((event.provider.as_str(), event.model.as_str()), ("fixture-relay", "gpt-fixture-final"));
+            }
+            assert!(actual.insert(event.session, exact).is_none());
+            Ok(())
+        })?;
+        assert_eq!(actual.len(), sessions.len());
+        Ok(sessions.map(|session| actual[session]))
+    };
+
+    let mut worker = Runtime::new(storage.clone(), settings.clone());
+    pass(&mut worker);
+    for _ in 0..16 {
+        if pending(&worker) == 0 { break; }
+        pass(&mut worker);
+    }
+    assert_eq!(pending(&worker), 0);
+    assert_eq!(classifications(&mut worker)?, [false, false]);
+    let store = worker.store.as_ref().unwrap();
+    let (revision, _) = store.checkpoint(&large)?.unwrap();
+    store.db.execute(
+        "UPDATE token_sources SET checkpoint=CAST(json_remove(checkpoint,'$.legacy_identity_prefix') AS BLOB)
+         WHERE revision=?", [revision],
+    )?;
+    drop(worker);
+
+    fs::write(&log, proofs)?;
+    let mut worker = Runtime::new(storage, settings);
+    pass(&mut worker);
+    assert!(pending(&worker) > 0);
+    assert!(worker.store.as_ref().unwrap().checkpoint(&large)?.unwrap().1.legacy_identity_prefix > 0);
+    let during_recheck = classifications(&mut worker)?;
+    for _ in 0..16 {
+        pass(&mut worker);
+        if pending(&worker) == 0 { break; }
+    }
+    assert_eq!(pending(&worker), 0);
+    assert_eq!(classifications(&mut worker)?, [true, true]);
+    assert_eq!(during_recheck, [false, true]);
+    Ok(())
+}
+
+#[test]
 fn byte_pages_reserve_whole_timestamp_groups_and_both_competition_margins() {
     let store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
     store

@@ -1843,7 +1843,9 @@ struct FileState {
     oversized: Option<oversized::Spool>,
     recheck_large_meter: bool,
     legacy_identity_prefix: u64,
+    legacy_tools_only: bool,
     identity_probe: Option<bool>,
+    replay_tool_activity: bool,
     skipping: bool,
     skipped_ordinal: Option<u64>,
     nul_padding_end: Option<u64>,
@@ -3899,6 +3901,9 @@ impl FileState {
             self.issues -= 1;
         }
         self.observe_rollout_position(ordinal);
+        if self.replay_tool_activity && !matches!(envelope.kind, "session_meta" | "response_item") {
+            return;
+        }
         let inherited = self.history_boundary.contains(ordinal);
         if envelope.kind == "token_usage_record" {
             if inherited {

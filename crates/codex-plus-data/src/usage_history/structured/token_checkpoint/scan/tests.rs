@@ -1744,6 +1744,7 @@ fn tool_detail_reads_all_output_parts() -> anyhow::Result<()> {
 #[test]
 fn tool_detail_reads_large_lines_in_plain_and_archived_sources() -> anyhow::Result<()> {
     use crate::usage_history::structured::token_checkpoint::DetailQuery;
+    use std::io::Write;
     let now = chrono::Local::now();
     let at = now - chrono::Duration::seconds(5);
     let large = "x".repeat((1 << 20) + 51);
@@ -1757,6 +1758,10 @@ fn tool_detail_reads_large_lines_in_plain_and_archived_sources() -> anyhow::Resu
             .replace("2026-01-02T12:00:00Z", &at.to_rfc3339())
             .replace("2026-01-02T12:01:00Z", &at.to_rfc3339());
         for (id, input) in [("mixed", "{}"), ("long-input", arguments.as_str())] {
+            if id == "long-input" {
+                let padding = format!("{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n", "x".repeat(65536));
+                source.push_str(&padding.repeat(65));
+            }
             let mut append = |payload| {
                 source.push_str(&json!({"type":"response_item", "timestamp":at.to_rfc3339(), "payload":payload}).to_string());
                 source.push('\n');
@@ -1798,18 +1803,41 @@ fn tool_detail_reads_large_lines_in_plain_and_archived_sources() -> anyhow::Resu
             store.db.prepare("SELECT event_id,payload FROM token_resolved ORDER BY event_id")?
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
         };
+        store.reclassify_session(FIRST, 1 << 20, &BTreeSet::new(), |events, _| {
+            for event in events {
+                event.provider = "recorded-relay".into();
+                event.provider_source = Some("request-log-exact".into());
+            }
+            Ok(())
+        })?.unwrap();
         let original = observations(&store)?;
         assert_eq!(original.len(), 1);
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&original[0].1)?["provider"], "recorded-relay");
         store.db.execute("DELETE FROM execution_observations WHERE end-position>1048576", [])?;
         store.db.execute("UPDATE token_sources SET activity_truncated=1,checkpoint=CAST(
             json_set(json_remove(CAST(checkpoint AS TEXT),'$.large_tools_checked'),
                 '$.activity_truncated', json('true')) AS BLOB)", [])?;
         drop(store);
         let mut store = Store::open(Connection::open(&db_path)?)?;
+        if !archived {
+            // 先提交实时追加，再冷开。工具补查的类型必须随新的检查点保留。
+            let mut append = fs::OpenOptions::new().append(true).open(&path)?;
+            writeln!(append, "{{\"type\":\"ignored\",\"payload\":{{}}}}")?;
+            let mut reader = SourceReader::restore(&store, &path)?;
+            assert!(reader.step(&mut store, at.date_naive(), &mut Budget::new(std::iter::empty()),
+                &BTreeMap::new(), 1 << 20)?);
+            assert_eq!(observations(&store)?, original);
+            drop(reader);
+            drop(store);
+            store = Store::open(Connection::open(&db_path)?)?;
+            assert!(store.checkpoint(&path)?.unwrap().1.legacy_tools_only);
+        }
         let mut scan = Scan::default();
-        for _ in 0..24 {
+        for round in 0..24 {
             let report = scan.round(&mut store, &home, at.date_naive(), &BTreeMap::new(), 1 << 20);
             assert!(report.errors.is_empty(), "{:?}", report.errors);
+            assert_eq!(observations(&store)?, original);
+            if round == 0 { assert!(!report.complete); }
             if report.complete { break; }
         }
         assert_eq!(observations(&store)?, original);

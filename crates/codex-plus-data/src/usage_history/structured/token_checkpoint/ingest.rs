@@ -100,9 +100,23 @@ impl SourceReader {
         !matches!(self.encoding, Encoding::Idle)
     }
 
+    pub(super) fn closed_legacy_prefix(&self) -> Option<(super::SourceStamp, bool)> {
+        let state = &self.state;
+        let stamp @ (size, Some(_), Some(_)) = state.stamp? else { return None };
+        // 历史扫描可能已提交整个新尾部，而旧前缀仍在分批读取。
+        (state.legacy_identity_prefix != 0
+            && self.committed_complete && self.ready.is_none() && !self.replacing
+            && !state.resume_pending && !state.recheck_large_meter && !state.skipping
+            && state.reader.is_none() && self.offset == state.committed_offset()
+            && (self.source.extension().is_some_and(|ext| ext == "zst") || self.offset == size)
+            && !state.session.is_empty() && !state.identity_conflict
+            && state.issues == state.malformed_token_counts && (!state.invalid_counts || state.issues != 0))
+            .then_some((stamp, !state.legacy_tools_only || state.issues != 0))
+    }
+
     pub(super) fn has_count_gap(&self) -> bool {
         self.state.issues != 0 || self.state.invalid_counts || self.state.identity_conflict
-            || self.state.legacy_identity_prefix != 0
+            || self.state.legacy_identity_prefix != 0 && !self.state.legacy_tools_only
     }
 
     pub(super) fn has_only_malformed_token_counts(&self) -> bool {
@@ -111,6 +125,125 @@ impl SourceReader {
             && !self.state.identity_conflict
             && self.state.issues != 0
             && self.state.issues == self.state.malformed_token_counts
+    }
+
+    fn check_prefix(
+        &mut self,
+        store: &mut Store,
+        cutoff: NaiveDate,
+        budget: &mut Budget,
+    ) -> Result<bool> {
+        if self.state.legacy_tools_only {
+            let probe = self.identity_probe.get_or_insert_with(|| {
+                Box::new(FileState {
+                    replay_tool_activity: true,
+                    executions: Some(Default::default()),
+                    ..FileState::default()
+                })
+            });
+            probe.executions.as_mut().unwrap().now_ms = chrono::Local::now().timestamp_millis();
+            let (complete, _) = probe.read_source_batch(&self.source, cutoff, budget)?;
+            if self.state.stamp != Some(FileState::source_stamp(&self.source)?) {
+                self.identity_probe = None;
+                return Ok(false);
+            }
+            if self.state.identity_conflict {
+                probe.tools.clear();
+                probe.executions.as_mut().unwrap().rows.clear();
+            }
+            if !probe.tools.is_empty() || !probe.executions.as_ref().unwrap().rows.is_empty() || complete {
+                // 原始会话和计量已经核验。分批补回同一文件位置的工具记录。
+                store.repair_tool_batch(&self.source, self.revision.unwrap(), probe, complete)?;
+                probe.tools.clear();
+                probe.executions.as_mut().unwrap().rows.clear();
+            }
+            if complete {
+                self.state.legacy_identity_prefix = 0;
+                self.state.legacy_tools_only = false;
+                self.state.activity_truncated = probe.activity_truncated;
+                self.state.calls = std::mem::take(&mut probe.calls);
+                self.state.exec_skills = std::mem::take(&mut probe.exec_skills);
+                self.state.exec_polls = std::mem::take(&mut probe.exec_polls);
+                self.identity_probe = None;
+            } else if probe.reader.is_some() {
+                Meter::new(probe).refresh(probe, CURSOR_BYTES);
+            }
+            return Ok(complete);
+        }
+        let probe = self.identity_probe.get_or_insert_with(|| {
+            Box::new(FileState { identity_probe: Some(false), ..FileState::default() })
+        });
+        // 只检查旧解析器已经提交的前缀，尾部的新数据仍由正常路径优先追加。
+        let end = self.state.legacy_identity_prefix;
+        if probe.identity_probe != Some(true) && probe.committed_offset() < end {
+            let allowance = budget.read_left;
+            budget.read_left = allowance.min(end.saturating_sub(probe.offset).max(1));
+            let reserved = allowance - budget.read_left;
+            let result = probe.read_source_batch(&self.source, cutoff, budget);
+            budget.read_left += reserved;
+            let (complete, _) = result?;
+            probe.events.clear();
+            probe.tools.clear();
+            anyhow::ensure!(!complete || probe.committed_offset() >= end,
+                "source ended before its saved identity-check prefix");
+        }
+        if probe.identity_probe == Some(true) {
+            if budget.read_left == 0 || budget.source_left == 0 {
+                return Ok(false);
+            }
+            self.state.recheck_large_meter = true;
+            self.state.resume_pending = true;
+            self.identity_probe = None;
+        } else if probe.committed_offset() >= end {
+            if self.state.stamp != Some(FileState::source_stamp(&self.source)?) {
+                return Ok(false);
+            }
+            store.finish_identity_probe(&self.source, self.revision.unwrap())?;
+            self.state.legacy_identity_prefix = 0;
+            self.identity_probe = None;
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+
+    pub(super) fn step_in_history_slot(
+        &mut self,
+        store: &mut Store,
+        cutoff: NaiveDate,
+        budget: &mut Budget,
+        provider_names: &BTreeMap<String, String>,
+        reconciliation_limit: usize,
+    ) -> Result<bool> {
+        if self.state.legacy_identity_prefix == 0
+            || !self.source.extension().is_some_and(|ext| ext == "jsonl")
+        {
+            return self.step(store, cutoff, budget, provider_names, reconciliation_limit);
+        }
+        let current = FileState::source_stamp(&self.source)?;
+        if self.state.stamp == Some(current) && current.0 == self.offset {
+            return self.step(store, cutoff, budget, provider_names, reconciliation_limit);
+        }
+        // 同一个文件持续追加时，历史名额同时服务新尾部和已经固定的旧前缀。
+        let reserved = (budget.read_left / 2, budget.source_left / 2);
+        budget.read_left -= reserved.0;
+        budget.source_left -= reserved.1;
+        let before = self.offset;
+        let tail = self.step(store, cutoff, budget, provider_names, reconciliation_limit);
+        budget.read_left += reserved.0;
+        budget.source_left += reserved.1;
+        let closed = tail?;
+        if self.offset == before || self.state.legacy_identity_prefix == 0 || self.replacing
+            || self.state.legacy_tools_only && !self.committed_complete
+            || self.state.stamp != Some(FileState::source_stamp(&self.source)?)
+        {
+            return Ok(closed);
+        }
+        let checked = self.check_prefix(store, cutoff, budget)?;
+        if self.state.recheck_large_meter {
+            return self.step(store, cutoff, budget, provider_names, reconciliation_limit);
+        }
+        Ok(checked && self.committed_complete)
     }
 
     pub(super) fn step(
@@ -124,41 +257,9 @@ impl SourceReader {
         if self.state.legacy_identity_prefix > 0 && self.ready.is_none()
             && self.state.reader.is_none() && !self.state.resume_pending
             && !self.replacing && self.state.stamp == Some(FileState::source_stamp(&self.source)?)
+            && !self.check_prefix(store, cutoff, budget)?
         {
-            let probe = self.identity_probe.get_or_insert_with(|| {
-                Box::new(FileState { identity_probe: Some(false), ..FileState::default() })
-            });
-            // 只检查旧解析器已经提交的前缀，尾部的新数据仍由正常路径优先追加。
-            let end = self.state.legacy_identity_prefix;
-            if probe.identity_probe != Some(true) && probe.committed_offset() < end {
-                let allowance = budget.read_left;
-                budget.read_left = allowance.min(end.saturating_sub(probe.offset).max(1));
-                let reserved = allowance - budget.read_left;
-                let result = probe.read_source_batch(&self.source, cutoff, budget);
-                budget.read_left += reserved;
-                let (complete, _) = result?;
-                probe.events.clear();
-                probe.tools.clear();
-                anyhow::ensure!(!complete || probe.committed_offset() >= end,
-                    "source ended before its saved identity-check prefix");
-            }
-            if probe.identity_probe == Some(true) {
-                if budget.read_left == 0 || budget.source_left == 0 {
-                    return Ok(false);
-                }
-                self.state.recheck_large_meter = true;
-                self.state.resume_pending = true;
-                self.identity_probe = None;
-            } else if probe.committed_offset() >= end {
-                if self.state.stamp != Some(FileState::source_stamp(&self.source)?) {
-                    return Ok(false);
-                }
-                store.finish_identity_probe(&self.source, self.revision.unwrap())?;
-                self.state.legacy_identity_prefix = 0;
-                self.identity_probe = None;
-            } else {
-                return Ok(false);
-            }
+            return Ok(false);
         }
         if self.ready.is_some() {
             let stamp = match FileState::source_stamp(&self.source) {

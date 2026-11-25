@@ -28,9 +28,11 @@ pub(super) struct Scan {
     live: BTreeMap<PathBuf, SourceStamp>,
     waiting_for_newline: BTreeMap<PathBuf, (SourceStamp, bool)>,
     last_revisited: Option<PathBuf>,
+    waiting_prefixes: HashSet<PathBuf>,
     issues: usize,
     unknown_count_scope: bool,
     sealed_queue: HashSet<PathBuf>,
+    legacy_prefixes: BTreeMap<PathBuf, (SourceStamp, bool)>,
     scoped_count_gaps: BTreeSet<PathBuf>,
     maintenance_day: Option<NaiveDate>,
     details_pending: bool,
@@ -41,6 +43,7 @@ pub(super) struct Scan {
 
 pub(super) struct Report {
     pub(super) complete: bool,
+    pub(super) can_classify: bool,
     pub(super) pending_sources: usize,
     pub(super) issues: usize,
     pub(super) errors: Vec<(PathBuf, anyhow::Error)>,
@@ -119,6 +122,8 @@ impl Scan {
         {
             self.issues = 0;
             let previous_queue = std::mem::take(&mut self.sealed_queue);
+            self.legacy_prefixes.clear();
+            self.waiting_prefixes.clear();
             self.scoped_count_gaps.clear();
             self.missing.clear();
             self.more_missing = false;
@@ -158,7 +163,7 @@ impl Scan {
             }
             if self.issues == 0 {
                 match store.sealed_queued_sources(self.remaining.make_contiguous()) {
-                    Ok((sealed, gaps, growing, unchecked)) => {
+                    Ok((sealed, gaps, growing, unchecked, prefixes)) => {
                         for (path, &stamp) in sealed.iter().chain(&unchecked) {
                             if path.starts_with(&sessions_dir)
                                 && path.extension().is_some_and(|ext| ext == "jsonl")
@@ -168,6 +173,7 @@ impl Scan {
                             }
                         }
                         self.sealed_queue = sealed.into_keys().collect();
+                        self.legacy_prefixes = prefixes;
                         self.issues += gaps.len();
                         self.scoped_count_gaps = gaps;
                         current_inventory = true;
@@ -191,9 +197,11 @@ impl Scan {
                             });
                         } else if !growing.is_empty() {
                             // 优先解析追加内容，读完并提交后才可按新的计数范围保留归属。
-                            self.remaining
-                                .make_contiguous()
-                                .sort_by_key(|path| !growing.contains_key(path));
+                            if let Err(error) = store.prioritize_growing(&growing, &mut self.remaining) {
+                                self.issues += 1;
+                                self.unknown_count_scope = true;
+                                errors.push((home.to_owned(), error));
+                            }
                             if !self.retirement_blocked()
                                 && !self.more_missing
                                 && self.remaining.len() == self.sealed_queue.len() + growing.len()
@@ -260,12 +268,19 @@ impl Scan {
             }
         }
         if !changed.is_empty() {
+            if self.active.is_none() && retry.is_none() && self.comparing.is_none()
+                && let Some(head) = self.remaining.front()
+                && self.waiting_prefixes.remove(head)
+            {
+                changed.retain(|path| path != head);
+            }
             let growing: HashSet<_> = changed.iter().collect();
             self.remaining.retain(|path| !growing.contains(path));
             for path in &changed {
                 let was_waiting = self.waiting_for_newline.remove(path).is_some_and(|(_, gap)| gap);
                 let was_sealed = self.sealed_queue.remove(path);
-                let removed_gap = (was_waiting || was_sealed) && self.scoped_count_gaps.remove(path);
+                let was_prefix = self.legacy_prefixes.remove(path).is_some();
+                let removed_gap = (was_waiting || was_sealed || was_prefix) && self.scoped_count_gaps.remove(path);
                 if was_waiting || removed_gap {
                     self.issues -= 1;
                 }
@@ -357,7 +372,8 @@ impl Scan {
                         }
                         continue;
                     };
-                    if self.sealed_queue.remove(&path) && self.scoped_count_gaps.remove(&path) {
+                    self.sealed_queue.remove(&path);
+                    if self.scoped_count_gaps.remove(&path) {
                         self.issues -= 1;
                     }
                     if self
@@ -460,7 +476,9 @@ impl Scan {
             slot_budget.read_left = slot_budget.read_left.min(batch_bytes);
             slot_budget.source_left = slot_budget.source_left.min(batch_bytes);
             let allowance = (slot_budget.read_left, slot_budget.source_left);
-            let result = reader.step(
+            let step = if revisit { SourceReader::step } else { SourceReader::step_in_history_slot };
+            let result = step(
+                &mut reader,
                 store,
                 cutoff,
                 &mut slot_budget,
@@ -477,15 +495,25 @@ impl Scan {
                 live_bytes -= consumed.0;
                 live_source_bytes -= consumed.1;
             }
+            if result.is_ok() && let Some(prefix) = reader.closed_legacy_prefix() {
+                self.legacy_prefixes.insert(reader.source.clone(), prefix);
+                if let Some(stamp) = self.live.get_mut(&reader.source) {
+                    *stamp = prefix.0;
+                }
+            } else if reader.state.identity_conflict {
+                self.legacy_prefixes.remove(&reader.source);
+            }
             match result {
                 Ok(true) if reader.state.legacy_identity_prefix != 0 => {
                     // 尾部已提交，旧前缀由历史队列复核，实时名额留给下一次追加。
                     if let Some(stamp) = self.live.get_mut(&reader.source) {
                         *stamp = reader.state.stamp.unwrap();
                     }
+                    self.waiting_prefixes.insert(reader.source.clone());
                     verify_later.push(reader.source);
                 }
                 Ok(complete) if complete || reader.waiting_for_newline() => {
+                    self.legacy_prefixes.remove(&reader.source);
                     if !complete {
                         self.waiting_for_newline.insert(
                             reader.source.clone(),
@@ -567,18 +595,44 @@ impl Scan {
             .chain(&self.revisiting)
             .filter(|reader| reader.retrying_closed_append())
             .count();
-        if let Err(error) = store.record_coverage(
-            Coverage {
-                pending_sources,
-                issues,
-                maintenance_blocked: maintenance_error.is_some(),
-            },
-            self.unknown_count_scope
-                || pending_sources != self.sealed_pending() + unpublished_append,
-        ) {
+        // 盘点之后，路径也可能被替换。旧前缀只对同一份已提交内容限定会话范围。
+        let mut affected = self.scoped_count_gaps.clone();
+        let mut covered = 0;
+        for path in self.remaining.iter().chain(self.active.iter().chain(&self.revisiting)
+            .chain(&self.deferred).map(|reader| &reader.source)) {
+            if self.sealed_queue.contains(path) {
+                covered += 1;
+            } else if let Some(&(stamp, affects_counts)) = self.legacy_prefixes.get(path) {
+                match FileState::source_stamp(path) {
+                    Ok(current) if current == stamp => {
+                        covered += 1;
+                        if affects_counts { affected.insert(path.clone()); }
+                    }
+                    Ok(_) => { self.legacy_prefixes.remove(path); }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        self.legacy_prefixes.remove(path);
+                    }
+                    Err(error) => {
+                        self.unknown_count_scope = true;
+                        issues += 1;
+                        errors.push((path.clone(), error.into()));
+                    }
+                }
+            }
+        }
+        let unknown = self.unknown_count_scope || pending_sources > covered + unpublished_append;
+        let can_classify = !unknown && unpublished_append == 0 && issues == self.scoped_count_gaps.len();
+        let coverage = Coverage { pending_sources, issues, maintenance_blocked: maintenance_error.is_some() };
+        let recorded = if can_classify {
+            store.record_scoped_coverage(coverage, &affected)
+        } else {
+            store.record_coverage(coverage, unknown)
+        };
+        if let Err(error) = recorded {
             issues += 1;
             return Report {
                 complete: false,
+                can_classify: false,
                 pending_sources,
                 issues,
                 errors,
@@ -587,6 +641,7 @@ impl Scan {
         }
         Report {
             complete: pending_sources == 0 && issues == 0 && maintenance_error.is_none(),
+            can_classify: can_classify && maintenance_error.is_none(),
             pending_sources,
             issues,
             errors,

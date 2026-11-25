@@ -136,6 +136,280 @@ fn legacy_prefix_recheck_leaves_the_live_slot_available_for_other_appends() -> a
 }
 
 #[test]
+fn legacy_prefix_attribution_follows_only_the_linked_sessions() -> anyhow::Result<()> {
+    use crate::usage_history::structured::token_checkpoint::store::projection::SourceUpdate;
+
+    const PHYSICAL: &str = "00000000-0000-4000-8000-000000000071";
+    const CHILD: &str = "00000000-0000-4000-8000-000000000072";
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut divergences = Vec::new();
+    for case in [
+        "same-session",
+        "history-base",
+        "tools-only",
+        "replaced",
+        "missing",
+        "replaced-during-probe",
+        "unknown-header",
+        "partial-line",
+    ] {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().canonicalize()?;
+        let sessions = root.join("sessions");
+        fs::create_dir(&sessions)?;
+        let parent = sessions.join(format!("rollout-{PHYSICAL}.jsonl"));
+        let parent_rows: Vec<_> = rollout(FIRST)
+            .lines()
+            .enumerate()
+            .map(|(i, line)| {
+                let mut row: serde_json::Value = serde_json::from_str(line).unwrap();
+                row["ordinal"] = json!(i);
+                format!("{row}\n")
+            })
+            .collect();
+        fs::write(&parent, parent_rows.concat())?;
+        fs::write(
+            sessions.join(format!("rollout-{SECOND}.jsonl")),
+            rollout(SECOND),
+        )?;
+        let source = sessions.join(format!("rollout-fixture-{CHILD}.jsonl"));
+        let owner = if case == "history-base" { CHILD } else { FIRST };
+        let mut meta = json!({"type":"session_meta","ordinal":2,"timestamp":"2026-01-02T12:02:00Z",
+            "payload":{"id":owner,"model_provider":"custom"}});
+        if case == "history-base" {
+            meta["payload"]["history_base"] = json!({"thread_id":PHYSICAL,
+                "end_ordinal_exclusive":2,"end_byte_offset":parent.metadata()?.len()});
+        }
+        let context = json!({"type":"turn_context","ordinal":3,"timestamp":"2026-01-02T12:02:01Z",
+            "payload":{"turn_id":"tail","model":"fixture"}});
+        let padding = format!(
+            "{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n",
+            "x".repeat(65536)
+        );
+        let long_id = "r".repeat(257);
+        let counts = json!({"input_tokens":125,"cached_input_tokens":25,"output_tokens":12});
+        let terminal = json!({"type":"token_usage_record","timestamp":"2026-01-02T12:03:00Z",
+            "payload":{"thread_id":owner,"turn_id":"tail","response_id":long_id,
+            "usage":counts,"thread_token_usage":counts}});
+        let tools_only = case == "tools-only";
+        let mut content = format!("{meta}\n{context}\n{}", padding.repeat(145));
+        if tools_only {
+            let tool = json!({"type":"response_item","timestamp":"2026-01-02T12:03:00Z",
+                "payload":{"type":"function_call","name":"exec_command","call_id":"large",
+                "arguments": "a".repeat(1100 << 10)}});
+            content.push_str(&format!("{tool}\n"));
+        } else {
+            content.push_str(&format!("{terminal}\n"));
+        }
+        if case == "unknown-header" {
+            let header = json!({"type":"session_meta","timestamp":"2026-01-02T12:04:00Z",
+                "payload":{"id":SECOND,"padding":"x".repeat(1100 << 10)}});
+            content.push_str(&format!("{header}\n"));
+        }
+        fs::write(&source, content)?;
+        let mut old = FileState::default();
+        while !old.read_with_budget(&source, cutoff, &mut Budget::new(std::iter::empty()))? {}
+        if case == "unknown-header" {
+            // 当前解析器读出第二个会话；旧解析器跳过了整个超长头，只留下非计数诊断。
+            assert_eq!(old.session, FIRST);
+            assert!(old.identity_conflict && old.invalid_counts && old.issues == 1);
+            old.identity_conflict = false;
+            old.invalid_counts = false;
+            old.issues = 0;
+        }
+        assert_eq!(old.issues, 0);
+        if !tools_only {
+            assert!(
+                old.events
+                    .iter()
+                    .any(|event| event.terminal_response.as_deref() == Some(&long_id))
+            );
+            old.events.retain(|event| event.terminal_response.is_none());
+        }
+        let mut store = Store::open(Connection::open_in_memory()?)?;
+        let update = SourceUpdate {
+            source: &source,
+            state: &old,
+            previous_revision: None,
+            replace: false,
+        };
+        let prepared = store.prepare(update, cutoff, names.clone(), LIMIT)?;
+        store.publish(prepared)?;
+        let mut scan = Scan::default();
+        assert!(
+            scan.round(&mut store, &root, cutoff, &names, LIMIT)
+                .complete
+        );
+        for session in [FIRST, SECOND] {
+            store
+                .reclassify_session(session, LIMIT, &BTreeSet::new(), |events, _| {
+                    for event in events {
+                        event.provider = "verified-relay".into();
+                        event.provider_source = Some("request-log-exact".into());
+                    }
+                    Ok(())
+                })?
+                .unwrap();
+        }
+        let exact_sessions = |store: &mut Store| -> anyhow::Result<BTreeSet<String>> {
+            let mut exact = BTreeSet::new();
+            Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+                if event.provider_source.as_deref() == Some("request-log-exact") {
+                    exact.insert(event.session);
+                }
+                Ok(())
+            })?;
+            Ok(exact)
+        };
+        let both = BTreeSet::from([FIRST.to_owned(), SECOND.to_owned()]);
+        assert_eq!(exact_sessions(&mut store)?, both);
+        let (rev, _) = store.checkpoint(&source)?.unwrap();
+        if tools_only {
+            store.db.execute(
+                "UPDATE token_sources SET checkpoint=CAST(json_set(checkpoint,
+                '$.activity_truncated',json('true'),'$.large_tools_checked',json('false')) AS BLOB)
+                WHERE revision=?",
+                [rev],
+            )?;
+        } else {
+            store.db.execute(
+                "UPDATE token_sources SET checkpoint=CAST(json_set(json_remove(checkpoint,
+                '$.legacy_identity_prefix'),'$.issues',?) AS BLOB) WHERE revision=?",
+                rusqlite::params![usize::from(case == "unknown-header"), rev],
+            )?;
+        }
+        if case == "partial-line" {
+            let mut file = fs::OpenOptions::new().append(true).open(&source)?;
+            file.write_all(b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"")?;
+        }
+        if case == "replaced" || case == "missing" {
+            fs::rename(&source, root.join("old.jsonl"))?;
+            let path = if case == "replaced" {
+                source.clone()
+            } else {
+                sessions.join("rollout-new.jsonl")
+            };
+            // 新来源的会话头位于首批数据之后，扫描器尚不能断言其归属范围。
+            fs::write(path, format!("{}{}", padding.repeat(145), rollout(SECOND)))?;
+        }
+        let mut scan = Scan::default();
+        let report = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+        assert!(
+            !report.complete && report.errors.is_empty(),
+            "{case}: {:?}",
+            report.errors
+        );
+        let expected = match case {
+            "tools-only" => both,
+            "replaced" | "missing" | "unknown-header" | "partial-line" => BTreeSet::new(),
+            _ => BTreeSet::from([SECOND.to_owned()]),
+        };
+        let actual = exact_sessions(&mut store)?;
+        if actual != expected {
+            divergences.push((case, expected, actual));
+        }
+        if case == "replaced-during-probe" {
+            fs::rename(&source, root.join("old.jsonl"))?;
+            fs::write(&source, format!("{}{}", padding.repeat(145), rollout(SECOND)))?;
+            let report = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+            assert!(!report.complete);
+            assert!(exact_sessions(&mut store)?.is_empty());
+        }
+        if case == "partial-line" {
+            assert!((0..16).any(|_| {
+                let report = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+                assert!(!report.complete && report.errors.is_empty());
+                scan.waiting_for_newline.contains_key(&source)
+            }));
+            let waiting = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+            assert!(!waiting.complete && waiting.errors.is_empty());
+            assert!(exact_sessions(&mut store)?.is_empty());
+        }
+        if matches!(case, "same-session" | "history-base") {
+            assert!((0..16).any(|_| {
+                scan.round(&mut store, &root, cutoff, &names, LIMIT)
+                    .complete
+            }));
+            let exists = store.db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM token_observations
+                WHERE json_extract(CAST(payload AS TEXT),'$.terminal_response')=?)",
+                [&long_id],
+                |row| row.get::<_, bool>(0),
+            )?;
+            assert!(exists, "{case}");
+        }
+    }
+    assert!(divergences.is_empty(), "{divergences:?}");
+    Ok(())
+}
+
+#[test]
+fn growing_session_prioritizes_linked_prefixes_and_keeps_other_history_moving() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions)?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let paths: Vec<_> = (0..5).map(|n| sessions.join(format!("rollout-fixture-{n}.jsonl"))).collect();
+    let padding = format!("{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n", "x".repeat(65536)).repeat(65);
+    for (i, path) in paths.iter().enumerate() {
+        let session = match i {
+            0 | 1 => FIRST.to_owned(),
+            n => format!("00000000-0000-4000-8000-{:012}", n + 100),
+        };
+        let mut rows = rollout(&session);
+        rows.push_str(&padding);
+        if i == 0 { rows.push_str(&padding); }
+        fs::write(path, rows)?;
+    }
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    assert!((0..32).any(|_| scan.round(&mut store, &root, cutoff, &BTreeMap::new(), LIMIT).complete));
+    for (i, path) in paths.iter().enumerate() {
+        let revision = store.checkpoint(path)?.unwrap().0;
+        store.db.execute(
+            "UPDATE token_sources SET checkpoint=CAST(json_remove(checkpoint,'$.legacy_identity_prefix') AS BLOB)
+             WHERE revision=?", [revision],
+        )?;
+        if i == 1 || i == 2 {
+            // 第二个前缀只能经首个前缀的物理续段关联到增长源。
+            store.db.execute(
+                "INSERT INTO token_source_links SELECT id,'r:00000000-0000-4000-8000-000000000199'
+                 FROM token_sources WHERE revision=?", [revision],
+            )?;
+        }
+    }
+    let mut ordered: VecDeque<_> = [3, 2, 0, 4, 1].map(|i| paths[i].clone()).into();
+    store.prioritize_growing(&BTreeMap::from([(paths[0].clone(), 1)]), &mut ordered)?;
+    assert_eq!(ordered, [0, 2, 3, 1, 4].map(|i| paths[i].clone()));
+
+    let mut scan = Scan::default();
+    let mut active = fs::OpenOptions::new().append(true).open(&paths[0])?;
+    for i in 1..=32 {
+        let mut count: serde_json::Value = serde_json::from_str(&next_count())?;
+        count["timestamp"] = json!(format!("2026-01-02T12:02:{i:02}Z"));
+        count["payload"]["info"]["total_token_usage"]["input_tokens"] = json!(100 + 102 * i);
+        writeln!(active, "{count}")?;
+        let report = scan.round(&mut store, &root, cutoff, &BTreeMap::new(), LIMIT);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        let checkpoint = store.checkpoint(&paths[0])?.unwrap().1;
+        assert_eq!(checkpoint.offset, active.metadata()?.len());
+        if i == 1 { assert_ne!(checkpoint.legacy_identity_prefix, 0); }
+        let appended: usize = store.db.query_row(
+            "SELECT count(*) FROM token_resolved WHERE json_extract(CAST(payload AS TEXT),'$.delta.i')=102",
+            [], |row| row.get(0),
+        )?;
+        assert_eq!(appended, i);
+        if report.complete { break; }
+    }
+    for path in &paths {
+        assert_eq!(store.checkpoint(path)?.unwrap().1.legacy_identity_prefix, 0);
+    }
+    Ok(())
+}
+
+#[test]
 fn concurrent_appends_beyond_one_round_stay_pending_and_rotate() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().canonicalize()?;

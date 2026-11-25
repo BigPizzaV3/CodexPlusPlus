@@ -1,5 +1,5 @@
 use super::{Checkpoint, Counter, FileState, Observation, UsageEvent};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -79,6 +79,11 @@ impl Store {
                 pending_sources INTEGER NOT NULL,
                 issues INTEGER NOT NULL,
                 maintenance_blocked INTEGER NOT NULL
+             ) STRICT;
+             CREATE TABLE IF NOT EXISTS token_attribution_coverage (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                revision INTEGER NOT NULL,
+                blocked_sessions TEXT NOT NULL
              ) STRICT;
              CREATE TABLE IF NOT EXISTS token_sources (
                 id INTEGER PRIMARY KEY,
@@ -234,8 +239,56 @@ impl Store {
     ) -> Result<()> {
         let tx = self.db.transaction()?;
         if unknown_count_scope {
-            projection::retract_unscoped_attribution(&tx)?;
+            projection::retract_attribution(&tx, None)?;
         }
+        tx.execute("DELETE FROM token_attribution_coverage", [])?;
+        Self::write_coverage(&tx, coverage)?;
+        Ok(tx.commit()?)
+    }
+
+    pub(super) fn record_scoped_coverage(
+        &mut self,
+        coverage: Coverage,
+        affected_sources: &BTreeSet<PathBuf>,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        let affected = if affected_sources.is_empty() {
+            "[]".to_owned()
+        } else {
+            let mut lookup = tx.prepare_cached("SELECT id FROM token_sources WHERE source=?1")?;
+            let sources = affected_sources
+                .iter()
+                .map(|path| lookup.query_row([encode_path(path)], |row| row.get::<_, i64>(0)))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // Both physical rollout aliases and canonical sessions participate in the closure.
+            tx.query_row(
+                "WITH RECURSIVE component(id,link) AS (
+                    SELECT value,NULL FROM json_each(?1)
+                    UNION SELECT NULL,l.link FROM component c JOIN token_source_links l ON l.source_id=c.id
+                    UNION SELECT l.source_id,NULL FROM component c JOIN token_source_links l ON l.link=c.link
+                 )
+                 SELECT json_group_array(s.id ORDER BY s.id) FROM component c
+                 JOIN token_sessions s ON s.session=substr(c.link,3) WHERE c.link GLOB 's:*'",
+                [serde_json::to_string(&sources)?],
+                |row| row.get::<_, String>(0),
+            )?
+        };
+        if affected != "[]" {
+            projection::retract_attribution(&tx, Some(&affected))?;
+        }
+        tx.execute(
+            "INSERT INTO token_attribution_coverage
+             SELECT 1,revision,?1 FROM token_revision WHERE singleton=1
+             ON CONFLICT(singleton) DO UPDATE SET revision=excluded.revision,
+                blocked_sessions=excluded.blocked_sessions
+             WHERE (revision,blocked_sessions) != (excluded.revision,excluded.blocked_sessions)",
+            [affected],
+        )?;
+        Self::write_coverage(&tx, coverage)?;
+        Ok(tx.commit()?)
+    }
+
+    fn write_coverage(tx: &Connection, coverage: Coverage) -> Result<()> {
         tx.execute(
             "INSERT INTO token_coverage
              SELECT 1, revision, ?1, ?2, ?3 FROM token_revision WHERE singleton = 1
@@ -252,7 +305,7 @@ impl Store {
                 coverage.maintenance_blocked
             ],
         )?;
-        Ok(tx.commit()?)
+        Ok(())
     }
 
     pub(super) fn expire_execution_locators(&mut self, now_ms: i64, batch: u32) -> Result<()> {
@@ -429,57 +482,87 @@ impl Store {
                     serde_json::to_vec(&Observation::capture(event))?,
                 ])?;
             }
-            let mut activity = tx.prepare(
-                "INSERT INTO token_activity
-                 SELECT ?1, id, ?3, ?4, ?5, ?6 FROM token_sessions WHERE session = ?2
-                 ON CONFLICT(source_id, session_id, call_id) DO UPDATE SET
-                    timestamp_ms = excluded.timestamp_ms, day = excluded.day, payload = excluded.payload",
-            )?;
-            for tool in state.tools.iter().filter(|_| !state.identity_conflict) {
-                add_session.execute([&tool.call.session])?;
-                activity.execute(params![
-                    source_id,
-                    tool.call.session,
-                    tool.id,
-                    DateTime::parse_from_rfc3339(&tool.call.timestamp)?.timestamp_millis(),
-                    tool.date.to_string(),
-                    serde_json::to_vec(&serde_json::json!({
-                        "conversationKey":tool.call.session,
-                        "timestamp":tool.call.timestamp,
-                        "call":tool.call.payload,
-                        "output":tool.output,
-                    }))?,
+        }
+        Self::write_activity(tx, source_id, state, false)?;
+        Ok(revision)
+    }
+
+    fn write_activity(tx: &Connection, source_id: i64, state: &FileState, repair: bool) -> Result<()> {
+        if state.identity_conflict {
+            return Ok(());
+        }
+        let mut add_session =
+            tx.prepare("INSERT OR IGNORE INTO token_sessions (session) VALUES (?1)")?;
+        let mut activity = tx.prepare(
+            "INSERT INTO token_activity
+             SELECT ?1, id, ?3, ?4, ?5, ?6 FROM token_sessions WHERE session = ?2
+             ON CONFLICT(source_id, session_id, call_id) DO UPDATE SET
+                timestamp_ms = excluded.timestamp_ms, day = excluded.day, payload = excluded.payload",
+        )?;
+        for tool in &state.tools {
+            add_session.execute([&tool.call.session])?;
+            activity.execute(params![
+                source_id,
+                tool.call.session,
+                tool.id,
+                DateTime::parse_from_rfc3339(&tool.call.timestamp)?.timestamp_millis(),
+                tool.date.to_string(),
+                serde_json::to_vec(&serde_json::json!({
+                    "conversationKey":tool.call.session,
+                    "timestamp":tool.call.timestamp,
+                    "call":tool.call.payload,
+                    "output":tool.output,
+                }))?,
+            ])?;
+        }
+        if let Some(batch) = &state.executions && !batch.rows.is_empty() {
+            add_session.execute([&state.session])?;
+            let conflict = if repair { " ON CONFLICT(source_id,position) DO NOTHING" } else { "" };
+            let mut insert = tx.prepare(&format!(
+                "INSERT INTO execution_observations
+                 SELECT ?1,id,?3,?4,?5,?6,?7,?8,?9 FROM token_sessions WHERE session=?2{conflict}",
+            ))?;
+            let mut process = tx.prepare(&format!(
+                "INSERT INTO execution_process VALUES(?1,?2,?3){conflict}"
+            ))?;
+            for row in &batch.rows {
+                insert.execute(params![
+                    source_id, state.session, row.position, row.timestamp_ms, row.call_id,
+                    row.end, row.is_output, row.name, row.namespace,
                 ])?;
-            }
-            if let Some(batch) = &state.executions
-                && !batch.rows.is_empty()
-                && !state.identity_conflict
-            {
-                add_session.execute([&state.session])?;
-                let mut insert = tx.prepare(
-                    "INSERT INTO execution_observations
-                     SELECT ?1, id, ?3, ?4, ?5, ?6, ?7, ?8, ?9 FROM token_sessions WHERE session = ?2",
-                )?;
-                let mut process = tx.prepare("INSERT INTO execution_process VALUES(?1,?2,?3)")?;
-                for row in &batch.rows {
-                    insert.execute(params![
-                        source_id,
-                        state.session,
-                        row.position,
-                        row.timestamp_ms,
-                        row.call_id,
-                        row.end,
-                        row.is_output,
-                        row.name,
-                        row.namespace,
-                    ])?;
-                    if let Some(key) = &row.process {
-                        process.execute(params![source_id, row.position, key])?;
-                    }
+                if let Some(key) = &row.process {
+                    process.execute(params![source_id, row.position, key])?;
                 }
             }
         }
-        Ok(revision)
+        Ok(())
+    }
+
+    pub(super) fn repair_tool_batch(
+        &mut self, source: &Path, revision: i64, replay: &FileState, complete: bool,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        let id: i64 = tx.query_row(
+            "SELECT id FROM token_sources WHERE source=? AND revision=?",
+            params![encode_path(source), revision], |row| row.get(0),
+        ).context("source changed during tool repair")?;
+        Self::write_activity(&tx, id, replay, true)?;
+        if complete {
+            tx.execute(
+                "UPDATE token_sources SET activity_truncated=?2, checkpoint=CAST(json_set(CAST(checkpoint AS TEXT),
+                 '$.large_tools_checked',json('true'),'$.activity_truncated',json(?3),
+                 '$.calls',json(?4),'$.exec_skills',json(?5),'$.exec_polls',json(?6)) AS BLOB) WHERE id=?1",
+                params![id, replay.activity_truncated, serde_json::to_string(&replay.activity_truncated)?,
+                    serde_json::to_string(&replay.calls)?, serde_json::to_string(&replay.exec_skills)?,
+                    serde_json::to_string(&replay.exec_polls)?],
+            )?;
+        }
+        tx.execute(
+            "UPDATE token_revision SET revision=revision+1,updated_at=max(updated_at+1,?1)",
+            [Local::now().timestamp_millis()],
+        )?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub(super) fn checkpoint(&self, source: &Path) -> Result<Option<(i64, FileState)>> {
@@ -524,6 +607,43 @@ impl Store {
         Ok((missing, false))
     }
 
+    pub(super) fn prioritize_growing(
+        &self,
+        growing: &BTreeMap<PathBuf, u64>,
+        queue: &mut VecDeque<PathBuf>,
+    ) -> Result<()> {
+        let mut source_id = self.db.prepare_cached("SELECT id FROM token_sources WHERE source=?")?;
+        let seeds: Vec<i64> = growing.keys().map(|path| {
+            source_id.query_row([encode_path(path)], |r| r.get(0))
+        }).collect::<rusqlite::Result<_>>()?;
+        let mut statement = self.db.prepare_cached(
+            "WITH RECURSIVE component(id,link) AS (
+                 SELECT value,NULL FROM json_each(?1)
+                 UNION SELECT NULL,l.link FROM component c JOIN token_source_links l ON l.source_id=c.id
+                 UNION SELECT l.source_id,NULL FROM component c JOIN token_source_links l ON l.link=c.link
+             )
+             SELECT s.source FROM component c JOIN token_sources s ON s.id=c.id
+             WHERE COALESCE(json_extract(CAST(s.checkpoint AS TEXT),'$.legacy_identity_prefix'),s.offset)>0",
+        )?;
+        let mut rows = statement.query([serde_json::to_string(&seeds)?])?;
+        let mut linked = HashSet::new();
+        while let Some(row) = rows.next()? {
+            linked.insert(decode_path(row.get(0)?)?);
+        }
+        let (new_tails, history): (VecDeque<_>, VecDeque<_>) =
+            std::mem::take(queue).into_iter().partition(|path| growing.contains_key(path));
+        let (mut linked, mut other): (VecDeque<_>, VecDeque<_>) =
+            history.into_iter().partition(|path| linked.contains(path));
+        *queue = new_tails;
+        while !linked.is_empty() && !other.is_empty() {
+            queue.extend(linked.pop_front());
+            queue.extend(other.pop_front());
+        }
+        queue.extend(linked);
+        queue.extend(other);
+        Ok(())
+    }
+
     pub(super) fn finish_identity_probe(&self, source: &Path, revision: i64) -> Result<()> {
         let changed = self.db.execute(
             "UPDATE token_sources SET checkpoint = CAST(json_set(CAST(checkpoint AS TEXT),
@@ -537,7 +657,13 @@ impl Store {
     pub(super) fn sealed_queued_sources(
         &self,
         discovered: &[PathBuf],
-    ) -> Result<(BTreeMap<PathBuf, super::SourceStamp>, BTreeSet<PathBuf>, BTreeMap<PathBuf, u64>, BTreeMap<PathBuf, super::SourceStamp>)> {
+    ) -> Result<(
+        BTreeMap<PathBuf, super::SourceStamp>,
+        BTreeSet<PathBuf>,
+        BTreeMap<PathBuf, u64>,
+        BTreeMap<PathBuf, super::SourceStamp>,
+        BTreeMap<PathBuf, (super::SourceStamp, bool)>,
+    )> {
         #[derive(serde::Deserialize)]
         struct CountState {
             stamp: Option<super::SourceStamp>,
@@ -568,6 +694,7 @@ impl Store {
         let mut gaps = BTreeSet::new();
         let mut growing = BTreeMap::new();
         let mut unchecked = BTreeMap::new();
+        let mut scoped_prefixes = BTreeMap::new();
         let mut owners = HashSet::new();
         let mut sources = self
             .db
@@ -585,9 +712,32 @@ impl Store {
             let scoped_gap = !saved.session.is_empty()
                 && saved.issues != 0
                 && saved.issues == saved.malformed_token_counts;
-            if super::recheck_prefix(row.get(2)?, saved.legacy_identity_prefix, saved.large_tools_checked, saved.activity_truncated) != 0 {
+            let offset = row.get::<_, u64>(2)?;
+            if super::recheck_prefix(
+                offset,
+                saved.legacy_identity_prefix,
+                saved.large_tools_checked,
+                saved.activity_truncated,
+            ) != 0
+            {
+                let actual = current(&path)?;
+                if actual == Some(stamp)
+                    && !saved.session.is_empty()
+                    && !saved.resume_pending
+                    && !saved.skipping
+                    && !saved.identity_conflict
+                    && saved.issues == saved.malformed_token_counts
+                    && (!saved.invalid_counts || scoped_gap)
+                    && (size == offset || path.extension().is_some_and(|ext| ext == "zst"))
+                {
+                    scoped_prefixes
+                        .insert(path.clone(), (stamp, saved.legacy_identity_prefix != Some(0)));
+                    if scoped_gap {
+                        gaps.insert(path.clone());
+                    }
+                }
                 if path.extension().is_some_and(|ext| ext == "jsonl") {
-                    if let Some((length, _, identity)) = current(&path)?
+                    if let Some((length, _, identity)) = actual
                         && length > size && identity == stamp.2
                     {
                         growing.insert(path.clone(), length - size);
@@ -639,7 +789,7 @@ impl Store {
                 }
             }
         }
-        Ok((sealed, gaps, growing, unchecked))
+        Ok((sealed, gaps, growing, unchecked, scoped_prefixes))
     }
 
     pub(super) fn relocate_source(
