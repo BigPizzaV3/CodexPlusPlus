@@ -165,6 +165,9 @@ pub struct GatewayProvider {
     /// 从哪个 Agent 的页面添加的（目前只记 `claude`）；空串时按来源推断，见 [`crate::gateway::codex_link::owner_of`]。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub owner: String,
+    /// 这家的多个 Key / 多个账号怎么轮着用，以及每个凭据单独的设置。没设时沿用全局的 Key 策略。
+    #[serde(default, skip_serializing_if = "ProviderCredentials::is_empty")]
+    pub credentials: ProviderCredentials,
     pub relay: RelayProfile,
     /// 不认识的字段（更新版本写的）原样保留，保存时写回，回滚后再升级不丢数据。
     #[serde(flatten)]
@@ -173,6 +176,95 @@ pub struct GatewayProvider {
 
 fn is_zero(value: &u64) -> bool {
     *value == 0
+}
+
+/// 一家供应商里的多个凭据（多个 Key，或多个登录账号）之间怎么分请求。
+/// 不管哪种，同一个对话都固定在一个凭据上，它答不了（限流、额度用完、失效）才换下一个。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CredentialRotation {
+    /// 依次：新对话总从排在前面的可用凭据开始。
+    #[default]
+    InOrder,
+    /// 轮换：新对话轮流分给各个凭据。
+    Rotate,
+    /// 按权重：新对话按权重比例分给各个凭据。
+    Weighted,
+    /// 额度优先：新对话给剩余额度最多的凭据。
+    Usage,
+    /// 用完再换：一直用排在前面的，用完才换下一个；前面的恢复后对话也回到前面。
+    Drain,
+}
+
+impl CredentialRotation {
+    /// 没按供应商设时，由全局的 Key 策略推出。
+    pub fn from_key_mode(mode: KeyRotationMode) -> Self {
+        match mode {
+            KeyRotationMode::Sticky => Self::InOrder,
+            KeyRotationMode::RoundRobin => Self::Rotate,
+        }
+    }
+}
+
+/// 单个凭据（一个 Key 或一个账号）的设置，键是凭据 id（见 `key_pool::KeyRef::key_id`）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialSettings {
+    /// 停用：不再分请求给它，凭据本身保留。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
+    /// 「按权重」时的权重；不填当 1。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u32>,
+    /// 只给这些上游模型用；空表示不限。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<String>,
+    /// 账号额度用到这个百分比就先不再用它（任一额度窗口到了就算）；不填表示用到上游拒绝为止。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used_percent_limit: Option<u8>,
+}
+
+impl CredentialSettings {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// 这个凭据给不给 `upstream_model` 用（忽略大小写）。模型未知（空）时不限制。
+    pub fn allows_model(&self, upstream_model: &str) -> bool {
+        let model = upstream_model.trim();
+        self.models.is_empty()
+            || model.is_empty()
+            || self
+                .models
+                .iter()
+                .any(|allowed| allowed.trim().eq_ignore_ascii_case(model))
+    }
+}
+
+/// 见 [`GatewayProvider::credentials`]。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderCredentials {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotation: Option<CredentialRotation>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub settings: BTreeMap<String, CredentialSettings>,
+}
+
+impl ProviderCredentials {
+    pub fn is_empty(&self) -> bool {
+        self.rotation.is_none() && self.settings.is_empty()
+    }
+
+    /// 这家实际用的分法：按供应商设的优先，否则跟全局的 Key 策略。
+    pub fn rotation_or(&self, global: KeyRotationMode) -> CredentialRotation {
+        self.rotation
+            .unwrap_or_else(|| CredentialRotation::from_key_mode(global))
+    }
+
+    pub fn settings_for(&self, credential_id: &str) -> Option<&CredentialSettings> {
+        self.settings.get(credential_id)
+    }
 }
 
 /// 供应商的自动压缩阈值（#3100），单位是窗口的百分比（如 `85.0` 表示窗口的 85%）。
@@ -232,6 +324,13 @@ pub struct SyncedReasoning {
     pub default_level: Option<String>,
 }
 
+/// `<供应商 id>~<账号 id>` → (供应商 id, 账号 id)；没有分隔符返回 None。
+pub fn split_credential_ref(reference: &str) -> Option<(&str, &str)> {
+    reference
+        .rsplit_once(crate::settings::ACCOUNT_REF_SEPARATOR)
+        .filter(|(provider, account)| !provider.is_empty() && !account.is_empty())
+}
+
 impl GatewayProvider {
     /// 一份上游配置对应的新供应商：其余设置都是默认（打开、不填价、不单独走代理、不限速）。
     pub fn new(relay: RelayProfile, source: &str) -> Self {
@@ -254,6 +353,7 @@ impl GatewayProvider {
             upstream_meta: UpstreamMetaRecord::default(),
             linked_codex_relay: None,
             owner: String::new(),
+            credentials: ProviderCredentials::default(),
             relay,
             extra: Map::new(),
         }
@@ -842,6 +942,31 @@ impl GatewaySettings {
         self.providers
             .iter()
             .find(|provider| provider.relay.id == id)
+    }
+
+    /// 按凭据引用（`<供应商 id>` 或 `<供应商 id>~<账号 id>`，见 [`RelayProfile::credential_ref`]）
+    /// 找到那个账号最新的视图。整个引用本身就是一家供应商的 id 时按供应商算。
+    pub fn credential(&self, reference: &str) -> Option<RelayProfile> {
+        if let Some(provider) = self.provider(reference) {
+            return provider.relay.account_view("");
+        }
+        let (provider_id, account_id) = split_credential_ref(reference)?;
+        self.provider(provider_id)?.relay.account_view(account_id)
+    }
+
+    /// 改凭据引用指向的那个账号的登录凭据；找不到返回 false。
+    pub fn set_credential_auth(&mut self, reference: &str, auth_contents: String) -> bool {
+        let (provider_id, account_id) = match self.provider(reference) {
+            Some(_) => (reference.to_string(), String::new()),
+            None => match split_credential_ref(reference) {
+                Some((provider_id, account_id)) => (provider_id.to_string(), account_id.to_string()),
+                None => return false,
+            },
+        };
+        self.providers
+            .iter_mut()
+            .find(|provider| provider.relay.id == provider_id)
+            .is_some_and(|provider| provider.relay.set_account_auth(&account_id, auth_contents))
     }
 
     /// 某个 Agent 的生图模型设置（空串是自动）。
@@ -1566,6 +1691,7 @@ mod tests {
                 ..RelayProfile::default()
             },
             extra: Default::default(),
+            credentials: Default::default(),
         });
         assert_eq!(settings.unique_slug("DeepSeek", false), "deepseek-2");
         assert_eq!(settings.unique_slug("", true), "unnamed");

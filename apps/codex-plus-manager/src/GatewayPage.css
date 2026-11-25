@@ -3571,3 +3571,33 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   color: var(--gw-warn);
   font-size: 11.5px;
 }
+
+/* 一家里登录的多个账号：一行一个，名字、套餐、额度、移除。 */
+.gw-account-list {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gw-account-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.gw-account-line[data-off="true"] > :not(button) {
+  opacity: 0.55;
+}
+
+.gw-account-line small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}
+
+.gw-account-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

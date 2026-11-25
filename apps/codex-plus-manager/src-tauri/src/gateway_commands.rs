@@ -100,6 +100,11 @@ pub struct GatewayPoolEntry {
     pub owner: Option<&'static str>,
     /// 引用的 Codex 直连供应商 id：地址、Key、模型这些要在 Codex「连接与供应商」里改，这里只读。
     pub linked_codex_relay: Option<String>,
+    /// 这家的全部 Key / 登录账号（打码），各自的设置和额度。
+    pub credentials: Vec<codex_plus_core::gateway::credentials::CredentialView>,
+    /// 这家实际用的分法；`rotation_set` 为 false 时是跟着全局的 Key 策略。
+    pub rotation: codex_plus_core::gateway::store::CredentialRotation,
+    pub rotation_set: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,6 +310,9 @@ fn pool_entry(
         custom_headers: codex_plus_core::gateway::provider_headers::view(relay),
         owner: None,
         linked_codex_relay: None,
+        credentials: Vec::new(),
+        rotation: Default::default(),
+        rotation_set: false,
     }
 }
 
@@ -375,6 +383,9 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
             key_concurrency: provider.key_concurrency,
             owner: codex_plus_core::gateway::codex_link::owner_of(provider),
             linked_codex_relay: provider.linked_codex_relay.clone(),
+            credentials: codex_plus_core::gateway::credentials::views(provider),
+            rotation: codex_plus_core::gateway::credentials::rotation(provider, &gateway),
+            rotation_set: provider.credentials.rotation.is_some(),
             ..pool_entry(
                 &provider.relay,
                 provider.enabled,
@@ -1622,6 +1633,55 @@ pub fn replace_gateway_provider_key(
     )
 }
 
+/// 从一家里移除一个登录账号（只剩一个时不能移除）。
+#[tauri::command]
+pub fn remove_gateway_provider_account(
+    id: String,
+    credential_id: String,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "账号已移除。",
+        "移除账号失败",
+        refresh_agents(codex_plus_core::gateway::credentials::remove_account(
+            &GatewayStore::default(),
+            &id,
+            &credential_id,
+        )),
+    )
+}
+
+/// 设这家的多个 Key / 账号怎么分请求；`rotation` 为空表示跟全局的 Key 策略。
+#[tauri::command]
+pub fn set_gateway_provider_rotation(
+    id: String,
+    rotation: Option<codex_plus_core::gateway::store::CredentialRotation>,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "已保存。",
+        "保存失败",
+        codex_plus_core::gateway::credentials::set_rotation(&GatewayStore::default(), &id, rotation),
+    )
+}
+
+/// 设一个 Key / 账号的单独设置：停用、权重、只给哪些模型、额度上限。
+#[tauri::command]
+pub fn set_gateway_credential_settings(
+    id: String,
+    credential_id: String,
+    settings: codex_plus_core::gateway::store::CredentialSettings,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "已保存。",
+        "保存失败",
+        codex_plus_core::gateway::credentials::set_credential_settings(
+            &GatewayStore::default(),
+            &id,
+            &credential_id,
+            settings,
+        ),
+    )
+}
+
 /// 删掉供应商的某个 Key（按 Key 的标识找，至少保留一个，#2782）。
 #[tauri::command]
 pub fn delete_gateway_provider_key(
@@ -2022,7 +2082,12 @@ pub async fn refresh_gateway_quota(id: String) -> CommandResult<Option<GatewayPa
     let Some(relay) = relay else {
         return failed(&format!("供应商不存在：{id}"), current_payload());
     };
-    match codex_plus_core::gateway::quota::refresh(&relay).await {
+    // 一家登录了多个账号：其余账号一并查（各查各的，失败不影响第一个账号的结果）。
+    for view in relay.credential_views().iter().skip(1) {
+        let _ = codex_plus_core::gateway::quota::refresh(view).await;
+    }
+    let first = relay.account_view("").unwrap_or_else(|| relay.clone());
+    match codex_plus_core::gateway::quota::refresh(&first).await {
         Ok(Some(_)) => ok("额度已刷新。", current_payload()),
         Ok(None) => failed("这个供应商没有可查的额度。", current_payload()),
         Err(error) => failed(&format!("查询额度失败：{error:#}"), current_payload()),
@@ -3320,6 +3385,7 @@ mod login_tests {
 #[tauri::command]
 pub async fn login_gateway_chatgpt(
     skip_agents: Option<Vec<String>>,
+    provider_id: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
@@ -3327,6 +3393,11 @@ pub async fn login_gateway_chatgpt(
     let outcome = cancellable_login(async move {
         let account = accounts::chatgpt_login(open_in_browser).await?;
         let store = GatewayStore::default();
+        // 在一家里点「添加账号」：账号加进这一家，不新建。
+        if let Some(provider_id) = provider_id.filter(|id| !id.trim().is_empty()) {
+            let relay = accounts::chatgpt_relay(&account, &[]);
+            return codex_plus_core::gateway::credentials::add_account(&store, &provider_id, &relay);
+        }
         // 同一个人的同一个账号已经登录过：只换 token。工作区成员共用账号 id，还要比用户；
         // 带锁读改写，只动这一个供应商。
         let (_, updated) = store.update(|gateway| {
@@ -3373,8 +3444,17 @@ fn add_account_provider(
     kind: &str,
     identity_field: &str,
     skip_agents: Option<&[String]>,
+    provider_id: Option<&str>,
 ) -> anyhow::Result<String> {
     use codex_plus_core::gateway::accounts::ACCOUNT_KIND_FIELD;
+    // 在一家里点「添加账号」：账号加进这一家，不新建。
+    if let Some(provider_id) = provider_id.filter(|id| !id.trim().is_empty()) {
+        return codex_plus_core::gateway::credentials::add_account(
+            &GatewayStore::default(),
+            provider_id,
+            &relay,
+        );
+    }
     let identity = |contents: &str| {
         serde_json::from_str::<serde_json::Value>(contents)
             .ok()
@@ -3440,11 +3520,18 @@ pub async fn start_gateway_copilot_login()
 pub async fn finish_gateway_copilot_login(
     code: codex_plus_core::gateway::accounts::DeviceCode,
     skip_agents: Option<Vec<String>>,
+    provider_id: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     let outcome = cancellable_login(async move {
         let relay = codex_plus_core::gateway::accounts::copilot_finish(&code).await?;
-        add_account_provider(relay, "copilot", "login", skip_agents.as_deref())
+        add_account_provider(
+            relay,
+            "copilot",
+            "login",
+            skip_agents.as_deref(),
+            provider_id.as_deref(),
+        )
     })
     .await;
     login_response(outcome, &before).await
@@ -3454,6 +3541,7 @@ pub async fn finish_gateway_copilot_login(
 #[tauri::command]
 pub async fn login_gateway_grok(
     skip_agents: Option<Vec<String>>,
+    provider_id: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
@@ -3467,6 +3555,7 @@ pub async fn login_gateway_grok(
             "grok",
             "email",
             skip_agents.as_deref(),
+            provider_id.as_deref(),
         )
     })
     .await;
@@ -3478,6 +3567,7 @@ pub async fn login_gateway_grok(
 #[tauri::command]
 pub async fn login_gateway_chatgpt_api(
     skip_agents: Option<Vec<String>>,
+    provider_id: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::accounts;
@@ -3496,6 +3586,7 @@ pub async fn login_gateway_chatgpt_api(
             "chatgpt-api",
             "subject",
             skip_agents.as_deref(),
+            provider_id.as_deref(),
         )
     })
     .await;
@@ -3557,6 +3648,7 @@ pub async fn finish_gateway_subscription_login(
     kind: String,
     start: codex_plus_core::gateway::subscriptions::LoginStart,
     skip_agents: Option<Vec<String>>,
+    provider_id: Option<String>,
 ) -> CommandResult<Option<GatewayPayload>> {
     let before = GatewayStore::default().load().unwrap_or_default();
     use codex_plus_core::gateway::subscriptions;
@@ -3574,6 +3666,7 @@ pub async fn finish_gateway_subscription_login(
             &format!("{}{}", subscriptions::KIND_PREFIX, item.id()),
             "account",
             skip_agents.as_deref(),
+            provider_id.as_deref(),
         )
     })
     .await;

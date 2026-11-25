@@ -60,6 +60,7 @@ import {
   imageModelLabel,
   isDirectProxy,
   keyLabel,
+  credentialRotationLabel,
   type ImportCandidate,
   type ImportSource,
   type LocalLogin,
@@ -77,6 +78,7 @@ import { ProviderReasoningDialog, reasoningSummary, type ReasoningSyncPick } fro
 import { ProviderModelsDialog, type ModelSyncPicks } from "./ProviderModelsDialog";
 import { ProviderKeyList } from "./ProviderKeyList";
 import { ProviderTestDialog } from "./ProviderTestDialog";
+import { ProviderCredentialsDialog, type CredentialChanges } from "./ProviderCredentialsDialog";
 import { takeGatewayJump, useGatewayViewState } from "./gateway-store";
 import { useEscapeLayer } from "./use-escape-layer";
 import { useModalShell } from "./use-modal-shell";
@@ -333,6 +335,7 @@ export function ProvidersView({
       onEdit={(focus) => setForm({ mode: "edit", entry, focus })}
       loggingIn={Boolean(entry.account) && loginPending === entry.account}
       onRelogin={() => void login(entry.account as AccountKind)}
+      onAddAccount={() => void login(entry.account as AccountKind, undefined, entry.id)}
       onToggleExpand={() => setExpanded(expanded === entry.id ? null : entry.id)}
       payload={payload}
       run={run}
@@ -482,7 +485,8 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
   const [pending, setPending] = useState<AccountKind | null>(null);
   const [deviceCode, setDeviceCode] = useState<DeviceCode | null>(null);
   // 私有接口订阅：先选登录方式（或粘贴凭据），确认后才开始。
-  const [choosing, setChoosing] = useState<{ item: SubscriptionView; skip?: GatewayAgentId[] } | null>(null);
+  // `providerId`：在一家里点「添加账号」，登录的账号加进这一家。
+  const [choosing, setChoosing] = useState<{ item: SubscriptionView; skip?: GatewayAgentId[]; providerId?: string } | null>(null);
   // 当前这次登录的序号：取消或开始新的登录后，旧登录的收尾不再改界面。
   const attempt = useRef(0);
   // 私有接口订阅的 `login()` 要等选登录方式 → 登录这一整段结束才返回：调用方（添加供应商）
@@ -502,7 +506,7 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
     void invoke("cancel_gateway_login").catch(() => undefined);
   };
   /** 私有接口订阅的登录：开始 → （验证码弹窗 / 浏览器）→ 等完成后加进池里。 */
-  const loginSubscription = async (item: SubscriptionView, method: SubscriptionLoginMethod, input: string, skip?: GatewayAgentId[]) => {
+  const loginSubscription = async (item: SubscriptionView, method: SubscriptionLoginMethod, input: string, skip?: GatewayAgentId[], providerId?: string) => {
     const kind: AccountKind = `sub:${item.id}`;
     const id = ++attempt.current;
     const current = () => attempt.current === id;
@@ -536,7 +540,7 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
       } else if (start.openUrl) {
         void notify(title, start.message || t("已在浏览器打开登录页，登录完成后回到这里。5 分钟内有效。"), "info");
       }
-      await run(`login:${kind}`, "finish_gateway_subscription_login", { kind: item.id, start, skipAgents: skip }, title, false, { background: true });
+      await run(`login:${kind}`, "finish_gateway_subscription_login", { kind: item.id, start, skipAgents: skip, providerId }, title, false, { background: true });
     } finally {
       if (current()) {
         setPending(null);
@@ -546,8 +550,8 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
     }
   };
   /** 登录订阅账号：ChatGPT / ChatGPT API / SuperGrok 走浏览器登录；Copilot 先显示验证码，再等你在 GitHub 上授权。
-   * `skip` 是新添加时取消勾选的 Agent；重新登录已有账号时不传。 */
-  const login = async (kind: AccountKind, skip?: GatewayAgentId[]) => {
+   * `skip` 是新添加时取消勾选的 Agent；重新登录已有账号时不传。`providerId` 给了时登录的账号加进这一家。 */
+  const login = async (kind: AccountKind, skip?: GatewayAgentId[], providerId?: string) => {
     const subscription = subscriptionOf(payload, kind);
     if (kind.startsWith("sub:")) {
       if (!subscription) {
@@ -557,7 +561,7 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
       settleChooser();
       return new Promise<void>((resolve) => {
         chooserDone.current = resolve;
-        setChoosing({ item: subscription, skip });
+        setChoosing({ item: subscription, skip, providerId });
       });
     }
     const id = ++attempt.current;
@@ -582,11 +586,11 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
         // 拿验证码期间已经取消了。
         if (!current()) return;
         setDeviceCode(code);
-        await run("login:copilot", "finish_gateway_copilot_login", { code, skipAgents: skip }, title, false, { background: true });
+        await run("login:copilot", "finish_gateway_copilot_login", { code, skipAgents: skip, providerId }, title, false, { background: true });
         return;
       }
       void notify(title, t("已在浏览器打开登录页，登录完成后回到这里。5 分钟内有效。"), "info");
-      await run(`login:${kind}`, BROWSER_LOGIN_COMMANDS[kind], skip ? { skipAgents: skip } : undefined, title, false, { background: true });
+      await run(`login:${kind}`, BROWSER_LOGIN_COMMANDS[kind], skip || providerId ? { skipAgents: skip, providerId } : undefined, title, false, { background: true });
     } finally {
       if (current()) {
         setPending(null);
@@ -602,7 +606,7 @@ function useAccountLogin(payload: GatewayPayload | null, run: Run, notify: Notif
         setChoosing(null);
         settleChooser();
       }}
-      onStart={(method, input) => void loginSubscription(choosing.item, method, input, choosing.skip)}
+      onStart={(method, input) => void loginSubscription(choosing.item, method, input, choosing.skip, choosing.providerId)}
     />
   ) : deviceCode ? (
     <DeviceCodeDialog code={deviceCode} notify={notify} onCancel={cancel} />
@@ -762,6 +766,7 @@ function PoolRow({
   onToggleExpand,
   onEdit,
   onRelogin,
+  onAddAccount,
   loggingIn,
 }: {
   entry: GatewayPoolEntry;
@@ -774,6 +779,8 @@ function PoolRow({
   /** 打开编辑弹窗；「headers」时直接滚到请求头一节。 */
   onEdit: (focus?: "headers") => void;
   onRelogin: () => void;
+  /** 再登录一个账号，加进这一家。 */
+  onAddAccount: () => void;
   /** 这个账号类型正在登录（浏览器 / 设备码），按钮显示进行中。 */
   loggingIn: boolean;
 }) {
@@ -853,6 +860,27 @@ function PoolRow({
   const headersSummary = providerHeadersSummary(entry.customHeaders);
   const saveLimits = async (rpm: number | null, concurrency: number | null) => {
     if (await run(`limits:${entry.id}`, "save_gateway_provider_limits", { id: entry.id, rpm, concurrency }, t("保存限速"))) setLimitsOpen(false);
+  };
+  // 一家里的多个 Key / 账号：分法和各自的设置在「分配方式」弹窗里改。
+  const credentials = entry.credentials ?? [];
+  const [credentialsOpen, setCredentialsOpen] = useState(false);
+  const globalRoundRobin = payload?.gateway.keyPolicy?.mode === "roundRobin";
+  const rotation = entry.rotation ?? (globalRoundRobin ? "rotate" : "inOrder");
+  const pausedCredentials = credentials.filter((item) => item.settings.disabled).length;
+  const rotationSummary = [
+    entry.rotationSet ? t(credentialRotationLabel(rotation)) : tf("跟随全局（{0}）", [t(credentialRotationLabel(rotation))]),
+    pausedCredentials ? tf("{0} 个已停用", [pausedCredentials]) : "",
+  ].filter(Boolean).join(" · ");
+  const saveCredentials = async (changes: CredentialChanges) => {
+    if (changes.rotation !== undefined && !(await run(`rotation:${entry.id}`, "set_gateway_provider_rotation", { id: entry.id, rotation: changes.rotation }, t("保存分配方式"), true))) return;
+    for (const change of changes.settings) {
+      if (!(await run(`credential:${entry.id}`, "set_gateway_credential_settings", { id: entry.id, credentialId: change.id, settings: change.settings }, t("保存分配方式"), true))) return;
+    }
+    setCredentialsOpen(false);
+  };
+  const removeAccount = async (id: string, label: string) => {
+    const ok = await appConfirm(tf("从「{0}」移除账号「{1}」？", [maskAccountName(entry.name), maskAccountName(label)]), { title: t("移除账号"), confirmText: t("移除"), danger: true });
+    if (ok) await run(`account-remove:${entry.id}`, "remove_gateway_provider_account", { id: entry.id, credentialId: id }, t("移除账号"));
   };
   const remove = async () => {
     const ok = await appConfirm(tf("从本地服务删除「{0}」？直连模式里的供应商不受影响。", [maskAccountName(entry.name)]), { title: t("删除供应商"), confirmText: t("删除"), danger: true });
@@ -978,7 +1006,31 @@ function PoolRow({
               </span>
             </div>
           ) : null}
-          <div className="gw-detail-row">
+          {entry.account && credentials.length > 1 ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("账号")}<span className="gw-detail-count">{credentials.length}</span></span>
+              <div className="gw-detail-value gw-account-list">
+                {credentials.map((item) => (
+                  <div className="gw-account-line" data-off={Boolean(item.settings.disabled)} key={item.id}>
+                    <span className="gw-account-name">{maskAccountName(item.label)}</span>
+                    {item.plan ? <small>{item.plan}</small> : null}
+                    {item.settings.disabled ? <small>{t("已停用")}</small> : null}
+                    {item.quota ? <QuotaWindows compact quota={item.quota} /> : null}
+                    <button aria-label={tf("移除 {0}", [maskAccountName(item.label)])} className="gw-icon-button gw-inline-icon" disabled={busy !== null} onClick={() => void removeAccount(item.id, item.label)} title={t("移除这个账号")} type="button">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <span className="gw-detail-actions">
+                <button className="gw-text-button gw-sync-button" disabled={busy !== null || loggingIn} onClick={onAddAccount} title={t("再登录一个账号，加进这一家，轮着用各个账号的额度")} type="button">
+                  <Plus className="h-3.5 w-3.5" />
+                  {loggingIn ? t("登录中…") : t("添加账号")}
+                </button>
+              </span>
+            </div>
+          ) : null}
+          <div className="gw-detail-row" hidden={Boolean(entry.account) && credentials.length > 1}>
             <span className="gw-detail-label">{entry.account ? t("套餐") : "Key"}</span>
             <div className="gw-detail-value gw-chip-row">
               {entry.account ? <span>{entry.plan || t("未知")}</span> : linked && entry.keys?.length ? entry.keys.map((key) => <code className="gw-chip" key={key.id}>{key.masked}</code>) : entry.keys?.length ? <ProviderKeyList busy={busy} entry={entry} onTest={(keyId) => setTestKey(keyId)} run={run} /> : <KeyCount count={entry.keyCount} />}
@@ -989,6 +1041,12 @@ function PoolRow({
               ))}
             </div>
             <span className="gw-detail-actions">
+              {entry.account && credentials.length <= 1 ? (
+                <button className="gw-text-button gw-sync-button" disabled={busy !== null || loggingIn} onClick={onAddAccount} title={t("再登录一个账号，加进这一家，轮着用各个账号的额度")} type="button">
+                  <Plus className="h-3.5 w-3.5" />
+                  {loggingIn ? t("登录中…") : t("添加账号")}
+                </button>
+              ) : null}
               {failures.length || breaker ? (
                 <button className="gw-text-button" disabled={busy !== null} onClick={() => void run(`reset:${entry.id}`, "reset_gateway_key_health", { relayId: entry.id }, t("重置 Key 状态"), true)} type="button">
                   {t("重置")}
@@ -996,6 +1054,15 @@ function PoolRow({
               ) : null}
             </span>
           </div>
+          {credentials.length > 1 ? (
+            <div className="gw-detail-row">
+              <span className="gw-detail-label">{t("分配方式")}</span>
+              <div className="gw-detail-value">{rotationSummary}</div>
+              <span className="gw-detail-actions">
+                <EditIcon disabled={busy !== null} label={t("编辑分配方式")} onClick={() => setCredentialsOpen(true)} />
+              </span>
+            </div>
+          ) : null}
           {showAccess ? (
             <div className="gw-detail-row">
               <span className="gw-detail-label">{t("访问令牌")}</span>
@@ -1165,6 +1232,15 @@ function PoolRow({
             </div>
           </div>
         </div>
+      ) : null}
+      {credentialsOpen ? (
+        <ProviderCredentialsDialog
+          busy={busy !== null}
+          entry={entry}
+          globalRoundRobin={globalRoundRobin}
+          onCancel={() => setCredentialsOpen(false)}
+          onSave={(changes) => void saveCredentials(changes)}
+        />
       ) : null}
       {testKey !== undefined ? <ProviderTestDialog entry={entry} keyId={testKey} onEditSubscription={() => onEdit()} onClose={() => setTestKey(undefined)} /> : null}
       {modelsOpen ? (

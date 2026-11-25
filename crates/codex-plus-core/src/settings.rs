@@ -259,7 +259,30 @@ pub struct RelayProfile {
     /// 网关与直连模式的供应商 id 各自独立，按 id 查会误用同名直连供应商的代理。
     #[serde(skip)]
     pub gateway_proxy: Option<String>,
+    /// 同一家供应商登录的其余账号（网关轮着用它们的额度）。第一个账号仍是 `auth_contents` 本身，
+    /// 只有一个账号时这里为空，和以前完全一样。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<RelayAccount>,
+    /// 运行时标记：这份 relay 是 `accounts` 里哪个账号的视图（`auth_contents` 已换成它的）。
+    /// 空串是第一个账号 / 供应商本身。只在内存里，不落盘。
+    #[serde(skip)]
+    pub account_id: String,
 }
+
+/// 供应商里的又一个登录账号，见 [`RelayProfile::accounts`]。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayAccount {
+    pub id: String,
+    /// 显示用的名字（套餐 · 邮箱 / 用户名），和单独登录时供应商的名字一样。
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub auth_contents: String,
+}
+
+/// 凭据引用里供应商 id 与账号 id 的分隔符：`<供应商 id>~<账号 id>`。也用在订阅的本地地址里，要 URL 安全。
+pub const ACCOUNT_REF_SEPARATOR: char = '~';
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -450,11 +473,76 @@ impl Default for RelayProfile {
             anthropic_impersonate_claude_code: false,
             anthropic_thinking_mode: String::new(),
             gateway_proxy: None,
+            accounts: Vec::new(),
+            account_id: String::new(),
         }
     }
 }
 
 impl RelayProfile {
+    /// 凭据引用：供应商本身 / 第一个账号是 `id`，其余账号是 `id~账号 id`。
+    pub fn credential_ref(&self) -> String {
+        if self.account_id.is_empty() {
+            self.id.clone()
+        } else {
+            format!("{}{ACCOUNT_REF_SEPARATOR}{}", self.id, self.account_id)
+        }
+    }
+
+    /// 某个账号的视图：`auth_contents` 换成它的，`account_id` 标上。空 id 是供应商本身（第一个账号）。
+    /// 视图里不带 `accounts`，免得被当成又一家多账号供应商展开。
+    pub fn account_view(&self, account_id: &str) -> Option<RelayProfile> {
+        let mut view = self.clone();
+        view.accounts = Vec::new();
+        if account_id.is_empty() {
+            view.account_id = String::new();
+            return Some(view);
+        }
+        let account = self.accounts.iter().find(|account| account.id == account_id)?;
+        view.auth_contents = account.auth_contents.clone();
+        view.account_id = account.id.clone();
+        // 登录型账号的 token 在 `auth_contents` 里，`api_key` 在请求前由凭据现推，不能沿用第一个账号的。
+        view.api_key = String::new();
+        Some(view)
+    }
+
+    /// 全部账号的视图：第一个账号在前，其余按添加顺序。没有其余账号时只有自己。
+    pub fn credential_views(&self) -> Vec<RelayProfile> {
+        if !self.account_id.is_empty() || self.accounts.is_empty() {
+            return vec![self.clone()];
+        }
+        std::iter::once(String::new())
+            .chain(self.accounts.iter().map(|account| account.id.clone()))
+            .filter_map(|id| self.account_view(&id))
+            .collect()
+    }
+
+    /// 某个账号的登录凭据（空 id 是第一个账号）。
+    pub fn account_auth(&self, account_id: &str) -> Option<&str> {
+        if account_id.is_empty() {
+            return Some(&self.auth_contents);
+        }
+        self.accounts
+            .iter()
+            .find(|account| account.id == account_id)
+            .map(|account| account.auth_contents.as_str())
+    }
+
+    /// 改某个账号的登录凭据；找不到这个账号返回 false。
+    pub fn set_account_auth(&mut self, account_id: &str, auth_contents: String) -> bool {
+        if account_id.is_empty() {
+            self.auth_contents = auth_contents;
+            return true;
+        }
+        match self.accounts.iter_mut().find(|account| account.id == account_id) {
+            Some(account) => {
+                account.auth_contents = auth_contents;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn selected_api_key(&self) -> Option<&RelayApiKey> {
         self.api_keys.iter().find(|entry| entry.id == self.active_api_key_id)
             .or_else(|| self.api_keys.first())
@@ -1785,6 +1873,8 @@ impl BackendSettings {
                 anthropic_impersonate_claude_code: false,
                 anthropic_thinking_mode: String::new(),
                 gateway_proxy: None,
+                accounts: Vec::new(),
+                account_id: String::new(),
             };
         }
 
@@ -1862,6 +1952,8 @@ impl BackendSettings {
             anthropic_impersonate_claude_code: false,
             anthropic_thinking_mode: String::new(),
             gateway_proxy: None,
+            accounts: Vec::new(),
+            account_id: String::new(),
         }
     }
 
@@ -3610,6 +3702,7 @@ pub(crate) const RELAY_PROFILE_KNOWN_FIELDS: &[&str] = &[
     "anthropicPromptCache",
     "anthropicImpersonateClaudeCode",
     "anthropicThinkingMode",
+    "accounts",
 ];
 
 fn preserve_unknown_settings_fields(

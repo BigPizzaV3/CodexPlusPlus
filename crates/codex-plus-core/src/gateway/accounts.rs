@@ -1194,8 +1194,8 @@ async fn prepare_grok(relay: &RelayProfile, value: &Value) -> anyhow::Result<Rel
         .ok()
         .and_then(|gateway| {
             gateway
-                .provider(&relay.id)
-                .and_then(|provider| account_kind(&provider.relay))
+                .credential(&relay.credential_ref())
+                .and_then(|latest| account_kind(&latest))
                 .map(|(_, value)| value)
         })
         .unwrap_or_else(|| value.clone());
@@ -1274,12 +1274,21 @@ fn persist_account_auth(
     apply: impl FnOnce(&mut RelayProfile),
 ) {
     let result = store.update(|gateway| {
-        if let Some(provider) = gateway
-            .providers
-            .iter_mut()
-            .find(|provider| provider.relay.id == relay.id)
-        {
-            apply(&mut provider.relay);
+        if relay.account_id.is_empty() {
+            if let Some(provider) = gateway
+                .providers
+                .iter_mut()
+                .find(|provider| provider.relay.id == relay.id)
+            {
+                apply(&mut provider.relay);
+            }
+        } else {
+            // 一家里的其余账号：在它的视图上改，只把凭据写回那个账号（地址、Key 由凭据现推，不单独存）。
+            let reference = relay.credential_ref();
+            if let Some(mut view) = gateway.credential(&reference) {
+                apply(&mut view);
+                gateway.set_credential_auth(&reference, view.auth_contents);
+            }
         }
         Ok(())
     });
@@ -1774,8 +1783,8 @@ async fn prepare_chatgpt_api(relay: &RelayProfile, value: &Value) -> anyhow::Res
         .ok()
         .and_then(|gateway| {
             gateway
-                .provider(&relay.id)
-                .and_then(|provider| account_kind(&provider.relay))
+                .credential(&relay.credential_ref())
+                .and_then(|latest| account_kind(&latest))
                 .map(|(_, value)| value)
         })
         .unwrap_or_else(|| value.clone());
@@ -2117,9 +2126,7 @@ async fn prepare_copilot(relay: &RelayProfile, value: &Value) -> anyhow::Result<
     // 等锁期间别的请求可能已经换过了。
     let store = crate::gateway::store::GatewayStore::default();
     if let Some(latest) = store.load().ok().and_then(|gateway| {
-        gateway
-            .provider(&relay.id)
-            .map(|provider| provider.relay.clone())
+        gateway.credential(&relay.credential_ref())
     }) && let Some((_, latest_value)) = account_kind(&latest)
         && let Some(ready) = copilot_from_auth(relay, &latest_value)
     {
@@ -2285,6 +2292,7 @@ mod tests {
                 auto_compact: Default::default(),
                 relay,
                 extra: Default::default(),
+                credentials: Default::default(),
             });
         store.save(&gateway).unwrap();
         let saved = store.load().unwrap();
@@ -2672,6 +2680,7 @@ mod tests {
                 auto_compact: Default::default(),
                 relay,
                 extra: Default::default(),
+                credentials: Default::default(),
             });
         store.save(&gateway).unwrap();
         (temp, store)

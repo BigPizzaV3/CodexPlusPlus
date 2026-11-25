@@ -662,6 +662,7 @@ mod tests {
                 ..RelayProfile::default()
             },
             extra: Default::default(),
+            credentials: Default::default(),
         });
         store.save(&gateway).unwrap();
 
@@ -710,6 +711,7 @@ mod tests {
             auto_compact: Default::default(),
             relay,
             extra: Default::default(),
+            credentials: Default::default(),
         }
     }
 

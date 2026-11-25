@@ -179,6 +179,7 @@ fn provider(id: &str, base_url: &str, keys: &[&str]) -> GatewayProvider {
             ..RelayProfile::default()
         },
         extra: Default::default(),
+        credentials: Default::default(),
     }
 }
 

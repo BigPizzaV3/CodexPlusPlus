@@ -593,19 +593,21 @@ async fn resolve_official_credential_mode(
     token_url_override: Option<&str>,
     quota_read: bool,
 ) -> anyhow::Result<OfficialCredential> {
+    // 一家里登录的其余账号按 `<供应商 id>~<账号 id>` 找凭据、写回，第一个账号照旧按供应商 id。
+    let credential_ref = profile.credential_ref();
     let settings = store.load()?;
     let native_explicit = crate::native_auth::is_default_home(codex_home)
         && settings.native_auth_selection.is_some();
     let native_selected = native_explicit
         && crate::native_auth::selection_account_ref(&settings)
             == Some(if profile.official_account_ref.trim().is_empty() {
-                profile.id.as_str()
+                credential_ref.as_str()
             } else {
                 profile.official_account_ref.trim()
             });
     let mut resolved = crate::native_auth::resolve_profile_credentials(profile)?;
     if gateway_owned(profile) && profile.official_account_ref.trim().is_empty()
-        && let Some(auth) = crate::native_auth::gateway_auth_optional(&profile.id)?
+        && let Some(auth) = crate::native_auth::gateway_auth_optional(&credential_ref)?
     {
         let mut canonical = resolved.clone();
         canonical.auth_contents = auth;
@@ -648,14 +650,14 @@ async fn resolve_official_credential_mode(
     let selected_now = native_explicit
         && crate::native_auth::selection_account_ref(&settings)
             == Some(if profile.official_account_ref.trim().is_empty() {
-                profile.id.as_str()
+                credential_ref.as_str()
             } else {
                 profile.official_account_ref.trim()
             });
     let mut latest = profile.clone();
     if (gateway_owned(profile) || !profile.official_account_ref.trim().is_empty())
         && let Some(auth) = crate::native_auth::gateway_auth_optional(
-        if profile.official_account_ref.trim().is_empty() { &profile.id } else { &profile.official_account_ref },
+        if profile.official_account_ref.trim().is_empty() { &credential_ref } else { &profile.official_account_ref },
     )? {
         latest.auth_contents = auth;
     }
@@ -676,8 +678,8 @@ async fn resolve_official_credential_mode(
     } else if owned_by_gateway {
         crate::gateway::store::GatewayStore::default()
             .load()?
-            .provider(&profile.id)
-            .map(|provider| provider.relay.auth_contents.clone())
+            .credential(&credential_ref)
+            .map(|latest| latest.auth_contents)
     } else {
         current_auth_contents(store, &profile.id)
     };
@@ -804,7 +806,7 @@ async fn resolve_official_credential_mode(
     } else if owned_by_gateway {
         let written = persist_gateway_login(
             &crate::gateway::store::GatewayStore::default(),
-            &profile.id,
+            &credential_ref,
             if native_selected {
                 &expected_auth
             } else {
@@ -1052,19 +1054,15 @@ pub(crate) fn persist_gateway_login(
     updated_auth: &str,
 ) -> anyhow::Result<bool> {
     // 带锁读改写：界面命令同时改 gateway.json 时不会拿旧状态整体覆盖，也不会被它覆盖。
+    // `provider_id` 也可以是 `<供应商 id>~<账号 id>`（一家里登录的其余账号）。
     let (_, written) = store.update(|gateway| {
-        let Some(provider) = gateway
-            .providers
-            .iter_mut()
-            .find(|provider| provider.relay.id == provider_id)
-        else {
+        let Some(current) = gateway.credential(provider_id) else {
             return Ok(false);
         };
-        if !same_credential_generation(&provider.relay.auth_contents, expected_auth) {
+        if !same_credential_generation(&current.auth_contents, expected_auth) {
             return Ok(false);
         }
-        provider.relay.auth_contents = updated_auth.to_string();
-        Ok(true)
+        Ok(gateway.set_credential_auth(provider_id, updated_auth.to_string()))
     })?;
     Ok(written)
 }

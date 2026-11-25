@@ -14151,6 +14151,7 @@ ${key} = ${value}`]);
     BUILTIN_GATEWAY_AGENTS: () => BUILTIN_GATEWAY_AGENTS,
     COMPACTION_FALLBACK_REASON_PREFIX: () => COMPACTION_FALLBACK_REASON_PREFIX,
     COMPACTION_MODEL_REASON_PREFIX: () => COMPACTION_MODEL_REASON_PREFIX,
+    CREDENTIAL_ROTATIONS: () => CREDENTIAL_ROTATIONS,
     DIRECT_PROXY: () => DIRECT_PROXY,
     FOREIGN_COMPACTION_DROPPED_REASON: () => FOREIGN_COMPACTION_DROPPED_REASON,
     GATEWAY_AGENT_NAMES: () => GATEWAY_AGENT_NAMES,
@@ -14175,6 +14176,8 @@ ${key} = ${value}`]);
     compactionNote: () => compactionNote,
     connectedAgents: () => connectedAgents,
     costText: () => costText,
+    credentialRotationDescription: () => credentialRotationDescription,
+    credentialRotationLabel: () => credentialRotationLabel,
     currencySymbol: () => currencySymbol,
     defaultProviderAgents: () => defaultProviderAgents,
     disabledGroup: () => disabledGroup,
@@ -14539,6 +14542,35 @@ ${key} = ${value}`]);
   }
 
   // apps/codex-plus-manager/src/gateway-model.ts
+  var CREDENTIAL_ROTATIONS = ["inOrder", "rotate", "weighted", "usage", "drain"];
+  function credentialRotationLabel(rotation) {
+    switch (rotation) {
+      case "rotate":
+        return "轮换";
+      case "weighted":
+        return "按权重";
+      case "usage":
+        return "额度优先";
+      case "drain":
+        return "用完再换";
+      default:
+        return "依次";
+    }
+  }
+  function credentialRotationDescription(rotation) {
+    switch (rotation) {
+      case "rotate":
+        return "新对话轮流分给各个 Key / 账号";
+      case "weighted":
+        return "新对话按权重比例分配";
+      case "usage":
+        return "新对话给剩余额度最多的账号";
+      case "drain":
+        return "一直用排在前面的，用完才换下一个；前面的恢复后再回来";
+      default:
+        return "新对话总从排在前面的开始，答不了再换下一个";
+    }
+  }
   function keyLabel(keys, keyId) {
     const list = keys ?? [];
     const found = list.find((key) => key.id === keyId) ?? (keyId === "primary" && list.length === 1 ? list[0] : void 0);

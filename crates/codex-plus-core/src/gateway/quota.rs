@@ -122,39 +122,77 @@ pub fn record_for_relay(relay: &RelayProfile, quota: ProviderQuota) {
     if quota.windows.is_empty() && !quota.windows_complete {
         return;
     }
+    // 一家多个账号时按账号记（`<供应商 id>~<账号 id>`），第一个账号仍按供应商 id。
+    let credential = relay.credential_ref();
     if !crate::official_login::member_uses_official_login_transport(relay) {
-        record(&relay.id, quota);
+        record(&credential, quota);
         return;
     }
     let Some(scope) = crate::native_auth::account_scope(&relay.auth_contents) else {
         // An incomplete identity cannot safely inherit a previous occupant's reading.
-        forget(&relay.id);
+        forget_credential(&credential);
         return;
     };
     let key = format!("chatgpt:{scope}");
     let mut cache = cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.accounts.insert(relay.id.clone(), key.clone());
-    cache.readings.remove(&relay.id);
+    cache.accounts.insert(credential.clone(), key.clone());
+    cache.readings.remove(&credential);
     insert_reading(&mut cache, key, quota);
 }
 
 pub fn quota_for_relay(relay: &RelayProfile) -> Option<ProviderQuota> {
+    let credential = relay.credential_ref();
     if !crate::official_login::member_uses_official_login_transport(relay) {
-        return get(&relay.id);
+        return get(&credential);
     }
     let scope = crate::native_auth::account_scope(&relay.auth_contents)?;
     let key = format!("chatgpt:{scope}");
     let mut cache = cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.accounts.insert(relay.id.clone(), key.clone());
+    cache.accounts.insert(credential, key.clone());
     cache.readings.get(&key).cloned()
 }
 
+/// 这个账号（或供应商）最紧的一个额度窗口用了百分之多少；已过重置时间的窗口不算。查不到返回 None。
+pub fn used_percent_for_relay(relay: &RelayProfile) -> Option<f64> {
+    let quota = quota_for_relay(relay)?;
+    let now = now_ms();
+    quota
+        .windows
+        .iter()
+        .filter(|window| window.resets_at_ms.is_none_or(|reset| reset > now))
+        .map(|window| window.used_percent)
+        .filter(|used| used.is_finite())
+        .reduce(f64::max)
+}
+
+/// 这个账号（或供应商）剩余额度的比例（0–1），口径同 [`remaining`]。查不到返回 None。
+pub fn remaining_for_relay(relay: &RelayProfile) -> Option<f64> {
+    quota_for_relay(relay).map(|quota| remaining_at(&quota, now_ms()))
+}
+
+/// 一家供应商剩余最多的那个账号的剩余比例：多账号时任一账号还有额度，这家就还能用。
+pub fn best_remaining(relay: &RelayProfile) -> Option<f64> {
+    relay
+        .credential_views()
+        .iter()
+        .filter_map(remaining_for_relay)
+        .reduce(f64::max)
+}
+
 /// 忘掉一个供应商的额度（删除供应商时用：`login:chatgpt` 的 id 会被新登录的账号复用，
-/// 不清的话新账号会沿用旧账号的额度）。
+/// 不清的话新账号会沿用旧账号的额度）。它名下其余账号的额度一起清掉。
 pub fn forget(relay_id: &str) {
+    let prefix = format!("{relay_id}{}", crate::settings::ACCOUNT_REF_SEPARATOR);
     let mut cache = cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    cache.accounts.remove(relay_id);
-    cache.readings.remove(relay_id);
+    cache.accounts.retain(|key, _| key != relay_id && !key.starts_with(&prefix));
+    cache.readings.retain(|key, _| key != relay_id && !key.starts_with(&prefix));
+}
+
+/// 只忘掉一个凭据（供应商本身或其中一个账号）的额度。
+pub fn forget_credential(credential: &str) {
+    let mut cache = cache().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.accounts.remove(credential);
+    cache.readings.remove(credential);
 }
 
 /// 秒（可能是小数、负数或很大的数）→ 毫秒，越界时取边界值，不溢出。
@@ -599,10 +637,10 @@ struct RefreshFlight {
 }
 
 fn refresh_key(relay: &RelayProfile) -> String {
-    if !relay.official_account_ref.trim().is_empty() {
+    if !relay.official_account_ref.trim().is_empty() && relay.account_id.is_empty() {
         return format!("credential:{}", relay.official_account_ref.trim());
     }
-    format!("credential:{}", relay.id)
+    format!("credential:{}", relay.credential_ref())
 }
 
 fn refresh_flight(relay: &RelayProfile) -> Arc<RefreshFlight> {
@@ -702,30 +740,32 @@ async fn fetch_reading(relay: &RelayProfile) -> anyhow::Result<Option<ProviderQu
 }
 
 /// 包含尚未启用的已导入账号，按凭证引用去重。有效缓存与失败退避限制轮询请求。
-fn prefetch_targets(gateway: &GatewaySettings) -> Vec<(&RelayProfile, u64)> {
-    let mut targets: Vec<(&RelayProfile, u64)> = Vec::new();
+/// 一家登录了多个账号时每个账号各查各的。
+fn prefetch_targets(gateway: &GatewaySettings) -> Vec<(RelayProfile, u64)> {
+    let mut targets: Vec<(RelayProfile, u64)> = Vec::new();
     let mut positions = HashMap::new();
     for provider in &gateway.providers {
-        let relay = &provider.relay;
-        if provider.source == "native:external"
-            || crate::official_login::is_native_owned_login(relay)
-            || !supports(relay)
-        {
-            continue;
-        }
-        // API Key 型套餐关着时不在后台轮询（手动刷新照常可查）。
-        if !provider.enabled && crate::gateway::coding_plan::plan_for_relay(relay).is_some() {
-            continue;
-        }
-        let max_age_ms = provider.subscription_policy.as_ref()
-            .map(|policy| policy.max_age_seconds.saturating_mul(500))
-            .unwrap_or(300_000).clamp(1_000, 300_000);
-        let next_position = targets.len();
-        let position = *positions.entry(refresh_key(relay)).or_insert(next_position);
-        if position == next_position {
-            targets.push((relay, max_age_ms));
-        } else {
-            targets[position].1 = targets[position].1.min(max_age_ms);
+        for relay in provider.relay.credential_views() {
+            if provider.source == "native:external"
+                || crate::official_login::is_native_owned_login(&relay)
+                || !supports(&relay)
+            {
+                continue;
+            }
+            // API Key 型套餐关着时不在后台轮询（手动刷新照常可查）。
+            if !provider.enabled && crate::gateway::coding_plan::plan_for_relay(&relay).is_some() {
+                continue;
+            }
+            let max_age_ms = provider.subscription_policy.as_ref()
+                .map(|policy| policy.max_age_seconds.saturating_mul(500))
+                .unwrap_or(300_000).clamp(1_000, 300_000);
+            let next_position = targets.len();
+            let position = *positions.entry(refresh_key(&relay)).or_insert(next_position);
+            if position == next_position {
+                targets.push((relay, max_age_ms));
+            } else {
+                targets[position].1 = targets[position].1.min(max_age_ms);
+            }
         }
     }
     targets
@@ -733,7 +773,7 @@ fn prefetch_targets(gateway: &GatewaySettings) -> Vec<(&RelayProfile, u64)> {
 
 pub async fn prefetch(gateway: &GatewaySettings) {
     for (relay, max_age_ms) in prefetch_targets(gateway) {
-        let _ = refresh_coordinated(relay, Some(max_age_ms), || fetch_reading(relay)).await;
+        let _ = refresh_coordinated(&relay, Some(max_age_ms), || fetch_reading(&relay)).await;
     }
 }
 

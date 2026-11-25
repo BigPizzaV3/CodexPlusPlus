@@ -589,6 +589,8 @@ fn relay_profile_from_request(
         anthropic_impersonate_claude_code: false,
         anthropic_thinking_mode: String::new(),
         gateway_proxy: None,
+        accounts: Vec::new(),
+        account_id: String::new(),
     }
 }
 

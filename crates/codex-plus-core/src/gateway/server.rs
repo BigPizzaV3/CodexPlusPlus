@@ -372,13 +372,19 @@ async fn handle_images(
     let mut last_error = String::new();
     for (index, target) in targets.into_iter().enumerate() {
         let has_more = index + 1 < count;
-        let (keys, _) = crate::gateway::key_pool::order_keys_with(
+        let no_credentials = crate::gateway::store::ProviderCredentials::default();
+        let keys = crate::gateway::key_pool::order_credentials(
             &target.relay,
+            "",
+            gateway
+                .provider(&target.relay.id)
+                .map_or(&no_credentials, |provider| &provider.credentials),
             gateway.key_policy.mode,
             None,
             std::time::Instant::now(),
             true,
-        );
+        )
+        .available;
         // 主动限速：跳过名额满了的 Key（不排队），占到的名额持有到这一家的答复读完。
         let limits = gateway
             .provider(&target.relay.id)

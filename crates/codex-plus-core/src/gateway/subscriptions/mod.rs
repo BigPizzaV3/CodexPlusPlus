@@ -348,7 +348,7 @@ pub fn prepare(relay: &RelayProfile) -> RelayProfile {
     ready.base_url = format!(
         "http://{}:{port}/sub/{}/v1",
         crate::wsl_network::LOOPBACK_HOST,
-        relay.id
+        relay.credential_ref()
     );
     ready.api_key = local_secret().to_string();
     ready.protocol = RelayProtocol::ChatCompletions;

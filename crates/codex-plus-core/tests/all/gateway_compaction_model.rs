@@ -45,6 +45,7 @@ fn provider(id: &str, base_url: &str, model: &str, protocol: RelayProtocol) -> G
             ..RelayProfile::default()
         },
         extra: Default::default(),
+        credentials: Default::default(),
     }
 }
 

@@ -243,8 +243,8 @@ test("轮询时不重复算：筛选条 useMemo、组编辑器的空排除列表
 
 test("订阅登录不占全局 busy，可取消：关掉验证码弹窗即取消，后端能中止登录任务", () => {
   const providers = read("GatewayProviders.tsx");
-  assert.match(providers, /"finish_gateway_copilot_login", \{ code, skipAgents: skip \}, title, false, \{ background: true \}\)/);
-  assert.match(providers, /BROWSER_LOGIN_COMMANDS\[kind\], skip \? \{ skipAgents: skip \} : undefined, title, false, \{ background: true \}\)/);
+  assert.match(providers, /"finish_gateway_copilot_login", \{ code, skipAgents: skip, providerId \}, title, false, \{ background: true \}\)/);
+  assert.match(providers, /BROWSER_LOGIN_COMMANDS\[kind\], skip \|\| providerId \? \{ skipAgents: skip, providerId \} : undefined, title, false, \{ background: true \}\)/);
   assert.match(providers, /invoke\("cancel_gateway_login"\)/);
   assert.match(providers, /<DeviceCodeDialog code=\{deviceCode\} notify=\{notify\} onCancel=\{cancel\} \/>/);
   assert.match(providers, /<LoginPendingBar /);
@@ -271,7 +271,7 @@ test("本机订阅导入读取具名 start，再将原始登录状态交给完�
   assert.match(login, /if \(!result\.start\)/);
   assert.match(login, /start = result\.start;/);
   assert.doesNotMatch(login, /result\.payload/, "CommandResult 把结果摊平，不能再从 payload 取登录状态");
-  assert.match(login, /"finish_gateway_subscription_login", \{ kind: item\.id, start, skipAgents: skip \}/);
+  assert.match(login, /"finish_gateway_subscription_login", \{ kind: item\.id, start, skipAgents: skip, providerId \}/);
   const preview = read("../web-preview/tauri-web-shim.ts");
   const shimStart = preview.slice(preview.indexOf('case "start_gateway_subscription_login":'), preview.indexOf('case "finish_gateway_subscription_login":'));
   assert.match(shimStart, /return ok\(\{ start: \{/);

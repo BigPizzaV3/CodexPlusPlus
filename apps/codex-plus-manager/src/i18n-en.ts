@@ -5,6 +5,29 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "一直用排在前面的，用完才换下一个；前面的恢复后再回来": "Keep using the first one; move on only when it runs out, and come back once it recovers",
+  "保存分配方式": "Save distribution",
+  "全部模型": "All models",
+  "再登录一个账号，加进这一家，轮着用各个账号的额度": "Sign in to another account and add it to this provider, so their allowances are used in turn",
+  "分配方式": "Distribution",
+  "只给这些模型": "Only for these models",
+  "同一个对话固定用一个，它答不了才换下一个": "A conversation stays on one; it moves to the next only when that one can't answer",
+  "排在前面的先用；停用的不再分请求，凭据保留": "Earlier ones are used first; paused ones get no requests but are kept",
+  "新对话总从排在前面的开始，答不了再换下一个": "New conversations start with the first one and move on when it can't answer",
+  "新对话按权重比例分配": "New conversations are split by weight",
+  "新对话给剩余额度最多的账号": "New conversations go to the account with the most allowance left",
+  "新对话轮流分给各个 Key / 账号": "New conversations take turns across keys / accounts",
+  "权重要填 1–1000 的整数，留空当 1": "Weight must be a whole number from 1 to 1000; empty means 1",
+  "模型用逗号分开，留空表示这家的模型都能用。额度用到上限的账号先不用，额度恢复后自动回来。": "Separate models with commas; empty means all of this provider's models. An account that reaches its cap is set aside and comes back once its allowance renews.",
+  "添加账号": "Add account",
+  "用完再换": "Use up, then switch",
+  "移除账号": "Remove account",
+  "移除这个账号": "Remove this account",
+  "编辑分配方式": "Edit distribution",
+  "至少要留一个不停用；整家不用请关掉这家供应商": "Keep at least one active; to stop using the provider, turn it off",
+  "跟「本地服务」里的 Key 策略走": "Follows the key policy in Local service",
+  "额度上限要填 1–100 的整数，留空表示不限": "The cap must be a whole number from 1 to 100; empty means no cap",
+  "额度用到": "Cap at",
   "Codex config.toml 里的插件：从目录安装的，以及别处装的（如 Codex 自带的）。关掉开关等于停用，不删文件。": "Plugins in Codex's config.toml: ones installed from the catalog and ones installed elsewhere (such as Codex's built-in ones). Turning one off disables it without deleting files.",
   "插件文件在，但 config.toml 里没有它的配置，Codex 不会加载；在目录里点开它重新安装即可。": "The plugin files are here but config.toml has no entry for it, so Codex won't load it. Open it in the catalog and reinstall.",
   "没有配置": "No config",
@@ -3976,6 +3999,12 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "{0} 个已停用": "{0} paused",
+  "{0} 个账号": "{0} accounts",
+  "{0} 的分配方式": "Distribution for {0}",
+  "从「{0}」移除账号「{1}」？": "Remove account \"{1}\" from \"{0}\"?",
+  "使用 {0}": "Use {0}",
+  "跟随全局（{0}）": "Follow global ({0})",
   "启用插件 {0}": "Enable plugin {0}",
   "已完成 {0} / {1} 步": "{0} of {1} steps done",
   "{0}，测试通过。": "{0}, test passed.",
@@ -4664,6 +4693,15 @@ export const EN_TEMPLATE: Record<string, string> = {
 // at the display layer (showNotice wraps message with t()). Exact-match first,
 // then pattern-based for messages that embed dynamic values.
 export const EN_BACKEND: Record<string, string> = {
+  "已保存。": "Saved.",
+  "保存失败": "Couldn't save",
+  "账号已移除。": "Account removed.",
+  "移除账号失败": "Couldn't remove the account",
+  "这家只有一个账号；不用了请直接删除这家供应商": "This provider has only one account; delete the provider if you no longer need it",
+  "这个账号已经不在了，刷新后再试": "That account is gone; refresh and try again",
+  "这个 Key / 账号已经不在了，刷新后再试": "That key / account is gone; refresh and try again",
+  "这次登录没有拿到账号凭据": "This sign-in didn't return account credentials",
+  "这个账号正借给 Codex 登录，先在 Codex 里换掉它再移除": "This account is lent to Codex's sign-in; switch Codex to another account before removing it",
   "勾选的供应商都已导入，保留已有配置。": "Everything selected was already imported; existing configs were kept.",
   // Claude Desktop 自动接管（src-tauri/src/claude_auto_takeover.rs、core claude_auto_takeover.rs）。
   "当前系统不支持 Claude 自动接管。": "Claude auto-takeover isn't supported on this system.",
@@ -5074,6 +5112,8 @@ export const EN_APPENDED: Record<string, string> = {
 // Pattern-based backend translations: [regex, replacement template].
 // Checked when EN_BACKEND exact match fails — covers messages with dynamic values.
 export const EN_BACKEND_PATTERNS: Array<[RegExp, string]> = [
+  [/^已把「(.+)」加进「(.+)」，这家现在有 (\d+) 个账号。$/, "Added \"$1\" to \"$2\"; it now has $3 accounts."],
+  [/^「(.+)」不是同一种账号，不能加进去；要单独用请在列表里添加$/, "\"$1\" is a different kind of account; add it from the list to use it on its own"],
   // Claude 页面扩展
   [/^「(.+)」已从 (.+) 更新到 (.+)。$/, "Updated \"$1\" from $2 to $3."],
   [/^「(.+)」已安装并启用，刷新 Claude 页面后生效。$/, "Installed and enabled \"$1\"; reload the Claude page to apply."],
