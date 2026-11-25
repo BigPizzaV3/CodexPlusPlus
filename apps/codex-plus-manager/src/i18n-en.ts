@@ -5,6 +5,9 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "账号与分配": "Accounts & distribution",
+  "Key 分配": "Key distribution",
+  "再加一个账号，这一家就会轮着用各个账号的额度；怎么分、每个账号用到多少先不用，都在这里设。": "Add another account and this provider will use each account's allowance in turn; how they're shared and when each is set aside are set here.",
   "模型用逗号分开，留空表示这家的模型都能用。": "Separate models with commas; empty means all of this provider's models.",
   "一直用排在前面的，用完才换下一个；前面的恢复后再回来": "Keep using the first one; move on only when it runs out, and come back once it recovers",
   "保存分配方式": "Save distribution",
@@ -24,7 +27,6 @@ export const EN_PLAIN: Record<string, string> = {
   "用完再换": "Use up, then switch",
   "移除账号": "Remove account",
   "移除这个账号": "Remove this account",
-  "编辑分配方式": "Edit distribution",
   "至少要留一个不停用；整家不用请关掉这家供应商": "Keep at least one active; to stop using the provider, turn it off",
   "跟「本地服务」里的 Key 策略走": "Follows the key policy in Local service",
   "额度上限要填 1–100 的整数，留空表示不限": "The cap must be a whole number from 1 to 100; empty means no cap",
@@ -4000,10 +4002,10 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
-  "用到 {0}% 先不用": "set aside at {0}%",
-  "{0} 个已停用": "{0} paused",
+  "{0}已用 {1}%": "{0}: {1}% used",
+  "{0} 的账号": "Accounts of {0}",
+  "{0} 的 Key 分配": "Key distribution for {0}",
   "{0} 个账号": "{0} accounts",
-  "{0} 的分配方式": "Distribution for {0}",
   "从「{0}」移除账号「{1}」？": "Remove account \"{1}\" from \"{0}\"?",
   "使用 {0}": "Use {0}",
   "跟随全局（{0}）": "Follow global ({0})",

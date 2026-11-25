@@ -929,3 +929,21 @@
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 8px;
 }
+
+.pf-credential-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.pf-credential-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pf-credential-quota {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+}

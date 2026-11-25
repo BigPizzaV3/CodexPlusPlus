@@ -1,7 +1,10 @@
-/** 一家供应商里多个 Key / 登录账号的分法，以及每个 Key / 账号单独的设置（停用、权重、只给哪些模型、额度上限）。 */
+/**
+ * 一家供应商里的多个 Key / 登录账号：添加、移除账号，分配方式，以及每个 Key / 账号单独的设置
+ * （停用、权重、只给哪些模型、额度上限）。从 Codex「连接与供应商」和 Claude「供应商」的行菜单打开。
+ */
 import { useId, useState } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
@@ -15,10 +18,20 @@ import {
   type CredentialSettings,
   type CredentialView,
   type GatewayPoolEntry,
+  type ProviderQuota,
 } from "./gateway-model";
 import { Avatar, Switch } from "./gateway-ui";
 import { useModalShell } from "./use-modal-shell";
 import "./ProviderFormDialog.css";
+
+/** 账号额度的一句话：「5 小时已用 32% · 每周已用 10%」。 */
+function quotaText(quota: ProviderQuota | null | undefined): string {
+  return (quota?.windows ?? []).map((window) => {
+    const minutes = window.windowMinutes;
+    const name = minutes === 300 ? t("5 小时") : minutes === 10080 ? t("每周") : minutes ? tf("{0} 小时", [Math.round(minutes / 60)]) : t("本期");
+    return tf("{0}已用 {1}%", [name, Math.round(Number(window.usedPercent) || 0)]);
+  }).join(" · ");
+}
 
 /** 跟全局 Key 策略时选择框里的值。 */
 const FOLLOW_GLOBAL = "global";
@@ -70,6 +83,9 @@ export function ProviderCredentialsDialog({
   entry,
   busy,
   globalRoundRobin,
+  loggingIn = false,
+  onAddAccount,
+  onRemoveAccount,
   onSave,
   onCancel,
 }: {
@@ -77,10 +93,18 @@ export function ProviderCredentialsDialog({
   busy: boolean;
   /** 全局 Key 策略是「每次轮换」：跟全局时实际是轮换，否则是依次。 */
   globalRoundRobin: boolean;
+  /** 正在登录要加进来的账号。 */
+  loggingIn?: boolean;
+  /** 再登录一个账号加进这一家；Key 供应商不给。 */
+  onAddAccount?: () => void;
+  /** 移除一个账号（只剩一个时不显示）。 */
+  onRemoveAccount?: (item: CredentialView) => void;
   onSave: (changes: CredentialChanges) => void;
   onCancel: () => void;
 }) {
   const credentials: CredentialView[] = entry.credentials ?? [];
+  // 只有一个账号时没什么可分的：只列出来，能再加。
+  const several = credentials.length > 1;
   const initialRotation: RotationChoice = entry.rotationSet && entry.rotation ? entry.rotation : FOLLOW_GLOBAL;
   const [rotation, setRotation] = useState<RotationChoice>(initialRotation);
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() => Object.fromEntries(credentials.map((item) => [item.id, draftOf(item.settings)])));
@@ -116,14 +140,14 @@ export function ProviderCredentialsDialog({
         <header className="pf-head">
           <Avatar baseUrl={entry.baseUrl} name={entry.name} />
           <div>
-            <strong id={titleId}>{tf("{0} 的分配方式", [maskAccountName(entry.name)])}</strong>
+            <strong id={titleId}>{entry.account ? tf("{0} 的账号", [maskAccountName(entry.name)]) : tf("{0} 的 Key 分配", [maskAccountName(entry.name)])}</strong>
             <small>{entry.account ? tf("{0} 个账号", [credentials.length]) : tf("{0} 个 Key", [credentials.length])}</small>
           </div>
           <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
 
         <div className="pf-body">
-          <section className="pf-section">
+          {several ? <section className="pf-section">
             <h4>{t("分配方式")}<small>{t("同一个对话固定用一个，它答不了才换下一个")}</small></h4>
             <AppSelect<RotationChoice>
               ariaLabel={t("分配方式")}
@@ -134,10 +158,17 @@ export function ProviderCredentialsDialog({
               ]}
               value={rotation}
             />
-          </section>
+          </section> : null}
 
           <section className="pf-section">
-            <h4>{entry.account ? t("账号") : "Key"}<small>{t("排在前面的先用；停用的不再分请求，凭据保留")}</small></h4>
+            <div className="pf-credential-title">
+              <h4>{entry.account ? t("账号") : "Key"}{several ? <small>{t("排在前面的先用；停用的不再分请求，凭据保留")}</small> : null}</h4>
+              {onAddAccount ? (
+                <Button disabled={busy || loggingIn} onClick={onAddAccount} size="sm" title={t("再登录一个账号，加进这一家，轮着用各个账号的额度")} type="button" variant="outline">
+                  <Plus className="h-3.5 w-3.5" />{loggingIn ? t("登录中…") : t("添加账号")}
+                </Button>
+              ) : null}
+            </div>
             {parsed.map(({ item }) => {
               const draft = drafts[item.id] ?? draftOf(item.settings);
               const name = item.kind === "account" ? maskAccountName(item.label) : item.label;
@@ -148,9 +179,15 @@ export function ProviderCredentialsDialog({
                       {item.kind === "key" ? <code className="pf-mono">{name}</code> : <strong>{name}</strong>}
                       {item.plan ? <small>{item.plan}</small> : null}
                     </span>
-                    <Switch label={tf("使用 {0}", [name])} on={!draft.disabled} onToggle={() => update(item.id, { disabled: !draft.disabled })} />
+                    <span className="pf-credential-actions">
+                      {several ? <Switch label={tf("使用 {0}", [name])} on={!draft.disabled} onToggle={() => update(item.id, { disabled: !draft.disabled })} /> : null}
+                      {several && onRemoveAccount && item.kind === "account" ? (
+                        <button aria-label={tf("移除 {0}", [name])} className="pf-icon" disabled={busy} onClick={() => onRemoveAccount(item)} title={t("移除这个账号")} type="button"><X /></button>
+                      ) : null}
+                    </span>
                   </div>
-                  <div className="pf-credential-fields">
+                  {item.quota?.windows.length ? <small className="pf-credential-quota">{quotaText(item.quota)}</small> : null}
+                  {several ? <div className="pf-credential-fields">
                     {effective === "weighted" ? (
                       <label className="pf-field">
                         <span>{t("权重")}</span>
@@ -167,18 +204,20 @@ export function ProviderCredentialsDialog({
                         <Input inputMode="numeric" onChange={(event) => update(item.id, { cap: event.currentTarget.value })} placeholder={t("不限")} value={draft.cap} />
                       </label>
                     ) : null}
-                  </div>
+                  </div> : null}
                 </div>
               );
             })}
-            <p className="pf-note">{entry.account ? t("模型用逗号分开，留空表示这家的模型都能用。额度用到上限的账号先不用，额度恢复后自动回来。") : t("模型用逗号分开，留空表示这家的模型都能用。")}</p>
+            {several ? <p className="pf-note">{entry.account ? t("模型用逗号分开，留空表示这家的模型都能用。额度用到上限的账号先不用，额度恢复后自动回来。") : t("模型用逗号分开，留空表示这家的模型都能用。")}</p> : (
+              <p className="pf-note">{t("再加一个账号，这一家就会轮着用各个账号的额度；怎么分、每个账号用到多少先不用，都在这里设。")}</p>
+            )}
           </section>
         </div>
 
         <footer className="pf-foot">
           <span className="pf-error">{error}</span>
-          <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
-          <Button disabled={busy || Boolean(error) || !dirty} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button>
+          <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{several ? t("取消") : t("关闭")}</Button>
+          {several ? <Button disabled={busy || Boolean(error) || !dirty} size="sm" type="submit">{busy ? t("保存中") : t("保存")}</Button> : null}
         </footer>
       </form>
     </div>,

@@ -26,6 +26,8 @@ import {
 import { t, tf } from "./i18n";
 import { entriesForPage } from "./provider-owner";
 import { OwnerBadge, useShowOtherAgents } from "./ProviderOwner";
+import { credentialMenuLabel, credentialSummary, hasCredentialSettings } from "./ProviderCredentials";
+import { ProviderCredentialsHost } from "./ProviderCredentialsHost";
 
 /** Claude Desktop 在网关里的绑定：3p 模式直接用它，完整功能模式也按它的模型和「挑选」列模型。 */
 const AGENT: GatewayAgentId = "claude-desktop";
@@ -84,6 +86,9 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
   const [busy, setBusy] = useState<string | null>(null);
   const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
   const [adding, setAdding] = useState<"catalog" | "import" | null>(null);
+  // 「账号与分配」：打开的是哪一家；打开过就一直挂着，关掉后登录提示照样在。
+  const [credentialsId, setCredentialsId] = useState<string | null>(null);
+  const [credentialsUsed, setCredentialsUsed] = useState(false);
   // 没选过时落在有供应商的那一页（先「无需转换」）。
   const [chosenView, setChosenView] = useState<ClaudeProviderView | null>(null);
   const binding = payload?.gateway.bindings[AGENT];
@@ -99,6 +104,8 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
   const viewCount = (view: ClaudeProviderView) => view === "groups" ? groups.length : pool.filter((entry) => viewOf(entry.protocol) === view).length;
   const view: ClaudeProviderView = chosenView ?? (viewCount("native") || !viewCount("converted") ? "native" : "converted");
   const visiblePool = view === "groups" ? [] : pool.filter((entry) => viewOf(entry.protocol) === view);
+  // 有一行带「账号与分配」菜单时，其余行留出同样宽的位置，开关才对得齐。
+  const anyCredentials = visiblePool.some(hasCredentialSettings);
   const pendingCount = pendingImports(payload).filter((item) => CLAUDE_IMPORT_SOURCES.has(item.source)).length;
   // Claude Code（命令行）：和 Agent 接入页那一行同一个模型下拉，选一个共享供应商的模型就是让它经本地服务，
   // 下拉顶部「断开」就还原成它自己的 settings.json。本地服务里没有这个 Agent 时不显示这一行。
@@ -285,7 +292,7 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
                     <OwnerBadge entry={entry} page="claude" />
                   </>
                 )}
-                detail={[protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length])].filter(Boolean).join(" · ")}
+                detail={[protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length]), credentialSummary(entry, payload)].filter(Boolean).join(" · ")}
                 icon={<Avatar baseUrl={entry.baseUrl} name={entry.name} size="sm" />}
                 key={entry.id}
                 muted={!on && !partial}
@@ -309,6 +316,11 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
                   onToggle={() => toggle(entry.id, !on)}
                   pending={busy === `exclude:${entry.id}`}
                 />
+                {hasCredentialSettings(entry) ? (
+                  <Menu label={t("供应商操作")}>
+                    <MenuItem onClick={() => { setCredentialsUsed(true); setCredentialsId(entry.id); }}>{credentialMenuLabel(entry)}</MenuItem>
+                  </Menu>
+                ) : anyCredentials ? <span aria-hidden="true" className="claude-provider-menu-slot" /> : null}
               </CxRow>
             );
           })}
@@ -349,6 +361,9 @@ export function ClaudeProviders({ notify, onManage, onManageGroups }: { notify: 
           )}
         </CxCard>
       </CxSection>
+      {credentialsUsed ? (
+        <ProviderCredentialsHost notify={notify} onClose={() => setCredentialsId(null)} openId={credentialsId} payload={payload} run={run} />
+      ) : null}
       {adding ? (
         <ProviderAdder
           busy={busy}

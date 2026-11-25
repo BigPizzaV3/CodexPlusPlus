@@ -750,6 +750,7 @@ export function RelayScreen({
             <CodexAggregateList
               busy={poolBusy}
               entries={sharedEntries}
+              notify={actions.showMessage}
               onAdd={openCatalog}
               onEditLinked={editLinkedProfile}
               onManage={onOpenGateway}
