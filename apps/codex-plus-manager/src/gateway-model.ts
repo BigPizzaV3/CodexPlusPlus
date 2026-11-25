@@ -294,7 +294,8 @@ export type RouteStepView = {
   relayName: string;
   keyId: string;
   model: string;
-  outcome: "answered" | "failed" | "transport";
+  outcome: "answered" | "failed" | "transport" | "skipped";
+  attemptMs?: number;
   failure?: string | null;
   status?: number | null;
   elapsedMs: number;
@@ -308,6 +309,8 @@ export type RouteRecordView = {
   steps: RouteStepView[];
   result: "answered" | "failed" | "cooling";
   coolingMs?: number | null;
+  contextWindow?: number;
+  truncated?: boolean;
   finishedAtMs: number;
   elapsedMs: number;
 };
@@ -1547,6 +1550,7 @@ export function validateProviderDraft(draft: ProviderDraft, editing = false): st
 /* —————————————— 用量 —————————————— */
 
 export type UsageCounts = {
+  tokenMeteredCalls?: number;
   calls: number;
   errors: number;
   inputTokens: number;
@@ -1563,7 +1567,12 @@ export type UsageCost = { currency: string; amount: number };
 export type UsageDay = UsageCounts & { date: string };
 /** `costs` 只含填了价格的部分，旧版后端没有。 */
 export type UsageGroup = UsageCounts & { key: string; label: string; costs?: UsageCost[] };
+export type UsageHour = UsageCounts & { hour: number };
+export type UsageRouteDay = UsageCounts & { date: string; agent: string; providerId: string; provider: string; model: string };
 export type UsageSummary = {
+  hours?: UsageHour[];
+  dailyRoutes?: UsageRouteDay[];
+  observedDateRange?: { first: string; last: string };
   totals: UsageCounts;
   days: UsageDay[];
   byAgent: UsageGroup[];
@@ -1942,3 +1951,5 @@ export function appendGroupMembers(members: GroupMember[], models: string[]): Gr
   }
   return next;
 }
+
+export type QuotaObservation = { windowMinutes: number | null; usedPercent: number; resetsAtMs: number | null; observedAtMs: number };

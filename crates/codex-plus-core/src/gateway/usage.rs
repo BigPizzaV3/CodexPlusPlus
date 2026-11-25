@@ -41,6 +41,8 @@ pub struct UsageCounts {
     /// 其中成功的生图请求（生图一般不返回 token，只能按次数看）。
     #[serde(default, skip_serializing_if = "is_zero")]
     pub images: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_metered_calls: Option<u64>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -58,6 +60,10 @@ impl UsageCounts {
         self.duration_ms += other.duration_ms;
         self.timed_calls += other.timed_calls;
         self.images += other.images;
+        if let Some(metered) = other.token_metered_calls {
+            self.token_metered_calls = Some(self.token_metered_calls.unwrap_or(0) + metered);
+        }
+
     }
 }
 
@@ -84,6 +90,8 @@ struct UsageFile {
     /// `YYYY-MM-DD`（本地日期）→ 当天各组合的累计。
     #[serde(default)]
     days: BTreeMap<String, Vec<UsageRow>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    hourly: BTreeMap<String, BTreeMap<u8, UsageCounts>>,
     /// 不认识的顶层字段原样保留。
     #[serde(flatten)]
     extra: serde_json::Map<String, serde_json::Value>,
@@ -127,10 +135,25 @@ impl UsageStore {
 
     /// 记一个请求。`day` 是本地日期 `YYYY-MM-DD`。
     pub fn record(&self, day: &str, row: UsageRow) -> anyhow::Result<()> {
+        self.record_at(day, None, row)
+    }
+
+    fn record_at(&self, day: &str, hour: Option<u8>, row: UsageRow) -> anyhow::Result<()> {
         let _guard = write_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut file = self.load()?;
+        if let Some(hour) = hour {
+            file.hourly
+                .entry(day.to_string())
+                .or_default()
+                .entry(hour)
+                .or_default()
+                .add(&row.counts);
+            while file.hourly.len() > 2 {
+                file.hourly.pop_first();
+            }
+        }
         let rows = file.days.entry(day.to_string()).or_default();
         match rows.iter_mut().find(|known| {
             known.agent == row.agent
@@ -172,6 +195,16 @@ impl UsageStore {
                 .unwrap_or_else(|| today.to_string()),
         };
         let mut summary = UsageSummary::default();
+        if days == Some(1) {
+            summary.hours = Some(
+                file.hourly
+                    .get(today)
+                    .into_iter()
+                    .flatten()
+                    .map(|(&hour, &counts)| UsageHour { hour, counts })
+                    .collect(),
+            );
+        }
         let mut day = first.clone();
         // 逐天补齐，没有请求的日子也画一根空柱子。
         let mut guard = 0;
@@ -208,6 +241,14 @@ impl UsageStore {
                 if let Some(price) = price {
                     add_cost(&mut summary.costs, price, &row.counts);
                 }
+                summary.daily_routes.push(UsageRouteDay {
+                    date: day.clone(),
+                    agent: row.agent.clone(),
+                    provider_id: row.provider_id.clone(),
+                    provider: row.provider.clone(),
+                    model: row.model.clone(),
+                    counts: row.counts,
+                });
             }
             summary.days.push(UsageDay {
                 date: day.clone(),
@@ -215,6 +256,14 @@ impl UsageStore {
             });
             day = shift_day(&day, 1);
             guard += 1;
+        }
+        if let (Some(first), Some(last)) =
+            (summary.daily_routes.first(), summary.daily_routes.last())
+        {
+            summary.observed_date_range = Some(UsageDateRange {
+                first: first.date.clone(),
+                last: last.date.clone(),
+            });
         }
         for groups in [
             &mut summary.by_agent,
@@ -326,28 +375,61 @@ pub struct UsageCost {
     pub amount: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageRouteDay {
+    pub date: String,
+    pub agent: String,
+    pub provider_id: String,
+    pub provider: String,
+    pub model: String,
+    #[serde(flatten)]
+    pub counts: UsageCounts,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UsageDateRange {
+    pub first: String,
+    pub last: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct UsageHour {
+    pub hour: u8,
+    #[serde(flatten)]
+    pub counts: UsageCounts,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UsageSummary {
     pub totals: UsageCounts,
     pub days: Vec<UsageDay>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hours: Option<Vec<UsageHour>>,
     pub by_agent: Vec<UsageGroup>,
     pub by_provider: Vec<UsageGroup>,
     pub by_model: Vec<UsageGroup>,
     /// 只统计填了价格的网关供应商。
     pub costs: Vec<UsageCost>,
+    pub daily_routes: Vec<UsageRouteDay>,
+    /// Bounds of observed rows, not a claim of uninterrupted capture.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_date_range: Option<UsageDateRange>,
+}
+
+fn local_day_and_hour(timestamp_ms: u64) -> rusqlite::Result<(String, u8)> {
+    rusqlite::Connection::open_in_memory()?.query_row(
+        "SELECT date(?1 / 1000, 'unixepoch', 'localtime'), CAST(strftime('%H', ?1 / 1000, 'unixepoch', 'localtime') AS INTEGER)",
+        [i64::try_from(timestamp_ms).unwrap_or(i64::MAX)],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
 }
 
 /// 本地日期（`YYYY-MM-DD`）。
 pub fn local_day(timestamp_ms: u64) -> String {
-    rusqlite::Connection::open_in_memory()
-        .and_then(|connection| {
-            connection.query_row(
-                "SELECT date(?1 / 1000, 'unixepoch', 'localtime')",
-                [timestamp_ms as i64],
-                |row| row.get::<_, String>(0),
-            )
-        })
+    local_day_and_hour(timestamp_ms)
+        .map(|(day, _)| day)
         .unwrap_or_else(|_| "1970-01-01".to_string())
 }
 
@@ -393,6 +475,7 @@ pub fn record_entry_in(store: &UsageStore, entry: &RequestLogEntry) -> anyhow::R
             duration_ms: entry.duration_ms,
             timed_calls: u64::from(entry.duration_ms > 0),
             images: u64::from(entry.success && entry.is_image()),
+            token_metered_calls: Some(u64::from(entry.usage.is_some())),
         },
         extra: Default::default(),
     };
@@ -401,7 +484,10 @@ pub fn record_entry_in(store: &UsageStore, entry: &RequestLogEntry) -> anyhow::R
     } else {
         entry.started_at_ms
     };
-    store.record(&local_day(timestamp), row)
+    match local_day_and_hour(timestamp) {
+        Ok((day, hour)) => store.record_at(&day, (timestamp > 0).then_some(hour), row),
+        Err(_) => store.record("1970-01-01", row),
+    }
 }
 
 #[cfg(test)]
@@ -410,6 +496,58 @@ mod tests {
     use crate::gateway::store::GatewayProvider;
     use crate::request_log::RequestUsage;
     use crate::settings::RelayProfile;
+
+    #[test]
+    fn today_returns_observed_hours_without_allocating_legacy_daily_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = UsageStore::at(dir.path().join(USAGE_FILE));
+        let mut request = entry(Some("codex"), "relay", 30, 15, 10);
+        let (local_day, local_hour) = local_day_and_hour(request.timestamp_ms).unwrap();
+        let gateway = GatewaySettings::default();
+
+        store
+            .record(
+                &local_day,
+                UsageRow {
+                    counts: UsageCounts {
+                        calls: 1,
+                        input_tokens: 20,
+                        ..UsageCounts::default()
+                    },
+                    ..UsageRow::default()
+                },
+            )
+            .unwrap();
+        request.state = Some("running".into());
+        record_entry_in(&store, &request).unwrap();
+        request.state = None;
+        record_entry_in(&store, &request).unwrap();
+        record_entry_in(&store, &request).unwrap();
+
+        let summary = store.summary(&local_day, Some(1), &gateway).unwrap();
+        assert_eq!(summary.totals.calls, 3);
+        let hours = summary.hours.unwrap();
+        assert_eq!(hours.len(), 1);
+        assert_eq!(hours[0].hour, local_hour);
+        assert_eq!(hours[0].counts.calls, 2);
+        assert_eq!(hours[0].counts.input_tokens, 60);
+        assert!(
+            store
+                .summary(&local_day, Some(7), &gateway)
+                .unwrap()
+                .hours
+                .is_none()
+        );
+        store.clear().unwrap();
+        assert!(
+            store
+                .summary(&local_day, Some(1), &gateway)
+                .unwrap()
+                .hours
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     fn entry(
         agent: Option<&str>,
