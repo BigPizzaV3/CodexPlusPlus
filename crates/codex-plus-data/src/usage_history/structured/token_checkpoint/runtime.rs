@@ -252,6 +252,7 @@ impl Runtime {
                 Some(window),
                 RECONCILIATION_BYTES,
                 self.scan.scoped_count_gaps(),
+                self.scan.sealed_pending(),
                 |events, aliases, scope| {
                     ensure!(
                         index.native_evidence.observe_count_conflicts(events, true),
@@ -374,8 +375,7 @@ impl Runtime {
         );
         state.failed_sources = report.errors.len();
         let can_classify = report.complete
-            || (report.pending_sources == 0
-                && report.issues != 0
+            || (report.pending_sources == self.scan.sealed_pending()
                 && report.issues == self.scan.scoped_count_gaps().len());
         if let Some(error) = report.maintenance_error {
             self.retry_full = disk_full(&error);
@@ -981,5 +981,145 @@ mod tests {
             .read(&storage, &query, &request, None, false);
         assert_eq!(cold["days"], after["days"]);
         assert_eq!(cold["revision"], after["revision"]);
+    }
+
+    #[test]
+    fn sealed_queued_sources_allow_gateway_evidence_and_a_new_or_replaced_archive_withdraws_it() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let sources = home.join("sessions");
+        fs::create_dir_all(&sources).unwrap();
+        let home = fs::canonicalize(home).unwrap();
+        let settings = root.path().join("settings.json");
+        fs::write(&settings, r#"{"usageHistoryEnabled":true}"#).unwrap();
+        let log = root.path().join("requests.jsonl");
+        let storage = root.path().join("history");
+        let now = Local::now();
+        let session = "00000000-0000-4000-8000-000000000001";
+        let other = "00000000-0000-4000-8000-000000000002";
+        let head = |id: &str| {
+            json!({"type":"session_meta","timestamp":now.to_rfc3339(),
+                                     "payload":{"id":id,"model_provider":"custom"}})
+        };
+        let turn = json!({"type":"turn_context","timestamp":now.to_rfc3339(),
+                          "payload":{"turn_id":"turn","model":"gpt-fixture"}});
+        let usage = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":10});
+        let mut count = json!({"type":"event_msg","timestamp":now.to_rfc3339(),"payload":{
+            "type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}});
+        fs::write(
+            sources.join("rollout-000.jsonl"),
+            format!("{}\n{turn}\n{count}\n", head(session)),
+        )
+        .unwrap();
+        for i in 1..74 {
+            fs::write(
+                sources.join(format!("rollout-{i:03}.jsonl")),
+                format!("{}\n", head(other)),
+            )
+            .unwrap();
+        }
+        count["payload"]["info"]["total_token_usage"]["input_tokens"] = json!("invalid");
+        let archived = sources.join("rollout-last.jsonl.zst");
+        let data = format!("{}\n{count}\n", head(other));
+        fs::write(
+            &archived,
+            zstd::stream::encode_all(data.as_bytes(), 1).unwrap(),
+        )
+        .unwrap();
+        let oldest = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        fs::File::options()
+            .write(true)
+            .open(&archived)
+            .unwrap()
+            .set_modified(oldest)
+            .unwrap();
+        let request = json!({"period":"today","includeSessionCursors":true});
+        let query = Query::parse(&request, now.date_naive()).unwrap();
+        let pass = |worker: &mut Runtime| {
+            let state = worker.update_with_request_log(&home, &log);
+            assert!(state.storage_error.is_none(), "{:?}", state.storage_error);
+            assert!(
+                state.classification_error.is_none(),
+                "{:?}",
+                state.classification_error
+            );
+            state.read(&storage, &query, &request, None, false)
+        };
+        let mut worker = Runtime::new(storage.clone(), settings.clone());
+        pass(&mut worker);
+        let native = pass(&mut worker);
+        assert_eq!(native["days"][0]["recordCount"], 1);
+        assert_eq!(native["scan"]["sourceIssues"], 1);
+        let proof = json!({"id":"test-proof","threadId":session,"model":"gpt-fixture",
+            "upstreamModel":"gpt-fixture","relayId":"fixture-relay","relayName":"Fixture",
+            "success":true,"state":"success","statusCode":200,"timestampMs":now.timestamp_millis(),
+            "startedAtMs":now.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+            "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}});
+        fs::write(&log, format!("{proof}\n")).unwrap();
+        drop(worker);
+        let exact = |view: &Value| {
+            view["days"][0]["breakdowns"][0]["classificationEvidence"] == "request-log-exact"
+        };
+        for case in ["new", "replaced"] {
+            let mut worker = Runtime::new(storage.clone(), settings.clone());
+            let known = pass(&mut worker);
+            assert!(known["scan"]["pendingFiles"].as_u64().unwrap() > 0);
+            assert_eq!(known["countStatus"]["complete"], false);
+            assert!(
+                exact(&known),
+                "{case}: sealed backlog must allow exact evidence"
+            );
+            drop(worker);
+            let disturb = if case == "new" {
+                sources.join("rollout-new-last.jsonl.zst")
+            } else {
+                archived.clone()
+            };
+            let fresh = format!("{}\n", head(other));
+            fs::write(
+                &disturb,
+                zstd::stream::encode_all(fresh.as_bytes(), 1).unwrap(),
+            )
+            .unwrap();
+            fs::File::options()
+                .write(true)
+                .open(&disturb)
+                .unwrap()
+                .set_modified(oldest)
+                .unwrap();
+            let mut worker = Runtime::new(storage.clone(), settings.clone());
+            let unverified = pass(&mut worker);
+            assert!(unverified["scan"]["pendingFiles"].as_u64().unwrap() > 0);
+            assert!(
+                !exact(&unverified),
+                "{case}: unverified backlog retained exact evidence"
+            );
+            assert_eq!(unverified["days"][0]["usage"], native["days"][0]["usage"]);
+            assert_eq!(unverified["sessionCursors"], native["sessionCursors"]);
+            assert!(
+                exact(&pass(&mut worker)),
+                "{case}: resolved backlog must recover"
+            );
+        }
+        use std::io::Write;
+        let mut active = fs::OpenOptions::new()
+            .append(true)
+            .open(sources.join("rollout-000.jsonl"))
+            .unwrap();
+        active.write_all(b"{").unwrap();
+        let mut worker = Runtime::new(storage.clone(), settings.clone());
+        let partial = pass(&mut worker);
+        assert!(
+            !exact(&partial),
+            "an unfinished same-session tail retained evidence"
+        );
+        assert_eq!(partial["days"][0]["usage"], native["days"][0]["usage"]);
+        active
+            .write_all(b"\"type\":\"fixture-ignored\",\"payload\":{}}\n")
+            .unwrap();
+        drop(active);
+        drop(worker);
+        let mut reopened = Runtime::new(storage.clone(), settings);
+        assert!(exact(&pass(&mut reopened)));
     }
 }

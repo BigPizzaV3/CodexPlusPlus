@@ -64,6 +64,75 @@ fn new_source<'a>(source: &'a Path, state: &'a FileState) -> SourceUpdate<'a> {
 }
 
 #[test]
+fn registered_compressed_prefix_can_introduce_another_sessions_counts_in_its_suffix()
+-> anyhow::Result<()> {
+    let temp = tempfile::tempdir()?;
+    let root = temp.path().canonicalize()?;
+    let archive = root.join(format!("rollout-{CHILD}.jsonl.zst"));
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let first = format!("{}\n{}\n", header(CHILD, 0), count(1, 1, 1, true));
+    let mut fork = header(CHILD, 2);
+    fork["payload"]["forked_from_id"] = json!(PARENT);
+    fork["payload"]["subagent_history_start_ordinal"] = json!(5);
+    let full = format!(
+        "{first}{fork}\n{}\n{}\n",
+        header(PARENT, 3),
+        count(4, 4, 1, true)
+    );
+    fs::write(&archive, zstd::stream::encode_all(full.as_bytes(), 1)?)?;
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut reader = SourceReader::restore(&store, &archive)?;
+    let mut first_budget = Budget::new(std::iter::empty());
+    first_budget.read_left = first.len() as u64 + 1;
+    assert!(!reader.step(
+        &mut store,
+        cutoff,
+        &mut first_budget,
+        &BTreeMap::new(),
+        1 << 20
+    )?);
+    let (_, first_checkpoint) = store.checkpoint(&archive)?.unwrap();
+    assert!(first_checkpoint.resume_pending);
+    assert_eq!(first_checkpoint.session, CHILD);
+    assert_eq!(first_checkpoint.offset, first.len() as u64);
+    assert_eq!(
+        first_checkpoint.stamp,
+        Some(FileState::source_stamp(&archive)?)
+    );
+    assert!(!first_checkpoint.identity_conflict && !first_checkpoint.invalid_counts);
+    let link_count = |store: &Store| -> rusqlite::Result<i64> {
+        store.db.query_row(
+            "SELECT count(*) FROM token_source_links WHERE link=?",
+            [format!("s:{PARENT}")],
+            |row| row.get(0),
+        )
+    };
+    assert_eq!(link_count(&store)?, 0);
+    let queued = std::slice::from_ref(&archive);
+    assert!(store.sealed_queued_sources(queued)?.0.is_empty());
+    let mut reopened = SourceReader::restore(&store, &archive)?;
+    assert!(reopened.step(
+        &mut store,
+        cutoff,
+        &mut Budget::new(std::iter::empty()),
+        &BTreeMap::new(),
+        1 << 20
+    )?);
+    let (_, closed) = store.checkpoint(&archive)?.unwrap();
+    assert!(!closed.resume_pending && !closed.identity_conflict && !closed.invalid_counts);
+    assert_eq!(closed.session, CHILD);
+    assert_eq!(closed.stamp, first_checkpoint.stamp);
+    assert!(store.sealed_queued_sources(queued)?.0.contains(&archive));
+    assert_eq!(link_count(&store)?, 1);
+    assert!(store.db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM token_observations o JOIN token_sessions s ON s.id=o.session_id
+         WHERE s.session=?1)",
+        [PARENT], |row| row.get::<_, bool>(0)
+    )?);
+    Ok(())
+}
+
+#[test]
 fn cross_session_parent_prefix_requires_a_unique_committed_native_anchor() -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let root = temp.path().canonicalize()?;
@@ -3213,6 +3282,7 @@ fn bounded_classification_preserves_day_totals_and_counts_competitors_across_the
                 Some(start..start + 1),
                 LIMIT,
                 &gaps,
+                0,
                 |events, aliases, scope| {
                     assert_eq!(scope.targets.len(), 1);
                     assert_eq!(events.len(), 2);
@@ -3276,9 +3346,14 @@ fn bounded_classification_preserves_day_totals_and_counts_competitors_across_the
         .timestamp_millis();
     assert!(
         store
-            .reclassify_window(PARENT, Some(oldest..oldest + 1), LIMIT, &gaps, |_, _, _| {
-                panic!("cannot accept a clipped retention boundary")
-            })
+            .reclassify_window(
+                PARENT,
+                Some(oldest..oldest + 1),
+                LIMIT,
+                &gaps,
+                0,
+                |_, _, _| { panic!("cannot accept a clipped retention boundary") }
+            )
             .unwrap()
             .is_none()
     );

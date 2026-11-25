@@ -2,7 +2,7 @@ use super::{Checkpoint, Counter, FileState, Observation, UsageEvent};
 use anyhow::{Result, ensure};
 use chrono::{DateTime, Local};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
@@ -522,6 +522,83 @@ impl Store {
             }
         }
         Ok((missing, false))
+    }
+
+    pub(super) fn sealed_queued_sources(
+        &self,
+        discovered: &[PathBuf],
+    ) -> Result<(HashSet<PathBuf>, BTreeSet<PathBuf>)> {
+        #[derive(serde::Deserialize)]
+        struct CountState {
+            stamp: Option<super::SourceStamp>,
+            resume_pending: bool,
+            skipping: bool,
+            session: String,
+            issues: usize,
+            #[serde(default)]
+            malformed_token_counts: usize,
+            invalid_counts: bool,
+            identity_conflict: bool,
+        }
+        let present: HashSet<_> = discovered.iter().map(PathBuf::as_path).collect();
+        let current = |source: &Path, expected: super::SourceStamp| -> Result<bool> {
+            match FileState::source_stamp(source) {
+                Ok(actual) => Ok(actual == expected),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error.into()),
+            }
+        };
+        let mut sealed = HashSet::new();
+        let mut gaps = BTreeSet::new();
+        let mut owners = HashSet::new();
+        let mut sources = self
+            .db
+            .prepare_cached("SELECT id, source, offset, checkpoint FROM token_sources")?;
+        let mut rows = sources.query([])?;
+        while let Some(row) = rows.next()? {
+            let path = decode_path(row.get(1)?)?;
+            if !present.contains(path.as_path()) {
+                continue;
+            }
+            let saved: CountState = serde_json::from_slice(row.get_ref(3)?.as_blob()?)?;
+            let Some(stamp @ (size, Some(_), Some(_))) = saved.stamp else {
+                continue;
+            };
+            let scoped_gap = !saved.session.is_empty()
+                && saved.issues != 0
+                && saved.issues == saved.malformed_token_counts;
+            if saved.resume_pending
+                || saved.skipping
+                || saved.identity_conflict
+                || (saved.issues != 0 || saved.invalid_counts) && !scoped_gap
+                || !path.extension().is_some_and(|ext| ext == "zst")
+                    && size != row.get::<_, u64>(2)?
+                || !current(&path, stamp)?
+            {
+                continue;
+            }
+            if scoped_gap {
+                gaps.insert(path.clone());
+            } else {
+                owners.insert(row.get::<_, i64>(0)?);
+            }
+            sealed.insert(path);
+        }
+        // A verified replica only covers the bytes certified for its unchanged owner.
+        let mut copies = self
+            .db
+            .prepare_cached("SELECT source, owner_id, stamp FROM token_source_copies")?;
+        let mut rows = copies.query([])?;
+        while let Some(row) = rows.next()? {
+            if owners.contains(&row.get::<_, i64>(1)?) {
+                let path = decode_path(row.get(0)?)?;
+                let stamp = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
+                if present.contains(path.as_path()) && current(&path, stamp)? {
+                    sealed.insert(path);
+                }
+            }
+        }
+        Ok((sealed, gaps))
     }
 
     pub(super) fn relocate_source(

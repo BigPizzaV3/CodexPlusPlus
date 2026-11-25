@@ -60,6 +60,13 @@ impl SourceReader {
         self.ready.is_some() && !matches!(self.encoding, Encoding::Exhausted)
     }
 
+    pub(super) fn retrying_closed_append(&self) -> bool {
+        self.committed_complete
+            && !self.replacing
+            && self.ready == Some(true)
+            && !self.has_count_gap()
+    }
+
     pub(super) fn encoding_pending(&self) -> bool {
         matches!(self.encoding, Encoding::Compacting(_) | Encoding::Retry)
     }

@@ -1584,6 +1584,7 @@ impl Store {
             None,
             input_limit,
             scoped_count_gaps,
+            0,
             |events, aliases, _| classify(events, aliases),
         )
     }
@@ -1594,6 +1595,7 @@ impl Store {
         window: Option<Range<i64>>,
         input_limit: usize,
         scoped_count_gaps: &BTreeSet<PathBuf>,
+        sealed_pending: usize,
         classify: impl FnOnce(
             &mut [UsageEvent],
             &BTreeMap<String, String>,
@@ -1604,8 +1606,8 @@ impl Store {
         let base = revision(&read)?;
         let eligible = read.query_row(
             "SELECT EXISTS(SELECT 1 FROM token_coverage WHERE revision = ?1
-                           AND pending_sources = 0 AND issues = ?2 AND NOT maintenance_blocked)",
-            params![base, scoped_count_gaps.len()],
+                           AND pending_sources = ?3 AND issues = ?2 AND NOT maintenance_blocked)",
+            params![base, scoped_count_gaps.len(), sealed_pending],
             |row| row.get::<_, bool>(0),
         )?;
         if !eligible {

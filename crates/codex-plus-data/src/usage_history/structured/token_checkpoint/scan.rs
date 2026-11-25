@@ -8,7 +8,7 @@ use super::{
 };
 use crate::usage_history::structured::{discover, index_budget::Budget};
 use chrono::NaiveDate;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -29,6 +29,7 @@ pub(super) struct Scan {
     next_live: usize,
     issues: usize,
     unknown_count_scope: bool,
+    sealed_queue: HashSet<PathBuf>,
     scoped_count_gaps: BTreeSet<PathBuf>,
     maintenance_day: Option<NaiveDate>,
     details_pending: bool,
@@ -46,6 +47,10 @@ pub(super) struct Report {
 }
 
 impl Scan {
+    pub(super) fn sealed_pending(&self) -> usize {
+        self.sealed_queue.len()
+    }
+
     pub(super) fn scoped_count_gaps(&self) -> &BTreeSet<PathBuf> {
         &self.scoped_count_gaps
     }
@@ -97,6 +102,7 @@ impl Scan {
             && self.missing.is_empty()
         {
             self.issues = 0;
+            self.sealed_queue.clear();
             self.scoped_count_gaps.clear();
             self.more_missing = false;
             let paths = discover(home, !self.rescan, &mut self.issues);
@@ -109,6 +115,7 @@ impl Scan {
                     }
                     Err(error) => {
                         self.issues += 1;
+                        self.unknown_count_scope = true;
                         errors.push((home.to_owned(), error));
                     }
                 }
@@ -117,6 +124,20 @@ impl Scan {
             self.rescan = true;
             if let Some(reader) = &self.deferred {
                 self.remaining.retain(|source| source != &reader.source);
+            }
+            if self.issues == 0 {
+                match store.sealed_queued_sources(self.remaining.make_contiguous()) {
+                    Ok((sealed, gaps)) => {
+                        self.sealed_queue = sealed;
+                        self.issues += gaps.len();
+                        self.scoped_count_gaps = gaps;
+                    }
+                    Err(error) => {
+                        self.issues += 1;
+                        self.unknown_count_scope = true;
+                        errors.push((home.to_owned(), error));
+                    }
+                }
             }
         }
         let mut budget = Budget::new(std::iter::empty());
@@ -194,6 +215,7 @@ impl Scan {
                         }
                         if self.issues != 0 || self.deferred.is_some() {
                             if !self.missing.is_empty() || self.more_missing {
+                                self.unknown_count_scope = true;
                                 self.scoped_count_gaps.clear();
                             }
                             self.missing.clear();
@@ -214,16 +236,21 @@ impl Scan {
                                     reconciliation_limit,
                                 ) {
                                     self.issues += 1;
+                                    self.unknown_count_scope = true;
                                     errors.push((source, error));
                                 }
                             }
                             Err(error) => {
                                 self.issues += 1;
+                                self.unknown_count_scope = true;
                                 errors.push((source, error.into()));
                             }
                         }
                         continue;
                     };
+                    if self.sealed_queue.remove(&path) && self.scoped_count_gaps.remove(&path) {
+                        self.issues -= 1;
+                    }
                     if self
                         .comparing
                         .as_ref()
@@ -246,6 +273,7 @@ impl Scan {
                                 Ok(false) => {}
                                 Err(error) => {
                                     self.issues += 1;
+                                    self.unknown_count_scope = true;
                                     errors.push((path, error));
                                     continue 'sources;
                                 }
@@ -356,7 +384,10 @@ impl Scan {
                     self.active = Some(reader);
                     break;
                 }
-                Ok(false) => self.issues += 1,
+                Ok(false) => {
+                    self.issues += 1;
+                    self.unknown_count_scope = true;
+                }
                 Err(error) => {
                     self.issues += 1;
                     self.unknown_count_scope |= !reader.can_retry_write();
@@ -375,13 +406,20 @@ impl Scan {
             + usize::from(self.comparing.is_some())
             + usize::from(self.deferred.is_some());
         let mut issues = self.issues;
+        // The previous snapshot stays intact until this known append actually commits.
+        let unpublished_append = usize::from(
+            self.deferred
+                .as_ref()
+                .is_some_and(SourceReader::retrying_closed_append),
+        );
         if let Err(error) = store.record_coverage(
             Coverage {
                 pending_sources,
                 issues,
                 maintenance_blocked: maintenance_error.is_some(),
             },
-            self.unknown_count_scope,
+            self.unknown_count_scope
+                || pending_sources != self.sealed_pending() + unpublished_append,
         ) {
             issues += 1;
             return Report {
