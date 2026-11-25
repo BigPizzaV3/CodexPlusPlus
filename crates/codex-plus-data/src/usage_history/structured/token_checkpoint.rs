@@ -311,5 +311,9 @@ mod store;
 mod tests;
 
 mod runtime;
-pub(super) use runtime::{ReadState, Runtime, recover_archive};
-pub(super) use store::{archive::ArchiveKey, projection::ArchiveAnswer};
+pub(super) use runtime::{ReadState, Runtime, read_execution_detail, recover_archive};
+pub(super) use store::{
+    archive::ArchiveKey,
+    executions::{DetailQuery, ExecutionQuery},
+    projection::ArchiveAnswer,
+};

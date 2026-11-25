@@ -4,6 +4,7 @@ use super::{
     store::{
         Store,
         archive::{ArchiveKey, Recovered},
+        executions::{DetailQuery, ExecutionQuery},
         projection::ArchiveAnswer,
     },
 };
@@ -324,6 +325,31 @@ fn enforce_working_budget(db: &Connection, storage: &Path, budget: u64) -> Resul
 }
 
 impl ReadState {
+    pub(in super::super) fn read_executions(
+        &self,
+        storage: &Path,
+        request: &ExecutionQuery,
+        processing: bool,
+    ) -> Value {
+        match open_database(storage, false).and_then(|mut db| {
+            Store::read_execution_page(
+                &mut db,
+                request,
+                Local::now().timestamp_millis(),
+                processing,
+                self.storage_error.as_deref(),
+            )
+        }) {
+            Ok(response) => response,
+            Err(error) => json!({
+                "status":if processing {"partial"} else {"unavailable"},
+                "message":error.to_string(), "complete":false,
+                "items":[], "nextCursor":null, "coverage":{"complete":false},
+                "scan":{"processing":processing,"storageError":self.storage_error}
+            }),
+        }
+    }
+
     #[cfg(test)]
     pub(in super::super) fn read(
         &self,
@@ -410,6 +436,19 @@ impl ReadState {
             json!([])
         };
         (response, schedule)
+    }
+}
+
+pub(in super::super) fn read_execution_detail(
+    storage: &Path,
+    home: &Path,
+    request: &DetailQuery,
+) -> Value {
+    match open_database(storage, false).and_then(|mut db| {
+        Store::read_execution_detail(&mut db, home, request, || Local::now().timestamp_millis())
+    }) {
+        Ok(response) => response,
+        Err(error) => json!({"status":"unavailable","message":error.to_string()}),
     }
 }
 

@@ -8,6 +8,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 pub(super) mod archive;
+pub(super) mod executions;
 pub(super) mod projection;
 pub(super) mod replicas;
 
@@ -182,6 +183,13 @@ impl Store {
                 ON execution_observations (session_id, call_id);
              CREATE INDEX IF NOT EXISTS execution_locator_expiry
                 ON execution_observations (is_output, timestamp_ms) WHERE end IS NOT NULL;
+             CREATE TABLE IF NOT EXISTS execution_coverage_start (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                started_at INTEGER
+             ) STRICT;
+             INSERT OR IGNORE INTO execution_coverage_start
+                SELECT 1, CASE WHEN EXISTS (SELECT 1 FROM token_sources)
+                    THEN CAST(unixepoch('subsec') * 1000 AS INTEGER) END;
              COMMIT;",
         )?;
         Ok(Self { db })

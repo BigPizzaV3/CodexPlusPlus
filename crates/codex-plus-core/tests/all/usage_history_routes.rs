@@ -72,6 +72,7 @@ impl BridgeRuntimeService for UnusedRuntime {
 struct MockData {
     queries: Mutex<Vec<Value>>,
     archive_queries: Mutex<Vec<Value>>,
+    execution_queries: Mutex<Vec<(&'static str, Value)>>,
     clears: AtomicUsize,
 }
 
@@ -84,6 +85,20 @@ impl BridgeDataService for MockData {
     async fn usage_archive(&self, payload: Value) -> anyhow::Result<Value> {
         self.archive_queries.lock().unwrap().push(payload.clone());
         Ok(json!({"status":"ok","echo":payload}))
+    }
+    async fn usage_executions(&self, payload: Value) -> anyhow::Result<Value> {
+        self.execution_queries
+            .lock()
+            .unwrap()
+            .push(("list", payload));
+        Ok(json!({"status":"ok","items":[]}))
+    }
+    async fn usage_execution_detail(&self, payload: Value) -> anyhow::Result<Value> {
+        self.execution_queries
+            .lock()
+            .unwrap()
+            .push(("detail", payload));
+        Ok(json!({"status":"ok","detail":{}}))
     }
     async fn usage_history_storage_info(&self) -> anyhow::Result<Value> {
         Ok(json!({"status":"ok","directory":"usage-history/example","bytes":50}))
@@ -128,6 +143,34 @@ async fn assert_rejected(enabled: Option<bool>) {
     assert_eq!(result["records"], json!([]));
     assert_eq!(data.clears.load(Ordering::SeqCst), 1);
     assert!(data.queries.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn execution_routes_require_recording_and_do_not_query_token_history() {
+    let _state = crate::common::IsolatedTestState::new();
+    for (route, kind) in [
+        ("/usage/executions", "list"),
+        ("/usage/execution-detail", "detail"),
+    ] {
+        for enabled in [Some(true), Some(false), None] {
+            let (ctx, data) = context(enabled);
+            let payload = json!({"test":"payload","revision":3});
+            let result = handle_bridge_request(ctx, route, payload.clone()).await;
+            if enabled == Some(true) {
+                assert_eq!(result["status"], "ok");
+                assert_eq!(
+                    *data.execution_queries.lock().unwrap(),
+                    vec![(kind, payload)]
+                );
+            } else {
+                assert_eq!(result["status"], "unavailable");
+                assert_eq!(result["enabled"], false);
+                assert!(data.execution_queries.lock().unwrap().is_empty());
+            }
+            assert!(data.queries.lock().unwrap().is_empty());
+            assert_eq!(data.clears.load(Ordering::SeqCst), 0);
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

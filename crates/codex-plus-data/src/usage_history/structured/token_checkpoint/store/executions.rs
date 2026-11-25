@@ -1,0 +1,781 @@
+use super::super::SourceStamp;
+use super::{Store, decode_path};
+use crate::usage_history::{
+    normalize_session_id,
+    structured::{FileState, MAX_LINE, exec_receipt, execution_observations::DETAIL_MS, log_file},
+};
+use anyhow::{Context, Result, ensure};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use chrono::{DateTime, Local, NaiveDate, TimeZone};
+use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::collections::BTreeMap;
+use std::fs::{self, File};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::Path;
+
+const MAX_DETAIL_BYTES: u64 = 4 * 1024 * 1024;
+const MAX_ARCHIVE_DETAIL_OFFSET: u64 = 32 * 1024 * 1024;
+const MAX_OUTPUTS: usize = 64;
+
+#[derive(Deserialize, Serialize)]
+struct Cursor(i64, String, String);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::usage_history::structured) struct ExecutionQuery {
+    start_at: i64,
+    end_at: i64,
+    scope_session_id: Option<String>,
+    #[serde(default = "default_limit")]
+    limit: u16,
+    revision: Option<i64>,
+    cursor: Option<String>,
+    #[serde(default)]
+    search: String,
+    kind: Option<String>,
+    #[serde(default)]
+    include_activity_summary: bool,
+}
+
+fn default_limit() -> u16 {
+    50
+}
+
+impl ExecutionQuery {
+    pub(in crate::usage_history::structured) fn parse(request: &Value) -> Result<Self> {
+        let mut query = Self::deserialize(request)?;
+        ensure!(
+            query.start_at < query.end_at
+                && DateTime::from_timestamp_millis(query.start_at).is_some()
+                && DateTime::from_timestamp_millis(query.end_at - 1).is_some(),
+            "工具时间范围无效"
+        );
+        ensure!((1..=200).contains(&query.limit), "工具分页大小无效");
+        ensure!(query.search.len() <= 512, "工具搜索过长");
+        ensure!(
+            query
+                .kind
+                .as_deref()
+                .is_none_or(|kind| matches!(kind, "tool" | "skill" | "mcp")),
+            "工具类别无效"
+        );
+        ensure!(query.revision.is_none_or(|rev| rev >= 0), "工具版本无效");
+        if let Some(scope) = &mut query.scope_session_id {
+            *scope = normalize_session_id(scope).context("会话范围 ID 无效")?;
+        }
+        if query.cursor.is_some() {
+            ensure!(query.revision.is_some(), "工具游标需要版本");
+            query.cursor()?;
+        }
+        Ok(query)
+    }
+
+    fn cursor(&self) -> Result<Option<Cursor>> {
+        let Some(cursor) = &self.cursor else {
+            return Ok(None);
+        };
+        ensure!(cursor.len() <= 1024, "工具游标过长");
+        let cursor: Cursor = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(cursor)?)?;
+        ensure!(
+            normalize_session_id(&cursor.1).is_some()
+                && !cursor.2.is_empty()
+                && cursor.2.len() <= 300,
+            "工具游标无效"
+        );
+        Ok(Some(cursor))
+    }
+}
+
+// 先按时间索引找到调用身份，再检查该身份的所有副本。跨范围的冲突不能被过滤掉。
+const CALLS: &str = "
+WITH candidates AS (
+    SELECT DISTINCT e.session_id, e.call_id FROM execution_observations e
+    WHERE e.is_output = 0 AND e.timestamp_ms >= ?1 AND e.timestamp_ms < ?2
+      AND (?3 IS NULL OR e.session_id IN (
+          SELECT s.id FROM json_each(?3) j JOIN token_sessions s ON s.session = j.value
+      ))
+), identities AS (
+    SELECT e.session_id, e.call_id, MIN(e.timestamp_ms) AS at,
+        MIN(COALESCE(e.name, '')) AS name, MIN(COALESCE(e.namespace, '')) AS namespace,
+        MIN(e.timestamp_ms) != MAX(e.timestamp_ms)
+          OR MIN(COALESCE(e.name, '')) != MAX(COALESCE(e.name, ''))
+          OR MIN(COALESCE(e.namespace, '')) != MAX(COALESCE(e.namespace, '')) AS conflict
+    FROM candidates c JOIN execution_observations e
+      ON e.session_id = c.session_id AND e.call_id = c.call_id AND e.is_output = 0
+    GROUP BY e.session_id, e.call_id
+), annotated AS (
+    SELECT i.*, s.session, (
+        SELECT json_extract(CAST(a.payload AS TEXT), '$.call.arguments.skillNames')
+        FROM token_activity a WHERE a.session_id = i.session_id AND a.call_id = i.call_id
+        ORDER BY a.source_id DESC LIMIT 1
+    ) AS skills
+    FROM identities i JOIN token_sessions s ON s.id = i.session_id
+    WHERE i.conflict OR (i.name != 'write_stdin' AND i.name NOT LIKE '%.write_stdin')
+), calls AS (
+    SELECT *, CASE
+        WHEN json_array_length(skills) > 0 THEN 'skill'
+        WHEN substr(name, 1, 5) = 'mcp__' OR substr(namespace, 1, 5) = 'mcp__' THEN 'mcp'
+        ELSE 'tool'
+    END AS kind
+    FROM annotated
+), visible AS (
+    SELECT at, session, call_id, kind, skills,
+        CASE WHEN kind = 'tool' AND at <= ?4 THEN '' ELSE name END AS name,
+        CASE WHEN kind = 'tool' AND at <= ?4 THEN '' ELSE namespace END AS namespace
+    FROM calls WHERE NOT conflict
+), filtered AS (
+    SELECT * FROM visible WHERE (?5 IS NULL OR kind = ?5)
+      AND (instr(lower(name), lower(?6)) > 0 OR instr(lower(namespace), lower(?6)) > 0
+           OR instr(lower(COALESCE(skills,'')), lower(?6)) > 0)
+)";
+
+impl Store {
+    pub(in crate::usage_history::structured) fn read_execution_page(
+        db: &mut Connection,
+        query: &ExecutionQuery,
+        now_ms: i64,
+        processing: bool,
+        storage_error: Option<&str>,
+    ) -> Result<Value> {
+        let tx = db.transaction()?;
+        let (revision, precise_from): (i64, String) = tx.query_row(
+            "SELECT revision, precise_from FROM token_revision",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        if query.revision.is_some_and(|rev| rev != revision) {
+            return Ok(json!({"status":"stale","complete":false}));
+        }
+        let scope = if let Some(requested) = &query.scope_session_id {
+            let tree = Self::scope(&tx, &BTreeMap::new())?;
+            let (_, members) = tree.scope_members(requested);
+            Some(serde_json::to_string(&members)?)
+        } else {
+            None
+        };
+        let cutoff = NaiveDate::parse_from_str(&precise_from, "%Y-%m-%d")
+            .ok()
+            .and_then(|day| {
+                Local
+                    .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
+                    .earliest()
+            })
+            .map(|at| at.timestamp_millis());
+        let range_missing = cutoff.is_none_or(|cutoff| query.start_at < cutoff);
+        let capture_since: Option<i64> = tx.query_row(
+            "SELECT started_at FROM execution_coverage_start WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        let capture_missing = capture_since.is_some_and(|since| query.start_at < since);
+        let from = query.start_at.max(cutoff.unwrap_or(query.end_at));
+        let until = query.end_at.min(now_ms.saturating_add(1));
+        let detail_from = now_ms - DETAIL_MS;
+        let aggregate = tx.query_row(
+            &format!(
+                "{CALLS}
+                SELECT json_object('total', count(*),
+                    'conflicts', (SELECT count(*) FROM calls WHERE conflict),
+                    'matched', (SELECT count(*) FROM filtered),
+                    'skill', count(*) FILTER (WHERE kind = 'skill'),
+                    'mcp', count(*) FILTER (WHERE kind = 'mcp'),
+                    'tool', count(*) FILTER (WHERE kind = 'tool'),
+                    'recentSkill', count(*) FILTER (WHERE kind = 'skill' AND at > ?4),
+                    'recentMcp', count(*) FILTER (WHERE kind = 'mcp' AND at > ?4),
+                    'recentTool', count(*) FILTER (WHERE kind = 'tool' AND at > ?4)) FROM visible"
+            ),
+            params![from, until, scope, detail_from, query.kind, query.search],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut summary: Value = serde_json::from_str(&aggregate)?;
+        let indexed: bool = tx.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM token_coverage
+                WHERE revision = ?1 AND pending_sources = 0 AND issues = 0 AND NOT maintenance_blocked
+             ) AND NOT EXISTS(SELECT 1 FROM token_sources WHERE activity_truncated)",
+            [revision],
+            |row| row.get(0),
+        )?;
+        let complete = indexed
+            && !processing
+            && storage_error.is_none()
+            && !range_missing
+            && !capture_missing
+            && summary["conflicts"] == 0;
+        summary["classificationComplete"] = json!(complete);
+        if !complete && summary["total"] == 0 {
+            summary["total"] = Value::Null;
+        }
+        let cursor = query.cursor()?;
+        let mut items = Vec::new();
+        let mut next = None;
+        {
+            let mut statement = tx.prepare(&format!(
+                "{CALLS}
+                SELECT at, session, call_id, kind, name, namespace
+                FROM filtered WHERE (?7 IS NULL OR (at, session, call_id) < (?7, ?8, ?9))
+                ORDER BY at DESC, session DESC, call_id DESC LIMIT ?10"
+            ))?;
+            let mut rows = statement.query(params![
+                from,
+                until,
+                scope,
+                detail_from,
+                query.kind,
+                query.search,
+                cursor.as_ref().map(|cursor| cursor.0),
+                cursor.as_ref().map(|cursor| &cursor.1),
+                cursor.as_ref().map(|cursor| &cursor.2),
+                u32::from(query.limit) + 1,
+            ])?;
+            let mut last = None;
+            while let Some(row) = rows.next()? {
+                if items.len() == usize::from(query.limit) {
+                    next = Some(URL_SAFE_NO_PAD.encode(serde_json::to_vec(&last.unwrap())?));
+                    break;
+                }
+                let key = Cursor(row.get(0)?, row.get(1)?, row.get(2)?);
+                // The cursor is kept separately so a short last page never advertises another page.
+                items.push(json!({
+                    "timestampMs":key.0,"sessionId":key.1,"id":key.2,
+                    "kind":row.get::<_, String>(3)?,
+                    "name":row.get::<_, String>(4)?,"namespace":row.get::<_, String>(5)?
+                }));
+                last = Some(key);
+            }
+        }
+        let activity = if query.include_activity_summary && query.search.is_empty() {
+            Some(activity_summary(
+                &tx,
+                query,
+                from,
+                until,
+                scope.as_deref(),
+                detail_from,
+                complete,
+            )?)
+        } else {
+            None
+        };
+        tx.commit()?;
+        Ok(json!({
+            "status":if complete {"ok"} else {"partial"}, "complete":complete,
+            "revision":revision,"items":items,"nextCursor":next,"summary":summary,
+            "dailySummaries":[], "activitySummary":activity, "searchApplied":!query.search.is_empty(),
+            "coverage":{"complete":complete,"precision":"exact","reason":if range_missing {
+                "outside-retention"
+            } else if capture_missing {
+                "before-tool-capture"
+            } else if storage_error.is_some() {
+                "storage-limited"
+            } else if complete { "covered" } else { "discovery-unconfirmed" }},
+            "scan":{"processing":processing,"storageError":storage_error}
+        }))
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::usage_history::structured) struct DetailQuery {
+    session_id: String,
+    id: String,
+    revision: i64,
+}
+
+impl DetailQuery {
+    pub(in crate::usage_history::structured) fn parse(request: &Value) -> Result<Self> {
+        let mut query = Self::deserialize(request)?;
+        query.session_id = normalize_session_id(&query.session_id).context("会话 ID 无效")?;
+        ensure!(
+            !query.id.is_empty() && query.id.len() <= 300,
+            "工具调用 ID 无效"
+        );
+        ensure!(query.revision >= 0, "工具版本无效");
+        Ok(query)
+    }
+}
+
+struct Location {
+    start: u64,
+    end: u64,
+    at: i64,
+}
+
+fn recent(at: i64, now: i64) -> bool {
+    at <= now && at > now - DETAIL_MS
+}
+
+impl Store {
+    pub(in crate::usage_history::structured) fn read_execution_detail(
+        db: &mut Connection,
+        home: &Path,
+        query: &DetailQuery,
+        now: impl Fn() -> i64,
+    ) -> Result<Value> {
+        let cutoff = now();
+        let tx = db.transaction()?;
+        let revision: i64 =
+            tx.query_row("SELECT revision FROM token_revision", [], |row| row.get(0))?;
+        if revision != query.revision {
+            return Ok(json!({"status":"stale","revision":revision}));
+        }
+        let not_found = || json!({"status":"not_found","revision":revision});
+        // 先证明调用身份只有一个可选来源，不把有分叉的两份原文拼在一起。
+        let location = {
+            let mut statement = tx.prepare(
+                "SELECT e.source_id,e.position,e.end,e.timestamp_ms,s.source,s.offset,s.checkpoint
+                 FROM execution_observations e JOIN token_sources s ON s.id = e.source_id
+                 WHERE e.session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+                   AND e.call_id = ?2 AND NOT e.is_output LIMIT 2",
+            )?;
+            let mut rows = statement.query(params![query.session_id, query.id])?;
+            let Some(row) = rows.next()? else {
+                return Ok(not_found());
+            };
+            let Some(end): Option<u64> = row.get(2)? else {
+                return Ok(not_found());
+            };
+            let call = Location {
+                start: row.get(1)?,
+                end,
+                at: row.get(3)?,
+            };
+            if !recent(call.at, cutoff) {
+                return Ok(not_found());
+            }
+            #[derive(Deserialize)]
+            struct Source {
+                stamp: Option<SourceStamp>,
+            }
+            let source: Source = serde_json::from_slice(row.get_ref(6)?.as_blob()?)?;
+            let values = (
+                row.get::<_, i64>(0)?,
+                call,
+                decode_path(row.get(4)?)?,
+                row.get::<_, u64>(5)?,
+                source.stamp,
+            );
+            if rows.next()?.is_some() {
+                return Ok(json!({"status":"partial","revision":revision,"detail":{}}));
+            }
+            values
+        };
+        let (source_id, call, path, committed_offset, expected) = location;
+        let mut outputs = Vec::new();
+        {
+            let mut statement = tx.prepare(
+                "SELECT position,end,timestamp_ms FROM execution_observations
+                 WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+                   AND call_id = ?2 AND source_id = ?3 AND is_output = 1 AND end IS NOT NULL
+                   AND position >= ?4 AND timestamp_ms >= ?5 AND timestamp_ms <= ?6
+                 ORDER BY position LIMIT ?7",
+            )?;
+            let mut rows = statement.query(params![
+                query.session_id,
+                query.id,
+                source_id,
+                call.end,
+                call.at,
+                cutoff,
+                MAX_OUTPUTS + 1
+            ])?;
+            while let Some(row) = rows.next()? {
+                outputs.push(Location {
+                    start: row.get(0)?,
+                    end: row.get(1)?,
+                    at: row.get(2)?,
+                });
+            }
+        }
+        tx.commit()?;
+        if !recent(call.at, now()) {
+            return Ok(not_found());
+        }
+        let expected = expected.context("工具原会话没有已提交的文件身份")?;
+        let compressed = path.extension().is_some_and(|ext| ext == "zst");
+        ensure!(
+            (path.starts_with(home.join("sessions"))
+                || path.starts_with(home.join("archived_sessions")))
+                && log_file(&path)
+                && fs::canonicalize(&path)? == path,
+            "工具原会话路径已变化"
+        );
+        let before = FileState::source_stamp(&path)?;
+        ensure!(
+            before.2.is_some()
+                && before.2 == expected.2
+                && (before == expected || !compressed && before.0 > expected.0),
+            "工具原会话文件已变化"
+        );
+        let file = File::open(&path)?;
+        ensure!(
+            Some(codex_plus_core::codex_sqlite::opened_file_identity(&file)?) == before.2,
+            "工具原会话身份已变化"
+        );
+        let mut reader = if compressed {
+            DetailReader::Compressed(Box::new(zstd::stream::read::Decoder::new(file)?), 0)
+        } else {
+            DetailReader::Plain(file)
+        };
+        let item = reader.read_item(&call, committed_offset, &query.id, false)?;
+        let shell = item["type"] == "local_shell_call"
+            || item["name"].as_str().is_some_and(|name| {
+                !item["namespace"]
+                    .as_str()
+                    .is_some_and(|namespace| namespace.starts_with("mcp__"))
+                    && matches!(name.rsplit('.').next(), Some("exec_command" | "shell"))
+            });
+        let input = item
+            .get("arguments")
+            .or_else(|| item.get("input"))
+            .or_else(|| item.get("action"))
+            .cloned()
+            .unwrap_or(Value::Null);
+        let input = match input {
+            Value::String(text) => serde_json::from_str(&text).unwrap_or(Value::String(text)),
+            value => value,
+        };
+        let mut used = call.end - call.start;
+        let mut positions_end = call.end;
+        let mut parts = Vec::new();
+        let mut partial = outputs.len() > MAX_OUTPUTS;
+        for location in outputs.into_iter().take(MAX_OUTPUTS) {
+            let length = location
+                .end
+                .checked_sub(location.start)
+                .context("工具定位范围尾部无效")?;
+            if location.start < positions_end
+                || used + length > MAX_DETAIL_BYTES
+                || compressed && location.end > MAX_ARCHIVE_DETAIL_OFFSET
+            {
+                partial = true;
+                break;
+            }
+            let item = reader.read_item(&location, committed_offset, &query.id, true)?;
+            parts.push((
+                location.at,
+                item.get("output").cloned().unwrap_or(Value::Null),
+            ));
+            used += length;
+            positions_end = location.end;
+        }
+        ensure!(
+            FileState::source_stamp(&path)? == before && fs::canonicalize(&path)? == path,
+            "读取期间工具原会话发生变化"
+        );
+        let final_now = now();
+        if !recent(call.at, final_now) {
+            return Ok(not_found());
+        }
+        let old_parts = parts.len();
+        parts.retain(|(at, _)| recent(*at, final_now));
+        partial |= parts.is_empty()
+            || parts.len() != old_parts
+            || shell
+                && !parts.last().is_some_and(|(_, output)| {
+                    exec_receipt(output).is_some_and(|(running, _)| !running)
+                });
+        let duration = if partial {
+            None
+        } else {
+            parts.last().map(|(at, _)| at - call.at)
+        };
+        let output: Vec<_> = parts.into_iter().map(|(_, part)| part).collect();
+        Ok(json!({
+            "status":if partial {"partial"} else {"ok"},"revision":revision,
+            "detail":{"input":input,"output":output,"durationMs":duration}
+        }))
+    }
+}
+
+enum DetailReader {
+    Plain(File),
+    Compressed(Box<dyn Read>, u64),
+}
+
+impl DetailReader {
+    fn read_item(
+        &mut self,
+        at: &Location,
+        committed_end: u64,
+        id: &str,
+        output: bool,
+    ) -> Result<Value> {
+        let size = at.end.checked_sub(at.start).context("工具定位范围无效")?;
+        ensure!(
+            size > 0 && size <= MAX_LINE as u64 && at.end <= committed_end,
+            "工具定位超出已提交范围"
+        );
+        let mut bytes = vec![0; size as usize];
+        match self {
+            Self::Plain(file) => {
+                file.seek(SeekFrom::Start(at.start))?;
+                file.read_exact(&mut bytes)?;
+            }
+            Self::Compressed(reader, offset) => {
+                ensure!(
+                    at.start >= *offset && at.end <= MAX_ARCHIVE_DETAIL_OFFSET,
+                    "归档工具详情超出读取范围"
+                );
+                let skip = at.start - *offset;
+                ensure!(
+                    io::copy(&mut reader.take(skip), &mut io::sink())? == skip,
+                    "归档工具位置缺失"
+                );
+                reader.read_exact(&mut bytes)?;
+                *offset = at.end;
+            }
+        }
+        let row: Value = serde_json::from_slice(&bytes)?;
+        let timestamp = row["timestamp"]
+            .as_str()
+            .and_then(|at| DateTime::parse_from_rfc3339(at).ok())
+            .map(|at| at.timestamp_millis());
+        let mut item = row;
+        let payload = item["payload"].take();
+        let is_kind = match payload["type"].as_str() {
+            Some("function_call" | "custom_tool_call" | "local_shell_call") => !output,
+            Some(
+                "function_call_output" | "custom_tool_call_output" | "local_shell_call_output",
+            ) => output,
+            _ => false,
+        };
+        ensure!(
+            item["type"] == "response_item"
+                && timestamp == Some(at.at)
+                && is_kind
+                && payload["call_id"]
+                    .as_str()
+                    .or_else(|| payload["id"].as_str())
+                    == Some(id),
+            "工具定位记录身份已变化"
+        );
+        Ok(payload)
+    }
+}
+
+fn activity_summary(
+    db: &Connection,
+    query: &ExecutionQuery,
+    from: i64,
+    until: i64,
+    scope: Option<&str>,
+    detail_from: i64,
+    complete: bool,
+) -> Result<Value> {
+    let span = query.end_at - query.start_at;
+    let bucket = span / 64 + i64::from(span % 64 != 0);
+    let sql = format!("{CALLS},
+        activity AS (
+            SELECT at, kind, j.value AS name, '' AS namespace FROM filtered JOIN json_each(skills) j
+            WHERE kind = 'skill'
+            UNION ALL
+            SELECT at, kind, name, namespace FROM filtered WHERE kind = 'mcp'
+        ), groups AS (
+            SELECT kind, name, namespace, count(*) AS count FROM activity GROUP BY kind, name, namespace
+        ), top AS (
+            SELECT * FROM groups ORDER BY count DESC, kind, name, namespace LIMIT 100
+        )
+        SELECT t.kind, t.name, t.namespace, t.count, (a.at - ?7) / ?8 AS bucket,
+            count(*), min(a.at), (SELECT count(*) FROM groups)
+        FROM top t JOIN activity a USING (kind,name,namespace)
+        GROUP BY t.kind,t.name,t.namespace,bucket
+        ORDER BY t.count DESC,t.kind,t.name,t.namespace,bucket");
+    let mut statement = db.prepare(&sql)?;
+    let mut rows = statement.query(params![
+        from,
+        until,
+        scope,
+        detail_from,
+        query.kind,
+        query.search,
+        query.start_at,
+        bucket,
+    ])?;
+    let mut groups: Vec<Value> = Vec::new();
+    let mut group_count = 0u64;
+    let mut previous = None;
+    while let Some(row) = rows.next()? {
+        let key = (
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        );
+        if previous.as_ref() != Some(&key) {
+            groups.push(json!({
+                "kind":key.0,"name":key.1,"namespace":key.2,"count":row.get::<_,u64>(3)?,
+                "timeline":[]
+            }));
+            previous = Some(key);
+        }
+        groups.last_mut().unwrap()["timeline"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!([
+                row.get::<_, u64>(4)?,
+                row.get::<_, u64>(5)?,
+                row.get::<_, i64>(6)?
+            ]));
+        group_count = row.get(7)?;
+    }
+    Ok(json!({
+        "groups":groups,"groupCount":group_count,"startAt":query.start_at,
+        "bucketWidthMs":bucket,"bucketCount":64,"complete":complete
+    }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SESSION: &str = "00000000-0000-4000-8000-000000000001";
+
+    #[test]
+    fn pages_and_search_use_committed_identity_without_changing_totals() {
+        let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        let now = Local::now();
+        let at = now.timestamp_millis() - 600_000;
+        let db = &mut store.db;
+        db.execute_batch(
+            "INSERT INTO token_sources VALUES(1,x'01',1,20,x'00',0);
+             INSERT INTO token_sources VALUES(2,x'02',1,20,x'00',0);
+             INSERT INTO token_coverage VALUES(1,1,0,0,0);",
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE token_revision SET revision=1,precise_from=?1",
+            [(now.date_naive() - chrono::Days::new(2)).to_string()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO token_sessions VALUES(1,?1)", [SESSION])
+            .unwrap();
+        for (source, position, id, at, name) in [
+            (1, 1, "a", at, "exec_command"),
+            (2, 1, "a", at, "exec_command"),
+            (1, 2, "b", at, "apply_patch"),
+            (1, 3, "c", at - 1, "mcp__fixture"),
+            (1, 4, "d", at - 3, "functions.write_stdin"),
+            (1, 5, "bad", at, "apply_patch"),
+            (2, 5, "bad", at + 1000, "apply_patch"),
+        ] {
+            db.execute(
+                "INSERT INTO execution_observations VALUES(?1,1,?2,?3,?4,NULL,0,?5,'')",
+                params![source, position, at, id, name],
+            )
+            .unwrap();
+        }
+        let request = json!({"startAt":at - 10,"endAt":at + 1,"limit":2});
+        let read = |db: &mut Connection, request: &Value| {
+            Store::read_execution_page(
+                db,
+                &ExecutionQuery::parse(request).unwrap(),
+                now.timestamp_millis(),
+                false,
+                None,
+            )
+            .unwrap()
+        };
+        let page = read(db, &request);
+        assert_eq!(page["summary"]["total"], 3);
+        assert_eq!(page["summary"]["tool"], 2);
+        assert_eq!(page["summary"]["mcp"], 1);
+        assert_eq!(page["summary"]["conflicts"], 1);
+        assert_eq!(page["status"], "partial");
+        assert_eq!(page["items"][0]["id"], "b");
+        assert_eq!(page["items"][1]["id"], "a");
+        let mut later = request.clone();
+        later["cursor"] = page["nextCursor"].clone();
+        later["revision"] = page["revision"].clone();
+        let tail = read(db, &later);
+        assert_eq!(tail["items"][0]["id"], "c");
+        assert!(tail["nextCursor"].is_null());
+        let mut filtered = request;
+        filtered["search"] = json!("APPLY_PATCH");
+        let search = read(db, &filtered);
+        assert_eq!(search["summary"]["total"], 3);
+        assert_eq!(search["summary"]["matched"], 1);
+        assert_eq!(search["items"][0]["id"], "b");
+        db.execute("UPDATE token_revision SET revision=2", [])
+            .unwrap();
+        assert_eq!(read(db, &later)["status"], "stale");
+    }
+
+    #[test]
+    fn skill_summary_splits_names_and_preserves_bucket_markers() {
+        let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        let now = Local::now();
+        let at = now.timestamp_millis() - 60_000;
+        let db = &mut store.db;
+        db.execute_batch(
+            "INSERT INTO token_sources VALUES(1,x'01',1,20,x'00',0);
+             INSERT INTO token_coverage VALUES(1,1,0,0,0);",
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE token_revision SET revision=1,precise_from=?1",
+            [(now.date_naive() - chrono::Days::new(2)).to_string()],
+        )
+        .unwrap();
+        db.execute("INSERT INTO token_sessions VALUES(1,?1)", [SESSION])
+            .unwrap();
+        db.execute(
+            "INSERT INTO execution_observations VALUES(1,1,1,?1,'multi',NULL,0,'exec_command','')",
+            [at],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO token_activity VALUES(1,1,'multi',?1,?2,?3)",
+            params![
+                at,
+                now.date_naive().to_string(),
+                br#"{"call":{"arguments":{"skillNames":["alpha","beta"]}}}"#.as_slice()
+            ],
+        )
+        .unwrap();
+        let query = ExecutionQuery::parse(&json!({
+            "startAt":at - 6000,"endAt":at + 4000,"kind":"skill","includeActivitySummary":true,
+        }))
+        .unwrap();
+        let page =
+            Store::read_execution_page(db, &query, now.timestamp_millis(), false, None).unwrap();
+        let groups = page["activitySummary"]["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0]["name"], "alpha");
+        assert_eq!(groups[1]["name"], "beta");
+        assert_eq!(groups[0]["timeline"][0][2], at);
+    }
+
+    #[test]
+    fn snapshot_upgrade_does_not_certify_unobserved_tool_history() {
+        let store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        store
+            .db
+            .execute_batch(
+                "INSERT INTO token_sources VALUES(1,x'01',1,20,x'00',0);
+             INSERT INTO token_coverage VALUES(1,1,0,0,0);
+             DROP TABLE execution_coverage_start;",
+            )
+            .unwrap();
+        let mut store = Store::open(store.db).unwrap();
+        let now = Local::now();
+        store
+            .db
+            .execute(
+                "UPDATE token_revision SET revision=1,precise_from=?1",
+                [(now.date_naive() - chrono::Days::new(1)).to_string()],
+            )
+            .unwrap();
+        let query = ExecutionQuery::parse(&json!({
+            "startAt":now.timestamp_millis() - 60_000,"endAt":now.timestamp_millis(),
+        }))
+        .unwrap();
+        let page =
+            Store::read_execution_page(&mut store.db, &query, now.timestamp_millis(), false, None)
+                .unwrap();
+        assert_eq!(page["status"], "partial");
+        assert_eq!(page["coverage"]["reason"], "before-tool-capture");
+        assert!(page["summary"]["total"].is_null());
+    }
+}

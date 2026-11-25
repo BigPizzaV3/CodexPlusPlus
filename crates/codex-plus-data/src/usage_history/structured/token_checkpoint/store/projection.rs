@@ -2135,7 +2135,10 @@ impl Store {
         Ok(())
     }
 
-    fn scope(read: &Connection, provider_names: &BTreeMap<String, String>) -> Result<Snapshot> {
+    pub(super) fn scope(
+        read: &Connection,
+        provider_names: &BTreeMap<String, String>,
+    ) -> Result<Snapshot> {
         #[derive(Deserialize)]
         struct ScopeCheckpoint {
             session: String,

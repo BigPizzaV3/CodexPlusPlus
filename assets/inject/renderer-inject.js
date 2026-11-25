@@ -33011,6 +33011,8 @@ ${key} = ${value}`]);
     "/diagnostics/log",
     "/thread-usage-history",
     "/usage/history",
+    "/usage/executions",
+    "/usage/execution-detail",
     // Daily 固定 schema 的消费者封存；写入只影响其独立数据库。
     "/usage/archive",
     "/archived-thread",

@@ -1041,6 +1041,42 @@ fn execution_locators_commit_with_the_source_and_expire_without_losing_the_call(
     })
     .unwrap();
     assert_eq!(committed, 1);
+    use crate::usage_history::structured::token_checkpoint::{DetailQuery, ExecutionQuery};
+    let page_request = ExecutionQuery::parse(&json!({
+        "startAt":at.timestamp_millis(),"endAt":now.timestamp_millis(),"limit":1,
+        "scopeSessionId":FIRST,
+    }))
+    .unwrap();
+    let page = Store::read_execution_page(
+        &mut store.db,
+        &page_request,
+        now.timestamp_millis(),
+        false,
+        None,
+    )
+    .unwrap();
+    assert_eq!(page["status"], "ok", "{page}");
+    assert_eq!(page["summary"]["tool"], 1);
+    assert_eq!(page["items"][0]["id"], "example");
+    assert!(page["nextCursor"].is_null());
+    let detail_request = DetailQuery::parse(&json!({
+        "sessionId":FIRST,"id":"example","revision":page["revision"]
+    }))
+    .unwrap();
+    let read_detail = |store: &mut Store, now| {
+        Store::read_execution_detail(&mut store.db, &root, &detail_request, || now)
+    };
+    let detail = read_detail(&mut store, now.timestamp_millis()).unwrap();
+    assert_eq!(detail["status"], "partial"); // No terminal shell receipt.
+    assert_eq!(detail["detail"]["input"]["cmd"], "fixture-body");
+    assert_eq!(detail["detail"]["output"], json!(["fixture-output"]));
+    assert_eq!(
+        read_detail(&mut store, at.timestamp_millis() + 86_400_000).unwrap()["status"],
+        "not_found"
+    );
+    fs::rename(&source, root.join("original.jsonl")).unwrap();
+    fs::write(&source, &content).unwrap();
+    assert!(read_detail(&mut store, now.timestamp_millis()).is_err());
     store
         .expire_execution_locators(
             at.timestamp_millis()

@@ -2039,6 +2039,42 @@ pub(super) fn query(home: &Path, options: &Query, request: &Value) -> Value {
     )
 }
 
+pub(super) fn query_executions(home: &Path, request: &Value) -> Value {
+    let request = match token_checkpoint::ExecutionQuery::parse(request) {
+        Ok(request) => request,
+        Err(error) => {
+            return json!({"status":"unavailable","complete":false,"message":error.to_string()});
+        }
+    };
+    let settings = codex_plus_core::paths::default_settings_path();
+    let cache = match touch_history(home, &settings) {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let (snapshot, storage, active) = match cache.lock() {
+        Ok(cache) => (
+            Arc::clone(&cache.snapshot),
+            cache.storage.clone(),
+            cache.active,
+        ),
+        Err(_) => return json!({"status":"unavailable","complete":false}),
+    };
+    snapshot.read_executions(&storage, &request, active)
+}
+
+pub(super) fn query_execution_detail(home: &Path, request: &Value) -> Value {
+    let settings = codex_plus_core::paths::default_settings_path();
+    if !history_enabled(&settings) {
+        return json!({"status":"unavailable","enabled":false});
+    }
+    let request = match token_checkpoint::DetailQuery::parse(request) {
+        Ok(request) => request,
+        Err(error) => return json!({"status":"unavailable","message":error.to_string()}),
+    };
+    let storage = provider_cache::storage_dir(home, &settings);
+    token_checkpoint::read_execution_detail(&storage, home, &request)
+}
+
 fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: PathBuf) -> Value {
     let scope_session = match request.get("scopeSessionId") {
         None => None,
@@ -2058,12 +2094,67 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
             return json!({"status":"unavailable","complete":false,"message":"用量时间范围无效"});
         }
     }
-    let Ok(mut homes) = homes().lock() else {
+    let cache = match touch_history(home, &settings) {
+        Ok(cache) => cache,
+        Err(response) => return response,
+    };
+    let Ok(mut state) = cache.lock() else {
         return json!({"status":"unavailable","complete":false});
     };
+    let snapshot = state.snapshot.clone();
+    let storage = state.storage.clone();
+    let processing = state.active;
+    let archived = state.archive.result();
+    drop(state);
+    let (mut response, schedule) = snapshot.read_with_archive(
+        &storage,
+        options,
+        request,
+        scope_session.as_deref(),
+        processing,
+        archived.as_deref(),
+    );
+    if let Some(key) = schedule
+        && let Ok(mut state) = cache.lock()
+        && !state.archive.cancelled.load(Ordering::Relaxed)
+        && state.archive.worker.is_none()
+        && !state.archive.result.as_ref().is_some_and(|(_, ready)| {
+            ready.0 == key
+                && archived
+                    .as_ref()
+                    .is_none_or(|seen| !Arc::ptr_eq(seen, ready))
+        })
+    {
+        let job = key.clone();
+        let home = home.to_owned();
+        let settings = state.settings_path.clone();
+        let cancelled = state.archive.cancelled.clone();
+        // 同一缓存仅允许一个只读回读；不阻塞前台查询或近期索引写者。
+        match std::thread::Builder::new()
+            .name("rollout-history-archive".into())
+            .spawn(move || {
+                token_checkpoint::recover_archive(
+                    job, &home, &storage, &settings, &snapshot, &cancelled,
+                )
+            }) {
+            Ok(worker) => state.archive.worker = Some((key, worker)),
+            Err(error) => {
+                let message = error.to_string();
+                response["archiveRecovery"] = json!({"status":"partial","message":message});
+                state.archive.result = Some((Instant::now(), Arc::new((key, Err(message)))));
+            }
+        }
+    }
+    response
+}
+
+fn touch_history(home: &Path, settings: &Path) -> Result<Arc<Mutex<Cache>>, Value> {
+    let Ok(mut homes) = homes().lock() else {
+        return Err(json!({"status":"unavailable","complete":false}));
+    };
     // 与缓存创建共用锁，拦住已通过上层开关检查、关闭后才抵达的请求。
-    if !history_enabled(&settings) {
-        return json!({"status":"unavailable","enabled":false,"complete":false});
+    if !history_enabled(settings) {
+        return Err(json!({"status":"unavailable","enabled":false,"complete":false}));
     }
     if !homes.contains_key(home) && homes.len() >= 2 {
         // 只回收空闲索引；运行中的扫描不能因另一个 home 查询而被反复创建。
@@ -2076,17 +2167,17 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
                 stop_cache(removed);
             }
         } else {
-            return json!({"status":"unavailable","complete":false});
+            return Err(json!({"status":"unavailable","complete":false}));
         }
     }
     let cache = if let Some(cache) = homes.get(home) {
         cache.clone()
     } else {
-        let storage_dir = provider_cache::storage_dir(home, &settings);
-        let runtime = token_checkpoint::Runtime::new(storage_dir.clone(), settings.clone());
+        let storage_dir = provider_cache::storage_dir(home, settings);
+        let runtime = token_checkpoint::Runtime::new(storage_dir.clone(), settings.to_owned());
         let snapshot = Arc::new(runtime.initial_state());
         let cache = Arc::new(Mutex::new(Cache {
-            settings_path: settings.clone(),
+            settings_path: settings.to_owned(),
             runtime: Some(runtime),
             storage: storage_dir,
             snapshot,
@@ -2104,19 +2195,19 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
             .spawn(move || expire_idle(identity, weak))
             .is_err()
         {
-            return json!({"status":"unavailable","complete":false});
+            return Err(json!({"status":"unavailable","complete":false}));
         }
         homes.insert(home.to_owned(), cache.clone());
         cache
     };
     let Ok(mut state) = cache.lock() else {
-        return json!({"status":"unavailable","complete":false});
+        return Err(json!({"status":"unavailable","complete":false}));
     };
     if state.settings_path != settings {
         drop(state);
         drop(homes);
         clear(home);
-        return query_with_settings(home, options, request, settings);
+        return touch_history(home, settings);
     }
     state.touched = Instant::now();
     if state._collector.is_none() {
@@ -2167,57 +2258,16 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
                     state.storage.clone(),
                     state.settings_path.clone(),
                 ));
-                return json!({"status":"unavailable","complete":false,"message":error.to_string()});
+                return Err(
+                    json!({"status":"unavailable","complete":false,"message":error.to_string()}),
+                );
             }
         }
     }
-    let snapshot = state.snapshot.clone();
-    let storage = state.storage.clone();
-    let processing = state.active;
-    let archived = state.archive.result();
     drop(state);
     // clear 必须等本次启动登记完成，才能移除缓存并收齐后台任务。
     drop(homes);
-    let (mut response, schedule) = snapshot.read_with_archive(
-        &storage,
-        options,
-        request,
-        scope_session.as_deref(),
-        processing,
-        archived.as_deref(),
-    );
-    if let Some(key) = schedule
-        && let Ok(mut state) = cache.lock()
-        && !state.archive.cancelled.load(Ordering::Relaxed)
-        && state.archive.worker.is_none()
-        && !state.archive.result.as_ref().is_some_and(|(_, ready)| {
-            ready.0 == key
-                && archived
-                    .as_ref()
-                    .is_none_or(|seen| !Arc::ptr_eq(seen, ready))
-        })
-    {
-        let job = key.clone();
-        let home = home.to_owned();
-        let settings = state.settings_path.clone();
-        let cancelled = state.archive.cancelled.clone();
-        // 同一缓存仅允许一个只读回读；不阻塞前台查询或近期索引写者。
-        match std::thread::Builder::new()
-            .name("rollout-history-archive".into())
-            .spawn(move || {
-                token_checkpoint::recover_archive(
-                    job, &home, &storage, &settings, &snapshot, &cancelled,
-                )
-            }) {
-            Ok(worker) => state.archive.worker = Some((key, worker)),
-            Err(error) => {
-                let message = error.to_string();
-                response["archiveRecovery"] = json!({"status":"partial","message":message});
-                state.archive.result = Some((Instant::now(), Arc::new((key, Err(message)))));
-            }
-        }
-    }
-    response
+    Ok(cache)
 }
 
 fn log_file(path: &Path) -> bool {

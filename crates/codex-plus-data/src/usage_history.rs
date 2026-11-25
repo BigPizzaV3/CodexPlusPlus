@@ -92,6 +92,20 @@ pub fn query_history(codex_home: &Path, query: &Value) -> Value {
     structured::query(&home, &options, query)
 }
 
+pub fn query_executions(codex_home: &Path, query: &Value) -> Value {
+    match fs::canonicalize(codex_home) {
+        Ok(home) => structured::query_executions(&home, query),
+        Err(error) => json!({"status":"unavailable","complete":false,"message":error.to_string()}),
+    }
+}
+
+pub fn query_execution_detail(codex_home: &Path, query: &Value) -> Value {
+    match fs::canonicalize(codex_home) {
+        Ok(home) => structured::query_execution_detail(&home, query),
+        Err(error) => json!({"status":"unavailable","message":error.to_string()}),
+    }
+}
+
 /// 关闭功能或更换实例时释放本进程的索引和采集器。
 pub fn clear_history(codex_home: &Path) {
     if let Ok(home) = fs::canonicalize(codex_home) {
