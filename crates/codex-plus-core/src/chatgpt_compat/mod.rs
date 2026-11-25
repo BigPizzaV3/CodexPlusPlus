@@ -11,6 +11,7 @@
 //! 端口 8000 是桌面鉴权白名单写死的（只有 `localhost` / `localhost:8000` /
 //! `*.openai.com` / `chatgpt.com` 会附带登录 token），不能改。
 
+pub mod plugins;
 mod recordings;
 
 use std::collections::HashMap;
@@ -474,7 +475,7 @@ async fn handle_connection(
 ) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt;
     let mut stream = stream;
-    let Some(request) = read_headers(&mut stream).await? else {
+    let Some((request, body)) = read_request(&mut stream).await? else {
         return Ok(());
     };
     let mut lines = request.lines();
@@ -482,6 +483,22 @@ async fn handle_connection(
     let mut parts = start.split_whitespace();
     let method = parts.next().unwrap_or("GET").to_string();
     let path = parts.next().unwrap_or("/").to_string();
+    // 插件目录和插件包用 Codex++ 的缓存现答（见 [`plugins`]），其余走录制 / 合成应答。
+    if let Some(reply) = plugins::reply(&method, &path, &request, &body).await {
+        write_body(&mut stream, reply.status, reply.content_type, &reply.body).await?;
+        stream.shutdown().await?;
+        let _ = crate::diagnostic_log::append_diagnostic_log(
+            "chatgpt_compat.request",
+            json!({
+                "method": method,
+                // 插件接口的查询串（分页、范围、搜索词）留着，排查 Codex 实际怎么请求时要看。
+                "path": path,
+                "source": "Plugins",
+                "status": reply.status,
+            }),
+        );
+        return Ok(());
+    }
     let (source, reply) = reply_for(&method, &path);
     write_json(&mut stream, reply.status, &reply.body).await?;
     stream.shutdown().await?;
@@ -496,27 +513,54 @@ async fn handle_connection(
     Ok(())
 }
 
-/// 读到请求头为止（以空行分隔）。应答不依赖正文，正文留给客户端自己发完。
-async fn read_headers(
+/// 正文最多读这么多（插件批量查询的 id 列表用得到，别的应答不看正文）。
+const BODY_LIMIT: usize = 1024 * 1024;
+
+/// 读请求头（以空行分隔），再按 `content-length` 读正文（超过上限的不读）。
+async fn read_request(
     stream: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<Option<(String, Vec<u8>)>> {
     use tokio::io::AsyncReadExt;
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
-    loop {
+    let header_end = loop {
         let read = stream.read(&mut chunk).await?;
         if read == 0 {
-            break;
+            break buffer.len();
         }
         buffer.extend_from_slice(&chunk[..read]);
-        if buffer.windows(4).any(|window| window == b"\r\n\r\n") || buffer.len() >= HEADER_LIMIT {
-            break;
+        if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+            break position + 4;
         }
-    }
+        if buffer.len() >= HEADER_LIMIT {
+            break buffer.len();
+        }
+    };
     if buffer.is_empty() {
         return Ok(None);
     }
-    Ok(Some(String::from_utf8_lossy(&buffer).into_owned()))
+    let headers = String::from_utf8_lossy(&buffer[..header_end]).into_owned();
+    let length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim().eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().ok())?
+        })
+        .unwrap_or(0);
+    let mut body = buffer[header_end.min(buffer.len())..].to_vec();
+    if length <= BODY_LIMIT {
+        while body.len() < length {
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..read]);
+        }
+        body.truncate(length);
+    } else {
+        body.clear();
+    }
+    Ok(Some((headers, body)))
 }
 
 async fn write_json(
@@ -524,13 +568,23 @@ async fn write_json(
     status: u16,
     body: &str,
 ) -> anyhow::Result<()> {
+    write_body(stream, status, JSON, body.as_bytes()).await
+}
+
+async fn write_body(
+    stream: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt;
     let reason = if (200..300).contains(&status) { "OK" } else { "Error" };
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+    let head = format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         body.len()
     );
-    stream.write_all(response.as_bytes()).await?;
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(body).await?;
     Ok(())
 }
 
