@@ -102,6 +102,8 @@ function harness(
     CLAUDE_DEFAULT_CONTEXT_WINDOW: 200_000,
     setTimeout: (callback: () => void) => { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout: (id: number) => timers.delete(id),
+    setInterval: (callback: () => void) => { const id = ++timerId; timers.set(id, callback); return id; },
+    clearInterval: (id: number) => timers.delete(id),
     clampNumber: (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value))),
     claudeLocalizationMemo: memo,
     claudeLocalMemo: options.localMemo ?? { status: localReady, autoDetected: true },
@@ -1001,6 +1003,55 @@ test("证书没信任或缺 Node 时，「证书与环境」页签带提示点",
   const tabs = findElements(screen.render(), "button").filter((button) => button.props.role === "tab");
   const dots = tabs.map((tab) => findElements(tab, "span").some((span) => span.props.className === "claude-local-tab-dot"));
   assert.deepEqual(dots, [false, false, false, true]);
+});
+
+test("Claude 的「语音识别」行可以启用共享 SenseVoice 并准备模型", async () => {
+  const notReady = { ...localReady, dictationReady: false, config: { ...localReady.config, enabled: true, voiceInput: false } };
+  const screen = harness(undefined, {}, {
+    localMemo: { status: notReady, autoDetected: true },
+    openAdvanced: false,
+  });
+  const page = screen.render();
+  const voiceRow = findElements(page, "CxRow").find((row) => row.props.title === "语音识别");
+  assert.ok(voiceRow);
+  const prepare = buttons(voiceRow).find((button) => text(button) === "启用并准备 SenseVoice");
+  assert.ok(prepare);
+
+  prepare.props.onClick();
+  await tick();
+  assert.equal(screen.calls[0].command, "enable_local_sensevoice_for_claude");
+  screen.calls[0].resolve({ status: "ok", message: "已启用本地 SenseVoice 语音服务。" });
+  await tick();
+  assert.equal(screen.calls[1].command, "claude_localization_set_voice_input");
+  assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ enabled: true }));
+  screen.calls[1].resolve({ status: "ok", message: "语音输入已开启。" });
+  await tick();
+  assert.equal(screen.calls[2].command, "claude_local_status");
+  screen.calls[2].resolve({
+    ...localReady,
+    status: "ok",
+    message: "Claude 语音入口已开启。",
+    dictationReady: false,
+    config: { ...localReady.config, enabled: true, voiceInput: true },
+  });
+  await tick();
+  assert.equal(screen.calls[3].command, "dictation_local_model_status");
+  screen.calls[3].resolve({ phase: "idle", modelReady: false, totalBytes: 239_549_735 });
+  await tick();
+  assert.equal(screen.calls[4].command, "download_dictation_local_model");
+  screen.calls[4].resolve({ status: "ok", message: "已下载", phase: "ready", modelReady: true });
+  await tick();
+  assert.equal(screen.calls[5].command, "claude_local_status");
+  screen.calls[5].resolve({
+    ...localReady,
+    status: "ok",
+    message: "已就绪",
+    dictationReady: true,
+    config: { ...localReady.config, enabled: true },
+  });
+  await tick();
+  assert.match(text(screen.render()), /已就绪/);
+  screen.unmount();
 });
 
 test("汉化、语音输入、Computer Use 三个开关共用 setClaudeFlag，不再各写一份", () => {
