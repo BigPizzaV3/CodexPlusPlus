@@ -22,6 +22,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 mod prefix;
+mod request_proofs;
 
 #[derive(Debug)]
 pub(in super::super) struct ComponentInputLimit;
@@ -68,6 +69,7 @@ pub(in super::super) struct Prepared<'a> {
     linear: Option<NativeTail>,
     superseded: Vec<SupersededReceipt>,
     receipt_origins: HashMap<[u8; 32], Counter>,
+    classification_origins: HashMap<[u8; 32], EventClassification>,
     events: Vec<UsageEvent>,
 }
 
@@ -1024,6 +1026,7 @@ impl Store {
                     linear: None,
                     superseded: Vec::new(),
                     receipt_origins: HashMap::new(),
+                    classification_origins: HashMap::new(),
                     events,
                 });
             }
@@ -1131,6 +1134,7 @@ impl Store {
                             linear: Some(linear),
                             superseded,
                             receipt_origins,
+                            classification_origins: HashMap::new(),
                             events,
                         });
                     }
@@ -1138,6 +1142,7 @@ impl Store {
             }
         }
         let mut has_prior_source = false;
+        let mut same_scope = false;
         {
             // 来源和关联分别去重，避免同一会话的每份副本都重新展开整组来源。
             let mut affected = read.prepare(
@@ -1292,6 +1297,24 @@ impl Store {
             );
             let mut incoming = checkpoint.restore(offset);
             if let Some(old) = index.files.remove(source) {
+                let base = |file: &FileState| {
+                    file.history_base.as_ref().map(|base| {
+                        (base.rollout, base.end_ordinal, base.end_offset)
+                    })
+                };
+                same_scope = !replace
+                    && cutoff_key == precise_from
+                    && old.session == state.session
+                    && !old.identity_conflict
+                    && !state.identity_conflict
+                    && !old.invalid_counts
+                    && !state.invalid_counts
+                    && old.issues == 0
+                    && state.issues == 0
+                    && old.continuation == state.continuation
+                    && base(&old) == base(state)
+                    && old.scope_parent_candidates == state.scope_parent_candidates
+                    && links(source, state, true).is_subset(&links(source, &old, true));
                 if let Some((position, total)) = old.expired_count
                     && incoming
                         .expired_count
@@ -1309,7 +1332,6 @@ impl Store {
             }
             index.files.insert(source.to_path_buf(), incoming);
         }
-        read.commit()?;
 
         for state in index.files.values_mut() {
             state.expire_observations(cutoff);
@@ -1337,6 +1359,18 @@ impl Store {
                 || event.count_incomplete
                 || event.context_conflicts.any()
         });
+        let classification_origins = if same_scope {
+            request_proofs::retain(
+                &read,
+                &cutoff_key,
+                &mut snapshot.events,
+                &index.collision_families,
+                &receipt_origins,
+            )?
+        } else {
+            HashMap::new()
+        };
+        read.commit()?;
         Ok(Prepared {
             update,
             base_revision,
@@ -1347,6 +1381,7 @@ impl Store {
             linear: linear.then_some(NativeTail::Advance),
             superseded: Vec::new(),
             receipt_origins,
+            classification_origins,
             events: snapshot.events,
         })
     }
@@ -1516,6 +1551,8 @@ impl Store {
             for event in &prepared.events {
                 let mut stored = Observation::capture(event);
                 stored.receipt_count_origin = prepared.receipt_origins.get(&event.id).copied();
+                stored.classification_origin =
+                    prepared.classification_origins.get(&event.id).cloned();
                 insert.execute(params![
                     event.id.as_slice(),
                     event.session,

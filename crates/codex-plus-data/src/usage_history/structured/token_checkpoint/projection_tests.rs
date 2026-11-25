@@ -630,7 +630,35 @@ fn long_continuation_appends_within_budget_after_reopen_and_refuses_a_child() ->
         source_budget,
     )?;
     store.publish(batch)?;
-    append(&count(53, 53, 52, true))?;
+    store.record_coverage(
+        Coverage {
+            pending_sources: 0,
+            issues: 0,
+            maintenance_blocked: false,
+        },
+        false,
+    )?;
+    let old = read(&mut store.db, i64::MIN, i64::MAX)
+        .1
+        .into_iter()
+        .min_by_key(|event| event.timestamp.clone())
+        .unwrap();
+    let proof = |events: &mut [UsageEvent], _: &BTreeMap<String, String>| {
+        for event in events {
+            event.provider = "verified-supplier".into();
+            event.model = "verified-model".into();
+            event.provider_source = Some("request-log-exact".into());
+        }
+        Ok(())
+    };
+    assert!(
+        store
+            .reclassify_session(PARENT, source_budget, &BTreeSet::new(), proof)?
+            .is_some()
+    );
+    let mut late = count(53, 53, 52, true);
+    late["timestamp"] = json!("2026-01-02T15:00:53Z");
+    append(&late)?;
     assert!(
         append_next(&mut reader, &mut store)
             .unwrap_err()
@@ -642,6 +670,160 @@ fn long_continuation_appends_within_budget_after_reopen_and_refuses_a_child() ->
         (retained_revision, retained.offset),
         (latest_revision, latest.offset)
     );
+    let read_leaf = |reader: &mut SourceReader, store: &mut Store| {
+        reader.step(
+            store,
+            cutoff,
+            &mut Budget::new(std::iter::empty()),
+            &names,
+            source_budget,
+        )
+    };
+    let before_failure = read(&mut store.db, i64::MIN, i64::MAX);
+    store.db.execute_batch(
+        "CREATE TEMP TRIGGER abort_day BEFORE INSERT ON token_days
+        BEGIN SELECT RAISE(ABORT, 'fixture day rollback'); END;",
+    )?;
+    assert!(
+        read_leaf(&mut reader, &mut store)
+            .unwrap_err()
+            .to_string()
+            .contains("fixture day rollback")
+    );
+    assert_eq!(store.checkpoint(&leaf)?.unwrap().1.offset, latest.offset);
+    assert!(read(&mut store.db, i64::MIN, i64::MAX) == before_failure);
+    store.db.execute_batch("DROP TRIGGER abort_day")?;
+    assert!(read_leaf(&mut reader, &mut store)?);
+    let (_, rows) = read(&mut store.db, i64::MIN, i64::MAX);
+    let retained = rows.iter().find(|event| event.id == old.id).unwrap();
+    assert_eq!(retained.delta, old.delta);
+    assert_eq!(retained.total, old.total);
+    assert_eq!(
+        retained.provider_source.as_deref(),
+        Some("request-log-exact")
+    );
+    assert_eq!(
+        (&*retained.provider, &*retained.model),
+        ("verified-supplier", "verified-model")
+    );
+    assert!(
+        rows.iter()
+            .any(|event| event.timestamp == "2026-01-02T15:00:53.000Z")
+    );
+    Ok(())
+}
+
+#[test]
+fn reprojected_request_proofs_follow_competing_counts_and_receipt_corrections() -> anyhow::Result<()>
+{
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let source = root.join("rollout-counts.jsonl");
+    let peer = root.join("rollout-peer.jsonl");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let limit = 1 << 20;
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let usage = |n| json!({"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n});
+    let counter = |at: &str, n, cached: bool| {
+        let mut row = json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"last_token_usage":usage(1),"total_token_usage":usage(n)}}});
+        if !cached {
+            for key in ["last_token_usage", "total_token_usage"] {
+                row["payload"]["info"][key]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("cached_input_tokens");
+            }
+        }
+        row
+    };
+    let receipt = |id| {
+        json!({"type":"token_usage_record","timestamp":"2026-01-02T15:00:01Z",
+        "payload":{"thread_id":PARENT,"turn_id":"same","response_id":id,"usage":usage(1),"thread_token_usage":usage(2)}})
+    };
+    let header = json!({"type":"session_meta","timestamp":"2026-01-02T12:00:00Z",
+        "payload":{"id":PARENT,"model_provider":"supplier-a"}});
+    let initial = parse(
+        &source,
+        &[
+            header.clone(),
+            json!({"type":"turn_context","timestamp":"2026-01-02T12:00:00Z",
+            "payload":{"turn_id":"same","model":"fixture"}}),
+            counter("2026-01-02T12:00:01Z", 1, true),
+            counter("2026-01-02T15:00:00Z", 2, false),
+            receipt("claim-one"),
+            counter("2026-01-02T18:00:00Z", 3, true),
+        ],
+        cutoff,
+    );
+    let other = parse(&peer, &[header], cutoff);
+    for (path, state) in [(&source, &initial), (&peer, &other)] {
+        let batch = store.prepare(new_source(path, state), cutoff, names.clone(), limit)?;
+        store.publish(batch)?;
+    }
+    store.record_coverage(
+        Coverage {
+            pending_sources: 0,
+            issues: 0,
+            maintenance_blocked: false,
+        },
+        false,
+    )?;
+    assert!(
+        store
+            .reclassify_session(PARENT, limit, &BTreeSet::new(), |rows, _| {
+                for event in rows {
+                    event.provider = "verified-supplier".into();
+                    event.provider_source = Some("request-log-exact".into());
+                }
+                Ok(())
+            })?
+            .is_some()
+    );
+    let before = read(&mut store.db, i64::MIN, i64::MAX).1;
+    assert_eq!(before.len(), 3);
+    assert!(before[1].delta.cached_known);
+    let mut reader = SourceReader::restore(&store, &source)?;
+    let mut append = |row: &Value, store: &mut Store| -> anyhow::Result<_> {
+        writeln!(fs::OpenOptions::new().append(true).open(&source)?, "{row}")?;
+        assert!(reader.step(
+            store,
+            cutoff,
+            &mut Budget::new(std::iter::empty()),
+            &names,
+            limit
+        )?);
+        Ok(read(&mut store.db, i64::MIN, i64::MAX).1)
+    };
+    let nearby = append(&counter("2026-01-02T18:04:00Z", 4, true), &mut store)?;
+    assert_eq!(nearby.len(), 4);
+    assert!(nearby[0..2] == before[0..2]);
+    assert_eq!(nearby[2].id, before[2].id);
+    assert_eq!(nearby[2].provider_source, None);
+    let corrected = append(&receipt("claim-two"), &mut store)?;
+    assert!(corrected[0] == before[0]);
+    assert_eq!(corrected[1].id, before[1].id);
+    assert_eq!(
+        corrected[1].delta.total_tokens,
+        before[1].delta.total_tokens
+    );
+    assert!(!corrected[1].delta.cached_known);
+    assert_eq!(corrected[1].provider_source, None);
+    let query = Query::parse(&json!({}), cutoff).unwrap();
+    let days = Store::read_selection(&mut store.db, &query, None, None)?.days;
+    let totals: u64 = days
+        .iter()
+        .map(|day| day["usage"]["totalTokens"].as_u64().unwrap())
+        .sum();
+    assert_eq!(totals, 440);
+    let verified: u64 = days
+        .iter()
+        .flat_map(|day| day["breakdowns"].as_array().unwrap())
+        .filter(|group| group["provider"] == "verified-supplier")
+        .map(|group| group["recordCount"].as_u64().unwrap())
+        .sum();
+    assert_eq!(verified, 1);
     Ok(())
 }
 
