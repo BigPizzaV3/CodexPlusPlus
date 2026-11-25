@@ -1173,7 +1173,12 @@ impl Store {
                          WHEN instr(o.payload,x'00')=0 AND json_valid(CAST(o.payload AS TEXT))
                           AND json_extract(CAST(o.payload AS TEXT),{FLAGS})
                            ='[false,false,false,false,{{\"model\":false,\"provider\":false,\"role\":false,\"turn\":false}}]'
-                    THEN json_remove(CAST(o.payload AS TEXT),{FLAGS}) ELSE o.payload END
+                    THEN CASE WHEN json_type(CAST(o.payload AS TEXT),'$.last')='object'
+                               AND json_extract(CAST(o.payload AS TEXT),'$.last')
+                                 = json_extract(CAST(o.payload AS TEXT),'$.delta')
+                         THEN '=' || json_remove(json_replace(CAST(o.payload AS TEXT),'$.last',NULL),{FLAGS})
+                         ELSE json_remove(CAST(o.payload AS TEXT),{FLAGS}) END
+                    ELSE o.payload END
                  FROM token_observations o
                  JOIN token_sessions s ON s.id = o.session_id
                  WHERE o.source_id = ?1 ORDER BY o.revision, o.position",
@@ -1242,22 +1247,27 @@ impl Store {
                     let mut records = observation.query([id])?;
                     while let Some(record) = records.next()? {
                         let field = record.get_ref(2)?;
-                        let bytes = match field {
+                        let (bytes, same_last) = match field {
                             rusqlite::types::ValueRef::Text(packed) => {
                                 charge(&mut remaining, packed.len())?;
+                                // '=' 表示查询用 null 替换了与 delta 完全相同的 last 对象。
+                                let same = packed.strip_prefix(b"=");
                                 restored.clear();
                                 restored.extend_from_slice(CLEAR);
-                                restored.extend_from_slice(&packed[1..]);
-                                &restored[..]
+                                restored.extend_from_slice(&same.unwrap_or(packed)[1..]);
+                                (&restored[..], same.is_some())
                             }
                             value => {
                                 let bytes = value.as_blob()?;
                                 charge(&mut remaining, bytes.len())?;
-                                bytes
+                                (bytes, false)
                             }
                         };
                         let event_id = record.get_ref(0)?.as_blob()?.try_into()?;
-                        let event: Observation = serde_json::from_slice(bytes)?;
+                        let mut event: Observation = serde_json::from_slice(bytes)?;
+                        if same_last {
+                            event.last = Some(event.delta);
+                        }
                         if stored_collision.exists([event.original_id.as_slice()])? {
                             index.collision_families.insert(event.original_id);
                         }

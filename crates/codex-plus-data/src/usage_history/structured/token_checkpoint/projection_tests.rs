@@ -120,6 +120,56 @@ fn full_component_reads_clear_flags_once_and_keeps_the_stored_observations() -> 
 }
 
 #[test]
+fn full_component_folds_only_identical_last_counts_under_input_limit() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let first = root.join(format!("rollout-{PARENT}.jsonl"));
+    let peer = root.join(format!("rollout-{OTHER}.jsonl"));
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let rows: Vec<_> = std::iter::once(header(PARENT, 0))
+        .chain((1..=120).map(|n| {
+            let mut row = count(n, n % 60, n as u64, true);
+            row["timestamp"] = json!(format!("2026-01-02T12:{:02}:{:02}Z", n / 60, n % 60));
+            row
+        }))
+        .collect();
+    let mut prior = parse(&first, &rows, cutoff);
+    prior.events[1].last = None;
+    prior.events[2].last.as_mut().unwrap().cached_known = false;
+    prior.events[3].last.as_mut().unwrap().reasoning_output_tokens = Some(0);
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let initial = store.prepare(new_source(&first, &prior), cutoff, BTreeMap::new(), 1 << 20)?;
+    store.publish(initial)?;
+    let limit = store.db.query_row(
+        "SELECT sum(length(json_remove(CAST(payload AS TEXT), '$.count_uncertain',
+         '$.count_incomplete', '$.count_pending', '$.inherited', '$.context_conflicts')))
+         FROM token_observations", [], |row| row.get::<_, usize>(0),
+    )?;
+    let mut next = count(1, 1, 121, true);
+    next["timestamp"] = json!("2026-01-02T12:02:01Z");
+    let peer_state = parse(&peer, &[header(PARENT, 0), next], cutoff);
+    let prepared = store.prepare(new_source(&peer, &peer_state), cutoff, BTreeMap::new(), limit)?;
+    store.publish(prepared)?;
+    let (_, resolved) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(resolved.len(), 121);
+    for (expected, observed) in prior.events.iter().zip(&resolved) {
+        assert_eq!(observed.id, expected.id);
+        assert_eq!(observed.last, expected.last);
+    }
+    // 重复字段也必须经过完整的反序列化检查。
+    store.db.execute(
+        "UPDATE token_observations SET payload=CAST('{\"last\":' ||
+         json_extract(CAST(payload AS TEXT),'$.last') || ',' || substr(CAST(payload AS TEXT),2) AS BLOB)
+         WHERE position=8", [],
+    )?;
+    let other = root.join("another.jsonl");
+    let error = store.prepare(new_source(&other, &peer_state), cutoff, BTreeMap::new(), 1 << 20)
+        .err().expect("duplicate last must be rejected");
+    assert!(error.to_string().contains("duplicate field"), "{error}");
+    Ok(())
+}
+
+#[test]
 fn registered_compressed_prefix_can_introduce_another_sessions_counts_in_its_suffix()
 -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
