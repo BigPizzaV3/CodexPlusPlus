@@ -165,6 +165,14 @@ impl Scan {
                         }
                         continue;
                     };
+                    if self
+                        .comparing
+                        .as_ref()
+                        .is_some_and(|probe| probe.holds(&path))
+                    {
+                        verify_later.push(path);
+                        continue;
+                    }
                     let probe = if let Some(comparing) = comparing {
                         compared = true;
                         comparing.step(store, &mut budget)

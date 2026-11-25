@@ -346,20 +346,46 @@ fn retract_append_proofs(
     Ok(days)
 }
 
+pub(super) fn linear_source(state: &FileState) -> bool {
+    !state.session.is_empty()
+        && !state.continuation
+        && state.history_base.is_none()
+        && state.inherited_contexts.is_empty()
+        && !state.identity_conflict
+        && !state.invalid_counts
+        && !state.rollout_out_of_order
+        && state.issues == 0
+}
+
+pub(super) fn linear_observation(
+    session: &str,
+    event: &UsageEvent,
+    previous: Option<&UsageEvent>,
+) -> bool {
+    event.session == session
+        && !event.inherited
+        && event.legacy_identity.is_none()
+        && !event.provider.trim().eq_ignore_ascii_case("openai")
+        && !event.context_conflicts.any()
+        && !event.count_uncertain
+        && !event.count_incomplete
+        && !event.count_pending
+        && previous.is_none_or(|before| {
+            // 同一时间戳可能是副本；相同累计输入输出可能是历史缓存修正。
+            DateTime::parse_from_rfc3339(&event.timestamp).unwrap()
+                > DateTime::parse_from_rfc3339(&before.timestamp).unwrap()
+                && event.total.is_monotonic_after(before.total)
+                && (event.total.input_tokens, event.total.output_tokens)
+                    != (before.total.input_tokens, before.total.output_tokens)
+        })
+}
+
 fn linear_batch<'a>(
     state: &'a FileState,
     cutoff: NaiveDate,
     mut previous: Option<&'a UsageEvent>,
 ) -> bool {
-    if state.session.is_empty()
-        || state.continuation
-        || state.history_base.is_some()
-        || !state.inherited_contexts.is_empty()
-        || state.identity_conflict
-        || state.invalid_counts
-        || state.rollout_out_of_order
-        || state.issues != 0
-    {
+    if !linear_source(state) {
         return false;
     }
     for event in state
@@ -367,24 +393,7 @@ fn linear_batch<'a>(
         .iter()
         .filter(|event| event.terminal_response.is_none())
     {
-        if event.session != state.session
-            || event.date < cutoff
-            || event.inherited
-            || event.legacy_identity.is_some()
-            || event.provider.trim().eq_ignore_ascii_case("openai")
-            || event.context_conflicts.any()
-            || event.count_uncertain
-            || event.count_incomplete
-            || event.count_pending
-            || previous.is_some_and(|before| {
-                // 同一时间戳可能是副本；相同累计输入输出可能是历史缓存修正。
-                DateTime::parse_from_rfc3339(&event.timestamp).unwrap()
-                    <= DateTime::parse_from_rfc3339(&before.timestamp).unwrap()
-                    || !event.total.is_monotonic_after(before.total)
-                    || (event.total.input_tokens, event.total.output_tokens)
-                        == (before.total.input_tokens, before.total.output_tokens)
-            })
-        {
+        if event.date < cutoff || !linear_observation(&state.session, event, previous) {
             return false;
         }
         previous = Some(event);
@@ -1431,21 +1440,20 @@ impl Store {
         batch: u32,
     ) -> Result<bool> {
         let (after_id, after_row) = *cursor;
-        let id = if after_row == (0, 0) {
-            self.db
-                .query_row(
-                    "SELECT id FROM token_sources WHERE id > ?1 ORDER BY id LIMIT 1",
-                    [after_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-        } else {
-            Some(after_id)
-        };
+        let id = self
+            .db
+            .query_row(
+                "SELECT id FROM token_sources WHERE id > ?1 OR (id = ?1 AND ?2)
+                 ORDER BY id LIMIT 1",
+                params![after_id, after_row != (0, 0)],
+                |row| row.get(0),
+            )
+            .optional()?;
         let Some(id) = id else {
             return Ok(false);
         };
-        let (next, _) = self.reclaim_observations(id, after_row, batch)?;
+        let from = if id == after_id { after_row } else { (0, 0) };
+        let (next, _) = self.reclaim_observations(id, from, batch)?;
         *cursor = (id, next.unwrap_or((0, 0)));
         Ok(true)
     }

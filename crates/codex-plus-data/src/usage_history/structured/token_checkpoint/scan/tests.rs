@@ -545,6 +545,144 @@ fn identical_archive_copy_must_not_stall_the_original_append() {
 }
 
 #[test]
+fn previously_materialized_copies_recover_a_verified_tail_without_republishing_counts() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let active = root.join("sessions");
+    let archive = root.join("archived_sessions");
+    fs::create_dir(&active).unwrap();
+    fs::create_dir(&archive).unwrap();
+    let name = format!("rollout-{FIRST}.jsonl");
+    let source = active.join(&name);
+    let copy = archive.join(&name);
+    let at = chrono::DateTime::parse_from_rfc3339("2026-01-02T12:01:00Z").unwrap();
+    let row = |n| {
+        json!({"type":"event_msg","timestamp":(at+chrono::Duration::seconds(n)).to_rfc3339(),
+        "payload":{"type":"token_count","info":{
+            "total_token_usage":{"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n},
+            "last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}
+        }}})
+    };
+    let head = rollout(FIRST);
+    fs::write(&source, &head).unwrap();
+    let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+    for n in 2..=80 {
+        writeln!(file, "{}", row(n)).unwrap();
+    }
+    drop(file);
+    let db = root.join("usage.sqlite");
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    fs::copy(&source, &copy).unwrap();
+    for path in [&source, &copy] {
+        // Reproduce the old scanner, which ingested both paths before copy proof existed.
+        assert!(
+            SourceReader::restore(&store, path)
+                .unwrap()
+                .step(
+                    &mut store,
+                    cutoff,
+                    &mut Budget::new(std::iter::empty()),
+                    &names,
+                    1 << 20
+                )
+                .unwrap()
+        );
+    }
+    let count_table = |store: &Store, query: &str| {
+        store
+            .db
+            .query_row(query, [], |row| row.get::<_, u64>(0))
+            .unwrap()
+    };
+    assert_eq!(count_table(&store, "SELECT count(*) FROM token_sources"), 2);
+    assert_eq!(
+        count_table(&store, "SELECT count(*) FROM token_linear_sources"),
+        0
+    );
+    let rows = |store: &mut Store| {
+        let mut counts = Vec::new();
+        Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |e| {
+            counts.push((e.id, e.delta));
+            Ok(())
+        })
+        .unwrap();
+        counts
+    };
+    let before = rows(&mut store);
+    assert_eq!(before.len(), 80);
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        row(81)
+    )
+    .unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER refuse_collapse BEFORE DELETE ON token_sources
+         BEGIN SELECT RAISE(ABORT, 'test collapse failure'); END;",
+        )
+        .unwrap();
+    let failed = Scan::default().round(&mut store, &root, cutoff, &names, 8192);
+    assert!(!failed.complete);
+    assert!(
+        failed
+            .errors
+            .iter()
+            .any(|(_, error)| error.to_string().contains("test collapse failure"))
+    );
+    assert_eq!(count_table(&store, "SELECT count(*) FROM token_sources"), 2);
+    assert_eq!(
+        count_table(&store, "SELECT count(*) FROM token_linear_sources"),
+        0
+    );
+    assert_eq!(rows(&mut store), before);
+    store
+        .db
+        .execute_batch("DROP TRIGGER refuse_collapse")
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut scan = Scan::default();
+    let recovered = scan.round(&mut store, &root, cutoff, &names, 8192);
+    assert!(recovered.complete, "{:?}", recovered.errors);
+    assert_eq!(count_table(&store, "SELECT count(*) FROM token_sources"), 1);
+    assert_eq!(
+        count_table(&store, "SELECT count(*) FROM token_source_copies"),
+        1
+    );
+    let after = rows(&mut store);
+    assert_eq!(after.len(), 81);
+    assert_eq!(after[..80], before);
+    assert_eq!(after[80].1.total_tokens, 110);
+
+    let mut fork = row(82);
+    fork["payload"]["info"]["total_token_usage"]["input_tokens"] = json!(9000);
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&copy).unwrap(),
+        "{fork}"
+    )
+    .unwrap();
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        row(82)
+    )
+    .unwrap();
+    let divergent = scan.round(&mut store, &root, cutoff, &names, 8192);
+    assert!(!divergent.complete);
+    assert_eq!(count_table(&store, "SELECT count(*) FROM token_sources"), 1);
+    let after_fork = rows(&mut store);
+    assert_eq!(after_fork[..81], after);
+    assert_eq!(after_fork.len(), 82);
+    assert_eq!(after_fork[81].1.total_tokens, 110);
+}
+
+#[test]
 fn large_copy_yields_to_other_sessions_and_a_changed_prefix_is_not_admitted_as_a_copy() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
