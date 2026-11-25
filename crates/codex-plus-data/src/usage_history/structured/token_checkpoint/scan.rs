@@ -155,7 +155,7 @@ impl Scan {
             }
             if self.issues == 0 {
                 match store.sealed_queued_sources(self.remaining.make_contiguous()) {
-                    Ok((sealed, gaps)) => {
+                    Ok((sealed, gaps, growing)) => {
                         self.sealed_queue = sealed;
                         self.issues += gaps.len();
                         self.scoped_count_gaps = gaps;
@@ -178,6 +178,11 @@ impl Scan {
                                     !path.file_name().is_some_and(|name| names.contains(name)),
                                 )
                             });
+                        } else if !growing.is_empty() {
+                            // 优先解析追加内容，读完并提交后才可按新的计数范围保留归属。
+                            self.remaining
+                                .make_contiguous()
+                                .sort_by_key(|path| !growing.contains(path));
                         }
                     }
                     Err(error) => {

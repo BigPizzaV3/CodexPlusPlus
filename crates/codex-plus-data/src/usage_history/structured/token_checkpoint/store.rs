@@ -527,7 +527,7 @@ impl Store {
     pub(super) fn sealed_queued_sources(
         &self,
         discovered: &[PathBuf],
-    ) -> Result<(HashSet<PathBuf>, BTreeSet<PathBuf>)> {
+    ) -> Result<(HashSet<PathBuf>, BTreeSet<PathBuf>, HashSet<PathBuf>)> {
         #[derive(serde::Deserialize)]
         struct CountState {
             stamp: Option<super::SourceStamp>,
@@ -541,15 +541,16 @@ impl Store {
             identity_conflict: bool,
         }
         let present: HashSet<_> = discovered.iter().map(PathBuf::as_path).collect();
-        let current = |source: &Path, expected: super::SourceStamp| -> Result<bool> {
+        let current = |source: &Path| -> Result<Option<super::SourceStamp>> {
             match FileState::source_stamp(source) {
-                Ok(actual) => Ok(actual == expected),
-                Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+                Ok(actual) => Ok(Some(actual)),
+                Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
                 Err(error) => Err(error.into()),
             }
         };
         let mut sealed = HashSet::new();
         let mut gaps = BTreeSet::new();
+        let mut growing = HashSet::new();
         let mut owners = HashSet::new();
         let mut sources = self
             .db
@@ -573,8 +574,17 @@ impl Store {
                 || (saved.issues != 0 || saved.invalid_counts) && !scoped_gap
                 || !path.extension().is_some_and(|ext| ext == "zst")
                     && size != row.get::<_, u64>(2)?
-                || !current(&path, stamp)?
             {
+                continue;
+            }
+            let actual = current(&path)?;
+            if actual != Some(stamp) {
+                if path.extension().is_some_and(|ext| ext == "jsonl")
+                    && stamp.2.is_some()
+                    && actual.is_some_and(|(length, _, id)| length > size && id == stamp.2)
+                {
+                    growing.insert(path);
+                }
                 continue;
             }
             if scoped_gap {
@@ -593,12 +603,12 @@ impl Store {
             if owners.contains(&row.get::<_, i64>(1)?) {
                 let path = decode_path(row.get(0)?)?;
                 let stamp = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
-                if present.contains(path.as_path()) && current(&path, stamp)? {
+                if present.contains(path.as_path()) && current(&path)? == Some(stamp) {
                     sealed.insert(path);
                 }
             }
         }
-        Ok((sealed, gaps))
+        Ok((sealed, gaps, growing))
     }
 
     pub(super) fn relocate_source(

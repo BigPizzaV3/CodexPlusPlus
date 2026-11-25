@@ -1968,3 +1968,78 @@ fn response_includes_scoped_trend_and_preserves_archived_day_totals() {
     assert_eq!(calendar["rangeApplied"], true);
     assert_eq!(calendar["days"][0]["usage"]["totalTokens"], 220);
 }
+
+#[test]
+fn rescan_consumes_registered_appends_before_sealed_files_and_retracts_only_competing_counts()
+-> anyhow::Result<()> {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let archive = root.join("archived_sessions");
+    let sessions = root.join("sessions");
+    fs::create_dir(&archive)?;
+    fs::create_dir(&sessions)?;
+    for index in 0..=SOURCES_PER_ROUND {
+        let header = json!({"type":"session_meta","timestamp":"2026-01-02T12:00:00Z",
+            "payload":{"id":format!("10000000-0000-4000-8000-{index:012x}")}});
+        fs::write(archive.join(format!("rollout-{index:03}.jsonl")), format!("{header}\n"))?;
+    }
+    let later = sessions.join("rollout-second.jsonl");
+    fs::write(sessions.join("rollout-first.jsonl"), rollout(FIRST))?;
+    fs::write(&later, rollout(SECOND))?;
+    let mut other_appends = Vec::new();
+    for index in 0..3 {
+        let path = sessions.join(format!("rollout-extra-{index}.jsonl"));
+        let header = json!({"type":"session_meta","timestamp":"2026-01-02T12:00:00Z",
+            "payload":{"id":format!("20000000-0000-4000-8000-{index:012x}")}});
+        fs::write(&path, format!("{header}\n"))?;
+        other_appends.push(path);
+    }
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    let names = BTreeMap::new();
+    let round = |scan: &mut Scan, store: &mut Store| scan.round(store, &root, cutoff, &names, 1 << 20);
+    assert!(!round(&mut scan, &mut store).complete);
+    assert!(round(&mut scan, &mut store).complete);
+    for session in [FIRST, SECOND] {
+        assert!(store.reclassify_session(session, 1 << 20, &BTreeSet::new(), |events, _| {
+            assert_eq!(events.len(), 1);
+            events[0].provider = "gateway".into();
+            events[0].provider_source = Some("request-log-exact".into());
+            Ok(())
+        })?.is_some());
+    }
+    let exact_sessions = |store: &Store| -> rusqlite::Result<Vec<String>> {
+        store.db.prepare("SELECT s.session FROM token_resolved r JOIN token_sessions s ON s.id=r.session_id
+            WHERE json_extract(CAST(r.payload AS TEXT),'$.provider_source')='request-log-exact' ORDER BY s.session")?
+            .query_map([], |row| row.get(0))?.collect()
+    };
+    assert_eq!(exact_sessions(&store)?, [FIRST, SECOND]);
+    let mut extra: serde_json::Value = serde_json::from_str(rollout(SECOND).lines().nth(1).unwrap())?;
+    extra["timestamp"] = json!("2026-01-02T12:01:01Z");
+    extra["payload"]["info"]["total_token_usage"] =
+        json!({"input_tokens":200,"cached_input_tokens":40,"output_tokens":20});
+    writeln!(fs::OpenOptions::new().append(true).open(&later)?, "{extra}")?;
+    for path in &other_appends {
+        let done = json!({"type":"event_msg","timestamp":"2026-01-02T12:01:01Z",
+            "payload":{"type":"task_complete"}});
+        writeln!(fs::OpenOptions::new().append(true).open(path)?, "{done}")?;
+    }
+
+    let next = round(&mut scan, &mut store);
+    assert!(next.errors.is_empty() && next.pending_sources > 0);
+    for path in other_appends.iter().chain([&later]) {
+        assert_eq!(store.checkpoint(path)?.unwrap().1.offset, fs::metadata(path)?.len());
+    }
+    assert_eq!(exact_sessions(&store)?, [FIRST], "unrelated proof must survive this inventory");
+    assert_eq!(store.db.query_row("SELECT count(*) FROM token_resolved", [], |r| r.get::<_, i64>(0))?, 3);
+    assert!(round(&mut scan, &mut store).complete);
+
+    // 半行仍可能补出别的会话或竞争计数。
+    fs::OpenOptions::new().append(true).open(&later)?.write_all(b"{")?;
+    assert!(!round(&mut scan, &mut store).complete);
+    assert!(exact_sessions(&store)?.is_empty());
+    Ok(())
+}
