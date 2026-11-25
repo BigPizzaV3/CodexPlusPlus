@@ -986,10 +986,16 @@ fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_ne
         read(&mut store.db, i64::MIN, i64::MAX).1
     };
     let head = json!({"type":"session_meta","timestamp":at(0),"payload":{"id":PARENT,"model_provider":"fixture-supplier"}});
-    let first = terminal(2, "turn-a", "resp-a", usage(10, 3, 2), usage(10, 3, 2));
-    append(&[head.clone(), context(1, "turn-a"), first.clone()]);
+    let mut first = terminal(2, "turn-a", "resp-a", usage(10, 3, 2), usage(10, 3, 2));
+    first["payload"]["extra"] = json!("x".repeat(32 * 1024));
+    let mut wrong_turn = first.clone();
+    wrong_turn["payload"]["turn_id"] = json!("turn-b");
+    wrong_turn["payload"]["response_id"] = json!("wrong-turn");
+    append(&[head.clone(), context(1, "turn-a"), wrong_turn, first.clone()]);
     let initial = step(&rollout);
     assert_eq!(initial.len(), 1);
+    assert_eq!(initial[0].terminal_response.as_deref(), Some("resp-a"));
+    assert!(step(&rollout) == initial);
     assert_eq!(
         initial[0].delta,
         crate::usage_history::Tokens::new(10, 3, 2)

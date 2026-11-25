@@ -35,7 +35,6 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const REQUEST_MATCH_WINDOW_MS: i64 = 30_000;
 const DELAYED_REQUEST_MATCH_WINDOW_MS: i64 = 120_000;
-const MAX_NATIVE_RECEIPT_LINE: usize = 8192;
 const REQUEST_SUPPLIER_PROOF: &str = "request-log-recovered-supplier-only";
 
 struct AttributionScope {
@@ -1529,6 +1528,17 @@ fn context_fields(raw: &str) -> serde_json::Result<[(&'static str, Option<&RawVa
         ("type", fields.kind),
         ("info", fields.info),
     ])
+}
+
+fn selected_payload<const N: usize>(
+    fields: [(&str, Option<&RawValue>); N],
+) -> serde_json::Result<Value> {
+    fields
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key, value)))
+        .map(|(key, value)| serde_json::from_str(value.get()).map(|value| (key.to_owned(), value)))
+        .collect::<serde_json::Result<serde_json::Map<String, Value>>>()
+        .map(Value::Object)
 }
 
 fn merge_context_value(
@@ -3844,12 +3854,12 @@ impl FileState {
         self.observe_rollout_position(ordinal);
         let inherited = self.history_boundary.contains(ordinal);
         if envelope.kind == "token_usage_record" {
-            if inherited || line.len() > MAX_NATIVE_RECEIPT_LINE {
+            if inherited {
                 self.pending_response = Some(PendingUsageReceipt::Unusable);
                 return;
             }
             let (Ok(payload), Some(time)) = (
-                serde_json::from_str::<Value>(envelope.payload.get()),
+                terminal_receipts::fields(envelope.payload.get()).and_then(selected_payload),
                 envelope.timestamp.and_then(|at| DateTime::parse_from_rfc3339(at).ok()),
             ) else {
                 self.pending_response = Some(PendingUsageReceipt::Unusable);
@@ -3990,19 +4000,11 @@ impl FileState {
                 return;
             }
         }
-        let parsed = if matches!(envelope.kind, "session_meta" | "turn_context") {
-            context_fields(envelope.payload.get()).and_then(|fields| {
-                fields
-                    .into_iter()
-                    .filter_map(|(key, value)| value.map(|value| (key, value)))
-                    .map(|(key, value)| {
-                        serde_json::from_str(value.get()).map(|value| (key.to_owned(), value))
-                    })
-                    .collect::<serde_json::Result<serde_json::Map<String, Value>>>()
-                    .map(Value::Object)
-            })
-        } else {
-            serde_json::from_str::<Value>(envelope.payload.get())
+        let parsed = match envelope.kind {
+            "session_meta" | "turn_context" => {
+                context_fields(envelope.payload.get()).and_then(selected_payload)
+            }
+            _ => serde_json::from_str::<Value>(envelope.payload.get()),
         };
         let Ok(payload) = parsed else {
             self.pending_response = None;

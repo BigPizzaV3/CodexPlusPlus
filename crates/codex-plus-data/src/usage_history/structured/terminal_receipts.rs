@@ -1,5 +1,29 @@
 use super::*;
 
+pub(super) fn fields(raw: &str) -> serde_json::Result<[(&'static str, Option<&RawValue>); 5]> {
+    #[derive(Deserialize)]
+    struct Fields<'a> {
+        #[serde(borrow)]
+        thread_id: Option<&'a RawValue>,
+        #[serde(borrow)]
+        turn_id: Option<&'a RawValue>,
+        #[serde(borrow)]
+        response_id: Option<&'a RawValue>,
+        #[serde(borrow)]
+        usage: Option<&'a RawValue>,
+        #[serde(borrow)]
+        thread_token_usage: Option<&'a RawValue>,
+    }
+    let fields: Fields<'_> = serde_json::from_str(raw)?;
+    Ok([
+        ("thread_id", fields.thread_id),
+        ("turn_id", fields.turn_id),
+        ("response_id", fields.response_id),
+        ("usage", fields.usage),
+        ("thread_token_usage", fields.thread_token_usage),
+    ])
+}
+
 pub(super) fn parse(
     state: &FileState,
     payload: &Value,

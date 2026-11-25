@@ -353,7 +353,7 @@ fn may_record_event(line: &[u8]) -> bool {
         return false;
     };
     if envelope.kind == "token_usage_record" {
-        return line.len() <= super::MAX_NATIVE_RECEIPT_LINE;
+        return true;
     }
     if !matches!(envelope.kind, "event_msg" | "turn_context") {
         return false;
@@ -384,24 +384,29 @@ fn parse_reserve(line: &[u8], skip_activity: bool) -> usize {
         if !matches!(
             envelope.kind,
             "session_meta" | "turn_context" | "event_msg" | "response_item" | "token_usage_record"
-        ) || envelope.kind == "token_usage_record" && line.len() > super::MAX_NATIVE_RECEIPT_LINE
-        {
+        ) {
             return LINE_OVERHEAD;
         }
-        if matches!(envelope.kind, "session_meta" | "turn_context") {
-            if let Ok(fields) = super::context_fields(envelope.payload.get()) {
-                let selected = fields
-                    .iter()
-                    .filter_map(|(_, value)| *value)
-                    .map(|value| value.get().len().saturating_add(128))
-                    .sum::<usize>();
-                return selected
-                    .saturating_mul(64)
-                    .saturating_add(line.len().saturating_mul(2))
-                    .saturating_add(LINE_OVERHEAD);
-            } else {
-                return LINE_OVERHEAD;
+        let selected_reserve = |fields: &[(&str, Option<&serde_json::value::RawValue>)]| {
+            fields
+                .iter()
+                .filter_map(|(_, value)| *value)
+                .map(|value| value.get().len().saturating_add(128))
+                .sum::<usize>()
+                .saturating_mul(64)
+                .saturating_add(line.len().saturating_mul(2))
+                .saturating_add(LINE_OVERHEAD)
+        };
+        match envelope.kind {
+            "session_meta" | "turn_context" => {
+                return super::context_fields(envelope.payload.get())
+                    .map_or(LINE_OVERHEAD, |fields| selected_reserve(&fields));
             }
+            "token_usage_record" => {
+                return super::terminal_receipts::fields(envelope.payload.get())
+                    .map_or(LINE_OVERHEAD, |fields| selected_reserve(&fields));
+            }
+            _ => {}
         }
         if envelope.kind == "event_msg" {
             if let Ok(item) = serde_json::from_str::<Item<'_>>(envelope.payload.get()) {
@@ -838,12 +843,19 @@ mod tests {
     }
 
     #[test]
-    fn native_receipt_reserves_parse_memory_only_within_its_read_limit() {
-        let row = br#"{"type":"token_usage_record","payload":{"usage":{}}}"#;
-        assert!(parse_reserve(row, true) > LINE_OVERHEAD);
-        let mut oversized = row.to_vec();
-        oversized.resize(super::super::MAX_NATIVE_RECEIPT_LINE + 1, b' ');
-        assert_eq!(parse_reserve(&oversized, true), LINE_OVERHEAD);
+    fn long_terminal_receipt_keeps_event_quota_and_skips_extra_payload() {
+        let counts = json!({"input_tokens":10,"cached_input_tokens":0,"output_tokens":2});
+        let mut record = json!({"type":"token_usage_record","timestamp":"2026-01-02T12:02:00Z",
+            "payload":{"thread_id":SESSION,"turn_id":"turn-a","response_id":"response-a",
+            "usage":counts,"thread_token_usage":counts}});
+        let small = record.to_string();
+        record["payload"]["extra"] = json!(vec![0u8; 128 * 1024]);
+        let large = record.to_string();
+        assert!(may_record_event(large.as_bytes()));
+        assert_eq!(
+            parse_reserve(large.as_bytes(), false) - parse_reserve(small.as_bytes(), false),
+            2 * (large.len() - small.len())
+        );
     }
 
     #[test]
