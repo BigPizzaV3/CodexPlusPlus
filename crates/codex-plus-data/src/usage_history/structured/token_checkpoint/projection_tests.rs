@@ -156,6 +156,196 @@ fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_ne
 }
 
 #[test]
+fn reconciled_terminal_pairs_append_within_budget_after_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let source = root.join("rollout-long.jsonl");
+    let database = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let base = DateTime::parse_from_rfc3339("2026-01-02T12:00:00Z").unwrap();
+    let pair = |n: usize, response: String, second_receipt: bool| {
+        let at = |extra| (base + chrono::Duration::seconds(n as i64 * 4 + extra)).to_rfc3339();
+        let turn = format!("turn-{n}");
+        let total = count(0, 0, n as u64, true);
+        let info = &total["payload"]["info"];
+        let mut receipt = json!({
+            "type":"token_usage_record","timestamp":at(2),
+            "payload":{"thread_id":PARENT,"turn_id":turn,"response_id":response,
+                       "usage":info["last_token_usage"],"thread_token_usage":info["total_token_usage"]}
+        });
+        let mut rows = vec![
+            json!({"type":"turn_context","timestamp":at(0),"payload":{"model":"fixture","turn_id":turn}}),
+            json!({"type":"event_msg","timestamp":at(1),"payload":total["payload"]}),
+            receipt.clone(),
+        ];
+        if second_receipt {
+            receipt["timestamp"] = json!(at(3));
+            receipt["payload"]["response_id"] = json!("another-claim");
+            rows.push(receipt);
+        }
+        for (index, row) in rows.iter_mut().enumerate() {
+            row["ordinal"] = json!((n - 1) * 3 + index + 1);
+        }
+        rows
+    };
+    let mut rows = vec![header(PARENT, 0)];
+    for n in 1..=120 {
+        rows.extend(pair(n, format!("receipt-{n}"), false));
+    }
+    let original = parse(&source, &rows, cutoff);
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let seed = store
+        .prepare(
+            new_source(&source, &original),
+            cutoff,
+            BTreeMap::new(),
+            1 << 20,
+        )
+        .unwrap();
+    let seeded_revision = store.publish(seed).unwrap();
+    let certificate: i64 = store
+        .db
+        .query_row("SELECT revision FROM token_linear_sources", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(certificate, seeded_revision);
+    let used: usize = store
+        .db
+        .query_row(
+            "SELECT sum(length(payload)) FROM token_observations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    const APPEND_BUDGET: usize = 16 * 1024;
+    assert!(used > APPEND_BUDGET);
+
+    for (n, response, another_claim, should_append) in [
+        (121, "receipt-121", false, true),
+        (122, "receipt-122", false, true),
+        (123, "receipt-123", true, false),
+        (123, "receipt-1", false, false),
+    ] {
+        drop(store);
+        let start = fs::metadata(&source).unwrap().len();
+        let batch = pair(n, response.into(), another_claim);
+        let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+        for row in &batch {
+            writeln!(file, "{row}").unwrap();
+        }
+        store = Store::open(Connection::open(&database).unwrap()).unwrap();
+        let (revision, mut state) = store.checkpoint(&source).unwrap().unwrap();
+        assert_eq!(state.offset, start);
+        assert!(
+            state
+                .read_with_budget(&source, cutoff, &mut Budget::new(std::iter::empty()))
+                .unwrap()
+        );
+        let update = SourceUpdate {
+            source: &source,
+            state: &state,
+            previous_revision: Some(revision),
+            replace: false,
+        };
+        let prepared = store.prepare(update, cutoff, BTreeMap::new(), APPEND_BUDGET);
+        if !should_append {
+            assert!(
+                prepared
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("component exceeds reconciliation input budget")
+            );
+            assert_eq!(store.checkpoint(&source).unwrap().unwrap().1.offset, start);
+            drop(file);
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&source)
+                .unwrap()
+                .set_len(start)
+                .unwrap();
+            continue;
+        }
+        let committed = store.publish(prepared.unwrap()).unwrap();
+        assert_eq!(
+            store.checkpoint(&source).unwrap().unwrap().1.offset,
+            fs::metadata(&source).unwrap().len()
+        );
+        let certificate: i64 = store
+            .db
+            .query_row("SELECT revision FROM token_linear_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(certificate, committed);
+        rows.extend(batch);
+    }
+
+    let selected = read(&mut store.db, i64::MIN, i64::MAX).1;
+    assert_eq!(selected.len(), 122);
+    assert!(selected.iter().all(|event| event.delta.total_tokens == 110));
+    let mut replay = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let full = parse(&source, &rows, cutoff);
+    let prepared = replay
+        .prepare(new_source(&source, &full), cutoff, BTreeMap::new(), 1 << 20)
+        .unwrap();
+    replay.publish(prepared).unwrap();
+    assert!(selected == read(&mut replay.db, i64::MIN, i64::MAX).1);
+
+    let day = full.events[0].date;
+    let retained = day.succ_opt().unwrap();
+    store.advance_retention(retained).unwrap().unwrap();
+    let mut cursor = (0, 0);
+    while let (Some(next), _) = store
+        .reclaim_source_observations(&source, cursor, 32)
+        .unwrap()
+    {
+        cursor = next;
+    }
+    let historical_tail = store.observations(&source).unwrap();
+    assert_eq!(historical_tail.len(), 1);
+    assert!(historical_tail[0].terminal_response.is_none());
+    let (previous_revision, mut next) = store.checkpoint(&source).unwrap().unwrap();
+    {
+        let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+        for mut row in pair(123, "next-day".into(), false) {
+            let at = DateTime::parse_from_rfc3339(row["timestamp"].as_str().unwrap()).unwrap();
+            row["timestamp"] = json!((at + chrono::Duration::days(1)).to_rfc3339());
+            writeln!(file, "{row}").unwrap();
+        }
+    }
+    assert!(
+        next.read_with_budget(&source, retained, &mut Budget::new(std::iter::empty()))
+            .unwrap()
+    );
+    let staged = store
+        .prepare(
+            SourceUpdate {
+                source: &source,
+                state: &next,
+                previous_revision: Some(previous_revision),
+                replace: false,
+            },
+            retained,
+            BTreeMap::new(),
+            APPEND_BUDGET,
+        )
+        .unwrap();
+    store.publish(staged).unwrap();
+    let latest = read(&mut store.db, i64::MIN, i64::MAX).1;
+    assert_eq!(latest.len(), 1);
+    assert_eq!(latest[0].delta.total_tokens, 110);
+    let mut archive = Vec::new();
+    Store::read_days(&mut store.db, day, retained, |_, _, groups| {
+        archive.push(groups[0].totals.counts.0.total_tokens);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(archive, vec![122 * 110]);
+}
+
+#[test]
 fn source_ingest_retries_a_failed_batch_then_completes_the_split_line_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

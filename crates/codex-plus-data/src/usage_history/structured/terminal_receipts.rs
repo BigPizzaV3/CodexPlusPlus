@@ -93,6 +93,52 @@ fn compatible(known: Tokens, received: Tokens) -> bool {
             .is_none_or(|(a, b)| a == b)
 }
 
+fn close_in_time(a: &UsageEvent, b: &UsageEvent) -> bool {
+    let at = |event: &UsageEvent| {
+        DateTime::parse_from_rfc3339(&event.timestamp)
+            .expect("parsed usage timestamp")
+            .timestamp_millis()
+    };
+    at(a).abs_diff(at(b)) <= DELAYED_REQUEST_MATCH_WINDOW_MS as u64
+}
+
+pub(super) fn wholly_accounted_in_batch(raw: &[UsageEvent], projected: &[UsageEvent]) -> bool {
+    if !raw.iter().any(|event| event.terminal_response.is_some()) {
+        return true;
+    }
+    let mut counters = HashMap::new();
+    for event in projected {
+        if event.terminal_response.is_some() {
+            return false;
+        }
+        if let Some(key) = signature(event) {
+            counters
+                .entry(key)
+                .and_modify(|entry| *entry = None)
+                .or_insert(Some(event));
+        }
+    }
+    let mut responses = HashSet::new();
+    raw.iter()
+        .filter(|event| event.terminal_response.is_some())
+        .all(|receipt| {
+            responses.insert(receipt.original_id)
+                && signature(receipt)
+                    .and_then(|key| counters.remove(&key).flatten())
+                    .is_some_and(|event| {
+                        event.date == receipt.date
+                            && event.total == receipt.total
+                            && event.last == receipt.last
+                            && event.delta == receipt.delta
+                            && !event.context_conflicts.any()
+                            && !event.count_uncertain
+                            && !event.count_incomplete
+                            && !event.count_pending
+                            && close_in_time(receipt, event)
+                    })
+        })
+}
+
 pub(super) fn project(index: &Index, snapshot: &mut Snapshot) {
     let mut receipts = BTreeMap::<_, (UsageEvent, bool)>::new();
     for event in index
@@ -162,20 +208,11 @@ pub(super) fn project(index: &Index, snapshot: &mut Snapshot) {
     for (receipt, conflict, paired, after_last_counter) in decisions {
         if let Some(i) = paired {
             let event = &mut snapshot.events[i];
-            let in_time = DateTime::parse_from_rfc3339(&receipt.timestamp)
-                .expect("parsed receipt timestamp")
-                .timestamp_millis()
-                .abs_diff(
-                    DateTime::parse_from_rfc3339(&event.timestamp)
-                        .expect("parsed Token timestamp")
-                        .timestamp_millis(),
-                )
-                <= DELAYED_REQUEST_MATCH_WINDOW_MS as u64;
             if !conflict
                 && claims[&i] == 1
                 && !event.count_uncertain
                 && !event.count_incomplete
-                && in_time
+                && close_in_time(receipt, event)
                 && !event.context_conflicts.turn
                 && compatible(event.total, receipt.total)
                 && event

@@ -331,9 +331,13 @@ fn linear_batch<'a>(
     {
         return false;
     }
-    for event in &state.events {
+    let mut has_counter = false;
+    for event in state
+        .events
+        .iter()
+        .filter(|event| event.terminal_response.is_none())
+    {
         if event.session != state.session
-            || event.terminal_response.is_some()
             || event.date < cutoff
             || event.inherited
             || event.legacy_identity.is_some()
@@ -353,9 +357,10 @@ fn linear_batch<'a>(
         {
             return false;
         }
+        has_counter = true;
         previous = Some(event);
     }
-    true
+    has_counter
 }
 
 impl Store {
@@ -400,9 +405,10 @@ impl Store {
                 .query_row(
                     "SELECT o.event_id, o.payload, owner.session FROM token_sources s
                  JOIN token_linear_sources l ON s.id = l.source_id
-                 JOIN token_observations o ON o.source_id = s.id
+                 JOIN token_observations o ON o.source_id = s.id AND o.revision = l.revision
                  JOIN token_sessions owner ON owner.id = o.session_id
                  WHERE s.source = ?1 AND s.revision = ?2 AND l.revision = ?2 AND l.cutoff <= ?3
+                 AND json_type(CAST(o.payload AS TEXT), '$.terminal_response') IS NULL
                  AND NOT EXISTS (
                     SELECT 1 FROM token_source_links
                     WHERE source_id != s.id AND link IN (SELECT value FROM json_each(?4))
@@ -424,19 +430,26 @@ impl Store {
                         .map_err(|_| anyhow::anyhow!("invalid Token event identity"))?,
                     owner,
                 )?;
-                let mut collision =
-                    read.prepare_cached("SELECT 1 FROM token_collisions WHERE id = ?1")?;
                 let mut eligible =
                     tail.session == state.session && linear_batch(state, cutoff, Some(&tail));
                 if eligible {
+                    let mut collision =
+                        read.prepare_cached("SELECT 1 FROM token_collisions WHERE id = ?1")?;
+                    let mut prior_receipt = read.prepare_cached(
+                        "SELECT 1 FROM token_observations WHERE event_id = ?1
+                         AND json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text'
+                         LIMIT 1",
+                    )?;
                     for event in &state.events {
-                        if collision.exists([event.original_id.as_slice()])? {
+                        let id = [event.original_id.as_slice()];
+                        if collision.exists(id)?
+                            || (event.terminal_response.is_some() && prior_receipt.exists(id)?)
+                        {
                             eligible = false;
                             break;
                         }
                     }
                 }
-                drop(collision);
                 if eligible {
                     let (_, checkpoint) = Checkpoint::capture(state);
                     let mut bytes = serde_json::to_vec(&checkpoint)?.len() + payload.len();
@@ -448,6 +461,9 @@ impl Store {
                             bytes <= input_limit,
                             "Token batch exceeds reconciliation input budget"
                         );
+                        if raw.terminal_response.is_some() {
+                            continue;
+                        }
                         let mut event = raw.clone();
                         event.delta = event.session_delta(Some(previous));
                         event.provider =
@@ -458,17 +474,20 @@ impl Store {
                             events.push(event);
                         }
                     }
-                    read.commit()?;
-                    return Ok(Prepared {
-                        update,
-                        base_revision,
-                        cutoff,
-                        sessions,
-                        collisions: HashMap::new(),
-                        append: true,
-                        linear: true,
-                        events,
-                    });
+                    // 任何需要改已有水位、分配计数或等待竞争裁决的回执都走原归并。
+                    if terminal_receipts::wholly_accounted_in_batch(&state.events, &events) {
+                        read.commit()?;
+                        return Ok(Prepared {
+                            update,
+                            base_revision,
+                            cutoff,
+                            sessions,
+                            collisions: HashMap::new(),
+                            append: true,
+                            linear: true,
+                            events,
+                        });
+                    }
                 }
             }
         }
@@ -574,7 +593,7 @@ impl Store {
         }
 
         let collisions = index.observed_collisions();
-        let linear = files == 0
+        let linear_candidate = files == 0
             && collisions.is_empty()
             && index.collision_families.is_empty()
             && linear_batch(state, cutoff, None);
@@ -583,6 +602,8 @@ impl Store {
         let mut snapshot = Snapshot::default();
         index.select_observations(cutoff, &mut snapshot, &mut BTreeMap::new(), usize::MAX);
         index.resolve_counts(&mut snapshot);
+        let linear = linear_candidate
+            && terminal_receipts::wholly_accounted_in_batch(&state.events, &snapshot.events);
         terminal_receipts::project(&index, &mut snapshot);
         snapshot.events.retain(|event| {
             event.delta.total_tokens > 0
@@ -1025,13 +1046,18 @@ impl Store {
         let mut next = None;
         let mut expired = Vec::new();
         {
-            // 复用来源主键，保留最后一条原始观察供有序追加取基线。
+            // 有序来源保护最新提交中的原生累计基线，其他来源仍保护尾记录。
             let mut query = tx.prepare(
                 "SELECT revision, position, payload FROM token_observations
                  WHERE source_id = ?1 AND (revision, position) > (?2, ?3)
-                   AND (revision, position) < (
-                       SELECT revision, position FROM token_observations WHERE source_id = ?1
-                       ORDER BY revision DESC, position DESC LIMIT 1
+                   AND (revision, position) IS NOT (
+                       SELECT tail.revision, tail.position FROM token_observations tail
+                       LEFT JOIN token_linear_sources linear ON linear.source_id = tail.source_id
+                       WHERE tail.source_id = ?1 AND (linear.revision IS NULL OR (
+                         tail.revision = linear.revision
+                         AND json_type(CAST(tail.payload AS TEXT), '$.terminal_response') IS NULL
+                       ))
+                       ORDER BY tail.revision DESC, tail.position DESC LIMIT 1
                    )
                  ORDER BY revision, position LIMIT ?4",
             )?;

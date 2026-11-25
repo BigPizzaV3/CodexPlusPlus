@@ -96,6 +96,9 @@ impl Store {
                 payload BLOB NOT NULL,
                 PRIMARY KEY (source_id, revision, position)
              ) WITHOUT ROWID, STRICT;
+             CREATE INDEX IF NOT EXISTS token_terminal_response_identity
+                ON token_observations(event_id)
+                WHERE json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text';
              CREATE TABLE IF NOT EXISTS token_source_links (
                 source_id INTEGER NOT NULL REFERENCES token_sources(id),
                 link TEXT NOT NULL,
