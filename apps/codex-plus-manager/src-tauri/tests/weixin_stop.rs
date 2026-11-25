@@ -67,3 +67,9 @@ fn stops_connection_when_settings_cannot_be_saved() {
         assert!(store.load().unwrap().weixin_connect_enabled);
     });
 }
+
+/// 测试不许碰用户的真实目录：main 之前进家目录沙箱（见 `codex_plus_core::test_sandbox`）。
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    codex_plus_core::test_sandbox::enter();
+}

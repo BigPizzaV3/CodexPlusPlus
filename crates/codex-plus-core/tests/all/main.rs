@@ -159,6 +159,7 @@ mod ssh_remote_loopback;
 mod standalone_quota_settings;
 mod statsig_overrides;
 mod task_board;
+mod test_sandbox;
 mod tool_shards;
 mod typing_effect_settings;
 mod ui_issue_regressions;
@@ -175,3 +176,9 @@ mod weixin_connect_page;
 mod whale_settings;
 mod windows_console_spawn;
 mod zed_remote;
+
+/// 测试不许碰用户的真实目录：main 之前进家目录沙箱（见 `codex_plus_core::test_sandbox`）。
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    codex_plus_core::test_sandbox::enter();
+}

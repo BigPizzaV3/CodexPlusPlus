@@ -125,6 +125,8 @@ pub mod stepwise;
 pub mod newapi;
 pub mod sub2api;
 pub mod task_board;
+#[doc(hidden)]
+pub mod test_sandbox;
 pub mod tools;
 pub mod update;
 pub mod extension_backend;
@@ -196,4 +198,11 @@ pub fn windows_apply_codexplusplus_icon_to_process_window(
 #[cfg(windows)]
 pub fn windows_enumerate_processes() -> Vec<windows_integration::WindowsProcessInfo> {
     windows_integration::enumerate_processes()
+}
+
+/// 单元测试也进家目录沙箱：测试不许碰用户的真实目录（见 [`test_sandbox`]）。
+#[cfg(test)]
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    test_sandbox::enter();
 }

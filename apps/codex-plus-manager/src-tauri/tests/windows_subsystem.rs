@@ -551,3 +551,9 @@ fn read_manager_app_source(manifest_dir: &std::path::Path) -> String {
         .collect::<Vec<_>>()
         .join("\n")
 }
+
+/// 测试不许碰用户的真实目录：main 之前进家目录沙箱（见 `codex_plus_core::test_sandbox`）。
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    codex_plus_core::test_sandbox::enter();
+}

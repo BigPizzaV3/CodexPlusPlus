@@ -86,6 +86,9 @@
 - 合并后各文件的用例在同一进程并行：改进程级状态（设置路径覆盖、诊断日志路径、环境变量）的用例
   必须先拿 `common::global_state_lock()`；需要独占进程的（改 `CODEX_PLUS_STATE_DIR`、常驻 helper 单例）
   才单独留在 `tests/` 下
+- 测试不许碰用户的真实目录：每个测试程序在 main 之前进家目录沙箱（`codex_plus_core::test_sandbox`，
+  `#[ctor::ctor]` 调 `test_sandbox::enter()`，HOME 指到临时目录、清掉 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` /
+  `CODEX_PLUS_STATE_DIR` 等）。新增测试程序照 `tests/all/main.rs` 末尾接上，契约测试 `test_sandbox::` 会查
 - 断言读 config.toml 文本，如 `assert!(config.contains("model_catalog_json"))`
 - 改行为要同步改/加对应测试
 

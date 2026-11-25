@@ -14,3 +14,9 @@ fn windows_icon_lists_largest_entry_first() {
     assert_eq!(width(0), largest, "icon.ico 第一个条目必须是最大尺寸");
     assert_eq!(largest, 256);
 }
+
+/// 测试不许碰用户的真实目录：main 之前进家目录沙箱（见 `codex_plus_core::test_sandbox`）。
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    codex_plus_core::test_sandbox::enter();
+}
