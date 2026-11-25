@@ -308,6 +308,78 @@ fn local_midnight(time: DateTime<Local>) -> bool {
         && Local.from_local_datetime(&time.naive_local()).single() == Some(time)
 }
 
+pub(super) fn retract_unscoped_attribution(db: &Connection) -> Result<()> {
+    let mut changed_days = BTreeSet::new();
+    let mut cursor = (0_i64, i64::MIN, [0_u8; 32]);
+    let mut select = db.prepare_cached(
+        "SELECT r.session_id, r.timestamp_ms, r.event_id, s.session, r.payload
+         FROM token_resolved r INDEXED BY token_classified_time
+         JOIN token_sessions s ON s.id = r.session_id
+         WHERE json_type(CAST(r.payload AS TEXT), '$.classification_origin') = 'object'
+           AND r.day >= (SELECT precise_from FROM token_revision)
+           AND (r.session_id, r.timestamp_ms, r.event_id) > (?1, ?2, ?3)
+         ORDER BY r.session_id, r.timestamp_ms, r.event_id LIMIT 128",
+    )?;
+    let mut write =
+        db.prepare_cached("UPDATE token_resolved SET payload = ?2 WHERE event_id = ?1")?;
+    loop {
+        let mut updates = Vec::new();
+        let mut rows = select.query(params![cursor.0, cursor.1, cursor.2.as_slice()])?;
+        let mut loaded = 0;
+        while let Some(row) = rows.next()? {
+            loaded += 1;
+            cursor = (
+                row.get(0)?,
+                row.get(1)?,
+                row.get_ref(2)?.as_blob()?.try_into()?,
+            );
+            let session: String = row.get(3)?;
+            let mut stored: Observation = serde_json::from_slice(row.get_ref(4)?.as_blob()?)?;
+            let origin = stored
+                .classification_origin
+                .take()
+                .context("missing classification origin")?;
+            let receipt = stored.receipt_count_origin;
+            let mut event = stored.into_event(cursor.2, session.clone())?;
+            let current = EventClassification::of(&event);
+            origin.apply(&mut event);
+            // Losing a supplier proof does not resolve an independently disputed count.
+            event.count_uncertain = current.count_uncertain;
+            if current != EventClassification::of(&event) {
+                changed_days.insert((session, event.date));
+                let mut restored = Observation::capture(&event);
+                restored.receipt_count_origin = receipt;
+                restored.classification_origin =
+                    (origin.count_uncertain != event.count_uncertain).then_some(origin);
+                updates.push((cursor.2, serde_json::to_vec(&restored)?));
+            }
+        }
+        drop(rows);
+        for (id, data) in updates {
+            write.execute(params![id.as_slice(), data])?;
+        }
+        if loaded < 128 {
+            break;
+        }
+    }
+    if !changed_days.is_empty() {
+        let mut update = db.prepare_cached(
+            "UPDATE token_days SET groups = ?3 WHERE day = ?2
+             AND session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
+        )?;
+        for (session, date) in changed_days {
+            let date = date.to_string();
+            let groups = committed_day_groups(db, &session, &date)?;
+            update.execute(params![session, date, encode_groups(groups)?])?;
+        }
+        db.execute(
+            "UPDATE token_revision SET revision = revision + 1, updated_at = max(updated_at + 1, ?1)",
+            [Local::now().timestamp_millis()],
+        )?;
+    }
+    Ok(())
+}
+
 fn retract_append_proofs(
     db: &Connection,
     first: &UsageEvent,

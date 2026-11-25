@@ -28,6 +28,7 @@ pub(super) struct Scan {
     live: BTreeMap<PathBuf, (u64, SystemTime)>,
     next_live: usize,
     issues: usize,
+    unknown_count_scope: bool,
     scoped_count_gaps: BTreeSet<PathBuf>,
     maintenance_day: Option<NaiveDate>,
     details_pending: bool,
@@ -99,6 +100,7 @@ impl Scan {
             self.scoped_count_gaps.clear();
             self.more_missing = false;
             let paths = discover(home, !self.rescan, &mut self.issues);
+            self.unknown_count_scope = self.issues != 0;
             if self.issues == 0 {
                 match store.missing_sources(&paths, SOURCES_PER_ROUND) {
                     Ok((missing, more)) => {
@@ -168,6 +170,7 @@ impl Scan {
                     Err(error) => {
                         self.live.remove(&path);
                         self.issues += 1;
+                        self.unknown_count_scope = true;
                         errors.push((path, error.into()));
                     }
                 }
@@ -286,6 +289,7 @@ impl Scan {
                         Ok(Probe::ReadSource) => {}
                         Err(error) => {
                             self.issues += 1;
+                            self.unknown_count_scope = true;
                             errors.push((path, error));
                             continue;
                         }
@@ -298,6 +302,7 @@ impl Scan {
                         Ok(reader) => reader,
                         Err(error) => {
                             self.issues += 1;
+                            self.unknown_count_scope = true;
                             errors.push((path, error));
                             continue;
                         }
@@ -318,6 +323,7 @@ impl Scan {
                         self.issues += 1;
                     } else if reader.has_count_gap() {
                         self.issues += 1;
+                        self.unknown_count_scope = true;
                     } else if reader.source.starts_with(&sessions_dir)
                         && reader.source.extension().is_some_and(|ext| ext == "jsonl")
                         && let Some(stamp) = reader.scanned_stamp()
@@ -353,6 +359,7 @@ impl Scan {
                 Ok(false) => self.issues += 1,
                 Err(error) => {
                     self.issues += 1;
+                    self.unknown_count_scope |= !reader.can_retry_write();
                     errors.push((reader.source.clone(), error));
                     if reader.can_retry_write() && self.deferred.is_none() {
                         self.deferred = Some(reader);
@@ -368,13 +375,22 @@ impl Scan {
             + usize::from(self.comparing.is_some())
             + usize::from(self.deferred.is_some());
         let mut issues = self.issues;
-        if let Err(error) = store.record_coverage(Coverage {
-            pending_sources,
-            issues,
-            maintenance_blocked: maintenance_error.is_some(),
-        }) {
+        if let Err(error) = store.record_coverage(
+            Coverage {
+                pending_sources,
+                issues,
+                maintenance_blocked: maintenance_error.is_some(),
+            },
+            self.unknown_count_scope,
+        ) {
             issues += 1;
-            errors.push((home.to_owned(), error));
+            return Report {
+                complete: false,
+                pending_sources,
+                issues,
+                errors,
+                maintenance_error: Some(error),
+            };
         }
         Report {
             complete: pending_sources == 0 && issues == 0 && maintenance_error.is_none(),

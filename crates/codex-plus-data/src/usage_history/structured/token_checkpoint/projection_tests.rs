@@ -1050,11 +1050,14 @@ fn late_receipt_repairs_a_sealed_counter_and_competition_revokes_only_its_cache(
         assert_eq!(daily[0]["usage"]["totalTokens"], 66 * 110);
         if n == 1 {
             store
-                .record_coverage(Coverage {
-                    pending_sources: 0,
-                    issues: 0,
-                    maintenance_blocked: false,
-                })
+                .record_coverage(
+                    Coverage {
+                        pending_sources: 0,
+                        issues: 0,
+                        maintenance_blocked: false,
+                    },
+                    false,
+                )
                 .unwrap();
             assert!(
                 store
@@ -1516,11 +1519,14 @@ fn context_only_fork_reconciles_within_budget_until_it_affects_parent_counts() -
         revision = store.publish(ready)?;
         assert!(read(&mut store.db, i64::MIN, i64::MAX).1 == before);
     }
-    store.record_coverage(Coverage {
-        pending_sources: 0,
-        issues: 0,
-        maintenance_blocked: false,
-    })?;
+    store.record_coverage(
+        Coverage {
+            pending_sources: 0,
+            issues: 0,
+            maintenance_blocked: false,
+        },
+        false,
+    )?;
     assert!(
         store
             .reclassify_session(PARENT, 1 << 20, &BTreeSet::new(), |events, _| {
@@ -2908,6 +2914,77 @@ fn attribution_still_waits_for_count_gaps_in_related_or_unidentified_sources() {
             None
         );
     }
+}
+
+#[test]
+fn newly_unidentified_source_withdraws_published_classifications_with_their_days() {
+    use super::scan::Scan;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let db = root.join("index.sqlite");
+    let source = sessions.join("rollout-parent.jsonl");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    parse(&source, &[header(PARENT, 0), count(1, 1, 1, true)], cutoff);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut scan = Scan::default();
+    assert!(
+        scan.round(&mut store, &root, cutoff, &BTreeMap::new(), 8192)
+            .complete
+    );
+    let native = read(&mut store.db, i64::MIN, i64::MAX).1.pop().unwrap();
+    let revision = store
+        .reclassify_session(PARENT, 8192, &BTreeSet::new(), |events, _| {
+            events[0].provider = "relay-proof".into();
+            events[0].model = "final-model".into();
+            events[0].provider_source = Some("request-log-exact".into());
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    fs::write(sessions.join("rollout-unidentified.jsonl.zst"), b"unread").unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER fail_day BEFORE UPDATE ON token_days
+        BEGIN SELECT RAISE(ABORT,'failed day write'); END;",
+        )
+        .unwrap();
+    let failed = scan.round(&mut store, &root, cutoff, &BTreeMap::new(), 8192);
+    assert!(
+        failed
+            .maintenance_error
+            .unwrap()
+            .to_string()
+            .contains("failed day write")
+    );
+    let (after_failed, kept) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(after_failed, revision);
+    assert_eq!(kept[0].provider, "relay-proof");
+    store.db.execute_batch("DROP TRIGGER fail_day").unwrap();
+    let report = scan.round(&mut store, &root, cutoff, &BTreeMap::new(), 8192);
+    assert_eq!((report.pending_sources, report.issues), (0, 1));
+    let (next, restored) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert!(next > revision);
+    assert_eq!(restored[0].id, native.id);
+    assert_eq!(restored[0].provider, native.provider);
+    assert_eq!(restored[0].provider_source, native.provider_source);
+    assert_eq!(restored[0].model, native.model);
+    assert_eq!(restored[0].delta.value(), native.delta.value());
+    drop(store);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let report = Scan::default().round(&mut store, &root, cutoff, &BTreeMap::new(), 8192);
+    assert_eq!((report.pending_sources, report.issues), (0, 1));
+    let query = Query::parse(&json!({}), cutoff).unwrap();
+    let view = Store::read_selection(&mut store.db, &query, None, None).unwrap();
+    assert_eq!(view.revision, next);
+    let day = &view.days[0];
+    assert_eq!(day["recordCount"], 1);
+    assert_eq!(day["usage"]["totalTokens"], 110);
+    assert_ne!(day["breakdowns"][0]["provider"], "relay-proof");
+    assert!(day["breakdowns"][0].get("classificationEvidence").is_none());
 }
 
 #[test]

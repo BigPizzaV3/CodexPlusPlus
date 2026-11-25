@@ -227,8 +227,16 @@ impl Store {
         Ok(Self { db })
     }
 
-    pub(super) fn record_coverage(&self, coverage: Coverage) -> Result<()> {
-        self.db.execute(
+    pub(super) fn record_coverage(
+        &mut self,
+        coverage: Coverage,
+        unknown_count_scope: bool,
+    ) -> Result<()> {
+        let tx = self.db.transaction()?;
+        if unknown_count_scope {
+            projection::retract_unscoped_attribution(&tx)?;
+        }
+        tx.execute(
             "INSERT INTO token_coverage
              SELECT 1, revision, ?1, ?2, ?3 FROM token_revision WHERE singleton = 1
              ON CONFLICT(singleton) DO UPDATE SET revision = excluded.revision,
@@ -244,7 +252,7 @@ impl Store {
                 coverage.maintenance_blocked
             ],
         )?;
-        Ok(())
+        Ok(tx.commit()?)
     }
 
     pub(super) fn expire_execution_locators(&mut self, now_ms: i64, batch: u32) -> Result<()> {
