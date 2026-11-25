@@ -95,7 +95,7 @@ fn recent_sessions_cover_the_day_then_their_own_history_and_revisit_late_proofs(
     assert_eq!(exact(&worker, yesterday.timestamp_millis()), 14);
 
     proofs.push_str(&late_proof);
-    fs::write(&log, proofs).unwrap();
+    fs::write(&log, &proofs).unwrap();
     for _ in 0..3 {
         pass(&mut worker);
     }
@@ -107,43 +107,33 @@ fn recent_sessions_cover_the_day_then_their_own_history_and_revisit_late_proofs(
         ),
         0
     );
-    let totals = worker.store.as_ref().unwrap().db.query_row(
+    let totals = |worker: &Runtime| worker.store.as_ref().unwrap().db.query_row(
         "SELECT count(*), sum(json_extract(CAST(payload AS TEXT), '$.delta.t')) FROM token_resolved",
         [], |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?)),
     ).unwrap();
-    assert_eq!(totals, (43, 43 * 110));
+    assert_eq!(totals(&worker), (43, 43 * 110));
 
-    let byte_budget = worker
-        .store
-        .as_ref()
-        .unwrap()
-        .db
-        .query_row(
-            "SELECT max(length(payload)) FROM token_resolved WHERE timestamp_ms = ?1",
-            [now.timestamp_millis()],
-            |row| row.get::<_, usize>(0),
-        )
+    let mut competitor = proofs.lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|proof| proof["id"] == "1-2")
         .unwrap();
+    competitor["id"] = json!("late-competitor");
+    writeln!(proofs, "{competitor}").unwrap();
+    fs::write(&log, proofs).unwrap();
+    worker.evidence.request_evidence.refresh(&log);
     let mut state = worker.initial_state();
     let cutoff = yesterday.date_naive();
     worker.evidence_before.clear();
     worker.evidence_cursor = 0;
-    let blocked = worker
-        .classify_retained(&home, cutoff, 1, &mut state)
-        .unwrap_err();
-    assert!(
-        blocked
-            .to_string()
-            .contains("competition window exceeds input budget")
-    );
-    assert!(worker.evidence_before.is_empty());
-    // 一轮只够一个完整窗口时，轮转使每个会话都能先拿到全部预算。
+    // 即使预算放不下一条记录，每轮仍核对一个完整窗口，再轮到下一会话。
     for expected in 1..=14 {
         worker
-            .classify_retained(&home, cutoff, byte_budget, &mut state)
+            .classify_retained(&home, cutoff, 1, &mut state)
             .unwrap();
         assert_eq!(worker.evidence_before.len(), expected);
+        assert_eq!(exact(&worker, now.timestamp_millis()), 13);
     }
+    assert_eq!(totals(&worker), (43, 43 * 110));
 }
 
 #[test]

@@ -219,16 +219,21 @@ impl Runtime {
         let index = &mut self.evidence;
         let mut remaining = byte_budget;
         let mut classify_page = |store: &mut Store, session: &str, from, to, shares: usize| {
+            if remaining == 0 {
+                return Ok(None);
+            }
+            // 每轮首个窗口可完整读取竞争记录，后续窗口共享剩余预算。
+            let available = if remaining == byte_budget {
+                usize::MAX
+            } else {
+                remaining
+            };
             let Some((window, bytes)) =
-                store.classification_page(session, from, to, remaining / shares, remaining)?
+                store.classification_page(session, from, to, remaining / shares, available)?
             else {
-                ensure!(
-                    remaining < byte_budget,
-                    "Token classification competition window exceeds input budget"
-                );
                 return Ok(None);
             };
-            remaining -= bytes;
+            remaining = remaining.saturating_sub(bytes);
             let start = window.start;
             store.reclassify_window(
                 session,
