@@ -1,6 +1,5 @@
 use super::*;
 
-const LIMIT: u64 = 32 * 1024 * 1024;
 const SOURCE: &str = "upstream-counter-bidirectional-supplier-only";
 const MAX_MODEL_DETAILS: usize = 128;
 
@@ -237,80 +236,26 @@ impl SupplierRecord {
     }
 }
 
-fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<(u64, u64)> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-
-        let _ = metadata;
-        let file = fs::OpenOptions::new()
-            .access_mode(0)
-            .custom_flags(0x0020_0000)
-            .open(path)?;
-        codex_plus_core::codex_sqlite::opened_file_identity(&file)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = path;
-        file_identity(metadata)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "file identity unavailable"))
-    }
-}
-
 pub(super) fn read_document(settings: &Path) -> anyhow::Result<Option<Document>> {
     let path = settings.with_file_name("usage-supplier-evidence-v2.json");
-    let metadata = match fs::symlink_metadata(&path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        other => other?,
+    let Some(document) = read_evidence_document::<Document>(&path)? else {
+        return Ok(None);
     };
     anyhow::ensure!(
-        metadata.is_file() && metadata.len() <= LIMIT,
-        "evidence size/type"
-    );
-    let identity = observed_file_identity(&path, &metadata)?;
-    let stamp = |value: &fs::Metadata| (value.len(), value.modified().ok());
-    let mut file = File::open(&path)?;
-    let opened = file.metadata()?;
-    anyhow::ensure!(
-        stamp(&opened) == stamp(&metadata)
-            && codex_plus_core::codex_sqlite::opened_file_identity(&file)? == identity,
-        "evidence replaced"
-    );
-    let mut bytes = Vec::new();
-    (&mut file).take(LIMIT + 1).read_to_end(&mut bytes)?;
-    let after = fs::symlink_metadata(&path)?;
-    let opened_after = file.metadata()?;
-    anyhow::ensure!(
-        bytes.len() as u64 == metadata.len()
-            && after.is_file()
-            && stamp(&after) == stamp(&metadata)
-            && stamp(&opened_after) == stamp(&metadata)
-            && observed_file_identity(&path, &after)? == identity
-            && codex_plus_core::codex_sqlite::opened_file_identity(&file)? == identity,
-        "evidence changed"
-    );
-    let document: Document = serde_json::from_slice(&bytes)?;
-    anyhow::ensure!(
-        document.version == 2
-            && !document.records.is_empty()
-            && document.records.len() <= MAX_EVENTS,
+        document.version == 2 && !document.records.is_empty(),
         "evidence version/count"
     );
     Ok(Some(document))
 }
 
-fn claim(owners: &mut HashMap<String, Option<String>>, id: &str, owner: &str) -> bool {
+fn claim(owners: &mut HashMap<String, Option<String>>, id: &str, owner: &str) {
     if let Some(previous) = owners.get_mut(id) {
         if previous.as_deref() != Some(owner) {
             *previous = None;
         }
-        return previous.as_deref() == Some(owner);
+    } else {
+        owners.insert(id.to_owned(), Some(owner.to_owned()));
     }
-    if owners.len() >= MAX_EVENTS {
-        return false;
-    }
-    owners.insert(id.to_owned(), Some(owner.to_owned()));
-    true
 }
 
 impl Cache {
@@ -388,9 +333,7 @@ impl Cache {
         let mut invalid = 0usize;
         for record in document.records {
             let id = &record.event.event_id;
-            if !event_id(id)
-                || (!self.signatures.contains_key(id) && self.signatures.len() >= MAX_EVENTS)
-            {
+            if !event_id(id) {
                 invalid += 1;
                 continue;
             }

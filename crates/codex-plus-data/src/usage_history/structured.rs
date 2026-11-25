@@ -49,7 +49,7 @@ struct AttributionScope {
     native_blocked: bool,
 }
 
-fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<Option<(u64, u64)>> {
+fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<(u64, u64)> {
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
@@ -60,12 +60,13 @@ fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<Op
             .access_mode(0)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0)
             .open(path)?;
-        codex_plus_core::codex_sqlite::opened_file_identity(&file).map(Some)
+        codex_plus_core::codex_sqlite::opened_file_identity(&file)
     }
     #[cfg(not(windows))]
     {
         let _ = path;
-        Ok(file_identity(metadata))
+        file_identity(metadata)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "file identity unavailable"))
     }
 }
 
@@ -2358,38 +2359,39 @@ struct LegacyEvidenceDocument {
     records: Vec<LegacyProviderEvidence>,
 }
 
+fn read_evidence_document<T: serde::de::DeserializeOwned>(
+    path: &Path,
+) -> anyhow::Result<Option<T>> {
+    let before = match FileState::source_stamp(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        other => other?,
+    };
+    let file = File::open(path)?;
+    let opened_stamp = || -> io::Result<_> {
+        let metadata = file.metadata()?;
+        Ok((
+            metadata.len(),
+            metadata.modified().ok(),
+            Some(codex_plus_core::codex_sqlite::opened_file_identity(&file)?),
+        ))
+    };
+    anyhow::ensure!(opened_stamp()? == before, "evidence replaced");
+    let mut input = BufReader::new(&file).take(before.0);
+    let document = serde_json::from_reader(&mut input)?;
+    anyhow::ensure!(
+        input.limit() == 0 && opened_stamp()? == before && FileState::source_stamp(path)? == before,
+        "evidence changed"
+    );
+    Ok(Some(document))
+}
+
 impl LegacyEvidenceDocument {
     fn read(settings: &Path) -> anyhow::Result<Option<Self>> {
-        const LIMIT: u64 = 32 * 1024 * 1024;
         let path = settings.with_file_name("usage-provider-evidence.json");
-        let metadata = match fs::symlink_metadata(&path) {
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                return Ok(None);
-            }
-            other => other?,
+        let Some(document) = read_evidence_document::<Self>(&path)? else {
+            return Ok(None);
         };
-        anyhow::ensure!(
-            metadata.is_file() && metadata.len() <= LIMIT,
-            "evidence size/type"
-        );
-        let stamp = |m: &fs::Metadata| (m.len(), m.modified().ok(), file_identity(m));
-        let file = File::open(&path)?;
-        anyhow::ensure!(
-            stamp(&file.metadata()?) == stamp(&metadata),
-            "evidence replaced"
-        );
-        let mut bytes = Vec::new();
-        file.take(LIMIT + 1).read_to_end(&mut bytes)?;
-        anyhow::ensure!(
-            bytes.len() as u64 == metadata.len()
-                && stamp(&fs::symlink_metadata(&path)?) == stamp(&metadata),
-            "evidence changed"
-        );
-        let document: Self = serde_json::from_slice(&bytes)?;
-        anyhow::ensure!(
-            document.version == 1 && document.records.len() <= MAX_EVENTS,
-            "evidence version/count"
-        );
+        anyhow::ensure!(document.version == 1, "evidence version");
         Ok(Some(document))
     }
 
@@ -2473,10 +2475,7 @@ impl LegacyEvidenceCache {
         let mut invalid = 0usize;
         for record in document.records {
             let id = record.event_id.to_ascii_lowercase();
-            if id.len() != 64
-                || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                || (!self.signatures.contains_key(&id) && self.signatures.len() >= MAX_EVENTS)
-            {
+            if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                 invalid += 1;
                 continue;
             }
@@ -3754,7 +3753,7 @@ impl FileState {
         Ok((
             metadata.len(),
             metadata.modified().ok(),
-            observed_file_identity(path, &metadata)?,
+            Some(observed_file_identity(path, &metadata)?),
         ))
     }
 
