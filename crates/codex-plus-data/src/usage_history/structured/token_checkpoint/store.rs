@@ -527,7 +527,7 @@ impl Store {
     pub(super) fn finish_identity_probe(&self, source: &Path, revision: i64) -> Result<()> {
         let changed = self.db.execute(
             "UPDATE token_sources SET checkpoint = CAST(json_set(CAST(checkpoint AS TEXT),
-               '$.legacy_identity_prefix', 0) AS BLOB) WHERE source = ?1 AND revision = ?2",
+               '$.legacy_identity_prefix', 0, '$.large_tools_checked', json('true')) AS BLOB) WHERE source = ?1 AND revision = ?2",
             params![encode_path(source), revision],
         )?;
         anyhow::ensure!(changed == 1, "source changed during identity check");
@@ -551,6 +551,10 @@ impl Store {
             identity_conflict: bool,
             #[serde(default)]
             legacy_identity_prefix: Option<u64>,
+            #[serde(default)]
+            activity_truncated: bool,
+            #[serde(default)]
+            large_tools_checked: bool,
         }
         let present: HashSet<_> = discovered.iter().map(PathBuf::as_path).collect();
         let current = |source: &Path| -> Result<Option<super::SourceStamp>> {
@@ -581,7 +585,7 @@ impl Store {
             let scoped_gap = !saved.session.is_empty()
                 && saved.issues != 0
                 && saved.issues == saved.malformed_token_counts;
-            if saved.legacy_identity_prefix.unwrap_or(row.get(2)?) != 0 {
+            if super::recheck_prefix(row.get(2)?, saved.legacy_identity_prefix, saved.large_tools_checked, saved.activity_truncated) != 0 {
                 if path.extension().is_some_and(|ext| ext == "jsonl") {
                     if let Some((length, _, identity)) = current(&path)?
                         && length > size && identity == stamp.2

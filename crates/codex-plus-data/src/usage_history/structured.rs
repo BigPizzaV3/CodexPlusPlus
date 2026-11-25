@@ -3973,15 +3973,23 @@ impl FileState {
             return;
         }
         // 忽略消息/推理正文，而不是把多 MB 的文本分配成 Value。
-        if envelope.kind == "response_item" && self.identity_probe.is_some() {
-            return;
-        }
         if envelope.kind == "response_item" {
+            if self.identity_probe.is_some() && line_bytes <= MAX_LINE as u64 {
+                return;
+            }
             let Ok(item) =
                 serde_json::from_str::<execution_observations::Item>(envelope.payload.get())
             else {
                 return;
             };
+            if let Some(found) = &mut self.identity_probe {
+                let now = Local::now().timestamp_millis();
+                *found |= oversized::tool_kind(item.kind) && envelope.timestamp
+                    .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                    .is_some_and(|at| (now - execution_observations::DETAIL_MS..=now)
+                        .contains(&at.timestamp_millis()));
+                return;
+            }
             if let Some(batch) = &mut self.executions
                 && !self.session.is_empty()
                 && !self.history_boundary.contains(ordinal)

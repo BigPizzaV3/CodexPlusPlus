@@ -134,44 +134,46 @@ impl Batch {
 
 fn running_process(output: Option<&RawValue>) -> Option<String> {
     let raw = output?.get();
+    let text = if raw.len() <= 4096 {
+        serde_json::from_str(raw).ok()?
+    } else {
+        output_header(raw)?
+    };
+    let (running, id) = super::exec_receipt(&serde_json::Value::String(text))?;
+    running.then_some(())?;
+    id.parse::<u64>().ok().map(|id| id.to_string())
+}
+
+pub(super) fn output_header(raw: &str) -> Option<String> {
     if !raw.starts_with('"') {
         return None;
     }
     // 只解码执行器回执头，不复制整段输出。截断时保留完整的 JSON 转义行。
-    let text: String = if raw.len() <= 4096 {
-        serde_json::from_str(raw).ok()?
-    } else {
-        let bytes = &raw.as_bytes()[..4096];
-        let mut end = None;
-        let mut offset = 1;
-        while offset + 1 < bytes.len() {
-            if bytes[offset] != b'\\' {
-                offset += 1;
-                continue;
-            }
-            offset += match bytes[offset + 1] {
-                b'u' if offset + 6 <= bytes.len() => {
-                    if bytes[offset + 2..offset + 6].eq_ignore_ascii_case(b"000a")
-                        || bytes[offset + 2..offset + 6].eq_ignore_ascii_case(b"000d")
-                    {
-                        end = Some(offset + 6);
-                    }
-                    6
-                }
-                b'n' | b'r' => {
-                    end = Some(offset + 2);
-                    2
-                }
-                _ => 2,
-            };
+    let bytes = &raw.as_bytes()[..raw.len().min(4096)];
+    let mut end = None;
+    let mut offset = 1;
+    while offset + 1 < bytes.len() {
+        if bytes[offset] != b'\\' {
+            offset += 1;
+            continue;
         }
-        serde_json::from_str(&format!("{}\"", raw.get(..end?)?)).ok()?
-    };
-    let (running, id) = super::exec_receipt(&serde_json::Value::String(text))?;
-    if !running {
-        return None;
+        offset += match bytes[offset + 1] {
+            b'u' if offset + 6 <= bytes.len() => {
+                if bytes[offset + 2..offset + 6].eq_ignore_ascii_case(b"000a")
+                    || bytes[offset + 2..offset + 6].eq_ignore_ascii_case(b"000d")
+                {
+                    end = Some(offset + 6);
+                }
+                6
+            }
+            b'n' | b'r' => {
+                end = Some(offset + 2);
+                2
+            }
+            _ => 2,
+        };
     }
-    id.parse::<u64>().ok().map(|id| id.to_string())
+    serde_json::from_str(&format!("{}\"", raw.get(..end?)?)).ok()
 }
 
 fn bounded(raw: Option<&RawValue>) -> Option<String> {

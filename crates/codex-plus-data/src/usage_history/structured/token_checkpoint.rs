@@ -202,6 +202,16 @@ struct Checkpoint {
     large_meter_checked: bool,
     #[serde(default)]
     legacy_identity_prefix: Option<u64>,
+    #[serde(default)]
+    large_tools_checked: bool,
+}
+
+fn recheck_prefix(offset: u64, identity_prefix: Option<u64>, large_tools_checked: bool, activity_truncated: bool) -> u64 {
+    if !large_tools_checked && activity_truncated && offset > super::MAX_LINE as u64 {
+        offset
+    } else {
+        identity_prefix.unwrap_or(offset)
+    }
 }
 
 impl Checkpoint {
@@ -262,6 +272,7 @@ impl Checkpoint {
                 skipping: state.skipping,
                 large_meter_checked: !state.recheck_large_meter,
                 legacy_identity_prefix: Some(state.legacy_identity_prefix),
+                large_tools_checked: true,
             },
         )
     }
@@ -275,7 +286,7 @@ impl Checkpoint {
             offset,
             resume_pending: self.resume_pending || recheck_large_meter,
             recheck_large_meter,
-            legacy_identity_prefix: self.legacy_identity_prefix.unwrap_or(offset),
+            legacy_identity_prefix: recheck_prefix(offset, self.legacy_identity_prefix, self.large_tools_checked, self.activity_truncated),
             session: self.session,
             model: self.model,
             model_unavailable: self.model_unavailable,

@@ -3,7 +3,7 @@ use super::{Store, decode_path};
 use crate::usage_history::{
     normalize_session_id,
     structured::{
-        FileState, MAX_LINE, exec_receipt,
+        FileState, exec_receipt,
         execution_observations::{DETAIL_MS, LIST_MS},
         log_file,
     },
@@ -20,7 +20,6 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::LazyLock;
 
-const MAX_DETAIL_BYTES: u64 = 4 * 1024 * 1024;
 pub(super) const COMPACTABLE_METADATA: &str =
     "name IS NOT NULL AND name != 'write_stdin' AND substr(name,-12) != '.write_stdin'
      AND substr(name, 1, 5) != 'mcp__' AND substr(COALESCE(namespace,''), 1, 5) != 'mcp__'";
@@ -732,7 +731,7 @@ impl Store {
         } else {
             DetailReader::Plain(file)
         };
-        let item = reader.read_item(&call, committed_offset, &query.id, false)?;
+        let mut item = reader.read_item(&call, committed_offset, &query.id, false)?;
         let shell = item["type"] == "local_shell_call"
             || item["name"].as_str().is_some_and(|name| {
                 !item["namespace"]
@@ -740,17 +739,13 @@ impl Store {
                     .is_some_and(|namespace| namespace.starts_with("mcp__"))
                     && matches!(name.rsplit('.').next(), Some("exec_command" | "shell"))
             });
-        let input = item
-            .get("arguments")
-            .or_else(|| item.get("input"))
-            .or_else(|| item.get("action"))
-            .cloned()
+        let input = ["arguments", "input", "action"].into_iter()
+            .find_map(|key| item.get_mut(key).map(Value::take))
             .unwrap_or(Value::Null);
         let input = match input {
             Value::String(text) => serde_json::from_str(&text).unwrap_or(Value::String(text)),
             value => value,
         };
-        let mut used = call.end - call.start;
         let mut positions_end = call.end;
         let mut parts = Vec::new();
         let mut partial = false;
@@ -766,16 +761,12 @@ impl Store {
             {
                 continue;
             }
-            let length = location
-                .end
-                .checked_sub(location.start)
-                .context("工具定位范围尾部无效")?;
-            if location.start < positions_end || used + length > MAX_DETAIL_BYTES {
+            if location.start < positions_end {
                 partial = true;
                 break;
             }
-            let item = reader.read_item(&location, committed_offset, &id, true)?;
-            let output = item.get("output").cloned().unwrap_or(Value::Null);
+            let mut item = reader.read_item(&location, committed_offset, &id, true)?;
+            let output = item.get_mut("output").map(Value::take).unwrap_or(Value::Null);
             if shell && let Some((started, id)) = exec_receipt(&output) {
                 if started {
                     let observed = id.parse::<u64>().ok().map(|id| id.to_string());
@@ -789,7 +780,6 @@ impl Store {
                 }
             }
             parts.push((location.at, output));
-            used += length;
             positions_end = location.end;
         }
         drop(statement);
@@ -835,14 +825,14 @@ impl DetailReader {
     ) -> Result<Value> {
         let size = at.end.checked_sub(at.start).context("工具定位范围无效")?;
         ensure!(
-            size > 0 && size <= MAX_LINE as u64 && at.end <= committed_end,
+            size > 0 && at.end <= committed_end,
             "工具定位超出已提交范围"
         );
-        let mut bytes = vec![0; size as usize];
+        let mut bytes = Vec::new();
         match self {
             Self::Plain(file) => {
                 file.seek(SeekFrom::Start(at.start))?;
-                file.read_exact(&mut bytes)?;
+                file.take(size).read_to_end(&mut bytes)?;
             }
             Self::Compressed(reader, offset) => {
                 ensure!(at.start >= *offset, "归档工具定位顺序无效");
@@ -851,10 +841,11 @@ impl DetailReader {
                     io::copy(&mut reader.take(skip), &mut io::sink())? == skip,
                     "归档工具位置缺失"
                 );
-                reader.read_exact(&mut bytes)?;
+                reader.take(size).read_to_end(&mut bytes)?;
                 *offset = at.end;
             }
         }
+        ensure!(bytes.len() as u64 == size, "工具原会话位置缺失");
         let row: Value = serde_json::from_slice(&bytes)?;
         let timestamp = row["timestamp"]
             .as_str()

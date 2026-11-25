@@ -1672,7 +1672,7 @@ fn compressed_execution_details_read_verified_calls_and_outputs_past_32_mib() ->
 }
 
 #[test]
-fn tool_detail_reads_many_small_outputs_until_the_actual_byte_budget() -> anyhow::Result<()> {
+fn tool_detail_reads_all_output_parts() -> anyhow::Result<()> {
     use crate::usage_history::structured::token_checkpoint::DetailQuery;
     use std::io::Write;
 
@@ -1729,15 +1729,99 @@ fn tool_detail_reads_many_small_outputs_until_the_actual_byte_budget() -> anyhow
     assert_eq!(result["status"], "ok");
     assert_eq!(result["detail"]["output"], json!(small));
     let result = read("large")?;
-    assert_eq!(result["status"], "partial");
+    assert_eq!(result["status"], "ok");
     let parts = result["detail"]["output"].as_array().unwrap();
-    assert_eq!(parts.len(), 7);
+    assert_eq!(parts.len(), 10);
     assert!(
         parts
             .iter()
             .all(|part| part.as_str() == Some(large.as_str()))
     );
-    assert!(result["detail"]["durationMs"].is_null());
+    assert_eq!(result["detail"]["durationMs"], 0);
+    Ok(())
+}
+
+#[test]
+fn tool_detail_reads_large_lines_in_plain_and_archived_sources() -> anyhow::Result<()> {
+    use crate::usage_history::structured::token_checkpoint::DetailQuery;
+    let now = chrono::Local::now();
+    let at = now - chrono::Duration::seconds(5);
+    let large = "x".repeat((1 << 20) + 51);
+    let arguments = json!({"value": &large}).to_string();
+    for archived in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let home = dir.path().canonicalize()?;
+        let sessions = home.join("sessions");
+        fs::create_dir(&sessions)?;
+        let mut source = rollout(FIRST)
+            .replace("2026-01-02T12:00:00Z", &at.to_rfc3339())
+            .replace("2026-01-02T12:01:00Z", &at.to_rfc3339());
+        for (id, input) in [("mixed", "{}"), ("long-input", arguments.as_str())] {
+            let mut append = |payload| {
+                source.push_str(&json!({"type":"response_item", "timestamp":at.to_rfc3339(), "payload":payload}).to_string());
+                source.push('\n');
+            };
+            append(json!({"type":"function_call","call_id":id,"name":"example","arguments":input}));
+            for value in ["prefix", large.as_str(), "tail"] {
+                append(json!({"type":"function_call_output","call_id":id,"output":value}));
+            }
+        }
+        let path = sessions.join(format!("rollout-{FIRST}.jsonl{}", if archived { ".zst" } else { "" }));
+        if archived {
+            fs::write(&path, zstd::stream::encode_all(source.as_bytes(), 1)?)?;
+        } else {
+            fs::write(&path, &source)?;
+        }
+        let db_path = home.join("index.sqlite");
+        let mut store = Store::open(Connection::open(&db_path)?)?;
+        let mut scan = Scan::default();
+        loop {
+            let report = scan.round(&mut store, &home, at.date_naive(), &BTreeMap::new(), 1 << 20);
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            if report.complete { break; }
+        }
+        let revision: i64 = store.db.query_row("SELECT revision FROM token_revision", [], |r| r.get(0))?;
+        for id in ["mixed", "long-input"] {
+            let query = DetailQuery::parse(&json!({"sessionId":FIRST,"id":id,"revision":revision}))?;
+            let result = Store::read_execution_detail(&mut store.db, &home, &query, || now.timestamp_millis())?;
+            assert_eq!(result["status"], "ok");
+            let output = result["detail"]["output"].as_array().unwrap();
+            assert_eq!(output.len(), 3, "{id}, archived={archived}");
+            assert_eq!(output[0], "prefix");
+            assert!(output[1].as_str() == Some(large.as_str()));
+            assert_eq!(output[2], "tail");
+            if id == "long-input" {
+                assert!(result["detail"]["input"]["value"].as_str() == Some(large.as_str()));
+            }
+        }
+        let observations = |store: &Store| -> rusqlite::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+            store.db.prepare("SELECT event_id,payload FROM token_resolved ORDER BY event_id")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect()
+        };
+        let original = observations(&store)?;
+        assert_eq!(original.len(), 1);
+        store.db.execute("DELETE FROM execution_observations WHERE end-position>1048576", [])?;
+        store.db.execute("UPDATE token_sources SET activity_truncated=1,checkpoint=CAST(
+            json_set(json_remove(CAST(checkpoint AS TEXT),'$.large_tools_checked'),
+                '$.activity_truncated', json('true')) AS BLOB)", [])?;
+        drop(store);
+        let mut store = Store::open(Connection::open(&db_path)?)?;
+        let mut scan = Scan::default();
+        for _ in 0..24 {
+            let report = scan.round(&mut store, &home, at.date_naive(), &BTreeMap::new(), 1 << 20);
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            if report.complete { break; }
+        }
+        assert_eq!(observations(&store)?, original);
+        let revision: i64 = store.db.query_row("SELECT revision FROM token_revision", [], |r| r.get(0))?;
+        let query = DetailQuery::parse(&json!({"sessionId":FIRST,"id":"long-input","revision":revision}))?;
+        let result = Store::read_execution_detail(&mut store.db, &home, &query, || now.timestamp_millis())?;
+        assert_eq!(result["status"], "ok", "upgrade, archived={archived}");
+        assert!(result["detail"]["input"]["value"].as_str() == Some(large.as_str()));
+        assert!(result["detail"]["output"][1].as_str() == Some(large.as_str()));
+        assert_eq!(result["detail"]["output"][2], "tail");
+        assert_eq!(store.checkpoint(&path)?.unwrap().1.legacy_identity_prefix, 0);
+    }
     Ok(())
 }
 
@@ -1773,7 +1857,7 @@ fn detail_follows_a_verified_shell_process_and_rejects_reused_process_ids() {
         row(
             30,
             json!({"type":"function_call_output","call_id":"open","output":format!(
-                "Chunk ID: x\nProcess running with session ID 831\nOutput:\n{}", "x".repeat(8192)
+                "Chunk ID: x\nProcess running with session ID 831\nOutput:\n{}", "x".repeat((1 << 20) + 51)
             )}),
         ),
         row(

@@ -1,6 +1,7 @@
 //! 从超长原生日志提取计量字段，正文中的同名字符串不参与分类。
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -66,8 +67,10 @@ impl Spool {
             original.seek(SeekFrom::Start(end - self.bytes))?;
             &mut original
         };
-        let mut json = serde_json::Deserializer::from_reader(BufReader::new(file.take(self.bytes)));
-        let mut record = match Columns::Envelope(session)
+        let prefix = FieldPrefix::default();
+        let mut input = BufReader::new(file.take(self.bytes));
+        let mut json = serde_json::Deserializer::from_reader(PrefixReader(&mut input, &prefix));
+        let mut record = match Columns::Envelope(session, &prefix)
             .deserialize(&mut json)
             .and_then(|value| {
                 json.end()?;
@@ -87,9 +90,13 @@ impl Spool {
         let bad_payload = terminal && record["payload"]["duplicate_terminal"] == true
             || context && record["payload"]["duplicate_context"] == true
             || event && record["payload"]["duplicate_event_type"] == true;
+        let tool = record["type"] == "response_item"
+            && record["payload"]["duplicate_tool_field"] != true
+            && record["payload"]["type"].as_str().is_some_and(tool_kind);
         if bad_payload
             || terminal
             || context
+            || tool
             || event
                 && record["payload"]["type"]
                     .as_str()
@@ -123,10 +130,70 @@ impl Spool {
     }
 }
 
+// 解析器跳过整个 JSON 字段；仅为工具分类和终端关联保留已有格式的元数据前缀。
+// 详情读取器始终使用原文定位，绝不拿此前缀作为正文。
+#[derive(Default)]
+struct FieldPrefix {
+    remaining: Cell<usize>,
+    bytes: RefCell<Vec<u8>>,
+}
+
+struct PrefixReader<'a, R>(&'a mut R, &'a FieldPrefix);
+
+impl<R: Read> Read for PrefixReader<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let count = self.0.read(buf)?;
+        let left = self.1.remaining.get();
+        if left != 0 {
+            let saved = count.min(left);
+            self.1.bytes.borrow_mut().extend_from_slice(&buf[..saved]);
+            self.1.remaining.set(left - saved);
+        }
+        Ok(count)
+    }
+}
+
+impl FieldPrefix {
+    fn read<'de, M: MapAccess<'de>>(&self, map: &mut M, output: bool) -> Result<Value, M::Error> {
+        self.bytes.borrow_mut().clear();
+        self.remaining.set(if output { 4096 } else { 64_002 });
+        map.next_value::<IgnoredAny>()?;
+        let complete = self.remaining.replace(0) != 0;
+        let bytes = self.bytes.borrow();
+        let raw = bytes
+            .trim_ascii_start()
+            .strip_prefix(b":")
+            .unwrap_or(&bytes)
+            .trim_ascii_start();
+        if complete && let Ok(value) = serde_json::from_slice(raw) {
+            return Ok(value);
+        }
+        if output
+            && let Some(chunk) = raw.utf8_chunks().next()
+            && let Some(text) = super::execution_observations::output_header(chunk.valid())
+        {
+            return Ok(Value::String(text));
+        }
+        Ok(Value::Null)
+    }
+}
+
+pub(super) fn tool_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "function_call"
+            | "function_call_output"
+            | "custom_tool_call"
+            | "custom_tool_call_output"
+            | "local_shell_call"
+            | "local_shell_call_output"
+    )
+}
+
 #[derive(Clone, Copy)]
 enum Columns<'a> {
-    Envelope(&'a str),
-    Payload(&'a str),
+    Envelope(&'a str, &'a FieldPrefix),
+    Payload(&'a str, &'a FieldPrefix),
     Info,
     Counts,
     HistoryBase,
@@ -183,8 +250,13 @@ impl<'de> Visitor<'de> for Columns<'_> {
             Self::Kind
                 if matches!(
                     s,
-                    "event_msg" | "token_usage_record" | "session_meta" | "turn_context"
-                ) || relevant_event(s) =>
+                    "event_msg"
+                        | "token_usage_record"
+                        | "session_meta"
+                        | "turn_context"
+                        | "response_item"
+                ) || relevant_event(s)
+                    || tool_kind(s) =>
             {
                 Value::from(s)
             }
@@ -211,8 +283,8 @@ impl<'de> Visitor<'de> for Columns<'_> {
     fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Value, M::Error> {
         if !matches!(
             self,
-            Self::Envelope(_)
-                | Self::Payload(_)
+            Self::Envelope(..)
+                | Self::Payload(..)
                 | Self::Info
                 | Self::Counts
                 | Self::HistoryBase
@@ -228,36 +300,45 @@ impl<'de> Visitor<'de> for Columns<'_> {
         while let Some(key) = map.next_key::<String>()? {
             let field = (self, key.as_str());
             let value = match field {
-                (Self::Envelope(session), "payload") => {
-                    map.next_value_seed(Self::Payload(session))?
+                (Self::Envelope(session, prefix), "payload") => {
+                    map.next_value_seed(Self::Payload(session, prefix))?
                 }
-                (Self::Payload(_), "info") => map.next_value_seed(Self::Info)?,
-                (Self::Payload(_), "usage" | "thread_token_usage")
+                (Self::Payload(_, prefix), "arguments" | "input" | "output") => {
+                    prefix.read(&mut map, key == "output")?
+                }
+                (Self::Payload(..), "info") => map.next_value_seed(Self::Info)?,
+                (Self::Payload(..), "usage" | "thread_token_usage")
                 | (Self::Info, "total_token_usage" | "last_token_usage") => {
                     map.next_value_seed(Self::Counts)?
                 }
-                (Self::Envelope(_) | Self::Payload(_), "type") => {
+                (Self::Envelope(..) | Self::Payload(..), "type") => {
                     map.next_value_seed(Self::Kind)?
                 }
-                (Self::Envelope(_), "timestamp") => map.next_value_seed(Self::Timestamp)?,
-                (Self::Payload(session), "thread_id") => map.next_value_seed(Self::Id(session))?,
-                (Self::Payload(_), "history_base") => map.next_value_seed(Self::HistoryBase)?,
-                (Self::Payload(_), "source") => map.next_value_seed(Self::Source)?,
+                (Self::Envelope(..), "timestamp") => map.next_value_seed(Self::Timestamp)?,
+                (Self::Payload(session, _), "thread_id") => {
+                    map.next_value_seed(Self::Id(session))?
+                }
+                (Self::Payload(..), "history_base") => map.next_value_seed(Self::HistoryBase)?,
+                (Self::Payload(..), "source") => map.next_value_seed(Self::Source)?,
                 (Self::Source, "subagent") => map.next_value_seed(Self::Subagent)?,
                 (Self::Subagent, "thread_spawn") => map.next_value_seed(Self::ThreadSpawn)?,
-                (Self::Payload(_), "thread_settings") => {
+                (Self::Payload(..), "thread_settings") => {
                     map.next_value_seed(Self::ThreadSettings)?
                 }
-                (Self::Payload(_), "id" | "session_id" | "forked_from_id" | "turn_id")
-                | (Self::Payload(_) | Self::ThreadSpawn, "parent_thread_id")
+                (
+                    Self::Payload(..),
+                    "id" | "session_id" | "forked_from_id" | "turn_id" | "call_id" | "name"
+                    | "namespace",
+                )
+                | (Self::Payload(..) | Self::ThreadSpawn, "parent_thread_id")
                 | (
-                    Self::Payload(_) | Self::ThreadSettings,
+                    Self::Payload(..) | Self::ThreadSettings,
                     "model_provider" | "modelProvider" | "model",
                 )
                 | (Self::HistoryBase, "thread_id") => map.next_value_seed(Self::Text)?,
-                (Self::Payload(_), "response_id") => map.next_value_seed(Self::Response)?,
-                (Self::Envelope(_), "ordinal")
-                | (Self::Payload(_), "subagent_history_start_ordinal")
+                (Self::Payload(..), "response_id") => map.next_value_seed(Self::Response)?,
+                (Self::Envelope(..), "ordinal")
+                | (Self::Payload(..), "subagent_history_start_ordinal")
                 | (Self::HistoryBase, "end_ordinal_exclusive" | "end_byte_offset")
                 | (
                     Self::Counts,
@@ -274,10 +355,16 @@ impl<'de> Visitor<'de> for Columns<'_> {
                 }
             };
             if fields.contains_key(&key) {
-                if matches!(self, Self::Envelope(_)) {
+                if matches!(self, Self::Envelope(..)) {
                     return Err(serde::de::Error::custom("duplicate envelope field"));
                 }
-                if matches!(self, Self::Payload(_)) {
+                if matches!(self, Self::Payload(..)) {
+                    if matches!(
+                        key.as_str(),
+                        "type" | "id" | "call_id" | "name" | "namespace" | "arguments" | "output"
+                    ) {
+                        fields.insert("duplicate_tool_field".into(), Value::Bool(true));
+                    }
                     if matches!(
                         key.as_str(),
                         "thread_id" | "turn_id" | "response_id" | "usage" | "thread_token_usage"
@@ -289,7 +376,16 @@ impl<'de> Visitor<'de> for Columns<'_> {
                     }
                     if !matches!(
                         key.as_str(),
-                        "thread_id" | "response_id" | "usage" | "thread_token_usage"
+                        "thread_id"
+                            | "response_id"
+                            | "usage"
+                            | "thread_token_usage"
+                            | "call_id"
+                            | "name"
+                            | "namespace"
+                            | "arguments"
+                            | "input"
+                            | "output"
                     ) {
                         fields.insert("duplicate_context".into(), Value::Bool(true));
                     }
@@ -322,6 +418,7 @@ fn relevant_event(kind: &str) -> bool {
 
 struct UsagePrefix<'a> {
     payload: bool,
+    response_item: bool,
     result: &'a std::cell::Cell<Option<bool>>,
     may_meter: &'a std::cell::Cell<bool>,
     ordinal: &'a std::cell::Cell<Option<u64>>,
@@ -339,10 +436,16 @@ impl<'de> serde::de::Visitor<'de> for UsagePrefix<'_> {
     }
     fn visit_map<M: serde::de::MapAccess<'de>>(self, mut map: M) -> Result<bool, M::Error> {
         let mut event_msg = false;
+        let mut response_item = false;
         while let Some(key) = map.next_key::<String>()? {
             if key == "type" {
                 let kind = map.next_value::<String>()?;
                 if self.payload {
+                    if self.response_item {
+                        self.may_meter.set(tool_kind(&kind));
+                        self.result.set(Some(false));
+                        return Ok(false);
+                    }
                     let relevant = relevant_event(&kind);
                     self.may_meter.set(projected_event(&kind));
                     self.result.set(Some(relevant));
@@ -355,6 +458,7 @@ impl<'de> serde::de::Visitor<'de> for UsagePrefix<'_> {
                         return Ok(true);
                     }
                     "event_msg" => event_msg = true,
+                    "response_item" => response_item = true,
                     _ => {
                         self.may_meter.set(false);
                         self.result.set(Some(false));
@@ -363,9 +467,10 @@ impl<'de> serde::de::Visitor<'de> for UsagePrefix<'_> {
                         }
                     }
                 }
-            } else if key == "payload" && event_msg {
+            } else if key == "payload" && (event_msg || response_item) {
                 return map.next_value_seed(UsagePrefix {
                     payload: true,
+                    response_item,
                     result: self.result,
                     may_meter: self.may_meter,
                     ordinal: self.ordinal,
@@ -396,6 +501,7 @@ pub(super) fn inspect(prefix: &[u8]) -> (bool, Option<u64>, bool) {
         &mut serde_json::Deserializer::from_slice(prefix),
         UsagePrefix {
             payload: false,
+            response_item: false,
             result: &result,
             ordinal: &ordinal,
             may_meter: &may_meter,
