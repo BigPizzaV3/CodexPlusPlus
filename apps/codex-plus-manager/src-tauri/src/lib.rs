@@ -517,6 +517,7 @@ pub fn run() {
             gateway_commands::apply_gateway_provider_reasoning_sync,
             gateway_commands::save_gateway_provider_models,
             gateway_commands::refresh_gateway_quota,
+            gateway_commands::load_gateway_quota_history,
             gateway_commands::sync_gateway_provider_prices,
             gateway_commands::set_gateway_provider_enabled,
             gateway_commands::reorder_gateway_providers,

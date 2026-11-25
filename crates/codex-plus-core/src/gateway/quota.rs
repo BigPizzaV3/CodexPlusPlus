@@ -652,6 +652,8 @@ where
     let result = fetch().await;
     if let Ok(Some(quota)) = &result {
         record_for_relay(relay, quota.clone());
+        #[cfg(not(test))]
+        super::quota_history::record_refresh(relay, quota).await;
     }
     *flight.outcome.lock().unwrap_or_else(|error| error.into_inner()) =
         Some((Instant::now(), result.as_ref().map(Clone::clone).map_err(|error| format!("{error:#}"))));

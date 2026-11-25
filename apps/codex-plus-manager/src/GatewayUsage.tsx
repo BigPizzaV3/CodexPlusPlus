@@ -26,7 +26,7 @@ import {
   type UsageSummary,
   maskAccountName,
 } from "./gateway-model";
-import { AGENT_ICONS, Avatar, QuotaWindows, type Notify, type Run } from "./gateway-ui";
+import { AGENT_ICONS, Avatar, type Notify, type Run } from "./gateway-ui";
 import { successRate } from "./hub-overview-model";
 import { openRequestLog, requestLogAgent } from "./UsageTabs";
 import { TopbarActions } from "./TopbarActions";
@@ -34,6 +34,7 @@ import { cachedProviderBalances, loadProviderBalances, subscribeProviderBalances
 import { CxCard, CxEmpty, CxRow, CxSection, CxStats } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
 import { UsageVisuals } from "./UsageVisuals";
+import { QuotaCards } from "./ProviderQuotaPanel";
 import { onTabListKeyDown } from "./tablist-keys";
 
 type LoadedUsage = { range: UsageRange; summary: UsageSummary };
@@ -284,30 +285,10 @@ export function UsageView({ payload, busy, run, notify }: { payload: GatewayPayl
 
       {/* 额度（#3084）：订阅账号和 OpenCode Go、Command Code 等套餐的时间窗口，和共享供应商卡片同一份缓存。 */}
       {quotas.length ? (
-        <CxSection count={quotas.length} title={t("额度")}>
-          <CxCard>
-            {quotas.map((entry) => (
-              <CxRow
-                icon={<Avatar baseUrl={entry.baseUrl} name={entry.name} size="sm" />}
-                key={entry.id}
-                title={maskAccountName(entry.name)}
-              >
-                {entry.quota
-                  ? <QuotaWindows compact maxAgeSeconds={entry.subscriptionPolicy?.maxAgeSeconds} quota={entry.quota} />
-                  : <small className="gw-usage-balance-missing">{t("额度待刷新")}</small>}
-                <button
-                  aria-label={t("刷新额度")}
-                  className="gw-icon-button"
-                  disabled={busy !== null}
-                  onClick={() => void run(`quota:${entry.id}`, "refresh_gateway_quota", { id: entry.id }, t("刷新额度"), true)}
-                  title={t("刷新额度")}
-                  type="button"
-                >
-                  <RefreshCw className={busy === `quota:${entry.id}` ? "h-3.5 w-3.5 animate-spin" : "h-3.5 w-3.5"} />
-                </button>
-              </CxRow>
-            ))}
-          </CxCard>
+        <CxSection count={quotas.length} title={t("配额窗口")}>
+          <QuotaCards entries={quotas} busy={busy} refresh={entry =>
+            void run(`quota:${entry.id}`, "refresh_gateway_quota", { id: entry.id }, t("刷新额度"), true)
+          } />
         </CxSection>
       ) : null}
 

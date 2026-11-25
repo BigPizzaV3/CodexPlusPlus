@@ -3585,3 +3585,21 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
     };
     run().unwrap_or_else(|message| serde_json::json!({ "status": "failed", "message": message }))
 }
+
+#[tauri::command]
+pub async fn load_gateway_quota_history(
+    id: String,
+) -> Result<Vec<codex_plus_core::gateway::quota_history::QuotaObservation>, String> {
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let gateway = GatewayStore::default().load()?;
+        let provider = gateway
+            .provider(&id)
+            .ok_or_else(|| anyhow::anyhow!("missing provider"))?;
+        codex_plus_core::gateway::quota_history::for_relay(&provider.relay)
+    })
+    .await;
+    match result {
+        Ok(Ok(points)) => Ok(points),
+        _ => Err("quota_history_unavailable".to_string()),
+    }
+}
