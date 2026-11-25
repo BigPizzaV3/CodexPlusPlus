@@ -30,6 +30,7 @@ pub(super) const RETENTION_DAYS: u64 = 60;
 const RECONCILIATION_BYTES: usize = 32 * 1024 * 1024;
 const WORKING_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 const CLASSIFICATION_SESSIONS_PER_ROUND: usize = 6;
+const CLASSIFICATION_SLICE_MS: i64 = 300_000;
 
 pub(in super::super) struct Runtime {
     storage: PathBuf,
@@ -38,6 +39,7 @@ pub(in super::super) struct Runtime {
     scan: Scan,
     evidence: Index,
     evidence_cursor: usize,
+    evidence_before: BTreeMap<String, i64>,
     historical: Option<Arc<Historical>>,
     historical_verifier: Arc<Mutex<EvidenceVerifier>>,
 }
@@ -92,6 +94,7 @@ impl Runtime {
             store: None,
             scan: Scan::default(),
             evidence_cursor: 0,
+            evidence_before: BTreeMap::new(),
             historical: None,
             historical_verifier: Arc::default(),
         }
@@ -173,6 +176,8 @@ impl Runtime {
             .expect("successful scan owns a usage index");
         let now = Local::now().timestamp_millis();
         let sessions = store.recent_sessions(now - 86_400_000)?;
+        let active: std::collections::BTreeSet<_> = sessions.iter().map(|(id, _)| id).collect();
+        self.evidence_before.retain(|id, _| active.contains(id));
         if sessions.is_empty() {
             self.evidence_cursor = 0;
             return Ok(());
@@ -182,46 +187,61 @@ impl Runtime {
         self.evidence_cursor = offset + count;
         let index = &mut self.evidence;
         let mut failure = None;
-        for session in sessions.iter().cycle().skip(offset).take(count) {
-            let result = store.reclassify_session(
-                session,
-                RECONCILIATION_BYTES,
-                self.scan.scoped_count_gaps(),
-                |events, aliases| {
-                    ensure!(
-                        index.native_evidence.observe_count_conflicts(events, true),
-                        "native count evidence exceeds capacity"
-                    );
-                    index.request_evidence.supplement_captured(
-                        events,
-                        aliases,
-                        &index.provider_cache,
-                    );
-                    index.request_evidence.attribute_with_cache(
-                        events,
-                        &mut state.provider_names,
-                        aliases,
-                        &index.provider_cache,
-                    );
-                    ensure!(
-                        !index.request_evidence.captured_id_check_failed,
-                        "captured request validation failed"
-                    );
-                    index.native_evidence.attribute(
-                        home,
-                        events,
-                        &index.provider_endpoints,
-                        index.provider_endpoint_since,
-                        aliases,
-                        &index.provider_cache,
-                        true,
-                    );
-                    index.native_evidence.apply_count_conflicts(events);
-                    Ok(())
-                },
-            );
-            if let Err(error) = result {
-                failure.get_or_insert(error);
+        for (session, latest) in sessions.iter().cycle().skip(offset).take(count) {
+            let tail = latest.saturating_sub(CLASSIFICATION_SLICE_MS - 1)..latest.saturating_add(1);
+            let before = self
+                .evidence_before
+                .entry(session.clone())
+                .or_insert(tail.start);
+            let older = store
+                .classification_before(session, (*before).min(tail.start))?
+                .map(|at| at.saturating_sub(CLASSIFICATION_SLICE_MS - 1)..at.saturating_add(1));
+            *before = older.as_ref().map_or(tail.start, |window| window.start);
+            for window in older.into_iter().chain(std::iter::once(tail)) {
+                let result = store.reclassify_window(
+                    session,
+                    Some(window),
+                    RECONCILIATION_BYTES,
+                    self.scan.scoped_count_gaps(),
+                    |events, aliases, scope| {
+                        ensure!(
+                            index.native_evidence.observe_count_conflicts(events, true),
+                            "native count evidence exceeds capacity"
+                        );
+                        index.request_evidence.supplement_captured_scoped(
+                            events,
+                            aliases,
+                            &index.provider_cache,
+                            Some(scope),
+                        );
+                        index.request_evidence.attribute_with_cache_scoped(
+                            events,
+                            &mut state.provider_names,
+                            aliases,
+                            &index.provider_cache,
+                            Some(scope),
+                        );
+                        ensure!(
+                            !index.request_evidence.captured_id_check_failed,
+                            "captured request validation failed"
+                        );
+                        index.native_evidence.attribute(
+                            home,
+                            events,
+                            &index.provider_endpoints,
+                            index.provider_endpoint_since,
+                            aliases,
+                            &index.provider_cache,
+                            true,
+                            Some(scope),
+                        );
+                        index.native_evidence.apply_count_conflicts(events);
+                        Ok(())
+                    },
+                );
+                if let Err(error) = result {
+                    failure.get_or_insert(error);
+                }
             }
         }
         index

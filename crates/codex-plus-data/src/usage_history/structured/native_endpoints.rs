@@ -3,7 +3,7 @@ use super::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::collections::BTreeSet;
 
-const WINDOW_MS: i64 = 600_000;
+pub(super) const WINDOW_MS: i64 = 600_000;
 const MAX_ROWS: usize = 20_000;
 const MAX_SESSION_ROWS: usize = 2_000;
 
@@ -751,6 +751,7 @@ impl Cache {
         session_aliases: &BTreeMap<String, String>,
         captured: &provider_cache::ProviderCache,
         scan_complete: bool,
+        scope: Option<&AttributionScope>,
     ) -> Value {
         let aliases = RequestSessionAliases::new(session_aliases);
         let blocked_sessions: HashSet<_> = events
@@ -775,11 +776,13 @@ impl Cache {
             .retain(|_, at| at.elapsed() < Duration::from_secs(300));
         let mut targets: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         let mut live_targets = HashSet::new();
-        for (event, key) in events.iter().zip(&keys) {
+        let range = scope.map_or(0..events.len(), |scope| scope.targets.clone());
+        for (event, key) in events[range.clone()].iter().zip(&keys[range.clone()]) {
             let Some((key, at)) = key else {
                 continue;
             };
             if !scan_complete
+                || scope.is_some_and(|scope| scope.native_blocked)
                 || event.count_uncertain
                 || event.context_conflicts.any()
                 || blocked_sessions.contains(&key.session)
@@ -994,7 +997,7 @@ impl Cache {
                 .or_insert(row);
         }
         let records: Vec<_> = unique.into_values().collect();
-        let stats = self.apply(
+        let stats = self.apply_scoped(
             events,
             &keys,
             &records,
@@ -1002,8 +1005,9 @@ impl Cache {
             &coverage,
             scan_complete,
             &blocked_sessions,
+            scope,
         );
-        for (event, key) in events.iter().zip(&keys) {
+        for (event, key) in events[range.clone()].iter().zip(&keys[range]) {
             if key.as_ref().is_some_and(|(key, at)| {
                 checked.contains(&key.session)
                     && coverage.get(&key.session).is_some_and(|(floor, complete)| {
@@ -1021,6 +1025,7 @@ impl Cache {
             "cachedEvents":self.verified.len()})
     }
 
+    #[cfg(test)]
     fn apply(
         &mut self,
         events: &mut [UsageEvent],
@@ -1030,6 +1035,29 @@ impl Cache {
         coverage: &BTreeMap<String, (i64, bool)>,
         scan_complete: bool,
         blocked_sessions: &HashSet<String>,
+    ) -> (usize, u64) {
+        self.apply_scoped(
+            events,
+            keys,
+            records,
+            binding_since,
+            coverage,
+            scan_complete,
+            blocked_sessions,
+            None,
+        )
+    }
+
+    fn apply_scoped(
+        &mut self,
+        events: &mut [UsageEvent],
+        keys: &[Option<(RequestMatchKey, i64)>],
+        records: &[Request],
+        binding_since: i64,
+        coverage: &BTreeMap<String, (i64, bool)>,
+        scan_complete: bool,
+        blocked_sessions: &HashSet<String>,
+        scope: Option<&AttributionScope>,
     ) -> (usize, u64) {
         type Group = (String, String, String);
         let mut requests: BTreeMap<Group, Vec<&Request>> = BTreeMap::new();
@@ -1055,7 +1083,8 @@ impl Cache {
             rows.sort_unstable();
         }
         let (mut recovered, mut tokens) = (0, 0u64);
-        for (event, key) in events.iter_mut().zip(keys) {
+        let targets = scope.map_or(0..events.len(), |scope| scope.targets.clone());
+        for (event, key) in events[targets.clone()].iter_mut().zip(&keys[targets]) {
             if event.context_conflicts.any() || event.count_uncertain && !event.count_pending {
                 if let Some(saved) = self.verified.get_mut(&event.id) {
                     saved.rejected = true;
@@ -1065,7 +1094,11 @@ impl Cache {
             if event.count_pending {
                 continue;
             }
-            if !scan_complete || !unknown_provider(&event.provider) || event.turn.is_empty() {
+            if !scan_complete
+                || scope.is_some_and(|scope| scope.native_blocked)
+                || !unknown_provider(&event.provider)
+                || event.turn.is_empty()
+            {
                 continue;
             }
             let Some((key, at)) = key else {
@@ -1249,6 +1282,36 @@ mod tests {
         assert_eq!(fresh[0].model, "cpx-a/model");
         assert_eq!(cache.verified[&event.id].version, 4);
         assert_eq!(cache.verified[&event.id].original_model, event.model);
+
+        // The previous count bounds the native request, but is not itself a target.
+        let mut preceding = event.clone();
+        preceding.id = [72; 32];
+        preceding.timestamp = DateTime::from_timestamp_millis(at - 50)
+            .unwrap()
+            .to_rfc3339();
+        let previous = event_key(&preceding, &aliases).unwrap();
+        let mut earlier_request = row("cpx-a/model", "supplier-b");
+        earlier_request.at = at - 60;
+        let mut scoped_events = vec![preceding, event.clone()];
+        let mut scoped_cache = Cache::default();
+        let scope = AttributionScope {
+            targets: 1..2,
+            gateway_blocked: false,
+            native_blocked: false,
+        };
+        scoped_cache.apply_scoped(
+            &mut scoped_events,
+            &[Some(previous), Some(key.clone())],
+            &[earlier_request, exact.clone()],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+            Some(&scope),
+        );
+        assert!(unknown_provider(&scoped_events[0].provider));
+        assert!(!scoped_cache.verified.contains_key(&[72; 32]));
+        assert_eq!(scoped_events[1].provider, "supplier-a");
 
         let root = tempfile::tempdir().unwrap();
         let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);

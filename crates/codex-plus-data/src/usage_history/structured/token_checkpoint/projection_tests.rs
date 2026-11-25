@@ -2361,6 +2361,156 @@ fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
 }
 
 #[test]
+fn bounded_classification_preserves_day_totals_and_counts_competitors_across_the_boundary() {
+    use super::scan::Scan;
+    use crate::usage_history::structured::{RequestEvidence, RequestEvidenceCache, provider_cache};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fs::create_dir(root.join("sessions")).unwrap();
+    let source = root.join("sessions/rollout-81.jsonl");
+    let day = Local::now().date_naive();
+    let cutoff = day.pred_opt().unwrap();
+    let point = day
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_local_timezone(Local)
+        .single()
+        .unwrap();
+    let at = |seconds| point + chrono::TimeDelta::seconds(seconds);
+    let mut head = header(PARENT, 0);
+    head["timestamp"] = json!(at(-4000).to_rfc3339());
+    head["payload"]["model_provider"] = json!("custom");
+    let context = json!({"type":"turn_context","ordinal":1,"timestamp":at(-4000).to_rfc3339(),
+        "payload":{"turn_id":"turn","model":"gpt-fixture"}});
+    let counter = |index: usize, seconds, input| {
+        let mut row = count(index + 1, 0, input, true);
+        row["timestamp"] = json!(at(seconds).to_rfc3339());
+        row
+    };
+    let mut rows = vec![head, context];
+    rows.extend((1..=80).map(|i| counter(i, -3800 + i as i64, i as u64)));
+    rows.extend([counter(81, -230, 81), counter(82, 0, 82)]);
+    parse(&source, &rows, cutoff);
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let names = BTreeMap::new();
+    let gaps = BTreeSet::new();
+    assert!(
+        Scan::default()
+            .round(&mut store, &root, cutoff, &names, 1 << 20)
+            .complete
+    );
+    const LIMIT: usize = 8192;
+    let rejected = store
+        .reclassify_session(PARENT, LIMIT, &gaps, |_, _| {
+            panic!("the full session should exceed the fixture budget")
+        })
+        .unwrap_err();
+    assert!(rejected.to_string().contains("exceeds input budget"));
+
+    let mut proof_db = provider_cache::ProviderCache::default();
+    proof_db.open(&root.join("proofs"), cutoff).unwrap();
+    let request = |id, relay, seconds| -> RequestEvidence {
+        let time = at(seconds).timestamp_millis();
+        serde_json::from_value(json!({"id":id,"threadId":PARENT,"model":"gpt-fixture",
+            "upstreamModel":"gpt-fixture","relayId":relay,"success":true,"state":"success",
+            "statusCode":200,"timestampMs":time,"startedAtMs":time - 100,"attempts":1,
+            "autoRetries":0,"usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}
+        }))
+        .unwrap()
+    };
+    let mut evidence = RequestEvidenceCache::default();
+    let inspect = |store: &mut Store| {
+        read(
+            &mut store.db,
+            at(-240).timestamp_millis(),
+            at(1).timestamp_millis(),
+        )
+        .1
+    };
+    let native = inspect(&mut store);
+    assert_eq!(native.len(), 2);
+    assert_ne!(native[1].provider, "recent-relay");
+    let classify = |store: &mut Store, evidence: &mut RequestEvidenceCache, seconds| {
+        let start = at(seconds).timestamp_millis();
+        store
+            .reclassify_window(
+                PARENT,
+                Some(start..start + 1),
+                LIMIT,
+                &gaps,
+                |events, aliases, scope| {
+                    assert_eq!(scope.targets.len(), 1);
+                    assert_eq!(events.len(), 2);
+                    evidence.attribute_with_cache_scoped(
+                        events,
+                        &mut BTreeMap::new(),
+                        aliases,
+                        &proof_db,
+                        Some(scope),
+                    );
+                    Ok(())
+                },
+            )
+            .unwrap()
+    };
+    let neighbor = request("neighbor", "neighbor-relay", -230);
+    evidence.records = vec![neighbor.clone()];
+    assert!(classify(&mut store, &mut evidence, -230).is_some());
+    assert_eq!(inspect(&mut store)[0].provider, "neighbor-relay");
+    evidence.records = vec![
+        neighbor.clone(),
+        request("other-neighbor", "another-relay", -230),
+        request("recent", "recent-relay", 0),
+    ];
+    assert!(classify(&mut store, &mut evidence, 0).is_some());
+    let assigned = inspect(&mut store);
+    assert_eq!(assigned[0].provider, "neighbor-relay");
+    assert_eq!(assigned[1].provider, "recent-relay");
+    assert!(!evidence.verified[&native[0].id].rejected);
+
+    let mut disputed = RequestEvidenceCache {
+        records: vec![request("ambiguous", "ambiguous-relay", -115)],
+        ..Default::default()
+    };
+    assert!(classify(&mut store, &mut disputed, 0).is_some());
+    let result = inspect(&mut store);
+    assert_eq!(result[0].provider, "neighbor-relay");
+    assert_eq!(result[1].provider, native[1].provider);
+    assert!(disputed.verified.is_empty());
+    assert_eq!(
+        result
+            .iter()
+            .map(|e| (e.id, e.delta.total_tokens))
+            .collect::<Vec<_>>(),
+        native
+            .iter()
+            .map(|e| (e.id, e.delta.total_tokens))
+            .collect::<Vec<_>>()
+    );
+    let request = json!({"from":day.to_string(),"to":day.to_string(),"includeFingerprints":false});
+    let query = Query::parse(&request, day).unwrap();
+    let summary = Store::read_response(&mut store.db, &query, &request, None, &names).unwrap();
+    assert_eq!(summary["days"][0]["recordCount"], 82);
+    assert_eq!(summary["days"][0]["usage"]["totalTokens"], 82 * 110);
+    let oldest = cutoff
+        .and_hms_opt(0, 5, 0)
+        .unwrap()
+        .and_local_timezone(Local)
+        .earliest()
+        .unwrap()
+        .timestamp_millis();
+    assert!(
+        store
+            .reclassify_window(PARENT, Some(oldest..oldest + 1), LIMIT, &gaps, |_, _, _| {
+                panic!("cannot accept a clipped retention boundary")
+            })
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn append_retracts_only_nearby_proofs_in_the_same_transaction_as_the_new_count() {
     use super::scan::Scan;
 

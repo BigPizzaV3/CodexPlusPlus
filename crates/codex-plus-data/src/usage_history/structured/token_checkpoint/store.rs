@@ -134,7 +134,11 @@ impl Store {
                 payload BLOB NOT NULL
              ) WITHOUT ROWID, STRICT;
              CREATE INDEX IF NOT EXISTS token_resolved_time ON token_resolved(timestamp_ms);
+             CREATE INDEX IF NOT EXISTS token_resolved_session_time ON token_resolved(session_id, timestamp_ms);
              CREATE INDEX IF NOT EXISTS token_resolved_session_day ON token_resolved(session_id, day);
+             CREATE INDEX IF NOT EXISTS token_resolved_count_gaps ON token_resolved(session_id, day)
+                WHERE json_extract(CAST(payload AS TEXT), '$.count_incomplete') = 1
+                   OR json_extract(CAST(payload AS TEXT), '$.delta.k') = 0;
              DROP INDEX IF EXISTS token_resolved_session;
              CREATE INDEX IF NOT EXISTS token_resolved_open_receipt
                 ON token_resolved(session_id, day)

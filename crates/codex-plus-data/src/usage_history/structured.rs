@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -40,6 +41,12 @@ const REQUEST_MATCH_WINDOW_MS: i64 = 30_000;
 const DELAYED_REQUEST_MATCH_WINDOW_MS: i64 = 120_000;
 const MAX_NATIVE_RECEIPT_LINE: usize = 8192;
 const REQUEST_SUPPLIER_PROOF: &str = "request-log-recovered-supplier-only";
+
+struct AttributionScope {
+    targets: Range<usize>,
+    gateway_blocked: bool,
+    native_blocked: bool,
+}
 
 fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<Option<(u64, u64)>> {
     #[cfg(windows)]
@@ -697,6 +704,16 @@ impl RequestEvidenceCache {
         aliases: &BTreeMap<String, String>,
         cache: &provider_cache::ProviderCache,
     ) -> (usize, bool) {
+        self.supplement_captured_scoped(events, aliases, cache, None)
+    }
+
+    fn supplement_captured_scoped(
+        &mut self,
+        events: &[UsageEvent],
+        aliases: &BTreeMap<String, String>,
+        cache: &provider_cache::ProviderCache,
+        scope: Option<&AttributionScope>,
+    ) -> (usize, bool) {
         if let Some(start) = self.captured_start.take() {
             self.records.truncate(start);
         }
@@ -714,7 +731,8 @@ impl RequestEvidenceCache {
             }
         }
         let mut targets: BTreeMap<String, Vec<(i64, [u8; 32])>> = BTreeMap::new();
-        for event in events.iter().filter(|e| {
+        let targets_slice = scope.map_or(events, |scope| &events[scope.targets.clone()]);
+        for event in targets_slice.iter().filter(|e| {
             (unknown_provider(&e.provider)
                 || unknown_model(&e.model)
                 || e.native_response_id
@@ -833,6 +851,17 @@ impl RequestEvidenceCache {
         aliases: &BTreeMap<String, String>,
         cache: &provider_cache::ProviderCache,
     ) -> Value {
+        self.attribute_with_cache_scoped(events, names, aliases, cache, None)
+    }
+
+    fn attribute_with_cache_scoped(
+        &mut self,
+        events: &mut [UsageEvent],
+        names: &mut BTreeMap<String, String>,
+        aliases: &BTreeMap<String, String>,
+        cache: &provider_cache::ProviderCache,
+        scope: Option<&AttributionScope>,
+    ) -> Value {
         let checked = cache.rejected_proxy_ids(
             self.records
                 .iter()
@@ -840,7 +869,7 @@ impl RequestEvidenceCache {
         );
         self.captured_id_check_failed = checked.is_err();
         self.captured_rejected = checked.unwrap_or_default();
-        self.attribute(events, names, aliases)
+        self.attribute_scoped(events, names, aliases, scope)
     }
 
     fn attribute(
@@ -848,6 +877,16 @@ impl RequestEvidenceCache {
         events: &mut [UsageEvent],
         names: &mut BTreeMap<String, String>,
         aliases: &BTreeMap<String, String>,
+    ) -> Value {
+        self.attribute_scoped(events, names, aliases, None)
+    }
+
+    fn attribute_scoped(
+        &mut self,
+        events: &mut [UsageEvent],
+        names: &mut BTreeMap<String, String>,
+        aliases: &BTreeMap<String, String>,
+        scope: Option<&AttributionScope>,
     ) -> Value {
         let aliases = RequestSessionAliases::new(aliases);
         let cutoff = provider_cache::ProviderCache::since(
@@ -1074,7 +1113,8 @@ impl RequestEvidenceCache {
         let (mut model_events, mut direct_conflicts) = (0usize, 0usize);
         let mut supplier_only = 0usize;
         let mut missing_names = HashSet::new();
-        for (event, evidence) in events.iter_mut().zip(&event_keys) {
+        let targets = scope.map_or(0..events.len(), |scope| scope.targets.clone());
+        for (event, evidence) in events[targets.clone()].iter_mut().zip(&event_keys[targets]) {
             // 请求日志没有轮次身份，不能把旧证明复用于拆分后的碰撞事件。
             if self.collision_families.contains(&event.original_id) {
                 continue;
@@ -1127,6 +1167,7 @@ impl RequestEvidenceCache {
                 continue;
             }
             if self.captured_id_check_failed
+                || scope.is_some_and(|scope| scope.gateway_blocked)
                 || event.count_uncertain
                 || event.count_incomplete
                 || !event.delta.cached_known
@@ -3189,6 +3230,7 @@ impl Index {
             &snapshot.aliases,
             &self.provider_cache,
             scan_complete && snapshot.count_cache_available,
+            None,
         );
         self.supplement_legacy_evidence(&settings, &mut snapshot);
         self.supplier_evidence.supplement(&settings, &mut snapshot);
