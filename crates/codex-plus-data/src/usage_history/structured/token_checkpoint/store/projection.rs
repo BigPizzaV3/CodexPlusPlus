@@ -21,13 +21,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-pub(super) fn links(path: &Path, state: &FileState) -> BTreeSet<String> {
+pub(super) fn links(path: &Path, state: &FileState, include_contexts: bool) -> BTreeSet<String> {
     let mut result = BTreeSet::new();
     for session in std::iter::once(&state.session)
         .chain(
             state
                 .inherited_contexts
                 .iter()
+                .filter(|_| include_contexts)
                 .map(|context| &context.session),
         )
         .chain(state.events.iter().map(|event| &event.session))
@@ -911,7 +912,8 @@ impl Store {
             provider_names,
             ..Index::default()
         };
-        let seeds = links(source, state);
+        // 只有坏累计才会影响没有实际观测的继承会话，见 resolve_counts。
+        let seeds = links(source, state, state.invalid_counts);
         let mut sessions: BTreeSet<_> = seeds
             .iter()
             .filter_map(|link| link.strip_prefix("s:").map(str::to_owned))
@@ -1055,13 +1057,23 @@ impl Store {
             // 来源和关联分别去重，避免同一会话的每份副本都重新展开整组来源。
             let mut affected = read.prepare(
                 "WITH RECURSIVE
+                     count_links(source_id, link) AS NOT MATERIALIZED (
+                        SELECT l.source_id, l.link FROM token_source_links l
+                        JOIN token_sources s ON s.id = l.source_id
+                        WHERE substr(l.link, 1, 2) = 'r:'
+                           OR substr(l.link, 3) = json_extract(CAST(s.checkpoint AS TEXT), '$.session')
+                           OR json_extract(CAST(s.checkpoint AS TEXT), '$.invalid_counts') = 1
+                           OR EXISTS (SELECT 1 FROM token_observations o
+                               WHERE o.source_id = l.source_id AND o.session_id = (
+                                   SELECT id FROM token_sessions WHERE session = substr(l.link, 3)))
+                     ),
                      component(id, link) AS (
                         SELECT id, NULL FROM token_sources WHERE source = ?1
                         UNION SELECT NULL, value FROM json_each(?2)
                         UNION SELECT NULL, own.link FROM component
-                           JOIN token_source_links own ON own.source_id = component.id
+                           JOIN count_links own ON own.source_id = component.id
                         UNION SELECT neighbor.source_id, NULL FROM component
-                           JOIN token_source_links neighbor ON neighbor.link = component.link
+                           JOIN count_links neighbor ON neighbor.link = component.link
                      )
                  SELECT component.link, s.id, s.source, s.revision, s.offset, s.checkpoint
                  FROM component LEFT JOIN token_sources s ON s.id = component.id",

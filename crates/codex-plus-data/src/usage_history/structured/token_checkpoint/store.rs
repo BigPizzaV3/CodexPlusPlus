@@ -394,7 +394,7 @@ impl Store {
             let mut insert = tx.prepare(
                 "INSERT OR IGNORE INTO token_source_links (source_id, link) VALUES (?1, ?2)",
             )?;
-            for link in projection::links(source, state) {
+            for link in projection::links(source, state, true) {
                 insert.execute(params![source_id, link])?;
             }
         }

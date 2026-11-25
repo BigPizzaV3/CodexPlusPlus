@@ -1229,6 +1229,183 @@ fn source_ingest_resumes_a_compressed_prefix_across_bounded_rounds() {
 }
 
 #[test]
+fn context_only_fork_reconciles_within_budget_until_it_affects_parent_counts() -> anyhow::Result<()>
+{
+    use crate::usage_history::structured::{Index, Snapshot};
+
+    let dir = tempfile::tempdir()?;
+    let root = fs::canonicalize(dir.path())?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let parent_path = root.join("rollout-parent.jsonl");
+    let child_path = root.join("rollout-child.jsonl");
+    let rows = std::iter::once(header(PARENT, 0))
+        .chain((1..=24).map(|n| count(n, n, n as u64, true)))
+        .collect::<Vec<_>>();
+    let parent = parse(&parent_path, &rows, cutoff);
+    let mut fork = header(CHILD, 0);
+    fork["payload"]["forked_from_id"] = json!(PARENT);
+    fork["payload"]["subagent_history_start_ordinal"] = json!(3);
+    let copied_header = header(PARENT, 1);
+    let child = parse(
+        &child_path,
+        &[fork.clone(), copied_header.clone(), count(3, 53, 1, true)],
+        cutoff,
+    );
+    assert_eq!(child.inherited_contexts[0].session, PARENT);
+    assert_eq!(child.events.len(), 1);
+    assert_eq!(child.events[0].session, CHILD);
+
+    let mut index = Index::default();
+    index.files.insert(parent_path.clone(), parent);
+    index.files.insert(child_path.clone(), child);
+    let mut reference = Snapshot::default();
+    index.select_observations(cutoff, &mut reference, &mut BTreeMap::new(), usize::MAX);
+    index.resolve_counts(&mut reference);
+    let parent = &index.files[&parent_path];
+    let child = &index.files[&child_path];
+
+    let file = root.join("fork.sqlite");
+    let mut store = Store::open(Connection::open(&file)?)?;
+    let ready = store.prepare(
+        new_source(&parent_path, parent),
+        cutoff,
+        BTreeMap::new(),
+        1 << 20,
+    )?;
+    store.publish(ready)?;
+    let ready = store.prepare(
+        new_source(&child_path, child),
+        cutoff,
+        BTreeMap::new(),
+        8192,
+    )?;
+    let mut revision = store.publish(ready)?;
+    drop(store);
+    let mut store = Store::open(Connection::open(&file)?)?;
+    let (_, before) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(before.len(), 25);
+    assert!(before == reference.events);
+    assert!(
+        before
+            .iter()
+            .all(|event| event.delta.total_tokens == 110 && !event.count_incomplete)
+    );
+    assert_eq!(
+        store.db.query_row(
+            "SELECT count(*) FROM token_source_links WHERE link = ?1",
+            [format!("s:{PARENT}")],
+            |row| row.get::<_, usize>(0)
+        )?,
+        2
+    );
+    let mut malformed = count(2, 49, 25, true);
+    malformed["payload"]["info"]["total_token_usage"]["input_tokens"] = json!("bad");
+    for (inherited_row, is_bad) in [(count(2, 49, 25, true), false), (malformed, true)] {
+        let contributed = parse(
+            &child_path,
+            &[
+                fork.clone(),
+                copied_header.clone(),
+                inherited_row,
+                count(3, 53, 1, true),
+            ],
+            cutoff,
+        );
+        assert_eq!(contributed.invalid_counts, is_bad);
+        assert_eq!(
+            contributed
+                .events
+                .iter()
+                .any(|event| event.session == PARENT && event.inherited),
+            !is_bad
+        );
+        let update = SourceUpdate {
+            source: &child_path,
+            state: &contributed,
+            previous_revision: Some(revision),
+            replace: true,
+        };
+        assert!(
+            store
+                .prepare(update, cutoff, BTreeMap::new(), 8192)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Token component exceeds")
+        );
+        assert!(read(&mut store.db, i64::MIN, i64::MAX) == (revision, before.clone()));
+        let ready = store.prepare(update, cutoff, BTreeMap::new(), 1 << 20)?;
+        let changed = store.publish(ready)?;
+        let (_, events) = read(&mut store.db, i64::MIN, i64::MAX);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.session == PARENT)
+                .count(),
+            if is_bad { 24 } else { 25 }
+        );
+        assert_eq!(
+            events
+                .iter()
+                .find(|event| event.session == PARENT)
+                .unwrap()
+                .count_incomplete,
+            is_bad
+        );
+        let restore = SourceUpdate {
+            source: &child_path,
+            state: child,
+            previous_revision: Some(changed),
+            replace: true,
+        };
+        assert!(
+            store
+                .prepare(restore, cutoff, BTreeMap::new(), 8192)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("Token component exceeds")
+        );
+        let ready = store.prepare(restore, cutoff, BTreeMap::new(), 1 << 20)?;
+        revision = store.publish(ready)?;
+        assert!(read(&mut store.db, i64::MIN, i64::MAX).1 == before);
+    }
+    store.record_coverage(Coverage {
+        pending_sources: 0,
+        issues: 0,
+        maintenance_blocked: false,
+    })?;
+    assert!(
+        store
+            .reclassify_session(PARENT, 1 << 20, &BTreeSet::new(), |events, _| {
+                events[0].provider = "fixture-proof".into();
+                events[0].provider_source = Some("request-log-exact".into());
+                Ok(())
+            })?
+            .is_some()
+    );
+    let parent_day = |db: &Connection| {
+        db.query_row("SELECT groups FROM token_days d JOIN token_sessions s ON s.id = d.session_id WHERE s.session = ?1", [PARENT], |row| row.get::<_, Vec<u8>>(0))
+    };
+    let day = parent_day(&store.db)?;
+    let (_, classified) = read(&mut store.db, i64::MIN, i64::MAX);
+    store.retire_source(&child_path, revision, cutoff, BTreeMap::new(), 8192)?;
+    let (_, remaining) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert!(remaining == classified[..24]);
+    assert_eq!(parent_day(&store.db)?, day);
+    let ready = store.prepare(
+        new_source(&child_path, child),
+        cutoff,
+        BTreeMap::new(),
+        8192,
+    )?;
+    store.publish(ready)?;
+    assert!(read(&mut store.db, i64::MIN, i64::MAX).1 == classified);
+    assert_eq!(parent_day(&store.db)?, day);
+    Ok(())
+}
+
+#[test]
 fn late_physical_prefix_repairs_only_affected_sources_and_preserves_reader_revision() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
