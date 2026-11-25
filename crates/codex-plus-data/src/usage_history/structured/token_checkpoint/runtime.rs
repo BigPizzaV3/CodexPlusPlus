@@ -239,7 +239,7 @@ impl Runtime {
                 |events, aliases, scope| {
                     ensure!(
                         index.native_evidence.observe_count_conflicts(events, true),
-                        "native count evidence exceeds capacity"
+                        "native count conflict has an invalid timestamp"
                     );
                     index.request_evidence.supplement_captured_scoped(
                         events,
@@ -345,7 +345,7 @@ impl Runtime {
         let (_, available) = index
             .native_evidence
             .save_bounded(&self.storage, cutoff, &[])?;
-        ensure!(available, "native evidence cache exceeds capacity");
+        ensure!(available, "native count evidence has an unresolved global conflict");
         if let Some(error) = failure {
             return Err(error);
         }

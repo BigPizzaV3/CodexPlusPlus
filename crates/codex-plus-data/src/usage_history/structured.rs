@@ -477,7 +477,7 @@ impl RequestEvidenceCache {
                 if *previous != saved {
                     previous.rejected = true;
                 }
-            } else if self.verified.len() < MAX_EVENTS {
+            } else {
                 self.verified.insert(id, saved);
             }
         }
@@ -486,25 +486,23 @@ impl RequestEvidenceCache {
     fn reject_conflicting_event(&mut self, event: &UsageEvent) {
         if let Some(saved) = self.verified.get_mut(&event.id) {
             saved.rejected = true;
-        } else if self.verified.len() < MAX_EVENTS {
-            if let Ok(at) = DateTime::parse_from_rfc3339(&event.timestamp) {
-                self.verified.insert(
-                    event.id,
-                    VerifiedAttribution {
-                        key: RequestMatchKey {
-                            session: String::new(),
-                            model: String::new(),
-                            input: 0,
-                            output: 0,
-                            cached: 0,
-                        },
-                        at: at.timestamp_millis(),
-                        request: RequestEvidence::default(),
-                        rejected: true,
-                        version: 1,
+        } else if let Ok(at) = DateTime::parse_from_rfc3339(&event.timestamp) {
+            self.verified.insert(
+                event.id,
+                VerifiedAttribution {
+                    key: RequestMatchKey {
+                        session: String::new(),
+                        model: String::new(),
+                        input: 0,
+                        output: 0,
+                        cached: 0,
                     },
-                );
-            }
+                    at: at.timestamp_millis(),
+                    request: RequestEvidence::default(),
+                    rejected: true,
+                    version: 1,
+                },
+            );
         }
     }
 
@@ -1317,7 +1315,7 @@ impl RequestEvidenceCache {
             if !unknown_provider(&event.provider) && !routed_model && !paired_receipt {
                 continue;
             }
-            if !self.verified.contains_key(&event.id) && self.verified.len() < MAX_EVENTS {
+            if !self.verified.contains_key(&event.id) {
                 let (key, at) = evidence.as_ref().unwrap();
                 self.verified.insert(
                     event.id,
@@ -2574,11 +2572,11 @@ impl Index {
         cutoff: NaiveDate,
     ) -> anyhow::Result<bool> {
         self.sync_native_evidence(cutoff)?;
-        let available = native_endpoints::cache_below_limit(
+        let available = native_endpoints::count_evidence_available(
             self.storage_dir.as_deref().unwrap_or(home),
             cutoff,
         )?;
-        // 容量和全局屏障必须与重载的事件屏障属于同一未变更版本。
+        // 全局屏障必须与重载的事件屏障属于同一未变更版本。
         Ok(available && self.native_cache_version == Some(self.provider_cache.data_version()?))
     }
 
@@ -3053,9 +3051,8 @@ impl Index {
             self.native_cache_version = None;
             cache_available = false;
         }
-        // 加载器会跳过无效条目；仅比较加载后的数量无法证明 LIMIT 未截断。
         if cache_available {
-            cache_available = native_endpoints::cache_below_limit(
+            cache_available = native_endpoints::count_evidence_available(
                 self.storage_dir.as_deref().unwrap_or(home),
                 cutoff,
             )
@@ -3150,7 +3147,7 @@ impl Index {
         self.select_observations(cutoff, &mut snapshot, &mut current_aliases, MAX_EVENTS);
         let seen = self.resolve_counts(&mut snapshot);
         let scan_complete = snapshot.errors == 0 && snapshot.issues == 0;
-        let count_cache_has_room = self.native_evidence.observe_count_conflicts(
+        let count_conflicts_available = self.native_evidence.observe_count_conflicts(
             &mut snapshot.events,
             scan_complete && collision_identity_available,
         );
@@ -3159,7 +3156,7 @@ impl Index {
                 event.count_incomplete = true;
             }
         }
-        snapshot.count_cache_available = cache_available && count_cache_has_room;
+        snapshot.count_cache_available = cache_available && count_conflicts_available;
         snapshot.unobserved_count_conflicts =
             self.native_evidence.unobserved_count_conflicts(&seen);
         snapshot.events.retain(|event| {
@@ -3314,8 +3311,7 @@ impl Index {
         snapshot.count_cache_available &= cache_available
             && native_writes
                 .as_ref()
-                .is_ok_and(|(_, available)| *available)
-            && self.native_evidence.verified.len() < MAX_EVENTS;
+                .is_ok_and(|(_, available)| *available);
         // 精确事件证据供尚未合并的实时回执使用；不把最后供应商推广到整段会话。
         let now = Local::now().timestamp_millis();
         let mut recent: Vec<_> = snapshot

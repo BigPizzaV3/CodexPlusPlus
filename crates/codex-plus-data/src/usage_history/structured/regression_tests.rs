@@ -1643,6 +1643,48 @@ fn request() -> RequestEvidence {
 }
 
 #[test]
+fn gateway_proofs_and_rejections_survive_the_old_row_limit_on_reopen() {
+    let mut fixture = Fixture::new();
+    fixture.write_classified_segment("rollout-a.jsonl", "auto", "custom", "main");
+    let mut event = fixture.snapshot().events.remove(0);
+    let at = DateTime::parse_from_rfc3339(&event.timestamp).unwrap().timestamp_millis();
+    let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+    let root = tempfile::tempdir().unwrap();
+    let mut storage = provider_cache::ProviderCache::default();
+    storage.open(root.path(), cutoff).unwrap();
+    let mut cache = RequestEvidenceCache::default();
+    let mut conflict = event.clone();
+    conflict.id = [0xfe; 32];
+    cache.reject_conflicting_event(&conflict);
+    let marker = cache.verified.remove(&conflict.id).unwrap();
+    let db = rusqlite::Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+    db.execute(
+        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?1)
+         INSERT INTO verified_requests SELECT CAST(printf('%032d',i) AS BLOB),?2,?3 FROM n",
+        rusqlite::params![MAX_EVENTS, at, serde_json::to_string(&marker).unwrap()],
+    ).unwrap();
+    drop(db);
+    cache.restore_verified(storage.load_verified(cutoff).unwrap());
+    let mut proof = request();
+    proof.timestamp_ms = at - 10;
+    proof.started_at_ms = at - 100;
+    cache.records.push(proof);
+    cache.attribute(std::slice::from_mut(&mut event), &mut BTreeMap::new(), &BTreeMap::new());
+    assert_eq!(event.provider_source.as_deref(), Some("request-log-exact"));
+    cache.reject_conflicting_event(&conflict);
+    assert_eq!(storage.save(&cache.verified, &BTreeMap::new()).unwrap(), 2);
+    drop(cache);
+    drop(storage);
+    let mut storage = provider_cache::ProviderCache::default();
+    storage.open(root.path(), cutoff).unwrap();
+    let mut restored = RequestEvidenceCache::default();
+    restored.restore_verified(storage.load_verified(cutoff).unwrap());
+    assert_eq!(restored.verified.len(), MAX_EVENTS + 2);
+    assert_eq!(restored.verified[&event.id].request.id, "request-1");
+    assert!(restored.verified[&conflict.id].rejected);
+}
+
+#[test]
 fn request_routing_recovers_actual_classification_without_changing_accounting() {
     for model in ["", "unknown", "auto", "group/pool", "cpx-route/model-a"] {
         let mut fixture = Fixture::new();
@@ -2750,7 +2792,7 @@ fn unsupported_cache_version_is_not_modified() {
 }
 
 #[test]
-fn native_cache_capacity_keeps_unpersisted_conflicts_closed_after_restart() {
+fn native_cache_persists_conflicts_past_the_old_row_limit_after_restart() {
     let mut fixture = Fixture::new();
     fixture.snapshot();
     let db = rusqlite::Connection::open(
@@ -2807,7 +2849,7 @@ fn native_cache_capacity_keeps_unpersisted_conflicts_closed_after_restart() {
     let first = fixture.snapshot();
     assert_eq!(
         snapshot_response(&first)["scan"]["countCacheAvailable"],
-        false
+        true
     );
     let db = rusqlite::Connection::open(
         fixture
@@ -2821,23 +2863,11 @@ fn native_cache_capacity_keeps_unpersisted_conflicts_closed_after_restart() {
             row.get(0)
         })
         .unwrap();
-    assert!(
-        count <= MAX_EVENTS,
-        "native attribution rows exceed budget: {count}"
-    );
-    let guard_at: i64 = db
-        .query_row(
-            "SELECT at FROM structured_count_guard WHERE singleton=1",
-            [],
-            |row| row.get(0),
-        )
+    assert_eq!(count, MAX_EVENTS + 1);
+    let guarded: bool = db
+        .query_row("SELECT EXISTS(SELECT 1 FROM structured_count_guard)", [], |row| row.get(0))
         .unwrap();
-    assert!(guard_at >= at);
-    db.execute(
-        "DELETE FROM native_attributions WHERE id=CAST(printf('%032d',1) AS BLOB)",
-        [],
-    )
-    .unwrap();
+    assert!(!guarded);
     drop(db);
 
     for name in ["rollout-one-a.jsonl", "rollout-two-a.jsonl"] {
@@ -2848,9 +2878,9 @@ fn native_cache_capacity_keeps_unpersisted_conflicts_closed_after_restart() {
     assert_eq!(snapshot_response(&restarted)["complete"], false);
     assert_eq!(
         snapshot_response(&restarted)["scan"]["countCacheAvailable"],
-        false
+        true
     );
-    assert_eq!(snapshot_response(&restarted)["days"], json!([]));
+    assert_eq!(snapshot_response(&restarted)["scan"]["uncertainCountEvents"], 2);
 }
 
 #[test]

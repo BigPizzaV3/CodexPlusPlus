@@ -139,22 +139,14 @@ fn open_count_cache(storage: &Path) -> anyhow::Result<Connection> {
     Ok(db)
 }
 
-pub(super) fn cache_below_limit(storage: &Path, cutoff: NaiveDate) -> anyhow::Result<bool> {
+pub(super) fn count_evidence_available(storage: &Path, cutoff: NaiveDate) -> anyhow::Result<bool> {
     let db = open_count_cache(storage)?;
-    let full: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM native_attributions WHERE at>=?1 LIMIT 1 OFFSET ?2)",
-        params![
-            provider_cache::ProviderCache::since(cutoff),
-            (MAX_EVENTS - 1) as i64
-        ],
-        |row| row.get(0),
-    )?;
     let guarded: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM structured_count_guard WHERE singleton=1 AND at>=?1)",
         [provider_cache::ProviderCache::since(cutoff)],
         |row| row.get(0),
     )?;
-    Ok(!full && !guarded)
+    Ok(!guarded)
 }
 
 pub(super) fn source_identity(path: &Path) -> anyhow::Result<String> {
@@ -300,7 +292,6 @@ impl Attribution {
 pub(super) struct Cache {
     pub(super) verified: HashMap<[u8; 32], Attribution>,
     persisted: HashMap<[u8; 32], [u8; 32]>,
-    pending_overflow_at: Option<i64>,
     negative: HashMap<[u8; 32], Instant>,
     binding_since: i64,
 }
@@ -533,19 +524,11 @@ impl Cache {
                 if stronger {
                     continue;
                 }
-                if self.verified.contains_key(&id) || self.verified.len() < MAX_EVENTS {
-                    self.verified.insert(id, saved);
-                } else {
-                    self.pending_overflow_at =
-                        Some(self.pending_overflow_at.unwrap_or(saved.at).max(saved.at));
-                }
+                self.verified.insert(id, saved);
             } else if let Some(restored) = self.verified.get_mut(&id) {
                 restored.rejected = true;
-            } else if self.verified.len() < MAX_EVENTS {
-                self.verified.insert(id, saved);
             } else {
-                self.pending_overflow_at =
-                    Some(self.pending_overflow_at.unwrap_or(saved.at).max(saved.at));
+                self.verified.insert(id, saved);
             }
         }
     }
@@ -565,7 +548,7 @@ impl Cache {
                 changed.push((*id, proof.clone()));
             }
         }
-        let mut overflow_at = events
+        let unrecorded_conflict_at = events
             .iter()
             .filter(|event| {
                 event.count_uncertain
@@ -578,19 +561,11 @@ impl Cache {
             .filter_map(|event| DateTime::parse_from_rfc3339(&event.timestamp).ok())
             .map(|at| at.timestamp_millis())
             .max();
-        if let Some(at) = self.pending_overflow_at {
-            overflow_at = Some(overflow_at.unwrap_or(at).max(at));
-        }
-        if changed.is_empty() && overflow_at.is_none() {
-            return Ok((0, cache_below_limit(storage, cutoff)?));
+        if changed.is_empty() && unrecorded_conflict_at.is_none() {
+            return Ok((0, count_evidence_available(storage, cutoff)?));
         }
         let mut db = open_count_cache(storage)?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut rows: usize = tx.query_row(
-            "SELECT count(*) FROM (SELECT 1 FROM native_attributions LIMIT ?1)",
-            [(MAX_EVENTS + 1) as i64],
-            |row| row.get(0),
-        )?;
         let mut resolved = Vec::new();
         let mut written = 0;
         for (id, incoming) in changed {
@@ -601,12 +576,6 @@ impl Cache {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            if current.is_none() && rows >= MAX_EVENTS {
-                if incoming.rejected {
-                    overflow_at = Some(overflow_at.unwrap_or(incoming.at).max(incoming.at));
-                }
-                continue;
-            }
             let merged = if let Some((at, data)) = &current {
                 let proof: Attribution = serde_json::from_str(data)?;
                 anyhow::ensure!(proof.valid() && proof.at == *at, "invalid native evidence");
@@ -627,10 +596,9 @@ impl Cache {
                 )?;
                 written += 1;
             }
-            rows += usize::from(current.is_none());
             resolved.push((id, fingerprint(&merged), merged));
         }
-        if let Some(at) = overflow_at {
+        if let Some(at) = unrecorded_conflict_at {
             // 缺失屏障不能只留在内存；单条全局屏障至少保留到受影响事件过期。
             let at = at.max(Local::now().timestamp_millis());
             tx.execute(
@@ -645,12 +613,11 @@ impl Cache {
             |row| row.get(0),
         )?;
         tx.commit()?;
-        self.pending_overflow_at = None;
         for (id, digest, proof) in resolved {
             self.persisted.insert(id, digest);
             self.verified.insert(id, proof);
         }
-        Ok((written, rows < MAX_EVENTS && !guarded))
+        Ok((written, !guarded))
     }
 
     pub(super) fn observe_count_conflicts(
@@ -689,10 +656,6 @@ impl Cache {
             if conflict == previous && !revalidate_legacy {
                 continue;
             }
-            if !self.verified.contains_key(&event.id) && self.verified.len() >= MAX_EVENTS {
-                available = false;
-                continue;
-            }
             let Ok(at) = DateTime::parse_from_rfc3339(&event.timestamp) else {
                 available = false;
                 continue;
@@ -719,8 +682,7 @@ impl Cache {
                 },
             );
         }
-        // 加载上限达到时，无法证明是否还有未加载的冲突屏障。
-        available && self.verified.len() < MAX_EVENTS
+        available
     }
 
     pub(super) fn unobserved_count_conflicts(&self, seen: &HashMap<[u8; 32], usize>) -> usize {
@@ -1138,9 +1100,7 @@ impl Cache {
             let complete = coverage
                 .get(&key.session)
                 .is_some_and(|(since, complete)| *complete && floor >= *since);
-            if let Some(provider) =
-                candidate.filter(|_| complete && self.verified.len() < MAX_EVENTS)
-            {
+            if let Some(provider) = candidate.filter(|_| complete) {
                 let since = rows
                     .iter()
                     .map(|row| {
@@ -2142,7 +2102,7 @@ mod tests {
     }
 
     #[test]
-    fn count_conflict_markers_expire_and_saturation_fails_closed() {
+    fn count_conflict_markers_expire_and_survive_the_old_row_limit() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             native_response_id: None,
@@ -2194,10 +2154,10 @@ mod tests {
             cache.verified.insert(id, marker.clone());
         }
         let mut disputed = event;
-        assert!(!cache.observe_count_conflicts(std::slice::from_mut(&mut disputed), true));
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut disputed), true));
         assert!(disputed.count_uncertain);
-        assert_eq!(cache.verified.len(), MAX_EVENTS);
-        assert!(!cache.verified.contains_key(&disputed.id));
+        assert_eq!(cache.verified.len(), MAX_EVENTS + 1);
+        assert_eq!(cache.verified[&disputed.id].count_conflict, 2);
     }
 
     #[test]

@@ -67,8 +67,6 @@ pub(super) struct ProviderCache {
     pub(super) aliases: BTreeMap<String, String>,
     alias_seen: BTreeMap<String, i64>,
     cutoff: Option<NaiveDate>,
-    native_count: Option<usize>,
-    proxy_count: Option<usize>,
     has_proxy_extra: bool,
 }
 
@@ -112,18 +110,15 @@ impl ProviderCache {
         let mut aliases = BTreeMap::new();
         {
             let mut statement =
-                db.prepare("SELECT id,target FROM aliases WHERE last_seen>=?1 LIMIT ?2")?;
+                db.prepare("SELECT id,target FROM aliases WHERE last_seen>=?1")?;
             let rows = statement
-                .query_map(params![Self::since(cutoff), MAX_EVENTS + 1], |row| {
+                .query_map([Self::since(cutoff)], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?;
             for row in rows {
                 let (id, target) = row?;
                 aliases.insert(id, target);
             }
-        }
-        if aliases.len() > MAX_EVENTS {
-            anyhow::bail!("provider alias limit");
         }
         Ok(Self {
             path,
@@ -220,8 +215,8 @@ impl ProviderCache {
             tx.commit()?;
         }
         {
-            let mut statement = db.prepare("SELECT id,target,last_seen FROM aliases LIMIT ?1")?;
-            let rows = statement.query_map([MAX_EVENTS as i64], |row| {
+            let mut statement = db.prepare("SELECT id,target,last_seen FROM aliases WHERE last_seen>=?1")?;
+            let rows = statement.query_map([Self::since(cutoff)], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
             })?;
             for row in rows {
@@ -268,8 +263,6 @@ impl ProviderCache {
         self.alias_seen.retain(|_, at| *at >= since);
         #[cfg(test)]
         self.native_fingerprints.clear();
-        self.native_count = None;
-        self.proxy_count = None;
         self.aliases
             .retain(|id, _| self.alias_seen.contains_key(id));
         self.cutoff = Some(cutoff);
@@ -285,10 +278,8 @@ impl ProviderCache {
             .db
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
-        let mut statement = db.prepare(
-            "SELECT id,data FROM verified_requests WHERE at>=?1 ORDER BY at DESC LIMIT ?2",
-        )?;
-        let rows = statement.query_map(params![since, MAX_EVENTS as i64], |row| {
+        let mut statement = db.prepare("SELECT id,data FROM verified_requests WHERE at>=?1")?;
+        let rows = statement.query_map([since], |row| {
             Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut records = Vec::new();
@@ -415,8 +406,8 @@ impl ProviderCache {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
         let mut statement =
-            db.prepare("SELECT id,data FROM native_attributions WHERE at>=?1 LIMIT ?2")?;
-        let rows = statement.query_map(params![Self::since(cutoff), MAX_EVENTS as i64], |row| {
+            db.prepare("SELECT id,data FROM native_attributions WHERE at>=?1")?;
+        let rows = statement.query_map([Self::since(cutoff)], |row| {
             Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, String>(1)?))
         })?;
         let mut records = HashMap::new();
@@ -473,7 +464,7 @@ impl ProviderCache {
         records: &HashMap<[u8; 32], native_endpoints::Attribution>,
     ) -> anyhow::Result<usize> {
         let mut changed = Vec::new();
-        for (id, proof) in records.iter().take(MAX_EVENTS) {
+        for (id, proof) in records {
             let data = serde_json::to_string(proof)?;
             let fingerprint = Sha256::digest(data.as_bytes()).into();
             if self.native_fingerprints.get(id) != Some(&fingerprint) {
@@ -567,13 +558,12 @@ impl ProviderCache {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
         let tx = db.transaction()?;
-        let mut added = 0;
         for (id, row) in rows {
             if !row.valid() {
                 continue;
             }
             // 首次观测的映射不可被后来的配置重解释；重复读取不写入。
-            added += tx.execute(
+            tx.execute(
                 "INSERT OR IGNORE INTO completed_native_requests VALUES(?1,?2,?3,?4)",
                 params![
                     id.as_slice(),
@@ -583,7 +573,6 @@ impl ProviderCache {
                 ],
             )?;
         }
-        let count = trim_completed(&tx, "completed_native_requests", self.native_count, added)?;
         // 替换旧游标前记下受旧正文截断影响的时段，保留原始证据供复核。
         tx.execute(
             "INSERT INTO capture_retention(kind,floor)
@@ -606,7 +595,6 @@ impl ProviderCache {
             ],
         )?;
         tx.commit()?;
-        self.native_count = Some(count);
         Ok(())
     }
 
@@ -670,7 +658,6 @@ impl ProviderCache {
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
         let tx = db.transaction()?;
         let mut writes = 0;
-        let mut added = 0;
         let mut ids = HashSet::new();
         let mut duplicates = HashSet::new();
         for row in rows {
@@ -743,14 +730,12 @@ impl ProviderCache {
                     if !denied && projection != *row {
                         extra = Some(row);
                     }
-                    let inserted = insert.execute(params![
+                    writes += insert.execute(params![
                         row.id,
                         at,
                         RequestSessionAliases::identity(&rejected.thread_id),
                         serde_json::to_string(&projection)?
                     ])?;
-                    added += inserted;
-                    writes += inserted;
                 }
                 if denied {
                     // 拒绝身份独立于首次请求的会话和时间索引；重复观测每日续期一次。
@@ -772,9 +757,7 @@ impl ProviderCache {
                 }
             }
         }
-        let count = trim_completed(&tx, "completed_proxy_requests", self.proxy_count, added)?;
         tx.commit()?;
-        self.proxy_count = Some(count);
         Ok(writes)
     }
 
@@ -946,34 +929,60 @@ impl ProviderCache {
     }
 }
 
-fn trim_completed(
-    tx: &rusqlite::Transaction<'_>,
-    table: &str,
-    count: Option<usize>,
-    added: usize,
-) -> anyhow::Result<usize> {
-    // 表名只来自本模块固定调用点；按整毫秒淘汰，避免保留半组矛盾请求。
-    let count = match count {
-        Some(count) => count.saturating_add(added),
-        None => tx.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-            row.get(0)
-        })?,
-    };
-    if count <= MAX_EVENTS {
-        return Ok(count);
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    #[test]
+    fn captures_past_the_old_row_limit_keep_competitors_and_existing_floors() -> anyhow::Result<()> {
+        let root = tempfile::tempdir()?;
+        let cutoff = Local::now().date_naive() - Days::days(5);
+        let at = Local::now().timestamp_millis();
+        let mut cache = ProviderCache::default();
+        cache.open(root.path(), cutoff)?;
+        let db = cache.db.as_ref().unwrap();
+        for table in ["completed_native_requests", "completed_proxy_requests"] {
+            db.execute(
+                &format!("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<?1)
+                  INSERT INTO {table}(id,at,session,data)
+                  SELECT printf('%032d',i),?2,'unrelated','{{}}' FROM n"),
+                params![MAX_EVENTS - 1, at],
+            )?;
+            db.execute(
+                "INSERT INTO capture_retention(kind,floor) VALUES(?1,?2)",
+                params![table, at - 60_000],
+            )?;
+        }
+        for id in [1u8, 2] {
+            let native = serde_json::from_value(json!({
+                "session":"wanted","turn":"turn","model":"model","at":at,"binding_since":at-1,
+                "identity":([id; 32]),"provider":"supplier"
+            }))?;
+            cache.capture_native("source", i64::from(id), &[([id; 32], native)], true, 0, "test")?;
+            let proxy = serde_json::from_value(json!({
+                "id":id.to_string(),"threadId":"wanted","model":"model","upstreamModel":"model",
+                "relayId":"supplier","success":true,"state":"success","statusCode":200,
+                "timestampMs":at,"startedAtMs":at-10,"attempts":1,"autoRetries":0,
+                "usage":{"inputTokens":10,"outputTokens":2,"cachedTokens":0}
+            }))?;
+            cache.capture_proxy(&[proxy])?;
+        }
+        drop(cache);
+        let mut cache = ProviderCache::default();
+        cache.open(root.path(), cutoff)?;
+        for table in ["completed_native_requests", "completed_proxy_requests"] {
+            assert_eq!(cache.capture_floor(table)?, at - 60_000);
+            let count: usize = cache.db.as_ref().unwrap().query_row(
+                &format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)
+            )?;
+            assert_eq!(count, MAX_EVENTS + 1);
+        }
+        assert_eq!(cache.captured_native("wanted", at - 1, at)?.rows.len(), 2);
+        let proxies = cache.captured_proxy("wanted", at - 1, at)?.rows;
+        assert_eq!(proxies.len(), 2);
+        assert!(proxies.iter().all(|row| row.valid_capture()));
+        Ok(())
     }
-    let at: i64 = tx.query_row(
-        &format!("SELECT at FROM {table} ORDER BY at DESC LIMIT 1 OFFSET ?1"),
-        [(MAX_EVENTS - 1) as i64],
-        |row| row.get(0),
-    )?;
-    let removed = tx.execute(&format!("DELETE FROM {table} WHERE at<=?1"), [at])?;
-    tx.execute(
-        "INSERT INTO capture_retention VALUES(?1,?2)
-        ON CONFLICT(kind) DO UPDATE SET floor=max(floor,excluded.floor)",
-        params![table, at],
-    )?;
-    Ok(count.saturating_sub(removed))
 }
 
 #[cfg(all(test, windows))]
@@ -996,12 +1005,12 @@ mod windows_tests {
         let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
         let mut cache = ProviderCache::default();
         assert!(cache.open(&storage, cutoff).unwrap());
-        assert!(native_endpoints::cache_below_limit(&storage, cutoff).unwrap());
+        assert!(native_endpoints::count_evidence_available(&storage, cutoff).unwrap());
         assert!(!cache.open(&storage, cutoff).unwrap());
 
         let mut second = ProviderCache::default();
         assert!(second.open(&storage, cutoff).unwrap());
-        assert!(native_endpoints::cache_below_limit(&storage, cutoff).unwrap());
+        assert!(native_endpoints::count_evidence_available(&storage, cutoff).unwrap());
 
         let log = storage.join("logs_1.sqlite");
         let log_db =
