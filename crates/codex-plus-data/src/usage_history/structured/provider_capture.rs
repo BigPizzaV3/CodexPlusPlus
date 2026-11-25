@@ -468,6 +468,71 @@ mod backend_recovery_tests {
     use super::*;
 
     #[test]
+    fn history_and_supplier_readers_accept_large_valid_configs() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = root.path().join("settings.json");
+        let padding = "p".repeat(8 * 1024 * 1024);
+        let relay = json!({"id":"relay-a","name":"Relay A","baseUrl":"https://a.example/v1"});
+        let gateway = json!({"id":"gateway-b","name":"Gateway B","baseUrl":"https://b.example/v1"});
+        fs::write(
+            &settings,
+            json!({"padding":padding,"usageHistoryEnabled":true,"relayProfiles":[relay]}).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("gateway.json"),
+            json!({"padding":padding,"providers":[{"relay":gateway}]}).to_string(),
+        )
+        .unwrap();
+
+        require_history_enabled(&settings).unwrap();
+        let profiles = native_endpoints::profiles(&settings).unwrap();
+        let endpoints = native_endpoints::endpoints(&profiles);
+        assert_eq!(endpoints["https://a.example/v1/responses"].as_deref(), Some("relay-a"));
+        assert_eq!(endpoints["https://b.example/v1/responses"].as_deref(), Some("gateway-b"));
+
+        fs::write(&settings, "{").unwrap();
+        let error = require_history_enabled(&settings).unwrap_err();
+        assert_eq!(error["status"], "unavailable");
+        assert!(error["message"].as_str().is_some_and(|message| !message.is_empty()));
+        assert!(error.get("enabled").is_none());
+    }
+
+    #[test]
+    fn collector_captures_completion_from_fifth_native_log_database() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let sqlite = root.path().join("sqlite");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&sqlite).unwrap();
+        let settings = root.path().join("settings.json");
+        let request_log = root.path().join("requests.jsonl");
+        fs::write(&settings, json!({"relayProfiles":[{
+            "id":"supplier-b","name":"Supplier B","baseUrl":"https://b.example/v1"
+        }]}).to_string()).unwrap();
+        let mut collector = Collector::default();
+        collector.tick(&home, &sqlite, &settings, &request_log).unwrap();
+        let at = Local::now().timestamp_millis();
+        let session = "fifth-log-session";
+        for number in 1..=5 {
+            let db = Connection::open(sqlite.join(format!("logs_{number}.sqlite"))).unwrap();
+            db.execute_batch("CREATE TABLE logs(id INTEGER PRIMARY KEY, ts, ts_nanos, feedback_log_body, thread_id, target)").unwrap();
+            if number == 5 {
+                let body = format!("{{thread.id={session} turn.id=turn model=model}}: Request completed method=POST url=https://b.example/v1/responses status=200 headers={{}}");
+                db.execute(
+                    "INSERT INTO logs VALUES(1,?1,?2,?3,?4,'codex_http_client::client')",
+                    params![at / 1000, at % 1000 * 1_000_000, body, session],
+                ).unwrap();
+            }
+        }
+        collector.tick(&home, &sqlite, &settings, &request_log).unwrap();
+        let captured = collector.cache.captured_native(session, at - 1, at).unwrap();
+        assert!(captured.complete);
+        assert_eq!(captured.rows.len(), 1);
+        assert_eq!(serde_json::to_value(&captured.rows[0]).unwrap()["provider"], "supplier-b");
+    }
+
+    #[test]
     fn collector_persists_long_completion_before_marking_its_window_complete() {
         let root = tempfile::tempdir().unwrap();
         let log_path = root.path().join("logs_1.sqlite");

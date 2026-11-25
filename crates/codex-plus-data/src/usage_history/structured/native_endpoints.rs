@@ -54,13 +54,8 @@ pub(super) fn profiles(
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 {
-            anyhow::bail!("supplier settings exceed read budget");
-        }
-        Ok(Some(serde_json::from_reader(
-            file.take(8 * 1024 * 1024 + 1),
-        )?))
+        anyhow::ensure!(file.metadata()?.is_file(), "supplier settings path is not a file");
+        Ok(Some(serde_json::from_reader(BufReader::new(file))?))
     }
     let before = config_stamp(path);
     let mut profiles = read::<Profiles>(path)?.map_or_else(Vec::new, |value| value.profiles);
@@ -85,21 +80,17 @@ pub(super) fn profiles(
 }
 
 pub(super) fn log_paths(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut paths: Vec<_> = fs::read_dir(root)?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|s| s.to_str())
-                .and_then(|name| name.strip_prefix("logs_")?.strip_suffix(".sqlite"))
-                .is_some_and(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()))
-        })
-        .collect();
-    paths.sort();
-    if paths.len() > 4 {
-        anyhow::bail!("too many native log databases");
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let is_log = entry.file_name().to_str()
+            .and_then(|name| name.strip_prefix("logs_")?.strip_suffix(".sqlite"))
+            .is_some_and(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()));
+        if is_log && entry.file_type()?.is_file() {
+            paths.push(entry.path());
+        }
     }
+    paths.sort();
     Ok(paths)
 }
 

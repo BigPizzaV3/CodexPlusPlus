@@ -63,6 +63,41 @@ fn idle_expiry_releases_index_and_clear_joins_inflight_worker() {
 }
 
 #[test]
+fn third_home_keeps_recent_and_scanning_indexes_available() {
+    let _serial = SERIAL.lock().unwrap();
+    for scanning in [false, true] {
+        let fixtures = [fixture(), fixture(), fixture()];
+        let caches: Vec<_> = fixtures[..2]
+            .iter()
+            .map(|(_, home, settings, query)| {
+                settled(home, settings, query);
+                let cache = homes().lock().unwrap()[home].clone();
+                cache.lock().unwrap().active = scanning;
+                cache
+            })
+            .collect();
+        let (_, home, settings, query) = &fixtures[2];
+        let response = query_with_settings(home, query, &json!({}), settings.clone());
+        let retained = {
+            let registry = homes().lock().unwrap();
+            fixtures
+                .iter()
+                .zip(&caches)
+                .all(|((_, path, _, _), cache)| {
+                    registry
+                        .get(path)
+                        .is_some_and(|current| Arc::ptr_eq(current, cache))
+                })
+        };
+        for (_, home, _, _) in &fixtures {
+            clear(home);
+        }
+        assert_ne!(response["status"], "unavailable", "scanning={scanning}");
+        assert!(retained, "scanning={scanning}");
+    }
+}
+
+#[test]
 fn cursor_and_activity_payloads_require_explicit_opt_in() {
     let _serial = SERIAL.lock().unwrap();
     let (_root, home, settings, options) = fixture();

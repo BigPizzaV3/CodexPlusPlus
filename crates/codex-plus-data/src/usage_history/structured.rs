@@ -2031,18 +2031,22 @@ struct HistorySettings {
 }
 
 fn read_history_settings(settings: &Path) -> anyhow::Result<HistorySettings> {
-    const MAX_BYTES: u64 = 8 * 1024 * 1024;
     let file = File::open(settings)?;
-    let metadata = file.metadata()?;
-    anyhow::ensure!(
-        metadata.is_file() && metadata.len() <= MAX_BYTES,
-        "用量设置文件无效"
-    );
-    Ok(serde_json::from_reader(file.take(MAX_BYTES + 1))?)
+    anyhow::ensure!(file.metadata()?.is_file(), "用量设置路径不是文件");
+    Ok(serde_json::from_reader(BufReader::new(file))?)
 }
 
-fn history_enabled(settings: &Path) -> bool {
-    read_history_settings(settings).is_ok_and(|settings| settings.enabled)
+fn require_history_enabled(settings: &Path) -> Result<(), Value> {
+    match read_history_settings(settings) {
+        Ok(settings) if settings.enabled => return Ok(()),
+        Ok(_) => {}
+        Err(error) if error.downcast_ref::<io::Error>()
+            .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) => {}
+        Err(error) => {
+            return Err(json!({"status":"unavailable","complete":false,"message":error.to_string()}));
+        }
+    }
+    Err(json!({"status":"unavailable","complete":false,"enabled":false}))
 }
 
 fn evict_idle(home: &Path, cache: &Arc<Mutex<Cache>>) -> bool {
@@ -2124,8 +2128,8 @@ pub(super) fn query_executions(home: &Path, request: &Value) -> Value {
 
 pub(super) fn query_execution_detail(home: &Path, request: &Value) -> Value {
     let settings = codex_plus_core::paths::default_settings_path();
-    if !history_enabled(&settings) {
-        return json!({"status":"unavailable","enabled":false});
+    if let Err(response) = require_history_enabled(&settings) {
+        return response;
     }
     let request = match token_checkpoint::DetailQuery::parse(request) {
         Ok(request) => request,
@@ -2214,23 +2218,7 @@ fn touch_history(home: &Path, settings: &Path) -> Result<Arc<Mutex<Cache>>, Valu
         return Err(json!({"status":"unavailable","complete":false}));
     };
     // 与缓存创建共用锁，拦住已通过上层开关检查、关闭后才抵达的请求。
-    if !history_enabled(settings) {
-        return Err(json!({"status":"unavailable","enabled":false,"complete":false}));
-    }
-    if !homes.contains_key(home) && homes.len() >= 2 {
-        // 只回收空闲索引；运行中的扫描不能因另一个 home 查询而被反复创建。
-        let idle = homes
-            .iter()
-            .find(|(_, cache)| cache.lock().is_ok_and(|c| !c.active))
-            .map(|(path, _)| path.clone());
-        if let Some(idle) = idle {
-            if let Some(removed) = homes.remove(&idle) {
-                stop_cache(removed);
-            }
-        } else {
-            return Err(json!({"status":"unavailable","complete":false}));
-        }
-    }
+    require_history_enabled(settings)?;
     let cache = if let Some(cache) = homes.get(home) {
         cache.clone()
     } else {

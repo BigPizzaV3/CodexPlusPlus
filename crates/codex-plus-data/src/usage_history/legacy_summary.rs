@@ -5,13 +5,12 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::SystemTime;
 
 const FILE_NAME: &str = "daily-legacy-summary.json";
-const MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -141,8 +140,8 @@ fn load(path: &Path) -> Result<Option<Arc<LegacySummary>>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("读取旧摘要状态失败: {error}")),
     };
-    if !metadata.is_file() || metadata.len() > MAX_BYTES {
-        return Err("旧摘要不是普通文件或超过 8 MiB 内存预算".into());
+    if !metadata.is_file() {
+        return Err("旧摘要不是普通文件".into());
     }
     let modified = metadata.modified().map_err(|error| error.to_string())?;
     let mut cache = cache().lock().expect("legacy summary cache poisoned");
@@ -151,15 +150,14 @@ fn load(path: &Path) -> Result<Option<Arc<LegacySummary>>, String> {
     }) {
         return Ok(Some(cached.summary.clone()));
     }
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    File::open(path)
-        .and_then(|file| file.take(MAX_BYTES + 1).read_to_end(&mut bytes))
-        .map_err(|error| format!("读取旧摘要失败: {error}"))?;
-    if bytes.len() as u64 > MAX_BYTES {
-        return Err("旧摘要超过 8 MiB 内存预算".into());
-    }
-    let legacy: LegacyFile =
-        serde_json::from_slice(&bytes).map_err(|error| format!("旧摘要格式无效: {error}"))?;
+    let file = File::open(path).map_err(|error| format!("读取旧摘要失败: {error}"))?;
+    let legacy: LegacyFile = serde_json::from_reader(BufReader::new(file)).map_err(|error| {
+        if error.is_io() {
+            format!("读取旧摘要失败: {error}")
+        } else {
+            format!("旧摘要格式无效: {error}")
+        }
+    })?;
     if legacy.version != 1
         || legacy.scope != "all"
         || legacy.coverage != "partial"
@@ -273,6 +271,34 @@ mod tests {
         assert!(result["legacyDays"]["2026-11-09"].is_null());
         assert!(result.to_string().find("must not be returned").is_none());
         assert_eq!(result["legacyStatus"]["coverage"], "partial");
+    }
+
+    #[test]
+    fn large_legacy_summary_is_read_through_the_last_day() {
+        use std::io::Write;
+
+        let (_root, home, settings) = setup(&fixture());
+        let path = super::super::storage_dir(&home, &settings).join(FILE_NAME);
+        let mut file = File::create(&path).unwrap();
+        file.write_all(&vec![b' '; 8 * 1024 * 1024]).unwrap();
+        serde_json::to_writer(&mut file, &fixture()).unwrap();
+        drop(file);
+        let request = json!({"from":"2026-11-10","to":"2026-11-10","includeLegacySummary":true});
+        let result = response(&home, &settings, request.clone());
+        assert_eq!(result["legacyStatus"]["available"], true);
+        assert_eq!(
+            result["legacyDays"]["2026-11-10"]["usage"]["inputTokens"],
+            5
+        );
+        assert_eq!(result["days"][0]["recordCount"], 4);
+        assert!(result["legacyDays"]["2026-11-09"].is_null());
+
+        let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
+        file.write_all(b"!").unwrap();
+        drop(file);
+        let invalid = response(&home, &settings, request);
+        assert_eq!(invalid["legacyStatus"]["available"], false);
+        assert!(invalid["legacyDays"].is_null());
     }
 
     #[test]
