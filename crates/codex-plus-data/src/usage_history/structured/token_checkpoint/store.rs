@@ -527,7 +527,7 @@ impl Store {
     pub(super) fn sealed_queued_sources(
         &self,
         discovered: &[PathBuf],
-    ) -> Result<(HashSet<PathBuf>, BTreeSet<PathBuf>, BTreeMap<PathBuf, u64>)> {
+    ) -> Result<(BTreeMap<PathBuf, super::SourceStamp>, BTreeSet<PathBuf>, BTreeMap<PathBuf, u64>)> {
         #[derive(serde::Deserialize)]
         struct CountState {
             stamp: Option<super::SourceStamp>,
@@ -548,7 +548,7 @@ impl Store {
                 Err(error) => Err(error.into()),
             }
         };
-        let mut sealed = HashSet::new();
+        let mut sealed = BTreeMap::new();
         let mut gaps = BTreeSet::new();
         let mut growing = BTreeMap::new();
         let mut owners = HashSet::new();
@@ -595,7 +595,7 @@ impl Store {
             } else {
                 owners.insert(row.get::<_, i64>(0)?);
             }
-            sealed.insert(path);
+            sealed.insert(path, stamp);
         }
         // A verified replica only covers the bytes certified for its unchanged owner.
         let mut copies = self
@@ -607,7 +607,7 @@ impl Store {
                 let path = decode_path(row.get(0)?)?;
                 let stamp = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
                 if present.contains(path.as_path()) && current(&path)? == Some(stamp) {
-                    sealed.insert(path);
+                    sealed.insert(path, stamp);
                 }
             }
         }

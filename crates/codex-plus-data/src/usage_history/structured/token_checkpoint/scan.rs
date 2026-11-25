@@ -13,7 +13,6 @@ use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 const SOURCES_PER_ROUND: usize = 64;
-const LIVE_REVISIT_SOURCES: usize = 8;
 pub(super) const RECLAIM_BATCH: u32 = 256;
 
 #[derive(Default)]
@@ -28,7 +27,7 @@ pub(super) struct Scan {
     rescan: bool,
     live: BTreeMap<PathBuf, SourceStamp>,
     waiting_for_newline: BTreeMap<PathBuf, (SourceStamp, bool)>,
-    next_live: usize,
+    last_revisited: Option<PathBuf>,
     issues: usize,
     unknown_count_scope: bool,
     sealed_queue: HashSet<PathBuf>,
@@ -113,6 +112,7 @@ impl Scan {
             && self.remaining.len() == self.sealed_queue.len()
             && !self.retirement_blocked();
         let mut current_inventory = false;
+        let sessions_dir = home.join("sessions");
         if self.active.is_none()
             && self.comparing.is_none()
             && (self.remaining.is_empty() || recheck_missing)
@@ -159,7 +159,15 @@ impl Scan {
             if self.issues == 0 {
                 match store.sealed_queued_sources(self.remaining.make_contiguous()) {
                     Ok((sealed, gaps, growing)) => {
-                        self.sealed_queue = sealed;
+                        for (path, &stamp) in &sealed {
+                            if path.starts_with(&sessions_dir)
+                                && path.extension().is_some_and(|ext| ext == "jsonl")
+                                && stamp.0 > 0 && !gaps.contains(path)
+                            {
+                                self.live.insert(path.clone(), stamp);
+                            }
+                        }
+                        self.sealed_queue = sealed.into_keys().collect();
                         self.issues += gaps.len();
                         self.scoped_count_gaps = gaps;
                         current_inventory = true;
@@ -216,55 +224,64 @@ impl Scan {
         };
         let mut compared = false;
         let mut verify_later = Vec::new();
-        let sessions_dir = home.join("sessions");
-        let mut live_path = None;
-        if (backlogged || self.active.is_some() || self.comparing.is_some())
-            && self.revisiting.is_none()
-        {
-            for _ in 0..self.live.len() {
-                let index = self.next_live % self.live.len();
-                self.next_live = index + 1;
-                let (path, stamp) = self.live.iter().nth(index).unwrap();
+        let mut changed = VecDeque::new();
+        if !current_inventory && (backlogged || self.active.is_some() || self.comparing.is_some()) {
+            self.live.retain(|path, stamp| {
                 if self
                     .active
                     .iter()
                     .chain(&retry)
                     .chain(&self.deferred)
+                    .chain(&self.revisiting)
                     .any(|r| &r.source == path)
                     || self.comparing.as_ref().is_some_and(|probe| probe.compares(path))
                 {
-                    continue;
+                    return true;
                 }
                 let stamp = self.waiting_for_newline.get(path).map_or(*stamp, |tail| tail.0);
-                let path = path.clone();
-                match FileState::source_stamp(&path) {
+                match FileState::source_stamp(path) {
                     Ok(current) if current != stamp => {
-                        self.remaining.retain(|p| p != &path);
-                        if let Some((_, true)) = self.waiting_for_newline.remove(&path) {
-                            self.issues -= 1;
-                            self.scoped_count_gaps.remove(&path);
-                        }
-                        live_path = Some(path);
-                        break;
+                        changed.push_back(path.clone());
+                        true
                     }
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        self.live.remove(&path);
-                    }
+                    Ok(_) => true,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
                     Err(error) => {
-                        self.live.remove(&path);
                         self.issues += 1;
                         self.unknown_count_scope = true;
-                        errors.push((path, error.into()));
+                        errors.push((path.clone(), error.into()));
+                        false
                     }
+                }
+            });
+            if let Some(last) = &self.last_revisited {
+                let next = changed.partition_point(|path| path <= last);
+                changed.rotate_left(next);
+            }
+        }
+        if !changed.is_empty() {
+            let growing: HashSet<_> = changed.iter().collect();
+            self.remaining.retain(|path| !growing.contains(path));
+            for path in &changed {
+                let was_waiting = self.waiting_for_newline.remove(path).is_some_and(|(_, gap)| gap);
+                let was_sealed = self.sealed_queue.remove(path);
+                let removed_gap = (was_waiting || was_sealed) && self.scoped_count_gaps.remove(path);
+                if was_waiting || removed_gap {
+                    self.issues -= 1;
                 }
             }
         }
+        let history_pending = self.active.is_some() || retry.is_some()
+            || self.comparing.is_some() || !self.remaining.is_empty();
+        let mut live_bytes = if history_pending { budget.read_left / 2 } else { budget.read_left };
+        let mut live_source_bytes = if history_pending { budget.source_left / 2 } else { budget.source_left };
         'sources: for slot in 0..SOURCES_PER_ROUND {
             if budget.read_left == 0 || budget.source_left == 0 {
                 break;
             }
-            let revisit = slot == 0 && (live_path.is_some() || self.revisiting.is_some());
+            let revisit = live_bytes > 0 && live_source_bytes > 0
+                && (!history_pending || slot + 1 < SOURCES_PER_ROUND)
+                && if self.revisiting.is_some() { slot == 0 } else { !changed.is_empty() };
             let resumed = if revisit {
                 self.revisiting.take()
             } else {
@@ -286,8 +303,14 @@ impl Scan {
                         && self.remaining.len() == self.sealed_queue.len()
                         && self.comparing.is_none()
                         && verify_later.is_empty();
+                    let live_path = if revisit {
+                        let path = changed.pop_front().unwrap();
+                        self.last_revisited = Some(path.clone());
+                        Some(path)
+                    } else {
+                        None
+                    };
                     let path = live_path
-                        .take()
                         .or_else(|| comparing.as_ref().map(|check| check.path().to_owned()))
                         .or_else(|| {
                             if retire_first { None } else { self.remaining.pop_front() }
@@ -430,9 +453,11 @@ impl Scan {
                 .chain(&self.revisiting)
                 .chain(&self.deferred)
                 .chain(&retry);
-            let other_work = self.active.is_some() || retry.is_some() || self.comparing.is_some() || !self.remaining.is_empty();
-            let mut slot_budget =
-                budget.checkpoint_slot(parked.map(|r| &r.state), revisit && other_work);
+            let mut slot_budget = budget.checkpoint_slot(parked.map(|r| &r.state));
+            if revisit {
+                slot_budget.read_left = slot_budget.read_left.min(live_bytes);
+                slot_budget.source_left = slot_budget.source_left.min(live_source_bytes);
+            }
             slot_budget.read_left = slot_budget.read_left.min(batch_bytes);
             slot_budget.source_left = slot_budget.source_left.min(batch_bytes);
             let allowance = (slot_budget.read_left, slot_budget.source_left);
@@ -449,6 +474,10 @@ impl Scan {
             );
             budget.read_left -= consumed.0;
             budget.source_left -= consumed.1;
+            if revisit {
+                live_bytes -= consumed.0;
+                live_source_bytes -= consumed.1;
+            }
             match result {
                 Ok(complete) if complete || reader.waiting_for_newline() => {
                     if !complete {
@@ -469,16 +498,6 @@ impl Scan {
                         && stamp.0 > 0
                     {
                         self.live.insert(reader.source, stamp);
-                        if self.live.len() > LIVE_REVISIT_SOURCES {
-                            let oldest = self
-                                .live
-                                .iter()
-                                .min_by_key(|(_, stamp)| stamp.1)
-                                .unwrap()
-                                .0
-                                .clone();
-                            self.live.remove(&oldest);
-                        }
                     }
                 }
                 Ok(false) if revisit && consumed != (0, 0) && reader.can_yield_plain_batch() => {
@@ -523,6 +542,8 @@ impl Scan {
                 }
             }
         }
+        // 已变化但尚未获分配的来源仍属于未处理队列，不能沿用封存时的覆盖结论。
+        self.remaining.extend(changed);
         self.remaining.extend(verify_later);
         let pending_sources = self.remaining.len()
             + self.waiting_for_newline.len()

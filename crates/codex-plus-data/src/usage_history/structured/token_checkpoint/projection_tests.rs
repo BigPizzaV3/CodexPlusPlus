@@ -320,7 +320,7 @@ fn registered_compressed_prefix_can_introduce_another_sessions_counts_in_its_suf
     assert!(!closed.resume_pending && !closed.identity_conflict && !closed.invalid_counts);
     assert_eq!(closed.session, CHILD);
     assert_eq!(closed.stamp, first_checkpoint.stamp);
-    assert!(store.sealed_queued_sources(queued)?.0.contains(&archive));
+    assert!(store.sealed_queued_sources(queued)?.0.contains_key(&archive));
     assert_eq!(link_count(&store)?, 1);
     assert!(store.db.query_row(
         "SELECT EXISTS(SELECT 1 FROM token_observations o JOIN token_sessions s ON s.id=o.session_id

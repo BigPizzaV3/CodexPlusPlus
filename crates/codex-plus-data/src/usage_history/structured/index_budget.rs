@@ -151,14 +151,12 @@ impl Budget {
     pub(super) fn checkpoint_slot<'a>(
         &self,
         parked: impl Iterator<Item = &'a FileState>,
-        share_with_history: bool,
     ) -> Self {
         let mut slot = Self::new(parked);
         // 暂停的解码器继续计入内存，第二个名额用于交替读取普通日志。
         slot.reader_limit = 2;
-        let divisor = if share_with_history { 2 } else { 1 };
-        slot.read_left = self.read_left / divisor;
-        slot.source_left = self.source_left / divisor;
+        slot.read_left = self.read_left;
+        slot.source_left = self.source_left;
         slot
     }
 
