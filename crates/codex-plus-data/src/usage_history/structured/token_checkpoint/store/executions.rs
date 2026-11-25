@@ -38,6 +38,43 @@ fn local_midnight(day: NaiveDate) -> Result<i64> {
 }
 
 impl Store {
+    pub(in super::super) fn evict_execution_days(
+        &mut self,
+        cutoff: NaiveDate,
+        batch: u32,
+    ) -> Result<u32> {
+        let tx = self.db.transaction()?;
+        let (removed, through) = {
+            let mut statement = tx.prepare_cached(
+                "DELETE FROM execution_daily WHERE (day, session_id) IN (
+                    SELECT day, session_id FROM execution_daily WHERE day < ?1
+                    ORDER BY day, session_id LIMIT ?2
+                 ) RETURNING day",
+            )?;
+            let mut rows = statement.query(params![cutoff.to_string(), batch])?;
+            let mut removed = 0;
+            let mut through = String::new();
+            while let Some(row) = rows.next()? {
+                through = through.max(row.get(0)?);
+                removed += 1;
+            }
+            (removed, through)
+        };
+        if removed != 0 {
+            tx.execute(
+                "INSERT INTO execution_evicted VALUES(1,?1) ON CONFLICT(singleton)
+                 DO UPDATE SET through_day=max(through_day,excluded.through_day)",
+                [through],
+            )?;
+            tx.execute(
+                "UPDATE token_revision SET revision=revision+1, updated_at=max(updated_at+1,?1)",
+                [Local::now().timestamp_millis()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     pub(in super::super) fn compact_execution_metadata(
         &mut self,
         now_ms: i64,
@@ -335,6 +372,15 @@ impl Store {
             |row| row.get(0),
         )?;
         let capture_missing = capture_since.is_some_and(|since| query.start_at < since);
+        let start_day = DateTime::from_timestamp_millis(query.start_at)
+            .unwrap()
+            .with_timezone(&Local)
+            .date_naive();
+        let storage_pruned: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM execution_evicted WHERE through_day >= ?1)",
+            [start_day.to_string()],
+            |row| row.get(0),
+        )?;
         let from = query.start_at.max(cutoff.unwrap_or(query.end_at));
         let until = query.end_at.min(now_ms.saturating_add(1));
         let calls = CALLS.as_str();
@@ -430,6 +476,7 @@ impl Store {
             && storage_error.is_none()
             && !range_missing
             && !capture_missing
+            && !storage_pruned
             && summary["conflicts"] == 0;
         summary["classificationComplete"] = json!(complete);
         if !complete && summary["total"] == 0 {
@@ -491,7 +538,9 @@ impl Store {
             "status":if complete {"ok"} else {"partial"}, "complete":complete,
             "revision":revision,"items":items,"nextCursor":next,"summary":summary,
             "dailySummaries":daily, "activitySummary":activity, "searchApplied":!query.search.is_empty(),
-            "coverage":{"complete":complete,"precision":if daily.is_empty() {"exact"} else {"day"},"reason":if range_missing {
+            "coverage":{"complete":complete,"precision":if !daily.is_empty() || storage_pruned {"day"} else {"exact"},"reason":if storage_pruned {
+                "storage-pruned"
+            } else if range_missing {
                 "outside-retention"
             } else if capture_missing {
                 "before-tool-capture"
@@ -918,6 +967,94 @@ mod tests {
     use super::*;
 
     const SESSION: &str = "00000000-0000-4000-8000-000000000001";
+
+    #[test]
+    fn pressure_evicts_only_oldest_tool_summaries_and_persists_the_gap() {
+        let dir = tempfile::tempdir().unwrap();
+        let database = dir.path().join("index.sqlite");
+        let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+        let cutoff = Local::now().date_naive() - chrono::Days::new(59);
+        let oldest = cutoff - chrono::Days::new(2);
+        let second = cutoff.pred_opt().unwrap();
+        store
+            .db
+            .execute(
+                "UPDATE token_revision SET revision=1,precise_from=?1",
+                [cutoff.to_string()],
+            )
+            .unwrap();
+        store
+            .db
+            .execute("INSERT INTO token_sessions VALUES(1,?1)", [SESSION])
+            .unwrap();
+        for (day, count) in [(oldest, 2), (second, 3), (cutoff, 5)] {
+            store
+                .db
+                .execute(
+                    "INSERT INTO execution_daily VALUES(?1,1,?2,0,0,?2,0)",
+                    params![day.to_string(), count],
+                )
+                .unwrap();
+        }
+        store
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_eviction BEFORE INSERT ON execution_evicted
+             BEGIN SELECT RAISE(ABORT,'fixture'); END;",
+            )
+            .unwrap();
+        assert!(store.evict_execution_days(cutoff, 1).is_err());
+        assert_eq!(
+            store
+                .db
+                .query_row("SELECT count(*) FROM execution_daily", [], |r| r
+                    .get::<_, u64>(0))
+                .unwrap(),
+            3
+        );
+        store
+            .db
+            .execute_batch("DROP TRIGGER fail_eviction")
+            .unwrap();
+        assert_eq!(store.evict_execution_days(cutoff, 1).unwrap(), 1);
+        drop(store);
+
+        let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+        let read = |store: &mut Store, start| {
+            let query = ExecutionQuery::parse(&json!({
+                "startAt": local_midnight(start).unwrap(),
+                "endAt": local_midnight(cutoff).unwrap(),
+            }))
+            .unwrap();
+            Store::read_execution_page(
+                &mut store.db,
+                &query,
+                Local::now().timestamp_millis(),
+                false,
+                None,
+            )
+            .unwrap()
+        };
+        let pruned = read(&mut store, oldest);
+        assert_eq!(pruned["revision"], 2);
+        assert_eq!(pruned["coverage"]["reason"], "storage-pruned");
+        assert_eq!(pruned["summary"]["total"], 3);
+        assert_eq!(pruned["complete"], false);
+        assert_eq!(
+            read(&mut store, second)["coverage"]["reason"],
+            "outside-retention"
+        );
+        assert_eq!(store.evict_execution_days(cutoff, 256).unwrap(), 1);
+        assert_eq!(store.evict_execution_days(cutoff, 256).unwrap(), 0);
+        assert_eq!(
+            store
+                .db
+                .query_row("SELECT day FROM execution_daily", [], |r| r
+                    .get::<_, String>(0))
+                .unwrap(),
+            cutoff.to_string()
+        );
+    }
 
     #[test]
     fn expired_tools_compact_once_in_bounded_transactions_and_keep_full_day_counts() {

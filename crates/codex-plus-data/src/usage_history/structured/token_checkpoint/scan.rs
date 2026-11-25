@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 const SOURCES_PER_ROUND: usize = 64;
-const RECLAIM_BATCH: u32 = 256;
+pub(super) const RECLAIM_BATCH: u32 = 256;
 
 #[derive(Default)]
 pub(super) struct Scan {
@@ -45,7 +45,7 @@ impl Scan {
         &self.scoped_count_gaps
     }
 
-    fn maintain(&mut self, store: &mut Store, cutoff: NaiveDate) -> anyhow::Result<()> {
+    pub(super) fn maintain(&mut self, store: &mut Store, cutoff: NaiveDate) -> anyhow::Result<()> {
         let now = chrono::Local::now().timestamp_millis();
         store.expire_execution_locators(now, RECLAIM_BATCH)?;
         store.compact_execution_metadata(now, RECLAIM_BATCH)?;

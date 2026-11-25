@@ -49,6 +49,12 @@
 最近 60 个本地日期（含当天）；到期后保留日汇总，有原会话时可按需回读。
 `scan.retentionDays` 为保留设置，`scan.preciseFrom` 为已提交的逐笔保留边界
 （尚未提交时为 `null`）。保留期不等于覆盖范围，查询完整性以 `coverage` 为准。
+通过 `usageHistoryPreciseDays` 可调整精确保留期；延长后不自动恢复已汇总的明细。
+索引工作预算 `usageHistoryStorageMiB` 默认 2048 MiB，包含主库、WAL 和辅助文件，
+不包含独立的归属证明缓存和旧索引。空间不足时按日期先回收已到期的工具日汇总；
+受影响的工具范围返回 `coverage.reason: "storage-pruned"`。
+长读取占用 WAL 时暂停写入，不删除记录。空间仍不足时保留最后已提交快照，
+`scan.storageBlocked` 提示写入受限；释放空间或提高预算后从原游标续读。
 `scan.sourceIssues` 汇总来源发现和摄取问题，不等于旧扫描器的坏记录条数。
 不提供旧扫描器的耗时、读取字节和已索引文件计数。
 文件状态保留预算 64 MiB，每轮输入和解压预算各 4 MiB，单行上限 1 MiB。

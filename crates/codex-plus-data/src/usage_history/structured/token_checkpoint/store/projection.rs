@@ -3,7 +3,6 @@ use super::{Coverage, Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{
     Checkpoint, Counter, EventClassification, Observation,
     historical::{EvidenceOverlay, Historical},
-    runtime::RETENTION_DAYS,
 };
 use crate::usage_history::structured::{
     AttributionScope, ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index,
@@ -2000,7 +1999,7 @@ impl Store {
                 "sourceIssues":all.coverage.map(|c| c.issues),
                 "storageBlocked":all.coverage.is_some_and(|c| c.maintenance_blocked),
                 "uncertainCountEvents":all.unresolved,
-                "retentionDays":RETENTION_DAYS,
+                "retentionDays":codex_plus_core::settings::default_usage_history_precise_days(),
                 "preciseFrom":(!cutoff.is_empty()).then_some(&cutoff),
             }
         });

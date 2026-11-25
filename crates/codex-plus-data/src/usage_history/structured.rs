@@ -1966,23 +1966,35 @@ pub(super) fn clear(home: &Path) {
     drop(homes);
 }
 
+#[derive(Deserialize)]
+struct HistorySettings {
+    #[serde(rename = "usageHistoryEnabled", default)]
+    enabled: bool,
+    #[serde(
+        rename = "usageHistoryStorageMiB",
+        default = "codex_plus_core::settings::default_usage_history_storage_mib"
+    )]
+    storage_mib: u32,
+    #[serde(
+        rename = "usageHistoryPreciseDays",
+        default = "codex_plus_core::settings::default_usage_history_precise_days"
+    )]
+    precise_days: u64,
+}
+
+fn read_history_settings(settings: &Path) -> anyhow::Result<HistorySettings> {
+    const MAX_BYTES: u64 = 8 * 1024 * 1024;
+    let file = File::open(settings)?;
+    let metadata = file.metadata()?;
+    anyhow::ensure!(
+        metadata.is_file() && metadata.len() <= MAX_BYTES,
+        "用量设置文件无效"
+    );
+    Ok(serde_json::from_reader(file.take(MAX_BYTES + 1))?)
+}
+
 fn history_enabled(settings: &Path) -> bool {
-    #[derive(Deserialize)]
-    struct Settings {
-        #[serde(rename = "usageHistoryEnabled", default)]
-        enabled: bool,
-    }
-    let Ok(file) = File::open(settings) else {
-        return false;
-    };
-    if !file
-        .metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 8 * 1024 * 1024)
-    {
-        return false;
-    }
-    serde_json::from_reader::<_, Settings>(file.take(8 * 1024 * 1024 + 1))
-        .is_ok_and(|settings| settings.enabled)
+    read_history_settings(settings).is_ok_and(|settings| settings.enabled)
 }
 
 fn evict_idle(home: &Path, cache: &Arc<Mutex<Cache>>) -> bool {

@@ -210,6 +210,10 @@ impl Store {
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 started_at INTEGER
              ) STRICT;
+             CREATE TABLE IF NOT EXISTS execution_evicted (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                through_day TEXT NOT NULL
+             ) STRICT;
              INSERT OR IGNORE INTO execution_coverage_start
                 SELECT 1, CASE WHEN EXISTS (SELECT 1 FROM token_sources)
                     THEN CAST(unixepoch('subsec') * 1000 AS INTEGER) END;
