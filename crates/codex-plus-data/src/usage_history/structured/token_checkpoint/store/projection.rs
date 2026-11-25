@@ -2068,15 +2068,9 @@ impl Store {
              WHERE r.timestamp_ms = ?1 AND r.day >= (SELECT precise_from FROM token_revision)",
         )?;
         for timestamp in timestamps {
-            // A timestamp is indivisible. Other groups are streamed within this read transaction.
-            let mut remaining: usize = 32 * 1024 * 1024;
             let mut rows = statement.query([timestamp])?;
             while let Some(row) = rows.next()? {
-                let raw = row.get_ref(2)?.as_blob()?;
-                remaining = remaining
-                    .checked_sub(raw.len())
-                    .context("historical classification exceeds candidate budget")?;
-                let event: Observation = serde_json::from_slice(raw)?;
+                let event: Observation = serde_json::from_slice(row.get_ref(2)?.as_blob()?)?;
                 visit(event.into_event(row.get_ref(0)?.as_blob()?.try_into()?, row.get(1)?)?);
             }
         }

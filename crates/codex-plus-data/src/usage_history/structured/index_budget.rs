@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ROUND_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
 static PENDING_BYTES: AtomicUsize = AtomicUsize::new(0);

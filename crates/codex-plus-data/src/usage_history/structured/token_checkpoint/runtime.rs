@@ -10,7 +10,7 @@ use super::{
 };
 use crate::usage_history::{
     Query, TOKEN_INDEX_DB,
-    structured::{Index, RequestEvidence, live_receipts, read_history_settings},
+    structured::{Index, RequestEvidence, index_budget::MAX_RETAINED_BYTES, live_receipts, read_history_settings},
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{Days, Local, NaiveDate};
@@ -28,7 +28,6 @@ use std::sync::{
 };
 use std::time::Duration;
 
-const RECONCILIATION_BYTES: usize = 32 * 1024 * 1024;
 const CLASSIFICATION_SESSIONS_PER_ROUND: usize = 6;
 const HISTORICAL_CLASSIFICATION_WINDOWS_PER_ROUND: usize = 2;
 const CLASSIFICATION_SLICE_MS: i64 = 300_000;
@@ -250,7 +249,7 @@ impl Runtime {
             let result = store.reclassify_window(
                 &session,
                 Some(window),
-                RECONCILIATION_BYTES,
+                MAX_RETAINED_BYTES,
                 self.scan.scoped_count_gaps(),
                 self.scan.sealed_pending(),
                 |events, aliases, scope| {
@@ -371,7 +370,7 @@ impl Runtime {
             home,
             cutoff,
             &state.provider_names,
-            RECONCILIATION_BYTES,
+            MAX_RETAINED_BYTES,
         );
         state.failed_sources = report.errors.len();
         let can_classify = report.complete

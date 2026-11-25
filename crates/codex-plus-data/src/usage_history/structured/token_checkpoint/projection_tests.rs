@@ -64,6 +64,35 @@ fn new_source<'a>(source: &'a Path, state: &'a FileState) -> SourceUpdate<'a> {
 }
 
 #[test]
+fn historical_candidates_stream_all_rows_at_one_timestamp() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let source = dir.path().canonicalize()?.join(format!("rollout-{PARENT}.jsonl"));
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let rows: Vec<_> = std::iter::once(header(PARENT, 0))
+        .chain((1..=33).map(|n| count(n, 1, n as u64, true)))
+        .collect();
+    let state = parse(&source, &rows, cutoff);
+    let expected: BTreeSet<_> = state.events.iter().map(|event| event.id).collect();
+    assert_eq!(expected.len(), 33);
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let prepared = store.prepare(new_source(&source, &state), cutoff, BTreeMap::new(), 1 << 20)?;
+    store.publish(prepared)?;
+    let tx = store.db.transaction()?;
+    // 每条记录单独可读，同一毫秒的合法 JSON 合计超过原先的 32 MiB。
+    tx.execute(
+        "UPDATE token_resolved SET payload = CAST(payload || ?1 AS BLOB)",
+        [" ".repeat(1 << 20)],
+    )?;
+    let at = DateTime::parse_from_rfc3339(&state.events[0].timestamp)?.timestamp_millis();
+    let mut visited = BTreeSet::new();
+    Store::historical_candidates(&tx, &BTreeSet::from([at]), |event| {
+        assert!(visited.insert(event.id));
+    })?;
+    assert_eq!(visited, expected);
+    Ok(())
+}
+
+#[test]
 fn full_component_reads_clear_flags_once_and_keeps_the_stored_observations() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().canonicalize()?;
