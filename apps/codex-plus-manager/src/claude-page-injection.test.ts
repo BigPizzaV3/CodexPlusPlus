@@ -94,7 +94,13 @@ function loadHook(state: string, plan: unknown, { loading = false } = {}) {
   };
   const nodeRequire = createRequire(import.meta.url);
   const context = vm.createContext({
-    require: (name: string) => (name === "electron" ? electron : name === "./bash-timeout.js" ? { beginTimeoutOverrides: () => Promise.resolve({}) } : nodeRequire(name)),
+    require: (name: string) => {
+      if (name === "electron") return electron;
+      if (name === "./bash-timeout.js") return { beginTimeoutOverrides: () => Promise.resolve({}) };
+      // hook.js falls back to the home directory when a local helper receipt is missing.
+      if (name === "node:os") return { ...os, homedir: () => state };
+      return nodeRequire(name);
+    },
     __dirname: dir,
     process, Buffer, console, setTimeout, clearTimeout, URL, Promise, JSON, WeakSet, Map,
     // bash 时限那段和这里无关：给一个已就绪的结果，不让它去动主进程。

@@ -128,7 +128,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 680
+      "lines": 687
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -168,7 +168,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1114
+      "lines": 1115
     },
     {
       "name": "91-extension-api.js",
@@ -213,7 +213,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 684
+      "lines": 686
     },
     {
       "name": "96-feature-lab.js",
@@ -268,7 +268,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 183
+      "lines": 197
     },
     {
       "name": "98-avatar-overlay-layout.js",

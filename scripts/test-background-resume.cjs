@@ -29,7 +29,10 @@ const context = vm.createContext({
   clearTimeout(id) { timers.delete(id); },
   requestAnimationFrame(fn) { const id = ++nextId; frames.set(id, fn); return id; },
   cancelAnimationFrame(id) { frames.delete(id); },
-  installDictationSupportPatch() { counters.dictation++; },
+  pruneSessionMoreMenus() {},
+  pruneRemovedSessionActions() { return false; },
+  pruneRemovedCodexPlusUiSlots() { return false; },
+  installDictationSupportPatch() { counters.dictation++; return Promise.resolve(); },
   scanLightweight() { counters.light++; },
   scanDeferred() { counters.deferred++; },
 });
@@ -135,6 +138,48 @@ check("deferred-only-resume-and-idle-visibility-do-not-full-scan", () => {
   flush(timers);
   flush(frames);
   assert.equal(counters.deferred, deferred);
+});
+check("virtualized turn mounting and shell output do not schedule a whole-window scan", () => {
+  const original = context.shouldScheduleScan;
+  context.shouldScheduleScan = vm.runInContext(`(${scheduling.match(/^  function shouldScheduleScan\([^]*?^  \}/m)[0]})`, context);
+  const refs = { turn: null, scroller: null, side: null };
+  const make = (tokens, parent) => ({
+    nodeType: 1, matches: (selector) => selector.split(/,\s*/).some((token) => tokens.includes(token)),
+    closest(selector) { return this.matches(selector) ? this : parent?.closest(selector) || null; },
+    querySelector() { return null; },
+  });
+  refs.scroller = make([".thread-scroll-container"]);
+  refs.turn = make(["[data-turn-key]", '[data-testid="conversation-turn"]'], refs.scroller);
+  refs.side = make(["[data-sidebar-fixture]"]);
+  Object.assign(context, {
+    selectors: { sidebarThread: "[data-sidebar-fixture]", appHeader: "[data-header-fixture]" },
+    codexPluginMarketplacePatchEnabled: () => false,
+    nodeOrAncestorLooksLikeCodexUserBubble: () => false,
+    nodeLooksLikeCodexUserBubble: () => false,
+    isExtensionUiNode: () => false,
+  });
+  const mutate = (target, addedNodes = [], removedNodes = []) => ({ type: "childList", target, addedNodes, removedNodes });
+  try {
+    const shell = mutate(refs.turn, [make(['[data-message-author-role]'], refs.turn)]);
+    const mount = mutate(refs.scroller, [refs.turn], [make(["[data-measured-turn]"])]);
+    const nativeWrapper = mutate(refs.scroller, [make(["[data-virtualized-turn]", '[data-testid="conversation-turn"]'])]);
+    const wrappedApproval = {
+      ...make(["[data-virtualized-turn]"]),
+      querySelector: selector => selector.includes("[data-codex-approval-surface]") ? {} : null,
+    };
+    const navigation = mutate(refs.scroller, [make([".composer-footer"], refs.scroller)]);
+    const recent = mutate(make([]), [refs.side]);
+    const approval = mutate(refs.turn, [make(["[data-codex-approval-surface]"], refs.turn)]);
+    assert.equal(context.shouldScheduleScan([shell, mount]), false);
+    assert.equal(context.shouldScheduleScan([nativeWrapper]), false);
+    assert.equal(context.shouldScheduleScan([mutate(refs.scroller, [wrappedApproval])]), true);
+    assert.equal(context.shouldScheduleScan([shell, approval]), true);
+    assert.equal(context.shouldScheduleScan([mount, recent]), true);
+    assert.equal(context.shouldScheduleScan([shell, navigation]), true);
+    assert.equal(context.shouldScheduleScan([mutate(refs.scroller, [refs.turn, make([".composer-footer"])])]), true);
+  } finally {
+    context.shouldScheduleScan = original;
+  }
 });
 check("repeated-background-round-trips-stay-bounded", () => {
   const before = { ...counters };

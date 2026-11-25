@@ -12,7 +12,8 @@
       ? Math.min(1, Math.max(0.01, configuredOpacity)) : 0.35;
     const fitMode = ["fill", "fit", "stretch", "tile", "center"].includes(config.fitMode)
       ? config.fitMode : "fit";
-    const reuse = !!(config.enabled && source && cached?.version === 37 && cached.ready && cached.source === source);
+    const engineVersion = 45;
+    const reuse = !!(config.enabled && source && cached?.version === engineVersion && cached.ready && cached.source === source);
     if (reuse && cached.opacity === opacity && cached.fitMode === fitMode &&
       document.getElementById(codexPlusImageOverlayId)?.getAttribute("data-codex-plus-ext") === "image-overlay") return;
     window.__codexPlusImageOverlayGeometryCleanup?.();
@@ -31,13 +32,217 @@
       tile: { size: "auto", position: "left top", repeat: "repeat" },
       center: { size: "auto", position: "center center", repeat: "no-repeat" },
     }[fitMode];
-    const viewerSelector = [
+    let resource = reuse ? cached : null;
+    let disposed = false;
+    let finishReady;
+    const image = new Image();
+    const stats = { frames: 0, rectReads: 0, styleReads: 0, queries: 0, maskWrites: 0, layerWrites: 0 };
+    window.__codexPlusImageOverlayStats = stats;
+    window.__codexPlusImageOverlayReady = new Promise(resolve => { finishReady = resolve; });
+    const loadWallpaper = ready => {
+      if (resource) return ready();
+      const data = source.match(/^data:([^;,]+);base64,([\s\S]*)$/);
+      let blobUrl = "";
+      try {
+        if (data) blobUrl = URL.createObjectURL(new Blob([
+          Uint8Array.fromBase64?.(data[2]) ?? Uint8Array.from(atob(data[2]), char => char.charCodeAt(0)),
+        ], { type: data[1] }));
+      } catch {
+        finishReady(false);
+        return;
+      }
+      resource = { version: engineVersion, source, blobUrl, imageSource: blobUrl || source };
+      window.__codexPlusImageOverlayResource = resource;
+      window.__codexPlusImageOverlayBlobUrl = blobUrl;
+      image.onload = ready;
+      image.onerror = () => { if (!disposed) window.__codexPlusImageOverlayCleanup?.(); };
+      image.src = resource.imageSource;
+    };
+    const releaseWallpaper = keep => {
+      image.onload = image.onerror = null;
+      finishReady(false);
+      if (keep || !resource) return;
+      if (resource.blobUrl) URL.revokeObjectURL(resource.blobUrl);
+      if (resource.tileInputUrl) URL.revokeObjectURL(resource.tileInputUrl);
+      if (window.__codexPlusImageOverlayResource === resource) window.__codexPlusImageOverlayResource = null;
+      if (window.__codexPlusImageOverlayBlobUrl === resource.blobUrl) window.__codexPlusImageOverlayBlobUrl = "";
+    };
+    const wallpaperReady = () => {
+      Object.assign(resource, { ready: true, opacity, fitMode, width: resource.width || image.naturalWidth,
+        height: resource.height || image.naturalHeight });
+      finishReady(true);
+      report?.("image_overlay_installed", { opacity, fitMode, sourceKind: source.startsWith("data:") ? "data-uri" : "unknown" });
+    };
+    const frameSelector = "[data-app-shell-frame][data-app-shell-page-surface]";
+    const currentShell = `${frameSelector} :is(main[data-app-shell-main-surface], [data-settings-panel], .messaging-root.messaging-embedded, section[aria-labelledby="orbit-introduction-title"])`;
+    const promoteCurrentShell = () => {
+      if (disposed || !document.querySelector(currentShell)) return;
+      window.__codexPlusImageOverlayCleanup(true);
+      installCodexPlusImageOverlay(config, report);
+    };
+    if (document.querySelector(currentShell)) {
+      // 新版只合成一张独立底图。容器仅让出背景，不重排原生层级。
+      const wallpaper = document.createElement("div");
+      wallpaper.id = codexPlusImageOverlayId;
+      wallpaper.dataset.codexPlusExt = "image-overlay";
+      wallpaper.setAttribute("aria-hidden", "true");
+      const style = document.createElement("style");
+      style.dataset.codexPlusExt = "image-overlay";
+      const translucent = (color, strength = "var(--codex-plus-image-material)") =>
+        `color-mix(in srgb, ${color} ${strength}, transparent)`;
+      const nativeOnly = ':not(:where([data-codex-plus-ext], [data-codex-plus-ext] *))';
+      const footer = '.absolute.inset-x-0:has(> [data-thread-scroll-footer] > [data-thread-composer-backdrop])';
+      const dot = `${frameSelector} .messaging-root.messaging-embedded:not([data-floating])`;
+      const composer = `${frameSelector} [data-composer-surface-variant="default"]:not([data-composer-drag-active])${nativeOnly}`;
+      const viewer = '.codex-dialog[role="dialog"]:has([data-testid="image-preview-dismiss-area"], [data-image-preview-toolbar])';
+      const viewerBackdrop = '.codex-dialog-overlay:is([class^="imageOverlay-"], [class*=" imageOverlay-"])';
+      const viewerControls = `${viewer} :is([class^="controlSurface-"], [class*=" controlSurface-"], [data-image-preview-toolbar] [role="toolbar"][class*="annotationTheme-"])${nativeOnly}`;
+      const viewerComposer = "[data-image-preview-composer] [data-composer-surface-variant]:not([data-composer-drag-active])";
+      const changes = '[class~="bg-surface-elevated-secondary/50"][class*="[--turn-diff-row-padding-y:"]';
+      const codeSurface = '[data-code-block][data-markdown-copy="code-block"][class*="CodeSurface-"]';
+      const fileTab = '[role="tabpanel"][data-app-shell-tab-panel-controller="right"][data-tab-id^="file:"]';
+      const fileTree = 'file-tree-container[data-file-tree-virtualized="true"]';
+      window.__codexPlusImageOverlayCleanup = keep => {
+        if (disposed) return;
+        disposed = true;
+        style.remove();
+        wallpaper.remove();
+        releaseWallpaper(keep);
+      };
+      loadWallpaper(() => {
+        if (disposed) return;
+        const surface = translucent("var(--color-surface-elevated-secondary, var(--codex-plus-image-base))");
+        const base = translucent("var(--codex-plus-image-base)");
+        const floating = `${Math.max(55, (1 - opacity) * 100)}%`;
+        const composerTint = "light-dark(var(--color-surface-elevated-secondary, Canvas), var(--color-text, CanvasText))";
+        const mainComposerFill = translucent(composerTint, `${(1 - opacity) * 16}%`);
+        const homeRailFill = translucent(composerTint, `${(1 - opacity) * 8}%`);
+        style.textContent = `@media (forced-colors: none) {
+          :root {
+            --codex-plus-image-base:var(--color-surface, Canvas);
+            --codex-plus-image-material:${(1 - opacity) * 100}%;
+          }
+          #${codexPlusImageOverlayId} {
+            position:fixed;inset:0;z-index:-1;pointer-events:none;
+            transform:translateZ(0);
+            background-color:var(--codex-plus-image-base)!important;
+            background-image:linear-gradient(${base},${base}),url(${JSON.stringify(resource.imageSource)})!important;
+            background-size:auto,${fitStyles.size};background-position:center,${fitStyles.position};
+            background-repeat:no-repeat,${fitStyles.repeat};
+          }
+          ${frameSelector} { background:none!important; }
+          ${frameSelector} [data-app-shell-focus-area="right-panel"]${nativeOnly} {
+            --app-shell-panel-background:transparent!important;
+          }
+          ${frameSelector} :is(main[data-app-shell-main-surface], .app-shell-left-panel, [data-app-shell-surface-backing], [data-app-shell-page-header].bg-surface)${nativeOnly} {
+            background-color:transparent!important;
+          }
+          ${frameSelector} [data-app-action-sidebar-scroll] [data-app-action-sidebar-project-row]${nativeOnly} {
+            content-visibility:visible!important;
+            contain:content!important;
+          }
+          ${changes} [class~="group/turn-diff-file-row"][class~="[content-visibility:auto]"]:nth-child(-n+3)${nativeOnly} {
+            content-visibility:visible!important;
+            contain:content;
+          }
+          ${frameSelector} [class~="text-surface"][class*="bg-[image:var(--app-shell-content-fade,"] { background-image:none!important; }
+          [role="dialog"].settings-dialog${nativeOnly} { background-color:${translucent("var(--color-surface)", floating)}!important; }
+          .settings-dialog :is([data-settings-panel].bg-surface, .settings-dialog-content, .settings-dialog-sidebar)${nativeOnly} { background-color:transparent!important; }
+          ${frameSelector} [data-settings-panel] > [class~="electron:bg-surface"]${nativeOnly},
+          ${fileTab} > .flex.h-full.min-h-0.flex-col.bg-surface${nativeOnly},
+          ${fileTab} ${fileTree}${nativeOnly},
+          ${frameSelector} .min-h-12.border-b.bg-surface:has([data-browser-sidebar-toolbar])${nativeOnly},
+          ${dot}${nativeOnly},
+          ${dot} .thread-pane${nativeOnly},
+          ${frameSelector} section[aria-labelledby="orbit-introduction-title"].bg-surface${nativeOnly},
+          ${frameSelector} section[aria-labelledby="orbit-introduction-title"] > footer.bg-surface${nativeOnly} {
+            background-color:transparent!important;
+          }
+          ${fileTab} ${fileTree}${nativeOnly} { --trees-bg-override:transparent!important; }
+          ${dot} .composer-wrap:not([data-has-composer-surface])${nativeOnly} {
+            border-bottom-color:transparent!important;
+          }
+          ${dot} .conversation-footer [data-codex-composer-root] > [class*="transcriptBackdrop-"] > [aria-hidden="true"].from-surface.via-surface${nativeOnly} {
+            background-image:none!important;
+          }
+          ${viewerBackdrop}${nativeOnly} { backdrop-filter:none!important; }
+          ${composer} {
+            --composer-layout-surface-fill:${mainComposerFill}!important;
+            --composer-layout-surface-backdrop-filter:none!important;
+          }
+          ${viewer} ${viewerComposer}${nativeOnly} {
+            --composer-layout-surface-fill:${translucent("var(--composer-layout-surface-background, var(--color-surface-elevated-secondary))", floating)}!important;
+            --composer-layout-surface-backdrop-filter:none!important;
+          }
+          :is(${composer}:not([data-composer-utility-bar-variant="home"]), ${composer}[data-composer-utility-bar-variant="home"] [data-composer-body]),
+          ${viewer} ${viewerComposer}${nativeOnly} { backdrop-filter:none!important; }
+          ${frameSelector} ${footer}::before { background-image:none!important; }
+          ${frameSelector} ${footer}::after { background-color:transparent!important; }
+          ${frameSelector} :is([data-codex-composer-root][data-composer-placement="home"], [data-composer-utility-bar-variant="home"]) [data-composer-utility-rail].bg-background-composer-action-bar${nativeOnly} {
+            background-color:${homeRailFill}!important;
+          }
+          [role="group"] > .bg-background-mode-toggle-track + span[aria-hidden="true"]${nativeOnly} {
+            background-color:${translucent("var(--color-background-mode-toggle-selected, var(--color-surface-elevated-secondary))", `${(1 - opacity) * 50}%`)}!important;
+          }
+          [data-chatgpt-composer][data-composer-placement="thread"] [data-composer-trailing-controls][class~="bg-(--composer-layout-surface-background)"]${nativeOnly} {
+            background-color:${translucent("var(--composer-layout-surface-background, var(--color-surface-elevated-secondary))")}!important;
+          }
+          ${frameSelector} [data-thread-find-composer="true"] [data-composer-trailing-controls][class~="bg-(--composer-layout-surface-background)"]:not([data-chatgpt-composer] *)${nativeOnly} {
+            background-color:${mainComposerFill}!important;
+          }
+          :is([data-composer-rail-item][data-composer-rail-framed].bg-surface-elevated-secondary, button[class~="group/scroll-to-bottom"])${nativeOnly} {
+            background-color:${surface}!important;
+          }
+          ${changes}${nativeOnly} { background-color:${translucent("var(--color-surface-elevated-secondary)", `${(1 - opacity) * 50}%`)}!important; }
+          ${changes} [class~="group/turn-diff-file-row"] button[class~="bg-surface/70"]:not(:hover)${nativeOnly} {
+            background-color:${translucent("var(--color-surface)", `${(1 - opacity) * 44}%`)}!important; }
+          ${codeSurface}${nativeOnly}, ${codeSurface} > .sticky[data-markdown-copy="exclude"]${nativeOnly} {
+            background-color:${translucent("var(--color-surface)", `${(1 - opacity) * 50}%`)}!important;
+            background-image:none!important;
+          }
+          [data-oai-writing-block-surface][data-markdown-copy="code-block"]${nativeOnly} {
+            --wb-surface-primary:${translucent("var(--color-surface-elevated-secondary, var(--color-surface))", `${(1 - opacity) * 50}%`)}!important;
+          }
+          .thread-scroll-container [data-turn-key] [class~="overflow-hidden"][class*="motion-reduce:h-auto!"]:not([aria-hidden="true"]):has([data-testid="exec-shell-body"])${nativeOnly} {
+            height:auto!important;
+            max-height:none!important;
+            overflow:visible!important;
+            transition:none!important;
+            animation:none!important;
+          }
+          :is([data-composer-overlay-floating-ui] .bg-surface-elevated-secondary, [role="menu"].bg-surface-elevated-secondary, [role="listbox"].bg-surface-elevated-secondary, [data-slot="popover-content"].bg-surface-elevated-secondary, [popover][role="dialog"][id$="-hover-card"].bg-surface-elevated-secondary)${nativeOnly},
+          ${viewer} [data-image-preview-composer] [data-inline-composer] > .bg-surface-elevated-secondary${nativeOnly},
+          ${viewerControls} {
+            background-color:${translucent("var(--color-surface-elevated-secondary)", floating)}!important;
+          }
+          .bg-codex-application-menu[data-radix-menubar-content]${nativeOnly} {
+            background-color:${translucent("var(--color-codex-application-menu, var(--color-surface-elevated-secondary))", floating)}!important;
+          }
+          ${viewerControls} { background-image:none!important;backdrop-filter:none!important; }
+          [data-browser-sidebar-toolbar] { background:none!important;box-shadow:none!important;backdrop-filter:none!important;filter:none!important; }
+          [data-browser-sidebar-toolbar] :is([data-menu-overlay-surface], [class*="controlSurface"]) {
+            background-image:none!important;
+            background-color:${surface}!important;
+            backdrop-filter:none!important;
+          }
+        }
+        @media (forced-colors: active) { #${codexPlusImageOverlayId} { display:none; } }`;
+        root.insertBefore(wallpaper, document.body);
+        root.append(style);
+        wallpaperReady();
+      });
+      return;
+    }
+    const imageBackdropSelector = '.codex-dialog-overlay:is([class*="_imageOverlay_"], [class^="imageOverlay-"], [class*=" imageOverlay-"])';
+    const imageViewerSelector = [
+      '.codex-dialog:has([data-image-preview-toolbar], [data-image-preview-composer])',
       '[role="dialog"]:has([data-testid="image-preview-dismiss-area"])',
+      `${imageBackdropSelector} + .codex-dialog[role="dialog"]`,
+    ].join(", ");
+    const viewerSelector = [
+      imageViewerSelector, imageBackdropSelector,
       '[data-testid="image-preview-editor"]',
       '[data-testid="image-preview-dismiss-area"]',
-      '.codex-dialog-overlay[class*="_imageOverlay_"]',
-      '.codex-dialog:has([data-image-preview-toolbar])',
-      '.codex-dialog:has([data-image-preview-composer])',
       "[data-browser-sidebar-webview]",
       "[data-browser-sidebar-toolbar]",
     ].join(", ");
@@ -58,7 +263,12 @@
     const mediaSelector = `img, video, canvas, ${viewerSelector}, ${reviewHeaderSelector}`;
     const nativeRangeSelector = 'input[type="range"], [role="slider"]';
     const composerSelector = ':is([data-composer-surface-variant][data-composer-radius-variant], [class*="_ComposerLayoutRoot_"])';
-    const headerSelector = '[data-app-shell-header-layout], [data-sticky]:is([class*="_shell_"], [class^="shell-"], [class*=" shell-"]), .sticky.z-30.bg-surface';
+    const composerBodySelector = "[data-composer-body], [class*='ComposerLayoutBody']";
+    // The clipped, opaque main shell owns one wallpaper surface and keeps its native children in order.
+    const shellSelector = 'main[data-app-shell-main-surface="default"], [data-app-shell-surface-backing]';
+    const shellFrameSelector = "[data-app-shell-frame]:has(main[data-app-shell-main-surface])";
+    const shellBoundarySelector = `:is(${shellFrameSelector}, ${shellSelector})`;
+    const headerSelector = '[data-app-shell-header-layout], header[data-app-shell-titlebar], [data-app-shell-main-titlebar], [data-app-shell-page-header], [data-sticky]:is([class*="_shell_"], [class^="shell-"], [class*=" shell-"]), .sticky.z-30.bg-surface';
     const editorSelector = '[contenteditable="true"], .ProseMirror';
     const composerOverlaySelector = "[data-composer-overlay-floating-ui]";
     const diffPreviewSelector = '[data-testid="diff-preview-scroll"]';
@@ -66,16 +276,20 @@
     const mediaAttribute = "data-codex-plus-image-native";
     const scopeAttribute = "data-codex-plus-image-scope";
     const containmentAttribute = "data-codex-plus-image-contain";
-    const browserPortalAttribute = "data-codex-plus-image-browser-portal";
+    const portalHostAttribute = "data-codex-plus-image-browser-portal";
     const popupMaterialAttribute = "data-codex-plus-image-popup-material";
     const popupBoundaryAttribute = "data-codex-plus-image-popup-boundary";
     const popupPortalAttribute = "data-codex-plus-image-popup-portal";
-    const popupPortalSelector = ".fixed.inset-0.pointer-events-none.zoom-adjusted-viewport.contain-layout";
+    const popupPortalSelector = ".fixed.inset-0.contain-layout:is(.pointer-events-none, .zoom-adjusted-viewport[data-overlay-owner])";
     const controlAttribute = "data-codex-plus-image-control";
     const paintAttribute = "data-codex-plus-image-paint";
     const topControlAttribute = "data-codex-plus-image-top-control";
     const footerAttribute = "data-codex-plus-image-footer-gutter";
-    const footerSelector = "[data-thread-scroll-footer]";
+    const footerBodySelector = "[data-thread-scroll-footer]";
+    const footerFrameSelector = `.absolute.inset-x-0:has(> ${footerBodySelector})`;
+    const footerSelector = `${footerFrameSelector}, ${footerBodySelector}:not(${footerFrameSelector} > *)`;
+    const modernFooterBackdropSelector = "[data-thread-composer-backdrop] [data-composer-body]";
+    const toastAreaSelector = ".codex-toast-area";
     // 原生共享卡片没有全部暴露 data 属性（例如旧 optionPicker），保留其外壳组合匹配。
     const nativeTooltipSelector = '[role="tooltip"]:is([class^="Tooltip-"], [class*=" Tooltip-"])';
     const surfaceSelector = [
@@ -88,7 +302,6 @@
       ".tortilla-gallery.bg-surface-elevated-secondary", ".tortilla-gallery .bg-surface-elevated-secondary",
     ].join(", ");
     const surfaceBoundarySelector = `[${mediaAttribute}^="surface"]`;
-    const imageViewerSelector = '.codex-dialog:has([data-image-preview-toolbar], [data-image-preview-composer]), [role="dialog"]:has([data-testid="image-preview-dismiss-area"])';
     const viewerSurfaceSelector = `:is(${imageViewerSelector}) :is(` +
       `[class*="controlSurface"], [role="toolbar"][class*="annotationTheme"], ` +
       `.pointer-events-auto.rounded-full:has([role="slider"]), [data-image-preview-composer] ${composerSelector})`;
@@ -96,10 +309,12 @@
       !node.parentElement?.closest(viewerSurfaceSelector);
     const topControlSelector = [
       '[role="menu"]', '[role="listbox"]', '[role="dialog"]', '[role="tooltip"]', '[class*="_Tooltip_"]', '[class^="Tooltip-"]', '[class*=" Tooltip-"]',
-      // Sonner 的内层 z-index 无法越过这个原生 z60 外壳；只抬外壳，不改通知本身的颜色与动画。
-      ".codex-toast-area",
+      toastAreaSelector,
       "[data-radix-popper-content-wrapper]", '[data-slot="popover-content"]', "[popover]", composerOverlaySelector,
     ].join(", ");
+    const nativeHosts = [shellBoundarySelector, pageSelector, composerSelector, footerSelector, headerSelector, browserSelector, reviewHeaderSelector].join(", ");
+    const nativeBoundaries = `[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${surfaceBoundarySelector}, ${toastAreaSelector}, ${nativeHosts}`;
+    const backingSelector = `${headerSelector}, ${shellBoundarySelector}, ${footerFrameSelector}`;
     // Extensions keep their own layers; their full-page shell is the one wallpaper surface.
     const owned = node => !!node?.closest?.('[data-codex-plus-ext]') && !node.matches(pageSelector);
     const wallpaperLayer = 1000;
@@ -118,30 +333,31 @@
     style.setAttribute("data-codex-plus-ext", "image-overlay");
     const nativeRules = `
       [${scopeAttribute}] { isolation:auto!important;z-index:auto!important;will-change:auto!important; }
-      [${browserPortalAttribute}] { z-index:${wallpaperLayer + 1}!important; }
-      ${popupPortalSelector}[${browserPortalAttribute}] { z-index:${wallpaperLayer + 2}!important; }
+      [${portalHostAttribute}] { z-index:${wallpaperLayer + 1}!important; }
+      ${popupPortalSelector}[${portalHostAttribute}] { z-index:${wallpaperLayer + 2}!important; }
+      ${popupPortalSelector}[${portalHostAttribute}]:has([${mediaAttribute}="viewer"]) { z-index:${wallpaperLayer + 3}!important; }
       [${scopeAttribute}^="identity"] { transform:none!important; }
       [${scopeAttribute}="identity-flow"] { position:relative!important; }
       [${containmentAttribute}] { contain:none!important; }
       [${containmentAttribute}^="flow"] { position:relative!important; }
       [${containmentAttribute}$="-clip"] { overflow:clip!important; }
-      [${mediaAttribute}]:where(:not([${mediaAttribute}="review"], [${mediaAttribute}="composer"], [${mediaAttribute}="page"], [${mediaAttribute}^="toolbar-surface"], ${surfaceBoundarySelector})) { z-index:${wallpaperLayer}!important; }
+      [${mediaAttribute}]:where(:not([${mediaAttribute}="review"], [${mediaAttribute}="composer"], [${mediaAttribute}="page"], [${mediaAttribute}="header-backing"], [${mediaAttribute}^="toolbar-surface"], ${surfaceBoundarySelector}, ${shellBoundarySelector} *)) { z-index:${wallpaperLayer}!important; }
       [${mediaAttribute}="surface-flow"] { position:relative!important; }
       [${mediaAttribute}="flow"], [${mediaAttribute}="island-flow"] { position:relative!important; }
       [${mediaAttribute}="viewer"] { z-index:${wallpaperLayer + 3}!important; }
-      [${mediaAttribute}="footer"] { z-index:${wallpaperLayer + 1}!important; }
-      [${mediaAttribute}^="header"] { z-index:${wallpaperLayer + 1}!important; }
+      [${mediaAttribute}="footer"]:not(:where(${shellBoundarySelector} *)), [${mediaAttribute}="header"], [${mediaAttribute}="header-flow"] { z-index:${wallpaperLayer + 1}!important; }
       [${mediaAttribute}="header-flow"] { position:relative!important; }
       [${mediaAttribute}^="header"][class~="after:bg-linear-to-b"][class~="after:from-surface"][class~="after:to-transparent"]::after { background-image:none!important; }
+      ${shellBoundarySelector} [class~="text-surface"][class*="bg-[image:var(--app-shell-content-fade,"] { background-image:none!important; }
       ${composerSelector} .top-full [data-composer-placement="home"].bg-background-composer-action-bar { background:none!important; }
       [${mediaAttribute}="page"], [${mediaAttribute}="composer"] { isolation:isolate!important; }
-      [${mediaAttribute}="composer"]:not([${mediaAttribute}="footer"] *) { z-index:${wallpaperLayer + 1}!important; }
+      [${mediaAttribute}="composer"]:not(:where([${mediaAttribute}="footer"] *, ${shellBoundarySelector} *)) { z-index:${wallpaperLayer + 1}!important; }
       [${mediaAttribute}="toolbar"], [${mediaAttribute}="toolbar-flow"] { background:none!important;box-shadow:none!important;filter:none!important;backdrop-filter:none!important; }
       [${mediaAttribute}="toolbar-flow"], [${mediaAttribute}="toolbar-surface-flow"] { position:relative!important; }
       [${mediaAttribute}^="toolbar-surface"] { isolation:isolate!important;backdrop-filter:none!important; }
       ${timelineSelector} { overscroll-behavior-y:none!important; }
       [${popupMaterialAttribute}] { background-image:none!important;filter:none!important;backdrop-filter:none!important; }
-      [${paintAttribute}] { isolation:isolate!important; }
+      [${paintAttribute}]:not([${paintAttribute}^="background-"]) { isolation:isolate!important; }
       [${paintAttribute}]:not([${paintAttribute}^="before-"], [${paintAttribute}^="background-"])::after, [${paintAttribute}^="before-"]::before {
         content:"";position:absolute;inset:0;pointer-events:none;border-radius:inherit;
         corner-shape:inherit;z-index:-1;opacity:${opacity};
@@ -149,7 +365,7 @@
         background-repeat:${fitStyles.repeat};background-attachment:fixed;
       }
       [${controlAttribute}] { z-index:${wallpaperLayer}!important; }
-      [${topControlAttribute}] { z-index:${wallpaperLayer + 2}!important; }
+      [${topControlAttribute}]:not(:where(${shellBoundarySelector} *)) { z-index:${wallpaperLayer + 2}!important; }
       [${popupPortalAttribute}] { z-index:${wallpaperLayer + 2}!important; }
       [${topControlAttribute}="flow"] { position:relative!important; }
     `;
@@ -163,18 +379,14 @@
     Object.assign(svg.style, { position: "fixed", width: "0", height: "0", pointerEvents: "none" });
     const defs = svgNode("defs");
     svg.appendChild(defs);
-    let resource = reuse ? cached : null;
-    let disposed = false;
     let raf = 0;
     let nextControl = 0;
     let nextSource = 0;
     let previewVisible = false;
     let sidebarScrollUntil = 0;
-    let finishReady;
-    const image = new Image();
     const records = new Map();
     const scopes = new Map();
-    const browserPortals = new Map();
+    const portalHosts = new Map();
     const controls = new Map();
     const popups = new Map();
     const visibleMedia = new Set();
@@ -191,9 +403,6 @@
     const paintObservers = new Map();
     let geometryDirty = true;
     const originalAttributes = new Map();
-    const stats = { frames: 0, rectReads: 0, styleReads: 0, queries: 0, maskWrites: 0, layerWrites: 0 };
-    window.__codexPlusImageOverlayStats = stats;
-    window.__codexPlusImageOverlayReady = new Promise(resolve => { finishReady = resolve; });
     const mark = (node, name, value) => {
       let attributes = originalAttributes.get(node);
       if (!attributes) originalAttributes.set(node, attributes = new Map());
@@ -246,12 +455,12 @@
       node.getAttribute("data-testid"),
       node.style.display, node.style.visibility, node.style.contentVisibility].join("|");
     const release = record => {
-      if (record.browserPortal) {
-        const count = browserPortals.get(record.browserPortal) - 1;
-        if (count) browserPortals.set(record.browserPortal, count);
+      if (record.portalHost) {
+        const count = portalHosts.get(record.portalHost) - 1;
+        if (count) portalHosts.set(record.portalHost, count);
         else {
-          browserPortals.delete(record.browserPortal);
-          unmark(record.browserPortal, browserPortalAttribute);
+          portalHosts.delete(record.portalHost);
+          unmark(record.portalHost, portalHostAttribute);
         }
       }
       for (const ancestor of record.ancestors) {
@@ -284,8 +493,10 @@
       node.matches(reviewHeaderSelector) ? "review" :
       node.matches(toolbarSelector) ? computed(node).position === "static" ? "toolbar-flow" : "toolbar" :
       isToolbarSurface(node) ? computed(node).position === "static" ? "toolbar-surface-flow" : "toolbar-surface" :
+      node.matches(shellFrameSelector) ? "frame" : node.matches(shellSelector) ? "shell" :
       node.matches(pageSelector) ? "page" : node.matches(composerSelector) ? "composer" :
-      node.matches(headerSelector) ? computed(node).position === "static" ? "header-flow" : "header" :
+      node.matches(headerSelector) ? node.parentElement?.closest(`${shellBoundarySelector}, ${headerSelector}`) ? "header-backing"
+        : computed(node).position === "static" ? "header-flow" : "header" :
       node.matches(footerSelector) ? "footer" :
       node.matches(viewerSelector) && !node.matches("[data-browser-sidebar-webview]") ? "viewer" :
       records.get(node)?.mediaIsland ? computed(node).position === "static" ? "island-flow" : "island" :
@@ -301,8 +512,10 @@
         return;
       }
       const nativeBoundary = toolbarSurface ? node.closest(toolbarSelector) : (localSurface && node.closest(viewerSelector)) ||
-        node.parentElement?.closest(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], [${mediaAttribute}^="island"], ${surfaceBoundarySelector}, ${pageSelector}, ${composerSelector}, ${footerSelector}, ${headerSelector}`);
-      if (nativeBoundary && !localSurface && !toolbarSurface && !node.matches(`${composerSelector}, ${headerSelector}`)) {
+        node.parentElement?.closest(nativeBoundaries);
+      if (nativeBoundary && !localSurface && !toolbarSurface &&
+        !node.matches(`${composerSelector}, ${headerSelector}`) &&
+        !(nativeBoundary.matches(shellBoundarySelector) && node.matches(nativeHosts))) {
         if (previous) removeMedia(node, previous);
         return;
       }
@@ -334,22 +547,24 @@
           return;
         }
       }
-      let browserPortal = node.matches(nativeTooltipSelector) ? node.closest(popupPortalSelector)
-        : node.matches(browserSelector) ? node.closest("[data-embedded-frame-host-root]") : null;
-      if (node.matches(browserSelector)) {
-        for (let parent = node.parentElement; !browserPortal && parent && parent !== root; parent = parent.parentElement) {
+      const browser = node.matches(browserSelector);
+      const viewer = !browser && node.matches(viewerSelector);
+      let portalHost = viewer || node.matches(nativeTooltipSelector) ? node.closest(popupPortalSelector)
+        : browser ? node.closest("[data-embedded-frame-host-root]") || node.closest("[data-browser-host-root]") : null;
+      if (browser) {
+        for (let parent = node.parentElement; !portalHost && parent && parent !== root &&
+          !parent.matches(shellBoundarySelector); parent = parent.parentElement) {
           const paint = computed(parent);
-          if (paint.position === "fixed" && paint.pointerEvents === "none") { browserPortal = parent; break; }
+          if (paint.position === "fixed" && paint.pointerEvents === "none") { portalHost = parent; break; }
         }
       }
       const ancestors = [];
-      for (let parent = nativeBoundary || node.matches(reviewHeaderSelector) ||
-        node.matches(viewerSelector) && !node.matches(browserSelector)
-        ? null : browserPortal ? browserPortal.parentElement : node.parentElement; parent && parent !== root && !parent.matches(pageSelector) &&
+      for (let parent = nativeBoundary || node.matches(`${shellBoundarySelector}, ${reviewHeaderSelector}`) || viewer
+        ? null : portalHost ? portalHost.parentElement : node.parentElement; parent && parent !== root && !parent.matches(pageSelector) &&
           parent !== nativeBoundary; parent = parent.parentElement) {
         ancestors.push(parent);
       }
-      if (previous?.parent === node.parentElement && previous.localSurface === localSurface && previous.browserPortal === browserPortal && previous.nativeBoundary === nativeBoundary &&
+      if (previous?.parent === node.parentElement && previous.localSurface === localSurface && previous.portalHost === portalHost && previous.nativeBoundary === nativeBoundary &&
         previous.ancestors.length === ancestors.length &&
         ancestors.every((parent, index) => previous.ancestors[index] === parent)) return;
       if (previous) release(previous);
@@ -358,18 +573,18 @@
         scopes.set(parent, count + 1);
         if (!count) refreshScope(parent);
       }
-      if (browserPortal) {
-        browserPortals.set(browserPortal, (browserPortals.get(browserPortal) || 0) + 1);
-        mark(browserPortal, browserPortalAttribute, "");
+      if (portalHost) {
+        portalHosts.set(portalHost, (portalHosts.get(portalHost) || 0) + 1);
+        mark(portalHost, portalHostAttribute, "");
       }
-      records.set(node, { ...previous, localSurface, parent: node.parentElement, ancestors, browserPortal, nativeBoundary, box: null });
+      records.set(node, { ...previous, localSurface, parent: node.parentElement, ancestors, portalHost, nativeBoundary, box: null });
       unmark(node, mediaAttribute);
       mark(node, mediaAttribute, nativeKind(node));
       if (node.getAttribute(mediaAttribute) === "viewer") {
         viewers.add(node);
         records.get(node).viewerKey = viewerKey(node);
       } else viewers.delete(node);
-      if (nativeBoundary || node.matches(`${browserSelector}, ${reviewHeaderSelector}, ${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`)) {
+      if (nativeBoundary || node.matches(nativeHosts) || viewer) {
         intersectionObserver.unobserve(node);
         visibleMedia.delete(node);
       } else if (!previous || previous.nativeBoundary) intersectionObserver.observe(node);
@@ -380,7 +595,7 @@
         node.matches(nativeRangeSelector) || node.closest(browserSelector) ||
         node.closest(sidebarSelector) || node.closest(pageSelector) || node.closest(viewerSelector) ||
         node.closest(topControlSelector) || node.closest(`[${popupBoundaryAttribute}]`) ||
-          node.closest(`${composerSelector}, ${footerSelector}, ${editorSelector}, ${surfaceBoundarySelector}, [${mediaAttribute}^="island"], ${headerSelector}`)) {
+          node.closest(`${shellBoundarySelector}, ${composerSelector}, ${footerSelector}, ${editorSelector}, ${surfaceBoundarySelector}, [${mediaAttribute}^="island"], ${headerSelector}`)) {
         const previous = controls.get(node);
         if (previous) removeControl(node, previous);
         return;
@@ -413,9 +628,10 @@
     const wallRule = paint => {
       const image = JSON.stringify(resource.imageSource);
       const selector = `[${paintAttribute}="${paint.ruleId}"]`;
-      if (paint.tints) return paint.tints.map(([pseudo, tint]) => {
+      if (paint.tints) return paint.tints.map(([pseudo, tint, fadeColor]) => {
         const geometry = paint.geometry?.get(pseudo);
-        return `${selector}${pseudo}{background-image:linear-gradient(${tint},${tint}),url(${image})!important;background-size:auto,${geometry?.size || fitStyles.size}!important;background-position:0 0,${geometry?.position || fitStyles.position}!important;background-repeat:no-repeat,${fitStyles.repeat}!important;background-attachment:${geometry ? "scroll" : "fixed"}!important;}`;
+        const fade = fadeColor ? `background-color:${fadeColor}!important;mask-image:linear-gradient(to bottom,transparent,black calc(100% - var(--composer-radius)))!important;` : "";
+        return `${selector}${pseudo}{${fade}background-image:linear-gradient(${tint},${tint}),url(${image})!important;background-size:auto,${geometry?.size || fitStyles.size}!important;background-position:0 0,${geometry?.position || fitStyles.position}!important;background-repeat:no-repeat,${fitStyles.repeat}!important;background-attachment:${geometry ? "scroll" : "fixed"}!important;}`;
       }).join("\n");
       const pseudo = `::${paint.pseudo}`;
       const geometry = paint.geometry?.get(pseudo);
@@ -506,16 +722,21 @@
         releasePaintGeometry(node, previous);
       }
       record.paint = paint;
-      if (node.matches(headerSelector)) {
+      if (node.matches(backingSelector)) {
         unmark(paint.surface, paintAttribute);
         paint.ruleId = `background-${paint.id}`;
-        // Paint only existing opaque backing, including native top-edge extensions.
-        // Transparent headers already see the single global wallpaper underneath.
+        const footerFadeColor = node.matches(footerFrameSelector) &&
+          node.querySelector(modernFooterBackdropSelector) &&
+          computed(paint.surface, "::after").backgroundColor;
         paint.tints = ["", "::before", "::after"].map(pseudo => {
+          if (!pseudo && node.matches(shellFrameSelector)) return null;
           const native = computed(paint.surface, pseudo || undefined);
-          const color = native.backgroundColor;
-          if (color === "transparent" || color.startsWith("rgba(") || color.includes("/") || native.backgroundImage !== "none") return null;
-          return [pseudo, `color-mix(in srgb, ${color} ${(1 - opacity) * 100}%, transparent)`];
+          // Keep the footer's native fade geometry and alpha, but align its opaque end with the wall.
+          const fade = pseudo === "::before" && footerFadeColor && opaqueColor(footerFadeColor) &&
+            native.backgroundImage.startsWith("linear-gradient(") && native.maskImage === "none";
+          const color = fade ? footerFadeColor : native.backgroundColor;
+          if (!opaqueColor(color) || !fade && native.backgroundImage !== "none") return null;
+          return [pseudo, `color-mix(in srgb, ${color} ${(1 - opacity) * 100}%, transparent)`, fade && color];
         }).filter(Boolean);
         mark(paint.surface, paintAttribute, paint.ruleId);
       } else if (!paint.pseudo) {
@@ -531,6 +752,14 @@
         paint.tints = null;
         mark(paint.surface, paintAttribute, paint.ruleId);
       }
+      if (paint.tints?.length === 0) {
+        paintedNodes.delete(node);
+        paintsDirty.delete(node);
+        releasePaintGeometry(node, paint);
+        record.wallRule = "";
+        writeRules();
+        return;
+      }
       paintedNodes.add(node);
       record.wallRule = wallRule(paint);
       paint.chainDirty = true;
@@ -541,6 +770,15 @@
     const removeWithin = (registry, tree, remove, includeRoot = true) => {
       for (const [node, record] of registry)
         if ((includeRoot || node !== tree) && tree.contains(node)) remove(node, record);
+    };
+    const addShell = node => {
+      if (owned(node) || inactivePanel(node)) return;
+      removeWithin(controls, node, removeControl);
+      for (const [child, record] of records)
+        if (child !== node && !record.localSurface && !child.matches(`${nativeHosts}, ${viewerSelector}`) &&
+          node.contains(child)) removeMedia(child, record);
+      add(node);
+      registerPaint(node);
     };
     const popupBackgroundKey = node => Array.from(node.style)
       .filter(name => name.startsWith("background") || name === "color")
@@ -621,9 +859,9 @@
       if (owned(node) || inactivePanel(node) || node.closest(viewerSelector)) return;
       // Paint below the native children. Never annotate editor-owned node views.
       const surface = node.matches('[data-composer-utility-bar-variant="home"]')
-        ? node.querySelector('[class*="ComposerLayoutBody"]') || node : node;
+        ? node.querySelector(composerBodySelector) || node : node;
       let surfacePaint = records.get(node)?.paint;
-      if (!surfacePaint) {
+      if (surfacePaint?.surface !== surface) {
         unmark(node, mediaAttribute);
         surfacePaint = nativeSurfacePaint(surface);
       }
@@ -687,6 +925,8 @@
     };
     const addNativePopup = node => {
       if (owned(node) || node.closest(viewerSelector) || node.closest(pageSelector)) return;
+      // Older Sonner hosts need a lift; current hosts already outrank native dialogs.
+      if (node.matches(toastAreaSelector) && Number(computed(node).zIndex) >= wallpaperLayer + 2) return;
       // 原生 tooltip 的不透明底色单独补画；仅降低底色 alpha 会把底下已混合的壁纸再次衰减。
       const tooltip = node.matches(nativeTooltipSelector) ? node :
         node.matches('[data-radix-popper-content-wrapper]') ? node.querySelector(nativeTooltipSelector) : null;
@@ -728,7 +968,8 @@
     const addHeader = node => {
       if (owned(node) || inactivePanel(node) || node.closest(`${viewerSelector}, ${editorSelector}`)) return;
       removeWithin(controls, node, removeControl);
-      removeWithin(records, node, removeMedia, false);
+      for (const [child, record] of records)
+        if (child !== node && !child.matches(headerSelector) && node.contains(child)) removeMedia(child, record);
       add(node);
       registerPaint(node);
     };
@@ -758,12 +999,18 @@
         !records.has(record.scroller) && !controls.has(record.scroller) && !paintObservers.has(record.scroller))
         resizeObserver.unobserve(record.scroller);
     };
-    const addFooter = footer => {
+    const footerScroller = footer => footer.closest(timelineSelector) ||
+      (footer.matches(footerFrameSelector) && footer.parentElement?.matches("[data-request-input-activity-root]")
+        ? footer.parentElement.querySelector(`:scope > :is(${timelineSelector})`) : null);
+    const addFooter = (footer, refresh = false) => {
       if (owned(footer) || inactivePanel(footer) || footer.closest(reviewHeaderSelector)) return;
       add(footer);
-      const surface = footer.querySelector(':scope > [aria-hidden="true"]');
-      if (surface && records.get(footer)?.paint?.surface !== surface) registerPaint(footer, nativeSurfacePaint(surface));
-      const scroller = footer.closest(timelineSelector);
+      const modern = footer.matches(footerFrameSelector);
+      const surface = modern ? footer : footer.querySelector(':scope > [aria-hidden="true"]');
+      const paintRecord = records.get(footer)?.paint;
+      if (surface && (paintRecord?.surface !== surface || refresh && modern))
+        registerPaint(footer, paintRecord?.surface === surface ? paintRecord : nativeSurfacePaint(surface));
+      const scroller = footerScroller(footer);
       if (!scroller) return;
       const previous = footers.get(footer);
       if (previous?.scroller === scroller) {
@@ -788,8 +1035,8 @@
       removeWithin(records, node, removeMedia, false);
       add(node);
     };
-    const discoverySelector = [pageSelector, mediaSelector, controlSelector, composerSelector, surfaceSelector, viewerSurfaceSelector, toolbarSurfaceSelector, footerSelector, headerSelector,
-      diffPreviewSelector, topControlSelector].join(", ");
+    const discoverySelector = [nativeHosts, mediaSelector, controlSelector, surfaceSelector, viewerSurfaceSelector,
+      toolbarSurfaceSelector, diffPreviewSelector, topControlSelector].join(", ");
     const visit = node => {
       if (node?.nodeType !== 1 || !node.isConnected || owned(node) || inactivePanel(node) ||
         node.closest(editorSelector)) return;
@@ -805,6 +1052,14 @@
       const targets = [node, ...(node.childElementCount ? queryAll(node, discoverySelector) : [])]
         .filter(target => !inactivePanel(target));
       // Establish native boundaries before registering their media descendants.
+      const frame = node.parentElement?.closest(shellFrameSelector);
+      if (frame?.matches(frameSelector) || node.matches(frameSelector) ||
+        targets.some(target => target.matches(frameSelector))) {
+        // The shell may first mount after sign-in or after the extension's initial load.
+        queueMicrotask(promoteCurrentShell);
+      }
+      if (frame && !records.has(frame)) addShell(frame);
+      for (const target of targets) if (target.matches(shellBoundarySelector)) addShell(target);
       for (const target of targets) if (target.matches(pageSelector)) addPage(target);
       for (const target of targets) if (target.matches(footerSelector)) addFooter(target);
       for (const target of targets) if (target.matches(composerSelector)) addComposer(target);
@@ -825,7 +1080,6 @@
         if (popup.matches(viewerSelector)) add(popup);
         else addNativePopup(popup);
       }
-      if (node.parentElement?.matches(footerSelector)) addFooter(node.parentElement);
     };
     const intersectionObserver = new IntersectionObserver(entries => {
       let changed = false;
@@ -904,7 +1158,7 @@
     const prune = () => {
       for (const [footer, record] of footers) {
         if (footer.isConnected && !inactivePanel(footer) && !footer.closest(reviewHeaderSelector) &&
-          record.scroller.isConnected && record.scroller.contains(footer)) continue;
+          record.scroller === footerScroller(footer)) continue;
         removeFooter(footer, record);
       }
       for (const [surface, popup] of popups) {
@@ -924,10 +1178,10 @@
         if (node.isConnected && !inactivePanel(node) &&
           (node.matches(viewerSelector) || isToolbarSurface(node) || !node.closest(viewerSelector)) &&
           (node.matches(reviewHeaderSelector) || !node.closest(reviewHeaderSelector)) &&
-          (node.matches(mediaSelector) || isToolbarSurface(node) || node.matches(`${composerSelector}, ${footerSelector}, ${pageSelector}, ${headerSelector}`) ||
+          (node.matches(mediaSelector) || isToolbarSurface(node) || node.matches(nativeHosts) ||
             record.mediaIsland && node.querySelector("img, video, canvas"))) {
           if (record.nativeBoundary &&
-            !record.nativeBoundary.matches(`[${popupMaterialAttribute}], [${popupBoundaryAttribute}], ${pageSelector}, ${footerSelector}, ${composerSelector}, ${headerSelector}, ${toolbarSelector}`)) add(node);
+            !record.nativeBoundary.matches(nativeBoundaries)) add(node);
           continue;
         }
         removeMedia(node, record);
@@ -954,6 +1208,7 @@
       const semanticAttributes = new Set();
       const panels = new Set();
       const movedInactive = new Set();
+      const changedFooterBackdrops = new Set();
       for (const mutation of mutations) {
         if (owned(mutation.target) || mutation.target.closest?.(editorSelector)) continue;
         if (mutation.type === "childList") {
@@ -981,6 +1236,10 @@
           pruneNeeded = true;
           for (const node of mutation.addedNodes)
             if (node.nodeType === 1 && node.isConnected && !owned(node)) added.add(node);
+          if (mutation.target.matches?.(`${footerSelector}, ${footerBodySelector}, [data-thread-composer-backdrop]`)) {
+            const footer = mutation.target.closest(footerSelector);
+            if (footer) changedFooterBackdrops.add(footer);
+          }
           if ([...mutation.removedNodes].some(node =>
             node.nodeType === 1 && !owned(node) && (node.matches(`[${mediaAttribute}],[${controlAttribute}],[${footerAttribute}]`) ||
               node.querySelector(`[${mediaAttribute}],[${controlAttribute}],[${popupMaterialAttribute}],[${footerAttribute}]`) ||
@@ -988,6 +1247,10 @@
         } else {
           attributes.add(mutation.target);
           if (mutation.attributeName !== "style") semanticAttributes.add(mutation.target);
+          if (mutation.attributeName === "data-thread-composer-backdrop" || mutation.attributeName === "data-thread-scroll-footer") {
+            const footer = mutation.target.closest(footerSelector);
+            if (footer) changedFooterBackdrops.add(footer);
+          }
         }
       }
       const before = stats.layerWrites;
@@ -1002,6 +1265,10 @@
         let parent = node.parentElement;
         while (parent && !added.has(parent)) parent = parent.parentElement;
         if (!parent) visit(node);
+      }
+      for (const footer of changedFooterBackdrops) {
+        addFooter(footer, true);
+        changed = true;
       }
       changed ||= stats.layerWrites !== before || records.size + controls.size + popups.size !== count;
       for (const node of attributes) {
@@ -1032,7 +1299,8 @@
             themeInputs.set(node, key);
             if (refreshLocalSurfaces(node)) changed = true;
             refreshPopupTheme();
-            for (const surface of paintedNodes) if (surface.matches(headerSelector)) registerPaint(surface);
+            for (const surface of records.keys())
+              if (surface.matches(backingSelector)) registerPaint(surface);
           }
         }
         if (viewers.has(node)) {
@@ -1064,6 +1332,7 @@
           changed ||= isPreviewOpen() !== previewVisible;
         pruneNeeded ||= semanticAttributes.has(node);
         if (node.matches(pageSelector) && !records.get(node)?.paint) visit(node);
+        if (node.matches(shellBoundarySelector) && !records.get(node)?.paint) { visit(node); changed = true; }
         if (node.matches(composerSelector) && (!records.get(node)?.paint || semanticAttributes.has(node))) { addComposer(node); changed = true; }
         if (node.matches(surfaceSelector) || records.get(node)?.localSurface) { addSurface(node); changed = true; }
         if (node.matches(headerSelector) && (!records.get(node)?.paint || semanticAttributes.has(node))) { addHeader(node); changed = true; }
@@ -1096,7 +1365,7 @@
         if (footers.has(node) || node.matches(footerSelector)) {
           const footer = footers.get(node);
           if (footer) removeFooter(node, footer);
-          if (node.matches(footerSelector)) addFooter(node);
+          if (node.matches(footerSelector)) addFooter(node, semanticAttributes.has(node));
           if (footer) writeRules();
         }
         if (records.has(node)) {
@@ -1573,24 +1842,13 @@
       overlay.remove();
       style.remove();
       svg.remove();
-      image.onload = null;
-      image.onerror = null;
-      for (const collection of [records, scopes, browserPortals, controls, popups, visibleMedia,
+      for (const collection of [records, scopes, portalHosts, controls, popups, visibleMedia,
         visibleControls, activeControls, paintedNodes, viewers, scopeKeys, footers, themeInputs,
         paintsDirty, geometryPaints, paintObservers]) collection.clear();
-      finishReady(false);
-      if (!keepResource && resource) {
-        if (resource.blobUrl) URL.revokeObjectURL(resource.blobUrl);
-        if (resource.tileInputUrl) URL.revokeObjectURL(resource.tileInputUrl);
-        if (window.__codexPlusImageOverlayResource === resource) window.__codexPlusImageOverlayResource = null;
-        if (window.__codexPlusImageOverlayBlobUrl === resource.blobUrl) window.__codexPlusImageOverlayBlobUrl = "";
-      }
+      releaseWallpaper(keepResource);
     };
     const install = () => {
       if (disposed) return;
-      resource.ready = true;
-      resource.opacity = opacity;
-      resource.fitMode = fitMode;
       resource.width ||= image.naturalWidth;
       resource.height ||= image.naturalHeight;
       overlay.style.backgroundImage = `url(${JSON.stringify(resource.imageSource)})`;
@@ -1601,30 +1859,13 @@
       themeInputs.set(root, themeKey(root));
       if (document.body) themeInputs.set(document.body, themeKey(document.body));
       mutationObserver.observe(root, { childList: true, subtree: true, attributes: true,
-        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-sticky", "data-composer-placement", "data-composer-surface-variant", "data-composer-radius-variant", "data-composer-utility-bar-variant", "data-menu-overlay-surface", "data-codex-composer-request-navigation", "data-codex-approval-surface", "data-composer-rail-item", "data-composer-attachment-pill", "data-sonner-toast", "data-in-progress-fixed-content", "data-image-preview-composer", "data-image-preview-toolbar"] });
+        attributeFilter: ["class", "style", "hidden", "open", "inert", "aria-hidden", "src", "srcset", "sizes", "role", "data-testid", "data-browser-sidebar-webview", "data-browser-sidebar-toolbar", "data-thread-scroll-footer", "data-thread-composer-backdrop", "data-app-shell-focus-area", "data-composer-overlay-floating-ui", "data-app-shell-header-layout", "data-app-shell-titlebar", "data-app-shell-main-titlebar", "data-app-shell-page-header", "data-app-shell-frame", "data-app-shell-main-surface", "data-app-shell-surface-backing", "data-sticky", "data-composer-placement", "data-composer-surface-variant", "data-composer-radius-variant", "data-composer-utility-bar-variant", "data-menu-overlay-surface", "data-codex-composer-request-navigation", "data-codex-approval-surface", "data-composer-rail-item", "data-composer-attachment-pill", "data-sonner-toast", "data-in-progress-fixed-content", "data-image-preview-composer", "data-image-preview-toolbar"] });
       for (const [target, event, handler, capture] of events)
         target.addEventListener(event, handler, { capture, passive: true });
       // 首次扫描登记的壁纸表面已排了一帧；这里同步渲染，撤掉重复的那一帧。
       if (raf) cancelAnimationFrame(raf);
       render();
-      finishReady(true);
-      report?.("image_overlay_installed", { opacity, fitMode, sourceKind: source.startsWith("data:") ? "data-uri" : "unknown" });
+      wallpaperReady();
     };
-    if (resource) install();
-    else {
-      let blobUrl = "";
-      const data = source.match(/^data:([^;,]+);base64,([\s\S]*)$/);
-      if (data) {
-        const decoded = atob(data[2]);
-        const bytes = new Uint8Array(decoded.length);
-        for (let index = 0; index < decoded.length; index++) bytes[index] = decoded.charCodeAt(index);
-        blobUrl = URL.createObjectURL(new Blob([bytes], { type: data[1] }));
-      }
-      resource = { version: 37, source, blobUrl, imageSource: blobUrl || source };
-      window.__codexPlusImageOverlayResource = resource;
-      window.__codexPlusImageOverlayBlobUrl = blobUrl;
-      image.onload = install;
-      image.onerror = () => { if (!disposed) window.__codexPlusImageOverlayCleanup?.(); };
-      image.src = resource.imageSource;
-    }
+    loadWallpaper(install);
   }
