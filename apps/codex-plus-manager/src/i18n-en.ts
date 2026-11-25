@@ -5,6 +5,12 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "自定义供应商": "Custom provider",
+  "OpenAI 会话": "OpenAI session",
+  "官方插件在「Codex 插件」": "Official plugins are under Codex plugins",
+  "内置拓展已关闭": "Built-in extensions are off",
+  "这里只放能让 Codex 恢复启动的开关；各项内置拓展的开关在 Codex 左侧栏的「Codex++」设置页里。": "Only switches that get Codex starting again live here; each built-in extension's switch is on the Codex++ settings page in Codex's sidebar.",
+  "这一页出错了，其它页面不受影响": "This page hit an error; other pages are unaffected",
   "打开后，直接打开 Claude（Dock、启动台）也会自动接管，汉化、听写、页面扩展照常生效。": "Once on, opening Claude directly (Dock, Launchpad) is taken over too, with localization, dictation and page extensions working as usual.",
   "打开后，直接打开 Claude（开始菜单、任务栏）也会自动接管，汉化、听写、页面扩展照常生效。": "Once on, opening Claude directly (Start menu, taskbar) is taken over too, with localization, dictation and page extensions working as usual.",
   "自动接管 Claude": "Auto-take over Claude",
@@ -666,9 +672,7 @@ export const EN_PLAIN: Record<string, string> = {
   "这里是 Codex 插件（官方目录）；Codex++ 自己的拓展在「万物皆拓展」里。": "These are Codex plugins from the official catalog; Codex++'s own extensions are under Everything is an extension.",
   "打开万物皆拓展": "Open Everything is an extension",
   "这里是 Codex++ 拓展；Codex 官方目录里的插件在「Codex 插件」页。": "These are Codex++ extensions; plugins from the official Codex catalog are on the Codex plugins page.",
-  "打开 Codex 插件": "Open Codex plugins",
   "Codex 打不开或显示异常时在这里处理": "Fix Codex here when it won't open or looks broken",
-  "这里只放能让 Codex 恢复启动的开关：增强总开关、独立模式补丁、本地拓展和皮肤。各项内置拓展的开关、语音输入与下一步建议的服务配置在 Codex 左侧栏的「Codex++」设置页里。": "This page only holds the switches that get Codex starting again: the enhancement master switch, standalone patches, local extensions and the skin. Toggles for each built-in extension, plus the dictation and next-step suggestion service settings, are on the Codex++ settings page in the Codex sidebar.",
   "Codex 打不开或显示异常时用：增强总开关、独立模式补丁、本地拓展与恢复默认皮肤": "For when Codex won't open or looks broken: the enhancement master switch, standalone patches, local extensions and restoring the default skin",
   "关掉后 Codex 不再注入任何本地拓展；各拓展的启停设置不会改变": "When off, Codex loads no local extensions; each extension's own on/off setting stays as it is",
   "语音听写": "Dictation",
@@ -1422,7 +1426,6 @@ export const EN_PLAIN: Record<string, string> = {
   "当前配置": "Current configuration",
   "正在编辑": "Editing",
   "皮肤未启用": "Skin is off",
-  "增强总开关已关闭": "Enhancements are off",
   "已恢复原始外观": "Original appearance restored",
   "等待状态检查": "Waiting for a status check",
   "未命名主题": "Untitled theme",

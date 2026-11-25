@@ -1201,29 +1201,30 @@ function SortableRelayProfileCard({
       {/* 右侧和「共享」分页同一个顺序：标记、「使用」、三点菜单。 */}
       <div className="cx-row-controls">
         {gatewayManaged || !poolLink ? null : <PoolLinkControl link={poolLink} profileId={profile.id} />}
-        <button
-          className="cx-secondary"
-          disabled={disabled}
-          onClick={(event) => {
-            event.stopPropagation();
-            if (disabled) return;
-            onSwitchProfile(profile.id);
-          }}
-          title={
-            disabled
-              ? t("供应商切换中")
-              : !form.relayProfilesEnabled
-                ? t("供应商配置总开关已关闭，点击后按提示开启")
-                : active
-                  ? t("当前正在使用")
+        {/* 正在用的那家行上已有「使用中」标记，不再放一个同名的按钮。 */}
+        {active ? null : (
+          <button
+            className="cx-secondary"
+            disabled={disabled}
+            onClick={(event) => {
+              event.stopPropagation();
+              if (disabled) return;
+              onSwitchProfile(profile.id);
+            }}
+            title={
+              disabled
+                ? t("供应商切换中")
+                : !form.relayProfilesEnabled
+                  ? t("供应商配置总开关已关闭，点击后按提示开启")
                   : gatewayManaged
                     ? t("重新接入 Codex++ 本地服务")
                     : t("设为当前")
-          }
-          type="button"
-        >
-          {active ? t("使用中") : t("使用")}
-        </button>
+            }
+            type="button"
+          >
+            {t("使用")}
+          </button>
+        )}
         {/* 次要操作收进三点菜单（原来是一排五个图标按钮）：多开、测试、编辑、复制、删除。点整行也是编辑。 */}
         {gatewayManaged ? null : (
         <span className="cx-relay-menu" onClick={(event) => event.stopPropagation()}>

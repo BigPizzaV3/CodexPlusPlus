@@ -838,6 +838,11 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { kind: "package", id: "word-guard", name: L("命令守卫", "Command guard"), description: L("拦截危险的 shell 命令，并给出更安全的替代写法。", "Block dangerous shell commands and suggest safer alternatives."), version: "1.2.0", author: "alice", tags: ["hooks"], homepage: "", icon: "", updatedAt: "2026-10-28", repo: "alice/codexpp-word-guard", tag: "v1.2.0", sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", official: false, channel: "curated", installed: true, installedVersion: "1.1.0", installedSha: "0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a9c1e", updateAvailable: true },
     ], blockedInstalled: [] }, user_scripts: demoUserScripts }) as T;
     case "load_ccs_providers": return ok({ providers: [] }) as T;
+    // 远程控制页的钉钉 / 飞书通知：两个机器人都要有状态，缺了整页渲染不出来。
+    case "chat_robot_request": return {
+      dingtalk: { enabled: true, hasWebhook: true, hasSecret: true, linkNetwork: "lan", lastResult: "上次通知已送达（10:24）" },
+      feishu: { enabled: false, hasWebhook: false, hasSecret: false, linkNetwork: "tailscale", lastResult: null },
+    } as T;
     case "weixin_connect_status": return ok({ state: "disconnected", message: "演示模式", accountId: "", hasToken: false, lastPeerId: "", lastMessageAtMs: 0, processedMessages: 0 }) as T;
     case "load_local_sessions":
     case "list_local_sessions": return ok({ dbPath: "演示模式", dbPaths: [], sessions: demoCodexSessions(), offset: 0, limit: 50, hasMore: false, totalCount: 4 }) as T;

@@ -259,7 +259,8 @@ export function WeixinConnectScreen({
         setCatalog(result);
         setCatalogError("");
       } catch (error) {
-        if (!disposed) setCatalogError(String(error));
+        // 只显示原因，不带「Error: 」前缀。
+        if (!disposed) setCatalogError(error instanceof Error ? error.message : String(error));
       } finally {
         inFlight = false;
         if (!disposed) setCatalogLoading(false);

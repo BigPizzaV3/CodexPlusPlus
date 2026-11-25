@@ -167,6 +167,7 @@ import { LegacyRelayGatewayHint, ProxySettingsScreen, RelayScreen } from "./Rela
 import { RelayCommonConfigScreen } from "./RelayEditor";
 import { activeSettingsEntry, AppSidebar, CustomizeTabs, settingsNavEntries } from "./AppSidebar";
 import { lazyNamed, PageFallback, preloadLazyPages } from "./lazy-page";
+import { PageErrorBoundary } from "./page-error-boundary";
 
 // 不常用的页面按需加载（首页、侧栏、Codex 连接 / 多开 / 会话 / MCP 等常用页仍随主界面一起加载）。
 const GatewayPage = lazyNamed(() => import("./GatewayPage"), "GatewayPage");
@@ -3544,6 +3545,8 @@ export function App() {
             </div>
           ) : null}
           {/* 按需加载的页面在这里等代码到位；不常用的页面才走这里，常用页不受影响。 */}
+          {/* 某一页渲染出错时只兜住这一页：侧栏和其它页照常能用，换页自动恢复。 */}
+          <PageErrorBoundary resetKey={route}>
           <Suspense fallback={<PageFallback />}>
           {extensionPageView ?? (<>
           {/* 「Codex 连接」一页：连接方式（经网关 / 直连）+ 直连供应商（可加入共享供应商）+ 高级（原「旧版代理设置」）。
@@ -3851,6 +3854,7 @@ export function App() {
           ) : null}
           </>)}
           </Suspense>
+          </PageErrorBoundary>
         </section>
       </main>
       {updatePrompt && !wizardOpen && !tourOpen ? (

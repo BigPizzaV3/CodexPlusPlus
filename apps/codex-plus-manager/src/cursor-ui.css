@@ -1714,3 +1714,19 @@
   margin: 0;
   left: auto;
 }
+
+/* 单页出错兜底（page-error-boundary.tsx）：报错原文等宽、可换行，最多几行。 */
+:root .shell .page-error {
+  margin-top: 8px;
+}
+
+:root .shell .page-error-message {
+  display: block;
+  max-width: 560px;
+  max-height: 6.5em;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
