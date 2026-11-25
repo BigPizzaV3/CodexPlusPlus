@@ -1696,8 +1696,20 @@ fn remove_installed(home: &Path, source: Source, id: &str) -> anyhow::Result<()>
 }
 
 /// Codex 的 ChatGPT 登录在不在（auth.json）。在的话原生插件页直接读官方云端目录，托管连接器也能连。
+///
+/// 本地账号（API Key 解锁）写的是假登录：云端目录只能由本机兼容服务回放一份很小的录制，
+/// 托管连接器也连不上，所以按「没登录」算，照常并入完整的缓存快照、照常提示要 ChatGPT 登录。
 fn codex_signed_in(home: &Path) -> bool {
-    crate::relay_config::chatgpt_auth_status_from_home(home).authenticated
+    crate::relay_config::chatgpt_auth_status_from_home(home).authenticated && !local_login(home)
+}
+
+/// `auth.json` 里是不是本地账号的假登录。
+fn local_login(home: &Path) -> bool {
+    fs::read_to_string(home.join("auth.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|auth| auth.get("tokens").cloned())
+        .is_some_and(|tokens| crate::chatgpt_compat::is_local_login_tokens(&tokens))
 }
 
 /// 已安装包里声明的连接器：`.mcp.json` 的服务名，以及有没有 ChatGPT 托管的 `.app.json`。
@@ -3599,6 +3611,19 @@ enabled = true
         let params = json!({ "marketplacePath": virtual_market_path(&home, source), "pluginName": "sample" });
         let detail = native_request(&home, "plugin/read", params).await.unwrap();
         assert_eq!(detail["plugin"]["summary"]["name"], "sample");
+    }
+
+    #[tokio::test]
+    async fn local_account_login_still_gets_the_full_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        cache_indexes(&home, vec![entry()]);
+        // 本地账号写的假登录：auth_mode 是 chatgpt，但账号是本机兼容服务的。
+        fs::write(home.join("auth.json"), crate::chatgpt_compat::fake_auth_json(None)).unwrap();
+        assert!(crate::relay_config::chatgpt_auth_status_from_home(&home).authenticated);
+        assert!(!codex_signed_in(&home), "本地账号不算真的 ChatGPT 登录");
+        let payload = native_request(&home, "plugin/list", json!({})).await.unwrap();
+        assert_eq!(payload["marketplaces"].as_array().unwrap().len(), 1, "照常并入缓存快照");
     }
 
     #[tokio::test]
