@@ -578,7 +578,14 @@ impl Scan {
         }
         // 已变化但尚未获分配的来源仍属于未处理队列，不能沿用封存时的覆盖结论。
         self.remaining.extend(changed);
-        self.remaining.extend(verify_later);
+        let (prefixes, later): (Vec<_>, Vec<_>) = verify_later
+            .into_iter()
+            .partition(|path| self.waiting_prefixes.contains(path));
+        self.remaining.extend(later);
+        // 已追平的活跃来源优先补完旧前缀，不再排到全部无关归档之后。
+        for path in prefixes.into_iter().rev() {
+            self.remaining.push_front(path);
+        }
         let pending_sources = self.remaining.len()
             + self.waiting_for_newline.len()
             + self.missing.len()
