@@ -65,6 +65,56 @@ fn attribute(cache: &mut RequestEvidenceCache, events: &mut [UsageEvent]) -> Val
 }
 
 #[test]
+fn successful_request_without_usage_still_blocks_a_competing_proof_after_rotation() {
+    let root = tempfile::tempdir().unwrap();
+    let at = Local::now().timestamp_millis();
+    let cutoff = Local::now().date_naive();
+    let exact = request(at);
+    let mut competitor = request(at + 1);
+    competitor.id = "request-without-counts".into();
+    competitor.relay_id = "supplier-b".into();
+    competitor.usage = None;
+    competitor.final_response_id = Some("response-without-counts".into());
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    assert!(
+        disk.rejected_proxy_ids_read_only([&competitor])
+            .unwrap()
+            .is_empty()
+    );
+    disk.capture_proxy(&[exact.clone(), competitor.clone()])
+        .unwrap();
+    drop(disk);
+
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), cutoff).unwrap();
+    assert!(
+        disk.rejected_proxy_ids([&exact, &competitor])
+            .unwrap()
+            .is_empty()
+    );
+    let saved = disk.captured_proxy(SESSION, at - 1000, at + 1000).unwrap();
+    assert!(saved.rows.contains(&competitor));
+    let original = event(at);
+    let mut events = [original.clone()];
+    let mut cache = RequestEvidenceCache::default();
+    cache.supplement_captured(&events, &BTreeMap::new(), &disk);
+    cache.attribute_with_cache(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &disk);
+    assert!(unknown_provider(&events[0].provider));
+    assert!(cache.verified.is_empty());
+    assert_eq!(events[0].delta, original.delta);
+
+    competitor.relay_id = "conflicting-supplier".into();
+    disk.capture_proxy(std::slice::from_ref(&competitor))
+        .unwrap();
+    assert!(
+        disk.rejected_proxy_ids_read_only([&competitor])
+            .unwrap()
+            .contains(&competitor.id)
+    );
+}
+
+#[test]
 fn enriched_disk_observation_keeps_legacy_projection_after_reopen() {
     let root = tempfile::tempdir().unwrap();
     let at = Local::now().timestamp_millis();

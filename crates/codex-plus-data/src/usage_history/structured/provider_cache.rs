@@ -25,13 +25,13 @@ struct ProxyObservationExtra {
 fn apply_proxy_extra(row: &mut RequestEvidence, data: Option<&str>) -> anyhow::Result<()> {
     if let Some(data) = data {
         let extra: ProxyObservationExtra = serde_json::from_str(data)?;
-        let usage = row
-            .usage
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("proxy observation missing usage"))?;
         row.final_response_id = extra.final_response_id;
-        usage.cached_tokens = extra.cached_tokens;
-        usage.cached_tokens_known = extra.cached_tokens_known;
+        if let Some(usage) = &mut row.usage {
+            usage.cached_tokens = extra.cached_tokens;
+            usage.cached_tokens_known = extra.cached_tokens_known;
+        } else if extra.cached_tokens.is_some() || extra.cached_tokens_known.is_some() {
+            anyhow::bail!("proxy cache counts without usage");
+        }
     }
     Ok(())
 }
@@ -739,11 +739,10 @@ impl ProviderCache {
                         extra = Some(enriched);
                     }
                     if let Some(extra) = extra {
-                        let usage = extra.usage.expect("validated proxy observation");
                         let data = serde_json::to_string(&ProxyObservationExtra {
                             final_response_id: extra.final_response_id.clone(),
-                            cached_tokens: usage.cached_tokens,
-                            cached_tokens_known: usage.cached_tokens_known,
+                            cached_tokens: extra.usage.and_then(|u| u.cached_tokens),
+                            cached_tokens_known: extra.usage.and_then(|u| u.cached_tokens_known),
                         })?;
                         writes += save_extra.execute(params![row.id, data])?;
                     }

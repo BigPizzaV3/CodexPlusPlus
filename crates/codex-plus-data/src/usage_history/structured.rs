@@ -370,24 +370,27 @@ impl RequestEvidence {
     }
 
     fn valid_capture(&self) -> bool {
-        if !self.valid_request() {
+        if !self.valid_request()
+            || self.actual_model().is_none()
+            || self
+                .final_response_id
+                .as_ref()
+                .is_some_and(|id| id.is_empty() || id.len() > 256)
+        {
             return false;
         }
-        let Some(RequestEvidenceUsage {
+        // 成功但未返回用量的请求仍参与竞争，只有完整计数能产生匹配键。
+        let Some(usage) = self.usage else { return true };
+        let RequestEvidenceUsage {
             input_tokens: Some(input),
             output_tokens: Some(output),
             cached_tokens,
             cached_tokens_known,
-        }) = self.usage
+        } = usage
         else {
             return false;
         };
-        self.actual_model().is_some()
-            && self
-                .final_response_id
-                .as_ref()
-                .is_none_or(|id| !id.is_empty() && id.len() <= 256)
-            && cached_tokens.is_none_or(|cached| cached <= input)
+        cached_tokens.is_none_or(|cached| cached <= input)
             && !(cached_tokens_known == Some(true) && cached_tokens.is_none())
             && !(cached_tokens_known == Some(false) && cached_tokens.is_some_and(|n| n > 0))
             && input.saturating_add(output) > 0
@@ -405,13 +408,13 @@ impl RequestEvidence {
         let Some(cached) = cached.filter(|_| self.valid_capture()) else {
             return Vec::new();
         };
-        let RequestEvidenceUsage {
+        let Some(RequestEvidenceUsage {
             input_tokens: Some(input),
             output_tokens: Some(output),
             ..
-        } = self.usage.unwrap()
+        }) = self.usage
         else {
-            unreachable!("validated request counts")
+            return Vec::new();
         };
         let mut models: Vec<_> = [&self.model, &self.upstream_model]
             .into_iter()
