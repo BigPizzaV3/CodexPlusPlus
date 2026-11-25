@@ -65,6 +65,49 @@ fn attribute(cache: &mut RequestEvidenceCache, events: &mut [UsageEvent]) -> Val
 }
 
 #[test]
+fn final_response_model_requires_compatible_native_context_and_a_complete_receipt() {
+    let at = Local::now().timestamp_millis();
+    let archived = tempfile::tempdir().unwrap();
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(archived.path(), Local::now().date_naive()).unwrap();
+    for (index, (provider, model, marker, response_id, expected)) in [
+        ("", "model-a", true, true, "served-model"),
+        ("supplier-a", "model-a", true, true, "served-model"),
+        ("", "model-a", true, false, "model-a"),
+        ("", "model-a", false, true, "model-a"),
+        ("", "another-native", true, true, "another-native"),
+        ("supplier-b", "model-a", true, true, "model-a"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let time = at - index as i64 * 300_000;
+        let mut completed = request(time);
+        completed.id = format!("terminal-request-{index}");
+        completed.upstream_model = "served-model".into();
+        completed.final_response_evidence = marker.then(|| "final-response-v1".into());
+        completed.final_response_id = response_id.then(|| format!("response-{index}"));
+        disk.capture_proxy(&[completed]).unwrap();
+        let mut classifier = RequestEvidenceCache::default();
+        let mut native = event(time);
+        native.provider = provider.into();
+        native.model = model.into();
+        let counts = native.delta;
+        let mut events = [native];
+        classifier.supplement_captured(&events, &BTreeMap::new(), &disk);
+        classifier.attribute_with_cache(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &disk);
+        assert_eq!(events[0].model, expected, "case {index}");
+        assert_eq!(events[0].delta, counts);
+        if model == "another-native" || provider == "supplier-b" {
+            assert_ne!(events[0].provider_source.as_deref(), Some("request-log-exact"));
+        } else {
+            assert_eq!(events[0].provider, "supplier-a");
+            assert_eq!(events[0].provider_source.as_deref(), Some("request-log-exact"));
+        }
+    }
+}
+
+#[test]
 fn successful_request_without_usage_still_blocks_a_competing_proof_after_rotation() {
     let root = tempfile::tempdir().unwrap();
     let at = Local::now().timestamp_millis();

@@ -737,13 +737,7 @@ impl RequestEvidenceCache {
         let mut targets: BTreeMap<String, Vec<(i64, [u8; 32])>> = BTreeMap::new();
         let targets_slice = scope.map_or(events, |scope| &events[scope.targets.clone()]);
         for event in targets_slice.iter().filter(|e| {
-            (unknown_provider(&e.provider)
-                || unknown_model(&e.model)
-                || e.native_response_id
-                    .as_ref()
-                    .is_some_and(|proof| !proof.full_counts)
-                || codex_plus_core::aggregate_catalog::is_aggregate_model(&e.model))
-                && !e.context_conflicts.any()
+            !e.context_conflicts.any()
                 && !e.count_uncertain
                 && !e.count_incomplete
                 && (e.delta.cached_known || e.native_response_id.is_some())
@@ -1342,8 +1336,11 @@ impl RequestEvidenceCache {
                 continue;
             };
             let routed_model = unknown_model(&event.model)
-                || (codex_plus_core::aggregate_catalog::is_aggregate_model(&event.model)
-                    && (legacy || request.model == event.model && event.model != actual_model));
+                || (legacy && codex_plus_core::aggregate_catalog::is_aggregate_model(&event.model))
+                || (!legacy && request.model == event.model && event.model != actual_model
+                    && (codex_plus_core::aggregate_catalog::is_aggregate_model(&event.model)
+                        || (request.final_response_evidence.as_deref() == Some("final-response-v1")
+                            && request.final_response_id.is_some())));
             if !routed_model
                 && !paired_receipt
                 && !request_keys[i].iter().any(|key| {
