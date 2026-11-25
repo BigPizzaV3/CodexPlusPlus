@@ -1,4 +1,5 @@
 use super::*;
+use crate::usage_history::structured::FileState;
 use rusqlite::Connection;
 use serde_json::json;
 use std::fs;
@@ -380,6 +381,227 @@ fn physical_archive_move_keeps_a_long_sources_committed_index_and_append_baselin
     assert_eq!(after.len(), 81);
     assert_eq!(after[..80], before.1);
     assert_eq!(after[80].1, 110);
+}
+
+#[test]
+fn identical_archive_copy_must_not_stall_the_original_append() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let active = root.join("sessions");
+    let archived = root.join("archived_sessions");
+    fs::create_dir(&active).unwrap();
+    fs::create_dir(&archived).unwrap();
+    let name = format!("rollout-{FIRST}.jsonl");
+    let source = active.join(&name);
+    let copy = archived.join(&name);
+    let initial = rollout(FIRST);
+    let (_, prototype) = initial.split_once('\n').unwrap();
+    let count = |n: i64| {
+        let mut event: serde_json::Value = serde_json::from_str(prototype).unwrap();
+        let at = chrono::DateTime::parse_from_rfc3339("2026-01-02T12:01:00Z").unwrap()
+            + chrono::Duration::seconds(n);
+        event["timestamp"] = json!(at.to_rfc3339());
+        event["payload"]["info"]["total_token_usage"] =
+            json!({"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n});
+        event
+    };
+    fs::write(&source, initial.as_bytes()).unwrap();
+    let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+    for n in 2..=80 {
+        writeln!(file, "{}", count(n)).unwrap();
+    }
+    drop(file);
+    let db = root.join("usage.sqlite");
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut scan = Scan::default();
+    assert!(
+        scan.round(&mut store, &root, cutoff, &names, 1 << 20)
+            .complete
+    );
+    fs::copy(&source, &copy).unwrap();
+    assert_ne!(
+        FileState::source_stamp(&source).unwrap().2,
+        FileState::source_stamp(&copy).unwrap().2,
+    );
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER refuse_copy BEFORE INSERT ON token_source_copies
+         BEGIN SELECT RAISE(ABORT, 'test copy registration failure'); END;",
+        )
+        .unwrap();
+    const BUDGET: usize = 8192;
+    let failed = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(!failed.complete);
+    assert_eq!(failed.errors.len(), 1);
+    assert!(
+        failed.errors[0]
+            .1
+            .to_string()
+            .contains("test copy registration failure")
+    );
+    assert!(store.checkpoint(&copy).unwrap().is_none());
+    store.db.execute_batch("DROP TRIGGER refuse_copy").unwrap();
+    let registered = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(registered.complete, "{:?}", registered.errors);
+    assert!(store.checkpoint(&copy).unwrap().is_none());
+    let source_id: i64 = store
+        .db
+        .query_row("SELECT id FROM token_sources", [], |row| row.get(0))
+        .unwrap();
+    let read = |store: &mut Store| {
+        let mut counts = Vec::new();
+        Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+            counts.push((event.id, event.delta.total_tokens));
+            Ok(())
+        })
+        .unwrap();
+        counts
+    };
+    let prior = read(&mut store);
+    assert_eq!(prior.len(), 80);
+    drop(store);
+
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        count(81)
+    )
+    .unwrap();
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut scan = Scan::default();
+    let report = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(report.complete, "{:?}", report.errors);
+    let after = read(&mut store);
+    assert_eq!(after.len(), 81);
+    assert_eq!(after[..80], prior);
+    assert_eq!(after[80].1, 110);
+
+    fs::copy(&source, &copy).unwrap();
+    let verified = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(verified.complete, "{:?}", verified.errors);
+    fs::remove_file(&source).unwrap();
+    drop(store);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut scan = Scan::default();
+    let promoted = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(promoted.complete, "{:?}", promoted.errors);
+    assert_eq!(read(&mut store), after);
+    assert!(store.checkpoint(&source).unwrap().is_none());
+    assert!(store.checkpoint(&copy).unwrap().is_some());
+    assert_eq!(
+        store
+            .db
+            .query_row("SELECT id FROM token_sources", [], |r| r.get::<_, i64>(0))
+            .unwrap(),
+        source_id,
+    );
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&copy).unwrap(),
+        "{}",
+        count(82)
+    )
+    .unwrap();
+    let appended = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(appended.complete, "{:?}", appended.errors);
+    let final_counts = read(&mut store);
+    assert_eq!(final_counts[..81], after);
+    assert_eq!(final_counts.len(), 82);
+    assert_eq!(final_counts[81].1, 110);
+
+    fs::copy(&copy, &source).unwrap();
+    writeln!(
+        fs::OpenOptions::new().append(true).open(&source).unwrap(),
+        "{}",
+        count(83)
+    )
+    .unwrap();
+    let extended = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(extended.complete, "{:?}", extended.errors);
+    assert!(store.checkpoint(&copy).unwrap().is_none());
+    assert!(store.checkpoint(&source).unwrap().is_some());
+    let extended_counts = read(&mut store);
+    assert_eq!(extended_counts[..82], final_counts);
+    assert_eq!(extended_counts.len(), 83);
+    assert_eq!(extended_counts[82].1, 110);
+
+    fs::remove_file(&copy).unwrap();
+    fs::rename(&source, &copy).unwrap();
+    let renamed = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(renamed.complete, "{:?}", renamed.errors);
+    assert_eq!(read(&mut store), extended_counts);
+    assert_eq!(
+        store
+            .db
+            .query_row("SELECT count(*) FROM token_source_copies", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn large_copy_yields_to_other_sessions_and_a_changed_prefix_is_not_admitted_as_a_copy() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let active = root.join("sessions");
+    let archived = root.join("archived_sessions");
+    fs::create_dir(&active).unwrap();
+    fs::create_dir(&archived).unwrap();
+    let name = format!("rollout-{FIRST}.jsonl");
+    let source = active.join(&name);
+    let copy = archived.join(&name);
+    let independent = active.join(format!("rollout-{SECOND}.jsonl"));
+    let padding = format!("{}\n", " ".repeat(512 * 1024)).repeat(3);
+    let bytes = format!("{}{}", rollout(FIRST), padding);
+    fs::write(&source, &bytes).unwrap();
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut scan = Scan::default();
+    const BUDGET: usize = 8192;
+    assert!(
+        scan.round(&mut store, &root, cutoff, &names, BUDGET)
+            .complete
+    );
+
+    fs::copy(&source, &copy).unwrap();
+    fs::write(&independent, rollout(SECOND)).unwrap();
+    let pending = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert_eq!(pending.pending_sources, 1);
+    assert!(pending.errors.is_empty());
+    assert!(store.checkpoint(&independent).unwrap().is_some());
+    assert!(store.checkpoint(&copy).unwrap().is_none());
+    let ready = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(ready.complete, "{:?}", ready.errors);
+    assert!(store.checkpoint(&copy).unwrap().is_none());
+
+    fs::rename(&copy, archived.join("previous.jsonl")).unwrap();
+    fs::write(
+        &copy,
+        bytes.replacen(
+            "\"cached_input_tokens\":20",
+            "\"cached_input_tokens\":19",
+            1,
+        ),
+    )
+    .unwrap();
+    let diverged = scan.round(&mut store, &root, cutoff, &names, BUDGET);
+    assert!(diverged.complete, "{:?}", diverged.errors);
+    assert!(store.checkpoint(&source).unwrap().is_some());
+    assert!(store.checkpoint(&copy).unwrap().is_some());
+    assert_eq!(
+        store
+            .db
+            .query_row("SELECT count(*) FROM token_source_copies", [], |r| r
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
+    );
 }
 
 #[test]

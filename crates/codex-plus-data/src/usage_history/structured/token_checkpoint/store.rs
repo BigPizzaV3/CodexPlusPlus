@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 pub(super) mod archive;
 pub(super) mod projection;
+pub(super) mod replicas;
 
 #[cfg(unix)]
 fn encode_path(path: &Path) -> Vec<u8> {
@@ -116,6 +117,12 @@ impl Store {
                 revision INTEGER NOT NULL,
                 cutoff TEXT NOT NULL
              ) STRICT;
+             CREATE TABLE IF NOT EXISTS token_source_copies (
+                source BLOB PRIMARY KEY,
+                owner_id INTEGER NOT NULL REFERENCES token_sources(id) ON DELETE CASCADE,
+                stamp BLOB NOT NULL
+             ) WITHOUT ROWID, STRICT;
+             CREATE INDEX IF NOT EXISTS token_copy_owner ON token_source_copies(owner_id);
              CREATE TABLE IF NOT EXISTS token_collisions (
                 id BLOB PRIMARY KEY
              ) WITHOUT ROWID, STRICT;
@@ -214,6 +221,15 @@ impl Store {
             previous.map(|row| row.1) == expected_revision,
             "Token source changed before commit"
         );
+        if replace && let Some((id, _, _)) = previous {
+            ensure!(
+                !tx.prepare_cached(
+                    "SELECT 1 FROM token_source_copies WHERE owner_id = ?1 LIMIT 1"
+                )?
+                .exists([id])?,
+                "Token source was replaced while a verified copy still needs reconciliation"
+            );
+        }
         if !replace && let Some((_, _, old_offset)) = previous {
             ensure!(
                 offset > old_offset || offset == old_offset && state.events.is_empty(),
@@ -265,6 +281,9 @@ impl Store {
             params![path, revision, offset, serde_json::to_vec(&checkpoint)?, state.activity_truncated],
             |row| row.get::<_, i64>(0),
         )?;
+        if previous.is_none() {
+            tx.execute("DELETE FROM token_source_copies WHERE source = ?1", [&path])?;
+        }
         if replace {
             tx.execute(
                 "DELETE FROM token_observations WHERE source_id = ?1",
@@ -355,6 +374,7 @@ impl Store {
         limit: usize,
     ) -> Result<(VecDeque<(PathBuf, i64)>, bool)> {
         let present: HashSet<_> = discovered.iter().map(PathBuf::as_path).collect();
+        self.remove_missing_copies(&present)?;
         let mut statement = self
             .db
             .prepare("SELECT source, revision FROM token_sources ORDER BY id")?;
@@ -408,6 +428,10 @@ impl Store {
             params![encode_path(new), encode_path(old), revision],
         )?;
         if changed == 1 {
+            tx.execute(
+                "DELETE FROM token_source_copies WHERE source = ?1",
+                [encode_path(new)],
+            )?;
             // 内容与计数未变，但必须让旧路径上的异步回读判定过期。
             tx.execute(
                 "UPDATE token_revision SET revision = revision + 1,
