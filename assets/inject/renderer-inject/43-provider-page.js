@@ -1032,6 +1032,7 @@
       : [["direct", "添加供应商"], ["model", "新建模型聚合"], ["failover", "新建故障转移"]];
     panel.innerHTML = `<div class="codex-plus-provider-shell">${renderCodexPlusProviderModeSwitch(gatewayMode)}<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
+        ${renderCodexPlusProviderModeInfo(gatewayMode)}
         <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
           ${codexPlusProviderActionMenu("new", "+ 新建", newOptions, state.busy || codexPlusGatewayPageState.busy ? "disabled" : "")}</div>
         ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-note">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}

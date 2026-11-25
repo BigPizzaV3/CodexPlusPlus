@@ -124,7 +124,7 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
       modelEditor: codexPlusProviderModelEditor, windowLabel: codexPlusProviderWindowLabel,
       detail: renderCodexPlusProviderDetail, gwDetail: renderCodexPlusGatewayDetail, menuChanged: codexPlusProviderMenuChanged,
       startNew: codexPlusProviderStartNew, save: codexPlusProviderSave, click: codexPlusProviderHandleClick, input: codexPlusProviderHandleInput,
-      gwList: renderCodexPlusGatewayList, gwClick: codexPlusGatewayHandleClick, modeSwitch: renderCodexPlusProviderModeSwitch,
+      gwList: renderCodexPlusGatewayList, gwClick: codexPlusGatewayHandleClick, modeSwitch: renderCodexPlusProviderModeSwitch, modeInfo: renderCodexPlusProviderModeInfo,
       login: renderCodexPlusLoginIdentity, loginChoose: codexPlusLoginIdentityChoose };`,
   )(
     loadEditing(),
@@ -497,18 +497,19 @@ describe("供应商页的网关页签（44 分片）", () => {
     assert.match(aggregate, /data-codex-gateway-action="mode-direct"/);
   });
 
-  it("聚合时顶部可以选完整的默认模型，候选与管理器一致", async () => {
+  it("聚合时左栏顶部可以选完整的默认模型，候选与管理器一致", async () => {
     const pool = [poolEntry("gw-a"), poolEntry("gw-b", { models: ["b-1"] }), poolEntry("gw-c", { models: ["c-1"] })];
     const result = gatewayResult(pool);
     (result.gateway.bindings.codex as { poolExclude: string[] }).poolExclude = ["gw-c"];
     const page = loadPage({ postJson: (path, payload) => (payload?.command ? result : listResult()) });
     page.gwApply(result);
-    const bar = page.modeSwitch(true).replaceAll("&quot;", '"');
+    assert.doesNotMatch(page.modeSwitch(true), /default-model/, "顶部那行横跨原生面板，只放切换");
+    const bar = page.modeInfo(true).replaceAll("&quot;", '"');
     assert.match(bar, /data-codex-provider-menu-toggle="default-model" data-value="gw-a\/m-1"/);
     assert.match(bar, /\["gw-a\/m-1","gw-a\/m-1"\],\["m-1","m-1"\],\["m-2","m-2"\],\["b-1","b-1"\]/);
     assert.doesNotMatch(bar, /c-1/, "排除的供应商不进候选");
     assert.doesNotMatch(bar, /不可用/);
-    assert.doesNotMatch(page.modeSwitch(false), /default-model/, "直连时不显示");
+    assert.doesNotMatch(page.modeInfo(false), /default-model/, "直连时不显示");
     page.menuChanged("default-model", "b-1", null);
     await new Promise((resolve) => setTimeout(resolve, 0));
     const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === "save_gateway_binding")!;

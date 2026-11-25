@@ -430,11 +430,14 @@
       .codex-plus-provider-item-actions button:disabled { opacity: .3; cursor: default; }
       /* 顶部的连接方式（聚合 / 直连），和管理器「连接与供应商」同一个切换；当前那段按下去不能再点。 */
       .codex-plus-provider-mode-switch { gap: 12px; }
+      .codex-plus-provider-mode-info { display: flex; flex-direction: column; gap: 6px; padding: 0 8px 12px; }
+      .codex-plus-provider-mode-info > .codex-plus-provider-help { line-height: 16px; }
+      .codex-plus-provider-default-model { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-provider-default-model > span { flex: none; }
+      .codex-plus-provider-default-model .codex-plus-provider-menu { min-width: 0; }
+      .codex-plus-provider-default-model .codex-plus-menu-trigger { max-width: 100%; }
       .codex-plus-provider-mode-switch button:disabled { cursor: default; }
       .codex-plus-provider-mode-switch button:disabled:not([aria-selected="true"]) { opacity: .5; }
-      .codex-plus-provider-default-model { display: inline-flex; flex: none; align-items: center; gap: 6px; color: var(--codex-plus-text-secondary); font-size: 12px; }
-      .codex-plus-provider-default-model .codex-plus-menu-trigger { max-width: 260px; }
-      .codex-plus-provider-mode-hint { min-width: 0; overflow: hidden; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
       /* 聚合时每行一个开关；「Codex 登录身份」贴在侧栏底部。 */
       .codex-plus-provider-item > .codex-plus-toggle { flex: 0 0 auto; }
       .codex-plus-provider-sidebar { display: flex; flex-direction: column; }

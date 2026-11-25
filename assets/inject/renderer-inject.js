@@ -1230,11 +1230,14 @@
       .codex-plus-provider-item-actions button:disabled { opacity: .3; cursor: default; }
       /* 顶部的连接方式（聚合 / 直连），和管理器「连接与供应商」同一个切换；当前那段按下去不能再点。 */
       .codex-plus-provider-mode-switch { gap: 12px; }
+      .codex-plus-provider-mode-info { display: flex; flex-direction: column; gap: 6px; padding: 0 8px 12px; }
+      .codex-plus-provider-mode-info > .codex-plus-provider-help { line-height: 16px; }
+      .codex-plus-provider-default-model { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-provider-default-model > span { flex: none; }
+      .codex-plus-provider-default-model .codex-plus-provider-menu { min-width: 0; }
+      .codex-plus-provider-default-model .codex-plus-menu-trigger { max-width: 100%; }
       .codex-plus-provider-mode-switch button:disabled { cursor: default; }
       .codex-plus-provider-mode-switch button:disabled:not([aria-selected="true"]) { opacity: .5; }
-      .codex-plus-provider-default-model { display: inline-flex; flex: none; align-items: center; gap: 6px; color: var(--codex-plus-text-secondary); font-size: 12px; }
-      .codex-plus-provider-default-model .codex-plus-menu-trigger { max-width: 260px; }
-      .codex-plus-provider-mode-hint { min-width: 0; overflow: hidden; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
       /* 聚合时每行一个开关；「Codex 登录身份」贴在侧栏底部。 */
       .codex-plus-provider-item > .codex-plus-toggle { flex: 0 0 auto; }
       .codex-plus-provider-sidebar { display: flex; flex-direction: column; }
@@ -16766,6 +16769,7 @@ ${key} = ${value}`]);
       : [["direct", "添加供应商"], ["model", "新建模型聚合"], ["failover", "新建故障转移"]];
     panel.innerHTML = `<div class="codex-plus-provider-shell">${renderCodexPlusProviderModeSwitch(gatewayMode)}<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
+        ${renderCodexPlusProviderModeInfo(gatewayMode)}
         <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
           ${codexPlusProviderActionMenu("new", "+ 新建", newOptions, state.busy || codexPlusGatewayPageState.busy ? "disabled" : "")}</div>
         ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-note">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
@@ -17386,21 +17390,29 @@ ${key} = ${value}`]);
   function renderCodexPlusProviderModeSwitch(gatewayMode) {
     const busy = Boolean(codexPlusGatewayPageState.busy || codexPlusProviderPageState.busy);
     const canSwitch = codexPlusProviderPageState.settings?.relayProfilesEnabled !== false;
-    const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
-    const connecting = codexPlusGatewayPageState.busy === "connect" || codexPlusGatewayPageState.busy === "disconnect";
     const button = (mode, label, title, active, enabled) => `<button type="button" role="radio" aria-checked="${active}" aria-selected="${active}" data-codex-gateway-action="mode-${mode}" title="${escapeHtml(title)}" ${active || busy || !enabled ? "disabled" : ""}>${escapeHtml(label)}</button>`;
-    const hint = connecting
-      ? "正在切换…"
-      : gatewayMode
-        ? "打开的供应商合在一起给 Codex 用，模型都列进模型选择器。需要 Codex++ 在后台运行。"
-        : "Codex 直接连一家，关掉 Codex++ 也能用（需协议转换的除外）；换一家点「使用」。";
+    // 这一行横跨侧栏和原生面板（侧栏展开时面板从侧栏右边起），只放切换本身；说明和默认模型放进左栏。
     return `<div class="codex-plus-provider-tabs codex-plus-provider-mode-switch">
       <div class="codex-plus-provider-tab-group" role="radiogroup" aria-label="Codex 的连接方式">
         ${button("aggregate", "聚合", canSwitch ? "聚合：Codex 经 Codex++ 本地服务，下面打开的供应商合在一起，不用切换" : "先在 Codex++「连接与供应商」的「更多设置」里打开供应商配置切换", gatewayMode, canSwitch)}
         ${button("direct", "直连", "直连：断开本地服务，还原接入前的直连配置；会先列出要还原的文件，确认后才改", !gatewayMode, true)}
       </div>
-      ${gatewayMode ? renderCodexPlusGatewayDefaultModel(model, busy) : ""}
-      <span class="codex-plus-provider-mode-hint">${escapeHtml(hint)}</span>
+    </div>`;
+  }
+
+  /** 左栏顶部：当前连接方式的一句说明；聚合时上面再放「默认模型」。 */
+  function renderCodexPlusProviderModeInfo(gatewayMode) {
+    const busy = Boolean(codexPlusGatewayPageState.busy || codexPlusProviderPageState.busy);
+    const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+    const connecting = codexPlusGatewayPageState.busy === "connect" || codexPlusGatewayPageState.busy === "disconnect";
+    const hint = connecting
+      ? "正在切换…"
+      : gatewayMode
+        ? "打开的供应商合在一起给 Codex 用，模型都列进模型选择器。需要 Codex++ 在后台运行。"
+        : "Codex 直接连一家，关掉 Codex++ 也能用（需协议转换的除外）；换一家点「使用」。";
+    return `<div class="codex-plus-provider-mode-info">
+      ${gatewayMode && codexPlusGatewayPageState.payload ? renderCodexPlusGatewayDefaultModel(model, busy) : ""}
+      <div class="codex-plus-provider-help">${escapeHtml(hint)}</div>
     </div>`;
   }
 
@@ -17419,7 +17431,7 @@ ${key} = ${value}`]);
     ];
     if (!options.length || (!model && !models.length)) return "";
     const current = models.find((item) => item.toLowerCase() === model.toLowerCase()) || model;
-    return `<span class="codex-plus-provider-default-model"><span>默认模型</span>${codexPlusProviderMenu("default-model", current, options, "Codex 默认模型", busy ? "disabled" : "")}</span>`;
+    return `<div class="codex-plus-provider-default-model"><span>默认模型</span>${codexPlusProviderMenu("default-model", current, options, "Codex 默认模型", busy ? "disabled" : "")}</div>`;
   }
 
   function renderCodexPlusGatewayList() {
@@ -17709,7 +17721,7 @@ ${key} = ${value}`]);
       ["none", "不登录"],
     ];
     const help = value === "local"
-      ? `代码审查、图像、资料库等入口已解锁，模型仍走所选供应商。${login.localLoginLaunchHint ? escapeHtml(login.localLoginLaunchHint) + "。" : ""}<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="edit-local-profile">编辑资料</button>`
+      ? `代码审查、图像、资料库等入口已解锁，模型仍走所选供应商。${login.localLoginLaunchHint ? "直接打开 Codex 前，先在 Codex++ 首页打开「自动接管官方 App」。" : ""}<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="edit-local-profile">编辑资料</button>`
       : escapeHtml(login.drift || login.restartBlockedReason || (blocked ? `本地账号暂不可用：${blocked}` : "选「本地账号」可以用 API Key 解锁 ChatGPT 专属入口。"));
     return `<div class="codex-plus-provider-login">
       <div class="codex-plus-provider-sidebar-header"><span>Codex 登录身份</span></div>
