@@ -2985,6 +2985,8 @@ impl ProxyRequestLog {
         let log = Self {
             started: std::time::Instant::now(),
             entry: crate::request_log::RequestLogEntry {
+                route: None,
+                context_summary: None,
                 id: crate::request_log::RequestLogEntry::new_id(started_at_ms),
                 timestamp_ms: started_at_ms,
                 started_at_ms,

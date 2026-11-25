@@ -6,6 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[path = "request_log_context.rs"]
+mod context;
+pub use context::RequestContextSummary;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -144,6 +147,10 @@ pub struct RequestLogEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<RequestUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_summary: Option<RequestContextSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<crate::gateway::activity::RouteRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_hit_ratio: Option<f64>,
     /// `final-response-v1`：内置原生 Responses 链路已写出完整成功响应，
     /// input/output/cached 均显式存在，路由与模型绑定最后一次 middleware 后发送。
@@ -238,12 +245,34 @@ pub fn start_request(entry: &RequestLogEntry) {
     }
 }
 
+pub(crate) fn record_running_route(id: &str, route: crate::gateway::activity::RouteRecord) {
+    if let Ok(mut live) = live_requests().lock()
+        && let Some(entry) = live.get_mut(id)
+    {
+        entry.route = Some(route);
+    }
+}
+
+pub(crate) fn update_running_context(id: &str, body: &Value) {
+    let summary = RequestContextSummary::from_responses(body);
+    if let Ok(mut live) = live_requests().lock()
+        && let Some(entry) = live.get_mut(id)
+    {
+        entry.context_summary = summary;
+    }
+}
+
 /// 请求结束：从进行中列表移除并写入 JSONL。
 pub fn finish_request(entry: &RequestLogEntry) {
-    if let Ok(mut live) = live_requests().lock() {
-        live.remove(&entry.id);
-    }
-    if let Err(error) = append_request_log(entry)
+    let recorded = live_requests().lock().ok().and_then(|mut live| live.remove(&entry.id));
+    let logged = recorded.and_then(|recorded| {
+        if recorded.context_summary.is_none() && recorded.route.is_none() { return None; }
+        let mut logged = entry.clone();
+        logged.context_summary = recorded.context_summary;
+        logged.route = recorded.route;
+        Some(logged)
+    });
+    if let Err(error) = append_request_log(logged.as_ref().unwrap_or(entry))
         && let Err(diagnostic_error) = crate::diagnostic_log::append_diagnostic_log(
             "request_log.write_or_trim_failed",
             serde_json::json!({ "error": error.to_string() }),
@@ -273,6 +302,8 @@ pub fn update_running(entry: &RequestLogEntry) {
         if current.first_token_ms.is_some() {
             updated.phase = current.phase.clone();
         }
+        updated.route = current.route.take().or(updated.route);
+        updated.context_summary = current.context_summary.take().or(updated.context_summary);
         *current = updated;
     }
 }
@@ -816,8 +847,26 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn context_summary_stays_with_the_exact_live_request() {
+        let request = entry("context-summary-exact");
+        let other = entry("context-summary-concurrent");
+        start_request(&request);
+        start_request(&other);
+        update_running_context(&request.id, &serde_json::json!({"input": "never persist this text"}));
+        update_running(&request);
+        let mut live = live_requests().lock().unwrap();
+        let saved = live.remove(&request.id).unwrap();
+        let other = live.remove(&other.id).unwrap();
+        assert!(saved.context_summary.is_some());
+        assert!(other.context_summary.is_none());
+        assert!(!serde_json::to_string(&saved.context_summary).unwrap().contains("never persist"));
+    }
+
     fn entry(id: &str) -> RequestLogEntry {
         RequestLogEntry {
+            route: None,
+            context_summary: None,
             id: id.to_string(),
             timestamp_ms: 0,
             started_at_ms: 0,

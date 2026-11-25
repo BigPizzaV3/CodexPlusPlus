@@ -17,9 +17,10 @@ import "./RequestFlow.css";
  * 按间隔轮询 `load_request_flow`，窗口不可见时不读。
  * 返回最近的请求（开始时间倒序），动画直接使用当前进行中的状态。
  */
-export function useRequestFlow(intervalMs: number, limit = 30): { entries: FlowEntry[]; loaded: boolean } {
+export function useRequestFlow(intervalMs: number, limit = 30, includeThreadTitles = false): { entries: FlowEntry[]; loaded: boolean; failed: boolean } {
   const [entries, setEntries] = useState<FlowEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -27,14 +28,16 @@ export function useRequestFlow(intervalMs: number, limit = 30): { entries: FlowE
     const tick = async () => {
       if (document.visibilityState === "visible") {
         try {
-          const result = await invoke<{ entries?: FlowEntry[] }>("load_request_flow", { limit });
+          const result = await invoke<{ status?: string; entries?: FlowEntry[] }>("load_request_flow", includeThreadTitles ? { limit, includeThreadTitles } : { limit });
           if (cancelled) return;
+          if (result.status === "failed") { setFailed(true); return; }
           const next = result.entries ?? [];
           // 列表没变（没有新请求、状态也没动）就沿用旧数组，总览不用每 1.5 秒整页重渲染。
           setEntries((previous) => keepIfSame(previous, next));
           setLoaded(true);
+          setFailed(false);
         } catch {
-          // 读不到时保持上一轮的列表。
+          if (!cancelled) setFailed(true);
         }
       }
       if (!cancelled) timer = window.setTimeout(() => void tick(), intervalMs);
@@ -44,9 +47,9 @@ export function useRequestFlow(intervalMs: number, limit = 30): { entries: FlowE
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [intervalMs, limit]);
+  }, [intervalMs, limit, includeThreadTitles]);
 
-  return { entries, loaded };
+  return { entries, loaded, failed };
 }
 
 /**

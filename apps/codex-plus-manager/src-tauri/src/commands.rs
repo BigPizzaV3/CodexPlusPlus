@@ -9464,16 +9464,23 @@ pub fn load_relay_proxies(profile_ids: Vec<String>) -> CommandResult<Value> {
 /// 实时请求流：托盘「流量」页签和总览拓扑图的光点动画每秒轮询它。
 /// 只读日志末尾和进行中的请求，不补会话标题和费用，保持轻量。
 #[tauri::command]
-pub async fn load_request_flow(limit: Option<usize>) -> CommandResult<Value> {
+pub async fn load_request_flow(limit: Option<usize>, include_thread_titles: Option<bool>) -> CommandResult<Value> {
     let limit = limit.unwrap_or(30).clamp(1, 200);
     let result = tauri::async_runtime::spawn_blocking(move || {
-        codex_plus_core::request_log::read_recent_request_logs(limit)
+        let entries = codex_plus_core::request_log::read_recent_request_logs(limit)?;
+        let count = entries.len();
+        let entries = if include_thread_titles.unwrap_or(false) {
+            json!(decorate_request_log_entries(&entries))
+        } else {
+            json!(entries)
+        };
+        Ok::<_, std::io::Error>((count, entries))
     })
     .await
     .unwrap_or_else(|error| Err(std::io::Error::other(error.to_string())));
     match result {
-        Ok(entries) => ok(
-            &format!("已读取 {} 条请求。", entries.len()),
+        Ok((count, entries)) => ok(
+            &format!("已读取 {count} 条请求。"),
             json!({ "entries": entries }),
         ),
         Err(error) => failed(

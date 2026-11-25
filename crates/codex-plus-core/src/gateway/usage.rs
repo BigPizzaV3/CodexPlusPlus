@@ -557,6 +557,8 @@ mod tests {
         cached: u64,
     ) -> RequestLogEntry {
         RequestLogEntry {
+            route: None,
+            context_summary: None,
             id: "id".to_string(),
             timestamp_ms: 1_790_000_000_000,
             started_at_ms: 0,
