@@ -58,7 +58,9 @@ fn claude_manifest_requires_explicit_valid_public_methods() {
 
     for invalid in [
         json!({}),
-        json!({"renderer": "claude.js"}),
+        json!({"renderer": "claude.ts"}),
+        json!({"methods": ["status"]}),
+        json!({"unknown": true}),
         json!({"events": {"unknown.event": "run"}}),
         json!({"events": {"turn.start": "__service"}}),
         json!({"buttons": [{"id": "x", "label": "X", "method": "constructor"}]}),
@@ -70,6 +72,29 @@ fn claude_manifest_requires_explicit_valid_public_methods() {
     ] {
         assert!(ClaudeDesktopExtension::parse(&invalid).is_err(), "accepted {invalid}");
     }
+}
+
+/// 页面部分（renderer / styles / methods）和 Code 会话的声明各管各的方法：页面只能调 methods 里的，
+/// 按钮、工具、事件只能调它们自己声明的。只有页面脚本和样式的包不需要后台。
+#[test]
+fn claude_page_declaration_stands_alone_and_keeps_its_own_method_list() {
+    let page_only = ClaudeDesktopExtension::parse(&json!({"renderer": "claude.js", "styles": ["claude.css"]})).unwrap();
+    assert!(!page_only.has_mods() && !page_only.needs_backend());
+    let page = page_only.page.as_ref().unwrap();
+    assert_eq!((page.scripts.as_slice(), page.styles.as_slice()), (&["claude.js".to_string()][..], &["claude.css".to_string()][..]));
+
+    let mut both = declaration();
+    both["renderer"] = json!(["a.js", "b.js"]);
+    both["methods"] = json!(["status"]);
+    let parsed = ClaudeDesktopExtension::parse(&both).unwrap();
+    assert!(parsed.has_mods() && parsed.needs_backend());
+    assert!(parsed.permits_page("status") && !parsed.permits("status"));
+    assert!(parsed.permits("add") && !parsed.permits_page("add"));
+    // 交给界面的那份带页面部分；下发给 Claude 插件的那份不带，原始字段也不回显。
+    let shown = serde_json::to_value(&parsed).unwrap();
+    assert_eq!(shown["page"]["methods"], json!(["status"]));
+    assert!(shown.get("renderer").is_none() && shown.get("methods").is_none());
+    assert!(serde_json::to_value(parsed.mods_only()).unwrap().get("page").is_none());
 }
 
 #[test]
@@ -278,6 +303,10 @@ export default (ctx) => {
     let claude = |method| json!({"key": "user:shared", "method": method, "sessionId": "claude-test"});
     let check = async {
         assert_eq!(extension_claude::call(&manager, &claude("add")).await.unwrap(), 1);
+        assert_eq!(extension_claude::call(&manager, &claude("add")).await.unwrap(), 2);
+        // 这个包没有声明页面部分：页面那条路调不到它的后台。
+        assert!(extension_backend::call_claude_page(&manager, "user:shared", "add", Value::Null, Duration::from_secs(10), None).await.is_err());
+        assert_eq!(extension_claude::call(&manager, &claude("add")).await.unwrap(), 1, "被拒的调用按停用处理，后台重起");
         assert_eq!(extension_claude::call(&manager, &claude("add")).await.unwrap(), 2);
         assert_eq!(extension_backend::call(&manager, "user:shared", "add", Value::Null, Duration::from_secs(10), None).await.unwrap(), 1);
         extension_backend::stop_all(&manager).await;

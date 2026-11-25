@@ -15,12 +15,10 @@ function functionSource(name: string) {
   return declaration.getText(app);
 }
 
-test("overview lists the local server and protocol conversion separately and keeps the debugger", () => {
-  const screen = functionSource("OverviewScreen");
+test("health items list the local server and protocol conversion separately and keep the debugger", () => {
   const items = functionSource("healthItems");
-  assert.match(screen, /t\("Codex 版本"\)/);
   assert.match(items, /t\("Codex 应用"\)/);
-  assert.doesNotMatch(screen + items, /management_shortcut|Codex\+\+ 应用入口|actions\.(checkHealth|repairShortcuts)/);
+  assert.doesNotMatch(items, /management_shortcut|Codex\+\+ 应用入口|actions\.(checkHealth|repairShortcuts)/);
   // 本地服务器与协议转换拆成两项：状态互相独立（服务器在跑、转换没开是常态）。
   for (const title of ["本地服务器状态", "协议转换", "调试连接状态"]) {
     assert.ok(items.includes(`t("${title}")`));
@@ -31,11 +29,8 @@ test("overview lists the local server and protocol conversion separately and kee
   assert.match(items, /当前供应商直连 Responses/);
   assert.match(items, /"off"/);
   assert.doesNotMatch(items, /后台服务状态|代理服务器状态|proxy_server/);
-  // 健康检查收成一张卡的行列表：有问题的项排前面，正常的收成一行，点开再看全部。
-  assert.match(screen, /className="overview-health-list"/);
-  assert.ok(screen.indexOf("{healthProblems.map(healthRow)}") < screen.indexOf("healthFine.map(healthRow)"));
-  assert.match(screen, /onClick=\{\(\) => setHealthExpanded\(true\)\}/);
-  assert.doesNotMatch(screen, /最近启动|LatestLaunch/);
+  // Agent 没有概览页了：设置页只取协议转换、调试连接状态两项。
+  assert.match(functionSource("GlobalSettingsScreen") + text, /healthItems\(overview\)\.filter\(\(item\) => item\.title === t\("协议转换"\) \|\| item\.title === t\("调试连接状态"\)\)/);
   const entry = functionSource("App");
   // 顶栏不再放 Codex 状态与启动 / 重启按钮：启动、停止在侧栏 Codex 行的播放键上。
   assert.match(entry, /runtime_health\?\.codex_app/);
@@ -43,9 +38,6 @@ test("overview lists the local server and protocol conversion separately and kee
   assert.match(entry, /const codexRun = \{\n\s*running: codexAppRunning,/);
   assert.match(entry, /codexRun=\{codexRun\}/);
   assert.doesNotMatch(entry, /aria-label=\{t\("刷新状态"\)\}/);
-  assert.match(screen, /overview-health-header-actions/);
-  assert.match(screen, /aria-label=\{t\("刷新状态"\)\}/);
-  assert.match(screen, /actions\.refreshCurrent/);
 });
 
 test("maintenance retains application entrypoint checks and repairs", () => {

@@ -389,6 +389,7 @@ async fn installs_release_asset_pinned_to_tag_commit() {
     assert_eq!(prepared["fromDefaultBranch"], false);
     assert_eq!(prepared["conflict"], Value::Null);
     assert_eq!(prepared["permissions"]["hooks"][0]["event"], "PreToolUse");
+    assert_eq!(prepared["previousPermissions"], Value::Null, "本机没装过：没有可比的旧版本");
     // 暂存期间还没进用户目录。
     assert!(!root.path().join("user_scripts/word-count").exists());
 
@@ -440,13 +441,17 @@ async fn falls_back_to_default_branch_and_guards_local_conflicts() {
     let endpoints = endpoints(&server);
     store.list(&endpoints, &manager, false).await;
 
-    // 本机已有一个手写的同 id 拓展。
+    // 本机已有一个手写的同 id 拓展（只有页面脚本，没有钩子）。
     let local = root.path().join("user_scripts/word-count");
     std::fs::create_dir_all(&local).unwrap();
-    std::fs::write(local.join("codexpp.json"), serde_json::to_string(&manifest("word-count", "0.1.0")).unwrap()).unwrap();
+    std::fs::write(local.join("codexpp.json"), json!({ "id": "word-count", "version": "0.1.0", "renderer": "main.js" }).to_string()).unwrap();
     std::fs::write(local.join("main.js"), "// 手写版本").unwrap();
 
     let prepared = store.prepare(&endpoints, &manager, "alice/codexpp-word-count").await.unwrap();
+    // 带上本机那一版的能力，确认框据此标出新版本多了钩子和路由。
+    assert_eq!(prepared["previousPermissions"]["renderer"], json!(["main.js"]));
+    assert_eq!(prepared["previousPermissions"]["hooks"], json!([]));
+    assert_eq!(prepared["permissions"]["hooks"][0]["event"], "PreToolUse");
     assert_eq!(prepared["fromDefaultBranch"], true);
     assert_eq!(prepared["tag"], Value::Null);
     assert_eq!(prepared["sha"], SHA_HEAD);

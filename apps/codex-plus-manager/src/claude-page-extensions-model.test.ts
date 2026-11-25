@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { compareVersions, countUpdates, marketAction, matchesQuery, sortMarket, type PageExtension, type PageMarketEntry } from "./claude-page-extensions-model.ts";
+import { compareVersions, countUpdates, marketAction, matchesQuery, sortMarket, type PageExtension, type PageMarketEntry, pageRuntimeSummary } from "./claude-page-extensions-model.ts";
 
 const entry = (id: string, version: string): PageMarketEntry => ({
   id, version, name: id, author: "", description: "", source: "official", repo: "a/b", path: "", commit: "0".repeat(40), url: "",
@@ -40,4 +40,25 @@ test("市场排序：默认保持目录顺序，按名称，按星数（没有�
   assert.deepEqual(sortMarket(list, "name").map((item) => item.id), ["a", "b", "c"]);
   assert.deepEqual(sortMarket(list, "stars").map((item) => item.id), ["c", "a", "b"]);
   assert.deepEqual(list.map((item) => item.id), ["b", "a", "c"], "不改原数组");
+});
+
+test("a codexpp package's row says how it is doing in the Claude page", () => {
+  const item = (extra: Partial<PageExtension>): PageExtension => ({
+    id: "demo", name: "Demo", version: "1.0.0", author: "", description: "", builtin: false, enabled: true,
+    format: "codexpp", capabilities: ["page"], notes: [], configSchema: [], config: {}, runtime: null, ...extra,
+  });
+  const runtime = (extra: object) => ({ status: "loaded", error: "", unsupported: [], loadedAt: "", ...extra });
+  // 页面扩展、没启用的、清单有误的：不显示运行情况。
+  assert.equal(pageRuntimeSummary(item({ format: "manifest" })), null);
+  assert.equal(pageRuntimeSummary(item({ format: undefined })), null, "老版本的列表没有 format，按页面扩展");
+  assert.equal(pageRuntimeSummary(item({ enabled: false })), null);
+  assert.equal(pageRuntimeSummary(item({ error: "bad" })), null);
+  assert.deepEqual(pageRuntimeSummary(item({})), { kind: "pending", detail: "" });
+  assert.deepEqual(pageRuntimeSummary(item({ runtime: runtime({ status: "loading" }) })), { kind: "pending", detail: "" });
+  assert.deepEqual(pageRuntimeSummary(item({ runtime: runtime({}) })), { kind: "loaded", detail: "" });
+  assert.deepEqual(pageRuntimeSummary(item({ runtime: runtime({ status: "failed", error: "SyntaxError: x\n    at y" }) })), { kind: "failed", detail: "SyntaxError: x" });
+  assert.deepEqual(pageRuntimeSummary(item({ runtime: runtime({ error: "page: boom" }) })), { kind: "error", detail: "page: boom" });
+  assert.deepEqual(pageRuntimeSummary(item({ runtime: runtime({ unsupported: ["registerComposerAction", "registerSlot:composer.above"] }) })), {
+    kind: "partial", detail: "registerComposerAction、registerSlot:composer.above",
+  });
 });

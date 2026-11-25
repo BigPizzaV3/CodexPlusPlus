@@ -348,6 +348,11 @@
   grid-template-rows: auto auto minmax(0, 1fr);
 }
 
+/* 「请求」页被拓展顶替、又切回内置页面时，页签下面多一条「使用拓展页面」横幅：它单独占一行，表格卡仍占满剩下的高度。 */
+:root .shell .screen.request-log-screen.has-override-banner {
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
 :root .shell .screen.request-log-screen > .request-log-page {
   display: flex;
   width: min(100%, var(--cx-content));

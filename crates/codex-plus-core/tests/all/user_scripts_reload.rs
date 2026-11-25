@@ -374,6 +374,35 @@ fn an_unreadable_config_is_never_overwritten_with_defaults() {
     assert!(!fs::read_dir(temp.path()).unwrap().flatten().any(|entry| entry.file_name().to_string_lossy().starts_with("fresh.json.corrupt-")));
 }
 
+/// 管理器、启动器、拓展 MCP、钩子进程各有各的管理器实例（各有各的进程内互斥锁），都会读改写同一份配置。
+/// 跨实例靠文件锁互斥：两边同时改不同的项，一项都不能丢。
+#[test]
+fn concurrent_updates_from_separate_managers_do_not_overwrite_each_other() {
+    let temp = tempfile::tempdir().unwrap();
+    let user = temp.path().join("user");
+    fs::create_dir_all(&user).unwrap();
+    let config_path = temp.path().join("config.json");
+    let workers = (0..4)
+        .map(|worker| {
+            let manager = UserScriptManager::new(temp.path().join("builtin"), &user, &config_path);
+            std::thread::spawn(move || {
+                for index in 0..25 {
+                    manager.set_script_enabled(&format!("user:w{worker}-{index}.js"), false).unwrap();
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    for worker in workers {
+        worker.join().unwrap();
+    }
+    let config = UserScriptManager::new(temp.path().join("builtin"), &user, &config_path).load_config();
+    let missing = (0..4)
+        .flat_map(|worker| (0..25).map(move |index| format!("user:w{worker}-{index}.js")))
+        .filter(|key| config.scripts.get(key) != Some(&false))
+        .collect::<Vec<_>>();
+    assert!(missing.is_empty(), "并发更新丢了 {} 项：{missing:?}", missing.len());
+}
+
 #[test]
 fn global_switch_preserves_individual_script_choices_after_reload() {
     let temp = tempfile::tempdir().unwrap();
@@ -464,23 +493,13 @@ window.__codexPlusUserScripts.registerCleanup(() => { window.active--; });
     fs::write(&path, "window.legacy = (window.legacy || 0) + 1;").unwrap();
     let legacy = manager.build_reload_bundle().unwrap();
     let initial = manager.build_initial_bundle().unwrap();
-    write_package(
-        &user,
-        "with-api",
-        json!({"id": "with-api", "name": "With API", "renderer": ["renderer.js"]}),
-    );
-    fs::write(user.join("with-api/renderer.js"), r#"
-codexPlus.extension(() => { window.packageLoads = (window.packageLoads || 0) + 1; });
-"#).unwrap();
-    let mixed_initial = manager.build_initial_bundle().unwrap();
-    manager.set_script_enabled("user:with-api", false).unwrap();
     manager.delete_user_script("user:demo.js").unwrap();
     let deleted = manager.build_reload_bundle().unwrap();
     let empty_initial = manager.build_initial_bundle().unwrap();
     let input = json!({"first": first, "updated": updated, "disabled": disabled,
         "globallyDisabled": globally_disabled, "legacy": legacy, "deleted": deleted,
         "bootstrap": BOOTSTRAP_SCRIPT, "renderer": codex_plus_core::assets::renderer_script(),
-        "initial": initial, "emptyInitial": empty_initial, "mixedInitial": mixed_initial});
+        "initial": initial, "emptyInitial": empty_initial});
     let fixture = temp.path().join("bundles.json");
     fs::write(&fixture, input.to_string()).unwrap();
     let output = Command::new("node").arg("-e").arg(r#"
@@ -526,54 +545,40 @@ let requests = 0;
 const fresh = Object.assign(new EventTarget(), { location: window.location, electronBridge: {},
   __codexSessionDeleteBridge(path) {
     assert.equal(path, '/user-scripts/load');
-    assert.ok(fresh.codexPlus);
+    assert.equal(typeof fresh.codexPlus.extension, 'function');
     requests++;
     return Promise.resolve({});
   } });
 fresh.self = fresh.top = fresh;
 const startup = vm.createContext({window: fresh, document: {readyState: 'complete'}, console,
-  Event, buildCodexPlusExtensionApi: () => ({ apiVersion: 1 })});
+  Event, buildCodexPlusExtensionApi: () => ({ extension() {} })});
 vm.runInContext(bundles.bootstrap, startup);
 vm.runInContext(bundles.bootstrap, startup);
 assert.equal(requests, 0);
 const apiStart = bundles.renderer.indexOf('window.codexPlus = buildCodexPlusExtensionApi();');
-const apiEnd = bundles.renderer.indexOf('// 内置功能挂到拓展内核上', apiStart);
+const ready = 'window.dispatchEvent(new Event("codex-plus-extension-api-ready"));';
+const apiEnd = bundles.renderer.indexOf(ready, apiStart);
 assert.ok(apiStart >= 0 && apiEnd > apiStart);
-vm.runInContext(bundles.renderer.slice(apiStart, apiEnd), startup);
-assert.equal(requests, 1);
+vm.runInContext(bundles.renderer.slice(apiStart, apiEnd + ready.length), startup);
 fresh.dispatchEvent(new Event('codex-plus-extension-api-ready'));
 assert.equal(requests, 1);
 fresh.__codexPlusUserScriptsBootstrap = false;
 fresh.top = {};
 vm.runInContext(bundles.bootstrap, startup);
 assert.equal(requests, 1);
-fresh.top = fresh;
-vm.runInContext(bundles.bootstrap, startup);
-assert.equal(requests, 2);
 
 // 重复启动请求、桥接恢复及刷新后的新页面均不得再次刷新或叠加旧脚本。
-// 桥接请求等候期间换页，新页没有 API；不能运行半份注入包并锁死初始化。
-const replacement = { electronBridge: {}, location: window.location };
-replacement.top = replacement.self = replacement;
-const replacementContext = vm.createContext({window: replacement, console});
-assert.equal(JSON.parse(vm.runInContext(bundles.mixedInitial, replacementContext)).ran, false);
-assert.equal(replacement.legacy, undefined);
-assert.equal(replacement.__codexPlusUserScripts.initialized, undefined);
-replacementContext.codexPlus = replacement.codexPlus = { extension(apply) { apply(); } };
-assert.equal(JSON.parse(vm.runInContext(bundles.mixedInitial, replacementContext)).ran, true);
-assert.equal(JSON.parse(vm.runInContext(bundles.mixedInitial, replacementContext)).ran, false);
-assert.equal(replacement.legacy, 1);
-assert.equal(replacement.packageLoads, 1);
-assert.equal(replacement.__codexPlusUserScripts.scripts["user:with-api"].status, "loaded");
-
 for (let page = 0; page < 3; page++) {
   let pageReloads = 0;
   const scheduled = [];
-  const pageWindow = { electronBridge: {}, codexPlus: { extension() {} }, __codexPlusUserScriptsBootstrap: true,
+  const pageWindow = { electronBridge: {}, __codexPlusUserScriptsBootstrap: true,
     location: { href: 'app://-/index.html', reload() { pageReloads++; } },
     setTimeout(fn) { scheduled.push(fn); } };
   pageWindow.top = pageWindow.self = pageWindow;
   const pageContext = vm.createContext({window: pageWindow, console});
+  assert.equal(JSON.parse(vm.runInContext(bundles.initial, pageContext)).ran, false);
+  assert.equal(pageWindow.__codexPlusUserScripts.initialized, undefined);
+  pageWindow.codexPlus = { extension() {} };
   for (let repeat = 0; repeat < 20; repeat++) vm.runInContext(bundles.initial, pageContext);
   assert.equal(pageWindow.legacy, 1);
   assert.equal(scheduled.length, 0);

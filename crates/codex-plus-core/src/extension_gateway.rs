@@ -106,8 +106,18 @@ pub fn with_replaced_segments_sync<R>(segments: &[&str], f: impl FnOnce() -> R) 
     REPLACED_OVERRIDE.sync_scope(segments.iter().map(|name| name.to_string()).collect(), f)
 }
 
+/// 要靠拓展的 upstream 段来接手的内置环节。
+const UPSTREAM_STAGE_SEGMENTS: &[&str] = &["builtin:auth-headers", "builtin:request-conversion", "builtin:official-shaping"];
+
 /// 内置网关环节（[`crate::user_scripts::BUILTIN_GATEWAY_SEGMENTS`]）是否被启用中的拓展用 `gateway.replaces` 关掉。
+///
+/// 启动器把请求转给本机网关时（两跳），拓展中间件只在外层那一跳跑，而且外层拿不到真实上游的 Key；
+/// 网关这一层（内层）不再跑拓展。所以内层里靠 upstream 段接手的环节一律按「没被关掉」处理，由 Codex++ 自己做：
+/// 否则没有任何一方带鉴权头、做协议转换，请求会不带凭据发给真实上游，全部 401。
 pub fn builtin_replaced(segment: &str) -> bool {
+    if already_applied() && UPSTREAM_STAGE_SEGMENTS.contains(&segment) {
+        return false;
+    }
     if let Ok(replaced) = REPLACED_OVERRIDE.try_with(|list| list.iter().any(|name| name == segment)) {
         return replaced;
     }
@@ -1055,7 +1065,13 @@ struct ResponseWorker {
     pending: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
     alive: std::sync::Arc<std::sync::atomic::AtomicBool>,
     child: std::sync::Mutex<std::process::Child>,
+    /// 工作进程回过多少条消息。等某次回复超时时，这个数没动说明整个进程都没反应（中间件里同步死循环），
+    /// 而不只是这一个中间件慢。
+    replies: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
+
+/// 往工作进程写一条消息最多等多久。进程卡死后不再读 stdin，管道写满了写入就会一直阻塞。
+const RESPONSE_WORKER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Drop for ResponseWorker {
     fn drop(&mut self) {
@@ -1123,9 +1139,11 @@ async fn spawn_response_worker() -> anyhow::Result<ResponseWorker> {
     let stdout = child.stdout.take().ok_or_else(|| anyhow::anyhow!("响应流工作进程没有 stdout"))?;
     let pending: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> = Default::default();
     let alive = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let replies = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     {
         let pending = pending.clone();
         let alive = alive.clone();
+        let replies = replies.clone();
         std::thread::Builder::new()
             .name("codex-plus-response-worker".into())
             .spawn(move || {
@@ -1134,6 +1152,7 @@ async fn spawn_response_worker() -> anyhow::Result<ResponseWorker> {
                     let Ok(message) = serde_json::from_str::<Value>(&line) else {
                         continue;
                     };
+                    replies.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                     if let Some(id) = message.get("id").and_then(Value::as_u64) {
                         let sender = pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
                         if let Some(sender) = sender {
@@ -1152,6 +1171,7 @@ async fn spawn_response_worker() -> anyhow::Result<ResponseWorker> {
         pending,
         alive,
         child: std::sync::Mutex::new(child),
+        replies,
     })
 }
 
@@ -1168,18 +1188,33 @@ async fn response_worker(fingerprint: &str) -> anyhow::Result<std::sync::Arc<Res
 }
 
 impl ResponseWorker {
+    /// 工作进程整个没反应了：标成已退出并结束它。结束后阻塞在写管道上的线程会报错返回，
+    /// 等着回复的调用立刻收到「已退出」，下一条响应会另起一个新的工作进程。
+    fn terminate(&self) {
+        self.alive.store(false, std::sync::atomic::Ordering::SeqCst);
+        let mut child = self.child.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _ = child.kill();
+    }
+
     async fn send(&self, message: Value) -> anyhow::Result<()> {
         use std::io::Write;
         // 写管道可能在对方读得慢时阻塞：放到阻塞线程里写，写完即返回（不会长时间占着线程）。
         let stdin = self.stdin.clone();
         let line = format!("{message}\n");
-        tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        let write = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
             let mut stdin = stdin.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             stdin.write_all(line.as_bytes())?;
             stdin.flush()
-        })
-        .await??;
-        Ok(())
+        });
+        // 限时：工作进程卡死（中间件里同步死循环）后不再读 stdin，管道一满这里就永远写不完，
+        // 而调用方是在给 Codex 转发回复的路上等着的。写不进去就结束工作进程，这条回复原样放行。
+        match tokio::time::timeout(RESPONSE_WORKER_WRITE_TIMEOUT, write).await {
+            Ok(written) => Ok(written??),
+            Err(_) => {
+                self.terminate();
+                anyhow::bail!("响应流工作进程没有读取输入，已结束它")
+            }
+        }
     }
 
     async fn request(&self, mut message: Value, timeout: Duration) -> anyhow::Result<Value> {
@@ -1187,6 +1222,7 @@ impl ResponseWorker {
         message["id"] = json!(id);
         let (sender, receiver) = tokio::sync::oneshot::channel();
         self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(id, sender);
+        let replies_before = self.replies.load(std::sync::atomic::Ordering::SeqCst);
         if let Err(error) = self.send(message).await {
             self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
             return Err(error);
@@ -1199,6 +1235,11 @@ impl ResponseWorker {
             Ok(Err(_)) => anyhow::bail!("响应流工作进程没有回应"),
             Err(_) => {
                 self.pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&id);
+                // 这段时间里工作进程一条消息都没回过：不是这一个中间件慢，是整个进程卡住了。
+                // 留着它，之后每条响应都要先等满一次超时，写多了还会把管道写满。结束它，下一条响应另起新的。
+                if self.replies.load(std::sync::atomic::Ordering::SeqCst) == replies_before {
+                    self.terminate();
+                }
                 anyhow::bail!("响应流中间件超时（{} 秒）", timeout.as_secs())
             }
         }
@@ -1385,6 +1426,15 @@ impl ResponseFilter {
     #[doc(hidden)]
     pub async fn worker_installed() -> bool {
         RESPONSE_WORKER.lock().await.is_some()
+    }
+
+    /// 槽位里的工作进程是否还活着（测试用）。
+    pub async fn worker_alive() -> bool {
+        RESPONSE_WORKER
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|(_, worker)| worker.alive.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     async fn process_block(&mut self, block: &[u8]) -> Vec<u8> {

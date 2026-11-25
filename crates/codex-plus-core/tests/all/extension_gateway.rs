@@ -182,6 +182,41 @@ export default async function* (context, next) {
     assert_eq!(parse_sse(raw.as_bytes()), ["response.created:", "response.output_text.delta:a", "response.completed:"]);
 }
 
+/// 中间件里同步死循环会把整个工作进程卡死（它是单线程的，之后谁的事件都回不了）。等回复超时的那段时间里
+/// 进程一条消息都没回过，就结束它：这条回复原样放行，下一条响应另起新的工作进程，不再每次都先等满一次超时。
+#[tokio::test]
+async fn a_worker_frozen_by_a_synchronous_loop_is_killed_and_replaced() {
+    if codex_plus_core::dsh_plugins::locate_node().is_none() {
+        return;
+    }
+    use codex_plus_core::extension_gateway::ResponseFilter;
+    let _state = crate::common::global_state_lock();
+    let temp = tempfile::tempdir().unwrap();
+    let manager = manager(&temp);
+    write_package(&temp, "frozen", json!({"response": [{"script": "gateway/f.mjs", "timeout": 1}]}), &[("gateway/f.mjs", r#"
+export default async function* (context, next) {
+  for await (const event of next()) {
+    for (;;) {}
+  }
+}"#)]);
+    let middlewares = manager.enabled_gateway_response_middlewares().unwrap();
+    let source = sse(&[json!({"type": "response.created"}), json!({"type": "response.completed"})]);
+    let mut filter = ResponseFilter::start_with(&middlewares, "/v1/responses", None).await.expect("应建立会话");
+    assert!(ResponseFilter::worker_alive().await);
+    let started = std::time::Instant::now();
+    let mut out = filter.push(&source).await;
+    out.extend(filter.finish().await);
+    assert!(started.elapsed() < std::time::Duration::from_secs(8), "卡死的中间件不能一直挡着回复");
+    assert_eq!(parse_sse(&out), ["response.created:", "response.completed:"], "超时后原样放行");
+    assert!(!ResponseFilter::worker_alive().await, "卡死的工作进程应当被结束");
+
+    // 同一组中间件的下一条响应另起一个新的工作进程，而不是接着用卡死的那个。
+    let again = ResponseFilter::start_with(&middlewares, "/v1/responses", None).await.expect("应另起工作进程");
+    assert!(ResponseFilter::worker_alive().await);
+    again.release_worker().await;
+    filter.release_worker().await;
+}
+
 #[tokio::test]
 async fn releasing_a_filter_leaves_a_newer_worker_in_the_slot() {
     if codex_plus_core::dsh_plugins::locate_node().is_none() {
@@ -208,7 +243,10 @@ async fn releasing_a_filter_leaves_a_newer_worker_in_the_slot() {
 
 #[tokio::test]
 async fn middlewares_run_once_when_the_launcher_forwards_to_the_local_gateway() {
-    use codex_plus_core::extension_gateway::{EXTENSIONS_ALREADY_APPLIED, EXTENSIONS_APPLIED_HEADER, ResponseFilter, apply_request, headers_mark_applied};
+    use codex_plus_core::extension_gateway::{
+        EXTENSIONS_ALREADY_APPLIED, EXTENSIONS_APPLIED_HEADER, ResponseFilter, apply_request, builtin_replaced, headers_mark_applied,
+        with_replaced_segments,
+    };
     // 启动器转给本机网关时带的标记头，大小写不敏感；请求行本身不算。
     assert!(headers_mark_applied(&format!("POST /gw/codex/v1/responses HTTP/1.1\r\nHost: x\r\n{}: 1\r\n", EXTENSIONS_APPLIED_HEADER.to_uppercase())));
     assert!(!headers_mark_applied("POST /gw/codex/v1/responses HTTP/1.1\r\nHost: x\r\n"));
@@ -222,6 +260,26 @@ async fn middlewares_run_once_when_the_launcher_forwards_to_the_local_gateway() 
             assert!(ResponseFilter::start("/v1/responses", None).await.is_none());
         })
         .await;
+
+    // 拓展关掉了鉴权头、请求转换、官方登录整理：这几个环节靠它的 upstream 段接手，而那一段在网关这一层不跑
+    // （外层那一跳也拿不到真实上游的 Key）。所以网关这一层仍由 Codex++ 自己带鉴权头、做转换，否则请求不带凭据就发出去了。
+    let replaced = ["builtin:auth-headers", "builtin:request-conversion", "builtin:official-shaping", "builtin:key-cooldown"];
+    with_replaced_segments(&replaced, async {
+        // 单跳：都算被关掉。
+        for segment in replaced {
+            assert!(builtin_replaced(segment), "{segment}");
+        }
+        EXTENSIONS_ALREADY_APPLIED
+            .scope(true, async {
+                for segment in ["builtin:auth-headers", "builtin:request-conversion", "builtin:official-shaping"] {
+                    assert!(!builtin_replaced(segment), "两跳的内层里 {segment} 仍由 Codex++ 做");
+                }
+                // 不靠 upstream 段接手的环节不受影响。
+                assert!(builtin_replaced("builtin:key-cooldown"));
+            })
+            .await;
+    })
+    .await;
 }
 
 #[tokio::test]
