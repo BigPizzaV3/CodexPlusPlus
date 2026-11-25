@@ -346,6 +346,165 @@ fn reconciled_terminal_pairs_append_within_budget_after_reopen() {
 }
 
 #[test]
+fn delayed_counters_replace_committed_receipts_without_reloading_the_long_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().canonicalize().unwrap();
+    let source = home.join("rollout-ordered.jsonl");
+    let database = home.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let base = DateTime::parse_from_rfc3339("2026-01-02T12:00:00Z").unwrap();
+    let at = |second| (base + chrono::Duration::seconds(second)).to_rfc3339();
+    let usage = |n| json!({"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n});
+    let context = |second, turn| json!({"type":"turn_context","timestamp":at(second),"payload":{"turn_id":turn,"model":"fixture"}});
+    let counter = |second, last, total| {
+        json!({"type":"event_msg","timestamp":at(second),
+        "payload":{"type":"token_count","info":{"last_token_usage":last,"total_token_usage":total}}})
+    };
+    let receipt = |second, n, response| {
+        json!({"type":"token_usage_record","timestamp":at(second),
+        "payload":{"thread_id":PARENT,"turn_id":"tail","response_id":response,
+                   "usage":usage(1),"thread_token_usage":usage(n)}})
+    };
+    let mut prefix = vec![
+        json!({"type":"session_meta","timestamp":at(0),
+        "payload":{"id":PARENT,"model_provider":"supplier-a"}}),
+        context(0, "prefix"),
+    ];
+    prefix.extend((1..=64).map(|n| counter(n, usage(1), usage(n))));
+    let initial = parse(&source, &prefix, cutoff);
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let seed = store
+        .prepare(
+            new_source(&source, &initial),
+            cutoff,
+            BTreeMap::new(),
+            1 << 20,
+        )
+        .unwrap();
+    let first = store.publish(seed).unwrap();
+    let source_bytes: usize = store
+        .db
+        .query_row(
+            "SELECT sum(length(payload)) FROM token_observations",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let budget = 8192;
+    assert!(source_bytes > budget);
+    drop(store);
+    let append = |rows: &[Value]| {
+        let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+        for row in rows {
+            writeln!(file, "{row}").unwrap();
+        }
+    };
+    let step = |store: &mut Store| {
+        let mut reader = SourceReader::restore(store, &source).unwrap();
+        reader.step(
+            store,
+            cutoff,
+            &mut Budget::new(std::iter::empty()),
+            &BTreeMap::new(),
+            budget,
+        )
+    };
+    let first_receipt = receipt(65, 65, "receipt-a");
+    let second_receipt = receipt(68, 66, "receipt-b");
+    let noise = json!({"type":"event_msg","timestamp":at(66),"payload":{"type":"agent_message","message":"synthetic"}});
+    for (batch, expected) in [
+        (vec![context(65, "tail"), first_receipt], 65),
+        (vec![noise], 65),
+        (vec![second_receipt], 66),
+    ] {
+        append(&batch);
+        let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+        assert!(step(&mut store).unwrap());
+        assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).1.len(), expected);
+        let anchor: i64 = store
+            .db
+            .query_row("SELECT revision FROM token_linear_sources", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            anchor, first,
+            "receipts and cursor-only writes cannot replace the anchor"
+        );
+        prefix.extend(batch);
+    }
+
+    let late = counter(
+        67,
+        json!({"input_tokens":100,"output_tokens":10}),
+        json!({"input_tokens":6500,"output_tokens":650}),
+    );
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    let committed = store.checkpoint(&source).unwrap().unwrap().1.offset;
+    let before = read(&mut store.db, i64::MIN, i64::MAX);
+    append(std::slice::from_ref(&late));
+    prefix.push(late);
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER fail_late_count BEFORE UPDATE ON token_days
+         BEGIN SELECT RAISE(ABORT, 'test rollback'); END;",
+        )
+        .unwrap();
+    assert!(
+        step(&mut store)
+            .unwrap_err()
+            .to_string()
+            .contains("test rollback")
+    );
+    assert_eq!(
+        store.checkpoint(&source).unwrap().unwrap().1.offset,
+        committed
+    );
+    assert!(before == read(&mut store.db, i64::MIN, i64::MAX));
+    store
+        .db
+        .execute_batch("DROP TRIGGER fail_late_count")
+        .unwrap();
+    drop(store);
+    let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+    assert!(step(&mut store).unwrap());
+    let (_, paired) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(paired.len(), 66);
+    assert!(paired[64].terminal_response.is_none());
+    assert_eq!(paired[64].delta.cached_input_tokens, 20);
+    assert_eq!(paired[65].terminal_response.as_deref(), Some("receipt-b"));
+
+    let next = counter(69, usage(2), usage(67));
+    append(std::slice::from_ref(&next));
+    prefix.push(next);
+    assert!(step(&mut store).unwrap());
+    let actual = read(&mut store.db, i64::MIN, i64::MAX).1;
+    assert_eq!(actual.len(), 66);
+    assert_eq!(actual.last().unwrap().delta.total_tokens, 220);
+    assert!(actual.iter().all(|event| event.terminal_response.is_none()));
+
+    let mut replay = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let full = parse(&source, &prefix, cutoff);
+    let staged = replay
+        .prepare(new_source(&source, &full), cutoff, BTreeMap::new(), 1 << 20)
+        .unwrap();
+    replay.publish(staged).unwrap();
+    assert!(actual == read(&mut replay.db, i64::MIN, i64::MAX).1);
+    let query = Query::parse(&json!({}), cutoff).unwrap();
+    let days = Store::read_selection(&mut store.db, &query, None, None)
+        .unwrap()
+        .days;
+    assert_eq!(
+        days,
+        Store::read_selection(&mut replay.db, &query, None, None)
+            .unwrap()
+            .days
+    );
+    assert_eq!(days[0]["usage"]["totalTokens"], 67 * 110);
+}
+
+#[test]
 fn source_ingest_retries_a_failed_batch_then_completes_the_split_line_after_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

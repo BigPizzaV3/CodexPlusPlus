@@ -48,8 +48,14 @@ pub(in super::super) struct Prepared<'a> {
     sessions: BTreeSet<String>,
     collisions: HashMap<[u8; 32], i64>,
     append: bool,
-    linear: bool,
+    linear: Option<NativeTail>,
+    superseded: Vec<SupersededReceipt>,
     events: Vec<UsageEvent>,
+}
+
+enum NativeTail {
+    Keep(i64),
+    Advance,
 }
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -257,13 +263,10 @@ fn local_midnight(time: DateTime<Local>) -> bool {
         && Local.from_local_datetime(&time.naive_local()).single() == Some(time)
 }
 
-fn retract_append_proofs(
-    db: &Connection,
-    first: &UsageEvent,
-) -> Result<BTreeMap<NaiveDate, Groups>> {
+fn retract_append_proofs(db: &Connection, first: &UsageEvent) -> Result<BTreeSet<NaiveDate>> {
     let at = DateTime::parse_from_rfc3339(&first.timestamp)?.timestamp_millis();
     let lower = at.saturating_sub(2 * DELAYED_REQUEST_MATCH_WINDOW_MS);
-    let mut days = BTreeMap::<NaiveDate, Groups>::new();
+    let mut days = BTreeSet::new();
     let mut retracted = Vec::new();
     {
         let mut select = db.prepare_cached(
@@ -283,7 +286,7 @@ fn retract_append_proofs(
                 .context("missing classification origin")?;
             let mut event = stored.into_event(id, first.session.clone())?;
             origin.apply(&mut event);
-            days.entry(event.date).or_default();
+            days.insert(event.date);
             retracted.push((id, serde_json::to_vec(&Observation::capture(&event))?));
         }
     }
@@ -294,22 +297,6 @@ fn retract_append_proofs(
         db.prepare_cached("UPDATE token_resolved SET payload = ?2 WHERE event_id = ?1")?;
     for (id, data) in retracted {
         update.execute(params![id.as_slice(), data])?;
-    }
-    let mut read = db.prepare_cached(
-        "SELECT event_id, payload FROM token_resolved
-         WHERE day = ?2 AND session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
-    )?;
-    for (day, groups) in &mut days {
-        let mut rows = read.query(params![first.session, day.to_string()])?;
-        while let Some(row) = rows.next()? {
-            let id = row.get_ref(0)?.as_blob()?.try_into()?;
-            let stored: Observation = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
-            let event = stored.into_event(id, first.session.clone())?;
-            groups
-                .entry(group_key(&event))
-                .or_default()
-                .merge(DayTotals::from_event(&event));
-        }
     }
     Ok(days)
 }
@@ -327,11 +314,9 @@ fn linear_batch<'a>(
         || state.invalid_counts
         || state.rollout_out_of_order
         || state.issues != 0
-        || state.events.is_empty()
     {
         return false;
     }
-    let mut has_counter = false;
     for event in state
         .events
         .iter()
@@ -357,10 +342,111 @@ fn linear_batch<'a>(
         {
             return false;
         }
-        has_counter = true;
         previous = Some(event);
     }
-    has_counter
+    previous.is_some()
+}
+
+type SupersededReceipt = ([u8; 32], NaiveDate);
+
+fn reconcile_append_receipts(
+    read: &Connection,
+    tail: &UsageEvent,
+    cutoff: NaiveDate,
+    counters: &mut Vec<UsageEvent>,
+    incoming: &[&UsageEvent],
+    provider_names: &BTreeMap<String, String>,
+    mut remaining: usize,
+) -> Result<Option<Vec<SupersededReceipt>>> {
+    if counters.is_empty() && incoming.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let mut open = Vec::new();
+    let mut select = read.prepare_cached(
+        "SELECT event_id, payload FROM token_resolved INDEXED BY token_resolved_open_receipt
+         WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+         AND day >= ?2 AND json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text'",
+    )?;
+    let mut rows = select.query(params![tail.session, cutoff.to_string()])?;
+    while let Some(row) = rows.next()? {
+        let payload = row.get_ref(1)?.as_blob()?;
+        remaining = remaining
+            .checked_sub(payload.len())
+            .context("Token receipt suffix exceeds reconciliation input budget")?;
+        let mut observation: Observation = serde_json::from_slice(payload)?;
+        let origin = observation.classification_origin.take();
+        let mut event =
+            observation.into_event(row.get_ref(0)?.as_blob()?.try_into()?, tail.session.clone())?;
+        if let Some(origin) = origin {
+            origin.apply(&mut event);
+        }
+        if event.count_uncertain || event.count_incomplete {
+            return Ok(None);
+        }
+        open.push(event);
+    }
+    let mut candidates = open.iter().collect::<Vec<_>>();
+    for &receipt in incoming {
+        if receipt.session != tail.session || receipt.date < cutoff {
+            return Ok(None);
+        }
+        if tail.total.is_monotonic_after(receipt.total) {
+            // 只接受不会改变已提交原生尾记录的迟到回执。
+            if !terminal_receipts::wholly_accounted_in_batch(
+                std::slice::from_ref(receipt),
+                std::slice::from_ref(tail),
+            ) {
+                return Ok(None);
+            }
+        } else if !receipt.total.is_monotonic_after(tail.total) {
+            return Ok(None);
+        } else {
+            candidates.push(receipt);
+        }
+    }
+    if !terminal_receipts::unique_claims(candidates.iter().copied())
+        || incoming
+            .iter()
+            .map(|receipt| receipt.original_id)
+            .collect::<HashSet<_>>()
+            .len()
+            != incoming.len()
+    {
+        return Ok(None);
+    }
+    if candidates.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    let latest = counters.last().unwrap_or(tail).total;
+    counters.insert(0, tail.clone());
+    terminal_receipts::reconcile(candidates.iter().copied(), counters, provider_names);
+    counters.remove(0);
+    let mut emitted = HashSet::new();
+    for event in counters
+        .iter()
+        .filter(|event| event.terminal_response.is_some())
+    {
+        if event.count_uncertain || event.count_incomplete {
+            return Ok(None);
+        }
+        emitted.insert(event.id);
+    }
+    // A hidden receipt beyond the anchor could corroborate a future counter. Never
+    // drop it from the open suffix merely because its time precedes a newer counter.
+    if candidates
+        .iter()
+        .any(|receipt| !emitted.contains(&receipt.id) && !latest.is_monotonic_after(receipt.total))
+    {
+        return Ok(None);
+    }
+    let previous: HashSet<_> = open.iter().map(|event| event.id).collect();
+    counters.retain(|event| !previous.contains(&event.id));
+    Ok(Some(
+        open.into_iter()
+            .filter(|event| !emitted.contains(&event.id))
+            .map(|event| (event.id, event.date))
+            .collect(),
+    ))
 }
 
 impl Store {
@@ -403,11 +489,11 @@ impl Store {
         if !replace && let Some(previous_revision) = previous_revision {
             let tail = read
                 .query_row(
-                    "SELECT o.event_id, o.payload, owner.session FROM token_sources s
+                    "SELECT o.event_id, o.payload, owner.session, l.revision FROM token_sources s
                  JOIN token_linear_sources l ON s.id = l.source_id
                  JOIN token_observations o ON o.source_id = s.id AND o.revision = l.revision
                  JOIN token_sessions owner ON owner.id = o.session_id
-                 WHERE s.source = ?1 AND s.revision = ?2 AND l.revision = ?2 AND l.cutoff <= ?3
+                 WHERE s.source = ?1 AND s.revision = ?2 AND l.cutoff <= ?3
                  AND json_type(CAST(o.payload AS TEXT), '$.terminal_response') IS NULL
                  AND NOT EXISTS (
                     SELECT 1 FROM token_source_links
@@ -420,11 +506,12 @@ impl Store {
                             row.get::<_, Vec<u8>>(0)?,
                             row.get::<_, Vec<u8>>(1)?,
                             row.get::<_, String>(2)?,
+                            row.get::<_, i64>(3)?,
                         ))
                     },
                 )
                 .optional()?;
-            if let Some((id, payload, owner)) = tail {
+            if let Some((id, payload, owner, native_revision)) = tail {
                 let tail = serde_json::from_slice::<Observation>(&payload)?.into_event(
                     id.try_into()
                         .map_err(|_| anyhow::anyhow!("invalid Token event identity"))?,
@@ -454,7 +541,8 @@ impl Store {
                     let (_, checkpoint) = Checkpoint::capture(state);
                     let mut bytes = serde_json::to_vec(&checkpoint)?.len() + payload.len();
                     let mut previous = tail.total;
-                    let mut events = Vec::with_capacity(state.events.len());
+                    let mut events = Vec::with_capacity(state.events.len().saturating_add(1));
+                    let mut incoming = Vec::new();
                     for raw in &state.events {
                         bytes += serde_json::to_vec(&Observation::capture(raw))?.len();
                         ensure!(
@@ -462,6 +550,7 @@ impl Store {
                             "Token batch exceeds reconciliation input budget"
                         );
                         if raw.terminal_response.is_some() {
+                            incoming.push(raw);
                             continue;
                         }
                         let mut event = raw.clone();
@@ -470,12 +559,25 @@ impl Store {
                             usage_provider(&event.model, &event.provider, &index.provider_names)
                                 .to_owned();
                         previous = event.total;
-                        if event.delta.total_tokens != 0 {
-                            events.push(event);
-                        }
+                        events.push(event);
                     }
-                    // 任何需要改已有水位、分配计数或等待竞争裁决的回执都走原归并。
-                    if terminal_receipts::wholly_accounted_in_batch(&state.events, &events) {
+                    let linear = if events.is_empty() {
+                        NativeTail::Keep(native_revision)
+                    } else {
+                        NativeTail::Advance
+                    };
+                    if state.previous == Some(previous)
+                        && let Some(superseded) = reconcile_append_receipts(
+                            &read,
+                            &tail,
+                            cutoff,
+                            &mut events,
+                            &incoming,
+                            &index.provider_names,
+                            input_limit.saturating_sub(bytes),
+                        )?
+                    {
+                        events.retain(|event| event.delta.total_tokens != 0);
                         read.commit()?;
                         return Ok(Prepared {
                             update,
@@ -484,7 +586,8 @@ impl Store {
                             sessions,
                             collisions: HashMap::new(),
                             append: true,
-                            linear: true,
+                            linear: Some(linear),
+                            superseded,
                             events,
                         });
                     }
@@ -618,7 +721,8 @@ impl Store {
             sessions,
             collisions,
             append: false,
-            linear,
+            linear: linear.then_some(NativeTail::Advance),
+            superseded: Vec::new(),
             events: snapshot.events,
         })
     }
@@ -658,17 +762,42 @@ impl Store {
             revision(&tx)? == prepared.base_revision,
             "Token index changed during reconciliation"
         );
-        let mut days = if prepared.append
-            && let Some(first) = prepared.events.first()
+        let session = prepared.update.state.session.as_str();
+        let mut rebuilt = BTreeSet::new();
+        if !prepared.superseded.is_empty() {
+            let mut remove = tx.prepare_cached("DELETE FROM token_resolved WHERE event_id = ?1")?;
+            for (id, day) in &prepared.superseded {
+                remove.execute([id.as_slice()])?;
+                rebuilt.insert(*day);
+            }
+        }
+        if prepared.append
+            && let Some(first) = prepared.events.iter().min_by_key(|event| &event.timestamp)
         {
             // A newly committed competitor can make a nearby request non-unique.
-            retract_append_proofs(&tx, first)?
-                .into_iter()
-                .map(|(day, groups)| ((first.session.as_str(), day), groups))
-                .collect::<BTreeMap<_, _>>()
-        } else {
-            BTreeMap::new()
-        };
+            rebuilt.extend(retract_append_proofs(&tx, first)?);
+        }
+        let mut days = BTreeMap::new();
+        if !rebuilt.is_empty() {
+            let mut read = tx.prepare_cached(
+                "SELECT event_id, payload FROM token_resolved
+                 WHERE day = ?2 AND session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
+            )?;
+            for day in rebuilt {
+                let mut groups = Groups::new();
+                let mut rows = read.query(params![session, day.to_string()])?;
+                while let Some(row) = rows.next()? {
+                    let stored: Observation = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
+                    let event = stored
+                        .into_event(row.get_ref(0)?.as_blob()?.try_into()?, session.to_owned())?;
+                    groups
+                        .entry(group_key(&event))
+                        .or_default()
+                        .merge(DayTotals::from_event(&event));
+                }
+                days.insert((session, day), groups);
+            }
+        }
         let mut prior_day = tx.prepare_cached(
             "SELECT d.groups FROM token_days d JOIN token_sessions s ON s.id = d.session_id
              WHERE s.session = ?1 AND d.day = ?2",
@@ -703,7 +832,12 @@ impl Store {
         drop(prior_day);
         let days = days
             .into_iter()
-            .map(|((session, day), groups)| Ok((session, day.to_string(), encode_groups(groups)?)))
+            .map(|((session, day), groups)| {
+                let bytes = (!groups.is_empty())
+                    .then(|| encode_groups(groups))
+                    .transpose()?;
+                Ok((session, day.to_string(), bytes))
+            })
             .collect::<Result<Vec<_>>>()?;
         let update = prepared.update;
         let next = Self::stage(
@@ -742,11 +876,15 @@ impl Store {
                     invalidate.execute([format!("s:{session}")])?;
                 }
             }
-            if prepared.linear && !retire {
+            if !retire && let Some(linear) = prepared.linear {
+                let anchor = match linear {
+                    NativeTail::Advance => next,
+                    NativeTail::Keep(revision) => revision,
+                };
                 tx.execute(
                     "INSERT OR REPLACE INTO token_linear_sources
                      SELECT id, ?2, ?3 FROM token_sources WHERE source = ?1",
-                    params![encode_path(update.source), next, cutoff],
+                    params![encode_path(update.source), anchor, cutoff],
                 )?;
             }
             let mut collide = tx.prepare("INSERT OR IGNORE INTO token_collisions VALUES (?1)")?;
@@ -769,8 +907,16 @@ impl Store {
                 "INSERT INTO token_days VALUES ((SELECT id FROM token_sessions WHERE session = ?1), ?2, ?3)
                  ON CONFLICT(session_id, day) DO UPDATE SET groups = excluded.groups",
             )?;
+            let mut remove_day = tx.prepare_cached(
+                "DELETE FROM token_days WHERE day = ?2
+                 AND session_id = (SELECT id FROM token_sessions WHERE session = ?1)",
+            )?;
             for (session, day, groups) in days {
-                insert_day.execute(params![session, day, groups])?;
+                if let Some(groups) = groups {
+                    insert_day.execute(params![session, day, groups])?;
+                } else {
+                    remove_day.execute(params![session, day])?;
+                }
             }
         }
         tx.commit()?;
@@ -1051,13 +1197,19 @@ impl Store {
                 "SELECT revision, position, payload FROM token_observations
                  WHERE source_id = ?1 AND (revision, position) > (?2, ?3)
                    AND (revision, position) IS NOT (
-                       SELECT tail.revision, tail.position FROM token_observations tail
-                       LEFT JOIN token_linear_sources linear ON linear.source_id = tail.source_id
-                       WHERE tail.source_id = ?1 AND (linear.revision IS NULL OR (
-                         tail.revision = linear.revision
-                         AND json_type(CAST(tail.payload AS TEXT), '$.terminal_response') IS NULL
-                       ))
-                       ORDER BY tail.revision DESC, tail.position DESC LIMIT 1
+                       SELECT tail.revision, tail.position FROM (
+                           SELECT o.revision, o.position FROM token_linear_sources l
+                           JOIN token_observations o ON o.source_id = l.source_id AND o.revision = l.revision
+                           WHERE l.source_id = ?1
+                           AND json_type(CAST(o.payload AS TEXT), '$.terminal_response') IS NULL
+                           ORDER BY o.position DESC LIMIT 1
+                       ) tail
+                       UNION ALL
+                       SELECT tail.revision, tail.position FROM (
+                           SELECT revision, position FROM token_observations
+                           WHERE source_id = ?1 ORDER BY revision DESC, position DESC LIMIT 1
+                       ) tail
+                       WHERE NOT EXISTS (SELECT 1 FROM token_linear_sources WHERE source_id = ?1)
                    )
                  ORDER BY revision, position LIMIT ?4",
             )?;

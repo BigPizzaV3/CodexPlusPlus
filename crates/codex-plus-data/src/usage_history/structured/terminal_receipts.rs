@@ -140,14 +140,29 @@ pub(super) fn wholly_accounted_in_batch(raw: &[UsageEvent], projected: &[UsageEv
 }
 
 pub(super) fn project(index: &Index, snapshot: &mut Snapshot) {
+    reconcile(
+        index
+            .files
+            .values()
+            .filter(|state| !state.identity_conflict)
+            .flat_map(|state| &state.events),
+        &mut snapshot.events,
+        &index.provider_names,
+    );
+}
+
+pub(super) fn unique_claims<'a>(mut receipts: impl Iterator<Item = &'a UsageEvent>) -> bool {
+    let mut signatures = HashSet::new();
+    receipts.all(|event| signature(event).is_some_and(|key| signatures.insert(key)))
+}
+
+pub(super) fn reconcile<'a>(
+    observations: impl Iterator<Item = &'a UsageEvent>,
+    events: &mut Vec<UsageEvent>,
+    provider_names: &BTreeMap<String, String>,
+) {
     let mut receipts = BTreeMap::<_, (UsageEvent, bool)>::new();
-    for event in index
-        .files
-        .values()
-        .filter(|state| !state.identity_conflict)
-        .flat_map(|state| &state.events)
-        .filter(|event| event.terminal_response.is_some())
-    {
+    for event in observations.filter(|event| event.terminal_response.is_some()) {
         receipts
             .entry(event.original_id)
             .and_modify(|(prior, conflict)| {
@@ -166,7 +181,7 @@ pub(super) fn project(index: &Index, snapshot: &mut Snapshot) {
     }
     let mut matches = HashMap::new();
     let mut latest = HashMap::<&str, (&str, Tokens)>::new();
-    for (i, event) in snapshot.events.iter().enumerate() {
+    for (i, event) in events.iter().enumerate() {
         if let Some(signature) = signature(event) {
             matches
                 .entry(signature)
@@ -207,7 +222,7 @@ pub(super) fn project(index: &Index, snapshot: &mut Snapshot) {
     let mut preceding_receipt = HashMap::<&str, Tokens>::new();
     for (receipt, conflict, paired, after_last_counter) in decisions {
         if let Some(i) = paired {
-            let event = &mut snapshot.events[i];
+            let event = &mut events[i];
             if !conflict
                 && claims[&i] == 1
                 && !event.count_uncertain
@@ -244,8 +259,7 @@ pub(super) fn project(index: &Index, snapshot: &mut Snapshot) {
         if !event.count_uncertain {
             preceding_receipt.insert(receipt.session.as_str(), receipt.total);
         }
-        event.provider =
-            usage_provider(&event.model, &event.provider, &index.provider_names).to_owned();
-        snapshot.events.push(event);
+        event.provider = usage_provider(&event.model, &event.provider, provider_names).to_owned();
+        events.push(event);
     }
 }

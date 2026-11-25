@@ -121,7 +121,11 @@ impl Store {
                 payload BLOB NOT NULL
              ) WITHOUT ROWID, STRICT;
              CREATE INDEX IF NOT EXISTS token_resolved_time ON token_resolved(timestamp_ms);
-             CREATE INDEX IF NOT EXISTS token_resolved_session ON token_resolved(session_id);
+             CREATE INDEX IF NOT EXISTS token_resolved_session_day ON token_resolved(session_id, day);
+             DROP INDEX IF EXISTS token_resolved_session;
+             CREATE INDEX IF NOT EXISTS token_resolved_open_receipt
+                ON token_resolved(session_id, day)
+                WHERE json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text';
              CREATE INDEX IF NOT EXISTS token_classified_time
                 ON token_resolved(session_id, timestamp_ms)
                 WHERE json_type(CAST(payload AS TEXT), '$.classification_origin') = 'object';
