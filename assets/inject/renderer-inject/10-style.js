@@ -1990,6 +1990,10 @@
       .codex-plus-settings .codex-plus-width-input,
       .codex-plus-settings .codex-plus-service-input { height: 28px; padding: 0 10px; }
       .codex-plus-settings .codex-plus-width-input { width: 72px; min-width: 48px; }
+      .codex-plus-settings [data-codex-plus-usage-history-budget] { width: 116px; padding-inline: 8px; }
+      .codex-plus-settings .codex-plus-usage-unit { appearance: auto !important; width: 48px; padding-inline: 6px; }
+      .codex-plus-settings .codex-plus-usage-policy-control { flex: 0 0 auto; flex-wrap: nowrap; }
+      .codex-plus-settings :is([data-codex-plus-usage-policy], .codex-plus-usage-unit):disabled { opacity: .55; cursor: not-allowed; }
       .codex-plus-settings .codex-plus-action-button,
       .codex-plus-settings .codex-plus-issue-button { white-space: normal; overflow-wrap: anywhere; }
       .codex-plus-settings .codex-plus-action-button:hover,

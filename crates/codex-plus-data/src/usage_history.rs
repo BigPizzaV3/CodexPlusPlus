@@ -25,6 +25,7 @@ pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathB
 pub fn storage_info(home: &Path, settings_path: &Path) -> anyhow::Result<Value> {
     let directory = storage_dir(home, settings_path);
     let mut bytes = 0;
+    let mut index_bytes = 0;
     for database in [
         "usage-provider-cache.sqlite",
         "usage-summary.sqlite",
@@ -33,14 +34,19 @@ pub fn storage_info(home: &Path, settings_path: &Path) -> anyhow::Result<Value> 
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let path = directory.join(format!("{database}{suffix}"));
             match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.is_file() => bytes += metadata.len(),
+                Ok(metadata) if metadata.is_file() => {
+                    bytes += metadata.len();
+                    if database == TOKEN_INDEX_DB {
+                        index_bytes += metadata.len();
+                    }
+                }
                 Ok(_) => anyhow::bail!("用量库路径不是普通文件：{}", path.display()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
         }
     }
-    Ok(json!({"status": "ok", "directory": directory, "bytes": bytes}))
+    Ok(json!({"status": "ok", "directory": directory, "bytes": bytes, "indexBytes": index_bytes}))
 }
 
 #[cfg(test)]
@@ -53,7 +59,7 @@ fn storage_info_reports_only_current_usage_database_files() {
     let directory = storage_dir(&home, &settings);
     assert_eq!(
         storage_info(&home, &settings).unwrap(),
-        json!({"status": "ok", "directory": directory, "bytes": 0})
+        json!({"status": "ok", "directory": directory, "bytes": 0, "indexBytes": 0})
     );
     assert!(!directory.exists());
     fs::create_dir_all(&directory).unwrap();
@@ -64,11 +70,15 @@ fn storage_info_reports_only_current_usage_database_files() {
         ("usage-provider-cache.sqlite-shm", 64),
         ("usage-provider-cache.sqlite-journal", 16),
         (TOKEN_INDEX_DB, 8192),
+        ("usage-token-index.sqlite-wal", 1024),
+        ("usage-index.sqlite", 8192),
         ("unrelated.sqlite", 1000),
     ] {
         fs::write(directory.join(name), vec![0; size]).unwrap();
     }
-    assert_eq!(storage_info(&home, &settings).unwrap()["bytes"], 14448);
+    let reported = storage_info(&home, &settings).unwrap();
+    assert_eq!(reported["bytes"], 15472);
+    assert_eq!(reported["indexBytes"], 9216);
     assert_eq!(
         storage_info(&temp.path().join("other-home"), &settings).unwrap()["bytes"],
         0

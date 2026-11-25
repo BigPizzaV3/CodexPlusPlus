@@ -169,6 +169,17 @@
    * 值没变就不写属性，避免无谓的 DOM 变更触发扫描。
    */
   function syncCodexPlusBackendToggleButtons() {
+    document.querySelectorAll("[data-codex-plus-usage-policy]").forEach((input) => {
+      const saving = input.dataset.saving === "true";
+      const disabled = codexPlusBackendSettings.usageHistoryEnabled !== true || saving;
+      if (input.disabled !== disabled) input.disabled = disabled;
+      const key = input.dataset.codexPlusUsagePolicy;
+      const unit = key === "usageHistoryStorageMiB" ? input.nextElementSibling : null;
+      if (unit && unit.disabled !== disabled) unit.disabled = disabled;
+      const stored = codexPlusBackendSettings[key];
+      const value = unit ? (stored ?? 2048) / Number(unit.value) : stored;
+      if (value !== undefined && document.activeElement !== input && !saving && input.value !== String(value)) input.value = String(value);
+    });
     document.querySelectorAll(".codex-plus-toggle[data-codex-backend-setting]").forEach((button) => {
       const key = button.getAttribute("data-codex-backend-setting");
       const enabled = String(!!codexPlusBackendSettings[key]);
@@ -2421,21 +2432,31 @@
                 </div>`;
   }
 
+  let codexPlusUsageStorageScale;
+
   /**
-   * 只在 Codex 设置页出现的行内输入框（值存在本页 localStorage，管理器读不到）。
+   * 只在 Codex 设置页出现的行内输入框。用量保留策略保存在后端。
    * 清单只给读屏标签与悬停提示；取值范围、当前值仍由运行时常量和读写函数决定。
    */
   function renderCodexPlusSettingsCatalogInput(input) {
+    const storageMiB = codexPlusBackendSettings.usageHistoryStorageMiB ?? 2048;
+    const scale = codexPlusUsageStorageScale ?? (storageMiB >= 1024 ? 1024 : 1);
     const specs = {
+      usageHistoryStorageMiB: () => ({ attribute: "data-codex-plus-usage-history-budget", min: 1 / scale, max: 4294967295 / scale, step: 1 / scale, value: storageMiB / scale, unit: "storage" }),
+      usageHistoryPreciseDays: () => ({ attribute: "data-codex-plus-usage-history-days", min: 1, max: 365, step: 1, value: codexPlusBackendSettings.usageHistoryPreciseDays ?? 60, unit: "天" }),
       capacityAutoRetryIntervalSeconds: () => ({ attribute: "data-codex-plus-capacity-retry-interval", min: 0, max: capacityAutoRetryIntervalCeilingSeconds, step: 1, value: capacityAutoRetryIntervalSeconds() }),
       capacityAutoRetryMaxAttempts: () => ({ attribute: "data-codex-plus-capacity-retry-max-attempts", min: 1, max: capacityAutoRetryMaxAttemptsCeiling, step: 1, value: capacityAutoRetryMaxAttempts() }),
       conversationViewMaxWidth: () => ({ attribute: "data-codex-plus-conversation-view-width", min: conversationViewMinWidth, max: conversationViewMaxAllowedWidth, step: 10, value: conversationViewWidth() }),
     };
     const spec = specs[input?.id];
     if (!spec) return "";
-    const { attribute, min, max, step, value } = spec();
+    const { attribute, min, max, step, value, unit } = spec();
     const label = escapeHtml(input.label || "");
-    return `<input class="codex-plus-width-input" ${attribute}="true" min="${min}" max="${max}" step="${step}" type="number" value="${value}" title="${escapeHtml(input.hint || input.label || "")}" aria-label="${label}">`;
+    const policy = unit ? ` data-codex-plus-usage-policy="${input.id}"` : "";
+    const disabled = unit && codexPlusBackendSettings.usageHistoryEnabled !== true ? " disabled" : "";
+    const control = `<input class="codex-plus-width-input" ${attribute}="true"${policy} min="${min}" max="${max}" step="${step}" type="number" value="${value}" title="${escapeHtml(input.hint || input.label || "")}" aria-label="${label}"${disabled}>`;
+    if (unit === "storage") return `${control}<select class="codex-plus-width-input codex-plus-usage-unit" data-codex-plus-usage-unit aria-label="存储上限单位" title="1 G = 1024 M"${disabled}><option value="1"${scale === 1 ? " selected" : ""}>M</option><option value="1024"${scale === 1024 ? " selected" : ""}>G</option></select>`;
+    return unit ? `${control}<span>天</span>` : control;
   }
 
   /** 清单 key 是 BackendSettings 字段；能映射到本页设置 key 的走 setCodexPlusSetting（带即时副作用）。 */
@@ -2502,12 +2523,12 @@
     details.dataset.loading = "true";
     try {
       const result = await postJson("/settings/usage-history-storage", {});
-      if (result.status !== "ok" || !Number.isSafeInteger(result.bytes) || result.bytes < 0 || typeof result.directory !== "string") {
+      if (result.status !== "ok" || !Number.isSafeInteger(result.indexBytes) || result.indexBytes < 0 || typeof result.directory !== "string") {
         throw new Error(result.message || "未取得用量库存储信息");
       }
-      size.textContent = result.bytes < 1024 ** 2
-        ? `${result.bytes.toLocaleString()} B`
-        : `${(result.bytes / 1024 ** 2).toLocaleString(undefined, { maximumFractionDigits: 2 })} MiB`;
+      size.textContent = result.indexBytes < 1024 ** 2
+        ? `${result.indexBytes.toLocaleString()} B`
+        : `${(result.indexBytes / 1024 ** 2).toLocaleString(undefined, { maximumFractionDigits: 2 })} MiB`;
       path.textContent = result.directory;
     } catch (error) {
       size.textContent = "读取失败";
@@ -2519,12 +2540,14 @@
 
   function renderCodexPlusSettingsCatalogRow(item, options = {}) {
     const title = escapeHtml(item.title);
+    const catalogInputs = Array.isArray(item.codexInputs) ? item.codexInputs : [];
     let control = "";
     if (item.control === "bool") {
       const localKey = codexPlusLocalSettingKey(item.key);
       const binding = localKey ? `data-codex-plus-setting="${escapeHtml(localKey)}"` : `data-codex-backend-setting="${escapeHtml(item.key)}"`;
       const toggle = `<button type="button" class="codex-plus-toggle" ${binding} role="switch" aria-checked="false" aria-label="${title}"><span></span></button>`;
-      const inputs = (Array.isArray(item.codexInputs) ? item.codexInputs : []).map(renderCodexPlusSettingsCatalogInput).join("");
+      const inputs = catalogInputs.filter((input) => input.id !== "usageHistoryPreciseDays" && input.id !== "usageHistoryStorageMiB")
+        .map(renderCodexPlusSettingsCatalogInput).join("");
       control = inputs ? `<div class="codex-plus-width-control">${inputs}${toggle}</div>` : toggle;
     }
     // 不认识的控件类型宁可不显示，也不显示一个点了不生效的行。
@@ -2535,11 +2558,29 @@
     const descriptionData = item.descriptionWhenEnhancementsOn ? ` data-codex-plus-setting-description="${escapeHtml(item.key)}"` : "";
     const builtin = item.builtin ? ` data-codex-plus-builtin="${escapeHtml(item.builtin)}"` : "";
     const param = options.param ? " data-codex-plus-builtin-param=\"true\"" : "";
+    const capacity = catalogInputs.find((input) => input.id === "usageHistoryStorageMiB");
     const storage = item.key === "usageHistoryEnabled" ? `
                 <div class="codex-plus-row" data-codex-plus-usage-storage>
-                  <div role="status">
-                    <div class="codex-plus-row-title">用量库占用 <span data-usage-storage-bytes>正在读取</span></div>
-                    <div class="codex-plus-row-description">保存目录 <span data-usage-storage-directory></span></div>
+                  <div>
+                    <div class="codex-plus-row-title">${escapeHtml(capacity?.label || "索引存储")}</div>
+                    <div role="status">
+                      <div class="codex-plus-row-description">索引占用 <span data-usage-storage-bytes>正在读取</span></div>
+                      <div class="codex-plus-row-description">保存目录 <span data-usage-storage-directory></span></div>
+                    </div>
+                  </div>
+                  <div class="codex-plus-width-control codex-plus-usage-policy-control">${renderCodexPlusSettingsCatalogInput(capacity)}</div>
+                </div>
+                <div class="codex-plus-row">
+                  <div>
+                    <div class="codex-plus-row-title">逐笔记录保留期</div>
+                    <div class="codex-plus-row-description">保留 Token 明细、技能、插件和工具调用信息。到期后按天汇总。延长时，已汇总的明细不会自动补回。</div>
+                  </div>
+                  <div class="codex-plus-width-control codex-plus-usage-policy-control">${renderCodexPlusSettingsCatalogInput(catalogInputs.find((input) => input.id === "usageHistoryPreciseDays"))}</div>
+                </div>
+                <div class="codex-plus-row">
+                  <div>
+                    <div class="codex-plus-row-title">工具输入和输出</div>
+                    <div class="codex-plus-row-description">只保留最近 24 小时的工具输入输出索引，详情从原会话读取。空间不足时优先回收较早的工具日汇总。</div>
                   </div>
                 </div>` : "";
     return `
@@ -2801,6 +2842,48 @@
     }, true);
     overlay.addEventListener("change", (event) => {
       const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+      const usageUnit = target?.closest("[data-codex-plus-usage-unit]");
+      if (usageUnit) {
+        if (usageUnit.disabled) return;
+        const input = usageUnit.previousElementSibling;
+        const scale = Number(usageUnit.value);
+        codexPlusUsageStorageScale = scale;
+        input.min = input.step = String(1 / scale);
+        input.max = String(4294967295 / scale);
+        input.value = String((codexPlusBackendSettings.usageHistoryStorageMiB ?? 2048) / scale);
+        return;
+      }
+      const policy = target?.closest("[data-codex-plus-usage-policy]");
+      if (policy) {
+        if (policy.disabled) return;
+        const key = policy.dataset.codexPlusUsagePolicy;
+        const unit = key === "usageHistoryStorageMiB" ? policy.nextElementSibling : null;
+        const scale = unit ? Number(unit.value) : 1;
+        const value = policy.valueAsNumber * scale;
+        const previous = codexPlusBackendSettings[key] ?? (unit ? 2048 : Number(policy.defaultValue));
+        if (!Number.isInteger(value) || !policy.validity.valid) {
+          policy.reportValidity();
+          policy.value = String(previous / scale);
+          return;
+        }
+        if (value === previous) return;
+        policy.dataset.saving = "true";
+        policy.disabled = true;
+        if (unit) unit.disabled = true;
+        void postJson("/settings/set", { [key]: value }).then((saved) => {
+          if (saved?.[key] !== value) throw new Error(saved?.message || "设置未保存");
+          codexPlusBackendSettings = { ...codexPlusBackendSettings, [key]: value };
+          emitCodexPlusSettingsChanged(key, value, true);
+        }).catch((error) => {
+          policy.value = String((codexPlusBackendSettings[key] ?? previous) / scale);
+          showToast(`保存用量设置失败：${error.message}`, { type: "error" });
+        }).finally(() => {
+          delete policy.dataset.saving;
+          policy.disabled = codexPlusBackendSettings.usageHistoryEnabled !== true;
+          if (unit) unit.disabled = policy.disabled;
+        });
+        return;
+      }
       if (typeof handleCodexPlusExtensionConfigChange === "function" && handleCodexPlusExtensionConfigChange(target)) return;
       if (typeof handleCodexPlusServiceSettingsChange === "function" && handleCodexPlusServiceSettingsChange(target)) return;
       const widthInput = target?.closest("[data-codex-plus-conversation-view-width]");
