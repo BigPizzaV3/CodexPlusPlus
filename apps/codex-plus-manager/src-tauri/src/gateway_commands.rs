@@ -434,7 +434,7 @@ fn build_payload(settings: &BackendSettings, gateway: GatewaySettings) -> Gatewa
                 diagnostics: Some(codex_plus_core::gateway::diagnostics::inspect(
                     &drift_ctx,
                     agent,
-                    &gateway,
+                    &runtime_gateway,
                     helper_running,
                     &activity,
                 )),
