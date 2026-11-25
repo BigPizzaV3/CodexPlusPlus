@@ -397,6 +397,12 @@ impl Store {
                           IS NOT DISTINCT FROM
                           (copy.timestamp_ms, copy.call_id, copy.end, copy.is_output, copy.name, copy.namespace)
                 )
+             ) OR EXISTS (
+                SELECT 1 FROM execution_process copy
+                WHERE copy.source_id = ?2 AND NOT EXISTS (
+                    SELECT 1 FROM execution_process own WHERE own.source_id = ?1
+                      AND own.position = copy.position AND own.process = copy.process
+                )
              )",
         )?.exists(params![owner_id, copy_id])?;
         if unique_activity

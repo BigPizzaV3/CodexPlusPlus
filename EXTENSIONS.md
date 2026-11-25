@@ -1486,6 +1486,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 
 `/usage/executions` 接收毫秒时间范围 `[startAt, endAt)`。可传 `scopeSessionId`（含该会话的子会话）、`limit`（1 至 200，默认 50）、`kind`（`tool`、`skill`、`mcp`）、`search` 和 `includeActivitySummary`。结果按时间、会话 ID、调用 ID 倒序，包含 `items`、`summary`、`coverage`、`revision` 和 `nextCursor`。搜索只影响分页和 `summary.matched`，不改变分类总数。翻页时传回同一查询的 `revision` 和 `cursor: nextCursor`；遇到 `status: "stale"` 从第一页重新读取。未覆盖的范围不可当作零次调用。
 
+逐次记录到期后只返回 `dailySummaries` 日计数，不再返回该日的名称、时间轴或输入输出。查询只覆盖某日的一部分时，`dailySummaries` 中的该行仍是整日计数，不计入 `summary` 的范围总数。
+
 `/usage/execution-detail` 接收列表项的 `sessionId`、`id` 和对应 `revision`，不接收本机路径。成功返回 `detail.input` 和分段的 `detail.output`，只在有完成证据时返回 `durationMs`。`partial` 表示原始片段不完整，`not_found` 表示定位不存在或已过 24 小时。
 
 `/provider-prices/public` 返回的是 Codex++ 配置价，不是上游实时报价或实际账单，也不会请求上游。`price` 是供应商默认价，未设置时为 `null`；`modelPrices` 按原始上游模型名保存逐模型价，缺项时为空对象。价格包含 `currency`、`input`、`cachedInput`、`output`，单位是每百万 Token。宿主现有配置不能区分价格字段中的未填写和明确免费，两者都可能为 `0`；通过管理器保存的全零价格会被视为未填写，不能据此断言免费或价格完整。

@@ -2,6 +2,7 @@ use super::{
     ingest::SourceReader,
     store::{
         Coverage, Store,
+        executions::CompactionCursor,
         replicas::{Comparison, Probe},
     },
 };
@@ -27,6 +28,7 @@ pub(super) struct Scan {
     maintenance_day: Option<NaiveDate>,
     details_pending: bool,
     activity_pending: bool,
+    execution_cursor: Option<CompactionCursor>,
     observation_cursor: Option<(i64, (i64, i64))>,
 }
 
@@ -50,12 +52,15 @@ impl Scan {
             self.maintenance_day = Some(cutoff);
             self.details_pending = true;
             self.activity_pending = true;
+            self.execution_cursor = None;
             self.observation_cursor = Some((0, (0, 0)));
         }
         if self.details_pending {
             self.details_pending =
                 store.reclaim_expired_details(RECLAIM_BATCH)? == RECLAIM_BATCH as usize;
         }
+        self.activity_pending |=
+            store.compact_executions(cutoff, &mut self.execution_cursor, RECLAIM_BATCH)? != 0;
         if self.activity_pending {
             self.activity_pending =
                 store.reclaim_expired_activity(cutoff, RECLAIM_BATCH)? == RECLAIM_BATCH as usize;

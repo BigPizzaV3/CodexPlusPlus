@@ -1413,8 +1413,11 @@ impl Store {
         let latest = cutoff.and_time(NaiveTime::MIN).and_utc().timestamp_millis() + 86_400_000;
         Ok(self.db.execute(
             "DELETE FROM token_activity WHERE (source_id, session_id, call_id) IN
-             (SELECT source_id, session_id, call_id FROM token_activity
-              WHERE timestamp_ms < ?1 AND day < ?2 ORDER BY timestamp_ms LIMIT ?3)",
+             (SELECT a.source_id, a.session_id, a.call_id FROM token_activity a
+              WHERE a.timestamp_ms < ?1 AND a.day < ?2 AND NOT EXISTS (
+                  SELECT 1 FROM execution_observations e
+                  WHERE e.session_id = a.session_id AND e.call_id = a.call_id AND e.is_output = 0
+              ) ORDER BY a.timestamp_ms LIMIT ?3)",
             params![latest, cutoff.to_string(), batch],
         )?)
     }

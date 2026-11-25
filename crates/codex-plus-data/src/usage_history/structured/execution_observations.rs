@@ -14,6 +14,10 @@ pub(super) struct Item<'a> {
     name: Option<&'a RawValue>,
     #[serde(borrow)]
     namespace: Option<&'a RawValue>,
+    #[serde(borrow)]
+    arguments: Option<&'a RawValue>,
+    #[serde(borrow)]
+    output: Option<&'a RawValue>,
 }
 
 #[derive(Default)]
@@ -30,6 +34,7 @@ pub(super) struct Observation {
     pub(super) is_output: bool,
     pub(super) name: Option<String>,
     pub(super) namespace: Option<String>,
+    pub(super) process: Option<String>,
 }
 
 impl Batch {
@@ -65,25 +70,97 @@ impl Batch {
         else {
             return false;
         };
+        let name = (!is_output).then(|| {
+            bounded(item.name).unwrap_or_else(|| {
+                if item.kind == "local_shell_call" {
+                    "local_shell".into()
+                } else {
+                    String::new()
+                }
+            })
+        });
+        let process = if !recent {
+            None
+        } else if is_output {
+            running_process(item.output)
+        } else if name
+            .as_deref()
+            .is_some_and(|name| name.rsplit('.').next() == Some("write_stdin"))
+        {
+            #[derive(Deserialize)]
+            struct Poll {
+                session_id: u64,
+            }
+            item.arguments
+                .filter(|args| args.get().len() <= 4096)
+                .and_then(|args| {
+                    let raw = args.get();
+                    if raw.starts_with('"') {
+                        serde_json::from_str::<String>(raw)
+                            .ok()
+                            .and_then(|decoded| serde_json::from_str::<Poll>(&decoded).ok())
+                    } else {
+                        serde_json::from_str::<Poll>(raw).ok()
+                    }
+                })
+                .map(|poll| poll.session_id.to_string())
+        } else {
+            None
+        };
         self.rows.push(Observation {
             call_id: call_id.to_owned(),
             timestamp_ms,
             position,
             end: recent.then_some(end),
             is_output,
-            name: (!is_output).then(|| {
-                bounded(item.name).unwrap_or_else(|| {
-                    if item.kind == "local_shell_call" {
-                        "local_shell".into()
-                    } else {
-                        String::new()
-                    }
-                })
-            }),
+            name,
             namespace: (!is_output).then(|| bounded(item.namespace).unwrap_or_default()),
+            process,
         });
         true
     }
+}
+
+fn running_process(output: Option<&RawValue>) -> Option<String> {
+    let raw = output?.get();
+    if !raw.starts_with('"') {
+        return None;
+    }
+    // 只解码执行器回执头，不复制整段输出。截断时保留完整的 JSON 转义行。
+    let text: String = if raw.len() <= 4096 {
+        serde_json::from_str(raw).ok()?
+    } else {
+        let bytes = &raw.as_bytes()[..4096];
+        let mut end = None;
+        let mut offset = 1;
+        while offset + 1 < bytes.len() {
+            if bytes[offset] != b'\\' {
+                offset += 1;
+                continue;
+            }
+            offset += match bytes[offset + 1] {
+                b'u' if offset + 6 <= bytes.len() => {
+                    if bytes[offset + 2..offset + 6].eq_ignore_ascii_case(b"000a")
+                        || bytes[offset + 2..offset + 6].eq_ignore_ascii_case(b"000d")
+                    {
+                        end = Some(offset + 6);
+                    }
+                    6
+                }
+                b'n' | b'r' => {
+                    end = Some(offset + 2);
+                    2
+                }
+                _ => 2,
+            };
+        }
+        serde_json::from_str(&format!("{}\"", raw.get(..end?)?)).ok()?
+    };
+    let (running, id) = super::exec_receipt(&serde_json::Value::String(text))?;
+    if !running {
+        return None;
+    }
+    id.parse::<u64>().ok().map(|id| id.to_string())
 }
 
 fn bounded(raw: Option<&RawValue>) -> Option<String> {
@@ -102,5 +179,6 @@ impl Observation {
         self.call_id.capacity()
             + self.name.as_ref().map_or(0, String::capacity)
             + self.namespace.as_ref().map_or(0, String::capacity)
+            + self.process.as_ref().map_or(0, String::capacity)
     }
 }

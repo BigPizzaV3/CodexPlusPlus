@@ -1096,6 +1096,120 @@ fn execution_locators_commit_with_the_source_and_expire_without_losing_the_call(
 }
 
 #[test]
+fn detail_follows_a_verified_shell_process_and_rejects_reused_process_ids() {
+    use crate::usage_history::structured::token_checkpoint::DetailQuery;
+    let dir = tempfile::tempdir().unwrap();
+    let home = fs::canonicalize(dir.path()).unwrap();
+    let sessions = home.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let path = sessions.join(format!("rollout-{FIRST}.jsonl"));
+    let now = chrono::Local::now();
+    let start = now - chrono::Duration::seconds(60);
+    let row = |offset: i64, payload| {
+        json!({
+            "type":"response_item","timestamp":(start + chrono::Duration::milliseconds(offset)).to_rfc3339(),"payload":payload,
+        })
+    };
+    let base = rollout(FIRST);
+    let rows = [
+        row(
+            0,
+            json!({"type":"function_call","name":"functions.exec_command","call_id":"open","arguments":"{\"cmd\":\"example\"}"}),
+        ),
+        row(
+            10,
+            json!({"type":"function_call","name":"functions.write_stdin","call_id":"before","arguments":"{\"session_id\":831}"}),
+        ),
+        row(
+            20,
+            json!({"type":"function_call_output","call_id":"before","output":"Process exited with code 0\nOutput:\nnot owned"}),
+        ),
+        row(
+            30,
+            json!({"type":"function_call_output","call_id":"open","output":format!(
+                "Chunk ID: x\nProcess running with session ID 831\nOutput:\n{}", "x".repeat(8192)
+            )}),
+        ),
+        row(
+            50,
+            json!({"type":"function_call","name":"functions.write_stdin","call_id":"other-poll","arguments":{"session_id":557}}),
+        ),
+        row(
+            60,
+            json!({"type":"function_call_output","call_id":"other-poll","output":"Process exited with code 0\nOutput:\nnot associated"}),
+        ),
+        row(
+            500,
+            json!({"type":"function_call","name":"functions.write_stdin","call_id":"finish","arguments":{"session_id":831}}),
+        ),
+        row(
+            700,
+            json!({"type":"function_call_output","call_id":"finish","output":"Process exited with code 0\nOutput:\nfinished"}),
+        ),
+        row(
+            900,
+            json!({"type":"function_call","name":"functions.write_stdin","call_id":"after","arguments":{"session_id":831}}),
+        ),
+        row(
+            990,
+            json!({"type":"function_call_output","call_id":"after","output":"Process exited with code 0\nOutput:\nnot active"}),
+        ),
+    ];
+    let encode = |rows: &[serde_json::Value]| {
+        rows.iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>()
+    };
+    fs::write(&path, format!("{base}{}", encode(&rows))).unwrap();
+    let db = home.join("usage.sqlite");
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let cutoff = start.date_naive() - chrono::Days::new(2);
+    let mut scan = Scan::default();
+    let report = scan.round(&mut store, &home, cutoff, &BTreeMap::new(), 1 << 20);
+    assert!(report.complete, "{:?}", report.errors);
+    drop(store);
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let read = |store: &mut Store| {
+        let revision: i64 = store
+            .db
+            .query_row("SELECT revision FROM token_revision", [], |r| r.get(0))
+            .unwrap();
+        let request =
+            DetailQuery::parse(&json!({"sessionId":FIRST,"id":"open","revision":revision}))
+                .unwrap();
+        Store::read_execution_detail(&mut store.db, &home, &request, || now.timestamp_millis())
+            .unwrap()
+    };
+    let detail = read(&mut store);
+    assert_eq!(detail["status"], "ok", "{detail}");
+    assert_eq!(detail["detail"]["durationMs"], 700);
+    let parts = detail["detail"]["output"].as_array().unwrap();
+    assert_eq!(parts.len(), 2);
+    assert!(parts[1].as_str().unwrap().ends_with("finished"));
+    let competing = [
+        row(
+            1000,
+            json!({"type":"function_call","name":"functions.exec_command","call_id":"other","arguments":"{\"cmd\":\"another\"}"}),
+        ),
+        row(
+            1100,
+            json!({"type":"function_call_output","call_id":"other","output":"Process running with session ID 831\nOutput:\nother"}),
+        ),
+    ];
+    fs::write(
+        &path,
+        format!("{base}{}{}", encode(&rows), encode(&competing)),
+    )
+    .unwrap();
+    let report = scan.round(&mut store, &home, cutoff, &BTreeMap::new(), 1 << 20);
+    assert!(report.complete, "{:?}", report.errors);
+    let ambiguous = read(&mut store);
+    assert_eq!(ambiguous["status"], "partial");
+    assert!(ambiguous["detail"]["durationMs"].is_null());
+    assert_eq!(ambiguous["detail"]["output"].as_array().unwrap().len(), 1);
+}
+
+#[test]
 fn activity_checkpoint_restarts_polls_and_publishes_only_committed_receipts() {
     use crate::usage_history::Query;
     use std::io::Write;

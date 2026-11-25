@@ -10,7 +10,7 @@ use chrono::{DateTime, Local, NaiveDate, TimeZone};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
@@ -18,6 +18,132 @@ use std::path::Path;
 const MAX_DETAIL_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_ARCHIVE_DETAIL_OFFSET: u64 = 32 * 1024 * 1024;
 const MAX_OUTPUTS: usize = 64;
+
+pub(in super::super) struct CompactionCursor(i64, i64, String);
+
+fn local_midnight(day: NaiveDate) -> Result<i64> {
+    Local
+        .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
+        .earliest()
+        .map(|at| at.timestamp_millis())
+        .context("本地日期没有对应的零点")
+}
+
+impl Store {
+    pub(in super::super) fn compact_executions(
+        &mut self,
+        cutoff: NaiveDate,
+        cursor: &mut Option<CompactionCursor>,
+        batch: u32,
+    ) -> Result<usize> {
+        let boundary = local_midnight(cutoff)?;
+        let tx = self.db.transaction()?;
+        let candidates = {
+            let mut statement = tx.prepare_cached(
+                "SELECT timestamp_ms, session_id, call_id FROM execution_observations
+                 WHERE is_output = 0 AND timestamp_ms < ?1
+                   AND (timestamp_ms, session_id, call_id) > (?2, ?3, ?4)
+                 ORDER BY timestamp_ms, session_id, call_id LIMIT ?5",
+            )?;
+            let (at, session, key) = cursor
+                .as_ref()
+                .map_or((i64::MIN, 0, ""), |c| (c.0, c.1, c.2.as_str()));
+            statement
+                .query_map(params![boundary, at, session, key, batch], |row| {
+                    Ok(CompactionCursor(row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut removed = 0;
+        let mut looked_up = 0;
+        let mut processed = 0;
+        let mut seen = HashSet::new();
+        for candidate in &candidates {
+            let CompactionCursor(_, session, id) = candidate;
+            if !seen.insert((session, id)) {
+                processed += 1;
+                continue;
+            }
+            if looked_up >= batch as usize * 2 || removed >= batch as usize {
+                break;
+            }
+            let (count, first, last, consistent, closed, partial, skill, mcp, poll) = tx.query_row(
+                "WITH rows AS (
+                    SELECT e.timestamp_ms, e.name, e.namespace,
+                        COALESCE(CAST(s.checkpoint AS TEXT) ->> '$.resume_pending', 1) = 0 AS closed,
+                        s.activity_truncated AS partial
+                    FROM execution_observations e JOIN token_sources s ON s.id = e.source_id
+                    WHERE e.session_id = ?1 AND e.call_id = ?2 AND e.is_output = 0 LIMIT ?3
+                 ) SELECT count(*), min(timestamp_ms), max(timestamp_ms),
+                    min(COALESCE(name,'')) = max(COALESCE(name,''))
+                      AND min(COALESCE(namespace,'')) = max(COALESCE(namespace,'')),
+                    min(closed), max(partial),
+                    COALESCE((
+                        SELECT json_array_length(CAST(a.payload AS TEXT), '$.call.arguments.skillNames') > 0
+                        FROM token_activity a WHERE a.session_id = ?1 AND a.call_id = ?2
+                        ORDER BY a.source_id DESC LIMIT 1
+                    ), 0),
+                    COALESCE(substr(min(name),1,5) = 'mcp__' OR substr(min(namespace),1,5) = 'mcp__', 0),
+                    COALESCE(min(name) = 'write_stdin' OR min(name) LIKE '%.write_stdin', 0) FROM rows",
+                params![session, id, batch + 1],
+                |row| Ok((row.get::<_, usize>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?,
+                    row.get::<_, bool>(3)?, row.get::<_, bool>(4)?, row.get::<_, bool>(5)?,
+                    row.get::<_, bool>(6)?, row.get::<_, bool>(7)?, row.get::<_, bool>(8)?)),
+            )?;
+            looked_up += count;
+            if count > batch as usize || !closed || last >= boundary {
+                processed += 1;
+                continue;
+            }
+            if removed + count > batch as usize {
+                break;
+            }
+            let day = DateTime::from_timestamp_millis(first)
+                .context("工具时间无效")?
+                .with_timezone(&Local)
+                .date_naive()
+                .to_string();
+            // 先释放详情页，再写入日计数。任何写失败都保留原始索引行。
+            removed += tx.execute(
+                "DELETE FROM execution_observations
+                 WHERE session_id = ?1 AND call_id = ?2 AND is_output = 0",
+                params![session, id],
+            )?;
+            let exact = consistent && first == last;
+            if !poll || !exact {
+                tx.execute(
+                    "INSERT INTO execution_daily VALUES(?1,?2,1,?3,?4,?5,?6)
+                     ON CONFLICT(day,session_id) DO UPDATE SET count=count+1,
+                     skill=skill+excluded.skill, mcp=mcp+excluded.mcp, tool=tool+excluded.tool,
+                     partial=max(partial,excluded.partial)",
+                    params![
+                        day,
+                        session,
+                        exact && skill,
+                        exact && !skill && mcp,
+                        exact && !skill && !mcp,
+                        partial || !exact
+                    ],
+                )?;
+            }
+            processed += 1;
+        }
+        if removed != 0 {
+            tx.execute(
+                "UPDATE token_revision SET revision=revision+1, updated_at=max(updated_at+1,?1)",
+                [Local::now().timestamp_millis()],
+            )?;
+        }
+        tx.commit()?;
+        // 扫描未完成来源及异常大的身份时仍可前进；到达末尾后允许下一轮重试。
+        *cursor = if processed == candidates.len() && candidates.len() < batch as usize {
+            None
+        } else {
+            candidates.into_iter().nth(processed.saturating_sub(1))
+        };
+        Ok(removed)
+    }
+}
 
 #[derive(Deserialize, Serialize)]
 struct Cursor(i64, String, String);
@@ -131,6 +257,18 @@ WITH candidates AS (
            OR instr(lower(COALESCE(skills,'')), lower(?6)) > 0)
 )";
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Daily {
+    day: String,
+    count: u64,
+    skill: u64,
+    mcp: u64,
+    tool: u64,
+    partial: bool,
+    classification_complete: bool,
+}
+
 impl Store {
     pub(in crate::usage_history::structured) fn read_execution_page(
         db: &mut Connection,
@@ -155,14 +293,9 @@ impl Store {
         } else {
             None
         };
-        let cutoff = NaiveDate::parse_from_str(&precise_from, "%Y-%m-%d")
-            .ok()
-            .and_then(|day| {
-                Local
-                    .from_local_datetime(&day.and_hms_opt(0, 0, 0).unwrap())
-                    .earliest()
-            })
-            .map(|at| at.timestamp_millis());
+        let cutoff = (!precise_from.is_empty())
+            .then(|| local_midnight(NaiveDate::parse_from_str(&precise_from, "%Y-%m-%d")?))
+            .transpose()?;
         let range_missing = cutoff.is_none_or(|cutoff| query.start_at < cutoff);
         let capture_since: Option<i64> = tx.query_row(
             "SELECT started_at FROM execution_coverage_start WHERE singleton = 1",
@@ -190,6 +323,61 @@ impl Store {
             |row| row.get::<_, String>(0),
         )?;
         let mut summary: Value = serde_json::from_str(&aggregate)?;
+        let mut daily = Vec::new();
+        if let Some(cutoff) = cutoff
+            && query.start_at < cutoff
+        {
+            let old_end = cutoff.min(query.end_at);
+            let day_at = |at| {
+                DateTime::from_timestamp_millis(at)
+                    .unwrap()
+                    .with_timezone(&Local)
+                    .date_naive()
+            };
+            let mut statement = tx.prepare_cached(
+                "SELECT d.day,sum(d.count),sum(d.skill),sum(d.mcp),sum(d.tool),max(d.partial)
+                 FROM execution_daily d WHERE d.day >= ?1 AND d.day <= ?2
+                 AND (?3 IS NULL OR d.session_id IN (
+                    SELECT s.id FROM json_each(?3) j JOIN token_sessions s ON s.session = j.value
+                 )) GROUP BY d.day ORDER BY d.day DESC",
+            )?;
+            let mut rows = statement.query(params![
+                day_at(query.start_at).to_string(),
+                day_at(old_end - 1).to_string(),
+                scope,
+            ])?;
+            while let Some(row) = rows.next()? {
+                let day: String = row.get(0)?;
+                let date = NaiveDate::parse_from_str(&day, "%Y-%m-%d")?;
+                let count: u64 = row.get(1)?;
+                let (skill, mcp, tool): (u64, u64, u64) = (row.get(2)?, row.get(3)?, row.get(4)?);
+                let partial: bool = row.get(5)?;
+                if query.start_at <= local_midnight(date)?
+                    && old_end >= local_midnight(date.succ_opt().context("工具汇总日期超出范围")?)?
+                {
+                    for (field, amount) in [
+                        ("total", count),
+                        ("skill", skill),
+                        ("mcp", mcp),
+                        ("tool", tool),
+                    ] {
+                        summary[field] = json!(summary[field].as_u64().unwrap() + amount);
+                    }
+                }
+                daily.push(Daily {
+                    day,
+                    count,
+                    skill,
+                    mcp,
+                    tool,
+                    partial,
+                    classification_complete: !partial && count == skill + mcp + tool,
+                });
+            }
+            if query.search.is_empty() && query.kind.is_none() {
+                summary["matched"] = summary["total"].clone();
+            }
+        }
         let indexed: bool = tx.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM token_coverage
@@ -263,8 +451,8 @@ impl Store {
         Ok(json!({
             "status":if complete {"ok"} else {"partial"}, "complete":complete,
             "revision":revision,"items":items,"nextCursor":next,"summary":summary,
-            "dailySummaries":[], "activitySummary":activity, "searchApplied":!query.search.is_empty(),
-            "coverage":{"complete":complete,"precision":"exact","reason":if range_missing {
+            "dailySummaries":daily, "activitySummary":activity, "searchApplied":!query.search.is_empty(),
+            "coverage":{"complete":complete,"precision":if daily.is_empty() {"exact"} else {"day"},"reason":if range_missing {
                 "outside-retention"
             } else if capture_missing {
                 "before-tool-capture"
@@ -366,10 +554,47 @@ impl Store {
         let mut outputs = Vec::new();
         {
             let mut statement = tx.prepare(
-                "SELECT position,end,timestamp_ms FROM execution_observations
-                 WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
-                   AND call_id = ?2 AND source_id = ?3 AND is_output = 1 AND end IS NOT NULL
-                   AND position >= ?4 AND timestamp_ms >= ?5 AND timestamp_ms <= ?6
+                "WITH direct AS (
+                    SELECT e.* FROM execution_observations e
+                    WHERE e.session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+                      AND e.call_id = ?2 AND e.source_id = ?3 AND e.is_output = 1 AND e.end IS NOT NULL
+                      AND e.position >= ?4 AND e.timestamp_ms >= ?5 AND e.timestamp_ms <= ?6
+                 ), launches AS (
+                    SELECT p.process, min(e.position) AS opened, min(e.session_id) AS session_id
+                    FROM direct e JOIN execution_process p USING(source_id,position)
+                    GROUP BY p.process
+                 ), chain AS (
+                    SELECT c.* FROM launches c
+                    WHERE (SELECT count(*) FROM launches) = 1
+                    AND NOT EXISTS (
+                        SELECT 1 FROM execution_process r JOIN execution_observations e USING(source_id,position)
+                        WHERE r.process = c.process AND e.session_id = c.session_id
+                          AND e.timestamp_ms > ?8 AND e.timestamp_ms <= ?6 AND (
+                            e.source_id != ?3 OR (e.is_output = 1 AND e.call_id != ?2 AND NOT EXISTS (
+                                SELECT 1 FROM execution_observations poll
+                                  JOIN execution_process p USING(source_id,position)
+                                WHERE poll.source_id = e.source_id AND poll.session_id = e.session_id
+                                  AND poll.call_id = e.call_id AND poll.is_output = 0
+                                  AND p.process = c.process AND poll.position < e.position
+                            ))
+                          )
+                    )
+                 ), polls AS (
+                    SELECT e.*, c.process FROM chain c JOIN execution_process p ON p.process = c.process
+                    JOIN execution_observations e USING(source_id,position)
+                    WHERE e.session_id = c.session_id AND e.source_id = ?3 AND e.is_output = 0
+                      AND e.position > c.opened AND e.timestamp_ms >= ?5 AND e.timestamp_ms <= ?6
+                      AND (SELECT count(*) FROM execution_observations peer
+                           WHERE peer.session_id = e.session_id AND peer.call_id = e.call_id
+                             AND peer.is_output = 0) = 1
+                 )
+                 SELECT position,end,timestamp_ms,call_id,NULL AS process FROM direct
+                 UNION ALL
+                 SELECT o.position,o.end,o.timestamp_ms,o.call_id,p.process
+                 FROM polls p JOIN execution_observations o
+                   ON o.source_id = p.source_id AND o.session_id = p.session_id AND o.call_id = p.call_id
+                 WHERE o.is_output = 1 AND o.end IS NOT NULL AND o.position >= p.end
+                   AND o.timestamp_ms >= p.timestamp_ms AND o.timestamp_ms <= ?6
                  ORDER BY position LIMIT ?7",
             )?;
             let mut rows = statement.query(params![
@@ -379,14 +604,19 @@ impl Store {
                 call.end,
                 call.at,
                 cutoff,
-                MAX_OUTPUTS + 1
+                MAX_OUTPUTS + 1,
+                cutoff - DETAIL_MS,
             ])?;
             while let Some(row) = rows.next()? {
-                outputs.push(Location {
-                    start: row.get(0)?,
-                    end: row.get(1)?,
-                    at: row.get(2)?,
-                });
+                outputs.push((
+                    Location {
+                        start: row.get(0)?,
+                        end: row.get(1)?,
+                        at: row.get(2)?,
+                    },
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ));
             }
         }
         tx.commit()?;
@@ -441,7 +671,17 @@ impl Store {
         let mut positions_end = call.end;
         let mut parts = Vec::new();
         let mut partial = outputs.len() > MAX_OUTPUTS;
-        for location in outputs.into_iter().take(MAX_OUTPUTS) {
+        let mut running = None;
+        let mut terminal_at = None;
+        for (location, id, process) in outputs.into_iter().take(MAX_OUTPUTS) {
+            if let Some(process) = &process
+                && (!shell
+                    || before != expected
+                    || terminal_at.is_some()
+                    || running.as_ref() != Some(process))
+            {
+                continue;
+            }
             let length = location
                 .end
                 .checked_sub(location.start)
@@ -453,11 +693,21 @@ impl Store {
                 partial = true;
                 break;
             }
-            let item = reader.read_item(&location, committed_offset, &query.id, true)?;
-            parts.push((
-                location.at,
-                item.get("output").cloned().unwrap_or(Value::Null),
-            ));
+            let item = reader.read_item(&location, committed_offset, &id, true)?;
+            let output = item.get("output").cloned().unwrap_or(Value::Null);
+            if shell && let Some((started, id)) = exec_receipt(&output) {
+                if started {
+                    let observed = id.parse::<u64>().ok().map(|id| id.to_string());
+                    if process.is_some() && process != observed {
+                        partial = true;
+                        break;
+                    }
+                    running = observed;
+                } else {
+                    terminal_at = Some(location.at);
+                }
+            }
+            parts.push((location.at, output));
             used += length;
             positions_end = location.end;
         }
@@ -471,16 +721,13 @@ impl Store {
         }
         let old_parts = parts.len();
         parts.retain(|(at, _)| recent(*at, final_now));
-        partial |= parts.is_empty()
-            || parts.len() != old_parts
-            || shell
-                && !parts.last().is_some_and(|(_, output)| {
-                    exec_receipt(output).is_some_and(|(running, _)| !running)
-                });
+        partial |= parts.is_empty() || parts.len() != old_parts || shell && terminal_at.is_none();
         let duration = if partial {
             None
         } else {
-            parts.last().map(|(at, _)| at - call.at)
+            terminal_at
+                .or_else(|| parts.last().map(|(at, _)| *at))
+                .map(|at| at - call.at)
         };
         let output: Vec<_> = parts.into_iter().map(|(_, part)| part).collect();
         Ok(json!({
@@ -631,6 +878,129 @@ mod tests {
     use super::*;
 
     const SESSION: &str = "00000000-0000-4000-8000-000000000001";
+
+    #[test]
+    fn expired_tools_compact_once_in_bounded_transactions_and_keep_full_day_counts() {
+        let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+        let now = Local::now();
+        let cutoff = now.date_naive() - chrono::Days::new(59);
+        let day = cutoff.pred_opt().unwrap();
+        let start = local_midnight(day).unwrap();
+        let end = local_midnight(cutoff).unwrap();
+        store
+            .db
+            .execute(
+                "UPDATE token_revision SET revision=1,precise_from=?1",
+                [cutoff.to_string()],
+            )
+            .unwrap();
+        store
+            .db
+            .execute("INSERT INTO token_sessions VALUES(1,?1)", [SESSION])
+            .unwrap();
+        for (source, pending) in [(1, false), (2, false), (3, true)] {
+            store
+                .db
+                .execute(
+                    "INSERT INTO token_sources VALUES(?1,?2,1,20,?3,0)",
+                    params![
+                        source,
+                        vec![source as u8],
+                        serde_json::to_vec(&json!({"resume_pending":pending})).unwrap()
+                    ],
+                )
+                .unwrap();
+        }
+        for (source, position, id, at, name) in [
+            (1, 1, "a", start + 1, "exec_command"),
+            (2, 1, "a", start + 1, "exec_command"),
+            (1, 2, "skill", start + 2, "exec_command"),
+            (1, 3, "mcp", start + 3, "mcp__fixture"),
+            (1, 4, "poll", start + 4, "write_stdin"),
+            (3, 1, "unfinished", start + 5, "apply_patch"),
+            (1, 6, "new", end + 1, "apply_patch"),
+        ] {
+            store
+                .db
+                .execute(
+                    "INSERT INTO execution_observations VALUES(?1,1,?2,?3,?4,NULL,0,?5,'')",
+                    params![source, position, at, id, name],
+                )
+                .unwrap();
+        }
+        store
+            .db
+            .execute(
+                "INSERT INTO token_activity VALUES(1,1,'skill',?1,?2,?3)",
+                params![
+                    start + 2,
+                    day.to_string(),
+                    br#"{"call":{"arguments":{"skillNames":["alpha"]}}}"#.as_slice()
+                ],
+            )
+            .unwrap();
+        store
+            .db
+            .execute_batch(
+                "CREATE TRIGGER reject_execution_summary BEFORE INSERT ON execution_daily
+             BEGIN SELECT RAISE(ABORT, 'synthetic summary failure'); END;",
+            )
+            .unwrap();
+        let mut cursor = None;
+        let failure = store
+            .compact_executions(cutoff, &mut cursor, 2)
+            .unwrap_err();
+        assert!(failure.to_string().contains("synthetic summary failure"));
+        assert!(cursor.is_none());
+        assert_eq!(
+            store
+                .db
+                .query_row("SELECT count(*) FROM execution_observations", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            7
+        );
+        store
+            .db
+            .execute_batch("DROP TRIGGER reject_execution_summary")
+            .unwrap();
+        let mut removed = 0;
+        for _ in 0..10 {
+            let count = store.compact_executions(cutoff, &mut cursor, 2).unwrap();
+            assert!(count <= 2);
+            removed += count;
+        }
+        assert_eq!(removed, 5);
+        assert_eq!(
+            store
+                .db
+                .query_row("SELECT count(*) FROM execution_observations", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        let read = |store: &mut Store, from, to| {
+            Store::read_execution_page(
+                &mut store.db,
+                &ExecutionQuery::parse(&json!({"startAt":from,"endAt":to})).unwrap(),
+                now.timestamp_millis(),
+                false,
+                None,
+            )
+            .unwrap()
+        };
+        let old = read(&mut store, start, end);
+        assert_eq!(old["summary"]["total"], 3);
+        assert_eq!(old["dailySummaries"][0]["skill"], 1);
+        assert_eq!(old["dailySummaries"][0]["mcp"], 1);
+        assert_eq!(old["dailySummaries"][0]["tool"], 1);
+        assert_eq!(old["coverage"]["precision"], "day");
+        assert_eq!(old["items"], json!([]));
+        assert!(read(&mut store, start + 1, end)["summary"]["total"].is_null());
+        let mixed = read(&mut store, start, end + 100);
+        assert_eq!(mixed["summary"]["total"], 4);
+        assert_eq!(mixed["items"][0]["id"], "new");
+    }
 
     #[test]
     fn pages_and_search_use_committed_identity_without_changing_totals() {

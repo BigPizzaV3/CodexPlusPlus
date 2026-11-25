@@ -183,6 +183,25 @@ impl Store {
                 ON execution_observations (session_id, call_id);
              CREATE INDEX IF NOT EXISTS execution_locator_expiry
                 ON execution_observations (is_output, timestamp_ms) WHERE end IS NOT NULL;
+             CREATE TABLE IF NOT EXISTS execution_process (
+                source_id INTEGER NOT NULL,
+                position INTEGER NOT NULL,
+                process TEXT NOT NULL,
+                PRIMARY KEY(source_id, position),
+                FOREIGN KEY(source_id, position)
+                    REFERENCES execution_observations(source_id, position) ON DELETE CASCADE
+             ) WITHOUT ROWID, STRICT;
+             CREATE INDEX IF NOT EXISTS execution_process_by_id ON execution_process(process);
+             CREATE TABLE IF NOT EXISTS execution_daily (
+                day TEXT NOT NULL,
+                session_id INTEGER NOT NULL REFERENCES token_sessions(id),
+                count INTEGER NOT NULL,
+                skill INTEGER NOT NULL,
+                mcp INTEGER NOT NULL,
+                tool INTEGER NOT NULL,
+                partial INTEGER NOT NULL,
+                PRIMARY KEY(day, session_id)
+             ) WITHOUT ROWID, STRICT;
              CREATE TABLE IF NOT EXISTS execution_coverage_start (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 started_at INTEGER
@@ -223,6 +242,14 @@ impl Store {
                  SELECT source_id, position FROM execution_observations
                  WHERE end IS NOT NULL AND timestamp_ms <= ?1 AND is_output = 1
                  ORDER BY timestamp_ms LIMIT ?2
+             )",
+            params![cutoff, batch],
+        )?;
+        tx.execute(
+            "DELETE FROM execution_process WHERE (source_id, position) IN (
+                SELECT source_id, position FROM execution_observations
+                WHERE end IS NOT NULL AND timestamp_ms <= ?1 AND is_output = 0
+                ORDER BY timestamp_ms LIMIT ?2
              )",
             params![cutoff, batch],
         )?;
@@ -412,6 +439,7 @@ impl Store {
                     "INSERT INTO execution_observations
                      SELECT ?1, id, ?3, ?4, ?5, ?6, ?7, ?8, ?9 FROM token_sessions WHERE session = ?2",
                 )?;
+                let mut process = tx.prepare("INSERT INTO execution_process VALUES(?1,?2,?3)")?;
                 for row in &batch.rows {
                     insert.execute(params![
                         source_id,
@@ -424,6 +452,9 @@ impl Store {
                         row.name,
                         row.namespace,
                     ])?;
+                    if let Some(key) = &row.process {
+                        process.execute(params![source_id, row.position, key])?;
+                    }
                 }
             }
         }

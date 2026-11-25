@@ -200,7 +200,7 @@ impl Budget {
             } else {
                 0
             };
-            4096 + growth
+            12288 + growth
         });
         if reserve == LINE_OVERHEAD {
             return self.memory_left(state) >= reserve + execution_growth;
