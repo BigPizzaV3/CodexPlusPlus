@@ -242,7 +242,6 @@ impl ExecutionQuery {
             "工具时间范围无效"
         );
         ensure!((1..=200).contains(&query.limit), "工具分页大小无效");
-        ensure!(query.search.len() <= 512, "工具搜索过长");
         ensure!(
             query
                 .kind
@@ -265,12 +264,9 @@ impl ExecutionQuery {
         let Some(cursor) = &self.cursor else {
             return Ok(None);
         };
-        ensure!(cursor.len() <= 1024, "工具游标过长");
         let cursor: Cursor = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(cursor)?)?;
         ensure!(
-            normalize_session_id(&cursor.1).is_some()
-                && !cursor.2.is_empty()
-                && cursor.2.len() <= 300,
+            normalize_session_id(&cursor.1).is_some() && !cursor.2.is_empty(),
             "工具游标无效"
         );
         Ok(Some(cursor))
@@ -561,10 +557,7 @@ impl DetailQuery {
     pub(in crate::usage_history::structured) fn parse(request: &Value) -> Result<Self> {
         let mut query = Self::deserialize(request)?;
         query.session_id = normalize_session_id(&query.session_id).context("会话 ID 无效")?;
-        ensure!(
-            !query.id.is_empty() && query.id.len() <= 300,
-            "工具调用 ID 无效"
-        );
+        ensure!(!query.id.is_empty(), "工具调用 ID 无效");
         ensure!(query.revision >= 0, "工具版本无效");
         Ok(query)
     }
@@ -1181,9 +1174,12 @@ mod tests {
         .unwrap();
         db.execute("INSERT INTO token_sessions VALUES(1,?1)", [SESSION])
             .unwrap();
+        let id = "a".repeat(1200);
+        let name = format!("exec_command_{}", "a".repeat(750));
+        let search_term = "A".repeat(750);
         for (source, position, id, at, name) in [
-            (1, 1, "a", at, "exec_command"),
-            (2, 1, "a", at, "exec_command"),
+            (1, 1, id.as_str(), at, name.as_str()),
+            (2, 1, id.as_str(), at, name.as_str()),
             (1, 2, "b", at, "apply_patch"),
             (1, 3, "c", at - 1, "mcp__fixture"),
             (1, 4, "d", at - 3, "functions.write_stdin"),
@@ -1214,7 +1210,9 @@ mod tests {
         assert_eq!(page["summary"]["conflicts"], 1);
         assert_eq!(page["status"], "partial");
         assert_eq!(page["items"][0]["id"], "b");
-        assert_eq!(page["items"][1]["id"], "a");
+        assert_eq!(page["items"][1]["id"], id);
+        assert!(page["nextCursor"].as_str().unwrap().len() > 1024);
+        assert!(DetailQuery::parse(&json!({"sessionId":SESSION,"id":id,"revision":1})).is_ok());
         let mut later = request.clone();
         later["cursor"] = page["nextCursor"].clone();
         later["revision"] = page["revision"].clone();
@@ -1227,6 +1225,10 @@ mod tests {
         assert_eq!(search["summary"]["total"], 3);
         assert_eq!(search["summary"]["matched"], 1);
         assert_eq!(search["items"][0]["id"], "b");
+        filtered["search"] = json!(search_term);
+        let search = read(db, &filtered);
+        assert_eq!(search["summary"]["matched"], 1);
+        assert_eq!(search["items"][0]["id"], id);
         db.execute("UPDATE token_revision SET revision=2", [])
             .unwrap();
         assert_eq!(read(db, &later)["status"], "stale");

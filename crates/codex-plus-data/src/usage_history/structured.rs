@@ -3627,7 +3627,12 @@ impl FileState {
                     && spool.complete
                 {
                     let physical_bytes = spool.bytes;
-                    match spool.finish(path, self.offset, stamp.2, &self.session, &self.turn)? {
+                    let skill_output = |id: &str| {
+                        self.exec_polls.contains_key(id) || self.calls.get(id).is_some_and(|call| {
+                            call.payload["arguments"]["skillNames"].as_array().is_some_and(|names| !names.is_empty())
+                        })
+                    };
+                    match spool.finish(path, self.offset, stamp.2, &self.session, &self.turn, skill_output)? {
                         oversized::Projected::Line(line) => {
                             if budget.event_blocked(self, &line) {
                                 return Ok(false);
@@ -4019,7 +4024,7 @@ impl FileState {
                 return;
             }
             if item.kind.ends_with("_output")
-                && item.call_id.is_none_or(|id| {
+                && item.call_id().is_none_or(|id| {
                     !self.calls.contains_key(id) && !self.exec_polls.contains_key(id)
                 })
             {
@@ -4278,7 +4283,7 @@ impl FileState {
         }
         if envelope.kind == "response_item" && date >= cutoff {
             if !inherited {
-                self.accept_tool(payload, timestamp, date);
+                self.accept_tool(payload, timestamp, date, line_bytes > MAX_LINE as u64);
             }
             return;
         }
@@ -4449,11 +4454,11 @@ impl FileState {
         }
     }
 
-    fn accept_tool(&mut self, mut payload: Value, timestamp: String, date: NaiveDate) {
+    fn accept_tool(&mut self, mut payload: Value, timestamp: String, date: NaiveDate, projected: bool) {
         let Some(id) = payload["call_id"]
             .as_str()
             .or_else(|| payload["id"].as_str())
-            .filter(|id| id.len() <= 300)
+            .filter(|id| !id.is_empty())
             .map(str::to_owned)
         else {
             return;
@@ -4467,41 +4472,27 @@ impl FileState {
                 .or_else(|| payload["input"].as_str())
                 .unwrap_or("");
             if name.rsplit('.').next() == Some("write_stdin") {
-                #[derive(Deserialize)]
-                struct PollArgs {
-                    session_id: Option<u64>,
-                }
-                if let Ok(args) = serde_json::from_str::<PollArgs>(arguments) {
-                    let session = args.session_id.map(|id| id.to_string());
-                    if let Some(session) = session.filter(|id| self.exec_skills.contains_key(id)) {
-                        if self.exec_polls.len() >= 512 {
-                            self.exec_polls.clear();
-                        }
-                        self.exec_polls.insert(id, session);
-                    }
-                }
-                return;
-            }
-            if !name.starts_with("mcp__")
-                && !namespace.starts_with("mcp__")
-                && !arguments.to_lowercase().contains("skill.md")
-            {
-                return;
-            }
-            if arguments.len() > 64_000 {
-                self.issues += 1;
-                return;
-            }
-            payload = tool_receipts::call(&payload);
-            if self.calls.len() >= 512 {
-                if let Some(oldest) = self
-                    .calls
-                    .iter()
-                    .min_by(|a, b| a.1.timestamp.cmp(&b.1.timestamp))
-                    .map(|(id, _)| id.clone())
+                let session = if let Some(args) = payload["arguments"].as_object() {
+                    args.get("session_id").and_then(Value::as_u64)
+                } else {
+                    execution_observations::poll_session(arguments)
+                };
+                if let Some(session) = session.map(|id| id.to_string())
+                    && self.exec_skills.contains_key(&session)
                 {
-                    self.calls.remove(&oldest);
+                    self.exec_polls.insert(id, session);
                 }
+                return;
+            }
+            let mcp = name.starts_with("mcp__") || namespace.starts_with("mcp__");
+            if !mcp && !tool_receipts::may_read_skill(name) {
+                return;
+            }
+            if !projected {
+                payload = tool_receipts::call(&payload);
+            }
+            if !mcp && !payload["arguments"]["skillNames"].as_array().is_some_and(|names| !names.is_empty()) {
+                return;
             }
             self.calls.insert(
                 id,
@@ -4538,10 +4529,12 @@ impl FileState {
             let failed = payload["isError"] == true
                 || payload["error"].is_object()
                 || payload["error"].is_string()
+                || payload["error"] == true
                 || payload["output"]["success"] == false
                 || payload["output"]["isError"] == true
                 || payload["output"]["error"].is_object()
                 || payload["output"]["error"].is_string()
+                || payload["output"]["error"] == true
                 || matches!(
                     payload["output"]["status"].as_str(),
                     Some("failed" | "error" | "cancelled" | "canceled" | "interrupted")
@@ -4565,16 +4558,6 @@ impl FileState {
             {
                 let session = session.or_else(|| receipt.map(|(_, id)| id)).unwrap();
                 let evidence = compact_evidence(&evidence, &payload["output"]);
-                if self.exec_skills.len() >= 256 {
-                    if let Some(oldest) = self
-                        .exec_skills
-                        .iter()
-                        .min_by(|a, b| a.1.call.timestamp.cmp(&b.1.call.timestamp))
-                        .map(|(id, _)| id.clone())
-                    {
-                        self.exec_skills.remove(&oldest);
-                    }
-                }
                 let mut call = call;
                 // 后台完成时间包含轮询等待，不能作为同步技能读取耗时。
                 call.payload["arguments"]["singleRead"] = json!(false);
@@ -4590,7 +4573,7 @@ impl FileState {
                 .to_owned();
             // 不返回完整工具输入/输出正文，保持调用身份与失败判定所需字段。
             let mut output = json!({"type":kind,"call_id":id,"timestamp":timestamp,"output":payload["output"],
-                "isError":payload["isError"],"error":payload["error"].is_object() || payload["error"].is_string()});
+                "isError":payload["isError"],"error":payload["error"].is_object() || payload["error"].is_string() || payload["error"] == true});
             if !evidence.is_empty() {
                 output["skillReadEvidence"] = json!(evidence);
             }
@@ -4620,7 +4603,6 @@ fn exec_receipt(value: &Value) -> Option<(bool, String)> {
             "Chunk ID:",
             "Wall time:",
             "Original token count:",
-            "Final output:",
         ]
         .iter()
         .any(|prefix| line.starts_with(prefix))

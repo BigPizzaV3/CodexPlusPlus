@@ -1870,7 +1870,8 @@ fn detail_follows_a_verified_shell_process_and_rejects_reused_process_ids() {
         ),
         row(
             500,
-            json!({"type":"function_call","name":"functions.write_stdin","call_id":"finish","arguments":{"session_id":831}}),
+            json!({"type":"function_call","name":"functions.write_stdin","call_id":"finish",
+                "arguments":json!({"chars":"x".repeat(8192),"session_id":831}).to_string()}),
         ),
         row(
             700,

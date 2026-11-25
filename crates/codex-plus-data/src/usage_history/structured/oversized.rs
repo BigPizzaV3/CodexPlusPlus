@@ -1,10 +1,23 @@
 //! 从超长原生日志提取计量字段，正文中的同名字符串不参与分类。
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde_json::Value;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
+mod argument_reader;
+mod output;
+use argument_reader::{JsonStringContents, receipt_text, skip_delimiters};
+
+pub(super) fn raw_receipt(raw: &str) -> Option<Value> {
+    let input = raw.strip_prefix('"')?.as_bytes();
+    receipt_text(&mut BufReader::new(JsonStringContents::new(input)), false).ok()
+}
+
+pub(super) fn structured_output(text: &str, skill: bool) -> Option<Value> {
+    let mut input = std::io::Cursor::new(text.as_bytes());
+    output::project(&mut input, 0, text.len() as u64, skill).ok()
+}
 
 pub(super) struct Spool {
     decompressed: Option<File>,
@@ -47,6 +60,7 @@ impl Spool {
         identity: Option<(u64, u64)>,
         session: &str,
         turn: &str,
+        skill_output: impl Fn(&str) -> bool,
     ) -> io::Result<Projected> {
         let mut original;
         let file = if let Some(file) = &mut self.decompressed {
@@ -67,8 +81,9 @@ impl Spool {
             original.seek(SeekFrom::Start(end - self.bytes))?;
             &mut original
         };
+        let start = file.stream_position()?;
         let prefix = FieldPrefix::default();
-        let mut input = BufReader::new(file.take(self.bytes));
+        let mut input = BufReader::new((&mut *file).take(self.bytes));
         let mut json = serde_json::Deserializer::from_reader(PrefixReader(&mut input, &prefix));
         let mut record = match Columns::Envelope(session, &prefix)
             .deserialize(&mut json)
@@ -93,6 +108,51 @@ impl Spool {
         let tool = record["type"] == "response_item"
             && record["payload"]["duplicate_tool_field"] != true
             && record["payload"]["type"].as_str().is_some_and(tool_kind);
+        if tool && let Some((offset, length)) = prefix.output.get() {
+            let skill = record["payload"]["call_id"].as_str().or_else(|| record["payload"]["id"].as_str()).is_some_and(skill_output);
+            record["payload"]["output"] = output::project(file, start + offset, length, skill)?;
+        }
+        if tool
+            && !record["payload"]["type"]
+                .as_str()
+                .unwrap()
+                .ends_with("_output")
+        {
+            let payload = &mut record["payload"];
+            let name = payload["name"].as_str().unwrap_or("");
+            let poll = name.rsplit('.').next() == Some("write_stdin");
+            if (poll || super::tool_receipts::may_read_skill(name))
+                && let Some((offset, length)) = prefix.arguments.get().or(prefix.input.get())
+            {
+                file.seek(SeekFrom::Start(start + offset))?;
+                let mut field = BufReader::new(file.take(length));
+                skip_delimiters(&mut field, true)?;
+                let mut decoded;
+                let field: &mut dyn BufRead = if field.fill_buf()?.first() == Some(&b'"') {
+                    field.consume(1);
+                    decoded = BufReader::new(JsonStringContents::new(field));
+                    &mut decoded
+                } else {
+                    &mut field
+                };
+                skip_delimiters(field, false)?;
+                if field.fill_buf()?.first() == Some(&b'{') {
+                    match serde_json::from_reader::<_, super::tool_receipts::ArgumentFields>(field)
+                    {
+                        Ok(fields) => payload["arguments"] = fields.0,
+                        Err(error) if error.is_io() => return Err(error.into()),
+                        Err(_) => {}
+                    }
+                } else if !poll && field.fill_buf()?.first() != Some(&b'[') {
+                    let mut command = String::new();
+                    field.read_to_string(&mut command)?;
+                    payload["arguments"] = Value::String(command);
+                }
+            }
+            if !poll {
+                *payload = super::tool_receipts::call(payload);
+            }
+        }
         if bad_payload
             || terminal
             || context
@@ -130,12 +190,15 @@ impl Spool {
     }
 }
 
-// 解析器跳过整个 JSON 字段；仅为工具分类和终端关联保留已有格式的元数据前缀。
-// 详情读取器始终使用原文定位，绝不拿此前缀作为正文。
+// 第一遍记录工具字段的原始范围，知道工具类型后再读取对应的分类元数据。
 #[derive(Default)]
 struct FieldPrefix {
-    remaining: Cell<usize>,
-    bytes: RefCell<Vec<u8>>,
+    offset: Cell<u64>,
+    first: Cell<Option<u8>>,
+    probe: Cell<bool>,
+    arguments: Cell<Option<(u64, u64)>>,
+    input: Cell<Option<(u64, u64)>>,
+    output: Cell<Option<(u64, u64)>>,
 }
 
 struct PrefixReader<'a, R>(&'a mut R, &'a FieldPrefix);
@@ -143,38 +206,16 @@ struct PrefixReader<'a, R>(&'a mut R, &'a FieldPrefix);
 impl<R: Read> Read for PrefixReader<'_, R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let count = self.0.read(buf)?;
-        let left = self.1.remaining.get();
-        if left != 0 {
-            let saved = count.min(left);
-            self.1.bytes.borrow_mut().extend_from_slice(&buf[..saved]);
-            self.1.remaining.set(left - saved);
+        self.1.offset.set(self.1.offset.get() + count as u64);
+        if self.1.probe.get() && self.1.first.get().is_none() {
+            self.1.first.set(
+                buf[..count]
+                    .iter()
+                    .copied()
+                    .find(|b| !b.is_ascii_whitespace() && !matches!(b, b':' | b',')),
+            );
         }
         Ok(count)
-    }
-}
-
-impl FieldPrefix {
-    fn read<'de, M: MapAccess<'de>>(&self, map: &mut M, output: bool) -> Result<Value, M::Error> {
-        self.bytes.borrow_mut().clear();
-        self.remaining.set(if output { 4096 } else { 64_002 });
-        map.next_value::<IgnoredAny>()?;
-        let complete = self.remaining.replace(0) != 0;
-        let bytes = self.bytes.borrow();
-        let raw = bytes
-            .trim_ascii_start()
-            .strip_prefix(b":")
-            .unwrap_or(&bytes)
-            .trim_ascii_start();
-        if complete && let Ok(value) = serde_json::from_slice(raw) {
-            return Ok(value);
-        }
-        if output
-            && let Some(chunk) = raw.utf8_chunks().next()
-            && let Some(text) = super::execution_observations::output_header(chunk.valid())
-        {
-            return Ok(Value::String(text));
-        }
-        Ok(Value::Null)
     }
 }
 
@@ -201,6 +242,8 @@ enum Columns<'a> {
     Subagent,
     ThreadSpawn,
     ThreadSettings,
+    Bool,
+    Error,
     Text,
     Kind,
     Timestamp,
@@ -224,8 +267,8 @@ impl<'de> Visitor<'de> for Columns<'_> {
     fn visit_unit<E>(self) -> Result<Value, E> {
         Ok(Value::Null)
     }
-    fn visit_bool<E>(self, _: bool) -> Result<Value, E> {
-        Ok(Value::Bool(false))
+    fn visit_bool<E>(self, b: bool) -> Result<Value, E> {
+        Ok(Value::Bool(matches!(self, Self::Bool | Self::Error) && b))
     }
     fn visit_i64<E>(self, n: i64) -> Result<Value, E> {
         Ok(if matches!(self, Self::Number) {
@@ -267,6 +310,7 @@ impl<'de> Visitor<'de> for Columns<'_> {
             },
             Self::Id(expected) if s == expected => Value::from(s),
             Self::Text => Value::from(s),
+            Self::Error => Value::Bool(true),
             Self::Source => Value::from(if s.to_ascii_lowercase().contains("subagent") {
                 "subagent"
             } else {
@@ -294,7 +338,7 @@ impl<'de> Visitor<'de> for Columns<'_> {
                 | Self::ThreadSettings
         ) {
             while map.next_entry::<IgnoredAny, IgnoredAny>()?.is_some() {}
-            return Ok(Value::Bool(false));
+            return Ok(Value::Bool(matches!(self, Self::Error)));
         }
         let mut fields = serde_json::Map::new();
         while let Some(key) = map.next_key::<String>()? {
@@ -304,8 +348,18 @@ impl<'de> Visitor<'de> for Columns<'_> {
                     map.next_value_seed(Self::Payload(session, prefix))?
                 }
                 (Self::Payload(_, prefix), "arguments" | "input" | "output") => {
-                    prefix.read(&mut map, key == "output")?
+                    let start = prefix.offset.get();
+                    map.next_value::<IgnoredAny>()?;
+                    let span = Some((start, prefix.offset.get() - start));
+                    match key.as_str() {
+                        "arguments" => prefix.arguments.set(span),
+                        "input" => prefix.input.set(span),
+                        _ => prefix.output.set(span),
+                    }
+                    Value::Null
                 }
+                (Self::Payload(..), "isError") => map.next_value_seed(Self::Bool)?,
+                (Self::Payload(..), "error") => map.next_value_seed(Self::Error)?,
                 (Self::Payload(..), "info") => map.next_value_seed(Self::Info)?,
                 (Self::Payload(..), "usage" | "thread_token_usage")
                 | (Self::Info, "total_token_usage" | "last_token_usage") => {

@@ -1,6 +1,7 @@
 use chrono::{DateTime, Local, NaiveDate};
 use serde::Deserialize;
 use serde_json::value::RawValue;
+use std::borrow::Cow;
 
 pub(super) const DETAIL_MS: i64 = 86_400_000;
 pub(super) const LIST_MS: i64 = 7 * DETAIL_MS;
@@ -9,8 +10,10 @@ pub(super) const LIST_MS: i64 = 7 * DETAIL_MS;
 pub(super) struct Item<'a> {
     #[serde(rename = "type")]
     pub(super) kind: &'a str,
-    pub(super) call_id: Option<&'a str>,
-    id: Option<&'a str>,
+    #[serde(borrow)]
+    call_id: Option<Cow<'a, str>>,
+    #[serde(borrow)]
+    id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     name: Option<&'a RawValue>,
     #[serde(borrow)]
@@ -19,6 +22,12 @@ pub(super) struct Item<'a> {
     arguments: Option<&'a RawValue>,
     #[serde(borrow)]
     output: Option<&'a RawValue>,
+}
+
+impl Item<'_> {
+    pub(super) fn call_id(&self) -> Option<&str> {
+        self.call_id.as_deref().or(self.id.as_deref())
+    }
 }
 
 #[derive(Default)]
@@ -64,23 +73,25 @@ impl Batch {
         if is_output && !recent {
             return true;
         }
-        let Some(call_id) = item
-            .call_id
-            .or(item.id)
-            .filter(|id| !skip && !id.is_empty() && id.len() <= 300)
-        else {
+        let Some(call_id) = item.call_id().filter(|id| !skip && !id.is_empty()) else {
             return false;
         };
         let mut name = (!is_output).then(|| {
-            bounded(item.name).unwrap_or_else(|| {
-                if item.kind == "local_shell_call" {
-                    "local_shell".into()
-                } else {
-                    String::new()
-                }
-            })
+            item.name
+                .and_then(|name| serde_json::from_str(name.get()).ok())
+                .unwrap_or_else(|| {
+                    if item.kind == "local_shell_call" {
+                        "local_shell".into()
+                    } else {
+                        String::new()
+                    }
+                })
         });
-        let mut namespace = (!is_output).then(|| bounded(item.namespace).unwrap_or_default());
+        let mut namespace = (!is_output).then(|| {
+            item.namespace
+                .and_then(|ns| serde_json::from_str::<String>(ns.get()).ok())
+                .unwrap_or_default()
+        });
         let poll = name
             .as_deref()
             .is_some_and(|name| name.rsplit('.').next() == Some("write_stdin"));
@@ -98,23 +109,18 @@ impl Batch {
         } else if is_output {
             running_process(item.output)
         } else if poll {
-            #[derive(Deserialize)]
-            struct Poll {
-                session_id: u64,
-            }
             item.arguments
-                .filter(|args| args.get().len() <= 4096)
                 .and_then(|args| {
                     let raw = args.get();
                     if raw.starts_with('"') {
                         serde_json::from_str::<String>(raw)
                             .ok()
-                            .and_then(|decoded| serde_json::from_str::<Poll>(&decoded).ok())
+                            .and_then(|decoded| poll_session(&decoded))
                     } else {
-                        serde_json::from_str::<Poll>(raw).ok()
+                        poll_session(raw)
                     }
                 })
-                .map(|poll| poll.session_id.to_string())
+                .map(|session| session.to_string())
         } else {
             None
         };
@@ -133,58 +139,20 @@ impl Batch {
 }
 
 fn running_process(output: Option<&RawValue>) -> Option<String> {
-    let raw = output?.get();
-    let text = if raw.len() <= 4096 {
-        serde_json::from_str(raw).ok()?
-    } else {
-        output_header(raw)?
-    };
-    let (running, id) = super::exec_receipt(&serde_json::Value::String(text))?;
+    let text = super::oversized::raw_receipt(output?.get())?;
+    let (running, id) = super::exec_receipt(&text)?;
     running.then_some(())?;
     id.parse::<u64>().ok().map(|id| id.to_string())
 }
 
-pub(super) fn output_header(raw: &str) -> Option<String> {
-    if !raw.starts_with('"') {
-        return None;
+pub(super) fn poll_session(arguments: &str) -> Option<u64> {
+    #[derive(Deserialize)]
+    struct Poll {
+        session_id: u64,
     }
-    // 只解码执行器回执头，不复制整段输出。截断时保留完整的 JSON 转义行。
-    let bytes = &raw.as_bytes()[..raw.len().min(4096)];
-    let mut end = None;
-    let mut offset = 1;
-    while offset + 1 < bytes.len() {
-        if bytes[offset] != b'\\' {
-            offset += 1;
-            continue;
-        }
-        offset += match bytes[offset + 1] {
-            b'u' if offset + 6 <= bytes.len() => {
-                if bytes[offset + 2..offset + 6].eq_ignore_ascii_case(b"000a")
-                    || bytes[offset + 2..offset + 6].eq_ignore_ascii_case(b"000d")
-                {
-                    end = Some(offset + 6);
-                }
-                6
-            }
-            b'n' | b'r' => {
-                end = Some(offset + 2);
-                2
-            }
-            _ => 2,
-        };
-    }
-    serde_json::from_str(&format!("{}\"", raw.get(..end?)?)).ok()
-}
-
-fn bounded(raw: Option<&RawValue>) -> Option<String> {
-    let raw = raw?.get();
-    if raw.len() > 1802 {
-        return None;
-    }
-    let mut text: String = serde_json::from_str(raw).ok()?;
-    text.truncate(text.floor_char_boundary(300));
-    text.shrink_to_fit();
-    Some(text)
+    serde_json::from_str::<Poll>(arguments)
+        .ok()
+        .map(|poll| poll.session_id)
 }
 
 impl Observation {

@@ -134,6 +134,7 @@ fn projection_preserves_large_identity_and_original_duplicate_semantics() -> any
             None,
             "session",
             "prior",
+            |_| false,
         )?
         else {
             panic!("context should reach the record parser")
