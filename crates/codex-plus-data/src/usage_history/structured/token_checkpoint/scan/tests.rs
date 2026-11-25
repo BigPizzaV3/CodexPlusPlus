@@ -2000,7 +2000,7 @@ fn rescan_consumes_registered_appends_before_sealed_files_and_retracts_only_comp
     let mut store = Store::open(Connection::open_in_memory()?)?;
     let mut scan = Scan::default();
     let names = BTreeMap::new();
-    let round = |scan: &mut Scan, store: &mut Store| scan.round(store, &root, cutoff, &names, 1 << 20);
+    let round = |scan: &mut Scan, store: &mut Store| scan.round(store, &root, cutoff, &names, 8 << 20);
     assert!(!round(&mut scan, &mut store).complete);
     assert!(round(&mut scan, &mut store).complete);
     for session in [FIRST, SECOND] {
@@ -2021,6 +2021,13 @@ fn rescan_consumes_registered_appends_before_sealed_files_and_retracts_only_comp
     extra["timestamp"] = json!("2026-01-02T12:01:01Z");
     extra["payload"]["info"]["total_token_usage"] =
         json!({"input_tokens":200,"cached_input_tokens":40,"output_tokens":20});
+    // 一批 4 MiB 的读取预算会停在 compacted 行中间，后面仍有真正的竞争计数。
+    let compacted = json!({"type":"compacted","payload":{"text":"x".repeat(96 * 1024)}});
+    let mut append = fs::OpenOptions::new().append(true).open(&later)?;
+    for _ in 0..50 {
+        writeln!(append, "{compacted}")?;
+    }
+    drop(append);
     writeln!(fs::OpenOptions::new().append(true).open(&later)?, "{extra}")?;
     for path in &other_appends {
         let done = json!({"type":"event_msg","timestamp":"2026-01-02T12:01:01Z",

@@ -527,7 +527,7 @@ impl Store {
     pub(super) fn sealed_queued_sources(
         &self,
         discovered: &[PathBuf],
-    ) -> Result<(HashSet<PathBuf>, BTreeSet<PathBuf>, HashSet<PathBuf>)> {
+    ) -> Result<(HashSet<PathBuf>, BTreeSet<PathBuf>, BTreeMap<PathBuf, u64>)> {
         #[derive(serde::Deserialize)]
         struct CountState {
             stamp: Option<super::SourceStamp>,
@@ -550,7 +550,7 @@ impl Store {
         };
         let mut sealed = HashSet::new();
         let mut gaps = BTreeSet::new();
-        let mut growing = HashSet::new();
+        let mut growing = BTreeMap::new();
         let mut owners = HashSet::new();
         let mut sources = self
             .db
@@ -579,11 +579,14 @@ impl Store {
             }
             let actual = current(&path)?;
             if actual != Some(stamp) {
-                if path.extension().is_some_and(|ext| ext == "jsonl")
+                if !saved.invalid_counts
+                    && path.extension().is_some_and(|ext| ext == "jsonl")
                     && stamp.2.is_some()
-                    && actual.is_some_and(|(length, _, id)| length > size && id == stamp.2)
+                    && let Some((length, _, id)) = actual
+                    && length > size
+                    && id == stamp.2
                 {
-                    growing.insert(path);
+                    growing.insert(path, length - size);
                 }
                 continue;
             }

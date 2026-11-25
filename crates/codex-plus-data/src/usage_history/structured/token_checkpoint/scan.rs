@@ -105,6 +105,9 @@ impl Scan {
     ) -> Report {
         let maintenance_error = self.maintain(store, cutoff).err();
         let mut errors = Vec::new();
+        let mut budget = Budget::new(std::iter::empty());
+        let batch_bytes = budget.read_left;
+        let mut finish_appends = false;
         let backlogged = !self.remaining.is_empty();
         let recheck_missing = !self.missing.is_empty()
             && self.remaining.len() == self.sealed_queue.len()
@@ -182,7 +185,20 @@ impl Scan {
                             // 优先解析追加内容，读完并提交后才可按新的计数范围保留归属。
                             self.remaining
                                 .make_contiguous()
-                                .sort_by_key(|path| !growing.contains(path));
+                                .sort_by_key(|path| !growing.contains_key(path));
+                            if !self.retirement_blocked()
+                                && !self.more_missing
+                                && self.remaining.len() == self.sealed_queue.len() + growing.len()
+                            {
+                                // 再留一个字节探测 EOF；每批仍按普通预算提交。
+                                let observed = growing.values().sum::<u64>().saturating_add(1);
+                                if observed > batch_bytes && observed <= reconciliation_limit as u64
+                                {
+                                    budget.read_left = observed;
+                                    budget.source_left = observed;
+                                    finish_appends = true;
+                                }
+                            }
                         }
                     }
                     Err(error) => {
@@ -193,7 +209,6 @@ impl Scan {
                 }
             }
         }
-        let mut budget = Budget::new(std::iter::empty());
         let mut retry = if self.active.is_none() {
             self.deferred.take()
         } else {
@@ -418,6 +433,8 @@ impl Scan {
             let other_work = self.active.is_some() || retry.is_some() || self.comparing.is_some() || !self.remaining.is_empty();
             let mut slot_budget =
                 budget.checkpoint_slot(parked.map(|r| &r.state), revisit && other_work);
+            slot_budget.read_left = slot_budget.read_left.min(batch_bytes);
+            slot_budget.source_left = slot_budget.source_left.min(batch_bytes);
             let allowance = (slot_budget.read_left, slot_budget.source_left);
             let result = reader.step(
                 store,
@@ -484,6 +501,10 @@ impl Scan {
                 }
                 Ok(false) if reader.has_open_reader() && consumed != (0, 0) => {
                     self.active = Some(reader);
+                    if finish_appends && (slot_budget.read_left == 0 || slot_budget.source_left == 0)
+                    {
+                        continue;
+                    }
                     break;
                 }
                 Ok(_) => {
