@@ -9,6 +9,41 @@ use std::path::Path;
 
 const SESSION: &str = "00000000-0000-4000-8000-000000000010";
 
+#[test]
+fn nul_padding_requires_adjacent_consecutive_records_across_reopen() {
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let record =
+        |ordinal| format!("{{\"type\":\"note\",\"ordinal\":{ordinal},\"payload\":{{}}}}\n");
+    let feed = |state: &mut FileState, line: &[u8]| {
+        state.offset += line.len() as u64;
+        state.accept(line, cutoff);
+    };
+    for (middle, next, expected) in [
+        (b"\0\0\n".as_slice(), 1, 0),
+        (b"\0\0\n".as_slice(), 2, 1),
+        (b"\0?\n".as_slice(), 1, 1),
+    ] {
+        let mut state = FileState::default();
+        feed(&mut state, record(0).as_bytes());
+        feed(&mut state, middle);
+        assert_eq!(state.issues, 1);
+        let (offset, checkpoint) = Checkpoint::capture(&state);
+        let encoded = serde_json::to_vec(&checkpoint).unwrap();
+        let mut reopened = serde_json::from_slice::<Checkpoint>(&encoded)
+            .unwrap()
+            .restore(offset);
+        feed(&mut reopened, record(next).as_bytes());
+        assert_eq!(reopened.issues, expected);
+    }
+    let mut state = FileState::default();
+    feed(&mut state, b"\0\n");
+    feed(&mut state, record(0).as_bytes());
+    feed(&mut state, b"\0\n");
+    feed(&mut state, b"\0\n");
+    feed(&mut state, record(1).as_bytes());
+    assert_eq!(state.issues, 3);
+}
+
 fn source_rows() -> Vec<Vec<u8>> {
     source_rows_on(NaiveDate::from_ymd_opt(2026, 1, 2).unwrap())
 }

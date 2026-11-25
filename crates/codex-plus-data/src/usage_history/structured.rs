@@ -1800,6 +1800,7 @@ struct FileState {
     pending: index_budget::PendingLine,
     skipping: bool,
     skipped_ordinal: Option<u64>,
+    nul_padding_end: Option<u64>,
     skip_activity: bool,
     activity_truncated: bool,
     session: String,
@@ -3826,14 +3827,35 @@ impl FileState {
             #[serde(borrow)]
             payload: &'a RawValue,
         }
+        let line_start = self.offset.checked_sub(line.len() as u64);
+        let preceding_padding = self.nul_padding_end.take();
         let Ok(envelope) = serde_json::from_slice::<Envelope>(line) else {
             if !line.iter().all(u8::is_ascii_whitespace) {
                 self.pending_response = None;
                 self.issues += 1;
+                // A NUL-only physical line stays an issue until both adjacent ordinals prove continuity.
+                if !self.rollout_out_of_order
+                    && self
+                        .rollout_extent
+                        .is_some_and(|(_, _, end)| Some(end) == line_start)
+                    && line.strip_suffix(b"\n").is_some_and(|bytes| {
+                        !bytes.is_empty() && bytes.iter().all(|&byte| byte == 0)
+                    })
+                {
+                    self.nul_padding_end = Some(self.offset);
+                }
             }
             return;
         };
         let ordinal = envelope.ordinal.and_then(|n| u64::try_from(n).ok());
+        if preceding_padding.is_some()
+            && preceding_padding == line_start
+            && self.rollout_extent.is_some_and(|(_, prev, _)| {
+                ordinal.is_some_and(|next| prev.checked_add(1) == Some(next))
+            })
+        {
+            self.issues -= 1;
+        }
         self.observe_rollout_position(ordinal);
         let inherited = self.history_boundary.contains(ordinal);
         if envelope.kind == "token_usage_record" {

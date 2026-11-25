@@ -174,6 +174,8 @@ struct Checkpoint {
     history_base: Option<([u8; 16], u64, u64)>,
     rollout_extent: Option<(u64, u64, u64)>,
     rollout_out_of_order: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nul_padding_end: Option<u64>,
     expired_count: Option<((u64, u64, u64), Counter)>,
     #[serde(default)]
     token_day_span: Option<TokenDaySpan>,
@@ -235,6 +237,7 @@ impl Checkpoint {
                     .map(|base| (*base.rollout.as_bytes(), base.end_ordinal, base.end_offset)),
                 rollout_extent: state.rollout_extent,
                 rollout_out_of_order: state.rollout_out_of_order,
+                nul_padding_end: state.nul_padding_end,
                 expired_count: state
                     .expired_count
                     .map(|(position, count)| (position, Counter(count))),
@@ -281,6 +284,7 @@ impl Checkpoint {
                 }),
             rollout_extent: self.rollout_extent,
             rollout_out_of_order: self.rollout_out_of_order,
+            nul_padding_end: self.nul_padding_end,
             expired_count: self
                 .expired_count
                 .map(|(position, count)| (position, count.0)),
