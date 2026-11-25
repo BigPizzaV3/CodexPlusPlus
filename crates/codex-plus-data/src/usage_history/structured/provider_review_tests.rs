@@ -65,6 +65,68 @@ fn attribute(cache: &mut RequestEvidenceCache, events: &mut [UsageEvent]) -> Val
 }
 
 #[test]
+fn captured_gateway_includes_all_target_sessions_and_their_aliases() {
+    let at = Local::now().timestamp_millis();
+    let root = tempfile::tempdir().unwrap();
+    let mut disk = provider_cache::ProviderCache::default();
+    disk.open(root.path(), Local::now().date_naive()).unwrap();
+    let mut events = Vec::new();
+    let mut requests = Vec::new();
+    for i in 0..257u32 {
+        let mut event = event(at);
+        event.id[..4].copy_from_slice(&i.to_le_bytes());
+        event.original_id = event.id;
+        event.session = format!("thread-{i}");
+        let mut completed = request(at);
+        completed.thread_id = event.session.clone();
+        completed.id = format!("request-{i}");
+        events.push(event);
+        requests.push(completed);
+    }
+    requests[0].thread_id = "alias-16".into();
+    let aliases = (0..17).map(|i| (format!("alias-{i}"), "thread-0".to_owned())).collect();
+    disk.capture_proxy(&requests).unwrap();
+    let original = events.clone();
+    let mut classifier = RequestEvidenceCache::default();
+    assert_eq!(classifier.supplement_captured(&events, &aliases, &disk), (257, false));
+    classifier.attribute_with_cache(&mut events, &mut BTreeMap::new(), &aliases, &disk);
+    assert!(events.iter().all(|event| event.provider == "supplier-a"));
+    let mut competitor = request(at);
+    competitor.thread_id = "alias-0".into();
+    competitor.relay_id = "supplier-b".into();
+    disk.capture_proxy(&[competitor]).unwrap();
+    let mut events = original;
+    assert_eq!(classifier.supplement_captured(&events, &aliases, &disk), (258, false));
+    classifier.attribute_with_cache(&mut events, &mut BTreeMap::new(), &aliases, &disk);
+    assert!(unknown_provider(&events[0].provider));
+    assert!(events[1..].iter().all(|event| event.provider == "supplier-a"));
+}
+
+#[test]
+fn request_log_reads_all_finished_rows_and_leaves_the_incomplete_tail_for_retry() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("request-log.jsonl");
+    let mut log = format!("{{\"id\":\"first\",\"error\":\"{}\"}}\n", "x".repeat(4 * 1024 * 1024));
+    for i in 0..8_192 {
+        log.push_str(&format!("{{\"id\":\"{i}\"}}\n"));
+    }
+    log.push_str("{\"id\":\"malformed\",\"timestampMs\":false}\n{\"id\":\"tail\"}");
+    fs::write(&path, &log).unwrap();
+    let mut cache = RequestEvidenceCache::default();
+    cache.refresh(&path);
+    assert_eq!(cache.bytes_read, log.len() as u64);
+    assert_eq!(cache.records.len(), 8_194);
+    assert_eq!(cache.records.first().unwrap().id, "first");
+    assert_eq!(cache.records.last().unwrap().id, "malformed");
+    assert!(!cache.records.last().unwrap().valid_capture());
+    log.push('\n');
+    fs::write(&path, log).unwrap();
+    cache.refresh(&path);
+    assert_eq!(cache.records.len(), 8_195);
+    assert_eq!(cache.records.last().unwrap().id, "tail");
+}
+
+#[test]
 fn final_response_model_requires_compatible_native_context_and_a_complete_receipt() {
     let at = Local::now().timestamp_millis();
     let archived = tempfile::tempdir().unwrap();

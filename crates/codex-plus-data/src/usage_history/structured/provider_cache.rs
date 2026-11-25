@@ -532,16 +532,23 @@ impl ProviderCache {
     pub(super) fn capture_cursor(
         &self,
         source: &str,
-    ) -> anyhow::Result<Option<(i64, String, i64)>> {
+    ) -> anyhow::Result<Option<(i64, String, i64, Option<i64>)>> {
         use rusqlite::OptionalExtension;
         Ok(self
             .db
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?
             .query_row(
-                "SELECT position,anchor,floor FROM native_capture_cursors WHERE source=?1",
+                "SELECT position,anchor,floor,at FROM native_capture_cursors WHERE source=?1",
                 [source],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    let anchor: String = row.get(1)?;
+                    let (anchor, legacy_at) = match anchor.strip_prefix("full:") {
+                        Some(full) => (full.to_owned(), None),
+                        None => (anchor, Some(row.get(3)?)),
+                    };
+                    Ok((row.get(0)?, anchor, row.get(2)?, legacy_at))
+                },
             )
             .optional()?)
     }
@@ -577,6 +584,14 @@ impl ProviderCache {
             )?;
         }
         let count = trim_completed(&tx, "completed_native_requests", self.native_count, added)?;
+        // 替换旧游标前记下受旧正文截断影响的时段，保留原始证据供复核。
+        tx.execute(
+            "INSERT INTO capture_retention(kind,floor)
+             SELECT 'native_legacy_until',at FROM native_capture_cursors
+             WHERE source=?1 AND anchor NOT GLOB 'full:*' AND position>0
+             ON CONFLICT(kind) DO UPDATE SET floor=max(floor,excluded.floor)",
+            [source],
+        )?;
         tx.execute(
             "INSERT INTO native_capture_cursors VALUES(?1,?2,?3,?4,?5,?6)
             ON CONFLICT(source) DO UPDATE SET position=excluded.position,at=excluded.at,
@@ -587,7 +602,7 @@ impl ProviderCache {
                 Local::now().timestamp_millis(),
                 complete,
                 floor,
-                anchor
+                format!("full:{anchor}")
             ],
         )?;
         tx.commit()?;
@@ -607,14 +622,16 @@ impl ProviderCache {
             .ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
         let tx = db.unchecked_transaction()?;
         let (floor, complete): (i64, bool) = tx.query_row(
-            "SELECT coalesce(max(floor),0),coalesce(min(complete),1) FROM native_capture_cursors",
+            "SELECT coalesce(max(CASE WHEN anchor NOT GLOB 'full:*' AND position>0
+                 THEN max(at,floor) ELSE floor END),0),coalesce(min(complete),1)
+             FROM native_capture_cursors",
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let mut floor = floor.max(self.capture_floor("completed_native_requests")?);
+        let floor = floor.max(self.capture_floor("completed_native_requests")?);
         let mut statement = tx.prepare(
             "SELECT data FROM completed_native_requests WHERE session=?1 AND at>?2 AND at<=?3
-             ORDER BY at DESC,id LIMIT 2001",
+             ORDER BY at DESC,id",
         )?;
         let rows = statement.query_map(params![session, since.max(floor), until], |row| {
             row.get::<_, String>(0)
@@ -627,10 +644,6 @@ impl ProviderCache {
             }
             result.push(row);
         }
-        if result.len() > 2000 {
-            floor = floor.max(result.last().unwrap().at);
-            result.retain(|row| row.at > floor);
-        }
         drop(statement);
         tx.commit()?;
         Ok(Captured {
@@ -638,6 +651,16 @@ impl ProviderCache {
             floor,
             complete,
         })
+    }
+
+    pub(super) fn native_legacy_until(&self) -> anyhow::Result<i64> {
+        let db = self.db.as_ref().ok_or_else(|| anyhow::anyhow!("provider cache unavailable"))?;
+        Ok(db.query_row(
+            "SELECT max(coalesce((SELECT floor FROM capture_retention WHERE kind='native_legacy_until'),0),
+                        coalesce((SELECT max(at) FROM native_capture_cursors
+                                  WHERE anchor NOT GLOB 'full:*' AND position>0),0))",
+            [], |row| row.get(0),
+        )?)
     }
 
     pub(super) fn capture_proxy(&mut self, rows: &[RequestEvidence]) -> anyhow::Result<usize> {
@@ -769,40 +792,31 @@ impl ProviderCache {
             .is_autocommit()
             .then(|| db.unchecked_transaction())
             .transpose()?;
-        let mut floor = self
+        let floor = self
             .capture_floor("completed_proxy_requests")?
             .saturating_add(1);
         let extra = self.proxy_extra_select();
         let mut statement = db.prepare(&format!(
-            "SELECT at,data,{extra} FROM completed_proxy_requests AS observed
-            WHERE session=?1 AND at>=?2 AND at<=?3 AND at>=?4 ORDER BY at DESC,id LIMIT 8193",
+            "SELECT data,{extra} FROM completed_proxy_requests AS observed
+            WHERE session=?1 AND at>=?2 AND at<=?3 ORDER BY at DESC,id",
         ))?;
-        let rows = statement.query_map(params![session, since, until, floor], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-            ))
+        let rows = statement.query_map(params![session, since.max(floor), until], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?;
-        let mut rows: Vec<(i64, RequestEvidence)> = rows
+        let rows = rows
             .map(|row| {
-                let (at, data, extra) = row?;
+                let (data, extra) = row?;
                 let mut row = serde_json::from_str(&data)?;
                 apply_proxy_extra(&mut row, extra.as_deref())?;
-                Ok((at, row))
+                Ok(row)
             })
             .collect::<anyhow::Result<_>>()?;
-        if rows.len() > MAX_REQUEST_EVIDENCE {
-            // floor 是首个完整毫秒；不能保留 LIMIT 截断的边界毫秒内的半组请求。
-            floor = floor.max(rows.last().unwrap().0.saturating_add(1));
-            rows.retain(|(at, _)| *at >= floor);
-        }
         drop(statement);
         if let Some(tx) = tx {
             tx.commit()?;
         }
         Ok(Captured {
-            rows: rows.into_iter().map(|(_, row)| row).collect(),
+            rows,
             floor,
             complete: true,
         })

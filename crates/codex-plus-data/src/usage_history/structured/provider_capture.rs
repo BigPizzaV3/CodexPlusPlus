@@ -320,15 +320,17 @@ impl Collector {
             snapshot.query_row("SELECT coalesce(max(id),0) FROM logs", [], |row| row.get(0))?;
         verify_source(path, &opened, &source_id)?;
         let mut discontinuity = false;
+        let mut legacy_at = None;
         if source.identity != source_id {
             // 完整来源轮转不构成已知缺口；未读尾部丢失才抬高覆盖边界。
             discontinuity = !source.identity.is_empty() && source.pending;
             source.seal(&mut self.cache, observed_at)?;
             source.identity = source_id;
-            let (position, anchor, floor) = self
+            let (position, anchor, floor, legacy) = self
                 .cache
                 .capture_cursor(&source.identity)?
-                .unwrap_or((0, "start".into(), 0));
+                .unwrap_or((0, "start".into(), 0, None));
+            legacy_at = legacy;
             source.position = position;
             source.anchor = anchor;
             source.floor = floor;
@@ -344,9 +346,13 @@ impl Collector {
             // 原文件 DELETE/重建后 high 可能更大；冲突必须重读旧 cursor 前的全部 ID。
             source.position = 0;
             source.anchor = "start".into();
-            source.floor = source.floor.max(0);
+            source.floor = source.floor.max(legacy_at.unwrap_or(0));
             source.stamp.clear();
             discontinuity = true;
+        } else if legacy_at.is_some() {
+            // 旧锚点仍对应同一来源；从实际第一行重读旧版可能截断的完成正文。
+            source.position = 0;
+            source.anchor = "start".into();
         }
         if source.stamp == current && !source.pending && source.position == high {
             return Ok(false);
@@ -369,7 +375,7 @@ impl Collector {
             let mut last_target = position;
             let mut statement = snapshot.prepare(
                 "SELECT id,ts,ts_nanos,
-                substr(feedback_log_body,1,16385),thread_id
+                feedback_log_body,thread_id
                 FROM logs WHERE id>?1 AND id<=?2 AND target='codex_http_client::client'
                 ORDER BY id LIMIT ?3",
             )?;
@@ -457,6 +463,63 @@ impl Collector {
 #[cfg(test)]
 mod backend_recovery_tests {
     use super::*;
+
+    #[test]
+    fn collector_persists_long_completion_before_marking_its_window_complete() {
+        let root = tempfile::tempdir().unwrap();
+        let log_path = root.path().join("logs_1.sqlite");
+        let db = Connection::open(&log_path).unwrap();
+        db.execute_batch("CREATE TABLE logs(id INTEGER PRIMARY KEY, ts, ts_nanos, feedback_log_body, thread_id, target)").unwrap();
+        let at = Local::now().timestamp_millis();
+        let session = "long-log-session";
+        let url = format!("https://relay.example/{}/responses", "p".repeat(2_100));
+        let turn = "t".repeat(300);
+        let body = format!(
+            "{} {{thread.id={session} turn.id={turn} model=model}}: Request completed method=POST url={url} status=200 headers={{}}",
+            "x".repeat(17_000)
+        );
+        db.execute(
+            "INSERT INTO logs VALUES(1,?1,?2,?3,?4,'codex_http_client::client')",
+            params![at / 1000, at % 1000 * 1_000_000, body, session],
+        )
+        .unwrap();
+        let old_anchor = cursor_anchor(&db, 1).unwrap();
+        drop(db);
+        let mut collector = Collector {
+            endpoints: BTreeMap::from([(url, Some("supplier-b".into()))]),
+            since: at - 1,
+            ..Default::default()
+        };
+        let storage = root.path().join("cache");
+        let today = Local::now().date_naive();
+        collector.cache.open(&storage, today).unwrap();
+        let source = native_endpoints::source_identity(&log_path).unwrap();
+        let old = Connection::open(provider_cache::database_path(&storage).unwrap()).unwrap();
+        old.execute(
+            "INSERT INTO native_capture_cursors VALUES(?1,1,?2,1,0,?3)",
+            params![source, at, old_anchor],
+        )
+        .unwrap();
+        drop(old);
+        let before = collector
+            .cache
+            .captured_native(session, at - 1, at)
+            .unwrap();
+        assert_eq!(before.floor, at);
+        assert!(before.rows.is_empty());
+        assert!(!collector.read_source(&log_path).unwrap());
+        drop(collector);
+        let mut cache = provider_cache::ProviderCache::default();
+        cache.open(&storage, today).unwrap();
+        let captured = cache.captured_native(session, at - 1, at).unwrap();
+        assert!(captured.complete);
+        assert_eq!(captured.floor, provider_cache::ProviderCache::since(today));
+        assert_eq!(cache.native_legacy_until().unwrap(), at);
+        assert_eq!(captured.rows.len(), 1);
+        let saved = serde_json::to_value(&captured.rows[0]).unwrap();
+        assert_eq!(saved["turn"], turn);
+        assert_eq!(saved["provider"], "supplier-b");
+    }
 
     #[test]
     fn gateway_only_changes_refresh_collector_and_invalid_config_clears_binding() {

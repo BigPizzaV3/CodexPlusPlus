@@ -275,7 +275,7 @@ impl Runtime {
                         "captured request validation failed"
                     );
                     index.native_evidence.attribute(
-                        home,
+                        || super::super::native_endpoints::log_paths_for_home(home),
                         events,
                         &index.provider_endpoints,
                         index.provider_endpoint_since,

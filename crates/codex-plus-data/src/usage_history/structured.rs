@@ -33,10 +33,6 @@ const MAX_EVENTS: usize = 100_000;
 const MAX_LINE: usize = 1024 * 1024;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(10);
 const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-const MAX_REQUEST_LOG_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_REQUEST_LOG_LINE: usize = 16 * 1024;
-const MAX_REQUEST_EVIDENCE: usize = 8192;
-const MAX_ROWS_CAPTURED_PROXY: usize = 20_000;
 const REQUEST_MATCH_WINDOW_MS: i64 = 30_000;
 const DELAYED_REQUEST_MATCH_WINDOW_MS: i64 = 120_000;
 const MAX_NATIVE_RECEIPT_LINE: usize = 8192;
@@ -462,7 +458,6 @@ struct RequestEvidenceCache {
     stamp: Option<(u64, Option<SystemTime>, Option<(u64, u64)>)>,
     records: Vec<RequestEvidence>,
     captured_start: Option<usize>,
-    captured_cursor: usize,
     captured_complete: Option<HashSet<[u8; 32]>>,
     captured_rejected: HashSet<String>,
     captured_id_check_failed: bool,
@@ -608,7 +603,7 @@ impl RequestEvidenceCache {
         }
         self.stamp = stamp;
         self.records.clear();
-        let Some(metadata) = metadata.filter(|m| m.len() <= MAX_REQUEST_LOG_BYTES) else {
+        let Some(metadata) = metadata else {
             return;
         };
         let Ok(mut file) = File::open(path) else {
@@ -624,78 +619,41 @@ impl RequestEvidenceCache {
             return;
         }
         self.reads += 1;
-        let mut contents = Vec::with_capacity(metadata.len() as usize);
+        let mut contents = Vec::new();
         let read_result = (&mut file).take(metadata.len()).read_to_end(&mut contents);
         drop(guard);
         if read_result.is_err() {
             self.stamp = None;
             return;
         }
-        // 总量和单行均有界；serde 跳过未声明字段，不分配 error/正文字符串。
-        let mut reader = BufReader::new(contents.as_slice());
-        let mut line = Vec::new();
-        let mut oversized = false;
-        let result = (|| -> io::Result<()> {
-            loop {
-                let buffer = reader.fill_buf()?;
-                if buffer.is_empty() {
-                    break;
-                }
-                let newline = buffer.iter().position(|b| *b == b'\n');
-                let length = newline.map_or(buffer.len(), |i| i + 1);
-                if !oversized {
-                    if line.len() + length > MAX_REQUEST_LOG_LINE {
-                        line.clear();
-                        oversized = true;
-                    } else {
-                        line.extend_from_slice(&buffer[..length]);
-                    }
-                }
-                reader.consume(length);
-                self.bytes_read += length as u64;
-                if newline.is_some() {
-                    if !oversized {
-                        #[derive(Deserialize)]
-                        struct Identity {
-                            id: String,
-                        }
-                        let record = serde_json::from_slice::<RequestEvidence>(&line)
-                            .ok()
-                            .or_else(|| {
-                                // 字段类型损坏但身份仍明确时，撤销该 ID 的旧补证，不能当作轮转缺失。
-                                serde_json::from_slice::<Identity>(&line)
-                                    .ok()
-                                    .map(|identity| RequestEvidence {
-                                        id: identity.id,
-                                        ..Default::default()
-                                    })
-                            });
-                        if let Some(record) = record {
-                            if self.records.len() == MAX_REQUEST_EVIDENCE {
-                                return Err(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "request evidence limit",
-                                ));
-                            }
-                            self.records.push(record);
-                        }
-                    }
-                    line.clear();
-                    oversized = false;
-                }
+        self.bytes_read = contents.len() as u64;
+        #[derive(Deserialize)]
+        struct Identity {
+            id: String,
+        }
+        for line in contents.split_inclusive(|&byte| byte == b'\n') {
+            if !line.ends_with(b"\n") {
+                break;
             }
-            Ok(())
-        })();
+            let record = serde_json::from_slice::<RequestEvidence>(line)
+                .ok()
+                .or_else(|| {
+                    // 字段损坏但身份明确时，撤销该 ID 的旧证明。
+                    serde_json::from_slice::<Identity>(line)
+                        .ok()
+                        .map(|identity| RequestEvidence {
+                            id: identity.id,
+                            ..Default::default()
+                        })
+                });
+            if let Some(record) = record {
+                self.records.push(record);
+            }
+        }
         // 未换行的尾记录不接受；读取期间被替换或追加时，下轮重新投影。
         let after = fs::symlink_metadata(path)
             .ok()
             .map(|m| (m.len(), m.modified().ok(), file_identity(&m)));
-        if let Err(error) = result {
-            self.records.clear();
-            if error.kind() != io::ErrorKind::InvalidData {
-                self.stamp = None;
-            }
-        }
         if after != stamp {
             self.records.clear();
             self.stamp = None;
@@ -763,12 +721,8 @@ impl RequestEvidenceCache {
             .map(|(index, r)| (r.id.clone(), index))
             .collect();
         let mut recovered = 0;
-        let mut limited = targets.len() > 256;
-        let targets: Vec<_> = targets.into_iter().collect();
-        let offset = self.captured_cursor % targets.len();
-        let count = targets.len().min(256);
-        self.captured_cursor = offset + count;
-        for (session, events) in targets.iter().cycle().skip(offset).take(count) {
+        let mut limited = false;
+        for (session, events) in targets {
             let since = events
                 .iter()
                 .map(|(at, _)| *at)
@@ -781,13 +735,9 @@ impl RequestEvidenceCache {
                 .max()
                 .unwrap()
                 .saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS);
-            let mut sources = source_aliases.remove(session).unwrap_or_default();
-            sources.push(session.clone());
+            let mut sources = source_aliases.remove(&session).unwrap_or_default();
+            sources.push(session);
             sources.sort();
-            if sources.len() > 16 {
-                limited = true;
-                continue;
-            }
             let mut rows = Vec::new();
             let mut complete = true;
             let mut floor = 0;
@@ -804,20 +754,8 @@ impl RequestEvidenceCache {
                     }
                 }
             }
-            // 一个别名的截断边界同样约束整组；不让更早的部分窗口推断唯一性。
+            // 整组别名都要覆盖匹配窗口，才能确认请求唯一。
             rows.retain(|row| row.timestamp_ms >= floor);
-            let additional = rows
-                .iter()
-                .filter(|row| {
-                    !observed
-                        .get(&row.id)
-                        .is_some_and(|&index| self.records[index].merge_observation(row).is_some())
-                })
-                .count();
-            if self.records.len().saturating_add(additional) > MAX_ROWS_CAPTURED_PROXY {
-                limited = true;
-                continue;
-            }
             for row in rows {
                 if let Some(&index) = observed.get(&row.id)
                     && let Some(merged) = self.records[index].merge_observation(&row)
@@ -833,7 +771,7 @@ impl RequestEvidenceCache {
             }
             for (at, id) in events {
                 if complete && at.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS) >= floor {
-                    self.captured_complete.as_mut().unwrap().insert(*id);
+                    self.captured_complete.as_mut().unwrap().insert(id);
                 } else {
                     limited = true;
                 }
@@ -3328,7 +3266,7 @@ impl Index {
         snapshot.provider_recovery["capturedProxyRequestsRead"] = json!(captured.0);
         snapshot.provider_recovery["capturedProxyLimited"] = json!(captured.1);
         snapshot.provider_recovery["nativeEndpoint"] = self.native_evidence.attribute(
-            home,
+            || native_endpoints::log_paths_for_home(home),
             &mut snapshot.events,
             &self.provider_endpoints,
             self.provider_endpoint_since,

@@ -304,7 +304,7 @@ fn incomplete_competing_receipt_cannot_release_its_remaining_request_to_another_
 }
 
 #[test]
-fn retention_and_complete_millisecond_limits_reject_partial_windows() {
+fn physical_retention_rejects_missing_windows_but_dense_complete_milliseconds_are_read() {
     let (root, mut cache, at) = fixture();
     let record = request("a", at, -10, 10, 2, 3);
     cache.capture_proxy(&[record]).unwrap();
@@ -318,12 +318,19 @@ fn retention_and_complete_millisecond_limits_reject_partial_windows() {
     let limited = check(root.path(), &[], &input);
     assert_eq!(limited[0]["rejected"], true);
     db.execute("DELETE FROM capture_retention", []).unwrap();
-    let rows: Vec<_> = (0..=MAX_REQUEST_EVIDENCE)
-        .map(|index| request(&format!("competitor-{index}"), at, -20, 1, 1, 0))
+    let rows: Vec<_> = (0..20_001)
+        .map(|index| request(&format!("other-{index}"), at, -5, 100, 20, 30))
         .collect();
     cache.capture_proxy(&rows).unwrap();
-    let limited = check(root.path(), &[], &input);
-    assert_eq!(limited[0]["rejected"], true, "{limited}");
+    let aliases = (0..17).map(|i| (format!("alias-{i}"), "session".to_owned())).collect();
+    let unique = match_captured_receipts(root.path(), &[], &aliases, &input);
+    assert!(positive(&unique), "{unique}");
+    assert_eq!(unique[0]["requestIds"], json!(["a"]));
+    let mut competitor = request("b", at, -12, 10, 2, 3);
+    competitor.thread_id = "alias-16".into();
+    cache.capture_proxy(&[competitor]).unwrap();
+    let conflict = match_captured_receipts(root.path(), &[], &aliases, &input);
+    assert!(!positive(&conflict), "{conflict}");
 }
 
 #[test]

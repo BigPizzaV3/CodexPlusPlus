@@ -183,9 +183,6 @@ pub(super) fn match_captured_receipts(
                 })
                 .cloned(),
         );
-        if sources.len() > 16 {
-            return json!([]);
-        }
         let mut floor = 0;
         let mut captured = Vec::new();
         for source in sources {
@@ -196,9 +193,6 @@ pub(super) fn match_captured_receipts(
                 return json!([]);
             }
             floor = floor.max(batch.floor);
-            if captured.len().saturating_add(batch.rows.len()) > MAX_ROWS_CAPTURED_PROXY {
-                return json!([]);
-            }
             captured.extend(batch.rows);
         }
         for receipt in receipts {
@@ -235,9 +229,6 @@ pub(super) fn match_captured_receipts(
                     }
                     continue;
                 }
-            }
-            if combined.len() >= MAX_ROWS_CAPTURED_PROXY {
-                return json!([]);
             }
             observed.insert(row.id.clone(), combined.len());
             combined.push(row);
