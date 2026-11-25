@@ -17,6 +17,8 @@
 # line-by-line; same CRLF hazard as *.rs on Windows checkouts (core.autocrlf=true).
 *.ts text eol=lf
 *.tsx text eol=lf
+# 样式文件同理：lazy-pages、extension-manager-pages-ui 等测试按 LF 匹配 CSS 全文（#3286）。
+*.css text eol=lf
 
 # First-party scripts are embedded with include_str! and inspected by source-contract tests.
 assets/inject/*.js text eol=lf
