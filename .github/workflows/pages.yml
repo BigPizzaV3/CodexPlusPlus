@@ -34,7 +34,15 @@ jobs:
           node-version: 20
 
       - name: Refresh site data
-        run: node site/scripts/build-data.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 只列已公开发布的版本：CHANGELOG 里写好但还没发版的那一节不上官网。
+          PUBLISHED_VERSIONS=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --limit 100 --json tagName -q '.[].tagName')
+          export PUBLISHED_VERSIONS
+          node site/scripts/build-data.mjs
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

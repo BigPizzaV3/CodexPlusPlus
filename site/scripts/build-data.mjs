@@ -16,15 +16,32 @@ const outDir = join(root, "site", "data");
 
 /* ---------------- 更新日志提取 ---------------- */
 
+// CHANGELOG 顶部那一节在发版前就会写好；只列 GitHub 上已经公开发布的版本，
+// 否则官网会出现一个下载不到的版本（#3291、#3241）。
+// PUBLISHED_VERSIONS 由 pages.yml 从 Releases 读出（每行一个 tag）；本地不传时不过滤。
+function publishedVersions() {
+  const raw = process.env.PUBLISHED_VERSIONS;
+  if (raw === undefined) return null;
+  return new Set(
+    raw
+      .split(/\s+/)
+      .map((tag) => tag.trim().replace(/^v/i, ""))
+      .filter(Boolean),
+  );
+}
+
 function buildReleases() {
   const raw = readFileSync(join(root, "CHANGELOG.md"), "utf8");
   const blocks = raw.split(/^## /m).slice(1);
+  const published = publishedVersions();
   const releases = [];
-  for (const block of blocks.slice(0, 4)) {
+  for (const block of blocks) {
+    if (releases.length >= 4) break;
     const headerEnd = block.indexOf("\n");
     const header = block.slice(0, headerEnd).trim(); // 如 1.7.7 - 2026-10-13
     const m = header.match(/^([\w.+-]+)\s*-\s*(.+)$/);
     if (!m) continue;
+    if (published && !published.has(m[1])) continue;
     const items = block
       .slice(headerEnd + 1)
       .split(/^- /m)
