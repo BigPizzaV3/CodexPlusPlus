@@ -3,6 +3,7 @@ use super::{Coverage, Store, decode_path, encode_path};
 use crate::usage_history::structured::token_checkpoint::{
     Checkpoint, Counter, EventClassification, Observation,
     historical::{EvidenceOverlay, Historical},
+    runtime::RETENTION_DAYS,
 };
 use crate::usage_history::structured::{
     ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index, MAX_ACTIVITY,
@@ -1817,7 +1818,7 @@ impl Store {
         }
         let scope = Self::scope(&read, provider_names)?;
         let scoped = requested.map(|session| scope.scope_members(session));
-        let (all, scoped_usage) = if let Some((_, sessions)) = &scoped {
+        let (mut all, mut scoped_usage) = if let Some((_, sessions)) = &scoped {
             let [all, usage] = Self::select(
                 &read,
                 query,
@@ -1849,6 +1850,27 @@ impl Store {
                 row.get(0)
             })?;
         let coverage = all.range_coverage(query, bounds, complete)?;
+        let archive_evidence = recovered.and_then(|(_, _, evidence)| evidence);
+        let retained_evidence = historical.map(|evidence| &evidence.overlay);
+        let mut names = provider_names.clone();
+        for (id, label) in [retained_evidence, archive_evidence]
+            .into_iter()
+            .flatten()
+            .flat_map(|evidence| &evidence.provider_names)
+        {
+            let name = names.entry(id.clone()).or_default();
+            if name.trim().is_empty() {
+                name.clone_from(label);
+            }
+        }
+        for selection in std::iter::once(&mut all).chain(scoped_usage.iter_mut()) {
+            for day in &mut selection.days {
+                for row in day["breakdowns"].as_array_mut().unwrap() {
+                    let name = names.get(row["provider"].as_str().unwrap());
+                    row["providerName"] = json!(name);
+                }
+            }
+        }
         let mut result = json!({
             "status": if complete {"ok"} else {"partial"},
             "complete":complete,
@@ -1864,33 +1886,21 @@ impl Store {
             "sessionIds":scope.sessions,
             "sessionAliases":scope.aliases,
             "sessionInfo":scope.session_info,
-            "providerNames":provider_names,
+            "providerNames":names,
             "scan":{
                 "ready":all.coverage.is_some(),
                 "pendingFiles":all.coverage.map(|c| c.pending_sources),
-                "malformedRecords":all.coverage.map(|c| c.issues),
+                "sourceIssues":all.coverage.map(|c| c.issues),
                 "storageBlocked":all.coverage.is_some_and(|c| c.maintenance_blocked),
                 "uncertainCountEvents":all.unresolved,
+                "retentionDays":RETENTION_DAYS,
+                "preciseFrom":(!cutoff.is_empty()).then_some(&cutoff),
             }
         });
         if include_trend {
             result["trend"] = json!(all.trend);
         }
-        let archive_evidence = recovered.and_then(|(_, _, evidence)| evidence);
-        let retained_evidence = historical.map(|evidence| &evidence.overlay);
         if retained_evidence.is_some() || archive_evidence.is_some() {
-            let mut names = provider_names.clone();
-            for (id, label) in [retained_evidence, archive_evidence]
-                .into_iter()
-                .flatten()
-                .flat_map(|evidence| &evidence.provider_names)
-            {
-                let name = names.entry(id.clone()).or_default();
-                if name.trim().is_empty() {
-                    name.clone_from(label);
-                }
-            }
-            result["providerNames"] = json!(names);
             result["classificationRevision"] = json!([
                 retained_evidence.map(|evidence| evidence.updated_at),
                 archive_evidence.map(|evidence| evidence.updated_at)

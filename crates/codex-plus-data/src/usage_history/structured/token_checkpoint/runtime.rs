@@ -26,7 +26,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-const RETENTION_DAYS: u64 = 60;
+pub(super) const RETENTION_DAYS: u64 = 60;
 const RECONCILIATION_BYTES: usize = 32 * 1024 * 1024;
 const WORKING_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 const CLASSIFICATION_SESSIONS_PER_ROUND: usize = 6;
@@ -526,7 +526,8 @@ mod tests {
             .update_with_request_log(&home, &request_log)
             .read(&storage, &query, &request, None, false);
         assert_eq!(before["days"][0]["usage"]["totalTokens"], 110);
-        assert_eq!(before["scan"]["malformedRecords"], 1);
+        assert_eq!(before["scan"]["sourceIssues"], 1);
+        assert!(before["scan"].get("malformedRecords").is_none());
         assert_eq!(before["countStatus"]["complete"], false);
         let row = json!({"id":"test-proof","threadId":session,"model":"gpt-fixture","upstreamModel":"gpt-fixture",
             "relayId":"fixture-relay","relayName":"Fixture Relay","success":true,"state":"success",

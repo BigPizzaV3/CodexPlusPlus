@@ -673,10 +673,11 @@ fn compatibility_fingerprints_bind_the_selected_events_and_allow_a_summary_only_
     };
     let old = crate::usage_history::structured::Snapshot {
         count_cache_available: true,
+        provider_names: BTreeMap::from([(events[0].provider.clone(), "Renamed relay".into())]),
         events,
         ..Default::default()
     };
-    let names = BTreeMap::new();
+    let names = &old.provider_names;
     let from = old.events[0]
         .timestamp
         .parse::<DateTime<chrono::FixedOffset>>()
@@ -695,7 +696,11 @@ fn compatibility_fingerprints_bind_the_selected_events_and_allow_a_summary_only_
     ] {
         let query = Query::parse(&request, cutoff).unwrap();
         let projected =
-            Store::read_response(&mut store.db, &query, &request, Some(PARENT), &names).unwrap();
+            Store::read_response(&mut store.db, &query, &request, Some(PARENT), names).unwrap();
+        assert_eq!(projected["scan"]["retentionDays"], 60);
+        assert_eq!(projected["scan"]["preciseFrom"], cutoff.to_string());
+        assert!(projected["scan"].get("bytesRead").is_none());
+        assert!(projected["scan"].get("indexedFiles").is_none());
         let selected = HashSet::from([PARENT.to_owned()]);
         for (actual, expected) in [
             (&projected["days"][0], old.usage_days(&query, bounds, None)),
@@ -717,7 +722,10 @@ fn compatibility_fingerprints_bind_the_selected_events_and_allow_a_summary_only_
                     .map(|row| {
                         (
                             row["provider"].as_str().unwrap().to_owned(),
-                            row["membershipFingerprint"].clone(),
+                            (
+                                row["membershipFingerprint"].clone(),
+                                row["providerName"].clone(),
+                            ),
                         )
                     })
                     .collect::<BTreeMap<_, _>>()
@@ -728,7 +736,7 @@ fn compatibility_fingerprints_bind_the_selected_events_and_allow_a_summary_only_
         let mut fast = request;
         fast["includeFingerprints"] = json!(false);
         let result =
-            Store::read_response(&mut store.db, &query, &fast, Some(PARENT), &names).unwrap();
+            Store::read_response(&mut store.db, &query, &fast, Some(PARENT), names).unwrap();
         assert!(result["days"][0].get("fingerprintCoverage").is_none());
         assert_eq!(result["days"][0]["usage"], projected["days"][0]["usage"]);
     }
@@ -736,7 +744,8 @@ fn compatibility_fingerprints_bind_the_selected_events_and_allow_a_summary_only_
     store.advance_retention(end).unwrap().unwrap();
     let request = json!({"from":day.to_string(),"to":day.to_string()});
     let query = Query::parse(&request, cutoff).unwrap();
-    let after = Store::read_response(&mut store.db, &query, &request, None, &names).unwrap();
+    let after = Store::read_response(&mut store.db, &query, &request, None, names).unwrap();
+    assert_eq!(after["scan"]["preciseFrom"], end.to_string());
     assert_eq!(after["days"][0]["usage"]["totalTokens"], 440);
     assert_eq!(after["days"][0]["fingerprintCoverage"], "unavailable");
     assert!(after["days"][0].get("accountingFingerprint").is_none());
