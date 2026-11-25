@@ -1,10 +1,10 @@
-import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { Button } from "@/components/ui/button";
+import { CxLoading } from "./cx-layout";
 import { t, tf } from "./i18n";
-import { useEscapeLayer } from "./use-escape-layer";
-import { useModalFocus } from "./use-modal-focus";
+import { useModalShell } from "./use-modal-shell";
 
 type ConfigView = { source: string; inputFormat: string; contents: string; editable: boolean };
 
@@ -27,11 +27,12 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
-  const root = useRef<HTMLDivElement>(null);
+  const titleId = useId();
   const editorId = useId();
-  const close = () => { if (!saving) onClose(); };
-  useEscapeLayer(true, close);
-  useModalFocus(root);
+  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLDivElement>({
+    labelledBy: titleId,
+    onClose: () => { if (!saving) onClose(); },
+  });
   useEffect(() => {
     let current = true;
     invoke<ConfigView>("read_agent_config", { agent }).then(result => {
@@ -53,11 +54,11 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & {
     } catch (reason) { setError(String(reason)); } finally { setSaving(false); }
   };
   const title = tf("编辑 {0} 配置", [name]);
-  return createPortal(<div className="gw-modal-backdrop gw-portal">
-    <div role="dialog" aria-modal="true" aria-label={title} ref={root} tabIndex={-1} className="gw-modal">
-      <header><strong>{title}</strong></header>
+  return createPortal(<div className="gw-modal-backdrop gw-portal" {...backdropProps}>
+    <div className="gw-modal" {...dialogProps}>
+      <header><strong id={titleId}>{title}</strong></header>
       <div className="gw-modal-body">
-        {!view && !error ? <p role="status">{t("正在读取…")}</p> : null}
+        {!view && !error ? <CxLoading /> : null}
         {view ? <>
           <p>{t("配置来源")}：<code>{view.source}</code></p>
           {view.editable ? <>
@@ -68,7 +69,7 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & {
         </> : null}
         {error ? <p role="alert" className="gw-disconnect-error">{error}</p> : null}
       </div>
-      <footer><Button size="sm" type="button" variant="ghost" disabled={saving} onClick={close}>{t("关闭")}</Button>
+      <footer><Button size="sm" type="button" variant="ghost" disabled={saving} onClick={requestClose}>{t("关闭")}</Button>
         {view?.editable ? <Button size="sm" type="button" disabled={saving || draft === view.contents} onClick={() => void save()}>{t("保存")}</Button> : null}
       </footer>
     </div>

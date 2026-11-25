@@ -59,10 +59,16 @@ test("Pi 配置弹窗读取原文，保存失败保留草稿，成功才关闭",
     "react-dom": { createPortal: (child: unknown) => child },
     react: {
       ...hooks,
-      createContext: () => null, useId: () => "editor", useRef: () => ({ current: null }),
+      createContext: () => null, useId: t.mock.fn(() => "config-dialog"),
     },
     "./i18n": translate,
-    "./use-escape-layer": { useEscapeLayer() {} }, "./use-modal-focus": { useModalFocus() {} },
+    "./cx-layout": { CxLoading: "loading" },
+    "./use-modal-shell": {
+      useModalShell: ({ onClose, labelledBy }: { onClose: () => void; labelledBy: string }) => ({
+        backdropProps: { onMouseDown: onClose }, dialogProps: { role: "dialog", "aria-labelledby": labelledBy },
+        requestClose: onClose,
+      }),
+    },
     "@/components/ui/button": { Button: "button" },
     "@tauri-apps/api/core": { invoke },
   };
@@ -71,12 +77,17 @@ test("Pi 配置弹窗读取原文，保存失败保留草稿，成功才关闭",
   const render = () => hooks.render(() => context.exports.AgentConfigDialog({ agent: "pi", name: "Pi", onClose: close }));
   const textarea = () => render().find((item) => item.type === "textarea").props;
   const save = () => render().find((item) => item.props.children === "保存").props;
-  render();
+  const opening = render();
+  assert.ok(opening.some(node => node.type === "loading"));
+  const dialog = opening.find(node => node.props.role === "dialog");
+  assert.ok(opening.some(node => node.type === "strong" && node.props.id === dialog.props["aria-labelledby"]));
   await settle();
+  assert.ok(!render().some(node => node.type === "loading"));
   assert.equal(textarea().value, "{}");
   assert.equal(save().disabled, true);
   textarea().onChange({ currentTarget: { value: draft } });
   save().onClick();
+  render().find(node => node.props.onMouseDown).props.onMouseDown();
   await settle();
   assert.match(render().find((node) => node.props.role === "alert").props.children, /配置已变更/);
   assert.equal(close.mock.callCount(), 0);
@@ -125,7 +136,7 @@ test("Codex 模板保存冲突时保留草稿，不重试，成功后才提示�
   const context = vm.createContext({
     ...translate,
     useState: hooks.useState, useEffect: hooks.useEffect, exports: {}, require: () => jsxRuntime,
-    Button: "button", Save: "svg", SyncedTextarea: "textarea", errorText: String,
+    Button: "button", CxLoading: "loading", Save: "svg", SyncedTextarea: "textarea", errorText: String,
     settingsRef: { current: { status: "ok", settings } }, isSuccessStatus: (status: string) => status === "ok",
     run: async (task: () => unknown) => {
       try { return await task(); } catch (error) { notices.push(String(error)); return null; }
@@ -158,8 +169,9 @@ test("Codex 模板保存冲突时保留草稿，不重试，成功后才提示�
   const button = () => render().find(node => node.type === "button" && Array.isArray(node.props.children)).props;
   const clickSave = async () => { button().onClick(); await settle(); };
 
-  render();
+  assert.ok(render().some(node => node.type === "loading"));
   await settle();
+  assert.ok(!render().some(node => node.type === "loading"));
   assert.equal(textarea().value, opened);
   textarea().onValueChange("[bad");
   await clickSave();

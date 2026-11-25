@@ -114,6 +114,7 @@ import { RelayHeaderRows } from "./RelayHeaderRows";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { CompatToggles } from "./CompatToggles";
+import { CxLoading } from "./cx-layout";
 import { errorText } from "@/lib/utils";
 import { useModalShell } from "./use-modal-shell";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -3133,7 +3134,7 @@ export function RelayCommonConfigScreen({ onSave, onBack }: {
               onValueChange={text => setDraft(text === contents ? null : text)}
             />
           </fieldset>
-        : <p role={loadError ? "alert" : "status"}>{loadError ?? t("正在读取…")}</p>}
+        : loadError ? <p role="alert">{loadError}</p> : <CxLoading />}
     </section>
   );
 }
