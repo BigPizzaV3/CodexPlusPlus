@@ -1663,6 +1663,19 @@ pub fn set_gateway_provider_rotation(
     )
 }
 
+/// 设这家各个 Key / 账号的先后（弹窗里拖动排序）。
+#[tauri::command]
+pub fn set_gateway_credential_order(
+    id: String,
+    ids: Vec<String>,
+) -> CommandResult<Option<GatewayPayload>> {
+    respond(
+        "已保存。",
+        "保存失败",
+        codex_plus_core::gateway::credentials::set_order(&GatewayStore::default(), &id, &ids),
+    )
+}
+
 /// 设一个 Key / 账号的单独设置：停用、权重、只给哪些模型、额度上限。
 #[tauri::command]
 pub fn set_gateway_credential_settings(

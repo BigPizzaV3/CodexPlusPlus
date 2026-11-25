@@ -154,7 +154,13 @@ pub fn remove_account(
             provider.credentials.settings.remove(key_pool::PRIMARY_KEY_ID);
             provider.credentials.settings.remove(key_pool::OFFICIAL_KEY_ID);
             if let Some(settings) = provider.credentials.settings.remove(&next.id) {
-                provider.credentials.settings.insert(primary_id, settings);
+                provider.credentials.settings.insert(primary_id.clone(), settings);
+            }
+            // 排过的先后里：被移除的第一个账号去掉，顶上来的那个换成第一个账号的 id、位置不变。
+            let order = &mut provider.credentials.order;
+            order.retain(|id| id != key_pool::PRIMARY_KEY_ID && id != key_pool::OFFICIAL_KEY_ID);
+            if let Some(slot) = order.iter_mut().find(|id| **id == next.id) {
+                *slot = primary_id;
             }
             Ok(vec![
                 key_pool::PRIMARY_KEY_ID.to_string(),
@@ -172,6 +178,7 @@ pub fn remove_account(
             };
             provider.relay.accounts.remove(position);
             provider.credentials.settings.remove(credential_id);
+            provider.credentials.order.retain(|id| id != credential_id);
             Ok(vec![credential_id.to_string()])
         }
     })?;
@@ -207,6 +214,31 @@ pub fn set_rotation(
 ) -> anyhow::Result<GatewaySettings> {
     let (gateway, ()) = store.update(|gateway| {
         provider_mut(gateway, provider_id)?.credentials.rotation = rotation;
+        Ok(())
+    })?;
+    Ok(gateway)
+}
+
+/// 设这家各个 Key / 账号的先后（拖动排序）。`ids` 要恰好是这家现有的全部凭据 id。
+pub fn set_order(
+    store: &GatewayStore,
+    provider_id: &str,
+    ids: &[String],
+) -> anyhow::Result<GatewaySettings> {
+    let (gateway, ()) = store.update(|gateway| {
+        let provider = provider_mut(gateway, provider_id)?;
+        let mut current = key_pool::expand_keys(&provider.relay)
+            .into_iter()
+            .map(|candidate| candidate.key.key_id)
+            .collect::<Vec<_>>();
+        let mut wanted = ids.to_vec();
+        current.sort();
+        wanted.sort();
+        wanted.dedup();
+        if current != wanted || wanted.len() != ids.len() {
+            bail!("Key / 账号有变化，刷新后再排");
+        }
+        provider.credentials.order = ids.to_vec();
         Ok(())
     })?;
     Ok(gateway)
@@ -292,7 +324,11 @@ pub struct CredentialView {
 pub fn views(provider: &GatewayProvider) -> Vec<CredentialView> {
     let relay = &provider.relay;
     let masked_keys = crate::gateway::apply::provider_keys(relay);
-    key_pool::expand_keys(relay)
+    let mut candidates = key_pool::expand_keys(relay);
+    provider
+        .credentials
+        .sort_by_order(&mut candidates, |candidate| candidate.key.key_id.as_str());
+    candidates
         .into_iter()
         .map(|candidate| {
             let view = &candidate.relay;

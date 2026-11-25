@@ -522,7 +522,7 @@ pub fn order_keys_detailed(
         upstream_model,
         &ProviderCredentials {
             rotation: Some(CredentialRotation::from_key_mode(mode)),
-            settings: Default::default(),
+            ..Default::default()
         },
         mode,
         conversation,
@@ -545,7 +545,9 @@ pub fn order_credentials(
     advance: bool,
 ) -> KeyOrder {
     let rotation = credentials.rotation_or(global);
-    let all = expand_keys(relay)
+    let mut all = expand_keys(relay);
+    credentials.sort_by_order(&mut all, |candidate| candidate.key.key_id.as_str());
+    let all = all
         .into_iter()
         .filter(|candidate| {
             let Some(settings) = credentials.settings_for(&candidate.key.key_id) else {

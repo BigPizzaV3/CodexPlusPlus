@@ -5,6 +5,8 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "拖动调整先后：排在前面的先用": "Drag to reorder: earlier ones are used first",
+  "拖动调先后，排在前面的先用；停用的不再分请求，凭据保留": "Drag to reorder; earlier ones are used first. Paused ones get no requests but are kept",
   "跟随全局": "Follow global",
   "模型用逗号分开，留空表示都能用": "Separate models with commas; empty means all",
   "额度用到 %": "Cap at %",
@@ -19,7 +21,6 @@ export const EN_PLAIN: Record<string, string> = {
   "分配方式": "Distribution",
   "只给这些模型": "Only for these models",
   "同一个对话固定用一个，它答不了才换下一个": "A conversation stays on one; it moves to the next only when that one can't answer",
-  "排在前面的先用；停用的不再分请求，凭据保留": "Earlier ones are used first; paused ones get no requests but are kept",
   "新对话总从排在前面的开始，答不了再换下一个": "New conversations start with the first one and move on when it can't answer",
   "新对话按权重比例分配": "New conversations are split by weight",
   "新对话给剩余额度最多的账号": "New conversations go to the account with the most allowance left",
@@ -4002,6 +4003,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "拖动调整 {0} 的先后": "Drag to reorder {0}",
   "{0} 的设置": "Settings for {0}",
   "只给 {0}": "only {0}",
   "现在是「{0}」，跟本地服务的 Key 策略走": "Currently \"{0}\", following the Local service key policy",

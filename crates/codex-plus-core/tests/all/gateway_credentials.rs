@@ -163,6 +163,7 @@ fn disabled_and_model_limited_credentials_are_skipped() {
     let credentials = ProviderCredentials {
         rotation: None,
         settings,
+        order: Vec::new(),
     };
     assert_eq!(order(&relay, "gpt-a", &credentials, None), ["account-2", "account-3"]);
     assert_eq!(order(&relay, "gpt-b", &credentials, None), ["account-3"]);
@@ -174,6 +175,7 @@ fn rotate_spreads_new_conversations_but_a_conversation_stays_put() {
     let credentials = ProviderCredentials {
         rotation: Some(CredentialRotation::Rotate),
         settings: BTreeMap::new(),
+        order: Vec::new(),
     };
     let firsts = (0..3)
         .map(|_| order(&relay, "gpt-a", &credentials, None)[0].clone())
@@ -205,6 +207,7 @@ fn weighted_follows_the_weights() {
     let credentials = ProviderCredentials {
         rotation: Some(CredentialRotation::Weighted),
         settings,
+        order: Vec::new(),
     };
     let picks = (0..8)
         .map(|_| order(&relay, "gpt-a", &credentials, None)[0].clone())
@@ -219,6 +222,7 @@ fn drain_returns_to_the_first_credential_once_it_recovers() {
     let credentials = ProviderCredentials {
         rotation: Some(CredentialRotation::Drain),
         settings: BTreeMap::new(),
+        order: Vec::new(),
     };
     let keys = key_pool::expand_keys(&relay);
     // 会话落到第二个账号上（比如第一个刚被限流）：用完再换不粘，第一个可用时仍排第一。
@@ -256,6 +260,7 @@ fn usage_prefers_the_account_with_most_left_and_caps_stop_an_account() {
     let usage = ProviderCredentials {
         rotation: Some(CredentialRotation::Usage),
         settings: BTreeMap::new(),
+        order: Vec::new(),
     };
     assert_eq!(order(&relay, "gpt-a", &usage, None), ["account-2", "primary"]);
 
@@ -270,6 +275,7 @@ fn usage_prefers_the_account_with_most_left_and_caps_stop_an_account() {
     let capped = ProviderCredentials {
         rotation: None,
         settings,
+        order: Vec::new(),
     };
     assert_eq!(order(&relay, "gpt-a", &capped, None), ["account-2"], "用到上限的账号先不用");
     quota::forget("cred-usage");
@@ -282,6 +288,7 @@ fn keys_use_the_providers_own_rotation() {
     let credentials = ProviderCredentials {
         rotation: Some(CredentialRotation::Rotate),
         settings: BTreeMap::new(),
+        order: Vec::new(),
     };
     let first = order(&relay, "m", &credentials, None)[0].clone();
     let second = order(&relay, "m", &credentials, None)[0].clone();
@@ -429,4 +436,42 @@ fn credential_settings_are_cleaned_and_one_must_stay_enabled() {
     assert_eq!(views.len(), 2);
     assert_eq!(views[1].kind, "account");
     assert_eq!(views[1].id, "account-2");
+}
+
+#[test]
+fn dragged_order_decides_who_goes_first() {
+    let relay = copilot_relay("cred-order", &["alice", "bob", "carol"]);
+    let credentials = ProviderCredentials {
+        order: vec!["account-3".to_string(), "primary".to_string()],
+        ..Default::default()
+    };
+    assert_eq!(
+        order(&relay, "gpt-a", &credentials, None),
+        ["account-3", "primary", "account-2"],
+        "排过的在前，没排到的照原顺序跟在后面"
+    );
+
+    let mut provider = GatewayProvider::new(relay, "login:copilot");
+    provider.credentials = credentials;
+    let ids = credentials::views(&provider).into_iter().map(|view| view.id).collect::<Vec<_>>();
+    assert_eq!(ids, ["account-3", "primary", "account-2"], "弹窗里的顺序和请求时一样");
+}
+
+#[test]
+fn saving_an_order_must_name_every_credential_and_removal_keeps_it_tidy() {
+    let (_dir, store) = store_with(vec![GatewayProvider::new(
+        copilot_relay("cred-order-save", &["alice", "bob", "carol"]),
+        "login:copilot",
+    )]);
+    let ids = |list: &[&str]| list.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+    assert!(credentials::set_order(&store, "cred-order-save", &ids(&["account-2", "primary"])).is_err());
+    assert!(credentials::set_order(&store, "cred-order-save", &ids(&["account-2", "primary", "primary"])).is_err());
+    let gateway = credentials::set_order(&store, "cred-order-save", &ids(&["account-2", "account-3", "primary"])).unwrap();
+    assert_eq!(gateway.provider("cred-order-save").unwrap().credentials.order, ids(&["account-2", "account-3", "primary"]));
+
+    // 移除第一个账号：bob（account-2）顶上来成为第一个账号，排序里它的位置不变、改叫 primary。
+    let gateway = credentials::remove_account(&store, "cred-order-save", "primary").unwrap();
+    assert_eq!(gateway.provider("cred-order-save").unwrap().credentials.order, ids(&["primary", "account-3"]));
+    let gateway = credentials::remove_account(&store, "cred-order-save", "account-3").unwrap();
+    assert_eq!(gateway.provider("cred-order-save").unwrap().credentials.order, ids(&["primary"]));
 }

@@ -3834,3 +3834,44 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   cursor: default;
   opacity: 0.45;
 }
+
+.gw-portal .pcd-row {
+  position: relative;
+  background: hsl(var(--popover));
+}
+
+.gw-portal .pcd-row[data-dragging] {
+  z-index: 1;
+  box-shadow: 0 8px 24px hsl(var(--shadow-color) / 0.3);
+}
+
+.gw-portal .pcd-row-main {
+  padding-left: 6px;
+}
+
+.gw-portal .pcd-grip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 28px;
+  margin-right: -4px;
+  border-radius: 6px;
+  color: var(--gw-mute);
+  cursor: grab;
+  touch-action: none;
+}
+
+.gw-portal .pcd-grip:hover {
+  background: var(--gw-soft);
+  color: var(--gw-ink);
+}
+
+.gw-portal .pcd-row[data-dragging] .pcd-grip {
+  cursor: grabbing;
+}
+
+.gw-portal .pcd-settings {
+  padding-left: 56px;
+}

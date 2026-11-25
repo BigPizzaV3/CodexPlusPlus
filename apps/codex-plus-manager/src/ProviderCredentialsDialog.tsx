@@ -3,11 +3,14 @@
  * （停用、权重、只给哪些模型、额度上限）。从 Codex「连接与供应商」和 Claude「供应商」的行菜单打开。
  *
  * 版式跟「从第三方导入」一样：上面是分配方式的选项卡，下面一行一个账号（额度条、设置摘要、开关），
- * 点行尾的箭头在行内展开它的设置，最后一行是「添加账号」。
+ * 点行尾的箭头在行内展开它的设置，拖行首的把手调先后，最后一行是「添加账号」。
  */
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, Plus, Trash2, X } from "lucide-react";
+import { closestCenter, DndContext, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS as DndCSS } from "@dnd-kit/utilities";
+import { ChevronDown, GripVertical, Plus, Trash2, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
 import {
@@ -78,7 +81,31 @@ export type CredentialChanges = {
   /** undefined：分法没改；null：改回跟全局。 */
   rotation: CredentialRotation | null | undefined;
   settings: Array<{ id: string; settings: CredentialSettings }>;
+  /** 拖动后的先后（全部凭据 id）；没拖过为 undefined。 */
+  order?: string[];
 };
+
+/** 可拖动的一行：把手在行首，拖动时跟手，其余行让位。 */
+function SortableRow({ id, draggable, label, off, open, children }: { id: string; draggable: boolean; label: string; off: boolean; open: boolean; children: (handle: ReactNode) => ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id, disabled: !draggable });
+  const handle = draggable ? (
+    <span {...attributes} {...listeners} aria-label={tf("拖动调整 {0} 的先后", [label])} className="pcd-grip" title={t("拖动调整先后：排在前面的先用")}>
+      <GripVertical className="h-4 w-4" />
+    </span>
+  ) : null;
+  return (
+    <div
+      className="pcd-row"
+      data-dragging={isDragging || undefined}
+      data-off={off || undefined}
+      data-open={open || undefined}
+      ref={setNodeRef}
+      style={{ transform: DndCSS.Translate.toString(transform), transition: isDragging ? "none" : transition ?? "transform 200ms ease" }}
+    >
+      {children(handle)}
+    </div>
+  );
+}
 
 export function ProviderCredentialsDialog({
   entry,
@@ -111,9 +138,27 @@ export function ProviderCredentialsDialog({
   const [rotation, setRotation] = useState<RotationChoice>(initialRotation);
   const [drafts, setDrafts] = useState<Record<string, Draft>>(() => Object.fromEntries(credentials.map((item) => [item.id, draftOf(item.settings)])));
   const [expanded, setExpanded] = useState<string | null>(null);
+  const initialOrder = credentials.map((item) => item.id);
+  const [order, setOrder] = useState<string[]>(initialOrder);
+  // 登录、移除后列表会变：新来的排在最后，已不在的去掉。
+  const ordered = [
+    ...order.map((id) => credentials.find((item) => item.id === id)).filter((item): item is CredentialView => Boolean(item)),
+    ...credentials.filter((item) => !order.includes(item.id)),
+  ];
+  const orderChanged = ordered.map((item) => item.id).join("\n") !== initialOrder.join("\n");
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+  const finishDrag = (event: DragEndEvent) => {
+    const ids = ordered.map((item) => item.id);
+    const from = ids.indexOf(String(event.active.id));
+    const to = event.over ? ids.indexOf(String(event.over.id)) : -1;
+    if (from >= 0 && to >= 0 && from !== to) setOrder(arrayMove(ids, from, to));
+  };
   const globalRotation: CredentialRotation = globalRoundRobin ? "rotate" : "inOrder";
   const weighted = (rotation === FOLLOW_GLOBAL ? globalRotation : rotation) === "weighted";
-  const parsed = credentials.map((item) => ({ item, settings: settingsFromDraft(drafts[item.id] ?? draftOf(item.settings)) }));
+  const parsed = ordered.map((item) => ({ item, settings: settingsFromDraft(drafts[item.id] ?? draftOf(item.settings)) }));
   const invalidWeight = parsed.some(({ settings }) => Number.isNaN(settings.weight));
   const invalidCap = parsed.some(({ settings }) => Number.isNaN(settings.usedPercentLimit));
   const allDisabled = parsed.length > 0 && parsed.every(({ settings }) => settings.disabled);
@@ -121,7 +166,7 @@ export function ProviderCredentialsDialog({
     : invalidCap ? t("额度上限要填 1–100 的整数，留空表示不限")
     : allDisabled ? t("至少要留一个不停用；整家不用请关掉这家供应商") : "";
   const changed = parsed.filter(({ item, settings }) => !sameSettings(item.settings, settings));
-  const dirty = rotation !== initialRotation || changed.length > 0;
+  const dirty = rotation !== initialRotation || changed.length > 0 || orderChanged;
   const titleId = useId();
   const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
   const update = (id: string, patch: Partial<Draft>) => setDrafts((current) => ({ ...current, [id]: { ...(current[id] ?? draftOf({})), ...patch } }));
@@ -141,6 +186,7 @@ export function ProviderCredentialsDialog({
           onSave({
             rotation: rotation === initialRotation ? undefined : rotation === FOLLOW_GLOBAL ? null : rotation,
             settings: changed.map(({ item, settings }) => ({ id: item.id, settings })),
+            order: orderChanged ? ordered.map((item) => item.id) : undefined,
           });
         }}
       >
@@ -172,17 +218,21 @@ export function ProviderCredentialsDialog({
             <h4>
               {accounts ? t("账号") : "Key"}
               <span className="pcd-count">{credentials.length}</span>
-              {several ? <small>{t("排在前面的先用；停用的不再分请求，凭据保留")}</small> : null}
+              {several ? <small>{t("拖动调先后，排在前面的先用；停用的不再分请求，凭据保留")}</small> : null}
             </h4>
             <div className="pcd-list">
+              <DndContext collisionDetection={closestCenter} onDragEnd={finishDrag} onDragStart={() => setExpanded(null)} sensors={sensors}>
+              <SortableContext items={ordered.map((item) => item.id)} strategy={verticalListSortingStrategy}>
               {parsed.map(({ item, settings }, index) => {
                 const draft = drafts[item.id] ?? draftOf(item.settings);
                 const name = item.kind === "account" ? maskAccountName(item.label) : item.label;
                 const open = expanded === item.id;
                 const summary = settingsSummary(settings, weighted);
                 return (
-                  <div className="pcd-row" data-off={draft.disabled || undefined} data-open={open || undefined} key={item.id}>
+                  <SortableRow draggable={several} id={item.id} key={item.id} label={name} off={draft.disabled} open={open}>
+                    {(handle) => (<>
                     <div className="pcd-row-main">
+                      {handle}
                       <span className="pcd-index">{index + 1}</span>
                       <span className="pcd-copy">
                         <span className="pcd-name">
@@ -234,9 +284,12 @@ export function ProviderCredentialsDialog({
                         ) : null}
                       </div>
                     ) : null}
-                  </div>
+                    </>)}
+                  </SortableRow>
                 );
               })}
+              </SortableContext>
+              </DndContext>
               {onAddAccount ? (
                 <button className="pcd-add" disabled={busy || loggingIn} onClick={onAddAccount} type="button">
                   <Plus className="h-4 w-4" />

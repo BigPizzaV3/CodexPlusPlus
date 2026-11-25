@@ -249,11 +249,28 @@ pub struct ProviderCredentials {
     pub rotation: Option<CredentialRotation>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub settings: BTreeMap<String, CredentialSettings>,
+    /// 用户拖出来的先后（凭据 id）：排在前面的先用。没列到的照原来的顺序排在后面；空表示没调过。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<String>,
 }
 
 impl ProviderCredentials {
     pub fn is_empty(&self) -> bool {
-        self.rotation.is_none() && self.settings.is_empty()
+        self.rotation.is_none() && self.settings.is_empty() && self.order.is_empty()
+    }
+
+    /// 按用户调过的先后排：列在 `order` 里的按它，其余保持原顺序跟在后面。
+    pub fn sort_by_order<T>(&self, items: &mut [T], id: impl Fn(&T) -> &str) {
+        if self.order.is_empty() {
+            return;
+        }
+        let rank = |item: &T| {
+            self.order
+                .iter()
+                .position(|known| known == id(item))
+                .unwrap_or(usize::MAX)
+        };
+        items.sort_by_key(|item| rank(item));
     }
 
     /// 这家实际用的分法：按供应商设的优先，否则跟全局的 Key 策略。

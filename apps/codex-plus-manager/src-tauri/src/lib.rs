@@ -509,6 +509,7 @@ pub fn run() {
             gateway_commands::remove_gateway_provider_account,
             gateway_commands::set_gateway_provider_rotation,
             gateway_commands::set_gateway_credential_settings,
+            gateway_commands::set_gateway_credential_order,
             gateway_commands::replace_gateway_provider_key,
             gateway_commands::delete_gateway_provider_key,
             gateway_commands::test_gateway_provider,

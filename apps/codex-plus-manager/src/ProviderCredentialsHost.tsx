@@ -32,6 +32,7 @@ export function ProviderCredentialsHost({
     if (!entry) return;
     setSaving(true);
     try {
+      if (changes.order && !(await run(`order:${entry.id}`, "set_gateway_credential_order", { id: entry.id, ids: changes.order }, t("保存分配方式"), true))) return;
       if (changes.rotation !== undefined && !(await run(`rotation:${entry.id}`, "set_gateway_provider_rotation", { id: entry.id, rotation: changes.rotation }, t("保存分配方式"), true))) return;
       for (const change of changes.settings) {
         if (!(await run(`credential:${entry.id}`, "set_gateway_credential_settings", { id: entry.id, credentialId: change.id, settings: change.settings }, t("保存分配方式"), true))) return;
