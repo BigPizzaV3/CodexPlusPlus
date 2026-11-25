@@ -946,6 +946,120 @@ fn cold_index_does_not_report_an_empty_archived_day_as_exact() {
 }
 
 #[test]
+fn execution_locators_commit_with_the_source_and_expire_without_losing_the_call() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions).unwrap();
+    let source = sessions.join(format!("rollout-{FIRST}.jsonl"));
+    let now = chrono::Local::now();
+    let at = now - chrono::Duration::seconds(10);
+    let timestamp = at.to_rfc3339();
+    let template = rollout(FIRST);
+    let (meta, token) = template.split_once('\n').unwrap();
+    let token = token.replace("2026-01-02T12:01:00Z", &timestamp);
+    let call = json!({"type":"response_item","timestamp":timestamp,"payload":{
+        "type":"function_call","name":"exec_command","namespace":"functions",
+        "call_id":"example","arguments":"{\"cmd\":\"fixture-body\"}"
+    }});
+    let output = json!({"type":"response_item","timestamp":timestamp,"payload":{
+        "type":"function_call_output","call_id":"example","output":"fixture-output"
+    }});
+    let content = format!("{meta}\n{token}{call}\n{output}\n");
+    fs::write(&source, &content).unwrap();
+    let db = root.join("usage.sqlite");
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    store
+        .db
+        .execute_batch(
+            "CREATE TRIGGER block_execution BEFORE INSERT ON execution_observations
+         BEGIN SELECT RAISE(ABORT, 'execution write failed'); END;",
+        )
+        .unwrap();
+    let names = BTreeMap::new();
+    let cutoff = at.date_naive();
+    let failed = Scan::default().round(&mut store, &root, cutoff, &names, 8192);
+    assert!(!failed.complete);
+    assert!(
+        failed.errors[0]
+            .1
+            .to_string()
+            .contains("execution write failed")
+    );
+    assert!(store.checkpoint(&source).unwrap().is_none());
+    let mut committed = 0;
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |_| {
+        committed += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(committed, 0);
+    store
+        .db
+        .execute_batch("DROP TRIGGER block_execution")
+        .unwrap();
+    drop(store);
+
+    let mut store = Store::open(Connection::open(&db).unwrap()).unwrap();
+    let report = Scan::default().round(&mut store, &root, cutoff, &names, 8192);
+    assert!(report.complete, "{:?}", report.errors);
+    assert_eq!(
+        store.checkpoint(&source).unwrap().unwrap().1.offset,
+        content.len() as u64
+    );
+    {
+        let mut query = store
+            .db
+            .prepare(
+                "SELECT call_id, position, end, name FROM execution_observations ORDER BY position",
+            )
+            .unwrap();
+        let mut rows = query.query([]).unwrap();
+        for (expected, name) in [(call, Some("exec_command")), (output, None)] {
+            let row = rows.next().unwrap().unwrap();
+            let id: String = row.get(0).unwrap();
+            let start: usize = row.get(1).unwrap();
+            let end: usize = row.get(2).unwrap();
+            assert_eq!(id, "example");
+            assert_eq!(row.get::<_, Option<String>>(3).unwrap().as_deref(), name);
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&content[start..end]).unwrap(),
+                expected
+            );
+        }
+        assert!(rows.next().unwrap().is_none());
+    }
+    let retained: u64 = store
+        .db
+        .query_row("SELECT count(*) FROM token_activity", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(retained, 0);
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+        assert_eq!(event.delta.total_tokens, 110);
+        committed += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(committed, 1);
+    store
+        .expire_execution_locators(
+            at.timestamp_millis()
+                + crate::usage_history::structured::execution_observations::DETAIL_MS,
+            256,
+        )
+        .unwrap();
+    let remaining: (u32, u32) = store
+        .db
+        .query_row(
+            "SELECT count(*), count(end) FROM execution_observations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(remaining, (1, 0));
+}
+
+#[test]
 fn activity_checkpoint_restarts_polls_and_publishes_only_committed_receipts() {
     use crate::usage_history::Query;
     use std::io::Write;

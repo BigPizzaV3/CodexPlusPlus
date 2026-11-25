@@ -164,6 +164,24 @@ impl Store {
              ) WITHOUT ROWID, STRICT;
              CREATE INDEX IF NOT EXISTS token_activity_time ON token_activity(timestamp_ms);
              CREATE INDEX IF NOT EXISTS token_activity_call ON token_activity(session_id, call_id);
+             CREATE TABLE IF NOT EXISTS execution_observations (
+                source_id INTEGER NOT NULL REFERENCES token_sources(id) ON DELETE CASCADE,
+                session_id INTEGER NOT NULL REFERENCES token_sessions(id),
+                position INTEGER NOT NULL,
+                timestamp_ms INTEGER NOT NULL,
+                call_id TEXT NOT NULL,
+                end INTEGER,
+                is_output INTEGER NOT NULL,
+                name TEXT,
+                namespace TEXT,
+                PRIMARY KEY (source_id, position)
+             ) WITHOUT ROWID, STRICT;
+             CREATE INDEX IF NOT EXISTS execution_by_time
+                ON execution_observations (timestamp_ms, session_id, call_id) WHERE is_output = 0;
+             CREATE INDEX IF NOT EXISTS execution_by_call
+                ON execution_observations (session_id, call_id);
+             CREATE INDEX IF NOT EXISTS execution_locator_expiry
+                ON execution_observations (is_output, timestamp_ms) WHERE end IS NOT NULL;
              COMMIT;",
         )?;
         Ok(Self { db })
@@ -186,6 +204,29 @@ impl Store {
                 coverage.maintenance_blocked
             ],
         )?;
+        Ok(())
+    }
+
+    pub(super) fn expire_execution_locators(&mut self, now_ms: i64, batch: u32) -> Result<()> {
+        let tx = self.db.transaction()?;
+        let cutoff = now_ms - super::super::execution_observations::DETAIL_MS;
+        tx.execute(
+            "DELETE FROM execution_observations WHERE (source_id, position) IN (
+                 SELECT source_id, position FROM execution_observations
+                 WHERE end IS NOT NULL AND timestamp_ms <= ?1 AND is_output = 1
+                 ORDER BY timestamp_ms LIMIT ?2
+             )",
+            params![cutoff, batch],
+        )?;
+        tx.execute(
+            "UPDATE execution_observations SET end = NULL WHERE (source_id, position) IN (
+                 SELECT source_id, position FROM execution_observations
+                 WHERE end IS NOT NULL AND timestamp_ms <= ?1 AND is_output = 0
+                 ORDER BY timestamp_ms LIMIT ?2
+             )",
+            params![cutoff, batch],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -301,6 +342,10 @@ impl Store {
                 "DELETE FROM token_activity WHERE source_id = ?1",
                 [source_id],
             )?;
+            tx.execute(
+                "DELETE FROM execution_observations WHERE source_id = ?1",
+                [source_id],
+            )?;
         }
         {
             let mut insert = tx.prepare(
@@ -349,6 +394,29 @@ impl Store {
                         "output":tool.output,
                     }))?,
                 ])?;
+            }
+            if let Some(batch) = &state.executions
+                && !batch.rows.is_empty()
+                && !state.identity_conflict
+            {
+                add_session.execute([&state.session])?;
+                let mut insert = tx.prepare(
+                    "INSERT INTO execution_observations
+                     SELECT ?1, id, ?3, ?4, ?5, ?6, ?7, ?8, ?9 FROM token_sessions WHERE session = ?2",
+                )?;
+                for row in &batch.rows {
+                    insert.execute(params![
+                        source_id,
+                        state.session,
+                        row.position,
+                        row.timestamp_ms,
+                        row.call_id,
+                        row.end,
+                        row.is_output,
+                        row.name,
+                        row.namespace,
+                    ])?;
+                }
             }
         }
         Ok(revision)

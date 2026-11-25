@@ -191,8 +191,19 @@ impl Budget {
             return false;
         }
         let reserve = self.line_reserve(state);
+        // 普通调用也会留下一条定位；为有界元数据和向量扩容预留空间。
+        let execution_growth = state.executions.as_ref().map_or(0, |batch| {
+            let rows = &batch.rows;
+            let growth = if rows.len() == rows.capacity() {
+                rows.capacity().max(4)
+                    * std::mem::size_of::<super::execution_observations::Observation>()
+            } else {
+                0
+            };
+            4096 + growth
+        });
         if reserve == LINE_OVERHEAD {
-            return self.memory_left(state) >= reserve;
+            return self.memory_left(state) >= reserve + execution_growth;
         }
         let vector_growth = |len: usize, capacity: usize, element: usize| {
             if len == capacity {
@@ -242,7 +253,11 @@ impl Budget {
                     .sum::<usize>()
                 })
                 .sum::<usize>();
-        if self.memory_left(state) < reserve.saturating_add(growth) {
+        if self.memory_left(state)
+            < reserve
+                .saturating_add(growth)
+                .saturating_add(execution_growth)
+        {
             return false;
         }
         true
@@ -489,22 +504,40 @@ fn tool_heap(tool: &super::ToolRecord) -> usize {
 pub(super) struct Meter {
     events: usize,
     tools: usize,
+    executions: usize,
     event_heap: usize,
     tool_heap: usize,
+    execution_heap: usize,
 }
 
 impl Meter {
     pub(super) fn new(state: &FileState) -> Self {
+        let executions = state
+            .executions
+            .as_ref()
+            .map_or(&[][..], |batch| batch.rows.as_slice());
         Self {
             events: state.events.len(),
             tools: state.tools.len(),
+            executions: executions.len(),
             event_heap: state.events.iter().map(event_heap).sum(),
             tool_heap: state.tools.iter().map(tool_heap).sum(),
+            execution_heap: executions
+                .iter()
+                .map(super::execution_observations::Observation::heap_bytes)
+                .sum(),
         }
     }
 
     pub(super) fn refresh(&mut self, state: &mut FileState, cursor_bytes: usize) {
-        if state.events.len() < self.events || state.tools.len() < self.tools {
+        let executions = state
+            .executions
+            .as_ref()
+            .map_or(&[][..], |batch| batch.rows.as_slice());
+        if state.events.len() < self.events
+            || state.tools.len() < self.tools
+            || executions.len() < self.executions
+        {
             *self = Self::new(state);
         } else {
             self.event_heap += state.events[self.events..]
@@ -517,6 +550,11 @@ impl Meter {
                 .sum::<usize>();
             self.events = state.events.len();
             self.tools = state.tools.len();
+            self.execution_heap += executions[self.executions..]
+                .iter()
+                .map(super::execution_observations::Observation::heap_bytes)
+                .sum::<usize>();
+            self.executions = executions.len();
         }
         let strings = [
             &state.session,
@@ -541,6 +579,11 @@ impl Meter {
             + self.event_heap
             + state.tools.capacity() * std::mem::size_of::<super::ToolRecord>()
             + self.tool_heap
+            + state.executions.as_ref().map_or(0, |batch| {
+                batch.rows.capacity()
+                    * std::mem::size_of::<super::execution_observations::Observation>()
+            })
+            + self.execution_heap
             + state.calls.capacity() * (std::mem::size_of::<(String, super::Call)>() + 32)
             + state
                 .calls

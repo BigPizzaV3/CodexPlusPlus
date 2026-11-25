@@ -381,12 +381,23 @@ impl Store {
         // The projection and revision are left unchanged except for its source membership.
         // If a call exists only on the duplicate, keep both sources rather than dropping it.
         let unique_activity = tx.prepare_cached(
-            "SELECT 1 FROM token_activity copy
-             WHERE copy.source_id = ?2 AND NOT EXISTS (
-                SELECT 1 FROM token_activity own
-                WHERE own.source_id = ?1 AND own.session_id = copy.session_id AND own.call_id = copy.call_id
-                  AND (own.timestamp_ms, own.day, own.payload) = (copy.timestamp_ms, copy.day, copy.payload)
-             ) LIMIT 1",
+            "SELECT 1 WHERE EXISTS (
+                SELECT 1 FROM token_activity copy
+                WHERE copy.source_id = ?2 AND NOT EXISTS (
+                    SELECT 1 FROM token_activity own
+                    WHERE own.source_id = ?1 AND own.session_id = copy.session_id AND own.call_id = copy.call_id
+                      AND (own.timestamp_ms, own.day, own.payload) = (copy.timestamp_ms, copy.day, copy.payload)
+                )
+             ) OR EXISTS (
+                SELECT 1 FROM execution_observations copy
+                WHERE copy.source_id = ?2 AND NOT EXISTS (
+                    SELECT 1 FROM execution_observations own WHERE own.source_id = ?1
+                      AND own.position = copy.position AND own.session_id = copy.session_id
+                      AND (own.timestamp_ms, own.call_id, own.end, own.is_output, own.name, own.namespace)
+                          IS NOT DISTINCT FROM
+                          (copy.timestamp_ms, copy.call_id, copy.end, copy.is_output, copy.name, copy.namespace)
+                )
+             )",
         )?.exists(params![owner_id, copy_id])?;
         if unique_activity
             || FileState::source_stamp(&owner.path)? != owner_stamp

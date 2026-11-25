@@ -18,10 +18,11 @@ pub(super) struct SourceReader {
 
 impl SourceReader {
     pub(super) fn restore(store: &Store, source: &Path) -> Result<Self> {
-        let (revision, state) = match store.checkpoint(source)? {
+        let (revision, mut state) = match store.checkpoint(source)? {
             Some((revision, state)) => (Some(revision), state),
             None => (None, FileState::default()),
         };
+        state.executions = Some(Default::default());
         Ok(Self {
             source: source.to_path_buf(),
             offset: state.offset,
@@ -70,6 +71,8 @@ impl SourceReader {
         let complete = match self.ready {
             Some(complete) => complete,
             None => {
+                self.state.executions.as_mut().unwrap().now_ms =
+                    chrono::Local::now().timestamp_millis();
                 let result = self.state.read_source_batch(&self.source, cutoff, budget);
                 let (complete, replaced) = match result {
                     Ok(result) => result,
@@ -111,6 +114,7 @@ impl SourceReader {
         self.committed_complete = complete;
         self.state.events = Vec::new();
         self.state.tools = Vec::new();
+        self.state.executions.as_mut().unwrap().rows = Vec::new();
         self.ready = None;
         self.replacing = false;
         Ok(complete)

@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
+mod execution_observations;
 mod index_budget;
 mod live_receipts;
 mod native_endpoints;
@@ -1820,6 +1821,7 @@ struct FileState {
     exec_skills: HashMap<String, ExecSkill>,
     exec_polls: HashMap<String, String>,
     tools: Vec<ToolRecord>,
+    executions: Option<execution_observations::Batch>,
     issues: usize,
     bytes_read: u64,
     provider: String,
@@ -3483,7 +3485,15 @@ impl FileState {
         }
         let replaced = self.source_replaced(stamp, compressed);
         if replaced {
+            let executions = self
+                .executions
+                .take()
+                .map(|batch| execution_observations::Batch {
+                    now_ms: batch.now_ms,
+                    rows: Vec::new(),
+                });
             *self = Self::default();
+            self.executions = executions;
             meter = index_budget::Meter::new(self);
             meter.refresh(self, 0);
         }
@@ -3787,15 +3797,25 @@ impl FileState {
         }
         // 忽略消息/推理正文，而不是把多 MB 的文本分配成 Value。
         if envelope.kind == "response_item" {
-            #[derive(Deserialize)]
-            struct Item<'a> {
-                #[serde(rename = "type")]
-                kind: &'a str,
-                call_id: Option<&'a str>,
-            }
-            let Ok(item) = serde_json::from_str::<Item>(envelope.payload.get()) else {
+            let Ok(item) =
+                serde_json::from_str::<execution_observations::Item>(envelope.payload.get())
+            else {
                 return;
             };
+            if let Some(batch) = &mut self.executions
+                && !self.session.is_empty()
+                && !self.history_boundary.contains(ordinal)
+                && !batch.capture(
+                    &item,
+                    envelope.timestamp,
+                    self.offset - line.len() as u64,
+                    self.offset,
+                    cutoff,
+                    self.skip_activity,
+                )
+            {
+                self.activity_truncated = true;
+            }
             if !matches!(
                 item.kind,
                 "function_call"
