@@ -3929,6 +3929,101 @@ fn late_gateway_evidence_reclassifies_committed_rows_and_days_atomically() {
 }
 
 #[test]
+fn durable_future_partial_request_needs_ordered_gateway_and_paired_native_response()
+-> anyhow::Result<()> {
+    use super::scan::Scan;
+    use crate::usage_history::structured::{RequestEvidence, RequestEvidenceCache, provider_cache};
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    fs::create_dir(root.join("sessions"))?;
+    let cutoff = Local::now().date_naive().pred_opt().unwrap();
+    let at = Local::now().timestamp_millis();
+    let time = |delta| {
+        DateTime::from_timestamp_millis(at + delta)
+            .unwrap()
+            .to_rfc3339()
+    };
+    let mut head = header(PARENT, 0);
+    head["payload"]["model_provider"] = json!("custom");
+    head["timestamp"] = json!(time(-60_000));
+    let context = json!({"type":"turn_context","timestamp":time(-50_000),"ordinal":1,"payload":{"turn_id":"t","model":"gpt-fixture"}});
+    let mut counter = count(3, 0, 1, true);
+    counter["timestamp"] = json!(time(0));
+    let usage = &counter["payload"]["info"]["last_token_usage"];
+    let receipt = json!({"type":"token_usage_record","ordinal":2,"timestamp":time(-1),"payload":{"thread_id":PARENT,"turn_id":"t","response_id":"id","usage":usage,"thread_token_usage":usage}});
+    parse(
+        &root.join("sessions/rollout-ref.jsonl"),
+        &[head, context, receipt, counter],
+        cutoff,
+    );
+    let db = root.join("index.sqlite");
+    let mut store = Store::open(Connection::open(&db)?)?;
+    assert!(
+        Scan::default()
+            .round(&mut store, &root, cutoff, &BTreeMap::new(), 1 << 20)
+            .complete
+    );
+    let before = read(&mut store.db, at, at + 1).1.remove(0);
+    drop(store);
+    let mut proof_db = provider_cache::ProviderCache::default();
+    proof_db.open(&root.join("requests"), cutoff)?;
+    for (start, end, proof_end, response, expected) in [
+        (102, 12_309, 5, "id", true),
+        (-24_696, -12_489, 5, "id", false),
+        (0, 12_309, 5, "id", false),
+        (1, 12_309, 5, "id", false),
+        (102, 12_309, 5, "other", false),
+        (12_310, 12_309, 5, "id", false),
+        (102, 12_309, -60_000, "id", false),
+    ] {
+        let mut store = Store::open(Connection::open(&db)?)?;
+        let proof: RequestEvidence = serde_json::from_value(
+            json!({"id":"complete","threadId":PARENT,"model":"gpt-fixture","upstreamModel":"gpt-fixture","relayId":"proved","success":true,"state":"success","statusCode":200,
+            "timestampMs":at+proof_end,"startedAtMs":at-70_000,"attempts":1,"autoRetries":0,"finalResponseEvidence":"final-response-v1","finalResponseId":response,
+            "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}}),
+        )?;
+        let mut other = proof.clone();
+        other.id = "partial".into();
+        other.started_at_ms = if start == 0 { 0 } else { at + start };
+        other.timestamp_ms = at + end;
+        other.final_response_id = None;
+        other.final_response_evidence = None;
+        other.usage = None;
+        let mut evidence = RequestEvidenceCache {
+            records: vec![proof, other],
+            ..Default::default()
+        };
+        store.reclassify_window(
+            PARENT,
+            Some(at..at + 1),
+            1 << 20,
+            &BTreeSet::new(),
+            0,
+            |events, aliases, scope| {
+                evidence.attribute_with_cache_scoped(
+                    events,
+                    &mut BTreeMap::new(),
+                    aliases,
+                    &proof_db,
+                    Some(scope),
+                );
+                assert!(evidence.captured_id_check_error.is_none());
+                Ok(())
+            },
+        )?;
+        drop(store);
+        let after = read(&mut Connection::open(&db)?, at, at + 1).1.remove(0);
+        assert_eq!(
+            after.provider == "proved",
+            expected,
+            "start={start} end={end} proof={proof_end} id={response}"
+        );
+        assert_eq!((after.id, after.delta), (before.id, before.delta));
+    }
+    Ok(())
+}
+
+#[test]
 fn bounded_classification_preserves_day_totals_and_counts_competitors_across_the_boundary() {
     use super::scan::Scan;
     use crate::usage_history::structured::{RequestEvidence, RequestEvidenceCache, provider_cache};

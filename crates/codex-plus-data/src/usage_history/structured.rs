@@ -37,10 +37,11 @@ const REQUEST_MATCH_WINDOW_MS: i64 = 30_000;
 const DELAYED_REQUEST_MATCH_WINDOW_MS: i64 = 120_000;
 const REQUEST_SUPPLIER_PROOF: &str = "request-log-recovered-supplier-only";
 
-struct AttributionScope {
+struct AttributionScope<'a> {
     targets: Range<usize>,
     gateway_blocked: bool,
     native_blocked: bool,
+    matches_terminal: Option<&'a dyn Fn(&UsageEvent, &str) -> anyhow::Result<bool>>,
 }
 
 fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<(u64, u64)> {
@@ -1207,17 +1208,60 @@ impl RequestEvidenceCache {
                     let end = records.partition_point(|record| {
                         record.timestamp_ms <= at.saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS)
                     });
-                    if records[start..end].iter().any(|record| {
-                        record.could_fit_counts(key.input, key.output, key.cached)
-                            && !(paired
-                                && record.usage.is_none()
-                                && record.final_response_id.is_none()
-                                && record.valid_request()
-                                && record.relay_id == request.relay_id
-                                && record.actual_model() == request.actual_model()
-                                && record.model == request.model)
-                    }) {
-                        return None;
+                    let mut later_request = false;
+                    for other in records[start..end]
+                        .iter()
+                        .filter(|r| r.could_fit_counts(key.input, key.output, key.cached))
+                    {
+                        if paired
+                            && !blocked.contains(&other.id)
+                            && other.usage.is_none()
+                            && other.final_response_id.is_none()
+                            && other.valid_request()
+                            && other.relay_id == request.relay_id
+                            && other.actual_model() == request.actual_model()
+                            && other.model == request.model
+                        {
+                            continue;
+                        }
+                        if other.thread_id != event.session
+                            || blocked.contains(&other.id)
+                            || !other.valid_request()
+                            || other.started_at_ms <= (*at).max(request.timestamp_ms)
+                        {
+                            return None;
+                        }
+                        later_request = true;
+                    }
+                    if later_request {
+                        // 原生终态与网关最终响应配对后，才用同一网关的先后顺序排除后发请求。
+                        let final_id = request.final_response_id.as_deref()?;
+                        if event.inherited
+                            || event.session != request.thread_id
+                            || request.final_response_evidence.as_deref()
+                                != Some("final-response-v1")
+                            || !request.valid_request_counts()
+                            || !live_receipts::within_receipt_window(
+                                request,
+                                *at,
+                                REQUEST_MATCH_WINDOW_MS,
+                            )
+                            || !event.last.is_some_and(|last| {
+                                last.cached_known && last.same_counts(event.delta)
+                            })
+                        {
+                            return None;
+                        }
+                        let matches = scope?.matches_terminal?;
+                        match matches(event, final_id) {
+                            Ok(true) => {}
+                            Ok(false) => return None,
+                            Err(error) => {
+                                self.captured_id_check_error =
+                                    Some(format!("validate native response identity: {error:#}"));
+                                return None;
+                            }
+                        }
                     }
                 }
                 if request.known_cached().is_none()

@@ -14,7 +14,11 @@ fn final_response_eligible(record: &RequestEvidence) -> bool {
 #[cfg(test)]
 mod captured_tests;
 
-fn within_receipt_window(record: &RequestEvidence, receipt_at: i64, lookback_ms: i64) -> bool {
+pub(super) fn within_receipt_window(
+    record: &RequestEvidence,
+    receipt_at: i64,
+    lookback_ms: i64,
+) -> bool {
     // 用量通知可能先于网关完成日志到达；只接受通知前已开始的请求。
     record.started_at_ms <= receipt_at
         && (-COMPLETION_LAG_MS..=lookback_ms)

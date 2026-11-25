@@ -1825,16 +1825,50 @@ impl Store {
                 candidates.push(candidate);
             }
         }
-        read.commit()?;
         if target_rows.is_empty() {
             return Ok(None);
         }
+        let matches_terminal = |event: &UsageEvent, id: &str| -> Result<bool> {
+            if let Some(terminal) = &event.terminal_response {
+                return Ok(terminal.as_ref() == id);
+            }
+            let mut claims = read.prepare_cached(
+                "SELECT event_id, payload FROM token_observations INDEXED BY token_terminal_claim
+                 WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
+                   AND json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text'
+                   AND json_extract(CAST(payload AS TEXT), '$.turn') = ?2
+                   AND CAST(payload AS TEXT) -> '$.total.i' = ?3 AND CAST(payload AS TEXT) -> '$.total.o' = ?4
+                 LIMIT 2",
+            )?;
+            let mut rows = claims.query(params![
+                event.session,
+                event.turn,
+                event.total.input_tokens.to_string(),
+                event.total.output_tokens.to_string()
+            ])?;
+            let Some(row) = rows.next()? else {
+                return Ok(false);
+            };
+            let receipt = serde_json::from_slice::<Observation>(row.get_ref(1)?.as_blob()?)?
+                .into_event(
+                    row.get_ref(0)?.as_blob()?.try_into()?,
+                    event.session.clone(),
+                )?;
+            Ok(rows.next()?.is_none()
+                && receipt.terminal_response.as_deref() == Some(id)
+                && terminal_receipts::wholly_accounted_in_batch(
+                    std::slice::from_ref(&receipt),
+                    std::slice::from_ref(event),
+                ))
+        };
         let attribution = AttributionScope {
             targets: target_rows.clone(),
             gateway_blocked,
             native_blocked,
+            matches_terminal: Some(&matches_terminal),
         };
         classify(&mut candidates, &scope.aliases, &attribution)?;
+        read.commit()?;
         let mut changed = Vec::new();
         let mut changed_days = BTreeSet::new();
         for ((event, origin, receipt_origin), candidate) in previous[target_rows.clone()]
