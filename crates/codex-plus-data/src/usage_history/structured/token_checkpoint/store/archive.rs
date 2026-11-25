@@ -11,9 +11,6 @@ use rusqlite::{Connection, params};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-const MAX_SOURCES: usize = 256;
-const REPLAY_WORK_BYTES: usize = 24 * 1024 * 1024;
-
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::usage_history::structured) struct ArchiveKey {
     pub(in crate::usage_history::structured) first: NaiveDate,
@@ -127,20 +124,15 @@ fn sources(
         )
         SELECT s.source, s.revision, s.offset, s.checkpoint
         FROM component JOIN token_sources s ON s.id = component.id
-        ORDER BY s.id LIMIT ?4",
+        ORDER BY s.id",
     )?;
     let mut rows = statement.query(params![
         dates.0.num_days_from_ce(),
         dates.1.num_days_from_ce(),
         scope.map(serde_json::to_string).transpose()?,
-        MAX_SOURCES + 1,
     ])?;
     let mut sources = Vec::new();
     while let Some(row) = rows.next()? {
-        ensure!(
-            sources.len() < MAX_SOURCES,
-            "archive recovery exceeds source budget"
-        );
         let checkpoint: Checkpoint = serde_json::from_slice(row.get_ref(3)?.as_blob()?)?;
         ensure!(
             !checkpoint.resume_pending
@@ -229,27 +221,18 @@ impl Replay {
             self.current
                 .read_source_batch(&source.path, NaiveDate::MIN, &mut budget)?;
         ensure!(
+            complete
+                || self.current.offset > offset
+                || allowance != (budget.read_left, budget.source_left),
+            "archive replay could not advance within its budget"
+        );
+        ensure!(
             !replaced
                 && self.current.stamp == Some(source.stamp)
                 && self.current.offset <= source.offset,
             "archive replay exceeded its committed source"
         );
-        ensure!(
-            self.current.retained_charge
-                + self
-                    .index
-                    .files
-                    .values()
-                    .map(|state| state.retained_charge)
-                    .sum::<usize>()
-                <= REPLAY_WORK_BYTES,
-            "archive replay exceeds reconciliation memory budget"
-        );
         if !complete {
-            ensure!(
-                self.current.offset > offset || allowance != (budget.read_left, budget.source_left),
-                "archive replay could not advance within its budget"
-            );
             return Ok(false);
         }
         ensure!(
@@ -386,6 +369,128 @@ mod tests {
             count(&first, 1),
             count(&second, 2)
         )
+    }
+
+    #[test]
+    fn archive_replay_uses_the_shared_budget_across_more_than_256_sources() -> Result<()> {
+        use crate::usage_history::{Tokens, structured::index_budget::MAX_RETAINED_BYTES};
+        use sha2::{Digest, Sha256};
+        use std::fmt::Write;
+
+        const SOURCE_COUNT: usize = 257;
+        const EVENTS_PER_SOURCE: i64 = 200;
+        let root = tempfile::tempdir()?;
+        let home = root.path().canonicalize()?;
+        let archived = home.join("archived_sessions");
+        fs::create_dir(&archived)?;
+        let day = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let at = stamp(day, 12);
+        let model = "archive-model-".repeat(40);
+        let mut body = format!(
+            "{}\n",
+            json!({"type":"turn_context","timestamp":at.to_rfc3339(),
+            "payload":{"model":model,"turn_id":"archive-turn"}})
+        );
+        let delta = Tokens::new(10, 0, 1);
+        let mut expected = Vec::new();
+        for n in 1..=EVENTS_PER_SOURCE {
+            let time = at + chrono::Duration::seconds(n);
+            let total = Tokens::new(10 * n as u64, 0, n as u64);
+            expected.push((
+                time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                serde_json::to_vec(&json!([total, delta]))?,
+                total,
+            ));
+            writeln!(
+                body,
+                "{}",
+                json!({"type":"event_msg","timestamp":time.to_rfc3339(),"payload":{
+                "type":"token_count","info":{
+                    "last_token_usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":1},
+                    "total_token_usage":{"input_tokens":10*n,"cached_input_tokens":0,"output_tokens":n}}}})
+            )?;
+        }
+        for n in 0..SOURCE_COUNT {
+            let id = format!("00000000-0000-4000-8000-{n:012x}");
+            let header =
+                json!({"type":"session_meta","timestamp":at.to_rfc3339(),"payload":{"id":id}});
+            fs::write(
+                archived.join(format!("rollout-{id}.jsonl")),
+                format!("{header}\n{body}"),
+            )?;
+        }
+        let mut store = Store::open(Connection::open_in_memory()?)?;
+        let mut scan = Scan::default();
+        let names = BTreeMap::new();
+        let cutoff = day.succ_opt().unwrap();
+        for _ in 0..512 {
+            let report = scan.round(&mut store, &home, cutoff, &names, 1 << 20);
+            assert!(report.errors.is_empty(), "{:?}", report.errors);
+            if report.complete {
+                break;
+            }
+        }
+        let key = ArchiveKey {
+            first: day,
+            end: cutoff,
+            session: None,
+        };
+        let mut replay = key.replay(&store.db, &home, names)?;
+        assert_eq!(replay.sources.len(), SOURCE_COUNT);
+        assert!(!replay.step()?);
+        let used = replay.index.files.values().next().unwrap().retained_charge;
+        replay
+            .index
+            .files
+            .values_mut()
+            .next()
+            .unwrap()
+            .retained_charge = MAX_RETAINED_BYTES;
+        assert!(
+            replay
+                .step()
+                .unwrap_err()
+                .to_string()
+                .contains("could not advance within its budget")
+        );
+        assert_eq!(replay.next_source, 1);
+        replay
+            .index
+            .files
+            .values_mut()
+            .next()
+            .unwrap()
+            .retained_charge = used;
+        while !replay.step()? {}
+        let retained: usize = replay.index.files.values().map(|s| s.retained_charge).sum();
+        assert!(
+            retained > 24 << 20 && retained <= MAX_RETAINED_BYTES,
+            "{retained}"
+        );
+        let recovered = replay.finish(&store.db)?;
+        assert_eq!(recovered.events.len(), SOURCE_COUNT * expected.len());
+        let mut events: BTreeMap<_, _> = recovered.events.iter().map(|e| (e.id, e)).collect();
+        for n in 0..SOURCE_COUNT {
+            let session = format!("00000000-0000-4000-8000-{n:012x}");
+            for (time, counters, total) in &expected {
+                let id: [u8; 32] = Sha256::new()
+                    .chain_update(session.as_bytes())
+                    .chain_update(time.as_bytes())
+                    .chain_update(counters)
+                    .finalize()
+                    .into();
+                let event = events.remove(&id).unwrap_or_else(|| {
+                    panic!("missing archive event for session {session} at {time}")
+                });
+                assert_eq!(event.original_id, id);
+                assert_eq!(event.session, session);
+                assert_eq!(&event.timestamp, time);
+                assert_eq!(&event.total, total);
+                assert_eq!(event.delta, delta);
+            }
+        }
+        assert!(events.is_empty());
+        Ok(())
     }
 
     #[test]
