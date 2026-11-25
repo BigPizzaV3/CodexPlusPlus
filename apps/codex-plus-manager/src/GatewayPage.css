@@ -1492,6 +1492,23 @@ span.gw-avatar[data-size] {
 .shell .gw-switch.is-on span {
   background: #fff;
 }
+/* 挂在 body 上的弹窗（分配方式等）不在 .shell 里：开关照页面里的尺寸和颜色。 */
+.gw-portal .gw-switch {
+  width: 32px;
+  height: 18px;
+  padding: 2px;
+}
+.gw-portal .gw-switch span {
+  width: 14px;
+  height: 14px;
+}
+.gw-portal .gw-switch.is-on {
+  background: hsl(var(--switch-on, var(--primary)));
+}
+.gw-portal .gw-switch.is-on span {
+  transform: translateX(14px);
+  background: #fff;
+}
 .gw-pool-row {
   transition: background-color 0.12s ease;
 }
@@ -3581,13 +3598,21 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
 
 .gw-account-line {
   display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gw-account-info {
+  display: flex;
+  flex: 1;
   align-items: center;
   flex-wrap: wrap;
   gap: 4px 8px;
   min-width: 0;
 }
 
-.gw-account-line[data-off="true"] > :not(button) {
+.gw-account-line[data-off="true"] .gw-account-info {
   opacity: 0.55;
 }
 

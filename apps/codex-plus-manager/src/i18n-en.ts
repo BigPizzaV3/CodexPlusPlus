@@ -5,6 +5,7 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "模型用逗号分开，留空表示这家的模型都能用。": "Separate models with commas; empty means all of this provider's models.",
   "一直用排在前面的，用完才换下一个；前面的恢复后再回来": "Keep using the first one; move on only when it runs out, and come back once it recovers",
   "保存分配方式": "Save distribution",
   "全部模型": "All models",
@@ -3999,6 +4000,7 @@ export const EN_PLAIN: Record<string, string> = {
 
 // Interpolated strings: tf("前缀 {0}", [x]) -> EN_TEMPLATE["前缀 {0}"] with {0} filled.
 export const EN_TEMPLATE: Record<string, string> = {
+  "用到 {0}% 先不用": "set aside at {0}%",
   "{0} 个已停用": "{0} paused",
   "{0} 个账号": "{0} accounts",
   "{0} 的分配方式": "Distribution for {0}",

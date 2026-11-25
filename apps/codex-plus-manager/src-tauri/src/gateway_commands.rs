@@ -3883,6 +3883,31 @@ pub fn provider_page_gateway_call(command: &str, args: serde_json::Value) -> ser
             "delete_gateway_provider_key" => {
                 to_value(delete_gateway_provider_key(arg(&args, "id")?, arg(&args, "keyId")?))
             }
+            "set_gateway_provider_rotation" => to_value(set_gateway_provider_rotation(
+                arg(&args, "id")?,
+                arg(&args, "rotation")?,
+            )),
+            "set_gateway_credential_settings" => to_value(set_gateway_credential_settings(
+                arg(&args, "id")?,
+                arg(&args, "credentialId")?,
+                arg(&args, "settings")?,
+            )),
+            "remove_gateway_provider_account" => to_value(remove_gateway_provider_account(
+                arg(&args, "id")?,
+                arg(&args, "credentialId")?,
+            )),
+            "login_gateway_chatgpt" => to_value(tauri::async_runtime::block_on(login_gateway_chatgpt(
+                None,
+                arg(&args, "providerId")?,
+            ))),
+            "login_gateway_chatgpt_api" => to_value(tauri::async_runtime::block_on(
+                login_gateway_chatgpt_api(None, arg(&args, "providerId")?),
+            )),
+            "login_gateway_grok" => to_value(tauri::async_runtime::block_on(login_gateway_grok(
+                None,
+                arg(&args, "providerId")?,
+            ))),
+            "cancel_gateway_login" => to_value(cancel_gateway_login()),
             "test_gateway_provider" => to_value(tauri::async_runtime::block_on(test_gateway_provider(
                 arg(&args, "id")?,
                 arg(&args, "model")?,

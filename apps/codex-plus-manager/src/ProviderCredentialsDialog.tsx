@@ -171,7 +171,7 @@ export function ProviderCredentialsDialog({
                 </div>
               );
             })}
-            <p className="pf-note">{t("模型用逗号分开，留空表示这家的模型都能用。额度用到上限的账号先不用，额度恢复后自动回来。")}</p>
+            <p className="pf-note">{entry.account ? t("模型用逗号分开，留空表示这家的模型都能用。额度用到上限的账号先不用，额度恢复后自动回来。") : t("模型用逗号分开，留空表示这家的模型都能用。")}</p>
           </section>
         </div>
 

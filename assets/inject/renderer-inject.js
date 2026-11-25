@@ -16504,6 +16504,13 @@ ${key} = ${value}`]);
     if (kind.startsWith("agg-")) return renderCodexPlusProviderPage();
     // 本地服务页签：协议写进草稿（与输入框一样不重绘）；测试用模型只在点「测试」时读按钮上的值。
     if (kind === "gw-protocol") codexPlusGatewayHandleInput({ target: { dataset: { codexGatewayField: "protocol" }, value } });
+    // 一家里多个账号 / Key 的分配方式：选了就存（空值是跟随全局）。
+    if (kind === "gw-rotation") {
+      const entry = codexPlusGatewaySelected();
+      if (entry && value !== (entry.rotationSet ? entry.rotation || "" : "")) {
+        void codexPlusGatewayMutate("set_gateway_provider_rotation", { id: entry.id, rotation: value || null }, { busy: "rotation", success: "已保存分配方式。" });
+      }
+    }
   }
 
   /** 菜单的点击（开合、选中）；是它的事件就处理并返回 true。 */
@@ -17505,6 +17512,76 @@ ${key} = ${value}`]);
     return `<div class="codex-plus-provider-list" role="list" aria-label="共享供应商">${rows}${draftRow}${rows || draftRow ? "" : codexPlusGatewayEntries().length ? '<div class="codex-plus-provider-help">其他 Agent 的供应商已隐藏，「+ 新建」菜单里可以显示。</div>' : '<div class="codex-plus-provider-help">还没有供应商。加进来的供应商都会合在一起给 Codex 用。</div>'}</div>`;
   }
 
+  /** 浏览器登录、能在 Codex 里直接加账号的种类；Copilot（验证码）和各订阅（要先选登录方式）去管理器加。 */
+  const codexPlusGatewayBrowserLogins = { chatgpt: "login_gateway_chatgpt", "chatgpt-api": "login_gateway_chatgpt_api", grok: "login_gateway_grok" };
+
+  /** 额度的一句话：每个窗口「5 小时 32%」，用逗号分开。 */
+  function codexPlusGatewayQuotaText(quota) {
+    const windows = quota?.windows || [];
+    return windows.map((window) => {
+      const minutes = window.windowMinutes;
+      const name = minutes === 300 ? "5 小时" : minutes === 10080 ? "每周" : minutes ? `${Math.round(minutes / 60)} 小时` : "本期";
+      return `${name}已用 ${Math.round(Number(window.usedPercent) || 0)}%`;
+    }).join("，");
+  }
+
+  /** 一家里的多个账号 / 多个 Key：分配方式、逐个停用、移除和「添加账号」。账号只有一个、Key 不到两个时不显示。 */
+  function codexPlusGatewayCredentialsCard(entry) {
+    const credentials = entry?.credentials || [];
+    const accounts = Boolean(entry?.account);
+    if (!entry || (!accounts && credentials.length < 2)) return "";
+    const busy = Boolean(codexPlusGatewayPageState.busy);
+    const model = codexPlusGatewayModel;
+    const globalRotation = codexPlusGatewayPageState.payload?.gateway?.keyPolicy?.mode === "roundRobin" ? "rotate" : "inOrder";
+    const rotation = entry.rotationSet && entry.rotation ? entry.rotation : "";
+    const rotationOptions = [["", `跟随全局（${model.credentialRotationLabel(globalRotation)}）`], ...model.CREDENTIAL_ROTATIONS.map((value) => [value, model.credentialRotationLabel(value)])];
+    const removable = accounts && credentials.length > 1;
+    const rows = credentials.map((item) => {
+      const on = !item.settings?.disabled;
+      const settings = item.settings || {};
+      const meta = [
+        item.plan,
+        codexPlusGatewayQuotaText(item.quota),
+        settings.usedPercentLimit ? `用到 ${settings.usedPercentLimit}% 先不用` : "",
+        settings.weight && settings.weight !== 1 ? `权重 ${settings.weight}` : "",
+        settings.models?.length ? `只给 ${settings.models.join("、")}` : "",
+        on ? "" : "已停用",
+      ].filter(Boolean).join(" · ");
+      const label = item.kind === "key" ? `<code>${escapeHtml(item.label)}</code>` : escapeHtml(item.label);
+      return `<div class="codex-plus-provider-line" data-kind="action" data-codex-gateway-credential="${escapeHtml(item.id)}"><span class="codex-plus-provider-line-copy"><span class="codex-plus-provider-line-title">${label}</span>${meta ? `<span class="codex-plus-provider-line-help">${escapeHtml(meta)}</span>` : ""}</span><span class="codex-plus-provider-line-control">
+        ${credentials.length > 1 ? codexPlusProviderToggleHtml(on, `使用「${item.label}」`, `data-codex-gateway-credential-toggle="${escapeHtml(item.id)}" ${busy ? "disabled" : ""}`) : ""}
+        ${removable ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-account-remove="${escapeHtml(item.id)}" data-label="${escapeHtml(item.label)}" ${busy ? "disabled" : ""}>移除</button>` : ""}
+      </span></div>`;
+    }).join("");
+    const loggingIn = codexPlusGatewayPageState.busy === "add-account";
+    const addLine = accounts
+      ? codexPlusProviderActionLine("添加账号", codexPlusGatewayBrowserLogins[entry.account]
+        ? "再登录一个账号加进这一家，轮着用各个账号的额度。会打开浏览器登录。"
+        : "这种账号要在 Codex++ 管理器里登录（验证码或选登录方式），登录后加进这一家。",
+        loggingIn
+          ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-login">取消登录</button>'
+          : `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="add-account" ${busy ? "disabled" : ""}>${codexPlusGatewayBrowserLogins[entry.account] ? "添加账号" : "在 Codex++ 中添加"}</button>`)
+      : "";
+    const rotationLine = credentials.length > 1
+      ? codexPlusProviderActionLine("分配方式", model.credentialRotationDescription(rotation || globalRotation) + "；同一个对话固定用一个，它答不了才换。",
+        codexPlusProviderMenu("gw-rotation", rotation, rotationOptions, "分配方式", busy ? "disabled" : ""))
+      : "";
+    return codexPlusProviderCard(accounts ? "账号" : "Key 分配", `${rotationLine}${rows}${addLine}`,
+      credentials.length < 2 ? "" : accounts
+        ? "权重、只给哪些模型、额度用到多少先不用，在 Codex++ 管理器的「分配方式」里设。"
+        : "权重、只给哪些模型，在 Codex++ 管理器的「分配方式」里设。");
+  }
+
+  async function codexPlusGatewayAddAccount(entry) {
+    const command = codexPlusGatewayBrowserLogins[entry.account];
+    if (!command) {
+      void postJson("/manager/open", { page: "gatewayProviders" });
+      return;
+    }
+    showToast("已在浏览器打开登录页，登录完成后回到这里。", { type: "info" });
+    await codexPlusGatewayMutate(command, { providerId: entry.id }, { busy: "add-account" });
+  }
+
   function renderCodexPlusGatewayDetail() {
     const state = codexPlusGatewayPageState;
     const entry = state.isNew ? null : codexPlusGatewaySelected();
@@ -17533,11 +17610,12 @@ ${key} = ${value}`]);
       '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button>'));
     if (!editable) {
       return `${header}
+        ${codexPlusGatewayCredentialsCard(entry)}
         ${codexPlusProviderCard("模型", [
           codexPlusProviderActionLine("模型列表", (entry.models || []).join("、") || "（无）", ""),
           testRow,
         ].join(""), entry.account
-          ? "登录得到的账号（订阅额度、Token 刷新都由本地服务维护），在 Codex 里只能启停、排序和测试。"
+          ? "登录得到的账号（订阅额度、Token 刷新都由本地服务维护）；模型列表在 Codex++ 管理器里改。"
           : "这一项由 Codex 原生登录或拓展提供，在 Codex 里只能启停、排序和测试。")}
         ${managerRow("账号与订阅", "登录、额度和刷新在 Codex++ 管理器里管理。")}
         ${dangerCard}`;
@@ -17562,6 +17640,7 @@ ${key} = ${value}`]);
             <div class="codex-plus-provider-key-add"><input type="password" class="codex-plus-provider-input" data-codex-gateway-new-key="true" placeholder="sk-..." autocomplete="off" spellcheck="false">
             <button type="button" class="codex-plus-action-button" data-codex-gateway-action="add-key" ${busy ? "disabled" : ""}>添加 Key</button></div>`,
         "Key 只显示首尾几位；多个 Key 会自动轮换。")}
+      ${state.isNew ? "" : codexPlusGatewayCredentialsCard(entry)}
       ${codexPlusProviderCard("模型", [
         codexPlusProviderLine("默认模型", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="model" value="${escapeHtml(draft.model)}" spellcheck="false">`),
         codexPlusProviderLine("模型列表", `<textarea class="codex-plus-provider-input codex-plus-provider-code" rows="5" data-codex-gateway-field="modelList" spellcheck="false" placeholder="一行一个">${escapeHtml(draft.modelList)}</textarea>`, "一行一个模型名。", true),
@@ -17642,6 +17721,28 @@ ${key} = ${value}`]);
       return true;
     }
     const entry = codexPlusGatewaySelected();
+    const credentialToggle = target.closest("[data-codex-gateway-credential-toggle]");
+    if (credentialToggle && entry) {
+      if (credentialToggle.disabled) return true;
+      const id = credentialToggle.dataset.codexGatewayCredentialToggle;
+      const item = (entry.credentials || []).find((credential) => credential.id === id);
+      if (item) {
+        const disabled = !item.settings?.disabled;
+        await codexPlusGatewayMutate("set_gateway_credential_settings", { id: entry.id, credentialId: id, settings: { ...item.settings, disabled } }, {
+          busy: `credential:${id}`,
+          success: disabled ? `已停用「${item.label}」。` : `已启用「${item.label}」。`,
+        });
+      }
+      return true;
+    }
+    const removeAccount = target.closest("[data-codex-gateway-account-remove]");
+    if (removeAccount && entry) {
+      if (removeAccount.disabled) return true;
+      const label = removeAccount.dataset.label || "";
+      const answer = await codexPlusAsk({ title: "移除账号？", message: `从「${entry.name}」移除账号「${label}」。`, options: [{ value: "remove", label: "移除" }] });
+      if (answer) await codexPlusGatewayMutate("remove_gateway_provider_account", { id: entry.id, credentialId: removeAccount.dataset.codexGatewayAccountRemove }, { success: `已移除「${label}」。` });
+      return true;
+    }
     const replaceKey = target.closest("[data-codex-gateway-key-replace]");
     if (replaceKey && entry) {
       await codexPlusGatewayReplaceKey(entry, replaceKey.dataset.codexGatewayKeyReplace);
@@ -17686,6 +17787,8 @@ ${key} = ${value}`]);
         if (entry && key) await codexPlusGatewayMutate("add_gateway_provider_key", { id: entry.id, key }, { success: "Key 已添加。" });
         break;
       }
+      case "add-account": if (entry) await codexPlusGatewayAddAccount(entry); break;
+      case "cancel-login": void codexPlusGatewayCall("cancel_gateway_login"); break;
       case "connect": await codexPlusGatewayConnect(); break;
       case "disconnect": await codexPlusGatewayOpenDisconnect(); break;
       case "mode-aggregate":

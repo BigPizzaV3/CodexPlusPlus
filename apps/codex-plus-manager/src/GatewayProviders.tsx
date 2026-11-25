@@ -1012,10 +1012,13 @@ function PoolRow({
               <div className="gw-detail-value gw-account-list">
                 {credentials.map((item) => (
                   <div className="gw-account-line" data-off={Boolean(item.settings.disabled)} key={item.id}>
-                    <span className="gw-account-name">{maskAccountName(item.label)}</span>
-                    {item.plan ? <small>{item.plan}</small> : null}
-                    {item.settings.disabled ? <small>{t("已停用")}</small> : null}
-                    {item.quota ? <QuotaWindows compact quota={item.quota} /> : null}
+                    <span className="gw-account-info">
+                      <span className="gw-account-name">{maskAccountName(item.label)}</span>
+                      {item.plan ? <small>{item.plan}</small> : null}
+                      {item.settings.usedPercentLimit ? <small>{tf("用到 {0}% 先不用", [item.settings.usedPercentLimit])}</small> : null}
+                      {item.settings.disabled ? <small>{t("已停用")}</small> : null}
+                      {item.quota ? <QuotaWindows compact quota={item.quota} /> : null}
+                    </span>
                     <button aria-label={tf("移除 {0}", [maskAccountName(item.label)])} className="gw-icon-button gw-inline-icon" disabled={busy !== null} onClick={() => void removeAccount(item.id, item.label)} title={t("移除这个账号")} type="button">
                       <X className="h-3.5 w-3.5" />
                     </button>
