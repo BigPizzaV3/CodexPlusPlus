@@ -1771,6 +1771,8 @@ mod tests {
                 ])
                 .env_clear()
                 .env("CODEX_PLUS_MAIN_STOP_API_TEST_DRIVER", mode)
+                .env("CODEX_PLUS_TEST_SANDBOX", crate::test_sandbox::root().unwrap())
+                .env("HOME", crate::test_sandbox::active_home().unwrap())
                 .env("APPDATA", &app_data)
                 .stdin(Stdio::null())
                 .creation_flags(crate::windows_integration::CREATE_NO_WINDOW);
@@ -1873,6 +1875,8 @@ mod tests {
                 ])
                 .env_clear()
                 .env("CODEX_PLUS_STOP_IDENTITY_TEST_CHILD", "owned-helper")
+                .env("CODEX_PLUS_TEST_SANDBOX", crate::test_sandbox::root().unwrap())
+                .env("HOME", crate::test_sandbox::active_home().unwrap())
                 .env("APPDATA", &app_data)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
