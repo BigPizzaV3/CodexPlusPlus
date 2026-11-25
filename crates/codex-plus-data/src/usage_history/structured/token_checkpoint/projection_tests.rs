@@ -64,6 +64,298 @@ fn new_source<'a>(source: &'a Path, state: &'a FileState) -> SourceUpdate<'a> {
 }
 
 #[test]
+fn long_continuation_appends_within_budget_after_reopen_and_refuses_a_child() -> anyhow::Result<()>
+{
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let file = root.join("index.sqlite");
+    let parent = root.join(format!("rollout-{PHYSICAL_PREFIX}.jsonl"));
+    let leaf = root.join(format!("rollout-{CHILD}.jsonl"));
+    let child = root.join(format!("rollout-{OTHER}.jsonl"));
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let source_budget = 1 << 20;
+    let append_budget = 8192;
+    let head = std::iter::once(header(PARENT, 0))
+        .chain((1..=48).map(|n| count(n, n, n as u64, true)))
+        .collect::<Vec<_>>();
+    let base = parse(&parent, &head, cutoff);
+    let mut meta = header(PARENT, 49);
+    meta["payload"]["history_base"] = json!({"thread_id":PHYSICAL_PREFIX,
+        "end_ordinal_exclusive":49,"end_byte_offset":base.offset});
+    let own = [meta, count(50, 49, 49, true)];
+    let first = parse(&leaf, &own, cutoff);
+    let mut store = Store::open(Connection::open(&file)?)?;
+    for (path, state) in [(&parent, &base), (&leaf, &first)] {
+        let batch = store.prepare(
+            new_source(path, state),
+            cutoff,
+            names.clone(),
+            source_budget,
+        )?;
+        store.publish(batch)?;
+    }
+    let append = |row: &Value| -> std::io::Result<()> {
+        writeln!(fs::OpenOptions::new().append(true).open(&leaf)?, "{row}")
+    };
+    let duplicate = count(51, 50, 49, true);
+    append(&duplicate)?;
+    let mut reader = SourceReader::restore(&store, &leaf)?;
+    assert!(reader.step(
+        &mut store,
+        cutoff,
+        &mut Budget::new(std::iter::empty()),
+        &names,
+        append_budget
+    )?);
+    assert_eq!(read(&mut store.db, i64::MIN, i64::MAX).1.len(), 49);
+    let (committed_revision, committed) = store.checkpoint(&leaf)?.unwrap();
+    drop(store);
+
+    let new_count = count(52, 51, 50, true);
+    append(&new_count)?;
+    let mut store = Store::open(Connection::open(&file)?)?;
+    let mut reader = SourceReader::restore(&store, &leaf)?;
+    store.db.execute_batch(
+        "CREATE TEMP TRIGGER reject_append BEFORE UPDATE ON token_sources
+         BEGIN SELECT RAISE(ABORT, 'fixture append rollback'); END;",
+    )?;
+    let append_next = |reader: &mut SourceReader, store: &mut Store| {
+        reader.step(
+            store,
+            cutoff,
+            &mut Budget::new(std::iter::empty()),
+            &names,
+            append_budget,
+        )
+    };
+    let error = append_next(&mut reader, &mut store).unwrap_err();
+    assert!(error.to_string().contains("fixture append rollback"));
+    let (stored_revision, stored) = store.checkpoint(&leaf)?.unwrap();
+    assert_eq!(
+        (stored_revision, stored.offset),
+        (committed_revision, committed.offset)
+    );
+    store.db.execute_batch("DROP TRIGGER reject_append")?;
+    assert!(append_next(&mut reader, &mut store)?);
+    let (latest_revision, latest) = store.checkpoint(&leaf)?.unwrap();
+    let (_, actual) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(actual.len(), 50);
+
+    let reference_file = root.join("reference.jsonl");
+    let reference = parse(
+        &reference_file,
+        &[
+            own[0].clone(),
+            own[1].clone(),
+            duplicate.clone(),
+            new_count.clone(),
+        ],
+        cutoff,
+    );
+    let mut full = Store::open(Connection::open_in_memory()?)?;
+    for (path, state) in [(&parent, &base), (&leaf, &reference)] {
+        let batch = full.prepare(
+            new_source(path, state),
+            cutoff,
+            names.clone(),
+            source_budget,
+        )?;
+        full.publish(batch)?;
+    }
+    let (_, expected) = read(&mut full.db, i64::MIN, i64::MAX);
+    assert!(actual == expected);
+
+    let mut correction = count(53, 52, 50, true);
+    correction["payload"]["info"]["total_token_usage"]["cached_input_tokens"] = json!(999);
+    let mut backdated = count(53, 52, 51, true);
+    backdated["timestamp"] = json!("2026-01-02T13:00:52+02:00"); // 11:00:52Z, before the anchor.
+    for rejected in [correction, backdated] {
+        let mut changed = parse(
+            &reference_file,
+            &[
+                own[0].clone(),
+                own[1].clone(),
+                duplicate.clone(),
+                new_count.clone(),
+                rejected,
+            ],
+            cutoff,
+        );
+        changed.events.drain(..3);
+        let error = store
+            .prepare(
+                SourceUpdate {
+                    source: &leaf,
+                    state: &changed,
+                    previous_revision: Some(latest_revision),
+                    replace: false,
+                },
+                cutoff,
+                names.clone(),
+                append_budget,
+            )
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("Token component exceeds"));
+        let (retained_revision, retained) = store.checkpoint(&leaf)?.unwrap();
+        assert_eq!(
+            (retained_revision, retained.offset),
+            (latest_revision, latest.offset)
+        );
+        assert!(read(&mut store.db, i64::MIN, i64::MAX).1 == actual);
+    }
+
+    let mut child_meta = header(PARENT, 53);
+    child_meta["payload"]["history_base"] = json!({"thread_id":CHILD,
+        "end_ordinal_exclusive":53,"end_byte_offset":latest.offset});
+    let competing = parse(&child, &[child_meta, count(54, 52, 51, true)], cutoff);
+    let batch = store.prepare(
+        new_source(&child, &competing),
+        cutoff,
+        names.clone(),
+        source_budget,
+    )?;
+    store.publish(batch)?;
+    append(&count(53, 53, 52, true))?;
+    assert!(
+        append_next(&mut reader, &mut store)
+            .unwrap_err()
+            .to_string()
+            .contains("Token component exceeds")
+    );
+    let (retained_revision, retained) = store.checkpoint(&leaf)?.unwrap();
+    assert_eq!(
+        (retained_revision, retained.offset),
+        (latest_revision, latest.offset)
+    );
+    Ok(())
+}
+
+#[test]
+fn continuation_receipts_require_reconciliation_in_the_incoming_or_prior_batch()
+-> anyhow::Result<()> {
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let full_budget = 1 << 20;
+    let append_budget = 8192;
+    for (prior_receipt, incoming_receipt) in [(false, false), (false, true), (true, false)] {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path().canonicalize()?;
+        let parent = root.join(format!("rollout-{PHYSICAL_PREFIX}.jsonl"));
+        let leaf = root.join(format!("rollout-{CHILD}.jsonl"));
+        let head = std::iter::once(header(PARENT, 0))
+            .chain((1..=48).map(|n| count(n, n, n as u64, true)))
+            .collect::<Vec<_>>();
+        let base = parse(&parent, &head, cutoff);
+        let mut meta = header(PARENT, 49);
+        meta["payload"]["history_base"] = json!({"thread_id":PHYSICAL_PREFIX,
+            "end_ordinal_exclusive":49,"end_byte_offset":base.offset});
+        let mut rows = vec![
+            meta,
+            json!({"type":"turn_context","ordinal":50,"timestamp":"2026-01-02T12:00:48Z",
+                "payload":{"turn_id":"tail","model":"fixture"}}),
+        ];
+        let receipt = |ordinal: usize, second: usize| {
+            let counter = count(ordinal, second, 50, true);
+            let info = &counter["payload"]["info"];
+            json!({"type":"token_usage_record","ordinal":ordinal,"timestamp":counter["timestamp"],
+                "payload":{"thread_id":PARENT,"turn_id":"tail","response_id":"tail-response",
+                    "usage":info["last_token_usage"],"thread_token_usage":info["total_token_usage"]}})
+        };
+        if prior_receipt {
+            // The receipt precedes the committed anchor: only the raw claim survives.
+            rows.push(receipt(51, 49));
+        }
+        rows.push(count(49 + rows.len(), 50, 49, true));
+        let first = parse(&leaf, &rows, cutoff);
+        let mut store = Store::open(Connection::open_in_memory()?)?;
+        for (source, state) in [(&parent, &base), (&leaf, &first)] {
+            let prepared = store.prepare(
+                new_source(source, state),
+                cutoff,
+                names.clone(),
+                full_budget,
+            )?;
+            store.publish(prepared)?;
+        }
+        let before = read(&mut store.db, i64::MIN, i64::MAX);
+        assert_eq!(before.1.len(), 49);
+        assert!(before.1.iter().all(|e| e.terminal_response.is_none()));
+        assert_eq!(
+            store
+                .observations(&leaf)?
+                .iter()
+                .filter(|e| e.terminal_response.is_some())
+                .count(),
+            usize::from(prior_receipt)
+        );
+        let (revision, checkpoint) = store.checkpoint(&leaf)?.unwrap();
+        let ordinal = 49 + rows.len();
+        let mut native = count(ordinal, 51, 50, true);
+        for key in ["last_token_usage", "total_token_usage"] {
+            native["payload"]["info"][key]
+                .as_object_mut()
+                .unwrap()
+                .remove("cached_input_tokens");
+        }
+        {
+            let mut file = fs::OpenOptions::new().append(true).open(&leaf)?;
+            writeln!(file, "{native}")?;
+            if incoming_receipt {
+                writeln!(file, "{}", receipt(ordinal + 1, 52))?;
+            }
+        }
+        let mut reader = SourceReader::restore(&store, &leaf)?;
+        let step = |reader: &mut SourceReader, store: &mut Store, limit| {
+            reader.step(
+                store,
+                cutoff,
+                &mut Budget::new(std::iter::empty()),
+                &names,
+                limit,
+            )
+        };
+        let bounded = step(&mut reader, &mut store, append_budget);
+        if prior_receipt || incoming_receipt {
+            assert!(
+                bounded
+                    .unwrap_err()
+                    .to_string()
+                    .contains("component exceeds reconciliation input budget")
+            );
+            assert!(read(&mut store.db, i64::MIN, i64::MAX) == before);
+            let (unchanged, retained) = store.checkpoint(&leaf)?.unwrap();
+            assert_eq!((unchanged, retained.offset), (revision, checkpoint.offset));
+            assert!(step(&mut reader, &mut store, full_budget)?);
+        } else {
+            assert!(bounded?);
+        }
+        let actual = read(&mut store.db, i64::MIN, i64::MAX).1;
+        assert_eq!(actual.len(), 50);
+        let last = actual.last().unwrap();
+        assert!(last.terminal_response.is_none());
+        assert_eq!(last.delta.total_tokens, 110);
+        assert_eq!(last.delta.cached_known, prior_receipt || incoming_receipt);
+        if last.delta.cached_known {
+            assert_eq!(last.delta.cached_input_tokens, 20);
+        }
+        assert_eq!(
+            store.checkpoint(&leaf)?.unwrap().1.offset,
+            fs::metadata(&leaf)?.len()
+        );
+
+        let mut replay = Store::open(Connection::open_in_memory()?)?;
+        for source in [&parent, &leaf] {
+            let mut reader = SourceReader::restore(&replay, source)?;
+            assert!(step(&mut reader, &mut replay, full_budget)?);
+        }
+        assert!(actual == read(&mut replay.db, i64::MIN, i64::MAX).1);
+    }
+    Ok(())
+}
+
+#[test]
 fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_next_turn() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().canonicalize().unwrap();

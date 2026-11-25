@@ -643,6 +643,245 @@ fn reconcile_append_receipts(
 }
 
 impl Store {
+    fn append_continuation(
+        read: &Connection,
+        update: &SourceUpdate<'_>,
+        cutoff: NaiveDate,
+        provider_names: &BTreeMap<String, String>,
+        mut remaining: usize,
+    ) -> Result<Option<Vec<UsageEvent>>> {
+        let state = update.state;
+        let Some(rollout) = segments::rollout_id(update.source) else {
+            return Ok(None);
+        };
+        if !state.continuation
+            || state.history_base.is_none()
+            || state.rollout_out_of_order
+            || state.identity_conflict
+            || state.invalid_counts
+            || !state.inherited_contexts.is_empty()
+            || state.issues != 0
+            || state.events.is_empty()
+            || state
+                .events
+                .iter()
+                .any(|event| event.terminal_response.is_some())
+        {
+            return Ok(None);
+        }
+        let checkpoint: Option<(i64, u64, Vec<u8>, i64)> = read
+            .query_row(
+                "SELECT src.id, src.offset, src.checkpoint, s.id
+             FROM token_sources src JOIN token_sessions s ON s.session = ?3
+             WHERE src.source = ?1 AND src.revision = ?2",
+                params![
+                    encode_path(update.source),
+                    update.previous_revision,
+                    state.session
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let Some((id, offset, blob, session)) = checkpoint else {
+            return Ok(None);
+        };
+        let (_, next_checkpoint) = Checkpoint::capture(state);
+        let next_bytes = serde_json::to_vec(&next_checkpoint)?.len();
+        let Some(left) = remaining
+            .checked_sub(blob.len())
+            .and_then(|left| left.checked_sub(next_bytes))
+        else {
+            return Ok(None);
+        };
+        remaining = left;
+        let prior: Checkpoint = serde_json::from_slice(&blob)?;
+        let Some((first_ordinal, last_ordinal, end)) = prior.rollout_extent else {
+            return Ok(None);
+        };
+        if prior.session != state.session
+            || prior.rollout_out_of_order
+            || prior.identity_conflict
+            || prior.invalid_counts
+            || prior.issues != 0
+            || end != offset
+            || state
+                .rollout_extent
+                .is_none_or(|(first, _, _)| first != first_ordinal)
+            || prior.history_base
+                != state
+                    .history_base
+                    .as_ref()
+                    .map(|base| (*base.rollout.as_bytes(), base.end_ordinal, base.end_offset))
+            || prior
+                .expired_count
+                .map(|(position, counter)| (position, counter.0))
+                != state.expired_count
+        {
+            return Ok(None);
+        }
+
+        // A materialized copy or a child can add another predecessor in the full resolver.
+        if read.query_row(
+            "SELECT EXISTS(SELECT 1 FROM token_source_links WHERE link = ?1 AND source_id != ?2)
+                  OR EXISTS(SELECT 1 FROM token_source_copies WHERE owner_id = ?2)
+                  OR EXISTS(SELECT 1 FROM token_resolved INDEXED BY token_resolved_open_receipt
+                     WHERE session_id = ?3 AND day >= ?4
+                     AND json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text')",
+            params![format!("r:{rollout}"), id, session, cutoff.to_string()],
+            |row| row.get(0),
+        )? {
+            return Ok(None);
+        }
+        let first_time = state.events[0].timestamp.as_str();
+        // 游标按时间文本取最大值；带时区偏移的时间还必须在实际时刻上严格更晚。
+        let strictly_after = |later: &str, earlier: &str| {
+            later > earlier
+                && DateTime::parse_from_rfc3339(later).unwrap()
+                    > DateTime::parse_from_rfc3339(earlier).unwrap()
+        };
+        let mut sources = read.prepare_cached(
+            "SELECT s.checkpoint FROM token_source_links l
+             JOIN token_sources s ON s.id = l.source_id WHERE l.link = ?1 AND s.id != ?2",
+        )?;
+        let mut rows = sources.query(params![format!("s:{}", state.session), id])?;
+        while let Some(row) = rows.next()? {
+            let bytes = row.get_ref(0)?.as_blob()?;
+            let Some(left) = remaining.checked_sub(bytes.len()) else {
+                return Ok(None);
+            };
+            remaining = left;
+            let other: Checkpoint = serde_json::from_slice(bytes)?;
+            if other.invalid_counts
+                || other
+                    .committed_cursors
+                    .get(&state.session)
+                    .is_some_and(|(at, _)| !strictly_after(first_time, at))
+            {
+                return Ok(None);
+            }
+        }
+        if prior
+            .committed_cursors
+            .get(&state.session)
+            .is_none_or(|(at, _)| !strictly_after(first_time, at))
+        {
+            return Ok(None);
+        }
+        let resolved = read
+            .query_row(
+                "SELECT event_id, payload FROM token_resolved
+             WHERE session_id = ?1 ORDER BY timestamp_ms DESC LIMIT 1",
+                [session],
+                |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?;
+        let Some((anchor_id, anchored)) = resolved else {
+            return Ok(None);
+        };
+        let Some(left) = remaining.checked_sub(anchored.len()) else {
+            return Ok(None);
+        };
+        remaining = left;
+        let anchor: Observation = serde_json::from_slice(&anchored)?;
+        let anchor = anchor.into_event(anchor_id.as_slice().try_into()?, state.session.clone())?;
+        if anchor.date < cutoff
+            || anchor.terminal_response.is_some()
+            || !linear_observation(&state.session, &anchor, None)
+            || prior.previous.map(|c| c.0) != Some(anchor.total)
+        {
+            return Ok(None);
+        }
+
+        // Prove the anchor belongs to this source. Only trailing unchanged counters may follow it.
+        let mut tail = read.prepare_cached(
+            "SELECT event_id, payload, session_id FROM token_observations
+             WHERE source_id = ?1 ORDER BY revision DESC, position DESC",
+        )?;
+        let mut rows = tail.query([id])?;
+        let mut matched = false;
+        while let Some(row) = rows.next()? {
+            let bytes = row.get_ref(1)?.as_blob()?;
+            let Some(left) = remaining.checked_sub(bytes.len()) else {
+                return Ok(None);
+            };
+            remaining = left;
+            let raw_id: [u8; 32] = row.get_ref(0)?.as_blob()?.try_into()?;
+            let raw: Observation = serde_json::from_slice(bytes)?;
+            let raw = raw.into_event(raw_id, state.session.clone())?;
+            if row.get::<_, i64>(2)? != session
+                || raw.terminal_response.is_some()
+                || raw.total != anchor.total
+                || !linear_observation(&state.session, &raw, None)
+            {
+                return Ok(None);
+            }
+            if raw_id == anchor.id && raw.rollout_position == anchor.rollout_position {
+                matched = true;
+                break;
+            }
+            if !strictly_after(&raw.timestamp, &anchor.timestamp) || raw.delta.total_tokens != 0 {
+                return Ok(None);
+            }
+        }
+        if !matched {
+            return Ok(None);
+        }
+        let mut previous = anchor.total;
+        let mut at = anchor.timestamp.as_str();
+        let mut position = last_ordinal;
+        let mut events = Vec::with_capacity(state.events.len());
+        let mut receipt = read.prepare_cached(
+            "SELECT 1 FROM token_observations INDEXED BY token_terminal_claim
+             WHERE session_id = ?1 AND json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text'
+             AND json_extract(CAST(payload AS TEXT), '$.turn') = ?2
+             AND CAST(payload AS TEXT) -> '$.total.i' = ?3
+             AND CAST(payload AS TEXT) -> '$.total.o' = ?4 LIMIT 1",
+        )?;
+        let mut collision = read.prepare_cached("SELECT 1 FROM token_collisions WHERE id = ?1")?;
+        for event in &state.events {
+            let Some((ordinal, start, _)) = event.rollout_position else {
+                return Ok(None);
+            };
+            let unchanged_count = event.total.input_tokens == previous.input_tokens
+                && event.total.output_tokens == previous.output_tokens;
+            if ordinal <= position
+                || start < offset
+                || event.date < cutoff
+                || !event.has_file_baseline
+                || !strictly_after(&event.timestamp, at)
+                || !linear_observation(&state.session, event, None)
+                || (unchanged_count && event.total != previous)
+                || !event.total.is_monotonic_after(previous)
+                || collision.exists([event.original_id.as_slice()])?
+                || receipt.exists(params![
+                    session,
+                    event.turn,
+                    event.total.input_tokens.to_string(),
+                    event.total.output_tokens.to_string()
+                ])?
+            {
+                return Ok(None);
+            }
+            let Some(left) =
+                remaining.checked_sub(serde_json::to_vec(&Observation::capture(event))?.len())
+            else {
+                return Ok(None);
+            };
+            remaining = left;
+            let mut resolved = event.clone();
+            resolved.delta = event.session_delta(Some(previous));
+            resolved.provider =
+                usage_provider(&event.model, &event.provider, provider_names).to_owned();
+            if resolved.delta.total_tokens != 0 {
+                events.push(resolved);
+            }
+            previous = event.total;
+            at = &event.timestamp;
+            position = ordinal;
+        }
+        Ok((state.previous == Some(previous)).then_some(events))
+    }
+
     pub(in super::super) fn prepare<'a>(
         &mut self,
         update: SourceUpdate<'a>,
@@ -680,6 +919,27 @@ impl Store {
         let path_key = encode_path(source);
         let seed_json = serde_json::to_string(&seeds)?;
         if !replace && let Some(previous_revision) = previous_revision {
+            if let Some(events) = Self::append_continuation(
+                &read,
+                &update,
+                cutoff,
+                &index.provider_names,
+                input_limit,
+            )? {
+                read.commit()?;
+                return Ok(Prepared {
+                    update,
+                    base_revision,
+                    cutoff,
+                    sessions,
+                    collisions: HashMap::new(),
+                    append: true,
+                    linear: None,
+                    superseded: Vec::new(),
+                    receipt_origins: HashMap::new(),
+                    events,
+                });
+            }
             let tail = read
                 .query_row(
                     "SELECT o.event_id, o.payload, owner.session, l.revision FROM token_sources s
