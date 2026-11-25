@@ -2269,22 +2269,22 @@ body.gw-sorting * {
 }
 
 /* —— 订阅额度 —— */
-.shell .gw-quota-badge,
-.shell .gw-quota-window {
+:is(.shell, .gw-portal) .gw-quota-badge,
+:is(.shell, .gw-portal) .gw-quota-window {
   --gw-quota-color: var(--gw-ok);
 }
 
-.shell .gw-quota-badge[data-tone="mid"],
-.shell .gw-quota-window[data-tone="mid"] {
+:is(.shell, .gw-portal) .gw-quota-badge[data-tone="mid"],
+:is(.shell, .gw-portal) .gw-quota-window[data-tone="mid"] {
   --gw-quota-color: var(--gw-warn);
 }
 
-.shell .gw-quota-badge[data-tone="low"],
-.shell .gw-quota-window[data-tone="low"] {
+:is(.shell, .gw-portal) .gw-quota-badge[data-tone="low"],
+:is(.shell, .gw-portal) .gw-quota-window[data-tone="low"] {
   --gw-quota-color: var(--gw-err);
 }
 
-.shell .gw-quota-badge {
+:is(.shell, .gw-portal) .gw-quota-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2295,8 +2295,8 @@ body.gw-sorting * {
   white-space: nowrap;
 }
 
-.shell .gw-quota-badge i,
-.shell .gw-quota-window i {
+:is(.shell, .gw-portal) .gw-quota-badge i,
+:is(.shell, .gw-portal) .gw-quota-window i {
   position: relative;
   display: inline-block;
   width: 36px;
@@ -2306,8 +2306,8 @@ body.gw-sorting * {
   background: hsl(var(--muted-foreground) / 0.2);
 }
 
-.shell .gw-quota-badge i::after,
-.shell .gw-quota-window i::after {
+:is(.shell, .gw-portal) .gw-quota-badge i::after,
+:is(.shell, .gw-portal) .gw-quota-window i::after {
   position: absolute;
   inset: 0 auto 0 0;
   width: var(--gw-quota);
@@ -2316,13 +2316,13 @@ body.gw-sorting * {
   content: "";
 }
 
-.shell .gw-quota-windows {
+:is(.shell, .gw-portal) .gw-quota-windows {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 6px 18px;
 }
 
-.shell .gw-quota-window {
+:is(.shell, .gw-portal) .gw-quota-window {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -2330,15 +2330,15 @@ body.gw-sorting * {
   font-variant-numeric: tabular-nums;
 }
 
-.shell .gw-quota-window b {
+:is(.shell, .gw-portal) .gw-quota-window b {
   font-weight: 500;
 }
 
-.shell .gw-quota-window[data-tone="unknown"] {
+:is(.shell, .gw-portal) .gw-quota-window[data-tone="unknown"] {
   color: var(--gw-mute);
 }
 
-.shell .gw-quota-windows[data-compact] {
+:is(.shell, .gw-portal) .gw-quota-windows[data-compact] {
   gap: 5px 16px;
   margin-top: 4px;
   min-width: 0;
@@ -3587,4 +3587,250 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   width: 100%;
   color: var(--gw-warn);
   font-size: 11.5px;
+}
+
+/* —— 「账号与分配」弹窗（ProviderCredentialsDialog）：和「从第三方导入」同一套弹窗、选项卡和条目 —— */
+.gw-portal .pcd-modal {
+  width: min(600px, 100%);
+}
+
+.gw-portal .pcd-modal .gw-modal-body {
+  min-height: 0;
+  align-content: start;
+  gap: 18px;
+}
+
+.gw-portal .pcd-title {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+
+.gw-portal .pcd-title strong {
+  font-size: 15px;
+}
+
+.gw-portal .pcd-title small {
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .pcd-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gw-portal .pcd-section h4 {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gw-portal .pcd-section h4 small {
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.gw-portal .pcd-count {
+  color: var(--gw-mute);
+  font-size: 12px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-portal .pcd-modes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.gw-portal .pcd-list {
+  display: grid;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--gw-line);
+  border-radius: 12px;
+}
+
+.gw-portal .pcd-row + .pcd-row,
+.gw-portal .pcd-row + .pcd-add {
+  border-top: 1px solid var(--gw-line);
+}
+
+.gw-portal .pcd-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  padding: 10px 10px 10px 12px;
+}
+
+.gw-portal .pcd-row[data-off] .pcd-copy,
+.gw-portal .pcd-row[data-off] .pcd-index {
+  opacity: 0.55;
+}
+
+.gw-portal .pcd-index {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--gw-soft);
+  color: var(--gw-mute);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.gw-portal .pcd-copy {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gw-portal .pcd-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.gw-portal .pcd-name strong,
+.gw-portal .pcd-name code {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .pcd-name code {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+}
+
+.gw-portal .pcd-copy .gw-quota-windows[data-compact] {
+  margin-top: 0;
+}
+
+.gw-portal .pcd-summary {
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.gw-portal .pcd-expand svg {
+  transition: transform 0.16s ease;
+}
+
+.gw-portal .pcd-row[data-open] .pcd-expand svg {
+  transform: rotate(180deg);
+}
+
+.gw-portal .pcd-settings {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 12px 12px 42px;
+}
+
+.gw-portal .pcd-field {
+  display: grid;
+  flex: 1 1 180px;
+  gap: 4px;
+  min-width: 0;
+}
+
+.gw-portal .pcd-field-narrow {
+  flex: 0 0 96px;
+}
+
+.gw-portal .pcd-field > span {
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.gw-portal .pcd-field input {
+  height: 30px;
+  font-size: 12.5px;
+}
+
+.gw-portal .pcd-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 30px;
+  color: hsl(var(--destructive));
+}
+
+.gw-portal .pcd-add {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--gw-ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.gw-portal .pcd-add:hover:not(:disabled) {
+  background: var(--gw-soft);
+}
+
+.gw-portal .pcd-add:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.gw-portal .pcd-add > svg {
+  flex: none;
+  width: 20px;
+  color: var(--gw-mute);
+}
+
+.gw-portal .pcd-add span {
+  display: grid;
+  gap: 2px;
+}
+
+.gw-portal .pcd-add strong {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.gw-portal .pcd-add small {
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.gw-portal .pcd-hint,
+.gw-portal .pcd-error {
+  color: var(--gw-mute);
+  font-size: 12px;
+}
+
+.gw-portal .pcd-error {
+  color: hsl(var(--destructive));
+}
+
+.gw-portal .pcd-modal .gw-primary-button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
