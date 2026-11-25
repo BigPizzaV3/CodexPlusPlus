@@ -2413,160 +2413,204 @@ struct LegacyEvidenceCache {
     signatures: HashMap<String, Option<[u8; 32]>>,
 }
 
+#[derive(Default)]
+struct EvidenceIdentities {
+    seen: HashSet<[u8; 32]>,
+    duplicates: HashSet<[u8; 32]>,
+    aliases: HashMap<[u8; 32], usize>,
+}
+
+impl EvidenceIdentities {
+    fn observe(&mut self, id: [u8; 32], alias: Option<[u8; 32]>) {
+        if !self.seen.insert(id) {
+            self.duplicates.insert(id);
+        }
+        if let Some(alias) = alias {
+            *self.aliases.entry(alias).or_default() += 1;
+        }
+    }
+}
+
+#[derive(Default)]
+struct LegacyMatches {
+    records: HashMap<String, Option<LegacyProviderEvidence>>,
+    invalid: usize,
+    applied: usize,
+    conflicts: usize,
+    mismatches: usize,
+    migrated: usize,
+    sources: BTreeMap<String, usize>,
+}
+
 impl LegacyEvidenceCache {
     fn apply(
         &mut self,
         document: anyhow::Result<Option<LegacyEvidenceDocument>>,
         snapshot: &mut Snapshot,
     ) {
-        // 不写入请求缓存，删除文件即可撤销，改写身份在本轮索引内不再信任。
-        let result = (|| -> anyhow::Result<Value> {
-            let Some(document) = document? else {
-                return Ok(json!({"status":"absent"}));
-            };
-            let mut records = HashMap::new();
-            let mut invalid = 0usize;
-            for record in document.records {
-                let id = record.event_id.to_ascii_lowercase();
-                if id.len() != 64
-                    || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    || (!self.signatures.contains_key(&id) && self.signatures.len() >= MAX_EVENTS)
-                {
-                    invalid += 1;
-                    continue;
-                }
-                let signature: [u8; 32] = Sha256::digest(serde_json::to_vec(&record)?).into();
-                let valid = [
-                    &record.session,
-                    &record.timestamp,
-                    &record.model,
-                    &record.provider,
-                ]
-                .iter()
-                .all(|s| {
-                    !s.trim().is_empty() && s.len() <= 256 && !s.chars().any(char::is_control)
-                }) && record.provider_name.len() <= 256
-                    && !record.provider_name.chars().any(char::is_control)
-                    && record.provider.trim() == record.provider
-                    && record.model.trim() == record.model
-                    && !unknown_provider(&record.provider)
-                    && !unknown_model(&record.model)
-                    && !unknown_model(request_base_model(&record.model))
-                    && matches!(record.role.as_str(), "main" | "subagent")
-                    && matches!(
-                        record.source.as_str(),
-                        "upstream-exact-bidirectional"
-                            | "user-classified"
-                            | "user-provider-classification"
-                    )
-                    && DateTime::parse_from_rfc3339(&record.timestamp).is_ok()
-                    && record.cached <= record.input
-                    && record
-                        .input
-                        .checked_add(record.output)
-                        .is_some_and(|n| n > 0)
-                    && !records.contains_key(&id)
-                    && self
-                        .signatures
-                        .get(&id)
-                        .is_none_or(|previous| *previous == Some(signature));
-                self.signatures
-                    .insert(id.clone(), valid.then_some(signature));
-                invalid += usize::from(!valid);
-                records.insert(id, valid.then_some(record));
-            }
-            let mut unique = HashSet::new();
-            let mut duplicates = HashSet::new();
-            let mut legacy_counts = HashMap::new();
-            for event in &snapshot.events {
-                if !unique.insert(event.id) {
-                    duplicates.insert(event.id);
-                }
-                if let Some(legacy) = &event.legacy_identity {
-                    *legacy_counts.entry(legacy.id).or_insert(0usize) += 1;
-                }
-            }
-            let (mut applied, mut conflicts, mut mismatches, mut migrated) =
-                (0usize, 0usize, 0usize, 0usize);
-            let mut sources = BTreeMap::<String, usize>::new();
+        let mut records = self.prepare(document);
+        let mut ids = EvidenceIdentities::default();
+        for event in &snapshot.events {
+            ids.observe(event.id, event.legacy_identity.as_ref().map(|old| old.id));
+        }
+        if let Ok(Some(matches)) = &mut records {
             for event in &mut snapshot.events {
-                let id: String = event.id.iter().map(|byte| format!("{byte:02x}")).collect();
-                let direct = records.get(&id).and_then(Option::as_ref);
-                // 只兼容明确复制头形成的旧身份，两端唯一且完整签名一致；不借父供应商推断。
-                let legacy = event.legacy_identity.as_ref().and_then(|identity| {
-                    if unique.contains(&identity.id) || legacy_counts.get(&identity.id) != Some(&1)
-                    {
-                        return None;
-                    }
-                    let id: String = identity
-                        .id
-                        .iter()
-                        .map(|byte| format!("{byte:02x}"))
-                        .collect();
-                    records
-                        .get(&id)
-                        .and_then(Option::as_ref)
-                        .filter(|record| record.matches(event, Some(identity)))
-                });
-                if records.get(&id).is_some_and(Option::is_none) {
-                    continue;
-                }
-                if direct
-                    .zip(legacy)
-                    .is_some_and(|(a, b)| a.provider != b.provider)
-                {
-                    conflicts += 1;
-                    continue;
-                }
-                let Some(record) = direct.or(legacy) else {
-                    continue;
-                };
-                if event.context_conflicts.any()
-                    || event.count_uncertain
-                    || event.count_incomplete
-                    || !event.delta.cached_known
-                {
-                    conflicts += 1;
-                    continue;
-                }
-                let missing_model = unknown_model(&event.model);
-                if duplicates.contains(&event.id)
-                    || direct.is_some_and(|record| !record.matches(event, None))
-                {
-                    mismatches += 1;
-                    continue;
-                }
-                if !unknown_provider(&event.provider) && event.provider != record.provider {
-                    conflicts += 1;
-                    continue;
-                }
-                if unknown_provider(&event.provider) {
-                    event.provider.clone_from(&record.provider);
-                    event.provider_source = Some(record.source.clone());
-                    applied += 1;
-                    migrated += usize::from(direct.is_none());
-                    *sources.entry(record.source.clone()).or_default() += 1;
-                }
-                if missing_model {
-                    event.model.clone_from(&record.model);
-                }
-                if !record.provider_name.trim().is_empty() {
-                    let name = snapshot
-                        .provider_names
-                        .entry(record.provider.clone())
-                        .or_default();
-                    if name.trim().is_empty() {
-                        name.clone_from(&record.provider_name);
-                    }
-                }
+                matches.apply(event, &ids, &mut snapshot.provider_names);
             }
-            Ok(
-                json!({"status":"ok","source":"legacy-provider-evidence","appliedEvents":applied,
-                "sources":sources,"invalid":invalid,"conflictedEvents":conflicts,"signatureMismatches":mismatches,
-                "migratedEvents":migrated}),
-            )
-        })();
-        snapshot.provider_evidence = result.unwrap_or_else(|_| json!({"status":"rejected"}));
+        }
+        snapshot.provider_evidence = LegacyMatches::report(records);
+    }
+
+    fn prepare(
+        &mut self,
+        document: anyhow::Result<Option<LegacyEvidenceDocument>>,
+    ) -> anyhow::Result<Option<LegacyMatches>> {
+        let Some(document) = document? else {
+            return Ok(None);
+        };
+        let mut records = HashMap::new();
+        let mut invalid = 0usize;
+        for record in document.records {
+            let id = record.event_id.to_ascii_lowercase();
+            if id.len() != 64
+                || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || (!self.signatures.contains_key(&id) && self.signatures.len() >= MAX_EVENTS)
+            {
+                invalid += 1;
+                continue;
+            }
+            let signature: [u8; 32] = Sha256::digest(serde_json::to_vec(&record)?).into();
+            let valid = [
+                &record.session,
+                &record.timestamp,
+                &record.model,
+                &record.provider,
+            ]
+            .iter()
+            .all(|s| !s.trim().is_empty() && s.len() <= 256 && !s.chars().any(char::is_control))
+                && record.provider_name.len() <= 256
+                && !record.provider_name.chars().any(char::is_control)
+                && record.provider.trim() == record.provider
+                && record.model.trim() == record.model
+                && !unknown_provider(&record.provider)
+                && !unknown_model(&record.model)
+                && !unknown_model(request_base_model(&record.model))
+                && matches!(record.role.as_str(), "main" | "subagent")
+                && matches!(
+                    record.source.as_str(),
+                    "upstream-exact-bidirectional"
+                        | "user-classified"
+                        | "user-provider-classification"
+                )
+                && DateTime::parse_from_rfc3339(&record.timestamp).is_ok()
+                && record.cached <= record.input
+                && record
+                    .input
+                    .checked_add(record.output)
+                    .is_some_and(|n| n > 0)
+                && !records.contains_key(&id)
+                && self
+                    .signatures
+                    .get(&id)
+                    .is_none_or(|previous| *previous == Some(signature));
+            self.signatures
+                .insert(id.clone(), valid.then_some(signature));
+            invalid += usize::from(!valid);
+            records.insert(id, valid.then_some(record));
+        }
+        Ok(Some(LegacyMatches {
+            records,
+            invalid,
+            ..Default::default()
+        }))
+    }
+}
+
+impl LegacyMatches {
+    fn apply(
+        &mut self,
+        event: &mut UsageEvent,
+        ids: &EvidenceIdentities,
+        names: &mut BTreeMap<String, String>,
+    ) {
+        let records = &self.records;
+        let id: String = event.id.iter().map(|byte| format!("{byte:02x}")).collect();
+        let direct = records.get(&id).and_then(Option::as_ref);
+        // 只兼容明确复制头形成的旧身份，两端唯一且完整签名一致；不借父供应商推断。
+        let legacy = event.legacy_identity.as_ref().and_then(|identity| {
+            if ids.seen.contains(&identity.id) || ids.aliases.get(&identity.id) != Some(&1) {
+                return None;
+            }
+            let id: String = identity
+                .id
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            records
+                .get(&id)
+                .and_then(Option::as_ref)
+                .filter(|record| record.matches(event, Some(identity)))
+        });
+        if records.get(&id).is_some_and(Option::is_none) {
+            return;
+        }
+        if direct
+            .zip(legacy)
+            .is_some_and(|(a, b)| a.provider != b.provider)
+        {
+            self.conflicts += 1;
+            return;
+        }
+        let Some(record) = direct.or(legacy) else {
+            return;
+        };
+        if event.context_conflicts.any()
+            || event.count_uncertain
+            || event.count_incomplete
+            || !event.delta.cached_known
+        {
+            self.conflicts += 1;
+            return;
+        }
+        let missing_model = unknown_model(&event.model);
+        if ids.duplicates.contains(&event.id)
+            || direct.is_some_and(|record| !record.matches(event, None))
+        {
+            self.mismatches += 1;
+            return;
+        }
+        if !unknown_provider(&event.provider) && event.provider != record.provider {
+            self.conflicts += 1;
+            return;
+        }
+        if unknown_provider(&event.provider) {
+            event.provider.clone_from(&record.provider);
+            event.provider_source = Some(record.source.clone());
+            self.applied += 1;
+            self.migrated += usize::from(direct.is_none());
+            *self.sources.entry(record.source.clone()).or_default() += 1;
+        }
+        if missing_model {
+            event.model.clone_from(&record.model);
+        }
+        if !record.provider_name.trim().is_empty() {
+            let name = names.entry(record.provider.clone()).or_default();
+            if name.trim().is_empty() {
+                name.clone_from(&record.provider_name);
+            }
+        }
+    }
+
+    fn report(records: anyhow::Result<Option<Self>>) -> Value {
+        match records {
+            Ok(Some(r)) => {
+                json!({"status":"ok","source":"legacy-provider-evidence","appliedEvents":r.applied,
+               "sources":r.sources,"invalid":r.invalid,"conflictedEvents":r.conflicts,
+               "signatureMismatches":r.mismatches,"migratedEvents":r.migrated})
+            }
+            Ok(None) => json!({"status":"absent"}),
+            Err(_) => json!({"status":"rejected"}),
+        }
     }
 }
 

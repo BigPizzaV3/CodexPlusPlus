@@ -1953,15 +1953,16 @@ impl Store {
     pub(in super::super) fn historical_candidates(
         read: &Connection,
         timestamps: &BTreeSet<i64>,
-    ) -> Result<Vec<UsageEvent>> {
-        let mut events = Vec::new();
-        let mut remaining: usize = 32 * 1024 * 1024;
+        mut visit: impl FnMut(UsageEvent),
+    ) -> Result<()> {
         let mut statement = read.prepare_cached(
             "SELECT r.event_id, s.session, r.payload FROM token_resolved r
              JOIN token_sessions s ON s.id = r.session_id
              WHERE r.timestamp_ms = ?1 AND r.day >= (SELECT precise_from FROM token_revision)",
         )?;
         for timestamp in timestamps {
+            // A timestamp is indivisible. Other groups are streamed within this read transaction.
+            let mut remaining: usize = 32 * 1024 * 1024;
             let mut rows = statement.query([timestamp])?;
             while let Some(row) = rows.next()? {
                 let raw = row.get_ref(2)?.as_blob()?;
@@ -1969,10 +1970,10 @@ impl Store {
                     .checked_sub(raw.len())
                     .context("historical classification exceeds candidate budget")?;
                 let event: Observation = serde_json::from_slice(raw)?;
-                events.push(event.into_event(row.get_ref(0)?.as_blob()?.try_into()?, row.get(1)?)?);
+                visit(event.into_event(row.get_ref(0)?.as_blob()?.try_into()?, row.get(1)?)?);
             }
         }
-        Ok(events)
+        Ok(())
     }
 
     pub(in super::super) fn historical_days(

@@ -323,23 +323,65 @@ impl Cache {
         document: anyhow::Result<Option<Document>>,
         snapshot: &mut Snapshot,
     ) {
-        let result = document.and_then(|doc| self.load(doc, snapshot));
+        let duplicates = {
+            let mut seen = HashSet::new();
+            snapshot
+                .events
+                .iter()
+                .filter_map(|e| (!seen.insert(e.id)).then_some(e.id))
+                .collect()
+        };
+        let mut prepared = self.prepare(document);
+        if let Ok(Some(matches)) = &mut prepared {
+            for event in &mut snapshot.events {
+                matches.apply(self, event, &duplicates, &mut snapshot.provider_names);
+            }
+        }
+        snapshot.supplier_evidence = Matches::report(prepared);
+    }
+
+    pub(super) fn prepare(
+        &mut self,
+        document: anyhow::Result<Option<Document>>,
+    ) -> anyhow::Result<Option<Matches>> {
+        let Some(document) = document? else {
+            return Ok(None);
+        };
+        self.validate(document).map(Some)
+    }
+}
+
+#[derive(Default)]
+pub(super) struct Matches {
+    records: HashMap<String, Option<SupplierRecord>>,
+    upstream_counts: HashMap<String, usize>,
+    request_counts: HashMap<String, usize>,
+    invalid: usize,
+    applied: usize,
+    unchanged: usize,
+    conflicts: usize,
+    mismatches: usize,
+    model_conflicts: usize,
+    model_details: Vec<Value>,
+    matched: HashSet<String>,
+}
+
+impl Matches {
+    pub(super) fn report(records: anyhow::Result<Option<Self>>) -> Value {
+        let result = records.map(|records| {
+            records.map_or_else(|| json!({"status":"absent"}), |records| records.counts())
+        });
         let mut report = result.unwrap_or_else(|_| json!({"status":"rejected"}));
         report["source"] = json!(SOURCE);
         report["trustBoundary"] = json!("external-offline-record-bound");
         report["runtimeCompetitionRecomputed"] = json!(false);
         report["modelRepairs"] = json!(0);
-        snapshot.supplier_evidence = report;
+        report
     }
+}
 
-    fn load(
-        &mut self,
-        document: Option<Document>,
-        snapshot: &mut Snapshot,
-    ) -> anyhow::Result<Value> {
-        let Some(document) = document else {
-            return Ok(json!({"status":"absent"}));
-        };
+impl Cache {
+    fn validate(&mut self, document: Document) -> anyhow::Result<Matches> {
         let mut records = HashMap::new();
         let mut upstream_counts = HashMap::new();
         let mut request_counts = HashMap::new();
@@ -382,87 +424,90 @@ impl Cache {
             invalid += usize::from(!valid);
             records.insert(id.clone(), valid.then_some(record));
         }
-        let mut seen = HashSet::new();
-        let mut duplicates = HashSet::new();
-        for event in &snapshot.events {
-            if !seen.insert(event.id) {
-                duplicates.insert(event.id);
-            }
+        Ok(Matches {
+            records,
+            upstream_counts,
+            request_counts,
+            invalid,
+            ..Default::default()
+        })
+    }
+}
+
+impl Matches {
+    pub(super) fn apply(
+        &mut self,
+        cache: &Cache,
+        event: &mut UsageEvent,
+        duplicates: &HashSet<[u8; 32]>,
+        names: &mut BTreeMap<String, String>,
+    ) {
+        let id: String = event.id.iter().map(|byte| format!("{byte:02x}")).collect();
+        let Some(Some(record)) = self.records.get(&id) else {
+            return;
+        };
+        let upstream = &record.supplier_evidence.upstream;
+        if self.upstream_counts.get(&upstream.id) != Some(&1)
+            || self.request_counts.get(&upstream.request_key()) != Some(&1)
+            || cache
+                .upstream_owners
+                .get(&upstream.id)
+                .and_then(Option::as_deref)
+                != Some(id.as_str())
+            || cache
+                .request_owners
+                .get(&upstream.request_key())
+                .and_then(Option::as_deref)
+                != Some(id.as_str())
+            || duplicates.contains(&event.id)
+            || event.context_conflicts.any()
+            || event.count_uncertain
+            || event.count_incomplete
+            || !event.delta.cached_known
+            || !event.total.cached_known
+        {
+            self.conflicts += 1;
+            return;
         }
-        let (mut applied, mut unchanged, mut conflicts, mut mismatches) =
-            (0usize, 0usize, 0usize, 0usize);
-        let mut model_conflicts = 0usize;
-        let mut model_details = Vec::new();
-        let mut matched = HashSet::new();
-        for event in &mut snapshot.events {
-            let id: String = event.id.iter().map(|byte| format!("{byte:02x}")).collect();
-            let Some(Some(record)) = records.get(&id) else {
-                continue;
-            };
-            let upstream = &record.supplier_evidence.upstream;
-            if upstream_counts.get(&upstream.id) != Some(&1)
-                || request_counts.get(&upstream.request_key()) != Some(&1)
-                || self
-                    .upstream_owners
-                    .get(&upstream.id)
-                    .and_then(Option::as_deref)
-                    != Some(id.as_str())
-                || self
-                    .request_owners
-                    .get(&upstream.request_key())
-                    .and_then(Option::as_deref)
-                    != Some(id.as_str())
-                || duplicates.contains(&event.id)
-                || event.context_conflicts.any()
-                || event.count_uncertain
-                || event.count_incomplete
-                || !event.delta.cached_known
-                || !event.total.cached_known
-            {
-                conflicts += 1;
-                continue;
-            }
-            if !record.matches(event) {
-                mismatches += 1;
-                continue;
-            }
-            matched.insert(id.clone());
-            let supplier = &record.supplier_evidence;
-            if !unknown_provider(&event.provider) && event.provider != supplier.provider {
-                conflicts += 1;
-                continue;
-            }
-            if unknown_provider(&event.provider) {
-                event.provider.clone_from(&supplier.provider);
-                event.provider_source = Some(SOURCE.to_owned());
-                applied += 1;
-            } else {
-                unchanged += 1;
-            }
-            let name = snapshot
-                .provider_names
-                .entry(supplier.provider.clone())
-                .or_default();
-            if name.trim().is_empty() {
-                name.clone_from(&supplier.provider_name);
-            }
-            model_conflicts += 1;
-            if model_details.len() < MAX_MODEL_DETAILS {
-                model_details.push(json!({
-                    "eventId":id,"status":record.model_evidence.status,
-                    "recordedModel":record.model_evidence.recorded_model,
-                    "upstreamModel":record.model_evidence.upstream_model,
-                    "action":record.model_evidence.action
-                }));
-            }
+        if !record.matches(event) {
+            self.mismatches += 1;
+            return;
         }
-        Ok(json!({
-            "status":"ok","appliedEvents":applied,"unchangedEvents":unchanged,
-            "invalid":invalid,"conflictedEvents":conflicts,"signatureMismatches":mismatches,
-            "unmatchedRecords":records.values().flatten().filter(|record| !matched.contains(&record.event.event_id)).count(),
-            "modelConflictEvents":model_conflicts,"modelEvidence":model_details,
-            "modelEvidenceTruncated":model_conflicts > MAX_MODEL_DETAILS
-        }))
+        self.matched.insert(id.clone());
+        let supplier = &record.supplier_evidence;
+        if !unknown_provider(&event.provider) && event.provider != supplier.provider {
+            self.conflicts += 1;
+            return;
+        }
+        if unknown_provider(&event.provider) {
+            event.provider.clone_from(&supplier.provider);
+            event.provider_source = Some(SOURCE.to_owned());
+            self.applied += 1;
+        } else {
+            self.unchanged += 1;
+        }
+        let name = names.entry(supplier.provider.clone()).or_default();
+        if name.trim().is_empty() {
+            name.clone_from(&supplier.provider_name);
+        }
+        self.model_conflicts += 1;
+        if self.model_details.len() < MAX_MODEL_DETAILS {
+            self.model_details.push(json!({
+                "eventId":id,"status":record.model_evidence.status,
+                "recordedModel":record.model_evidence.recorded_model,
+                "upstreamModel":record.model_evidence.upstream_model,
+                "action":record.model_evidence.action
+            }));
+        }
+    }
+    fn counts(self) -> Value {
+        json!({
+            "status":"ok","appliedEvents":self.applied,"unchangedEvents":self.unchanged,
+            "invalid":self.invalid,"conflictedEvents":self.conflicts,"signatureMismatches":self.mismatches,
+            "unmatchedRecords":self.records.values().flatten().filter(|record| !self.matched.contains(&record.event.event_id)).count(),
+            "modelConflictEvents":self.model_conflicts,"modelEvidence":self.model_details,
+            "modelEvidenceTruncated":self.model_conflicts > MAX_MODEL_DETAILS
+        })
     }
 }
 

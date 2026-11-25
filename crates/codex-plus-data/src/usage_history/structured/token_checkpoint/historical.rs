@@ -3,7 +3,8 @@ use super::{
     store::{Store, projection::DayGroup},
 };
 use crate::usage_history::structured::{
-    FileState, LegacyEvidenceCache, LegacyEvidenceDocument, Snapshot, UsageEvent, supplier_evidence,
+    EvidenceIdentities, FileState, LegacyEvidenceCache, LegacyEvidenceDocument, LegacyMatches,
+    Snapshot, UsageEvent, supplier_evidence,
 };
 use anyhow::{Result, ensure};
 use chrono::{Local, NaiveDate};
@@ -147,8 +148,86 @@ impl Historical {
         }
 
         let files = EvidenceFiles::read(settings);
-        let events = Store::historical_candidates(&read, &files.timestamps())?;
-        let (mut overlay, affected) = files.apply(verifier, settings, stamps_before, events)?;
+        let times = files.timestamps();
+        // Only legacy document IDs can be the target of an alias. The document bounds this set.
+        let legacy_ids: std::collections::HashSet<[u8; 32]> = files
+            .legacy
+            .as_ref()
+            .ok()
+            .and_then(Option::as_ref)
+            .into_iter()
+            .flat_map(|doc| &doc.records)
+            .filter_map(|record| {
+                if record.event_id.len() != 64 || !record.event_id.is_ascii() {
+                    return None;
+                }
+                let mut id = [0; 32];
+                for (i, byte) in id.iter_mut().enumerate() {
+                    *byte = u8::from_str_radix(&record.event_id[i * 2..i * 2 + 2], 16).ok()?;
+                }
+                Some(id)
+            })
+            .collect();
+        let mut identities = EvidenceIdentities::default();
+        Store::historical_candidates(&read, &times, |event| {
+            // token_resolved's primary key already guarantees canonical ID uniqueness.
+            if legacy_ids.contains(&event.id) {
+                identities.seen.insert(event.id);
+            }
+            if let Some(alias) = event
+                .legacy_identity
+                .as_ref()
+                .filter(|alias| legacy_ids.contains(&alias.id))
+            {
+                *identities.aliases.entry(alias.id).or_default() += 1;
+            }
+        })?;
+        drop(legacy_ids);
+        let mut guard = verifier
+            .lock()
+            .map_err(|_| anyhow::anyhow!("historical verifier panicked"))?;
+        ensure!(
+            stamps(settings)? == stamps_before,
+            "historical evidence changed during read"
+        );
+        let mut legacy = guard.legacy.prepare(files.legacy);
+        let mut supplier = guard.supplier.prepare(files.supplier);
+        let mut changes = HashMap::new();
+        let mut affected = BTreeSet::new();
+        let mut legacy_names = BTreeMap::new();
+        let mut supplier_names = BTreeMap::new();
+        Store::historical_candidates(&read, &times, |mut event| {
+            let prior = EventClassification::of(&event);
+            if let Ok(Some(matches)) = &mut legacy {
+                matches.apply(&mut event, &identities, &mut legacy_names);
+            }
+            if let Ok(Some(matches)) = &mut supplier {
+                matches.apply(
+                    &guard.supplier,
+                    &mut event,
+                    &identities.duplicates,
+                    &mut supplier_names,
+                );
+            }
+            let next = EventClassification::of(&event);
+            if next != prior {
+                changes.insert(event.id, next);
+                affected.insert((event.date, event.session));
+            }
+        })?;
+        drop(guard);
+        for (provider, name) in supplier_names {
+            legacy_names.entry(provider).or_insert(name);
+        }
+        let mut overlay = EvidenceOverlay {
+            settings: settings.to_owned(),
+            stamps: stamps_before,
+            updated_at: Local::now().timestamp_millis(),
+            changes,
+            provider_names: legacy_names,
+            legacy_status: LegacyMatches::report(legacy),
+            supplier_status: supplier_evidence::Matches::report(supplier),
+        };
         if let Some(prior) = previous
             && prior.overlay.changes == overlay.changes
             && prior.overlay.provider_names == overlay.provider_names
@@ -212,5 +291,70 @@ impl EvidenceOverlay {
 
     pub(super) fn contains(&self, event: &UsageEvent) -> bool {
         self.changes.contains_key(&event.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::{Connection, params};
+    use serde_json::json;
+
+    #[test]
+    fn ambiguous_old_identity_is_checked_across_evidence_dates() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let settings = dir.path().join("settings.json");
+        let mut store = Store::open(Connection::open_in_memory()?)?;
+        store
+            .db
+            .execute("INSERT INTO token_sessions VALUES(1,'fixture')", [])?;
+        let first = "2026-10-30T14:00:00Z";
+        let second = "2026-10-31T14:00:00Z";
+        let old = [9u8; 32];
+        let legacy = |id: u8, time: &str| {
+            json!({"eventId":format!("{id:02x}").repeat(32),
+            "session":"fixture","timestamp":time,"model":"fixture","role":"main",
+            "input":7,"output":1,"cached":0,"provider":"fixture-supplier",
+            "providerName":"Fixture","source":"upstream-exact-bidirectional"})
+        };
+        std::fs::write(
+            dir.path().join("usage-provider-evidence.json"),
+            serde_json::to_vec(&json!({"version":1,"records":[legacy(9,first),legacy(8,second)]}))?,
+        )?;
+        let insert = |store: &Store,
+                      id: u8,
+                      time: &str,
+                      alias: Option<[u8; 32]>|
+         -> anyhow::Result<()> {
+            let date = &time[..10];
+            let counter = json!({"i":7,"c":0,"o":1,"t":8,"r":null,"k":true});
+            let row = json!({"original_id":vec![id;32],"turn":"turn","model":"fixture",
+                "timestamp":time,"date":date,"total":counter,"delta":counter,
+                "last":null,"has_file_baseline":true,"count_uncertain":false,"count_incomplete":false,
+                "count_pending":false,"rollout_position":null,"provider":"custom","role":"main",
+                "inherited":false,"legacy_identity":alias.map(|id|json!({"id":id,"role":"main","session":"fixture"})),
+                "context_conflicts":{"model":false,"provider":false,"role":false,"turn":false}});
+            let at = chrono::DateTime::parse_from_rfc3339(time)?.timestamp_millis();
+            store.db.execute(
+                "INSERT INTO token_resolved VALUES(?1,1,?2,?3,?4)",
+                params![[id; 32].as_slice(), at, date, serde_json::to_vec(&row)?],
+            )?;
+            Ok(())
+        };
+        let verifier = Mutex::new(EvidenceVerifier::default());
+        insert(&store, 1, first, Some(old))?;
+        let migrated = Historical::refresh(None, &mut store, &verifier, &settings)?.unwrap();
+        assert_eq!(migrated.overlay.legacy_status["migratedEvents"], 1);
+        for (id, alias) in [(2, Some(old)), (9, None)] {
+            insert(&store, id, second, alias)?;
+            let ambiguous = Historical::refresh(None, &mut store, &verifier, &settings)?.unwrap();
+            assert!(ambiguous.overlay.changes.is_empty());
+            assert!(ambiguous.days.is_empty());
+            store.db.execute(
+                "DELETE FROM token_resolved WHERE event_id=?1",
+                [[id; 32].as_slice()],
+            )?;
+        }
+        Ok(())
     }
 }
