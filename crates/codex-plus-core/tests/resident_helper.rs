@@ -134,3 +134,9 @@ fn resident_helper_stays_up_across_codex_session_lifecycle() {
     assert_eq!(resident_helper::resident_helper_port(), None);
     TcpListener::bind(("127.0.0.1", occupied_port)).unwrap();
 }
+
+/// 测试不许碰用户的真实目录：main 之前进家目录沙箱（见 `codex_plus_core::test_sandbox`）。
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    codex_plus_core::test_sandbox::enter();
+}

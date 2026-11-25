@@ -110,14 +110,9 @@ export const defaultSettings: BackendSettings = {
   codexAppDisableWorkView: false,
   codexAppPetRealMouseLook: false,
   codexAppActivityOverlayRight: false,
-  protocolProxyAutoRetry: true,
-  protocolProxyAutoRetryMaxAttempts: 5,
-  protocolProxyAutoRetryIntervalSeconds: 2,
-  protocolProxyAutoRetryStatusCodes: [],
-  protocolProxyAutoRetryMode: "streaming",
-  protocolProxyAutoRetryCommitDelayMs: 1000,
   protocolProxyMapUnlistedModels: false,
   helperMaxRequestBodyMib: 128,
+  upstreamStreamHeaderTimeoutSecs: null,
   codexAppCapacityAutoRetry: false,
   codexAppTurnRewind: false,
   codexAppStepwiseEnabled: false,
@@ -725,20 +720,14 @@ export function normalizeSettings(settings: BackendSettings): BackendSettings {
     weixinConnectProjectId: (settings.weixinConnectProjectId || "").trim(),
     dictation: normalizeDictationSettings(settings.dictation),
     relayProfilesEnabled: settings.relayProfilesEnabled !== false,
-    protocolProxyAutoRetry: settings.protocolProxyAutoRetry !== false,
     // 默认关闭（opt-in），只有显式开启才生效。
     protocolProxyMapUnlistedModels: settings.protocolProxyMapUnlistedModels === true,
-    protocolProxyAutoRetryMaxAttempts: clampNumber(settings.protocolProxyAutoRetryMaxAttempts ?? 5, 0, 20),
-    protocolProxyAutoRetryMode:
-      settings.protocolProxyAutoRetryMode === "buffered"
-        ? "buffered"
-        : settings.protocolProxyAutoRetryMode === "streaming-legacy"
-          ? "streaming-legacy"
-          : "streaming",
-    protocolProxyAutoRetryCommitDelayMs: clampNumber(settings.protocolProxyAutoRetryCommitDelayMs ?? 1000, 0, 10000),
-    protocolProxyAutoRetryIntervalSeconds: clampNumber(settings.protocolProxyAutoRetryIntervalSeconds ?? 2, 0, 30),
-    protocolProxyAutoRetryStatusCodes: normalizeRetryStatusCodes(settings.protocolProxyAutoRetryStatusCodes),
     helperMaxRequestBodyMib: clampNumber(settings.helperMaxRequestBodyMib ?? 128, 32, 512),
+    // 未设置（null / 缺失）表示用后端默认 120；设置了就按后端同样的 120~3600 区间收口。
+    upstreamStreamHeaderTimeoutSecs:
+      typeof settings.upstreamStreamHeaderTimeoutSecs === "number"
+        ? clampNumber(settings.upstreamStreamHeaderTimeoutSecs, 120, 3600)
+        : null,
     codexAppDreamSkinPaused: settings.codexAppDreamSkinPaused === true,
     codexAppDreamSkinThemeConfig: normalizeDreamSkinTheme(settings.codexAppDreamSkinThemeConfig),
     codexAppDreamSkinImagePath: (settings.codexAppDreamSkinImagePath || "").trim(),
@@ -762,15 +751,6 @@ function normalizeStepwiseProtocol(value: StepwiseProtocol | undefined): Stepwis
     || value === "anthropic_messages"
     ? value
     : "chat_completions";
-}
-
-/** 与 Rust `normalize_protocol_proxy_auto_retry_status_codes` 保持一致：400~599、去重升序、最多 20 个。 */
-export function normalizeRetryStatusCodes(value: unknown): number[] {
-  if (!Array.isArray(value)) return [];
-  const codes = value
-    .map(Number)
-    .filter((status) => Number.isInteger(status) && status >= 400 && status <= 599);
-  return Array.from(new Set(codes)).sort((a, b) => a - b).slice(0, 20);
 }
 
 export function clampNumber(value: number, min: number, max: number): number {

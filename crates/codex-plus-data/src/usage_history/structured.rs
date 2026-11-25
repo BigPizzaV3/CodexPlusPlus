@@ -35,6 +35,7 @@ const MAX_REQUEST_EVIDENCE: usize = 8192;
 const MAX_ROWS_CAPTURED_PROXY: usize = 20_000;
 const REQUEST_MATCH_WINDOW_MS: i64 = 30_000;
 const DELAYED_REQUEST_MATCH_WINDOW_MS: i64 = 120_000;
+const MAX_NATIVE_RECEIPT_LINE: usize = 8192;
 
 fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<Option<(u64, u64)>> {
     #[cfg(windows)]
@@ -74,6 +75,8 @@ struct RequestEvidence {
     auto_retries: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     final_response_evidence: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    final_response_id: Option<String>,
     usage: Option<RequestEvidenceUsage>,
     #[serde(
         default,
@@ -99,6 +102,8 @@ struct RequestEvidenceUsage {
     input_tokens: Option<u64>,
     output_tokens: Option<u64>,
     cached_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_tokens_known: Option<bool>,
 }
 
 #[derive(Clone, Hash, serde::Serialize, Deserialize, PartialEq, Eq)]
@@ -233,10 +238,70 @@ fn unknown_model(model: &str) -> bool {
 }
 
 impl RequestEvidence {
-    fn same_request(&self, other: &Self) -> bool {
-        let mut comparable = self.clone();
-        comparable.relay_name.clone_from(&other.relay_name);
-        comparable == *other
+    fn legacy_projection(&self) -> Self {
+        let mut projection = self.clone();
+        projection.final_response_id = None;
+        if let Some(usage) = &mut projection.usage {
+            usage.cached_tokens_known = None;
+        }
+        projection
+    }
+
+    fn known_cached(&self) -> Option<u64> {
+        let usage = self.usage?;
+        let cached = usage.cached_tokens?;
+        usage
+            .cached_tokens_known
+            .unwrap_or(
+                cached > 0 || self.final_response_evidence.as_deref() == Some("final-response-v1"),
+            )
+            .then_some(cached)
+    }
+
+    // 同一次完成请求跨格式重读：只补缺失的回执和缓存计数，不覆盖已知证据。
+    fn merge_observation<'a>(&'a self, other: &Self) -> Option<std::borrow::Cow<'a, Self>> {
+        use std::borrow::Cow;
+        if !self.valid_capture()
+            || !other.valid_capture()
+            || self.id != other.id
+            || self.thread_id != other.thread_id
+            || self.model != other.model
+            || self.upstream_model != other.upstream_model
+            || self.relay_id != other.relay_id
+            || self.agent != other.agent
+            || self.success != other.success
+            || self.state != other.state
+            || self.status_code != other.status_code
+            || self.timestamp_ms != other.timestamp_ms
+            || self.started_at_ms != other.started_at_ms
+            || self.attempts != other.attempts
+            || self.auto_retries != other.auto_retries
+            || self.final_response_evidence != other.final_response_evidence
+            || self
+                .final_response_id
+                .as_ref()
+                .zip(other.final_response_id.as_ref())
+                .is_some_and(|(a, b)| a != b)
+            || self.usage.map(|u| (u.input_tokens, u.output_tokens))
+                != other.usage.map(|u| (u.input_tokens, u.output_tokens))
+        {
+            return None;
+        }
+        let (left, right) = (self.known_cached(), other.known_cached());
+        if left.zip(right).is_some_and(|(a, b)| a != b) {
+            return None;
+        }
+        let mut merged = Cow::Borrowed(self);
+        if left.is_none() && right.is_some() {
+            merged.to_mut().usage = other.usage;
+        }
+        if self.final_response_id.is_none() && other.final_response_id.is_some() {
+            merged
+                .to_mut()
+                .final_response_id
+                .clone_from(&other.final_response_id);
+        }
+        Some(merged)
     }
 
     fn provider_name(&self) -> &str {
@@ -260,7 +325,7 @@ impl RequestEvidence {
         self.usage.is_none_or(|usage| {
             usage.input_tokens.is_none_or(|count| count <= input)
                 && usage.output_tokens.is_none_or(|count| count <= output)
-                && usage.cached_tokens.is_none_or(|count| count <= cached)
+                && self.known_cached().is_none_or(|count| count <= cached)
         })
     }
 
@@ -292,29 +357,46 @@ impl RequestEvidence {
         true
     }
 
-    fn valid_request_counts(&self) -> bool {
+    fn valid_capture(&self) -> bool {
         if !self.valid_request() {
             return false;
         }
         let Some(RequestEvidenceUsage {
             input_tokens: Some(input),
             output_tokens: Some(output),
-            cached_tokens: Some(cached),
+            cached_tokens,
+            cached_tokens_known,
         }) = self.usage
         else {
             return false;
         };
-        cached <= input && input.saturating_add(output) > 0
+        self.actual_model().is_some()
+            && self
+                .final_response_id
+                .as_ref()
+                .is_none_or(|id| !id.is_empty() && id.len() <= 256)
+            && cached_tokens.is_none_or(|cached| cached <= input)
+            && !(cached_tokens_known == Some(true) && cached_tokens.is_none())
+            && !(cached_tokens_known == Some(false) && cached_tokens.is_some_and(|n| n > 0))
+            && input.saturating_add(output) > 0
+    }
+
+    fn valid_request_counts(&self) -> bool {
+        self.valid_capture() && self.known_cached().is_some()
     }
 
     fn keys(&self) -> Vec<RequestMatchKey> {
-        if !self.valid_request_counts() || self.actual_model().is_none() {
+        self.keys_with_cached(self.known_cached())
+    }
+
+    fn keys_with_cached(&self, cached: Option<u64>) -> Vec<RequestMatchKey> {
+        let Some(cached) = cached.filter(|_| self.valid_capture()) else {
             return Vec::new();
-        }
+        };
         let RequestEvidenceUsage {
             input_tokens: Some(input),
             output_tokens: Some(output),
-            cached_tokens: Some(cached),
+            ..
         } = self.usage.unwrap()
         else {
             unreachable!("validated request counts")
@@ -654,7 +736,8 @@ impl RequestEvidenceCache {
         let mut observed: HashMap<_, _> = self
             .records
             .iter()
-            .map(|r| (r.id.clone(), r.clone()))
+            .enumerate()
+            .map(|(index, r)| (r.id.clone(), index))
             .collect();
         let mut recovered = 0;
         let mut limited = targets.len() > 256;
@@ -705,7 +788,7 @@ impl RequestEvidenceCache {
                 .filter(|row| {
                     !observed
                         .get(&row.id)
-                        .is_some_and(|prior| prior.same_request(row))
+                        .is_some_and(|&index| self.records[index].merge_observation(row).is_some())
                 })
                 .count();
             if self.records.len().saturating_add(additional) > MAX_ROWS_CAPTURED_PROXY {
@@ -713,13 +796,15 @@ impl RequestEvidenceCache {
                 continue;
             }
             for row in rows {
-                if observed
-                    .get(&row.id)
-                    .is_some_and(|prior| prior.same_request(&row))
+                if let Some(&index) = observed.get(&row.id)
+                    && let Some(merged) = self.records[index].merge_observation(&row)
                 {
+                    if let std::borrow::Cow::Owned(merged) = merged {
+                        self.records[index] = merged;
+                    }
                     continue;
                 }
-                observed.insert(row.id.clone(), row.clone());
+                observed.insert(row.id.clone(), self.records.len());
                 self.records.push(row);
                 recovered += 1;
             }
@@ -769,26 +854,49 @@ impl RequestEvidenceCache {
             if record.id.is_empty() || record.id.len() > 256 {
                 continue;
             }
-            if record.keys().is_empty()
+            if !record.valid_capture()
                 || requests.insert(record.id.clone(), record.clone()).is_some()
             {
                 blocked.insert(record.id.clone());
             }
         }
         let current: HashSet<_> = requests.keys().cloned().collect();
-        for saved in self.verified.values() {
-            if let Some(record) = requests.get(&saved.request.id) {
-                if !record.same_request(&saved.request) {
-                    blocked.insert(saved.request.id.clone());
+        let mut legacy_zero_proofs = HashMap::new();
+        for (event_id, saved) in &self.verified {
+            // 旧版已验过的零只用于原事件；未知零不能为其他事件建立证明。
+            if !saved.rejected
+                && saved.key.cached == 0
+                && saved.request.usage.is_some_and(|usage| {
+                    usage.cached_tokens == Some(0) && usage.cached_tokens_known.is_none()
+                })
+                && saved.request.known_cached().is_none()
+            {
+                legacy_zero_proofs.insert(saved.request.id.clone(), *event_id);
+            }
+            if let Some(record) = requests.get_mut(&saved.request.id) {
+                match record.merge_observation(&saved.request) {
+                    None => {
+                        blocked.insert(saved.request.id.clone());
+                    }
+                    Some(std::borrow::Cow::Owned(merged)) => *record = merged,
+                    Some(std::borrow::Cow::Borrowed(_)) => {}
                 }
             } else {
                 requests.insert(saved.request.id.clone(), saved.request.clone());
             }
         }
+        let cached_for_matching = |record: &RequestEvidence| {
+            record
+                .known_cached()
+                .or_else(|| legacy_zero_proofs.contains_key(&record.id).then_some(0))
+        };
         let mut uncertain_requests: HashMap<String, Vec<RequestEvidence>> = HashMap::new();
         for record in &self.records {
             if record.could_be_success()
-                && (blocked.contains(&record.id) || record.keys().is_empty())
+                && (blocked.contains(&record.id)
+                    || requests
+                        .get(&record.id)
+                        .is_none_or(|r| cached_for_matching(r).is_none()))
             {
                 if let Some(session) = aliases.resolve(&record.thread_id) {
                     uncertain_requests
@@ -807,7 +915,7 @@ impl RequestEvidenceCache {
             .iter()
             .map(|request| {
                 request
-                    .keys()
+                    .keys_with_cached(cached_for_matching(request))
                     .into_iter()
                     .filter_map(|mut key| {
                         key.session = aliases.resolve(&key.session)?;
@@ -886,6 +994,38 @@ impl RequestEvidenceCache {
                 .collect::<Vec<usize>>()
         };
         let delayed_reverse = reverse_counts(DELAYED_REQUEST_MATCH_WINDOW_MS);
+        // 终态 ID 只能绑定一条原生用量与一条网关请求；拒绝的候选也参与查重。
+        let mut repeated_response_ids = HashSet::new();
+        if events
+            .iter()
+            .any(|event| event.native_response_id.is_some())
+        {
+            let mut seen = HashSet::new();
+            for id in events
+                .iter()
+                .filter_map(|event| event.native_response_id.as_deref())
+            {
+                if !seen.insert(id) {
+                    repeated_response_ids.insert(id.to_owned());
+                }
+            }
+            let mut owners = HashMap::new();
+            for request in self
+                .records
+                .iter()
+                .chain(&requests)
+                .chain(self.verified.values().map(|saved| &saved.request))
+            {
+                if let Some(id) = request.final_response_id.as_deref()
+                    && seen.contains(id)
+                    && owners
+                        .insert(id, request.id.as_str())
+                        .is_some_and(|old| old != request.id)
+                {
+                    repeated_response_ids.insert(id.to_owned());
+                }
+            }
+        }
         // 来源计数缺口可能藏有未知时间的事件；可定位的不确定事件只参与附近请求的竞争。
         let mut incomplete_sessions = HashSet::new();
         let mut uncertain_times: HashMap<String, Vec<i64>> = HashMap::new();
@@ -939,21 +1079,8 @@ impl RequestEvidenceCache {
                 continue;
             }
             let mut uncertain_competition = false;
+            let mut paired_receipt = false;
             let candidate = evidence.as_ref().and_then(|(key, at)| {
-                if let Some(records) = uncertain_requests.get(&key.session) {
-                    let start = records.partition_point(|record| {
-                        record.timestamp_ms < at.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
-                    });
-                    let end = records.partition_point(|record| {
-                        record.timestamp_ms <= at.saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS)
-                    });
-                    if records[start..end]
-                        .iter()
-                        .any(|record| record.could_fit_counts(key.input, key.output, key.cached))
-                    {
-                        return None;
-                    }
-                }
                 let entries = request_index.get(&key.counts_key())?;
                 let start = entries.partition_point(|(time, _)| {
                     *time < at.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
@@ -966,6 +1093,53 @@ impl RequestEvidenceCache {
                 }
                 let i = entries[start].1;
                 let request = &requests[i];
+                let native_id = event.native_response_id.as_deref();
+                let final_id = request.final_response_id.as_deref();
+                let terminal =
+                    request.final_response_evidence.as_deref() == Some("final-response-v1");
+                if terminal
+                    && native_id.zip(final_id).is_some_and(|(native, final_id)| {
+                        native != final_id || repeated_response_ids.contains(native)
+                    })
+                {
+                    return None;
+                }
+                let paired = !event.inherited
+                    && request.thread_id == event.session
+                    && terminal
+                    && native_id.is_some()
+                    && native_id == final_id
+                    && request.valid_request_counts()
+                    && request.started_at_ms <= *at
+                    && request.timestamp_ms.abs_diff(*at) <= REQUEST_MATCH_WINDOW_MS as u64
+                    && event
+                        .last
+                        .is_some_and(|last| last.cached_known && last.same_counts(event.delta));
+                if let Some(records) = uncertain_requests.get(&key.session) {
+                    let start = records.partition_point(|record| {
+                        record.timestamp_ms < at.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                    });
+                    let end = records.partition_point(|record| {
+                        record.timestamp_ms <= at.saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS)
+                    });
+                    if records[start..end].iter().any(|record| {
+                        record.could_fit_counts(key.input, key.output, key.cached)
+                            && !(paired
+                                && record.usage.is_none()
+                                && record.final_response_id.is_none()
+                                && record.valid_request()
+                                && record.relay_id == request.relay_id
+                                && record.actual_model() == request.actual_model()
+                                && record.model == request.model)
+                    }) {
+                        return None;
+                    }
+                }
+                if request.known_cached().is_none()
+                    && legacy_zero_proofs.get(&request.id) != Some(&event.id)
+                {
+                    return None;
+                }
                 // 以请求时间为中心，与反向唯一性使用同一窗口。
                 if let Some(times) = uncertain_times.get(&key.session) {
                     let first = times.partition_point(|at| {
@@ -986,6 +1160,7 @@ impl RequestEvidenceCache {
                     return None;
                 }
                 if request.timestamp_ms.abs_diff(*at) <= REQUEST_MATCH_WINDOW_MS as u64 {
+                    paired_receipt = paired;
                     return Some((i, false));
                 }
                 // 延迟补认只接受请求结束之后且没有重试的记录。
@@ -1011,10 +1186,16 @@ impl RequestEvidenceCache {
                         .is_none_or(|(key, at)| *key != saved_key || *at != saved.at)
                     || blocked.contains(&saved.request.id)
                     || !uncertain_competition
-                        && candidate
-                            .is_none_or(|(i, _)| !requests[i].same_request(&saved.request))
+                        && candidate.is_none_or(|(i, _)| {
+                            requests[i].merge_observation(&saved.request).is_none()
+                        })
                 {
                     saved.rejected = true;
+                } else if let Some((i, _)) = candidate
+                    && let Some(std::borrow::Cow::Owned(merged)) =
+                        saved.request.merge_observation(&requests[i])
+                {
+                    saved.request = merged;
                 }
             }
             if uncertain_competition {
@@ -1029,6 +1210,7 @@ impl RequestEvidenceCache {
                 .get(&event.id)
                 .is_some_and(|saved| saved.version == 0);
             if !legacy
+                && !paired_receipt
                 && !unknown_model(&event.model)
                 && (codex_plus_core::aggregate_catalog::is_aggregate_model(&request.model)
                     || codex_plus_core::aggregate_catalog::is_aggregate_model(&event.model))
@@ -1056,6 +1238,7 @@ impl RequestEvidenceCache {
                 || (codex_plus_core::aggregate_catalog::is_aggregate_model(&event.model)
                     && (legacy || request.model == event.model && event.model != actual_model));
             if !routed_model
+                && !paired_receipt
                 && !request_keys[i].iter().any(|key| {
                     if legacy {
                         request_base_model(&key.model) == request_base_model(&event.model)
@@ -1089,7 +1272,7 @@ impl RequestEvidenceCache {
             {
                 continue;
             }
-            if !unknown_provider(&event.provider) && !routed_model {
+            if !unknown_provider(&event.provider) && !routed_model && !paired_receipt {
                 continue;
             }
             if !self.verified.contains_key(&event.id) && self.verified.len() < MAX_EVENTS {
@@ -1107,7 +1290,7 @@ impl RequestEvidenceCache {
             }
             event.provider = request.relay_id.clone();
             event.provider_source = Some("request-log-exact".to_owned());
-            if routed_model && event.model != actual_model {
+            if (routed_model || paired_receipt) && event.model != actual_model {
                 event.model = actual_model.to_owned();
                 model_events += 1;
             }
@@ -1165,6 +1348,7 @@ struct LegacyIdentity {
 
 #[derive(Clone, PartialEq, Eq)]
 struct UsageEvent {
+    native_response_id: Option<Box<str>>,
     id: [u8; 32],
     original_id: [u8; 32],
     session: String,
@@ -1304,6 +1488,9 @@ impl UsageEvent {
     }
 
     fn merge_duplicate_context(&mut self, other: &Self, names: &BTreeMap<String, String>) {
+        if self.native_response_id != other.native_response_id {
+            self.native_response_id = None;
+        }
         // 先按各自模型解析供应商，避免合并模型后丢失原始候选的归属。
         if self.context_conflicts.provider {
             self.provider.clear();
@@ -1417,8 +1604,19 @@ struct InheritedUsageContext {
     ambiguous: bool,
 }
 
+enum PendingUsageReceipt {
+    Unusable,
+    One {
+        id: Box<str>,
+        at: i64,
+        usage: Tokens,
+        total: Tokens,
+    },
+}
+
 #[derive(Default)]
 struct FileState {
+    pending_response: Option<PendingUsageReceipt>,
     stamp: Option<(u64, Option<SystemTime>, Option<(u64, u64)>)>,
     offset: u64,
     reader: Option<index_budget::ReadCursor>,
@@ -3050,6 +3248,7 @@ impl FileState {
                         let affects_usage = oversized::may_affect_usage(&self.pending);
                         self.issues += usize::from(affects_usage);
                         self.activity_truncated |= !affects_usage;
+                        self.pending_response = None;
                         self.pending.clear();
                         self.skipping = true;
                     }
@@ -3112,6 +3311,7 @@ impl FileState {
                 return false;
             }
             // 即使空索引也无法容纳的行不能无限重试；标记不完整并继续后续记录。
+            self.pending_response = None;
             self.pending.clear();
             self.issues += 1;
         } else {
@@ -3143,6 +3343,7 @@ impl FileState {
         }
         let Ok(envelope) = serde_json::from_slice::<Envelope>(line) else {
             if !line.iter().all(u8::is_ascii_whitespace) {
+                self.pending_response = None;
                 self.issues += 1;
             }
             return;
@@ -3155,6 +3356,56 @@ impl FileState {
             extent.2 = self.offset;
         } else if self.rollout_extent.is_some() {
             self.rollout_out_of_order = true;
+        }
+        let inherited = self.history_boundary.contains(ordinal);
+        if envelope.kind == "token_usage_record" {
+            #[derive(Deserialize)]
+            struct Receipt<'a> {
+                thread_id: &'a str,
+                turn_id: &'a str,
+                response_id: &'a str,
+                usage: Value,
+                thread_token_usage: Value,
+            }
+            // 只为下一条累计用量保留证据，不从回执新增消费或改变累计基线。
+            let parsed = (|| {
+                if self.pending_response.is_some()
+                    || inherited
+                    || line.len() > MAX_NATIVE_RECEIPT_LINE
+                {
+                    return None;
+                }
+                let receipt: Receipt<'_> = serde_json::from_str(envelope.payload.get()).ok()?;
+                if receipt.thread_id != self.session
+                    || self.turn.is_empty()
+                    || receipt.turn_id != self.turn
+                    || receipt.response_id.is_empty()
+                    || receipt.response_id.len() > 256
+                    || !receipt
+                        .response_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_graphic())
+                {
+                    return None;
+                }
+                let at = DateTime::parse_from_rfc3339(envelope.timestamp?)
+                    .ok()?
+                    .timestamp_millis();
+                let usage = Tokens::parse(&receipt.usage).filter(|tokens| tokens.cached_known)?;
+                let total = Tokens::parse(&receipt.thread_token_usage)
+                    .filter(|tokens| tokens.cached_known)?;
+                Some(PendingUsageReceipt::One {
+                    id: receipt.response_id.into(),
+                    at,
+                    usage,
+                    total,
+                })
+            })();
+            self.pending_response = Some(parsed.unwrap_or(PendingUsageReceipt::Unusable));
+            return;
+        }
+        if matches!(envelope.kind, "session_meta" | "turn_context") {
+            self.pending_response = None;
         }
         if !matches!(
             envelope.kind,
@@ -3201,8 +3452,23 @@ impl FileState {
                 kind: &'a str,
             }
             let Ok(event) = serde_json::from_str::<Event>(envelope.payload.get()) else {
+                self.pending_response = None;
                 return;
             };
+            if event.kind.starts_with("thread_settings")
+                || matches!(
+                    event.kind,
+                    "task_started"
+                        | "turn_started"
+                        | "turn_aborted"
+                        | "task_aborted"
+                        | "task_complete"
+                        | "turn_completed"
+                        | "task_failed"
+                )
+            {
+                self.pending_response = None;
+            }
             if event.kind != "token_count"
                 && !event.kind.starts_with("thread_settings")
                 && !matches!(event.kind, "task_started" | "turn_started")
@@ -3225,10 +3491,10 @@ impl FileState {
             serde_json::from_str::<Value>(envelope.payload.get())
         };
         let Ok(payload) = parsed else {
+            self.pending_response = None;
             self.issues += 1;
             return;
         };
-        let inherited = self.history_boundary.contains(ordinal);
         if envelope.kind == "session_meta" {
             let id = payload["id"]
                 .as_str()
@@ -3313,6 +3579,14 @@ impl FileState {
             return;
         }
         let event_type = payload["type"].as_str().unwrap_or("");
+        let receipt = if event_type == "token_count" {
+            if payload.get("info") == Some(&Value::Null) && payload["rate_limits"].is_object() {
+                return;
+            }
+            self.pending_response.take()
+        } else {
+            None
+        };
         if self.session.is_empty() {
             if event_type == "token_count" {
                 self.issues += 1;
@@ -3526,6 +3800,27 @@ impl FileState {
                     })
                 });
         self.events.push(UsageEvent {
+            native_response_id: receipt.and_then(|receipt| {
+                let PendingUsageReceipt::One {
+                    id,
+                    at,
+                    usage,
+                    total: receipt_total,
+                } = receipt
+                else {
+                    return None;
+                };
+                (!inherited
+                    && !count_uncertain
+                    && time.timestamp_millis() >= at
+                    && time.timestamp_millis().saturating_sub(at) <= REQUEST_MATCH_WINDOW_MS
+                    && total.cached_known
+                    && total.same_counts(receipt_total)
+                    && delta.cached_known
+                    && delta.same_counts(usage)
+                    && last.is_some_and(|tokens| tokens.cached_known && tokens.same_counts(usage)))
+                .then_some(id)
+            }),
             id,
             original_id: id,
             session: owner,
@@ -3887,8 +4182,10 @@ impl Snapshot {
         }
         let mut days: BTreeMap<NaiveDate, Aggregate> = BTreeMap::new();
         let mut models: BTreeMap<(NaiveDate, String), Aggregate> = BTreeMap::new();
-        let mut breakdowns: BTreeMap<(NaiveDate, String, String, String, bool), Aggregate> =
-            BTreeMap::new();
+        let mut breakdowns: BTreeMap<
+            (NaiveDate, String, String, String, bool),
+            (Aggregate, Tokens),
+        > = BTreeMap::new();
         let mut day_proofs = BTreeMap::<NaiveDate, Sha256>::new();
         let mut breakdown_proofs =
             BTreeMap::<(NaiveDate, String, String, String, bool), (Sha256, bool, bool, bool)>::new(
@@ -3934,7 +4231,11 @@ impl Snapshot {
                 },
                 event.context_conflicts.provider,
             );
-            breakdowns.entry(key.clone()).or_default().add(&record);
+            let (aggregate, priceable) = breakdowns.entry(key.clone()).or_default();
+            aggregate.add(&record);
+            if event.delta.cached_known {
+                priceable.add(event.delta);
+            }
             event.update_membership_digest(day_proofs.entry(event.date).or_default());
             let (digest, exact, request_proof, supplier_proof) = breakdown_proofs
                 .entry(key)
@@ -3973,12 +4274,22 @@ impl Snapshot {
                         .iter()
                         .filter(|((day, _, _, _, _), _)| day == &date)
                         .map(
-                            |(key @ (_, model, provider, role, provider_conflict), aggregate)| {
+                            |(
+                                key @ (_, model, provider, role, provider_conflict),
+                                (aggregate, priceable),
+                            )| {
                                 let mut row = aggregate.value();
                                 row["model"] = json!(model);
                                 row["provider"] = json!(provider);
                                 row["providerName"] = json!(self.provider_names.get(provider));
                                 row["role"] = json!(role);
+                                if !aggregate.usage.cached_known && priceable.total_tokens != 0 {
+                                    row["priceableUsage"] = json!({
+                                        "inputTokens":priceable.input_tokens,
+                                        "cachedInputTokens":priceable.cached_input_tokens,
+                                        "outputTokens":priceable.output_tokens,
+                                    });
+                                }
                                 if *provider_conflict {
                                     row["providerConflict"] = json!(true);
                                 }

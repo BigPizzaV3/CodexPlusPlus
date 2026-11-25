@@ -1,6 +1,6 @@
 //! 进程内常驻的本地协议代理 helper。
 //!
-//! 背景：协议转换 / 聚合 / 请求避震等能力依赖 `config.toml` 里写死的本地代理
+//! 背景：协议转换 / 聚合 / 失败切换等能力依赖 `config.toml` 里写死的本地代理
 //! 地址（默认 `http://127.0.0.1:57321/v1`）。helper 过去只在
 //! `launch_and_inject` 里随 Codex 会话启动，Codex 一退出就关闭；于是「不从
 //! Codex++ 启动 Codex」（终端 CLI、IDE 插件、直接双击官方 App）时，config 指向

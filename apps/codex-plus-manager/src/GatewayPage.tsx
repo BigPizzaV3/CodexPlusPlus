@@ -54,6 +54,7 @@ import "./GatewayPage.css";
 import { CxBadge, CxCard, CxLoading, CxRow, CxSection } from "./cx-layout";
 import { Menu, MenuItem } from "./ManagementPages";
 import { AgentGlyph } from "./hub-shared";
+import { RecentRouteFeed } from "./RoutingObservatory";
 
 type Tab = "agents" | "providers" | "routing" | "usage" | "gateway";
 export type GatewayTab = Tab;
@@ -128,8 +129,6 @@ export function GatewayPage({
 
   return (
     <div className="mg-page gateway-page">
-      {/* 页面标题由外层框架显示，刷新按钮放进外壳顶栏。
-          用量页签有自己的刷新（读用量和余额），这里的只刷新网关状态，放在一起会让人以为刷新了用量。 */}
       <TopbarActions>{tab === "usage" ? null : refreshButton}</TopbarActions>
       <GatewayNavContext.Provider value={nav}>
       <div className="mg-content gw-content">
@@ -160,6 +159,17 @@ const STICKY_OPTIONS: GroupSticky[] = ["cache", "session", "off"];
 
 /** 路由页：你建的组和自动组，每张卡片上直接改路由方式、会话固定、隐藏成员，手动模式下点成员锁定。 */
 function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
+  const [view, setView] = useState<"settings" | "requests">("settings");
+  return <>
+    <nav className="tp-tabs cx-pills" aria-label={t("路由")} role="group">
+      <button aria-pressed={view === "settings"} data-active={view === "settings"} onClick={() => setView("settings")} type="button">{t("调度设置")}</button>
+      <button aria-pressed={view === "requests"} data-active={view === "requests"} onClick={() => setView("requests")} type="button">{t("请求路由")}</button>
+    </nav>
+    {view === "settings" ? <RoutingSettings payload={payload} busy={busy} run={run} /> : <RecentRouteFeed payload={payload} />}
+  </>;
+}
+
+function RoutingSettings({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
   const [editing, setEditing] = useState<GatewayGroupEntry | "new" | null>(null);
   // 搜索词和自动组的展开状态在切换页签后保留。
   const [query, setQuery] = useGatewayViewState("routing.query", "");

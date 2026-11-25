@@ -1218,8 +1218,21 @@ where
 
 /// 按开关对齐兼容服务：写入 / 还原 `~/.codex`，起 / 停本地服务。只记日志，不返回错误。
 async fn reconcile_chatgpt_compat(home: &Path, settings: &BackendSettings) {
-    match crate::chatgpt_compat_apply::reconcile(home, settings.chatgpt_compat_enabled) {
-        Ok(()) if settings.chatgpt_compat_enabled => {
+    // 当前供应商用不了本地账号：设置也退回「不登录」，不再每次启动都试着写、再被拒。
+    let fell_back = crate::chatgpt_compat_apply::fall_back_when_blocked(
+        home,
+        &crate::settings::SettingsStore::default(),
+    )
+    .unwrap_or(false);
+    let enabled = settings.chatgpt_compat_enabled && !fell_back;
+    // 资料要在写假登录之前定：登录 token 里也带邮箱和名字。
+    crate::chatgpt_compat::set_profile(crate::chatgpt_compat::Profile::from_settings(
+        &settings.chatgpt_compat_name,
+        &settings.chatgpt_compat_username,
+        &settings.chatgpt_compat_email,
+    ));
+    match crate::chatgpt_compat_apply::reconcile(home, enabled) {
+        Ok(()) if enabled => {
             if let Err(error) = crate::chatgpt_compat::start().await {
                 let _ = crate::diagnostic_log::append_diagnostic_log(
                     "launcher.chatgpt_compat_start_failed",
@@ -2985,6 +2998,8 @@ impl ProxyRequestLog {
         let log = Self {
             started: std::time::Instant::now(),
             entry: crate::request_log::RequestLogEntry {
+                route: None,
+                context_summary: None,
                 id: crate::request_log::RequestLogEntry::new_id(started_at_ms),
                 timestamp_ms: started_at_ms,
                 started_at_ms,
@@ -3006,6 +3021,7 @@ impl ProxyRequestLog {
                 attempt_details: Vec::new(),
                 state: Some("running".to_string()),
                 first_token_ms: None,
+                upstream_started_at_ms: None,
                 estimated_output_tokens: None,
                 phase: Some("requesting".to_string()),
                 error: None,
@@ -3052,6 +3068,7 @@ impl ProxyRequestLog {
         self.entry.auto_retries = trace.auto_retries;
         self.entry.retry_reasons = trace.retry_reasons.clone();
         self.entry.attempt_details = trace.attempt_details.clone();
+        self.entry.upstream_started_at_ms = trace.attempt_started_at_ms;
         if let Some(first_output_at_ms) = trace.first_output_at_ms {
             self.entry.first_token_ms =
                 Some(first_output_at_ms.saturating_sub(self.entry.started_at_ms));
@@ -3087,6 +3104,7 @@ impl ProxyRequestLog {
             self.entry.auto_retries = trace.auto_retries;
             self.entry.retry_reasons = trace.retry_reasons.clone();
             self.entry.attempt_details = trace.attempt_details.clone();
+            self.entry.upstream_started_at_ms = trace.attempt_started_at_ms;
             if let Some(first_output_at_ms) = trace.first_output_at_ms {
                 self.entry.first_token_ms =
                     Some(first_output_at_ms.saturating_sub(self.entry.started_at_ms));
@@ -9682,125 +9700,6 @@ mod tests {
         assert_eq!(entry.cache_hit_ratio, Some(100.0 / 120.0));
         assert_eq!(entry.final_response_id.as_deref(), Some("resp_logged"));
         assert_eq!(entry.final_response_evidence.as_deref(), Some("final-response-v1"));
-
-        crate::request_log::set_request_log_path_for_tests(None);
-        crate::paths::set_settings_path_for_tests(previous_settings_path);
-    }
-
-    #[tokio::test]
-    async fn helper_buffered_mode_retries_overload_and_hides_error() {
-        let _log_guard = crate::request_log::request_log_test_guard();
-        let _settings_guard = crate::paths::settings_path_test_guard();
-        let temp = tempfile::tempdir().unwrap();
-        let settings_path = temp.path().join("settings.json");
-        let log_path = temp.path().join("request-log.jsonl");
-        let previous_settings_path =
-            crate::paths::set_settings_path_for_tests(Some(settings_path.clone()));
-        crate::request_log::set_request_log_path_for_tests(Some(log_path.clone()));
-
-        let upstream_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let upstream_addr = upstream_listener.local_addr().unwrap();
-        let settings = serde_json::json!({
-            "relayProfilesEnabled": true,
-            "relayProfiles": [{
-                "id": "buffered-overload-relay",
-                "name": "缓冲重试供应商",
-                "baseUrl": format!("http://{upstream_addr}/v1"),
-                "upstreamBaseUrl": format!("http://{upstream_addr}/v1"),
-                "apiKey": "sk-upstream",
-                "protocol": "responses",
-                "relayMode": "pureApi"
-            }],
-            "activeRelayId": "buffered-overload-relay",
-            "protocolProxyAutoRetryMode": "buffered",
-            "protocolProxyAutoRetryMaxAttempts": 2,
-            "protocolProxyAutoRetryIntervalSeconds": 0
-        });
-        std::fs::write(settings_path, serde_json::to_vec_pretty(&settings).unwrap()).unwrap();
-
-        let upstream = tokio::spawn(async move {
-            let overloaded = concat!(
-                "event: response.created\n",
-                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_bad\",\"status\":\"in_progress\"}}\n\n",
-                "event: error\n",
-                "data: {\"type\":\"error\",\"error\":{\"code\":\"server_is_overloaded\",\"message\":\"Our servers are currently overloaded. Please try again later.\"}}\n\n",
-            );
-            let ok = concat!(
-                "event: response.created\n",
-                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_ok\",\"status\":\"in_progress\"}}\n\n",
-                "event: response.output_text.delta\n",
-                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
-                "event: response.completed\n",
-                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\",\"usage\":{\"input_tokens\":12,\"output_tokens\":3,\"input_tokens_details\":{\"cached_tokens\":0}}}}\n\n",
-            );
-            for body in [overloaded, ok] {
-                let (mut stream, _) = upstream_listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 4096];
-                let mut expected_len = None;
-                loop {
-                    let read = stream.read(&mut buffer).await.unwrap();
-                    assert!(read > 0);
-                    request.extend_from_slice(&buffer[..read]);
-                    if expected_len.is_none() {
-                        if let Some(header_end) = find_header_end(&request) {
-                            let headers = String::from_utf8_lossy(&request[..header_end]);
-                            let content_length = header_value_from_headers(&headers, "content-length")
-                                .unwrap()
-                                .parse::<usize>()
-                                .unwrap();
-                            expected_len = Some(header_end + 4 + content_length);
-                        }
-                    }
-                    if expected_len.is_some_and(|length| request.len() >= length) {
-                        break;
-                    }
-                }
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream.write_all(response.as_bytes()).await.unwrap();
-                stream.write_all(body.as_bytes()).await.unwrap();
-            }
-        });
-
-        let helper_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .unwrap();
-        let helper_addr = helper_listener.local_addr().unwrap();
-        let helper = tokio::spawn(async move {
-            let (stream, remote_addr) = helper_listener.accept().await.unwrap();
-            handle_helper_connection(stream, Some(remote_addr))
-                .await
-                .unwrap();
-        });
-        let mut client = tokio::net::TcpStream::connect(helper_addr).await.unwrap();
-        let body = br#"{"model":"gpt-6.1-sol","input":"probe","stream":true}"#;
-        let headers = format!(
-            "POST /v1/responses HTTP/1.1\r\nHost: {helper_addr}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        client.write_all(headers.as_bytes()).await.unwrap();
-        client.write_all(body).await.unwrap();
-        let mut response = Vec::new();
-        client.read_to_end(&mut response).await.unwrap();
-        helper.await.unwrap();
-        upstream.await.unwrap();
-
-        let text = String::from_utf8_lossy(&response);
-        assert!(text.contains("resp_ok"), "{text}");
-        assert!(!text.contains("server_is_overloaded"), "buffered 模式不应把过载错误交给客户端");
-        let entries = crate::request_log::read_request_logs_at(&log_path, 10).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].success);
-        assert_eq!(entries[0].attempts, 2);
-        assert_eq!(entries[0].auto_retries, 1);
-        assert_eq!(entries[0].usage.as_ref().map(|u| u.input_tokens), Some(12));
-        assert_eq!(entries[0].final_response_id.as_deref(), Some("resp_ok"));
-        assert_eq!(entries[0].final_response_evidence.as_deref(), Some("final-response-v1"));
 
         crate::request_log::set_request_log_path_for_tests(None);
         crate::paths::set_settings_path_for_tests(previous_settings_path);

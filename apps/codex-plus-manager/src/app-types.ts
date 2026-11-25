@@ -90,6 +90,10 @@ export type BackendSettings = WhaleBalanceSettings & {
   keepProjectsWithoutAccount?: boolean;
   /** 纯 API Key 解锁 ChatGPT 登录专属入口：本地 ChatGPT 兼容服务 + 改写 ~/.codex，关闭时还原。 */
   chatgptCompatEnabled?: boolean;
+  /** 本地账号显示的名字、用户名、邮箱；留空用默认值。 */
+  chatgptCompatName?: string;
+  chatgptCompatUsername?: string;
+  chatgptCompatEmail?: string;
   nativeAuthSelection?: { mode: "none" } | { mode: "account"; accountRef: string } | null;
   /** 启动时及运行期间自动检查 Codex++ 更新（#1272），默认开。 */
   updateAutoCheck?: boolean;
@@ -140,19 +144,12 @@ export type BackendSettings = WhaleBalanceSettings & {
   codexAppDisableWorkView: boolean;
   codexAppPetRealMouseLook: boolean;
   codexAppActivityOverlayRight: boolean;
-  /** 协议代理内部自动重试（与 Rust `protocol_proxy_auto_retry` 对应）。 */
-  protocolProxyAutoRetry: boolean;
-  protocolProxyAutoRetryMaxAttempts: number;
-  protocolProxyAutoRetryIntervalSeconds: number;
-  /** 命中这些上游 HTTP 状态码时由代理退避重发；空数组表示不重试。与 Rust `protocol_proxy_auto_retry_status_codes` 对应。 */
-  protocolProxyAutoRetryStatusCodes: number[];
-  protocolProxyAutoRetryMode: "streaming" | "streaming-legacy" | "buffered";
-  /** 流式避震下首段可见输出后到提交的延迟（毫秒）；0 表示一出现可见输出立即提交。与 Rust `protocol_proxy_auto_retry_commit_delay_ms` 对应。 */
-  protocolProxyAutoRetryCommitDelayMs: number;
   /** 把不在当前供应商模型列表里的请求模型（Codex 后台任务的 gpt-* / codex-auto-review）改写为该供应商默认模型。与 Rust `protocol_proxy_map_unlisted_models` 对应。 */
   protocolProxyMapUnlistedModels: boolean;
   /** 本地协议代理单次请求体上限（MiB，32~512，默认 128）。与 Rust `helper_max_request_body_mib` 对应。 */
   helperMaxRequestBodyMib: number;
+  /** 流式请求等上游响应头的上限（秒，120~3600；null 表示用默认 120）。与 Rust `upstream_stream_header_timeout_secs` 对应。 */
+  upstreamStreamHeaderTimeoutSecs: number | null;
   codexAppCapacityAutoRetry: boolean;
   codexAppTurnRewind: boolean;
   codexAppStepwiseEnabled: boolean;
@@ -455,6 +452,8 @@ export type RequestLogEntry = {
   state?: string | null;
   /** 首字耗时（毫秒）。 */
   firstTokenMs?: number | null;
+  /** 成功那次上游请求真正发出的 unix 毫秒时间：转发前排队/重试可据此单独统计（#3267）。旧日志没有该字段。 */
+  upstreamStartedAtMs?: number | null;
   /** 运行中按流式增量粗估的输出 token。 */
   estimatedOutputTokens?: number | null;
   error?: string | null;

@@ -982,7 +982,11 @@ mod tests {
         assert!(!confirmed.to_pool);
         assert!(confirmed.result.imported);
         assert!(settings.load().unwrap().relay_profiles.iter().any(|profile| profile.name == "Direct"));
-        assert!(gateway.load().unwrap_or_default().providers.is_empty());
+        // 导进的是直连供应商；它默认以引用的方式出现在共享供应商里，不复制一份进 gateway.json。
+        let pool = gateway.load().unwrap_or_default().providers;
+        assert_eq!(pool.len(), 1);
+        assert!(pool[0].linked_codex_relay.is_some());
+        assert!(!dir.path().join("gateway.json").exists(), "没用过本地服务时不为引用新建 gateway.json");
         assert!(!pending_path.exists());
         // 已经没有待确认导入时返回 None。
         assert!(

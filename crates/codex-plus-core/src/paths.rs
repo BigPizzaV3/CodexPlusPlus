@@ -63,7 +63,7 @@ pub fn default_app_state_dir() -> PathBuf {
 }
 
 fn default_state_base_dir() -> PathBuf {
-    if let Some(home_dir) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+    if let Some(home_dir) = crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
         return home_dir.join(APP_STATE_DIR);
     }
     PathBuf::from(APP_STATE_DIR)

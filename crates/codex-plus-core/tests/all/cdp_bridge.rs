@@ -863,12 +863,22 @@ fn image_overlay_extension_installs_from_data_uri() {
         .split("function installCodexPlusImageOverlay(config = {}, report = null)")
         .nth(1)
         .expect("image overlay entry point should be in the extension engine");
-    assert!(overlay_script.contains("data-codex-plus-image-native"));
-    assert!(overlay_script.contains("root.insertBefore(overlay, document.body"));
-    assert!(!overlay_script.contains("maskImage"));
+    let (modern_script, legacy_script) = overlay_script
+        .split_once("    const imageBackdropSelector =")
+        .expect("modern shell and legacy fallback should both be embedded");
+    assert!(modern_script.contains("root.insertBefore(wallpaper, document.body)"));
+    assert!(!modern_script.contains("maskImage"));
+    assert!(!modern_script.contains("mask-image:"));
+    assert!(legacy_script.contains("data-codex-plus-image-native"));
+    assert!(legacy_script.contains("root.insertBefore(overlay, document.body"));
+    // Only the legacy composer fade uses a mask; preserve any native mask it already has.
+    assert!(legacy_script.contains("native.maskImage === \"none\""));
+    assert!(legacy_script.contains("mask-image:linear-gradient(to bottom,transparent,black"));
     assert!(!overlay_script.contains("ScrollTimeline"));
     assert!(!overlay_script.contains("cloneNode"));
-    assert!(script.contains("URL.createObjectURL(new Blob([bytes], { type: data[1] }))"));
+    assert!(modern_script.contains("URL.createObjectURL(new Blob(["));
+    assert!(modern_script.contains("Uint8Array.fromBase64?.(data[2])"));
+    assert!(modern_script.contains("], { type: data[1] }))"));
     assert!(script.contains("image.src = resource.imageSource"));
     assert!(!script.contains("JSON.stringify(source)"));
     assert!(overlay_script.contains("zIndex: String(wallpaperLayer)"));

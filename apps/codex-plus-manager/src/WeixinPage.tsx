@@ -8,7 +8,7 @@ import { Switch } from "./gateway-ui";
 import { AppSelect } from "./AppSelect";
 import { useGatewayPayload } from "./hub-shared";
 import { groupDisplayName } from "./gateway-model";
-import { remoteControlRequest } from "./RemoteControlPage";
+import { remoteControlRequest, type RemoteControlStatus } from "./RemoteControlPage";
 import { Menu, MenuItem } from "./ManagementPages";
 import { usePopoverLayer } from "./use-popover-layer";
 import { t, tf } from "@/i18n";
@@ -215,17 +215,33 @@ export function WeixinConnectScreen({
   const [resetPending, setResetPending] = useState(false);
   const [resetMessage, setResetMessage] = useState("");
   // 加加跑在远程控制里：没开时微信里的加加不可用，这里提示一下（null = 还没读到）。
-  const [remoteControlRunning, setRemoteControlRunning] = useState<boolean | null>(null);
+  const [remoteControlStatus, setRemoteControlStatus] = useState<RemoteControlStatus | null>(null);
+  const remoteControlRunning = remoteControlStatus?.running ?? null;
+  const [focusPending, setFocusPending] = useState(false);
+  const [focusError, setFocusError] = useState("");
 
   useEffect(() => {
     let disposed = false;
     remoteControlRequest("status")
-      .then((value) => { if (!disposed) setRemoteControlRunning(Boolean(value.running)); })
-      .catch(() => { if (!disposed) setRemoteControlRunning(null); });
+      .then((value) => { if (!disposed) setRemoteControlStatus(value); })
+      .catch((error) => { if (!disposed) setFocusError(String(error)); });
     return () => {
       disposed = true;
     };
   }, []);
+
+  const toggleFocus = async () => {
+    if (!remoteControlStatus) return;
+    setFocusPending(true);
+    setFocusError("");
+    try {
+      setRemoteControlStatus(await remoteControlRequest("setWeixinFocus", { enabled: !remoteControlStatus.weixinFocusEnabled }));
+    } catch (error) {
+      setFocusError(String(error));
+    } finally {
+      setFocusPending(false);
+    }
+  };
 
   useEffect(() => {
     let disposed = false;
@@ -537,6 +553,18 @@ export function WeixinConnectScreen({
 
       <CxSection id="weixin-section-account" title={t("权限")}>
         <CxCard className="weixin-settings-card">
+          <SettingRow
+            title={t("允许微信专注操作桌面会话")}
+            description={focusError || t("远程控制关闭时，仅在此项开启后，已扫码绑定的微信用户仍可进入桌面会话、发消息和处理审批。不会开启网页访问。")}
+          >
+            <Switch
+              label={t("允许微信专注操作桌面会话")}
+              on={Boolean(remoteControlStatus?.weixinFocusEnabled)}
+              disabled={focusPending || !remoteControlStatus}
+              pending={focusPending}
+              onToggle={() => void toggleFocus()}
+            />
+          </SettingRow>
           <SettingRow description={t("Codex 在工作目录里能做什么")} title={t("沙箱权限")}>
             <AppSelect
               ariaLabel={t("沙箱权限")}

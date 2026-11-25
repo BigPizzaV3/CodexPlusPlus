@@ -5406,7 +5406,6 @@ select {
 .setting-row-control select,
 .setting-row-control > button[role="combobox"],
 .setting-row-control .app-select { width: 100%; }
-
 @media (max-width: 760px) {
   .setting-row { grid-template-columns: minmax(0, 1fr); gap: 10px; }
   .setting-row-control { justify-content: flex-start; }

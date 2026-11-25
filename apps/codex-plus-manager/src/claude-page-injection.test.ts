@@ -94,7 +94,13 @@ function loadHook(state: string, plan: unknown, { loading = false } = {}) {
   };
   const nodeRequire = createRequire(import.meta.url);
   const context = vm.createContext({
-    require: (name: string) => (name === "electron" ? electron : name === "./bash-timeout.js" ? { beginTimeoutOverrides: () => Promise.resolve({}) } : nodeRequire(name)),
+    require: (name: string) => {
+      if (name === "electron") return electron;
+      if (name === "./bash-timeout.js") return { beginTimeoutOverrides: () => Promise.resolve({}) };
+      // hook.js falls back to the home directory when a local helper receipt is missing.
+      if (name === "node:os") return { ...os, homedir: () => state };
+      return nodeRequire(name);
+    },
     __dirname: dir,
     process, Buffer, console, setTimeout, clearTimeout, URL, Promise, JSON, WeakSet, Map,
     // bash 时限那段和这里无关：给一个已就绪的结果，不让它去动主进程。
@@ -166,12 +172,18 @@ test("hook 照注入计划注入：旧格式扩展在页面脚本之前，运行
 test("一个包出错只记到它自己头上，别的包照常注入", async () => {
   const { state, packageRoot, cleanup } = fixture();
   try {
-    fs.symlinkSync("/etc/hosts", path.join(packageRoot, "link.js"));
+    const outside = path.join(state, "outside");
+    const outsideScript = "window.outsidePackageWasInjected = true;";
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "outside.js"), outsideScript);
+    // Windows 普通账号也能创建 junction；链接内的文件本身仍是普通文件。
+    fs.symlinkSync(outside, path.join(packageRoot, "linked"), process.platform === "win32" ? "junction" : "dir");
+    assert.equal(fs.readFileSync(path.join(packageRoot, "linked", "outside.js"), "utf8"), outsideScript);
     const packages = [
       { key: "user:syntax", root: packageRoot, pieces: [{ text: "SYNTAX ERROR HERE" }] },
       { key: "user:missing", root: packageRoot, pieces: [{ file: "gone.js" }] },
-      { key: "user:escape", root: packageRoot, pieces: [{ file: "../outside.js" }] },
-      { key: "user:link", root: packageRoot, pieces: [{ file: "link.js" }] },
+      { key: "user:escape", root: packageRoot, pieces: [{ file: "../outside/outside.js" }] },
+      { key: "user:link", root: packageRoot, pieces: [{ file: "linked/outside.js" }] },
       { key: "user:fine", root: packageRoot, pieces: [{ file: "main.js" }] },
     ];
     const hook = loadHook(state, plan(packageRoot, { legacy: [], packages }));
@@ -183,7 +195,7 @@ test("一个包出错只记到它自己头上，别的包照常注入", async ()
       assert.match(failed[index + 1], new RegExp(`markFailed\\("${key}","读不到拓展包里的文件"\\)`));
     }
     assert.equal(hook.executed.at(-1), "window.demo = 1;");
-    assert.ok(!hook.executed.some((code) => code.includes("localhost")), "包外的文件（符号链接）不会被读进来");
+    assert.ok(!hook.executed.some((code) => code.includes(outsideScript)), "包外的文件（目录链接）不会被读进来");
   } finally {
     cleanup();
   }

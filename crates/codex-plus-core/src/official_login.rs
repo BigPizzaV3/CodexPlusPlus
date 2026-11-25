@@ -90,6 +90,11 @@ fn official_login_from_auth_value(value: &Value) -> Option<OfficialLogin> {
     if access_token.is_empty() && refresh_token.is_empty() {
         return None;
     }
+    // 「本地账号」（API Key 解锁 ChatGPT 入口）写进 auth.json 的是假登录，不是 ChatGPT 账号：
+    // 不能被当成官方登录保存、借给供应商，或让网关改走官方会话身份。
+    if crate::chatgpt_compat::is_local_login_tokens(tokens) {
+        return None;
+    }
     Some(OfficialLogin {
         access_token,
         refresh_token,

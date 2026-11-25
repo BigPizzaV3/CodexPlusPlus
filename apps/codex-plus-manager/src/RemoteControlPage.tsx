@@ -24,6 +24,7 @@ export type RemoteDevice = {
 
 export type RemoteControlStatus = {
   enabled: boolean;
+  weixinFocusEnabled: boolean;
   running: boolean;
   port: number;
   url?: string | null;
@@ -49,6 +50,7 @@ export type RemoteControlAction =
   | "status"
   | "enable"
   | "disable"
+  | "setWeixinFocus"
   | "resetToken"
   | "enableLan"
   | "disableLan"
@@ -57,7 +59,7 @@ export type RemoteControlAction =
   | "setDeviceRole"
   | "revokeDevice";
 
-export function remoteControlRequest(action: RemoteControlAction, args?: Record<string, string>) {
+export function remoteControlRequest(action: RemoteControlAction, args?: Record<string, string | boolean>) {
   return invoke<RemoteControlStatus>("remote_control_request", { action, args });
 }
 
@@ -106,7 +108,7 @@ export function RemoteControlPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const deviceCount = useRef<number | null>(null);
 
-  const run = useCallback(async (action: RemoteControlAction, args?: Record<string, string>) => {
+  const run = useCallback(async (action: RemoteControlAction, args?: Record<string, string | boolean>) => {
     setBusy(true);
     setError(null);
     try {
@@ -194,7 +196,7 @@ export function RemoteControlPage() {
         <CxCard>
           <CxRow
             title={t("启用远程控制")}
-            detail={t("在浏览器里查看 Codex 的会话、发消息、停止，处理命令审批和模型提问，切换模型、权限和计划模式。")}
+            detail={t("在浏览器里查看 Codex 的会话、发消息、停止，处理命令审批和模型提问，切换模型、权限和计划模式。") + (status?.weixinFocusEnabled && !status.running ? ` ${t("开启远程控制会中断正在独立后台运行的微信专注轮次。")}` : "")}
             badges={status?.running ? <CxBadge tone="ok">{t("运行中")}</CxBadge> : null}
           >
             <Switch
@@ -203,6 +205,18 @@ export function RemoteControlPage() {
               pending={busy}
               disabled={busy || !status}
               onToggle={() => void run(status?.enabled ? "disable" : "enable")}
+            />
+          </CxRow>
+          <CxRow
+            title={t("允许微信专注操作桌面会话")}
+            detail={t("远程控制关闭时，仅在此项开启后，已扫码绑定的微信用户仍可进入桌面会话、发消息和处理审批。不会开启网页访问。")}
+          >
+            <Switch
+              label={t("允许微信专注操作桌面会话")}
+              on={Boolean(status?.weixinFocusEnabled)}
+              pending={busy}
+              disabled={busy || !status}
+              onToggle={() => void run("setWeixinFocus", { enabled: !status?.weixinFocusEnabled })}
             />
           </CxRow>
           {url ? (

@@ -1028,6 +1028,13 @@ export function ModelList({
       Boolean(providerModel && qualifiedProvider(payload, current, exclude) && providerModel.toLowerCase() === current.toLowerCase()));
   };
   const choose = (item: PickerItem) => (item.direct && onPickOwn ? onPickOwn(item) : onPick(item));
+  // 当前选中的模型在哪一组：那一组默认展开；选中的在共享供应商里时，Agent 自带（直连）那组默认折叠（#3263）。
+  const selectedSection = displaySections.find((section) => section.items.some(isSelected))?.key;
+  const expandedByDefault = (key: string) => {
+    if (selectedSection && key === selectedSection) return true;
+    if (key === "own" && selectedSection) return false;
+    return !key.startsWith("provider:");
+  };
 
   const filters = useMemo(
     () => withOwnSection(pickerSections(payload, "", avatarOf, exclude, skipGroup), ownPickerSection(ownList, "", avatarOf)).filter((section) => section.key !== "custom"),
@@ -1073,7 +1080,7 @@ export function ModelList({
         ) : null}
         {displaySections.map((section) => {
           const provider = providersBySection.get(section.key);
-          const expanded = searching ? !closedSearchSections.includes(section.key) : openSections[section.key] ?? !section.key.startsWith("provider:");
+          const expanded = searching ? !closedSearchSections.includes(section.key) : openSections[section.key] ?? expandedByDefault(section.key);
           return (
           <section className="gw-mp-section" data-section={section.key} key={section.key}>
             <div className="gw-mp-heading">
@@ -1250,9 +1257,11 @@ async function persistFavorites(models: string[]) {
  * 只有模型选择器的一个 Agent：别的页面（Desktop 增强页）用来选这个 Agent 的默认模型，和「Agent 接入」那一行同一个下拉、同一套保存。
  * 选完即接入（与 Agent 接入页一致）；Agent 自带的模型不在这里切（那要先断开还原，去 Agent 接入页做）。
  */
-export function AgentModelPicker({ agentId, payload, busy, run, notify }: {
+export function AgentModelPicker({ agentId, payload, hiddenProviders, busy, run, notify }: {
   agentId: GatewayAgentId;
   payload: GatewayPayload | null;
+  /** 页面上隐藏了的供应商：候选里不列它们的模型（仍能路由，已选的照常显示）。 */
+  hiddenProviders?: string[];
   busy: string | null;
   run: Run;
   notify: Notify;
@@ -1285,6 +1294,7 @@ export function AgentModelPicker({ agentId, payload, busy, run, notify }: {
       agent={agent}
       connected={connected}
       draft={draft}
+      hiddenProviders={hiddenProviders}
       onDisconnect={() => setOpen(false)}
       onOpenChange={(next) => { if (busy === null || !next) setOpen(next); }}
       onPick={(item) => void pick(item)}
@@ -1299,6 +1309,7 @@ function ModelPicker({
   agent,
   payload,
   draft,
+  hiddenProviders,
   connected,
   open,
   onOpenChange,
@@ -1309,6 +1320,7 @@ function ModelPicker({
   agent: GatewayAgentView;
   payload: GatewayPayload | null;
   draft: BindingDraft;
+  hiddenProviders?: string[];
   connected: boolean;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -1317,6 +1329,8 @@ function ModelPicker({
   onDisconnect: () => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
+  // 候选只列页面上看得见的供应商；判断已选模型能不能用仍按真实的排除名单。
+  const listExclude = hiddenProviders?.length ? [...draft.poolExclude, ...hiddenProviders] : draft.poolExclude;
   const selection = payload?.gateway.bindings[agent.agent as GatewayAgentId]?.defaultModelSelection;
   const inactive = disabledGroup(payload, draft.model, selection);
   const original = modelDisplay(payload, draft.model, draft.poolExclude, selection);
@@ -1378,7 +1392,7 @@ function ModelPicker({
       </button>
       <Floating anchorRef={buttonRef} className="gw-model-popover" minHeight={180} onClose={() => onOpenChange(false)} open={open} width={560}>
         <ModelList
-          exclude={draft.poolExclude}
+          exclude={listExclude}
           head={head}
           onPick={onPick}
           onPickOwn={onPickOwn}

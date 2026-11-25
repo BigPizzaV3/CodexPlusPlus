@@ -111,6 +111,10 @@ export type GatewayPoolEntry = {
   stripResponsesOutputEncryptedContent?: boolean;
   /** 不向该上游发送 `tool_search`（#2868）。旧版后端没有。 */
   disableToolSearch?: boolean;
+  /** 归哪个 Agent 的页面：codex（引用 Codex 直连供应商的）、claude（Claude 页添加或导入的）；本地服务页加的为空。旧版后端没有。 */
+  owner?: "codex" | "claude" | null;
+  /** 引用的 Codex 直连供应商 id：地址、Key、模型在 Codex「连接与供应商」里改，共享供应商里只读。旧版后端没有。 */
+  linkedCodexRelay?: string | null;
   /** 登录得到的账号：chatgpt / copilot / grok；普通供应商为空。 */
   account?: string;
   subscriptionPolicy?: SubscriptionPolicyInput | null;
@@ -266,6 +270,8 @@ export type GatewayAgentView = {
   diagnostics?: GatewayAgentDiagnostics | null;
   /** Agent 自带的模型：用它自己的登录或 Key 直连厂商，不经 Codex++；选中即断开网关。 */
   ownModels?: OwnModels | null;
+  /** Claude Code 没接入、正直连共享供应商里的一家时，那一家的 id。 */
+  directPoolProvider?: string | null;
 };
 
 export type OwnModel = { id: string; label: string };
@@ -294,7 +300,8 @@ export type RouteStepView = {
   relayName: string;
   keyId: string;
   model: string;
-  outcome: "answered" | "failed" | "transport";
+  outcome: "answered" | "failed" | "transport" | "skipped";
+  attemptMs?: number;
   failure?: string | null;
   status?: number | null;
   elapsedMs: number;
@@ -308,6 +315,8 @@ export type RouteRecordView = {
   steps: RouteStepView[];
   result: "answered" | "failed" | "cooling";
   coolingMs?: number | null;
+  contextWindow?: number;
+  truncated?: boolean;
   finishedAtMs: number;
   elapsedMs: number;
 };
@@ -1547,6 +1556,7 @@ export function validateProviderDraft(draft: ProviderDraft, editing = false): st
 /* —————————————— 用量 —————————————— */
 
 export type UsageCounts = {
+  tokenMeteredCalls?: number;
   calls: number;
   errors: number;
   inputTokens: number;
@@ -1563,7 +1573,12 @@ export type UsageCost = { currency: string; amount: number };
 export type UsageDay = UsageCounts & { date: string };
 /** `costs` 只含填了价格的部分，旧版后端没有。 */
 export type UsageGroup = UsageCounts & { key: string; label: string; costs?: UsageCost[] };
+export type UsageHour = UsageCounts & { hour: number };
+export type UsageRouteDay = UsageCounts & { date: string; agent: string; providerId: string; provider: string; model: string };
 export type UsageSummary = {
+  hours?: UsageHour[];
+  dailyRoutes?: UsageRouteDay[];
+  observedDateRange?: { first: string; last: string };
   totals: UsageCounts;
   days: UsageDay[];
   byAgent: UsageGroup[];
@@ -1942,3 +1957,5 @@ export function appendGroupMembers(members: GroupMember[], models: string[]): Gr
   }
   return next;
 }
+
+export type QuotaObservation = { windowMinutes: number | null; usedPercent: number; resetsAtMs: number | null; observedAtMs: number };

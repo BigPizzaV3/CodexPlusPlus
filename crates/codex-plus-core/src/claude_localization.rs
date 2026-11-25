@@ -491,7 +491,7 @@ pub(crate) fn is_claude_msix_path(path: &Path) -> bool {
 }
 
 fn home_dir() -> PathBuf {
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_default()
 }
@@ -671,9 +671,18 @@ fn find_runtime(name: &str, deadline: Instant) -> Result<Option<PathBuf>> {
         vec![format!("{name}.exe"), name.to_string()]
     };
     #[cfg(target_os = "windows")]
-    let candidates: Vec<PathBuf> = std::env::var_os("PATH")
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .into_iter()
         .flat_map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
+        .collect();
+    // 进程 PATH 可能早于 Node 安装：补上常见安装目录，和完整功能模式找 Node 的位置一致（#3291）。
+    #[cfg(target_os = "windows")]
+    if name == "node" {
+        dirs.extend(claude_local::node::windows_install_dirs(|name| std::env::var_os(name)));
+    }
+    #[cfg(target_os = "windows")]
+    let candidates: Vec<PathBuf> = dirs
+        .into_iter()
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)).collect::<Vec<_>>())
         .collect();
     #[cfg(not(target_os = "windows"))]

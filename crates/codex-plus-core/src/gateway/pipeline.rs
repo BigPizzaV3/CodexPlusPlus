@@ -77,7 +77,6 @@ pub struct GatewayRequest<'a> {
     pub user_agent: Option<&'a str>,
     pub session_headers: ProxySessionHeaders<'a>,
     pub live_request_id: Option<&'a str>,
-    pub auto_retry: bool,
     pub is_stream: bool,
     /// 发给上游的 Responses 路径：`/responses`，或旧版 Codex 远程压缩的 `/responses/compact`。
     pub upstream_path: &'a str,
@@ -116,7 +115,10 @@ pub async fn open(
     plan: &RoutePlan,
     request: GatewayRequest<'_>,
 ) -> anyhow::Result<GatewayOutcome> {
-    let mut recorder = RouteRecorder::new(plan);
+    if let Some(id) = request.live_request_id {
+        crate::request_log::update_running_context(id, &request.responses_body);
+    }
+    let mut recorder = RouteRecorder::new(plan, request.live_request_id);
     let mut result = open_candidates(settings, plan, request, &mut recorder).await;
     if let Ok(outcome) = &mut result
         && let GatewayUpstream::Pipeline(response) = &mut outcome.upstream
@@ -170,6 +172,7 @@ async fn open_candidates(
     if crate::extension_gateway::builtin_replaced("builtin:gateway-failover") {
         pending.truncate(1);
     }
+    recorder.candidates(&pending);
     if plan.candidates.is_empty() {
         let Some(wait) = plan.cooling else {
             anyhow::bail!("本地服务没有可用的上游：请检查绑定的供应商或模型组是否配置了地址和 Key");
@@ -177,7 +180,10 @@ async fn open_candidates(
         // 所有 Key 都在冷却（#2802）：最早的那个很快恢复时等它一等再试，不马上回本地 429——
         // Codex 自己的重试几秒内就用完了，冷却稍长一点就会整轮失败，而直连时这几秒后上游多半已恢复。
         match wait_for_cooling_key(plan, &request).await? {
-            Some(ready) => pending = vec![ready],
+            Some(ready) => {
+                pending = vec![ready];
+                recorder.candidates(&pending);
+            }
             None => {
                 recorder.cooling(wait.as_millis() as u64);
                 // 请求没发出去（attempts 仍为 0），但请求日志要能看出本来要发给哪家、哪个模型（#3229）：
@@ -285,6 +291,8 @@ async fn open_candidates(
             let candidate = &prepared;
             let busy = recorder.begin(candidate);
             let started = Instant::now();
+            // 记下这次上游请求真正发出的时刻：请求日志据此把「转发前耗时」与上游真实首字分开统计（#3267）。
+            trace.attempt_started_at_ms = Some(crate::launcher::current_time_ms());
             // Anthropic → Anthropic 原生直通不经过拓展的 upstream 段：拓展关掉了 builtin:auth-headers 时
             // 改走协议代理链路，鉴权头才由拓展给。
             let native = request
@@ -767,7 +775,6 @@ async fn attempt_pipeline(
     let forced = ForcedRelay {
         relay,
         upstream_model: Some(candidate.upstream_model.clone()),
-        auto_retry: request.auto_retry,
     };
     let mut response = match crate::protocol_proxy::open_responses_proxy_request_for_relay(
         &body,

@@ -13,6 +13,12 @@
 
 新控件和扩展自建的内容沿用各自外观。上游更改控件时，先重现具体表面的偏差，再把控件身份、背景像素、交互和卸载行为加入对应套件。半透明材质、第三方 iframe 内部和媒体像素继续由原生内容绘制。本表针对「背景图」静态图片拓展，Dream Skin 视频导入见 [界面与日常操作](../docs/daily-ui.md)。
 
+当前 App 壳由 `[data-app-shell-frame][data-app-shell-page-surface]` 和其内部的 `main[data-app-shell-main-surface]` 共同识别。窗口底部只铺一张固定壁纸，壁纸按设置值与原生底色混合，主区、顶栏和左栏共用，不各自叠加底色。设置、应用菜单和图片查看器控件只调整底色，不复制壁纸；查看器关闭多层背景模糊，原生图片、输入与过渡保留。新版回归测试覆盖这些材质、两栏滚动、启动时延迟挂载和关闭后的还原。下面关于媒体追踪、浮层提升和局部补画的检查适用于仍走旧壳兼容路径的界面。
+
+项目标题与改动卡片默认展示的前三条文件使用普通绘制，避免滚动来回时重复跳绘；检查覆盖项目与「最近」交界处的滚轮命中，以及线程列表、轮次虚拟化和扩展文件列表的原生行为。
+
+轮次的挂载、回收和历史加载由 App 负责。新版壁纸不监听线程滚动、不保留轮次，也不因轮次出入视口而补画。Shell 展开时直接采用最终高度，其余展开和收起保留原生时序。
+
 Run the browser suites with Node and locally available Playwright, Sharp and PNGJS.
 Use NODE_PATH for an existing external dependency directory. The shared fixture
 accepts CODEX_TEST_BROWSER_PATH or CODEX_TEST_BROWSER (default: msedge).
@@ -74,8 +80,9 @@ Sticky page headers retain their native fades, backing geometry and top insets,
 and occlude scrolling icons. Transparent headers do not receive a second wallpaper;
 opaque native backing uses static CSS backgrounds, including native pseudo-elements.
 Dark/light theme changes and patterned wallpaper remain aligned across header edges.
-The below-composer home action bar reveals the global wallpaper without repainting
-inside its animated transform; the above-composer project bar keeps its native paint.
+The current home project bar uses the composer material with a lighter fill above
+or below the input, without repainting wallpaper or changing its native position.
+Legacy layouts retain their separate action and project bar behavior.
 True-bottom reverse scrolling must reuse SVG primitives and existing stylesheets.
 
 The overlay, native-media and composite suites share image loading, installation

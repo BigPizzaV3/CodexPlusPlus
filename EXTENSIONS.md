@@ -478,7 +478,7 @@ Codex++ 自己在发请求前也会做几件事（本地压缩、第三方推理
   `builtin:exec-adapt`（exec 工具适配）、`builtin:relay-rotation`（轮换失败后自动换下一个供应商；关掉后只用选中的那一个，
   配合 route 段自己决定顺序）、`builtin:gateway-failover`（网关模式里一个候选失败后换下一个；关掉后只试排第一的那个）。
   本地代理（中转与网关两种模式都经过）里还能关：
-  - `builtin:auto-retry`：「请求避震」。关掉后上游错误原样交回，不再退避重发；要不要重试交给 `gateway.error`。
+  - `builtin:auto-retry`：已废弃，不再有效果。它对应的「请求避震」已移除，上游错误本来就原样交回、不再退避重发（要不要重试交给 `gateway.error`）；这个 id 仍被接受，只为已发布的拓展照常加载，新拓展不用再写。
   - `builtin:foreign-reasoning`：别家签发的加密推理内容的剥离与拒收后重发。关掉后加密项原样发出，被拒也不重发。
   - `builtin:unlisted-model-mapping`：目录外模型名映射到默认模型。关掉后模型名原样转发，映射在 request 段自己做。
 
@@ -1479,6 +1479,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/model-catalog/public` | 当前供应商的模型目录：`models`、`modelMetadata`（每模型的 `contextWindow` 等）、`model`、`default_model`、`provider_name`、`model_provider`、`service_tier`。去掉了来源地址与本机路径（只读） |
 
 **写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
+
+`/usage/history` 的 `days[].breakdowns[]` 中，`usage` 与 `recordCount` 仍统计整组。当 `usage.cachedKnown` 为 `false` 且组内有缓存已知的记录时，`priceableUsage` 单列这些记录的 `inputTokens`、`cachedInputTokens` 和 `outputTokens`，供估算部分费用。明确的零缓存属于已知；字段缺失则不计价。不要将子集加到 `usage`，也不要把部分费用当作完整费用。整组缓存均已知或均未知时，不返回该字段。
 
 `/provider-prices/public` 返回的是 Codex++ 配置价，不是上游实时报价或实际账单，也不会请求上游。`price` 是供应商默认价，未设置时为 `null`；`modelPrices` 按原始上游模型名保存逐模型价，缺项时为空对象。价格包含 `currency`、`input`、`cachedInput`、`output`，单位是每百万 Token。宿主现有配置不能区分价格字段中的未填写和明确免费，两者都可能为 `0`；通过管理器保存的全零价格会被视为未填写，不能据此断言免费或价格完整。
 

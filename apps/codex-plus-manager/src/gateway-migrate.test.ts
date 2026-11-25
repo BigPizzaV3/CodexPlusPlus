@@ -65,7 +65,7 @@ test("Magpie 的供应商也是可导入的来源：排在 ClaudeMom 后面，�
 
 test("导入弹窗多选、一次导完；官方登录账号直接去登录；空池时总览和共享供应商给出导入入口", () => {
   const providers = read("GatewayProviders.tsx");
-  assert.match(providers, /"import_gateway_providers", \{ items, skipAgents \}/);
+  assert.match(providers, /"import_gateway_providers", \{ items, skipAgents, \.\.\.\(owner \? \{ owner \} : \{\}\) \}/);
   assert.match(providers, /const pendingKeys = \(\) => new Set\(pendingImports\(payload\)\.map\(keyOf\)\);\n\s*const \[picked, setPicked\] = useState<Set<string>>\(pendingKeys\);/, "默认勾上还没导入的");
   assert.match(providers, /onClick=\{onLogin\} type="button">\{t\("去登录"\)\}/);
   assert.match(providers, /setAdding\("import"\)/);

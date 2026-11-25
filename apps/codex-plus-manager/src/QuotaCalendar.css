@@ -1,0 +1,51 @@
+:root .shell .gw-quota-calendar { display: grid; gap: 9px; min-width: 0; }
+:root .shell .gw-quota-calendar-toolbar,
+:root .shell .gw-quota-calendar-nav, :root .shell .gw-quota-calendar-range,
+:root .shell .gw-quota-calendar-key, :root .shell .gw-quota-calendar-detail {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px;
+}
+:root .shell .gw-quota-calendar-toolbar { justify-content: space-between; }
+:root .shell .gw-quota-calendar-range { font-size: 12px; font-variant-numeric: tabular-nums; }
+:root .shell .gw-quota-calendar-range span { color: hsl(var(--muted-foreground)); }
+:root .shell .gw-quota-calendar-nav { gap: 0; margin-inline-start: auto; }
+:root .shell .gw-quota-calendar-nav button { height: 30px; }
+:root .shell .gw-quota-calendar-nav > span, :root .shell .gw-quota-calendar-nav > button:not([aria-label]) {
+  display: inline-flex; justify-content: center; align-items: center; min-width: 92px;
+}
+:root .shell .gw-quota-calendar-nav > span { color: hsl(var(--muted-foreground)); font-size: 12px; }
+:root .shell .gw-quota-calendar-scroll { overflow-x: auto; overscroll-behavior-inline: contain; min-width: 0; border: 1px solid hsl(var(--border)); border-radius: 8px; }
+:root .shell .gw-quota-calendar-grid { min-width: 520px; }
+:root .shell .gw-quota-calendar[data-range="day"] .gw-quota-calendar-grid { min-width: 360px; }
+:root .shell .gw-quota-calendar-track, :root .shell .gw-quota-calendar-axis { position: relative; }
+:root .shell .gw-quota-calendar-track { height: 51px; }
+:root .shell .gw-quota-calendar-axis { height: 30px; border-bottom: 1px solid hsl(var(--border)); background: hsl(var(--muted) / .4); }
+:root .shell .gw-quota-calendar-axis span {
+  position: absolute; inset-block-start: 8px; padding-inline-start: 5px; white-space: nowrap; color: hsl(var(--muted-foreground)); font-size: 10px; font-variant-numeric: tabular-nums;
+}
+:root .shell .gw-quota-calendar-axis span[data-edge="true"] { transform: translateX(-100%); padding-inline: 0 4px; }
+:root .shell .gw-quota-calendar-tick, :root .shell .gw-quota-calendar-now { position: absolute; inset-block: 0; width: 1px; background: hsl(var(--border)); pointer-events: none; }
+:root .shell .gw-quota-calendar-now { z-index: 2; background: hsl(var(--primary) / .75); }
+:root .shell .gw-quota-calendar-slot, :root .shell .gw-quota-calendar-expiry { position: absolute; cursor: pointer; }
+:root .shell .gw-quota-calendar-slot {
+  inset-block-start: 11px; height: 28px; padding: 0 5px; overflow: hidden; border-radius: 4px; border: 1px solid hsl(var(--status-success) / .52);
+  background: hsl(var(--status-success) / .14); color: hsl(var(--foreground)); text-align: start; font-size: 10px;
+}
+:root .shell .gw-quota-calendar-slot span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:root .shell .gw-quota-calendar-slot[data-kind="history"], :root .shell .gw-quota-calendar-slot[data-stale="true"] { border-color: hsl(var(--muted-foreground) / .35); background: hsl(var(--muted)); }
+:root .shell .gw-quota-calendar-slot[data-kind="projected"] { border-color: hsl(var(--muted-foreground) / .45); border-style: dashed; background: transparent; color: hsl(var(--muted-foreground)); }
+:root .shell .gw-quota-calendar-slot[data-marker="true"] { width: 10px; padding: 0; transform: translateX(-50%); }
+:root .shell .gw-quota-calendar-expiry {
+  z-index: 2; width: 16px; height: 17px; inset-block-start: 1px; padding: 0; transform: translateX(-50%); background: none; border: 0;
+}
+:root .shell .gw-quota-calendar-expiry::before { content: ""; display: block; margin: auto; width: 7px; height: 7px; transform: rotate(45deg); background: hsl(var(--status-warning)); }
+:root .shell :is(.gw-quota-calendar-slot, .gw-quota-calendar-expiry):is(:hover, :focus-visible) { z-index: 2; outline: 1px solid hsl(var(--ring)); outline-offset: -1px; }
+:root .shell .gw-quota-calendar-empty { display: inline-flex; align-items: center; height: 100%; padding-inline: 9px; color: hsl(var(--muted-foreground)); font-size: 11px; }
+:root .shell .gw-quota-calendar-footer { min-height: 42px; font-size: 11px; color: hsl(var(--muted-foreground)); }
+:root .shell .gw-quota-calendar-key span { display: inline-flex; gap: 5px; align-items: center; }
+:root .shell .gw-quota-calendar-key i { display: block; width: 13px; height: 8px; border: 1px solid hsl(var(--status-success) / .52); border-radius: 2px; background: hsl(var(--status-success) / .14); }
+:root .shell .gw-quota-calendar-key i[data-kind="history"] { border-color: hsl(var(--muted-foreground) / .35); background: hsl(var(--muted)); }
+:root .shell .gw-quota-calendar-key i[data-kind="projected"] { border-color: hsl(var(--muted-foreground) / .45); border-style: dashed; background: transparent; }
+:root .shell .gw-quota-calendar-key i[data-kind="now"] { width: 1px; height: 10px; border: 0; background: hsl(var(--primary) / .75); }
+:root .shell .gw-quota-calendar-key i[data-kind="expiry"] { width: 6px; height: 6px; margin-inline: 2px; transform: rotate(45deg); border: 0; border-radius: 0; background: hsl(var(--status-warning)); }
+:root .shell .gw-quota-calendar-detail { margin-top: 7px; padding-top: 6px; border-top: 1px solid hsl(var(--border)); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+:root .shell .gw-quota-calendar-detail b { color: hsl(var(--foreground)); }

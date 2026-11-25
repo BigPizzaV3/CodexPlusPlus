@@ -45,9 +45,18 @@ export function getLanguage(): Language {
 /** Translate a plain Chinese literal. Falls back to the source text. */
 export function t(zh: string): string {
   if (LANG !== "en" || !EN) return zh;
-  const plain = EN.EN_PLAIN[zh] ?? EN.EN_BACKEND[zh];
+  return translatePlain(EN, zh);
+}
+
+/** 按英文词典翻一句（纯函数，测试直接传词典）。 */
+export function translatePlain(pack: Pick<typeof EnglishPack, "EN_PLAIN" | "EN_BACKEND" | "EN_BACKEND_PATTERNS" | "EN_APPENDED">, zh: string): string {
+  const plain = pack.EN_PLAIN[zh] ?? pack.EN_BACKEND[zh] ?? pack.EN_APPENDED[zh];
   if (plain) return plain;
-  for (const [re, replacement] of EN.EN_BACKEND_PATTERNS) {
+  // 后端接在消息后面的提示：前半句照常翻，后半句单独翻，中间补空格。
+  for (const [suffix, english] of Object.entries(pack.EN_APPENDED)) {
+    if (zh.endsWith(suffix)) return `${translatePlain(pack, zh.slice(0, -suffix.length))} ${english}`;
+  }
+  for (const [re, replacement] of pack.EN_BACKEND_PATTERNS) {
     if (re.test(zh)) return zh.replace(re, replacement);
   }
   return zh;

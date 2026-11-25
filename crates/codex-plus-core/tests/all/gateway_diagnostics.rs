@@ -119,10 +119,13 @@ fn activity(agent: &ToolId, time: u64, success: bool) -> ActivitySnapshot {
                     failure: (!success).then(|| "auth_invalid".into()),
                     status: Some(if success { 200 } else { 401 }),
                     elapsed_ms: 1,
+                    attempt_ms: None,
                 }],
                 result: if success { "answered" } else { "failed" }.into(),
                 cooling_ms: None,
                 finished_at_ms: time,
+                context_window: None,
+                truncated: false,
                 elapsed_ms: 1,
             }),
             ..AgentActivity::default()
@@ -170,7 +173,7 @@ fn every_generic_agent_is_verified_read_only_after_connecting() {
         let fixture = fixture();
         let agent = ToolId::Unknown(spec.id.to_string());
         enable_binding(&fixture.ctx, &agent, binding()).unwrap();
-        let gateway = fixture.ctx.gateway.load().unwrap();
+        let gateway = fixture.ctx.gateway.load().unwrap().with_extension_providers();
         let before = snapshot(&fixture.home);
         let result = inspect(
             &fixture.ctx,
@@ -189,6 +192,50 @@ fn every_generic_agent_is_verified_read_only_after_connecting() {
         assert!(!serialized.contains("cpx-gw-local-secret"));
         assert!(!serialized.contains("sk-upstream-secret"));
     }
+}
+
+#[test]
+fn omp_diagnostics_verify_the_runtime_model_catalog_and_detect_endpoint_changes() {
+    let fixture = fixture();
+    let agent = ToolId::Unknown("omp".into());
+    let binding = binding();
+    let mut gateway = fixture.ctx.gateway.load().unwrap();
+    gateway.bindings.insert("omp".into(), binding.clone());
+    let mut extension = gateway.providers[0].clone();
+    extension.source = "extension:fixture".into();
+    extension.relay.id = "fixture-extension".into();
+    extension.relay.model = "extension-model".into();
+    extension.relay.model_list = "extension-model".into();
+    let mut runtime_gateway = gateway.clone();
+    runtime_gateway.providers.push(extension);
+    agents::connect::write(
+        &fixture.ctx,
+        agents::spec("omp").unwrap(),
+        &runtime_gateway,
+        &binding,
+    )
+    .unwrap();
+
+    let path = fixture.home.join(".omp/agent/models.yml");
+    let configured = std::fs::read_to_string(&path).unwrap();
+    assert!(configured.contains("extension-model"));
+    let inspect_omp = |gateway| {
+        inspect(
+            &fixture.ctx,
+            &agent,
+            gateway,
+            true,
+            &ActivitySnapshot::default(),
+        )
+    };
+    assert_eq!(inspect_omp(&gateway).state, "configChanged");
+    assert_eq!(inspect_omp(&runtime_gateway).state, "awaitingTraffic");
+
+    let changed = configured.replace("127.0.0.1:57321", "127.0.0.1:57322");
+    assert_ne!(changed, configured);
+    write(&path, &changed);
+    assert_eq!(inspect_omp(&runtime_gateway).state, "configChanged");
+    assert_eq!(std::fs::read_to_string(path).unwrap(), changed);
 }
 
 #[test]

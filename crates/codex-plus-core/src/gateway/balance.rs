@@ -364,6 +364,8 @@ mod tests {
             .mount(&server)
             .await;
         let provider = crate::gateway::store::GatewayProvider {
+            linked_codex_relay: None,
+            owner: String::new(),
             enabled: true,
             source: String::new(),
             price: None,

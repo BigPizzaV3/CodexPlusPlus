@@ -1711,7 +1711,9 @@ impl UserScriptManager {
   {RUNTIME_SCRIPT}
   const runtime = window.__codexPlusUserScripts;
   let ran = false;
-  if (!runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
+  // 桥接等待期间可能换页，必须以执行注入包的页面为准。
+  if (typeof window.codexPlus?.extension === "function"
+      && !runtime.initialized && !runtime.refreshPending && !Object.keys(runtime.scripts).length) {{
     runtime.initialized = true;
     ran = true;
     {bundle}
@@ -2061,6 +2063,7 @@ pub const BUILTIN_GATEWAY_SEGMENTS: &[&str] = &[
     "builtin:relay-rotation",
     "builtin:gateway-failover",
     // 本地代理（中转与网关两种模式都经过）：
+    // 「请求避震」已移除，这一项只为兼容已发布的拓展保留：仍认这个 id，关不关都不再有效果。
     "builtin:auto-retry",
     "builtin:foreign-reasoning",
     "builtin:unlisted-model-mapping",
@@ -2086,13 +2089,13 @@ pub fn default_user_scripts_config_dir() -> PathBuf {
         if let Some(roaming) = std::env::var_os("APPDATA") {
             return PathBuf::from(roaming).join("Codex++");
         }
-        if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+        if let Some(home) = crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
             return home.join("AppData").join("Roaming").join("Codex++");
         }
     }
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
+        .or_else(|| crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))
         .unwrap_or_else(|| PathBuf::from(".config"))
         .join("Codex++")
 }

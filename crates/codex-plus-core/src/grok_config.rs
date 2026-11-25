@@ -88,7 +88,7 @@ pub fn default_grok_home_dir() -> PathBuf {
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty() && !path.to_string_lossy().trim().is_empty())
         .unwrap_or_else(|| {
-            directories::BaseDirs::new()
+            crate::user_dirs::BaseDirs::new()
                 .map(|dirs| dirs.home_dir().join(".grok"))
                 .unwrap_or_else(|| PathBuf::from(".grok"))
         })
@@ -385,7 +385,7 @@ fn find_grok_cli(home: &Path) -> Option<PathBuf> {
     if bundled.is_file() {
         return Some(bundled);
     }
-    if let Some(user_local) = directories::BaseDirs::new()
+    if let Some(user_local) = crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().join(".local").join("bin").join(binary))
         .filter(|path| path.is_file())
     {

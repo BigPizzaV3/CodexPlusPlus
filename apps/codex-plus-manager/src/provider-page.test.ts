@@ -123,7 +123,9 @@ function loadPage(stubs: { postJson: (path: string, payload: any) => any; ask?: 
       gwApplyDisconnect: codexPlusGatewayApplyDisconnect, gwInput: codexPlusGatewayHandleInput, gwStartNew: codexPlusGatewayStartNew,
       modelEditor: codexPlusProviderModelEditor, windowLabel: codexPlusProviderWindowLabel,
       detail: renderCodexPlusProviderDetail, gwDetail: renderCodexPlusGatewayDetail, menuChanged: codexPlusProviderMenuChanged,
-      startNew: codexPlusProviderStartNew, save: codexPlusProviderSave, click: codexPlusProviderHandleClick, input: codexPlusProviderHandleInput };`,
+      startNew: codexPlusProviderStartNew, save: codexPlusProviderSave, click: codexPlusProviderHandleClick, input: codexPlusProviderHandleInput,
+      gwList: renderCodexPlusGatewayList, gwClick: codexPlusGatewayHandleClick, modeSwitch: renderCodexPlusProviderModeSwitch, modeInfo: renderCodexPlusProviderModeInfo,
+      login: renderCodexPlusLoginIdentity, loginChoose: codexPlusLoginIdentityChoose };`,
   )(
     loadEditing(),
     async (path: string, payload: any) => {
@@ -483,6 +485,85 @@ describe("供应商页的网关页签（44 分片）", () => {
     await page.gwApplyDisconnect();
     const commit = page.calls.find((call: { path: string; payload: any }) => call.path === "/providers/commit")!;
     assert.equal(commit.payload.activate, "b");
+  });
+
+  it("顶部和管理器一样选连接方式（聚合 / 直连），一次只列一类", () => {
+    assert.match(pageSource, /const list = gatewayMode\s*\? codexPlusGatewayPageState\.payload/);
+    assert.match(pageSource, /state\.tab = gatewayMode \? "gateway" : "direct";/);
+    const page = loadPage({ postJson: () => listResult() });
+    const aggregate = page.modeSwitch(true);
+    assert.match(aggregate, /role="radiogroup" aria-label="Codex 的连接方式"/);
+    assert.match(aggregate, /aria-checked="true" aria-selected="true" data-codex-gateway-action="mode-aggregate"/);
+    assert.match(aggregate, /data-codex-gateway-action="mode-direct"/);
+  });
+
+  it("聚合时左栏顶部可以选完整的默认模型，候选与管理器一致", async () => {
+    const pool = [poolEntry("gw-a"), poolEntry("gw-b", { models: ["b-1"] }), poolEntry("gw-c", { models: ["c-1"] })];
+    const result = gatewayResult(pool);
+    (result.gateway.bindings.codex as { poolExclude: string[] }).poolExclude = ["gw-c"];
+    const page = loadPage({ postJson: (path, payload) => (payload?.command ? result : listResult()) });
+    page.gwApply(result);
+    assert.doesNotMatch(page.modeSwitch(true), /default-model/, "顶部那行横跨原生面板，只放切换");
+    const bar = page.modeInfo(true).replaceAll("&quot;", '"');
+    assert.match(bar, /data-codex-provider-menu-toggle="default-model" data-value="gw-a\/m-1"/);
+    assert.match(bar, /\["gw-a\/m-1","gw-a\/m-1"\],\["m-1","m-1"\],\["m-2","m-2"\],\["b-1","b-1"\]/);
+    assert.doesNotMatch(bar, /c-1/, "排除的供应商不进候选");
+    assert.doesNotMatch(bar, /不可用/);
+    assert.doesNotMatch(page.modeInfo(false), /default-model/, "直连时不显示");
+    page.menuChanged("default-model", "b-1", null);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === "save_gateway_binding")!;
+    assert.equal(sent.payload.args.binding.model, "b-1");
+  });
+
+  it("默认模型候选跟列表一致：别的 Agent 的供应商隐藏时不列它的模型，已选的照常显示", () => {
+    const pool = [poolEntry("gw-a"), poolEntry("kimi", { owner: "claude", models: ["k-1"] })];
+    const result = gatewayResult(pool);
+    const page = loadPage({ postJson: (path, payload) => (payload?.command ? result : listResult()) });
+    page.gwApply(result);
+    assert.doesNotMatch(page.modeInfo(true), /k-1/, "Claude 的供应商默认不列，模型也不进候选");
+    page.gw.showOthers = true;
+    assert.match(page.modeInfo(true).replaceAll("&quot;", '"'), /\["k-1","k-1"\]/);
+    page.gw.showOthers = false;
+    (result.gateway.bindings.codex as { model: string }).model = "k-1";
+    page.gwApply(result);
+    const bar = page.modeInfo(true).replaceAll("&quot;", '"');
+    assert.match(bar, /\["k-1","k-1"\]/, "已选的模型还能路由，照常显示");
+    assert.doesNotMatch(bar, /不可用/);
+  });
+
+  it("聚合时每家一个开关，只改 Codex 用哪些；别的 Agent 的默认不列", async () => {
+    const pool = [poolEntry("gw-a"), poolEntry("gw-b"), poolEntry("kimi", { owner: "claude" })];
+    const result = gatewayResult(pool);
+    (result.gateway.bindings.codex as { poolExclude: string[] }).poolExclude = ["gw-b"];
+    const page = loadPage({ postJson: (path, payload) => (payload?.command ? result : listResult()) });
+    page.gwApply(result);
+    const list = page.gwList();
+    assert.match(list, /aria-checked="true" data-enabled="true" data-codex-gateway-member="gw-a"/);
+    assert.match(list, /aria-checked="false" data-enabled="false" data-codex-gateway-member="gw-b"/);
+    assert.doesNotMatch(list, /data-codex-gateway-member="kimi"/, "Claude 的供应商默认不列");
+    page.gw.showOthers = true;
+    assert.match(page.gwList(), /来自 Claude[\s\S]*data-codex-gateway-member="kimi"/);
+    const member = { dataset: { codexGatewayMember: "gw-b" }, disabled: false, getAttribute: () => "false" };
+    await page.gwClick({ closest: (selector: string) => (selector === "[data-codex-gateway-member]" ? member : null) });
+    const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === "set_gateway_pool_member")!;
+    assert.deepEqual(sent.payload.args, { agents: ["codex"], id: "gw-b", used: true });
+  });
+
+  it("「Codex 登录身份」和管理器同一个选择：本地账号在官方登录下置灰，选了走 set_codex_login_identity", async () => {
+    const login = { status: "ok", managed: true, selection: { mode: "none" }, localLogin: false, accounts: [{ id: "chatgpt-1", name: "工作" }], actualLabel: "", drift: null };
+    const page = loadPage({ postJson: (path, payload) => (payload?.command === "set_codex_login_identity" ? { ...login, localLogin: true } : listResult()) });
+    page.gw.login = { ...login, localLoginBlockedReason: "当前用的是官方登录" };
+    const blocked = page.login();
+    assert.match(blocked, /Codex 登录身份/);
+    assert.match(blocked, /本地账号暂不可用：当前用的是官方登录/);
+    assert.match(blocked.replaceAll("&quot;", '"'), /\["local","本地账号",true\]/);
+    page.gw.login = login;
+    await page.loginChoose("local");
+    await page.loginChoose("account:chatgpt-1");
+    const sent = page.calls.filter((call: { path: string; payload: any }) => call.payload?.command === "set_codex_login_identity").map((call: any) => call.payload.args);
+    assert.deepEqual(sent, [{ kind: "local", accountRef: null }, { kind: "account", accountRef: "chatgpt-1" }]);
+    assert.match(page.login(), /data-codex-gateway-action="edit-local-profile"/);
   });
 
   it("网关路由不开放给拓展、Codex 页面用 /providers/gateway", () => {

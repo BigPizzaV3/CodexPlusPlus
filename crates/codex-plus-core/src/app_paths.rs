@@ -361,7 +361,7 @@ pub fn find_macos_codex_app_default() -> Option<PathBuf> {
 /// 默认探测根，也用于失败文案里「都找过哪些地方」的自述。
 pub fn macos_default_search_roots() -> Vec<PathBuf> {
     let mut roots = vec![PathBuf::from("/Applications")];
-    if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+    if let Some(home) = crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
         roots.push(home.join("Applications"));
     }
     roots
@@ -423,7 +423,7 @@ fn linux_app_candidates(root: &Path) -> Vec<PathBuf> {
 }
 
 pub fn find_linux_codex_app_default() -> Option<PathBuf> {
-    let home = directories::BaseDirs::new();
+    let home = crate::user_dirs::BaseDirs::new();
     let mut roots = Vec::new();
     // 系统级（官方 deb 默认安装在 /usr/lib/chatgpt）
     roots.push(PathBuf::from("/usr/lib"));

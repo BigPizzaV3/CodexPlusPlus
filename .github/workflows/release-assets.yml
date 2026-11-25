@@ -36,6 +36,8 @@ env:
 
 permissions:
   contents: write
+  # 发布后触发官网重新部署（gh workflow run pages.yml）。
+  actions: write
 
 # 同一个 tag 的两轮不要并发上传附件。
 concurrency:
@@ -639,3 +641,12 @@ jobs:
             echo "::notice::已有更新的 v$newest，$TAG 发布但不标 Latest"
           fi
           gh release edit "$TAG" --draft=false --latest="$latest" --verify-tag --repo "$REPO"
+
+      - name: Refresh site
+        # 官网只列已发布的版本，发布后重跑一次官网部署把新版本放上去。
+        # GITHUB_TOKEN 做的发布不会触发其他工作流，workflow_dispatch 是例外。
+        if: needs.prepare.outputs.is_draft == 'true' && (github.event_name == 'push' || inputs.publish) && needs.windows-installer.result == 'success' && needs.macos-dmg.result == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: gh workflow run pages.yml --ref main --repo "$REPO"

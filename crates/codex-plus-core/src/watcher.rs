@@ -273,7 +273,7 @@ fn xml_escape(value: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn macos_launch_agent_path() -> Option<PathBuf> {
-    directories::BaseDirs::new().map(|dirs| macos_launch_agent_path_at(dirs.home_dir()))
+    crate::user_dirs::BaseDirs::new().map(|dirs| macos_launch_agent_path_at(dirs.home_dir()))
 }
 
 pub fn watcher_is_installed() -> bool {
@@ -304,7 +304,7 @@ pub fn watcher_is_installed() -> bool {
 }
 
 pub fn linux_autostart_path() -> Option<PathBuf> {
-    directories::BaseDirs::new().map(|dirs| {
+    crate::user_dirs::BaseDirs::new().map(|dirs| {
         dirs.config_dir().join("autostart").join("codex-plus-plus.desktop")
     })
 }
@@ -1284,7 +1284,7 @@ pub fn install_watcher(launcher_path: &Path, _debug_port: u16) -> anyhow::Result
     if !launcher_path.is_file() {
         anyhow::bail!("找不到 Codex++ 可执行文件：{}", launcher_path.display());
     }
-    let home = directories::BaseDirs::new()
+    let home = crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .ok_or_else(|| anyhow::anyhow!("无法定位当前用户主目录"))?;
     write_macos_launch_agent_at(&home, launcher_path)?;
@@ -1309,7 +1309,7 @@ pub fn uninstall_watcher() -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 pub fn uninstall_watcher() -> anyhow::Result<()> {
-    let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) else {
+    let Some(home) = crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) else {
         return Ok(());
     };
     remove_macos_launch_agent_at(&home)?;

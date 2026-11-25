@@ -545,7 +545,6 @@ pub(crate) async fn open_responses_for_agent(
             user_agent,
             session_headers,
             live_request_id,
-            auto_retry: true,
             is_stream: false,
             upstream_path: if request_path.ends_with("/responses/compact") {
                 "/responses/compact"
@@ -973,8 +972,6 @@ async fn handle_claude_messages(
                 client_identity: &[],
             },
             live_request_id: Some(live_request_id.as_str()),
-            // 「请求避震」对新旧两套同时生效（只在用户打开时起作用）。
-            auto_retry: true,
             is_stream: wants_stream,
             upstream_path: "/responses",
             client: Some(&*stream),

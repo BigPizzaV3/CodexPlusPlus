@@ -81,6 +81,25 @@ const catalog = (models: string[], metadata = {}) => ({
   sources: [{ id: "relay-profile:gateway", type: "relay_profile_model_list" }],
 });
 const settle = async () => { for (let index = 0; index < 15; index++) await Promise.resolve(); };
+
+it("refreshes on native model selection and uses the current runtime after reinjection", async () => {
+  const previous = runtime();
+  const current = runtime(previous.window);
+  await load(current, ["a/sol"]);
+  current.emit("click", { target: { closest: () => null } });
+  assert.equal(current.pending.length, 0);
+  current.emit("click", { target: { closest: (selector: string) => {
+    assert.equal(selector, '[data-model-picker-view] [role="menuitemradio"]');
+    return {};
+  } } });
+  assert.equal(previous.pending.length, 0);
+  assert.equal(current.pending.length, 1);
+  current.pending.shift()!.resolve(catalog(["b/terra"]));
+  await settle();
+  assert.deepEqual(Array.from(current.api.catalog().models), ["b/terra"]);
+  assert.equal(current.invalidated.length, 2);
+});
+
 async function load(r: ReturnType<typeof runtime>, models: string[], metadata = {}) {
   const request = r.api.load(true);
   r.pending.shift()!.resolve(catalog(models, metadata));

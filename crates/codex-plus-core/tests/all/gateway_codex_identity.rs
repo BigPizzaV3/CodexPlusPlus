@@ -45,6 +45,8 @@ fn codex_raw_headers() -> String {
 
 fn provider(id: &str, base_url: &str, model: &str, protocol: RelayProtocol) -> GatewayProvider {
     GatewayProvider {
+        linked_codex_relay: None,
+        owner: String::new(),
         enabled: true,
         source: String::new(),
         price: None,
@@ -140,7 +142,6 @@ async fn send_through_gateway(
                 client_identity: &identity,
             },
             live_request_id: None,
-            auto_retry: false,
             is_stream: false,
             upstream_path: "/responses",
             client: None,

@@ -70,7 +70,14 @@ pub(super) fn profiles(
         read::<codex_plus_core::gateway::store::GatewaySettings>(&gateway_config_path(path))?
     {
         // 导入后两份配置可各自修改；source 和显示名不能证明它们仍是同一供应商。
-        profiles.extend(gateway.providers.into_iter().map(|provider| provider.relay));
+        // 引用 Codex 直连供应商的记录在 gateway.json 里没有地址（连接资料只在 settings.json），上面已经读过直连那份。
+        profiles.extend(
+            gateway
+                .providers
+                .into_iter()
+                .filter(|provider| provider.linked_codex_relay.is_none())
+                .map(|provider| provider.relay),
+        );
     }
     anyhow::ensure!(
         before == config_stamp(path),
@@ -1186,6 +1193,7 @@ mod tests {
     fn original_model_is_required_for_new_proofs_and_legacy_proofs_are_retained() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
+            native_response_id: None,
             id: [71; 32],
             original_id: [71; 32],
             session: "session".into(),
@@ -1464,6 +1472,7 @@ mod tests {
             cached: 20,
         };
         let event = UsageEvent {
+            native_response_id: None,
             id: [7; 32],
             original_id: [7; 32],
             session: key.session.clone(),
@@ -1532,6 +1541,7 @@ mod tests {
             cached: 20,
         };
         let event = UsageEvent {
+            native_response_id: None,
             id: [8; 32],
             original_id: [8; 32],
             session: key.session.clone(),
@@ -1634,6 +1644,7 @@ mod tests {
             cached: 20,
         };
         let event = UsageEvent {
+            native_response_id: None,
             id: [9; 32],
             original_id: [9; 32],
             session: key.session.clone(),
@@ -1701,6 +1712,7 @@ mod tests {
     fn incomplete_original_does_not_clear_an_inherited_count_conflict() {
         let at = Local::now().timestamp_millis();
         let mut event = UsageEvent {
+            native_response_id: None,
             id: [254; 32],
             original_id: [254; 32],
             session: "session".into(),
@@ -1745,6 +1757,7 @@ mod tests {
     fn incomplete_observation_does_not_persist_a_new_count_conflict() {
         let at = Local::now().timestamp_millis();
         let mut event = UsageEvent {
+            native_response_id: None,
             id: [253; 32],
             original_id: [253; 32],
             session: "session".into(),
@@ -1784,6 +1797,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
         let event = UsageEvent {
+            native_response_id: None,
             id: [98; 32],
             original_id: [98; 32],
             session: "session".into(),
@@ -1864,6 +1878,7 @@ mod tests {
     fn count_conflict_markers_expire_and_saturation_fails_closed() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
+            native_response_id: None,
             id: [255; 32],
             original_id: [255; 32],
             session: "session".into(),
@@ -1921,6 +1936,7 @@ mod tests {
     fn failed_load_retry_preserves_pending_conflicts_and_rejections() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
+            native_response_id: None,
             id: [10; 32],
             original_id: [10; 32],
             session: "session".into(),
@@ -1998,6 +2014,7 @@ mod tests {
             cached: 20,
         };
         let event = UsageEvent {
+            native_response_id: None,
             id: [7; 32],
             original_id: [7; 32],
             session: key.session.clone(),

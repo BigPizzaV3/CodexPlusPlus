@@ -6,16 +6,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::gateway::route::{GatewayCandidate, RoutePlan};
 
 /// 一次尝试：发给哪个供应商的哪个 Key，结果如何。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteStep {
     pub relay_id: String,
     pub relay_name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key_id: String,
     pub model: String,
     /// `answered` / `failed` / `transport`
@@ -24,10 +25,12 @@ pub struct RouteStep {
     pub failure: Option<String>,
     pub status: Option<u16>,
     pub elapsed_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt_ms: Option<u64>,
 }
 
 /// 路由计划里的一个成员（按尝试顺序，同一供应商的多个 Key 合并成一条）。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlannedMember {
     pub relay_id: String,
@@ -35,7 +38,7 @@ pub struct PlannedMember {
     pub model: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RouteRecord {
     pub requested_model: String,
@@ -47,10 +50,14 @@ pub struct RouteRecord {
     pub result: String,
     pub cooling_ms: Option<u64>,
     pub finished_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
     pub elapsed_ms: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentActivity {
     pub agent: String,
@@ -64,7 +71,7 @@ pub struct AgentActivity {
     pub last: Option<RouteRecord>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivitySnapshot {
     pub agents: Vec<AgentActivity>,
@@ -114,44 +121,56 @@ impl Drop for InFlight {
 pub struct RouteRecorder {
     agent: String,
     started: Instant,
+    attempt_started: Option<Instant>,
     record: RouteRecord,
+    request_id: Option<String>,
 }
 
 impl RouteRecorder {
-    pub fn new(plan: &RoutePlan) -> Self {
-        let mut planned: Vec<PlannedMember> = Vec::new();
-        for candidate in &plan.candidates {
-            if planned
-                .last()
-                .is_some_and(|member| member.relay_id == candidate.relay.id)
-            {
-                continue;
-            }
-            planned.push(PlannedMember {
-                relay_id: candidate.relay.id.clone(),
-                relay_name: candidate.relay.name.clone(),
-                model: candidate.upstream_model.clone(),
-            });
-        }
+    pub fn new(plan: &RoutePlan, request_id: Option<&str>) -> Self {
         Self {
             agent: plan.agent.as_str().to_string(),
             started: Instant::now(),
+            attempt_started: None,
+            request_id: request_id.map(str::to_owned),
             record: RouteRecord {
                 requested_model: plan.source_model.clone(),
                 model: plan.model.clone(),
                 group_id: plan.group_id.clone(),
-                planned,
+                planned: Vec::new(),
                 steps: Vec::new(),
                 result: "failed".to_string(),
                 cooling_ms: None,
                 finished_at_ms: 0,
                 elapsed_ms: 0,
+                context_window: None,
+                truncated: false,
             },
         }
     }
 
+    pub fn candidates(&mut self, candidates: &[&GatewayCandidate]) {
+        for candidate in candidates {
+            if self.record.planned.iter().any(|member| {
+                member.relay_id == candidate.relay.id && member.model == candidate.upstream_model
+            }) {
+                continue;
+            }
+            if self.record.planned.len() == 32 {
+                self.record.truncated = true;
+                break;
+            }
+            self.record.planned.push(PlannedMember {
+                relay_id: candidate.relay.id.clone(),
+                relay_name: candidate.relay.name.clone(),
+                model: candidate.upstream_model.clone(),
+            });
+        }
+    }
+
     /// 开始尝试一个候选。
-    pub fn begin(&self, candidate: &GatewayCandidate) -> InFlight {
+    pub fn begin(&mut self, candidate: &GatewayCandidate) -> InFlight {
+        self.attempt_started = Some(Instant::now());
         let mut state = lock();
         *state
             .in_flight
@@ -170,6 +189,13 @@ impl RouteRecorder {
         failure: Option<&str>,
         status: Option<u16>,
     ) {
+        if outcome == "answered" {
+            self.record.context_window = candidate.window;
+        }
+        if self.record.steps.len() == 32 {
+            self.record.steps.remove(0);
+            self.record.truncated = true;
+        }
         self.record.steps.push(RouteStep {
             relay_id: candidate.relay.id.clone(),
             relay_name: candidate.relay.name.clone(),
@@ -179,6 +205,7 @@ impl RouteRecorder {
             failure: failure.map(str::to_string),
             status,
             elapsed_ms: self.started.elapsed().as_millis() as u64,
+            attempt_ms: self.attempt_started.take().map(|start| start.elapsed().as_millis() as u64),
         });
     }
 
@@ -199,6 +226,19 @@ impl RouteRecorder {
         self.record.finished_at_ms = now_unix_ms();
         self.record.elapsed_ms = self.started.elapsed().as_millis() as u64;
         let rerouted = answered && self.record.steps.len() > 1;
+        if let Some(id) = self.request_id.as_deref() {
+            let mut record = self.record.clone();
+            for member in &mut record.planned {
+                member.relay_name = super::accounts::mask_account_name(&member.relay_name);
+                member.relay_id = super::accounts::mask_account_name(&member.relay_id);
+            }
+            for step in &mut record.steps {
+                step.key_id.clear();
+                step.relay_name = super::accounts::mask_account_name(&step.relay_name);
+                step.relay_id = super::accounts::mask_account_name(&step.relay_id);
+            }
+            crate::request_log::record_running_route(id, record);
+        }
         let mut state = lock();
         let entry = state
             .agents

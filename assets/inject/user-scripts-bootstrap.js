@@ -8,6 +8,11 @@
       if (result?.status === "failed") console.warn("[Codex++] user scripts:", result.message);
     }).catch((error) => console.warn("[Codex++] user scripts:", error));
   };
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", load, { once: true });
-  else load();
+  const loadWhenApiReady = () => {
+    if (window.codexPlus) load();
+    else window.addEventListener("codex-plus-extension-api-ready", load, { once: true });
+  };
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", loadWhenApiReady, { once: true });
+  } else loadWhenApiReady();
 })();

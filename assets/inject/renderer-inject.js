@@ -1228,6 +1228,25 @@
       .codex-plus-provider-item-actions button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--codex-plus-text-secondary); cursor: pointer; }
       .codex-plus-provider-item-actions button:hover:not(:disabled) { background: var(--codex-plus-bg-hover); }
       .codex-plus-provider-item-actions button:disabled { opacity: .3; cursor: default; }
+      /* 顶部的连接方式（聚合 / 直连），和管理器「连接与供应商」同一个切换；当前那段按下去不能再点。 */
+      .codex-plus-provider-mode-switch { gap: 12px; }
+      .codex-plus-provider-mode-info { display: flex; flex-direction: column; gap: 6px; padding: 0 8px 12px; }
+      .codex-plus-provider-mode-info > .codex-plus-provider-help { line-height: 16px; }
+      .codex-plus-provider-default-model { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; color: var(--codex-plus-text-secondary); font-size: 12px; }
+      .codex-plus-provider-default-model > span { flex: none; }
+      .codex-plus-provider-default-model .codex-plus-provider-menu { min-width: 0; }
+      .codex-plus-provider-default-model .codex-plus-menu-trigger { max-width: 100%; }
+      .codex-plus-provider-mode-switch button:disabled { cursor: default; }
+      .codex-plus-provider-mode-switch button:disabled:not([aria-selected="true"]) { opacity: .5; }
+      /* 聚合时每行一个开关；「Codex 登录身份」贴在侧栏底部。 */
+      .codex-plus-provider-item > .codex-plus-toggle { flex: 0 0 auto; }
+      .codex-plus-provider-sidebar { display: flex; flex-direction: column; }
+      .codex-plus-provider-sidebar > * { flex-shrink: 0; }
+      .codex-plus-provider-login { margin-top: auto; padding: 12px 0 2px; border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
+      .codex-plus-provider-login .codex-plus-provider-menu, .codex-plus-provider-login .codex-plus-menu-trigger { width: 100%; }
+      .codex-plus-provider-login .codex-plus-provider-menu { position: relative; padding: 0 4px; box-sizing: border-box; }
+      .codex-plus-provider-login > .codex-plus-provider-help { padding: 6px 8px 0; line-height: 16px; }
+      .codex-plus-provider-menu-popover .codex-plus-menu-item:disabled { opacity: .45; cursor: default; }
       .codex-plus-provider-badge { display: inline-block; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 16px; color: var(--codex-plus-text-secondary); background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); }
       .codex-plus-provider-badge[data-tone="active"] { color: var(--codex-plus-success, #10a37f); }
       .codex-plus-provider-badge[data-tone="new"] { color: var(--codex-plus-warning, #d97706); }
@@ -1281,10 +1300,6 @@
       .codex-plus-provider-footer[data-tone="error"] { color: var(--codex-plus-danger, #dc2626); }
       .codex-plus-provider-footer[data-tone="warn"] { color: var(--codex-plus-warning, #d97706); }
       /* 网关 / 直连模式 banner：更醒目的全宽横幅（比普通 note 更有存在感）。 */
-      .codex-plus-provider-mode-bar { padding: 7px 16px; font-size: 12px; display: flex; align-items: center; gap: 8px; }
-      .codex-plus-provider-mode-bar[data-codex-gateway-mode="gateway"] { background: rgba(16,163,127,.07); border-bottom: 1px solid rgba(16,163,127,.18); color: var(--codex-plus-text); }
-      .codex-plus-provider-mode-bar[data-codex-gateway-mode="direct"] { background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); border-bottom: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); color: var(--codex-plus-text-secondary); }
-      .codex-plus-provider-mode-bar button { margin-left: auto; }
       .codex-plus-provider-note { padding: 8px 10px; border-radius: 6px; background: var(--codex-plus-bg-elevated, var(--codex-plus-bg-hover)); color: var(--codex-plus-text-secondary); font-size: 12px; }
       .codex-plus-provider-empty { padding: 48px 24px; color: var(--codex-plus-text-secondary); }
       /* 详情改版：照 Codex 原生设置页——居中窄栏、14px 小节标题、圆角卡片里一行一项（左标题右控件）。 */
@@ -1361,7 +1376,7 @@
       details.codex-plus-provider-group > summary:hover { color: var(--codex-plus-text); }
       details.codex-plus-provider-group > summary::after { content: "config.toml / auth.json"; margin-left: 4px; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; font-weight: 400; }
       details.codex-plus-provider-group:not([open]) > summary { padding-bottom: 0; }
-      .codex-plus-provider-detail > .codex-plus-provider-mode-bar, .codex-plus-provider-detail > .codex-plus-provider-note { box-sizing: border-box; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); }
+      .codex-plus-provider-detail > .codex-plus-provider-note { box-sizing: border-box; margin-bottom: 12px; padding: 8px 12px; border: 1px solid var(--codex-plus-settings-card-border); border-radius: var(--codex-plus-control-radius); }
       .codex-plus-provider-sidebar-header { padding: 4px 8px 10px; color: var(--codex-plus-text-secondary); font-weight: 500; letter-spacing: 0; }
       .codex-plus-provider-sidebar-header .codex-plus-action-button { min-height: 24px; padding: 0 8px; font-size: 12px; }
       /*
@@ -7928,13 +7943,7 @@
         window.__codexPlusBackendHeartbeatGeneration === codexPlusBackendGeneration) return;
     if (window.__codexPlusBackendHeartbeat) clearInterval(window.__codexPlusBackendHeartbeat);
     window.__codexPlusBackendHeartbeatGeneration = codexPlusBackendGeneration;
-    let ticks = 0;
-    window.__codexPlusBackendHeartbeat = setInterval(() => {
-      ticks += 1;
-      if (ticks < 5 && (document.hidden || codexModelCatalog.runtimeContext?.status !== "ok")) return;
-      ticks = 0;
-      void checkBackendStatus();
-    }, 1000);
+    window.__codexPlusBackendHeartbeat = setInterval(checkBackendStatus, 5000);
     checkBackendStatus();
   }
 
@@ -16336,13 +16345,14 @@ ${key} = ${value}`]);
     const value = trigger.dataset.value || "";
     trigger.setAttribute("aria-expanded", "true");
     trigger.insertAdjacentHTML("afterend", `<div class="codex-plus-menu-popover codex-plus-provider-menu-popover" role="menu" aria-label="${escapeHtml(trigger.dataset.menuLabel || "")}">${options
-      .map(([id, text]) => `<button type="button" class="codex-plus-menu-item" role="menuitemradio" aria-checked="${String(id === value)}" data-codex-provider-menu-value="${escapeHtml(id)}"><span class="codex-plus-menu-item-label">${escapeHtml(text)}</span>${id === value ? codexPlusMenuIcons.check : ""}</button>`)
+      // 第三项为 true 时置灰（如官方登录供应商下的「本地账号」），键盘也跳过它。
+      .map(([id, text, disabled]) => `<button type="button" class="codex-plus-menu-item" role="menuitemradio" aria-checked="${String(id === value)}" data-codex-provider-menu-value="${escapeHtml(id)}"${disabled ? ' disabled aria-disabled="true"' : ""}><span class="codex-plus-menu-item-label">${escapeHtml(text)}</span>${id === value ? codexPlusMenuIcons.check : ""}</button>`)
       .join("")}</div>`);
     // Codex 在 document 捕获阶段把按键送进输入框，菜单的方向键 / Esc 要在 window 捕获阶段先拿到。
     window.addEventListener("keydown", codexPlusProviderMenuKeydown, true);
     window.addEventListener("pointerdown", codexPlusProviderMenuPointerdown, true);
     const menu = trigger.nextElementSibling;
-    (menu?.querySelector('[aria-checked="true"]') || menu?.querySelector(".codex-plus-menu-item"))?.focus({ preventScroll: true });
+    (menu?.querySelector('[aria-checked="true"]:not(:disabled)') || menu?.querySelector(".codex-plus-menu-item:not(:disabled)"))?.focus({ preventScroll: true });
   }
 
   /** 收起菜单；`refocus` 时焦点回到按钮（键盘操作关掉菜单后不丢焦点）。 */
@@ -16368,7 +16378,7 @@ ${key} = ${value}`]);
   function codexPlusProviderMenuKeydown(event) {
     const menu = document.querySelector(".codex-plus-provider-menu-popover");
     if (!menu) return codexPlusProviderCloseMenu();
-    const items = Array.from(menu.querySelectorAll(".codex-plus-menu-item"));
+    const items = Array.from(menu.querySelectorAll(".codex-plus-menu-item:not(:disabled)"));
     const index = items.indexOf(document.activeElement);
     let next = null;
     if (event.key === "ArrowDown") next = items[(index + 1) % items.length];
@@ -16426,7 +16436,20 @@ ${key} = ${value}`]);
       if (list) codexPlusProviderApplyModelLines(codexPlusProviderModelRowsText(list));
       return;
     }
+    if (kind === "login-identity") {
+      void codexPlusLoginIdentityChoose(value);
+      return;
+    }
+    if (kind === "default-model") {
+      const current = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+      if (value && value !== current) void codexPlusGatewayConnect(value);
+      return;
+    }
     if (kind === "new") {
+      if (value === "toggle-others") {
+        codexPlusGatewayPageState.showOthers = !codexPlusGatewayPageState.showOthers;
+        return renderCodexPlusProviderPage();
+      }
       if (value === "shared") {
         void codexPlusProviderConfirmDiscard().then(async (ok) => {
           if (!ok || !(await codexPlusGatewayConfirmDiscard())) return;
@@ -16454,6 +16477,7 @@ ${key} = ${value}`]);
   /** 菜单的点击（开合、选中）；是它的事件就处理并返回 true。 */
   function codexPlusProviderHandleMenuClick(target) {
     const item = target.closest(".codex-plus-provider-menu-popover .codex-plus-menu-item");
+    if (item?.disabled) return true;
     if (item) {
       codexPlusProviderChooseMenuItem(item);
       return true;
@@ -16725,24 +16749,32 @@ ${key} = ${value}`]);
       return;
     }
     const scroll = panel.querySelector(".codex-plus-provider-detail")?.scrollTop || 0;
-    // 直连和共享供应商一份列表（和管理器「连接与供应商」一样）：上面直连，下面「共享供应商」（经本地服务）；
-    // 选中哪一类，右侧就是哪一类的详情（state.tab 记的是当前看的是哪一类）。用哪家看哪一行「使用中」。
+    // 和管理器「连接与供应商」一样：顶部选连接方式（聚合 / 直连），下面一份供应商列表。
+    // 聚合时列共享供应商，每家一个开关（打开的合在一起给 Codex 用）；直连时列 Codex 自己的直连供应商，点「使用」换一家。
+    // 看哪一类跟着连接方式走（state.tab），别处改了连接方式，轮询重读后这里也跟着换。
     const gatewayMode = state.data?.gatewayMode === true;
+    state.tab = gatewayMode ? "gateway" : "direct";
     const footer = `<div class="codex-plus-provider-footer" data-codex-provider-footer></div>`;
-    const sharedList = codexPlusGatewayPageState.payload
-      ? renderCodexPlusGatewayList()
-      : `<div class="codex-plus-provider-help">${codexPlusGatewayPageState.busy === "load" ? "正在读取共享供应商…" : escapeHtml(codexPlusGatewayPageState.status || "还没有读取共享供应商")} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`;
-    const detailBody = state.tab === "gateway"
-      ? `${renderCodexPlusGatewayModeBar()}${renderCodexPlusGatewayDetail()}`
-      : `${gatewayMode ? '<div class="codex-plus-provider-note">Codex 现在经本地服务（下面「共享供应商」里标着用的是哪一家）；在这里点「使用」会先断开本地服务并还原。</div>' : ""}${renderCodexPlusProviderDetail()}`;
-    panel.innerHTML = `<div class="codex-plus-provider-shell"><div class="codex-plus-provider-layout">
+    const list = gatewayMode
+      ? codexPlusGatewayPageState.payload
+        ? renderCodexPlusGatewayList()
+        : `<div class="codex-plus-provider-help">${codexPlusGatewayPageState.busy === "load" ? "正在读取共享供应商…" : escapeHtml(codexPlusGatewayPageState.status || "还没有读取共享供应商")} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`
+      : renderCodexPlusProviderList();
+    const detailBody = gatewayMode
+      ? `${renderCodexPlusGatewayDetail()}`
+      : renderCodexPlusProviderDetail();
+    // 「+ 新建」：聚合时加共享供应商；直连时加直连供应商，或直连专用的模型聚合 / 故障转移。
+    const newOptions = gatewayMode
+      ? [["shared", "添加供应商"], ["toggle-others", codexPlusGatewayPageState.showOthers ? "隐藏其他 Agent 的供应商" : "显示其他 Agent 的供应商"]]
+      : [["direct", "添加供应商"], ["model", "新建模型聚合"], ["failover", "新建故障转移"]];
+    panel.innerHTML = `<div class="codex-plus-provider-shell">${renderCodexPlusProviderModeSwitch(gatewayMode)}<div class="codex-plus-provider-layout">
       <aside class="codex-plus-provider-sidebar">
+        ${renderCodexPlusProviderModeInfo(gatewayMode)}
         <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
-          ${codexPlusProviderActionMenu("new", "+ 新建", [["direct", "直连供应商"], ["failover", "故障转移（聚合）"], ["model", "模型聚合"], ["shared", "共享供应商（经本地服务）"]], state.busy || codexPlusGatewayPageState.busy ? "disabled" : "")}</div>
+          ${codexPlusProviderActionMenu("new", "+ 新建", newOptions, state.busy || codexPlusGatewayPageState.busy ? "disabled" : "")}</div>
         ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-note">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
-        ${renderCodexPlusProviderList()}
-        <div class="codex-plus-provider-sidebar-header" data-codex-provider-subheader="shared" title="多 Key 轮换、出错换下一家、协议自动转换；Claude 等其它 Agent 也能用"><span>共享供应商</span></div>
-        ${sharedList}
+        ${list}
+        ${renderCodexPlusLoginIdentity()}
       </aside>
       <section class="codex-plus-provider-detail">
         ${detailBody}
@@ -16915,17 +16947,8 @@ ${key} = ${value}`]);
     const state = codexPlusProviderPageState;
     if (!target) return;
     if (codexPlusProviderHandleMenuClick(target)) return;
-    // 从直连切到看共享供应商：先确认放弃直连这边没保存的修改；同一家再点一次也要切过去。
-    const sharedSelect = target.closest("[data-codex-gateway-select]");
-    if (sharedSelect && state.tab !== "gateway") {
-      if (!(await codexPlusProviderConfirmDiscard())) return;
-      state.tab = "gateway";
-      if (sharedSelect.dataset.codexGatewaySelect === codexPlusGatewayPageState.selectedId && !codexPlusGatewayPageState.isNew) {
-        codexPlusGatewaySetStatus("");
-        return renderCodexPlusProviderPage();
-      }
-    }
-    if (target.closest("[data-codex-gateway-select], [data-codex-gateway-move], [data-codex-gateway-action], [data-codex-gateway-key-replace], [data-codex-gateway-key-delete]")) {
+    // 一次只列一类（跟着连接方式），共享供应商的点击都交给 44 分片。
+    if (target.closest("[data-codex-gateway-select], [data-codex-gateway-move], [data-codex-gateway-action], [data-codex-gateway-member], [data-codex-gateway-key-replace], [data-codex-gateway-key-delete]")) {
       await codexPlusGatewayHandleClick(target);
       return;
     }
@@ -16938,12 +16961,6 @@ ${key} = ${value}`]);
     const select = target.closest("[data-codex-provider-select]");
     if (select) {
       const id = select.dataset.codexProviderSelect;
-      // 从共享供应商切回看直连：先确认放弃共享那边没保存的修改。
-      if (state.tab === "gateway") {
-        if (!(await codexPlusGatewayConfirmDiscard())) return;
-        state.tab = "direct";
-        if (id === state.selectedId && !state.isNew) return renderCodexPlusProviderPage();
-      }
       if (id === state.selectedId && !state.isNew) return;
       if (!(await codexPlusProviderConfirmDiscard())) return;
       codexPlusProviderSelect(id);
@@ -17002,6 +17019,7 @@ ${key} = ${value}`]);
     const state = codexPlusProviderPageState;
     if (!document.querySelector("[data-codex-provider-panel]")) return;
     if (state.tab === "gateway") codexPlusGatewayPoll();
+    codexPlusLoginIdentityPoll();
     if (state.dirty || state.busy || document.hidden) return;
     void postJson("/providers/list", {}).then((result) => {
       if (result?.status !== "ok" || result.revision === state.data?.revision) return;
@@ -17080,6 +17098,11 @@ ${key} = ${value}`]);
     fetchedModels: [],
     disconnect: null,
     signature: "",
+    // 聚合列表是否也列别的 Agent（Claude）的供应商；和管理器一样默认不列。
+    showOthers: false,
+    // 「Codex 登录身份」：get_native_auth_state 的结果。
+    login: null,
+    loginBusy: false,
   };
 
   function codexPlusGatewayCall(command, args = {}) {
@@ -17088,6 +17111,12 @@ ${key} = ${value}`]);
 
   function codexPlusGatewayEntries() {
     return codexPlusGatewayPageState.payload?.pool || [];
+  }
+
+  /** 聚合列表要列的：不勾「显示其他 Agent 的供应商」时去掉别的 Agent 的（和管理器 entriesForPage 一致）。 */
+  function codexPlusGatewayVisibleEntries() {
+    const others = codexPlusGatewayPageState.showOthers;
+    return codexPlusGatewayEntries().filter((entry) => others || !entry.owner || entry.owner === "codex");
   }
 
   function codexPlusGatewaySelected() {
@@ -17130,7 +17159,7 @@ ${key} = ${value}`]);
     if (result?.gateway && Array.isArray(result.pool)) {
       state.payload = result;
       state.signature = codexPlusGatewaySignature(result);
-      const ids = result.pool.map((entry) => entry.id);
+      const ids = codexPlusGatewayVisibleEntries().map((entry) => entry.id);
       const keep = keepSelection && ids.includes(state.selectedId) ? state.selectedId : ids[0] || "";
       if (!state.isNew) codexPlusGatewaySelect(keep);
     }
@@ -17141,6 +17170,8 @@ ${key} = ${value}`]);
       (payload?.pool || []).map((entry) => [entry.id, entry.name, entry.baseUrl, entry.protocol, entry.enabled,
         entry.models, entry.keys, entry.modelWindows, entry.contextWindow]),
       payload?.gateway?.bindings?.codex?.enabled,
+      payload?.gateway?.bindings?.codex?.model,
+      payload?.gateway?.bindings?.codex?.poolExclude,
     ]);
   }
 
@@ -17150,7 +17181,7 @@ ${key} = ${value}`]);
       state.busy = "load";
       renderCodexPlusProviderPage();
     }
-    const result = await codexPlusGatewayCall("load_gateway");
+    const [result] = await Promise.all([codexPlusGatewayCall("load_gateway"), codexPlusLoginIdentityLoad()]);
     state.busy = "";
     if (result?.status !== "ok" || !result.gateway) {
       codexPlusGatewaySetStatus(result?.message || "读取共享供应商失败", "error");
@@ -17353,33 +17384,68 @@ ${key} = ${value}`]);
       </div></div>`;
   }
 
-  function renderCodexPlusGatewayModeBar() {
-    const gatewayMode = codexPlusProviderPageState.data?.gatewayMode === true;
-    const busy = Boolean(codexPlusGatewayPageState.busy);
+  /**
+   * 页面顶部的连接方式（和管理器同一个「聚合 / 直连」切换）。
+   * 聚合：Codex 经 Codex++ 本地服务，打开的供应商合在一起；直连：断开本地服务、还原接入前的配置（先看还原预览）。
+   */
+  function renderCodexPlusProviderModeSwitch(gatewayMode) {
+    const busy = Boolean(codexPlusGatewayPageState.busy || codexPlusProviderPageState.busy);
+    const canSwitch = codexPlusProviderPageState.settings?.relayProfilesEnabled !== false;
+    const button = (mode, label, title, active, enabled) => `<button type="button" role="radio" aria-checked="${active}" aria-selected="${active}" data-codex-gateway-action="mode-${mode}" title="${escapeHtml(title)}" ${active || busy || !enabled ? "disabled" : ""}>${escapeHtml(label)}</button>`;
+    // 这一行横跨侧栏和原生面板（侧栏展开时面板从侧栏右边起），只放切换本身；说明和默认模型放进左栏。
+    return `<div class="codex-plus-provider-tabs codex-plus-provider-mode-switch">
+      <div class="codex-plus-provider-tab-group" role="radiogroup" aria-label="Codex 的连接方式">
+        ${button("aggregate", "聚合", canSwitch ? "聚合：Codex 经 Codex++ 本地服务，下面打开的供应商合在一起，不用切换" : "先在 Codex++「连接与供应商」的「更多设置」里打开供应商配置切换", gatewayMode, canSwitch)}
+        ${button("direct", "直连", "直连：断开本地服务，还原接入前的直连配置；会先列出要还原的文件，确认后才改", !gatewayMode, true)}
+      </div>
+    </div>`;
+  }
+
+  /** 左栏顶部：当前连接方式的一句说明；聚合时上面再放「默认模型」。 */
+  function renderCodexPlusProviderModeInfo(gatewayMode) {
+    const busy = Boolean(codexPlusGatewayPageState.busy || codexPlusProviderPageState.busy);
     const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
-    // 选中的这一家能不能直接「使用」：有模型、开着、不是正在用的那家。
-    const entry = codexPlusGatewayPageState.isNew ? null : codexPlusGatewaySelected();
-    const entryModel = entry?.models?.[0] || "";
-    const active = gatewayMode && entry && model.toLowerCase().startsWith(`${entry.id}/`.toLowerCase());
-    const useButton = entry && entryModel && entry.enabled !== false && !active
-      ? `<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="use-selected" ${busy ? "disabled" : ""}>${codexPlusGatewayPageState.busy === "connect" ? "正在切换…" : "让 Codex 用这家"}</button>`
-      : "";
-    return gatewayMode
-      ? `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="gateway">
-          <span>Codex 正经 Codex++ 本地服务接入${model ? `，默认模型 ${escapeHtml(model)}` : ""}。已打开的对话下一条请求就生效。</span>
-          ${useButton}
-          <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="disconnect" ${busy ? "disabled" : ""}>断开并还原为直连</button>
-        </div>`
-      : `<div class="codex-plus-provider-mode-bar" data-codex-gateway-mode="direct">
-          <span>Codex 现在是直连。在这里「使用」一家，Codex 就经本地服务、默认用这家的模型。</span>
-          ${useButton}
-        </div>`;
+    const connecting = codexPlusGatewayPageState.busy === "connect" || codexPlusGatewayPageState.busy === "disconnect";
+    const hint = connecting
+      ? "正在切换…"
+      : gatewayMode
+        ? "打开的供应商合在一起给 Codex 用，模型都列进模型选择器。需要 Codex++ 在后台运行。"
+        : "Codex 直接连一家，关掉 Codex++ 也能用（需协议转换的除外）；换一家点「使用」。";
+    return `<div class="codex-plus-provider-mode-info">
+      ${gatewayMode && codexPlusGatewayPageState.payload ? renderCodexPlusGatewayDefaultModel(model, busy) : ""}
+      <div class="codex-plus-provider-help">${escapeHtml(hint)}</div>
+    </div>`;
+  }
+
+  /**
+   * 聚合时的「默认模型」：和管理器顶部同一份候选（打开、没排除的供应商的模型 + 模型组），选了就改 Codex 绑定的默认模型。
+   * 候选跟列表一致：不勾「显示其他 Agent 的供应商」时不列别的 Agent 的供应商的模型；已选的模型能不能用仍按真实排除名单判断。
+   */
+  function renderCodexPlusGatewayDefaultModel(model, busy) {
+    const payload = codexPlusGatewayPageState.payload;
+    const exclude = payload?.gateway?.bindings?.codex?.poolExclude || [];
+    const visible = new Set(codexPlusGatewayVisibleEntries().map((entry) => entry.id));
+    const hidden = codexPlusGatewayEntries().filter((entry) => !visible.has(entry.id)).map((entry) => entry.id);
+    const models = codexPlusGatewayModel.agentModels(payload, [...exclude, ...hidden]);
+    const options = [
+      ...(model ? [] : [["", "选择默认模型"]]),
+      // 「供应商 id/模型」这种带前缀的写法不在候选里，但能路由就照常显示。
+      ...(model && !models.some((item) => item.toLowerCase() === model.toLowerCase())
+        ? [[model, codexPlusGatewayModel.modelRoutable(payload, model, exclude) ? model : `${model}（不可用）`]]
+        : []),
+      ...models.map((item) => [item, item]),
+    ];
+    if (!options.length || (!model && !models.length)) return "";
+    const current = models.find((item) => item.toLowerCase() === model.toLowerCase()) || model;
+    return `<div class="codex-plus-provider-default-model"><span>默认模型</span>${codexPlusProviderMenu("default-model", current, options, "Codex 默认模型", busy ? "disabled" : "")}</div>`;
   }
 
   function renderCodexPlusGatewayList() {
     const state = codexPlusGatewayPageState;
-    const entries = codexPlusGatewayEntries();
+    const entries = codexPlusGatewayVisibleEntries();
     const gatewayMode = codexPlusProviderPageState.data?.gatewayMode === true;
+    // 聚合时每家一个开关：打开的合在一起给 Codex 用（改 Codex 绑定的排除名单）。
+    const exclude = state.payload?.gateway?.bindings?.codex?.poolExclude || [];
     // 当前 Codex 绑定的模型（格式 "providerId/model"），用来标出活跃供应商。
     const activeModel = state.payload?.gateway?.bindings?.codex?.model || "";
     const activeProviderId = gatewayMode && activeModel.includes("/") ? activeModel.split("/")[0] : "";
@@ -17387,12 +17453,15 @@ ${key} = ${value}`]);
       const selected = entry.id === state.selectedId && !state.isNew && codexPlusProviderPageState.tab === "gateway";
       const enabled = entry.enabled !== false;
       const isActive = gatewayMode && entry.id === activeProviderId;
+      const used = enabled && !exclude.includes(entry.id);
+      const owner = entry.owner && entry.owner !== "codex" ? `<span class="codex-plus-provider-badge">来自 ${escapeHtml(entry.owner === "claude" ? "Claude" : entry.owner)}</span>` : "";
       const tag = entry.account ? (entry.plan || "账号") : String(entry.source || "").startsWith("extension:") ? "拓展" : String(entry.source || "").startsWith("native:") ? "原生登录" : ({ responses: "Responses", chatCompletions: "Chat", anthropicMessages: "Anthropic" }[entry.protocol] || entry.protocol);
       return `<div class="codex-plus-provider-item" role="listitem" data-selected="${selected}" data-disabled="${!enabled}" data-codex-gateway-select="${escapeHtml(entry.id)}">
         <div class="codex-plus-provider-item-main">
           <div class="codex-plus-provider-item-name">${isActive ? '<span class="codex-plus-provider-item-dot" aria-hidden="true"></span>' : ""}${escapeHtml(entry.name || entry.id)}</div>
-          <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(tag)}</span><span class="codex-plus-provider-badge">${entry.models?.length || 0} 个模型</span>${!enabled ? '<span class="codex-plus-provider-badge" data-tone="off">已停用</span>' : isActive ? '<span class="codex-plus-provider-badge" data-tone="active">使用中</span>' : ""}</div>
+          <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(tag)}</span><span class="codex-plus-provider-badge">${entry.models?.length || 0} 个模型</span>${owner}${!enabled ? '<span class="codex-plus-provider-badge" data-tone="off">已停用</span>' : isActive ? '<span class="codex-plus-provider-badge" data-tone="active">默认</span>' : ""}</div>
         </div>
+        ${codexPlusProviderToggleHtml(used, `给 Codex 用「${entry.name || entry.id}」`, `data-codex-gateway-member="${escapeHtml(entry.id)}" ${!enabled || state.busy ? "disabled" : ""} ${state.busy === `member:${entry.id}` ? 'data-pending="true"' : ""}`)}
         <div class="codex-plus-provider-item-actions">
           <button type="button" title="上移" aria-label="上移" data-codex-gateway-move="-1" data-id="${escapeHtml(entry.id)}" ${index === 0 ? "disabled" : ""}>↑</button>
           <button type="button" title="下移" aria-label="下移" data-codex-gateway-move="1" data-id="${escapeHtml(entry.id)}" ${index === entries.length - 1 ? "disabled" : ""}>↓</button>
@@ -17402,7 +17471,7 @@ ${key} = ${value}`]);
     const draftRow = state.isNew
       ? `<div class="codex-plus-provider-item" role="listitem" data-selected="true"><div class="codex-plus-provider-item-main"><div class="codex-plus-provider-item-name">${escapeHtml(state.draft?.name || "新供应商")}</div><div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge" data-tone="new">未保存</span></div></div></div>`
       : "";
-    return `<div class="codex-plus-provider-list" role="list" aria-label="共享供应商">${rows}${draftRow}${rows || draftRow ? "" : '<div class="codex-plus-provider-help">共享供应商是空的。</div>'}</div>`;
+    return `<div class="codex-plus-provider-list" role="list" aria-label="共享供应商">${rows}${draftRow}${rows || draftRow ? "" : codexPlusGatewayEntries().length ? '<div class="codex-plus-provider-help">其他 Agent 的供应商已隐藏，「+ 新建」菜单里可以显示。</div>' : '<div class="codex-plus-provider-help">还没有供应商。加进来的供应商都会合在一起给 Codex 用。</div>'}</div>`;
   }
 
   function renderCodexPlusGatewayDetail() {
@@ -17493,7 +17562,6 @@ ${key} = ${value}`]);
         ${renderCodexPlusGatewayList()}
       </aside>
       <section class="codex-plus-provider-detail">
-        ${renderCodexPlusGatewayModeBar()}
         ${renderCodexPlusGatewayDetail()}
       </section></div>${renderCodexPlusGatewayDisconnectDialog()}`;
   }
@@ -17520,6 +17588,19 @@ ${key} = ${value}`]);
   /** 本地服务页签的点击；处理了返回 true。 */
   async function codexPlusGatewayHandleClick(target) {
     const state = codexPlusGatewayPageState;
+    const member = target.closest("[data-codex-gateway-member]");
+    if (member) {
+      const id = member.dataset.codexGatewayMember;
+      const entry = codexPlusGatewayEntries().find((item) => item.id === id);
+      if (!member.disabled && entry) {
+        const used = member.getAttribute("aria-checked") !== "true";
+        await codexPlusGatewayMutate("set_gateway_pool_member", { agents: ["codex"], id, used }, {
+          busy: `member:${id}`,
+          success: used ? `Codex 开始用「${entry.name}」。` : `Codex 不再用「${entry.name}」。`,
+        });
+      }
+      return true;
+    }
     const move = target.closest("[data-codex-gateway-move]");
     if (move) {
       if (move.disabled || !(await codexPlusGatewayConfirmDiscard())) return true;
@@ -17607,12 +17688,15 @@ ${key} = ${value}`]);
         break;
       }
       case "connect": await codexPlusGatewayConnect(); break;
-      case "use-selected": {
-        const model = entry?.models?.[0] || "";
-        if (entry && model) await codexPlusGatewayConnect(`${entry.id}/${model}`);
-        break;
-      }
       case "disconnect": await codexPlusGatewayOpenDisconnect(); break;
+      case "mode-aggregate":
+        if (await codexPlusProviderConfirmDiscard()) await codexPlusGatewayConnect();
+        break;
+      case "mode-direct":
+        if (await codexPlusGatewayConfirmDiscard()) await codexPlusGatewayOpenDisconnect();
+        break;
+      // 本地账号的名字、用户名、邮箱在管理器里改（和管理器「编辑资料」同一处）。
+      case "edit-local-profile": void postJson("/manager/open", { page: "relay" }); break;
       case "disconnect-cancel":
         state.disconnect = null;
         renderCodexPlusProviderPage();
@@ -17622,6 +17706,80 @@ ${key} = ${value}`]);
       default: return false;
     }
     return true;
+  }
+
+  /** 下拉的值：local 本地账号、none 不登录、account:<id> ChatGPT 账号、"" 尚未指定（和管理器 nativeAuthSelection 一致）。 */
+  function codexPlusLoginIdentityValue(login) {
+    if (login?.localLogin) return "local";
+    if (login?.selection?.mode === "none") return "none";
+    if (login?.selection?.mode === "account") return `account:${login.selection.accountRef}`;
+    return "";
+  }
+
+  async function codexPlusLoginIdentityLoad() {
+    const result = await codexPlusGatewayCall("get_native_auth_state");
+    if (result?.status === "ok") codexPlusGatewayPageState.login = result;
+  }
+
+  /** 选了就写：后端一起改原生登录选择和解锁开关（先还原假登录再写真账号），重启 Codex 后生效。 */
+  async function codexPlusLoginIdentityChoose(value) {
+    const state = codexPlusGatewayPageState;
+    if (state.loginBusy || value === codexPlusLoginIdentityValue(state.login) || !value) return;
+    const args = value.startsWith("account:")
+      ? { kind: "account", accountRef: value.slice("account:".length) }
+      : { kind: value === "local" ? "local" : "none", accountRef: null };
+    state.loginBusy = true;
+    renderCodexPlusProviderPage();
+    const result = await codexPlusGatewayCall("set_codex_login_identity", args);
+    state.loginBusy = false;
+    if (result?.status === "ok") {
+      state.login = result;
+      showToast("登录身份已保存，重启 Codex 后生效", { type: "success" });
+    } else {
+      await codexPlusLoginIdentityLoad();
+      showToast(result?.message || "保存登录身份失败", { type: "error" });
+    }
+    renderCodexPlusProviderPage();
+  }
+
+  /** 侧栏底部的「Codex 登录身份」：ChatGPT 账号 / 本地账号 / 不登录，和管理器同一个选择。 */
+  function renderCodexPlusLoginIdentity() {
+    const state = codexPlusGatewayPageState;
+    const login = state.login;
+    if (!login) return "";
+    const value = codexPlusLoginIdentityValue(login);
+    const blocked = login.localLoginBlockedReason || "";
+    const accounts = login.accounts || [];
+    const options = [
+      ...(value ? [] : [["", login.actualLabel || "尚未指定"]]),
+      ...accounts.map((account) => [`account:${account.id}`, account.name || account.email || account.id]),
+      ...(value.startsWith("account:") && !accounts.some((account) => `account:${account.id}` === value) ? [[value, "已选账号不可用"]] : []),
+      // 官方登录供应商下模型请求要用真实登录：本地账号置灰，原因写在下面。
+      ["local", "本地账号", Boolean(blocked) && value !== "local"],
+      ["none", "不登录"],
+    ];
+    const help = value === "local"
+      ? `代码审查、图像、资料库等入口已解锁，模型仍走所选供应商。${login.localLoginLaunchHint ? "直接打开 Codex 前，先在 Codex++ 首页打开「自动接管官方 App」。" : ""}<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="edit-local-profile">编辑资料</button>`
+      : escapeHtml(login.drift || login.restartBlockedReason || (blocked ? `本地账号暂不可用：${blocked}` : "选「本地账号」可以用 API Key 解锁 ChatGPT 专属入口。"));
+    return `<div class="codex-plus-provider-login">
+      <div class="codex-plus-provider-sidebar-header"><span>Codex 登录身份</span></div>
+      ${codexPlusProviderMenu("login-identity", value, options, "Codex 登录身份", state.loginBusy ? "disabled" : "")}
+      <div class="codex-plus-provider-help">${state.loginBusy ? "正在保存…" : help}${state.loginBusy ? "" : " 改完重启 Codex 后生效。"}</div>
+    </div>`;
+  }
+
+  /** 别处（管理器）改了登录身份：变了才重绘；正在保存或菜单开着时不打断。 */
+  function codexPlusLoginIdentityPoll() {
+    const state = codexPlusGatewayPageState;
+    if (state.loginBusy || document.hidden) return;
+    void codexPlusGatewayCall("get_native_auth_state").then((result) => {
+      if (result?.status !== "ok" || state.loginBusy) return;
+      const pick = (login) => JSON.stringify([login?.selection, login?.localLogin, login?.localLoginBlockedReason, login?.localLoginLaunchHint, login?.drift, login?.restartBlockedReason, login?.actualLabel, (login?.accounts || []).map((account) => account.id)]);
+      if (pick(result) === pick(state.login)) return;
+      state.login = result;
+      if (document.querySelector(".codex-plus-provider-menu-popover")) return;
+      renderCodexPlusProviderPage();
+    });
   }
 
   /** 别处改了池子：没有未保存修改、也没有弹窗时静默刷新。 */
@@ -17886,8 +18044,10 @@ ${key} = ${value}`]);
     const main = `<section class="codex-plus-settings-section" aria-label="远程控制">
       <h2 class="codex-plus-settings-section-title">远程控制</h2>
       <div class="codex-plus-settings-card">
-        ${codexPlusRemoteRow("启用远程控制", "在浏览器或手机上查看 Codex 的会话、发消息、停止，处理命令审批和模型提问，切换模型、权限和计划模式。",
+        ${codexPlusRemoteRow("启用远程控制", `在浏览器或手机上查看 Codex 的会话、发消息、停止，处理命令审批和模型提问，切换模型、权限和计划模式。${data.weixinFocusEnabled && !data.running ? "开启远程控制会中断正在独立后台运行的微信专注轮次。" : ""}`,
           `${data.running ? '<span class="codex-plus-provider-badge" data-tone="active">运行中</span>' : ""}${codexPlusRemoteToggle(data.enabled ? "disable" : "enable", Boolean(data.enabled), "启用远程控制")}`)}
+        ${codexPlusRemoteRow("允许微信专注操作桌面会话", "远程控制关闭时，仅在此项开启后，已扫码绑定的微信用户仍可进入桌面会话、发消息和处理审批。不会开启网页访问。",
+          codexPlusRemoteToggle("setWeixinFocus", Boolean(data.weixinFocusEnabled), "允许微信专注操作桌面会话"))}
         ${url ? codexPlusRemoteRow("本机访问链接", `<code class="codex-plus-remote-url">${escapeHtml(url.replace(/#token=.*/, "#token=…"))}</code><br>链接里带着访问令牌，拿到链接就能操控 Codex，不要发给别人。`,
           `<button type="button" class="codex-plus-action-button" data-codex-remote-action="copy">${state.copied ? "已复制" : "复制"}</button>
            <button type="button" class="codex-plus-action-button" data-codex-remote-action="openBrowser">在浏览器打开</button>`) : ""}
@@ -18035,6 +18195,9 @@ ${key} = ${value}`]);
         return;
       case "startPairing":
         await codexPlusRemoteRun("startPairing", { role: state.pairRole });
+        return;
+      case "setWeixinFocus":
+        await codexPlusRemoteRun("setWeixinFocus", { enabled: !state.data?.weixinFocusEnabled });
         return;
       case "revoke": {
         const name = button.getAttribute("data-codex-remote-name") || "这台设备";
@@ -18625,6 +18788,8 @@ ${key} = ${value}`]);
     const permissionSection = `<section class="codex-plus-settings-section" aria-label="权限">
       <h2 class="codex-plus-settings-section-title">权限</h2>
       <div class="codex-plus-settings-card">
+        ${codexPlusWeixinRow("允许微信专注操作桌面会话", "远程控制关闭时，仅在此项开启后，已扫码绑定的微信用户仍可进入桌面会话、发消息和处理审批。不会开启网页访问。",
+          codexPlusWeixinToggle("weixinFocusEnabled", Boolean(data.weixinFocusEnabled), "允许微信专注操作桌面会话"))}
         ${codexPlusWeixinRow("沙箱权限", "Codex 在工作目录里能做什么。",
           codexPlusWeixinMenu("weixinConnectSandbox", settings.weixinConnectSandbox || "read-only", codexPlusWeixinSandboxOptions, "沙箱权限"))}
         ${codexPlusWeixinRow("工作区附件回传", outboundBlocked ? "先填允许的微信用户 ID（不能是 *）并填好工作目录，才能打开。" : "允许向指定微信用户回传工作区文件。",
@@ -18696,7 +18861,9 @@ ${key} = ${value}`]);
     if (toggle) {
       if (toggle.disabled) return;
       const field = toggle.getAttribute("data-codex-weixin-toggle");
-      await codexPlusWeixinSave({ [field]: toggle.getAttribute("aria-checked") !== "true" });
+      const enabled = toggle.getAttribute("aria-checked") !== "true";
+      if (field === "weixinFocusEnabled") await codexPlusWeixinRun("setWeixinFocus", { enabled });
+      else await codexPlusWeixinSave({ [field]: enabled });
       return;
     }
     const button = target.closest("[data-codex-weixin-action]");
@@ -23443,6 +23610,7 @@ ${key} = ${value}`]);
     patchStatsig: patchStatsigModelDynamicConfig,
     recordRequest: recordModelListRequest,
     patchMcp: patchMcpModelResponseData,
+    refresh: () => loadCodexModelCatalog(true),
   };
   window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
   let codexModelWhitelistRefreshTimer = 0;
@@ -23682,10 +23850,7 @@ ${key} = ${value}`]);
         codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
         codexModelCatalogRuntime.retryAt = 0;
         codexModelCatalogRuntime.failure = null;
-        if (changed) {
-          refreshCodexNativeModelQueries();
-          if (typeof codexPlusEmitExtensionEvent === "function") codexPlusEmitExtensionEvent("session-context/changed");
-        }
+        if (changed) refreshCodexNativeModelQueries();
         renderCodexPlusMenu();
         syncCodexPlusGroupModelQueries();
         scheduleCodexModelWhitelistRefresh();
@@ -24363,6 +24528,15 @@ ${key} = ${value}`]);
     }, true);
   }
 
+  if (!window.__codexPlusModelSelectionRefreshInstalled) {
+    window.__codexPlusModelSelectionRefreshInstalled = true;
+    window.addEventListener("click", (event) => {
+      if (event.target?.closest?.('[data-model-picker-view] [role="menuitemradio"]')) {
+        void window.__codexPlusModelCatalogRuntime.refresh();
+      }
+    }, true);
+  }
+
   function modelResponseHasPagination(value) {
     return !!value && typeof value === "object"
       && ("nextCursor" in value || "next_cursor" in value);
@@ -24459,85 +24633,6 @@ ${key} = ${value}`]);
       && (!!codexModelCatalog.runtimeContext || ["pureApi", "aggregate"].includes(profile?.relayMode));
   }
 
-  function codexThreadContextOverrideKey(threadId, model) {
-    return `codex-plus:thread-context:${JSON.stringify([threadId, model])}`;
-  }
-
-  function codexThreadContextFromCatalog(runtime, threadId, model) {
-    if (runtime?.status !== "ok" || !Object.hasOwn(runtime.models, model)) return null;
-    const defaults = runtime.models[model];
-    const defaultWindow = defaults.model_context_window;
-    const defaultEffective = runtime.effectiveWindows?.[model];
-    const saved = threadId ? Number(window.localStorage?.getItem(codexThreadContextOverrideKey(threadId, model))) : 0;
-    const override = Number.isSafeInteger(saved) && saved > 0 ? saved : null;
-    const config = override === null ? defaults : {
-      model_context_window: override,
-      model_auto_compact_token_limit: Math.min(override, Math.max(1,
-        Math.floor(override * (defaults.model_auto_compact_token_limit / defaultWindow)))),
-    };
-    const effectiveWindow = override === null ? defaultEffective : defaultEffective === undefined ? undefined
-      : Math.floor(override * Math.round(defaultEffective / defaultWindow * 100) / 100);
-    return { model, config, defaultWindow, override, effectiveWindow, signature: codexThreadContextSignature(config) };
-  }
-
-  function codexSessionContextSelection() {
-    const composer = [...document.querySelectorAll("[data-codex-composer-root]")]
-      .find((node) => node.getBoundingClientRect().width > 0);
-    const trigger = [...(composer?.querySelectorAll('[data-composer-navigation-target="reasoning"]') || [])]
-      .find((node) => node.getBoundingClientRect().width > 0);
-    const label = trigger?.querySelector('[data-tooltip-overflow-target] span.truncate.whitespace-nowrap')?.textContent.trim();
-    if (!label) return null;
-    const runtime = codexModelCatalog.runtimeContext;
-    if (runtime?.status !== "ok") return null;
-    const models = Object.keys(runtime.models);
-    const exact = models.includes(label) ? [label]
-      : models.filter((model) => codexPlusModelMetadata(model)?.displayName === label);
-    const labelKey = codexPlusModelPickerNativeLabelKey(label);
-    const matches = exact.length ? exact : models.filter((model) => {
-      const name = codexPlusModelMetadata(model)?.displayName || model;
-      return codexPlusModelPickerNativeLabelKey(name) === labelKey;
-    });
-    if (matches.length !== 1) return null;
-    const selected = document.querySelector('[data-app-action-sidebar-thread-active="true"]');
-    const host = selected?.getAttribute("data-app-action-sidebar-thread-host-id");
-    if (host && host !== "local") return null;
-    const threadId = composer.getAttribute("data-composer-placement") === "home" ? "" : codexPlusCurrentSessionId();
-    const context = codexThreadContextFromCatalog(runtime, threadId, matches[0]);
-    return { ...context, threadId, label };
-  }
-
-  function codexSessionContextService() {
-    return Object.freeze({
-      read: codexSessionContextSelection,
-      async refresh() {
-        const catalog = await loadCodexModelCatalog(true);
-        if (catalog.status === "failed") throw new Error(catalog.message);
-        if (catalog.runtimeContext && catalog.runtimeContext.status !== "ok") {
-          throw new Error(catalog.runtimeContext.message);
-        }
-        return codexSessionContextSelection();
-      },
-      async set(threadId, model, value) {
-        const selected = codexSessionContextSelection();
-        if (!threadId || selected?.threadId !== threadId || selected.model !== model) {
-          throw new Error("会话或模型已切换，请重新打开上下文设置");
-        }
-        if (value !== null && (!Number.isSafeInteger(value) || value < 1)) {
-          throw new Error("上下文窗口必须是正整数");
-        }
-        const key = codexThreadContextOverrideKey(threadId, model);
-        if (value === null) window.localStorage.removeItem(key);
-        else window.localStorage.setItem(key, String(value));
-        codexPlusEmitExtensionEvent("session-context/changed");
-        return await codexPlusRpcSerializeTurn(threadId, async () => {
-          const client = await codexPlusAppServerClient("local");
-          return await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, codexPlusRpcContextSendRequest(client),
-            "turn/start", { threadId, model }, { contextOnly: true });
-        });
-      },
-    });
-  }
-
   function codexThreadModelRequestState(method, params, result) {
     if (method === "send-cli-request-for-host" && params?.method) {
       return codexThreadModelRequestState(String(params.method), params.params, result);
@@ -24596,8 +24691,9 @@ ${key} = ${value}`]);
     if (!runtime) return null;
     if (runtime.status !== "ok") throw new Error(runtime.message || "读取上下文配置失败，请稍后重新发送");
     const model = codexThreadModelRequestState("", params).model || catalog.model;
-    const { threadId } = codexThreadModelRequestState("", params);
-    return codexThreadContextFromCatalog(runtime, threadId, model);
+    if (!Object.hasOwn(runtime.models, model)) return null;
+    const config = runtime.models[model];
+    return { model, config, effectiveWindow: runtime.effectiveWindows?.[model], signature: codexThreadContextSignature(config) };
   }
 
   async function prepareCodexThreadContextStart(method, params, hostId) {
@@ -24671,7 +24767,6 @@ ${key} = ${value}`]);
         return null;
       }
       if (!["idle", "notLoaded", "systemError"].includes(read.thread.status.type)) {
-        if (options?.contextOnly) return null;
         throw new Error("请先等待当前回复结束，再应用上下文配置");
       }
       // 新建线程的 rollout 要到首轮才写入；仅路径存在不代表可以卸载恢复。
@@ -24684,10 +24779,7 @@ ${key} = ${value}`]);
         return null;
       }
       const current = await originalSendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions);
-      if (!["idle", "systemError"].includes(current.thread.status.type)) {
-        if (options?.contextOnly) return null;
-        throw new Error("请先等待当前回复结束，再应用上下文配置");
-      }
+      if (!["idle", "systemError"].includes(current.thread.status.type)) throw new Error("请先等待当前回复结束，再应用上下文配置");
       let resumeParams = codexThreadReloadParams(threadId, current, { ...params, model: context.model });
       resumeParams.modelProvider = current.modelProvider;
       resumeParams.config = { ...resumeParams.config, ...context.config };
@@ -28097,16 +28189,23 @@ ${key} = ${value}`]);
   }
 
   function updateDeleteButtonOffsets() {
-    sessionRows().forEach((row) => {
+    const offsets = sessionRows().filter((row) => row.dataset.codexDeleteRow === "true").map((row) => {
+      let right;
       const hasArchiveConfirm = Array.from(row.querySelectorAll("button")).some((button) => {
-        const rect = button.getBoundingClientRect();
+        if (button.hasAttribute("data-codex-plus-row-action")) return false;
         const label = button.getAttribute("aria-label") || "";
+        if (/^(?:归档对话|置顶对话|Archive (?:chat|thread)|Pin (?:chat|thread))$/i.test(label)) return false;
         const text = (button.textContent || "").trim();
-        if (button.hasAttribute("data-codex-plus-row-action") || label === "归档对话" || label === "置顶对话") return false;
-        return text === "确认" || (text.length > 0 && rect.width > 0 && rect.width <= 36 && rect.x > row.getBoundingClientRect().right - 50);
+        if (!text) return false;
+        if (text === "确认") return true;
+        const rect = button.getBoundingClientRect();
+        return rect.width > 0 && rect.width <= 36 && rect.x > (right ??= row.getBoundingClientRect().right) - 50;
       });
-      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+      return [row, hasArchiveConfirm];
     });
+    for (const [row, hasArchiveConfirm] of offsets) {
+      row.classList.toggle("codex-archive-confirm-visible", hasArchiveConfirm);
+    }
   }
 
   /**
@@ -30508,7 +30607,7 @@ ${key} = ${value}`]);
     };
   }
 
-  function attachButton(row) {
+  function attachButton(row, pendingLayouts) {
     const ref = sessionRefFromRow(row);
     const uncreated = !ref.session_id && isClientNewThreadId(row.getAttribute("data-app-action-sidebar-thread-id"));
     const items = sessionRowActionItems().filter((item) => ref.session_id
@@ -30602,12 +30701,13 @@ ${key} = ${value}`]);
     // 先套上原生按钮外观再量布局，避免尺寸在测量后才变化。
     syncNativeSessionActionStyle(row);
     installNativeSessionActionStyleSync(row);
-    syncActionGroupLayout(row, group);
+    if (pendingLayouts) pendingLayouts.push({ row, group });
+    else syncActionGroupLayout(row, group);
   }
 
-  function tryAttachButton(row) {
+  function tryAttachButton(row, pendingLayouts) {
     try {
-      attachButton(row);
+      attachButton(row, pendingLayouts);
     } catch (error) {
       window.__codexSessionDeleteAttachButtonFailures = window.__codexSessionDeleteAttachButtonFailures || [];
       window.__codexSessionDeleteAttachButtonFailures.push(String(error?.stack || error));
@@ -32316,9 +32416,6 @@ ${key} = ${value}`]);
     if (!codexPlusServices.has("themes") && typeof codexPlusThemesService === "function") codexPlusProvideService("themes", codexPlusThemesService(), "builtin");
     if (!codexPlusServices.has("sessions")) codexPlusProvideService("sessions", codexPlusSessionsService(), "builtin");
     if (!codexPlusServices.has("sessionQuery")) codexPlusProvideService("sessionQuery", codexPlusSessionQueryService(), "builtin");
-    if (!codexPlusServices.has("codexpp.sessionContext") && typeof codexSessionContextService === "function") {
-      codexPlusProvideService("codexpp.sessionContext", codexSessionContextService(), "builtin");
-    }
     // 全局的多语言服务：写成 inject: ["locale"] 的拓展也能用（ctx.locale 是按实例自动撤销的同一套接口）。
     if (!codexPlusServices.has("locale")) {
       codexPlusProvideService("locale", Object.freeze({
@@ -33576,21 +33673,6 @@ ${key} = ${value}`]);
     return typeof codexPerModelContextEnabled === "function" && codexPerModelContextEnabled();
   }
 
-  function codexPlusRpcContextSendRequest(client, signal) {
-    return async (method, params, options) => {
-      signal?.throwIfAborted();
-      if (method === "thread/unsubscribe") {
-        await client.unsubscribeInactiveConversation(params.threadId);
-        signal?.throwIfAborted();
-        // 宿主方法会内部记录并吞掉失败；原始请求幂等，确保原生错误继续传回。
-      }
-      const result = method === "thread/resume" && params.config
-        ? await client.resumeThread(params) : await client.sendRequest(method, params, options);
-      signal?.throwIfAborted();
-      return result;
-    };
-  }
-
   function codexPlusRpcReceiverHost(port, expr) {
     let receivers = codexPlusRpcHostReceivers.get(port);
     if (expr[2][0] === "subscribe") {
@@ -34156,7 +34238,19 @@ ${key} = ${value}`]);
             (method, params, options) => client.sendRequest(method, params, options), client, signal);
         }
         if (!refreshContext) return nextFrame;
-        await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, codexPlusRpcContextSendRequest(client, signal),
+        const sendRequest = async (method, params, options) => {
+          signal?.throwIfAborted();
+          if (method === "thread/unsubscribe") {
+            await client.unsubscribeInactiveConversation(params.threadId);
+            signal?.throwIfAborted();
+            // 宿主方法会内部记录并吞掉失败；原始请求幂等，确保原生错误传回当前发送。
+          }
+          const result = method === "thread/resume" && params.config
+            ? await client.resumeThread(params) : await client.sendRequest(method, params, options);
+          signal?.throwIfAborted();
+          return result;
+        };
+        await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, sendRequest,
           "turn/start", decoded.start.request);
         signal?.throwIfAborted();
         return nextFrame;
@@ -37743,7 +37837,9 @@ ${key} = ${value}`]);
     // 已删会话的行过滤（会话删除）、对话宽度、滚动位置恢复也都是内置拓展经公开的 ctx.onScan 登记的步骤。
     runCodexPlusScanSteps();
     // 会话行的操作按钮组、归档页的行按钮是删除、导出与第三方拓展 rowAction 共用的宿主，留在内核里扫描。
-    sessionRows().forEach(tryAttachButton);
+    const layouts = [];
+    for (const row of sessionRows()) tryAttachButton(row, layouts);
+    syncActionGroupLayouts(layouts);
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     removeLegacyCodexServiceTierBadges();
@@ -39217,6 +39313,90 @@ ${key} = ${value}`]);
     return { hooks, warnings };
   }
 
+  /** 数一份 hooks 文档里的 handler 总数（提示用户层 hook 条数用）。 */
+  function codexPlusHooksEditorHandlerCount(doc) {
+    let count = 0;
+    for (const groups of Object.values(doc?.hooks || {})) {
+      for (const group of Array.isArray(groups) ? groups : []) {
+        count += Array.isArray(group?.hooks) ? group.hooks.length : 0;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * issue #3235：工作位置选 WSL 时 app-server 在 WSL 里运行，读的是 WSL 侧 ~/.codex；
+   * Codex++ 管理的用户层 hooks.json 在 Windows 侧 CODEX_HOME，hooks/list 因此一条都不回。
+   * 这不是 hook 丢了，不能静默空列表：Windows 侧用户层有 hook 而 app-server 一条都看不到时，
+   * 判定为两份 CODEX_HOME，返回用户层 hook 条数供提示。app-server 只要回出任何指向用户层
+   * 文件的 hook（sourcePath 与用户层文件路径一致），就证明两边同源，不提示。
+   * 复审修正：WSL 只在 Windows 上存在，非 Windows 平台不判定（app-server 拒加载非法
+   * handler、或别的原因导致空列表时不能妄断是两份 CODEX_HOME）。
+   */
+  function codexPlusHooksEditorHomeMismatch(files, listed, platform = codexPlusHooksEditorPlatform()) {
+    if (platform !== "windows") return 0;
+    const userFile = (Array.isArray(files) ? files : []).find((file) => file?.scope === "user");
+    if (!userFile?.exists || !userFile.text) return 0;
+    const parsed = codexPlusHooksEditorParse(userFile.text);
+    if (parsed.error || !parsed.doc) return 0;
+    const count = codexPlusHooksEditorHandlerCount(parsed.doc);
+    if (!count) return 0;
+    for (const hook of listed instanceof Map ? listed.values() : []) {
+      const source = typeof hook?.sourcePath === "string" ? hook.sourcePath : "";
+      if (source && (source === userFile.path || source === userFile.canonicalPath)) return 0;
+    }
+    return count;
+  }
+
+  /** Windows 风格路径：盘符（C:\）、UNC（\\…）或其正斜杠写法（//wsl.localhost/…）。 */
+  function codexPlusHooksEditorIsWindowsPath(path) {
+    return /^[a-zA-Z]:[/\\]/.test(path) || /^\\\\/.test(path) || /^\/\/[^/]/.test(path);
+  }
+
+  /** POSIX 风格路径：以单个 / 开头。 */
+  function codexPlusHooksEditorIsPosixPath(path) {
+    return path.startsWith("/") && !path.startsWith("//");
+  }
+
+  /**
+   * 当前工作位置是否真的在 WSL（纯函数，不凭猜）：平台是 Windows，且
+   *   - 用户层文件是 Windows 路径（Codex++ 管理的 Windows 侧 CODEX_HOME），并且
+   *   - app-server 回出的某个 sourcePath 是 POSIX 路径（Windows 宿主上 app-server
+   *     用的是 Windows 路径；只有跑在 WSL 里才会回 POSIX 路径），或者
+   *   - 某个项目层 root 本身是 POSIX 路径或 WSL UNC（\wsl.localhost\…、//wsl$/…），
+   *     即工作位置就在 WSL 文件系统里。
+   * app-server 一条都没回、也没有 WSL 风格的项目目录时无法确认，返回 false，提示用中性文案。
+   */
+  function codexPlusHooksEditorHomeMismatchWsl(files, listed, platform = codexPlusHooksEditorPlatform()) {
+    if (platform !== "windows") return false;
+    const fileList = Array.isArray(files) ? files : [];
+    const userFile = fileList.find((file) => file?.scope === "user");
+    if (!userFile || !codexPlusHooksEditorIsWindowsPath(String(userFile.path || ""))) return false;
+    for (const file of fileList) {
+      const root = String(file?.root || "");
+      if (root && (codexPlusHooksEditorIsPosixPath(root) || /wsl\.localhost|wsl\$/i.test(root))) return true;
+    }
+    for (const hook of listed instanceof Map ? listed.values() : []) {
+      const source = typeof hook?.sourcePath === "string" ? hook.sourcePath : "";
+      if (source && codexPlusHooksEditorIsPosixPath(source)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * wsl=true（已确认工作位置在 WSL）才断言两份 CODEX_HOME 并给软链指引；
+   * 其它情况（app-server 拒加载、原因不明）只中性陈述现象，不断言原因。
+   */
+  function codexPlusHooksEditorHomeMismatchMessage(helperHome, count, wsl = false) {
+    if (!wsl) {
+      return `Codex++ 用户层 hooks.json 里有 ${count} 条 hook，但当前 app-server 一条都看不到（app-server 没有读到这份用户层文件）。`
+        + ` 请检查 hook 配置是否合法、app-server 是否加载成功；app-server 若在使用另一份 CODEX_HOME，请直接在它使用的 CODEX_HOME 里配置 hooks。`;
+    }
+    return `Codex++ 用户层 hooks.json 里有 ${count} 条 hook，但当前 app-server 一条都看不到。`
+      + ` 工作位置为 WSL 时 app-server 使用 WSL 内的 ~/.codex，与 Codex++ 管理的 ${helperHome || "Windows 侧 CODEX_HOME"} 不是同一份 CODEX_HOME。`
+      + ` 可在 WSL 中把 ~/.codex 软链到共享目录（例如 /mnt/<盘>/Codex），或在此工作位置单独配置 hooks。`;
+  }
+
   async function codexPlusHooksEditorReadState(client) {
     const result = await client.sendRequest("config/read", {});
     const state = result?.config?.hooks?.state;
@@ -39406,6 +39586,7 @@ ${key} = ${value}`]);
       dirty: false,
       listed: new Map(),
       warnings: [],
+      reportedHomeMismatch: "",
       hookState: {},
       editing: null,
       testing: null,
@@ -39502,6 +39683,22 @@ ${key} = ${value}`]);
       ]);
       state.listed = hooks;
       state.warnings = warnings;
+      // issue #3235：WSL 工作位置下 app-server 用的是 WSL 侧 CODEX_HOME，用户层 hook 会
+      // 静默消失。这里明确提示并引导共享/单独配置，而不是给一个空列表。只在 Windows 上、
+      // 且能确认工作位置确实在 WSL 时才断言两份 CODEX_HOME；确认不了就用中性文案。
+      const mismatchHooks = codexPlusHooksEditorHomeMismatch(state.files, state.listed);
+      if (mismatchHooks) {
+        const mismatchWsl = codexPlusHooksEditorHomeMismatchWsl(state.files, state.listed);
+        state.warnings.unshift(codexPlusHooksEditorHomeMismatchMessage(state.codexHome, mismatchHooks, mismatchWsl));
+        // refreshListed 会被保存、信任、写开关连续触发多次，同一份 mismatch 状态只上报一次。
+        const mismatchKey = `${mismatchHooks}:${mismatchWsl}`;
+        if (state.reportedHomeMismatch !== mismatchKey && typeof sendCodexPlusDiagnostic === "function") {
+          state.reportedHomeMismatch = mismatchKey;
+          sendCodexPlusDiagnostic("hooks_editor_app_server_home_mismatch", { hookCount: mismatchHooks });
+        }
+      } else {
+        state.reportedHomeMismatch = "";
+      }
       state.hookState = hookState;
     };
 
@@ -43545,9 +43742,23 @@ ${key} = ${value}`]);
       !Array.from(mutation.removedNodes).some((node) => node.nodeType === 1 && isScanRelevantNode(node));
   }
 
+  function isVirtualizedTurnMutation({ type, target, addedNodes, removedNodes, attributeName }) {
+    if (!target.closest?.(".thread-scroll-container")) return false;
+    const turn = "[data-measured-turn], [data-virtualized-turn], [data-turn-key]";
+    const withinTurn = target.closest(turn);
+    if (type !== "childList") return !!withinTurn && attributeName !== "data-above-composer-conversation-id";
+    const nodes = [...addedNodes, ...removedNodes].filter((node) => node.nodeType === 1);
+    if (!withinTurn && (!nodes.length || !nodes.every((node) => node.matches(turn)))) return false;
+    // 审批与嵌入式输入区仍可能需要全局注册的动作。
+    const controls = "[data-codex-approval-surface], .composer-footer, [data-above-composer-conversation-id]";
+    return !target.closest(controls) && !nodes.some((node) => node.matches(controls) || node.querySelector(controls));
+  }
+
   function shouldScheduleScan(mutations) {
     if (!mutations) return true;
     return mutations.some((mutation) => {
+      // 挂卸原生回合和展开其输出不需要再扫侧栏；消息插槽有自己的对话区观察器。
+      if (isVirtualizedTurnMutation(mutation)) return false;
       if (isChatContentMutation(mutation)) return false;
       const target = mutation.target;
       if (isExtensionUiNode(target)) return false;
@@ -43749,6 +43960,7 @@ ${key} = ${value}`]);
   // 用户脚本的注入晚于本脚本，不会撞上这个时间点。
   installCodexPlusBuiltinServices();
   window.codexPlus = buildCodexPlusExtensionApi();
+  window.dispatchEvent(new Event("codex-plus-extension-api-ready"));
   // 同页重复注入：已经在跑的用户脚本还挂在上一代内核上，请求一次重载把它们搬过来（只在不会整页刷新时才做，
   // 见 91-extension-runtime.js 的 codexPlusRehomeUserScriptsAfterReinjection）。请求是异步发的，这里不等。
   codexPlusRehomeUserScriptsAfterReinjection();

@@ -47,7 +47,6 @@ impl TestSettings {
                 auto_review_model: auto_review_model.to_string(),
                 ..RelayProfile::default()
             }],
-            protocol_proxy_auto_retry: false,
             ..BackendSettings::default()
         };
         // None 表示沿用默认值，用来守住「默认关闭」。

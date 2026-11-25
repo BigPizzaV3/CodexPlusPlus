@@ -365,7 +365,21 @@ pub fn codex_binding_models(gateway: &GatewaySettings, binding: &AgentBinding) -
 /// 绑定里自己声明过这个裸名时它本来就公开列着，不算别名。
 pub fn codex_pinned_default_alias(gateway: &GatewaySettings, binding: &AgentBinding) -> Option<String> {
     let relays = binding_pool_relays(gateway, binding);
-    let (relay, upstream) = qualified_in(&relays, &binding_default_model(gateway, binding))?;
+    let default = binding_default_model(gateway, binding);
+    // 上游自己同时公布 `<本家 id>/模型` 与裸名两份写法时（#3268），整串已被当模型名声明，
+    // [`qualified_in`] 会拒绝：前缀正是声明它的那家、那家也声明了裸名时，仍按固定默认别名处理。
+    let (relay, upstream) = match qualified_in(&relays, &default) {
+        Some(found) => found,
+        None => {
+            let (prefix, rest) = default.split_once('/')?;
+            let relay = relays
+                .iter()
+                .copied()
+                .find(|relay| relay.id.eq_ignore_ascii_case(prefix.trim()))?;
+            let upstream = rest.trim();
+            (relay, upstream.to_string())
+        }
+    };
     let model = chat_models(relay)
         .into_iter()
         .find(|model| model.eq_ignore_ascii_case(&upstream))?;
@@ -403,11 +417,29 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
     let unlisted = unlisted_members(gateway);
     for relay in &relays {
         let mut block = Vec::new();
+        // 上游列表里 `<本家 id>/<模型>` 与裸 `<模型>` 常是同一个模型的两份写法（网关类上游会
+        // 同时公布两种），都列出来客户端选择器里就出现重复的模型名（#3268）。按剥掉本家前缀
+        // 后的模型名去重，保留先出现的那份。
+        let self_prefix = format!("{}/", relay.id);
+        let mut identities: Vec<String> = Vec::new();
+        let mut fresh_entry = |entry: &str, block: &mut Vec<String>, identities: &mut Vec<String>| {
+            let identity = entry
+                .strip_prefix(self_prefix.as_str())
+                .unwrap_or(entry)
+                .to_ascii_lowercase();
+            if identities.iter().any(|known| *known == identity) {
+                return;
+            }
+            if fresh(entry) {
+                identities.push(identity);
+                block.push(entry.to_string());
+            }
+        };
         for model in chat_models(relay) {
             if is_disabled_group_model(gateway, &model) {
                 let pinned = format!("{}/{model}", relay.id);
-                if !unlisted.contains(&pinned.to_ascii_lowercase()) && fresh(&pinned) {
-                    block.push(pinned);
+                if !unlisted.contains(&pinned.to_ascii_lowercase()) {
+                    fresh_entry(&pinned, &mut block, &mut identities);
                 }
                 continue;
             }
@@ -421,8 +453,8 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
                 } else {
                     format!("{}/{model}", relay.id)
                 };
-                if !unlisted.contains(&pinned.to_ascii_lowercase()) && fresh(&pinned) {
-                    block.push(pinned);
+                if !unlisted.contains(&pinned.to_ascii_lowercase()) {
+                    fresh_entry(&pinned, &mut block, &mut identities);
                 }
                 if !shared
                     .iter()
@@ -450,9 +482,7 @@ fn codex_pool_blocks(gateway: &GatewaySettings, binding: &AgentBinding) -> Vec<V
                     }
                     _ => model,
                 };
-                if fresh(&entry) {
-                    block.push(entry);
-                }
+                fresh_entry(&entry, &mut block, &mut identities);
             }
         }
         blocks.push(block);
@@ -1997,6 +2027,8 @@ mod tests {
 
     fn provider(id: &str, models: &str) -> GatewayProvider {
         GatewayProvider {
+            linked_codex_relay: None,
+            owner: String::new(),
             enabled: true,
             source: String::new(),
             price: None,
@@ -3535,6 +3567,54 @@ mod tests {
         let catalog = crate::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
         let metadata: serde_json::Value = serde_json::from_str(&catalog.model_metadata).unwrap();
         assert!(metadata["kimi-k3"].get("visibility").is_none());
+    }
+
+    #[test]
+    fn codex_pool_dedupes_self_qualified_alias_of_a_single_provider_model() {
+        // #3268：上游同时公布裸名和 `<本家 id>/模型` 两份写法时，目录里只保留一份，
+        // 客户端选择器不再出现重复的模型名；只有带前缀写法的模型照常列出。
+        let mut gateway = GatewaySettings::default();
+        gateway.providers.push(provider(
+            "krill",
+            "gpt-6.1-terra\nkrill/gpt-6.1-terra\nkrill/gpt-6.2-sol",
+        ));
+        gateway.bindings.insert(
+            "claude".to_string(),
+            AgentBinding {
+                enabled: true,
+                model: "krill/gpt-6.1-terra".to_string(),
+                ..AgentBinding::default()
+            },
+        );
+        let binding = gateway.binding(&ToolId::Claude).unwrap().clone();
+        let pool = codex_pool_models(&gateway, &binding);
+        assert_eq!(
+            pool.iter()
+                .filter(|model| model.eq_ignore_ascii_case("gpt-6.1-terra"))
+                .count(),
+            1
+        );
+        assert!(!pool
+            .iter()
+            .any(|model| model.eq_ignore_ascii_case("krill/gpt-6.1-terra")));
+        assert!(pool.iter().any(|model| model == "krill/gpt-6.2-sol"));
+        // 目录里裸名那份按固定默认别名规则隐藏，可见的仍只有一份（#3179 语义不变）。
+        let catalog = crate::gateway::apply::codex_gateway_model_catalog(&gateway, &binding);
+        let listed: Vec<String> = catalog
+            .model_list
+            .lines()
+            .map(|line| crate::model_suffix::parse_model_suffix(line).0)
+            .collect();
+        assert_eq!(
+            listed
+                .iter()
+                .filter(|model| model.eq_ignore_ascii_case("gpt-6.1-terra"))
+                .count(),
+            1
+        );
+        let metadata: serde_json::Value = serde_json::from_str(&catalog.model_metadata).unwrap();
+        assert_eq!(metadata["gpt-6.1-terra"]["visibility"], "hide");
+        assert_eq!(routed(&gateway, "gpt-6.1-terra"), vec![pair("krill", "gpt-6.1-terra")]);
     }
 
     #[test]

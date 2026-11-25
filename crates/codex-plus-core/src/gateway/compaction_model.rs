@@ -235,7 +235,6 @@ pub async fn open(
                 user_agent: request.user_agent,
                 session_headers: request.session_headers,
                 live_request_id: request.live_request_id,
-                auto_retry: request.auto_retry,
                 is_stream: request.is_stream,
                 upstream_path: request.upstream_path,
                 client: request.client,

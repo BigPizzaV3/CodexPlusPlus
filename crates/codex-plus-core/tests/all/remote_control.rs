@@ -287,6 +287,34 @@ impl Drop for TempState {
 }
 
 #[test]
+fn independent_weixin_focus_authorization_does_not_keep_the_web_service_alive() {
+    use codex_plus_core::remote_control as remote;
+    let _guard = crate::common::global_state_lock();
+    let temp = TempState::new();
+    std::fs::write(temp.dir.path().join("remote-control.json"), r#"{"enabled":false,"port":0}"#).unwrap();
+    assert_eq!(remote::status()["weixinFocusEnabled"], false, "旧配置默认不授权");
+    assert!(remote::dispatch("setWeixinFocus", &json!({"enabled":"true"})).is_err());
+
+    let state = remote::dispatch("setWeixinFocus", &json!({"enabled":true})).unwrap();
+    assert_eq!(state["enabled"], false);
+    assert_eq!(state["running"], false);
+    assert_eq!(state["weixinFocusEnabled"], true);
+
+    remote::set_enabled(true).unwrap();
+    let port = remote::running_port().unwrap();
+    let web = std::sync::Arc::downgrade(&remote::hosted_service().unwrap().0);
+    let closed = remote::set_enabled(false).unwrap();
+    assert_eq!(closed["running"], false);
+    assert_eq!(closed["weixinFocusEnabled"], true);
+    assert!(remote::hosted_service().is_none() && web.upgrade().is_none());
+    assert!(std::net::TcpListener::bind(("127.0.0.1", port)).is_ok());
+
+    let state = remote::dispatch("setWeixinFocus", &json!({"enabled":false})).unwrap();
+    assert_eq!(state["weixinFocusEnabled"], false);
+    assert!(temp.state_text().contains("\"weixinFocusEnabled\": false"));
+}
+
+#[test]
 fn pairing_issues_device_tokens_that_can_be_revoked() {
     use codex_plus_core::remote_control::devices::{self, Principal, Role};
     let _guard = crate::common::global_state_lock();

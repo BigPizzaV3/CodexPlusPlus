@@ -579,35 +579,6 @@
   width: 170px;
 }
 
-/* 状态码一行放不下：说明在上，编辑区在下 */
-
-.gw-retry-codes {
-  display: flex !important;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px !important;
-}
-
-.gw-retry-code {
-  cursor: pointer;
-}
-
-.gw-retry-code:hover {
-  color: var(--gw-err);
-}
-
-.gw-retry-input {
-  width: 140px;
-  height: 28px;
-  padding: 0 10px;
-  border: 1px solid hsl(var(--input));
-  border-radius: 7px;
-  background: hsl(var(--background));
-  color: var(--gw-ink);
-  font: inherit;
-  font-size: 12.5px;
-}
-
 @media (max-width: 760px) {
   .gw-tabs button {
     padding: 0 10px;

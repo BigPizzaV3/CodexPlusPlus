@@ -23,7 +23,7 @@ use crate::gateway::subscriptions::{ChatStream, fail};
 
 /// 用户主目录。
 pub fn home() -> PathBuf {
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."))

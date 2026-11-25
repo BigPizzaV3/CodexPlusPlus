@@ -109,7 +109,8 @@ test("默认模型带窗口后缀时仍勾选对应供应商，而非同名供�
     const section = elements(render("a/example-model", "example-model")).find((element) => element.props?.["data-section"] === key);
     const heading = elements(section).find((element) => element.props?.className === "gw-mp-heading-toggle");
     assert.ok(heading, key);
-    heading.props.onClick();
+    // 选中的那一组默认已展开（#3263），只点开还折叠着的。
+    if (!heading.props["aria-expanded"]) heading.props.onClick();
   }
   const selected = (model: string, upstreamModel?: string, providerRemoved = false, data = payload, ownModels?: OwnModels) =>
     elements(render(model, upstreamModel, providerRemoved, data, ownModels))

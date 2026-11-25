@@ -63,7 +63,7 @@ impl AgentEnv {
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .map(PathBuf::from)
-            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
+            .or_else(|| crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()))
             .unwrap_or_else(|| PathBuf::from("."));
         Self {
             home,

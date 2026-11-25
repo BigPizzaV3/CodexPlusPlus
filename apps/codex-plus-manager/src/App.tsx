@@ -3500,7 +3500,7 @@ export function App() {
               form={settingsForm}
               actions={actions}
               onOpenGateway={() => void navigate("gatewayProviders")}
-              onUseShared={(model) => void connectCodexGateway(model)}
+              onConnectGateway={() => void connectCodexGateway()}
               sharedConnecting={codexConnecting}
               onDisconnectGateway={(then) => {
                 legacyDisconnectThen.current = then ?? null;
@@ -3558,7 +3558,7 @@ export function App() {
           {/* Claude 的供应商：从「Desktop 增强」的页签里移出来，和 Codex 的「连接与供应商」一样单独一页。 */}
           {route === "claudeProviders" ? (
             <div className="claude-localization-page cx-page">
-              <ClaudeProviders notify={actions.showMessage} onManage={() => void navigate("gatewayProviders")} />
+              <ClaudeProviders notify={actions.showMessage} onManage={() => void navigate("gatewayProviders")} onManageGroups={() => void navigate("gatewayRouting")} />
             </div>
           ) : null}
           {/* Codex 页签是完整的会话管理，其余页签是各 Agent 的会话列表。 */}

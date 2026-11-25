@@ -511,7 +511,7 @@ dependencies = [
 [[package]]
 name = "claude-local"
 version = "0.1.14"
-source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=b8335af5cadd34cc7d9c1117f47947a86c8e986e#b8335af5cadd34cc7d9c1117f47947a86c8e986e"
+source = "git+https://github.com/BigPizzaV3/ClaudeMom?rev=a8984251001610f239dead1520d03df218b9f150#a8984251001610f239dead1520d03df218b9f150"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -539,6 +539,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "claude-local",
+ "ctor",
  "directories",
  "ecb",
  "flate2",
@@ -587,6 +588,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "codex-plus-core",
+ "ctor",
  "fs2",
  "rusqlite",
  "serde",
@@ -608,6 +610,7 @@ dependencies = [
  "async-trait",
  "codex-plus-core",
  "codex-plus-data",
+ "ctor",
  "directories",
  "serde_json",
  "tempfile",
@@ -624,6 +627,7 @@ dependencies = [
  "codex-plus-core",
  "codex-plus-data",
  "codex-plus-launcher",
+ "ctor",
  "directories",
  "rusqlite",
  "serde",

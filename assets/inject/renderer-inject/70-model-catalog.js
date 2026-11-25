@@ -40,6 +40,7 @@
     patchStatsig: patchStatsigModelDynamicConfig,
     recordRequest: recordModelListRequest,
     patchMcp: patchMcpModelResponseData,
+    refresh: () => loadCodexModelCatalog(true),
   };
   window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
   let codexModelWhitelistRefreshTimer = 0;
@@ -279,10 +280,7 @@
         codexModelCatalogLoadedAt = codexModelCatalogRuntime.loadedAt = Date.now();
         codexModelCatalogRuntime.retryAt = 0;
         codexModelCatalogRuntime.failure = null;
-        if (changed) {
-          refreshCodexNativeModelQueries();
-          if (typeof codexPlusEmitExtensionEvent === "function") codexPlusEmitExtensionEvent("session-context/changed");
-        }
+        if (changed) refreshCodexNativeModelQueries();
         renderCodexPlusMenu();
         syncCodexPlusGroupModelQueries();
         scheduleCodexModelWhitelistRefresh();
@@ -960,6 +958,15 @@
     }, true);
   }
 
+  if (!window.__codexPlusModelSelectionRefreshInstalled) {
+    window.__codexPlusModelSelectionRefreshInstalled = true;
+    window.addEventListener("click", (event) => {
+      if (event.target?.closest?.('[data-model-picker-view] [role="menuitemradio"]')) {
+        void window.__codexPlusModelCatalogRuntime.refresh();
+      }
+    }, true);
+  }
+
   function modelResponseHasPagination(value) {
     return !!value && typeof value === "object"
       && ("nextCursor" in value || "next_cursor" in value);
@@ -1056,85 +1063,6 @@
       && (!!codexModelCatalog.runtimeContext || ["pureApi", "aggregate"].includes(profile?.relayMode));
   }
 
-  function codexThreadContextOverrideKey(threadId, model) {
-    return `codex-plus:thread-context:${JSON.stringify([threadId, model])}`;
-  }
-
-  function codexThreadContextFromCatalog(runtime, threadId, model) {
-    if (runtime?.status !== "ok" || !Object.hasOwn(runtime.models, model)) return null;
-    const defaults = runtime.models[model];
-    const defaultWindow = defaults.model_context_window;
-    const defaultEffective = runtime.effectiveWindows?.[model];
-    const saved = threadId ? Number(window.localStorage?.getItem(codexThreadContextOverrideKey(threadId, model))) : 0;
-    const override = Number.isSafeInteger(saved) && saved > 0 ? saved : null;
-    const config = override === null ? defaults : {
-      model_context_window: override,
-      model_auto_compact_token_limit: Math.min(override, Math.max(1,
-        Math.floor(override * (defaults.model_auto_compact_token_limit / defaultWindow)))),
-    };
-    const effectiveWindow = override === null ? defaultEffective : defaultEffective === undefined ? undefined
-      : Math.floor(override * Math.round(defaultEffective / defaultWindow * 100) / 100);
-    return { model, config, defaultWindow, override, effectiveWindow, signature: codexThreadContextSignature(config) };
-  }
-
-  function codexSessionContextSelection() {
-    const composer = [...document.querySelectorAll("[data-codex-composer-root]")]
-      .find((node) => node.getBoundingClientRect().width > 0);
-    const trigger = [...(composer?.querySelectorAll('[data-composer-navigation-target="reasoning"]') || [])]
-      .find((node) => node.getBoundingClientRect().width > 0);
-    const label = trigger?.querySelector('[data-tooltip-overflow-target] span.truncate.whitespace-nowrap')?.textContent.trim();
-    if (!label) return null;
-    const runtime = codexModelCatalog.runtimeContext;
-    if (runtime?.status !== "ok") return null;
-    const models = Object.keys(runtime.models);
-    const exact = models.includes(label) ? [label]
-      : models.filter((model) => codexPlusModelMetadata(model)?.displayName === label);
-    const labelKey = codexPlusModelPickerNativeLabelKey(label);
-    const matches = exact.length ? exact : models.filter((model) => {
-      const name = codexPlusModelMetadata(model)?.displayName || model;
-      return codexPlusModelPickerNativeLabelKey(name) === labelKey;
-    });
-    if (matches.length !== 1) return null;
-    const selected = document.querySelector('[data-app-action-sidebar-thread-active="true"]');
-    const host = selected?.getAttribute("data-app-action-sidebar-thread-host-id");
-    if (host && host !== "local") return null;
-    const threadId = composer.getAttribute("data-composer-placement") === "home" ? "" : codexPlusCurrentSessionId();
-    const context = codexThreadContextFromCatalog(runtime, threadId, matches[0]);
-    return { ...context, threadId, label };
-  }
-
-  function codexSessionContextService() {
-    return Object.freeze({
-      read: codexSessionContextSelection,
-      async refresh() {
-        const catalog = await loadCodexModelCatalog(true);
-        if (catalog.status === "failed") throw new Error(catalog.message);
-        if (catalog.runtimeContext && catalog.runtimeContext.status !== "ok") {
-          throw new Error(catalog.runtimeContext.message);
-        }
-        return codexSessionContextSelection();
-      },
-      async set(threadId, model, value) {
-        const selected = codexSessionContextSelection();
-        if (!threadId || selected?.threadId !== threadId || selected.model !== model) {
-          throw new Error("会话或模型已切换，请重新打开上下文设置");
-        }
-        if (value !== null && (!Number.isSafeInteger(value) || value < 1)) {
-          throw new Error("上下文窗口必须是正整数");
-        }
-        const key = codexThreadContextOverrideKey(threadId, model);
-        if (value === null) window.localStorage.removeItem(key);
-        else window.localStorage.setItem(key, String(value));
-        codexPlusEmitExtensionEvent("session-context/changed");
-        return await codexPlusRpcSerializeTurn(threadId, async () => {
-          const client = await codexPlusAppServerClient("local");
-          return await refreshCodexThreadModelBeforeTurn({ hostId: "local" }, codexPlusRpcContextSendRequest(client),
-            "turn/start", { threadId, model }, { contextOnly: true });
-        });
-      },
-    });
-  }
-
   function codexThreadModelRequestState(method, params, result) {
     if (method === "send-cli-request-for-host" && params?.method) {
       return codexThreadModelRequestState(String(params.method), params.params, result);
@@ -1193,8 +1121,9 @@
     if (!runtime) return null;
     if (runtime.status !== "ok") throw new Error(runtime.message || "读取上下文配置失败，请稍后重新发送");
     const model = codexThreadModelRequestState("", params).model || catalog.model;
-    const { threadId } = codexThreadModelRequestState("", params);
-    return codexThreadContextFromCatalog(runtime, threadId, model);
+    if (!Object.hasOwn(runtime.models, model)) return null;
+    const config = runtime.models[model];
+    return { model, config, effectiveWindow: runtime.effectiveWindows?.[model], signature: codexThreadContextSignature(config) };
   }
 
   async function prepareCodexThreadContextStart(method, params, hostId) {
@@ -1268,7 +1197,6 @@
         return null;
       }
       if (!["idle", "notLoaded", "systemError"].includes(read.thread.status.type)) {
-        if (options?.contextOnly) return null;
         throw new Error("请先等待当前回复结束，再应用上下文配置");
       }
       // 新建线程的 rollout 要到首轮才写入；仅路径存在不代表可以卸载恢复。
@@ -1281,10 +1209,7 @@
         return null;
       }
       const current = await originalSendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions);
-      if (!["idle", "systemError"].includes(current.thread.status.type)) {
-        if (options?.contextOnly) return null;
-        throw new Error("请先等待当前回复结束，再应用上下文配置");
-      }
+      if (!["idle", "systemError"].includes(current.thread.status.type)) throw new Error("请先等待当前回复结束，再应用上下文配置");
       let resumeParams = codexThreadReloadParams(threadId, current, { ...params, model: context.model });
       resumeParams.modelProvider = current.modelProvider;
       resumeParams.config = { ...resumeParams.config, ...context.config };

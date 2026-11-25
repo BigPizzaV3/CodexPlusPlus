@@ -76,6 +76,11 @@ pub const GATEWAY_PAGE_COMMANDS: &[&str] = &[
     "preview_gateway_disconnect",
     "disable_gateway_binding",
     "disable_gateway_binding_full_switch",
+    // 聚合时每家一个开关：只改 Codex 绑定的排除名单（见 gateway_command_allowed）。
+    "set_gateway_pool_member",
+    // 「Codex 登录身份」：ChatGPT 账号 / 本地账号（API Key 解锁）/ 不登录，和管理器同一个命令。
+    "get_native_auth_state",
+    "set_codex_login_identity",
 ];
 
 const GATEWAY_AGENT_COMMANDS: &[&str] = &[
@@ -94,6 +99,12 @@ pub fn gateway_command_allowed(command: &str, args: &Value) -> Result<(), String
         && args.get("agent").and_then(Value::as_str) != Some(ToolId::Codex.as_str())
     {
         return Err("Codex 页面只能接入或断开 Codex 自己的本地服务连接".to_string());
+    }
+    if command == "set_gateway_pool_member"
+        && args.get("agents").and_then(Value::as_array).map(Vec::as_slice)
+            != Some(&[Value::String(ToolId::Codex.as_str().to_string())][..])
+    {
+        return Err("Codex 页面只能改 Codex 自己用哪些供应商".to_string());
     }
     Ok(())
 }

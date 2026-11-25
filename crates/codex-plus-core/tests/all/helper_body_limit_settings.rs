@@ -2,7 +2,7 @@
 //
 // 背景：旧默认 32 MiB 会让 1M 上下文的长会话（请求体 ~33 MB+ 且仍在增长）直接
 // 收到 413 并中断对话，因此默认值改为 128 MiB，并提供 32~512 MiB 的设置项。
-// 与 proxy_auto_retry_settings.rs 一样，这里同时覆盖 `store.save()`（管理器整份保存）
+// 这里同时覆盖 `store.save()`（管理器整份保存）
 // 和 `store.update()`（`/settings/set` 部分更新白名单）：漏登记
 // merge_known_setting_fields 的键会 HTTP 200 但值不变，必须由测试守住。
 use codex_plus_core::settings::{BackendSettings, SettingsStore};

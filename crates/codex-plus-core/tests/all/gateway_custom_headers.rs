@@ -206,7 +206,6 @@ async fn gateway_requests_send_custom_headers() {
             user_agent: Some("h3075-test"),
             session_headers: ProxySessionHeaders::default(),
             live_request_id: None,
-            auto_retry: false,
             is_stream: false,
             upstream_path: "/responses",
             client: None,

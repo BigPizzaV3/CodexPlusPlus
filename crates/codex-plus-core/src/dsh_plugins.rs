@@ -400,7 +400,7 @@ pub fn parse_source(input: &str) -> anyhow::Result<PluginSource> {
         bail!("来源过长或包含控制字符");
     }
     if let Some(rest) = text.strip_prefix("~/") {
-        let home = directories::BaseDirs::new()
+        let home = crate::user_dirs::BaseDirs::new()
             .context("无法定位用户目录")?
             .home_dir()
             .to_path_buf();
@@ -559,7 +559,7 @@ pub fn locate_node() -> Option<PathBuf> {
         candidates.push(PathBuf::from(
             "/Applications/Codex.app/Contents/Resources/cua_node/bin/node",
         ));
-        if let Some(base) = directories::BaseDirs::new() {
+        if let Some(base) = crate::user_dirs::BaseDirs::new() {
             candidates.push(
                 base.home_dir()
                     .join("Applications/ChatGPT.app/Contents/Resources/cua_node/bin/node"),
@@ -582,7 +582,7 @@ pub fn locate_program(name: &str) -> Option<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| std::env::split_paths(&path).collect())
         .unwrap_or_default();
-    if let Some(base) = directories::BaseDirs::new() {
+    if let Some(base) = crate::user_dirs::BaseDirs::new() {
         for extra in [".local/bin", ".volta/bin", ".npm-global/bin", ".bun/bin"] {
             dirs.push(base.home_dir().join(extra));
         }

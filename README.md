@@ -152,7 +152,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 | Agent | Codex++ 能做什么 |
 | --- | --- |
-| **Codex 桌面版** | 经网关或直连接入供应商、协议转换、请求避震、会话管理、界面增强、多开、拓展与桌宠 |
+| **Codex 桌面版** | 经网关或直连接入供应商、协议转换、会话管理、界面增强、多开、拓展与桌宠 |
 | **Claude Code** | 经网关接入任意协议的供应商（Anthropic 请求在网关里转成 Chat / Responses）、接入 Computer Use |
 | **Claude Desktop** | 增强版（中文界面、语音输入、Computer Use）、接入 Computer Use |
 | **Grok CLI** | 经网关接入供应商池，可用 SuperGrok 订阅 |
@@ -289,10 +289,6 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 <p align="center">
   <img src="docs/images/readme-preview/usage-requests.webp" alt="请求日志：进行中的请求、自动重试、429 限流后换下一家，以及输入、输出、缓存 token 与费用" width="100%">
-</p>
-
-<p align="center">
-  <img src="docs/images/readme-preview/request-status-auto-retry.png" alt="请求状态条：输入框上方显示正在重试第 2 次、模型 gpt-6.1-sol、已用 18 秒、第 3 次尝试，以及上次失败原因 server_is_overloaded" width="100%">
 </p>
 
 ### Computer Use：把 Codex 的桌面控制借给其他 Agent

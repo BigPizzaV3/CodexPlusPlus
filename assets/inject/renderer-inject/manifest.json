@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3768
+      "lines": 3783
     },
     {
       "name": "20-menu.js",
@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 3428
+      "lines": 3422
     },
     {
       "name": "41-extension-detail.js",
@@ -73,22 +73,22 @@
     {
       "name": "43-provider-page.js",
       "description": "左侧图标栏「供应商」页：在 Codex 里增删改切供应商，经 /providers/* 走管理器的保存与切换",
-      "lines": 1330
+      "lines": 1339
     },
     {
       "name": "44-provider-gateway.js",
       "description": "「供应商」页的网关页签：在 Codex 里管理网关供应商池、接入 / 断开网关（经 /providers/gateway 走管理器的网关命令）",
-      "lines": 580
+      "lines": 720
     },
     {
       "name": "45-remote-control-page.js",
       "description": "左侧图标栏「远程控制」页：在 Codex 里开关远程控制与局域网访问、给手机配对、管理设备（经 /remote-control 走管理器托管的服务）",
-      "lines": 528
+      "lines": 533
     },
     {
       "name": "45-weixin-connect-page.js",
       "description": "左侧图标栏「微信连接」页：在 Codex 里扫码登录、启停微信连接、改常用设置（经 /weixin-connect 走管理器登记的宿主路由，与管理器微信页共用命令）",
-      "lines": 686
+      "lines": 690
     },
     {
       "name": "46-service-settings.js",
@@ -118,7 +118,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1872
+      "lines": 1797
     },
     {
       "name": "71-model-picker-groups.js",
@@ -128,7 +128,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 680
+      "lines": 687
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -168,7 +168,7 @@
     {
       "name": "90-action-groups.js",
       "description": "会话行操作按钮布局、更多菜单、工具提示",
-      "lines": 1114
+      "lines": 1115
     },
     {
       "name": "91-extension-api.js",
@@ -178,12 +178,12 @@
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1616
+      "lines": 1613
     },
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 1137
+      "lines": 1134
     },
     {
       "name": "92-extension-host.js",
@@ -213,7 +213,7 @@
     {
       "name": "95-conversation-view.js",
       "description": "会话视图运行时、官方用量策略重写、扫描主循环",
-      "lines": 684
+      "lines": 686
     },
     {
       "name": "96-feature-lab.js",
@@ -223,7 +223,7 @@
     {
       "name": "96-hooks-editor.js",
       "description": "内置拓展 Hooks 编辑器：hooks.json 的模板新建、编辑、启停、信任与试运行",
-      "lines": 1217
+      "lines": 1318
     },
     {
       "name": "96-shell-command.js",
@@ -268,7 +268,7 @@
     {
       "name": "98-scan-schedule.js",
       "description": "扫描相关性判定与调度，启动重试",
-      "lines": 183
+      "lines": 197
     },
     {
       "name": "98-avatar-overlay-layout.js",
@@ -278,7 +278,7 @@
     {
       "name": "99-startup.js",
       "description": "启动序列：resize 处理、MutationObserver 与事件绑定",
-      "lines": 49
+      "lines": 50
     },
     {
       "name": "99-tail.js",

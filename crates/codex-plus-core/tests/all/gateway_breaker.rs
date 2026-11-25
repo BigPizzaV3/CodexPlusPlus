@@ -93,6 +93,8 @@ async fn mock_upstream(failures: usize) -> (String, Arc<AtomicUsize>) {
 
 fn provider(id: &str, base_url: &str) -> GatewayProvider {
     GatewayProvider {
+        linked_codex_relay: None,
+        owner: String::new(),
         enabled: true,
         source: String::new(),
         price: None,
@@ -164,7 +166,6 @@ async fn send(plan: &RoutePlan) -> anyhow::Result<GatewayOutcome> {
                 client_identity: &[],
             },
             live_request_id: None,
-            auto_retry: false,
             is_stream: true,
             upstream_path: "/responses",
             client: None,

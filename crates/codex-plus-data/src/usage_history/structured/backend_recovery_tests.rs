@@ -45,11 +45,13 @@ fn legacy_placeholder_keys_restore_without_unrejecting_real_conflicts() {
                 attempts: Some(1),
                 auto_retries: Some(0),
                 final_response_evidence: None,
+                final_response_id: None,
                 agent: String::new(),
                 usage: Some(RequestEvidenceUsage {
                     input_tokens: Some(100),
                     output_tokens: Some(10),
                     cached_tokens: Some(20),
+                    cached_tokens_known: None,
                 }),
             };
             let mut saved = VerifiedAttribution {

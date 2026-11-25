@@ -365,7 +365,7 @@
     };
   }
 
-  function attachButton(row) {
+  function attachButton(row, pendingLayouts) {
     const ref = sessionRefFromRow(row);
     const uncreated = !ref.session_id && isClientNewThreadId(row.getAttribute("data-app-action-sidebar-thread-id"));
     const items = sessionRowActionItems().filter((item) => ref.session_id
@@ -459,12 +459,13 @@
     // 先套上原生按钮外观再量布局，避免尺寸在测量后才变化。
     syncNativeSessionActionStyle(row);
     installNativeSessionActionStyleSync(row);
-    syncActionGroupLayout(row, group);
+    if (pendingLayouts) pendingLayouts.push({ row, group });
+    else syncActionGroupLayout(row, group);
   }
 
-  function tryAttachButton(row) {
+  function tryAttachButton(row, pendingLayouts) {
     try {
-      attachButton(row);
+      attachButton(row, pendingLayouts);
     } catch (error) {
       window.__codexSessionDeleteAttachButtonFailures = window.__codexSessionDeleteAttachButtonFailures || [];
       window.__codexSessionDeleteAttachButtonFailures.push(String(error?.stack || error));

@@ -110,7 +110,7 @@ fn codex_refresh_ports() -> Vec<u16> {
             .and_then(|status| status.debug_port),
     );
     // 本地测试包隔离了自身状态，但接入的仍然是正常运行的 Codex App。
-    if let Some(base) = directories::BaseDirs::new() {
+    if let Some(base) = codex_plus_core::user_dirs::BaseDirs::new() {
         let path = base
             .home_dir()
             .join(".codex-session-delete/latest-status.json");

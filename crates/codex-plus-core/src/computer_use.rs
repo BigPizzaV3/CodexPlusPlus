@@ -156,7 +156,7 @@ impl Target {
 }
 
 pub(crate) fn home_dir() -> PathBuf {
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -619,7 +619,7 @@ fn candidate_app_paths() -> Vec<PathBuf> {
         PathBuf::from("/Applications/ChatGPT.app"),
         PathBuf::from("/Applications/Codex.app"),
     ];
-    if let Some(home) = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
+    if let Some(home) = crate::user_dirs::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf()) {
         paths.push(home.join("Applications/ChatGPT.app"));
         paths.push(home.join("Applications/Codex.app"));
     }
@@ -674,7 +674,7 @@ fn read_package_version(path: &Path) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn claude_code_config_path() -> PathBuf {
-    directories::BaseDirs::new()
+    crate::user_dirs::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".claude.json")
@@ -692,10 +692,10 @@ fn claude_desktop_config_paths() -> Vec<PathBuf> {
         }
     }
     let base = if cfg!(target_os = "macos") {
-        directories::BaseDirs::new()
+        crate::user_dirs::BaseDirs::new()
             .map(|dirs| dirs.home_dir().join("Library/Application Support"))
     } else {
-        directories::BaseDirs::new().map(|dirs| dirs.config_dir().to_path_buf())
+        crate::user_dirs::BaseDirs::new().map(|dirs| dirs.config_dir().to_path_buf())
     };
     if let Some(base) = base {
         for name in ["Claude", "Claude-3p"] {
@@ -707,7 +707,7 @@ fn claude_desktop_config_paths() -> Vec<PathBuf> {
     }
     if paths.is_empty() {
         paths.push(
-            directories::BaseDirs::new()
+            crate::user_dirs::BaseDirs::new()
                 .map(|dirs| dirs.config_dir().join("Claude/claude_desktop_config.json"))
                 .unwrap_or_else(|| PathBuf::from("claude_desktop_config.json")),
         );

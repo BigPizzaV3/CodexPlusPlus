@@ -481,7 +481,9 @@ pub fn run() {
             gateway_commands::disable_gateway_binding,
             gateway_commands::disable_gateway_binding_full_switch,
             gateway_commands::use_gateway_own_model,
+            gateway_commands::use_claude_code_pool_provider,
             gateway_commands::save_gateway_own_models_shown,
+            gateway_commands::set_gateway_pool_member,
             gateway_commands::rotate_gateway_token,
             gateway_commands::reset_gateway_model_selections,
             gateway_commands::save_gateway_model_suffix,
@@ -501,6 +503,7 @@ pub fn run() {
             gateway_commands::update_gateway_provider,
             gateway_commands::get_native_auth_state,
             gateway_commands::set_native_auth_account,
+            gateway_commands::set_codex_login_identity,
             gateway_commands::add_gateway_provider_key,
             gateway_commands::replace_gateway_provider_key,
             gateway_commands::delete_gateway_provider_key,
@@ -517,6 +520,7 @@ pub fn run() {
             gateway_commands::apply_gateway_provider_reasoning_sync,
             gateway_commands::save_gateway_provider_models,
             gateway_commands::refresh_gateway_quota,
+            gateway_commands::load_gateway_quota_history,
             gateway_commands::sync_gateway_provider_prices,
             gateway_commands::set_gateway_provider_enabled,
             gateway_commands::reorder_gateway_providers,
@@ -769,7 +773,7 @@ pub fn run() {
                         codex_plus_core::claude_local_backend::stop_backend();
                         codex_plus_core::resident_helper::stop_resident_helper();
                         // 远程控制服务停掉侧车 app-server，别留孤儿进程。
-                        codex_plus_core::remote_control::stop();
+                        codex_plus_core::remote_control::shutdown();
                         SHUTDOWN_COMPLETE.store(true, Ordering::SeqCst);
                         app.exit(0);
                     });
@@ -1387,4 +1391,11 @@ fn acquire_single_instance_guard() -> Option<codex_plus_core::ports::LoopbackPor
             }
         }
     }
+}
+
+/// 测试不许碰用户的真实目录：main 之前进家目录沙箱（见 `codex_plus_core::test_sandbox`）。
+#[cfg(test)]
+#[ctor::ctor]
+fn enter_test_sandbox() {
+    codex_plus_core::test_sandbox::enter();
 }

@@ -93,35 +93,13 @@ async fn official_upstream() -> MockServer {
 }
 
 async fn send_forced(relay: &RelayProfile, body: &Value) -> (u16, Vec<u8>) {
-    send_forced_with(relay, body, AutoRetry::Off).await
-}
-
-/// 「请求避震」的几种状态：关着时只为 #2777 预读生命周期事件；开着时走它的首包前预读
-/// （默认的流式预读，或整段缓冲）。
-#[derive(Debug, Clone, Copy)]
-enum AutoRetry {
-    Off,
-    Streaming,
-    Buffered,
-}
-
-async fn send_forced_with(
-    relay: &RelayProfile,
-    body: &Value,
-    auto_retry: AutoRetry,
-) -> (u16, Vec<u8>) {
-    let mut settings = BackendSettings::default();
-    if matches!(auto_retry, AutoRetry::Buffered) {
-        settings.protocol_proxy_auto_retry_mode = "buffered".to_string();
-    }
-    let auto_retry = !matches!(auto_retry, AutoRetry::Off);
+    let settings = BackendSettings::default();
     let mut response = open_responses_proxy_request_for_relay(
         &body.to_string(),
         settings,
         ForcedRelay {
             relay: relay.clone(),
             upstream_model: None,
-            auto_retry,
         },
         None,
         "/responses",
@@ -210,13 +188,11 @@ async fn ordinary_requests_keep_reasoning_items_untouched() {
     assert_eq!(status, 200);
     let mut streamed = body.clone();
     streamed["stream"] = json!(true);
-    for auto_retry in [AutoRetry::Off, AutoRetry::Streaming, AutoRetry::Buffered] {
-        let (status, output) = send_forced_with(&relay, &streamed, auto_retry).await;
-        assert_eq!(status, 200);
-        assert!(String::from_utf8_lossy(&output).contains("response.completed"));
-    }
+    let (status, output) = send_forced(&relay, &streamed).await;
+    assert_eq!(status, 200);
+    assert!(String::from_utf8_lossy(&output).contains("response.completed"));
     let sent = received(&server).await;
-    assert_eq!(sent.len(), 4, "正常请求各发一次");
+    assert_eq!(sent.len(), 2, "正常请求各发一次");
     assert_eq!(
         sent[0], body,
         "没切换供应商的请求不改动 reasoning / compaction 项"
@@ -263,7 +239,6 @@ async fn direct_local_proxy_path_also_retries_without_foreign_reasoning() {
     let settings = BackendSettings {
         active_relay_id: relay.id.clone(),
         relay_profiles: vec![relay],
-        protocol_proxy_auto_retry: false,
         ..BackendSettings::default()
     };
     SettingsStore::new(path.clone()).save(&settings).unwrap();
@@ -449,18 +424,13 @@ async fn local_compaction_summary_is_kept_when_foreign_reasoning_is_stripped() {
 
 #[tokio::test]
 async fn in_stream_rejection_before_any_content_is_retried() {
-    // 没开「请求避震」（只按住生命周期事件）与开着（走它的首包前预读 / 整段缓冲）几种情况；
-    // 拒收以 response.failed 或 error 事件出现。
+    // 预读只按住生命周期事件；拒收以 response.failed 或 error 事件出现。
     let error_event = json!({"type": "error", "error": {"code": "invalid_encrypted_content",
         "message": "The encrypted content for item rs_relay could not be verified."}});
-    for (auto_retry, rejection) in [
-        (AutoRetry::Off, stream_failed(XAI_REJECTION)),
-        (AutoRetry::Off, error_event.clone()),
-        (AutoRetry::Streaming, error_event),
-        (
-            AutoRetry::Buffered,
-            stream_failed("Grok (SuperGrok): Could not decrypt the provided encrypted_content."),
-        ),
+    for rejection in [
+        stream_failed(XAI_REJECTION),
+        error_event,
+        stream_failed("Grok (SuperGrok): Could not decrypt the provided encrypted_content."),
     ] {
         let server = MockServer::start().await;
         let failure = rejection.clone();
@@ -483,23 +453,17 @@ async fn in_stream_rejection_before_any_content_is_retried() {
         let mut body = request(vec![user.clone(), reasoning("rs_relay", FOREIGN)]);
         body["stream"] = json!(true);
 
-        let (status, output) = send_forced_with(&relay, &body, auto_retry).await;
+        let (status, output) = send_forced(&relay, &body).await;
         let output = String::from_utf8_lossy(&output);
         assert_eq!(status, 200);
-        assert!(
-            output.contains("response.completed"),
-            "{auto_retry:?}: {output}"
-        );
+        assert!(output.contains("response.completed"), "{rejection}: {output}");
         assert!(
             !output.contains("response.failed"),
-            "{auto_retry:?}: 被拒的那次不转发"
+            "{rejection}: 被拒的那次不转发"
         );
-        assert!(
-            !output.contains("encrypted_content"),
-            "{auto_retry:?}: {output}"
-        );
+        assert!(!output.contains("encrypted_content"), "{rejection}: {output}");
         let sent = received(&server).await;
-        assert_eq!(sent.len(), 2, "{auto_retry:?}: 只重发一次");
+        assert_eq!(sent.len(), 2, "{rejection}: 只重发一次");
         assert_eq!(sent[1]["input"], json!([user]));
     }
 }
@@ -603,7 +567,6 @@ async fn send_forced_traced(
         ForcedRelay {
             relay: relay.clone(),
             upstream_model: None,
-            auto_retry: false,
         },
         None,
         "/responses",
@@ -863,7 +826,9 @@ async fn emptied_content_then_unverifiable_placeholder_is_stripped() {
 
 #[tokio::test]
 async fn in_stream_reasoning_content_rejection_is_retried() {
-    for auto_retry in [AutoRetry::Off, AutoRetry::Streaming, AutoRetry::Buffered] {
+    // 推理项带不带占位的加密内容都要覆盖：不带时请求里没有加密项，#2777 那条预读不会触发，
+    // 只靠「请求里有明文 content」触发预读才能在流内拒收时重发（#2917）。
+    for with_encrypted in [true, false] {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(|incoming: &Request| {
@@ -884,26 +849,27 @@ async fn in_stream_reasoning_content_rejection_is_retried() {
             .await;
         let relay = relay(&server, "content-stream");
         let user = json!({"type": "message", "role": "user", "content": "继续"});
-        let mut body = request(vec![user.clone(), plain_reasoning("DeepSeek 的思考")]);
+        let mut item = plain_reasoning("DeepSeek 的思考");
+        if !with_encrypted {
+            item.as_object_mut().unwrap().remove("encrypted_content");
+        }
+        let mut body = request(vec![user.clone(), item.clone()]);
         body["stream"] = json!(true);
 
-        let (status, output) = send_forced_with(&relay, &body, auto_retry).await;
+        let (status, output) = send_forced(&relay, &body).await;
         let output = String::from_utf8_lossy(&output);
         assert_eq!(status, 200);
         assert!(
             output.contains("response.completed"),
-            "{auto_retry:?}: {output}"
+            "with_encrypted={with_encrypted}: {output}"
         );
         assert!(
             !output.contains("response.failed"),
-            "{auto_retry:?}: 被拒的那次不转发"
+            "with_encrypted={with_encrypted}: 被拒的那次不转发"
         );
         let sent = received(&server).await;
-        assert_eq!(sent.len(), 2, "{auto_retry:?}: 只重发一次");
-        assert_eq!(
-            sent[1]["input"],
-            json!([user, emptied(plain_reasoning("DeepSeek 的思考"))])
-        );
+        assert_eq!(sent.len(), 2, "with_encrypted={with_encrypted}: 只重发一次");
+        assert_eq!(sent[1]["input"], json!([user, emptied(item)]));
     }
 }
 

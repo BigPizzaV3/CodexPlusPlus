@@ -20,7 +20,7 @@ function elements(value: unknown): Element[] {
 
 function picker(
   onPick: (item: { model: string }) => void = () => {},
-  options: { pinProvider?: boolean; sections?: PickerFixtureSection[]; conflicts?: string[] } = {},
+  options: { pinProvider?: boolean; sections?: PickerFixtureSection[]; conflicts?: string[]; selectedModel?: string } = {},
 ) {
   const source = readFileSync(new URL("./GatewayAgents.tsx", import.meta.url), "utf8");
   const file = ts.createSourceFile("GatewayAgents.tsx", source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TSX);
@@ -86,7 +86,7 @@ function picker(
       return exports.ModelList({
         payload: { pool, gateway: {} },
         exclude: [],
-        selectedModel: "",
+        selectedModel: options.selectedModel ?? "",
         onPick,
         pinProvider: options.pinProvider,
       }) as Element;
@@ -118,6 +118,18 @@ test("供应商默认折叠，其他模型保持可见；重新打开后恢复�
   assert.equal(heading(tree, "provider:a").props["aria-expanded"], true);
   assert.equal(heading(tree, "provider:b").props["aria-expanded"], false);
   assert.equal(heading(picker().render(), "provider:a").props["aria-expanded"], false);
+});
+
+test("当前选中共享供应商里的模型时展开那一组，自带（直连）模型默认折叠（#3263）", () => {
+  const view = picker(() => {}, { selectedModel: "beta" });
+  let tree = view.render();
+  assert.equal(heading(tree, "provider:b").props["aria-expanded"], true);
+  assert.equal(heading(tree, "provider:a").props["aria-expanded"], false);
+  assert.equal(heading(tree, "own").props["aria-expanded"], false);
+  // 手动展开仍然生效。
+  heading(tree, "own").props.onClick();
+  tree = view.render();
+  assert.equal(heading(tree, "own").props["aria-expanded"], true);
 });
 
 test("供应商筛选展开目标；搜索展开匹配项，清空后恢复手动状态", () => {

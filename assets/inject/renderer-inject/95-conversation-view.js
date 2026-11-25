@@ -626,7 +626,9 @@
     // 已删会话的行过滤（会话删除）、对话宽度、滚动位置恢复也都是内置拓展经公开的 ctx.onScan 登记的步骤。
     runCodexPlusScanSteps();
     // 会话行的操作按钮组、归档页的行按钮是删除、导出与第三方拓展 rowAction 共用的宿主，留在内核里扫描。
-    sessionRows().forEach(tryAttachButton);
+    const layouts = [];
+    for (const row of sessionRows()) tryAttachButton(row, layouts);
+    syncActionGroupLayouts(layouts);
     updateDeleteButtonOffsets();
     archivedPageRows().forEach(attachArchivedPageDeleteButton);
     removeLegacyCodexServiceTierBadges();
