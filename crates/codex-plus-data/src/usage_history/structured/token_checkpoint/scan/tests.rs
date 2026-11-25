@@ -1484,6 +1484,170 @@ fn execution_locators_commit_with_the_source_and_expire_without_losing_the_call(
 }
 
 #[test]
+fn compressed_execution_details_read_verified_calls_and_outputs_past_32_mib() -> anyhow::Result<()>
+{
+    use crate::usage_history::structured::token_checkpoint::DetailQuery;
+    use std::io::Write;
+    let dir = tempfile::tempdir()?;
+    let home = fs::canonicalize(dir.path())?;
+    let archives = home.join("archived_sessions");
+    fs::create_dir(&archives)?;
+    let source = archives.join(format!("rollout-{FIRST}.jsonl.zst"));
+    let now = chrono::Local::now();
+    let at = now - chrono::Duration::seconds(10);
+    let wrap =
+        |payload| json!({"type":"response_item","timestamp":at.to_rfc3339(),"payload":payload});
+    let call = |id| {
+        wrap(
+            json!({"type":"function_call","name":"test_tool","call_id":id,"arguments":{"input":id}}),
+        )
+    };
+    let output = |id| wrap(json!({"type":"function_call_output","call_id":id,"output":id}));
+    let mut archive = zstd::stream::write::Encoder::new(fs::File::create(&source)?, 1)?;
+    archive.write_all(rollout(FIRST).as_bytes())?;
+    writeln!(archive, "{}", call("early"))?;
+    let filler = wrap(json!({"type":"message","role":"user","content":"x".repeat(256 * 1024)}));
+    let filler = format!("{filler}\n");
+    for _ in 0..128 {
+        archive.write_all(filler.as_bytes())?;
+    }
+    for row in [call("late"), output("early"), output("late")] {
+        writeln!(archive, "{row}")?;
+    }
+    archive.finish()?;
+
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    let names = BTreeMap::new();
+    for _ in 0..32 {
+        let report = scan.round(&mut store, &home, at.date_naive(), &names, 1 << 20);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        if report.complete {
+            break;
+        }
+    }
+    let (revision, committed): (i64, u64) = store.db.query_row(
+        "SELECT r.revision,s.offset FROM token_revision r,token_sources s",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let positions = store
+        .db
+        .prepare("SELECT position FROM execution_observations ORDER BY position")?
+        .query_map([], |row| row.get::<_, u64>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    assert_eq!(positions.len(), 4);
+    assert!(positions[0] < 32 << 20 && positions[1] > 32 << 20 && positions[3] < committed);
+    let read = |store: &mut Store, id: &str| {
+        let request = DetailQuery::parse(&json!({"sessionId":FIRST,"id":id,"revision":revision}))?;
+        Store::read_execution_detail(&mut store.db, &home, &request, || now.timestamp_millis())
+    };
+    for id in ["early", "late"] {
+        let started = std::time::Instant::now();
+        let detail = read(&mut store, id)?;
+        eprintln!(
+            "{id} archive detail at {positions:?}: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(detail["status"], "ok", "{detail}");
+        assert_eq!(detail["detail"]["input"], json!({"input":id}));
+        assert_eq!(detail["detail"]["output"], json!([id]));
+    }
+    store
+        .db
+        .execute("UPDATE token_sources SET offset=?1", [positions[3]])?;
+    assert!(
+        read(&mut store, "late")
+            .unwrap_err()
+            .to_string()
+            .contains("已提交范围")
+    );
+    store
+        .db
+        .execute("UPDATE token_sources SET offset=?1", [committed])?;
+    let original = home.join("original.zst");
+    fs::rename(&source, &original)?;
+    fs::copy(&original, &source)?;
+    assert!(
+        read(&mut store, "late")
+            .unwrap_err()
+            .to_string()
+            .contains("文件已变化")
+    );
+    Ok(())
+}
+
+#[test]
+fn tool_detail_reads_many_small_outputs_until_the_actual_byte_budget() -> anyhow::Result<()> {
+    use crate::usage_history::structured::token_checkpoint::DetailQuery;
+    use std::io::Write;
+
+    let dir = tempfile::tempdir()?;
+    let home = fs::canonicalize(dir.path())?;
+    let sessions = home.join("sessions");
+    fs::create_dir(&sessions)?;
+    let now = chrono::Local::now();
+    let at = now - chrono::Duration::seconds(5);
+    let row =
+        |payload| json!({"type":"response_item","timestamp":at.to_rfc3339(),"payload":payload});
+    let mut file = fs::File::create(sessions.join(format!("rollout-{FIRST}.jsonl")))?;
+    file.write_all(rollout(FIRST).as_bytes())?;
+    let small: Vec<String> = (0..80).map(|n| format!("part-{n}")).collect();
+    let large = "x".repeat(512 * 1024);
+    for (id, parts) in [("small", small.clone()), ("large", vec![large.clone(); 10])] {
+        writeln!(
+            file,
+            "{}",
+            row(json!({"type":"function_call","call_id":id,"name":"example","arguments":"{}"}))
+        )?;
+        for part in parts {
+            writeln!(
+                file,
+                "{}",
+                row(json!({"type":"function_call_output","call_id":id,"output":part}))
+            )?;
+        }
+    }
+    drop(file);
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    loop {
+        let report = scan.round(
+            &mut store,
+            &home,
+            at.date_naive(),
+            &BTreeMap::new(),
+            1 << 20,
+        );
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        if report.complete {
+            break;
+        }
+    }
+    let revision: i64 = store
+        .db
+        .query_row("SELECT revision FROM token_revision", [], |r| r.get(0))?;
+    let mut read = |id: &str| {
+        let query = DetailQuery::parse(&json!({"sessionId":FIRST,"id":id,"revision":revision}))?;
+        Store::read_execution_detail(&mut store.db, &home, &query, || now.timestamp_millis())
+    };
+    let result = read("small")?;
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["detail"]["output"], json!(small));
+    let result = read("large")?;
+    assert_eq!(result["status"], "partial");
+    let parts = result["detail"]["output"].as_array().unwrap();
+    assert_eq!(parts.len(), 7);
+    assert!(
+        parts
+            .iter()
+            .all(|part| part.as_str() == Some(large.as_str()))
+    );
+    assert!(result["detail"]["durationMs"].is_null());
+    Ok(())
+}
+
+#[test]
 fn detail_follows_a_verified_shell_process_and_rejects_reused_process_ids() {
     use crate::usage_history::structured::token_checkpoint::DetailQuery;
     let dir = tempfile::tempdir().unwrap();

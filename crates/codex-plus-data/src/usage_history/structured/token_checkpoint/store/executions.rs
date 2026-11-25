@@ -21,8 +21,6 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 const MAX_DETAIL_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_ARCHIVE_DETAIL_OFFSET: u64 = 32 * 1024 * 1024;
-const MAX_OUTPUTS: usize = 64;
 pub(super) const COMPACTABLE_METADATA: &str =
     "name IS NOT NULL AND name != 'write_stdin' AND substr(name,-12) != '.write_stdin'
      AND substr(name, 1, 5) != 'mcp__' AND substr(COALESCE(namespace,''), 1, 5) != 'mcp__'";
@@ -639,9 +637,7 @@ impl Store {
             values
         };
         let (source_id, call, path, committed_offset, expected) = location;
-        let mut outputs = Vec::new();
-        {
-            let mut statement = tx.prepare(
+        let mut statement = tx.prepare(
                 "WITH direct AS (
                     SELECT e.* FROM execution_observations e
                     WHERE e.session_id = (SELECT id FROM token_sessions WHERE session = ?1)
@@ -657,7 +653,7 @@ impl Store {
                     AND NOT EXISTS (
                         SELECT 1 FROM execution_process r JOIN execution_observations e USING(source_id,position)
                         WHERE r.process = c.process AND e.session_id = c.session_id
-                          AND e.timestamp_ms > ?8 AND e.timestamp_ms <= ?6 AND (
+                          AND e.timestamp_ms > ?7 AND e.timestamp_ms <= ?6 AND (
                             e.source_id != ?3 OR (e.is_output = 1 AND e.call_id != ?2 AND NOT EXISTS (
                                 SELECT 1 FROM execution_observations poll
                                   JOIN execution_process p USING(source_id,position)
@@ -683,20 +679,20 @@ impl Store {
                    ON o.source_id = p.source_id AND o.session_id = p.session_id AND o.call_id = p.call_id
                  WHERE o.is_output = 1 AND o.end IS NOT NULL AND o.position >= p.end
                    AND o.timestamp_ms >= p.timestamp_ms AND o.timestamp_ms <= ?6
-                 ORDER BY position LIMIT ?7",
-            )?;
-            let mut rows = statement.query(params![
+                 ORDER BY position",
+        )?;
+        let outputs = statement.query_map(
+            params![
                 query.session_id,
                 query.id,
                 source_id,
                 call.end,
                 call.at,
                 cutoff,
-                MAX_OUTPUTS + 1,
                 cutoff - DETAIL_MS,
-            ])?;
-            while let Some(row) = rows.next()? {
-                outputs.push((
+            ],
+            |row| {
+                Ok((
                     Location {
                         start: row.get(0)?,
                         end: row.get(1)?,
@@ -704,10 +700,9 @@ impl Store {
                     },
                     row.get::<_, String>(3)?,
                     row.get::<_, Option<String>>(4)?,
-                ));
-            }
-        }
-        tx.commit()?;
+                ))
+            },
+        )?;
         if !recent(call.at, now()) {
             return Ok(not_found());
         }
@@ -758,10 +753,11 @@ impl Store {
         let mut used = call.end - call.start;
         let mut positions_end = call.end;
         let mut parts = Vec::new();
-        let mut partial = outputs.len() > MAX_OUTPUTS;
+        let mut partial = false;
         let mut running = None;
         let mut terminal_at = None;
-        for (location, id, process) in outputs.into_iter().take(MAX_OUTPUTS) {
+        for output in outputs {
+            let (location, id, process) = output?;
             if let Some(process) = &process
                 && (!shell
                     || before != expected
@@ -774,10 +770,7 @@ impl Store {
                 .end
                 .checked_sub(location.start)
                 .context("工具定位范围尾部无效")?;
-            if location.start < positions_end
-                || used + length > MAX_DETAIL_BYTES
-                || compressed && location.end > MAX_ARCHIVE_DETAIL_OFFSET
-            {
+            if location.start < positions_end || used + length > MAX_DETAIL_BYTES {
                 partial = true;
                 break;
             }
@@ -799,6 +792,8 @@ impl Store {
             used += length;
             positions_end = location.end;
         }
+        drop(statement);
+        tx.commit()?;
         ensure!(
             FileState::source_stamp(&path)? == before && fs::canonicalize(&path)? == path,
             "读取期间工具原会话发生变化"
@@ -850,10 +845,7 @@ impl DetailReader {
                 file.read_exact(&mut bytes)?;
             }
             Self::Compressed(reader, offset) => {
-                ensure!(
-                    at.start >= *offset && at.end <= MAX_ARCHIVE_DETAIL_OFFSET,
-                    "归档工具详情超出读取范围"
-                );
+                ensure!(at.start >= *offset, "归档工具定位顺序无效");
                 let skip = at.start - *offset;
                 ensure!(
                     io::copy(&mut reader.take(skip), &mut io::sink())? == skip,
