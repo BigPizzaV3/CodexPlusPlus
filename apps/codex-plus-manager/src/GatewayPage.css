@@ -2524,16 +2524,21 @@ body.gw-sorting * {
   background: hsl(var(--muted-foreground) / 0.5);
 }
 
+/* 各 Agent 一个色相，深浅主题都分得清（主题的 primary / brand-accent 在深色下都是近白的灰，挨在一起看不出界）。 */
 .shell :is(.gw-usage-agents-bar, .gw-usage-agents-legend) i[data-agent="codex"] {
-  background: hsl(var(--primary));
+  background: hsl(214 72% 56%);
 }
 
-.shell :is(.gw-usage-agents-bar, .gw-usage-agents-legend) i[data-agent="claude"] {
-  background: hsl(var(--brand-accent));
+.shell :is(.gw-usage-agents-bar, .gw-usage-agents-legend) i:is([data-agent="claude"], [data-agent="claude-desktop"]) {
+  background: hsl(18 66% 56%);
+}
+
+.shell :is(.gw-usage-agents-bar, .gw-usage-agents-legend) i[data-agent="claude-desktop"] {
+  background: hsl(32 70% 58%);
 }
 
 .shell :is(.gw-usage-agents-bar, .gw-usage-agents-legend) i[data-agent="grok"] {
-  background: hsl(var(--brand-accent-2));
+  background: hsl(262 42% 62%);
 }
 
 .shell .gw-usage-agents-legend {

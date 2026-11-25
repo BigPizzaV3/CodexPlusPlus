@@ -5,6 +5,7 @@
 
 // Plain strings: t("中文") -> EN_PLAIN["中文"].
 export const EN_PLAIN: Record<string, string> = {
+  "加加（远程控制里的聊天助手）": "Jiajia (the chat assistant in remote control)",
   "自定义供应商": "Custom provider",
   "OpenAI 会话": "OpenAI session",
   "官方插件在「Codex 插件」": "Official plugins are under Codex plugins",
