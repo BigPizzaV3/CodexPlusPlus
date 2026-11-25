@@ -1024,6 +1024,88 @@ fn late_physical_prefix_repairs_only_affected_sources_and_preserves_reader_revis
 }
 
 #[test]
+fn oversized_non_usage_lines_preserve_physical_prefix_across_batches() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    for (case, ordinal, pending) in [("ordered", 2, false), ("gap", 3, true)] {
+        let parent_path = root.join(format!("{case}-prefix-{PHYSICAL_PREFIX}.jsonl"));
+        let child_path = root.join(format!("{case}-child.jsonl"));
+        let initial = parse(
+            &parent_path,
+            &[header(PARENT, 0), count(1, 1, 1, true)],
+            cutoff,
+        );
+        let long_line = format!(
+            "{{\"ordinal\":{ordinal},\"type\":\"event_msg\",\"payload\":{{\"type\":\"agent_message\",\"message\":\"{}\"}}}}\n",
+            "x".repeat(crate::usage_history::structured::MAX_LINE + 128)
+        );
+        let mut bytes = fs::read(&parent_path).unwrap();
+        bytes.extend_from_slice(long_line.as_bytes());
+        fs::write(&parent_path, &bytes).unwrap();
+        let file = root.join(format!("{case}.sqlite3"));
+        let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+        let mut reader = SourceReader::restore(&store, &parent_path).unwrap();
+        let mut budget = Budget::new(std::iter::empty());
+        budget.read_left = initial.offset + crate::usage_history::structured::MAX_LINE as u64 + 1;
+        assert!(
+            !reader
+                .step(&mut store, cutoff, &mut budget, &BTreeMap::new(), 8192)
+                .unwrap()
+        );
+        assert!(
+            store.checkpoint(&parent_path).unwrap().is_none(),
+            "the skipped row must not commit before its newline"
+        );
+        assert!(
+            reader
+                .step(
+                    &mut store,
+                    cutoff,
+                    &mut Budget::new(std::iter::empty()),
+                    &BTreeMap::new(),
+                    8192,
+                )
+                .unwrap()
+        );
+        drop(store);
+
+        let mut store = Store::open(Connection::open(&file).unwrap()).unwrap();
+        let (_, checkpoint) = store.checkpoint(&parent_path).unwrap().unwrap();
+        assert_eq!(
+            checkpoint.rollout_extent,
+            Some((0, ordinal as u64, bytes.len() as u64))
+        );
+        assert_eq!(checkpoint.rollout_out_of_order, pending);
+        assert_eq!(checkpoint.issues, 0);
+
+        let mut child_header = header(CHILD, ordinal + 1);
+        child_header["payload"]["history_base"] = json!({"thread_id":PHYSICAL_PREFIX,
+            "end_ordinal_exclusive":ordinal + 1,"end_byte_offset":bytes.len()});
+        let child = parse(
+            &child_path,
+            &[child_header, count(ordinal + 2, 2, 2, false)],
+            cutoff,
+        );
+        let prepared = store
+            .prepare(
+                new_source(&child_path, &child),
+                cutoff,
+                BTreeMap::new(),
+                8192,
+            )
+            .unwrap();
+        store.publish(prepared).unwrap();
+        let (_, events) = read(&mut store.db, i64::MIN, i64::MAX);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].count_pending, pending);
+        if !pending {
+            assert_eq!(events[1].delta.total_tokens, 110);
+        }
+    }
+}
+
+#[test]
 fn replacing_scope_uses_old_and_new_links_and_failed_publication_keeps_the_old_view() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();

@@ -2,6 +2,7 @@
 struct UsagePrefix<'a> {
     payload: bool,
     result: &'a std::cell::Cell<Option<bool>>,
+    ordinal: &'a std::cell::Cell<Option<u64>>,
 }
 impl<'de> serde::de::DeserializeSeed<'de> for UsagePrefix<'_> {
     type Value = bool;
@@ -38,21 +39,34 @@ impl<'de> serde::de::Visitor<'de> for UsagePrefix<'_> {
                     return Ok(relevant);
                 }
                 match kind.as_str() {
-                    "session_meta" | "turn_context" => {
+                    "session_meta" | "turn_context" | "token_usage_record" => {
                         self.result.set(Some(true));
                         return Ok(true);
                     }
                     "event_msg" => event_msg = true,
                     _ => {
                         self.result.set(Some(false));
-                        return Ok(false);
+                        if self.ordinal.get().is_some() {
+                            return Ok(false);
+                        }
                     }
                 }
             } else if key == "payload" && event_msg {
                 return map.next_value_seed(UsagePrefix {
                     payload: true,
                     result: self.result,
+                    ordinal: self.ordinal,
                 });
+            } else if !self.payload && key == "ordinal" {
+                self.ordinal.set(
+                    map.next_value::<Option<i64>>()?
+                        .and_then(|n| u64::try_from(n).ok()),
+                );
+                if self.result.get() == Some(false) {
+                    return Ok(false);
+                }
+            } else if key == "payload" && self.result.get() == Some(false) {
+                return Ok(false);
             } else {
                 map.next_value::<serde::de::IgnoredAny>()?;
             }
@@ -60,15 +74,17 @@ impl<'de> serde::de::Visitor<'de> for UsagePrefix<'_> {
         Ok(true)
     }
 }
-pub(super) fn may_affect_usage(prefix: &[u8]) -> bool {
+pub(super) fn inspect(prefix: &[u8]) -> (bool, Option<u64>) {
     let result = std::cell::Cell::new(None);
+    let ordinal = std::cell::Cell::new(None);
     // 前缀可能没有闭合括号；已确认的类型独立保存，不依赖完整 JSON 解析成功。
     let _ = serde::Deserializer::deserialize_map(
         &mut serde_json::Deserializer::from_slice(prefix),
         UsagePrefix {
             payload: false,
             result: &result,
+            ordinal: &ordinal,
         },
     );
-    result.get().unwrap_or(true)
+    (result.get().unwrap_or(true), ordinal.get())
 }

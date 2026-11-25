@@ -1799,6 +1799,7 @@ struct FileState {
     retained_charge: usize,
     pending: index_budget::PendingLine,
     skipping: bool,
+    skipped_ordinal: Option<u64>,
     skip_activity: bool,
     activity_truncated: bool,
     session: String,
@@ -3641,10 +3642,11 @@ impl FileState {
                             return Ok(false);
                         }
                     } else {
-                        let affects_usage = oversized::may_affect_usage(&self.pending);
+                        let (affects_usage, ordinal) = oversized::inspect(&self.pending);
                         self.issues += usize::from(affects_usage);
                         self.activity_truncated |= !affects_usage;
                         self.pending_response = None;
+                        self.skipped_ordinal = if affects_usage { None } else { ordinal };
                         self.pending.clear();
                         self.skipping = true;
                     }
@@ -3656,6 +3658,8 @@ impl FileState {
                     self.retained_charge.saturating_sub(pending_capacity) + self.pending.capacity();
                 if complete && self.skipping {
                     self.skipping = false;
+                    let ordinal = self.skipped_ordinal.take();
+                    self.observe_rollout_position(ordinal);
                 }
                 input.consume(length);
             }
@@ -3754,6 +3758,17 @@ impl FileState {
         true
     }
 
+    fn observe_rollout_position(&mut self, ordinal: Option<u64>) {
+        if let Some(ordinal) = ordinal {
+            let extent = self.rollout_extent.get_or_insert((ordinal, ordinal, 0));
+            self.rollout_out_of_order |= extent.2 != 0 && extent.1.checked_add(1) != Some(ordinal);
+            extent.1 = ordinal;
+            extent.2 = self.offset;
+        } else if self.rollout_extent.is_some() {
+            self.rollout_out_of_order = true;
+        }
+    }
+
     fn accept(&mut self, line: &[u8], cutoff: NaiveDate) {
         if self.identity_conflict {
             return;
@@ -3775,14 +3790,7 @@ impl FileState {
             return;
         };
         let ordinal = envelope.ordinal.and_then(|n| u64::try_from(n).ok());
-        if let Some(ordinal) = ordinal {
-            let extent = self.rollout_extent.get_or_insert((ordinal, ordinal, 0));
-            self.rollout_out_of_order |= extent.2 != 0 && ordinal != extent.1 + 1;
-            extent.1 = ordinal;
-            extent.2 = self.offset;
-        } else if self.rollout_extent.is_some() {
-            self.rollout_out_of_order = true;
-        }
+        self.observe_rollout_position(ordinal);
         let inherited = self.history_boundary.contains(ordinal);
         if envelope.kind == "token_usage_record" {
             if inherited || line.len() > MAX_NATIVE_RECEIPT_LINE {
