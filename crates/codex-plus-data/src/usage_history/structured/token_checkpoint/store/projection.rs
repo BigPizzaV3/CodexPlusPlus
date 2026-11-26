@@ -2441,28 +2441,15 @@ impl Store {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         let mut historical_error = None;
-        let rebuilt;
         let historical =
-            match historical.map(|evidence| Ok::<_, anyhow::Error>(
-                (evidence, evidence.is_current(current_revision)?)
-            )) {
-                Some(Ok((evidence, true))) => Some(evidence),
-                Some(Ok((evidence, false))) => {
-                    rebuilt = match evidence.read_consistent(&read, current_revision) {
-                        Ok(consistent) => consistent,
-                        Err(error) => {
-                            historical_error = Some(format!("{error:#}"));
-                            None
-                        }
-                    };
-                    rebuilt.as_ref()
-                }
-                Some(Err(error)) => {
+            historical.and_then(|evidence| match evidence.is_current(current_revision) {
+                Ok(true) => Some(evidence),
+                Ok(false) => None,
+                Err(error) => {
                     historical_error = Some(format!("{error:#}"));
                     None
                 }
-                None => None,
-            };
+            });
         let archive_key = if let Some((start, end)) = bounds
             && !cutoff.is_empty()
         {
