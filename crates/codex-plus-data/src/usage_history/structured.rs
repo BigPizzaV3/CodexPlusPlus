@@ -1694,6 +1694,7 @@ enum ClassificationEvidence {
     RequestExact,
     SupplierOnly,
     RecoveredRequestSupplier,
+    NamespaceInferred,
 }
 
 impl ClassificationEvidence {
@@ -1706,6 +1707,7 @@ impl ClassificationEvidence {
             Some("request-log-exact") => Self::RequestExact,
             Some("upstream-counter-bidirectional-supplier-only") => Self::SupplierOnly,
             Some(REQUEST_SUPPLIER_PROOF) => Self::RecoveredRequestSupplier,
+            Some("model-namespace") => Self::NamespaceInferred,
             _ => Self::None,
         }
     }
@@ -1735,6 +1737,7 @@ impl ClassificationEvidence {
             Self::RecoveredRequestSupplier => {
                 row["supplierClassificationEvidence"] = json!(REQUEST_SUPPLIER_PROOF);
             }
+            Self::NamespaceInferred => row["providerInferred"] = json!(true),
         }
     }
 }
@@ -2557,7 +2560,13 @@ impl LegacyEvidenceCache {
                     "upstream-exact-bidirectional"
                         | "user-classified"
                         | "user-provider-classification"
+                        | "request-log-recovered-supplier-only"
+                        | "model-namespace"
                 )
+                && (record.source != "model-namespace"
+                    || record.model.split_once('/').is_some_and(|(namespace, _)| {
+                        namespace == record.provider && namespace != "group"
+                    }))
                 && DateTime::parse_from_rfc3339(&record.timestamp).is_ok()
                 && record.cached <= record.input
                 && record

@@ -3562,6 +3562,88 @@ fn selection_preserves_the_known_priceable_subset_across_sessions() {
 }
 
 #[test]
+fn restored_supplier_evidence_keeps_inference_separate_without_changing_counts()
+-> anyhow::Result<()> {
+    use super::historical::{EvidenceVerifier, Historical};
+    use std::sync::Mutex;
+
+    let dir = tempfile::tempdir()?;
+    let root = fs::canonicalize(dir.path())?;
+    let database = root.join("tokens.sqlite");
+    let settings = root.join("settings.json");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut store = Store::open(Connection::open(&database)?)?;
+    let mut records = Vec::new();
+    for (session, supplier, source) in [
+        (PARENT, "custom", "model-namespace"),
+        (CHILD, "custom", "request-log-recovered-supplier-only"),
+        (OTHER, "supplier-b", "model-namespace"),
+    ] {
+        let path = root.join(format!("rollout-{session}.jsonl"));
+        let mut state = parse(&path, &[header(session, 0), count(1, 1, 1, true)], cutoff);
+        let event = &mut state.events[0];
+        event.model = "supplier-a/fixture".into();
+        event.provider = supplier.into();
+        event.provider_source = (supplier == "supplier-b").then(|| "request-log-exact".into());
+        let prepared = store.prepare(new_source(&path, &state), cutoff, BTreeMap::new(), 8192)?;
+        store.publish(prepared)?;
+        let event = read(&mut store.db, i64::MIN, i64::MAX)
+            .1
+            .into_iter()
+            .find(|event| event.session == session)
+            .unwrap();
+        records.push(json!({
+            "eventId":event.id.map(|byte| format!("{byte:02x}")).concat(),
+            "session":event.session,"timestamp":event.timestamp,"model":event.model,
+            "role":event.role,"input":event.delta.input_tokens,"output":event.delta.output_tokens,
+            "cached":event.delta.cached_input_tokens,"provider":"supplier-a",
+            "providerName":"Supplier A","source":source
+        }));
+    }
+    let query = Query::parse(&json!({}), cutoff).unwrap();
+    let request = json!({});
+    let names = BTreeMap::new();
+    let before = Store::read_response(&mut store.db, &query, &request, None, &names)?;
+    fs::write(
+        settings.with_file_name("usage-provider-evidence.json"),
+        serde_json::to_vec(&json!({"version":1,"records":records}))?,
+    )?;
+    let with_overlay = |store: &mut Store| -> anyhow::Result<Value> {
+        let verifier = Mutex::new(EvidenceVerifier::default());
+        let overlay = Historical::refresh(None, store, &verifier, &settings)?.unwrap();
+        assert_eq!(overlay.overlay.legacy_status["appliedEvents"], 2);
+        let (result, _) = Store::read_response_with_archive(
+            &mut store.db,
+            &query,
+            &request,
+            None,
+            &names,
+            None,
+            Some(&overlay),
+        )?;
+        Ok(result)
+    };
+    let after = with_overlay(&mut store)?;
+    assert_eq!(after["days"][0]["usage"], before["days"][0]["usage"]);
+    assert_eq!(after["days"][0]["recordCount"], 3);
+    let rows = after["days"][0]["breakdowns"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert!(
+        rows.iter()
+            .any(|row| row["provider"] == "supplier-a" && row["providerInferred"] == true)
+    );
+    assert!(rows.iter().any(|row| row["provider"] == "supplier-a"
+        && row["providerInferred"].is_null()
+        && row["supplierClassificationEvidence"] == "request-log-recovered-supplier-only"));
+    assert!(rows.iter().any(|row| row["provider"] == "supplier-b"
+        && row["classificationEvidence"] == "request-log-exact"));
+    drop(store);
+    let mut reopened = Store::open(Connection::open(&database)?)?;
+    assert_eq!(with_overlay(&mut reopened)?["days"], after["days"]);
+    Ok(())
+}
+
+#[test]
 fn archived_classification_matches_live_rollups_without_promoting_mixed_evidence() {
     use crate::usage_history::structured::{NativeResponseIdentity, REQUEST_SUPPLIER_PROOF, Snapshot};
 

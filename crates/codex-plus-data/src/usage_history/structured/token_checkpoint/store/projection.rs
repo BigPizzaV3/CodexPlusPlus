@@ -279,12 +279,20 @@ impl Selection {
     }
 }
 
+const PROVIDER_INFERRED: u8 = 1 << 4;
+const RECOVERED_REQUEST_SUPPLIER: u8 = 1 << 5;
+
 fn group_key(event: &UsageEvent) -> (String, String, String, u8) {
     let conflict = event.context_conflicts;
     let flags = u8::from(conflict.model)
         | u8::from(conflict.provider) << 1
         | u8::from(conflict.role) << 2
-        | u8::from(conflict.turn) << 3;
+        | u8::from(conflict.turn) << 3
+        | match ClassificationEvidence::of(event) {
+            ClassificationEvidence::NamespaceInferred => PROVIDER_INFERRED,
+            ClassificationEvidence::RecoveredRequestSupplier => RECOVERED_REQUEST_SUPPLIER,
+            _ => 0,
+        };
     (
         event.model.clone(),
         event.provider.clone(),
@@ -3229,7 +3237,7 @@ impl Store {
             unclassified += groups
                 .iter()
                 .filter(|((model, provider, _, flags), _)| {
-                    *flags & 3 != 0
+                    *flags & (3 | PROVIDER_INFERRED) != 0
                         || unknown_model(model)
                         || unknown_provider(provider)
                         || codex_plus_core::aggregate_catalog::is_aggregate_model(model)

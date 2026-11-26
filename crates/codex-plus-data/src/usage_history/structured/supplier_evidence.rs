@@ -417,11 +417,12 @@ impl Matches {
         }
         self.matched.insert(id.clone());
         let supplier = &record.supplier_evidence;
-        if !unknown_provider(&event.provider) && event.provider != supplier.provider {
+        let inferred = event.provider_source.as_deref() == Some("model-namespace");
+        if !inferred && !unknown_provider(&event.provider) && event.provider != supplier.provider {
             self.conflicts += 1;
             return;
         }
-        if unknown_provider(&event.provider) {
+        if inferred || unknown_provider(&event.provider) {
             event.provider.clone_from(&supplier.provider);
             event.provider_source = Some(SOURCE.to_owned());
             self.applied += 1;
