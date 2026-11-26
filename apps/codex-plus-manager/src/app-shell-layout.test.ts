@@ -904,3 +904,33 @@ test("Codex 页的登录卡叫「Codex 登录身份」：和各供应商绑定�
   assert.doesNotMatch(auth, /t\("Codex 登录"\)/);
   assert.match(auth, /<span>\{t\("供应商登录账号"\)\}<\/span>/);
 });
+
+test("程序内全部弹框统一到管理页居中弹窗风格：毛玻璃遮罩、四周留白、14px 圆角、统一标题栏 / 输入框 / 底栏按钮", () => {
+  const cursorUi = readSource("./cursor-ui.css");
+  const gatewayCss = readSource("./GatewayPage.css");
+  const formCss = readSource("./ProviderFormDialog.css");
+  const marketCss = readSource("./PluginMarketScreen.css");
+  const stylesCss = readSource("./styles.css");
+
+  // 遮罩统一：半透明底 + 毛玻璃虚化 + 避开红绿灯留白。
+  assert.match(cursorUi, /:root \.gw-modal-backdrop,\n:root \.modal-backdrop \{[^}]*padding: 40px 32px 32px;[^}]*background: hsl\(var\(--shadow-color\) \/ 0\.55\);[^}]*backdrop-filter: blur\(4px\) saturate\(130%\);/);
+  assert.match(cursorUi, /:root \.update-dialog::backdrop,\n:root \.shell \.plugin-market-detail-dialog::backdrop \{[^}]*backdrop-filter: blur\(4px\) saturate\(130%\);/);
+  assert.match(cursorUi, /:root \.palette-backdrop \{[^}]*backdrop-filter: blur\(4px\) saturate\(130%\);/);
+
+  // 弹框外壳统一：14px 圆角、input 描边、surface-raised 底、入场动画，不再出现旧的 8px/12px/16px 混用。
+  assert.match(cursorUi, /:root \.pf-modal,\n:root \.gw-modal \{[^}]*border: 1px solid hsl\(var\(--input\)\);[^}]*border-radius: 14px;[^}]*background: hsl\(var\(--surface-raised\)\);[^}]*animation: modal-rise 180ms var\(--motion-ease\);/);
+  assert.match(gatewayCss, /\.gw-modal-backdrop \{[^}]*backdrop-filter: blur\(4px\) saturate\(130%\);/);
+  assert.match(gatewayCss, /\.gw-portal \.gw-disconnect-modal \{[^}]*border-radius: 14px;/);
+  assert.match(formCss, /\.pf-modal \{[^}]*border-radius: 14px;[^}]*background: hsl\(var\(--surface-raised\)\);/);
+  assert.match(marketCss, /\.shell \.plugin-market-detail-dialog::backdrop \{[^}]*backdrop-filter: blur\(4px\) saturate\(130%\);/);
+  assert.match(stylesCss, /\.palette \{[^}]*border-radius: 14px;/);
+
+  // 标题栏、输入控件、底栏按钮统一到管理页弹窗（.mg-modal）规范。
+  assert.match(cursorUi, /:root \.pf-modal > \.pf-head strong,\n:root \.gw-modal > header strong,\n:root \.gw-modal > header h2 \{[^}]*font-size: 16px;/);
+  assert.match(cursorUi, /:root \.pf-modal > \.pf-head > \.pf-icon svg,\n:root \.gw-modal > header > \.gw-icon-button svg \{[^}]*width: 18px;\n  height: 18px;/);
+  assert.match(cursorUi, /:root :is\(\.pf-modal, \.gw-modal, \.modal-card\) :is\([\s\S]*?border-radius: 6px;[\s\S]*?background-color: hsl\(var\(--background\) \/ 0\.6\);/);
+  assert.match(cursorUi, /:root \.pf-modal > \.pf-foot,\n:root \.gw-modal > footer \{[^}]*justify-content: flex-end;[^}]*padding: 12px 18px;/);
+
+  // AgentConfigEditor 补齐右上角关闭按钮。
+  assert.match(readSource("./AgentConfigEditor.tsx"), /<button aria-label=\{t\("关闭"\)\} className="gw-icon-button"/);
+});

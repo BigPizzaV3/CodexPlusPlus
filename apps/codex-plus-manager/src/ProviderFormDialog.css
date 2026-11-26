@@ -3,15 +3,15 @@
 .pf-modal {
   display: flex;
   flex-direction: column;
-  width: min(560px, calc(100vw - 32px));
-  max-height: min(760px, calc(100vh - 48px));
+  width: min(640px, 100%);
+  max-height: 100%;
   overflow: hidden;
   border: 1px solid hsl(var(--input));
-  border-radius: 12px;
-  background: hsl(var(--popover));
+  border-radius: 14px;
+  background: hsl(var(--surface-raised));
   box-shadow: var(--shadow-xl);
-  color: hsl(var(--popover-foreground));
-  font-size: 12.5px;
+  color: hsl(var(--foreground));
+  font-size: 13px;
   animation: modal-rise 180ms var(--motion-ease);
 }
 

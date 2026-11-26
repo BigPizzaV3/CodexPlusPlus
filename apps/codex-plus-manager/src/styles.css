@@ -4778,7 +4778,7 @@ select {
   overflow: hidden;
 }
 .update-dialog[open] { display: flex; flex-direction: column; }
-.update-dialog::backdrop { background: hsl(var(--shadow-color) / 0.6); backdrop-filter: blur(6px); }
+.update-dialog::backdrop { background: hsl(var(--shadow-color) / 0.55); -webkit-backdrop-filter: blur(4px) saturate(130%); backdrop-filter: blur(4px) saturate(130%); }
 .update-dialog .modal-head { flex-shrink: 0; }
 .update-dialog-body { min-height: 0; overflow-y: auto; }
 .update-dialog-body .release-notes { max-height: none; }
@@ -5476,16 +5476,19 @@ select {
   justify-content: center;
   padding-top: 14vh;
   background: hsl(var(--shadow-color) / 0.55);
+  -webkit-backdrop-filter: blur(4px) saturate(130%);
+  backdrop-filter: blur(4px) saturate(130%);
 }
 
 .palette {
   width: min(560px, calc(100vw - 32px));
   overflow: hidden;
   border: 1px solid hsl(var(--input));
-  border-radius: 12px;
-  background: hsl(var(--popover));
+  border-radius: 14px;
+  background: hsl(var(--surface-raised));
   box-shadow: var(--shadow-xl);
-  color: hsl(var(--popover-foreground));
+  color: hsl(var(--foreground));
+  animation: modal-rise 180ms var(--motion-ease);
 }
 
 .palette-input {

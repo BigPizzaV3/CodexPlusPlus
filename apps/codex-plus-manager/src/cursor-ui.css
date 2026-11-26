@@ -1600,32 +1600,19 @@
   box-shadow: 0 1px 0 hsl(var(--cx-row-divider));
 }
 
-/* 细滚动条（侧栏导航、模型选择器里那排供应商筛选）：4px 滑块、不画轨道，鼠标移上去略深一点。 */
-:root .shell .cx-side-nav::-webkit-scrollbar-track,
-.gw-portal .gw-mp-filters::-webkit-scrollbar-track {
+/* 细滚动条（侧栏导航）：4px 滑块、不画轨道，鼠标移上去略深一点。 */
+:root .shell .cx-side-nav::-webkit-scrollbar-track {
   background: transparent;
 }
 
-:root .shell .cx-side-nav::-webkit-scrollbar-thumb,
-.gw-portal .gw-mp-filters::-webkit-scrollbar-thumb {
+:root .shell .cx-side-nav::-webkit-scrollbar-thumb {
   border: 0;
   border-radius: 999px;
   background: hsl(var(--muted-foreground) / 0.25);
 }
 
-:root .shell .cx-side-nav::-webkit-scrollbar-thumb:hover,
-.gw-portal .gw-mp-filters::-webkit-scrollbar-thumb:hover {
+:root .shell .cx-side-nav::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.45);
-}
-
-.gw-portal .gw-mp-filters {
-  overflow-y: hidden;
-  padding-bottom: 4px;
-  scrollbar-width: thin;
-}
-
-.gw-portal .gw-mp-filters::-webkit-scrollbar {
-  height: 4px;
 }
 
 /* 供应商池右下角的悬浮提示（去首页看赞助商推荐）：小卡片浮在内容区右下角，不挡侧栏。 */
@@ -1729,4 +1716,476 @@
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* ── 弹窗统一（对齐管理页居中弹窗 .mg-modal） ──────────────────────
+   所有挂在 body 上的网关 / 供应商弹窗（.gw-modal-backdrop + .pf-modal / .gw-modal）、
+   通用对话弹窗（.modal-backdrop + .modal-card）、原生 <dialog> 与命令面板，
+   统一使用与管理页居中弹窗相同的毛玻璃遮罩、留白、圆角、标题栏、输入框和底栏按钮风格。
+   用 `:root` 前缀提升权重，且不依赖 `.shell` 祖先（portal 挂在 body 下）。 */
+
+:root .gw-modal-backdrop,
+:root .modal-backdrop {
+  padding: 40px 32px 32px;
+  background: hsl(var(--shadow-color) / 0.55);
+  -webkit-backdrop-filter: blur(4px) saturate(130%);
+  backdrop-filter: blur(4px) saturate(130%);
+}
+
+:root .palette-backdrop {
+  background: hsl(var(--shadow-color) / 0.55);
+  -webkit-backdrop-filter: blur(4px) saturate(130%);
+  backdrop-filter: blur(4px) saturate(130%);
+}
+
+:root .update-dialog::backdrop,
+:root .shell .plugin-market-detail-dialog::backdrop {
+  background: hsl(var(--shadow-color) / 0.55);
+  -webkit-backdrop-filter: blur(4px) saturate(130%);
+  backdrop-filter: blur(4px) saturate(130%);
+}
+
+:root .pf-modal,
+:root .gw-modal {
+  width: min(640px, 100%);
+  height: auto;
+  max-height: 100%;
+  overflow: hidden;
+  border: 1px solid hsl(var(--input));
+  border-radius: 14px;
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  box-shadow: var(--shadow-xl);
+  font-size: 13px;
+  animation: modal-rise 180ms var(--motion-ease);
+}
+
+:root .modal-card,
+:root .palette,
+:root .shell .plugin-market-detail-dialog {
+  border: 1px solid hsl(var(--input));
+  border-radius: 14px;
+  background: hsl(var(--surface-raised));
+  color: hsl(var(--foreground));
+  box-shadow: var(--shadow-xl);
+  animation: modal-rise 180ms var(--motion-ease);
+}
+
+/* 保留各自业务所需的特殊宽度，上限受遮罩留白约束。 */
+:root .gw-portal .pf-reasoning-modal {
+  width: min(680px, 100%);
+}
+
+:root .gw-modal.gw-catalog-modal {
+  width: min(860px, 100%);
+  height: min(640px, 100%);
+}
+
+:root .gw-portal .gw-disconnect-modal {
+  width: min(820px, 100%);
+  border-radius: 14px;
+}
+
+:root .gw-modal.gw-agent-modal,
+:root .shell .gw-modal.gw-agent-modal {
+  width: min(860px, 100%);
+}
+
+:root .gw-modal.gw-device-modal {
+  width: min(520px, 100%);
+}
+
+:root .gw-portal .tpi-modal {
+  width: min(600px, 100%);
+}
+
+:root .gw-portal .pcd-modal,
+:root .gw-modal.gw-group-modal {
+  width: min(640px, 100%);
+}
+
+/* 标题栏：对齐 .mg-drawer > header（52px 起、16px 标题、28px 关闭键 + 18px 叉号）。 */
+:root .pf-modal > .pf-head,
+:root .gw-modal > header {
+  flex-shrink: 0;
+  min-height: 52px;
+  padding: 12px 18px 12px 20px;
+  gap: 12px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: none;
+}
+
+:root .pf-modal > .pf-head strong,
+:root .gw-modal > header strong,
+:root .gw-modal > header h2 {
+  color: hsl(var(--foreground));
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.35;
+}
+
+:root .pf-modal > .pf-head small,
+:root .gw-modal > header small {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
+:root .pf-modal > .pf-head > .pf-icon,
+:root .gw-modal > header > .gw-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: hsl(var(--foreground));
+}
+
+:root .pf-modal > .pf-head > .pf-icon:hover:not(:disabled),
+:root .gw-modal > header > .gw-icon-button:hover:not(:disabled) {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+:root .pf-modal > .pf-head > .pf-icon svg,
+:root .gw-modal > header > .gw-icon-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* 内容区：对齐 .mg-modal-form > .mg-drawer-body 的留白与间距。 */
+:root .pf-modal > .pf-body,
+:root .gw-modal > .gw-modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+:root .pf-modal .pf-section {
+  padding: 16px 20px;
+  gap: 12px;
+}
+
+:root .pf-modal .pf-section h4 {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+:root .gw-modal > .gw-modal-body {
+  padding: 18px 20px 20px;
+  gap: 16px;
+}
+
+:root .gw-catalog-modal > .gw-modal-body.gw-catalog {
+  padding: 10px 18px 18px;
+}
+
+/* 表单标签与输入控件：对齐 .mg-field（6px 圆角、柔和暗底、无发光阴影、34px 高度）。 */
+:root :is(.pf-modal, .gw-modal) :is(.pf-field, .gw-field, .pcd-field) {
+  gap: 6px;
+}
+
+:root :is(.pf-modal, .gw-modal) :is(.pf-field, .gw-field, .pcd-field) > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+:root :is(.pf-modal, .gw-modal) :is(.pf-field, .gw-field, .pcd-field) > span small {
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+}
+
+:root :is(.pf-modal, .gw-modal, .modal-card) :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="number"],
+  input[type="password"],
+  input[type="url"],
+  input:not([type]),
+  textarea,
+  select
+) {
+  border: 1px solid hsl(var(--input) / 0.85);
+  border-radius: 6px;
+  background-color: hsl(var(--background) / 0.6);
+  color: hsl(var(--foreground));
+  font-size: 13px;
+  line-height: 1.4;
+  box-shadow: none;
+  outline: 0;
+}
+
+:root :is(.pf-modal, .gw-modal, .modal-card) :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="number"],
+  input[type="password"],
+  input[type="url"],
+  input:not([type]),
+  select
+) {
+  height: 34px;
+  padding: 0 9px;
+}
+
+:root :is(.pf-modal, .gw-modal, .modal-card) textarea {
+  padding: 7px 9px;
+}
+
+:root :is(.pf-modal, .gw-modal, .modal-card) :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="number"],
+  input[type="password"],
+  input[type="url"],
+  input:not([type]),
+  textarea,
+  select
+):hover:not(:disabled) {
+  border-color: hsl(var(--input));
+}
+
+:root :is(.pf-modal, .gw-modal, .modal-card) :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="number"],
+  input[type="password"],
+  input[type="url"],
+  input:not([type]),
+  textarea,
+  select
+):focus,
+:root :is(.pf-modal, .gw-modal, .modal-card) :is(
+  input[type="text"],
+  input[type="search"],
+  input[type="number"],
+  input[type="password"],
+  input[type="url"],
+  input:not([type]),
+  textarea,
+  select
+):focus-visible {
+  border-color: hsl(var(--ring) / 0.7);
+  box-shadow: none;
+  outline: 0;
+}
+
+/* 嵌在复合容器里的无边框输入框与表格紧凑输入框，还原自身外形。 */
+:root :is(.pf-modal, .gw-modal) :is(.pf-chip-input, .pf-picker-head input, .gw-sheet-search input, .gw-pattern-input input) {
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+}
+
+:root .pf-modal .pf-chip-input {
+  height: 22px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+:root .pf-modal .pf-price-row input {
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12.5px;
+}
+
+:root .pf-modal .pf-table-search {
+  height: 30px;
+  font-size: 12.5px;
+}
+
+:root .gw-modal .gw-weight-input {
+  height: 28px;
+  padding: 0 7px;
+  font-size: 12.5px;
+}
+
+:root :is(.pf-modal, .gw-modal) .app-select-trigger {
+  min-height: 34px;
+  height: 34px;
+  border-color: hsl(var(--input) / 0.85);
+  border-radius: 6px;
+  background: hsl(var(--background) / 0.6);
+  font-size: 13px;
+}
+
+:root :is(.pf-modal, .gw-modal) .app-select-sm .app-select-trigger {
+  min-height: 28px;
+  height: 28px;
+  font-size: 12px;
+}
+
+/* 标签输入盒、模型勾选框、摘要卡、分段控件：与管理页表单同一表面层次。 */
+:root .pf-modal .pf-chips,
+:root .pf-modal .pf-picker {
+  border: 1px solid hsl(var(--input) / 0.85);
+  border-radius: 6px;
+  background: hsl(var(--background) / 0.6);
+}
+
+:root .pf-modal .pf-chips:focus-within {
+  border-color: hsl(var(--ring) / 0.7);
+}
+
+:root .pf-modal .pf-windows-entry {
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--surface-sunken) / 0.4);
+}
+
+:root .pf-modal > .pf-agents {
+  padding: 12px 20px;
+}
+
+:root .pf-modal .pf-action {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 7px;
+  background: transparent;
+  color: hsl(var(--foreground));
+  font-size: 12px;
+  font-weight: 500;
+}
+
+:root .pf-modal .pf-action:hover:not(:disabled) {
+  background: hsl(var(--accent));
+}
+
+:root :is(.pf-modal, .gw-modal) :is(.pf-seg, .gw-tabs, .mg-segmented, .mg-tabs) {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: auto;
+  padding: 3px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken));
+  width: max-content;
+}
+
+:root :is(.pf-modal, .gw-modal) :is(.pf-seg, .gw-tabs, .mg-segmented, .mg-tabs) > button {
+  height: auto;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 12.5px;
+  box-shadow: none;
+}
+
+:root :is(.pf-modal, .gw-modal) :is(.pf-seg, .gw-tabs, .mg-segmented, .mg-tabs) > button:is([data-active="true"], [aria-pressed="true"], [aria-selected="true"]) {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+  box-shadow: none;
+}
+
+/* 底栏与按钮：对齐 .mg-drawer > footer 与 .mg-button / .mg-primary（28px 高、7px 圆角、取消带描边、主按钮无阴影）。 */
+:root .pf-modal > .pf-foot,
+:root .gw-modal > footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid hsl(var(--border));
+}
+
+:root .gw-modal > footer.gw-import-foot,
+:root .gw-modal > footer.gw-catalog-foot {
+  justify-content: space-between;
+}
+
+:root :is(.pf-modal > .pf-foot, .gw-modal > footer, .modal-card .app-dialog-actions, .modal-card .confirm-modal-actions, .modal-card .modal-actions, .modal-card .update-dialog-actions, .modal-card > .toolbar) > button:not(.gw-icon-button) {
+  height: 28px;
+  margin-top: 0;
+  padding: 0 12px;
+  border-radius: 7px;
+  font-size: 12.5px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+/* 次要按钮（取消、关闭、重测等）：透明底 + 清晰描边。 */
+:root :is(.pf-modal > .pf-foot, .gw-modal > footer, .modal-card .app-dialog-actions, .modal-card .confirm-modal-actions, .modal-card .modal-actions, .modal-card .update-dialog-actions, .modal-card > .toolbar) > button:not(.bg-primary):not(.gw-primary-button):not(.gw-icon-button):not(.app-dialog-danger) {
+  border: 1px solid hsl(var(--input));
+  background: transparent;
+  color: hsl(var(--foreground));
+}
+
+:root :is(.pf-modal > .pf-foot, .gw-modal > footer, .modal-card .app-dialog-actions, .modal-card .confirm-modal-actions, .modal-card .modal-actions, .modal-card .update-dialog-actions, .modal-card > .toolbar) > button:not(.bg-primary):not(.gw-primary-button):not(.gw-icon-button):not(.app-dialog-danger):hover:not(:disabled) {
+  border-color: hsl(var(--input));
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+/* 主按钮（保存、确认、导入、开始测试等）：主题主色实底、无投影、禁用 0.45 透明。 */
+:root :is(.pf-modal > .pf-foot, .gw-modal > footer, .modal-card .app-dialog-actions, .modal-card .confirm-modal-actions, .modal-card .modal-actions, .modal-card .update-dialog-actions, .modal-card > .toolbar) > :is(button.bg-primary, .gw-primary-button):not(.app-dialog-danger) {
+  border: 1px solid hsl(var(--primary));
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  box-shadow: none;
+}
+
+:root :is(.pf-modal > .pf-foot, .gw-modal > footer, .modal-card .app-dialog-actions, .modal-card .confirm-modal-actions, .modal-card .modal-actions, .modal-card .update-dialog-actions, .modal-card > .toolbar) > :is(button.bg-primary, .gw-primary-button):not(.app-dialog-danger):hover:not(:disabled) {
+  background: hsl(var(--primary) / 0.88);
+}
+
+:root :is(.pf-modal > .pf-foot, .gw-modal > footer, .modal-card .app-dialog-actions, .modal-card .confirm-modal-actions, .modal-card .modal-actions, .modal-card .update-dialog-actions, .modal-card > .toolbar) > button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+:root .gw-modal > footer > .gw-icon-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+/* 危险确认按钮：红色描边浅底，与 .mg-danger-button 一致。 */
+:root .modal-card .app-dialog-actions > .app-dialog-danger {
+  border: 1px solid hsl(var(--destructive) / 0.35);
+  background: hsl(var(--destructive) / 0.1);
+  color: hsl(var(--destructive));
+  box-shadow: none;
+}
+
+:root .modal-card .app-dialog-actions > .app-dialog-danger:hover:not(:disabled) {
+  background: hsl(var(--destructive) / 0.18);
+}
+
+/* 模型选择器浮层：对齐统一弹框表面与圆角。 */
+:root .gw-popover.gw-model-popover {
+  border: 1px solid hsl(var(--input));
+  border-radius: 12px;
+  background: hsl(var(--surface-raised));
+  box-shadow: var(--shadow-xl);
+}
+
+@media (max-width: 760px) {
+  :root .gw-modal-backdrop,
+  :root .modal-backdrop {
+    padding: 36px 12px 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root .pf-modal,
+  :root .gw-modal,
+  :root .modal-card,
+  :root .palette,
+  :root .shell .plugin-market-detail-dialog {
+    animation: none;
+  }
 }

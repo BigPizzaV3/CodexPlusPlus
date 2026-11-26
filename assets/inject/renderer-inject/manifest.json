@@ -68,7 +68,7 @@
     {
       "name": "42-provider-editing.generated.js",
       "description": "生成文件：与管理器共用的供应商编辑纯函数（relay-profile-editing.ts，scripts/assemble-provider-editing.mjs 打包）",
-      "lines": 3281
+      "lines": 3261
     },
     {
       "name": "43-provider-page.js",
@@ -123,7 +123,7 @@
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器供应商图标与折叠列表双视图、有效默认身份展示",
-      "lines": 2377
+      "lines": 2936
     },
     {
       "name": "80-session-share.js",

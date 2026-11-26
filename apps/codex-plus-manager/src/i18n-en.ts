@@ -1059,6 +1059,7 @@ export const EN_PLAIN: Record<string, string> = {
   "Codex++ 本地服务": "Codex++ local service",
   "档位": "Tiers",
   "没有匹配的模型": "No matching models",
+  "未找到模型": "No models found",
   "共享供应商是空的，先在「共享供应商」里添加供应商。": "The shared providers is empty. Add a provider under Shared providers first.",
   "Grok 页里配置的供应商": "Providers configured on the Grok page",
   "OpenCode 里保存的 Key": "Keys saved in OpenCode",

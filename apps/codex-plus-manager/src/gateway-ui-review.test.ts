@@ -287,7 +287,7 @@ test("模型选择器顶部的供应商按钮是筛选，不是滚动到那一�
   const source = read("GatewayAgents.tsx");
   assert.match(source, /onClick=\{\(\) => pickScope\(\{ section: section\.key \}\)\}/);
   assert.match(source, /pickerSections\(payload, query, avatarOf, exclude, skipGroup, sectionOnly,/);
-  assert.match(source, /if \(sectionOnly\) return all\.filter\(\(section\) => section\.key === sectionOnly \|\| section\.key === "custom"\)/, "自定义组由 pickerSections 按供应商限定");
+  assert.match(source, /if \(sectionOnly\) return all\.filter\(\(section\) => section\.key === sectionOnly\)/);
   assert.doesNotMatch(source, /scrollTop = node\.offsetTop/);
 });
 

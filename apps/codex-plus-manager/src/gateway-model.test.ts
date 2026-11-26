@@ -162,9 +162,7 @@ test("模型选择器：每个供应商一组，路由组作为 group/ 模型在
   assert.deepEqual(all[0].items.map((item) => item.model), ["deepseek-v4-pro", "deepseek-v4-flash"]);
   assert.deepEqual(all[2].items[0], { model: "group/daily", label: "Daily", sub: "group/Daily", avatar: "DA" });
   assert.deepEqual(pickerSections(payload(), "flash", initials)[0].items.map((item) => item.model), ["deepseek-v4-flash"]);
-  const custom = pickerSections(payload(), "kimi-k3", initials).at(-1);
-  assert.equal(custom?.key, "custom");
-  assert.deepEqual(custom?.items.map((item) => item.model), ["deepseek/kimi-k3", "glm/kimi-k3", "bare/kimi-k3"]);
+  assert.deepEqual(pickerSections(payload(), "kimi-k3", initials), []);
   assert.equal(pickerSections(payload(), "deepseek-v4-pro", initials).some((section) => section.key === "custom"), false);
   // 编辑路由组时不能选它自己；挑选排除的供应商不出现。
   assert.equal(pickerSections(payload(), "", initials, [], "daily").some((section) => section.key === "group"), false);
@@ -220,32 +218,12 @@ test("完整含斜杠的模型名优先于供应商前缀", () => {
   assert.equal(qualifiedProvider(data, "group/daily"), null);
 });
 
-test("自定义限定模型保留供应商和原始上游模型", () => {
+test("已保存的限定模型带窗口后缀时，显示仍识别供应商可用状态", () => {
   const data = payload();
   data.pool[1].source = "preset:glm";
-  const qualified = pickerSections(data, "glm/vendor/new", initials).find((section) => section.key === "custom")!.items;
-  assert.equal(qualified.length, 1);
-  assert.equal(qualified[0].model, "glm/vendor/new");
-  assert.deepEqual(qualified[0].defaultModelSelection, {
-    providerId: "glm", upstreamModel: "vendor/new", providerSource: "preset:glm",
-  });
-  const unqualified = pickerSections(data, "vendor/new", initials).find((section) => section.key === "custom")!.items[1];
-  assert.equal(unqualified.model, "glm/vendor/new");
-  assert.deepEqual(unqualified.defaultModelSelection, qualified[0].defaultModelSelection);
-  assert.deepEqual(bindingFromDraft({ ...draftFromBinding(undefined), model: qualified[0].model }, undefined, qualified[0]).defaultModelSelection, qualified[0].defaultModelSelection);
-});
-
-test("自定义模型的窗口后缀不属于上游模型身份", () => {
-  const data = payload();
-  data.pool[1].source = "preset:glm";
-  const item = pickerSections(data, "glm/vendor/new[1M]", initials)
-    .find((section) => section.key === "custom")!.items[0];
-  assert.equal(item.model, "glm/vendor/new[1M]");
-  assert.equal(item.defaultModelSelection?.upstreamModel, "vendor/new");
+  const selection = { providerId: "glm", upstreamModel: "vendor/new[1M]", providerSource: "preset:glm" };
   data.pool[1].enabled = false;
-  assert.equal(modelDisplay(data, item.model, [], {
-    ...item.defaultModelSelection!, upstreamModel: "vendor/new[1M]",
-  }).issue, "unavailable");
+  assert.equal(modelDisplay(data, "glm/vendor/new[1M]", [], selection).issue, "unavailable");
 });
 
 test("供应商 ID 与模型组前缀同名时显示冲突，不把供应商选择当停用组", () => {

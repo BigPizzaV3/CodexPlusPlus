@@ -2337,7 +2337,7 @@ ${key} = ${value}`]);
     if (!query) return true;
     return values.some((value) => value.toLowerCase().includes(query));
   }
-  function pickerSections(payload, rawQuery, avatar, exclude = [], skipGroup, sectionOnly = null, hasOwnMatch = false) {
+  function pickerSections(payload, rawQuery, avatar, exclude = [], skipGroup, sectionOnly = null, _hasOwnMatch = false) {
     if (!payload) return [];
     const query = rawQuery.trim().toLowerCase();
     const sections = [];
@@ -2372,27 +2372,7 @@ ${key} = ${value}`]);
     if (autoItems.length) sections.push({ key: "auto", title: "自动组", avatar: "", items: autoItems });
     const groups = payload.groups.filter((group) => !group.disabled && group.id !== skipGroup && group.members.length && matches(query, group.name, groupModelId(group.id))).map((group) => ({ model: groupModelId(group.id), label: group.name, sub: `${GROUP_MODEL_PREFIX}${group.name}`, avatar: avatar(group.name) }));
     if (groups.length) sections.push({ key: "group", title: "我的组", avatar: "", items: groups });
-    const typed = rawQuery.trim();
-    const visible = sectionOnly ? sections.filter((section) => section.key === sectionOnly) : sections;
-    const qualified = qualifiedProvider(payload, typed, exclude);
-    const canOfferCustom = !sectionOnly || sectionOnly.startsWith("provider:");
-    if (typed && !/\s/.test(typed) && canOfferCustom && !disabledGroup(payload, typed) && !visible.length && !hasOwnMatch && (!modelRoutable(payload, typed, exclude) || qualified)) {
-      const targets = providers.filter((entry) => (!sectionOnly || sectionOnly === `provider:${entry.id}`) && (!qualified || entry.id === qualified.entry.id)).slice(0, 6);
-      if (!targets.length) return sections;
-      sections.push({
-        key: "custom",
-        title: "自定义模型",
-        avatar: "",
-        items: targets.map((entry) => ({
-          model: qualified ? typed : `${entry.id}/${typed}`,
-          defaultModelSelection: { providerId: entry.id, upstreamModel: modelSlugFromRowName(qualified ? qualified.model : typed), providerSource: entry.source ?? "" },
-          label: typed,
-          sub: maskAccountName(entry.name),
-          avatar: avatar(entry.name),
-          custom: true
-        }))
-      });
-    }
+    void sectionOnly;
     return sections;
   }
   function visibleOwnModels(agent, payload) {
