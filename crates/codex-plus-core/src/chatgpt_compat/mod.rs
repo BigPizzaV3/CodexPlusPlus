@@ -411,30 +411,55 @@ pub fn running() -> bool {
 
 struct ServerHandle {
     shutdown: tokio::sync::watch::Sender<bool>,
+    generation: u64,
 }
 
 static SERVER: Mutex<Option<ServerHandle>> = Mutex::new(None);
+static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// 启动兼容服务。已经在跑时直接返回。端口被占用时返回错误，由调用方提示。
+///
+/// 不以句柄判断「已经在跑」：存着的句柄可能比监听者活得久（任务被提前结束），
+/// 只看句柄会让服务再也起不来——日志里就是 `started` 只出现过一次，之后端口早就没人听，
+/// 每次启动都当成「已经在跑」直接返回。这里总是先绑端口，绑到了才算启动。
 pub async fn start() -> anyhow::Result<()> {
-    if running() {
-        return Ok(());
-    }
     let cert = ensure_certificate()?;
     let mut config = (*crate::remote_control::tls::server_config(&cert)?).clone();
     // 只说 HTTP/1.1：Chromium 默认先协商 h2，这里只会按 HTTP/1.1 应答。
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(config));
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", PORT))
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!("兼容服务绑定 127.0.0.1:{PORT} 失败：{error}（端口可能被占用）")
-        })?;
+    let listener = match tokio::net::TcpListener::bind(("127.0.0.1", PORT)).await {
+        Ok(listener) => listener,
+        // 绑不上但句柄还在：就是本进程在听，按已启动处理。
+        Err(_) if running() => return Ok(()),
+        Err(error) => {
+            anyhow::bail!("兼容服务绑定 127.0.0.1:{PORT} 失败：{error}（端口可能被占用）")
+        }
+    };
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-    *SERVER.lock().expect("chatgpt compat server lock") = Some(ServerHandle {
-        shutdown: shutdown_tx,
+    let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let previous = SERVER
+        .lock()
+        .expect("chatgpt compat server lock")
+        .replace(ServerHandle {
+            shutdown: shutdown_tx,
+            generation,
+        });
+    // 上一个句柄对应的监听者已经不在（否则上面绑不上）：把它的任务收掉。
+    if let Some(previous) = previous {
+        let _ = previous.shutdown.send(true);
+    }
+    tokio::spawn(async move {
+        serve(listener, acceptor, shutdown_rx).await;
+        // 被 stop 或任务自己结束时只清自己这一代，别把后来启动的那个句柄清掉。
+        let mut server = SERVER.lock().expect("chatgpt compat server lock");
+        if server
+            .as_ref()
+            .is_some_and(|handle| handle.generation == generation)
+        {
+            *server = None;
+        }
     });
-    tokio::spawn(serve(listener, acceptor, shutdown_rx));
     let _ = crate::diagnostic_log::append_diagnostic_log(
         "chatgpt_compat.started",
         json!({ "port": PORT, "recordings": recordings().len() }),
@@ -669,6 +694,52 @@ mod tests {
         use base64::Engine;
         let bytes = base64::engine::general_purpose::STANDARD.decode(&hash).unwrap();
         assert_eq!(bytes.len(), 32);
+    }
+
+    /// 句柄比监听者活得久时也要能把服务重新拉起来：以前只按句柄判断「已经在跑」，
+    /// 端口早就没人听也会直接返回 Ok，服务从此再也起不来。
+    #[tokio::test]
+    async fn start_rebinds_after_the_previous_listener_is_gone() {
+        // 端口是进程级固定资源：本机已经有服务在听（开发机常常开着）就跳过。
+        let Ok(probe) = tokio::net::TcpListener::bind(("127.0.0.1", PORT)).await else {
+            return;
+        };
+        drop(probe);
+        // 证书落在状态目录里：拿进程级的设置路径锁，再用自己的临时目录，别和并行用例抢同一个文件。
+        let _guard = crate::paths::settings_path_test_guard();
+        let state = tempfile::tempdir().unwrap();
+        struct RestoreStateDir(Option<std::ffi::OsString>);
+        impl Drop for RestoreStateDir {
+            fn drop(&mut self) {
+                // SAFETY: 整个用例持着设置路径锁，没有别的用例同时读这个变量。
+                unsafe {
+                    match self.0.take() {
+                        Some(previous) => std::env::set_var(crate::paths::STATE_DIR_ENV, previous),
+                        None => std::env::remove_var(crate::paths::STATE_DIR_ENV),
+                    }
+                }
+            }
+        }
+        let _restore = {
+            let previous = std::env::var_os(crate::paths::STATE_DIR_ENV);
+            // SAFETY: 同上。
+            unsafe { std::env::set_var(crate::paths::STATE_DIR_ENV, state.path()) };
+            RestoreStateDir(previous)
+        };
+        stop();
+        // 假装表里还留着一个句柄，但它对应的监听者已经不在了。
+        let (shutdown, _receiver) = tokio::sync::watch::channel(false);
+        let generation = GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *SERVER.lock().expect("chatgpt compat server lock") = Some(ServerHandle {
+            shutdown,
+            generation,
+        });
+        assert!(running(), "前提：表里留着一个陈旧句柄");
+
+        start().await.unwrap();
+        let rebound = tokio::net::TcpListener::bind(("127.0.0.1", PORT)).await;
+        assert!(rebound.is_err(), "start() 应该真的绑上端口，而不是信陈旧句柄");
+        stop();
     }
 
     /// 在随机端口真起服务，用只信任这张证书的 TLS 客户端连上去读应答。
