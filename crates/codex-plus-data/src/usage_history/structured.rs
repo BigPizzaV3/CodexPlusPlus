@@ -1718,6 +1718,8 @@ impl ClassificationEvidence {
         match (self, next) {
             (Self::UpstreamExact, Self::RequestExact)
             | (Self::RequestExact, Self::UpstreamExact) => Self::RequestExact,
+            (Self::NamespaceInferred, Self::SessionContextInferred)
+            | (Self::SessionContextInferred, Self::NamespaceInferred) => Self::SessionContextInferred,
             (left, right) if left == right => left,
             _ => Self::None,
         }

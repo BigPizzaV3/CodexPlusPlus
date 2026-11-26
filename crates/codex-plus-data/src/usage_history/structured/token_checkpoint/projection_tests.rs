@@ -3570,6 +3570,20 @@ fn restored_supplier_evidence_keeps_inference_separate_without_changing_counts()
     Ok(())
 }
 
+#[test]
+fn mixed_supplier_inference_preserves_inferred_flag() {
+    use crate::usage_history::structured::ClassificationEvidence as Evidence;
+    for (a, b) in [
+        (Evidence::NamespaceInferred, Evidence::SessionContextInferred),
+        (Evidence::SessionContextInferred, Evidence::NamespaceInferred),
+    ] {
+        let mut row = json!({});
+        a.intersect(b).write_to(&mut row);
+        assert_eq!(row, json!({"providerInferred":true}));
+        assert_eq!(a.intersect(Evidence::RequestExact), Evidence::None);
+    }
+}
+
 fn restored_supplier_evidence_for_source(inferred_source: &str) -> anyhow::Result<()> {
     use super::historical::{EvidenceVerifier, Historical};
     use std::sync::Mutex;
