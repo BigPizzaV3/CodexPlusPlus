@@ -1,4 +1,4 @@
-//! 供应商证据按查询生命周期采集，缓存与采集锁保存在管理器状态目录。
+//! 供应商证据随记录功能持续采集，缓存与采集锁保存在管理器状态目录。
 use super::native_endpoints::timestamp_ms;
 use super::*;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -66,14 +66,16 @@ fn start_provider_collector_with_log(
             if owner.is_some() {
                 match collector.tick(&home, &sqlite_home, &settings_path, &request_log) {
                     Ok(backlog) => { pending = backlog; failed = false; },
-                    Err(_) => {
+                    Err(error) => {
                         // 短暂锁库或半写配置下次重试；不影响请求转发或页面。
                         collector.settings_stamp = None;
                         if !failed {
-                            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                            if let Err(log_error) = codex_plus_core::diagnostic_log::append_diagnostic_log(
                                 "usage.provider_capture.retry",
-                                json!({"reason":"local evidence temporarily unavailable"}),
-                            );
+                                json!({"reason":"local evidence temporarily unavailable","message":format!("{error:#}")}),
+                            ) {
+                                eprintln!("supplier evidence capture failed: {error:#}; diagnostic log failed: {log_error}");
+                            }
                         }
                         failed = true;
                     }
@@ -82,7 +84,16 @@ fn start_provider_collector_with_log(
             let delay = if pending { Duration::from_millis(250) } else { INTERVAL };
             if receiver.recv_timeout(delay) != Err(mpsc::RecvTimeoutError::Timeout) {
                 // 只做最后一个有界批次，避免退出后还留有后台写入。
-                if owner.is_some() { let _ = collector.tick(&home, &sqlite_home, &settings_path, &request_log); }
+                if owner.is_some()
+                    && let Err(error) = collector.tick(&home, &sqlite_home, &settings_path, &request_log)
+                {
+                    if let Err(log_error) = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "usage.provider_capture.stop_failed",
+                        json!({"message":format!("{error:#}")}),
+                    ) {
+                        eprintln!("supplier evidence final capture failed: {error:#}; diagnostic log failed: {log_error}");
+                    }
+                }
                 return;
             }
         }

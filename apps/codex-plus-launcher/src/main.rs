@@ -31,6 +31,21 @@ pub fn clear_usage_history() {
     codex_plus_data::usage_history::clear_history(&home);
 }
 
+/// 管理器启动和设置变更时接续证据采集，关闭面板不停止记录。
+pub fn sync_usage_history_capture() {
+    let home = codex_plus_core::codex_sqlite::default_codex_home_dir();
+    let settings = codex_plus_core::paths::default_settings_path();
+    if let Err(error) = codex_plus_data::usage_history::sync_provider_capture(&home, &settings) {
+        let message = format!("{error:#}");
+        if let Err(log_error) = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "usage.provider_capture.start_failed",
+            json!({"message":message}),
+        ) {
+            eprintln!("usage capture failed: {message}; diagnostic log failed: {log_error}");
+        }
+    }
+}
+
 fn show_gui(payload: Value) -> Result<()> {
     let handler = NAVIGATION_HANDLER
         .get_or_init(|| Mutex::new(None))
@@ -420,9 +435,12 @@ pub fn shutdown() -> Result<()> {
         .lock()
         .map_err(|_| anyhow::anyhow!("Codex++ 后台运行时锁已损坏"))?;
     let Some(current) = worker.begin_shutdown() else {
+        clear_usage_history();
         return Ok(());
     };
-    shutdown_worker(current)
+    let result = shutdown_worker(current);
+    clear_usage_history();
+    result
 }
 
 /// 读会话快照。纯内存读 + 一次状态文件读，无副作用、不会启动任何东西。
@@ -669,6 +687,7 @@ async fn run_embedded_session(
             return;
         }
     };
+    sync_usage_history_capture();
     // 启动包含 spawn_blocking 的数据库/系统浏览器事务；停止请求要等它们完成，
     // 再销毁 monitor owner，不能直接取消 future 让已开始的系统改写失去恢复句柄。
     let result = match launcher_session(options.clone(), &hooks, &mut ready, guard.is_some()).await

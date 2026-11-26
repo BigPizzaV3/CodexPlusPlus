@@ -124,6 +124,11 @@ pub fn clear_history(codex_home: &Path) {
     }
 }
 
+/// 宿主启动和设置变更时同步证据采集，不依赖用量页面是否打开。
+pub fn sync_provider_capture(codex_home: &Path, settings_path: &Path) -> anyhow::Result<()> {
+    structured::sync_provider_capture(&fs::canonicalize(codex_home)?, settings_path)
+}
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Tokens {

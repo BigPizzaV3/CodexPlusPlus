@@ -57,9 +57,79 @@ fn idle_expiry_releases_index_and_clear_joins_inflight_worker() {
     assert!(evict_idle(&home, &cache));
     drop(cache);
     assert!(weak.upgrade().is_none());
+    assert!(collectors().lock().unwrap().contains_key(&home));
     let _ = query_with_settings(&home, &options, &json!({}), settings);
     clear(&home);
     assert!(!homes().lock().unwrap().contains_key(&home));
+    assert!(!collectors().lock().unwrap().contains_key(&home));
+}
+
+#[test]
+fn enabled_recording_captures_without_a_history_query_and_stops_when_disabled() {
+    use fs2::FileExt;
+    use std::io::Write;
+
+    let _serial = SERIAL.lock().unwrap();
+    let _request_log = codex_plus_core::request_log::request_log_test_guard();
+    let (root, home, settings, options) = fixture();
+    let request_log = root.path().join("requests.jsonl");
+    let request = |id: &str| {
+        let at = Local::now().timestamp_millis();
+        json!({"id":id,"threadId":"00000000-0000-4000-8000-000000000001",
+            "model":"provider/model","upstreamModel":"model","relayId":"provider","relayName":"Provider",
+            "success":true,"state":"success","statusCode":200,"timestampMs":at,"startedAtMs":at-100,
+            "attempts":1,"autoRetries":0,"finalResponseEvidence":"final-response-v1","finalResponseId":id,
+            "usage":{"inputTokens":100,"outputTokens":10,"cachedTokens":20,"cachedTokensKnown":true}})
+    };
+    fs::write(&request_log, format!("{}\n", request("before-query"))).unwrap();
+    codex_plus_core::request_log::set_request_log_path_for_tests(Some(request_log.clone()));
+    let started = sync_provider_capture(&home, &settings);
+    codex_plus_core::request_log::set_request_log_path_for_tests(None);
+    started.unwrap();
+    assert!(!homes().lock().unwrap().contains_key(&home));
+    let storage = provider_cache::storage_dir(&home, &settings);
+    let captured = |id: &str| {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if storage.join("usage-provider-cache.sqlite").exists() {
+                let db = rusqlite::Connection::open_with_flags(
+                    storage.join("usage-provider-cache.sqlite"),
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                ).unwrap();
+                let found = db.query_row(
+                    "SELECT count(*) FROM completed_proxy_requests r
+                     JOIN completed_proxy_request_extra e USING(id)
+                     WHERE r.id=?1 AND json_extract(r.data,'$.relayId')='provider'
+                     AND json_extract(e.data,'$.final_response_id')=?1
+                     AND json_extract(e.data,'$.cached_tokens_known')=1",
+                    [id], |row| row.get::<_, i64>(0),
+                );
+                if matches!(found, Ok(1)) {
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "request {id} was not captured");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    };
+    captured("before-query");
+    let lock = File::open(storage.join("usage-provider-collector.lock")).unwrap();
+    assert!(lock.try_lock_exclusive().is_err());
+    sync_provider_capture(&home, &settings).unwrap();
+    assert!(lock.try_lock_exclusive().is_err());
+    assert!(!storage.join(super::super::TOKEN_INDEX_DB).exists());
+    assert_eq!(settled(&home, &settings, &options)["complete"], true);
+    let cache = homes().lock().unwrap()[&home].clone();
+    cache.lock().unwrap().touched = Instant::now() - IDLE_TIMEOUT - Duration::from_secs(1);
+    assert!(evict_idle(&home, &cache));
+    let mut log = fs::OpenOptions::new().append(true).open(&request_log).unwrap();
+    writeln!(log, "{}", request("after-idle")).unwrap();
+    drop(log);
+    captured("after-idle");
+    fs::write(&settings, r#"{"usageHistoryEnabled":false}"#).unwrap();
+    sync_provider_capture(&home, &settings).unwrap();
+    assert!(!collectors().lock().unwrap().contains_key(&home));
+    lock.try_lock_exclusive().unwrap();
 }
 
 #[test]

@@ -1939,7 +1939,6 @@ struct Cache {
     active: bool,
     refreshed: Option<Instant>,
     touched: Instant,
-    _collector: Option<provider_capture::ProviderCollector>,
     worker: Option<std::thread::JoinHandle<()>>,
     archive: ArchiveSlot,
 }
@@ -1983,18 +1982,53 @@ fn homes() -> &'static HistoryCaches {
     HOMES.get_or_init(Default::default)
 }
 
+type ProviderCollectors =
+    Mutex<HashMap<PathBuf, (PathBuf, provider_capture::ProviderCollector)>>;
+
+fn collectors() -> &'static ProviderCollectors {
+    static COLLECTORS: OnceLock<ProviderCollectors> = OnceLock::new();
+    COLLECTORS.get_or_init(Default::default)
+}
+
+fn ensure_provider_capture(home: &Path, settings: &Path) -> io::Result<()> {
+    let mut collectors = collectors().lock().unwrap_or_else(|error| error.into_inner());
+    if collectors.get(home).is_some_and(|(path, _)| path == settings) {
+        return Ok(());
+    }
+    // 采集独立于查询缓存；设置路径变化时先等待旧写者退出。
+    collectors.remove(home);
+    let sqlite_home = std::env::var_os("CODEX_SQLITE_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.to_owned());
+    let collector = provider_capture::start_provider_collector(
+        home.to_owned(),
+        sqlite_home,
+        settings.to_owned(),
+    )?;
+    collectors.insert(home.to_owned(), (settings.to_owned(), collector));
+    Ok(())
+}
+
+pub(super) fn sync_provider_capture(home: &Path, settings: &Path) -> anyhow::Result<()> {
+    if read_history_settings(settings)?.enabled {
+        ensure_provider_capture(home, settings)?;
+    } else {
+        clear(home);
+    }
+    Ok(())
+}
+
 fn stop_cache(cache: Arc<Mutex<Cache>>) {
-    let (collector, worker, archive) = {
+    let (worker, archive) = {
         let mut state = cache.lock().unwrap_or_else(|error| error.into_inner());
         state.archive.cancelled.store(true, Ordering::Relaxed);
         (
-            state._collector.take(),
             state.worker.take(),
             state.archive.worker.take(),
         )
     };
     // 不持有索引锁等待退出；其他强引用不能延迟后台任务的收尾。
-    drop(collector);
     if let Some(worker) = worker {
         let _ = worker.join();
     }
@@ -2012,6 +2046,10 @@ pub(super) fn clear(home: &Path) {
     if let Some(cache) = homes.remove(home) {
         stop_cache(cache);
     }
+    collectors()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .remove(home);
     // 并发 clear 也须等待已移除缓存的后台任务退出。
     drop(homes);
 }
@@ -2235,7 +2273,6 @@ fn touch_history(home: &Path, settings: &Path) -> Result<Arc<Mutex<Cache>>, Valu
             active: false,
             refreshed: None,
             touched: Instant::now(),
-            _collector: None,
             worker: None,
             archive: ArchiveSlot::default(),
         }));
@@ -2261,19 +2298,8 @@ fn touch_history(home: &Path, settings: &Path) -> Result<Arc<Mutex<Cache>>, Valu
         return touch_history(home, settings);
     }
     state.touched = Instant::now();
-    if state._collector.is_none() {
-        let sqlite_home = std::env::var_os("CODEX_SQLITE_HOME")
-            .filter(|path| !path.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.to_owned());
-        // 启动失败不影响只读查询；下一次请求会重试，而非永久静默停采。
-        state._collector = provider_capture::start_provider_collector(
-            home.to_owned(),
-            sqlite_home,
-            state.settings_path.clone(),
-        )
-        .ok();
-    }
+    ensure_provider_capture(home, &state.settings_path)
+        .map_err(|error| json!({"status":"unavailable","complete":false,"message":error.to_string()}))?;
     if !state.active
         && state
             .refreshed
