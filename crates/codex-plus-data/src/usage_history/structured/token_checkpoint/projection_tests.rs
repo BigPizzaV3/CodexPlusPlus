@@ -3665,6 +3665,33 @@ fn restored_supplier_evidence_for_source(inferred_source: &str) -> anyhow::Resul
     drop(store);
     let mut reopened = Store::open(Connection::open(&database)?)?;
     assert_eq!(with_overlay(&mut reopened)?["days"], after["days"]);
+
+    reopened.db.pragma_update(None, "journal_mode", "WAL")?;
+    let overlay = Historical::refresh(
+        None, &mut reopened, &Mutex::new(EvidenceVerifier::default()), &settings,
+    )?.unwrap();
+    let reader = Connection::open_with_flags(&database, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    reader.execute_batch("BEGIN")?;
+    reader.query_row("SELECT revision FROM token_revision", [], |row| row.get::<_, i64>(0))?;
+    let path = root.join("rollout-appended.jsonl");
+    let state = parse(&path, &[header(PHYSICAL_PREFIX, 0), count(1, 2, 1, true)], cutoff);
+    let prepared = reopened.prepare(new_source(&path, &state), cutoff, BTreeMap::new(), 8192)?;
+    reopened.publish(prepared)?;
+
+    for request in [&request, &json!({"includeFingerprints":false})] {
+        let (during, _) =
+            Store::read_snapshot(&reader, &query, request, None, &names, None, Some(&overlay))?;
+        assert_eq!(during["days"][0]["recordCount"], 3);
+        assert!(during["days"][0]["breakdowns"].as_array().unwrap().iter()
+            .any(|row| row["providerInferred"] == true));
+    }
+    let updated = with_overlay(&mut reopened)?;
+    assert_eq!(updated["days"][0]["recordCount"], 4);
+    assert_eq!(updated["days"][0]["usage"]["totalTokens"], 440);
+    fs::write(settings.with_file_name("usage-provider-evidence.json"), r#"{"version":1,"records":[]}"#)?;
+    let (revoked, _) = Store::read_snapshot(&reader, &query, &json!({}), None, &names, None, Some(&overlay))?;
+    assert_eq!(revoked["days"][0]["recordCount"], 3);
+    assert!(revoked["providerEvidence"].is_null());
     Ok(())
 }
 

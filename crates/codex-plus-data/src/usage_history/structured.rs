@@ -1945,6 +1945,7 @@ struct Cache {
     storage: PathBuf,
     runtime: Option<token_checkpoint::Runtime>,
     snapshot: Arc<token_checkpoint::ReadState>,
+    refresh_reader: Option<token_checkpoint::HistoryReader>,
     active: bool,
     refreshed: Option<Instant>,
     touched: Instant,
@@ -2218,9 +2219,14 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
     let storage = state.storage.clone();
     let processing = state.active;
     let archived = state.archive.result();
+    let reader = state.refresh_reader.clone().map_or_else(
+        || token_checkpoint::ReadState::open_reader(&storage),
+        Ok,
+    );
     drop(state);
     let (mut response, schedule) = snapshot.read_with_archive(
         &storage,
+        reader,
         options,
         request,
         scope_session.as_deref(),
@@ -2279,6 +2285,7 @@ fn touch_history(home: &Path, settings: &Path) -> Result<Arc<Mutex<Cache>>, Valu
             runtime: Some(runtime),
             storage: storage_dir,
             snapshot,
+            refresh_reader: None,
             active: false,
             refreshed: None,
             touched: Instant::now(),
@@ -2314,11 +2321,15 @@ fn touch_history(home: &Path, settings: &Path) -> Result<Arc<Mutex<Cache>>, Valu
             .refreshed
             .is_none_or(|at| at.elapsed() >= REFRESH_INTERVAL)
     {
+        let reader = state.runtime.as_ref().expect("idle worker owns runtime")
+            .pin_refresh_reader(&state.snapshot)
+            .map_err(|error| json!({"status":"unavailable","complete":false,"message":error.to_string()}))?;
         let mut runtime = state
             .runtime
             .take()
             .expect("idle usage worker owns its runtime");
         state.active = true;
+        state.refresh_reader = reader;
         let shared = cache.clone();
         let home = home.to_owned();
         match std::thread::Builder::new()
@@ -2332,12 +2343,14 @@ fn touch_history(home: &Path, settings: &Path) -> Result<Arc<Mutex<Cache>>, Valu
                         state.snapshot = Arc::new(snapshot);
                     }
                     state.runtime = Some(runtime);
+                    state.refresh_reader = None;
                     state.active = false;
                     state.refreshed = Some(Instant::now());
                 }
             }) {
             Ok(worker) => state.worker = Some(worker),
             Err(error) => {
+                state.refresh_reader = None;
                 state.active = false;
                 state.refreshed = Some(Instant::now());
                 state.runtime = Some(token_checkpoint::Runtime::new(

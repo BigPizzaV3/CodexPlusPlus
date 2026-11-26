@@ -63,6 +63,8 @@ pub(in super::super) struct ReadState {
     historical_verifier: Arc<Mutex<EvidenceVerifier>>,
 }
 
+pub(in super::super) type HistoryReader = Arc<Mutex<Connection>>;
+
 fn open_database(storage: &Path, write: bool) -> Result<Connection> {
     if write {
         fs::create_dir_all(storage)?;
@@ -123,6 +125,21 @@ impl Runtime {
             historical_verifier: Arc::clone(&self.historical_verifier),
             ..ReadState::default()
         }
+    }
+
+    pub(in super::super) fn pin_refresh_reader(
+        &self,
+        state: &ReadState,
+    ) -> Result<Option<HistoryReader>> {
+        if state.historical.is_none() {
+            return Ok(None);
+        }
+        let budget = u64::from(read_history_settings(&self.settings)?.storage_mib) * 1024 * 1024;
+        // Leave WAL reclamation to the writer before pinning the next round.
+        if working_index_bytes(&self.storage)? >= budget {
+            return Ok(None);
+        }
+        ReadState::open_reader(&self.storage).map(Some)
     }
 
     fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> ReadState {
@@ -459,19 +476,20 @@ fn allocated_pages(db: &Connection) -> Result<(u64, u64)> {
 }
 
 // 长读事务会阻止 WAL 回收；先暂停摄取，避免每一轮继续累加日志。
-fn checkpoint_if_over_budget(db: &Connection, storage: &Path, budget: u64) -> Result<bool> {
-    let bytes = || -> Result<u64> {
-        let mut used = 0;
-        for suffix in ["", "-wal", "-shm", "-journal"] {
-            match fs::metadata(storage.join(format!("{TOKEN_INDEX_DB}{suffix}"))) {
-                Ok(metadata) => used += metadata.len(),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+fn working_index_bytes(storage: &Path) -> Result<u64> {
+    let mut used = 0;
+    for suffix in ["", "-wal", "-shm", "-journal"] {
+        match fs::metadata(storage.join(format!("{TOKEN_INDEX_DB}{suffix}"))) {
+            Ok(metadata) => used += metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        Ok(used)
-    };
-    if bytes()? >= budget {
+    }
+    Ok(used)
+}
+
+fn checkpoint_if_over_budget(db: &Connection, storage: &Path, budget: u64) -> Result<bool> {
+    if working_index_bytes(storage)? >= budget {
         let (busy, _, _): (i64, i64, i64) =
             db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?))
@@ -480,12 +498,19 @@ fn checkpoint_if_over_budget(db: &Connection, storage: &Path, budget: u64) -> Re
             busy == 0,
             "usage index working budget exhausted (WAL reader active)"
         );
-        return Ok(bytes()? < budget);
+        return Ok(working_index_bytes(storage)? < budget);
     }
     Ok(true)
 }
 
 impl ReadState {
+    pub(in super::super) fn open_reader(storage: &Path) -> Result<HistoryReader> {
+        let db = open_database(storage, false)?;
+        db.execute_batch("BEGIN")?;
+        db.query_row("SELECT revision FROM token_revision", [], |row| row.get::<_, i64>(0))?;
+        Ok(Arc::new(Mutex::new(db)))
+    }
+
     pub(in super::super) fn read_executions(
         &self,
         storage: &Path,
@@ -520,22 +545,25 @@ impl ReadState {
         scope_session: Option<&str>,
         processing: bool,
     ) -> Value {
-        self.read_with_archive(storage, options, request, scope_session, processing, None)
-            .0
+        self.read_with_archive(
+            storage, Self::open_reader(storage), options, request, scope_session, processing, None,
+        ).0
     }
 
     pub(in super::super) fn read_with_archive(
         &self,
         storage: &Path,
+        reader: Result<HistoryReader>,
         options: &Query,
         request: &Value,
         scope_session: Option<&str>,
         processing: bool,
         archive: Option<&ArchiveAnswer>,
     ) -> (Value, Option<ArchiveKey>) {
-        let (mut response, schedule) = match open_database(storage, false).and_then(|mut db| {
-            Store::read_response_with_archive(
-                &mut db,
+        let (mut response, schedule) = match reader.and_then(|reader| {
+            let db = reader.lock().map_err(|_| anyhow::anyhow!("usage snapshot reader panicked"))?;
+            Store::read_snapshot(
+                &db,
                 options,
                 request,
                 scope_session,

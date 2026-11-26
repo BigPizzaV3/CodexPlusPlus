@@ -2421,6 +2421,7 @@ impl Store {
             .map(|(response, _)| response)
     }
 
+    #[cfg(test)]
     pub(in super::super) fn read_response_with_archive(
         db: &mut Connection,
         query: &Query,
@@ -2431,6 +2432,22 @@ impl Store {
         historical: Option<&Historical>,
     ) -> Result<(Value, Option<ArchiveKey>)> {
         let read = db.transaction()?;
+        let answer = Self::read_snapshot(
+            &read, query, request, requested, provider_names, archived, historical,
+        )?;
+        read.commit()?;
+        Ok(answer)
+    }
+
+    pub(in super::super) fn read_snapshot(
+        read: &Connection,
+        query: &Query,
+        request: &Value,
+        requested: Option<&str>,
+        provider_names: &BTreeMap<String, String>,
+        archived: Option<&ArchiveAnswer>,
+        historical: Option<&Historical>,
+    ) -> Result<(Value, Option<ArchiveKey>)> {
         let bounds = request["startAt"].as_i64().zip(request["endAt"].as_i64());
         let activity_page = request["activityPage"].as_u64().unwrap_or(1).clamp(1, 24) as usize;
         let include_trend = request["includeTrend"] == true;
@@ -2664,7 +2681,6 @@ impl Store {
                 result["activityComplete"] = json!(false);
             }
         }
-        read.commit()?;
         Ok((result, schedule))
     }
 

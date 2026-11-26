@@ -341,7 +341,7 @@ mod store;
 mod tests;
 
 mod runtime;
-pub(super) use runtime::{ReadState, Runtime, read_execution_detail, recover_archive};
+pub(super) use runtime::{HistoryReader, ReadState, Runtime, read_execution_detail, recover_archive};
 pub(super) use store::{
     archive::ArchiveKey,
     executions::{DetailQuery, ExecutionQuery},
