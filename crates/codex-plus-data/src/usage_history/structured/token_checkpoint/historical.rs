@@ -8,6 +8,7 @@ use crate::usage_history::structured::{
 };
 use anyhow::{Result, ensure};
 use chrono::{Local, NaiveDate};
+use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::ErrorKind;
@@ -37,6 +38,7 @@ pub(super) struct Historical {
     pub(super) overlay: EvidenceOverlay,
     revision: i64,
     pub(super) days: BTreeMap<NaiveDate, HashMap<String, Vec<DayGroup>>>,
+    verifier: Arc<Mutex<EvidenceVerifier>>,
 }
 
 pub(super) struct EvidenceOverlay {
@@ -131,20 +133,31 @@ impl Historical {
     pub(super) fn refresh(
         previous: Option<&Arc<Self>>,
         store: &mut Store,
-        verifier: &Mutex<EvidenceVerifier>,
+        verifier: &Arc<Mutex<EvidenceVerifier>>,
         settings: &Path,
     ) -> Result<Option<Arc<Self>>> {
-        let stamps_before = stamps(settings)?;
-        if stamps_before.iter().all(Option::is_none) {
-            return Ok(None);
-        }
         let read = store.db.transaction()?;
         let revision = read.query_row("SELECT revision FROM token_revision", [], |r| r.get(0))?;
         if let Some(prior) = previous
-            && prior.revision == revision
-            && prior.overlay.stamps == stamps_before
+            && prior.is_current(revision)?
         {
             return Ok(Some(Arc::clone(prior)));
+        }
+        let snapshot = Self::at_revision(previous.map(Arc::as_ref), &read, revision, verifier, settings)?;
+        read.commit()?;
+        Ok(snapshot.map(Arc::new))
+    }
+
+    fn at_revision(
+        previous: Option<&Self>,
+        read: &Connection,
+        revision: i64,
+        verifier: &Arc<Mutex<EvidenceVerifier>>,
+        settings: &Path,
+    ) -> Result<Option<Self>> {
+        let stamps_before = stamps(settings)?;
+        if stamps_before.iter().all(Option::is_none) {
+            return Ok(None);
         }
 
         let files = EvidenceFiles::read(settings);
@@ -169,7 +182,7 @@ impl Historical {
             })
             .collect();
         let mut identities = EvidenceIdentities::default();
-        Store::historical_candidates(&read, &times, |event| {
+        Store::historical_candidates(read, &times, |event| {
             // token_resolved's primary key already guarantees canonical ID uniqueness.
             if legacy_ids.contains(&event.id) {
                 identities.seen.insert(event.id);
@@ -196,7 +209,7 @@ impl Historical {
         let mut affected = BTreeSet::new();
         let mut legacy_names = BTreeMap::new();
         let mut supplier_names = BTreeMap::new();
-        Store::historical_candidates(&read, &times, |mut event| {
+        Store::historical_candidates(read, &times, |mut event| {
             let prior = EventClassification::of(&event);
             if let Ok(Some(matches)) = &mut legacy {
                 matches.apply(&mut event, &identities, &mut legacy_names);
@@ -234,17 +247,21 @@ impl Historical {
         {
             overlay.updated_at = prior.overlay.updated_at;
         }
-        let days = Store::historical_days(&read, &affected, &overlay.changes)?;
-        read.commit()?;
-        Ok(Some(Arc::new(Self {
+        let days = Store::historical_days(read, &affected, &overlay.changes)?;
+        Ok(Some(Self {
             revision,
             overlay,
             days,
-        })))
+            verifier: Arc::clone(verifier),
+        }))
     }
 
     pub(super) fn is_current(&self, revision: i64) -> Result<bool> {
         Ok(self.revision == revision && self.overlay.is_current()?)
+    }
+
+    pub(super) fn read_consistent(&self, read: &Connection, revision: i64) -> Result<Option<Self>> {
+        Self::at_revision(Some(self), read, revision, &self.verifier, &self.overlay.settings)
     }
 }
 
@@ -341,7 +358,7 @@ mod tests {
             )?;
             Ok(())
         };
-        let verifier = Mutex::new(EvidenceVerifier::default());
+        let verifier = Arc::new(Mutex::new(EvidenceVerifier::default()));
         insert(&store, 1, first, Some(old))?;
         let migrated = Historical::refresh(None, &mut store, &verifier, &settings)?.unwrap();
         assert_eq!(migrated.overlay.legacy_status["migratedEvents"], 1);

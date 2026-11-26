@@ -3586,7 +3586,7 @@ fn mixed_supplier_inference_preserves_inferred_flag() {
 
 fn restored_supplier_evidence_for_source(inferred_source: &str) -> anyhow::Result<()> {
     use super::historical::{EvidenceVerifier, Historical};
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     let dir = tempfile::tempdir()?;
     let root = fs::canonicalize(dir.path())?;
@@ -3633,14 +3633,14 @@ fn restored_supplier_evidence_for_source(inferred_source: &str) -> anyhow::Resul
         settings.with_file_name("usage-provider-evidence.json"),
         serde_json::to_vec(&json!({"version":1,"records":records}))?,
     )?;
-    let with_overlay = |store: &mut Store| -> anyhow::Result<Value> {
-        let verifier = Mutex::new(EvidenceVerifier::default());
-        let overlay = Historical::refresh(None, store, &verifier, &settings)?.unwrap();
-        assert_eq!(overlay.overlay.legacy_status["appliedEvents"], 2);
+    let verifier = Arc::new(Mutex::new(EvidenceVerifier::default()));
+    let overlay = Historical::refresh(None, &mut store, &verifier, &settings)?.unwrap();
+    assert_eq!(overlay.overlay.legacy_status["appliedEvents"], 2);
+    let with_overlay = |store: &mut Store, request: &Value| -> anyhow::Result<Value> {
         let (result, _) = Store::read_response_with_archive(
             &mut store.db,
             &query,
-            &request,
+            request,
             None,
             &names,
             None,
@@ -3648,7 +3648,7 @@ fn restored_supplier_evidence_for_source(inferred_source: &str) -> anyhow::Resul
         )?;
         Ok(result)
     };
-    let after = with_overlay(&mut store)?;
+    let after = with_overlay(&mut store, &request)?;
     assert_eq!(after["days"][0]["usage"], before["days"][0]["usage"]);
     assert_eq!(after["days"][0]["recordCount"], 3);
     let rows = after["days"][0]["breakdowns"].as_array().unwrap();
@@ -3664,7 +3664,31 @@ fn restored_supplier_evidence_for_source(inferred_source: &str) -> anyhow::Resul
         && row["classificationEvidence"] == "request-log-exact"));
     drop(store);
     let mut reopened = Store::open(Connection::open(&database)?)?;
-    assert_eq!(with_overlay(&mut reopened)?["days"], after["days"]);
+    assert_eq!(with_overlay(&mut reopened, &request)?["days"], after["days"]);
+
+    // Read after a writer commit but before the background publishes the new overlay.
+    let path = root.join("rollout-appended.jsonl");
+    let state = parse(
+        &path,
+        &[header(PHYSICAL_PREFIX, 0), count(1, 2, 1, true)],
+        cutoff,
+    );
+    let prepared = reopened.prepare(new_source(&path, &state), cutoff, BTreeMap::new(), 8192)?;
+    reopened.publish(prepared)?;
+    for request in [request, json!({"includeFingerprints":false})] {
+        let after_append = with_overlay(&mut reopened, &request)?;
+        assert_eq!(after_append["days"][0]["recordCount"], 4);
+        assert_eq!(after_append["days"][0]["usage"]["totalTokens"], 440);
+        assert!(after_append["days"][0]["breakdowns"].as_array().unwrap().iter()
+            .any(|row| row["providerInferred"] == true));
+    }
+    fs::write(
+        settings.with_file_name("usage-provider-evidence.json"),
+        r#"{"version":1,"records":[]}"#,
+    )?;
+    let revoked = with_overlay(&mut reopened, &json!({}))?;
+    assert_eq!(revoked["days"][0]["recordCount"], 4);
+    assert_eq!(revoked["providerEvidence"]["appliedEvents"], 0);
     Ok(())
 }
 
