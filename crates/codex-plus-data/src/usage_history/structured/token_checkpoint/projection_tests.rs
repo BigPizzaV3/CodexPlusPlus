@@ -438,6 +438,75 @@ fn cross_session_parent_prefix_requires_a_unique_committed_native_anchor() -> an
 }
 
 #[test]
+fn compressed_parent_duplicate_preserves_child_baseline_and_conflicts_stay_pending() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let parent_path = root.join(format!("rollout-{PHYSICAL_PREFIX}.jsonl"));
+    let archive_path = root.join(format!("rollout-{PHYSICAL_PREFIX}.jsonl.zst"));
+    let child_path = root.join(format!("rollout-{CHILD}.jsonl"));
+    let parent = parse(
+        &parent_path,
+        &[header(PARENT, 0), count(1, 1, 1, true), count(2, 2, 2, true)],
+        cutoff,
+    );
+    let mut meta = header(CHILD, 3);
+    meta["payload"]["history_base"] = json!({"thread_id": PHYSICAL_PREFIX,
+        "end_ordinal_exclusive": 3, "end_byte_offset": parent.offset});
+    let child = parse(&child_path, &[meta, count(4, 3, 3, false)], cutoff);
+    fs::write(
+        &archive_path,
+        zstd::stream::encode_all(fs::read(&parent_path)?.as_slice(), 1)?,
+    )?;
+    for case in ["identical", "event identity", "byte boundary", "source issue"] {
+        let database = root.join(format!("{case}.sqlite"));
+        let mut store = Store::open(Connection::open(&database)?)?;
+        for (path, state) in [(&parent_path, &parent), (&child_path, &child)] {
+            let batch = store.prepare(new_source(path, state), cutoff, BTreeMap::new(), 1 << 20)?;
+            store.publish(batch)?;
+        }
+        let expected = read(&mut store.db, i64::MIN, i64::MAX).1;
+        assert_eq!(expected.len(), 3);
+        assert!(!expected.iter().find(|event| event.session == CHILD).unwrap().count_pending);
+        let mut archive = FileState::default();
+        assert!(archive.read_with_budget(
+            &archive_path, cutoff, &mut Budget::new(std::iter::empty())
+        )?);
+        match case {
+            "event identity" => {
+                archive.events[0].id[0] ^= 1;
+                archive.events[0].original_id[0] ^= 1;
+            }
+            "byte boundary" => archive.events[0].rollout_position.as_mut().unwrap().1 += 1,
+            "source issue" => archive.issues = 1,
+            _ => {}
+        }
+        let batch = store.prepare(
+            new_source(&archive_path, &archive), cutoff, BTreeMap::new(), 1 << 20
+        )?;
+        store.publish(batch)?;
+        let actual = read(&mut store.db, i64::MIN, i64::MAX).1;
+        let child_event = actual.iter().find(|event| event.session == CHILD).unwrap();
+        if case == "identical" {
+            assert!(actual == expected);
+            drop(store);
+            store = Store::open(Connection::open(&database)?)?;
+            assert!(read(&mut store.db, i64::MIN, i64::MAX).1 == expected);
+            let revision = store.checkpoint(&parent_path)?.unwrap().0;
+            store.retire_source(&parent_path, revision, cutoff, BTreeMap::new())?;
+            assert!(read(&mut store.db, i64::MIN, i64::MAX).1 == expected);
+        } else {
+            assert!(child_event.count_pending, "{case}");
+            assert!(child_event.count_uncertain, "{case}");
+            let revision = store.checkpoint(&archive_path)?.unwrap().0;
+            store.retire_source(&archive_path, revision, cutoff, BTreeMap::new())?;
+            assert!(read(&mut store.db, i64::MIN, i64::MAX).1 == expected);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn tiny_parent_still_fits_the_original_full_read_budget() -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let root = temp.path().canonicalize()?;
