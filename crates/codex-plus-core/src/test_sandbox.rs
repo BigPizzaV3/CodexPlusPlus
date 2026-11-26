@@ -72,6 +72,12 @@ pub fn enter() -> &'static Path {
                 }
             }
             for name in CLEARED {
+                // 清空过环境的子进程，环境是父进程自己拼的（HOME 也会被指到沙箱），里面那点目录本来就是
+                // 临时夹具；而这个变量还决定子进程被视为哪个 Codex 实例，必须照父进程给的值留下来
+                // （Windows 停止主进程的用例靠它区分主实例和多开窗口）。
+                if cleared && *name == "CODEX_ELECTRON_USER_DATA_PATH" {
+                    continue;
+                }
                 std::env::remove_var(name);
             }
             std::env::set_var("HOME", &home);
