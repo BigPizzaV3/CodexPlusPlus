@@ -39,7 +39,7 @@ function checkKeys(keys: Keys) {
 
 test("启动引导与界面导览的所有状态、按钮和错误均有英文", () => {
   const keys = emptyKeys();
-  for (const file of ["./OnboardingSetup.tsx", "./OnboardingTour.tsx"]) collectCalls(source(file), keys);
+  for (const file of ["./OnboardingSetup.tsx", "./OnboardingTour.tsx", "./AgentConfigEditor.tsx"]) collectCalls(source(file), keys);
   assert.ok(keys.plain.has("测试没有通过"), "需要扫描嵌套条件分支中的失败状态");
   assert.ok(keys.template.has("当前供应商：{0} · {1}"), "需要扫描带占位符的状态");
   checkKeys(keys);

@@ -81,6 +81,7 @@ fn opencode_path(env: &AgentEnv) -> PathBuf {
 
 pub const OPENCODE: AgentSpec = AgentSpec {
     id: "opencode",
+    preferences: super::Preferences::OPENCODE,
     name: "OpenCode",
     binary: "opencode",
     wire: AgentWire::Chat,

@@ -54,6 +54,7 @@ fn provider(id: &str, models: &str) -> GatewayProvider {
             ..RelayProfile::default()
         },
         extra: Default::default(),
+        credentials: Default::default(),
     }
 }
 

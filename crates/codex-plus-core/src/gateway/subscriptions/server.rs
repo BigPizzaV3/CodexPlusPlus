@@ -95,12 +95,13 @@ pub(crate) async fn ready_in(
 )> {
     let load = || -> anyhow::Result<_> {
         let gateway = store.load()?;
-        let provider = gateway
-            .provider(id)
+        // `id` 可以是 `<供应商 id>~<账号 id>`：一家里登录的其余账号。
+        let relay = gateway
+            .credential(id)
             .ok_or_else(|| subscriptions::fail(404, format!("本地服务里没有供应商 {id}")))?;
-        let (item, credentials) = kind_of(&provider.relay)
+        let (item, credentials) = kind_of(&relay)
             .ok_or_else(|| subscriptions::fail(400, format!("{id} 不是订阅供应商")))?;
-        let http = crate::http_client::proxied_client_for_relay("", &provider.relay)?;
+        let http = crate::http_client::proxied_client_for_relay("", &relay)?;
         Ok((item, credentials, http))
     };
     let (item, credentials, http) = load()?;
@@ -115,12 +116,8 @@ pub(crate) async fn ready_in(
         return Ok((item, credentials, http));
     };
     let result = store.update(|gateway| {
-        if let Some(provider) = gateway
-            .providers
-            .iter_mut()
-            .find(|provider| provider.relay.id == id)
-        {
-            provider.relay.auth_contents = with_credentials(&provider.relay.auth_contents, &fresh);
+        if let Some(latest) = gateway.credential(id) {
+            gateway.set_credential_auth(id, with_credentials(&latest.auth_contents, &fresh));
         }
         Ok(())
     });

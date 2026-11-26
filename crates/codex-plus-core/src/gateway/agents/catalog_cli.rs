@@ -20,8 +20,8 @@ use crate::gateway::agents::catalog_core::{
 };
 use crate::gateway::agents::files::{parse_jsonc, yaml_block};
 use crate::gateway::agents::{
-    AgentEnv, AgentSpec, AgentWire, FileSet, ModelEntry, Os, PROVIDER_ID, PROVIDER_NAME, Wiring,
-    YamlDoc, object_entry,
+    AgentEnv, AgentSpec, AgentWire, FileSet, ModelEntry, Os, PROVIDER_ID, PROVIDER_NAME,
+    Preferences, Wiring, YamlDoc, object_entry,
 };
 
 pub static SPECS: &[AgentSpec] = &[
@@ -500,6 +500,7 @@ fn write_openchamber(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyh
 
 pub const OPENCHAMBER: AgentSpec = AgentSpec {
     id: "openchamber",
+    preferences: Preferences::ReadOnly,
     name: "OpenChamber",
     binary: "openchamber",
     wire: AgentWire::Chat,
@@ -522,6 +523,7 @@ fn mimo_path(env: &AgentEnv) -> PathBuf {
 
 pub const MIMO_CODE: AgentSpec = AgentSpec {
     id: "mimo-code",
+    preferences: Preferences::OPENCODE,
     name: "MiMo Code",
     binary: "mimo",
     wire: AgentWire::Chat,
@@ -541,6 +543,7 @@ fn deveco_path(env: &AgentEnv) -> PathBuf {
 
 pub const DEVECO_CODE: AgentSpec = AgentSpec {
     id: "deveco-code",
+    preferences: Preferences::OPENCODE,
     name: "DevEco Code",
     binary: "deveco",
     wire: AgentWire::Chat,
@@ -603,6 +606,7 @@ fn pi_dir(env: &AgentEnv) -> PathBuf {
 
 pub const PI: AgentSpec = AgentSpec {
     id: "pi",
+    preferences: Preferences::PI,
     name: "Pi",
     binary: "pi",
     wire: AgentWire::Chat,
@@ -619,6 +623,7 @@ fn omo_dir(env: &AgentEnv) -> PathBuf {
 
 pub const OMO: AgentSpec = AgentSpec {
     id: "omo",
+    preferences: Preferences::PI,
     name: "OmO",
     binary: "omo",
     wire: AgentWire::Chat,
@@ -635,6 +640,7 @@ fn prime_agent_dir(env: &AgentEnv) -> PathBuf {
 
 pub const PRIME_AGENT: AgentSpec = AgentSpec {
     id: "prime-agent",
+    preferences: Preferences::PI,
     name: "Prime Agent",
     binary: "prime-agent",
     wire: AgentWire::Chat,
@@ -672,6 +678,7 @@ fn write_stepcode(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow:
 
 pub const STEPCODE: AgentSpec = AgentSpec {
     id: "stepcode",
+    preferences: Preferences::ReadOnly,
     name: "StepCode",
     binary: "step",
     wire: AgentWire::Chat,
@@ -701,6 +708,7 @@ fn aside_dir(env: &AgentEnv) -> PathBuf {
 
 pub const ASIDE: AgentSpec = AgentSpec {
     id: "aside",
+    preferences: Preferences::ReadOnly,
     name: "Aside",
     binary: "aside",
     wire: AgentWire::Chat,
@@ -800,6 +808,7 @@ fn write_omp(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Resu
 
 pub const OMP: AgentSpec = AgentSpec {
     id: "omp",
+    preferences: Preferences::ReadOnly,
     name: "oh-my-pi (omp)",
     binary: "omp",
     wire: AgentWire::Chat,
@@ -840,6 +849,7 @@ fn write_mothx(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const MOTHX: AgentSpec = AgentSpec {
     id: "mothx",
+    preferences: Preferences::ReadOnly,
     name: "MothX",
     binary: "mothx",
     wire: AgentWire::Chat,
@@ -898,6 +908,7 @@ fn write_penguin(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
 
 pub const PENGUIN: AgentSpec = AgentSpec {
     id: "penguin",
+    preferences: Preferences::ReadOnly,
     name: "PenguinHarness",
     binary: "penguin",
     wire: AgentWire::Responses,
@@ -955,6 +966,7 @@ fn write_copilot(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::
 
 pub const COPILOT_CLI: AgentSpec = AgentSpec {
     id: "copilot-cli",
+    preferences: Preferences::ReadOnly,
     name: "Copilot CLI",
     binary: "copilot",
     wire: AgentWire::Chat,
@@ -1046,6 +1058,7 @@ fn write_crush(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Re
 
 pub const CRUSH: AgentSpec = AgentSpec {
     id: "crush",
+    preferences: Preferences::ReadOnly,
     name: "Crush",
     binary: "crush",
     wire: AgentWire::Chat,
@@ -1090,6 +1103,7 @@ fn write_command_code(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> any
 
 pub const COMMAND_CODE: AgentSpec = AgentSpec {
     id: "command-code",
+    preferences: Preferences::ReadOnly,
     name: "Command Code",
     binary: "command-code",
     wire: AgentWire::Chat,
@@ -1164,6 +1178,7 @@ fn write_kimi(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Res
 
 pub const KIMI_CODE: AgentSpec = AgentSpec {
     id: "kimi-code",
+    preferences: Preferences::ReadOnly,
     name: "Kimi Code",
     binary: "kimi",
     wire: AgentWire::Chat,
@@ -1224,6 +1239,7 @@ fn write_qwen(env: &AgentEnv, wiring: &Wiring, set: &mut FileSet) -> anyhow::Res
 
 pub const QWEN_CODE: AgentSpec = AgentSpec {
     id: "qwen-code",
+    preferences: Preferences::GEMINI,
     name: "Qwen Code",
     binary: "qwen",
     wire: AgentWire::Chat,

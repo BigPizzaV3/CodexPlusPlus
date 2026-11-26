@@ -18,6 +18,9 @@ use tokio::process::Command;
 use toml_edit::{DocumentMut, Item, Table};
 
 pub const MARKETPLACE_NAME: &str = "codex-plus-plugin-market";
+/// 本地账号的兼容服务用的插件目录与插件包（见 [`compat`]）。
+pub(crate) mod compat;
+
 const MAX_INDEX_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_PACKAGE_FILES: u64 = 100_000;
@@ -1696,6 +1699,9 @@ fn remove_installed(home: &Path, source: Source, id: &str) -> anyhow::Result<()>
 }
 
 /// Codex 的 ChatGPT 登录在不在（auth.json）。在的话原生插件页直接读官方云端目录，托管连接器也能连。
+///
+/// 本地账号（API Key 解锁）的假登录也算：它的「官方云端目录」由本机兼容服务用同一份完整缓存回答
+/// （见 [`crate::chatgpt_compat::plugins`]），这里再并入快照就会列两份。
 fn codex_signed_in(home: &Path) -> bool {
     crate::relay_config::chatgpt_auth_status_from_home(home).authenticated
 }
@@ -3599,6 +3605,17 @@ enabled = true
         let params = json!({ "marketplacePath": virtual_market_path(&home, source), "pluginName": "sample" });
         let detail = native_request(&home, "plugin/read", params).await.unwrap();
         assert_eq!(detail["plugin"]["summary"]["name"], "sample");
+    }
+
+    #[tokio::test]
+    async fn local_account_leaves_the_catalog_to_the_compat_service() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = prepare_home(temp.path()).unwrap();
+        cache_indexes(&home, vec![entry()]);
+        // 本地账号的假登录：目录由本机兼容服务按完整缓存回答，这里不再并一份快照。
+        fs::write(home.join("auth.json"), crate::chatgpt_compat::fake_auth_json(None)).unwrap();
+        let payload = native_request(&home, "plugin/list", json!({})).await.unwrap();
+        assert!(payload["marketplaces"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -95,7 +95,7 @@ export function EnhanceScreen({
   const skipNextStart = Boolean(inventory?.skip_next_start);
   const skinActive = masterEnabled && form.codexAppDreamSkinEnabled && !form.codexAppDreamSkinPaused;
   const skinState = !masterEnabled
-    ? t("增强总开关已关闭")
+    ? t("内置拓展已关闭")
     : !form.codexAppDreamSkinEnabled
       ? t("皮肤未启用")
       : form.codexAppDreamSkinPaused
@@ -109,16 +109,6 @@ export function EnhanceScreen({
         <span className="enhance-save-actions cx-enhance-save">
           <AutoSaveStatus state={autoSave} />
         </span>
-        {/* 总开关：一个紧凑开关，说明放悬停。 */}
-        <label className="feature-toggle enhance-master-switch cx-enhance-master-switch" title={t(masterItem.description)}>
-          <input
-            checked={form.enhancementsEnabled}
-            onChange={(event) => onFormChange({ ...form, enhancementsEnabled: event.currentTarget.checked })}
-            type="checkbox"
-          />
-          <span><strong>{t(masterItem.title)}</strong></span>
-          <ToggleVisual />
-        </label>
       </div>
       <div className="sectioned-body cx-enhance-body">
       {restartLabels.length ? (
@@ -156,10 +146,21 @@ export function EnhanceScreen({
         <div className="feature-toggle cx-enhance-moved" data-enhance-moved="codex">
           <span>
             <strong>{t("Codex 打不开或显示异常时在这里处理")}</strong>
-            <small>{t("这里只放能让 Codex 恢复启动的开关：增强总开关、独立模式补丁、本地拓展和皮肤。各项内置拓展的开关、语音输入与下一步建议的服务配置在 Codex 左侧栏的「Codex++」设置页里。")}</small>
+            <small>{t("这里只放能让 Codex 恢复启动的开关；各项内置拓展的开关在 Codex 左侧栏的「Codex++」设置页里。")}</small>
           </span>
         </div>
       </CxCard>
+      {/* 总开关和下面几组一样放进卡片：一行标题 + 说明，右侧开关。 */}
+      <CxSection className="cx-feature-group" id="enhance-group-master" title={t("内置拓展")}>
+        <CxCard className="cx-feature-card">
+          <FeatureToggle
+            checked={form.enhancementsEnabled}
+            detail={t(masterItem.description)}
+            onChange={(value) => onFormChange({ ...form, enhancementsEnabled: value })}
+            title={t(masterItem.title)}
+          />
+        </CxCard>
+      </CxSection>
       <FeatureGroup id="enhance-group-standalone" title={t(standaloneGroup.title)} detail={t(standaloneGroup.description ?? "")}>
         {standaloneCards.map((card) => (card.item ? (
           <EnhancementSettingControl key={card.id} item={card.item} form={form} onFormChange={onFormChange} masterEnabled={masterEnabled} />
@@ -426,13 +427,7 @@ export function UserScriptsScreen({ host, onHostChange, settings, market, onOpen
           {codexHost ? <MenuItem onClick={onOpenRescue}>{t("打开启动急救")}</MenuItem> : null}
         </Menu>
       </TopbarActions>
-      <ExtensionsHero host={host} onHostChange={onHostChange} />
-      {codexHost && onOpenPluginMarket ? (
-        <p className="cx-aggregate-note ext-crosslink">
-          <span>{t("这里是 Codex++ 拓展；Codex 官方目录里的插件在「Codex 插件」页。")}</span>
-          <button className="cx-link" onClick={onOpenPluginMarket} type="button">{t("打开 Codex 插件")}</button>
-        </p>
-      ) : null}
+      <ExtensionsHero host={host} onHostChange={onHostChange} onOpenPluginMarket={codexHost ? onOpenPluginMarket : undefined} />
       <CxToolbar onQuery={setSearch} placeholder={codexHost ? t("搜索拓展：名称、作者、描述或标签") : t("搜索适配 Claude 的拓展")} query={search}>
         {codexHost ? <ExtensionCreatorCard /> : null}
       </CxToolbar>
@@ -686,7 +681,7 @@ const extensionCapabilities = [
   "界面与页面", "斜杠命令", "消息与面板", "模型工具", "Codex 钩子", "网关中间件", "常驻后台", "会话历史", "拓展间服务", "多语言",
 ] as const;
 
-function ExtensionsHero({ host, onHostChange }: { host: ExtensionHost; onHostChange: (host: ExtensionHost) => void }) {
+function ExtensionsHero({ host, onHostChange, onOpenPluginMarket }: { host: ExtensionHost; onHostChange: (host: ExtensionHost) => void; onOpenPluginMarket?: () => void }) {
   // 页面标题就是「万物皆拓展」：这里只留一句理念（能改到的地方放在悬停里），宿主切换放在右侧。
   const hosts = ["codex", "claude"] as const;
   return (
@@ -695,6 +690,13 @@ function ExtensionsHero({ host, onHostChange }: { host: ExtensionHost; onHostCha
         {host === "codex"
           ? t("界面、命令、工具、钩子、模型请求都能由拓展接管；在 Codex 对话里说一句就能造一个。")
           : t("往 Claude 页面里加 js / css 的页面扩展，格式和扩展市场与 ClaudeMom 相同；也能给 Claude Code 装适配它的 Codex++ 拓展。")}
+        {/* 和 Codex 官方插件分开：一句话里带个链接，不再单独占一行。 */}
+        {onOpenPluginMarket ? (
+          <>
+            {" "}
+            <button className="cx-link" onClick={onOpenPluginMarket} title={t("这里是 Codex++ 拓展；Codex 官方目录里的插件在「Codex 插件」页。")} type="button">{t("官方插件在「Codex 插件」")}</button>
+          </>
+        ) : null}
       </p>
       <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>
         {hosts.map((target) => (

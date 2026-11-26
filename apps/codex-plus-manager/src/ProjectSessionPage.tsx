@@ -9,6 +9,22 @@ import { CxBadge, CxBanner, CxCard, CxEmpty, CxRow, CxToolbar } from "./cx-layou
 import { TopbarActions } from "./TopbarActions";
 import "./ManagementPages.css";
 
+/**
+ * 会话的 `model_provider`（Codex 配置里的供应商键）换成看得懂的名字：
+ * `openai` 是官方会话身份（经本地服务时也是它），`custom` 是直连的自定义供应商，其余照原样显示。
+ * 原始键放在悬停提示里。
+ */
+export function sessionProviderLabel(provider: string): string {
+  switch (provider.trim()) {
+    case "":
+    case "openai": return t("OpenAI 会话");
+    case "custom": return t("自定义供应商");
+    case "codexplus":
+    case "codex_plus_gateway": return t("Codex++ 本地服务");
+    default: return provider;
+  }
+}
+
 type SessionPageData = {
   sessions: ManagedSession[]; totalCount: number; hasMore: boolean; offset: number; limit: number;
   projects?: SessionProjectCount[]; query?: string; archived?: boolean | null; status?: string; message?: string;
@@ -236,7 +252,7 @@ export function ProjectSessionPage({
             icon={selection ? <input type="checkbox" aria-label={tf("选择会话：{0}", [session.title || session.id])} checked={selected.has(session.id)} onChange={() => toggle(session)} /> : undefined}
             title={session.title || t("未命名会话")}
             badges={session.archived ? <CxBadge>{t("已归档")}</CxBadge> : undefined}
-            detail={<span title={mode === "time" ? session.cwd : session.modelProvider}>{mode === "time" ? session.cwd || t("未记录项目路径") : session.modelProvider || "Codex"}</span>}
+            detail={<span title={mode === "time" ? session.cwd : `model_provider = ${session.modelProvider || "openai"}`}>{mode === "time" ? session.cwd || t("未记录项目路径") : sessionProviderLabel(session.modelProvider)}</span>}
             updatedAtMs={session.updatedAtMs}
             now={now}
             selected={selection && selected.has(session.id)}
@@ -258,6 +274,6 @@ export function ProjectSessionPage({
     {detail ? <ManagementDrawer title={detail.title || t("未命名会话")} onClose={() => setDetail(null)} footer={<>
       <Button className="mg-button" onClick={() => void copy(`id:${detail.id}`, detail.id)}>{copied === `id:${detail.id}` ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}{copied === `id:${detail.id}` ? t("已复制") : copyFailed === `id:${detail.id}` ? t("复制失败") : t("复制会话 ID")}</Button>
       <Button className="mg-button" danger onClick={() => void deleteOne(detail)}><Trash2 size={14} aria-hidden="true" />{t("删除会话")}</Button>
-    </>}><dl className="mg-detail"><dt>{t("会话 ID")}</dt><dd>{detail.id}</dd><dt>{t("项目目录")}</dt><dd>{detail.cwd || "—"}</dd><dt>{t("模型供应商")}</dt><dd>{detail.modelProvider || "Codex"}</dd><dt>{t("状态")}</dt><dd>{detail.archived ? t("已归档") : t("未归档")}</dd><dt>{t("数据库")}</dt><dd>{detail.dbPath || "—"}</dd></dl></ManagementDrawer> : null}
+    </>}><dl className="mg-detail"><dt>{t("会话 ID")}</dt><dd>{detail.id}</dd><dt>{t("项目目录")}</dt><dd>{detail.cwd || "—"}</dd><dt>{t("模型供应商")}</dt><dd title={`model_provider = ${detail.modelProvider || "openai"}`}>{sessionProviderLabel(detail.modelProvider)}</dd><dt>{t("状态")}</dt><dd>{detail.archived ? t("已归档") : t("未归档")}</dd><dt>{t("数据库")}</dt><dd>{detail.dbPath || "—"}</dd></dl></ManagementDrawer> : null}
   </div>;
 }

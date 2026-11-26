@@ -512,3 +512,10 @@
   display: none;
 }
 
+
+/* Claude「供应商」：有的行带「账号与分配」菜单，其余行留出同宽的位置，开关对齐。 */
+:root .shell .claude-provider-menu-slot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 28px;
+}

@@ -151,8 +151,10 @@ export function NativeAuthControl({ onRestart, form, onSave }: {
           </button>
         ) : null}
         {state?.managed && onRestart ? (
-          <button aria-label={t("重启 Codex 应用登录选择")} className="native-auth-action" disabled={busy || chosen !== null || !!state.drift || !!state.restartBlockedReason} onClick={() => void restart()} title={t("重启 Codex 应用登录选择")} type="button">
+          // 和右边的「刷新」图标长得太像：重启写成带字的按钮。
+          <button aria-label={t("重启 Codex 应用登录选择")} className="cx-secondary native-auth-restart" disabled={busy || chosen !== null || !!state.drift || !!state.restartBlockedReason} onClick={() => void restart()} title={t("重启 Codex 应用登录选择")} type="button">
             <RotateCw className={restarting ? "animate-spin" : ""} />
+            {t("重启 Codex")}
           </button>
         ) : null}
         <button aria-label={t("刷新登录账号")} className="native-auth-action" disabled={busy} onClick={() => { setChosen(null); void reload(); }} title={t("刷新登录账号")} type="button">

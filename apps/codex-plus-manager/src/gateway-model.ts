@@ -142,6 +142,54 @@ export type GatewayPoolEntry = {
   newapiAccess?: NewApiAccessView | null;
   /** 自定义请求头（#3075）：敏感头只有打码后的 `masked`；订阅账号等不开放编辑的为空。旧版后端没有。 */
   customHeaders?: ProviderHeaderView[];
+  /** 这家的全部 Key / 登录账号（打码），各自的设置和额度。旧版后端没有。 */
+  credentials?: CredentialView[];
+  /** 这家多个 Key / 账号之间怎么分请求；`rotationSet` 为 false 时跟着全局的 Key 策略。旧版后端没有。 */
+  rotation?: CredentialRotation;
+  rotationSet?: boolean;
+};
+
+/** 一家里多个 Key / 账号的分法。 */
+export type CredentialRotation = "inOrder" | "rotate" | "weighted" | "usage" | "drain";
+
+export const CREDENTIAL_ROTATIONS: CredentialRotation[] = ["inOrder", "rotate", "weighted", "usage", "drain"];
+
+export function credentialRotationLabel(rotation: CredentialRotation): string {
+  switch (rotation) {
+    case "rotate": return "轮换";
+    case "weighted": return "按权重";
+    case "usage": return "额度优先";
+    case "drain": return "用完再换";
+    default: return "依次";
+  }
+}
+
+export function credentialRotationDescription(rotation: CredentialRotation): string {
+  switch (rotation) {
+    case "rotate": return "新对话轮流分给各个 Key / 账号";
+    case "weighted": return "新对话按权重比例分配";
+    case "usage": return "新对话给剩余额度最多的账号";
+    case "drain": return "一直用排在前面的，用完才换下一个；前面的恢复后再回来";
+    default: return "新对话总从排在前面的开始，答不了再换下一个";
+  }
+}
+
+/** 单个 Key / 账号的设置。 */
+export type CredentialSettings = {
+  disabled?: boolean;
+  weight?: number | null;
+  models?: string[];
+  usedPercentLimit?: number | null;
+};
+
+/** 一个 Key 或登录账号（打码）。`id` 是凭据标识：第一个账号是 primary / official。 */
+export type CredentialView = {
+  id: string;
+  kind: "account" | "key";
+  label: string;
+  plan: string;
+  quota?: ProviderQuota | null;
+  settings: CredentialSettings;
 };
 
 /** 已保存的 new-api 访问令牌：只有打码后的样子和用户 ID。 */

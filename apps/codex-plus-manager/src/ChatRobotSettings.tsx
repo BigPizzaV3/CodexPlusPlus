@@ -99,6 +99,7 @@ export function ChatRobotSettings({ running, lanRunning }: { running: boolean; l
     {!running && <CxBanner tone="warn" title={t("打开远程控制后开始监听任务通知。")}/>}
     {running && !lanRunning && <CxBanner tone="info" title={t("要在手机上打开会话，请启用局域网访问并配对设备。")}/>}
     {error && <div role="alert"><CxBanner tone="warn" title={error} /></div>}
-    {robots && (["dingtalk", "feishu"] as const).map(provider => <RobotForm key={provider} provider={provider} status={robots[provider]} busy={busy} run={run} />)}
+    {/* 后端没给某个机器人的状态（旧版本、出错）时跳过那一行，不让整页渲染失败。 */}
+    {robots && (["dingtalk", "feishu"] as const).map(provider => robots[provider] ? <RobotForm key={provider} provider={provider} status={robots[provider]} busy={busy} run={run} /> : null)}
   </CxSection>;
 }

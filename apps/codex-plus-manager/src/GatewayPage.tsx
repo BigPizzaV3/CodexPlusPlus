@@ -1058,6 +1058,8 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
             tooltip={t("只监听本机；各 Agent 用自己的路径和 token 接入。")}
           >
             {copyButton("listen", listen)}
+            {/* 下面各 Agent 的行尾有三点菜单：这里留出同宽的空位，复制按钮上下对齐。 */}
+            <span className="cx-set-menu-spacer" />
           </CxRow>
           {glanceAgents(payload.agents).map((agent) => {
             const binding = payload.gateway.bindings[agent.agent];

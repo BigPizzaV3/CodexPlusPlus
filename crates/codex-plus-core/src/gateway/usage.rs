@@ -657,6 +657,7 @@ mod tests {
                 ..RelayProfile::default()
             },
             extra: Default::default(),
+            credentials: Default::default(),
         });
         let summary = store.summary(&day, Some(7), &gateway).unwrap();
         assert_eq!(summary.days.len(), 7);

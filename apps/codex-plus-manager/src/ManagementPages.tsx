@@ -6,7 +6,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { MoreHorizontal, Plus, RefreshCw, Search, Server, TriangleAlert, Upload, X } from "lucide-react";
 import { t, tf } from "./i18n";
-import { CxAddRow, CxBadge, CxBanner, CxCard, CxEmpty, CxLoading, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxLoading, CxRow, CxSection, CxStatusIcon, CxToolbar } from "./cx-layout";
 import { AppSelect } from "./AppSelect";
 import { matchesManagementQuery } from "./management-model";
 import { TopbarActions } from "./TopbarActions";
@@ -240,7 +240,7 @@ export function McpPage({ entries, onSave, onDelete, onRefresh, onImport, notify
           <button className="cx-primary" type="button" disabled={busy} onClick={() => setEditor({})}><Plus size={15} />{kind === "mcp" ? t("添加服务器") : t("添加插件")}</button>
           {kind === "mcp" ? <button className="cx-secondary" type="button" disabled={busy} onClick={() => setImporting(true)}><Upload size={15} />{t("导入 JSON")}</button> : null}
         </CxEmpty>}</CxCard> : null}
-    <CxAddRow title={kind === "mcp" ? t("新建 MCP 服务器") : t("新建插件")} detail={kind === "mcp" ? t("添加一个自定义 MCP 服务器，选择写入哪些 Agent") : t("添加一个 Codex 插件配置")} onClick={() => setEditor({})} disabled={busy} />
+    {/* 添加入口只留搜索框旁的「添加服务器」（列表为空时空状态里也有一个），列表末尾不再重复一行。 */}
     {editor && <McpEditor
       entry={editor.row ? { kind, id: editor.row.id, title: editor.row.id, tomlBody: editor.row.body, enabled: true } : undefined}
       kind={kind}

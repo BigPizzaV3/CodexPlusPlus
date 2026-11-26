@@ -156,6 +156,7 @@ fn providers(relays: Vec<RelayProfile>) -> Vec<GatewayProvider> {
             auto_compact: Default::default(),
             relay,
             extra: Default::default(),
+            credentials: Default::default(),
         })
         .collect()
 }

@@ -2207,6 +2207,8 @@ async fn launch_starts_helper_when_chat_protocol_proxy_is_enabled() {
             anthropic_impersonate_claude_code: false,
             anthropic_thinking_mode: String::new(),
             gateway_proxy: None,
+            accounts: Vec::new(),
+            account_id: String::new(),
         }],
         active_relay_id: "relay-chat".to_string(),
         ..BackendSettings::default()

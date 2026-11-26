@@ -26,5 +26,5 @@ test("各条添加路径都带上 skipAgents", () => {
     const line = source.split("\n").find((item) => item.includes(`"${command}"`)) ?? "";
     assert.match(line, /skipAgents/, command);
   }
-  assert.match(source, /BROWSER_LOGIN_COMMANDS\[kind\], skip \? \{ skipAgents: skip \}/);
+  assert.match(source, /BROWSER_LOGIN_COMMANDS\[kind\], skip \|\| providerId \? \{ skipAgents: skip, providerId \}/);
 });

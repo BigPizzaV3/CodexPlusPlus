@@ -390,6 +390,7 @@ mod tests {
                 ..relay(&server.uri())
             },
             extra: Default::default(),
+            credentials: Default::default(),
         };
         let mut disabled = provider.clone();
         disabled.enabled = false;

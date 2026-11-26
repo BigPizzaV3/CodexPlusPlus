@@ -259,7 +259,8 @@ export function WeixinConnectScreen({
         setCatalog(result);
         setCatalogError("");
       } catch (error) {
-        if (!disposed) setCatalogError(String(error));
+        // 只显示原因，不带「Error: 」前缀。
+        if (!disposed) setCatalogError(error instanceof Error ? error.message : String(error));
       } finally {
         inFlight = false;
         if (!disposed) setCatalogLoading(false);
@@ -522,7 +523,8 @@ export function WeixinConnectScreen({
           <CxBadge tone={remoteControlRunning ? "ok" : "neutral"}>{remoteControlRunning ? t("远程控制已开") : t("远程控制未开")}</CxBadge>
         )}
         id="weixin-section-jiajia"
-        title={t("加加")}
+        // 第一次看到「加加」不知道是什么：标题里带一句它是谁。
+        title={t("加加（远程控制里的聊天助手）")}
       >
         <CxCard className="weixin-settings-card">
           <SettingRow

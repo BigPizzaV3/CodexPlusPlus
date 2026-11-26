@@ -58,6 +58,7 @@ function harness(
     mode?: "local" | "patch";
     onLocalStatus?: (status: unknown) => void;
     notify?: (title: string, message: string, status?: string) => Promise<void>;
+    confirm?: (message: string) => Promise<boolean>;
   } = {},
 ) {
   const props = {
@@ -102,10 +103,13 @@ function harness(
     CLAUDE_DEFAULT_CONTEXT_WINDOW: 200_000,
     setTimeout: (callback: () => void) => { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout: (id: number) => timers.delete(id),
+    setInterval: (callback: () => void) => { const id = ++timerId; timers.set(id, callback); return id; },
+    clearInterval: (id: number) => timers.delete(id),
     clampNumber: (value: number, min: number, max: number) => Math.min(max, Math.max(min, Math.round(value))),
     claudeLocalizationMemo: memo,
     claudeLocalMemo: options.localMemo ?? { status: localReady, autoDetected: true },
     announceBackendSettingsChanged: () => {},
+    appConfirm: options.confirm ?? (() => Promise.resolve(false)),
     listen: () => Promise.resolve(() => {}),
     document: { querySelector: (selector: string) => (selector === "[data-topbar-actions]" ? topbarSlot : null) },
     createPortal: (child: unknown, target: typeof topbarSlot) => { target.portal = child; return null; },
@@ -1001,6 +1005,94 @@ test("证书没信任或缺 Node 时，「证书与环境」页签带提示点",
   const tabs = findElements(screen.render(), "button").filter((button) => button.props.role === "tab");
   const dots = tabs.map((tab) => findElements(tab, "span").some((span) => span.props.className === "claude-local-tab-dot"));
   assert.deepEqual(dots, [false, false, false, true]);
+});
+
+test("Claude 的「语音识别」行可以启用共享 SenseVoice 并准备模型", async () => {
+  const notReady = { ...localReady, dictationReady: false, config: { ...localReady.config, enabled: true, voiceInput: false } };
+  const screen = harness(undefined, {}, {
+    localMemo: { status: notReady, autoDetected: true },
+    openAdvanced: false,
+  });
+  const page = screen.render();
+  const voiceRow = findElements(page, "CxRow").find((row) => row.props.title === "语音识别");
+  assert.ok(voiceRow);
+  const prepare = buttons(voiceRow).find((button) => text(button) === "启用并准备 SenseVoice");
+  assert.ok(prepare);
+
+  prepare.props.onClick();
+  await tick();
+  assert.equal(screen.calls[0].command, "enable_local_sensevoice_for_claude");
+  screen.calls[0].resolve({ status: "ok", message: "已启用本地 SenseVoice 语音服务。" });
+  await tick();
+  assert.equal(screen.calls[1].command, "claude_localization_set_voice_input");
+  assert.equal(JSON.stringify(screen.calls[1].args[0]), JSON.stringify({ enabled: true }));
+  screen.calls[1].resolve({ status: "ok", message: "语音输入已开启。" });
+  await tick();
+  assert.equal(screen.calls[2].command, "claude_local_status");
+  screen.calls[2].resolve({
+    ...localReady,
+    status: "ok",
+    message: "Claude 语音入口已开启。",
+    dictationReady: false,
+    config: { ...localReady.config, enabled: true, voiceInput: true },
+  });
+  await tick();
+  assert.equal(screen.calls[3].command, "dictation_local_model_status");
+  screen.calls[3].resolve({ phase: "idle", modelReady: false, totalBytes: 239_549_735 });
+  await tick();
+  assert.equal(screen.calls[4].command, "download_dictation_local_model");
+  screen.calls[4].resolve({ status: "ok", message: "已下载", phase: "ready", modelReady: true });
+  await tick();
+  assert.equal(screen.calls[5].command, "claude_local_status");
+  screen.calls[5].resolve({
+    ...localReady,
+    status: "ok",
+    message: "已就绪",
+    dictationReady: true,
+    config: { ...localReady.config, enabled: true },
+  });
+  await tick();
+  assert.match(text(screen.render()), /已就绪/);
+  screen.unmount();
+});
+
+test("语音识别已在用远程服务时，先确认再换成 SenseVoice；取消就不改", async () => {
+  const notReady = { ...localReady, dictationReady: false, config: { ...localReady.config, enabled: true, voiceInput: true } };
+  const asked: string[] = [];
+  let answer = false;
+  const screen = harness(undefined, {}, {
+    localMemo: { status: notReady, autoDetected: true },
+    openAdvanced: false,
+    confirm: async (message) => { asked.push(message); return answer; },
+  });
+  const prepare = () => buttons(findElements(screen.render(), "CxRow").find((row) => row.props.title === "语音识别")!)
+    .find((button) => text(button) === "启用并准备 SenseVoice")!;
+  const needsConfirm = { status: "failed", message: "远程", needsReplaceConfirm: true, model: "whisper-large-v3-turbo" };
+
+  // 取消：只问一次，不带 replaceRemote 重试，也不去下载模型。
+  prepare().props.onClick();
+  await tick();
+  assert.equal(screen.calls[0].command, "enable_local_sensevoice_for_claude");
+  assert.equal(screen.calls[0].args[0], undefined);
+  screen.calls[0].resolve(needsConfirm);
+  await tick();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /whisper-large-v3-turbo/);
+  assert.equal(screen.calls.length, 1);
+  assert.equal(text(prepare()), "启用并准备 SenseVoice");
+
+  // 确认：带 replaceRemote 再调一次，之后照常准备模型。
+  answer = true;
+  prepare().props.onClick();
+  await tick();
+  screen.calls[1].resolve(needsConfirm);
+  await tick();
+  assert.equal(screen.calls[2].command, "enable_local_sensevoice_for_claude");
+  assert.equal(JSON.stringify(screen.calls[2].args[0]), JSON.stringify({ replaceRemote: true }));
+  screen.calls[2].resolve({ status: "ok", message: "已启用本地 SenseVoice 语音服务。" });
+  await tick();
+  assert.equal(screen.calls[3].command, "dictation_local_model_status");
+  screen.unmount();
 });
 
 test("汉化、语音输入、Computer Use 三个开关共用 setClaudeFlag，不再各写一份", () => {

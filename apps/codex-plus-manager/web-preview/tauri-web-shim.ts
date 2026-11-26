@@ -293,6 +293,33 @@ const gatewayBinding = (model: string, extra: Partial<Record<string, unknown>> =
 const price = (input: number, cachedInput: number, output: number, currency = "CNY") => ({ currency, input, cachedInput, output });
 const demoKeys = (...masked: string[]) => masked.map((value, index) => ({ id: `k${index + 1}`, masked: value }));
 const minutesLater = (minutes: number) => Date.now() + minutes * 60_000;
+// Codex 登录身份：一个已保存的演示 ChatGPT 账号，当前就用它。
+const nativeAuthState = {
+  managed: true,
+  selection: { mode: "account", accountRef: "demo-chatgpt" },
+  actualAccountRef: "demo-chatgpt",
+  actualLabel: "demo@example.com",
+  accounts: [{ id: "demo-chatgpt", name: L("演示账号", "Demo account"), email: "demo@example.com", workspaceId: "", source: "codex" }],
+  drift: null,
+};
+// ChatGPT 订阅过去 4 天的额度采样（每 30 分钟一点），和池里 quota 的 5h 23%、7d 41% 接得上；其他供应商没有历史。
+function quotaHistory(id: string) {
+  if (id !== "chatgpt-pro") return [];
+  const minute = 60_000;
+  const now = Date.now();
+  const points: { windowMinutes: number; usedPercent: number; resetsAtMs: number; observedAtMs: number }[] = [];
+  for (let ago = 4 * 1440; ago >= 30; ago -= 30) {
+    const at = now - ago * minute;
+    // 5h 窗口：当前周期 130 分钟前开始，之前每 300 分钟重置一次；每个周期用得快慢不一样。
+    const cycle = Math.floor((ago - 130 + 299) / 300);
+    const into = cycle <= 0 ? 130 - ago : 300 - ((ago - 130) % 300 || 300);
+    const pace = [0.177, 0.12, 0.25, 0.08, 0.2, 0.15][((cycle % 6) + 6) % 6];
+    points.push({ windowMinutes: 300, usedPercent: Math.min(98, Math.round(into * pace)), resetsAtMs: at + (300 - into) * minute, observedAtMs: at });
+    // 7d 窗口：4 天前开始，匀速涨到现在的 41%。
+    points.push({ windowMinutes: 10080, usedPercent: Math.round(41 * (1 - ago / (4 * 1440))), resetsAtMs: minutesLater(3 * 1440), observedAtMs: at });
+  }
+  return points;
+}
 const gateway = ok({
   gateway: {
     version: 1,
@@ -690,6 +717,9 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
   switch (command) {
     case "list_tools": return tools as T;
     case "load_gateway": return gateway as T;
+    case "load_gateway_quota_history": return quotaHistory(String(args.id ?? "")) as T;
+    case "get_native_auth_state":
+    case "set_codex_login_identity": return ok(nativeAuthState) as T;
     case "start_gateway_subscription_login": return ok({ start: { message: "", state: {} } }) as T;
     case "scan_agent_cache": return ok({ report: agentCacheReport }) as T;
     case "fetch_provider_models": return ok({ models: ["claude-opus-4-5", "claude-sonnet-4-5", "claude-haiku-4-5"], endpoint: "https://api.anthropic.com/v1/models" }) as T;
@@ -808,6 +838,11 @@ export async function invoke<T = unknown>(command: string, args: Record<string, 
       { kind: "package", id: "word-guard", name: L("命令守卫", "Command guard"), description: L("拦截危险的 shell 命令，并给出更安全的替代写法。", "Block dangerous shell commands and suggest safer alternatives."), version: "1.2.0", author: "alice", tags: ["hooks"], homepage: "", icon: "", updatedAt: "2026-10-28", repo: "alice/codexpp-word-guard", tag: "v1.2.0", sha: "4f2a9c1e0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c", official: false, channel: "curated", installed: true, installedVersion: "1.1.0", installedSha: "0b7d3a5f6e8c9d0a1b2c3d4e5f6a7b8c4f2a9c1e", updateAvailable: true },
     ], blockedInstalled: [] }, user_scripts: demoUserScripts }) as T;
     case "load_ccs_providers": return ok({ providers: [] }) as T;
+    // 远程控制页的钉钉 / 飞书通知：两个机器人都要有状态，缺了整页渲染不出来。
+    case "chat_robot_request": return {
+      dingtalk: { enabled: true, hasWebhook: true, hasSecret: true, linkNetwork: "lan", lastResult: "上次通知已送达（10:24）" },
+      feishu: { enabled: false, hasWebhook: false, hasSecret: false, linkNetwork: "tailscale", lastResult: null },
+    } as T;
     case "weixin_connect_status": return ok({ state: "disconnected", message: "演示模式", accountId: "", hasToken: false, lastPeerId: "", lastMessageAtMs: 0, processedMessages: 0 }) as T;
     case "load_local_sessions":
     case "list_local_sessions": return ok({ dbPath: "演示模式", dbPaths: [], sessions: demoCodexSessions(), offset: 0, limit: 50, hasMore: false, totalCount: 4 }) as T;

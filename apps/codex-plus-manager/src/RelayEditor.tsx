@@ -114,6 +114,7 @@ import { RelayHeaderRows } from "./RelayHeaderRows";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
 import { CompatToggles } from "./CompatToggles";
+import { CxLoading } from "./cx-layout";
 import { errorText } from "@/lib/utils";
 import { useModalShell } from "./use-modal-shell";
 import { usePopoverLayer } from "./use-popover-layer";
@@ -157,6 +158,7 @@ import type {
   RelayEditorMode,
   RelayFilesResult,
   RelayProfile,
+  SettingsResult,
 } from "./app-types";
 import {
   CODEX_GATEWAY_RELAY_ID,
@@ -3081,6 +3083,66 @@ function SyncedTextarea({
       }}
       spellCheck={false}
     />
+  );
+}
+
+export function RelayCommonConfigScreen({ onSave, onBack, onDirtyChange }: {
+  onSave: (original: string, contents: string) => Promise<SettingsResult | null>;
+  onBack: () => void;
+  /** 草稿有无变化时告诉外层，侧栏切页时由外层确认是否放弃。 */
+  onDirtyChange?: (dirty: boolean) => void;
+}) {
+  const [contents, setContents] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { onDirtyChange?.(draft !== null); }, [draft, onDirtyChange]);
+  const back = async () => {
+    if (draft !== null && !(await appConfirm(t("有未保存的修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true }))) return;
+    onBack();
+  };
+  useEffect(() => {
+    let cancelled = false;
+    void invoke<BackendSettings>("read_relay_common_config").then(settings => {
+      if (!cancelled) setContents(settings.relayCommonConfigContents ?? "");
+    }).catch(error => { if (!cancelled) setLoadError(errorText(error)); });
+    return () => { cancelled = true; };
+  }, []);
+  const save = async () => {
+    if (contents === null || draft === null || saving) return;
+    setSaving(true);
+    try {
+      const result = await onSave(contents, draft);
+      if (result) {
+        setContents(result.settings.relayCommonConfigContents ?? "");
+        setDraft(null);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <section className="screen management-screen">
+      <header className="cx-page-head" data-tauri-drag-region="deep">
+        <div className="cx-page-title"><h1>{t("通用配置文件")}</h1></div>
+        <div className="topbar-actions">
+          {contents !== null ? <Button type="button" disabled={draft === null || saving} onClick={() => void save()}>
+            <Save className="h-4 w-4" />
+            {t("保存")}
+          </Button> : null}
+          <Button variant="ghost" disabled={saving} onClick={() => void back()}>{t("返回列表")}</Button>
+        </div>
+      </header>
+      {contents !== null
+        ? <fieldset className="min-w-0" disabled={saving}>
+            <SyncedTextarea
+              className="relay-file-textarea"
+              value={draft ?? contents}
+              onValueChange={text => setDraft(text === contents ? null : text)}
+            />
+          </fieldset>
+        : loadError ? <p role="alert">{loadError}</p> : <CxLoading />}
+    </section>
   );
 }
 

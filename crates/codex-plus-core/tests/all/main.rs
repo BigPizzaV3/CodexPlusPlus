@@ -74,6 +74,7 @@ mod gateway_codex_identity;
 mod gateway_codex_link;
 mod gateway_coding_plan_quota;
 mod gateway_compaction_model;
+mod gateway_credentials;
 mod gateway_custom_headers;
 mod gateway_diagnostics;
 mod gateway_forced_relay;

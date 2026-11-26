@@ -194,7 +194,9 @@ test("enhancement switches come only from the settings catalog", () => {
   // 会话维护页的自动修复开关与 Codex 设置页同一条文案。
   assert.match(appSource, /const providerSyncItem = enhancementItem\("providerSyncEnabled"\);/);
   assert.match(appSource, /<SettingRow title=\{t\(providerSyncItem\.title\)\} description=\{t\(providerSyncItem\.description\)\}>/);
-  assert.match(appSource, /<strong>\{t\(masterItem\.title\)\}<\/strong>/);
+  // 启动急救页的总开关放在卡片里，标题和说明都取自设置清单。
+  assert.match(appSource, /title=\{t\(masterItem\.title\)\}/);
+  assert.match(appSource, /detail=\{t\(masterItem\.description\)\}/);
 });
 
 test("the manager keeps only the master switch, standalone patches and session maintenance; everything else is Codex-only", () => {

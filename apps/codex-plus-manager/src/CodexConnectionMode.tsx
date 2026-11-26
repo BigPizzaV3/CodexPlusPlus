@@ -2,12 +2,13 @@
 // - 聚合：Codex 接到 Codex++ 本地服务，打开的供应商合在一起，模型都列进 Codex 的模型选择器，不用切换；
 // - 直连：Codex 直接连一家，关掉 Codex++ 也能用（需协议转换的除外），换供应商点「使用」。
 // 两种方式共用一份供应商：直连供应商以引用的方式就在共享供应商里，加一次两边都能用。
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useState } from "react";
 import { Cable, Loader2, Waypoints } from "lucide-react";
 import { Avatar, Switch, type Notify, type Run } from "./gateway-ui";
 import { presetHost, protocolLabel, providerEnabled, type GatewayPayload, type GatewayPoolEntry } from "./gateway-model";
 import { Menu, MenuItem } from "./ManagementPages";
 import { OwnerBadge } from "./ProviderOwner";
+import { credentialMenuLabel, credentialSummary, hasCredentialSettings } from "./ProviderCredentials";
 import { CxBadge, CxCard, CxEmpty, CxLoading, CxRow } from "./cx-layout";
 import { t, tf } from "@/i18n";
 
@@ -15,6 +16,8 @@ export type CodexConnectionMode = "aggregate" | "direct";
 
 // 默认模型下拉在 GatewayAgents 里，那是按需加载的大模块：这里也按需引入，不把它打回主包。
 const AgentModelPicker = lazy(() => import("./GatewayAgents").then((module) => ({ default: module.AgentModelPicker })));
+// 「账号与分配」弹窗连着账号登录，也在大模块里：点开时才加载。
+const ProviderCredentialsHost = lazy(() => import("./ProviderCredentialsHost").then((module) => ({ default: module.ProviderCredentialsHost })));
 
 /** 「聚合 / 直连」两段切换：Codex 页和 Claude 页（Claude Code 那一行）共用。 */
 export function ConnectionModeSwitch({
@@ -130,6 +133,7 @@ export function CodexAggregateList({
   entries,
   busy,
   run,
+  notify,
   onEditLinked,
   onManage,
   onAdd,
@@ -139,11 +143,15 @@ export function CodexAggregateList({
   entries: GatewayPoolEntry[];
   busy: string | null;
   run: Run;
+  notify: Notify;
   /** 引用 Codex 直连供应商的那几项：打开它的编辑页；返回 false 表示直连列表里没有它。 */
   onEditLinked: (relayId: string) => boolean;
   onManage?: () => void;
   onAdd: () => void;
 }) {
+  // 「账号与分配」：打开的是哪一家；打开过就一直挂着，关掉后登录提示照样在。
+  const [credentialsId, setCredentialsId] = useState<string | null>(null);
+  const [credentialsUsed, setCredentialsUsed] = useState(false);
   if (!payload) return <CxCard><CxLoading label={t("正在读取供应商…")} /></CxCard>;
   const exclude = payload.gateway.bindings?.codex?.poolExclude ?? [];
   if (!payload.pool.length) {
@@ -164,6 +172,11 @@ export function CodexAggregateList({
   }
   return (
     <CxCard>
+      {credentialsUsed ? (
+        <Suspense fallback={null}>
+          <ProviderCredentialsHost notify={notify} onClose={() => setCredentialsId(null)} openId={credentialsId} payload={payload} run={run} />
+        </Suspense>
+      ) : null}
       {entries.map((entry) => {
         const enabled = providerEnabled(entry);
         const on = enabled && !exclude.includes(entry.id);
@@ -176,7 +189,7 @@ export function CodexAggregateList({
                 <OwnerBadge entry={entry} page="codex" />
               </>
             )}
-            detail={[protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length])].filter(Boolean).join(" · ")}
+            detail={[protocolLabel(entry.protocol), presetHost(entry.baseUrl), tf("{0} 个模型", [entry.models.length]), credentialSummary(entry, payload)].filter(Boolean).join(" · ")}
             icon={<Avatar baseUrl={entry.baseUrl} name={entry.name} size="sm" />}
             key={entry.id}
             muted={!on}
@@ -191,6 +204,9 @@ export function CodexAggregateList({
             />
             <Menu label={t("供应商操作")}>
               {linked ? <MenuItem onClick={() => { if (!onEditLinked(linked)) onManage?.(); }}>{t("编辑")}</MenuItem> : null}
+              {hasCredentialSettings(entry) ? (
+                <MenuItem onClick={() => { setCredentialsUsed(true); setCredentialsId(entry.id); }}>{credentialMenuLabel(entry)}</MenuItem>
+              ) : null}
               {onManage ? <MenuItem onClick={onManage}>{t("在「本地服务」里管理")}</MenuItem> : null}
             </Menu>
           </CxRow>

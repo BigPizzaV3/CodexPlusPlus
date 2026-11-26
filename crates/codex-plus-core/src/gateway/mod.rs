@@ -39,6 +39,7 @@ pub mod codex_link;
 pub mod coding_plan;
 pub mod compaction_model;
 pub mod connection_generation;
+pub mod credentials;
 pub mod diagnostics;
 pub mod disconnect_preview;
 pub mod drift;

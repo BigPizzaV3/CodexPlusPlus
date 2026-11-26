@@ -344,10 +344,17 @@ pub(crate) fn gateway_auth(account_ref: &str) -> anyhow::Result<String> {
 
 pub(crate) fn gateway_auth_optional(account_ref: &str) -> anyhow::Result<Option<String>> {
     let gateway = GatewayStore::default().load()?;
+    // `account_ref` 也可以是 `<供应商 id>~<账号 id>`（一家里登录的其余账号）。
+    let provider_id = match gateway.provider(account_ref) {
+        Some(_) => account_ref,
+        None => crate::gateway::store::split_credential_ref(account_ref)
+            .map_or(account_ref, |(provider_id, _)| provider_id),
+    };
     Ok(gateway
-        .provider(account_ref)
-        .map(|provider| {
-            let mut auth = provider.relay.auth_contents.clone();
+        .provider(provider_id)
+        .zip(gateway.credential(account_ref))
+        .map(|(provider, latest)| {
+            let mut auth = latest.auth_contents;
             if provider.source == "native:external"
                 && let Ok(mut value) = serde_json::from_str::<Value>(&auth)
             {

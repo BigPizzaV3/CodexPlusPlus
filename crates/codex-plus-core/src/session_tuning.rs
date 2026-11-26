@@ -138,6 +138,21 @@ fn forget_snapshot_copies(settings: &mut crate::settings::BackendSettings, commo
     }
 }
 
+/// Prepare a full-template save by removing stored copies of changed or deleted tuning values.
+pub fn forget_changed_template_copies(
+    settings: &mut crate::settings::BackendSettings,
+    draft: &DocumentMut,
+) {
+    let Ok(common) = settings.relay_common_config_contents.parse::<DocumentMut>() else {
+        return;
+    };
+    for &(key, _) in SESSION_TUNING_KEYS {
+        if common.get(key).map(item_to_json) != draft.get(key).map(item_to_json) {
+            forget_snapshot_copies(settings, &common, key);
+        }
+    }
+}
+
 /// `/session-tuning/read`：通用配置里这些键当前的值。
 pub fn read(store: &SettingsStore) -> anyhow::Result<Value> {
     let settings = store.load().context("读取 Codex++ 设置失败")?;

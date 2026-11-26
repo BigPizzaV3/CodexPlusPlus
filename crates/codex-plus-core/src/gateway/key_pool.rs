@@ -16,7 +16,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::Serialize;
 
-use crate::gateway::store::KeyRotationMode;
+use crate::gateway::store::{CredentialRotation, KeyRotationMode, ProviderCredentials};
 use crate::settings::RelayProfile;
 
 /// 限流没给任何恢复时间（Retry-After / x-ratelimit-reset*）时的首个冷却时长，之后按连续次数翻倍。
@@ -355,16 +355,50 @@ fn primary_fingerprint(relay: &RelayProfile) -> u64 {
     }
 }
 
+/// 账号视图的凭据 id 就是账号 id；第一个账号 / 供应商本身用 `primary`。
+fn account_key_id(relay: &RelayProfile, primary: &str) -> String {
+    if relay.account_id.is_empty() {
+        primary.to_string()
+    } else {
+        relay.account_id.clone()
+    }
+}
+
+/// 官方登录（ChatGPT 账号）的凭据：401 只冷却一会儿，不按指纹永久停用。
+/// 第一个账号是 `official`，其余账号指纹记 0（token 由官方登录那边刷新，指纹不随之变化）。
+fn is_official_key(key: &KeyRef) -> bool {
+    key.key_id == OFFICIAL_KEY_ID || key.fingerprint == 0
+}
+
 /// 供应商的全部 Key（还没按健康状态过滤）。
 ///
 /// 两个及以上命名 Key 时逐个展开；否则只有 `relay.api_key` 一个。官方登录成员不走 Key。
+/// 一家登录了多个账号（`relay.accounts`）时每个账号一个候选，凭据 id 是账号 id（第一个账号照旧）。
 pub fn expand_keys(relay: &RelayProfile) -> Vec<KeyCandidate> {
+    // 一家里登录了多个账号：每个账号一个候选，第一个账号的候选和只有一个账号时一模一样。
+    if relay.account_id.is_empty() && !relay.accounts.is_empty() {
+        return relay
+            .credential_views()
+            .iter()
+            .flat_map(expand_keys)
+            .collect();
+    }
     if crate::official_login::member_uses_official_login_transport(relay) {
         return vec![KeyCandidate {
             key: KeyRef {
                 relay_id: relay.id.clone(),
-                key_id: OFFICIAL_KEY_ID.to_string(),
+                key_id: account_key_id(relay, OFFICIAL_KEY_ID),
                 fingerprint: 0,
+            },
+            relay: relay.clone(),
+        }];
+    }
+    if !relay.account_id.is_empty() {
+        return vec![KeyCandidate {
+            key: KeyRef {
+                relay_id: relay.id.clone(),
+                key_id: relay.account_id.clone(),
+                fingerprint: primary_fingerprint(relay),
             },
             relay: relay.clone(),
         }];
@@ -483,7 +517,50 @@ pub fn order_keys_detailed(
     now: Instant,
     advance: bool,
 ) -> KeyOrder {
-    let all = expand_keys(relay);
+    order_credentials(
+        relay,
+        upstream_model,
+        &ProviderCredentials {
+            rotation: Some(CredentialRotation::from_key_mode(mode)),
+            ..Default::default()
+        },
+        mode,
+        conversation,
+        now,
+        advance,
+    )
+}
+
+/// 按这家自己的凭据设置排：停用的、不给这个模型用的、额度用到上限的账号先拿掉，
+/// 再按这家的分法（依次 / 轮换 / 按权重 / 额度优先 / 用完再换）排可用的。
+/// `global` 是这家没单独设分法时跟的全局 Key 策略。
+#[allow(clippy::too_many_arguments)]
+pub fn order_credentials(
+    relay: &RelayProfile,
+    upstream_model: &str,
+    credentials: &ProviderCredentials,
+    global: KeyRotationMode,
+    conversation: Option<&str>,
+    now: Instant,
+    advance: bool,
+) -> KeyOrder {
+    let rotation = credentials.rotation_or(global);
+    let mut all = expand_keys(relay);
+    credentials.sort_by_order(&mut all, |candidate| candidate.key.key_id.as_str());
+    let all = all
+        .into_iter()
+        .filter(|candidate| {
+            let Some(settings) = credentials.settings_for(&candidate.key.key_id) else {
+                return true;
+            };
+            !settings.disabled
+                && settings.allows_model(upstream_model)
+                && settings.used_percent_limit.is_none_or(|cap| {
+                    crate::gateway::quota::used_percent_for_relay(&candidate.relay)
+                        .is_none_or(|used| used < f64::from(cap.min(100)))
+                })
+        })
+        .collect::<Vec<_>>();
     let mut state = lock();
     let breaker = state
         .providers
@@ -525,8 +602,9 @@ pub fn order_keys_detailed(
         available.push(candidate);
     }
     if available.len() > 1 {
+        // 「用完再换」不粘：前面的凭据一恢复，对话就回到它上面。
         let sticky = conversation
-            .filter(|value| !value.trim().is_empty())
+            .filter(|value| !value.trim().is_empty() && rotation != CredentialRotation::Drain)
             .and_then(|conversation| {
                 state
                     .sticky
@@ -540,26 +618,70 @@ pub fn order_keys_detailed(
         {
             let pinned = available.remove(position);
             available.insert(0, pinned);
-        } else if mode == KeyRotationMode::RoundRobin {
-            let offset = if advance {
-                let counter = state.round_robin.entry(relay.id.clone()).or_default();
-                let current = *counter;
-                *counter = counter.wrapping_add(1);
-                current
-            } else {
-                state
-                    .round_robin
-                    .get(&relay.id)
-                    .copied()
-                    .unwrap_or_default()
-            } % available.len();
-            available.rotate_left(offset);
+        } else {
+            match rotation {
+                CredentialRotation::InOrder | CredentialRotation::Drain => {}
+                CredentialRotation::Rotate => {
+                    let offset = rotation_counter(&mut state, &relay.id, advance) % available.len();
+                    available.rotate_left(offset);
+                }
+                CredentialRotation::Weighted => {
+                    let weights = available
+                        .iter()
+                        .map(|candidate| {
+                            credentials
+                                .settings_for(&candidate.key.key_id)
+                                .and_then(|settings| settings.weight)
+                                .unwrap_or(1) as usize
+                        })
+                        .collect::<Vec<_>>();
+                    let total = weights.iter().sum::<usize>();
+                    if total > 0 {
+                        let mut slot = rotation_counter(&mut state, &relay.id, advance) % total;
+                        let position = weights
+                            .iter()
+                            .position(|weight| {
+                                if slot < *weight {
+                                    return true;
+                                }
+                                slot -= weight;
+                                false
+                            })
+                            .unwrap_or_default();
+                        let picked = available.remove(position);
+                        available.insert(0, picked);
+                    }
+                }
+                CredentialRotation::Usage => {
+                    // 剩余额度多的在前；查不到额度的排在查得到的后面，彼此保持原顺序。
+                    let remaining = |candidate: &KeyCandidate| {
+                        crate::gateway::quota::remaining_for_relay(&candidate.relay).unwrap_or(-1.0)
+                    };
+                    available.sort_by(|left, right| {
+                        remaining(right)
+                            .partial_cmp(&remaining(left))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
+                }
+            }
         }
     }
     KeyOrder {
         available,
         soonest,
         waiting,
+    }
+}
+
+/// 「轮换」「按权重」用的计数：`advance` 为 false 时只读不推进（预览用）。
+fn rotation_counter(state: &mut PoolState, relay_id: &str, advance: bool) -> usize {
+    if advance {
+        let counter = state.round_robin.entry(relay_id.to_string()).or_default();
+        let current = *counter;
+        *counter = counter.wrapping_add(1);
+        current
+    } else {
+        state.round_robin.get(relay_id).copied().unwrap_or_default()
     }
 }
 
@@ -607,7 +729,7 @@ pub fn record_failure(
         FailureClass::QuotaExhausted { reset_after } => {
             entry.cooldown_until = Some(now + reset_after.unwrap_or(QUOTA_DEFAULT_COOLDOWN));
         }
-        FailureClass::AuthInvalid if key.key_id == OFFICIAL_KEY_ID => {
+        FailureClass::AuthInvalid if is_official_key(key) => {
             entry.cooldown_until = Some(now + OFFICIAL_AUTH_COOLDOWN);
         }
         FailureClass::AuthInvalid => {

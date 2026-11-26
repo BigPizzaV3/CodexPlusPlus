@@ -81,6 +81,14 @@ pub const GATEWAY_PAGE_COMMANDS: &[&str] = &[
     // 「Codex 登录身份」：ChatGPT 账号 / 本地账号（API Key 解锁）/ 不登录，和管理器同一个命令。
     "get_native_auth_state",
     "set_codex_login_identity",
+    // 一家里的多个账号 / 多个 Key：分配方式、逐个停用、移除，以及浏览器登录一个账号加进这一家。
+    "set_gateway_provider_rotation",
+    "set_gateway_credential_settings",
+    "remove_gateway_provider_account",
+    "login_gateway_chatgpt",
+    "login_gateway_chatgpt_api",
+    "login_gateway_grok",
+    "cancel_gateway_login",
 ];
 
 const GATEWAY_AGENT_COMMANDS: &[&str] = &[
@@ -99,6 +107,15 @@ pub fn gateway_command_allowed(command: &str, args: &Value) -> Result<(), String
         && args.get("agent").and_then(Value::as_str) != Some(ToolId::Codex.as_str())
     {
         return Err("Codex 页面只能接入或断开 Codex 自己的本地服务连接".to_string());
+    }
+    // 在 Codex 页里登录只能把账号加进已有的一家（新建登录型供应商在管理器里做）。
+    if command.starts_with("login_gateway_")
+        && args
+            .get("providerId")
+            .and_then(Value::as_str)
+            .is_none_or(|id| id.trim().is_empty())
+    {
+        return Err("Codex 页面里登录只能把账号加进已有的供应商".to_string());
     }
     if command == "set_gateway_pool_member"
         && args.get("agents").and_then(Value::as_array).map(Vec::as_slice)

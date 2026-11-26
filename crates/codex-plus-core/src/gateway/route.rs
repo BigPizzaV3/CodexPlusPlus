@@ -1521,7 +1521,7 @@ fn value_has_image(value: &serde_json::Value) -> bool {
 /// 额度优先：有余量的按剩余比例从多到少，其次是没有额度数据的（保持原顺序），用完的排最后。
 fn sort_by_quota(relays: &mut [(RelayProfile, String)]) {
     relays.sort_by(|(left, _), (right, _)| {
-        let rank = |relay: &RelayProfile| match crate::gateway::quota::remaining(&relay.id) {
+        let rank = |relay: &RelayProfile| match crate::gateway::quota::best_remaining(relay) {
             Some(left) if left > 0.0 => (0, -left),
             None => (1, 0.0),
             Some(_) => (2, 0.0),
@@ -1878,7 +1878,15 @@ fn resolve_plan_with(
     let mut permitted = Vec::new();
     let mut blocked = None;
     for (relay, model) in relays {
-        match gate.check(gateway, &relay) {
+        // 一家登录了多个账号时逐个账号查：任一账号放行，这家就留下，到发请求时再按账号逐个把关。
+        let mut verdict = Ok(());
+        for view in relay.credential_views() {
+            verdict = gate.check(gateway, &view);
+            if verdict.is_ok() {
+                break;
+            }
+        }
+        match verdict {
             Ok(()) => permitted.push((relay, model)),
             Err(error) => {
                 let stop = matches!(
@@ -1937,9 +1945,11 @@ fn resolve_plan_with(
             .map(GatewayProvider::key_limits)
             .unwrap_or_default();
         // 带上上游模型：只因别的模型被限流而冷却的 Key 照常可用（#3229）。
-        let order = key_pool::order_keys_detailed(
+        let no_credentials = crate::gateway::store::ProviderCredentials::default();
+        let order = key_pool::order_credentials(
             &relay,
             &upstream_model,
+            provider.map_or(&no_credentials, |provider| &provider.credentials),
             gateway.key_policy.mode,
             conversation.as_deref(),
             now,
@@ -2055,6 +2065,7 @@ mod tests {
                 ..RelayProfile::default()
             },
             extra: Default::default(),
+            credentials: Default::default(),
         }
     }
 

@@ -289,6 +289,37 @@ fn root(text: &str) -> anyhow::Result<Node> {
     Parser::document(text)?.context("JSONC 文件没有值")
 }
 
+pub(super) fn read_preferences(text: &str) -> anyhow::Result<Value> {
+    fn unique_keys(node: &Node) -> bool {
+        match &node.kind {
+            Kind::Object(members) => {
+                let mut seen = std::collections::HashSet::new();
+                members
+                    .iter()
+                    .all(|member| seen.insert(&member.key) && unique_keys(&member.value))
+            }
+            Kind::Array(elements) => elements.iter().all(|element| unique_keys(&element.value)),
+            Kind::Scalar => true,
+        }
+    }
+    let value = parse_jsonc(text)?;
+    if let Some(node) = Parser::document(text)? {
+        ensure!(unique_keys(&node), "JSON 配置含有重复的键，未改动文件");
+    }
+    Ok(value)
+}
+
+pub(super) fn preference_draft(text: &str) -> anyhow::Result<serde_json::Map<String, Value>> {
+    let Value::Object(values) = read_preferences(text)? else {
+        bail!("请输入 JSON 对象");
+    };
+    ensure!(
+        !super::files::strip_jsonc(text).trim().is_empty(),
+        "请输入 JSON 对象；清空设置请使用 {{}}"
+    );
+    Ok(values)
+}
+
 fn delete(
     text: &mut String,
     span: Range<usize>,

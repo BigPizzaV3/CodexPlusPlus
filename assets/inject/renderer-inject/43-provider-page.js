@@ -735,6 +735,13 @@
     if (kind.startsWith("agg-")) return renderCodexPlusProviderPage();
     // 本地服务页签：协议写进草稿（与输入框一样不重绘）；测试用模型只在点「测试」时读按钮上的值。
     if (kind === "gw-protocol") codexPlusGatewayHandleInput({ target: { dataset: { codexGatewayField: "protocol" }, value } });
+    // 一家里多个账号 / Key 的分配方式：选了就存（空值是跟随全局）。
+    if (kind === "gw-rotation") {
+      const entry = codexPlusGatewaySelected();
+      if (entry && value !== (entry.rotationSet ? entry.rotation || "" : "")) {
+        void codexPlusGatewayMutate("set_gateway_provider_rotation", { id: entry.id, rotation: value || null }, { busy: "rotation", success: "已保存分配方式。" });
+      }
+    }
   }
 
   /** 菜单的点击（开合、选中）；是它的事件就处理并返回 true。 */
