@@ -1257,6 +1257,7 @@ fn oversized_unfinished_meter_reopens_at_its_start_and_publishes_only_once() -> 
 
 #[test]
 fn exclusive_terminal_usage_repairs_only_its_paired_delta_with_a_mixed_prefix() {
+    for cumulative_cache in [420_908_928, 408_736_256] {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().canonicalize().unwrap();
     let database = home.join("usage.sqlite");
@@ -1265,9 +1266,9 @@ fn exclusive_terminal_usage_repairs_only_its_paired_delta_with_a_mixed_prefix() 
     let at = |second| format!("2026-01-02T12:00:{second:02}Z");
     let counts = |input, cache, output, total| json!({"input_tokens":input,
         "cached_input_tokens":cache,"cache_write_input_tokens":0,"output_tokens":output,"total_tokens":total});
-    let last = counts(126_679, 29_184, 357, 156_220);
-    let cumulative = counts(419_614_180, 420_908_928, 1_508_615, 450_082_667);
-    let before = counts(419_487_501, 420_879_744, 1_508_258, 449_926_447);
+    let last = counts(126_679, 211_072, 357, 338_108);
+    let cumulative = counts(419_614_180, cumulative_cache, 1_508_615, 450_082_667);
+    let before = counts(419_487_501, cumulative_cache - 211_072, 1_508_258, 449_744_559);
     let count = |second, last, total| json!({"type":"event_msg","timestamp":at(second),
         "payload":{"type":"token_count","info":{"last_token_usage":last,"total_token_usage":total}}});
     let receipt = |second, id, last, total| json!({"type":"token_usage_record","timestamp":at(second),
@@ -1296,20 +1297,21 @@ fn exclusive_terminal_usage_repairs_only_its_paired_delta_with_a_mixed_prefix() 
     assert_eq!(native.len(), 2);
     assert_eq!(native[1].delta.input_tokens, 126_679);
     assert!(!native[1].delta.cached_known);
+    assert_eq!(native[1].total.cached_known, cumulative_cache < 419_614_180);
     append(&[receipt(2, "chat-final", last.clone(), cumulative.clone())]);
     let (receipts, paired) = step();
     assert_eq!(receipts, 1, "exclusive-cache terminal receipt was discarded");
     assert_eq!(paired.len(), 2);
     assert!(paired[0] == native[0]);
     assert_eq!(paired[1].total, native[1].total);
-    assert_eq!(paired[1].delta, crate::usage_history::Tokens::new(155_863, 29_184, 357));
+    assert_eq!(paired[1].delta, crate::usage_history::Tokens::new(337_751, 211_072, 357));
     assert!(step().1 == paired);
     append(&[receipt(4, "competing-final", last, cumulative)]);
     let (receipts, withdrawn) = step();
     assert_eq!(receipts, 2);
     assert!(withdrawn == native, "a competing claim must withdraw the correction");
     let next_last = counts(9_105, 168_960, 953, 179_018);
-    let next_total = counts(419_623_285, 421_077_888, 1_509_568, 450_261_685);
+    let next_total = counts(419_623_285, cumulative_cache + 168_960, 1_509_568, 450_261_685);
     append(&[
         receipt(5, "next-final", next_last.clone(), next_total.clone()),
         count(6, next_last, next_total),
@@ -1320,6 +1322,7 @@ fn exclusive_terminal_usage_repairs_only_its_paired_delta_with_a_mixed_prefix() 
     assert!(next[..2] == native);
     assert_eq!(next[2].delta, crate::usage_history::Tokens::new(178_065, 168_960, 953));
     assert!(step().1 == next);
+    }
 }
 
 #[test]

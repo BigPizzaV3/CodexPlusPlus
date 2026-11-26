@@ -289,9 +289,8 @@ pub(super) fn reconcile<'a>(
 }
 
 pub(super) fn apply_receipt_counts(event: &mut UsageEvent, receipt: &UsageEvent) -> bool {
-    // 混合累计口径失去缓存知识时，唯一回执可证明这一次差量恰好漏了缓存。
-    let omitted_cache = !event.total.cached_known
-        && !event.delta.cached_known
+    // 混合口径使差量失去缓存知识时，唯一回执可证明本次恰好漏了缓存。
+    let omitted_cache = !event.delta.cached_known
         && event.delta.input_tokens.checked_add(receipt.delta.cached_input_tokens)
             == Some(receipt.delta.input_tokens)
         && event.delta.output_tokens == receipt.delta.output_tokens
