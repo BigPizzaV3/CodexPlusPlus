@@ -11,6 +11,7 @@
 //! 端口 8000 是桌面鉴权白名单写死的（只有 `localhost` / `localhost:8000` /
 //! `*.openai.com` / `chatgpt.com` 会附带登录 token），不能改。
 
+pub mod account_settings;
 pub mod plugins;
 mod recordings;
 
@@ -208,13 +209,38 @@ pub fn reply_for(method: &str, path: &str) -> (ReplySource, Reply) {
             },
         );
     }
+    // 强调色跟着账号走：改的时候存下来、原样回写（见 [`account_settings`]）。
+    if path_only.ends_with("/settings/account_user_setting") {
+        let settings_user = recordings()
+            .get(&format!("GET {SETTINGS_USER_PATH}"))
+            .map(|recording| recording.body)
+            .unwrap_or("{}");
+        let (status, body) = account_settings::account_user_setting_reply(
+            path,
+            settings_user,
+            &account_settings::store(),
+        );
+        return (
+            ReplySource::Synthetic,
+            Reply {
+                status,
+                content_type: JSON,
+                body,
+            },
+        );
+    }
     if let Some(recording) = recordings().get(&format!("{method} {path_only}")) {
+        let mut body = personalize(path_only, recording.body);
+        if path_only == SETTINGS_USER_PATH {
+            // 录制里的强调色是录制那个账号的（black），换成本机记的，没改过是 default。
+            body = account_settings::with_saved_theme(&body, &account_settings::store().chat_theme());
+        }
         return (
             ReplySource::Recorded,
             Reply {
                 status: recording.status,
                 content_type: JSON,
-                body: personalize(path_only, recording.body),
+                body,
             },
         );
     }
@@ -242,6 +268,9 @@ fn synthetic_reply(method: &str, path: &str) -> Reply {
 }
 
 const JSON: &str = "application/json";
+
+/// 账号设置（强调色等）的接口路径。
+const SETTINGS_USER_PATH: &str = "/backend-api/settings/user";
 
 /// 本地签发的登录 token。桌面只解码 payload，不验签。
 fn token_reply() -> Reply {
