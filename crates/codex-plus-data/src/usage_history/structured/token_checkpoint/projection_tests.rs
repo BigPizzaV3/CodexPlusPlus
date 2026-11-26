@@ -3564,6 +3564,13 @@ fn selection_preserves_the_known_priceable_subset_across_sessions() {
 #[test]
 fn restored_supplier_evidence_keeps_inference_separate_without_changing_counts()
 -> anyhow::Result<()> {
+    for source in ["model-namespace", "session-context-inferred"] {
+        restored_supplier_evidence_for_source(source)?;
+    }
+    Ok(())
+}
+
+fn restored_supplier_evidence_for_source(inferred_source: &str) -> anyhow::Result<()> {
     use super::historical::{EvidenceVerifier, Historical};
     use std::sync::Mutex;
 
@@ -3575,14 +3582,18 @@ fn restored_supplier_evidence_keeps_inference_separate_without_changing_counts()
     let mut store = Store::open(Connection::open(&database)?)?;
     let mut records = Vec::new();
     for (session, supplier, source) in [
-        (PARENT, "custom", "model-namespace"),
+        (PARENT, "custom", inferred_source),
         (CHILD, "custom", "request-log-recovered-supplier-only"),
-        (OTHER, "supplier-b", "model-namespace"),
+        (OTHER, "supplier-b", inferred_source),
     ] {
         let path = root.join(format!("rollout-{session}.jsonl"));
         let mut state = parse(&path, &[header(session, 0), count(1, 1, 1, true)], cutoff);
         let event = &mut state.events[0];
-        event.model = "supplier-a/fixture".into();
+        event.model = if inferred_source == "session-context-inferred" {
+            "fixture".into()
+        } else {
+            "supplier-a/fixture".into()
+        };
         event.provider = supplier.into();
         event.provider_source = (supplier == "supplier-b").then(|| "request-log-exact".into());
         let prepared = store.prepare(new_source(&path, &state), cutoff, BTreeMap::new(), 8192)?;

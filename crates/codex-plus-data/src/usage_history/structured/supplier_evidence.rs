@@ -417,7 +417,10 @@ impl Matches {
         }
         self.matched.insert(id.clone());
         let supplier = &record.supplier_evidence;
-        let inferred = event.provider_source.as_deref() == Some("model-namespace");
+        let inferred = matches!(
+            event.provider_source.as_deref(),
+            Some("model-namespace" | "session-context-inferred")
+        );
         if !inferred && !unknown_provider(&event.provider) && event.provider != supplier.provider {
             self.conflicts += 1;
             return;

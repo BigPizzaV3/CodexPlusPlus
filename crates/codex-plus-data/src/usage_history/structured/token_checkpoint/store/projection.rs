@@ -289,7 +289,8 @@ fn group_key(event: &UsageEvent) -> (String, String, String, u8) {
         | u8::from(conflict.role) << 2
         | u8::from(conflict.turn) << 3
         | match ClassificationEvidence::of(event) {
-            ClassificationEvidence::NamespaceInferred => PROVIDER_INFERRED,
+            ClassificationEvidence::NamespaceInferred
+            | ClassificationEvidence::SessionContextInferred => PROVIDER_INFERRED,
             ClassificationEvidence::RecoveredRequestSupplier => RECOVERED_REQUEST_SUPPLIER,
             _ => 0,
         };

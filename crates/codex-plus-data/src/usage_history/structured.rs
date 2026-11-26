@@ -1695,6 +1695,7 @@ enum ClassificationEvidence {
     SupplierOnly,
     RecoveredRequestSupplier,
     NamespaceInferred,
+    SessionContextInferred,
 }
 
 impl ClassificationEvidence {
@@ -1708,6 +1709,7 @@ impl ClassificationEvidence {
             Some("upstream-counter-bidirectional-supplier-only") => Self::SupplierOnly,
             Some(REQUEST_SUPPLIER_PROOF) => Self::RecoveredRequestSupplier,
             Some("model-namespace") => Self::NamespaceInferred,
+            Some("session-context-inferred") => Self::SessionContextInferred,
             _ => Self::None,
         }
     }
@@ -1737,7 +1739,9 @@ impl ClassificationEvidence {
             Self::RecoveredRequestSupplier => {
                 row["supplierClassificationEvidence"] = json!(REQUEST_SUPPLIER_PROOF);
             }
-            Self::NamespaceInferred => row["providerInferred"] = json!(true),
+            Self::NamespaceInferred | Self::SessionContextInferred => {
+                row["providerInferred"] = json!(true);
+            }
         }
     }
 }
@@ -2562,6 +2566,7 @@ impl LegacyEvidenceCache {
                         | "user-provider-classification"
                         | "request-log-recovered-supplier-only"
                         | "model-namespace"
+                        | "session-context-inferred"
                 )
                 && (record.source != "model-namespace"
                     || record.model.split_once('/').is_some_and(|(namespace, _)| {
