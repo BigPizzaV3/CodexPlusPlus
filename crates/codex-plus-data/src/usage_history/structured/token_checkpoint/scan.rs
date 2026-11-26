@@ -7,7 +7,7 @@ use super::{
         replicas::{Comparison, Probe},
     },
 };
-use crate::usage_history::structured::{FileState, discover, index_budget::Budget};
+use crate::usage_history::structured::{FileState, discover, discover_directories, index_budget::Budget};
 use chrono::NaiveDate;
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -25,6 +25,7 @@ pub(super) struct Scan {
     comparing: Option<Box<Comparison>>,
     deferred: Option<SourceReader>,
     rescan: bool,
+    discovered: HashSet<PathBuf>,
     live: BTreeMap<PathBuf, SourceStamp>,
     waiting_for_newline: BTreeMap<PathBuf, (SourceStamp, bool)>,
     last_revisited: Option<PathBuf>,
@@ -128,6 +129,7 @@ impl Scan {
             self.missing.clear();
             self.more_missing = false;
             let paths = discover(home, !self.rescan, &mut self.issues);
+            self.discovered = paths.iter().cloned().collect();
             self.unknown_count_scope = self.issues != 0;
             if self.issues == 0 {
                 match store.missing_sources(&paths, SOURCES_PER_ROUND) {
@@ -269,6 +271,12 @@ impl Scan {
                 let next = changed.partition_point(|path| path <= last);
                 changed.rotate_left(next);
             }
+            // 新会话与已知文件追加共用实时名额，不必等无关归档扫描结束。
+            let mut discovery_errors = 0;
+            let paths = discover_directories(home, vec![sessions_dir.clone()], false, &mut discovery_errors);
+            self.issues += discovery_errors;
+            self.unknown_count_scope |= discovery_errors != 0;
+            changed.extend(paths.into_iter().filter(|path| self.discovered.insert(path.clone())));
         }
         if !changed.is_empty() {
             if self.active.is_none() && retry.is_none() && self.comparing.is_none()

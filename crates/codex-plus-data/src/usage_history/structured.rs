@@ -2381,8 +2381,11 @@ fn log_file(path: &Path) -> bool {
 }
 
 fn discover(home: &Path, cold_start: bool, errors: &mut usize) -> Vec<PathBuf> {
+    discover_directories(home, vec![home.join("sessions"), home.join("archived_sessions")], cold_start, errors)
+}
+
+fn discover_directories(home: &Path, mut pending: Vec<PathBuf>, cold_start: bool, errors: &mut usize) -> Vec<PathBuf> {
     let mut files = Vec::new();
-    let mut pending = vec![home.join("sessions"), home.join("archived_sessions")];
     while let Some(directory) = pending.pop() {
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,

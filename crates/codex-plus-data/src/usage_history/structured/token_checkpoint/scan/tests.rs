@@ -255,6 +255,55 @@ fn growing_live_source_refreshes_while_historical_queue_advances() {
 }
 
 #[test]
+fn new_live_source_is_discovered_during_archive_backlog() -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let archives = root.join("archived_sessions");
+    fs::create_dir(&archives)?;
+    let archive = archives.join("rollout-history.jsonl.zst");
+    let mut compressed = zstd::stream::write::Encoder::new(fs::File::create(&archive)?, 1)?;
+    compressed.write_all(rollout(FIRST).as_bytes())?;
+    let filler = format!("{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n", "x".repeat(65536));
+    for _ in 0..384 {
+        compressed.write_all(filler.as_bytes())?;
+    }
+    compressed.finish()?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    assert!(!scan.round(&mut store, &root, cutoff, &names, 32 << 20).complete);
+    let seed = store.checkpoint(&archive)?.unwrap().1.offset;
+    let sessions = root.join("sessions/2026/01/02");
+    fs::create_dir_all(&sessions)?;
+    let live = sessions.join("rollout-new.jsonl");
+    fs::write(&live, rollout(SECOND))?;
+    let report = scan.round(&mut store, &root, cutoff, &names, 32 << 20);
+    assert!(report.errors.is_empty() && report.pending_sources > 0);
+    assert_eq!(store.checkpoint(&live)?.expect("new source was not discovered").1.offset,
+        fs::metadata(&live)?.len());
+    assert!(store.checkpoint(&archive)?.unwrap().1.offset > seed);
+    for _ in 0..12 {
+        if scan.round(&mut store, &root, cutoff, &names, 32 << 20).complete {
+            break;
+        }
+    }
+    assert!(!store.checkpoint(&archive)?.unwrap().1.resume_pending);
+    let mut reopened = Scan::default();
+    reopened.round(&mut store, &root, cutoff, &names, 32 << 20);
+    let mut counts = Vec::new();
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+        counts.push((event.session, event.delta.total_tokens));
+        Ok(())
+    })?;
+    counts.sort();
+    assert_eq!(counts, [(FIRST.to_owned(), 110), (SECOND.to_owned(), 110)]);
+    Ok(())
+}
+
+#[test]
 fn growing_live_source_refreshes_during_cold_archive_prefix_and_suffix() -> anyhow::Result<()> {
     use std::io::Write;
     use std::time::{Duration, UNIX_EPOCH};
