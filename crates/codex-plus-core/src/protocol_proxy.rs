@@ -3070,6 +3070,10 @@ impl ChatSseToResponsesConverter {
             .and_then(crate::request_log::usage_from_usage_value)
     }
 
+    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::FinalResponseUsage> {
+        if self.failed { None } else { self.state.final_response_usage.clone() }
+    }
+
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
         append_utf8_safe(&mut self.buffer, &mut self.utf8_remainder, bytes);
         let mut output = String::new();
@@ -6725,6 +6729,7 @@ struct ChatSseState {
     latest_usage: Option<Value>,
     /// 上游原始 usage，逐块合并：Anthropic 的输入在 message_start、输出在 message_delta 里分开到。
     upstream_usage: Option<Value>,
+    final_response_usage: Option<crate::request_log::FinalResponseUsage>,
     finish_reason: Option<String>,
     tool_context: CodexToolContext,
     original_request: Option<Value>,
@@ -6746,6 +6751,7 @@ impl Default for ChatSseState {
             output_items: Vec::new(),
             latest_usage: None,
             upstream_usage: None,
+            final_response_usage: None,
             finish_reason: None,
             tool_context: CodexToolContext::default(),
             original_request: None,
@@ -7175,6 +7181,10 @@ impl ChatSseState {
             response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
         }
         copy_response_request_fields(&mut response, self.original_request.as_ref());
+        self.final_response_usage = crate::request_log::converted_final_response_usage(
+            &response,
+            self.upstream_usage.as_ref().and_then(crate::request_log::usage_from_usage_value),
+        );
         push_sse(
             output,
             "response.completed",

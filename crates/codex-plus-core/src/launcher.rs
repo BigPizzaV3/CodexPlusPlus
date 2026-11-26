@@ -3079,7 +3079,8 @@ impl ProxyRequestLog {
     pub(crate) fn record_upstream(&mut self, upstream: &crate::protocol_proxy::UpstreamProxyResponse) {
         self.entry.final_response_evidence = None;
         self.entry.final_response_id = None;
-        self.final_response_eligible = upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Responses
+        self.final_response_eligible = matches!(upstream.wire_api,
+            crate::protocol_proxy::UpstreamWireApi::Responses | crate::protocol_proxy::UpstreamWireApi::ChatCompletions)
             && !upstream.compaction
             && !upstream.native_compaction_passthrough
             && !upstream.exec_adapted
@@ -3142,8 +3143,12 @@ impl ProxyRequestLog {
             && self.entry.error.is_none()
             && Some(&terminal.usage) == self.entry.usage.as_ref()
         {
-            self.entry.final_response_evidence =
-                Some(crate::request_log::FINAL_RESPONSE_EVIDENCE_V1.to_string());
+            self.entry.final_response_evidence = if terminal.usage.cached_tokens_known {
+                Some(crate::request_log::FINAL_RESPONSE_EVIDENCE_V1.to_string())
+            } else {
+                terminal.response_id.as_ref()
+                    .map(|_| crate::request_log::FINAL_RESPONSE_SUPPLIER_EVIDENCE_V1.to_string())
+            };
             self.entry.final_response_id = terminal.response_id;
         }
     }
@@ -3760,6 +3765,9 @@ async fn handle_protocol_proxy_connection_inner(
     )?;
     let body = serde_json::to_vec(&response_json)?;
     request_log.entry.usage = request_log.entry.usage.take().or(usage);
+    let final_usage = (upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::ChatCompletions)
+        .then(|| crate::request_log::converted_final_response_usage(&response_json, request_log.entry.usage.clone()))
+        .flatten();
     write_http_response_with_usage(stream, "200 OK", "application/json; charset=utf-8", &body, usage_headers).await?;
     log_helper_response(
         "helper.protocol_proxy_ok",
@@ -3769,6 +3777,7 @@ async fn handle_protocol_proxy_connection_inner(
         remote_addr_text,
     );
     stream.shutdown().await?;
+    request_log.record_final_response(final_usage);
     Ok(())
 }
 
@@ -5983,6 +5992,7 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
     }
     stream.send(&converter.finish()).await?;
     record_chat_converter_usage(thread_id, &converter);
+    *final_response_usage = converter.final_response_usage();
     // 流式 Chat 上游的用量也要进请求日志和网关用量统计（#2803）。
     Ok((None, converter.request_usage(), None, first_output_at_ms))
 }
@@ -8479,7 +8489,7 @@ mod tests {
         assert!(log.entry.final_response_evidence.is_none());
         log.entry.error = None;
 
-        for case in ["unbound", "missing-model", "missing-relay", "exec", "compaction", "native", "chat", "http-error"] {
+        for case in ["unbound", "missing-model", "missing-relay", "exec", "compaction", "native", "anthropic", "http-error"] {
             let saved_trace = upstream.request_trace.clone();
             match case {
                 "unbound" => upstream.request_trace.as_mut().unwrap().upstream_model_bound = false,
@@ -8488,7 +8498,7 @@ mod tests {
                 "exec" => upstream.exec_adapted = true,
                 "compaction" => upstream.compaction = true,
                 "native" => upstream.native_compaction_passthrough = true,
-                "chat" => upstream.wire_api = crate::protocol_proxy::UpstreamWireApi::ChatCompletions,
+                "anthropic" => upstream.wire_api = crate::protocol_proxy::UpstreamWireApi::AnthropicMessages,
                 "http-error" => upstream.status_code = 502,
                 _ => unreachable!(),
             }
