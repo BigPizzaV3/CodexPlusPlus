@@ -19,6 +19,7 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
   };
   const pending: Array<{ resolve: (value: any) => void; reject: (error: Error) => void }> = [];
   const invalidated: any[] = [];
+  const events: string[] = [];
   const diagnostics: Array<{ event: string; detail: any }> = [];
   const timers: Array<() => void> = sharedWindow.testTimers ||= [];
   const listeners: Map<string, Array<(event: any) => void>> = sharedWindow.testListeners ||= new Map();
@@ -41,6 +42,7 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
       ? settings.relayProfiles.find((entry: any) => entry.id === settings.activeRelayId) : null,
     codexServiceTierModelFromValue: (value: any) => value,
     renderCodexPlusMenu: () => {}, scheduleCodexModelWhitelistRefresh: () => {},
+    codexPlusEmitExtensionEvent: (event: string) => events.push(event),
     sendCodexPlusDiagnostic: (event: string, detail: any) => diagnostics.push({ event, detail }),
     uniqueValues: (values: any[]) => [...new Set(values.filter(value => typeof value === "string" && value.trim()))],
     readCodexAppServerPreparation: () => new Promise((resolve, reject) => pending.push({ resolve, reject })),
@@ -64,7 +66,7 @@ function runtime(sharedWindow: any = {}, initialSettings?: any) {
       installStatsig: patchStatsigModelWhitelist,
       catalog: () => codexModelCatalog }; })()`, context);
   return {
-    api, pending, invalidated, diagnostics, timers, window: sharedWindow, settings: () => settings,
+    api, pending, invalidated, diagnostics, timers, events, window: sharedWindow, settings: () => settings,
     emit: (type: string, event: any) => listeners.get(type)?.forEach(callback => callback(event)),
     tick: (ms: number) => { now += ms; },
     update: (next: any) => {
@@ -185,6 +187,7 @@ it("catalog fingerprint changes bypass cache and invalidate only local model que
   assert.deepEqual(value.models.map(entry => entry.model), ["a/sol", "group/coding"]);
   assert.equal(value.defaultModel, "a/sol");
   assert.deepEqual(JSON.parse(JSON.stringify(r.invalidated)), [["models", "local"], ["models", "local"]]);
+  assert.deepEqual(r.events, ["session-context/changed", "session-context/changed"]);
   r.update({ ...r.settings(), codexAppTypingEffects: true });
   assert.equal(r.pending.length, 0);
 });

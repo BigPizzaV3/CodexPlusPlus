@@ -667,6 +667,28 @@ interface CodexPlusLocale {
 /** waterfall 中间件：调 next(v) 交给下一个，不调即短路。 */
 type CodexPlusInterceptor<T = unknown> = (value: T, next: (value?: T) => T | Promise<T>) => T | Promise<T>;
 
+interface CodexPlusSessionContextSelection {
+  /** 新会话尚未分配 ID 时为空字符串。 */
+  threadId: string;
+  /** 目录中的完整模型 ID；label 是原生界面的显示名称。 */
+  model: string;
+  label: string;
+  defaultWindow: number;
+  override: number | null;
+  effectiveWindow: number;
+  config: {
+    model_context_window: number;
+    model_auto_compact_token_limit: number;
+  };
+}
+
+interface CodexPlusSessionContext {
+  read(): CodexPlusSessionContextSelection | null;
+  refresh(): Promise<CodexPlusSessionContextSelection | null>;
+  /** null 清除覆盖。立即恢复会话时返回 true，无需恢复或延后时返回 null。 */
+  set(threadId: string, model: string, value: number | null): Promise<true | null>;
+}
+
 interface CodexPlusExtensionContext {
   readonly id: string;
   readonly scriptKey: string;
@@ -697,6 +719,8 @@ interface CodexPlusExtensionContext {
   readonly sessionQuery?: CodexPlusSessionQuery;
   /** inject 了 sessions 时可用：新建、分叉、改名、追加条目、发起 / 插话 / 中断一轮、压缩。 */
   readonly sessions?: CodexPlusSessions;
+  /** 仅管理当前本机会话及其所选模型的上下文窗口。 */
+  readonly "codexpp.sessionContext"?: CodexPlusSessionContext;
   /** 调模型。 */
   readonly llm: CodexPlusLlm;
   /** 主题。 */
@@ -707,6 +731,7 @@ interface CodexPlusExtensionContext {
   /** 提供服务：服务名全局唯一，重名抛错；随实例卸载撤销，依赖它的拓展随之卸载。 */
   provide(name: string, value: unknown): CodexPlusDispose;
   /** 取服务，不存在时为 undefined（可选依赖）。 */
+  get(name: "codexpp.sessionContext"): CodexPlusSessionContext | undefined;
   get<T = unknown>(name: string): T | undefined;
   /** 子作用域：deps 齐全时以子 ctx 调用 apply；服务消失时卸载、回来时重新应用。 */
   inject(deps: CodexPlusInject, apply: (ctx: CodexPlusExtensionContext) => void | Promise<void>): CodexPlusExtensionFiber;

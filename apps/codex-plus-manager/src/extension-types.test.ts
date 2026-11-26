@@ -99,8 +99,8 @@ describe("拓展公开类型契约", () => {
     assert.ok(ctx && ts.isObjectLiteralExpression(ctx));
     const runtime = ctx.properties.map(memberName).filter((name) => name !== "__tryConfigUpdate");
     // inject 服务与 fiber 在构建完 ctx 后动态挂载，不是对象字面量里的成员。
-    const dynamic = new Set(["sessionQuery", "sessions", "fiber"]);
-    const declared = interfaceMembers("CodexPlusExtensionContext").filter((name) => !dynamic.has(name));
+    const dynamic = new Set(["sessionQuery", "sessions", "codexpp.sessionContext", "fiber"]);
+    const declared = [...new Set(interfaceMembers("CodexPlusExtensionContext"))].filter((name) => !dynamic.has(name));
     assert.deepEqual(declared.sort(), runtime.sort());
   });
 
@@ -131,6 +131,15 @@ describe("拓展公开类型契约", () => {
       });
       const session = api.currentSession();
       const sessionId: string = session.id;
+      const contextWindow = ctx.get("codexpp.sessionContext");
+      void contextWindow?.refresh().then((selection) => {
+        if (!selection?.threadId) return;
+        const window: number = selection.defaultWindow;
+        void contextWindow.set(selection.threadId, selection.model, 400000);
+        void contextWindow.set(selection.threadId, selection.model, null);
+        // @ts-expect-error 缩写只在拓展 UI 里解析，宿主服务接收 token 整数。
+        void contextWindow.set(selection.threadId, selection.model, "400K");
+      });
       const title: string = session.title;
       const hostId: string = session.hostId;
       const remote: boolean = session.remote;

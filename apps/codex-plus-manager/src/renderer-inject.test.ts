@@ -4135,7 +4135,7 @@ describe("拓展运行时内核", () => {
     };
     const api = new Function(
       "window", "runCodexPlusExtensionCallback", "codexPlusMarkExtensionFailure", "codexPlusCurrentExtensionScriptKey",
-      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage", "document",
+      "codexPlusRegisterExtensionItem", "codexPlusRegisterExtensionPage", "codexPlusRegisterExtensionSidePanel", "codexPlusRegisterExtensionSlot", "codexPlusRegistry", "codexPlusExtensionCall", "showToast", "localStorage", "document", "codexSessionContextService",
       `${source}\nreturn { create: codexPlusCreateExtension, waterfall: codexPlusRunWaterfall, emit: codexPlusEmitExtensionEvent, instances: codexPlusExtensionInstances, bridge: installCodexExtensionEventBridge, requestMiddleware: codexPlusApplyExtensionRequestMiddleware, services: codexPlusServices, installBuiltins: installCodexPlusBuiltinServices, sessionItem: codexPlusSessionItem, sessionsCall: codexPlusSessionsCall };`,
     )(
       window,
@@ -4168,6 +4168,7 @@ describe("拓展运行时内核", () => {
       (message: string) => toasts.push(message),
       localStorage,
       { documentElement: { lang: "en-US" } },
+      () => ({}),
     ) as { create: (...args: any[]) => any; waterfall: (name: string, value: unknown) => any; emit: (event: string, args: unknown[]) => void; instances: Set<unknown>;
       bridge: (dispatcher: unknown) => boolean; requestMiddleware: (method: string, params: unknown) => any;
       services: Map<string, { value: unknown; owner: string }>; installBuiltins: () => void;
