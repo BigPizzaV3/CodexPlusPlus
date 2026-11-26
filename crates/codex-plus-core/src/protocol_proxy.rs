@@ -1682,6 +1682,15 @@ fn chat_completion_to_response_with_context(
     if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
         response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
     }
+    // issue #3301：非流式路径同样不能把 content_filter 当 completed；用
+    // invalid_prompt + 上游 refusal 文本（没有就给固定说明），Codex 原样展示不重试。
+    if choice.get("finish_reason").and_then(Value::as_str) == Some("content_filter") {
+        let refusal = message.get("refusal").and_then(Value::as_str);
+        response["error"] = json!({
+            "code": "invalid_prompt",
+            "message": content_filter_message(refusal),
+        });
+    }
     copy_response_request_fields(&mut response, original_request);
 
     Ok(response)
@@ -6726,6 +6735,8 @@ struct ChatSseState {
     /// 上游原始 usage，逐块合并：Anthropic 的输入在 message_start、输出在 message_delta 里分开到。
     upstream_usage: Option<Value>,
     finish_reason: Option<String>,
+    /// 上游拒绝说明（delta.refusal），issue #3301：结束时透给用户。
+    refusal: Option<String>,
     tool_context: CodexToolContext,
     original_request: Option<Value>,
 }
@@ -6747,6 +6758,7 @@ impl Default for ChatSseState {
             latest_usage: None,
             upstream_usage: None,
             finish_reason: None,
+            refusal: None,
             tool_context: CodexToolContext::default(),
             original_request: None,
         }
@@ -6803,6 +6815,12 @@ impl ChatSseState {
             if let Some(content) = delta.get("content").and_then(Value::as_str) {
                 if !content.is_empty() {
                     self.push_content_delta_into(content, output);
+                }
+            }
+
+            if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
+                if !refusal.is_empty() {
+                    self.refusal = Some(refusal.to_string());
                 }
             }
 
@@ -7169,17 +7187,33 @@ impl ChatSseState {
             return;
         }
 
-        let status = response_status(self.finish_reason.as_deref());
+        let finish_reason = self.finish_reason.as_deref();
+        let status = response_status(finish_reason);
         let mut response = self.base_response(status, self.completed_output_items());
         if status == "incomplete" {
             response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
         }
+        // issue #3301：content_filter 用 invalid_prompt 发 response.failed，
+        // Codex 会原样展示 message 且不重试，不再把拒绝当正常结束。
+        if finish_reason == Some("content_filter") {
+            response["error"] = json!({
+                "code": "invalid_prompt",
+                "message": content_filter_message(self.refusal.as_deref()),
+            });
+        }
         copy_response_request_fields(&mut response, self.original_request.as_ref());
+        // issue #3301：Codex 只认 response.incomplete 事件为「不完整」，
+        // length 时必须发 response.incomplete 而不是带着 incomplete 状态的 completed。
+        let event_name = match finish_reason {
+            Some("length") => "response.incomplete",
+            Some("content_filter") => "response.failed",
+            _ => "response.completed",
+        };
         push_sse(
             output,
-            "response.completed",
+            event_name,
             json!({
-                "type": "response.completed",
+                "type": event_name,
                 "response": response
             }),
         );
@@ -10726,7 +10760,20 @@ fn effective_cache_creation_tokens(
 fn response_status(finish_reason: Option<&str>) -> &'static str {
     match finish_reason {
         Some("length") => "incomplete",
+        // issue #3301：content_filter 不能映射成 completed，Codex 只认
+        // response.incomplete / response.failed 事件，completed 会被当正常结束静默吞掉。
+        Some("content_filter") => "failed",
         _ => "completed",
+    }
+}
+
+/// issue #3301：上游拒绝（finish_reason=content_filter）时，优先透出上游的
+/// refusal 文本；没有就用一条明确的中文说明，Codex 对 invalid_prompt 会
+/// 原样展示 message 且不重试。
+fn content_filter_message(refusal: Option<&str>) -> String {
+    match refusal {
+        Some(text) if !text.trim().is_empty() => text.trim().to_string(),
+        _ => "上游拒绝了这次请求（finish_reason=content_filter）".to_string(),
     }
 }
 
