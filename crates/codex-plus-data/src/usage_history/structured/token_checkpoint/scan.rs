@@ -185,6 +185,16 @@ impl Scan {
                             self.sealed_queue
                                 .retain(|path| previous_queue.contains(path));
                         }
+                        // 不再增长的近期会话也可能在等待关联归档的旧前缀复核。
+                        let recent_since = self.legacy_prefixes.values().any(|&(_, counts)| counts)
+                            .then(|| chrono::Local::now().timestamp_millis() - super::RECENT_CLASSIFICATION_MS);
+                        if (recent_since.is_some() || self.missing.is_empty() && !growing.is_empty())
+                            && let Err(error) = store.prioritize_queue(&growing, recent_since, &mut self.remaining)
+                        {
+                            self.issues += 1;
+                            self.unknown_count_scope = true;
+                            errors.push((home.to_owned(), error));
+                        }
                         if !self.missing.is_empty() {
                             let names: HashSet<_> = self.missing.iter()
                                 .filter_map(|(path, _)| path.file_name())
@@ -195,25 +205,18 @@ impl Scan {
                                     !path.file_name().is_some_and(|name| names.contains(name)),
                                 )
                             });
-                        } else if !growing.is_empty() {
-                            // 优先解析追加内容，读完并提交后才可按新的计数范围保留归属。
-                            if let Err(error) = store.prioritize_growing(&growing, &mut self.remaining) {
-                                self.issues += 1;
-                                self.unknown_count_scope = true;
-                                errors.push((home.to_owned(), error));
-                            }
-                            if !self.retirement_blocked()
-                                && !self.more_missing
-                                && self.remaining.len() == self.sealed_queue.len() + growing.len()
+                        } else if !growing.is_empty()
+                            && !self.retirement_blocked()
+                            && !self.more_missing
+                            && self.remaining.len() == self.sealed_queue.len() + growing.len()
+                        {
+                            // 再留一个字节探测 EOF；每批仍按普通预算提交。
+                            let observed = growing.values().sum::<u64>().saturating_add(1);
+                            if observed > batch_bytes && observed <= reconciliation_limit as u64
                             {
-                                // 再留一个字节探测 EOF；每批仍按普通预算提交。
-                                let observed = growing.values().sum::<u64>().saturating_add(1);
-                                if observed > batch_bytes && observed <= reconciliation_limit as u64
-                                {
-                                    budget.read_left = observed;
-                                    budget.source_left = observed;
-                                    finish_appends = true;
-                                }
+                                budget.read_left = observed;
+                                budget.source_left = observed;
+                                finish_appends = true;
                             }
                         }
                     }

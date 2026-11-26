@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::SystemTime;
 
+const RECENT_CLASSIFICATION_MS: i64 = 86_400_000;
+
 // Tokens 的公开序列化不包含 cached_known，不能作为持久格式使用。
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "Tokens")]

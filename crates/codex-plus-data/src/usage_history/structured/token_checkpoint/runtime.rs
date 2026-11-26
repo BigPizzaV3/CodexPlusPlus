@@ -228,7 +228,7 @@ impl Runtime {
             .store
             .as_mut()
             .expect("successful scan owns a usage index");
-        let recent_since = Local::now().timestamp_millis() - 86_400_000;
+        let recent_since = Local::now().timestamp_millis() - super::RECENT_CLASSIFICATION_MS;
         let sessions = store.recent_sessions(recent_since)?;
         let active: std::collections::BTreeSet<_> = sessions.iter().map(|(id, _)| id).collect();
         self.evidence_before.retain(|id, _| active.contains(id));

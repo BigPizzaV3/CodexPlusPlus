@@ -386,6 +386,83 @@ fn legacy_prefix_attribution_follows_only_the_linked_sessions() -> anyhow::Resul
 }
 
 #[test]
+fn recent_session_rechecks_linked_archive_without_live_growth() -> anyhow::Result<()> {
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    let archives = root.join("archived_sessions");
+    fs::create_dir(&sessions)?;
+    fs::create_dir(&archives)?;
+    let live = sessions.join("rollout-live.jsonl");
+    let retired = sessions.join("rollout-retired.jsonl");
+    let linked = archives.join("rollout-linked.jsonl.zst");
+    let unrelated = archives.join("rollout-unrelated.jsonl.zst");
+    let now = chrono::Utc::now();
+    fs::write(&retired, rollout("00000000-0000-4000-8000-000000000099"))?;
+    fs::write(
+        &live,
+        rollout(FIRST)
+            .replace("2026-01-02T12:00:00Z", &(now - chrono::TimeDelta::minutes(2)).to_rfc3339())
+            .replace("2026-01-02T12:01:00Z", &(now - chrono::TimeDelta::minutes(1)).to_rfc3339())
+            .replace(r#""input_tokens":100"#, r#""input_tokens":200"#),
+    )?;
+    let padding = format!(
+        "{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n",
+        "x".repeat(65_536)
+    );
+    for (path, session, count) in [(&linked, FIRST, 0), (&unrelated, SECOND, 144)] {
+        let mut file = fs::File::create(path)?;
+        zstd::stream::copy_encode(
+            format!("{}{}", rollout(session), padding.repeat(count)).as_bytes(),
+            &mut file,
+            1,
+        )?;
+        if path == &linked {
+            file.set_modified(UNIX_EPOCH + Duration::from_secs(1_770_000_000))?;
+        }
+    }
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    assert!((0..16).any(|_| scan.round(&mut store, &root, cutoff, &names, LIMIT).complete));
+    assert_eq!(
+        store.recent_sessions(now.timestamp_millis() - super::super::super::RECENT_CLASSIFICATION_MS)?
+            .into_iter()
+            .map(|(session, _)| session)
+            .collect::<Vec<_>>(),
+        [FIRST],
+    );
+    fs::rename(&retired, root.join("not-discovered.jsonl"))?;
+    for path in [&linked, &unrelated] {
+        store.db.execute(
+            "UPDATE token_sources SET checkpoint=CAST(json_remove(checkpoint,'$.legacy_identity_prefix') AS BLOB)
+             WHERE revision=?",
+            [store.checkpoint(path)?.unwrap().0],
+        )?;
+    }
+    let mut scan = Scan::default();
+    let report = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+    assert!(report.errors.is_empty(), "{:?}", report.errors);
+    assert!(report.can_classify && !report.complete);
+    assert!(scan.missing.iter().any(|(path, _)| path == &retired));
+    assert_eq!(store.checkpoint(&linked)?.unwrap().1.legacy_identity_prefix, 0);
+    assert_ne!(store.checkpoint(&unrelated)?.unwrap().1.legacy_identity_prefix, 0);
+    let first_admitted = store.db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM json_each(blocked_sessions)
+         WHERE value=(SELECT id FROM token_sessions WHERE session=?1))
+         FROM token_attribution_coverage",
+        [FIRST],
+        |row| row.get::<_, bool>(0),
+    )?;
+    assert!(first_admitted);
+    assert!(!scan.remaining.contains(&unrelated), "unrelated history must also start");
+    Ok(())
+}
+
+#[test]
 fn growing_session_prioritizes_linked_prefixes_and_keeps_other_history_moving() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().canonicalize()?;
@@ -422,7 +499,7 @@ fn growing_session_prioritizes_linked_prefixes_and_keeps_other_history_moving() 
         }
     }
     let mut ordered: VecDeque<_> = [3, 2, 0, 4, 1].map(|i| paths[i].clone()).into();
-    store.prioritize_growing(&BTreeMap::from([(paths[0].clone(), 1)]), &mut ordered)?;
+    store.prioritize_queue(&BTreeMap::from([(paths[0].clone(), 1)]), None, &mut ordered)?;
     assert_eq!(ordered, [0, 2, 3, 1, 4].map(|i| paths[i].clone()));
 
     let mut scan = Scan::default();
