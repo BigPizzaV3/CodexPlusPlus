@@ -1166,6 +1166,59 @@ fn missing_owner_is_retired_while_verified_sources_remain_queued() {
 }
 
 #[test]
+fn missing_known_source_only_blocks_its_component_during_archive_replay() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions)?;
+    let old = sessions.join("rollout-old.jsonl");
+    let archived = sessions.join("rollout-old.jsonl.zst");
+    let archive = rollout(FIRST) + &format!(
+        "{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n",
+        "a".repeat(16384)
+    ).repeat(400);
+    fs::write(&old, rollout(FIRST))?;
+    fs::write(&archived, zstd::stream::encode_all(archive.as_bytes(), 1)?)?;
+    fs::write(sessions.join("rollout-current.jsonl"), rollout(SECOND))?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let mut scan = Scan::default();
+    for _ in 0..10 {
+        let report = scan.round(&mut store, &root, cutoff, &names, 32 << 20);
+        assert!(report.errors.is_empty());
+        if report.complete {
+            break;
+        }
+    }
+    assert!(store.checkpoint(&old)?.is_some());
+    assert!(store.checkpoint(&archived)?.is_some());
+    store.db.execute(
+        "UPDATE token_sources SET checkpoint=CAST(json_remove(CAST(checkpoint AS TEXT),
+          '$.legacy_identity_prefix') AS BLOB) WHERE offset=?1",
+        [archive.len()],
+    )?;
+    fs::remove_file(&old)?;
+    let mut scan = Scan::default();
+    let report = scan.round(&mut store, &root, cutoff, &names, 32 << 20);
+    assert!(report.errors.is_empty() && report.maintenance_error.is_none());
+    assert!(scan.missing.iter().any(|(path, _)| path == &old));
+    assert!(report.can_classify);
+    let actual: String = store.db.query_row(
+        "SELECT blocked_sessions FROM token_attribution_coverage",
+        [],
+        |row| row.get(0),
+    )?;
+    let expected: i64 = store.db.query_row(
+        "SELECT id FROM token_sessions WHERE session=?1",
+        [FIRST],
+        |row| row.get(0),
+    )?;
+    assert_eq!(serde_json::from_str::<Vec<i64>>(&actual)?, vec![expected]);
+    Ok(())
+}
+
+#[test]
 fn retirement_checks_unknown_and_replaced_archives_after_discovery() {
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
@@ -1204,11 +1257,9 @@ fn retirement_checks_unknown_and_replaced_archives_after_discovery() {
     let ongoing = archives.join("rollout-unread.jsonl.zst");
     fs::write(&ongoing, &bytes).unwrap();
     let mut scan = Scan::default();
-    assert!(
-        !scan
-            .round(&mut store, &root, cutoff, &names, 1 << 25)
-            .complete
-    );
+    let report = scan.round(&mut store, &root, cutoff, &names, 1 << 25);
+    assert!(!report.complete);
+    assert!(!report.can_classify);
     assert!(store.checkpoint(&old).unwrap().is_some());
     fs::write(&changed, &bytes).unwrap();
     let new = archives.join("rollout-new.jsonl.zst");

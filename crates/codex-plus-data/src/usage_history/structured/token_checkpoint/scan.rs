@@ -605,6 +605,28 @@ impl Scan {
         // 盘点之后，路径也可能被替换。旧前缀只对同一份已提交内容限定会话范围。
         let mut affected = self.scoped_count_gaps.clone();
         let mut covered = 0;
+        // 已登记的完整旧路径只影响其关联会话；未知的新来源仍会阻止归类。
+        for (path, revision) in &self.missing {
+            match store.checkpoint(path) {
+                Ok(Some((saved_revision, state))) if saved_revision == *revision
+                    && !state.session.is_empty()
+                    && !state.resume_pending && !state.skipping
+                    && !state.invalid_counts && !state.identity_conflict && state.issues == 0
+                    && path.extension().is_some_and(|ext| ext == "jsonl")
+                    && state.stamp.is_some_and(|(size, modified, identity)|
+                        size == state.offset && modified.is_some() && identity.is_some()) =>
+                {
+                    affected.insert(path.clone());
+                    covered += 1;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    issues += 1;
+                    self.unknown_count_scope = true;
+                    errors.push((path.clone(), error));
+                }
+            }
+        }
         for path in self.remaining.iter().chain(self.active.iter().chain(&self.revisiting)
             .chain(&self.deferred).map(|reader| &reader.source)) {
             if self.sealed_queue.contains(path) {
