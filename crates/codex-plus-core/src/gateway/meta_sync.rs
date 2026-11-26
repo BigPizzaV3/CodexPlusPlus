@@ -188,6 +188,45 @@ fn reasoning_omitted(entry: Option<&Map<String, Value>>) -> bool {
         == Some("omit")
 }
 
+/// 这家的模型资料里给这个模型写明了思考档位（手动填的或之前同步写入的），或选了不发送思考参数：
+/// 生成目录时照它，不再拿上游声明的覆盖。
+pub(crate) fn reasoning_set_in_profile(relay: &RelayProfile, model: &str) -> bool {
+    let Some(map) = metadata_object(relay) else {
+        // 模型资料解析不了：当作写过，别拿上游的去盖一份看不懂的设置。
+        return true;
+    };
+    let entry = metadata_entry(&map, model);
+    reasoning_omitted(entry) || custom_reasoning(entry).is_some_and(|(levels, _)| !levels.is_empty())
+}
+
+/// 上游 `/models` 声明的思考档位，按 [`slug_key`] 存：后台检查上游模型时记下，
+/// 生成目录时优先于内置模板（见 `apply::member_catalog_entry`）。没声明档位的模型不记。
+pub fn declared_reasoning(metas: &[UpstreamModelMeta]) -> BTreeMap<String, SyncedReasoning> {
+    metas
+        .iter()
+        .filter(|meta| !meta.reasoning_levels.is_empty())
+        .map(|meta| {
+            (
+                slug_key(&meta.model),
+                SyncedReasoning {
+                    levels: meta.reasoning_levels.clone(),
+                    default_level: meta.default_reasoning_level.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// 上游给这个模型声明的档位（忽略大小写和 `[1M]` 后缀）。
+pub(crate) fn upstream_reasoning_for<'a>(
+    declared: &'a BTreeMap<String, SyncedReasoning>,
+    model: &str,
+) -> Option<&'a SyncedReasoning> {
+    declared
+        .get(&slug_key(model))
+        .filter(|reasoning| !reasoning.levels.is_empty())
+}
+
 /// 按上游元数据算预览（纯计算，便于测试）。`builtin` 的键是 [`slug_key`]。
 pub fn build_preview(
     provider: &GatewayProvider,

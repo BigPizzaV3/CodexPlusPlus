@@ -2053,6 +2053,7 @@ mod tests {
             models_checked_at_ms: 0,
             newapi_access: None,
             upstream_meta: Default::default(),
+            upstream_reasoning: None,
             auto_compact: Default::default(),
             subscription_policy: None,
             relay: RelayProfile {

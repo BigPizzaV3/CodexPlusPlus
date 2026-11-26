@@ -578,7 +578,7 @@ fn codex_model_metadata(
                     continue;
                 };
                 if let Some(entry) =
-                    member_catalog_entry(&mut member_catalogs, &relays, index, &upstream)
+                    member_catalog_entry(gateway, &mut member_catalogs, &relays, index, &upstream)
                 {
                     member_fields.push(catalog_ui_fields(&entry));
                 }
@@ -618,7 +618,7 @@ fn codex_model_metadata(
                         .iter()
                         .filter_map(|(relay, upstream)| {
                             let index = relays.iter().position(|candidate| candidate.id == relay.id)?;
-                            member_catalog_entry(&mut member_catalogs, &relays, index, upstream)
+                            member_catalog_entry(gateway, &mut member_catalogs, &relays, index, upstream)
                         })
                         .map(|entry| catalog_ui_fields(&entry))
                         .collect();
@@ -661,7 +661,7 @@ fn codex_model_metadata(
                         .iter()
                         .position(|relay| relay.id == member.id)
                         .and_then(|index| {
-                            member_catalog_entry(&mut member_catalogs, &relays, index, &model)
+                            member_catalog_entry(gateway, &mut member_catalogs, &relays, index, &model)
                         })
                 })
                 .collect();
@@ -685,7 +685,7 @@ fn codex_model_metadata(
                         .iter()
                         .position(|candidate| candidate.id == relay.id)
                         .and_then(|index| {
-                            member_catalog_entry(&mut member_catalogs, &relays, index, &model)
+                            member_catalog_entry(gateway, &mut member_catalogs, &relays, index, &model)
                         })
                         .is_some_and(|entry| {
                             entry["service_tiers"].as_array().is_some_and(|tiers| {
@@ -718,7 +718,7 @@ fn codex_model_metadata(
             continue;
         };
         let relay = relays[index];
-        let Some(entry) = member_catalog_entry(&mut member_catalogs, &relays, index, &upstream)
+        let Some(entry) = member_catalog_entry(gateway, &mut member_catalogs, &relays, index, &upstream)
         else {
             continue;
         };
@@ -752,6 +752,7 @@ fn codex_model_metadata(
                         .filter_map(|(member, member_upstream)| {
                             let index = relays.iter().position(|relay| relay.id == member.id)?;
                             member_catalog_entry(
+                                gateway,
                                 &mut member_catalogs,
                                 &relays,
                                 index,
@@ -922,7 +923,58 @@ fn account_suffix_candidates(masked_head: &str) -> Vec<String> {
 }
 
 /// 池里第 `index` 家的成员目录里这个上游模型的条目（不分大小写）；每家的目录只生成一次。
+///
+/// 思考档位优先用上游 `/models` 声明的（[`GatewayProvider::upstream_reasoning`]）：这家模型资料里
+/// 写明了档位的照用，没写的才用上游的，上游也没有时才是借来的内置模板。
 fn member_catalog_entry(
+    gateway: &GatewaySettings,
+    cache: &mut [Option<Vec<Value>>],
+    relays: &[&RelayProfile],
+    index: usize,
+    upstream: &str,
+) -> Option<Value> {
+    let mut entry = member_catalog_entry_from_profile(cache, relays, index, upstream)?;
+    let relay = relays[index];
+    if let Some(declared) = gateway
+        .provider(&relay.id)
+        .and_then(|provider| provider.upstream_reasoning.as_ref())
+        .and_then(|declared| crate::gateway::meta_sync::upstream_reasoning_for(declared, upstream))
+        && !crate::gateway::meta_sync::reasoning_set_in_profile(relay, upstream)
+    {
+        apply_upstream_reasoning(&mut entry, declared);
+    }
+    Some(entry)
+}
+
+/// 用上游声明的档位替换目录条目里的档位；默认档取上游给的，没给就沿用原来的（还在档位里时），
+/// 再不行取 medium，最后取最低一档。
+fn apply_upstream_reasoning(entry: &mut Value, declared: &crate::gateway::store::SyncedReasoning) {
+    let levels: Vec<Value> = declared
+        .levels
+        .iter()
+        .map(|level| {
+            json!({
+                "effort": level,
+                "description": crate::upstream_model_meta::reasoning_level_description(level),
+            })
+        })
+        .collect();
+    let has = |level: &str| declared.levels.iter().any(|known| known == level);
+    let previous = entry["default_reasoning_level"].as_str().map(str::to_string);
+    let default = declared
+        .default_level
+        .clone()
+        .filter(|level| has(level))
+        .or(previous.filter(|level| has(level)))
+        .or_else(|| has("medium").then(|| "medium".to_string()))
+        .or_else(|| declared.levels.first().cloned());
+    entry["supported_reasoning_levels"] = Value::Array(levels);
+    if let Some(default) = default {
+        entry["default_reasoning_level"] = json!(default);
+    }
+}
+
+fn member_catalog_entry_from_profile(
     cache: &mut [Option<Vec<Value>>],
     relays: &[&RelayProfile],
     index: usize,

@@ -2108,9 +2108,15 @@ pub async fn refresh_gateway_quota(id: String) -> CommandResult<Option<GatewayPa
 }
 
 /// 后台任务：启动时补一次价格，之后每小时看一眼，超过一天没检查的供应商重新拉上游模型；
-/// 另外每 10 分钟查一遍订阅账号的额度。
+/// 上游声明的思考档位变了就重写开着的 Agent 的模型目录。另外每 10 分钟查一遍订阅账号的额度。
 pub fn start_model_watch() {
-    tauri::async_runtime::spawn(model_sync::watch(GatewayStore::default()));
+    tauri::async_runtime::spawn(model_sync::watch(GatewayStore::default(), || {
+        std::thread::spawn(|| {
+            if GatewayStore::default().load().is_ok_and(|gateway| gateway.any_enabled()) {
+                let _ = refresh_agents(Ok(()));
+            }
+        });
+    }));
     tauri::async_runtime::spawn(codex_plus_core::gateway::quota::watch(
         GatewayStore::default(),
     ));

@@ -172,12 +172,29 @@ async fn subscription_models(
 
 /// 拉上游模型并和现有列表比较；结果记进供应商（界面据此提示新模型）。
 pub async fn check_provider(store: &GatewayStore, id: &str) -> anyhow::Result<ModelDiff> {
+    check_provider_tracking(store, id).await.map(|(diff, _)| diff)
+}
+
+/// 同 [`check_provider`]，另外返回上游声明的思考档位有没有变（变了要重写 Agent 的模型目录）。
+async fn check_provider_tracking(
+    store: &GatewayStore,
+    id: &str,
+) -> anyhow::Result<(ModelDiff, bool)> {
     let relay = store
         .load()?
         .provider(id)
         .map(|provider| provider.relay.clone())
         .ok_or_else(|| anyhow::anyhow!("供应商不存在：{id}"))?;
     let fetched = upstream_models_in(store, &relay).await;
+    // 上游声明的思考档位：只有通用 `/models` 的供应商有；模型列表拉成功了才顺带读。
+    let declared = if fetched.is_ok() {
+        crate::gateway::meta_sync::upstream_model_metas(&relay)
+            .await
+            .ok()
+            .map(|metas| crate::gateway::meta_sync::declared_reasoning(&metas))
+    } else {
+        None
+    };
     // 拉的这段时间里可能有别的写入：在锁里重新读一次再改。
     let (_, result) = store.update(|gateway| {
         let Some(provider) = gateway
@@ -188,6 +205,20 @@ pub async fn check_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Mo
             bail!("供应商不存在：{id}");
         };
         provider.models_checked_at_ms = now_ms();
+        let mut reasoning_changed = false;
+        match declared {
+            Some(declared) if provider.upstream_reasoning.as_ref() != Some(&declared) => {
+                provider.upstream_reasoning = Some(declared);
+                reasoning_changed = true;
+            }
+            Some(_) => {}
+            // 这类供应商不声明档位，或这次没读到：记成拉过了（空），不让每小时的检查一直重试；
+            // 已有的缓存保留到下次读到为止。
+            None if provider.upstream_reasoning.is_none() => {
+                provider.upstream_reasoning = Some(Default::default());
+            }
+            None => {}
+        }
         Ok(fetched.map(|upstream| {
             let diff = diff_models(
                 &crate::gateway::route::relay_models(&provider.relay),
@@ -195,7 +226,7 @@ pub async fn check_provider(store: &GatewayStore, id: &str) -> anyhow::Result<Mo
             );
             provider.upstream_new = diff.added.clone();
             provider.upstream_gone = diff.removed.clone();
-            diff
+            (diff, reasoning_changed)
         }))
     })?;
     result
@@ -429,30 +460,43 @@ pub async fn preview_provider_models(
 
 /// 检查所有打开的、超过 `max_age` 没检查过的供应商。单个失败不影响其它。返回检查了几个。
 pub async fn check_due(store: &GatewayStore, max_age: Duration) -> usize {
+    check_due_tracking(store, max_age).await.0
+}
+
+/// 同 [`check_due`]，另外返回有没有哪家上游声明的思考档位变了。
+/// 还没读过上游档位的供应商（升级上来的）不等满一天，这一轮就补读。
+async fn check_due_tracking(store: &GatewayStore, max_age: Duration) -> (usize, bool) {
     let Ok(gateway) = store.load() else {
-        return 0;
+        return (0, false);
     };
     let due: Vec<String> = gateway
         .providers
         .iter()
         .filter(|provider| {
             provider.enabled
-                && now_ms().saturating_sub(provider.models_checked_at_ms)
-                    >= max_age.as_millis() as u64
+                && (provider.upstream_reasoning.is_none()
+                    || now_ms().saturating_sub(provider.models_checked_at_ms)
+                        >= max_age.as_millis() as u64)
         })
         .map(|provider| provider.relay.id.clone())
         .collect();
+    let mut changed = false;
     for id in &due {
-        let _ = check_provider(store, id).await;
+        if let Ok((_, reasoning_changed)) = check_provider_tracking(store, id).await {
+            changed |= reasoning_changed;
+        }
     }
-    due.len()
+    (due.len(), changed)
 }
 
 /// 常驻任务：启动时补一次价格，之后每小时看一眼，超过一天没检查的供应商重新拉上游模型。
-pub async fn watch(store: GatewayStore) {
+/// 上游声明的思考档位有变化时调 `on_reasoning_changed`（宿主据此重写 Agent 的模型目录）。
+pub async fn watch(store: GatewayStore, on_reasoning_changed: impl Fn() + Send + 'static) {
     let _ = fill_missing_prices(&store, None).await;
     loop {
-        check_due(&store, Duration::from_secs(24 * 60 * 60)).await;
+        if check_due_tracking(&store, Duration::from_secs(24 * 60 * 60)).await.1 {
+            on_reasoning_changed();
+        }
         tokio::time::sleep(Duration::from_secs(60 * 60)).await;
     }
 }
@@ -654,6 +698,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            upstream_reasoning: None,
             auto_compact: Default::default(),
             relay: RelayProfile {
                 id: "p".into(),
@@ -708,6 +753,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            upstream_reasoning: None,
             auto_compact: Default::default(),
             relay,
             extra: Default::default(),
