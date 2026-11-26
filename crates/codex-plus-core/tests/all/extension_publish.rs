@@ -227,6 +227,19 @@ exit 1
     fs::write(&path, script).unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    // 用例在同一进程里并行，别的线程这时候 fork 出来的子进程会短暂继承这个脚本的写句柄，
+    // 紧接着 exec 它就偶发 ETXTBSY（os error 26）。等到真能执行再返回；探针写进日志的那一行清掉。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match std::process::Command::new(&path).arg("auth").arg("status").output() {
+            Err(error) if error.raw_os_error() == Some(26) => {
+                assert!(std::time::Instant::now() < deadline, "假 gh 一直 Text file busy");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => break,
+        }
+    }
+    let _ = fs::remove_file(log);
     path
 }
 
