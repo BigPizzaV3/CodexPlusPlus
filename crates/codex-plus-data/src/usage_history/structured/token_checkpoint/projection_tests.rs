@@ -1304,10 +1304,14 @@ fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_ne
     let response_id = "resp-a".repeat(100);
     let mut first = terminal(2, "turn-a", response_id.as_str(), usage(10, 3, 2), usage(10, 3, 2));
     first["payload"]["extra"] = json!("x".repeat(1100 * 1024));
+    first["payload"]["usage"]["total_tokens"] = json!(12);
+    first["payload"]["thread_token_usage"]["total_tokens"] = json!(15);
     let mut wrong_turn = first.clone();
     wrong_turn["payload"]["turn_id"] = json!("turn-b");
     wrong_turn["payload"]["response_id"] = json!("wrong-turn");
-    append(&[head.clone(), context(1, "turn-a"), wrong_turn, first.clone()]);
+    let mut wrong_usage = terminal(2, "turn-a", "wrong-usage", usage(10, 3, 2), usage(10, 3, 2));
+    wrong_usage["payload"]["usage"]["total_tokens"] = json!(15);
+    append(&[head.clone(), context(1, "turn-a"), wrong_turn, wrong_usage, first.clone()]);
     let initial = step(&rollout);
     assert_eq!(initial.len(), 1);
     assert_eq!(initial[0].terminal_response.as_deref(), Some(response_id.as_str()));

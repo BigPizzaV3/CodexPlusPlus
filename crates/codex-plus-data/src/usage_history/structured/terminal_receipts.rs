@@ -51,13 +51,15 @@ pub(super) fn parse(
                     .input_tokens
                     .checked_add(tokens.output_tokens)
                     .is_some()
-                && (!value
-                    .as_object()
-                    .is_some_and(|obj| obj.contains_key("total_tokens"))
-                    || value["total_tokens"].as_u64() == Some(tokens.total_tokens))
         })
     };
-    let last = counts("usage").filter(|tokens| tokens.total_tokens > 0)?;
+    let usage = &payload["usage"];
+    let last = counts("usage").filter(|tokens| {
+        tokens.total_tokens > 0
+            && (usage.get("total_tokens").is_none()
+                || usage["total_tokens"].as_u64() == Some(tokens.total_tokens))
+    })?;
+    // 跨续接的累计合计可能沿用旧口径；与原生计数一样以累计分项为准。
     let total = counts("thread_token_usage")?;
     if !total.is_monotonic_after(last) || total.cached_input_tokens < last.cached_input_tokens {
         return None;
