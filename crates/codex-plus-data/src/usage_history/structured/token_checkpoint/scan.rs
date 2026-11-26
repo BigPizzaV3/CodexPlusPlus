@@ -604,6 +604,7 @@ impl Scan {
             .count();
         // 盘点之后，路径也可能被替换。旧前缀只对同一份已提交内容限定会话范围。
         let mut affected = self.scoped_count_gaps.clone();
+        let mut rechecking = BTreeSet::new();
         let mut covered = 0;
         // 已登记的完整旧路径只影响其关联会话；未知的新来源仍会阻止归类。
         for (path, revision) in &self.missing {
@@ -635,7 +636,7 @@ impl Scan {
                 match FileState::source_stamp(path) {
                     Ok(current) if current == stamp => {
                         covered += 1;
-                        if affects_counts { affected.insert(path.clone()); }
+                        if affects_counts { rechecking.insert(path.clone()); }
                     }
                     Ok(_) => { self.legacy_prefixes.remove(path); }
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -653,7 +654,7 @@ impl Scan {
         let can_classify = !unknown && unpublished_append == 0 && issues == self.scoped_count_gaps.len();
         let coverage = Coverage { pending_sources, issues, maintenance_blocked: maintenance_error.is_some() };
         let recorded = if can_classify {
-            store.record_scoped_coverage(coverage, &affected)
+            store.record_scoped_coverage(coverage, &affected, &rechecking)
         } else {
             store.record_coverage(coverage, unknown)
         };

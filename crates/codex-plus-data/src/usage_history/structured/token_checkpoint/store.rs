@@ -249,19 +249,21 @@ impl Store {
     pub(super) fn record_scoped_coverage(
         &mut self,
         coverage: Coverage,
-        affected_sources: &BTreeSet<PathBuf>,
+        invalidated_sources: &BTreeSet<PathBuf>,
+        rechecking_sources: &BTreeSet<PathBuf>,
     ) -> Result<()> {
         let tx = self.db.transaction()?;
-        let affected = if affected_sources.is_empty() {
-            "[]".to_owned()
-        } else {
+        let affected_sessions = |sources: &BTreeSet<PathBuf>| -> Result<String> {
+            if sources.is_empty() {
+                return Ok("[]".to_owned());
+            }
             let mut lookup = tx.prepare_cached("SELECT id FROM token_sources WHERE source=?1")?;
-            let sources = affected_sources
+            let sources = sources
                 .iter()
                 .map(|path| lookup.query_row([encode_path(path)], |row| row.get::<_, i64>(0)))
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             // Both physical rollout aliases and canonical sessions participate in the closure.
-            tx.query_row(
+            Ok(tx.query_row(
                 "WITH RECURSIVE component(id,link) AS (
                     SELECT value,NULL FROM json_each(?1)
                     UNION SELECT NULL,l.link FROM component c JOIN token_source_links l ON l.source_id=c.id
@@ -271,18 +273,20 @@ impl Store {
                  JOIN token_sessions s ON s.session=substr(c.link,3) WHERE c.link GLOB 's:*'",
                 [serde_json::to_string(&sources)?],
                 |row| row.get::<_, String>(0),
-            )?
+            )?)
         };
-        if affected != "[]" {
-            projection::retract_attribution(&tx, Some(&affected))?;
+        if !invalidated_sources.is_empty() {
+            projection::retract_attribution(&tx, Some(&affected_sessions(invalidated_sources)?))?;
         }
+        // 对未变更的旧前缀暂停新归属；只有回读实际改变计数或竞争关系时才撤回旧证明。
+        let blocked = invalidated_sources.union(rechecking_sources).cloned().collect();
         tx.execute(
             "INSERT INTO token_attribution_coverage
              SELECT 1,revision,?1 FROM token_revision WHERE singleton=1
              ON CONFLICT(singleton) DO UPDATE SET revision=excluded.revision,
                 blocked_sessions=excluded.blocked_sessions
              WHERE (revision,blocked_sessions) != (excluded.revision,excluded.blocked_sessions)",
-            [affected],
+            [affected_sessions(&blocked)?],
         )?;
         Self::write_coverage(&tx, coverage)?;
         Ok(tx.commit()?)
