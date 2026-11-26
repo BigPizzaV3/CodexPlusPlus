@@ -41,6 +41,7 @@ struct AttributionScope<'a> {
     targets: Range<usize>,
     gateway_blocked: bool,
     native_blocked: bool,
+    paired_only: bool,
     matches_terminal: Option<&'a dyn Fn(&UsageEvent, &str) -> anyhow::Result<bool>>,
 }
 
@@ -721,7 +722,7 @@ impl RequestEvidenceCache {
             !e.context_conflicts.any()
                 && !e.count_uncertain
                 && !e.count_incomplete
-                && (e.delta.cached_known || e.native_response_id.is_some())
+                && (e.delta.cached_known || e.native_response_id.is_some() || scope.is_some())
         }) {
             let Some(session) = aliases.resolve(&event.session) else {
                 continue;
@@ -775,7 +776,7 @@ impl RequestEvidenceCache {
             let mut complete = true;
             let mut floor = 0;
             for source in sources {
-                match cache.captured_proxy(&source, since, until) {
+                match cache.captured_proxy_context(&source, since, until, scope.is_some()) {
                     Ok(batch) => {
                         complete &= batch.complete;
                         floor = floor.max(batch.floor);
@@ -1201,6 +1202,7 @@ impl RequestEvidenceCache {
                     && event
                         .last
                         .is_some_and(|last| last.cached_known && last.same_counts(event.delta));
+                let mut later_request = false;
                 if let Some(records) = uncertain_requests.get(&key.session) {
                     let start = records.partition_point(|record| {
                         record.timestamp_ms < at.saturating_sub(DELAYED_REQUEST_MATCH_WINDOW_MS)
@@ -1208,7 +1210,6 @@ impl RequestEvidenceCache {
                     let end = records.partition_point(|record| {
                         record.timestamp_ms <= at.saturating_add(DELAYED_REQUEST_MATCH_WINDOW_MS)
                     });
-                    let mut later_request = false;
                     for other in records[start..end]
                         .iter()
                         .filter(|r| r.could_fit_counts(key.input, key.output, key.cached))
@@ -1235,34 +1236,32 @@ impl RequestEvidenceCache {
                         }
                         later_request = true;
                     }
-                    if later_request {
-                        // 原生终态与网关最终响应配对后，才用同一网关的先后顺序排除后发请求。
-                        let final_id = request.final_response_id.as_deref()?;
-                        if event.inherited
-                            || event.session != request.thread_id
-                            || request.final_response_evidence.as_deref()
-                                != Some("final-response-v1")
-                            || !request.valid_request_counts()
-                            || !live_receipts::within_receipt_window(
-                                request,
-                                *at,
-                                REQUEST_MATCH_WINDOW_MS,
-                            )
-                            || !event.last.is_some_and(|last| {
-                                last.cached_known && last.same_counts(event.delta)
-                            })
-                        {
+                }
+                if later_request
+                    || scope.is_some_and(|scope| scope.paired_only)
+                        && !self.verified.contains_key(&event.id)
+                {
+                    // 未扫完的来源或后发请求不能仅靠等量计数排除。
+                    let final_id = request.final_response_id.as_deref()?;
+                    if event.inherited
+                        || event.session != request.thread_id
+                        || request.final_response_evidence.as_deref() != Some("final-response-v1")
+                        || !request.valid_request_counts()
+                        || !live_receipts::within_receipt_window(request, *at, REQUEST_MATCH_WINDOW_MS)
+                        || !event.last.is_some_and(|last| {
+                            last.cached_known && last.same_counts(event.delta)
+                        })
+                    {
+                        return None;
+                    }
+                    let matches = scope?.matches_terminal?;
+                    match matches(event, final_id) {
+                        Ok(true) => {}
+                        Ok(false) => return None,
+                        Err(error) => {
+                            self.captured_id_check_error =
+                                Some(format!("validate native response identity: {error:#}"));
                             return None;
-                        }
-                        let matches = scope?.matches_terminal?;
-                        match matches(event, final_id) {
-                            Ok(true) => {}
-                            Ok(false) => return None,
-                            Err(error) => {
-                                self.captured_id_check_error =
-                                    Some(format!("validate native response identity: {error:#}"));
-                                return None;
-                            }
                         }
                     }
                 }
@@ -1460,6 +1459,87 @@ impl RequestEvidenceCache {
             "strictWindowMs":REQUEST_MATCH_WINDOW_MS,"delayedWindowMs":DELAYED_REQUEST_MATCH_WINDOW_MS,
             "retainedEvents":retained,"conflictedEvents":self.verified.values().filter(|saved| saved.rejected).count(),
             "logReads":self.reads,"logBytesRead":self.bytes_read})
+    }
+
+    fn infer_scoped(
+        &self,
+        events: &mut [UsageEvent],
+        names: &mut BTreeMap<String, String>,
+        aliases: &BTreeMap<String, String>,
+        scope: &AttributionScope,
+    ) -> anyhow::Result<()> {
+        let aliases = RequestSessionAliases::new(aliases);
+        let mut sessions = HashMap::<_, Vec<_>>::new();
+        for request in &self.records {
+            if request.valid_capture()
+                && let Some(session) = aliases.resolve(&request.thread_id)
+            {
+                sessions.entry(session).or_default().push(request);
+            }
+        }
+        for requests in sessions.values_mut() {
+            requests.sort_unstable_by_key(|request| request.timestamp_ms);
+        }
+        for event in &mut events[scope.targets.clone()] {
+            if !unknown_provider(&event.provider)
+                || event.context_conflicts.any()
+                || event.count_uncertain || event.count_incomplete || event.count_pending
+                || self.collision_families.contains(&event.original_id)
+                || self.verified.get(&event.id).is_some_and(|proof| proof.rejected)
+            {
+                continue;
+            }
+            let Some(session) = aliases.resolve(&event.session) else { continue };
+            let Some(requests) = sessions.get(&session) else { continue };
+            let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
+            let mut best = (0, std::cmp::Reverse(u64::MAX));
+            let mut supplier: Option<&RequestEvidence> = None;
+            let mut conflict = false;
+            let model = request_base_model(&event.model);
+            for &request in requests {
+                let distance = request.timestamp_ms.abs_diff(at);
+                let nearby = distance <= DELAYED_REQUEST_MATCH_WINDOW_MS as u64;
+                let counts_match = request.usage.is_some_and(|usage| {
+                    usage.input_tokens == Some(event.delta.input_tokens)
+                        && usage.output_tokens == Some(event.delta.output_tokens)
+                        && (!event.delta.cached_known
+                            || request.known_cached().is_none_or(|cached| cached == event.delta.cached_input_tokens))
+                });
+                let mut paired = false;
+                if !event.inherited
+                    && let (Some(id), Some(matches)) = (request.final_response_id.as_deref(), scope.matches_terminal)
+                {
+                    paired = matches(event, id)?;
+                }
+                let model_matches = !unknown_model(model)
+                    && [request.model.as_str(), request.upstream_model.as_str()]
+                        .into_iter().any(|name| request_base_model(name) == model);
+                // 响应身份确认供应商，不以缓存计数完整为前提；上下文只作推断。
+                let rank = if paired { 4 } else if nearby && counts_match && model_matches { 3 }
+                    else if model_matches { 2 } else { 1 };
+                // 直接证据之间不能靠时间选一家；推断优先离当前记录最近的同会话请求。
+                let rank = (rank, std::cmp::Reverse(if rank == 4 { 0 } else { distance }));
+                let rejected = self.captured_rejected.contains(&request.id);
+                if rank > best {
+                    best = rank;
+                    supplier = Some(request);
+                    conflict = rejected;
+                } else if rank == best {
+                    conflict |= rejected || supplier.is_some_and(|prior| prior.relay_id != request.relay_id);
+                }
+            }
+            if let Some(request) = supplier.filter(|_| !conflict) {
+                event.provider.clone_from(&request.relay_id);
+                event.provider_source = Some(if best.0 == 4 {
+                    "request-log-recovered-supplier-only"
+                } else {
+                    "session-context-inferred"
+                }.to_owned());
+                names.entry(request.relay_id.clone())
+                    .or_insert_with(|| request.provider_name().to_owned());
+            }
+        }
+        Ok(())
     }
 }
 

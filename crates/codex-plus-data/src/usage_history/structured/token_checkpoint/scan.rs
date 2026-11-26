@@ -32,6 +32,7 @@ pub(super) struct Scan {
     waiting_prefixes: HashSet<PathBuf>,
     issues: usize,
     unknown_count_scope: bool,
+    pub(super) paired_only: bool,
     sealed_queue: HashSet<PathBuf>,
     legacy_prefixes: BTreeMap<PathBuf, (SourceStamp, bool)>,
     scoped_count_gaps: BTreeSet<PathBuf>,
@@ -639,6 +640,7 @@ impl Scan {
                 }
             }
         }
+        let unscoped_missing = self.more_missing || covered < self.missing.len();
         for path in self.remaining.iter().chain(self.active.iter().chain(&self.revisiting)
             .chain(&self.deferred).map(|reader| &reader.source)) {
             if self.sealed_queue.contains(path) {
@@ -661,10 +663,18 @@ impl Scan {
                 }
             }
         }
-        let unknown = self.unknown_count_scope || pending_sources > covered + unpublished_append;
-        let can_classify = !unknown && unpublished_append == 0 && issues == self.scoped_count_gaps.len();
+        let unknown = self.unknown_count_scope || unscoped_missing
+            || !self.waiting_for_newline.is_empty()
+            || self.active.iter().chain(&self.revisiting).chain(&self.deferred)
+                .any(|reader| reader.replacing || reader.state.issues != 0
+                    || reader.state.invalid_counts || reader.state.identity_conflict);
+        let can_publish_scope = !unknown && issues == self.scoped_count_gaps.len();
+        // A queued source is not a conflict. Until it is read, new exact matches
+        // require an independent response identity, not just matching counts.
+        self.paired_only = pending_sources > covered + unpublished_append;
+        let can_classify = can_publish_scope && unpublished_append == 0;
         let coverage = Coverage { pending_sources, issues, maintenance_blocked: maintenance_error.is_some() };
-        let recorded = if can_classify {
+        let recorded = if can_publish_scope {
             store.record_scoped_coverage(coverage, &affected, &rechecking)
         } else {
             store.record_coverage(coverage, unknown)

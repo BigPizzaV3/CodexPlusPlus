@@ -1715,6 +1715,7 @@ impl Store {
             input_limit,
             scoped_count_gaps,
             0,
+            false,
             |events, aliases, _| classify(events, aliases),
         )
     }
@@ -1726,6 +1727,7 @@ impl Store {
         input_limit: usize,
         scoped_count_gaps: &BTreeSet<PathBuf>,
         sealed_pending: usize,
+        paired_only: bool,
         classify: impl FnOnce(
             &mut [UsageEvent],
             &BTreeMap<String, String>,
@@ -1874,17 +1876,35 @@ impl Store {
                     row.get_ref(0)?.as_blob()?.try_into()?,
                     event.session.clone(),
                 )?;
+            let (Some(last), Some(received_last)) = (event.last, receipt.last) else {
+                return Ok(false);
+            };
+            let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
+            let received_at = DateTime::parse_from_rfc3339(&receipt.timestamp)?.timestamp_millis();
+            // 这里只配对供应商身份；未知缓存不能否定回执，也不能改写原生计数。
             Ok(rows.next()?.is_none()
                 && receipt.terminal_response.as_deref() == Some(id)
-                && terminal_receipts::wholly_accounted_in_batch(
-                    std::slice::from_ref(&receipt),
-                    std::slice::from_ref(event),
-                ))
+                && event.date == receipt.date
+                && at.abs_diff(received_at) <= DELAYED_REQUEST_MATCH_WINDOW_MS as u64
+                && !event.context_conflicts.any()
+                && !event.count_uncertain
+                && !event.count_incomplete
+                && !event.count_pending
+                && [(event.total, receipt.total), (event.delta, receipt.delta), (last, received_last)]
+                    .into_iter().all(|(counter, terminal)| {
+                        counter.input_tokens == terminal.input_tokens
+                            && counter.output_tokens == terminal.output_tokens
+                            && (!counter.cached_known || !terminal.cached_known
+                                || counter.cached_input_tokens == terminal.cached_input_tokens)
+                            && counter.reasoning_output_tokens.zip(terminal.reasoning_output_tokens)
+                                .is_none_or(|(a, b)| a == b)
+                    }))
         };
         let attribution = AttributionScope {
             targets: target_rows.clone(),
             gateway_blocked,
-            native_blocked,
+            native_blocked: native_blocked || paired_only,
+            paired_only,
             matches_terminal: Some(&matches_terminal),
         };
         classify(&mut candidates, &scope.aliases, &attribution)?;

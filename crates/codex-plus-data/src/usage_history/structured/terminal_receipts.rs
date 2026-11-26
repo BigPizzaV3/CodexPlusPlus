@@ -47,8 +47,7 @@ pub(super) fn parse(
     let raw_last = Tokens::parse(usage)?;
     let last_accounting = CacheAccounting::parse(usage, raw_last);
     let last = raw_last.normalize_cache_input(last_accounting, None, None);
-    if !last.cached_known
-        || last.total_tokens == 0
+    if last.total_tokens == 0
         || last.input_tokens.checked_add(last.output_tokens).is_none()
         || (usage.get("total_tokens").is_some()
             && usage["total_tokens"].as_u64() != Some(last.total_tokens))
@@ -65,7 +64,8 @@ pub(super) fn parse(
     );
     if !total.is_monotonic_after(last)
         || total.input_tokens.checked_add(total.output_tokens).is_none()
-        || cumulative["cached_input_tokens"].as_u64()? < last.cached_input_tokens
+        || (total.cached_known && last.cached_known
+            && total.cached_input_tokens < last.cached_input_tokens)
     {
         return None;
     }
@@ -296,6 +296,10 @@ pub(super) fn reconcile<'a>(
 }
 
 pub(super) fn apply_receipt_counts(event: &mut UsageEvent, receipt: &UsageEvent) -> bool {
+    // 身份回执可以缺缓存；这种回执不能把未知缓存补成零。
+    if !receipt.delta.cached_known {
+        return false;
+    }
     // 混合口径使差量失去缓存知识时，唯一回执可证明本次恰好漏了缓存。
     let omitted_cache = !event.delta.cached_known
         && event.delta.input_tokens.checked_add(receipt.delta.cached_input_tokens)

@@ -263,6 +263,7 @@ impl Runtime {
                 bytes,
                 self.scan.scoped_count_gaps(),
                 self.scan.sealed_pending(),
+                self.scan.paired_only,
                 |events, aliases, scope| {
                     ensure!(
                         index.native_evidence.observe_count_conflicts(events, true),
@@ -295,6 +296,7 @@ impl Runtime {
                         Some(scope),
                     );
                     index.native_evidence.apply_count_conflicts(events);
+                    index.request_evidence.infer_scoped(events, &mut state.provider_names, aliases, scope)?;
                     Ok(())
                 },
             )?;
@@ -1216,8 +1218,8 @@ mod tests {
             let unverified = pass(&mut worker);
             assert!(unverified["scan"]["pendingFiles"].as_u64().unwrap() > 0);
             assert!(
-                !exact(&unverified),
-                "{case}: unverified backlog retained exact evidence"
+                exact(&unverified),
+                "{case}: unrelated queued work must retain a previously verified proof"
             );
             assert_eq!(unverified["days"][0]["usage"], native["days"][0]["usage"]);
             assert_eq!(unverified["sessionCursors"], native["sessionCursors"]);

@@ -1308,7 +1308,10 @@ fn retirement_checks_unknown_and_replaced_archives_after_discovery() {
     let mut scan = Scan::default();
     let report = scan.round(&mut store, &root, cutoff, &names, 1 << 25);
     assert!(!report.complete);
-    assert!(!report.can_classify);
+    assert!(report.can_classify && scan.paired_only);
+    assert!(store.reclassify_session(FIRST, 1 << 25, scan.scoped_count_gaps(), |_, _| {
+        panic!("missing source must keep its own component blocked")
+    }).unwrap().is_none());
     assert!(store.checkpoint(&old).unwrap().is_some());
     fs::write(&changed, &bytes).unwrap();
     let new = archives.join("rollout-new.jsonl.zst");

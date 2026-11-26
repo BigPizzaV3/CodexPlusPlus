@@ -26,7 +26,7 @@ pub(super) struct SourceReader {
     revision: Option<i64>,
     offset: u64,
     committed_complete: bool,
-    replacing: bool,
+    pub(super) replacing: bool,
     ready: Option<bool>,
     encoding: Encoding,
     identity_probe: Option<Box<FileState>>,

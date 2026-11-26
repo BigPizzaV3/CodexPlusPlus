@@ -343,7 +343,8 @@ fn legacy_prefix_attribution_follows_only_the_linked_sessions() -> anyhow::Resul
         );
         let expected = match case {
             "tools-only" | "same-session" | "history-base" | "replaced-during-probe" => both,
-            "replaced" | "missing" | "unknown-header" | "partial-line" => BTreeSet::new(),
+            "missing" => BTreeSet::from([SECOND.to_owned()]),
+            "replaced" | "unknown-header" | "partial-line" => BTreeSet::new(),
             _ => unreachable!("{case}"),
         };
         let actual = exact_sessions(&mut store)?;

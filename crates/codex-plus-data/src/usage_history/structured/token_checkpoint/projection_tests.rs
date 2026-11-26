@@ -4239,6 +4239,7 @@ fn durable_future_partial_request_needs_ordered_gateway_and_paired_native_respon
             1 << 20,
             &BTreeSet::new(),
             0,
+            false,
             |events, aliases, scope| {
                 evidence.attribute_with_cache_scoped(
                     events,
@@ -4343,6 +4344,7 @@ fn bounded_classification_preserves_day_totals_and_counts_competitors_across_the
                 LIMIT,
                 &gaps,
                 0,
+                false,
                 |events, aliases, scope| {
                     assert_eq!(scope.targets.len(), 1);
                     assert_eq!(events.len(), 2);
@@ -4412,6 +4414,7 @@ fn bounded_classification_preserves_day_totals_and_counts_competitors_across_the
                 LIMIT,
                 &gaps,
                 0,
+                false,
                 |_, _, _| { panic!("cannot accept a clipped retention boundary") }
             )
             .unwrap()

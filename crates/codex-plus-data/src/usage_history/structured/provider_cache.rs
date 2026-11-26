@@ -846,6 +846,16 @@ impl ProviderCache {
         since: i64,
         until: i64,
     ) -> anyhow::Result<Captured<RequestEvidence>> {
+        self.captured_proxy_context(session, since, until, false)
+    }
+
+    pub(super) fn captured_proxy_context(
+        &self,
+        session: &str,
+        since: i64,
+        until: i64,
+        include_neighbors: bool,
+    ) -> anyhow::Result<Captured<RequestEvidence>> {
         let db = self
             .db
             .as_ref()
@@ -860,9 +870,14 @@ impl ProviderCache {
         let extra = self.proxy_extra_select();
         let mut statement = db.prepare(&format!(
             "SELECT data,{extra} FROM completed_proxy_requests AS observed
-            WHERE session=?1 AND at>=?2 AND at<=?3 ORDER BY at DESC,id",
+            WHERE session=?1 AND at>=?4 AND (at BETWEEN ?2 AND ?3
+                OR (?5 AND at=(SELECT max(at) FROM completed_proxy_requests
+                    WHERE session=?1 AND at<?2 AND at>=?4))
+                OR (?5 AND at=(SELECT min(at) FROM completed_proxy_requests
+                    WHERE session=?1 AND at>?3)))
+            ORDER BY at DESC,id",
         ))?;
-        let rows = statement.query_map(params![session, since.max(floor), until], |row| {
+        let rows = statement.query_map(params![session, since.max(floor), until, floor, include_neighbors], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
         })?;
         let rows = rows

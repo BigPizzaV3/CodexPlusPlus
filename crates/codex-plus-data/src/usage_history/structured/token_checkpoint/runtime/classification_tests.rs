@@ -1,7 +1,121 @@
 use super::*;
-use chrono::TimeDelta;
+use chrono::{DateTime, TimeDelta};
 use rusqlite::params;
 use std::fmt::Write;
+
+#[test]
+fn archive_backlog_keeps_paired_supplier_proofs_revocable() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(home.join("sessions"))?;
+    fs::create_dir(home.join("archived_sessions"))?;
+    let home = fs::canonicalize(home)?;
+    let settings = root.path().join("settings.json");
+    let log = root.path().join("requests.jsonl");
+    fs::write(&settings, r#"{"usageHistoryEnabled":true}"#)?;
+    let at = (Local::now() - TimeDelta::minutes(5)).to_rfc3339();
+    let usage = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":10});
+    let mut proofs = String::new();
+    for n in 1..=5 {
+        let session = format!("00000000-0000-4000-8000-{n:012}");
+        let id = format!("response-{n}");
+        let meta = json!({"type":"session_meta","timestamp":at,
+            "payload":{"id":session,"model_provider":"custom","source":"vscode"}});
+        let turn = json!({"type":"turn_context","timestamp":at,
+            "payload":{"turn_id":"turn","model":"gpt-fixture"}});
+        let mut native_usage = usage.clone();
+        if n == 3 {
+            native_usage.as_object_mut().unwrap().remove("cached_input_tokens");
+        }
+        let mut receipt_usage = native_usage.clone();
+        if n == 4 {
+            receipt_usage.as_object_mut().unwrap().remove("cached_input_tokens");
+        } else if n == 5 {
+            receipt_usage["cached_input_tokens"] = json!(21);
+        }
+        let receipt = json!({"type":"token_usage_record","timestamp":at,"payload":{
+            "thread_id":session,"turn_id":"turn","response_id":id,
+            "usage":receipt_usage,"thread_token_usage":receipt_usage}});
+        let count = json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"total_token_usage":native_usage,"last_token_usage":native_usage}}});
+        let mut rows = format!("{meta}\n{turn}\n");
+        if n != 2 {
+            writeln!(rows, "{receipt}")?;
+        }
+        writeln!(rows, "{count}")?;
+        fs::write(home.join(format!("sessions/rollout-{session}.jsonl")), rows)?;
+        let at = DateTime::parse_from_rfc3339(&at)?.timestamp_millis();
+        let mut proof = json!({"id":format!("request-{n}"),"threadId":session,"model":"gpt-fixture",
+            "upstreamModel":"gpt-fixture","relayId":"fixture-relay","success":true,"state":"success",
+            "statusCode":200,"timestampMs":at,"startedAtMs":at-100,
+            "finalResponseEvidence":"final-response-v1","finalResponseId":id,
+            "attempts":1,"autoRetries":0,"usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}});
+        if n >= 3 {
+            proof["finalResponseEvidence"] = json!("final-response-supplier-v1");
+            proof["usage"]["cachedTokens"] = Value::Null;
+            proof["usage"]["cachedTokensKnown"] = json!(false);
+        }
+        writeln!(proofs, "{proof}")?;
+    }
+    let padding = format!("{{\"type\":\"ignored\",\"payload\":\"{}\"}}\n", "x".repeat(65536));
+    fs::write(&log, "")?;
+    let storage = root.path().join("history");
+    let mut worker = Runtime::new(storage.clone(), settings.clone());
+    assert!(worker.update_with_request_log(&home, &log).storage_error.is_none());
+    fs::write(home.join("archived_sessions/rollout-pending.jsonl"), padding.repeat(1200))?;
+    fs::write(&log, &proofs)?;
+    let pass = |worker: &mut Runtime, exact: usize| -> Result<()> {
+        let state = worker.update_with_request_log(&home, &log);
+        assert!(state.storage_error.is_none(), "{:?}", state.storage_error);
+        assert!(state.classification_error.is_none(), "{:?}", state.classification_error);
+        let db = &worker.store.as_ref().unwrap().db;
+        assert!(db.query_row("SELECT pending_sources FROM token_coverage", [], |row| row.get::<_, usize>(0))? > 0);
+        assert_eq!(db.query_row(
+            "SELECT count(*),sum(json_extract(CAST(payload AS TEXT),'$.delta.t')),
+             sum(coalesce(json_extract(CAST(payload AS TEXT),'$.provider_source')='request-log-exact',0)),
+             sum(coalesce(json_extract(CAST(payload AS TEXT),'$.provider_source')='session-context-inferred',0)),
+             sum(coalesce(json_extract(CAST(payload AS TEXT),'$.provider_source')='request-log-recovered-supplier-only',0))
+             FROM token_resolved",
+            [], |row| Ok((row.get::<_, usize>(0)?,row.get::<_, usize>(1)?,row.get::<_, usize>(2)?,row.get::<_, usize>(3)?,row.get::<_, usize>(4)?)),
+        )?, (5, 550, exact, 2, 2));
+        for n in [4, 5] {
+            let session = format!("00000000-0000-4000-8000-{n:012}");
+            let (source, input, cached, known, output): (String, u64, u64, bool, u64) = db.query_row(
+                "SELECT json_extract(CAST(payload AS TEXT),'$.provider_source'),
+                 json_extract(CAST(payload AS TEXT),'$.delta.i'),
+                 json_extract(CAST(payload AS TEXT),'$.delta.c'),
+                 json_extract(CAST(payload AS TEXT),'$.delta.k'),
+                 json_extract(CAST(payload AS TEXT),'$.delta.o')
+                 FROM token_resolved WHERE session_id=(SELECT id FROM token_sessions WHERE session=?1)",
+                [&session],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )?;
+            assert_eq!((input, cached, known, output), (100, 20, true, 10));
+            assert_eq!(source, if n == 4 {
+                "request-log-recovered-supplier-only"
+            } else {
+                "session-context-inferred"
+            });
+        }
+        Ok(())
+    };
+    pass(&mut worker, 1)?;
+    pass(&mut worker, 1)?;
+    // 正式网关在日志轮转前同步保留完成请求；夹具复用同一写入入口。
+    let captured = proofs.lines().map(serde_json::from_str).collect::<serde_json::Result<Vec<_>>>()?;
+    worker.evidence.provider_cache.capture_proxy(&captured)?;
+    drop(worker);
+    fs::write(&log, "")?;
+    let mut worker = Runtime::new(storage, settings);
+    pass(&mut worker, 1)?;
+    let mut competing: Value = serde_json::from_str(proofs.lines().next().unwrap())?;
+    competing["id"] = json!("competing-request");
+    competing["relayId"] = json!("competing-relay");
+    writeln!(proofs, "{competing}")?;
+    fs::write(&log, proofs)?;
+    pass(&mut worker, 0)?;
+    Ok(())
+}
 
 #[test]
 fn recent_sessions_cover_the_day_then_their_own_history_and_revisit_late_proofs() {
@@ -81,7 +195,8 @@ fn recent_sessions_cover_the_day_then_their_own_history_and_revisit_late_proofs(
             .db
             .query_row(
                 "SELECT count(*) FROM token_resolved WHERE timestamp_ms = ?1
-             AND json_extract(CAST(payload AS TEXT), '$.provider') = 'fixture-relay'",
+             AND json_extract(CAST(payload AS TEXT), '$.provider') = 'fixture-relay'
+             AND json_extract(CAST(payload AS TEXT), '$.provider_source') = 'request-log-exact'",
                 [at],
                 |row| row.get::<_, usize>(0),
             )
