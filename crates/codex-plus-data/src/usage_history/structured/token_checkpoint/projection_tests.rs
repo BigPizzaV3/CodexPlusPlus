@@ -1292,6 +1292,7 @@ fn exclusive_terminal_usage_repairs_only_its_paired_delta_with_a_mixed_prefix() 
         json!({"type":"turn_context","timestamp":at(0),"payload":{"turn_id":"turn","model":"fixture"}}),
         count(1, counts(100, 20, 10, 110), before),
         count(3, last.clone(), cumulative.clone()),
+        count(4, last.clone(), cumulative.clone()),
     ]);
     let (_, native) = step();
     assert_eq!(native.len(), 2);

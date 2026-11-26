@@ -218,7 +218,14 @@ pub(super) fn reconcile<'a>(
     let mut matches = HashMap::new();
     let mut latest = HashMap::<&str, (&str, Tokens)>::new();
     for (i, event) in events.iter().enumerate() {
-        if let Some(signature) = signature(event) {
+        // 原生重复累计产生的已确认零差量不是另一笔回执候选。
+        if (event.delta.total_tokens > 0
+            || event.count_uncertain
+            || event.count_incomplete
+            || event.count_pending
+            || event.context_conflicts.any())
+            && let Some(signature) = signature(event)
+        {
             matches
                 .entry(signature)
                 .and_modify(|row| *row = None)
