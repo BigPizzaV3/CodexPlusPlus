@@ -629,6 +629,46 @@ fn normalized_overload_failure_event(data_json: &Value) -> Option<String> {
     ))
 }
 
+/// 把不可重试的策略拒绝（裸 `error` 事件 + cyber_policy 等 code）规范成
+/// Codex 认作终态的 `response.failed` 事件（issue #3298）。
+///
+/// Codex 只把 `response.failed` / `response.incomplete` 当终态；裸 `error`
+/// 事件会被当成网络断流（stream closed before response.completed）自动重试，
+/// 而策略拒绝重试也不会成功，只会反复触发。只认明确的策略/审核类 code，
+/// 其它 `error` 事件保持原样转发，不改变既有行为。
+fn normalized_policy_failure_event(data_json: &Value) -> Option<String> {
+    let error = data_json.get("error")?;
+    let code = error.get("code").and_then(Value::as_str).unwrap_or_default();
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let lowered = format!("{code} {message}").to_ascii_lowercase();
+    let is_policy_rejection = lowered.contains("cyber_policy")
+        || lowered.contains("cyber policy")
+        || lowered.contains("content_policy")
+        || lowered.contains("moderation");
+    if !is_policy_rejection {
+        return None;
+    }
+    let response_id = data_json
+        .pointer("/response/id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let payload = json!({
+        "type": "response.failed",
+        "response": {
+            "id": response_id,
+            "status": "failed",
+            "error": error.clone(),
+        }
+    });
+    Some(format!(
+        "event: response.failed\ndata: {}\n\n",
+        serde_json::to_string(&payload).ok()?
+    ))
+}
+
 /// 找到 `from` 之后第一个完整 SSE 事件边界（返回边界之后的字节下标）。
 fn next_sse_boundary(bytes: &[u8], from: usize) -> Option<usize> {
     let mut index = from;
@@ -12351,7 +12391,30 @@ mod stream_start_peek_tests {
         ));
     }
 
+    /// issue #3298：裸 `error` 事件里的策略拒绝要改写成 Codex 认作终态的
+    /// response.failed，否则 Codex 把它当网络断流自动重试。
+    #[test]
+    fn policy_error_event_is_rewritten_to_response_failed() {
+        let mut t = ResponsesSseTransformer::default();
+        let out = t.push_bytes(
+            b"event: error\ndata:{\"type\":\"error\",\"error\":{\"type\":\"invalid_request\",\"code\":\"cyber_policy\",\"message\":\"This content was flagged for possible cybersecurity risk.\"}}\n\n",
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("event: response.failed"), "{text}");
+        assert!(text.contains("\"code\":\"cyber_policy\""), "{text}");
+        assert!(text.contains("cybersecurity risk"), "{text}");
+        assert!(!text.contains("event: error"), "{text}");
+        assert!(t.finish().is_some(), "策略拒绝是终态失败");
+    }
 
+    /// 非 policy 的裸 `error` 事件保持原样转发，不改变既有行为。
+    #[test]
+    fn non_policy_error_event_is_forwarded_verbatim() {
+        let mut t = ResponsesSseTransformer::default();
+        let body = b"event: error\ndata:{\"type\":\"error\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream exploded\"}}\n\n";
+        let out = t.push_bytes(body);
+        assert_eq!(out, body.to_vec());
+    }
 }
 
 #[cfg(test)]
@@ -12842,6 +12905,14 @@ impl ResponsesSseTransformer {
             }
             if stream_failure_is_retryable(code.as_deref(), message.as_deref())
                 && let Some(normalized) = normalized_overload_failure_event(data_json)
+            {
+                return normalized.into_bytes();
+            }
+            // 裸 `error` 事件 Codex 不认作终态：会把这一轮当成「stream closed
+            // before response.completed」的网络断流自动重试。不可重试的策略拒绝
+            // （cyber_policy 等）必须改写成 response.failed 让 Codex 明确终止。
+            if event_type == "error"
+                && let Some(normalized) = normalized_policy_failure_event(data_json)
             {
                 return normalized.into_bytes();
             }
