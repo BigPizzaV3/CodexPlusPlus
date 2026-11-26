@@ -85,7 +85,12 @@ fn open_database(storage: &Path, write: bool) -> Result<Connection> {
         storage.join(TOKEN_INDEX_DB),
         flags | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )?;
-    db.busy_timeout(Duration::from_millis(50))?;
+    // 冷备份切换 WAL 需要等前台读事务结束；后台写者不沿用前台的短等待。
+    db.busy_timeout(if write {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_millis(50)
+    })?;
     Ok(db)
 }
 
@@ -654,6 +659,48 @@ mod classification_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cold_seed_writer_waits_for_a_foreground_reader_before_enabling_wal() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::open(open_database(root.path(), true).unwrap()).unwrap();
+        store
+            .db
+            .execute("UPDATE token_revision SET revision=6245", [])
+            .unwrap();
+        store.db.pragma_update(None, "journal_mode", "DELETE").unwrap();
+        drop(store);
+
+        let storage = root.path().to_owned();
+        let (pinned, ready) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let mut db = open_database(&storage, false).unwrap();
+            let read = db.transaction().unwrap();
+            let revision: i64 = read
+                .query_row("SELECT revision FROM token_revision", [], |row| row.get(0))
+                .unwrap();
+            pinned.send(revision).unwrap();
+            std::thread::sleep(Duration::from_millis(250));
+            read.commit().unwrap();
+        });
+        assert_eq!(ready.recv().unwrap(), 6245);
+        let opened = Store::open(open_database(root.path(), true).unwrap());
+        reader.join().unwrap();
+        let store = opened.expect("writer must wait for the foreground read to finish");
+        assert_eq!(
+            store
+                .db
+                .pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))
+                .unwrap(),
+            "wal"
+        );
+        assert_eq!(read_revision(root.path()), 6245);
+        store
+            .db
+            .execute("UPDATE token_revision SET revision=revision+1", [])
+            .unwrap();
+        assert_eq!(read_revision(root.path()), 6246);
+    }
 
     #[test]
     fn storage_policy_applies_to_the_live_writer_without_rewinding_retained_history() {
