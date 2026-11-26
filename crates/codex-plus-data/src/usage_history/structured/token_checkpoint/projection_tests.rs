@@ -1256,6 +1256,104 @@ fn oversized_unfinished_meter_reopens_at_its_start_and_publishes_only_once() -> 
 }
 
 #[test]
+fn exclusive_terminal_usage_repairs_only_its_paired_delta_with_a_mixed_prefix() {
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().canonicalize().unwrap();
+    let database = home.join("usage.sqlite");
+    let rollout = home.join("rollout-fixture.jsonl");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let at = |second| format!("2026-01-02T12:00:{second:02}Z");
+    let counts = |input, cache, output, total| json!({"input_tokens":input,
+        "cached_input_tokens":cache,"cache_write_input_tokens":0,"output_tokens":output,"total_tokens":total});
+    let last = counts(126_679, 29_184, 357, 156_220);
+    let cumulative = counts(419_614_180, 420_908_928, 1_508_615, 450_082_667);
+    let before = counts(419_487_501, 420_879_744, 1_508_258, 449_926_447);
+    let count = |second, last, total| json!({"type":"event_msg","timestamp":at(second),
+        "payload":{"type":"token_count","info":{"last_token_usage":last,"total_token_usage":total}}});
+    let receipt = |second, id, last, total| json!({"type":"token_usage_record","timestamp":at(second),
+        "payload":{"thread_id":PARENT,"turn_id":"turn","response_id":id,"usage":last,"thread_token_usage":total}});
+    let append = |rows: &[Value]| {
+        let mut file = fs::OpenOptions::new().create(true).append(true).open(&rollout).unwrap();
+        for row in rows { writeln!(file, "{row}").unwrap(); }
+    };
+    let step = || {
+        let mut store = Store::open(Connection::open(&database).unwrap()).unwrap();
+        let mut reader = SourceReader::restore(&store, &rollout).unwrap();
+        assert!(reader.step(&mut store, cutoff, &mut Budget::new(std::iter::empty()),
+            &BTreeMap::new(), 1 << 20).unwrap());
+        let receipts: usize = store.db.query_row(
+            "SELECT count(*) FROM token_observations WHERE json_type(CAST(payload AS TEXT),'$.terminal_response')='text'",
+            [], |row| row.get(0)).unwrap();
+        (receipts, read(&mut store.db, i64::MIN, i64::MAX).1)
+    };
+    append(&[
+        header(PARENT, 0),
+        json!({"type":"turn_context","timestamp":at(0),"payload":{"turn_id":"turn","model":"fixture"}}),
+        count(1, counts(100, 20, 10, 110), before),
+        count(3, last.clone(), cumulative.clone()),
+    ]);
+    let (_, native) = step();
+    assert_eq!(native.len(), 2);
+    assert_eq!(native[1].delta.input_tokens, 126_679);
+    assert!(!native[1].delta.cached_known);
+    append(&[receipt(2, "chat-final", last.clone(), cumulative.clone())]);
+    let (receipts, paired) = step();
+    assert_eq!(receipts, 1, "exclusive-cache terminal receipt was discarded");
+    assert_eq!(paired.len(), 2);
+    assert!(paired[0] == native[0]);
+    assert_eq!(paired[1].total, native[1].total);
+    assert_eq!(paired[1].delta, crate::usage_history::Tokens::new(155_863, 29_184, 357));
+    assert!(step().1 == paired);
+    append(&[receipt(4, "competing-final", last, cumulative)]);
+    let (receipts, withdrawn) = step();
+    assert_eq!(receipts, 2);
+    assert!(withdrawn == native, "a competing claim must withdraw the correction");
+    let next_last = counts(9_105, 168_960, 953, 179_018);
+    let next_total = counts(419_623_285, 421_077_888, 1_509_568, 450_261_685);
+    append(&[
+        receipt(5, "next-final", next_last.clone(), next_total.clone()),
+        count(6, next_last, next_total),
+    ]);
+    let (receipts, next) = step();
+    assert_eq!(receipts, 3);
+    assert_eq!(next.len(), 3);
+    assert!(next[..2] == native);
+    assert_eq!(next[2].delta, crate::usage_history::Tokens::new(178_065, 168_960, 953));
+    assert!(step().1 == next);
+}
+
+#[test]
+fn exclusive_terminal_usage_normalizes_the_cumulative_and_counts_a_late_pair_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().canonicalize().unwrap().join("rollout-exclusive.jsonl");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let counts = json!({"input_tokens":10,"cached_input_tokens":40,"cache_write_input_tokens":3,
+        "output_tokens":5,"total_tokens":58});
+    let terminal = json!({"type":"token_usage_record","timestamp":"2026-01-02T12:00:02Z",
+        "payload":{"thread_id":PARENT,"turn_id":"turn","response_id":"exclusive-final",
+            "usage":counts,"thread_token_usage":counts}});
+    let state = parse(&source, &[
+        header(PARENT, 0),
+        json!({"type":"turn_context","timestamp":"2026-01-02T12:00:01Z",
+            "payload":{"turn_id":"turn","model":"fixture"}}),
+        terminal,
+        json!({"type":"event_msg","timestamp":"2026-01-02T12:00:03Z","payload":{
+            "type":"token_count","info":{"last_token_usage":counts,"total_token_usage":counts}}}),
+    ], cutoff);
+    assert_eq!(state.events.len(), 2);
+    assert_eq!(state.events[0].terminal_response.as_deref(), Some("exclusive-final"));
+    let expected = crate::usage_history::Tokens::new(53, 40, 5);
+    assert_eq!(state.events[0].total, expected);
+    assert_eq!(state.events[0].delta, expected);
+    let mut store = Store::open(Connection::open_in_memory().unwrap()).unwrap();
+    let prepared = store.prepare(new_source(&source, &state), cutoff, BTreeMap::new(), 1 << 20).unwrap();
+    store.publish(prepared).unwrap();
+    let events = read(&mut store.db, i64::MIN, i64::MAX).1;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].delta, expected);
+}
+
+#[test]
 fn terminal_usage_persists_across_restart_and_late_count_without_rebasing_the_next_turn() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().canonicalize().unwrap();
