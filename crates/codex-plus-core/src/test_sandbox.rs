@@ -53,7 +53,10 @@ pub fn enter() -> &'static Path {
         {
             return inherited;
         }
-        let root = std::env::temp_dir().join(format!("codex-plus-test-home-{}", std::process::id()));
+        // 测试起子进程时清空了环境（env_clear）、只给了几个变量：Windows 上这时连 TEMP 都没有，
+        // `temp_dir()` 会落到不可写的 C:\Windows。这种子进程放在父进程给的 APPDATA 下，也不覆盖它。
+        let cleared = cleared_environment();
+        let root = sandbox_base(cleared).join(format!("codex-plus-test-home-{}", std::process::id()));
         let home = root.join("home");
         let _ = std::fs::create_dir_all(&home);
         // SAFETY: 只在 main 之前的 #[ctor] 里调用，进程里还没有其他线程读写环境变量。
@@ -75,12 +78,34 @@ pub fn enter() -> &'static Path {
             std::env::set_var(MARKER, &root);
             if cfg!(windows) {
                 std::env::set_var("USERPROFILE", &home);
-                std::env::set_var("APPDATA", home.join("AppData").join("Roaming"));
-                std::env::set_var("LOCALAPPDATA", home.join("AppData").join("Local"));
+                // 父进程给清空环境的子进程明确设过的目录照用（它们本来就是测试的临时目录）。
+                if !(cleared && std::env::var_os("APPDATA").is_some()) {
+                    std::env::set_var("APPDATA", home.join("AppData").join("Roaming"));
+                }
+                if !(cleared && std::env::var_os("LOCALAPPDATA").is_some()) {
+                    std::env::set_var("LOCALAPPDATA", home.join("AppData").join("Local"));
+                }
             }
         }
         root
     })
+}
+
+/// 环境被父进程清空过：HOME、USERPROFILE 都没有（正常的进程至少有一个）。
+fn cleared_environment() -> bool {
+    std::env::var_os("HOME").is_none() && std::env::var_os("USERPROFILE").is_none()
+}
+
+/// 沙箱根目录放在哪：清空过环境的子进程用父进程给的 APPDATA / LOCALAPPDATA（绝对路径），
+/// 其余用系统临时目录。
+fn sandbox_base(cleared: bool) -> PathBuf {
+    let given = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|path| path.is_absolute());
+    if cleared {
+        if let Some(base) = given("APPDATA").or_else(|| given("LOCALAPPDATA")).or_else(|| given("TEMP")).or_else(|| given("TMP")) {
+            return base;
+        }
+    }
+    std::env::temp_dir()
 }
 
 /// 沙箱里的家目录：本进程（或起它的测试进程）进了沙箱、家目录也还在沙箱根下时返回，否则 None。
