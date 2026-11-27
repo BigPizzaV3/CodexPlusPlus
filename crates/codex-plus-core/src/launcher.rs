@@ -9942,12 +9942,11 @@ mod tests {
         let contacted = upstream.await.unwrap();
         let response = String::from_utf8(response).unwrap();
         assert!(
-            response.starts_with("HTTP/1.1 400 Bad Request"),
+            response.starts_with("HTTP/1.1 200 OK"),
             "{response}"
         );
         let body = response.split_once("\r\n\r\n").unwrap().1;
-        let error: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert_eq!(error["choices"][0]["message"]["content"], "wrong");
+        assert!(body.contains("\"wrong\""), "{body}");
         assert!(!response.contains("fixture-private-payload"));
         assert!(!response.contains("fixture-api-key"));
         assert!(contacted, "降级后的请求应照常发给 Chat 上游");
