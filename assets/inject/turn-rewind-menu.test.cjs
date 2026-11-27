@@ -84,6 +84,7 @@ class Element {
   vm.createContext(context);
   vm.runInContext(shard('85-turn-rewind-controller.js') + shard('86-turn-rewind-menu.js'), context);
   const api = context.__codexPlusTurnRewind;
+  const runRewind = api.run;
   context.syncCodexPlusTurnRewind();
   assert.equal(observes, 0); assert.equal(menu.children.length, 2); assert.equal(moduleLoads, 0);
   settings.turnRewind = true; context.syncCodexPlusTurnRewind(); assert.equal(observes, 0);
@@ -231,11 +232,99 @@ class Element {
   const exported = await api.exportRecord({ id: 'fixture', text: '中文恢复记录' });
   assert.equal(exported.path, '/fixture/receipt.json'); assert.equal(disposed, 1);
   assert.equal(JSON.parse(Buffer.from(saveRequests[0].bytes).toString('utf8')).text, '中文恢复记录');
+
+  // 新版宿主仅暴露异步 RPC facade。React 树里只有目标身份，没有旧版 manager。
+  identity.turnId = 'desktop-selected';
+  const original = ['desktop-baseline', identity.turnId].map(turnId => ({ turnId, status: 'completed', items: [] }));
+  let serverTurns, loadedTurns, mode, notification, openCount = 0, managerDisposals = 0, subscriptionDisposals = 0;
+  let report, panelResult, changeTargetOnOpen = false;
+  const desktopWrites = [];
+  const rpc = {
+    async getHostId() { return 'local'; },
+    async getConversation(id) { return { ...state, id }; },
+    async hasLocalHistorySubscription() { return mode !== 'follower'; },
+    async ensureConversationHistoryLoaded(id, parents, options) { assert.equal(options.force, true); },
+    async getLoadedConversationHistory() { return { isComplete: mode !== 'partial-history', turns: loadedTurns }; },
+    subscribe(options) {
+      assert.equal(options.key.threadId, identity.threadId);
+      notification = options.listener;
+      return Promise.resolve({ [Symbol.dispose]() { subscriptionDisposals++; notification = null; } });
+    },
+    async sendFollowUpMessage(threadId, { prompt }) {
+      desktopWrites.push('prompt');
+      const turnId = 'desktop-rewind';
+      const item = { type: 'userMessage', content: [{ type: 'text', text: prompt }] };
+      const assistant = { type: 'agentMessage', text: 'CODEX_REWIND_RESULT_desktop={"status":"complete","undone":[],"unresolved":[],"verification":[]}' };
+      loadedTurns = loadedTurns.concat({ turnId, status: 'completed', items: [item, assistant] });
+      serverTurns = loadedTurns;
+      if (mode === 'concurrent') serverTurns = serverTurns.concat({ turnId: 'new-independent-turn', status: 'completed' });
+      notification({ method: 'item/started', params: { threadId, turnId, item } });
+      notification({ method: 'turn/completed', params: { threadId, turn: { id: turnId } } });
+    },
+    async sendRequest(method, params) {
+      if (method === 'thread/turns/list') {
+        assert.equal(params.itemsView, 'notLoaded');
+        const index = Number(params.cursor ?? 0);
+        return { data: serverTurns.slice(index, index + 1).map(turn => ({ id: turn.turnId, status: turn.status })),
+          nextCursor: index + 1 < serverTurns.length ? String(index + 1) : null };
+      }
+      assert.equal(method, 'thread/revert'); assert.equal(params.beforeTurnId, 'desktop-selected');
+      desktopWrites.push('revert');
+      serverTurns = serverTurns.slice(0, 1);
+      if (mode !== 'stale-ui') loadedTurns = serverTurns;
+      return { thread: { id: params.threadId } };
+    },
+    [Symbol.dispose]() { managerDisposals++; },
+  };
+  context.codexHostServices = async () => ({
+    appServerManagers: { async open(host) {
+      assert.equal(host, 'local'); openCount++;
+      if (changeTargetOnOpen) identity.turnId = 'reused-menu-target';
+      return { status: 'ready', manager: rpc };
+    } },
+    workspaceFiles: { async saveCopy() { return { path: '/desktop/receipt.json' }; } },
+  });
+  const plainActionBar = { memoizedProps: identity, return: applicationRoot };
+  trigger.__reactFiber$fixture = { memoizedProps: {}, return: plainActionBar };
+  branch.__reactFiber$fixture = detachedMenuTree;
+  body.appendChild(trigger);
+  api.run = async (threadId, turnId, { manager }) => {
+    report = await runRewind(threadId, turnId, { manager, token: 'desktop', timeoutMs: 100,
+      saveRun: async () => {}, panel: { update: (...args) => { panelResult = args; } } });
+  };
+  await context.loadTurnRewindDesktopServices();
+  context.refreshTurnRewindMenus();
+  assert.equal(button.getAttribute('aria-disabled'), 'false');
+  for (mode of ['ready', 'stale-ui', 'stale-history', 'concurrent', 'follower', 'partial-history']) {
+    loadedTurns = original;
+    serverTurns = mode === 'stale-history' ? original.slice(0, 1) : original;
+    desktopWrites.length = 0;
+    await button.click();
+    if (mode === 'ready' || mode === 'stale-ui') {
+      assert.deepEqual(desktopWrites, ['prompt', 'revert']);
+      assert.equal(report.status, mode === 'ready' ? 'complete' : 'ui-refresh-required');
+      assert.equal(report.historyTruncated, true);
+      assert.equal(panelResult[2], true);
+    } else {
+      assert.equal(report.status, 'incomplete', mode);
+      assert.deepEqual(desktopWrites, mode === 'concurrent' ? ['prompt'] : [], mode);
+    }
+  }
+  const writesBeforeReusedMenu = desktopWrites.length;
+  changeTargetOnOpen = true;
+  await button.click();
+  assert.equal(desktopWrites.length, writesBeforeReusedMenu, 'menu changed while opening the RPC');
+  assert.match(toasts.at(-1), /菜单已变化/);
+  assert.equal(managerDisposals, openCount, 'release every opened manager, including a reused menu');
+  assert.equal(subscriptionDisposals, 4, 'release the notification subscription on completion and errors');
+  assert.equal(notification, null);
+
   // 重注入保留控制器对象，不丢在途任务；旧观察器和菜单项被回收。
   vm.runInContext(`(() => {${shard('85-turn-rewind-controller.js') + shard('86-turn-rewind-menu.js')}
     window.fixtureSync = syncCodexPlusTurnRewind;
   })()`, context);
   assert.equal(context.__codexPlusTurnRewind, api); assert.equal(disconnects, 1);
+  assert.equal((await api.exportRecord({ id: 'desktop' })).path, '/desktop/receipt.json');
   context.fixtureSync();
   settings.turnRewind = false; context.fixtureSync();
   assert.equal(menu.children.length, 2); assert.equal(disconnects, 2);

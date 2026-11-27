@@ -1,6 +1,7 @@
   // 仅接入消息菜单，不改原生模块、安装目录或对第三方拓展开放写 RPC。
   window.__codexPlusTurnRewindMenuCleanup?.();
   const turnRewindMenuMark = "builtin-turn-rewind-menu";
+  let turnRewindMenuDisposed = false;
   let turnRewindObserver = null;
   let turnRewindRefreshTimer = 0;
   let turnRewindSaveServicePromise = null;
@@ -8,9 +9,11 @@
   let turnRewindRegistryLoad = null;
   let turnRewindRegistryModule = null;
   let turnRewindRegistryRetryAt = 0;
+  let turnRewindDesktopServices = null;
+  let turnRewindDesktopServicesLoad = null;
+  let turnRewindDesktopRetryAt = 0;
 
-  // 新版客户端的 React hooks 只暴露会话 facade，写接口仍在已有的原生 manager。
-  // 复用注册表的只读 accessor 与 React 中已有的 scope，不创建 manager，不猜 atom key。
+  // 兼容仍通过 React scope 提供本地 manager 的旧版桌面。
   function discoverTurnRewindRegistryReader() {
     if (!turnRewindRegistryModule || turnRewindRegistryReader) return;
     const candidates = Object.values(turnRewindRegistryModule).filter((value) => {
@@ -52,6 +55,107 @@
     } catch { return false; }
   }
 
+  async function loadTurnRewindDesktopServices() {
+    if (turnRewindDesktopServices || typeof codexHostServices !== "function"
+        || Date.now() < turnRewindDesktopRetryAt) return turnRewindDesktopServices;
+    turnRewindDesktopServicesLoad ||= codexHostServices().then((services) => {
+      turnRewindDesktopServices = services;
+      if (services?.appServerManagers) scheduleTurnRewindMenuRefresh();
+      return services;
+    }).catch(() => {
+      turnRewindDesktopRetryAt = Date.now() + 30000;
+      return null;
+    }).finally(() => { turnRewindDesktopServicesLoad = null; });
+    return turnRewindDesktopServicesLoad;
+  }
+
+  function disposeTurnRewindRpc(resource) {
+    try { resource?.[Symbol.dispose]?.(); } catch { /* 连接断开时资源已释放。 */ }
+  }
+
+  function turnRewindDesktopManager(client, threadId) {
+    let onConversationState;
+    return {
+      getHostId: () => "local",
+      async getConversation(id) {
+        const state = await client.getConversation(id);
+        return state?.id === id && !state.ephemeral && state.threadAccess !== "shared" ? state : null;
+      },
+      async getStreamRole(id) {
+        return { role: await client.hasLocalHistorySubscription(id) ? "owner" : "follower" };
+      },
+      async getCompleteConversationTurns(id) {
+        await client.ensureConversationHistoryLoaded(id, [], { force: true });
+        const history = await client.getLoadedConversationHistory(id);
+        if (history?.isComplete !== true || !Array.isArray(history.turns)
+            || history.turns.some((turn) => turn.itemsPagination?.hasLoadedOldest === false)) {
+          throw Error("无法读取此聊天的完整执行记录，原对话保留。");
+        }
+        return history.turns;
+      },
+      async validateHistory(id, expectedIds) {
+        // 宿主缓存可能落后于其他窗口，或还显示已经截断的轮次。写入前读服务端的轮次 ID。
+        const cursors = new Set();
+        let index = 0, cursor = null;
+        do {
+          const page = await client.sendRequest("thread/turns/list", {
+            threadId: id, cursor, limit: 100, sortDirection: "asc", itemsView: "notLoaded",
+          });
+          if (!Array.isArray(page?.data)) throw Error("无法核对服务端会话历史，原对话保留。");
+          for (const turn of page.data) {
+            if (index >= expectedIds.length || turn.id !== expectedIds[index] || turn.status === "inProgress") {
+              throw Error("服务端会话历史已变化或仍有任务执行，原对话保留。");
+            }
+            index += 1;
+          }
+          cursor = page.nextCursor ?? null;
+          if (cursor !== null && (!page.data.length || cursors.has(cursor))) {
+            throw Error("无法核对服务端会话历史，原对话保留。");
+          }
+          cursors.add(cursor);
+        } while (cursor !== null);
+        if (index !== expectedIds.length) throw Error("服务端会话历史已变化，原对话保留。");
+      },
+      addConversationStateCallback(listener) {
+        onConversationState = listener;
+        return () => { onConversationState = null; };
+      },
+      async addTurnCompletedListener(listener) {
+        const pending = client.subscribe({
+          type: "notification", key: { hostId: "local", threadId },
+          methods: ["item/started", "item/completed", "turn/completed"],
+          listener({ method, params }) {
+            if (params?.threadId !== threadId) return;
+            if (method === "turn/completed" && params.turn?.id) {
+              void listener({ conversationId: threadId, turnId: params.turn.id });
+            } else if (params.item?.type === "userMessage" && params.turnId) {
+              onConversationState?.(threadId, { turns: [{ turnId: params.turnId, items: [params.item] }] });
+            }
+          },
+        });
+        try {
+          const lease = await pending;
+          return () => { disposeTurnRewindRpc(lease); disposeTurnRewindRpc(pending); };
+        } catch (error) {
+          disposeTurnRewindRpc(pending);
+          throw error;
+        }
+      },
+      sendFollowUpMessage: (id, options) => client.sendFollowUpMessage(id, options),
+      interruptConversation: (id, reason, turnId) => client.interruptConversation(id, reason, turnId),
+      sendRequest: (method, params) => client.sendRequest(method, params),
+      async applyRevertResponseToConversation({ conversationId, response, revertedTurns }) {
+        // 宿主 RPC 没有本地写缓存的接口。检查原生缓存，陈旧时交由控制器提示重新打开聊天。
+        const history = await client.getLoadedConversationHistory(conversationId);
+        const removed = new Set(revertedTurns.map((turn) => turn.turnId));
+        if (response?.thread?.id !== conversationId || !Array.isArray(history?.turns)
+            || history.turns.some((turn) => removed.has(turn.turnId))) {
+          throw Error("桌面会话尚未同步回退后的历史。");
+        }
+      },
+    };
+  }
+
   function turnRewindMenuOwners(node) {
     const menu = node?.closest?.('[role="menu"]');
     if (!menu) return [];
@@ -72,7 +176,7 @@
 
   // 原生菜单可能经过深层 Radix 包装或 portal。除了菜单自身，使用原生
   // aria-controls / aria-labelledby 的明确关联回到触发按钮，不按 DOM 顺序猜目标。
-  function turnRewindContextFromNode(node, details = {}) {
+  function turnRewindContextFromNode(node, details = {}, identityOnly = false) {
     const identities = new Map();
     const managers = new Set();
     const owners = turnRewindMenuOwners(node);
@@ -136,20 +240,25 @@
         // 原生回答操作栏同时接收 threadId、turnId 和 onFork；它是触发按钮的消息边界。
         // 有明确菜单归属时，不把更上层页面/列表的 props 当成选中的消息。
         if (hasIdentity && (!isOwner || (!messageBoundary && typeof props.onFork === "function"))) {
-          const identity = { threadId, turnId, hostId: props.hostId };
-          identities.set(JSON.stringify([threadId, turnId]), identity);
+          const key = JSON.stringify([threadId, turnId]);
+          const previousHost = identities.get(key)?.hostId;
+          if (previousHost && props.hostId && previousHost !== props.hostId) return null;
+          const identity = { threadId, turnId, hostId: props.hostId || previousHost };
+          identities.set(key, identity);
           if (isOwner) messageBoundary = identity;
         }
-        inspect(props?.value);
-        inspect(props?.scope);
-        for (let hook = fiber.memoizedState, count = 0; hook && count < 48; hook = hook.next, count += 1) {
-          inspect(hook.memoizedState);
+        if (!identityOnly) {
+          inspect(props?.value);
+          inspect(props?.scope);
+          for (let hook = fiber.memoizedState, count = 0; hook && count < 48; hook = hook.next, count += 1) {
+            inspect(hook.memoizedState);
+          }
+          for (let context = fiber.dependencies?.firstContext, count = 0; context && count < 32; context = context.next, count += 1) {
+            inspect(context.memoizedValue);
+          }
         }
-        for (let context = fiber.dependencies?.firstContext, count = 0; context && count < 32; context = context.next, count += 1) {
-          inspect(context.memoizedValue);
-        }
-        if (isOwner && messageBoundary && matchingManagers(messageBoundary.threadId).length === 1) {
-          // 身份已由原生触发按钮及消息操作栏确定，接口也已确认；不再遍历整个应用树。
+        if (isOwner && messageBoundary && (identityOnly || matchingManagers(messageBoundary.threadId).length === 1)) {
+          // 新版通过宿主取得接口，触发按钮一侧只需找到原生回答操作栏。
           details.messageBoundaryResolved = true;
           break;
         }
@@ -167,6 +276,7 @@
     if (details.scanLimitReached || (owners.length === 1 && !details.messageBoundaryResolved) || identities.size !== 1) return null;
     const target = [...identities.values()][0];
     if (target.hostId && target.hostId !== "local") return null;
+    if (identityOnly) return target;
     const matches = matchingManagers(target.threadId);
     details.matchCount = matches.length;
     return matches.length === 1 ? { ...target, manager: matches[0] } : null;
@@ -175,6 +285,8 @@
   async function turnRewindNativeSaveService() {
     if (!turnRewindSaveServicePromise) {
       turnRewindSaveServicePromise = (async () => {
+        const files = (await loadTurnRewindDesktopServices())?.workspaceFiles;
+        if (typeof files?.saveCopy === "function") return files;
         for (const prefix of ["app-shared-", "app-initial-"]) {
           try {
             const module = await loadCodexAppModule(prefix);
@@ -199,10 +311,10 @@
     finally { operation?.[Symbol.dispose]?.(); }
   });
 
-  function turnRewindAvailability(branch) {
+  function turnRewindAvailability(branch, identityOnly = false) {
     if (!codexPlusTurnRewindEnabled()) return { reason: "请先在 Codex++ 设置中开启轮次回退。" };
     const details = {};
-    const target = turnRewindContextFromNode(branch, details);
+    const target = turnRewindContextFromNode(branch, details, identityOnly);
     if (!target) {
       const reason = details.scanLimitReached
         ? "消息结构超出当前支持的安全识别范围，未执行回退。"
@@ -211,6 +323,9 @@
         : "无法获取此聊天的原生回退接口，未执行回退。请确认通过最新 Codex++ 测试版启动客户端。";
       return { reason, details };
     }
+    if (identityOnly) return codexPlusTurnRewind.getActive(target.threadId)
+      ? { reason: "此聊天已有回退任务。", details }
+      : { target, details };
     codexPlusTurnRewind.registerManager(target.threadId, target.manager);
     return codexPlusTurnRewind.canRun(target.threadId, target.turnId)
       ? { target, details }
@@ -218,12 +333,13 @@
   }
 
   function refreshTurnRewindMenus() {
-    if (!codexPlusTurnRewindEnabled()) return;
-    prepareTurnRewindRegistryReader();
+    if (turnRewindMenuDisposed || !codexPlusTurnRewindEnabled()) return;
+    if (!turnRewindDesktopServices?.appServerManagers) prepareTurnRewindRegistryReader();
     for (const menu of document.querySelectorAll('[role="menu"]')) {
       if (menu.hidden || menu.getAttribute("data-state") === "closed") continue;
       const branch = [...menu.querySelectorAll('[role="menuitem"]')].find(turnRewindIsBranchItem);
       if (!branch) continue;
+      void loadTurnRewindDesktopServices();
       let button = menu.querySelector(`[data-codex-plus-ext="${turnRewindMenuMark}"]`);
       if (!button) {
         button = document.createElement("button");
@@ -236,11 +352,27 @@
         button.addEventListener("click", async (event) => {
           event.preventDefault();
           event.stopPropagation();
+          if (button.disabled) return;
           // 点击时重读 React 身份；菜单节点可被复用，不能信任上次扫描的引用。
           const currentBranch = button.previousElementSibling;
+          const menu = currentBranch?.closest('[role="menu"]');
+          let operation, client;
+          button.disabled = true;
           try {
-            if (!turnRewindIsBranchItem(currentBranch)) throw Error("原生菜单已变化，请关闭菜单后重新打开再试。");
-            const availability = turnRewindAvailability(currentBranch);
+            if (!menu || !turnRewindIsBranchItem(currentBranch)) throw Error("原生菜单已变化，请关闭菜单后重新打开再试。");
+            const original = turnRewindAvailability(currentBranch, true).target;
+            const services = original ? await loadTurnRewindDesktopServices() : null;
+            const desktop = typeof services?.appServerManagers?.open === "function";
+            if (desktop) {
+              if (!codexPlusTurnRewind.supportsDesktopManager) throw Error("轮次回退已更新，请重启 Codex 后重试。");
+              operation = services.appServerManagers.open("local");
+              const connection = await operation;
+              client = connection?.manager;
+              if (connection?.status !== "ready" || !client || await client.getHostId() !== "local") {
+                throw Error("本地会话管理器尚未连接，请稍后重试。");
+              }
+            }
+            const availability = turnRewindAvailability(currentBranch, desktop);
             if (!availability.target) {
               if (typeof sendCodexPlusDiagnostic === "function") {
                 void sendCodexPlusDiagnostic("turn_rewind_unavailable", availability.details || {});
@@ -248,14 +380,28 @@
               throw Error(availability.reason);
             }
             const { target } = availability;
-            button.disabled = true;
+            if (button.previousElementSibling !== currentBranch || currentBranch.closest('[role="menu"]') !== menu
+                || menu.hidden || menu.getAttribute("data-state") === "closed"
+                || (original && (original.threadId !== target.threadId || original.turnId !== target.turnId))) {
+              throw Error("原生菜单已变化，请关闭菜单后重新打开再试。");
+            }
             // 自定义 DOM 项没有 Radix 的 onSelect；关闭原生菜单后释放模态焦点和指针锁。
-            currentBranch.closest('[role="menu"]').dispatchEvent(new KeyboardEvent("keydown", {
+            menu.dispatchEvent(new KeyboardEvent("keydown", {
               key: "Escape", code: "Escape", bubbles: true, cancelable: true,
             }));
-            await codexPlusTurnRewind.run(target.threadId, target.turnId);
+            if (client) {
+              const manager = turnRewindDesktopManager(client, target.threadId);
+              await codexPlusTurnRewind.run(target.threadId, target.turnId, { manager });
+            } else {
+              await codexPlusTurnRewind.run(target.threadId, target.turnId);
+            }
           } catch (error) { showToast(String(error?.message || error), { type: "error" }); }
-          finally { button.disabled = false; scheduleTurnRewindMenuRefresh(); }
+          finally {
+            disposeTurnRewindRpc(client);
+            disposeTurnRewindRpc(operation);
+            button.disabled = false;
+            scheduleTurnRewindMenuRefresh();
+          }
         });
         button.addEventListener("pointerdown", (event) => event.stopPropagation());
         // 原生菜单的键盘事件由其 roving-focus 管理器消费；自己的项显式支持。
@@ -267,7 +413,7 @@
         });
         branch.insertAdjacentElement("afterend", button);
       }
-      const availability = turnRewindAvailability(branch);
+      const availability = turnRewindAvailability(branch, !!turnRewindDesktopServices?.appServerManagers);
       // 保留点击处理，以便接口不可用时解释原因；只在实际启动期间禁用原生按钮。
       button.setAttribute("aria-disabled", String(!availability.target));
       button.style.opacity = availability.target ? "1" : "0.55";
@@ -276,7 +422,7 @@
   }
 
   function scheduleTurnRewindMenuRefresh() {
-    if (turnRewindRefreshTimer) return;
+    if (turnRewindMenuDisposed || turnRewindRefreshTimer) return;
     turnRewindRefreshTimer = setTimeout(() => {
       turnRewindRefreshTimer = 0;
       refreshTurnRewindMenus();
@@ -292,7 +438,7 @@
       document.querySelectorAll(`[data-codex-plus-ext="${turnRewindMenuMark}"]`).forEach((node) => node.remove());
       return;
     }
-    prepareTurnRewindRegistryReader();
+    if (!turnRewindDesktopServices?.appServerManagers) prepareTurnRewindRegistryReader();
     if (!turnRewindObserver && document.body) {
       turnRewindObserver = new MutationObserver((records) => {
         // 自己的菜单项与状态面板都带归属标记，避免注入引起自喂扫描。
@@ -311,6 +457,7 @@
   }
 
   window.__codexPlusTurnRewindMenuCleanup = () => {
+    turnRewindMenuDisposed = true;
     turnRewindObserver?.disconnect();
     clearTimeout(turnRewindRefreshTimer);
     document.querySelectorAll(`[data-codex-plus-ext="${turnRewindMenuMark}"]`).forEach((node) => node.remove());
