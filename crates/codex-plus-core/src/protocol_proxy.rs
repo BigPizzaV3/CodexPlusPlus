@@ -7339,30 +7339,40 @@ impl ChatSseState {
         }
 
         let finish_reason = self.finish_reason.as_deref();
-        let status = response_status(finish_reason);
-        let mut response = self.base_response(status, self.completed_output_items());
+        let output_items = self.completed_output_items();
+        // issue #3301：上游拒绝、或只输出了思考就用满输出上限时，发 completed 会被 Codex
+        // 当正常结束，这一轮静默无输出。改发 response.failed + invalid_prompt：Codex 原样显示
+        // message 且不重试。不用 response.incomplete：Codex 把它当可重试的流错误，会重放这一轮。
+        // 截断但已有正文或工具调用时照旧 completed（status incomplete），已产出的内容照常显示。
+        let produced_answer = output_items
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) != Some("reasoning"));
+        let failure_message = match finish_reason {
+            Some("content_filter") => Some(content_filter_message(self.refusal.as_deref())),
+            Some("length") if !produced_answer => Some(LENGTH_WITHOUT_ANSWER_MESSAGE.to_string()),
+            _ => None,
+        };
+        let status = if failure_message.is_some() {
+            "failed"
+        } else {
+            response_status(finish_reason)
+        };
+        let mut response = self.base_response(status, output_items);
         if status == "incomplete" {
             response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
         }
-        // issue #3301：content_filter 用 invalid_prompt 发 response.failed，
-        // Codex 会原样展示 message 且不重试，不再把拒绝当正常结束。
-        if finish_reason == Some("content_filter") {
-            response["error"] = json!({
-                "code": "invalid_prompt",
-                "message": content_filter_message(self.refusal.as_deref()),
-            });
+        if let Some(message) = failure_message {
+            response["error"] = json!({ "code": "invalid_prompt", "message": message });
         }
         copy_response_request_fields(&mut response, self.original_request.as_ref());
         self.final_response_usage = crate::request_log::converted_final_response_usage(
             &response,
             self.upstream_usage.as_ref().and_then(crate::request_log::usage_from_usage_value),
         );
-        // issue #3301：Codex 只认 response.incomplete 事件为「不完整」，
-        // length 时必须发 response.incomplete 而不是带着 incomplete 状态的 completed。
-        let event_name = match finish_reason {
-            Some("length") => "response.incomplete",
-            Some("content_filter") => "response.failed",
-            _ => "response.completed",
+        let event_name = if status == "failed" {
+            "response.failed"
+        } else {
+            "response.completed"
         };
         push_sse(
             output,
@@ -7888,9 +7898,13 @@ fn downgrade_orphan_function_calls(body: &mut Value) -> usize {
                 .map(str::to_string)
         })
         .collect();
-    let last_index = items.len() - 1;
+    // 末尾连续的 function_call（并行调用时可能不止一个）都是在途形态，整段保留。
+    let in_flight_start = items
+        .iter()
+        .rposition(|item| item.get("type").and_then(Value::as_str) != Some("function_call"))
+        .map_or(0, |index| index + 1);
     let mut downgraded = 0;
-    for index in 0..last_index {
+    for index in 0..in_flight_start {
         let item = &items[index];
         if item.get("type").and_then(Value::as_str) != Some("function_call") {
             continue;
@@ -10985,6 +10999,9 @@ fn response_status(finish_reason: Option<&str>) -> &'static str {
 /// issue #3301：上游拒绝（finish_reason=content_filter）时，优先透出上游的
 /// refusal 文本；没有就用一条明确的中文说明，Codex 对 invalid_prompt 会
 /// 原样展示 message 且不重试。
+/// issue #3301：Chat 上游只输出了思考就以 finish_reason=length 结束时给用户的说明。
+const LENGTH_WITHOUT_ANSWER_MESSAGE: &str = "模型只输出了思考就用满了输出上限（finish_reason=length），这一轮没有回答。可以调高这个模型的输出上限或调低推理强度后再试。";
+
 fn content_filter_message(refusal: Option<&str>) -> String {
     match refusal {
         Some(text) if !text.trim().is_empty() => text.trim().to_string(),
@@ -14426,6 +14443,16 @@ mod callless_function_output_tests {
         ]});
         assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
         assert_eq!(body["input"][1]["type"], "function_call");
+
+        // 末尾连续的并行调用整段都是在途形态，都保留。
+        let mut body = json!({"input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call","call_id":"call_3","name":"exec","arguments":"{}"},
+            {"type":"function_call","call_id":"call_4","name":"exec","arguments":"{}"}
+        ]});
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
+        assert_eq!(body["input"][1]["type"], "function_call");
+        assert_eq!(body["input"][2]["type"], "function_call");
 
         // input 非数组 / 单条时不改任何东西。
         let mut body = json!({"input": "text"});

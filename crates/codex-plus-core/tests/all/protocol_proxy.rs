@@ -8618,3 +8618,59 @@ fn responses_item_id_normalization_keeps_opaque_compaction_and_long_ids() {
     assert_eq!(body["input"][1]["id"], json!(long_message), "改写后超过 64 字符时不改写");
     assert_eq!(body["input"][2]["id"], "cmp_resp_compact_1", "旧 cp_ 前缀仍然修复");
 }
+
+#[test]
+fn chat_sse_length_with_only_reasoning_fails_without_retry() {
+    // issue #3301：只输出思考就用满输出上限，不能当正常结束静默吞掉；
+    // 也不发 response.incomplete（Codex 会当流错误重放这一轮）。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_len","created":1,"model":"m","choices":[{"delta":{"reasoning_content":"thinking"}}]}
+
+data: {"id":"chatcmpl_len","created":1,"model":"m","choices":[{"delta":{},"finish_reason":"length"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.failed"), "{sse}");
+    assert!(!sse.contains("event: response.incomplete"));
+    assert!(!sse.contains("event: response.completed"));
+    assert!(sse.contains("\"code\":\"invalid_prompt\""));
+    assert!(sse.contains("finish_reason=length"));
+}
+
+#[test]
+fn chat_sse_length_with_partial_answer_stays_completed() {
+    // 已有正文的截断照旧 completed（status incomplete），已产出的内容照常显示。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_len2","created":1,"model":"m","choices":[{"delta":{"content":"partial"}}]}
+
+data: {"id":"chatcmpl_len2","created":1,"model":"m","choices":[{"delta":{},"finish_reason":"length"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"), "{sse}");
+    assert!(sse.contains("\"status\":\"incomplete\""));
+    assert!(sse.contains("max_output_tokens"));
+    assert!(!sse.contains("event: response.failed"));
+}
+
+#[test]
+fn chat_sse_content_filter_fails_with_upstream_refusal() {
+    // issue #3301：上游拒绝时发 response.failed，优先透出上游的 refusal 文本。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_cf","created":1,"model":"m","choices":[{"delta":{"refusal":"I can't help with that."}}]}
+
+data: {"id":"chatcmpl_cf","created":1,"model":"m","choices":[{"delta":{},"finish_reason":"content_filter"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.failed"), "{sse}");
+    assert!(sse.contains("\"code\":\"invalid_prompt\""));
+    assert!(sse.contains("I can't help with that."));
+    assert!(!sse.contains("event: response.completed"));
+}
