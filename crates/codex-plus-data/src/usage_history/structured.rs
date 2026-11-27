@@ -1298,6 +1298,38 @@ impl RequestEvidenceCache {
                     && request.attempts == Some(1)
                     && request.auto_retries == Some(0))
                 .then_some((i, true))
+            }).or_else(|| {
+                // 等量请求只会破坏计数唯一性，不能撤回仍能独立复证的原响应。
+                if uncertain_competition || event.inherited {
+                    return None;
+                }
+                let saved = self.verified.get(&event.id).filter(|saved| !saved.rejected)?;
+                let response = saved.request.final_response_id.as_deref()?;
+                let (key, at) = evidence.as_ref()?;
+                let entries = request_index.get(&key.counts_key())?;
+                let i = entries.iter().find_map(|&(_, i)| (requests[i].id == saved.request.id).then_some(i))?;
+                let request = &requests[i];
+                if request.thread_id != event.session
+                    || request.final_response_evidence.as_deref() != Some("final-response-v1")
+                    || request.final_response_id.as_deref() != Some(response)
+                    || !request.valid_request_counts()
+                    || !live_receipts::within_receipt_window(request, *at, REQUEST_MATCH_WINDOW_MS)
+                    || !event.last.is_some_and(|last| last.cached_known && last.same_counts(event.delta))
+                    || requests.iter().chain(&self.records).any(|other| {
+                        other.id != request.id && other.final_response_id.as_deref() == Some(response)
+                    })
+                {
+                    return None;
+                }
+                match scope?.resolve_terminal?(event) {
+                    Ok(terminal) if terminal.as_deref() == Some(response) => Some((i, false)),
+                    Ok(_) => None,
+                    Err(error) => {
+                        self.captured_id_check_error =
+                            Some(format!("validate native response identity: {error:#}"));
+                        None
+                    }
+                }
             });
             if let Some(saved) = self.verified.get_mut(&event.id) {
                 let mut saved_key = saved.key.clone();

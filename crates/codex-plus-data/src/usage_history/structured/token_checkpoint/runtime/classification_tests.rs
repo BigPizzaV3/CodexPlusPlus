@@ -328,15 +328,22 @@ fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
     let append = |i: usize| -> Result<()> {
         let at = times[i];
         let n = i + 1;
-        writeln!(fs::OpenOptions::new().append(true).open(&source)?, "{}",
+        let response = format!("resp_priority_{i}");
+        let total = json!({"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n});
+        let mut out = fs::OpenOptions::new().append(true).open(&source)?;
+        writeln!(out, "{}",
+            json!({"type":"token_usage_record","timestamp":at.to_rfc3339(),"payload":{
+                "thread_id":session,"turn_id":"turn","response_id":response,
+                "usage":usage,"thread_token_usage":total}}))?;
+        writeln!(out, "{}",
             json!({"type":"event_msg","timestamp":at.to_rfc3339(),"payload":{
-                "type":"token_count","info":{"last_token_usage":usage,
-                    "total_token_usage":{"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n}}}}))?;
+                "type":"token_count","info":{"last_token_usage":usage,"total_token_usage":total}}}))?;
         writeln!(fs::OpenOptions::new().append(true).create(true).open(&log)?, "{}",
             json!({"id":format!("proof-{i}"),"threadId":session,"model":"gpt-fixture",
-                "upstreamModel":"gpt-fixture","relayId":"fixture-relay","success":true,
+                "upstreamModel":"gpt-fixture","relayId":format!("fixture-relay-{}", i % 2),"success":true,
                 "state":"success","statusCode":200,"timestampMs":at.timestamp_millis(),
                 "startedAtMs":at.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+                "finalResponseEvidence":"final-response-v1","finalResponseId":response,
                 "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}}))?;
         Ok(())
     };
@@ -352,9 +359,10 @@ fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
     let before = cursor.before;
     let exact = |worker: &Runtime, i: usize| -> Result<bool> {
         Ok(worker.store.as_ref().unwrap().db.query_row(
-            "SELECT coalesce(json_extract(CAST(payload AS TEXT),'$.provider_source')='request-log-exact',0)
+            "SELECT coalesce(json_extract(CAST(payload AS TEXT),'$.provider_source')='request-log-exact'
+               AND json_extract(CAST(payload AS TEXT),'$.provider')=?,0)
              FROM token_resolved WHERE timestamp_ms=?",
-            [times[i].timestamp_millis()], |row| row.get(0))?)
+            params![format!("fixture-relay-{}", i % 2), times[i].timestamp_millis()], |row| row.get(0))?)
     };
     assert!(exact(&worker, 2)?);
     assert!(!exact(&worker, 1)?);
@@ -363,7 +371,7 @@ fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
         let cutoff = now.date_naive() - Days::new(3);
         let mut state = worker.initial_state();
         assert!(worker.refresh(&home, cutoff, 64 << 20, &mut state)?);
-        // 单页可用完整竞争窗口，但不能靠第二页超支来维持公平。
+        // 活跃尾部和历史各自推进，不减少完整竞争窗口。
         worker.classify_retained(&home, cutoff, budget, &mut state)?;
         Ok(())
     };
@@ -376,11 +384,9 @@ fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
     append(4)?;
     pass(&mut worker, 1)?;
     assert!(exact(&worker, 1)?);
-    assert!(!exact(&worker, 4)?);
+    assert!(exact(&worker, 4)?, "an old page must not defer the new terminal proof");
     assert!(!worker.evidence_before[session].tail_preempted);
     assert!(worker.evidence_before[session].before < before);
-    pass(&mut worker, 1)?;
-    assert!(exact(&worker, 4)?);
     append(5)?;
     pass(&mut worker, 1)?;
     assert!(exact(&worker, 5)?);

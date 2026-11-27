@@ -240,23 +240,22 @@ impl Runtime {
         let offset = self.evidence_cursor % slots;
         self.evidence_cursor = offset + 1;
         let index = &mut self.evidence;
-        let mut remaining = byte_budget;
-        let mut classify_page = |store: &mut Store, session: &str, from, to, shares: usize| {
-            if remaining == 0 {
+        let mut classify_page = |store: &mut Store, session: &str, from, to, shares: usize, remaining: &mut usize| {
+            if *remaining == 0 {
                 return Ok(None);
             }
             // 每轮首个窗口可完整读取竞争记录，后续窗口共享剩余预算。
-            let available = if remaining == byte_budget {
+            let available = if *remaining == byte_budget {
                 usize::MAX
             } else {
-                remaining
+                *remaining
             };
             let Some((window, bytes)) =
-                store.classification_page(session, from, to, remaining / shares, available)?
+                store.classification_page(session, from, to, *remaining / shares, available)?
             else {
                 return Ok(None);
             };
-            remaining = remaining.saturating_sub(bytes);
+            *remaining = remaining.saturating_sub(bytes);
             let start = window.start;
             store.reclassify_window(
                 session,
@@ -304,6 +303,7 @@ impl Runtime {
             Ok::<_, anyhow::Error>(Some(start))
         };
         let mut failure = None;
+        let mut remaining = byte_budget;
         for step in 0..slots {
             let slot = (offset + step) % slots;
             let shares = slots - step;
@@ -328,7 +328,7 @@ impl Runtime {
                     ),
                     (None, None) => (recent_since, *latest),
                 };
-                match classify_page(store, session, from, to, shares) {
+                match classify_page(store, session, from, to, shares, &mut remaining) {
                     Ok(Some(start)) => {
                         let before = match cursor {
                             Some(cursor) if !cursor.older_next || preempt_old => cursor.before,
@@ -361,7 +361,7 @@ impl Runtime {
                         self.historical_cursor = None;
                         break;
                     };
-                    match classify_page(store, &session, i64::MIN, at, shares * left) {
+                    match classify_page(store, &session, i64::MIN, at, shares * left, &mut remaining) {
                         Ok(Some(start)) => self.historical_cursor = Some((id, start)),
                         Ok(None) => break,
                         Err(error) => {
@@ -372,7 +372,9 @@ impl Runtime {
                 }
             }
         }
-        // 补完该轮让给旧页的新尾部，不占其他会话本轮的份额。
+        // 旧页可以用完本轮份额，但已入库的新尾不能因此等待下一轮。
+        // 独立份额仍逐页读写，不同时保留新旧窗口。
+        let mut live_remaining = byte_budget;
         for (step, (session, latest)) in sessions
             .iter()
             .cycle()
@@ -383,14 +385,17 @@ impl Runtime {
             let Some(cursor) = self
                 .evidence_before
                 .get_mut(session)
-                .filter(|cursor| !cursor.older_next && cursor.latest < *latest)
+                .filter(|cursor| cursor.latest < *latest)
             else {
                 continue;
             };
             let from = cursor.latest.saturating_sub(classification_lookback_ms());
-            match classify_page(store, session, from, *latest, sessions.len() - step) {
+            match classify_page(
+                store, session, from, *latest, sessions.len() - step, &mut live_remaining,
+            ) {
                 Ok(Some(_)) => {
                     cursor.latest = *latest;
+                    cursor.tail_preempted = cursor.older_next;
                     cursor.older_next = true;
                 }
                 Ok(None) => {}
