@@ -465,7 +465,10 @@ fn event_heap(event: &super::UsageEvent) -> usize {
     .iter()
     .map(|text| text.capacity())
     .sum::<usize>()
-        + event.native_response_id.as_ref().map_or(0, |id| id.len())
+        + event
+            .native_response_id
+            .as_ref()
+            .map_or(0, |proof| proof.id.len())
         + event.legacy_identity.as_ref().map_or(0, |id| {
             std::mem::size_of::<super::LegacyIdentity>()
                 + id.session.capacity()

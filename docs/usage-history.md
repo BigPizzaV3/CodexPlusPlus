@@ -75,6 +75,9 @@
 可提供同一标记。缓存未知但响应 ID、实际路由与模型明确时，保存
 `finalResponseEvidence: "final-response-supplier-v1"`，同时保留 `cachedTokensKnown: false`。
 该供应商证据不证明缓存计数完整，不能替代计数匹配所需的完整用量标记。
+原生回执和网关记录的终态 ID、会话、输入和输出计数一致且没有竞争归属时，
+历史用量以 `supplierClassificationEvidence: "request-log-recovered-supplier-only"` 返回供应商，
+不改写原生模型或任何 Token 计数。
 转换失败、截断以及未验证的响应改写不产生终态证明。
 通知之后的完成日志仍最多晚一秒，请求必须在通知前开始。
 延迟组合、无标记记录和模型冲突仍占用竞争证据，不会因自身不符合补认条件而被忽略；
