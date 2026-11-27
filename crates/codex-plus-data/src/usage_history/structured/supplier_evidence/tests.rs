@@ -363,11 +363,11 @@ fn both_evidence_imports_match_after_the_old_file_record_and_cache_limits() -> a
             events: vec![original.clone()],
             ..Snapshot::default()
         };
-        let signatures = (0..MAX_EVENTS)
-            .map(|n| (format!("{n:064x}"), None))
-            .collect();
+        let ids = (0..MAX_EVENTS).map(|n| format!("{n:064x}"));
         let report = if version == 1 {
-            let mut cache = LegacyEvidenceCache { signatures };
+            let mut cache = LegacyEvidenceCache {
+                signatures: ids.map(|id| (id, None)).collect(),
+            };
             cache.apply(LegacyEvidenceDocument::read(&path), &mut snapshot);
             assert_eq!(cache.signatures.len(), MAX_EVENTS + 1);
             snapshot.provider_evidence
@@ -375,7 +375,7 @@ fn both_evidence_imports_match_after_the_old_file_record_and_cache_limits() -> a
             let stale_owners: HashMap<_, _> =
                 (0..MAX_EVENTS).map(|n| (n.to_string(), None)).collect();
             let mut cache = Cache {
-                signatures,
+                signatures: ids.map(|id| (id, None)).collect(),
                 upstream_owners: stale_owners.clone(),
                 request_owners: stale_owners,
             };

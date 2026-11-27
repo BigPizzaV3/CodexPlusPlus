@@ -1867,6 +1867,13 @@ struct LegacyProviderEvidence {
 }
 
 impl LegacyProviderEvidence {
+    fn is_direct(&self) -> bool {
+        matches!(
+            self.source.as_str(),
+            "upstream-exact-bidirectional" | "request-log-recovered-supplier-only"
+        )
+    }
+
     fn matches(&self, event: &UsageEvent, legacy: Option<&LegacyIdentity>) -> bool {
         self.session == legacy.map_or(event.session.as_str(), |id| id.session.as_str())
             && self.role == legacy.map_or(event.role.as_str(), |id| id.role.as_str())
@@ -2597,7 +2604,13 @@ impl Index {
 
 #[derive(Default)]
 struct LegacyEvidenceCache {
-    signatures: HashMap<String, Option<[u8; 32]>>,
+    signatures: HashMap<String, Option<LegacyEvidenceSignature>>,
+}
+
+#[derive(Clone, Copy)]
+struct LegacyEvidenceSignature {
+    digest: [u8; 32],
+    inferred: bool,
 }
 
 #[derive(Default)]
@@ -2663,7 +2676,13 @@ impl LegacyEvidenceCache {
                 invalid += 1;
                 continue;
             }
-            let signature: [u8; 32] = Sha256::digest(serde_json::to_vec(&record)?).into();
+            let signature = LegacyEvidenceSignature {
+                digest: Sha256::digest(serde_json::to_vec(&record)?).into(),
+                inferred: matches!(
+                    record.source.as_str(),
+                    "model-namespace" | "session-context-inferred"
+                ),
+            };
             let valid = [
                 &record.session,
                 &record.timestamp,
@@ -2705,7 +2724,12 @@ impl LegacyEvidenceCache {
                 && self
                     .signatures
                     .get(&id)
-                    .is_none_or(|previous| *previous == Some(signature));
+                    .is_none_or(|previous| {
+                        previous.is_some_and(|saved| {
+                            saved.digest == signature.digest
+                                || (saved.inferred && record.is_direct())
+                        })
+                    });
             self.signatures
                 .insert(id.clone(), valid.then_some(signature));
             invalid += usize::from(!valid);
@@ -2781,10 +2805,7 @@ impl LegacyMatches {
         let upgrade_inference = matches!(
             event.provider_source.as_deref(),
             Some("model-namespace" | "session-context-inferred")
-        ) && matches!(
-            record.source.as_str(),
-            "upstream-exact-bidirectional" | "request-log-recovered-supplier-only"
-        );
+        ) && record.is_direct();
         if !upgrade_inference
             && !unknown_provider(&event.provider)
             && event.provider != record.provider

@@ -818,6 +818,61 @@ fn mixed_cache_breakdown_only_prices_known_records() {
 }
 
 #[test]
+fn warm_legacy_evidence_upgrades_inference_without_replacing_verified_proof() {
+    for source in ["model-namespace", "session-context-inferred"] {
+        let mut fixture = Fixture::new();
+        let model = "supplier-b/gpt-test";
+        fixture.write_segment(
+            "rollout-a.jsonl",
+            vec![fixture.context(500, model), fixture.usage(1_000, 1)],
+        );
+        let initial = fixture.snapshot();
+        let original = snapshot_response(&initial)["days"][0].clone();
+        let direct = evidence(&initial.events[0], model);
+        let mut inferred = direct.clone();
+        inferred["provider"] = json!("supplier-b");
+        inferred["providerName"] = json!("Supplier B");
+        inferred["source"] = json!(source);
+
+        fixture.write_evidence(vec![inferred.clone()]);
+        let warm = fixture.snapshot();
+        assert_eq!(warm.events[0].provider, "supplier-b");
+        assert_eq!(warm.events[0].provider_source.as_deref(), Some(source));
+
+        fixture.write_evidence(vec![direct.clone()]);
+        let updated = fixture.snapshot();
+        assert_eq!(updated.events[0].provider, "supplier-a");
+        assert_eq!(
+            updated.events[0].provider_source.as_deref(),
+            Some("upstream-exact-bidirectional")
+        );
+        assert_eq!(updated.provider_evidence["invalid"], 0);
+        let current = snapshot_response(&updated)["days"][0].clone();
+        assert_eq!(original["usage"], current["usage"]);
+        assert_eq!(
+            original["accountingFingerprint"],
+            current["accountingFingerprint"]
+        );
+        assert_eq!(
+            original["breakdowns"][0]["membershipFingerprint"],
+            current["breakdowns"][0]["membershipFingerprint"]
+        );
+
+        fixture.write_evidence(vec![]);
+        assert_ne!(
+            fixture.snapshot().events[0].provider_source.as_deref(),
+            Some("upstream-exact-bidirectional")
+        );
+        fixture.write_evidence(vec![direct]);
+        assert_eq!(fixture.snapshot().events[0].provider, "supplier-a");
+        fixture.write_evidence(vec![inferred]);
+        let downgraded = fixture.snapshot();
+        assert_eq!(downgraded.provider_evidence["invalid"], 1);
+        assert_ne!(downgraded.events[0].provider_source.as_deref(), Some(source));
+    }
+}
+
+#[test]
 fn local_membership_proofs_bind_counts_and_allow_exact_evidence_reclassification() {
     let mut fixture = Fixture::new();
     let row = fixture.usage(1_000, 1);
