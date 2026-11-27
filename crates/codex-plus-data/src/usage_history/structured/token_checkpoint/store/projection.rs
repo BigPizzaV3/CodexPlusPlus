@@ -405,14 +405,14 @@ pub(super) fn retract_attribution(db: &Connection, sessions: Option<&str>) -> Re
 
 fn retract_append_proofs(
     db: &Connection,
-    first: &UsageEvent,
+    session: &str,
+    at: i64,
     correction: bool,
+    appended: &[(i64, &UsageEvent)],
 ) -> Result<BTreeSet<NaiveDate>> {
-    let at = DateTime::parse_from_rfc3339(&first.timestamp)?.timestamp_millis();
-    let lower = at.saturating_sub(2 * DELAYED_REQUEST_MATCH_WINDOW_MS);
+    let lower = at.saturating_sub(CLASSIFICATION_RIGHT_MS);
     let upper = if correction {
-        at.saturating_add(2 * DELAYED_REQUEST_MATCH_WINDOW_MS)
-            .saturating_add(1)
+        at.saturating_add(CLASSIFICATION_RIGHT_MS).saturating_add(1)
     } else {
         at
     };
@@ -420,22 +420,48 @@ fn retract_append_proofs(
     let mut retracted = Vec::new();
     {
         let mut select = db.prepare_cached(
-            "SELECT event_id, payload FROM token_resolved INDEXED BY token_classified_time
+            "SELECT event_id, payload, timestamp_ms FROM token_resolved INDEXED BY token_classified_time
              WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
              AND timestamp_ms >= ?2 AND timestamp_ms < ?3
              AND day >= (SELECT precise_from FROM token_revision)
              AND json_type(CAST(payload AS TEXT), '$.classification_origin') = 'object'",
         )?;
-        let mut rows = select.query(params![first.session, lower, upper])?;
+        let mut rows = select.query(params![session, lower, upper])?;
         while let Some(row) = rows.next()? {
             let id: [u8; 32] = row.get_ref(0)?.as_blob()?.try_into()?;
             let mut stored: Observation = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
+            if !correction
+                && let Some(source @ ("request-log-exact" | "request-log-recovered-supplier-only")) =
+                    stored.provider_source.as_deref()
+            {
+                let at: i64 = row.get(2)?;
+                let latest = at.saturating_add(CLASSIFICATION_RIGHT_MS);
+                let delta = stored.delta.0;
+                let competes = appended
+                    .iter()
+                    .take_while(|(at, _)| *at <= latest)
+                    .any(|(_, event)| {
+                        let next = event.delta;
+                        event.count_uncertain
+                            || event.count_pending
+                            || event.count_incomplete
+                            || event.context_conflicts.any()
+                            || !next.cached_known
+                            || (next.input_tokens == delta.input_tokens
+                                && next.output_tokens == delta.output_tokens
+                                && (source == "request-log-recovered-supplier-only"
+                                    || next.cached_input_tokens == delta.cached_input_tokens))
+                    });
+                if !competes {
+                    continue;
+                }
+            }
             let origin = stored
                 .classification_origin
                 .take()
                 .context("missing classification origin")?;
             let receipt_origin = stored.receipt_count_origin;
-            let mut event = stored.into_event(id, first.session.clone())?;
+            let mut event = stored.into_event(id, session.to_owned())?;
             origin.apply(&mut event);
             days.insert(event.date);
             let mut restored = Observation::capture(&event);
@@ -1452,17 +1478,18 @@ impl Store {
         }
         if prepared.append {
             let previous: HashSet<_> = prepared.superseded.iter().map(|(id, _)| *id).collect();
-            let mut first_new: Option<&UsageEvent> = None;
+            let mut appended = Vec::new();
             for event in &prepared.events {
+                let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
                 if previous.contains(&event.id) {
-                    rebuilt.extend(retract_append_proofs(&tx, event, true)?);
-                } else if first_new.is_none_or(|first| event.timestamp < first.timestamp) {
-                    first_new = Some(event);
+                    rebuilt.extend(retract_append_proofs(&tx, &event.session, at, true, &[])?);
+                } else {
+                    appended.push((at, event));
                 }
             }
-            // A newly committed competitor can make a nearby request non-unique.
-            if let Some(first) = first_new {
-                rebuilt.extend(retract_append_proofs(&tx, first, false)?);
+            appended.sort_unstable_by_key(|(at, _)| *at);
+            if let Some(&(at, first)) = appended.first() {
+                rebuilt.extend(retract_append_proofs(&tx, &first.session, at, false, &appended)?);
             }
         }
         let mut days = BTreeMap::new();

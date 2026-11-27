@@ -4594,6 +4594,40 @@ fn append_retracts_only_nearby_proofs_in_the_same_transaction_as_the_new_count()
         .find(|row| row["provider"] == "relay-proof")
         .unwrap();
     assert_eq!(exact["recordCount"], 1);
+
+    store
+        .reclassify_session(PARENT, 8192, &BTreeSet::new(), proof)
+        .unwrap()
+        .unwrap();
+    let mut file = fs::OpenOptions::new().append(true).open(&source).unwrap();
+    let with_input = |n, second, total, last| {
+        let mut row = counts_at(n, second);
+        let info = &mut row["payload"]["info"];
+        info["total_token_usage"]["input_tokens"] = json!(total);
+        info["last_token_usage"]["input_tokens"] = json!(last);
+        row
+    };
+    writeln!(file, "{}", with_input(4, 610, 450, 150)).unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let (_, distinct) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(distinct.len(), 4);
+    assert_eq!(distinct[1].provider, "relay-proof");
+    assert_eq!(distinct[2].provider, "relay-proof");
+
+    store
+        .reclassify_session(PARENT, 8192, &BTreeSet::new(), proof)
+        .unwrap()
+        .unwrap();
+    writeln!(file, "{}", with_input(5, 615, 620, 170)).unwrap();
+    writeln!(file, "{}", with_input(6, 620, 720, 100)).unwrap();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 8192).complete);
+    let (_, competing) = read(&mut store.db, i64::MIN, i64::MAX);
+    assert_eq!(competing.len(), 6);
+    assert_eq!(competing[0].provider, "relay-proof");
+    assert_eq!(competing[1].provider_source, None);
+    assert_eq!(competing[2].provider_source, None);
+    assert_eq!(competing[3].provider, "relay-proof");
+    assert_eq!(competing.iter().map(|e| e.delta.total_tokens).sum::<u64>(), 780);
 }
 
 #[test]
