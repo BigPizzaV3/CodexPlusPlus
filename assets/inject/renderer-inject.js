@@ -13061,6 +13061,9 @@ var codexPlusProviderEditing = (() => {
   function stripResponsesOutputEncryptedContentEnabled(profile) {
     return profile.stripResponsesOutputEncryptedContent === true && profile.protocol === "responses" && profile.relayMode !== "aggregate" && (profile.relayMode !== "official" || profile.officialMixApiKey);
   }
+  function imageCompressEnabled(profile) {
+    return profile.imageCompress === true && profile.relayMode !== "aggregate" && (profile.relayMode !== "official" || profile.officialMixApiKey);
+  }
   function pureApiImageGenerationEnabled(profile) {
     return profile.pureApiImageGeneration === true && profile.relayMode === "pureApi";
   }
@@ -13209,7 +13212,7 @@ var codexPlusProviderEditing = (() => {
   function buildRelayConfigToml(profile, options) {
     const searchHistoryCompat = profile.webSearchHistoryCompat === true && profile.protocol === "responses" && profile.relayMode !== "aggregate" && (profile.relayMode !== "official" || profile.officialMixApiKey);
     const localCompaction = profile.localCompactionPromptAtEnd === true && (profile.protocol === "responses" || profile.protocol === "chatCompletions") && profile.relayMode !== "aggregate" && (profile.relayMode !== "official" || profile.officialMixApiKey);
-    const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile) || stripImageGenerationToolEnabled(profile) || stripResponsesImageDetailEnabled(profile) || stripResponsesOutputEncryptedContentEnabled(profile) || pureApiImageGenerationEnabled(profile) ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
+    const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile) || stripImageGenerationToolEnabled(profile) || stripResponsesImageDetailEnabled(profile) || stripResponsesOutputEncryptedContentEnabled(profile) || imageCompressEnabled(profile) || pureApiImageGenerationEnabled(profile) ? PROTOCOL_PROXY_BASE_URL : profile.baseUrl.trim();
     const apiKey = profile.apiKey.trim();
     const sessionProvider = normalizeRelaySessionProvider(profile.sessionProvider);
     const rootLines = [
@@ -13339,10 +13342,10 @@ var codexPlusProviderEditing = (() => {
     if ("upstreamBaseUrl" in patch) {
       next.baseUrl = patch.upstreamBaseUrl || "";
     }
-    if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "stripImageGenerationTool" in patch || "stripResponsesImageDetail" in patch || "stripResponsesOutputEncryptedContent" in patch || "pureApiImageGeneration" in patch || "modelMetadata" in patch) {
+    if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "stripImageGenerationTool" in patch || "stripResponsesImageDetail" in patch || "stripResponsesOutputEncryptedContent" in patch || "imageCompress" in patch || "pureApiImageGeneration" in patch || "modelMetadata" in patch) {
       const searchHistoryCompat = next.webSearchHistoryCompat === true && next.protocol === "responses" && next.relayMode !== "aggregate" && (next.relayMode !== "official" || next.officialMixApiKey);
       const localCompaction = next.localCompactionPromptAtEnd === true && (next.protocol === "responses" || next.protocol === "chatCompletions") && next.relayMode !== "aggregate" && (next.relayMode !== "official" || next.officialMixApiKey);
-      const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next) || stripImageGenerationToolEnabled(next) || stripResponsesImageDetailEnabled(next) || stripResponsesOutputEncryptedContentEnabled(next) || pureApiImageGenerationEnabled(next) ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
+      const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next) || stripImageGenerationToolEnabled(next) || stripResponsesImageDetailEnabled(next) || stripResponsesOutputEncryptedContentEnabled(next) || imageCompressEnabled(next) || pureApiImageGenerationEnabled(next) ? PROTOCOL_PROXY_BASE_URL : next.upstreamBaseUrl || next.baseUrl;
       next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
         requiresOpenAiAuth: next.relayMode !== "pureApi"
       });
@@ -13939,6 +13942,7 @@ ${key} = ${value}`]);
       vlmApiKey: "",
       vlmModel: "",
       vlmBaseUrl: "",
+      imageCompress: false,
       userAgent: "",
       customHeaders: [],
       sub2apiEnabled: false,
@@ -13983,6 +13987,7 @@ ${key} = ${value}`]);
         vlmApiKey: "",
         vlmModel: "",
         vlmBaseUrl: "",
+        imageCompress: false,
         userAgent: "",
         customHeaders: [],
         sub2apiEnabled: false,
@@ -14441,6 +14446,7 @@ ${key} = ${value}`]);
       stripImageGenerationTool: profile.stripImageGenerationTool === true,
       stripResponsesImageDetail: profile.stripResponsesImageDetail === true,
       stripResponsesOutputEncryptedContent: profile.stripResponsesOutputEncryptedContent === true,
+      imageCompress: profile.imageCompress === true,
       disableToolSearch: profile.disableToolSearch === true,
       pureApiImageGeneration: profile.pureApiImageGeneration === true,
       anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),
@@ -15664,6 +15670,7 @@ ${key} = ${value}`]);
       subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
       stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
       stripResponsesOutputEncryptedContent: entry.stripResponsesOutputEncryptedContent === true,
+      imageCompress: entry.imageCompress === true,
       disableToolSearch: entry.disableToolSearch === true,
       customHeaders: providerHeaderRows(entry.customHeaders)
     };
@@ -15683,6 +15690,7 @@ ${key} = ${value}`]);
       ...draft.subscriptionPolicy !== void 0 ? { subscriptionPolicy: draft.subscriptionPolicy } : {},
       stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
       stripResponsesOutputEncryptedContent: draft.stripResponsesOutputEncryptedContent === true,
+      imageCompress: draft.imageCompress === true,
       disableToolSearch: draft.disableToolSearch === true,
       ...draft.customHeaders !== void 0 ? { customHeaders: providerHeaderInputs(draft.customHeaders) } : {}
     };

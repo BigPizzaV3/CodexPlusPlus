@@ -53,6 +53,7 @@ fn fixture(port: u16) -> Fixture {
             subscription_policy: None,
             strip_responses_image_detail: None,
             strip_responses_output_encrypted_content: None,
+            image_compress: None,
             disable_tool_search: None,
             custom_headers: None,
         },

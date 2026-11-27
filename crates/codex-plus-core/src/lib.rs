@@ -141,6 +141,7 @@ pub mod extension_llm;
 pub mod extension_manager_data;
 pub mod extension_publish;
 pub mod extension_hooks;
+pub mod image_compress;
 pub mod extension_node;
 pub mod extension_semver;
 pub mod upstream_model_meta;

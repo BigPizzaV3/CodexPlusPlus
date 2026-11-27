@@ -30,6 +30,7 @@ import {
   stripImageGenerationToolEnabled,
   stripResponsesImageDetailEnabled,
   stripResponsesOutputEncryptedContentEnabled,
+  imageCompressEnabled,
 } from "./model-routes";
 import { relayProfileWithNormalizedApiKeys, relayProfileWithUpdatedApiKey } from "./provider-api-keys";
 import { resolveProviderName } from "./provider-name";
@@ -77,7 +78,7 @@ export function withGeneratedRelayFiles(profile: RelayProfile): RelayProfile {
 }
 
 export function buildRelayConfigToml(
-  profile: Pick<RelayProfile, "id" | "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "localCompactionPromptAtEnd" | "strictResponsesReasoning" | "stripImageGenerationTool" | "stripResponsesImageDetail" | "stripResponsesOutputEncryptedContent" | "pureApiImageGeneration" | "modelMetadata">,
+  profile: Pick<RelayProfile, "id" | "model" | "baseUrl" | "upstreamBaseUrl" | "apiKey" | "protocol" | "sessionProvider" | "relayMode" | "officialMixApiKey" | "webSearchHistoryCompat" | "localCompactionPromptAtEnd" | "strictResponsesReasoning" | "stripImageGenerationTool" | "stripResponsesImageDetail" | "stripResponsesOutputEncryptedContent" | "imageCompress" | "pureApiImageGeneration" | "modelMetadata">,
   options: { includeBearerToken: boolean; requiresOpenAiAuth?: boolean },
 ): string {
   const searchHistoryCompat = profile.webSearchHistoryCompat === true
@@ -88,7 +89,7 @@ export function buildRelayConfigToml(
     && (profile.protocol === "responses" || profile.protocol === "chatCompletions")
     && profile.relayMode !== "aggregate"
     && (profile.relayMode !== "official" || profile.officialMixApiKey);
-  const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile) || stripImageGenerationToolEnabled(profile) || stripResponsesImageDetailEnabled(profile) || stripResponsesOutputEncryptedContentEnabled(profile) || pureApiImageGenerationEnabled(profile)
+  const baseUrl = profile.protocol !== "responses" || independentProxyEnabled(profile) || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(profile) || stripImageGenerationToolEnabled(profile) || stripResponsesImageDetailEnabled(profile) || stripResponsesOutputEncryptedContentEnabled(profile) || imageCompressEnabled(profile) || pureApiImageGenerationEnabled(profile)
     ? PROTOCOL_PROXY_BASE_URL
     : profile.baseUrl.trim();
   const apiKey = profile.apiKey.trim();
@@ -248,7 +249,7 @@ export function applyRelayProfilePatchToFiles(
   if ("upstreamBaseUrl" in patch) {
     next.baseUrl = patch.upstreamBaseUrl || "";
   }
-  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "stripImageGenerationTool" in patch || "stripResponsesImageDetail" in patch || "stripResponsesOutputEncryptedContent" in patch || "pureApiImageGeneration" in patch || "modelMetadata" in patch) {
+  if ("baseUrl" in patch || "upstreamBaseUrl" in patch || "protocol" in patch || "modelRoutes" in patch || "webSearchHistoryCompat" in patch || "localCompactionPromptAtEnd" in patch || "strictResponsesReasoning" in patch || "stripImageGenerationTool" in patch || "stripResponsesImageDetail" in patch || "stripResponsesOutputEncryptedContent" in patch || "imageCompress" in patch || "pureApiImageGeneration" in patch || "modelMetadata" in patch) {
     const searchHistoryCompat = next.webSearchHistoryCompat === true
       && next.protocol === "responses"
       && next.relayMode !== "aggregate"
@@ -257,7 +258,7 @@ export function applyRelayProfilePatchToFiles(
       && (next.protocol === "responses" || next.protocol === "chatCompletions")
       && next.relayMode !== "aggregate"
       && (next.relayMode !== "official" || next.officialMixApiKey);
-    const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next) || stripImageGenerationToolEnabled(next) || stripResponsesImageDetailEnabled(next) || stripResponsesOutputEncryptedContentEnabled(next) || pureApiImageGenerationEnabled(next)
+    const baseUrlForConfig = next.protocol !== "responses" || independentProxyEnabled(next) || normalizeRelayModelRoutes(next.modelRoutes).length > 0 || searchHistoryCompat || localCompaction || requestCompatibilityEnabled(next) || stripImageGenerationToolEnabled(next) || stripResponsesImageDetailEnabled(next) || stripResponsesOutputEncryptedContentEnabled(next) || imageCompressEnabled(next) || pureApiImageGenerationEnabled(next)
       ? PROTOCOL_PROXY_BASE_URL
       : next.upstreamBaseUrl || next.baseUrl;
     next.configContents = setCodexProviderStringKey(next.configContents, "base_url", baseUrlForConfig, {
@@ -950,6 +951,7 @@ export function createRelayProfile(settings: BackendSettings): RelayProfile {
     vlmApiKey: "",
     vlmModel: "",
     vlmBaseUrl: "",
+    imageCompress: false,
     userAgent: "",
     customHeaders: [],
     sub2apiEnabled: false,
@@ -995,6 +997,7 @@ export function createAggregateRelayProfile(settings: BackendSettings): RelayPro
       vlmApiKey: "",
       vlmModel: "",
       vlmBaseUrl: "",
+      imageCompress: false,
       userAgent: "",
       customHeaders: [],
       sub2apiEnabled: false,
@@ -1528,6 +1531,7 @@ export function normalizeRelayProfile(profile: RelayProfile, defaultContextSelec
     stripImageGenerationTool: profile.stripImageGenerationTool === true,
     stripResponsesImageDetail: profile.stripResponsesImageDetail === true,
     stripResponsesOutputEncryptedContent: profile.stripResponsesOutputEncryptedContent === true,
+    imageCompress: profile.imageCompress === true,
     disableToolSearch: profile.disableToolSearch === true,
     pureApiImageGeneration: profile.pureApiImageGeneration === true,
     anthropicAuthHeader: normalizeAnthropicAuthHeader(profile.anthropicAuthHeader),

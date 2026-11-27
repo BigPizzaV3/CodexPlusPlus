@@ -2,7 +2,7 @@
  * 网关供应商的编辑弹窗和直连供应商编辑页共用一张选项表，文案只写一份；直连多一句「请求改走本地代理」之类的说明。 */
 import { getLanguage, t } from "./i18n";
 
-export type CompatToggleKey = "stripImageGenerationTool" | "stripResponsesImageDetail" | "stripResponsesOutputEncryptedContent" | "disableToolSearch";
+export type CompatToggleKey = "stripImageGenerationTool" | "stripResponsesImageDetail" | "stripResponsesOutputEncryptedContent" | "imageCompress" | "disableToolSearch";
 
 export type CompatToggleOption = {
   key: CompatToggleKey;
@@ -36,6 +36,13 @@ export const COMPAT_TOGGLE_OPTIONS: CompatToggleOption[] = [
     description: "部分严格 Responses 上游不接受 Codex 请求 include 里的 output.encrypted_content，会整条返回 400。开启后只删除这一项，保留 reasoning.encrypted_content 和其他项；Kimi 地址或模型名会自动处理。",
     directNote: "请求改走本地代理。",
     fieldClass: "relay-field-strip-responses-output-encrypted-content",
+  },
+  {
+    key: "imageCompress",
+    title: "大图压缩",
+    description: "长任务里 Codex 自动截图可能把请求体撑过上游上限（413）。开启后转发前把超过 256KB 的 base64 图片缩放到最长边 1600px 并转成 JPEG（质量 60），压缩失败或非图片时原样放行；不影响外部图片 URL。",
+    directNote: "仅 macOS 生效，其他平台忽略。",
+    fieldClass: "relay-field-image-compress",
   },
   {
     key: "disableToolSearch",

@@ -277,6 +277,8 @@ export type RelayProfile = {
   stripResponsesImageDetail?: boolean;
   /** 转发前移除 Responses `include` 里的 `output.encrypted_content`，默认关闭。 */
   stripResponsesOutputEncryptedContent?: boolean;
+  /** 大图压缩：超过阈值的 base64 图片缩放转 JPEG，默认关闭。 */
+  imageCompress?: boolean;
   /** #2868：不向上游发送 tool_search，默认关闭。 */
   disableToolSearch?: boolean;
   /** #1433：纯 API 下让 Codex 注册原生生图工具，生图请求经本地代理发给本供应商，默认关闭。 */
