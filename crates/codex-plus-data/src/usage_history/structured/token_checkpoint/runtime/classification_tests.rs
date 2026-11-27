@@ -298,6 +298,76 @@ fn archive_backlog_keeps_paired_supplier_proofs_revocable() -> Result<()> {
 }
 
 #[test]
+fn distinct_terminal_ids_keep_equal_count_supplier_proofs() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(home.join("sessions"))?;
+    let home = fs::canonicalize(home)?;
+    let settings = root.path().join("settings.json");
+    fs::write(&settings, r#"{"usageHistoryEnabled":true}"#)?;
+    let log = root.path().join("requests.jsonl");
+    let source = home.join("sessions/rollout-equal-counts.jsonl");
+    let session = "00000000-0000-4000-8000-000000000098";
+    let now = Local::now() - TimeDelta::minutes(5);
+    let mut rows = format!("{}\n", json!({"type":"session_meta","timestamp":now.to_rfc3339(),
+        "payload":{"id":session,"model_provider":"custom"}}));
+    let mut proofs = Vec::new();
+    let mut worker = Runtime::new(root.path().join("history"), settings);
+    let read = |worker: &mut Runtime| -> Result<Vec<(String, Option<String>, u64)>> {
+        let state = worker.update_with_request_log(&home, &log);
+        assert!(state.storage_error.is_none(), "{:?}", state.storage_error);
+        assert!(state.classification_error.is_none(), "{:?}", state.classification_error);
+        let mut query = worker.store.as_ref().unwrap().db.prepare(
+            "SELECT json_extract(CAST(payload AS TEXT),'$.provider'),
+                    json_extract(CAST(payload AS TEXT),'$.provider_source'),
+                    json_extract(CAST(payload AS TEXT),'$.delta.t')
+             FROM token_resolved ORDER BY timestamp_ms",
+        )?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    };
+    let counts = |n| json!({"input_tokens":100*n, "cached_input_tokens":20*n, "output_tokens":10*n});
+    for n in 1..=2 {
+        let at = now + TimeDelta::seconds(n);
+        let stamp = at.to_rfc3339();
+        let turn = format!("turn-{n}");
+        let response = format!("resp_equal_{n}");
+        writeln!(rows, "{}", json!({"type":"turn_context","timestamp":stamp,
+            "payload":{"turn_id":turn,"model":"gpt-fixture"}}))?;
+        writeln!(rows, "{}", json!({"type":"token_usage_record","timestamp":stamp,
+            "payload":{"thread_id":session,"turn_id":turn,"response_id":response,
+                "usage":counts(1),"thread_token_usage":counts(n)}}))?;
+        writeln!(rows, "{}", json!({"type":"event_msg","timestamp":stamp,"payload":{
+            "type":"token_count","info":{"last_token_usage":counts(1),"total_token_usage":counts(n)}}}))?;
+        proofs.push(json!({"id":format!("request-{n}"),"threadId":session,"model":"gpt-fixture",
+            "upstreamModel":"gpt-fixture","relayId":format!("supplier-{n}"),"success":true,
+            "state":"success","statusCode":200,"timestampMs":at.timestamp_millis()-10,
+            "startedAtMs":at.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+            "finalResponseEvidence":"final-response-v1","finalResponseId":response,
+            "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}}));
+        fs::write(&source, &rows)?;
+        fs::write(&log, proofs.iter().map(|proof| format!("{proof}\n")).collect::<String>())?;
+        let actual = read(&mut worker)?;
+        assert_eq!(actual.len(), n as usize);
+        for (index, (supplier, proof, total)) in actual.into_iter().enumerate() {
+            assert_eq!(supplier, format!("supplier-{}", index + 1));
+            assert!(matches!(proof.as_deref(), Some("request-log-exact" | "request-log-recovered-supplier-only")));
+            assert_eq!(total, 110);
+        }
+    }
+    let mut conflict = proofs[0].clone();
+    conflict["id"] = json!("competing-request");
+    conflict["relayId"] = json!("competing-supplier");
+    proofs.push(conflict);
+    fs::write(&log, proofs.iter().map(|proof| format!("{proof}\n")).collect::<String>())?;
+    let actual = read(&mut worker)?;
+    assert_eq!(actual[0], ("custom".into(), None, 110));
+    assert_eq!(actual[1].0, "supplier-2");
+    assert_eq!(actual[1].2, 110);
+    Ok(())
+}
+
+#[test]
 fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
     use std::io::Write as _;
     let root = tempfile::tempdir()?;

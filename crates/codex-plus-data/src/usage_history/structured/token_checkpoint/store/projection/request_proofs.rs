@@ -91,22 +91,26 @@ pub(super) fn retain(
                 appended_counts.insert((
                     event.delta.input_tokens,
                     event.delta.output_tokens,
-                    event.delta.cached_input_tokens,
                     at,
+                    event.delta.cached_input_tokens,
                 ));
             }
         }
         for (i, at, origin, proof) in proofs {
             let window = at.saturating_sub(radius)..=at.saturating_add(radius);
-            // 完整的新计数只有等量才参与精确匹配竞争；上下文归属仍需检查附近新增项。
-            let competes = if proof.provider_source.as_deref() == Some("request-log-exact") {
-                let delta = events[i].delta;
-                appended_counts.range(
-                    (delta.input_tokens, delta.output_tokens, delta.cached_input_tokens, *window.start())
-                    ..=(delta.input_tokens, delta.output_tokens, delta.cached_input_tokens, *window.end())
-                ).next().is_some()
-            } else {
-                appended_times.range(window.clone()).next().is_some()
+            // 供应商终态证明不依赖缓存计数，输入或输出不同的完整新增不会与它竞争。
+            let competes = match proof.provider_source.as_deref() {
+                Some(source @ ("request-log-exact" | "request-log-recovered-supplier-only")) => {
+                    let delta = events[i].delta;
+                    appended_counts.range(
+                        (delta.input_tokens, delta.output_tokens, *window.start(), 0)
+                        ..=(delta.input_tokens, delta.output_tokens, *window.end(), u64::MAX)
+                    ).any(|&(_, _, _, cached)| {
+                        source == "request-log-recovered-supplier-only"
+                            || cached == delta.cached_input_tokens
+                    })
+                }
+                _ => appended_times.range(window.clone()).next().is_some(),
             };
             if !competes && changes.range(window).next().is_none() {
                 // 仅跨计数重算保留未变的归属；下一轮仍从 origin 重新核对请求证据。
@@ -214,10 +218,14 @@ mod tests {
             let nearby = append(&distinct, &mut store)?;
             assert!(nearby[..2] == before[..2], "{evidence}");
             assert_eq!(nearby[2].id, before[2].id);
-            if evidence == "request-log-exact" {
-                assert!(nearby[2] == before[2], "distinct counts cannot compete with exact proof");
+            if matches!(evidence, "request-log-exact" | "request-log-recovered-supplier-only") {
+                assert!(nearby[2] == before[2], "{evidence}: distinct counts cannot compete");
                 let mut competitor = counter("2026-01-02T18:04:00Z", 5, true);
                 competitor["payload"]["info"]["total_token_usage"]["input_tokens"] = json!(550);
+                if evidence == "request-log-recovered-supplier-only" {
+                    competitor["payload"]["info"]["total_token_usage"]["cached_input_tokens"] = json!(101);
+                    competitor["payload"]["info"]["last_token_usage"]["cached_input_tokens"] = json!(21);
+                }
                 let competing = append(&competitor, &mut store)?;
                 assert_eq!(competing[2].id, before[2].id);
                 assert_eq!(competing[2].provider_source, None, "equal counts must revalidate");
