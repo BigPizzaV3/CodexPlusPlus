@@ -9363,3 +9363,66 @@ fn normalize_config_text_still_merges_repeated_standard_tables_last_wins() {
         Some(1)
     );
 }
+
+#[test]
+fn strip_common_config_removes_its_array_of_tables_entries() {
+    // 合并时 [[skills.config]] 按条目追加（#3125），剥离必须删掉同样的条目，
+    // 供应商自己的条目留下。
+    let common = "[[skills.config]]\npath = \"/skills/a/SKILL.md\"\nenabled = false\n";
+    let profile = "model = \"gpt-x\"\n\n[[skills.config]]\npath = \"/skills/own/SKILL.md\"\nenabled = false\n";
+    let merged = merge_common_config_into_config(profile, common).unwrap();
+    assert_eq!(merged.matches("[[skills.config]]").count(), 2, "{merged}");
+
+    // 之前切换累积下来的重复副本也一起清掉。
+    let polluted = format!("{merged}\n{common}");
+    for config in [merged.as_str(), polluted.as_str()] {
+        let stripped = strip_common_config_from_config(config, common).unwrap();
+        assert_eq!(
+            stripped.matches("[[skills.config]]").count(),
+            1,
+            "{stripped}"
+        );
+        assert!(stripped.contains("/skills/own/SKILL.md"), "{stripped}");
+        assert!(!stripped.contains("/skills/a/SKILL.md"), "{stripped}");
+    }
+}
+
+#[test]
+fn switching_providers_does_not_repeat_context_skill_config_entries() {
+    // 切换供应商 = 回填上一个供应商（剥掉上下文配置）再重新应用。通用/上下文配置里的
+    // [[skills.config]] 不能在快照里越积越多。
+    let temp = tempfile::tempdir().unwrap();
+    let mut profile = RelayProfile {
+        id: "custom".to_string(),
+        relay_mode: RelayMode::PureApi,
+        protocol: RelayProtocol::Responses,
+        use_common_config: true,
+        config_contents: r#"model = "gpt-x"
+model_provider = "custom"
+
+[model_providers.custom]
+name = "custom"
+wire_api = "responses"
+requires_openai_auth = true
+base_url = "https://responses.example.test/v1"
+"#
+        .to_string(),
+        auth_contents: r#"{"OPENAI_API_KEY":"sk-test-redacted"}"#.to_string(),
+        ..RelayProfile::default()
+    };
+    let mut context =
+        String::from("[[skills.config]]\npath = \"/skills/a/SKILL.md\"\nenabled = false\n");
+
+    for _ in 0..3 {
+        apply_relay_profile_to_home_with_switch_rules(temp.path(), &profile, &context).unwrap();
+        let live = std::fs::read_to_string(temp.path().join("config.toml")).unwrap();
+        assert_eq!(live.matches("[[skills.config]]").count(), 1, "{live}");
+        backfill_relay_profile_from_home_with_common(temp.path(), &mut profile, &mut context)
+            .unwrap();
+        assert!(
+            !profile.config_contents.contains("[[skills.config]]"),
+            "{}",
+            profile.config_contents
+        );
+    }
+}
