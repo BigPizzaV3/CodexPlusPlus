@@ -451,8 +451,6 @@ fn relay_context_management_is_global_not_supplier_scoped() {
 fn manager_window_and_relay_detail_header_stay_usable() {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let app_tsx = read_manager_app_source(manifest_dir);
-    let styles = manifest_dir.parent().unwrap().join("src/styles.css");
-    let styles = std::fs::read_to_string(&styles).expect("read manager styles.css");
     let lib_rs =
         std::fs::read_to_string(manifest_dir.join("src/lib.rs")).expect("read manager lib.rs");
     let tauri_conf =
@@ -460,16 +458,22 @@ fn manager_window_and_relay_detail_header_stay_usable() {
 
     // 供应商详情的头部要始终可见、正文自己滚动。
     //
-    // cb3c7fa 把原来的 .relay-detail-sticky（position: sticky）重构成了 flex 布局：
-    // 头部 flex-shrink: 0 不被压缩，正文 flex: 1 + overflow-y: auto 吃掉剩余空间。
-    // 效果一样且比 sticky 可靠，但当时守卫测试没跟着改，CI 一直红着。
-    // 这里改成断言真正保证该行为的属性，而不是已经废弃的实现细节。
-    assert!(app_tsx.contains("relay-detail-header"));
+    // 详情从整页改成了弹窗（.pf-modal.relay-edit-modal）：外框纵向 flex、overflow: hidden，
+    // 头部 .pf-head 在正文外面不跟着滚，正文 .pf-body 自己 overflow-y: auto。
+    // 断言真正保证该行为的结构与属性，而不是某一版的类名。
+    let dialog_css = std::fs::read_to_string(manifest_dir.parent().unwrap().join("src/ProviderFormDialog.css"))
+        .expect("read ProviderFormDialog.css");
+    assert!(app_tsx.contains("className=\"pf-modal relay-edit-modal\""));
+    assert!(app_tsx.contains("<header className=\"pf-head\">"));
     assert!(!app_tsx.contains("CardHead title=\"供应商详情\""));
-    assert!(styles.contains(".relay-detail-header"));
-    assert!(styles.contains(".relay-detail-body"));
-    assert!(styles.contains("flex-shrink: 0"));
-    assert!(styles.contains("overflow-y: auto"));
+    let rule = |selector: &str| {
+        let start = dialog_css.find(&format!("{selector} {{")).unwrap_or_else(|| panic!("{selector} rule"));
+        let end = start + dialog_css[start..].find('}').expect("rule end");
+        dialog_css[start..end].to_string()
+    };
+    let modal = rule(".pf-modal");
+    assert!(modal.contains("flex-direction: column") && modal.contains("overflow: hidden"), "{modal}");
+    assert!(rule(".pf-body").contains("overflow-y: auto"));
     assert!(lib_rs.contains(".inner_size(1180.0, 820.0)"));
     assert!(lib_rs.contains(".min_inner_size(960.0, 720.0)"));
     assert!(tauri_conf.contains("\"width\": 1180"));
