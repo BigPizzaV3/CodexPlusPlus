@@ -29979,9 +29979,10 @@ ${key} = ${value}`]);
               throw Error("原生菜单已变化，请关闭菜单后重新打开再试。");
             }
             // 自定义 DOM 项没有 Radix 的 onSelect；关闭原生菜单后释放模态焦点和指针锁。
-            const parkView = client ? turnRewindViewReopener(
-              turnRewindMenuOwners(currentBranch)[0] || document.querySelector("nav[data-app-navigation-rail], aside.app-shell-left-panel"),
-              target.threadId,
+            const parkView = client ? (
+              // 消息操作栏可能离 React 根节点很远。优先从同一窗口的原生侧栏定位页面路由。
+              turnRewindViewReopener(document.querySelector("nav[data-app-navigation-rail], aside.app-shell-left-panel"), target.threadId)
+              || turnRewindViewReopener(turnRewindMenuOwners(currentBranch)[0], target.threadId)
             ) : null;
             menu.dispatchEvent(new KeyboardEvent("keydown", {
               key: "Escape", code: "Escape", bubbles: true, cancelable: true,

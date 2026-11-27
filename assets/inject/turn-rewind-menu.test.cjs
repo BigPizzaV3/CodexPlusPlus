@@ -339,7 +339,15 @@ class Element {
   const routeRoot = { tag: 3, child: routerFiber };
   routeRoot.stateNode = { current: routeRoot };
   routerFiber.return = routeRoot;
-  const plainActionBar = { memoizedProps: identity, return: routerFiber };
+  const nav = new Element();
+  nav.__reactFiber$fixture = { return: routerFiber };
+  context.document.querySelector = selector => {
+    assert.equal(selector, 'nav[data-app-navigation-rail], aside.app-shell-left-panel');
+    return nav;
+  };
+  let deepChatTree = routerFiber;
+  for (let depth = 0; depth < 370; depth++) deepChatTree = { return: deepChatTree };
+  const plainActionBar = { memoizedProps: identity, return: deepChatTree };
   trigger.__reactFiber$fixture = { memoizedProps: {}, return: plainActionBar };
   branch.__reactFiber$fixture = detachedMenuTree;
   body.appendChild(trigger);
@@ -361,6 +369,7 @@ class Element {
     desktopWrites.length = 0;
     routes.length = 0;
     commitRoute(chatPath, '?fixture=1', '#transcript', chatState);
+    assert.equal(context.turnRewindViewReopener(trigger, identity.threadId), null, 'the message trigger cannot reach the root');
     await button.click();
     if (['ready', 'stale-ui', 'rewind-first', 'navigated-after-park'].includes(mode)) {
       assert.deepEqual(desktopWrites, mode === 'ready' ? ['prompt', 'revert'] : ['prompt', 'revert', 'refresh']);
