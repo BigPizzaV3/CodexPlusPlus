@@ -271,6 +271,81 @@ fn supplier_only_evidence_keeps_unknown_cache_and_conflict_boundaries() {
 }
 
 #[test]
+fn historical_direct_evidence_upgrades_inference_without_overwriting_direct_proof() {
+    let mut fixture = Fixture::new();
+    fixture.write_segment(
+        "rollout-a.jsonl",
+        vec![fixture.context(500, "model-a"), fixture.usage(1_000, 1)],
+    );
+    let original = fixture.snapshot().events.remove(0);
+    for previous_source in [
+        "model-namespace",
+        "session-context-inferred",
+        "request-log-exact",
+        "request-log-recovered-supplier-only",
+    ] {
+        for source in [
+            "upstream-exact-bidirectional",
+            "request-log-recovered-supplier-only",
+            "session-context-inferred",
+        ] {
+            for provider in ["supplier-a", "supplier-b"] {
+                let mut event = original.clone();
+                event.provider = provider.into();
+                event.provider_source = Some(previous_source.into());
+                let mut record = evidence(&event, &event.model);
+                record["source"] = json!(source);
+                let upgrade = matches!(
+                    previous_source,
+                    "model-namespace" | "session-context-inferred"
+                ) && source != "session-context-inferred";
+                let document = serde_json::from_value(
+                    json!({"version":1, "records":[record.clone()]}),
+                ).unwrap();
+                let mut cache = LegacyEvidenceCache::default();
+                let mut snapshot = Snapshot::default();
+                snapshot.events.push(event.clone());
+                cache.apply(Ok(Some(document)), &mut snapshot);
+                let mut expected = event.clone();
+                if upgrade {
+                    expected.provider = "supplier-a".into();
+                    expected.provider_source = Some(source.into());
+                }
+                assert!(snapshot.events[0] == expected, "{previous_source}/{source}/{provider}");
+                assert_eq!(snapshot.provider_evidence["appliedEvents"], usize::from(upgrade));
+                // 历史覆盖从原始快照重建，撤回后恢复原归属和原始计数。
+                snapshot.events = vec![event.clone()];
+                cache.apply(Ok(None), &mut snapshot);
+                assert!(snapshot.events[0] == event);
+                if upgrade {
+                    for conflict in ["context", "signature", "duplicate"] {
+                        let mut rejected = event.clone();
+                        let mut invalid_record = record.clone();
+                        match conflict {
+                            "context" => rejected.context_conflicts.provider = true,
+                            "signature" => invalid_record["output"] = json!(11),
+                            "duplicate" => {}
+                            _ => unreachable!(),
+                        }
+                        let document = serde_json::from_value(
+                            json!({"version":1, "records":[invalid_record]}),
+                        ).unwrap();
+                        let mut snapshot = Snapshot::default();
+                        snapshot.events.push(rejected.clone());
+                        if conflict == "duplicate" {
+                            snapshot.events.push(rejected.clone());
+                        }
+                        LegacyEvidenceCache::default().apply(Ok(Some(document)), &mut snapshot);
+                        assert!(snapshot.events.iter().all(|row| *row == rejected), "{conflict}");
+                        assert_eq!(snapshot.provider_evidence["appliedEvents"], 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn local_missing_initial_baseline_does_not_assign_lifetime_usage_to_today() {
     let mut fixture = Fixture::new();
     let mut segment = fixture.usage(2_000, 100);

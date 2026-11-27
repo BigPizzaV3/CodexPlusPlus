@@ -2772,11 +2772,21 @@ impl LegacyMatches {
             self.mismatches += 1;
             return;
         }
-        if !unknown_provider(&event.provider) && event.provider != record.provider {
+        let upgrade_inference = matches!(
+            event.provider_source.as_deref(),
+            Some("model-namespace" | "session-context-inferred")
+        ) && matches!(
+            record.source.as_str(),
+            "upstream-exact-bidirectional" | "request-log-recovered-supplier-only"
+        );
+        if !upgrade_inference
+            && !unknown_provider(&event.provider)
+            && event.provider != record.provider
+        {
             self.conflicts += 1;
             return;
         }
-        if unknown_provider(&event.provider) {
+        if upgrade_inference || unknown_provider(&event.provider) {
             event.provider.clone_from(&record.provider);
             event.provider_source = Some(record.source.clone());
             self.applied += 1;

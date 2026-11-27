@@ -328,7 +328,8 @@ mod tests {
             let row = json!({"original_id":vec![id;32],"turn":"turn","model":"fixture",
                 "timestamp":time,"date":date,"total":counter,"delta":counter,
                 "last":null,"has_file_baseline":true,"count_uncertain":false,"count_incomplete":false,
-                "count_pending":false,"rollout_position":null,"provider":"custom","role":"main",
+                "count_pending":false,"rollout_position":null,"provider":"inferred-supplier",
+                "provider_source":"session-context-inferred","role":"main",
                 "inherited":false,"legacy_identity":alias.map(|id|json!({"id":id,"role":"main","session":"fixture"})),
                 "context_conflicts":{"model":false,"provider":false,"role":false,"turn":false}});
             let at = chrono::DateTime::parse_from_rfc3339(time)?.timestamp_millis();
