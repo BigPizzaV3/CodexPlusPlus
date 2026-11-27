@@ -1119,6 +1119,11 @@ describe("renderer injection header compatibility", () => {
     assert.ok(themeBody.length > 0, "找不到 applyCodexPlusTheme 的函数体");
     assert.ok(!themeBody.includes('text: "#f3f4f6"'), "主题函数里残留硬编码的正文色");
     assert.ok(!themeBody.includes('textSecondary: "#a1a1aa"'), "主题函数里残留硬编码的次要色");
+    // 开关颜色取原生 Switch 的 --switch-* 变量；accent-solid 在新版深色主题里是白色，开着的开关会变成白底白点。
+    assert.match(themeBody, /"--codex-plus-switch-on": read\(\s*\["--switch-track-color-checked"\]/);
+    assert.match(themeBody, /"--codex-plus-switch-off": read\(\s*\["--switch-track-color",/);
+    assert.match(themeBody, /"--codex-plus-switch-thumb": read\(\s*\["--switch-thumb-color",/);
+    assert.ok(!themeBody.includes('["--color-background-accent-solid"'), "开关不能再读 accent-solid");
   });
 
   it("梦皮壁纸模式下，注入页自己画遮罩 + 壁纸，不再用实色底盖住（#3152）", async () => {

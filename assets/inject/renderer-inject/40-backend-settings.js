@@ -1967,16 +1967,18 @@
         ["--color-background-surface-secondary", "--color-background-surface-raised"],
         light ? "#f7f7f7" : "#232323",
       ),
+      // 开关先取原生 Switch 自己的 --switch-* 变量（和 10-style.js 里的定义同一条链）。
+      // 不能用 --color-background-accent-solid：新版 Codex 深色主题下它是 #ffffff，开着的开关会变成白底白点。
       "--codex-plus-switch-on": read(
-        ["--color-background-accent-solid", "--color-token-bg-accent"],
-        "#3485ff",
+        ["--switch-track-color-checked"],
+        light ? "#0169cc" : "#0285ff",
       ),
       "--codex-plus-switch-off": read(
-        ["--color-background-switch-off", "--color-background-secondary-solid"],
+        ["--switch-track-color", "--color-background-switch-off", "--color-background-secondary-solid"],
         light ? "#dedede" : "#3a3a3a",
       ),
       "--codex-plus-switch-thumb": read(
-        ["--color-background-switch-thumb"],
+        ["--switch-thumb-color", "--color-background-switch-thumb"],
         "#ffffff",
       ),
       "--codex-plus-bg-hover": read(
