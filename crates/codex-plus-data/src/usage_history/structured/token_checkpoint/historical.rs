@@ -169,17 +169,12 @@ impl Historical {
             })
             .collect();
         let mut identities = EvidenceIdentities::default();
-        Store::historical_candidates(&read, &times, |event| {
-            // token_resolved's primary key already guarantees canonical ID uniqueness.
-            if legacy_ids.contains(&event.id) {
-                identities.seen.insert(event.id);
+        Store::historical_identities(&read, &times, |id, alias| {
+            if legacy_ids.contains(&id) {
+                identities.seen.insert(id);
             }
-            if let Some(alias) = event
-                .legacy_identity
-                .as_ref()
-                .filter(|alias| legacy_ids.contains(&alias.id))
-            {
-                *identities.aliases.entry(alias.id).or_default() += 1;
+            if let Some(alias) = alias.filter(|id| legacy_ids.contains(id)) {
+                *identities.aliases.entry(alias).or_default() += 1;
             }
         })?;
         drop(legacy_ids);
@@ -317,9 +312,11 @@ mod tests {
             "input":7,"output":1,"cached":0,"provider":"fixture-supplier",
             "providerName":"Fixture","source":"upstream-exact-bidirectional"})
         };
+        let mut later = legacy(8, second);
+        later["providerName"] = json!("Later name");
         std::fs::write(
             dir.path().join("usage-provider-evidence.json"),
-            serde_json::to_vec(&json!({"version":1,"records":[legacy(9,first),legacy(8,second)]}))?,
+            serde_json::to_vec(&json!({"version":1,"records":[legacy(9,first),later]}))?,
         )?;
         let insert = |store: &Store,
                       id: u8,
@@ -343,18 +340,32 @@ mod tests {
         };
         let verifier = Mutex::new(EvidenceVerifier::default());
         insert(&store, 1, first, Some(old))?;
+        insert(&store, 8, second, None)?;
         let migrated = Historical::refresh(None, &mut store, &verifier, &settings)?.unwrap();
         assert_eq!(migrated.overlay.legacy_status["migratedEvents"], 1);
+        assert_eq!(migrated.overlay.legacy_status["appliedEvents"], 2);
+        assert_eq!(migrated.overlay.provider_names["fixture-supplier"], "Fixture");
         for (id, alias) in [(2, Some(old)), (9, None)] {
             insert(&store, id, second, alias)?;
             let ambiguous = Historical::refresh(None, &mut store, &verifier, &settings)?.unwrap();
-            assert!(ambiguous.overlay.changes.is_empty());
-            assert!(ambiguous.days.is_empty());
+            assert_eq!(ambiguous.overlay.legacy_status["migratedEvents"], 0);
+            assert_eq!(ambiguous.overlay.legacy_status["appliedEvents"], 1);
+            assert_eq!(ambiguous.overlay.changes.len(), 1);
+            assert!(ambiguous.overlay.changes.contains_key(&[8; 32]));
+            assert_eq!(ambiguous.overlay.provider_names["fixture-supplier"], "Later name");
             store.db.execute(
                 "DELETE FROM token_resolved WHERE event_id=?1",
                 [[id; 32].as_slice()],
             )?;
         }
+        std::fs::write(
+            dir.path().join("usage-provider-evidence.json"),
+            br#"{"version":1,"records":[]}"#,
+        )?;
+        let revoked =
+            Historical::refresh(Some(&migrated), &mut store, &verifier, &settings)?.unwrap();
+        assert!(revoked.overlay.changes.is_empty());
+        assert!(revoked.days.is_empty());
         Ok(())
     }
 }

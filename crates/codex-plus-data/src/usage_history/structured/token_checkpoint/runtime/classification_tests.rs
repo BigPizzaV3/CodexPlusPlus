@@ -298,6 +298,99 @@ fn archive_backlog_keeps_paired_supplier_proofs_revocable() -> Result<()> {
 }
 
 #[test]
+fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
+    use std::io::Write as _;
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(home.join("sessions"))?;
+    let home = fs::canonicalize(home)?;
+    let settings = root.path().join("settings.json");
+    fs::write(&settings, r#"{"usageHistoryEnabled":true}"#)?;
+    let log = root.path().join("requests.jsonl");
+    let session = "00000000-0000-4000-8000-000000000083";
+    let now = Local::now();
+    let times = [
+        now - TimeDelta::hours(50),
+        now - TimeDelta::hours(26),
+        now - TimeDelta::minutes(10),
+        now - TimeDelta::minutes(7),
+        now - TimeDelta::minutes(4),
+    ];
+    let usage = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":10});
+    let source = home.join("sessions/rollout-priority.jsonl");
+    fs::write(&source, format!("{}\n{}\n",
+        json!({"type":"session_meta","timestamp":times[0].to_rfc3339(),
+            "payload":{"id":session,"model_provider":"custom"}}),
+        json!({"type":"turn_context","timestamp":times[0].to_rfc3339(),
+            "payload":{"turn_id":"turn","model":"gpt-fixture"}})))?;
+    let append = |i: usize| -> Result<()> {
+        let at = times[i];
+        let n = i + 1;
+        writeln!(fs::OpenOptions::new().append(true).open(&source)?, "{}",
+            json!({"type":"event_msg","timestamp":at.to_rfc3339(),"payload":{
+                "type":"token_count","info":{"last_token_usage":usage,
+                    "total_token_usage":{"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n}}}}))?;
+        writeln!(fs::OpenOptions::new().append(true).create(true).open(&log)?, "{}",
+            json!({"id":format!("proof-{i}"),"threadId":session,"model":"gpt-fixture",
+                "upstreamModel":"gpt-fixture","relayId":"fixture-relay","success":true,
+                "state":"success","statusCode":200,"timestampMs":at.timestamp_millis(),
+                "startedAtMs":at.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+                "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}}))?;
+        Ok(())
+    };
+    for i in 0..3 {
+        append(i)?;
+    }
+    let mut worker = Runtime::new(root.path().join("history"), settings);
+    let state = worker.update_with_request_log(&home, &log);
+    assert!(state.storage_error.is_none(), "{:?}", state.storage_error);
+    assert!(state.classification_error.is_none(), "{:?}", state.classification_error);
+    let cursor = &worker.evidence_before[session];
+    assert!(cursor.older_next);
+    let before = cursor.before;
+    let exact = |worker: &Runtime, i: usize| -> Result<bool> {
+        Ok(worker.store.as_ref().unwrap().db.query_row(
+            "SELECT coalesce(json_extract(CAST(payload AS TEXT),'$.provider_source')='request-log-exact',0)
+             FROM token_resolved WHERE timestamp_ms=?",
+            [times[i].timestamp_millis()], |row| row.get(0))?)
+    };
+    assert!(exact(&worker, 2)?);
+    assert!(!exact(&worker, 1)?);
+    let pass = |worker: &mut Runtime| -> Result<()> {
+        worker.evidence.request_evidence.refresh(&log);
+        let cutoff = now.date_naive() - Days::new(3);
+        let mut state = worker.initial_state();
+        assert!(worker.refresh(&home, cutoff, 64 << 20, &mut state)?);
+        // 单页可用完整竞争窗口，但不能靠第二页超支来维持公平。
+        worker.classify_retained(&home, cutoff, 1, &mut state)?;
+        Ok(())
+    };
+    append(3)?;
+    pass(&mut worker)?;
+    assert!(exact(&worker, 3)?);
+    assert!(!exact(&worker, 1)?);
+    assert!(worker.evidence_before[session].tail_preempted);
+    assert_eq!(worker.evidence_before[session].before, before);
+    append(4)?;
+    pass(&mut worker)?;
+    assert!(exact(&worker, 1)?);
+    assert!(!exact(&worker, 4)?);
+    assert!(!worker.evidence_before[session].tail_preempted);
+    assert!(worker.evidence_before[session].before < before);
+    pass(&mut worker)?;
+    assert!(exact(&worker, 4)?);
+    for _ in 0..4 {
+        pass(&mut worker)?;
+    }
+    assert!(exact(&worker, 0)?);
+    let totals: (usize, usize) = worker.store.as_ref().unwrap().db.query_row(
+        "SELECT count(*),sum(json_extract(CAST(payload AS TEXT),'$.delta.t')) FROM token_resolved",
+        [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    assert_eq!(totals, (5, 550));
+    Ok(())
+}
+
+#[test]
 fn recent_sessions_cover_the_day_then_their_own_history_and_revisit_late_proofs() {
     let root = tempfile::tempdir().unwrap();
     let home = root.path().join("home");

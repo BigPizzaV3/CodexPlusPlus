@@ -34,6 +34,7 @@ struct RecentClassification {
     latest: i64,
     before: i64,
     older_next: bool,
+    tail_preempted: bool,
 }
 
 pub(in super::super) struct Runtime {
@@ -308,11 +309,14 @@ impl Runtime {
             let shares = slots - step;
             if let Some((session, latest)) = sessions.get(slot) {
                 let cursor = self.evidence_before.get(session);
-                let older = match cursor.filter(|cursor| cursor.older_next) {
+                let preempt_old = cursor.is_some_and(|cursor| {
+                    cursor.older_next && !cursor.tail_preempted && *latest > cursor.latest
+                });
+                let older = match cursor.filter(|cursor| cursor.older_next && !preempt_old) {
                     Some(cursor) => store.classification_before(session, cursor.before)?,
                     None => None,
                 };
-                // 先覆盖最近一天，再交替回访尾部和向前翻页；每次从真实事件继续。
+                // 新尾部可抢占一次旧页；下次兑现旧页，持续追加也不会饿死历史校验。
                 let (from, to) = match (cursor, older) {
                     (_, Some(at)) => (i64::MIN, at),
                     (Some(cursor), None) => (
@@ -327,7 +331,7 @@ impl Runtime {
                 match classify_page(store, session, from, to, shares) {
                     Ok(Some(start)) => {
                         let before = match cursor {
-                            Some(cursor) if !cursor.older_next => cursor.before,
+                            Some(cursor) if !cursor.older_next || preempt_old => cursor.before,
                             _ => start,
                         };
                         self.evidence_before.insert(
@@ -339,6 +343,7 @@ impl Runtime {
                                 },
                                 before,
                                 older_next: older.is_none(),
+                                tail_preempted: preempt_old,
                             },
                         );
                     }

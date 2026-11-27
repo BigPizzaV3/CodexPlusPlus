@@ -2229,6 +2229,28 @@ impl Store {
         Ok(current)
     }
 
+    pub(in super::super) fn historical_identities(
+        read: &Connection,
+        timestamps: &BTreeSet<i64>,
+        mut visit: impl FnMut([u8; 32], Option<[u8; 32]>),
+    ) -> Result<()> {
+        // 身份竞争预扫不需要解码完整 Token 记录，也不改变后续证据应用顺序。
+        let mut statement = read.prepare_cached(
+            "SELECT event_id, json_extract(CAST(payload AS TEXT), '$.legacy_identity.id')
+             FROM token_resolved
+             WHERE timestamp_ms = ?1 AND day >= (SELECT precise_from FROM token_revision)",
+        )?;
+        for timestamp in timestamps {
+            let mut rows = statement.query([timestamp])?;
+            while let Some(row) = rows.next()? {
+                let alias: Option<String> = row.get(1)?;
+                let alias = alias.as_deref().map(serde_json::from_str).transpose()?;
+                visit(row.get_ref(0)?.as_blob()?.try_into()?, alias);
+            }
+        }
+        Ok(())
+    }
+
     pub(in super::super) fn historical_candidates(
         read: &Connection,
         timestamps: &BTreeSet<i64>,
