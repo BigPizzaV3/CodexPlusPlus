@@ -9892,7 +9892,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn helper_rejects_encrypted_agent_content_as_bad_request_before_upstream_send() {
+    async fn helper_degrades_encrypted_agent_content_to_placeholder_for_chat_upstream() {
         let _settings_guard = crate::paths::settings_path_test_guard();
         let temp = tempfile::tempdir().unwrap();
         let settings_path = temp.path().join("settings.json");
@@ -9942,19 +9942,14 @@ mod tests {
         let contacted = upstream.await.unwrap();
         let response = String::from_utf8(response).unwrap();
         assert!(
-            response.starts_with("HTTP/1.1 400 Bad Request"),
+            response.starts_with("HTTP/1.1 200 OK"),
             "{response}"
         );
         let body = response.split_once("\r\n\r\n").unwrap().1;
-        let error: serde_json::Value = serde_json::from_str(body).unwrap();
-        assert_eq!(error["error"]["type"], "invalid_request_error");
-        assert_eq!(
-            error["error"]["code"],
-            "unsupported_encrypted_agent_content"
-        );
+        assert!(body.contains("\"wrong\""), "{body}");
         assert!(!response.contains("fixture-private-payload"));
         assert!(!response.contains("fixture-api-key"));
-        assert!(!contacted);
+        assert!(contacted, "降级后的请求应照常发给 Chat 上游");
 
         // 只有新增的 typed unsupported 错误映射为 400，其余请求错误沿用 502。
         let response = send_raw_helper_request(b"POST /v1/responses HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 1\r\nConnection: close\r\n\r\n{").await;
