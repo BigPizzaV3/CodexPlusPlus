@@ -128,19 +128,24 @@ impl Runtime {
         }
     }
 
-    pub(in super::super) fn pin_refresh_reader(
-        &self,
-        state: &ReadState,
-    ) -> Result<Option<HistoryReader>> {
-        if state.historical.is_none() {
-            return Ok(None);
-        }
+    pub(in super::super) fn pin_refresh_reader(&self) -> Result<Option<HistoryReader>> {
         let budget = u64::from(read_history_settings(&self.settings)?.storage_mib) * 1024 * 1024;
-        // Leave WAL reclamation to the writer before pinning the next round.
-        if working_index_bytes(&self.storage)? >= budget {
+        let used = working_index_bytes(&self.storage)?;
+        if used == 0 || used >= budget {
             return Ok(None);
         }
-        ReadState::open_reader(&self.storage).map(Some)
+        let db = open_database(&self.storage, false)?;
+        // A read transaction must not block the first transition to WAL.
+        if db.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))? != "wal" {
+            return Ok(None);
+        }
+        db.execute_batch("BEGIN")?;
+        let initialized = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='token_revision' AND type='table')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?;
+        Ok(initialized.then(|| Arc::new(Mutex::new(db))))
     }
 
     fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> ReadState {
@@ -739,6 +744,9 @@ mod tests {
         drop(store);
 
         let storage = root.path().to_owned();
+        let settings = root.path().join("settings.json");
+        fs::write(&settings, r#"{"usageHistoryEnabled":true}"#).unwrap();
+        assert!(Runtime::new(storage.clone(), settings).pin_refresh_reader().unwrap().is_none());
         let (pinned, ready) = std::sync::mpsc::channel();
         let reader = std::thread::spawn(move || {
             let mut db = open_database(&storage, false).unwrap();

@@ -272,6 +272,44 @@ fn history_route_keeps_committed_usage_readable_while_the_writer_retries() {
 }
 
 #[test]
+fn history_route_does_not_read_intermediate_revisions_before_first_classification() {
+    let _serial = SERIAL.lock().unwrap();
+    let (_root, home, settings, options) = fixture();
+    let first = settled(&home, &settings, &options);
+    let storage = provider_cache::storage_dir(&home, &settings);
+    let cache = homes().lock().unwrap()[&home].clone();
+    let cold = token_checkpoint::Runtime::new(storage.clone(), settings.clone());
+    let starting = cold.initial_state();
+    {
+        let mut state = cache.lock().unwrap();
+        state.refresh_reader = cold.pin_refresh_reader().unwrap();
+        state.snapshot = Arc::new(starting);
+        state.active = true;
+    }
+    let writer = rusqlite::Connection::open(storage.join(super::super::TOKEN_INDEX_DB)).unwrap();
+    writer.execute("UPDATE token_revision SET revision=revision+1", []).unwrap();
+
+    let request = json!({"includeFingerprints":false});
+    let pinned = query_with_settings(&home, &options, &request, settings.clone());
+    assert_eq!(pinned["scan"]["processing"], true);
+    assert_eq!(pinned["revision"], first["revision"]);
+    assert_eq!(pinned["days"], first["days"]);
+
+    // A new index or a writer reclaiming its WAL cannot reserve a reader.
+    cache.lock().unwrap().refresh_reader = None;
+    let pending = query_with_settings(&home, &options, &request, settings.clone());
+    assert_eq!(pending["status"], "partial");
+    assert_eq!(pending["scan"]["processing"], true);
+    assert!(pending.get("revision").is_none());
+    assert!(pending.get("days").is_none());
+
+    cache.lock().unwrap().active = false;
+    let published = query_with_settings(&home, &options, &request, settings);
+    assert_eq!(published["revision"], first["revision"].as_i64().unwrap() + 1);
+    clear(&home);
+}
+
+#[test]
 fn history_route_recovers_cold_archive_and_rejects_a_cached_result_after_source_removal() {
     let _serial = SERIAL.lock().unwrap();
     let (_root, home, settings, options) = fixture();

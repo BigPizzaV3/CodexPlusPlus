@@ -2360,10 +2360,11 @@ fn query_with_settings(home: &Path, options: &Query, request: &Value, settings: 
     let storage = state.storage.clone();
     let processing = state.active;
     let archived = state.archive.result();
-    let reader = state.refresh_reader.clone().map_or_else(
-        || token_checkpoint::ReadState::open_reader(&storage),
-        Ok,
-    );
+    let reader = match &state.refresh_reader {
+        Some(reader) => Ok(Arc::clone(reader)),
+        None if processing => Err(anyhow::anyhow!("usage refresh has no published snapshot")),
+        None => token_checkpoint::ReadState::open_reader(&storage),
+    };
     drop(state);
     let (mut response, schedule) = snapshot.read_with_archive(
         &storage,
@@ -2463,7 +2464,7 @@ fn touch_history(home: &Path, settings: &Path) -> Result<Arc<Mutex<Cache>>, Valu
             .is_none_or(|at| at.elapsed() >= REFRESH_INTERVAL)
     {
         let reader = state.runtime.as_ref().expect("idle worker owns runtime")
-            .pin_refresh_reader(&state.snapshot)
+            .pin_refresh_reader()
             .map_err(|error| json!({"status":"unavailable","complete":false,"message":error.to_string()}))?;
         let mut runtime = state
             .runtime
