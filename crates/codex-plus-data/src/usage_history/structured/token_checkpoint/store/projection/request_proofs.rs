@@ -76,10 +76,39 @@ pub(super) fn retain(
                 proofs.push((i, at, origin, proof));
             }
         }
-        changes.extend(incoming.into_values().map(|(at, _)| at));
+        let mut appended_times = BTreeSet::new();
+        let mut appended_counts = BTreeSet::new();
+        for (at, i) in incoming.into_values() {
+            let event = &events[i];
+            appended_times.insert(at);
+            if event.count_uncertain
+                || event.count_pending
+                || !event.delta.cached_known
+                || event.context_conflicts.any()
+            {
+                changes.insert(at);
+            } else {
+                appended_counts.insert((
+                    event.delta.input_tokens,
+                    event.delta.output_tokens,
+                    event.delta.cached_input_tokens,
+                    at,
+                ));
+            }
+        }
         for (i, at, origin, proof) in proofs {
             let window = at.saturating_sub(radius)..=at.saturating_add(radius);
-            if changes.range(window).next().is_none() {
+            // 完整的新计数只有等量才参与精确匹配竞争；上下文归属仍需检查附近新增项。
+            let competes = if proof.provider_source.as_deref() == Some("request-log-exact") {
+                let delta = events[i].delta;
+                appended_counts.range(
+                    (delta.input_tokens, delta.output_tokens, delta.cached_input_tokens, *window.start())
+                    ..=(delta.input_tokens, delta.output_tokens, delta.cached_input_tokens, *window.end())
+                ).next().is_some()
+            } else {
+                appended_times.range(window.clone()).next().is_some()
+            };
+            if !competes && changes.range(window).next().is_none() {
                 // 仅跨计数重算保留未变的归属；下一轮仍从 origin 重新核对请求证据。
                 proof.apply(&mut events[i]);
                 retained.insert(events[i].id, origin);
@@ -179,10 +208,22 @@ mod tests {
                 assert!(reader.step(store, cutoff, &mut Budget::new(std::iter::empty()), &names, limit)?);
                 inspect(store)
             };
-            let nearby = append(&counter("2026-01-02T18:04:00Z", 4, true), &mut store)?;
+            let mut distinct = counter("2026-01-02T18:01:00Z", 4, true);
+            distinct["payload"]["info"]["total_token_usage"]["input_tokens"] = json!(450);
+            distinct["payload"]["info"]["last_token_usage"]["input_tokens"] = json!(150);
+            let nearby = append(&distinct, &mut store)?;
             assert!(nearby[..2] == before[..2], "{evidence}");
             assert_eq!(nearby[2].id, before[2].id);
-            assert_eq!(nearby[2].provider_source, None, "{evidence}");
+            if evidence == "request-log-exact" {
+                assert!(nearby[2] == before[2], "distinct counts cannot compete with exact proof");
+                let mut competitor = counter("2026-01-02T18:04:00Z", 5, true);
+                competitor["payload"]["info"]["total_token_usage"]["input_tokens"] = json!(550);
+                let competing = append(&competitor, &mut store)?;
+                assert_eq!(competing[2].id, before[2].id);
+                assert_eq!(competing[2].provider_source, None, "equal counts must revalidate");
+            } else {
+                assert_eq!(nearby[2].provider_source, None, "{evidence}");
+            }
             let corrected = append(&receipt("claim-two"), &mut store)?;
             assert!(corrected[0] == before[0], "{evidence}");
             assert_eq!(corrected[1].id, before[1].id);
