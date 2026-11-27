@@ -1222,7 +1222,14 @@
       .codex-plus-provider-item-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--codex-plus-success, #10a37f); vertical-align: middle; margin-right: 4px; margin-bottom: 1px; flex-shrink: 0; }
       .codex-plus-provider-item-main { flex: 1; min-width: 0; }
       .codex-plus-provider-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-provider-item-meta { display: flex; gap: 4px; margin-top: 3px; }
+      /* 名称下面一行小字，照原生侧栏的次要文字：「Responses · 24 个模型 · 默认」，放不下就省略号，
+         不再是一排小方块（侧栏窄时方块会被挤成一字一行）。 */
+      .codex-plus-provider-item-meta { display: block; min-width: 0; margin-top: 2px; overflow: hidden; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge { display: inline; padding: 0; border-radius: 0; background: none; font-size: inherit; line-height: inherit; color: inherit; }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge + .codex-plus-provider-badge::before { content: "·"; margin: 0 4px; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="off"] { color: var(--codex-plus-danger, #dc2626); }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="active"] { color: var(--codex-plus-success, #10a37f); }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="new"] { color: var(--codex-plus-warning, #d97706); }
       .codex-plus-provider-item-actions { display: none; gap: 2px; }
       .codex-plus-provider-item:hover .codex-plus-provider-item-actions { display: flex; }
       .codex-plus-provider-item-actions button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--codex-plus-text-secondary); cursor: pointer; }
@@ -9014,25 +9021,17 @@
       if (on) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
-    [
-      [codexPlusRailNavId, "home"],
-      [codexPlusRailExtensionsId, "extensions"],
-      [codexPlusRailSponsorId, "sponsor"],
-      [codexPlusRailProviderId, "provider"],
-      [codexPlusRailRemoteId, "remote"],
-      [codexPlusRailWeixinId, "weixin"],
-      [codexPlusRailTasksId, "tasks"],
-    ].forEach(([id, name]) => {
-      const railButton = document.querySelector(`#${id} > button`);
-      if (!railButton) return;
-      const on = Boolean(active) && entry === name;
+    // 图标栏只留 Codex++ 一个入口：设置页和收进它里面的页面（供应商、远程控制……）打开时都亮它。
+    const railButton = document.querySelector(`#${codexPlusRailNavId} > button`);
+    if (railButton) {
+      const on = Boolean(active) && (entry === "home" || codexPlusFoldedPages().some((page) => page.entry === entry));
       railButton.dataset.active = String(on);
       if (on) railButton.setAttribute("aria-current", "page");
       else railButton.removeAttribute("aria-current");
       // 原生 rail 按钮的选中色由 data-selected 驱动（且需无 data-suppress-active-style）。
       if (on) railButton.setAttribute("data-selected", "");
       else railButton.removeAttribute("data-selected");
-    });
+    }
     syncCodexPlusRailNativeSelection();
   }
 
@@ -9195,6 +9194,21 @@
     }
   }
 
+  /**
+   * 页面开着时 Codex 可能整块重建外壳：图标栏、原生面板都换成新节点。ResizeObserver 还盯着旧节点，
+   * 页面就停在重建那一刻量到的位置——实测重建中途量到的全是 0，页面从窗口左上角铺满，
+   * 盖住图标栏和标题栏，顶上的切换压在红绿灯底下。每轮扫描比一下量的还是不是现在这批节点，换了就重量。
+   */
+  function refreshCodexPlusPagePosition() {
+    const overlay = document.querySelector(`.${codexPlusPageClass}`);
+    if (!overlay) return;
+    const targets = window.__codexPlusPageLayoutTargets || {};
+    if (targets.rail === document.querySelector(codexPlusRailSelector)
+      && targets.backing === document.querySelector("[data-app-shell-surface-backing]")
+      && targets.main === document.querySelector("main")) return;
+    positionCodexPlusPage(overlay);
+  }
+
   function observeCodexPlusPageLayout(overlay) {
     window.__codexPlusPageLayoutObserver?.disconnect();
     window.removeEventListener("resize", window.__codexPlusPageResizeHandler);
@@ -9261,7 +9275,11 @@
       if (!leavingWindow) {
         const railButton = target?.closest("[data-codex-plus-rail] > button");
         if (railButton) {
-          if (codexPlusSidebarFloating()) next = page && railButton.getAttribute("aria-current") === "page" ? "page" : railButton.parentElement.id;
+          // Codex++ 入口在收进去的页面（供应商等）上也是选中的，但那时浮出的是 Codex++ 卡片（页面 + 设置分组），
+          // 好从这一页直接换到另一页；只有设置页本身开着时才浮页面自己的左栏。
+          const ownPage = railButton.getAttribute("aria-current") === "page"
+            && (railButton.parentElement.id !== codexPlusRailNavId || codexPlusActiveEntry() === "home");
+          if (codexPlusSidebarFloating()) next = page && ownPage ? "page" : railButton.parentElement.id;
         } else if (page?.card.contains(target)) next = "page";
         else if (peek?.dataset.open === "true" && peek.contains(target)) next = shown;
         else if (page && event.clientX <= 4) next = "page";
@@ -9331,6 +9349,8 @@
         attrs: ' data-codex-plus-active-tab="home" data-codex-plus-section-nav="true"',
         items: codexPlusSettingsPeekNavItems(),
         pick(button) {
+          const link = button.getAttribute("data-codex-plus-page-link");
+          if (link) return openCodexPlusFoldedPage(link);
           const id = button.getAttribute("data-codex-plus-settings-nav");
           if (!id) return;
           openCodexPlusPage();
@@ -9690,11 +9710,25 @@
     return codexPlusSettingsNavSections[id] || "功能";
   }
 
+  /**
+   * 左栏最上面的「页面」一节：收进 Codex++ 入口的页面，点一项打开那一页。
+   * 设置页和图标栏悬浮卡片共用；当前开着的那一页标成选中（设置页本身开着时一项都不选）。
+   */
+  function codexPlusFoldedPagesNavHtml() {
+    const current = codexPlusActiveEntry();
+    return `
+      <div class="codex-plus-page-nav-section-title" role="presentation">页面</div>${codexPlusFoldedPages().map((page) => {
+      const on = page.entry === current;
+      return `
+      <button type="button" class="codex-plus-page-nav-item" data-codex-plus-page-link="${escapeHtml(page.entry)}" data-active="${String(on)}"${on ? ' aria-current="page"' : ""}><span class="codex-plus-page-nav-item-icon" aria-hidden="true">${page.icon}</span><span class="codex-plus-page-nav-item-name">${escapeHtml(page.label)}</span></button>`;
+    }).join("")}`;
+  }
+
   function renderCodexPlusSettingsNavItems(root = document) {
     const groups = codexPlusSettingsGroupNodes(root);
     const active = codexPlusResolvedSettingsGroup(groups);
     let section = "";
-    return groups.map((node) => {
+    return codexPlusFoldedPagesNavHtml() + groups.map((node) => {
       const id = node.getAttribute("data-codex-plus-settings-group");
       const label = node.getAttribute("data-codex-plus-settings-label") || id;
       const current = id === active;
@@ -10329,6 +10363,12 @@
         if (typeof codexPlusExtensionSourceEnsureLoaded === "function") codexPlusExtensionSourceEnsureLoaded(codexPlusExtensionsFilter);
         return;
       }
+      // 设置页左栏「页面」一节：打开收进 Codex++ 入口的那一页。
+      const pageLink = target?.closest("[data-codex-plus-page-link]");
+      if (pageLink) {
+        openCodexPlusFoldedPage(pageLink.getAttribute("data-codex-plus-page-link"));
+        return;
+      }
       // 设置页左栏：切换右边显示的分组。
       const settingsNav = target?.closest("[data-codex-plus-settings-nav]");
       if (settingsNav) {
@@ -10925,8 +10965,50 @@
     button.addEventListener("pointerdown", close);
   }
 
+  /** Codex++ 自己各页面的图标：图标栏的 Codex++ 入口用 logo，收进去的页面在左栏「页面」一节里用其余几个。 */
+  function codexPlusPageIcons() {
+    return {
+      // Codex++ 入口直接用 Codex++ 自己的 logo（彩色），一眼能和原生入口区分开。
+      home: `<img class="codex-plus-rail-logo" src="${codexPlusLogoDataUrl}" alt="" draggable="false">`,
+      // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
+      // 和页面内部保持同一个符号，不再另画一个近似图形。
+      extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
+      // Lucide 的 server：同一套 24 格线性风格。
+      provider: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg>',
+      // Lucide 的 megaphone：同一套 24 格线性风格。
+      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
+      // Lucide 的 smartphone：同一套 24 格线性风格。
+      remote: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>',
+      // Lucide 的 message-circle：同一套 24 格线性风格（管理器微信页的状态图标也是它）。
+      weixin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>',
+      // Lucide 的 square-kanban：同一套 24 格线性风格。
+      tasks: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/></svg>',
+    };
+  }
+
   /**
-   * 把 Codex++ / 拓展两个入口挂到新版图标栏。
+   * 收进 Codex++ 入口的页面。图标栏上只放 Codex++ 一个入口，不占一排图标；这些页面列在它的左栏
+   * （和侧栏收起时浮出的卡片）最上面的「页面」一节。entry 与 codexPlusActiveEntry 的取值一致。
+   * 远程控制与微信连接相邻：两者都是「在手机上用 Codex」，都由管理器托管、Codex 没开也能用。
+   */
+  function codexPlusFoldedPages() {
+    const icons = codexPlusPageIcons();
+    return [
+      { entry: "provider", label: "供应商", icon: icons.provider, open: () => openCodexPlusProviderPage() },
+      { entry: "remote", label: "远程控制", icon: icons.remote, open: () => openCodexPlusRemoteControlPage() },
+      { entry: "weixin", label: "微信连接", icon: icons.weixin, open: () => openCodexPlusWeixinConnectPage() },
+      { entry: "tasks", label: "任务面板", icon: icons.tasks, open: () => openCodexPlusTaskBoardPage() },
+      { entry: "extensions", label: "拓展", icon: icons.extensions, open: () => openCodexPlusExtensions() },
+      { entry: "sponsor", label: "推荐内容", icon: icons.sponsor, open: () => openCodexPlusSponsor() },
+    ];
+  }
+
+  function openCodexPlusFoldedPage(entry) {
+    codexPlusFoldedPages().find((page) => page.entry === entry)?.open();
+  }
+
+  /**
+   * 把 Codex++ 入口挂到新版图标栏（收进它里面的页面见 codexPlusFoldedPages）。
    *
    * Codex 的 rail 渲染晚于注入，所以这里每次 scan 都会被调用；靠 id 判存避免重复插入。
    */
@@ -10952,34 +11034,12 @@
       }, true);
     }
 
-    const icons = {
-      // Codex++ 入口直接用 Codex++ 自己的 logo（彩色），一眼能和原生入口区分开。
-      home: `<img class="codex-plus-rail-logo" src="${codexPlusLogoDataUrl}" alt="" draggable="false">`,
-      // 「拓展」直接用 VSCode 的扩展字形（就是列表里默认图标那一份），
-      // 和页面内部保持同一个符号，不再另画一个近似图形。
-      extensions: `<svg viewBox="0 0 16 16" fill="currentColor"><path d="${codexPlusDefaultExtensionIconPath}"/></svg>`,
-      // Lucide 的 megaphone：与 home 同一套 24 格线性风格，笔画宽度和端点也一致。
-      // Lucide 的 server：同一套 24 格线性风格。
-      provider: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01"/></svg>',
-      sponsor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 11 18-5v12L3 14v-3z"/><path d="M11.6 16.8a3 3 0 1 1-5.8-1.6"/></svg>',
-      // Lucide 的 smartphone：同一套 24 格线性风格。
-      remote: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M12 18h.01"/></svg>',
-      // Lucide 的 message-circle：同一套 24 格线性风格（管理器微信页的状态图标也是它）。
-      weixin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></svg>',
-      // Lucide 的 square-kanban：同一套 24 格线性风格。
-      tasks: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M8 7v7M12 7v4M16 7v9"/></svg>',
-    };
-
     const specs = [
-      { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
-      { id: codexPlusRailProviderId, label: "供应商", iconMarkup: icons.provider, withStatus: false, onActivate: openCodexPlusProviderPage },
-      { id: codexPlusRailRemoteId, label: "远程控制", iconMarkup: icons.remote, withStatus: false, onActivate: openCodexPlusRemoteControlPage },
-      // 和远程控制相邻：两者都是「在手机上用 Codex」，都由管理器托管、Codex 没开也能用。
-      { id: codexPlusRailWeixinId, label: "微信连接", iconMarkup: icons.weixin, withStatus: false, onActivate: openCodexPlusWeixinConnectPage },
-      { id: codexPlusRailTasksId, label: "任务面板", iconMarkup: icons.tasks, withStatus: false, onActivate: openCodexPlusTaskBoardPage },
-      { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
-      { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
+      { id: codexPlusRailNavId, label: "Codex++", iconMarkup: codexPlusPageIcons().home, withStatus: true, onActivate: openCodexPlusPage },
     ];
+    // 以前每个页面一个图标，已经收进 Codex++：旧注入留下的入口摘掉。
+    [codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId]
+      .forEach((id) => document.getElementById(id)?.remove());
 
     const anchor = codexPlusRailPrimaryAnchor(rail);
     // 插到锚点所在的父容器里，而不是 nav 顶层：原生按钮可能嵌在 nav 内部的分组 div 中，
@@ -11008,6 +11068,8 @@
     if (status) status.dataset.status = codexPlusBackendStatus.status || "checking";
     // 侧栏收起时入口浮出各自的侧栏卡片，原生页面上也要有，所以随入口一起装。
     installCodexPlusNavPeek();
+    // 每轮扫描顺带检查开着的页面量的是不是现在这批外壳节点（Codex 重建外壳后要重量位置）。
+    refreshCodexPlusPagePosition();
     return true;
   }
 

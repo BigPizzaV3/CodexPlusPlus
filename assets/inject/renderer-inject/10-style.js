@@ -422,7 +422,14 @@
       .codex-plus-provider-item-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--codex-plus-success, #10a37f); vertical-align: middle; margin-right: 4px; margin-bottom: 1px; flex-shrink: 0; }
       .codex-plus-provider-item-main { flex: 1; min-width: 0; }
       .codex-plus-provider-item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .codex-plus-provider-item-meta { display: flex; gap: 4px; margin-top: 3px; }
+      /* 名称下面一行小字，照原生侧栏的次要文字：「Responses · 24 个模型 · 默认」，放不下就省略号，
+         不再是一排小方块（侧栏窄时方块会被挤成一字一行）。 */
+      .codex-plus-provider-item-meta { display: block; min-width: 0; margin-top: 2px; overflow: hidden; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge { display: inline; padding: 0; border-radius: 0; background: none; font-size: inherit; line-height: inherit; color: inherit; }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge + .codex-plus-provider-badge::before { content: "·"; margin: 0 4px; color: var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="off"] { color: var(--codex-plus-danger, #dc2626); }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="active"] { color: var(--codex-plus-success, #10a37f); }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="new"] { color: var(--codex-plus-warning, #d97706); }
       .codex-plus-provider-item-actions { display: none; gap: 2px; }
       .codex-plus-provider-item:hover .codex-plus-provider-item-actions { display: flex; }
       .codex-plus-provider-item-actions button { width: 20px; height: 20px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--codex-plus-text-secondary); cursor: pointer; }

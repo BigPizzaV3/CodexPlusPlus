@@ -1057,7 +1057,7 @@ describe("renderer injection header compatibility", () => {
     assert.match(renderer, /:is\(\.\$\{codexPlusPageClass\} \.codex-plus-modal-content, \.codex-plus-rail-peek-content\):is\(\[data-codex-plus-active-tab="home"\], \[data-codex-plus-section-nav\]\) \.codex-plus-page-nav \{/);
     assert.match(renderer, /:is\(\.\$\{codexPlusPageClass\} \.codex-plus-modal-content, \.codex-plus-rail-peek-content\)\[data-codex-plus-active-tab="extensions"\] \.codex-plus-page-nav \{/);
     // 侧栏收起时每个入口浮出自己的卡片：处理函数随图标栏入口一起装（原生页面上也要有）。
-    assert.match(renderer, /installCodexPlusNavPeek\(\);\s*return true;\s*\}/);
+    assert.match(renderer, /installCodexPlusNavPeek\(\);\s*(?:\/\/[^\n]*\n\s*)*refreshCodexPlusPagePosition\(\);\s*return true;\s*\}/);
     const peekSpec = renderer.slice(renderer.indexOf("function codexPlusRailPeekSpec("), renderer.indexOf("function codexPlusSettingsPeekNavItems("));
     for (const [rail, nav] of [["codexPlusRailRemoteId", "codexPlusRemoteSectionNav"], ["codexPlusRailWeixinId", "codexPlusWeixinSectionNav"], ["codexPlusRailSponsorId", "codexPlusSponsorSectionNav"]]) {
       assert.match(peekSpec, new RegExp(`if \\(railId === ${rail}\\) return section\\(${nav}, `));
@@ -1074,13 +1074,15 @@ describe("renderer injection header compatibility", () => {
   it("把三个 rail 入口都接成独立页面，并跟随 Codex 的界面缩放", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
-    // 推荐内容从弹窗二级 tab 提成图标栏上的一级入口。
+    // 推荐内容是独立页面，入口收进图标栏 Codex++ 左栏的「页面」一节（图标栏只留 Codex++ 一个）。
     assert.match(renderer, /const codexPlusRailSponsorId = "codex-plus-rail-sponsor"/);
     assert.match(renderer, /const codexPlusSponsorTab = "sponsor"/);
     assert.match(renderer, /function openCodexPlusSponsor\(\)/);
-    assert.match(renderer, /id: codexPlusRailSponsorId, label: "推荐内容"/);
-    // 三个入口都要参与选中态映射，否则「推荐内容」亮不起来。
-    assert.match(renderer, /\[codexPlusRailSponsorId, "sponsor"\],/);
+    assert.match(renderer, /\{ entry: "sponsor", label: "推荐内容", icon: icons\.sponsor, open: \(\) => openCodexPlusSponsor\(\) \}/);
+    assert.match(renderer, /const specs = \[\n\s*\{ id: codexPlusRailNavId, label: "Codex\+\+"[^\n]*\n\s*\];/, "图标栏只放 Codex++ 一个入口");
+    assert.match(renderer, /return codexPlusFoldedPagesNavHtml\(\) \+ groups\.map/, "左栏最上面列出收进去的页面");
+    assert.match(renderer, /const pageLink = target\?\.closest\("\[data-codex-plus-page-link\]"\);/, "设置页左栏点页面打开那一页");
+    assert.match(renderer, /if \(link\) return openCodexPlusFoldedPage\(link\);/, "悬浮卡片里点页面打开那一页");
     assert.match(renderer, /if \(tab === codexPlusSponsorTab\) return "sponsor";/);
 
     // 弹窗里的 tab 条已随入口外移删除，不该再有残留。

@@ -167,6 +167,9 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   const currentEntry = railButton("codex-plus-rail-remote", true);
   const otherEntry = railButton("codex-plus-rail-weixin", false);
   const unsupportedEntry = railButton("codex-plus-rail-provider", false);
+  // Codex++ 入口在收进它的页面（这里是远程控制）上也是选中的。
+  const codexPlusEntry = railButton("codex-plus-rail-nav", true);
+  let activeEntry = "remote";
   const nativeEntry: Record<string, unknown> = node({ closest: (selector: string) => (selector === "[data-sidebar-destination]" ? nativeEntry : null) });
   const elsewhere = node({ closest: () => null });
   const peekItem = node({ closest: () => null });
@@ -187,8 +190,9 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   };
   let floating = true;
   const window: Record<string, unknown> = {};
-  new Function("document", "window", "Element", "codexPlusSidebarFloating", "showCodexPlusRailPeek", "hideCodexPlusRailPeek", `
+  new Function("document", "window", "Element", "codexPlusSidebarFloating", "showCodexPlusRailPeek", "hideCodexPlusRailPeek", "codexPlusActiveEntry", `
     const codexPlusPageClass = "codex-plus-page-overlay";
+    const codexPlusRailNavId = "codex-plus-rail-nav";
     const codexPlusRailPeekId = "codex-plus-rail-peek";
     const codexPlusRailDestinationSelector = "[data-sidebar-destination]";
     const codexPlusBackendGeneration = 1;
@@ -208,6 +212,7 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
       return true;
     },
     () => { if (peek.dataset.open) peek.dataset.open = "false"; },
+    () => activeEntry,
   );
   const move = (target: unknown, clientX = 300) => listeners.get("pointermove")!({ type: "pointermove", target, clientX });
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -258,6 +263,54 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   move(otherEntry, 26);
   await wait(160);
   assert.equal(shown.length, 3, "with the sidebar open, hovering the rail floats nothing, like native");
+  floating = true;
+  move(codexPlusEntry, 26);
+  await wait(160);
+  assert.deepEqual(shown.slice(3), ["codex-plus-rail-nav"], "on a page folded into Codex++, its entry floats the Codex++ card (pages + settings) to switch pages");
+  move(elsewhere, 300);
+  await wait(300);
+  activeEntry = "home";
+  move(codexPlusEntry, 26);
+  await wait(160);
+  assert.equal(overlay.dataset.codexPlusNavPeek, "true", "on the settings page itself the entry floats the page's own column");
+  assert.equal(shown.length, 4);
+});
+
+it("re-measures an open page on scan once Codex has rebuilt the shell it was measured against", () => {
+  // 实测：外壳重建中途量到的全是 0，页面从窗口左上角铺满，盖住图标栏和标题栏，之后再没人重量。
+  const overlay = { id: "page" };
+  const shell = { rail: { id: "rail-1" }, backing: { id: "backing-1" }, main: { id: "main-1" } };
+  let open = true;
+  const document = {
+    querySelector: (selector: string) => {
+      if (selector === ".codex-plus-page-overlay") return open ? overlay : null;
+      if (selector === "nav[data-app-navigation-rail]") return shell.rail;
+      if (selector === "[data-app-shell-surface-backing]") return shell.backing;
+      if (selector === "main") return shell.main;
+      return null;
+    },
+  };
+  const window: Record<string, any> = { __codexPlusPageLayoutTargets: { ...shell } };
+  const positioned: unknown[] = [];
+  const refresh = new Function("document", "window", "positionCodexPlusPage", `
+    const codexPlusPageClass = "codex-plus-page-overlay";
+    const codexPlusRailSelector = "nav[data-app-navigation-rail]";
+    ${functionSource("refreshCodexPlusPagePosition")}
+    return refreshCodexPlusPagePosition;
+  `)(document, window, (node: unknown) => positioned.push(node));
+  refresh();
+  assert.deepEqual(positioned, [], "still measured against the live shell: nothing to do");
+  shell.rail = { id: "rail-2" };
+  refresh();
+  assert.deepEqual(positioned, [overlay], "the rail was replaced: measure again");
+  window.__codexPlusPageLayoutTargets = { ...shell };
+  shell.backing = { id: "backing-2" };
+  refresh();
+  assert.equal(positioned.length, 2, "the native panel was replaced: measure again");
+  open = false;
+  shell.main = { id: "main-2" };
+  refresh();
+  assert.equal(positioned.length, 2, "no page open: nothing to measure");
 });
 
 it("retargets the layout observer when the host replaces its main or rail", () => {
@@ -339,8 +392,8 @@ it("cleans up the previous extension before opening another extension page", () 
   assert.equal(h.listeners.size, 0);
 });
 
-it("keeps only the current rail entry selected and removes inactive aria-current attributes", () => {
-  const buttons = Array.from({ length: 8 }, () => ({
+it("lights the single Codex++ rail entry for its own page and every page folded into it", () => {
+  const buttons = Array.from({ length: 2 }, () => ({
     dataset: {} as Record<string, string>,
     attributes: new Map<string, string>(),
     setAttribute(name: string, value: string) { this.attributes.set(name, value); },
@@ -352,7 +405,7 @@ it("keeps only the current rail entry selected and removes inactive aria-current
       assert.equal(id, "sidebar", "retired plugin navigation must not be queried");
       return { querySelector: () => buttons[0] };
     },
-    querySelector: (selector: string) => buttons[ids.findIndex(id => selector === `#${id} > button`) + 1],
+    querySelector: (selector: string) => (selector === "#home > button" ? buttons[1] : undefined),
   };
   const active = new Function("document", `
     const codexPlusSidebarNavId = "sidebar";
@@ -364,16 +417,17 @@ it("keeps only the current rail entry selected and removes inactive aria-current
     const codexPlusRailWeixinId = "weixin";
     const codexPlusRailTasksId = "tasks";
     function syncCodexPlusRailNativeSelection() {}
+    function codexPlusFoldedPages() { return ["provider", "remote", "weixin", "tasks", "extensions", "sponsor"].map((entry) => ({ entry })); }
     ${functionSource("setCodexPlusSidebarNavActive")}
     return setCodexPlusSidebarNavActive;
   `)(document);
-  for (const entry of ids) {
+  for (const entry of [...ids, "ext:third-party"]) {
     active(true, entry);
-    for (const [index, button] of buttons.entries()) {
-      const selected = (index === 0 ? "home" : ids[index - 1]) === entry;
-      assert.equal(button.attributes.get("aria-current"), selected ? "page" : undefined);
-      assert.equal(button.dataset.active, String(selected));
-    }
+    // buttons[0] 是旧外壳的侧栏入口（只认设置页），buttons[1] 是图标栏的 Codex++ 入口。
+    assert.equal(buttons[0].attributes.get("aria-current"), entry === "home" ? "page" : undefined);
+    const lit = ids.includes(entry);
+    assert.equal(buttons[1].attributes.get("aria-current"), lit ? "page" : undefined, entry);
+    assert.equal(buttons[1].dataset.active, String(lit));
   }
   active(false);
   for (const button of buttons) assert.equal(button.attributes.has("aria-current"), false);

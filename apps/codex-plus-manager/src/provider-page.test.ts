@@ -275,8 +275,9 @@ describe("供应商页（43 分片）", () => {
 
   it("新入口登记进所有写死内置 id 的地方", () => {
     assert.match(renderer, /codexPlusRailProviderId = "codex-plus-rail-provider"/);
-    assert.match(renderer, /\{ id: codexPlusRailProviderId, label: "供应商", iconMarkup: icons\.provider, withStatus: false, onActivate: openCodexPlusProviderPage \}/);
-    assert.match(renderer, /\[codexPlusRailProviderId, "provider"\],/);
+    // 图标栏只留 Codex++：供应商收进它左栏的「页面」一节，旧入口摘掉。
+    assert.match(renderer, /\{ entry: "provider", label: "供应商", icon: icons\.provider, open: \(\) => openCodexPlusProviderPage\(\) \}/);
+    assert.match(renderer, /codexPlusFoldedPages\(\)\.some\(\(page\) => page\.entry === entry\)/, "收进 Codex++ 的页面打开时亮 Codex++ 入口");
     assert.match(renderer, /if \(tab === codexPlusProviderTab\) return "provider";/);
     assert.match(renderer, /\[codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId\]\.forEach/);
     // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。
