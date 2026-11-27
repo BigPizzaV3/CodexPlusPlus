@@ -107,7 +107,7 @@
         update(message, done = false, success = false) {
           body.textContent = message;
           title.textContent = done ? success ? '回退完成' : '回退未完成' : '正在回退';
-          stop.hidden = done;
+          stop.hidden = done || record.historyTruncated === true;
           close.hidden = !done;
         }
       };
@@ -133,6 +133,7 @@
       let disposeStarted = () => {};
       const persist = dependencies.saveRun || saveRun;
       const panel = dependencies.panel || statusPanel(record, async () => {
+        if (record.historyTruncated) return;
         cancelled = true;
         if (rollbackTurnId) await m.interruptConversation(threadId, 'user-stop', rollbackTurnId).catch(() => {});
         cancelWait(Error('回退已停止。已经撤销的操作不会自动重做，原对话保留。'));
@@ -220,7 +221,10 @@
         if (cancelled || !isEnabled()) throw Error('回退已停止，原对话保留。');
         const response = await m.sendRequest('thread/revert', { threadId, beforeTurnId: turnId });
         record.historyTruncated = true;
-        await m.applyRevertResponseToConversation({ conversationId: threadId, response, revertedTurns: now.slice(index) });
+        panel.update('后台已截断会话，正在刷新当前窗口。');
+        await persist(record).catch(() => {});
+        await m.applyRevertResponseToConversation({ conversationId: threadId, response,
+          revertedTurns: now.slice(index), retainedTurnId: now[index - 1]?.turnId ?? null });
         record.status = 'complete';
         record.finishedAt = new Date().toISOString();
         // Once the server confirmed the truncation, a report-storage error must not claim it did not happen.
@@ -228,7 +232,7 @@
         panel.update('AI 已报告操作回滚完成，会话已回退到选中轮之前。\n选中轮、后续轮次和回滚请求已移出原会话。恢复记录保存在本机，可导出查看。', true, true);
         return record;
       } catch (error) {
-        if ((cancelled || timedOut) && rollbackTurnId) {
+        if (!record.historyTruncated && (cancelled || timedOut) && rollbackTurnId) {
           await m.interruptConversation(threadId, 'user-stop', rollbackTurnId).catch(() => {});
         }
         record.status = record.historyTruncated ? 'ui-refresh-required' : 'incomplete';

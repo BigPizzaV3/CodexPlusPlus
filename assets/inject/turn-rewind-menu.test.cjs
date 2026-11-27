@@ -238,10 +238,11 @@ class Element {
   const original = ['desktop-baseline', identity.turnId].map(turnId => ({ turnId, status: 'completed', items: [] }));
   let serverTurns, loadedTurns, mode, notification, openCount = 0, managerDisposals = 0, subscriptionDisposals = 0;
   let report, panelResult, changeTargetOnOpen = false;
+  let resumeState, historyTruncated;
   const desktopWrites = [];
   const rpc = {
     async getHostId() { return 'local'; },
-    async getConversation(id) { return { ...state, id }; },
+    async getConversation(id) { return { ...state, id, resumeState }; },
     async hasLocalHistorySubscription() { return mode !== 'follower'; },
     async ensureConversationHistoryLoaded(id, parents, options) { assert.equal(options.force, true); },
     async getLoadedConversationHistory() { return { isComplete: mode !== 'partial-history', turns: loadedTurns }; },
@@ -264,15 +265,35 @@ class Element {
     async sendRequest(method, params) {
       if (method === 'thread/turns/list') {
         assert.equal(params.itemsView, 'notLoaded');
+        if (params.sortDirection === 'desc') {
+          assert.equal(params.limit, 1);
+          const turn = serverTurns.at(-1);
+          return { data: turn ? [{ id: turn.turnId, status: turn.status }] : [] };
+        }
         const index = Number(params.cursor ?? 0);
         return { data: serverTurns.slice(index, index + 1).map(turn => ({ id: turn.turnId, status: turn.status })),
           nextCursor: index + 1 < serverTurns.length ? String(index + 1) : null };
       }
-      assert.equal(method, 'thread/revert'); assert.equal(params.beforeTurnId, 'desktop-selected');
+      if (method === 'thread/read') {
+        assert.equal(historyTruncated, true);
+        assert.equal(params.includeTurns, false);
+        return { thread: { id: params.threadId, status: { type: mode === 'active-after-revert' ? 'active' : 'idle' } } };
+      }
+      assert.equal(method, 'thread/revert');
+      assert.equal(params.beforeTurnId, mode === 'rewind-first' ? 'desktop-baseline' : 'desktop-selected');
       desktopWrites.push('revert');
-      serverTurns = serverTurns.slice(0, 1);
-      if (mode !== 'stale-ui') loadedTurns = serverTurns;
+      historyTruncated = true;
+      serverTurns = serverTurns.slice(0, mode === 'rewind-first' ? 0 : 1);
+      if (mode === 'ready') loadedTurns = serverTurns;
+      if (mode === 'new-turn-after-revert') serverTurns = serverTurns.concat({ turnId: 'new-turn', status: 'completed' });
       return { thread: { id: params.threadId } };
+    },
+    async unsubscribeInactiveConversation(id) {
+      assert.equal(id, identity.threadId);
+      assert.equal(historyTruncated, true);
+      desktopWrites.push('refresh');
+      resumeState = 'needs_resume';
+      setTimeout(() => { loadedTurns = serverTurns; resumeState = 'resumed'; }, 25);
     },
     [Symbol.dispose]() { managerDisposals++; },
   };
@@ -295,14 +316,24 @@ class Element {
   await context.loadTurnRewindDesktopServices();
   context.refreshTurnRewindMenus();
   assert.equal(button.getAttribute('aria-disabled'), 'false');
-  for (mode of ['ready', 'stale-ui', 'stale-history', 'concurrent', 'follower', 'partial-history']) {
+  for (mode of ['ready', 'stale-ui', 'rewind-first', 'active-after-revert', 'new-turn-after-revert',
+    'stale-history', 'concurrent', 'follower', 'partial-history']) {
+    identity.turnId = mode === 'rewind-first' ? 'desktop-baseline' : 'desktop-selected';
     loadedTurns = original;
     serverTurns = mode === 'stale-history' ? original.slice(0, 1) : original;
+    resumeState = 'resumed';
+    historyTruncated = false;
     desktopWrites.length = 0;
     await button.click();
-    if (mode === 'ready' || mode === 'stale-ui') {
+    if (['ready', 'stale-ui', 'rewind-first'].includes(mode)) {
+      assert.deepEqual(desktopWrites, mode === 'ready' ? ['prompt', 'revert'] : ['prompt', 'revert', 'refresh']);
+      assert.equal(report.status, 'complete');
+      assert.equal(report.historyTruncated, true);
+      assert.deepEqual(loadedTurns.map(turn => turn.turnId), mode === 'rewind-first' ? [] : ['desktop-baseline']);
+      assert.equal(panelResult[2], true);
+    } else if (['active-after-revert', 'new-turn-after-revert'].includes(mode)) {
       assert.deepEqual(desktopWrites, ['prompt', 'revert']);
-      assert.equal(report.status, mode === 'ready' ? 'complete' : 'ui-refresh-required');
+      assert.equal(report.status, 'ui-refresh-required');
       assert.equal(report.historyTruncated, true);
       assert.equal(panelResult[2], true);
     } else {
@@ -316,7 +347,7 @@ class Element {
   assert.equal(desktopWrites.length, writesBeforeReusedMenu, 'menu changed while opening the RPC');
   assert.match(toasts.at(-1), /菜单已变化/);
   assert.equal(managerDisposals, openCount, 'release every opened manager, including a reused menu');
-  assert.equal(subscriptionDisposals, 4, 'release the notification subscription on completion and errors');
+  assert.equal(subscriptionDisposals, 7, 'release the notification subscription on completion and errors');
   assert.equal(notification, null);
 
   // 重注入保留控制器对象，不丢在途任务；旧观察器和菜单项被回收。

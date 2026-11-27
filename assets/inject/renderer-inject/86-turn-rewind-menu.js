@@ -144,14 +144,40 @@
       sendFollowUpMessage: (id, options) => client.sendFollowUpMessage(id, options),
       interruptConversation: (id, reason, turnId) => client.interruptConversation(id, reason, turnId),
       sendRequest: (method, params) => client.sendRequest(method, params),
-      async applyRevertResponseToConversation({ conversationId, response, revertedTurns }) {
-        // 宿主 RPC 没有本地写缓存的接口。检查原生缓存，陈旧时交由控制器提示重新打开聊天。
-        const history = await client.getLoadedConversationHistory(conversationId);
+      async applyRevertResponseToConversation({ conversationId, response, revertedTurns, retainedTurnId }) {
+        if (response?.thread?.id !== conversationId) throw Error("回退响应的会话不匹配。");
         const removed = new Set(revertedTurns.map((turn) => turn.turnId));
-        if (response?.thread?.id !== conversationId || !Array.isArray(history?.turns)
-            || history.turns.some((turn) => removed.has(turn.turnId))) {
-          throw Error("桌面会话尚未同步回退后的历史。");
+        const hasRefreshedHistory = async () => {
+          const history = await client.getLoadedConversationHistory(conversationId);
+          if (!Array.isArray(history?.turns) || history.turns.some((turn) => removed.has(turn.turnId))) return false;
+          return retainedTurnId === null ? history.turns.length === 0
+            : history.turns.some((turn) => turn.turnId === retainedTurnId);
+        };
+        const state = await client.getConversation(conversationId);
+        if (state?.resumeState === "resumed" && await hasRefreshedHistory()) return;
+        if (!state || state.threadRuntimeStatus?.type === "active") throw Error("桌面会话当前无法刷新。");
+
+        if (state.resumeState === "resumed" && await client.hasLocalHistorySubscription(conversationId)) {
+          const latest = await client.sendRequest("thread/turns/list", {
+            threadId: conversationId, limit: 1, sortDirection: "desc", itemsView: "notLoaded",
+          });
+          const current = await client.sendRequest("thread/read", { threadId: conversationId, includeTurns: false });
+          if (!Array.isArray(latest?.data) || (latest.data[0]?.id ?? null) !== retainedTurnId
+              || latest.data[0]?.status === "inProgress" || current?.thread?.id !== conversationId
+              || current.thread.status?.type !== "idle") {
+            throw Error("服务端会话已变化，无法刷新窗口。");
+          }
+          // 原生方法标记 needs_resume，当前聊天的原生视图会重新加载已截断的历史。
+          // 只重新订阅这个聊天，保留窗口、草稿和恢复记录面板。
+          await client.unsubscribeInactiveConversation(conversationId);
         }
+        const deadline = Date.now() + 8000;
+        do {
+          const current = await client.getConversation(conversationId);
+          if (current?.resumeState === "resumed" && await hasRefreshedHistory()) return;
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        } while (Date.now() < deadline);
+        throw Error("桌面会话尚未同步回退后的历史。");
       },
     };
   }
