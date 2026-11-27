@@ -1337,6 +1337,21 @@ impl RequestEvidenceCache {
         let mut sessions: HashMap<_, Vec<_>> = HashMap::new();
         let mut seen = HashSet::new();
         let mut rejected = self.captured_rejected.clone();
+        let gateway_response_ids: HashSet<_> = self
+            .records
+            .iter()
+            .chain(self.verified.values().map(|saved| &saved.request))
+            .filter_map(|request| request.final_response_id.as_deref())
+            .collect();
+        let repeated_native_ids = {
+            let mut seen = HashSet::new();
+            events
+                .iter()
+                .filter_map(|event| event.native_response_id.as_deref())
+                .filter(|id| !seen.insert(*id))
+                .map(str::to_owned)
+                .collect::<HashSet<_>>()
+        };
         for request in &self.records {
             if !seen.insert(&request.id) {
                 rejected.insert(request.id.clone());
@@ -1352,8 +1367,11 @@ impl RequestEvidenceCache {
         }
         let mut inferred = 0;
         for event in events {
+            let terminal = event.native_response_id.as_deref();
             if !unknown_provider(&event.provider)
-                || event.native_response_id.is_some()
+                || terminal.is_some_and(|id| {
+                    gateway_response_ids.contains(id) || repeated_native_ids.contains(id)
+                })
                 || event.context_conflicts.any()
                 || event.count_uncertain
                 || event.count_incomplete
@@ -1406,6 +1424,15 @@ impl RequestEvidenceCache {
                                 .known_cached()
                                 .is_none_or(|cached| cached == event.delta.cached_input_tokens))
                 });
+                // 旧网关没有终态 ID 时，只用同会话中相符的邻近路由作推断。
+                if terminal.is_some()
+                    && (request.final_response_id.is_some()
+                        || distance > DELAYED_REQUEST_MATCH_WINDOW_MS as u64
+                        || !model_matches
+                        || !counts_match)
+                {
+                    continue;
+                }
                 let rank = (
                     model_matches && counts_match,
                     model_matches,

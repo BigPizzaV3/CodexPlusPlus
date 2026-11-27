@@ -115,6 +115,71 @@ mod actual_attribution {
     }
 
     #[test]
+    fn unmatched_native_response_can_use_compatible_legacy_route_as_inference() {
+        for case in [
+            "missing-id",
+            "different-id",
+            "same-id",
+            "wrong-counts",
+            "wrong-model",
+            "distant",
+            "rejected",
+            "duplicate-native",
+        ] {
+            let mut event = event("gpt-fixture", "custom");
+            assert!(unknown_provider(&event.provider));
+            event.native_response_id = Some("resp_native".into());
+            let mut request = proof(&event);
+            let usage = request.usage.as_mut().unwrap();
+            usage.cached_tokens = None;
+            usage.cached_tokens_known = Some(false);
+            match case {
+                "different-id" => request.final_response_id = Some("resp_other".into()),
+                "wrong-counts" => usage.input_tokens = Some(101),
+                "wrong-model" => request.model = "other-model".into(),
+                "distant" => request.timestamp_ms += DELAYED_REQUEST_MATCH_WINDOW_MS + 100,
+                _ => {}
+            }
+            let mut evidence = RequestEvidenceCache::default();
+            if case == "rejected" {
+                evidence.captured_rejected.insert(request.id.clone());
+            }
+            if case == "same-id" {
+                let mut direct = request.clone();
+                direct.id = "direct".into();
+                direct.final_response_id = Some("resp_native".into());
+                evidence.records.push(direct);
+            }
+            evidence.records.push(request);
+            let mut events = vec![event];
+            if case == "duplicate-native" {
+                let mut duplicate = events[0].clone();
+                duplicate.id = [23; 32];
+                events.push(duplicate);
+            }
+            let original = events[0].clone();
+            let count = evidence.infer_providers(
+                &mut events,
+                &mut BTreeMap::new(),
+                &BTreeMap::new(),
+            );
+            let event = &events[0];
+            assert_eq!(count, usize::from(case == "missing-id"), "{case}");
+            if case == "missing-id" {
+                assert_eq!(event.provider, "supplier-b");
+                assert_eq!(event.provider_source.as_deref(), Some(SESSION_PROVIDER_INFERENCE));
+            } else {
+                assert_eq!(event.provider, original.provider, "{case}");
+                assert_eq!(event.provider_source, original.provider_source, "{case}");
+            }
+            assert_eq!(event.delta, original.delta, "{case}");
+            assert_eq!(event.id, original.id, "{case}");
+            assert_eq!(event.model, original.model, "{case}");
+            assert!(evidence.verified.is_empty());
+        }
+    }
+
+    #[test]
     fn paired_terminal_receipt_corrects_stale_model_without_changing_accounting() {
         for case in [
             "paired",
