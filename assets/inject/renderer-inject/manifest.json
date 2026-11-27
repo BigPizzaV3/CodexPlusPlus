@@ -93,7 +93,7 @@
     {
       "name": "46-service-settings.js",
       "description": "Codex++ 设置页的语音输入与下一步建议服务配置（地址、模型、Key、本地模型下载、全局热键、测试连接）与原生浏览器状态",
-      "lines": 628
+      "lines": 769
     },
     {
       "name": "47-task-board-page.js",

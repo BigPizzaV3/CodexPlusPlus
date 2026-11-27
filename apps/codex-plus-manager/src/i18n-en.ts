@@ -1584,7 +1584,7 @@ export const EN_PLAIN: Record<string, string> = {
   "会话的删除、导出、回退、补载与同步。": "Deleting, exporting, rewinding, backfilling and syncing conversations.",
   "外观与阅读": "Appearance and reading",
   "界面语言、对话宽度、回答折叠、主题与多开标识。": "Interface language, conversation width, answer folding, themes and instance badge.",
-  "内置拓展总开关与启动前的会话维护。": "Master switch for built-in extensions and session maintenance before launch.",
+  "内置拓展总开关。": "Master switch for built-in extensions.",
   "旁支保存": "Save side chats",
   "在本地 Side Chat 标签页显示「保存」。回复结束后可保存为普通会话，包含创建旁支时的主历史。建议开启后新建旁支。": "Show Save on local side chat tabs. Once the reply finishes, save as a normal conversation including the parent history at the fork. Enable before creating a side chat.",
   "点击建议后直接发送到当前会话。": "Send a suggestion directly to the current conversation when clicked.",
@@ -2401,6 +2401,9 @@ export const EN_PLAIN: Record<string, string> = {
   "v2 需上游支持加密子代理载荷，转 Chat 协议的中转请选 v1；仅新会话生效。":
     "v2 requires an upstream that supports encrypted sub-agent payloads; pick v1 for Chat-completions relays. New sessions only.",
   "切换模型后旧会话跟随新默认": "Existing sessions follow the new default model",
+  "非官方登录时保留本地项目": "Keep local projects without the official login",
+  "登录过 ChatGPT 后改用 API Key、本地服务或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。":
+    "After signing in to ChatGPT and then switching to an API key, the local service or an aggregate provider, Codex clears the project list on every launch. When on, Codex++ carries the most recent account's projects into the current mode before launch and hands them back when you return to the official login; a backup is written first. Takes effect after restarting Codex.",
   "用 API Key 解锁代码审查、图像、资料库等入口，模型仍走所选供应商":
     "Unlocks code review, images, the library and more with an API key; models still use the chosen provider",
   "当前用的是官方登录或内置 OpenAI 供应商，模型请求要用真实登录；切到 API Key 供应商或本地服务后才能用本地账号":

@@ -1653,6 +1653,54 @@ impl BridgeDataService for LauncherDataService {
         .map_err(|error| anyhow::anyhow!("export markdown task failed: {error}"))
     }
 
+    /// Codex 设置页「会话维护」的「修复会话索引」：和管理器的 `repair_session_index` 命令同一流程，
+    /// 修完照样触发历史轮次补载（当前页面里已打开的会话补齐消息）。
+    async fn repair_session_index(&self) -> anyhow::Result<Value> {
+        let report = tokio::task::spawn_blocking(|| codex_plus_data::repair_session_index(None))
+            .await
+            .map_err(|error| anyhow::anyhow!("session index repair task failed: {error}"))??;
+        let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+            "bridge.session_index_repair.completed",
+            json!({
+                "elapsed_ms": report.elapsed_ms,
+                "scanned_files": report.scanned_files,
+                "repaired_items": report.repaired_items,
+                "aborted": report.aborted_reason.is_some(),
+            }),
+        );
+        codex_plus_core::history_turn_recovery::after_index_repair(
+            session_snapshot().debug_port,
+            report.aborted_reason.is_some(),
+            report.checked_at_ms,
+        );
+        let mut payload = json!(report);
+        payload["frontendRecovery"] = json!({ "status": "pending", "loadedPages": 0, "metadataPages": 0 });
+        Ok(json!({
+            "status": "ok",
+            "message": format!("会话索引检查完成，恢复 {} 条消息。", report.repaired_items),
+            "report": payload,
+        }))
+    }
+
+    async fn session_index_repair_report(&self) -> anyhow::Result<Value> {
+        let report = tokio::task::spawn_blocking(|| {
+            codex_plus_data::load_session_index_repair_report(None).map(|report| {
+                report.map(|report| {
+                    let frontend = codex_plus_core::history_turn_recovery::load_report(
+                        &codex_plus_core::relay_config::default_codex_home_dir(),
+                        report.checked_at_ms,
+                    );
+                    let mut payload = json!(report);
+                    payload["frontendRecovery"] = json!(frontend);
+                    payload
+                })
+            })
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("session index report task failed: {error}"))??;
+        Ok(json!({ "status": "ok", "report": report }))
+    }
+
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value> {
         let adapter = self.storage_adapter();
         tokio::task::spawn_blocking(move || adapter.codex_thread_usage_history(&session))
