@@ -73,7 +73,53 @@
     try { resource?.[Symbol.dispose]?.(); } catch { /* 连接断开时资源已释放。 */ }
   }
 
-  function turnRewindDesktopManager(client, threadId) {
+  function turnRewindViewReopener(trigger, threadId) {
+    const fiberKey = Object.getOwnPropertyNames(trigger || {}).find((name) => name.startsWith("__reactFiber$"));
+    let routeContext, reactRoot;
+    for (let fiber = trigger?.[fiberKey], depth = 0; fiber && depth < 192; fiber = fiber.return, depth++) {
+      const value = fiber.memoizedProps?.value;
+      if (typeof value?.location?.key === "string" && ["POP", "PUSH", "REPLACE"].includes(value.navigationType)) {
+        routeContext = fiber.type;
+      }
+      if (fiber.tag === 3) reactRoot = fiber.stateNode;
+    }
+    if (!routeContext || !reactRoot) return null;
+    const readLocation = () => {
+      const stack = [reactRoot.current];
+      for (let scanned = 0; stack.length && scanned < 1024; scanned++) {
+        const fiber = stack.pop();
+        if (!fiber) continue;
+        if (fiber.type === routeContext) return fiber.memoizedProps?.value?.location;
+        if (fiber.sibling) stack.push(fiber.sibling);
+        if (fiber.child && !(fiber.tag === 22 && fiber.memoizedState)) stack.push(fiber.child);
+      }
+      return null;
+    };
+    const original = readLocation();
+    if (original?.pathname !== `/local/${threadId}`) return null;
+    const navigate = (path, state) => window.dispatchEvent(new MessageEvent("message", {
+      data: { type: "navigate-to-route", path, state, replace: true },
+      origin: window.location.origin, source: window,
+    }));
+    return async () => {
+      const current = readLocation();
+      if (current?.key !== original.key || current.pathname !== original.pathname) return null;
+      const marker = crypto.randomUUID();
+      const parked = () => {
+        const location = readLocation();
+        return location?.pathname === "/" && location.state?.codexPlusRewindRefresh === marker;
+      };
+      navigate("/", { codexPlusRewindRefresh: marker });
+      // 等离开原生聊天视图的清理函数释放它持有的历史订阅。
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (!parked()) return null;
+      return () => {
+        if (parked()) navigate(original.pathname + original.search + original.hash, original.state);
+      };
+    };
+  }
+
+  function turnRewindDesktopManager(client, threadId, parkView) {
     let onConversationState;
     return {
       getHostId: () => "local",
@@ -167,9 +213,17 @@
               || current.thread.status?.type !== "idle") {
             throw Error("服务端会话已变化，无法刷新窗口。");
           }
-          // 原生方法标记 needs_resume，当前聊天的原生视图会重新加载已截断的历史。
-          // 只重新订阅这个聊天，保留窗口、草稿和恢复记录面板。
-          await client.unsubscribeInactiveConversation(conversationId);
+          // 活动视图会让原生恢复流程保留旧轮次。先离开目标路由，再让宿主释放旧缓存。
+          const restoreView = await parkView?.();
+          try {
+            const beforeUnsubscribe = await client.getConversation(conversationId);
+            if (beforeUnsubscribe?.threadRuntimeStatus?.type !== "idle") {
+              throw Error("桌面会话当前无法刷新。");
+            }
+            await client.unsubscribeInactiveConversation(conversationId);
+          } finally {
+            restoreView?.();
+          }
         }
         const deadline = Date.now() + 8000;
         do {
@@ -412,11 +466,15 @@
               throw Error("原生菜单已变化，请关闭菜单后重新打开再试。");
             }
             // 自定义 DOM 项没有 Radix 的 onSelect；关闭原生菜单后释放模态焦点和指针锁。
+            const parkView = client ? turnRewindViewReopener(
+              turnRewindMenuOwners(currentBranch)[0] || document.querySelector("nav[data-app-navigation-rail], aside.app-shell-left-panel"),
+              target.threadId,
+            ) : null;
             menu.dispatchEvent(new KeyboardEvent("keydown", {
               key: "Escape", code: "Escape", bubbles: true, cancelable: true,
             }));
             if (client) {
-              const manager = turnRewindDesktopManager(client, target.threadId);
+              const manager = turnRewindDesktopManager(client, target.threadId, parkView);
               await codexPlusTurnRewind.run(target.threadId, target.turnId, { manager });
             } else {
               await codexPlusTurnRewind.run(target.threadId, target.turnId);

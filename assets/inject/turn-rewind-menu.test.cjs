@@ -238,7 +238,32 @@ class Element {
   const original = ['desktop-baseline', identity.turnId].map(turnId => ({ turnId, status: 'completed', items: [] }));
   let serverTurns, loadedTurns, mode, notification, openCount = 0, managerDisposals = 0, subscriptionDisposals = 0;
   let report, panelResult, changeTargetOnOpen = false;
-  let resumeState, historyTruncated;
+  let resumeState, historyTruncated, viewActive;
+  const routeContext = Symbol('native-route-context');
+  const routes = [];
+  const chatPath = `/local/${identity.threadId}`;
+  const chatState = { fixture: 'composer-and-panel-state' };
+  const routerFiber = { type: routeContext, memoizedProps: { value: { navigationType: 'REPLACE' } } };
+  function commitRoute(pathname, search = '', hash = '', routeState = null) {
+    routerFiber.memoizedProps.value.location = { pathname, search, hash, state: routeState, key: String(routes.length) };
+  }
+  context.location = { origin: 'app://-' };
+  context.MessageEvent = class { constructor(type, init) { this.type = type; Object.assign(this, init); } };
+  context.dispatchEvent = ({ data: { type, path, state, replace } }) => {
+    assert.equal(type, 'navigate-to-route'); assert.equal(replace, true);
+    routes.push(path);
+    if (path === '/') {
+      commitRoute('/', '', '', state);
+      setTimeout(() => { viewActive = false; }, 0);
+    } else {
+      assert.equal(path, chatPath + '?fixture=1#transcript');
+      assert.equal(state, chatState);
+      commitRoute(chatPath, '?fixture=1', '#transcript', chatState);
+      viewActive = true;
+      resumeState = 'resumed';
+      loadedTurns = serverTurns;
+    }
+  };
   const desktopWrites = [];
   const rpc = {
     async getHostId() { return 'local'; },
@@ -293,7 +318,13 @@ class Element {
       assert.equal(historyTruncated, true);
       desktopWrites.push('refresh');
       resumeState = 'needs_resume';
-      setTimeout(() => { loadedTurns = serverTurns; resumeState = 'resumed'; }, 25);
+      assert.equal(viewActive, false, 'Codex retains stale turns while the native conversation view remains active');
+      loadedTurns = [];
+      if (mode === 'navigated-after-park') {
+        commitRoute('/settings');
+        loadedTurns = serverTurns;
+        resumeState = 'resumed';
+      }
     },
     [Symbol.dispose]() { managerDisposals++; },
   };
@@ -305,7 +336,10 @@ class Element {
     } },
     workspaceFiles: { async saveCopy() { return { path: '/desktop/receipt.json' }; } },
   });
-  const plainActionBar = { memoizedProps: identity, return: applicationRoot };
+  const routeRoot = { tag: 3, child: routerFiber };
+  routeRoot.stateNode = { current: routeRoot };
+  routerFiber.return = routeRoot;
+  const plainActionBar = { memoizedProps: identity, return: routerFiber };
   trigger.__reactFiber$fixture = { memoizedProps: {}, return: plainActionBar };
   branch.__reactFiber$fixture = detachedMenuTree;
   body.appendChild(trigger);
@@ -316,23 +350,29 @@ class Element {
   await context.loadTurnRewindDesktopServices();
   context.refreshTurnRewindMenus();
   assert.equal(button.getAttribute('aria-disabled'), 'false');
-  for (mode of ['ready', 'stale-ui', 'rewind-first', 'active-after-revert', 'new-turn-after-revert',
+  for (mode of ['ready', 'stale-ui', 'rewind-first', 'navigated-after-park', 'active-after-revert', 'new-turn-after-revert',
     'stale-history', 'concurrent', 'follower', 'partial-history']) {
     identity.turnId = mode === 'rewind-first' ? 'desktop-baseline' : 'desktop-selected';
     loadedTurns = original;
     serverTurns = mode === 'stale-history' ? original.slice(0, 1) : original;
     resumeState = 'resumed';
     historyTruncated = false;
+    viewActive = true;
     desktopWrites.length = 0;
+    routes.length = 0;
+    commitRoute(chatPath, '?fixture=1', '#transcript', chatState);
     await button.click();
-    if (['ready', 'stale-ui', 'rewind-first'].includes(mode)) {
+    if (['ready', 'stale-ui', 'rewind-first', 'navigated-after-park'].includes(mode)) {
       assert.deepEqual(desktopWrites, mode === 'ready' ? ['prompt', 'revert'] : ['prompt', 'revert', 'refresh']);
+      assert.deepEqual(routes, mode === 'ready' ? [] : mode === 'navigated-after-park' ? ['/']
+        : ['/', chatPath + '?fixture=1#transcript']);
       assert.equal(report.status, 'complete');
       assert.equal(report.historyTruncated, true);
       assert.deepEqual(loadedTurns.map(turn => turn.turnId), mode === 'rewind-first' ? [] : ['desktop-baseline']);
       assert.equal(panelResult[2], true);
     } else if (['active-after-revert', 'new-turn-after-revert'].includes(mode)) {
       assert.deepEqual(desktopWrites, ['prompt', 'revert']);
+      assert.deepEqual(routes, [], 'leave the current view alone if the server has new work');
       assert.equal(report.status, 'ui-refresh-required');
       assert.equal(report.historyTruncated, true);
       assert.equal(panelResult[2], true);
@@ -347,7 +387,7 @@ class Element {
   assert.equal(desktopWrites.length, writesBeforeReusedMenu, 'menu changed while opening the RPC');
   assert.match(toasts.at(-1), /菜单已变化/);
   assert.equal(managerDisposals, openCount, 'release every opened manager, including a reused menu');
-  assert.equal(subscriptionDisposals, 7, 'release the notification subscription on completion and errors');
+  assert.equal(subscriptionDisposals, 8, 'release the notification subscription on completion and errors');
   assert.equal(notification, null);
 
   // 重注入保留控制器对象，不丢在途任务；旧观察器和菜单项被回收。
