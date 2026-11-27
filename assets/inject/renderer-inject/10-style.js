@@ -231,6 +231,10 @@
         position: fixed;
         top: 56px;
         right: 24px;
+        /* 同页重新注入后，上一代脚本收提示时会给所有提示写行内 bottom（旧版从下往上排），
+           和这里的 top 一起就把提示从上拉到下。行内样式只有 !important 压得住。 */
+        bottom: auto !important;
+        height: auto !important;
         z-index: 2147483000;
         box-sizing: border-box;
         display: flex;
