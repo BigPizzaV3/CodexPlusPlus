@@ -1030,25 +1030,24 @@ describe("renderer injection header compatibility", () => {
     // 只搬动已有的 modal-body，不重建里面的 data-codex-* 挂载点，
     // 否则 renderUserScripts / 各 toggle 的 querySelector 会找不到目标。
     assert.match(renderer, /main\.appendChild\(body\)/);
-    // 左面板按页面决定：「拓展」是脚本列表，设置页是分组导航；推荐内容、远程控制、微信连接走分组左栏。
+    // 左面板按页面决定：「拓展」是脚本列表，设置页是分组导航；推荐内容没有左栏；远程控制、微信连接在 Codex++ 里面打开。
     assert.match(renderer, /if \(tab === codexPlusExtensionsTab\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /\} else if \(tab === "home"\) \{[\s\S]{0,400}nav\.className = "codex-plus-page-nav"/);
     assert.match(renderer, /data-codex-plus-page-nav-body="true"/);
-    // 目录是常量，页面里的左栏和图标栏悬浮卡片共用。
-    assert.match(renderer, /if \(tab === codexPlusSponsorTab\) installCodexPlusSectionNav\(overlay, codexPlusSponsorSectionNav\);/);
-    assert.match(renderer, /const codexPlusSponsorSectionNav = \{ title: "推荐内容", groups: \[\{ id: "partners"/);
+    assert.doesNotMatch(renderer, /codexPlusSponsorSectionNav|function installCodexPlusSectionNav\(/, "推荐内容不再有只一项的左栏，独立分组左栏已删");
     assert.match(renderer, /const codexPlusRemoteSectionNav = \{\s*title: "远程控制",[\s\S]{0,200}groups: \[\s*\{ id: "remote"[\s\S]{0,80}\{ id: "devices"[\s\S]{0,80}\{ id: "notify"[\s\S]{0,80}\{ id: "help"/);
     assert.match(renderer, /const codexPlusWeixinSectionNav = \{\s*title: "微信连接",\s*groups: \[\s*\{ id: "connection"[\s\S]{0,80}\{ id: "session"[\s\S]{0,80}\{ id: "jiajia"[\s\S]{0,80}\{ id: "permission"/);
-    assert.match(renderer, /installCodexPlusSectionNav\(overlay, codexPlusRemoteSectionNav\);/);
-    assert.match(renderer, /installCodexPlusSectionNav\(overlay, codexPlusWeixinSectionNav\);/);
+    // 两页的分组挂在 Codex++ 左栏那一项下面（installCodexPlusEmbeddedNav 的第二个参数）。
+    assert.match(renderer, /installCodexPlusEmbeddedNav\(overlay, codexPlusRemoteSectionNav\);/);
+    assert.match(renderer, /installCodexPlusEmbeddedNav\(overlay, codexPlusWeixinSectionNav\);/);
     // 两页的面板用设置页的分页样式；重画后由 MutationObserver 补回当前组，左栏不占 refreshCodexPlusPageNav 认的挂载点。
     assert.match(renderer, /codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-remote-panel="true"/);
     assert.match(renderer, /codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-weixin-panel="true"/);
-    const sectionNav = renderer.slice(renderer.indexOf("function installCodexPlusSectionNav("), renderer.indexOf("function codexPlusSectionGroupHtml("));
-    assert.match(sectionNav, /data-codex-plus-section-nav-body="true"/);
-    assert.doesNotMatch(sectionNav, /data-codex-plus-page-nav-body/);
-    assert.match(sectionNav, /new MutationObserver\(sync\)\.observe\(body, \{ childList: true, subtree: true \}\)/);
-    assert.match(sectionNav, /window\.localStorage\.setItem\(storageKey, active\)/);
+    const embeddedNav = renderer.slice(renderer.indexOf("function installCodexPlusEmbeddedNav("), renderer.indexOf("function installCodexPlusEmbeddedNav(") + 4000);
+    assert.match(embeddedNav, /data-codex-plus-embedded-nav-body="true"/);
+    assert.doesNotMatch(embeddedNav, /data-codex-plus-page-nav-body/);
+    assert.match(embeddedNav, /new MutationObserver\(syncSection\)\.observe\(pageBody, \{ childList: true, subtree: true \}\)/);
+    assert.match(embeddedNav, /window\.localStorage\.setItem\(`codex-plus-section-nav:\$\{section\.nav\.title\}`, sectionId\)/);
     // 克隆来的图标栏入口去掉原生悬浮区标记，否则停在我们的入口上会浮出模板那一项的原生侧栏。
     const railButton = renderer.slice(renderer.indexOf("function createCodexPlusRailButton("), renderer.indexOf("function createCodexPlusRailButton(") + 2500);
     assert.match(railButton, /button\.removeAttribute\("data-slate-sidebar-peek-area"\);/);
@@ -1059,9 +1058,7 @@ describe("renderer injection header compatibility", () => {
     // 侧栏收起时每个入口浮出自己的卡片：处理函数随图标栏入口一起装（原生页面上也要有）。
     assert.match(renderer, /installCodexPlusNavPeek\(\);\s*(?:\/\/[^\n]*\n\s*)*refreshCodexPlusPagePosition\(\);\s*return true;\s*\}/);
     const peekSpec = renderer.slice(renderer.indexOf("function codexPlusRailPeekSpec("), renderer.indexOf("function codexPlusSettingsPeekNavItems("));
-    for (const [rail, nav] of [["codexPlusRailRemoteId", "codexPlusRemoteSectionNav"], ["codexPlusRailWeixinId", "codexPlusWeixinSectionNav"], ["codexPlusRailSponsorId", "codexPlusSponsorSectionNav"]]) {
-      assert.match(peekSpec, new RegExp(`if \\(railId === ${rail}\\) return section\\(${nav}, `));
-    }
+    assert.doesNotMatch(peekSpec, /codexPlusRailRemoteId|codexPlusRailWeixinId|codexPlusRailSponsorId/, "收进 Codex++ 的页面和推荐内容没有自己的悬浮卡片");
     assert.match(peekSpec, /if \(railId === codexPlusRailNavId\) \{[\s\S]{0,900}openCodexPlusPage\(\);\s*selectCodexPlusSettingsGroup\(id\);/);
     assert.match(peekSpec, /if \(railId === codexPlusRailExtensionsId\) \{[\s\S]{0,400}items: renderCodexPlusExtensionsNav\(\)/);
     // 布局必须在 selectCodexPlusTab 之前建好，否则刷新左面板时找不到容器。

@@ -232,7 +232,7 @@
     const state = codexPlusRemotePageState;
     const data = state.data;
     const busy = Boolean(state.busy);
-    // 页面名和「实验」标在左栏顶上（installCodexPlusSectionNav），右边每组第一节的标题就是大标题。
+    // 页面名和「实验」标在 Codex++ 左栏里，分组挂在它下面（installCodexPlusEmbeddedNav），右边每组第一节的标题就是大标题。
     const banner = [
       state.error || data?.error || data?.lan?.error ? `<div class="codex-plus-remote-banner" data-tone="warn" role="alert">${escapeHtml(state.error || data?.error || data?.lan?.error)}</div>` : "",
       state.notice ? `<div class="codex-plus-remote-banner" data-tone="ok" role="status">${escapeHtml(state.notice)}</div>` : "",
@@ -495,10 +495,10 @@
       <div class="codex-plus-modal-body"><div class="codex-plus-panel codex-plus-settings" data-codex-plus-settings-paged="true" data-codex-remote-panel="true"></div></div></div>`;
     overlay.addEventListener("click", (event) => { void codexPlusRemoteHandleClick(event); });
     overlay.addEventListener("input", codexPlusRemoteHandleInput);
-    installCodexPlusSectionNav(overlay, codexPlusRemoteSectionNav);
     document.body.appendChild(overlay);
     // 最左边保留 Codex++ 的分组栏：这一页是在 Codex++ 页面里面打开的（40-backend-settings.js）。
-    installCodexPlusEmbeddedNav(overlay);
+    // 这一页的分组挂在 Codex++ 左栏「远程控制」下面，右边只显示选中的一组。
+    installCodexPlusEmbeddedNav(overlay, codexPlusRemoteSectionNav);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);
     document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {

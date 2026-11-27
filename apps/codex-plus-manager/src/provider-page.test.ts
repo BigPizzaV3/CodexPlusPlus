@@ -278,7 +278,7 @@ describe("供应商页（43 分片）", () => {
     // 图标栏只留 Codex++：供应商收进它左栏的「页面」一节，旧入口摘掉。
     assert.match(renderer, /\{ entry: "provider", label: "供应商", icon: icons\.provider, open: \(\) => openCodexPlusProviderPage\(\) \}/);
     assert.match(renderer, /\[codexPlusRailNavId, \["home", \.\.\.codexPlusFoldedPages\(\)\.map\(\(page\) => page\.entry\)\]\],/, "打开时亮 Codex++ 入口");
-    assert.match(pageSource, /document\.body\.appendChild\(overlay\);\n(?:\s*\/\/[^\n]*\n)*\s*installCodexPlusEmbeddedNav\(overlay\);/, "在 Codex++ 页面里面打开：最左边保留 Codex++ 分组栏");
+    assert.match(pageSource, /document\.body\.appendChild\(overlay\);\n(?:\s*\/\/[^\n]*\n)*\s*installCodexPlusEmbeddedNav\(overlay(?:, codexPlus\w+SectionNav)?\);/, "在 Codex++ 页面里面打开：最左边保留 Codex++ 分组栏");
     assert.match(renderer, /if \(tab === codexPlusProviderTab\) return "provider";/);
     assert.match(renderer, /\[codexPlusRailNavId, codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId, codexPlusRailPluginMarketId\]\.forEach/);
     // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。

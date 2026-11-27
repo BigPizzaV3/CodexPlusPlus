@@ -32,6 +32,8 @@
     fetchedModels: [],
     // "gateway" | "direct"；打开页面时按 Codex 当前的接入方式选。
     tab: "",
+    // "list" | "detail"：先看供应商列表，点一家进它的详情（「← 供应商」回列表）。
+    view: "list",
   };
 
   codexPlusProviderEditingApi.configureRelayProfileEditing({
@@ -717,6 +719,7 @@
         void codexPlusProviderConfirmDiscard().then(async (ok) => {
           if (!ok || !(await codexPlusGatewayConfirmDiscard())) return;
           codexPlusProviderPageState.tab = "gateway";
+          codexPlusProviderPageState.view = "detail";
           codexPlusGatewayStartNew();
         });
         return;
@@ -724,6 +727,7 @@
       void codexPlusProviderConfirmDiscard().then((ok) => {
         if (!ok) return;
         codexPlusProviderPageState.tab = "direct";
+        codexPlusProviderPageState.view = "detail";
         codexPlusProviderStartNew(value);
       });
       return;
@@ -1018,40 +1022,79 @@
       panel.innerHTML = `<div class="codex-plus-provider-empty">${state.busy === "load" ? "正在读取供应商…" : escapeHtml(state.status || "读取供应商失败")} <button type="button" class="codex-plus-provider-link" data-codex-provider-action="reload">重试</button></div>`;
       return;
     }
-    const scroll = panel.querySelector(".codex-plus-provider-detail")?.scrollTop || 0;
-    // 和管理器「连接与供应商」一样：顶部选连接方式（聚合 / 直连），下面一份供应商列表。
+    // 和管理器「连接与供应商」一样：连接方式（聚合 / 直连）+ 一份供应商列表。
     // 聚合时列共享供应商，每家一个开关（打开的合在一起给 Codex 用）；直连时列 Codex 自己的直连供应商，点「使用」换一家。
     // 看哪一类跟着连接方式走（state.tab），别处改了连接方式，轮询重读后这里也跟着换。
+    // 页面在 Codex++ 里面打开（左边是 Codex++ 的分组栏），这里照原生设置的子页做两层：
+    // 先是列表页（连接方式、默认模型、登录身份、供应商列表），点一家进它的详情页，「← 供应商」回列表。
     const gatewayMode = state.data?.gatewayMode === true;
     state.tab = gatewayMode ? "gateway" : "direct";
+    const view = state.view === "detail" ? "detail" : "list";
+    const previous = panel.querySelector(".codex-plus-provider-detail");
+    // 同一层重画（轮询、操作之后）保留滚动位置；换了一层从顶上看起。
+    const scroll = previous?.dataset.view === view ? previous.scrollTop : 0;
     const footer = `<div class="codex-plus-provider-footer" data-codex-provider-footer></div>`;
+    const body = view === "detail" ? renderCodexPlusProviderDetailView(gatewayMode) : renderCodexPlusProviderListView(gatewayMode);
+    panel.innerHTML = `<div class="codex-plus-provider-shell"><section class="codex-plus-provider-detail" data-view="${view}">${body}</section>${footer}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
+    const detail = panel.querySelector(".codex-plus-provider-detail");
+    if (detail) detail.scrollTop = scroll;
+    codexPlusProviderSyncFooter();
+  }
+
+  /** 列表页：标题行放连接方式切换和「+ 新建」，下面「连接」一卡（默认模型、登录身份），再下面是供应商列表。 */
+  function renderCodexPlusProviderListView(gatewayMode) {
+    const state = codexPlusProviderPageState;
+    const busy = Boolean(state.busy || codexPlusGatewayPageState.busy);
     const list = gatewayMode
       ? codexPlusGatewayPageState.payload
         ? renderCodexPlusGatewayList()
         : `<div class="codex-plus-provider-help">${codexPlusGatewayPageState.busy === "load" ? "正在读取共享供应商…" : escapeHtml(codexPlusGatewayPageState.status || "还没有读取共享供应商")} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`
       : renderCodexPlusProviderList();
-    const detailBody = gatewayMode
-      ? `${renderCodexPlusGatewayDetail()}`
-      : renderCodexPlusProviderDetail();
     // 「+ 新建」：聚合时加共享供应商；直连时加直连供应商，或直连专用的模型聚合 / 故障转移。
     const newOptions = gatewayMode
       ? [["shared", "添加供应商"], ["toggle-others", codexPlusGatewayPageState.showOthers ? "隐藏其他 Agent 的供应商" : "显示其他 Agent 的供应商"]]
       : [["direct", "添加供应商"], ["model", "新建模型聚合"], ["failover", "新建故障转移"]];
-    panel.innerHTML = `<div class="codex-plus-provider-shell">${renderCodexPlusProviderModeSwitch(gatewayMode)}<div class="codex-plus-provider-layout">
-      <aside class="codex-plus-provider-sidebar">
-        ${renderCodexPlusProviderModeInfo(gatewayMode)}
-        <div class="codex-plus-provider-sidebar-header"><span>供应商</span>
-          ${codexPlusProviderActionMenu("new", "+ 新建", newOptions, state.busy || codexPlusGatewayPageState.busy ? "disabled" : "")}</div>
-        ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-note">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
-        ${list}
-        ${renderCodexPlusLoginIdentity()}
-      </aside>
-      <section class="codex-plus-provider-detail">
-        ${detailBody}
-      </section></div>${footer}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
-    const detail = panel.querySelector(".codex-plus-provider-detail");
-    if (detail) detail.scrollTop = scroll;
-    codexPlusProviderSyncFooter();
+    const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+    const connection = [
+      gatewayMode && codexPlusGatewayPageState.payload ? renderCodexPlusGatewayDefaultModel(model, busy) : "",
+      renderCodexPlusLoginIdentity(),
+    ].filter(Boolean).join("");
+    return `<div class="codex-plus-provider-detail-header">
+        <div><div class="codex-plus-provider-title">供应商</div><div class="codex-plus-provider-subtitle">${escapeHtml(codexPlusProviderModeHint(gatewayMode))}</div></div>
+        <div class="codex-plus-provider-actions">${renderCodexPlusProviderModeSwitch(gatewayMode)}</div>
+      </div>
+      ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-banner" data-tone="warn">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
+      ${connection ? `<section class="codex-plus-provider-section codex-plus-provider-group"><div class="codex-plus-provider-section-title">连接</div><div class="codex-plus-provider-card codex-plus-provider-connection-card">${connection}</div></section>` : ""}
+      <section class="codex-plus-provider-section codex-plus-provider-group">
+        <div class="codex-plus-provider-section-title"><span>${gatewayMode ? "共享供应商" : "直连供应商"}</span>${codexPlusProviderActionMenu("new", "+ 新建", newOptions, busy ? "disabled" : "")}</div>
+        <div class="codex-plus-provider-card codex-plus-provider-list-card">${list}</div>
+        <div class="codex-plus-provider-group-note">${gatewayMode ? "开关决定 Codex 用不用这一家；点一行看详情、改连接和模型。" : "点一行看详情；「使用」换成这一家。"}</div>
+      </section>`;
+  }
+
+  /** 详情页：上面一个「← 供应商」回列表，下面是原来的详情（标题行、各卡片）。 */
+  function renderCodexPlusProviderDetailView(gatewayMode) {
+    return `<div class="codex-plus-provider-back-row"><button type="button" class="codex-plus-provider-back" data-codex-provider-action="back"><span aria-hidden="true">‹</span>供应商</button></div>
+      ${gatewayMode ? renderCodexPlusGatewayDetail() : renderCodexPlusProviderDetail()}`;
+  }
+
+  /** 从详情回列表：有没保存的修改先问；放弃就把草稿换回保存的版本（新建的直接丢掉）。 */
+  async function codexPlusProviderBackToList() {
+    const state = codexPlusProviderPageState;
+    if (state.tab === "gateway") {
+      const gateway = codexPlusGatewayPageState;
+      if (!(await codexPlusGatewayConfirmDiscard())) return;
+      if (gateway.isNew || gateway.dirty) {
+        gateway.isNew = false;
+        codexPlusGatewaySelect(gateway.selectedId && codexPlusGatewayEntries().some((entry) => entry.id === gateway.selectedId) ? gateway.selectedId : codexPlusGatewayEntries()[0]?.id || "");
+      }
+    } else {
+      if (!(await codexPlusProviderConfirmDiscard())) return;
+      if (state.isNew || state.dirty) codexPlusProviderSelect(state.isNew ? state.settings.activeRelayId : state.selectedId);
+    }
+    state.view = "list";
+    codexPlusProviderSetStatus("");
+    renderCodexPlusProviderPage();
   }
 
   async function codexPlusProviderConfirmDiscard() {
@@ -1218,8 +1261,18 @@
     if (!target) return;
     if (codexPlusProviderHandleMenuClick(target)) return;
     // 一次只列一类（跟着连接方式），共享供应商的点击都交给 44 分片。
+    // 列表页点一行（不是行里的开关、上下移）进它的详情；同一家已经选着时 44 不重画，这里补一次。
+    const gatewayOpen = target.closest("[data-codex-gateway-select]") && !target.closest("[data-codex-gateway-member], [data-codex-gateway-move]");
+    const gatewayAction = target.closest("[data-codex-gateway-action]")?.dataset.codexGatewayAction || "";
     if (target.closest("[data-codex-gateway-select], [data-codex-gateway-move], [data-codex-gateway-action], [data-codex-gateway-member], [data-codex-gateway-key-replace], [data-codex-gateway-key-delete]")) {
+      const deletingId = gatewayAction === "delete" ? codexPlusGatewayPageState.selectedId : "";
+      if (gatewayOpen) state.view = "detail";
+      if (gatewayAction === "cancel-new") state.view = "list";
+      if (gatewayAction === "new") state.view = "detail";
       await codexPlusGatewayHandleClick(target);
+      // 删掉了就回列表，不停在另一家的详情上。
+      if (deletingId && !codexPlusGatewayEntries().some((entry) => entry.id === deletingId)) state.view = "list";
+      if (gatewayOpen || deletingId) renderCodexPlusProviderPage();
       return;
     }
     const move = target.closest("[data-codex-provider-move]");
@@ -1231,10 +1284,12 @@
     const select = target.closest("[data-codex-provider-select]");
     if (select) {
       const id = select.dataset.codexProviderSelect;
-      if (id === state.selectedId && !state.isNew) return;
-      if (!(await codexPlusProviderConfirmDiscard())) return;
-      codexPlusProviderSelect(id);
-      codexPlusProviderSetStatus("");
+      if (id !== state.selectedId || state.isNew) {
+        if (!(await codexPlusProviderConfirmDiscard())) return;
+        codexPlusProviderSelect(id);
+        codexPlusProviderSetStatus("");
+      }
+      state.view = "detail";
       return renderCodexPlusProviderPage();
     }
     if (codexPlusProviderHandleModelEditor(event)) return;
@@ -1245,6 +1300,7 @@
     if (!action || target.closest("button")?.disabled) return;
     const id = state.draft?.id;
     switch (action) {
+      case "back": return codexPlusProviderBackToList();
       case "reload": return codexPlusProviderLoad();
       case "agg-route-add": {
         const aggregate = codexPlusProviderAggregateConfig(state.draft);
@@ -1256,10 +1312,18 @@
       }
       case "cancel-new":
         codexPlusProviderSelect(state.settings.activeRelayId);
+        state.view = "list";
         return renderCodexPlusProviderPage();
       case "save": return codexPlusProviderSave();
       case "use": return codexPlusProviderUse(id);
-      case "delete": return codexPlusProviderDelete(id);
+      case "delete":
+        await codexPlusProviderDelete(id);
+        // 删掉了就回列表，不停在另一家的详情上。
+        if (!state.settings.relayProfiles.some((profile) => profile.id === id)) {
+          state.view = "list";
+          renderCodexPlusProviderPage();
+        }
+        return;
       case "duplicate":
         if (!(await codexPlusProviderConfirmDiscard())) return;
         return codexPlusProviderDuplicate(id);
@@ -1341,6 +1405,7 @@
     state.dirty = false;
     state.isNew = false;
     state.tab = "";
+    state.view = "list";
     Object.assign(codexPlusGatewayPageState, { payload: null, isNew: false, dirty: false, busy: "", status: "", disconnect: null, fetchedModels: [] });
     codexPlusProviderSetStatus("");
     renderCodexPlusProviderPage();

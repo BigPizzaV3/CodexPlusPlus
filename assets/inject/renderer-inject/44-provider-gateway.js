@@ -324,16 +324,21 @@
     </div>`;
   }
 
-  /** 左栏顶部：当前连接方式的一句说明；聚合时上面再放「默认模型」。 */
-  function renderCodexPlusProviderModeInfo(gatewayMode) {
-    const busy = Boolean(codexPlusGatewayPageState.busy || codexPlusProviderPageState.busy);
-    const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+  /** 当前连接方式的一句说明（供应商列表页的副标题）。 */
+  function codexPlusProviderModeHint(gatewayMode) {
     const connecting = codexPlusGatewayPageState.busy === "connect" || codexPlusGatewayPageState.busy === "disconnect";
-    const hint = connecting
+    return connecting
       ? "正在切换…"
       : gatewayMode
         ? "打开的供应商合在一起给 Codex 用，模型都列进模型选择器。需要 Codex++ 在后台运行。"
         : "Codex 直接连一家，关掉 Codex++ 也能用（需协议转换的除外）；换一家点「使用」。";
+  }
+
+  /** 当前连接方式的一句说明；聚合时上面再放「默认模型」。 */
+  function renderCodexPlusProviderModeInfo(gatewayMode) {
+    const busy = Boolean(codexPlusGatewayPageState.busy || codexPlusProviderPageState.busy);
+    const model = codexPlusGatewayPageState.payload?.gateway?.bindings?.codex?.model || "";
+    const hint = codexPlusProviderModeHint(gatewayMode);
     return `<div class="codex-plus-provider-mode-info">
       ${gatewayMode && codexPlusGatewayPageState.payload ? renderCodexPlusGatewayDefaultModel(model, busy) : ""}
       <div class="codex-plus-provider-help">${escapeHtml(hint)}</div>
