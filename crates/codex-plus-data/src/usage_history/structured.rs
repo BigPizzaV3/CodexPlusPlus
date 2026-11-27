@@ -1471,10 +1471,12 @@ impl RequestEvidenceCache {
         let aliases = RequestSessionAliases::new(aliases);
         let mut sessions = HashMap::<_, Vec<_>>::new();
         for request in &self.records {
-            if request.valid_capture()
-                && let Some(session) = aliases.resolve(&request.thread_id)
-            {
-                sessions.entry(session).or_default().push(request);
+            if let Some(session) = aliases.resolve(&request.thread_id) {
+                if request.valid_capture() {
+                    sessions.entry(session).or_default().push(request);
+                } else if self.captured_rejected.contains(&request.id) {
+                    sessions.entry(session).or_default();
+                }
             }
         }
         for requests in sessions.values_mut() {
@@ -1490,7 +1492,19 @@ impl RequestEvidenceCache {
                 continue;
             }
             let Some(session) = aliases.resolve(&event.session) else { continue };
-            let Some(requests) = sessions.get(&session) else { continue };
+            let Some(requests) = sessions.get(&session) else {
+                // 请求证据缺失时，已知供应商前缀只作推断，不能证明实际故障转移路由。
+                if let Some((provider, model)) = event.model.split_once('/')
+                    && !unknown_provider(provider)
+                    && !provider.eq_ignore_ascii_case("group")
+                    && !unknown_model(model)
+                    && names.contains_key(provider)
+                {
+                    event.provider = provider.to_owned();
+                    event.provider_source = Some("model-namespace".to_owned());
+                }
+                continue;
+            };
             let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
             let mut best = (0, std::cmp::Reverse(u64::MAX));
             let mut supplier: Option<&RequestEvidence> = None;
@@ -2740,7 +2754,13 @@ impl LegacyMatches {
         if event.context_conflicts.any()
             || event.count_uncertain
             || event.count_incomplete
-            || !event.delta.cached_known
+            || (!event.delta.cached_known
+                && !matches!(
+                    record.source.as_str(),
+                    "request-log-recovered-supplier-only"
+                        | "session-context-inferred"
+                        | "model-namespace"
+                ))
         {
             self.conflicts += 1;
             return;

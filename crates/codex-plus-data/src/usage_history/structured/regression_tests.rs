@@ -213,6 +213,64 @@ fn supplier_only_evidence_accepts_routing_models_without_resolving_the_model() {
 }
 
 #[test]
+fn supplier_only_evidence_keeps_unknown_cache_and_conflict_boundaries() {
+    for (source, allowed) in [
+        ("session-context-inferred", true),
+        ("request-log-recovered-supplier-only", true),
+        ("model-namespace", true),
+        ("upstream-exact-bidirectional", false),
+        ("user-classified", false),
+        ("user-provider-classification", false),
+    ] {
+        let mut fixture = Fixture::new();
+        let mut row = fixture.usage(1_000, 1);
+        for name in ["total_token_usage", "last_token_usage"] {
+            row["payload"]["info"][name].as_object_mut().unwrap().remove("cached_input_tokens");
+        }
+        fixture.write_segment("rollout-a.jsonl",
+            vec![fixture.context(500, "supplier-a/model-a"), row]);
+        let original = fixture.snapshot();
+        assert!(!original.events[0].delta.cached_known);
+        let mut record = evidence(&original.events[0], &original.events[0].model);
+        record["source"] = json!(source);
+        fixture.write_evidence(vec![record.clone()]);
+        reopen_index(&mut fixture);
+        let mut repaired = fixture.snapshot();
+        assert_eq!(repaired.provider_evidence["appliedEvents"], usize::from(allowed), "{source}");
+        if allowed {
+            assert_eq!(repaired.events[0].provider, "supplier-a", "{source}");
+            assert_eq!(repaired.events[0].provider_source.as_deref(), Some(source));
+            repaired.events[0].provider.clone_from(&original.events[0].provider);
+            repaired.events[0].provider_source.clone_from(&original.events[0].provider_source);
+        }
+        assert!(repaired.events[0] == original.events[0], "{source}: changed raw usage");
+        fixture.write_evidence(vec![]);
+        let withdrawn = fixture.snapshot();
+        assert!(withdrawn.events[0] == original.events[0], "{source}: revocation changed usage");
+        if !allowed {
+            continue;
+        }
+        for conflict in ["context", "uncertain", "incomplete", "provider"] {
+            let mut event = original.events[0].clone();
+            match conflict {
+                "context" => event.context_conflicts.provider = true,
+                "uncertain" => event.count_uncertain = true,
+                "incomplete" => event.count_incomplete = true,
+                "provider" => event.provider = "supplier-b".into(),
+                _ => unreachable!(),
+            }
+            let mut snapshot = Snapshot::default();
+            snapshot.events.push(event.clone());
+            let document = serde_json::from_value(json!({"version":1, "records":[record]})).unwrap();
+            LegacyEvidenceCache::default().apply(Ok(Some(document)), &mut snapshot);
+            assert!(snapshot.events[0] == event, "{source}/{conflict}");
+            assert_eq!(snapshot.provider_evidence["appliedEvents"], 0, "{source}/{conflict}");
+            assert_eq!(snapshot.provider_evidence["conflictedEvents"], 1, "{source}/{conflict}");
+        }
+    }
+}
+
+#[test]
 fn local_missing_initial_baseline_does_not_assign_lifetime_usage_to_today() {
     let mut fixture = Fixture::new();
     let mut segment = fixture.usage(2_000, 100);

@@ -16,7 +16,7 @@ pub(super) fn retain(
          WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1) AND day >= ?2
          AND json_type(CAST(payload AS TEXT), '$.classification_origin') = 'object'
          AND json_extract(CAST(payload AS TEXT), '$.provider_source') IN
-             ('request-log-exact','request-log-recovered-supplier-only','session-context-inferred')",
+             ('request-log-exact','request-log-recovered-supplier-only','session-context-inferred','model-namespace')",
     )?;
     let mut previous = db.prepare_cached(
         "SELECT event_id, timestamp_ms, payload FROM token_resolved
@@ -69,7 +69,7 @@ pub(super) fn retain(
                 changes.extend([at, next_at]);
             } else if let Some(origin) = origin
                 && matches!(proof.provider_source.as_deref(),
-                    Some("request-log-exact" | "request-log-recovered-supplier-only" | "session-context-inferred"))
+                    Some("request-log-exact" | "request-log-recovered-supplier-only" | "session-context-inferred" | "model-namespace"))
                 && !proof.count_uncertain
                 && !collisions.contains(&native.original_id)
             {
@@ -103,6 +103,7 @@ mod tests {
             "request-log-exact",
             "request-log-recovered-supplier-only",
             "session-context-inferred",
+            "model-namespace",
         ] {
             let dir = tempfile::tempdir()?;
             let root = dir.path().canonicalize()?;

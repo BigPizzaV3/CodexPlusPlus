@@ -4,6 +4,90 @@ use rusqlite::params;
 use std::fmt::Write;
 
 #[test]
+fn namespace_inference_reopens_retracts_and_upgrades_to_delivered_supplier() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(home.join("sessions"))?;
+    let home = fs::canonicalize(home)?;
+    let settings = root.path().join("settings.json");
+    let configured = json!({"usageHistoryEnabled":true, "relayProfiles":[{
+        "id":"supplier-a", "name":"Supplier A", "baseUrl":"https://supplier-a.example/v1"
+    }]});
+    fs::write(&settings, configured.to_string())?;
+    let log = root.path().join("requests.jsonl");
+    fs::write(&log, "")?;
+    let session = "00000000-0000-4000-8000-000000000082";
+    let at = Local::now() - TimeDelta::minutes(5);
+    let model = "supplier-a/model-a";
+    let usage = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":10});
+    let rows = [
+        json!({"type":"session_meta","timestamp":at.to_rfc3339(),
+            "payload":{"id":session,"model_provider":"custom"}}),
+        json!({"type":"turn_context","timestamp":at.to_rfc3339(),
+            "payload":{"turn_id":"turn","model":model}}),
+        json!({"type":"token_usage_record","timestamp":at.to_rfc3339(),
+            "payload":{"thread_id":session,"turn_id":"turn","response_id":"response-a",
+                "usage":usage,"thread_token_usage":usage}}),
+        json!({"type":"event_msg","timestamp":at.to_rfc3339(),
+            "payload":{"type":"token_count","info":{
+                "last_token_usage":usage,"total_token_usage":usage}}}),
+    ];
+    fs::write(home.join("sessions/rollout-namespace.jsonl"),
+        rows.iter().map(|row| format!("{row}\n")).collect::<String>())?;
+    let storage = root.path().join("history");
+    let mut worker = Runtime::new(storage.clone(), settings.clone());
+    let inspect = |worker: &mut Runtime| -> Result<Value> {
+        for _ in 0..3 {
+            let state = worker.update_with_request_log(&home, &log);
+            assert!(state.storage_error.is_none(), "{:?}", state.storage_error);
+            assert!(state.classification_error.is_none(), "{:?}", state.classification_error);
+        }
+        let db = &worker.store.as_ref().unwrap().db;
+        assert_eq!(db.query_row("SELECT count(*) FROM token_resolved", [],
+            |row| row.get::<_, usize>(0))?, 1);
+        let payload: Vec<u8> = db.query_row("SELECT payload FROM token_resolved", [],
+            |row| row.get(0))?;
+        Ok(serde_json::from_slice(&payload)?)
+    };
+    let inferred = inspect(&mut worker)?;
+    assert_eq!(inferred["provider"], "supplier-a");
+    assert_eq!(inferred["provider_source"], "model-namespace");
+    drop(worker);
+    let mut worker = Runtime::new(storage, settings.clone());
+    assert_eq!(inspect(&mut worker)?, inferred);
+    fs::write(&settings, r#"{"usageHistoryEnabled":true}"#)?;
+    let withdrawn = inspect(&mut worker)?;
+    assert_eq!(withdrawn["provider"], "custom");
+    assert!(withdrawn["provider_source"].is_null());
+    fs::write(&settings, configured.to_string())?;
+    assert_eq!(inspect(&mut worker)?, inferred);
+
+    let proof = json!({"id":"request-a","threadId":session,
+        "model":model,"upstreamModel":model,"relayId":"supplier-b",
+        "success":true,"state":"success","statusCode":200,"timestampMs":at.timestamp_millis(),
+        "startedAtMs":at.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+        "finalResponseEvidence":"final-response-supplier-v1","finalResponseId":"response-a",
+        "usage":{"inputTokens":100,"outputTokens":10,"cachedTokensKnown":false}});
+    fs::write(&log, format!("{proof}\n"))?;
+    let direct = inspect(&mut worker)?;
+    assert_eq!(direct["provider"], "supplier-b");
+    assert_eq!(direct["provider_source"], "request-log-recovered-supplier-only");
+    let mut conflicting = proof.clone();
+    conflicting["id"] = json!("conflicting-request");
+    conflicting["relayId"] = json!("supplier-c");
+    fs::write(&log, format!("{proof}\n{conflicting}\n"))?;
+    let conflict = inspect(&mut worker)?;
+    assert_eq!(conflict["provider"], "custom");
+    assert!(conflict["provider_source"].is_null());
+    for row in [&withdrawn, &direct, &conflict] {
+        for key in ["model", "timestamp", "delta", "total"] {
+            assert_eq!(row[key], inferred[key], "{key}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn delayed_adjacent_receipts_confirm_suppliers_without_a_time_limit() -> Result<()> {
     for case in ["ordered", "midnight", "separate", "intervening", "conflicting"] {
         let root = tempfile::tempdir()?;
