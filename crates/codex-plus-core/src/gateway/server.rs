@@ -1277,8 +1277,19 @@ async fn write_native(
     let mut chunks = upstream.bytes_stream();
     let mut failure = None;
     use futures_util::StreamExt;
-    while let Some(chunk) = chunks.next().await {
-        match chunk {
+    while let Some(next) = tokio::select! {
+        chunk = chunks.next() => chunk.map(|result| result.map_err(|error| error.without_url().to_string())),
+        _ = tokio::time::sleep(crate::launcher::UPSTREAM_STREAM_IDLE) => {
+            Some(Err(format!(
+                "上游响应流空闲超时（{} 秒没有任何数据），放弃这次转发",
+                crate::launcher::UPSTREAM_STREAM_IDLE.as_secs()
+            )))
+        }
+        // 客户端已经断开：别再等上游，否则这次请求的 future 挂住不结束，
+        // InFlight 标记和本地限速名额一起泄漏（#3265）。
+        _ = pipeline::client_gone(Some(&*stream)) => None,
+    } {
+        match next {
             Ok(bytes) => {
                 if !bytes.is_empty() {
                     if !observer.started {
@@ -1289,8 +1300,8 @@ async fn write_native(
                     stream.write_all(&bytes).await?;
                 }
             }
-            Err(error) => {
-                failure = Some(error.without_url().to_string());
+            Err(reason) => {
+                failure = Some(reason);
                 break;
             }
         }

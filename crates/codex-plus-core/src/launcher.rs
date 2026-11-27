@@ -5757,6 +5757,32 @@ impl<S: SseSink> SseSink for ExtensionResponseSink<'_, S> {
     }
 }
 
+// 上游流空闲超时：这么久一个字节都没收到就放弃这次转发。挂住的上游流会让网关请求
+// 处理函数永远不结束，InFlight 标记和本地限速名额一起泄漏（#3265）。
+pub(crate) const UPSTREAM_STREAM_IDLE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// 读上游流的下一段：正常返回 `Some(Ok(bytes))`，EOF 返回 `None`；
+/// 读取出错或超过 `idle` 没有任何数据时返回 `Some(Err(原因))`（空闲超时按断流处理）。
+pub(crate) async fn next_upstream_chunk<T, S>(
+    chunks: &mut S,
+    idle: std::time::Duration,
+) -> Option<Result<T, String>>
+where
+    S: futures_util::Stream<Item = std::result::Result<T, reqwest::Error>> + Unpin,
+{
+    tokio::select! {
+        chunk = chunks.next() => {
+            chunk.map(|result| result.map_err(|error| error.without_url().to_string()))
+        }
+        _ = tokio::time::sleep(idle) => {
+            Some(Err(format!(
+                "上游响应流空闲超时（{} 秒没有任何数据），放弃这次转发",
+                idle.as_secs()
+            )))
+        }
+    }
+}
+
 // 返回流失败原因与（可选的）usage；HTTP 响应头已经发送，不能再把失败伪装成第二个 HTTP 502。
 pub(crate) async fn forward_protocol_proxy_stream<S: SseSink>(
     stream: &mut S,
@@ -5833,8 +5859,8 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
                 return Ok((transformer.finish(), usage, detail, first_output_at_ms));
             }
         }
-        while let Some(chunk) = chunks.next().await {
-            match chunk {
+        while let Some(next) = next_upstream_chunk(&mut chunks, UPSTREAM_STREAM_IDLE).await {
+            match next {
                 Ok(bytes) => {
                     observe_protocol_proxy_output(
                         &bytes, &mut first_output_at_ms, live_request_id,
@@ -5849,8 +5875,8 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
                         return Ok((transformer.finish(), usage, detail, first_output_at_ms));
                     }
                 }
-                Err(error) => {
-                    // 断流时仍在暂存的消息原样补写，不丢事件。
+                Err(reason) => {
+                    // 断流（含空闲超时）时仍在暂存的消息原样补写，不丢事件。
                     let pending = transformer.flush_pending();
                     if !pending.is_empty() {
                         stream.send(&pending).await?;
@@ -5858,7 +5884,7 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
                     let usage = transformer.take_usage();
                     let detail = transformer.take_failure_detail();
                     return Ok((
-                        Some(error.without_url().to_string()),
+                        Some(reason),
                         usage,
                         detail,
                         first_output_at_ms,
@@ -5880,8 +5906,8 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
         let mut converter = request
             .map(crate::anthropic_bridge::AnthropicSseToResponsesConverter::with_request)
             .unwrap_or_default();
-        while let Some(chunk) = chunks.next().await {
-            match chunk {
+        while let Some(next) = next_upstream_chunk(&mut chunks, UPSTREAM_STREAM_IDLE).await {
+            match next {
                 Ok(bytes) => {
                     observe_protocol_proxy_output(
                         &bytes, &mut first_output_at_ms, live_request_id,
@@ -5899,14 +5925,14 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
                         ));
                     }
                 }
-                Err(error) => {
+                Err(reason) => {
                     let failed = converter.fail(
                         "上游响应流读取失败".to_string(),
                         Some("stream_error".to_string()),
                     );
                     stream.send(&failed).await?;
                     return Ok((
-                        Some(error.without_url().to_string()),
+                        Some(reason),
                         converter.request_usage(),
                         None,
                         first_output_at_ms,
@@ -5935,8 +5961,8 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
     let mut converter = request
         .map(crate::protocol_proxy::ChatSseToResponsesConverter::with_request)
         .unwrap_or_default();
-    while let Some(chunk) = chunks.next().await {
-        match chunk {
+    while let Some(next) = next_upstream_chunk(&mut chunks, UPSTREAM_STREAM_IDLE).await {
+        match next {
             Ok(bytes) => {
                 observe_protocol_proxy_output(
                     &bytes, &mut first_output_at_ms, live_request_id,
@@ -5952,14 +5978,14 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
                     ));
                 }
             }
-            Err(error) => {
+            Err(reason) => {
                 let failed = converter.fail(
                     "上游响应流读取失败".to_string(),
                     Some("stream_error".to_string()),
                 );
                 stream.send(&failed).await?;
                 return Ok((
-                    Some(error.without_url().to_string()),
+                    Some(reason),
                     converter.request_usage(),
                     None,
                     first_output_at_ms,
