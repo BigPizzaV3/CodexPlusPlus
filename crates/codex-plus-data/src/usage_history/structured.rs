@@ -1531,6 +1531,53 @@ impl UsageEvent {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ClassificationEvidence {
+    None,
+    UpstreamExact,
+    RequestExact,
+    SupplierOnly,
+}
+
+impl ClassificationEvidence {
+    fn of(event: &UsageEvent) -> Self {
+        if event.context_conflicts.any() {
+            return Self::None;
+        }
+        match event.provider_source.as_deref() {
+            Some("upstream-exact-bidirectional") => Self::UpstreamExact,
+            Some("request-log-exact") => Self::RequestExact,
+            Some("upstream-counter-bidirectional-supplier-only") => Self::SupplierOnly,
+            _ => Self::None,
+        }
+    }
+
+    fn intersect(self, next: Self) -> Self {
+        match (self, next) {
+            (Self::UpstreamExact, Self::RequestExact)
+            | (Self::RequestExact, Self::UpstreamExact) => Self::RequestExact,
+            (left, right) if left == right => left,
+            _ => Self::None,
+        }
+    }
+
+    fn write_to(self, row: &mut Value) {
+        match self {
+            Self::None => {}
+            Self::UpstreamExact => {
+                row["classificationEvidence"] = json!("upstream-exact-bidirectional");
+            }
+            Self::RequestExact => {
+                row["classificationEvidence"] = json!("request-log-exact");
+            }
+            Self::SupplierOnly => {
+                row["supplierClassificationEvidence"] =
+                    json!("upstream-counter-bidirectional-supplier-only");
+            }
+        }
+    }
+}
+
 #[derive(serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LegacyProviderEvidence {
@@ -4137,7 +4184,7 @@ impl Snapshot {
         }
     }
 
-    fn scoped_usage(&self, session: &str, query: &Query, bounds: Option<(i64, i64)>) -> Value {
+    fn scope_members<'a>(&'a self, session: &'a str) -> (&'a str, HashSet<String>) {
         let session = self
             .aliases
             .get(session)
@@ -4159,15 +4206,12 @@ impl Snapshot {
                 }
             }
         }
-        let mut ids: Vec<_> = sessions
-            .iter()
-            .filter(|id| id.as_str() != session)
-            .cloned()
-            .collect();
-        ids.sort();
-        if sessions.contains(session) {
-            ids.insert(0, session.to_owned());
-        }
+        (session, sessions)
+    }
+
+    fn scoped_usage(&self, session: &str, query: &Query, bounds: Option<(i64, i64)>) -> Value {
+        let (session, sessions) = self.scope_members(session);
+        let ids = ordered_scope_ids(session, &sessions);
         json!({"sessionId":session,"sessionIds":ids,"days":self.usage_days(query, bounds, Some(&sessions))})
     }
 
@@ -4187,9 +4231,10 @@ impl Snapshot {
             (Aggregate, Tokens),
         > = BTreeMap::new();
         let mut day_proofs = BTreeMap::<NaiveDate, Sha256>::new();
-        let mut breakdown_proofs =
-            BTreeMap::<(NaiveDate, String, String, String, bool), (Sha256, bool, bool, bool)>::new(
-            );
+        let mut breakdown_proofs = BTreeMap::<
+            (NaiveDate, String, String, String, bool),
+            (Sha256, ClassificationEvidence),
+        >::new();
         let mut ordered_events: Vec<_> = self.events.iter().collect();
         ordered_events.sort_unstable_by_key(|event| event.id);
         for event in ordered_events {
@@ -4237,19 +4282,12 @@ impl Snapshot {
                 priceable.add(event.delta);
             }
             event.update_membership_digest(day_proofs.entry(event.date).or_default());
-            let (digest, exact, request_proof, supplier_proof) = breakdown_proofs
+            let evidence = ClassificationEvidence::of(event);
+            let (digest, _) = breakdown_proofs
                 .entry(key)
-                .or_insert_with(|| (Sha256::new(), true, false, true));
+                .and_modify(|(_, shared)| *shared = shared.intersect(evidence))
+                .or_insert_with(|| (Sha256::new(), evidence));
             event.update_membership_digest(digest);
-            *exact &= !event.context_conflicts.any()
-                && matches!(
-                    event.provider_source.as_deref(),
-                    Some("upstream-exact-bidirectional" | "request-log-exact")
-                );
-            *request_proof |= event.provider_source.as_deref() == Some("request-log-exact");
-            *supplier_proof &= !event.context_conflicts.any()
-                && event.provider_source.as_deref()
-                    == Some("upstream-counter-bidirectional-supplier-only");
         }
         days.into_iter()
             .map(|(date, aggregate)| {
@@ -4293,22 +4331,10 @@ impl Snapshot {
                                 if *provider_conflict {
                                     row["providerConflict"] = json!(true);
                                 }
-                                if let Some((digest, exact, request_proof, supplier_proof)) =
-                                    breakdown_proofs.get(key)
-                                {
+                                if let Some((digest, evidence)) = breakdown_proofs.get(key) {
                                     row["membershipFingerprint"] =
                                         json!(format!("{:x}", digest.clone().finalize()));
-                                    if *exact {
-                                        row["classificationEvidence"] = json!(if *request_proof {
-                                            "request-log-exact"
-                                        } else {
-                                            "upstream-exact-bidirectional"
-                                        });
-                                    }
-                                    if *supplier_proof {
-                                        row["supplierClassificationEvidence"] =
-                                            json!("upstream-counter-bidirectional-supplier-only");
-                                    }
+                                    evidence.write_to(&mut row);
                                 }
                                 row
                             }
@@ -4407,6 +4433,12 @@ impl Snapshot {
         }
         response
     }
+}
+
+fn ordered_scope_ids<'a>(session: &str, sessions: &'a HashSet<String>) -> Vec<&'a str> {
+    let mut ids: Vec<_> = sessions.iter().map(String::as_str).collect();
+    ids.sort_unstable_by(|a, b| (a != &session, a).cmp(&(b != &session, b)));
+    ids
 }
 
 #[cfg(test)]
