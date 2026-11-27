@@ -238,39 +238,18 @@ class Element {
   const original = ['desktop-baseline', identity.turnId].map(turnId => ({ turnId, status: 'completed', items: [] }));
   let serverTurns, loadedTurns, mode, notification, openCount = 0, managerDisposals = 0, subscriptionDisposals = 0;
   let report, panelResult, changeTargetOnOpen = false;
-  let resumeState, historyTruncated, viewActive;
-  const routeContext = Symbol('native-route-context');
-  const routes = [];
-  const chatPath = `/local/${identity.threadId}`;
-  const chatState = { fixture: 'composer-and-panel-state' };
-  const routerFiber = { type: routeContext, memoizedProps: { value: { navigationType: 'REPLACE' } } };
-  function commitRoute(pathname, search = '', hash = '', routeState = null) {
-    routerFiber.memoizedProps.value.location = { pathname, search, hash, state: routeState, key: String(routes.length) };
-  }
-  context.location = { origin: 'app://-' };
-  context.MessageEvent = class { constructor(type, init) { this.type = type; Object.assign(this, init); } };
-  context.dispatchEvent = ({ data: { type, path, state, replace } }) => {
-    assert.equal(type, 'navigate-to-route'); assert.equal(replace, true);
-    routes.push(path);
-    if (path === '/') {
-      commitRoute('/', '', '', state);
-      setTimeout(() => { viewActive = false; }, 0);
-    } else {
-      assert.equal(path, chatPath + '?fixture=1#transcript');
-      assert.equal(state, chatState);
-      commitRoute(chatPath, '?fixture=1', '#transcript', chatState);
-      viewActive = true;
-      resumeState = 'resumed';
-      loadedTurns = serverTurns;
-    }
-  };
+  let resumeState, historyTruncated, hasUnreadTurn, historyComplete, activeDeferrals = 0;
+  context.dispatchEvent = () => assert.fail('refresh the open chat without navigating');
   const desktopWrites = [];
   const rpc = {
     async getHostId() { return 'local'; },
-    async getConversation(id) { return { ...state, id, resumeState }; },
+    async getConversation(id) {
+      return { ...state, id, resumeState, hasUnreadTurn,
+        unconfirmedTurnSubmissions: historyTruncated && mode === 'pending-local-turn' ? [{ terminal: false }] : [] };
+    },
     async hasLocalHistorySubscription() { return mode !== 'follower'; },
     async ensureConversationHistoryLoaded(id, parents, options) { assert.equal(options.force, true); },
-    async getLoadedConversationHistory() { return { isComplete: mode !== 'partial-history', turns: loadedTurns }; },
+    async getLoadedConversationHistory() { return { isComplete: historyComplete, turns: loadedTurns }; },
     subscribe(options) {
       assert.equal(options.key.threadId, identity.threadId);
       notification = options.listener;
@@ -313,18 +292,41 @@ class Element {
       if (mode === 'new-turn-after-revert') serverTurns = serverTurns.concat({ turnId: 'new-turn', status: 'completed' });
       return { thread: { id: params.threadId } };
     },
-    async unsubscribeInactiveConversation(id) {
+    async getTurnCoordinator() {
+      return {
+        async deferAutomaticTurns(id) {
+          assert.equal(id, identity.threadId);
+          activeDeferrals++;
+          return { [Symbol.dispose]() { activeDeferrals--; } };
+        },
+      };
+    },
+    async discardConversationFromCache(id) {
       assert.equal(id, identity.threadId);
       assert.equal(historyTruncated, true);
-      desktopWrites.push('refresh');
+      assert.equal(activeDeferrals, 1);
+      desktopWrites.push('discard-cache');
       resumeState = 'needs_resume';
-      assert.equal(viewActive, false, 'Codex retains stale turns while the native conversation view remains active');
-      loadedTurns = [];
-      if (mode === 'navigated-after-park') {
-        commitRoute('/settings');
-        loadedTurns = serverTurns;
-        resumeState = 'resumed';
+      loadedTurns = null;
+      hasUnreadTurn = false;
+    },
+    async hydrateBackgroundThreads(ids, options) {
+      assert.deepEqual(Array.from(ids), [identity.threadId]);
+      assert.equal(options.includeTurns, true); assert.equal(options.refreshExisting, true);
+      assert.equal(activeDeferrals, 1);
+      assert.equal(loadedTurns, null);
+      desktopWrites.push('reload-history');
+      if (mode === 'hydrate-failed') throw Error('fixture hydration failed');
+      loadedTurns = serverTurns;
+      if (mode === 'rewind-first') {
+        historyComplete = false;
+        setTimeout(() => { historyComplete = true; }, 25);
       }
+    },
+    async markConversationAsUnread(id) {
+      assert.equal(id, identity.threadId);
+      desktopWrites.push('restore-unread');
+      hasUnreadTurn = true;
     },
     [Symbol.dispose]() { managerDisposals++; },
   };
@@ -336,16 +338,7 @@ class Element {
     } },
     workspaceFiles: { async saveCopy() { return { path: '/desktop/receipt.json' }; } },
   });
-  const routeRoot = { tag: 3, child: routerFiber };
-  routeRoot.stateNode = { current: routeRoot };
-  routerFiber.return = routeRoot;
-  const nav = new Element();
-  nav.__reactFiber$fixture = { return: routerFiber };
-  context.document.querySelector = selector => {
-    assert.equal(selector, 'nav[data-app-navigation-rail], aside.app-shell-left-panel');
-    return nav;
-  };
-  let deepChatTree = routerFiber;
+  let deepChatTree = null;
   for (let depth = 0; depth < 370; depth++) deepChatTree = { return: deepChatTree };
   const plainActionBar = { memoizedProps: identity, return: deepChatTree };
   trigger.__reactFiber$fixture = { memoizedProps: {}, return: plainActionBar };
@@ -358,30 +351,33 @@ class Element {
   await context.loadTurnRewindDesktopServices();
   context.refreshTurnRewindMenus();
   assert.equal(button.getAttribute('aria-disabled'), 'false');
-  for (mode of ['ready', 'stale-ui', 'rewind-first', 'navigated-after-park', 'active-after-revert', 'new-turn-after-revert',
+  for (mode of ['ready', 'stale-ui', 'rewind-first', 'active-after-revert', 'new-turn-after-revert', 'pending-local-turn', 'hydrate-failed',
     'stale-history', 'concurrent', 'follower', 'partial-history']) {
     identity.turnId = mode === 'rewind-first' ? 'desktop-baseline' : 'desktop-selected';
     loadedTurns = original;
     serverTurns = mode === 'stale-history' ? original.slice(0, 1) : original;
     resumeState = 'resumed';
     historyTruncated = false;
-    viewActive = true;
+    historyComplete = mode !== 'partial-history';
+    hasUnreadTurn = ['stale-ui', 'hydrate-failed'].includes(mode);
     desktopWrites.length = 0;
-    routes.length = 0;
-    commitRoute(chatPath, '?fixture=1', '#transcript', chatState);
-    assert.equal(context.turnRewindViewReopener(trigger, identity.threadId), null, 'the message trigger cannot reach the root');
     await button.click();
-    if (['ready', 'stale-ui', 'rewind-first', 'navigated-after-park'].includes(mode)) {
-      assert.deepEqual(desktopWrites, mode === 'ready' ? ['prompt', 'revert'] : ['prompt', 'revert', 'refresh']);
-      assert.deepEqual(routes, mode === 'ready' ? [] : mode === 'navigated-after-park' ? ['/']
-        : ['/', chatPath + '?fixture=1#transcript']);
+    assert.equal(activeDeferrals, 0, 'release the target conversation queue deferral');
+    if (['ready', 'stale-ui', 'rewind-first'].includes(mode)) {
+      const expected = ['prompt', 'revert'];
+      if (mode !== 'ready') expected.push('discard-cache', 'reload-history');
+      if (mode === 'stale-ui') expected.push('restore-unread');
+      assert.deepEqual(desktopWrites, expected);
       assert.equal(report.status, 'complete');
       assert.equal(report.historyTruncated, true);
       assert.deepEqual(loadedTurns.map(turn => turn.turnId), mode === 'rewind-first' ? [] : ['desktop-baseline']);
+      assert.equal(historyComplete, true, 'a transient empty cache does not prove that first-turn rewind finished');
+      assert.equal(hasUnreadTurn, mode === 'stale-ui');
       assert.equal(panelResult[2], true);
-    } else if (['active-after-revert', 'new-turn-after-revert'].includes(mode)) {
-      assert.deepEqual(desktopWrites, ['prompt', 'revert']);
-      assert.deepEqual(routes, [], 'leave the current view alone if the server has new work');
+    } else if (['active-after-revert', 'new-turn-after-revert', 'pending-local-turn', 'hydrate-failed'].includes(mode)) {
+      assert.deepEqual(desktopWrites, mode === 'hydrate-failed'
+        ? ['prompt', 'revert', 'discard-cache', 'reload-history', 'restore-unread'] : ['prompt', 'revert']);
+      if (mode === 'hydrate-failed') assert.equal(hasUnreadTurn, true);
       assert.equal(report.status, 'ui-refresh-required');
       assert.equal(report.historyTruncated, true);
       assert.equal(panelResult[2], true);
@@ -396,7 +392,7 @@ class Element {
   assert.equal(desktopWrites.length, writesBeforeReusedMenu, 'menu changed while opening the RPC');
   assert.match(toasts.at(-1), /菜单已变化/);
   assert.equal(managerDisposals, openCount, 'release every opened manager, including a reused menu');
-  assert.equal(subscriptionDisposals, 8, 'release the notification subscription on completion and errors');
+  assert.equal(subscriptionDisposals, 9, 'release the notification subscription on completion and errors');
   assert.equal(notification, null);
 
   // 重注入保留控制器对象，不丢在途任务；旧观察器和菜单项被回收。

@@ -29586,53 +29586,7 @@ ${key} = ${value}`]);
     try { resource?.[Symbol.dispose]?.(); } catch { /* 连接断开时资源已释放。 */ }
   }
 
-  function turnRewindViewReopener(trigger, threadId) {
-    const fiberKey = Object.getOwnPropertyNames(trigger || {}).find((name) => name.startsWith("__reactFiber$"));
-    let routeContext, reactRoot;
-    for (let fiber = trigger?.[fiberKey], depth = 0; fiber && depth < 192; fiber = fiber.return, depth++) {
-      const value = fiber.memoizedProps?.value;
-      if (typeof value?.location?.key === "string" && ["POP", "PUSH", "REPLACE"].includes(value.navigationType)) {
-        routeContext = fiber.type;
-      }
-      if (fiber.tag === 3) reactRoot = fiber.stateNode;
-    }
-    if (!routeContext || !reactRoot) return null;
-    const readLocation = () => {
-      const stack = [reactRoot.current];
-      for (let scanned = 0; stack.length && scanned < 1024; scanned++) {
-        const fiber = stack.pop();
-        if (!fiber) continue;
-        if (fiber.type === routeContext) return fiber.memoizedProps?.value?.location;
-        if (fiber.sibling) stack.push(fiber.sibling);
-        if (fiber.child && !(fiber.tag === 22 && fiber.memoizedState)) stack.push(fiber.child);
-      }
-      return null;
-    };
-    const original = readLocation();
-    if (original?.pathname !== `/local/${threadId}`) return null;
-    const navigate = (path, state) => window.dispatchEvent(new MessageEvent("message", {
-      data: { type: "navigate-to-route", path, state, replace: true },
-      origin: window.location.origin, source: window,
-    }));
-    return async () => {
-      const current = readLocation();
-      if (current?.key !== original.key || current.pathname !== original.pathname) return null;
-      const marker = crypto.randomUUID();
-      const parked = () => {
-        const location = readLocation();
-        return location?.pathname === "/" && location.state?.codexPlusRewindRefresh === marker;
-      };
-      navigate("/", { codexPlusRewindRefresh: marker });
-      // 等离开原生聊天视图的清理函数释放它持有的历史订阅。
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      if (!parked()) return null;
-      return () => {
-        if (parked()) navigate(original.pathname + original.search + original.hash, original.state);
-      };
-    };
-  }
-
-  function turnRewindDesktopManager(client, threadId, parkView) {
+  function turnRewindDesktopManager(client, threadId) {
     let onConversationState;
     return {
       getHostId: () => "local",
@@ -29704,47 +29658,57 @@ ${key} = ${value}`]);
       interruptConversation: (id, reason, turnId) => client.interruptConversation(id, reason, turnId),
       sendRequest: (method, params) => client.sendRequest(method, params),
       async applyRevertResponseToConversation({ conversationId, response, revertedTurns, retainedTurnId }) {
-        if (response?.thread?.id !== conversationId) throw Error("回退响应的会话不匹配。");
+        if (conversationId !== threadId || response?.thread?.id !== threadId) throw Error("回退响应的会话不匹配。");
         const removed = new Set(revertedTurns.map((turn) => turn.turnId));
         const hasRefreshedHistory = async () => {
           const history = await client.getLoadedConversationHistory(conversationId);
           if (!Array.isArray(history?.turns) || history.turns.some((turn) => removed.has(turn.turnId))) return false;
-          return retainedTurnId === null ? history.turns.length === 0
+          return retainedTurnId === null ? history.isComplete === true && history.turns.length === 0
             : history.turns.some((turn) => turn.turnId === retainedTurnId);
         };
         const state = await client.getConversation(conversationId);
         if (state?.resumeState === "resumed" && await hasRefreshedHistory()) return;
         if (!state || state.threadRuntimeStatus?.type === "active") throw Error("桌面会话当前无法刷新。");
 
-        if (state.resumeState === "resumed" && await client.hasLocalHistorySubscription(conversationId)) {
-          const latest = await client.sendRequest("thread/turns/list", {
-            threadId: conversationId, limit: 1, sortDirection: "desc", itemsView: "notLoaded",
-          });
-          const current = await client.sendRequest("thread/read", { threadId: conversationId, includeTurns: false });
-          if (!Array.isArray(latest?.data) || (latest.data[0]?.id ?? null) !== retainedTurnId
-              || latest.data[0]?.status === "inProgress" || current?.thread?.id !== conversationId
-              || current.thread.status?.type !== "idle") {
-            throw Error("服务端会话已变化，无法刷新窗口。");
-          }
-          // 活动视图会让原生恢复流程保留旧轮次。先离开目标路由，再让宿主释放旧缓存。
-          const restoreView = await parkView?.();
-          try {
-            const beforeUnsubscribe = await client.getConversation(conversationId);
-            if (beforeUnsubscribe?.threadRuntimeStatus?.type !== "idle") {
+        let coordinator, deferral;
+        try {
+          if (state.resumeState === "resumed" && await client.hasLocalHistorySubscription(conversationId)) {
+            coordinator = await client.getTurnCoordinator();
+            deferral = await coordinator.deferAutomaticTurns(conversationId);
+            const latest = await client.sendRequest("thread/turns/list", {
+              threadId: conversationId, limit: 1, sortDirection: "desc", itemsView: "notLoaded",
+            });
+            const current = await client.sendRequest("thread/read", { threadId: conversationId, includeTurns: false });
+            if (!Array.isArray(latest?.data) || (latest.data[0]?.id ?? null) !== retainedTurnId
+                || latest.data[0]?.status === "inProgress" || current?.thread?.id !== conversationId
+                || current.thread.status?.type !== "idle") {
+              throw Error("服务端会话已变化，无法刷新窗口。");
+            }
+            const stillOwnsHistory = await client.hasLocalHistorySubscription(conversationId);
+            const beforeReset = await client.getConversation(conversationId);
+            if (!stillOwnsHistory || beforeReset?.id !== conversationId || beforeReset.resumeState !== "resumed"
+                || beforeReset.threadRuntimeStatus?.type !== "idle"
+                || beforeReset.unconfirmedTurnSubmissions?.some((turn) => turn.terminal !== true)) {
               throw Error("桌面会话当前无法刷新。");
             }
-            await client.unsubscribeInactiveConversation(conversationId);
-          } finally {
-            restoreView?.();
+            // 活动视图重新订阅会合并旧轮次。清掉目标缓存后，现有视图订阅会收到新的历史。
+            await client.discardConversationFromCache(conversationId);
+            try {
+              await client.hydrateBackgroundThreads([conversationId], { includeTurns: true, refreshExisting: true });
+            } finally {
+              if (beforeReset.hasUnreadTurn) await client.markConversationAsUnread(conversationId).catch(() => {});
+            }
           }
+          const deadline = Date.now() + 8000;
+          do {
+            if (await hasRefreshedHistory()) return;
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          } while (Date.now() < deadline);
+          throw Error("桌面会话尚未同步回退后的历史。");
+        } finally {
+          disposeTurnRewindRpc(deferral);
+          disposeTurnRewindRpc(coordinator);
         }
-        const deadline = Date.now() + 8000;
-        do {
-          const current = await client.getConversation(conversationId);
-          if (current?.resumeState === "resumed" && await hasRefreshedHistory()) return;
-          await new Promise((resolve) => setTimeout(resolve, 200));
-        } while (Date.now() < deadline);
-        throw Error("桌面会话尚未同步回退后的历史。");
       },
     };
   }
@@ -29979,16 +29943,11 @@ ${key} = ${value}`]);
               throw Error("原生菜单已变化，请关闭菜单后重新打开再试。");
             }
             // 自定义 DOM 项没有 Radix 的 onSelect；关闭原生菜单后释放模态焦点和指针锁。
-            const parkView = client ? (
-              // 消息操作栏可能离 React 根节点很远。优先从同一窗口的原生侧栏定位页面路由。
-              turnRewindViewReopener(document.querySelector("nav[data-app-navigation-rail], aside.app-shell-left-panel"), target.threadId)
-              || turnRewindViewReopener(turnRewindMenuOwners(currentBranch)[0], target.threadId)
-            ) : null;
             menu.dispatchEvent(new KeyboardEvent("keydown", {
               key: "Escape", code: "Escape", bubbles: true, cancelable: true,
             }));
             if (client) {
-              const manager = turnRewindDesktopManager(client, target.threadId, parkView);
+              const manager = turnRewindDesktopManager(client, target.threadId);
               await codexPlusTurnRewind.run(target.threadId, target.turnId, { manager });
             } else {
               await codexPlusTurnRewind.run(target.threadId, target.turnId);
