@@ -629,6 +629,46 @@ fn normalized_overload_failure_event(data_json: &Value) -> Option<String> {
     ))
 }
 
+/// 把不可重试的策略拒绝（裸 `error` 事件 + cyber_policy 等 code）规范成
+/// Codex 认作终态的 `response.failed` 事件（issue #3298）。
+///
+/// Codex 只把 `response.failed` / `response.incomplete` 当终态；裸 `error`
+/// 事件会被当成网络断流（stream closed before response.completed）自动重试，
+/// 而策略拒绝重试也不会成功，只会反复触发。只认明确的策略/审核类 code，
+/// 其它 `error` 事件保持原样转发，不改变既有行为。
+fn normalized_policy_failure_event(data_json: &Value) -> Option<String> {
+    let error = data_json.get("error")?;
+    let code = error.get("code").and_then(Value::as_str).unwrap_or_default();
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let lowered = format!("{code} {message}").to_ascii_lowercase();
+    let is_policy_rejection = lowered.contains("cyber_policy")
+        || lowered.contains("cyber policy")
+        || lowered.contains("content_policy")
+        || lowered.contains("moderation");
+    if !is_policy_rejection {
+        return None;
+    }
+    let response_id = data_json
+        .pointer("/response/id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let payload = json!({
+        "type": "response.failed",
+        "response": {
+            "id": response_id,
+            "status": "failed",
+            "error": error.clone(),
+        }
+    });
+    Some(format!(
+        "event: response.failed\ndata: {}\n\n",
+        serde_json::to_string(&payload).ok()?
+    ))
+}
+
 /// 找到 `from` 之后第一个完整 SSE 事件边界（返回边界之后的字节下标）。
 fn next_sse_boundary(bytes: &[u8], from: usize) -> Option<usize> {
     let mut index = from;
@@ -1166,6 +1206,9 @@ fn responses_to_chat_completions_with_context(
     // #3106：剩下的是原生上游签发的加密压缩项，Chat 协议无法表达，换成占位说明，其余历史照常转换。
     // 代理入口已按候选决定过是切换还是降级（见 open_responses_proxy_request_once），这里兜底。
     degrade_native_compaction_history(&mut body);
+    // #3288：上一家 Responses 上游签发的加密 agent 消息，Chat 协议同样无法表达，
+    // 与加密压缩项一致换成占位说明继续对话；已确认明文形态的片段仍按文本透传。
+    degrade_unreadable_encrypted_agent_history(&mut body);
     // agent_message 的 encrypted_content 片段在 multi_agent v2 里实际承载明文任务；
     // 转换时按文本透传，opaque 内容则明确失败，避免静默发空任务。
     let mut result = json!({});
@@ -3008,6 +3051,97 @@ fn degrade_native_compaction_history(body: &mut Value) -> usize {
     degraded
 }
 
+/// 加密 agent 消息（#3288）降级成的占位说明，措辞对齐 [`NATIVE_COMPACTION_PLACEHOLDER`]。
+const ENCRYPTED_AGENT_PLACEHOLDER: &str = "[Context note] An earlier agent message in this conversation was encrypted by a different provider and cannot be read under the current protocol, so its content has been omitted. Continue from the remaining conversation, and ask the user if essential earlier details are missing.";
+
+/// 判断一条消息的 content 是否携带当前协议读不了的加密 agent 内容。
+/// 与 `responses_content_to_chat_content` 的 fail-closed 判定保持一致：
+/// 只有已确认明文形态且每个片段都非 opaque 的 agent_message 才能透传，其余一律不可读。
+fn message_content_has_unreadable_encrypted_content(content: &Value) -> bool {
+    // 对象形态的 content 无法透传 encrypted_content（fail closed）。
+    if content.get("type").and_then(Value::as_str) == Some("encrypted_content") {
+        return true;
+    }
+    let Some(parts) = content.as_array() else {
+        return false;
+    };
+    let mut fragments: Vec<&str> = Vec::new();
+    for part in parts
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("encrypted_content"))
+    {
+        match part
+            .get("encrypted_content")
+            .or_else(|| part.get("text"))
+            .and_then(Value::as_str)
+        {
+            Some(value) => fragments.push(value),
+            // 缺失或非字符串的加密片段同样读不了（转换层会 fail closed）。
+            None => return true,
+        }
+    }
+    if fragments.is_empty() {
+        return false;
+    }
+    !agent_message_has_confirmed_plaintext_shape(content)
+        || fragments
+            .iter()
+            .any(|value| value.is_empty() || encrypted_content_value_is_opaque(value))
+}
+
+fn unreadable_agent_message_placeholder() -> Value {
+    json!({
+        "type": "message",
+        "role": "user",
+        "content": [{ "type": "input_text", "text": ENCRYPTED_AGENT_PLACEHOLDER }]
+    })
+}
+
+/// 把上一家 Responses 上游签发、当前协议读不了的加密 agent 消息（#3288：切换供应商后
+/// 残留在历史里）换成一条 user 占位说明，返回替换了几项。占位说明留在原处，
+/// 前后消息顺序与工具调用配对不受影响。已确认明文形态的 multi_agent v2 消息不受影响。
+fn degrade_unreadable_encrypted_agent_history(body: &mut Value) -> usize {
+    fn unreadable(item: &Value) -> bool {
+            let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+            if item_type == "encrypted_content" {
+                return true;
+            }
+            // 只有 agent_message 的已确认明文形态才允许透传加密片段（见转换层）；
+            // 其余 item 类型一律读不了。
+            if item_type != "agent_message" {
+                return item
+                    .get("content")
+                    .is_some_and(|content| {
+                        content.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                            || content.as_array().is_some_and(|parts| {
+                                parts.iter().any(|part| {
+                                    part.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                                })
+                            })
+                    });
+            }
+            item.get("content")
+                .is_some_and(message_content_has_unreadable_encrypted_content)
+        };
+    let mut degraded = 0;
+    match body.get_mut("input") {
+        Some(Value::Array(items)) => {
+            for item in items.iter_mut() {
+                if unreadable(item) {
+                    *item = unreadable_agent_message_placeholder();
+                    degraded += 1;
+                }
+            }
+        }
+        Some(input @ Value::Object(_)) if unreadable(input) => {
+            *input = json!([unreadable_agent_message_placeholder()]);
+            degraded = 1;
+        }
+        _ => {}
+    }
+    degraded
+}
+
 fn expand_local_compaction_history(body: &mut Value) {
     match body.get_mut("input") {
         Some(Value::Array(items)) => {
@@ -3068,6 +3202,10 @@ impl ChatSseToResponsesConverter {
             .upstream_usage
             .as_ref()
             .and_then(crate::request_log::usage_from_usage_value)
+    }
+
+    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::FinalResponseUsage> {
+        if self.failed { None } else { self.state.final_response_usage.clone() }
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
@@ -6725,6 +6863,7 @@ struct ChatSseState {
     latest_usage: Option<Value>,
     /// 上游原始 usage，逐块合并：Anthropic 的输入在 message_start、输出在 message_delta 里分开到。
     upstream_usage: Option<Value>,
+    final_response_usage: Option<crate::request_log::FinalResponseUsage>,
     finish_reason: Option<String>,
     tool_context: CodexToolContext,
     original_request: Option<Value>,
@@ -6746,6 +6885,7 @@ impl Default for ChatSseState {
             output_items: Vec::new(),
             latest_usage: None,
             upstream_usage: None,
+            final_response_usage: None,
             finish_reason: None,
             tool_context: CodexToolContext::default(),
             original_request: None,
@@ -7175,6 +7315,10 @@ impl ChatSseState {
             response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
         }
         copy_response_request_fields(&mut response, self.original_request.as_ref());
+        self.final_response_usage = crate::request_log::converted_final_response_usage(
+            &response,
+            self.upstream_usage.as_ref().and_then(crate::request_log::usage_from_usage_value),
+        );
         push_sse(
             output,
             "response.completed",
@@ -12351,7 +12495,30 @@ mod stream_start_peek_tests {
         ));
     }
 
+    /// issue #3298：裸 `error` 事件里的策略拒绝要改写成 Codex 认作终态的
+    /// response.failed，否则 Codex 把它当网络断流自动重试。
+    #[test]
+    fn policy_error_event_is_rewritten_to_response_failed() {
+        let mut t = ResponsesSseTransformer::default();
+        let out = t.push_bytes(
+            b"event: error\ndata:{\"type\":\"error\",\"error\":{\"type\":\"invalid_request\",\"code\":\"cyber_policy\",\"message\":\"This content was flagged for possible cybersecurity risk.\"}}\n\n",
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("event: response.failed"), "{text}");
+        assert!(text.contains("\"code\":\"cyber_policy\""), "{text}");
+        assert!(text.contains("cybersecurity risk"), "{text}");
+        assert!(!text.contains("event: error"), "{text}");
+        assert!(t.finish().is_some(), "策略拒绝是终态失败");
+    }
 
+    /// 非 policy 的裸 `error` 事件保持原样转发，不改变既有行为。
+    #[test]
+    fn non_policy_error_event_is_forwarded_verbatim() {
+        let mut t = ResponsesSseTransformer::default();
+        let body = b"event: error\ndata:{\"type\":\"error\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream exploded\"}}\n\n";
+        let out = t.push_bytes(body);
+        assert_eq!(out, body.to_vec());
+    }
 }
 
 #[cfg(test)]
@@ -12842,6 +13009,14 @@ impl ResponsesSseTransformer {
             }
             if stream_failure_is_retryable(code.as_deref(), message.as_deref())
                 && let Some(normalized) = normalized_overload_failure_event(data_json)
+            {
+                return normalized.into_bytes();
+            }
+            // 裸 `error` 事件 Codex 不认作终态：会把这一轮当成「stream closed
+            // before response.completed」的网络断流自动重试。不可重试的策略拒绝
+            // （cyber_policy 等）必须改写成 response.failed 让 Codex 明确终止。
+            if event_type == "error"
+                && let Some(normalized) = normalized_policy_failure_event(data_json)
             {
                 return normalized.into_bytes();
             }

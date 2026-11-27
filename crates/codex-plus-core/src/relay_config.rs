@@ -5888,6 +5888,26 @@ fn remove_toml_item(target: &mut Item, source: &Item) {
         }
     }
 
+    // 合并时数组表按条目追加（#3125），剥离也要按条目删掉同样的条目；
+    // 否则回填后通用配置的 [[skills.config]] 留在供应商快照里，每切换一次就多一份。
+    // 相同条目全部删掉：合并时会再补回一份，已经累积的重复也顺带清掉。
+    if let (Some(target_array), Some(source_array)) =
+        (target.as_array_of_tables_mut(), source.as_array_of_tables())
+    {
+        let source_entries: Vec<Value> = source_array
+            .iter()
+            .filter_map(|entry| toml_item_to_json(&Item::Table(entry.clone())))
+            .collect();
+        target_array.retain(|entry| {
+            toml_item_to_json(&Item::Table(entry.clone()))
+                .is_none_or(|entry| !source_entries.contains(&entry))
+        });
+        if target_array.is_empty() {
+            *target = Item::None;
+        }
+        return;
+    }
+
     if let Some(source_value) = source.as_value() {
         let mut remove_item = false;
 
