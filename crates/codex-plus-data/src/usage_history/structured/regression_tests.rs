@@ -185,6 +185,34 @@ fn local_evidence_placeholder_is_never_a_verified_model() {
 }
 
 #[test]
+fn supplier_only_evidence_accepts_routing_models_without_resolving_the_model() {
+    for source in ["session-context-inferred", "request-log-recovered-supplier-only"] {
+        for model in ["group/routing", "unknown"] {
+            let mut fixture = Fixture::new();
+            fixture.write_segment(
+                "rollout-a.jsonl",
+                vec![fixture.context(500, model), fixture.usage(1_000, 1)],
+            );
+            let original = fixture.snapshot();
+            let mut record = evidence(&original.events[0], &original.events[0].model);
+            record["source"] = json!(source);
+            fixture.write_evidence(vec![record]);
+            reopen_index(&mut fixture);
+            let repaired = fixture.snapshot();
+            assert_eq!(repaired.events[0].provider, "supplier-a", "{source}/{model}");
+            assert_eq!(repaired.events[0].provider_source.as_deref(), Some(source));
+            assert_eq!(repaired.events[0].model, original.events[0].model);
+            assert_eq!(repaired.events[0].delta, original.events[0].delta);
+            assert_eq!(repaired.events[0].id, original.events[0].id);
+            assert_eq!(repaired.provider_evidence["appliedEvents"], 1);
+            fixture.write_evidence(vec![]);
+            let withdrawn = fixture.snapshot();
+            assert_eq!(withdrawn.events[0].provider, original.events[0].provider);
+        }
+    }
+}
+
+#[test]
 fn local_missing_initial_baseline_does_not_assign_lifetime_usage_to_today() {
     let mut fixture = Fixture::new();
     let mut segment = fixture.usage(2_000, 100);

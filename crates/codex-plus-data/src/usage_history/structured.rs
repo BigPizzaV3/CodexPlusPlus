@@ -2656,8 +2656,11 @@ impl LegacyEvidenceCache {
                 && record.provider.trim() == record.provider
                 && record.model.trim() == record.model
                 && !unknown_provider(&record.provider)
-                && !unknown_model(&record.model)
-                && !unknown_model(request_base_model(&record.model))
+                && (matches!(
+                    record.source.as_str(),
+                    "request-log-recovered-supplier-only" | "session-context-inferred"
+                ) || (!unknown_model(&record.model)
+                    && !unknown_model(request_base_model(&record.model))))
                 && matches!(record.role.as_str(), "main" | "subagent")
                 && matches!(
                     record.source.as_str(),
