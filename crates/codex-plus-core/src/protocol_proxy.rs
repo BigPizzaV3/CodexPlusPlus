@@ -6051,6 +6051,17 @@ async fn upstream_request_parts(
                 }),
             );
         }
+        let orphan_calls = downgrade_orphan_function_calls(&mut body);
+        if orphan_calls > 0 {
+            // 只记录条数，不记录 call_id / 工具名之外的请求内容。
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.orphan_function_call_downgraded",
+                json!({
+                    "relayId": relay.id,
+                    "count": orphan_calls,
+                }),
+            );
+        }
         let callless_outputs = downgrade_callless_function_outputs(&mut body);
         if !callless_outputs.is_empty() {
             // 只记录条数与工具名，不记录 output 内容。
@@ -7811,6 +7822,66 @@ fn normalize_responses_item_ids(body: &mut Value) {
         Value::Object(_) => normalize_responses_item_id(input),
         _ => {}
     }
+}
+
+/// Responses 上游（包括内部再把 Responses 转成 Chat Completions 的中转站）要求
+/// 每个 `function_call` 都有对应 `function_call_output`，否则按
+/// 「an assistant message with 'tool_calls' must be followed by tool messages」
+/// 拒绝整轮请求。中断/回滚过的会话在历史**中段**留下没有 output 的
+/// `function_call`（后面还有新一轮的 user 消息等条目），转发后就是 issue #3289。
+/// Chat 转换路径已有 `enforce_tool_call_pairing` 兜底；Responses 直通路径此前没有。
+///
+/// input 末尾的未应答 `function_call` 是「刚发起、结果还没回来」的正常在途形态，
+/// 必须保留；只降级中段的孤立 call —— 原位换成一条 user 消息，保留「模型曾试图
+/// 调用某工具」的信息，与 Chat 路径的处理语义一致。
+/// 返回降级条数。
+fn downgrade_orphan_function_calls(body: &mut Value) -> usize {
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    if items.len() < 2 {
+        return 0;
+    }
+    let answered: std::collections::BTreeSet<String> = items
+        .iter()
+        .filter_map(|item| {
+            if item.get("type").and_then(Value::as_str) != Some("function_call_output") {
+                return None;
+            }
+            item.get("call_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        })
+        .collect();
+    let last_index = items.len() - 1;
+    let mut downgraded = 0;
+    for index in 0..last_index {
+        let item = &items[index];
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            continue;
+        }
+        let call_id = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if answered.contains(call_id) {
+            continue;
+        }
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+        let note = if call_id.is_empty() {
+            format!("Abandoned function call: {name}")
+        } else {
+            format!("Abandoned function call ({call_id}): {name}")
+        };
+        items[index] = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": note }]
+        });
+        downgraded += 1;
+    }
+    downgraded
 }
 
 /// Codex Desktop 在跨任务委派（`create_thread` / `send_message_to_thread`）和定时任务
@@ -14270,5 +14341,49 @@ mod callless_function_output_tests {
         );
         assert_eq!(input[1]["type"], "message");
         assert_eq!(input[1]["content"][0]["text"], "delegate");
+    }
+
+    /// issue #3289：历史中段孤立（无 output）的 function_call 会被 Responses 上游
+    /// （含内部转 Chat 的中转）以 tool_call_id 校验拒绝整轮请求。出站前应降级成
+    /// user 消息；末尾的未应答 call 是在途形态，必须保留。
+    #[test]
+    fn responses_upstream_never_sees_a_mid_history_orphan_function_call() {
+        let mut body = json!({"model": "kimi", "input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call","id":"fc_a","call_id":"exec_command:51","name":"exec_command","arguments":"{}"},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+        ]});
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 1);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["role"], "user");
+        assert_eq!(
+            input[1]["content"][0]["text"],
+            "Abandoned function call (exec_command:51): exec_command"
+        );
+
+        // 已配对的 call 不动。
+        let mut body = json!({"input": [
+            {"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call_1","output":"ok"},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}
+        ]});
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
+        assert_eq!(body["input"][0]["type"], "function_call");
+
+        // 末尾未应答的 call 是在途形态，保留。
+        let mut body = json!({"input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call","call_id":"call_2","name":"exec","arguments":"{}"}
+        ]});
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
+        assert_eq!(body["input"][1]["type"], "function_call");
+
+        // input 非数组 / 单条时不改任何东西。
+        let mut body = json!({"input": "text"});
+        let before = body.clone();
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
+        assert_eq!(body, before);
     }
 }
