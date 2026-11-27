@@ -1740,7 +1740,18 @@
       .codex-plus-provider-list-card .codex-plus-provider-item[data-selected="true"] { background: transparent; }
       .codex-plus-provider-list-card .codex-plus-provider-item:hover { background: var(--codex-plus-bg-hover); }
       .codex-plus-provider-list-card .codex-plus-provider-item::after { content: ""; flex: none; width: 6px; height: 6px; margin: 0 2px 0 2px; border-right: 1.5px solid var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); border-bottom: 1.5px solid var(--codex-plus-text-tertiary, var(--codex-plus-text-secondary)); transform: rotate(-45deg); }
-      .codex-plus-provider-list-card .codex-plus-provider-item:not([data-codex-gateway-select]):not([data-codex-provider-select])::after { visibility: hidden; }
+      .codex-plus-provider-list-card .codex-plus-provider-item:not([data-codex-provider-open])::after { visibility: hidden; }
+      /* 当前模式下没在用的（聚合没打开、直连已停用、折叠在底下的）：名字和摘要变淡，同管理器的 muted 行。 */
+      .codex-plus-provider-list-card .codex-plus-provider-item[data-muted="true"] .codex-plus-provider-item-main { opacity: .55; }
+      .codex-plus-provider-list-card .codex-plus-provider-item > .codex-plus-action-button { flex: none; min-height: 26px; padding: 2px 12px; font-size: 12px; }
+      .codex-plus-provider-list-card .codex-plus-provider-in-use { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--codex-plus-success, #10a37f) 14%, transparent); font-size: 12px; line-height: 18px; }
+      .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="warn"] { color: var(--codex-plus-warning, #d97706); }
+      /* 列表底下「N 家仅支持聚合模式」：点开才列出来（同管理器 gw-pool-off-toggle）。 */
+      .codex-plus-provider-folded-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 10px 0 0 2px; padding: 2px 6px 2px 2px; border: 0; border-radius: var(--codex-plus-control-radius, 6px); background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+      .codex-plus-provider-folded-toggle:hover { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
+      .codex-plus-provider-folded-toggle > span { width: 5px; height: 5px; margin: 0 3px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .15s ease; }
+      .codex-plus-provider-folded-toggle[aria-expanded="true"] > span { transform: rotate(45deg); }
+      .codex-plus-provider-folded-toggle + .codex-plus-provider-list-card { margin-top: 8px; }
       .codex-plus-provider-list-card .codex-plus-provider-item-name { font-size: 13px; font-weight: 500; line-height: 18px; }
       /* 「连接」一卡：默认模型、Codex 登录身份，各一行（左标题 + 说明，右下拉）。 */
       .codex-plus-provider-connection-card > .codex-plus-provider-default-model { box-sizing: border-box; min-height: 52px; padding: 12px 0; color: var(--codex-plus-text); font-size: 13px; }

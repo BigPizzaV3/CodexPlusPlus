@@ -179,15 +179,6 @@
     await codexPlusGatewayMutate("delete_gateway_provider", { id: entry.id }, { busy: "delete", success: `已删除「${entry.name}」。` });
   }
 
-  async function codexPlusGatewayMove(id, offset) {
-    const ids = codexPlusGatewayEntries().map((entry) => entry.id);
-    const index = ids.indexOf(id);
-    const target = index + offset;
-    if (index < 0 || target < 0 || target >= ids.length) return;
-    [ids[index], ids[target]] = [ids[target], ids[index]];
-    await codexPlusGatewayMutate("reorder_gateway_providers", { ids }, { busy: "reorder", success: "顺序已更新（排在前面的先用）。" });
-  }
-
   async function codexPlusGatewayReplaceKey(entry, keyId) {
     const answer = await codexPlusAsk({
       title: "替换 Key",
@@ -308,18 +299,18 @@
   }
 
   /**
-   * 页面顶部的连接方式（和管理器同一个「聚合 / 直连」切换）。
-   * 聚合：Codex 经 Codex++ 本地服务，打开的供应商合在一起；直连：断开本地服务、还原接入前的配置（先看还原预览）。
+   * 供应商列表页标题行的连接方式（和管理器同一个「聚合 / 直连」切换）。aggregate 是列表看的模式，gatewayMode 是 Codex 实际的连接方式。
+   * 和管理器一样：点「直连」只把列表换成直连视图，点某家「使用」才真的切过去（自动断开本地服务）；
+   * 点「聚合」时已经经本地服务就只换视图，没接入就接入。
    */
-  function renderCodexPlusProviderModeSwitch(gatewayMode) {
+  function renderCodexPlusProviderModeSwitch(aggregate, gatewayMode = aggregate) {
     const busy = Boolean(codexPlusGatewayPageState.busy || codexPlusProviderPageState.busy);
     const canSwitch = codexPlusProviderPageState.settings?.relayProfilesEnabled !== false;
     const button = (mode, label, title, active, enabled) => `<button type="button" role="radio" aria-checked="${active}" aria-selected="${active}" data-codex-gateway-action="mode-${mode}" title="${escapeHtml(title)}" ${active || busy || !enabled ? "disabled" : ""}>${escapeHtml(label)}</button>`;
-    // 这一行横跨侧栏和原生面板（侧栏展开时面板从侧栏右边起），只放切换本身；说明和默认模型放进左栏。
     return `<div class="codex-plus-provider-tabs codex-plus-provider-mode-switch">
       <div class="codex-plus-provider-tab-group" role="radiogroup" aria-label="Codex 的连接方式">
-        ${button("aggregate", "聚合", canSwitch ? "聚合：Codex 经 Codex++ 本地服务，下面打开的供应商合在一起，不用切换" : "先在 Codex++「连接与供应商」的「更多设置」里打开供应商配置切换", gatewayMode, canSwitch)}
-        ${button("direct", "直连", "直连：断开本地服务，还原接入前的直连配置；会先列出要还原的文件，确认后才改", !gatewayMode, true)}
+        ${button("aggregate", "聚合", canSwitch ? "聚合：Codex 经 Codex++ 本地服务，下面打开的供应商合在一起，模型都列进 Codex 的模型选择器，不用切换；需要 Codex++ 在后台运行" : "先在 Codex++「连接与供应商」的「更多设置」里打开供应商配置切换", aggregate, canSwitch)}
+        ${button("direct", "直连", gatewayMode ? "查看直连供应商列表，点任一家「使用」即可直接切换过去" : "直连：Codex 直接连一家供应商，关掉 Codex++ 也能用（需协议转换的除外）；换供应商点「使用」", !aggregate, true)}
       </div>
     </div>`;
   }
@@ -366,40 +357,6 @@
     if (!options.length || (!model && !models.length)) return "";
     const current = models.find((item) => item.toLowerCase() === model.toLowerCase()) || model;
     return `<div class="codex-plus-provider-default-model"><span>默认模型</span>${codexPlusProviderMenu("default-model", current, options, "Codex 默认模型", busy ? "disabled" : "")}</div>`;
-  }
-
-  function renderCodexPlusGatewayList() {
-    const state = codexPlusGatewayPageState;
-    const entries = codexPlusGatewayVisibleEntries();
-    const gatewayMode = codexPlusProviderPageState.data?.gatewayMode === true;
-    // 聚合时每家一个开关：打开的合在一起给 Codex 用（改 Codex 绑定的排除名单）。
-    const exclude = state.payload?.gateway?.bindings?.codex?.poolExclude || [];
-    // 当前 Codex 绑定的模型（格式 "providerId/model"），用来标出活跃供应商。
-    const activeModel = state.payload?.gateway?.bindings?.codex?.model || "";
-    const activeProviderId = gatewayMode && activeModel.includes("/") ? activeModel.split("/")[0] : "";
-    const rows = entries.map((entry, index) => {
-      const selected = entry.id === state.selectedId && !state.isNew && codexPlusProviderPageState.tab === "gateway";
-      const enabled = entry.enabled !== false;
-      const isActive = gatewayMode && entry.id === activeProviderId;
-      const used = enabled && !exclude.includes(entry.id);
-      const owner = entry.owner && entry.owner !== "codex" ? `<span class="codex-plus-provider-badge">来自 ${escapeHtml(entry.owner === "claude" ? "Claude" : entry.owner)}</span>` : "";
-      const tag = entry.account ? (entry.plan || "账号") : String(entry.source || "").startsWith("extension:") ? "拓展" : String(entry.source || "").startsWith("native:") ? "原生登录" : ({ responses: "Responses", chatCompletions: "Chat", anthropicMessages: "Anthropic" }[entry.protocol] || entry.protocol);
-      return `<div class="codex-plus-provider-item" role="listitem" data-selected="${selected}" data-disabled="${!enabled}" data-codex-gateway-select="${escapeHtml(entry.id)}">
-        <div class="codex-plus-provider-item-main">
-          <div class="codex-plus-provider-item-name">${isActive ? '<span class="codex-plus-provider-item-dot" aria-hidden="true"></span>' : ""}${escapeHtml(entry.name || entry.id)}</div>
-          <div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge">${escapeHtml(tag)}</span><span class="codex-plus-provider-badge">${entry.models?.length || 0} 个模型</span>${owner}${!enabled ? '<span class="codex-plus-provider-badge" data-tone="off">已停用</span>' : isActive ? '<span class="codex-plus-provider-badge" data-tone="active">默认</span>' : ""}</div>
-        </div>
-        ${codexPlusProviderToggleHtml(used, `给 Codex 用「${entry.name || entry.id}」`, `data-codex-gateway-member="${escapeHtml(entry.id)}" ${!enabled || state.busy ? "disabled" : ""} ${state.busy === `member:${entry.id}` ? 'data-pending="true"' : ""}`)}
-        <div class="codex-plus-provider-item-actions">
-          <button type="button" title="上移" aria-label="上移" data-codex-gateway-move="-1" data-id="${escapeHtml(entry.id)}" ${index === 0 ? "disabled" : ""}>↑</button>
-          <button type="button" title="下移" aria-label="下移" data-codex-gateway-move="1" data-id="${escapeHtml(entry.id)}" ${index === entries.length - 1 ? "disabled" : ""}>↓</button>
-        </div>
-      </div>`;
-    }).join("");
-    const draftRow = state.isNew
-      ? `<div class="codex-plus-provider-item" role="listitem" data-selected="true"><div class="codex-plus-provider-item-main"><div class="codex-plus-provider-item-name">${escapeHtml(state.draft?.name || "新供应商")}</div><div class="codex-plus-provider-item-meta"><span class="codex-plus-provider-badge" data-tone="new">未保存</span></div></div></div>`
-      : "";
-    return `<div class="codex-plus-provider-list" role="list" aria-label="共享供应商">${rows}${draftRow}${rows || draftRow ? "" : codexPlusGatewayEntries().length ? '<div class="codex-plus-provider-help">其他 Agent 的供应商已隐藏，「+ 新建」菜单里可以显示。</div>' : '<div class="codex-plus-provider-help">还没有供应商。加进来的供应商都会合在一起给 Codex 用。</div>'}</div>`;
   }
 
   /** 浏览器登录、能在 Codex 里直接加账号的种类；Copilot（验证码）和各订阅（要先选登录方式）去管理器加。 */
@@ -542,23 +499,6 @@
       ${dangerCard}`;
   }
 
-  function renderCodexPlusGatewayPane() {
-    const state = codexPlusGatewayPageState;
-    if (!state.payload) {
-      return `<div class="codex-plus-provider-empty">${state.busy === "load" ? "正在读取共享供应商…" : escapeHtml(state.status || "还没有读取共享供应商")}
-        <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="reload">重试</button></div>`;
-    }
-    return `<div class="codex-plus-provider-layout">
-      <aside class="codex-plus-provider-sidebar">
-        <div class="codex-plus-provider-sidebar-header"><span>共享供应商</span>
-          <button type="button" class="codex-plus-action-button" data-codex-gateway-action="new" ${state.busy ? "disabled" : ""}>+ 新建</button></div>
-        ${renderCodexPlusGatewayList()}
-      </aside>
-      <section class="codex-plus-provider-detail">
-        ${renderCodexPlusGatewayDetail()}
-      </section></div>${renderCodexPlusGatewayDisconnectDialog()}`;
-  }
-
   async function codexPlusGatewayConfirmDiscard() {
     if (!codexPlusGatewayPageState.dirty) return true;
     const answer = await codexPlusAsk({ title: "放弃修改？", message: "当前共享供应商有未保存的修改。", options: [{ value: "discard", label: "放弃修改" }] });
@@ -591,22 +531,6 @@
           busy: `member:${id}`,
           success: used ? `Codex 开始用「${entry.name}」。` : `Codex 不再用「${entry.name}」。`,
         });
-      }
-      return true;
-    }
-    const move = target.closest("[data-codex-gateway-move]");
-    if (move) {
-      if (move.disabled || !(await codexPlusGatewayConfirmDiscard())) return true;
-      await codexPlusGatewayMove(move.dataset.id, Number(move.dataset.codexGatewayMove));
-      return true;
-    }
-    const select = target.closest("[data-codex-gateway-select]");
-    if (select) {
-      const id = select.dataset.codexGatewaySelect;
-      if ((id !== state.selectedId || state.isNew) && (await codexPlusGatewayConfirmDiscard())) {
-        codexPlusGatewaySelect(id);
-        codexPlusGatewaySetStatus("");
-        renderCodexPlusProviderPage();
       }
       return true;
     }
@@ -682,10 +606,16 @@
       case "connect": await codexPlusGatewayConnect(); break;
       case "disconnect": await codexPlusGatewayOpenDisconnect(); break;
       case "mode-aggregate":
-        if (await codexPlusProviderConfirmDiscard()) await codexPlusGatewayConnect();
+        // 已经经本地服务：只把列表换回聚合视图；还没接入：接入。
+        if (codexPlusProviderPageState.data?.gatewayMode === true) {
+          codexPlusProviderPageState.viewMode = "aggregate";
+          renderCodexPlusProviderPage();
+        } else if (await codexPlusProviderConfirmDiscard()) await codexPlusGatewayConnect();
         break;
       case "mode-direct":
-        if (await codexPlusGatewayConfirmDiscard()) await codexPlusGatewayOpenDisconnect();
+        // 只换成直连视图；点某家「使用」才真的切过去（codexPlusProviderSwitchDirect）。
+        codexPlusProviderPageState.viewMode = "direct";
+        renderCodexPlusProviderPage();
         break;
       // 本地账号的名字、用户名、邮箱在管理器里改（和管理器「编辑资料」同一处）。
       case "edit-local-profile": void postJson("/manager/open", { page: "relay" }); break;

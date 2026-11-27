@@ -113,6 +113,7 @@ var codexPlusProviderEditing = (() => {
     tomlString: () => tomlString,
     tomlStringAssignmentValue: () => tomlStringAssignmentValue,
     tomlStructureMask: () => tomlStructureMask,
+    unified: () => codex_unified_providers_exports,
     updateRelayProfile: () => updateRelayProfile,
     withGeneratedRelayFiles: () => withGeneratedRelayFiles
   });
@@ -3256,6 +3257,60 @@ ${key} = ${value}`]);
       upstream_error: "上游请求失败"
     };
     return labels[kind] ?? "错误原因待确认";
+  }
+
+  // apps/codex-plus-manager/src/codex-unified-providers.ts
+  var codex_unified_providers_exports = {};
+  __export(codex_unified_providers_exports, {
+    buildCodexUnifiedProviders: () => buildCodexUnifiedProviders,
+    codexItemSupportsAggregate: () => codexItemSupportsAggregate,
+    codexItemSupportsDirect: () => codexItemSupportsDirect
+  });
+  function buildCodexUnifiedProviders(profiles, entries, options) {
+    const byRelayId = /* @__PURE__ */ new Map();
+    const hasChatgptAccount = entries.some((entry) => entry.account === "chatgpt");
+    for (const entry of entries) {
+      const relayId = entry.linkedCodexRelay ?? (entry.source?.startsWith("codex:") ? entry.source.slice(6) : null);
+      if (relayId && !byRelayId.has(relayId)) byRelayId.set(relayId, entry);
+    }
+    const matchedPoolIds = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const profile of profiles) {
+      const isPureOfficial = profile.relayMode === "official" && !profile.officialMixApiKey;
+      if (isPureOfficial && hasChatgptAccount && options?.activeOfficialExternalId !== profile.id) {
+        continue;
+      }
+      const poolEntry = byRelayId.get(profile.id) ?? null;
+      if (poolEntry) matchedPoolIds.add(poolEntry.id);
+      result.push({
+        key: `relay:${profile.id}`,
+        name: profile.name || poolEntry?.name || profile.id,
+        baseUrl: profile.baseUrl || poolEntry?.baseUrl || "",
+        profile,
+        poolEntry
+      });
+    }
+    for (const entry of entries) {
+      if (matchedPoolIds.has(entry.id)) continue;
+      result.push({
+        key: `pool:${entry.id}`,
+        name: entry.name,
+        baseUrl: entry.baseUrl,
+        profile: null,
+        poolEntry: entry
+      });
+    }
+    return result;
+  }
+  function codexItemSupportsAggregate(item) {
+    const entry = item.poolEntry;
+    if (!entry) return false;
+    if (entry.account) return true;
+    if (entry.linkedCodexRelay && !entry.baseUrl.trim()) return false;
+    return true;
+  }
+  function codexItemSupportsDirect(item) {
+    return item.profile !== null || item.poolEntry?.account === "chatgpt";
   }
   return __toCommonJS(provider_editing_entry_exports);
 })(); // 结束 codexPlusProviderEditing
