@@ -1166,6 +1166,9 @@ fn responses_to_chat_completions_with_context(
     // #3106：剩下的是原生上游签发的加密压缩项，Chat 协议无法表达，换成占位说明，其余历史照常转换。
     // 代理入口已按候选决定过是切换还是降级（见 open_responses_proxy_request_once），这里兜底。
     degrade_native_compaction_history(&mut body);
+    // #3288：上一家 Responses 上游签发的加密 agent 消息，Chat 协议同样无法表达，
+    // 与加密压缩项一致换成占位说明继续对话；已确认明文形态的片段仍按文本透传。
+    degrade_unreadable_encrypted_agent_history(&mut body);
     // agent_message 的 encrypted_content 片段在 multi_agent v2 里实际承载明文任务；
     // 转换时按文本透传，opaque 内容则明确失败，避免静默发空任务。
     let mut result = json!({});
@@ -3001,6 +3004,97 @@ fn degrade_native_compaction_history(body: &mut Value) -> usize {
         }
         Some(input @ Value::Object(_)) if is_native(input) => {
             *input = json!([placeholder()]);
+            degraded = 1;
+        }
+        _ => {}
+    }
+    degraded
+}
+
+/// 加密 agent 消息（#3288）降级成的占位说明，措辞对齐 [`NATIVE_COMPACTION_PLACEHOLDER`]。
+const ENCRYPTED_AGENT_PLACEHOLDER: &str = "[Context note] An earlier agent message in this conversation was encrypted by a different provider and cannot be read under the current protocol, so its content has been omitted. Continue from the remaining conversation, and ask the user if essential earlier details are missing.";
+
+/// 判断一条消息的 content 是否携带当前协议读不了的加密 agent 内容。
+/// 与 `responses_content_to_chat_content` 的 fail-closed 判定保持一致：
+/// 只有已确认明文形态且每个片段都非 opaque 的 agent_message 才能透传，其余一律不可读。
+fn message_content_has_unreadable_encrypted_content(content: &Value) -> bool {
+    // 对象形态的 content 无法透传 encrypted_content（fail closed）。
+    if content.get("type").and_then(Value::as_str) == Some("encrypted_content") {
+        return true;
+    }
+    let Some(parts) = content.as_array() else {
+        return false;
+    };
+    let mut fragments: Vec<&str> = Vec::new();
+    for part in parts
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("encrypted_content"))
+    {
+        match part
+            .get("encrypted_content")
+            .or_else(|| part.get("text"))
+            .and_then(Value::as_str)
+        {
+            Some(value) => fragments.push(value),
+            // 缺失或非字符串的加密片段同样读不了（转换层会 fail closed）。
+            None => return true,
+        }
+    }
+    if fragments.is_empty() {
+        return false;
+    }
+    !agent_message_has_confirmed_plaintext_shape(content)
+        || fragments
+            .iter()
+            .any(|value| value.is_empty() || encrypted_content_value_is_opaque(value))
+}
+
+fn unreadable_agent_message_placeholder() -> Value {
+    json!({
+        "type": "message",
+        "role": "user",
+        "content": [{ "type": "input_text", "text": ENCRYPTED_AGENT_PLACEHOLDER }]
+    })
+}
+
+/// 把上一家 Responses 上游签发、当前协议读不了的加密 agent 消息（#3288：切换供应商后
+/// 残留在历史里）换成一条 user 占位说明，返回替换了几项。占位说明留在原处，
+/// 前后消息顺序与工具调用配对不受影响。已确认明文形态的 multi_agent v2 消息不受影响。
+fn degrade_unreadable_encrypted_agent_history(body: &mut Value) -> usize {
+    fn unreadable(item: &Value) -> bool {
+            let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+            if item_type == "encrypted_content" {
+                return true;
+            }
+            // 只有 agent_message 的已确认明文形态才允许透传加密片段（见转换层）；
+            // 其余 item 类型一律读不了。
+            if item_type != "agent_message" {
+                return item
+                    .get("content")
+                    .is_some_and(|content| {
+                        content.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                            || content.as_array().is_some_and(|parts| {
+                                parts.iter().any(|part| {
+                                    part.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                                })
+                            })
+                    });
+            }
+            item.get("content")
+                .is_some_and(message_content_has_unreadable_encrypted_content)
+        };
+    let mut degraded = 0;
+    match body.get_mut("input") {
+        Some(Value::Array(items)) => {
+            for item in items.iter_mut() {
+                if unreadable(item) {
+                    *item = unreadable_agent_message_placeholder();
+                    degraded += 1;
+                }
+            }
+        }
+        Some(input @ Value::Object(_)) if unreadable(input) => {
+            *input = json!([unreadable_agent_message_placeholder()]);
             degraded = 1;
         }
         _ => {}
