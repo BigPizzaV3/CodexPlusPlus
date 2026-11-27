@@ -78,7 +78,7 @@ fn scoped_namespace_infers_only_known_suppliers_without_session_requests() -> an
         gateway_blocked: false,
         native_blocked: false,
         paired_only: false,
-        matches_terminal: None,
+        resolve_terminal: None,
     };
     for (model, expected) in [
         ("supplier-a/model-a", "supplier-a"),
@@ -137,15 +137,13 @@ fn scoped_namespace_does_not_override_request_context_or_conflicts() -> anyhow::
     routed.relay_id = "supplier-b".into();
     routed.final_response_id = Some("response-b".into());
     cache.records.push(routed.clone());
-    let matches = |event: &UsageEvent, id: &str| {
-        Ok(event.terminal_response.as_deref() == Some(id))
-    };
+    let resolve = |event: &UsageEvent| Ok(event.terminal_response.clone());
     let scope = AttributionScope {
         targets: 0..1,
         gateway_blocked: false,
         native_blocked: false,
         paired_only: false,
-        matches_terminal: Some(&matches),
+        resolve_terminal: Some(&resolve),
     };
     let mut events = [original.clone()];
     cache.infer_scoped(&mut events, &mut names, &BTreeMap::new(), &scope)?;
@@ -188,6 +186,52 @@ fn scoped_namespace_does_not_override_request_context_or_conflicts() -> anyhow::
 }
 
 #[test]
+fn scoped_supplier_resolves_terminal_once_per_event() -> anyhow::Result<()> {
+    let at = Local::now().timestamp_millis() - 600_000;
+    let mut cache = RequestEvidenceCache::default();
+    for n in 0..2048 {
+        let mut proof = request(at - n * 1000);
+        proof.id = format!("request-{n}");
+        proof.final_response_id = Some(format!("response-{n}"));
+        proof.relay_id = format!("supplier-{}", n % 2);
+        cache.records.push(proof);
+    }
+    let lookups = std::cell::Cell::new(0);
+    let resolve = |_: &UsageEvent| {
+        lookups.set(lookups.get() + 1);
+        Ok(Some(Box::from("response-2047")))
+    };
+    let scope = AttributionScope {
+        targets: 0..1,
+        gateway_blocked: false,
+        native_blocked: false,
+        paired_only: true,
+        resolve_terminal: Some(&resolve),
+    };
+    let original = event(at);
+    let mut events = [original.clone()];
+    cache.infer_scoped(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &scope)?;
+    assert_eq!(events[0].provider, "supplier-1");
+    assert_eq!(events[0].provider_source.as_deref(), Some("request-log-recovered-supplier-only"));
+    events[0].provider.clear();
+    events[0].provider_source = None;
+    assert!(events[0] == original);
+    assert_eq!(lookups.get(), 1, "resolve the native receipt once, not once per request");
+    events[0].inherited = true;
+    cache.infer_scoped(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &scope)?;
+    assert_eq!(lookups.get(), 1, "inherited records cannot bind the parent's receipt");
+    assert_eq!(events[0].provider_source.as_deref(), Some("session-context-inferred"));
+    for request in &mut cache.records {
+        request.final_response_id = None;
+    }
+    events[0] = original;
+    cache.infer_scoped(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &scope)?;
+    assert_eq!(lookups.get(), 1, "requests without response identities need no receipt lookup");
+    assert_eq!(events[0].provider_source.as_deref(), Some("session-context-inferred"));
+    Ok(())
+}
+
+#[test]
 fn scoped_supplier_identity_does_not_require_cache_accounting() -> anyhow::Result<()> {
     let at = Local::now().timestamp_millis() - 600_000;
     let mut proof = request(at);
@@ -199,15 +243,13 @@ fn scoped_supplier_identity_does_not_require_cache_accounting() -> anyhow::Resul
     cache.records.push(proof.clone());
     let mut events = [event(at)];
     let original_counts = events[0].delta;
-    let matches = |event: &UsageEvent, id: &str| {
-        Ok(event.terminal_response.as_deref() == Some(id))
-    };
+    let resolve = |event: &UsageEvent| Ok(event.terminal_response.clone());
     let scope = AttributionScope {
         targets: 0..1,
         gateway_blocked: false,
         native_blocked: false,
         paired_only: true,
-        matches_terminal: Some(&matches),
+        resolve_terminal: Some(&resolve),
     };
     cache.infer_scoped(&mut events, &mut BTreeMap::new(), &BTreeMap::new(), &scope)?;
     assert_eq!(events[0].provider, "supplier-a");
@@ -251,7 +293,7 @@ fn scoped_context_uses_canonical_session_and_nearest_provider_switch() -> anyhow
         gateway_blocked: false,
         native_blocked: false,
         paired_only: false,
-        matches_terminal: None,
+        resolve_terminal: None,
     };
     let mut events = [event(at)];
     events[0].session = "session-alias".into();
@@ -295,7 +337,7 @@ fn scoped_context_survives_reopen_without_the_request_log() -> anyhow::Result<()
         gateway_blocked: false,
         native_blocked: false,
         paired_only: false,
-        matches_terminal: None,
+        resolve_terminal: None,
     };
     let mut events = [event(at)];
     let mut cache = RequestEvidenceCache::default();

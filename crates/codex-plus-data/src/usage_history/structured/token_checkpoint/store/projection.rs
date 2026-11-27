@@ -1850,9 +1850,9 @@ impl Store {
         if target_rows.is_empty() {
             return Ok(None);
         }
-        let matches_terminal = |event: &UsageEvent, id: &str| -> Result<bool> {
+        let resolve_terminal = |event: &UsageEvent| -> Result<Option<Box<str>>> {
             if let Some(terminal) = &event.terminal_response {
-                return Ok(terminal.as_ref() == id);
+                return Ok(Some(terminal.clone()));
             }
             let mut claims = read.prepare_cached(
                 "SELECT event_id, payload, source_id, revision, position
@@ -1870,7 +1870,7 @@ impl Store {
                 event.total.output_tokens.to_string()
             ])?;
             let Some(row) = rows.next()? else {
-                return Ok(false);
+                return Ok(None);
             };
             let receipt = serde_json::from_slice::<Observation>(row.get_ref(1)?.as_blob()?)?
                 .into_event(
@@ -1878,7 +1878,7 @@ impl Store {
                     event.session.clone(),
                 )?;
             let (Some(last), Some(received_last)) = (event.last, receipt.last) else {
-                return Ok(false);
+                return Ok(None);
             };
             let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
             let received_at = DateTime::parse_from_rfc3339(&receipt.timestamp)?.timestamp_millis();
@@ -1896,8 +1896,7 @@ impl Store {
                 event.original_id.as_slice(),
             ])?;
             // 这里只配对供应商身份；未知缓存不能否定回执，也不能改写原生计数。
-            Ok(rows.next()?.is_none()
-                && receipt.terminal_response.as_deref() == Some(id)
+            let paired = rows.next()?.is_none()
                 && (nearby || adjacent)
                 && !event.context_conflicts.any()
                 && !event.count_uncertain
@@ -1911,14 +1910,15 @@ impl Store {
                                 || counter.cached_input_tokens == terminal.cached_input_tokens)
                             && counter.reasoning_output_tokens.zip(terminal.reasoning_output_tokens)
                                 .is_none_or(|(a, b)| a == b)
-                    }))
+                    });
+            Ok(if paired { receipt.terminal_response } else { None })
         };
         let attribution = AttributionScope {
             targets: target_rows.clone(),
             gateway_blocked,
             native_blocked: native_blocked || paired_only,
             paired_only,
-            matches_terminal: Some(&matches_terminal),
+            resolve_terminal: Some(&resolve_terminal),
         };
         classify(&mut candidates, &scope.aliases, &attribution)?;
         read.commit()?;

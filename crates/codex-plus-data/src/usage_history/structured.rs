@@ -42,7 +42,7 @@ struct AttributionScope<'a> {
     gateway_blocked: bool,
     native_blocked: bool,
     paired_only: bool,
-    matches_terminal: Option<&'a dyn Fn(&UsageEvent, &str) -> anyhow::Result<bool>>,
+    resolve_terminal: Option<&'a dyn Fn(&UsageEvent) -> anyhow::Result<Option<Box<str>>>>,
 }
 
 fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<(u64, u64)> {
@@ -1254,10 +1254,10 @@ impl RequestEvidenceCache {
                     {
                         return None;
                     }
-                    let matches = scope?.matches_terminal?;
-                    match matches(event, final_id) {
-                        Ok(true) => {}
-                        Ok(false) => return None,
+                    let resolve = scope?.resolve_terminal?;
+                    match resolve(event) {
+                        Ok(terminal) if terminal.as_deref() == Some(final_id) => {}
+                        Ok(_) => return None,
                         Err(error) => {
                             self.captured_id_check_error =
                                 Some(format!("validate native response identity: {error:#}"));
@@ -1510,6 +1510,15 @@ impl RequestEvidenceCache {
             let mut supplier: Option<&RequestEvidence> = None;
             let mut conflict = false;
             let model = request_base_model(&event.model);
+            // 回执只与这条原生记录有关，不随同会话的请求候选重复查询。
+            let terminal = if !event.inherited
+                && requests.iter().any(|request| request.final_response_id.is_some())
+                && let Some(resolve) = scope.resolve_terminal
+            {
+                resolve(event)?
+            } else {
+                None
+            };
             for &request in requests {
                 let distance = request.timestamp_ms.abs_diff(at);
                 let nearby = distance <= DELAYED_REQUEST_MATCH_WINDOW_MS as u64;
@@ -1519,12 +1528,9 @@ impl RequestEvidenceCache {
                         && (!event.delta.cached_known
                             || request.known_cached().is_none_or(|cached| cached == event.delta.cached_input_tokens))
                 });
-                let mut paired = false;
-                if !event.inherited
-                    && let (Some(id), Some(matches)) = (request.final_response_id.as_deref(), scope.matches_terminal)
-                {
-                    paired = matches(event, id)?;
-                }
+                let paired = terminal.as_deref().is_some_and(|id| {
+                    request.final_response_id.as_deref() == Some(id)
+                });
                 let model_matches = !unknown_model(model)
                     && [request.model.as_str(), request.upstream_model.as_str()]
                         .into_iter().any(|name| request_base_model(name) == model);

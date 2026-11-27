@@ -1446,7 +1446,7 @@ mod tests {
             gateway_blocked: false,
             paired_only: false,
             native_blocked: false,
-            matches_terminal: None,
+            resolve_terminal: None,
         };
         scoped_cache.apply_scoped(
             &mut scoped_events,
