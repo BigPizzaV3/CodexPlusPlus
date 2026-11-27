@@ -307,6 +307,10 @@ Codex 的「连接与供应商」、Claude Code 的「供应商」都是同一�
 
 Codex++ 自带的 Codex 增强（插件市场解锁、模型白名单、原生 Fast、输入预测、会话删除等）都是内置拓展，在 Codex 里的「Codex++」设置页按分组开关。
 
+<p align="center">
+  <img src="docs/images/readme-preview/codex-builtins.webp" alt="Codex 里的 Codex++ 设置页，「模型与插件」分组：插件市场解锁、模型白名单解锁、原生 Fast 强制解锁等开关" width="100%">
+</p>
+
 <table>
   <tr>
     <td width="50%" valign="top"><strong>Codex 插件</strong><br>官方插件目录的快照，不登录 ChatGPT 也能装；带连接器的插件装完就能登录。<br><img src="docs/images/readme-preview/codex-plugins.webp" alt="Codex 插件页：按热门、效率、创意、开发者工具分组的官方插件，可安装与查看已安装" width="100%"></td>
@@ -340,10 +344,10 @@ Codex++ 自带的 Codex 增强（插件市场解锁、模型白名单、原生 F
   <img src="docs/images/agent-collaboration.png" alt="实测：问问 DeepSeek 1+1 是多少，通过 Codex Plus Collaboration 协作集成返回 2" width="100%">
 </p>
 
-### 模型选择器按供应商分组
+### 模型选择器：供应商、模型、推理强度三栏
 
 <p align="center">
-  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器按供应商分组：先列出各家供应商和各自的模型数，当前用的那家带标记，点进去再选模型" width="420">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器三栏：左栏是收藏和各家供应商，中间是这一家的模型，右栏选推理强度" width="560">
 </p>
 
 ### Codex 里的拓展页
@@ -351,7 +355,7 @@ Codex++ 自带的 Codex 增强（插件市场解锁、模型白名单、原生 F
 不离开 Codex 也能浏览、安装和启停拓展。
 
 <p align="center">
-  <img src="docs/images/readme-preview/extension-market.png" alt="Codex 里的拓展页：浏览和安装拓展" width="100%">
+  <img src="docs/images/readme-preview/codex-extensions.webp" alt="Codex 里的拓展页：左栏是已安装的拓展，右边是精选、社区、本地、我发布的、dsh 插件几个分栏" width="100%">
 </p>
 
 ### 认真工作，也可以有点趣味

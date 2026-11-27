@@ -212,10 +212,10 @@ Each provider can configure Responses or Chat Completions, model lists, a test m
 
 Per-model windows accept values such as `1M`, `200K`, or plain integers. Codex++ generates a dedicated `model_catalog_json` for Codex.
 
-With model aggregation, the native model picker folds models into one group per provider.
+With several providers, the model picker gets three columns: favorites and providers, that provider's models, and reasoning effort.
 
 <p align="center">
-  <img src="docs/images/readme-preview/model-picker-groups.png" alt="Model picker grouped by provider: each provider with its model count, the current one marked; click in to pick a model" width="420">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="Model picker in three columns: favorites and providers on the left, that provider's models in the middle, reasoning effort on the right" width="560">
 </p>
 
 Provider switching saves the current profile before applying the target profile. Real API keys remain local and should never be posted in logs, screenshots, or issues.
@@ -232,6 +232,10 @@ Provider switching saves the current profile before applying the target profile.
 - Custom image overlays and user scripts.
 
 These are built-in extensions, switched on Codex's own **Codex++** settings page; another extension can take one over. Settings that depend on renderer injection generally require saving and restarting Codex from the Codex++ window.
+
+<p align="center">
+  <img src="docs/images/readme-preview/codex-builtins.webp" alt="The Codex++ settings page inside Codex (in Chinese), Models and plugins group: switches for plugin marketplace unlock, model whitelist unlock, forced native Fast and more" width="100%">
+</p>
 
 ### Use native Fast controls with an API key
 
