@@ -342,7 +342,7 @@ export type RelayContextSelection = {
   plugins: string[];
 };
 
-export type RelayProtocol = "responses" | "chatCompletions" | "anthropicMessages";
+export type RelayProtocol = "responses" | "chatCompletions" | "anthropicMessages" | "gemini";
 export type StepwiseProtocol = "auto" | "chat_completions" | "responses" | "anthropic_messages";
 export type StepwiseGenerationMode = "auto" | "manual";
 export type RelayMode = "official" | "mixedApi" | "pureApi" | "aggregate";

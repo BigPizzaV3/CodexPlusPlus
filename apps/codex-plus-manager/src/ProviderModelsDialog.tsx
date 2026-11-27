@@ -1,7 +1,7 @@
 /** 供应商的模型列表：手动增删、设默认模型，以及「从上游同步」（#2785，原来单独的同步弹窗并进来了）。
  * 同步用存下的凭据（订阅账号也能刷）拉上游、列出差异：上游已没有的默认勾选移除（可取消以保留），
  * 上游新增的默认不勾、可搜索多选。勾选的改动和手动增删一起在保存时写入；后台检查已发现的差异打开时直接带进来。 */
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, Search, Star, X } from "lucide-react";
@@ -33,6 +33,8 @@ export function ProviderModelsDialog({
   syncOnOpen = false,
   onSave,
   onCancel,
+  renderTabs,
+  noEnterAnimation,
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
@@ -40,6 +42,8 @@ export function ProviderModelsDialog({
   syncOnOpen?: boolean;
   onSave: (models: string[], defaultModel: string, sync: ModelSyncPicks | null) => void;
   onCancel: () => void;
+  renderTabs?: (runIfClean: (action: () => void) => void) => ReactNode;
+  noEnterAnimation?: boolean;
 }) {
   const titleId = useId();
   const [models, setModels] = useState<string[]>(entry.models);
@@ -99,7 +103,7 @@ export function ProviderModelsDialog({
   const dirty = picks.remove.length > 0 || picks.add.length > 0
     || models.length !== entry.models.length || models.some((model, index) => model !== entry.models[index])
     || defaultModel !== (entry.models[0] ?? "");
-  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
+  const { backdropProps, dialogProps, requestClose, confirmAction } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
 
   const addModels = (list: string[]) => setModels((previous) => [...previous, ...list.filter((model) => !previous.some((item) => sameModel(item, model)))]);
   const removeModel = (model: string) => setModels((previous) => previous.filter((item) => item !== model));
@@ -119,6 +123,8 @@ export function ProviderModelsDialog({
       <form
         {...dialogProps}
         className="pf-modal pf-sync-modal"
+        data-no-enter={noEnterAnimation ? "true" : undefined}
+        data-tabbed={renderTabs ? "true" : undefined}
         onSubmit={(event) => {
           event.preventDefault();
           if (!finalModels.length) return;
@@ -133,6 +139,7 @@ export function ProviderModelsDialog({
           </div>
           <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
+        {renderTabs?.((action) => void confirmAction(action))}
 
         <div className="pf-body">
           <section className="pf-section">

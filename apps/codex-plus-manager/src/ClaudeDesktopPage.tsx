@@ -601,8 +601,8 @@ export function ClaudeLocalizationScreen(
         <div {...settingsPanel("providers")}>
           <CxCard>
           {onNavigate ? (
-            <CxRow detail={t("Claude 用哪些供应商、默认哪个模型，在 Claude 的「供应商」页里设置。")} title={t("供应商与默认模型")}>
-              <button className="cx-secondary" onClick={() => onNavigate("claudeProviders")} type="button">{t("打开供应商")}</button>
+            <CxRow detail={t("Claude Desktop 用哪些供应商、默认哪个模型，在 Claude Desktop 的「供应商」页里设置。")} title={t("供应商与默认模型")}>
+              <button className="cx-secondary" onClick={() => onNavigate("claudeDesktopProviders")} type="button">{t("打开供应商")}</button>
             </CxRow>
           ) : null}
           {/* 窗口比默认模型小的模型不会列给 Claude（Claude 按默认模型的窗口压所有模型）；说清楚它们去哪了。 */}

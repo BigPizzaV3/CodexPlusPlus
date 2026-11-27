@@ -2710,6 +2710,12 @@ pub fn sync_codex_identity_after_selection(ctx: &ApplyContext) -> anyhow::Result
             && taken_over(ctx, &ToolId::Codex).is_none()
         {
             crate::gateway::connection_generation::publish(&ctx.codex_home)?;
+        } else if settings.active_relay_id != CODEX_GATEWAY_RELAY_ID
+            && !settings.chatgpt_compat_enabled
+        {
+            // 直连模式下外层切换「Codex 登录身份」时，同步自定义供应商的 requires_openai_auth，
+            // 让自带凭据的纯 API 供应商无需切回「官方登录 + API」也能配合 ChatGPT 账号或退出登录。
+            let _ = crate::native_auth::sync_direct_provider_login_declaration(&ctx.codex_home)?;
         }
     }
     Ok(())

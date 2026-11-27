@@ -1434,17 +1434,21 @@ pub async fn test_relay_profile(
     } else if !profile.user_agent.trim().is_empty() { profile.user_agent.trim() }
     else { "CodexPlusPlus/RelayTest" };
     let client = crate::http_client::proxied_client_for_relay(user_agent, &profile)?;
+    let test_model = model.trim();
+    if test_model.is_empty() {
+        anyhow::bail!("测试模型不能为空");
+    }
+
     let endpoint = match profile.protocol {
         RelayProtocol::Responses => crate::protocol_proxy::responses_url(base_url),
         RelayProtocol::ChatCompletions => crate::protocol_proxy::chat_completions_url(base_url),
         RelayProtocol::AnthropicMessages => {
             crate::anthropic_bridge::anthropic_messages_url(base_url)
         }
+        RelayProtocol::Gemini => {
+            crate::gemini_bridge::gemini_generate_url(base_url, test_model, false)
+        }
     };
-    let test_model = model.trim();
-    if test_model.is_empty() {
-        anyhow::bail!("测试模型不能为空");
-    }
 
     let payload = relay_profile_test_payload(profile.protocol, test_model);
     let response = relay_test_request(&client, &endpoint, profile, api_key, &payload)
@@ -1455,15 +1459,23 @@ pub async fn test_relay_profile(
     // 如果 404 且 base_url 末尾没有 /v1，尝试自动补 /v1 后再发一次。
     // 许多上游（中转站、自建代理）暴露的路径以 /v1/ 开头，
     // 用户容易遗漏这个前缀，导致 /responses 或 /chat/completions 404。
-    let complete_endpoint = ["/responses", "/chat/completions", "/messages"].iter()
+    let complete_endpoint = ["/responses", "/chat/completions", "/messages", ":generatecontent", ":streamgeneratecontent"].iter()
         .any(|suffix| base_url.trim_end_matches('#').to_ascii_lowercase().ends_with(suffix));
-    if http_status == 404 && !base_url.ends_with("/v1") && !base_url.ends_with('#') && !complete_endpoint {
+    if http_status == 404
+        && profile.protocol != RelayProtocol::Gemini
+        && !base_url.ends_with("/v1")
+        && !base_url.ends_with('#')
+        && !complete_endpoint
+    {
         let v1_url = format!("{base_url}/v1");
         let v1_endpoint = match profile.protocol {
             RelayProtocol::Responses => crate::protocol_proxy::responses_url(&v1_url),
             RelayProtocol::ChatCompletions => crate::protocol_proxy::chat_completions_url(&v1_url),
             RelayProtocol::AnthropicMessages => {
                 crate::anthropic_bridge::anthropic_messages_url(&v1_url)
+            }
+            RelayProtocol::Gemini => {
+                crate::gemini_bridge::gemini_generate_url(&v1_url, test_model, false)
             }
         };
         let v1_response = relay_test_request(&client, &v1_endpoint, profile, api_key, &payload)
@@ -1533,6 +1545,17 @@ pub fn validate_relay_test_response(protocol: RelayProtocol, status: u16, text: 
                 _ => return failed(),
             }
         },
+        RelayProtocol::Gemini => {
+            let root = value.get("response").filter(|v| v.is_object()).unwrap_or(&value);
+            let Some(candidates) = root.get("candidates").and_then(Value::as_array).filter(|v| !v.is_empty()) else { return failed(); };
+            match candidates[0].get("finishReason").and_then(Value::as_str) {
+                Some("STOP" | "MAX_TOKENS") => "completed",
+                Some("SAFETY" | "RECITATION" | "OTHER") => "incomplete",
+                // 部分 Gemini 兼容网关在短响应里省略 finishReason 但返回了 content.parts。
+                None if candidates[0].pointer("/content/parts").and_then(Value::as_array).is_some() => "completed",
+                _ => return failed(),
+            }
+        },
     };
     (true, state.to_string())
 }
@@ -1577,6 +1600,14 @@ fn relay_profile_test_payload(protocol: RelayProtocol, model: &str) -> Value {
             ],
             "max_tokens": 16
         }),
+        RelayProtocol::Gemini => serde_json::json!({
+            "contents": [
+                { "role": "user", "parts": [{ "text": "hi" }] }
+            ],
+            "generationConfig": {
+                "maxOutputTokens": 16
+            }
+        }),
     }
 }
 
@@ -1584,7 +1615,7 @@ fn codex_base_url_for_protocol(base_url: &str, protocol: RelayProtocol, proxy_po
     match protocol {
         RelayProtocol::Responses => base_url.to_string(),
         // 需要协议转换的上游一律让 Codex 连本机代理，由代理决定真实上游协议。
-        RelayProtocol::ChatCompletions | RelayProtocol::AnthropicMessages => {
+        RelayProtocol::ChatCompletions | RelayProtocol::AnthropicMessages | RelayProtocol::Gemini => {
             crate::protocol_proxy::local_responses_proxy_base_url(proxy_port)
         }
     }
@@ -2930,7 +2961,9 @@ fn write_codex_live_atomic_with(
             let had_managed = parse_toml_document(&live)
                 .is_ok_and(|live| live.get("model_providers").and_then(|providers| providers.get(MANAGED_SESSION_PROVIDER)).is_some());
             sync_managed_session_provider(&mut doc, had_managed);
-            Some(ensure_trailing_newline(doc.to_string()))
+            let rendered = ensure_trailing_newline(doc.to_string());
+            let projected = crate::native_auth::project_native_auth_config(home, &rendered)?;
+            Some(ensure_trailing_newline(projected))
         }
         None => None,
     };

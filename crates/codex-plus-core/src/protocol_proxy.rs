@@ -821,6 +821,7 @@ fn upstream_wire_api_label(api: UpstreamWireApi) -> &'static str {
         UpstreamWireApi::Responses => "responses",
         UpstreamWireApi::ChatCompletions => "chatCompletions",
         UpstreamWireApi::AnthropicMessages => "anthropicMessages",
+        UpstreamWireApi::Gemini => "gemini",
         UpstreamWireApi::AudioTranscriptions => "audioTranscriptions",
         UpstreamWireApi::ImageGenerations => "imageGenerations",
         UpstreamWireApi::ImageEdits => "imageEdits",
@@ -1849,6 +1850,8 @@ pub enum UpstreamWireApi {
     ChatCompletions,
     /// Anthropic Messages（`/v1/messages`），经 `anthropic_bridge` 转换。
     AnthropicMessages,
+    /// Google Gemini（`/v1beta/models/{model}:streamGenerateContent`），经 `gemini_bridge` 转换。
+    Gemini,
     AudioTranscriptions,
     ImageGenerations,
     ImageEdits,
@@ -2596,6 +2599,12 @@ pub(crate) fn validate_compaction_json_completion(
         UpstreamWireApi::AnthropicMessages => matches!(
             body.get("stop_reason").and_then(Value::as_str),
             Some("end_turn" | "stop_sequence")
+        ),
+        UpstreamWireApi::Gemini => matches!(
+            body.pointer("/candidates/0/finishReason")
+                .or_else(|| body.pointer("/response/candidates/0/finishReason"))
+                .and_then(Value::as_str),
+            Some("STOP")
         ),
         _ => false,
     };
@@ -5984,7 +5993,16 @@ async fn upstream_request_parts(
             json!({ "relayId": relay.id }),
         );
     }
-    let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
+    let request_model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let request_is_stream = request_json
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let model = request_model.as_str();
     let compatibility_enabled = relay.request_compatibility_enabled();
     let reasoning_mode = if compatibility_enabled { relay.model_reasoning_parameters(model) } else { "auto" }.to_string();
     let requested_effort = request_json.pointer("/reasoning/effort").cloned();
@@ -6017,6 +6035,8 @@ async fn upstream_request_parts(
                 &crate::anthropic_bridge::request_options(relay),
             )?
         }
+        // Responses → Gemini generateContent：模型与流式标志体现在 URL 中。
+        RelayProtocol::Gemini => crate::gemini_bridge::responses_to_gemini_request(request_json)?,
     };
     if request_conversion
         && relay.protocol == RelayProtocol::ChatCompletions
@@ -6146,6 +6166,7 @@ async fn upstream_request_parts(
         RelayProtocol::Responses => UpstreamWireApi::Responses,
         RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
         RelayProtocol::AnthropicMessages => UpstreamWireApi::AnthropicMessages,
+        RelayProtocol::Gemini => UpstreamWireApi::Gemini,
     };
     // 官方登录成员没有用户填写的 base_url，固定发往 chatgpt.com 后端。
     let endpoint_base = official_base
@@ -6164,6 +6185,11 @@ async fn upstream_request_parts(
             RelayProtocol::AnthropicMessages => {
                 crate::anthropic_bridge::anthropic_messages_url(endpoint_base)
             }
+            RelayProtocol::Gemini => crate::gemini_bridge::gemini_generate_url(
+                endpoint_base,
+                &request_model,
+                request_is_stream,
+            ),
         },
         body,
         wire_api,
@@ -6492,6 +6518,13 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
                 ));
             converter = converter.with_chat_upstream();
             converter.push_upstream_bytes(chat_sse.as_bytes());
+        } else if wire_api == UpstreamWireApi::Gemini {
+            let chat_sse =
+                crate::gemini_bridge::gemini_sse_to_chat_sse(&String::from_utf8_lossy(
+                    &upstream_body,
+                ));
+            converter = converter.with_chat_upstream();
+            converter.push_upstream_bytes(chat_sse.as_bytes());
         } else {
             if wire_api != UpstreamWireApi::Responses {
                 converter = converter.with_chat_upstream();
@@ -6567,6 +6600,26 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
                 &thinking_blocks,
             );
         }
+        return Ok(ProxyHttpResponse {
+            status: "200 OK".to_string(),
+            content_type: "application/json; charset=utf-8".to_string(),
+            body: serde_json::to_vec(&response_json)?,
+        });
+    }
+
+    if wire_api == UpstreamWireApi::Gemini {
+        // Gemini → Chat → Responses：与 Anthropic 同样复用 Chat → Responses 映射。
+        if is_stream {
+            let text = String::from_utf8_lossy(&upstream_body);
+            return Ok(ProxyHttpResponse {
+                status: "200 OK".to_string(),
+                content_type: "text/event-stream; charset=utf-8".to_string(),
+                body: crate::gemini_bridge::gemini_sse_to_responses_sse(&text, &request_json),
+            });
+        }
+        let message: Value = serde_json::from_slice(&upstream_body)?;
+        let chat_json = crate::gemini_bridge::gemini_response_to_chat_completion(message)?;
+        let response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: "application/json; charset=utf-8".to_string(),

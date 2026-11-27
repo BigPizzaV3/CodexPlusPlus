@@ -17,16 +17,12 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ArrowLeft,
-  Cable,
   Check,
   CheckCircle2,
   ChevronDown,
   Download,
   GripVertical,
   Info,
-  KeyRound,
-  MessageCircle,
   FileCode2,
   Plus,
   RefreshCw,
@@ -35,6 +31,8 @@ import {
   ShieldAlert,
   Stethoscope,
   Trash2,
+  X,
+  Zap,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -46,7 +44,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { selectedContextConfigToml, splitContextConfigText, stripContextEntriesFromConfig, type CodexContextEntries } from "./context-config-text";
 import { AppSelect } from "./AppSelect";
 import { appConfirm } from "./app-dialog";
-import { proxyAddressError } from "./gateway-model";
+import { parseKeyLimit, proxyAddressError, type GatewayPoolEntry, type GatewayResult } from "./gateway-model";
+import { publishGatewayPayload } from "./gateway-store";
+import { EMPTY_PRICE_ROW, priceRowFromMatch, type PriceRow } from "./provider-form-model";
+import {
+  gatewayProxyErrorFromState,
+  gatewayProxyInputFromValue,
+  gatewayProxyModeFromValue,
+  gatewayProxyValueFromState,
+  initialPriceCurrency,
+  initialPriceRows,
+  ProviderGatewayProxyFields,
+  ProviderLimitsFields,
+  ProviderPriceFields,
+  serializePriceRows,
+  type GatewayProxyMode,
+} from "./ProviderExtrasDialog";
+import { ProviderTestDialog } from "./ProviderTestDialog";
 import { DEFAULT_AUTO_COMPACT_PERCENT, autoCompactOptions, normalizeAutoCompactPercent } from "./auto-compact";
 import {
   builtinEntryToImportDocument,
@@ -109,7 +123,7 @@ import {
 import { clampAggregateRoutePriority } from "./aggregate-routes";
 import { aggregateMemberCandidates, isOfficialLoginMemberProfile } from "./aggregate-members";
 import { relayAuthForLiveDraft } from "./relay-live-files";
-import { SavedAuthAccountField } from "./NativeAuthControls";
+import { Avatar } from "./gateway-ui";
 import { RelayHeaderRows } from "./RelayHeaderRows";
 import { apiKeyPreview, createRelayApiKey, normalizeRelayApiKeys, type RelayApiKey } from "./provider-api-keys";
 import { relayHeadersValidationMessage, serializeRelayHeaders } from "./relay-headers";
@@ -155,7 +169,6 @@ import type {
   RelayAggregateConfig,
   RelayAggregateRoute,
   RelayContextSelection,
-  RelayEditorMode,
   RelayFilesResult,
   RelayProfile,
   SettingsResult,
@@ -337,6 +350,7 @@ function relayDraftWithModelRows(draft: RelayProfile, rows: ModelWindowRow[]): R
 
 export function RelayProfileDetail({
   profile,
+  poolEntry = null,
   relayFiles,
   form,
   isNew = false,
@@ -348,6 +362,8 @@ export function RelayProfileDetail({
   actions,
 }: {
   profile: RelayProfile;
+  /** 网关池里与该直连供应商对应的引用条目：有它在，弹窗里合并展示价格、限速和本地服务代理。 */
+  poolEntry?: GatewayPoolEntry | null;
   relayFiles: RelayFilesResult | null;
   form: BackendSettings;
   isNew?: boolean;
@@ -371,6 +387,94 @@ export function RelayProfileDetail({
   const [promptPrefix, setPromptPrefix] = useState(false);
   const [savedPromptPrefix, setSavedPromptPrefix] = useState(false);
   const extrasTouchedRef = useRef({ proxy: false, prefix: false });
+  // 网关池侧的价格、限速与本地服务代理：和本弹窗合在一起，随「保存供应商」统一保存。
+  const [priceRows, setPriceRows] = useState<Record<string, PriceRow>>(() => (poolEntry ? initialPriceRows(poolEntry) : {}));
+  const [priceCurrency, setPriceCurrency] = useState(() => (poolEntry ? initialPriceCurrency(poolEntry) : "USD"));
+  const [savedPriceBaseline, setSavedPriceBaseline] = useState(() => (poolEntry
+    ? JSON.stringify({ rows: initialPriceRows(poolEntry), currency: initialPriceCurrency(poolEntry) })
+    : ""));
+  const [gatewayProxyMode, setGatewayProxyMode] = useState<GatewayProxyMode>(() => gatewayProxyModeFromValue(poolEntry?.proxy));
+  const [gatewayProxyInput, setGatewayProxyInput] = useState(() => gatewayProxyInputFromValue(poolEntry?.proxy));
+  const [savedGatewayProxy, setSavedGatewayProxy] = useState(() => (poolEntry?.proxy ?? ""));
+  const [limitRpm, setLimitRpm] = useState(() => (poolEntry?.keyRpm ? String(poolEntry.keyRpm) : ""));
+  const [limitConcurrency, setLimitConcurrency] = useState(() => (poolEntry?.keyConcurrency ? String(poolEntry.keyConcurrency) : ""));
+  const [savedLimits, setSavedLimits] = useState(() => ({
+    rpm: poolEntry?.keyRpm ? String(poolEntry.keyRpm) : "",
+    concurrency: poolEntry?.keyConcurrency ? String(poolEntry.keyConcurrency) : "",
+  }));
+  const gatewayTouchedRef = useRef({ price: false, proxy: false, limits: false });
+  const lastPoolEntryIdRef = useRef<string | null>(poolEntry?.id ?? null);
+  useEffect(() => {
+    const entryId = poolEntry?.id ?? null;
+    const switched = lastPoolEntryIdRef.current !== entryId;
+    lastPoolEntryIdRef.current = entryId;
+    if (switched) gatewayTouchedRef.current = { price: false, proxy: false, limits: false };
+    if (!poolEntry) {
+      setPriceRows({});
+      setPriceCurrency("USD");
+      setSavedPriceBaseline("");
+      setGatewayProxyMode("system");
+      setGatewayProxyInput("");
+      setSavedGatewayProxy("");
+      setLimitRpm("");
+      setLimitConcurrency("");
+      setSavedLimits({ rpm: "", concurrency: "" });
+      return;
+    }
+    const nextRows = initialPriceRows(poolEntry);
+    const nextCurrency = initialPriceCurrency(poolEntry);
+    const nextPriceBaseline = JSON.stringify({ rows: nextRows, currency: nextCurrency });
+    setSavedPriceBaseline(nextPriceBaseline);
+    if (switched || !gatewayTouchedRef.current.price) {
+      setPriceRows(nextRows);
+      setPriceCurrency(nextCurrency);
+    }
+    const nextProxy = poolEntry.proxy ?? "";
+    setSavedGatewayProxy(nextProxy);
+    if (switched || !gatewayTouchedRef.current.proxy) {
+      setGatewayProxyMode(gatewayProxyModeFromValue(nextProxy));
+      setGatewayProxyInput(gatewayProxyInputFromValue(nextProxy));
+    }
+    const nextRpm = poolEntry.keyRpm ? String(poolEntry.keyRpm) : "";
+    const nextConcurrency = poolEntry.keyConcurrency ? String(poolEntry.keyConcurrency) : "";
+    setSavedLimits({ rpm: nextRpm, concurrency: nextConcurrency });
+    if (switched || !gatewayTouchedRef.current.limits) {
+      setLimitRpm(nextRpm);
+      setLimitConcurrency(nextConcurrency);
+    }
+  }, [poolEntry]);
+  const changePriceRow = (model: string, patch: Partial<PriceRow>) => {
+    gatewayTouchedRef.current.price = true;
+    setPriceRows((previous) => ({ ...previous, [model]: { ...(previous[model] ?? EMPTY_PRICE_ROW), ...patch } }));
+  };
+  const changePriceCurrency = (currency: string) => {
+    gatewayTouchedRef.current.price = true;
+    setPriceCurrency(currency);
+  };
+  const applyPriceMatches = (hits: Array<[string, Parameters<typeof priceRowFromMatch>[0]]>) => {
+    gatewayTouchedRef.current.price = true;
+    setPriceRows((previous) => {
+      const next = { ...previous };
+      for (const [model, match] of hits) next[model] = priceRowFromMatch(match);
+      return next;
+    });
+  };
+  const changeGatewayProxyMode = (mode: GatewayProxyMode) => {
+    gatewayTouchedRef.current.proxy = true;
+    setGatewayProxyMode(mode);
+  };
+  const changeGatewayProxyInput = (value: string) => {
+    gatewayTouchedRef.current.proxy = true;
+    setGatewayProxyInput(value);
+  };
+  const changeLimitRpm = (value: string) => {
+    gatewayTouchedRef.current.limits = true;
+    setLimitRpm(value);
+  };
+  const changeLimitConcurrency = (value: string) => {
+    gatewayTouchedRef.current.limits = true;
+    setLimitConcurrency(value);
+  };
   useEffect(() => {
     let cancelled = false;
     extrasTouchedRef.current = { proxy: false, prefix: false };
@@ -412,16 +516,20 @@ export function RelayProfileDetail({
   const promptPrefixChanged = !isAggregateRelayProfile(draft) && promptPrefix !== savedPromptPrefix;
   const proxyProblem = isAggregateRelayProfile(draft) ? null : proxyAddressError(proxyUrl);
   const proxyError = proxyProblem ? t(proxyProblem) : null;
-  // 从「高级」里的供应商代理列表进来：展开「请求」分区并聚焦代理输入框。
+  // 从「高级」里的供应商代理列表进来：切到「请求」标签并聚焦代理输入框。
+  const [activeTab, setActiveTab] = useState<RelayEditorTabId>(() => (initialSection === "proxy" ? "requests" : "basic"));
   useEffect(() => {
-    if (initialSection !== "proxy") return;
-    const root = detailBodyRef.current;
-    jumpToRelaySection(root, "requests");
-    requestAnimationFrame(() => root?.querySelector<HTMLInputElement>(".relay-field-proxy input")?.focus());
+    setActiveTab(initialSection === "proxy" ? "requests" : "basic");
   }, [initialSection, profile.id]);
+  useEffect(() => {
+    if (initialSection !== "proxy" || activeTab !== "requests") return;
+    const frame = requestAnimationFrame(() => detailBodyRef.current?.querySelector<HTMLInputElement>(".relay-field-proxy input")?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [activeTab, initialSection, profile.id]);
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
   const [doctorOpen, setDoctorOpen] = useState(false);
   const [doctorRunning, setDoctorRunning] = useState(false);
+  const [testOpen, setTestOpen] = useState(false);
   const [savingDraft, setSavingDraft] = useState(false);
   const [aggregateMode, setAggregateMode] = useState<AggregateMode | null>(() => {
     if (!isAggregateRelayProfile(profile)) return null;
@@ -478,15 +586,48 @@ export function RelayProfileDetail({
   const modelRowsError = useMemo(() => modelWindowRowsValidationMessage(modelWindowRowsValidationError(modelWindowRows)), [modelWindowRows]);
   // 请求头写错（名字非法、值里有换行）也挡住保存，和模型行错误一样就地写出原因。
   const headersError = useMemo(() => relayHeadersValidationMessage(draft.customHeaders || []), [draft.customHeaders]);
-  const blockingIssue = validationError || modelRowsError || headersError || proxyError;
+  const hasGatewayExtras = !isNew && !isAggregateRelayProfile(draft) && Boolean(poolEntry);
+  const gatewayModels = useMemo(() => {
+    if (!poolEntry) return [];
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const row of modelWindowRows) {
+      const slug = modelSlugFromRowName(row.model.trim());
+      if (slug && !seen.has(slug)) {
+        seen.add(slug);
+        list.push(slug);
+      }
+    }
+    for (const model of poolEntry.models) {
+      if (model && !seen.has(model)) {
+        seen.add(model);
+        list.push(model);
+      }
+    }
+    return list;
+  }, [modelWindowRows, poolEntry]);
+  const gatewayPriceChanged = hasGatewayExtras
+    && JSON.stringify({ rows: priceRows, currency: priceCurrency }) !== savedPriceBaseline;
+  const gatewayProxyValue = gatewayProxyValueFromState(gatewayProxyMode, gatewayProxyInput);
+  const gatewayProxyChanged = hasGatewayExtras && gatewayProxyValue !== savedGatewayProxy;
+  const gatewayProxyError = hasGatewayExtras ? gatewayProxyErrorFromState(gatewayProxyMode, gatewayProxyInput) : "";
+  const limitRpmValue = parseKeyLimit(limitRpm);
+  const limitConcurrencyValue = parseKeyLimit(limitConcurrency);
+  const limitsChanged = hasGatewayExtras
+    && (limitRpm !== savedLimits.rpm || limitConcurrency !== savedLimits.concurrency);
+  const limitsError = hasGatewayExtras && (Number.isNaN(limitRpmValue) || Number.isNaN(limitConcurrencyValue))
+    ? t("上限要填正整数，留空表示不限")
+    : "";
+  const blockingIssue = validationError || modelRowsError || headersError || proxyError || gatewayProxyError || limitsError;
   const currentDraft = useMemo(() => relayDraftWithModelRows(draft, modelWindowRows), [draft, modelWindowRows]);
   const draftWithModelRows = () => currentDraft;
-  // 「有未保存修改」：整份草稿（名称、地址、Key、协议、请求头、文件……）和打开时的基线比，
+  // 「有未保存修改」：整份草稿（名称、地址、Key、协议、请求头、文件、网关价格 / 限速 / 代理……）和打开时的基线比，
   // 不只比模型行；基线在载入 / 外部更新草稿时重设。
   const baselineDraftRef = useRef<string | null>(null);
   const currentDraftJson = useMemo(() => JSON.stringify(currentDraft), [currentDraft]);
   if (baselineDraftRef.current === null) baselineDraftRef.current = currentDraftJson;
-  const hasUnsavedChanges = currentDraftJson !== baselineDraftRef.current || proxyChanged || promptPrefixChanged;
+  const profileDraftChanged = currentDraftJson !== baselineDraftRef.current || proxyChanged || promptPrefixChanged;
+  const hasUnsavedChanges = profileDraftChanged || gatewayPriceChanged || gatewayProxyChanged || limitsChanged;
   const hasUnsavedModelChanges = useMemo(() => JSON.stringify({
     modelList: currentDraft.modelList,
     modelWindows: currentDraft.modelWindows,
@@ -564,6 +705,43 @@ export function RelayProfileDetail({
         }
         setSavedPromptPrefix(promptPrefix);
       }
+      // 网关层的价格、限速、本地服务代理单独走网关命令，先落盘，失败则停下不留一半。
+      if (hasGatewayExtras && poolEntry && (gatewayPriceChanged || gatewayProxyChanged)) {
+        const serializedPrice = gatewayPriceChanged ? serializePriceRows(priceRows, priceCurrency) : null;
+        const result = await invoke<GatewayResult>("save_gateway_provider_extras", {
+          id: poolEntry.id,
+          price: serializedPrice ? serializedPrice.price : (poolEntry.price ?? null),
+          modelPrices: serializedPrice ? serializedPrice.modelPrices : null,
+          proxy: gatewayProxyChanged ? gatewayProxyValue : (poolEntry.proxy ?? ""),
+        });
+        if (result.status !== "ok") {
+          void actions.showMessage(gatewayProxyChanged && !gatewayPriceChanged ? t("保存代理") : t("保存价格"), t(result.message), "failed");
+          return;
+        }
+        publishGatewayPayload(result);
+        gatewayTouchedRef.current.price = false;
+        gatewayTouchedRef.current.proxy = false;
+        setSavedPriceBaseline(JSON.stringify({ rows: priceRows, currency: priceCurrency }));
+        setSavedGatewayProxy(gatewayProxyChanged ? gatewayProxyValue : (poolEntry.proxy ?? ""));
+      }
+      if (hasGatewayExtras && poolEntry && limitsChanged) {
+        const result = await invoke<GatewayResult>("save_gateway_provider_limits", {
+          id: poolEntry.id,
+          rpm: limitRpmValue,
+          concurrency: limitConcurrencyValue,
+        });
+        if (result.status !== "ok") {
+          void actions.showMessage(t("保存限速"), t(result.message), "failed");
+          return;
+        }
+        publishGatewayPayload(result);
+        gatewayTouchedRef.current.limits = false;
+        setSavedLimits({ rpm: limitRpm, concurrency: limitConcurrency });
+      }
+      if (!isNew && !profileDraftChanged && (gatewayPriceChanged || gatewayProxyChanged || limitsChanged)) {
+        onSaved?.();
+        return;
+      }
       const savedSettings = await onFormChange(next);
       if (!savedSettings) return;
       if (requiresRestart) {
@@ -614,7 +792,18 @@ export function RelayProfileDetail({
     setAggregateMode(mode);
     setDraft(aggregateProfileForMode(draft, form, mode));
   };
-  const showDoctor = !aggregateProfile && (draft.relayMode !== "official" || draft.officialMixApiKey);
+  const showApiFields = relayEditorMode(draft) !== "official";
+  const showDoctor = !aggregateProfile && showApiFields;
+  const showModelTest = hasGatewayExtras && showApiFields && Boolean(poolEntry?.baseUrl.trim());
+  const effectiveTab: RelayEditorTabId = (!showApiFields && activeTab === "requests")
+    || (!hasGatewayExtras && (activeTab === "price" || activeTab === "limits"))
+    ? "basic"
+    : activeTab;
+  const modelsTabIssue = Boolean(
+    modelRowsError || (!aggregateProfile && relayModelRoutesSettingsValidation(validationSettings)),
+  );
+  const requestsTabIssue = Boolean(headersError || proxyError || gatewayProxyError || relaySessionProviderValidation(draft));
+  const limitsTabIssue = Boolean(limitsError);
   const detailStatus = aggregateProfile
     ? aggregateModeRequired
       ? t("先选择类型")
@@ -622,99 +811,175 @@ export function RelayProfileDetail({
         ? t("模型聚合：模型固定绑定供应商")
         : t("故障转移：按策略分配请求")
     : relayProfileEditorStatus(draft, form, isNew);
+  const modalTitle = draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"));
+  const titleId = useId();
+  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLDivElement>({
+    onClose: onBack,
+    dirty: hasUnsavedChanges,
+    labelledBy: titleId,
+    active: !doctorOpen && !testOpen,
+  });
+  const showTabs = !aggregateModeRequired && !aggregateProfile;
+  const tabs = relaySectionLinks(showApiFields, hasGatewayExtras, {
+    models: modelsTabIssue,
+    requests: requestsTabIssue,
+    limits: limitsTabIssue,
+  });
   return (
-    <div className="relay-detail-page" key={profile.id}>
-      <div className="relay-detail-header">
-        <div className="relay-editor-heading">
-          <Button aria-label={t("返回列表")} onClick={() => void (async () => {
-            if (hasUnsavedChanges && !(await appConfirm(t("有未保存的修改，确定放弃吗？"), { title: t("放弃修改"), confirmText: t("放弃"), danger: true }))) return;
-            onBack();
-          })()} size="icon" title={t("返回列表")} type="button" variant="ghost">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div className="relay-editor-heading-copy">
-            <strong>{draft.name || (aggregateProfile ? t("未命名聚合供应商") : t("未命名供应商"))}</strong>
-            <span>{hasUnsavedChanges ? `${detailStatus} · ${t("有未保存修改")}` : detailStatus}</span>
-            {blockingIssue ? (
-              // 就地写出「为什么存不了」：按钮不再禁用，这里也给人一眼能看到的原因。
-              <span className="relay-editor-validation" role="alert">
-                {blockingIssue}
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <div className="relay-editor-actions">
-          {showDoctor ? (
-            <Button disabled={doctorRunning} onClick={() => void runProviderDoctor()} type="button" variant="secondary">
-              <Stethoscope className="h-4 w-4" />
-              {doctorRunning ? t("诊断中") : t("诊断供应商")}
-            </Button>
-          ) : null}
-          {aggregateProfile ? (
-            <UiBadge variant="secondary">{aggregateModeRequired ? t("聚合")
-              : draft.aggregate?.modelAggregationEnabled === true ? t("模型聚合") : t("故障转移")}</UiBadge>
-          ) : isNew || form.activeRelayId === CODEX_GATEWAY_RELAY_ID ? null : (
-            // 网关接管期间（从多开页进来编辑）不给「设为当前」：切走会绕过「断开并还原」（#2801）。
-            <Button
-              disabled={actions.relaySwitching}
-              onClick={switchDraft}
-              title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭，点击后按提示开启") : actions.relaySwitching ? t("供应商切换中") : undefined}
-              variant={draft.id === form.activeRelayId ? "secondary" : "default"}
-            >
-              {actions.relaySwitching ? t("切换中") : draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
-            </Button>
-          )}
-          <Button
-            // 配置有误时也让人点：点一下把原因弹出来，比一个点不动的按钮清楚。
-            disabled={savingDraft}
-            onClick={() => void saveDraft()}
-            title={aggregateModeRequired ? t("先选择类型") : blockingIssue || t("保存")}
-            type="button"
+    <>
+      {createPortal(
+        <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
+          <div
+            {...dialogProps}
+            className="pf-modal relay-edit-modal"
+            data-tab={showTabs ? effectiveTab : undefined}
+            data-tabbed={showTabs ? "true" : undefined}
+            key={profile.id}
           >
-            <Save className="h-4 w-4" />
-            {savingDraft ? t("保存中") : t("保存供应商")}
-          </Button>
-        </div>
-      </div>
-      {!aggregateModeRequired && !isAggregateRelayProfile(draft) ? (
-        // 编辑页很长：标题栏下给一排分区跳转，点哪个就展开该分区并滚过去。
-        <nav className="relay-section-nav" aria-label={t("跳转到分区")}>
-          {relaySectionLinks().map((link) => (
-            <button key={link.id} onClick={() => jumpToRelaySection(detailBodyRef.current, link.id)} type="button">
-              {link.label}
-            </button>
-          ))}
-        </nav>
-      ) : null}
-      <div className="relay-detail-body" ref={detailBodyRef}>
-        {aggregateModeRequired ? (
-          <AggregateModeChooser onSelect={selectAggregateMode} />
-        ) : (
-          <RelayProfileEditor
-            profile={draft}
-            form={form}
-            isNew={isNew}
-            proxy={{ value: proxyUrl, error: proxyError, onChange: changeProxyUrl }}
-            promptPrefix={{ value: promptPrefix, onChange: changePromptPrefix }}
-            onProfileChange={setDraft}
-            actions={actions}
-            modelWindowRows={modelWindowRows}
-            setModelWindowRows={setModelWindowRows}
-          />
-        )}
-        {isAggregateRelayProfile(draft) ? null : (
-        <RelayFileEditors
-          contextProfile={profile}
-          profile={draft}
-          form={form}
-          isActive={isActive}
-          profileId={profile.id}
-          onFormChange={onFormChange}
-          onProfileChange={setDraft}
-          actions={actions}
+            <header className="pf-head">
+              <Avatar baseUrl={draft.baseUrl} name={modalTitle} />
+              <div>
+                <strong id={titleId}>{modalTitle}</strong>
+                <small>{hasUnsavedChanges ? `${detailStatus} · ${t("有未保存修改")}` : detailStatus}</small>
+              </div>
+              <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button">
+                <X />
+              </button>
+            </header>
+            {showTabs ? (
+              <nav aria-label={t("供应商设置分区")} className="pf-tabs" role="tablist">
+                {tabs.map((tab) => {
+                  const active = effectiveTab === tab.id;
+                  return (
+                    <button
+                      aria-selected={active}
+                      data-active={active}
+                      data-issue={tab.issue ? "true" : undefined}
+                      key={tab.id}
+                      onClick={() => setActiveTab(tab.id)}
+                      role="tab"
+                      type="button"
+                    >
+                      {tab.label}
+                      {tab.issue ? <span className="relay-tab-issue-dot" aria-label={t("需要检查")} /> : null}
+                    </button>
+                  );
+                })}
+              </nav>
+            ) : null}
+            <div className="pf-body relay-edit-modal-body" ref={detailBodyRef}>
+              {aggregateModeRequired ? (
+                <AggregateModeChooser onSelect={selectAggregateMode} />
+              ) : !aggregateProfile && effectiveTab === "price" && poolEntry ? (
+                <ProviderPriceFields
+                  baseUrl={draft.baseUrl || poolEntry.baseUrl}
+                  currency={priceCurrency}
+                  models={gatewayModels}
+                  onApplyMatches={applyPriceMatches}
+                  onChangeCurrency={changePriceCurrency}
+                  onChangeRow={changePriceRow}
+                  rows={priceRows}
+                />
+              ) : !aggregateProfile && effectiveTab === "limits" && poolEntry ? (
+                <ProviderLimitsFields
+                  concurrency={limitConcurrency}
+                  onChangeConcurrency={changeLimitConcurrency}
+                  onChangeRpm={changeLimitRpm}
+                  rpm={limitRpm}
+                />
+              ) : !aggregateProfile && effectiveTab === "config-preview" ? (
+                <RelayFileEditors
+                  contextProfile={profile}
+                  profile={draft}
+                  form={form}
+                  isActive={isActive}
+                  profileId={profile.id}
+                  onFormChange={onFormChange}
+                  onProfileChange={setDraft}
+                  actions={actions}
+                />
+              ) : (
+                <RelayProfileEditor
+                  activeTab={effectiveTab === "config-preview" || effectiveTab === "price" || effectiveTab === "limits" ? "basic" : effectiveTab}
+                  gatewayProxy={hasGatewayExtras ? {
+                    mode: gatewayProxyMode,
+                    value: gatewayProxyInput,
+                    error: gatewayProxyError,
+                    onChangeMode: changeGatewayProxyMode,
+                    onChangeValue: changeGatewayProxyInput,
+                  } : undefined}
+                  profile={draft}
+                  form={form}
+                  isNew={isNew}
+                  proxy={{ value: proxyUrl, error: proxyError, onChange: changeProxyUrl }}
+                  promptPrefix={{ value: promptPrefix, onChange: changePromptPrefix }}
+                  onProfileChange={setDraft}
+                  actions={actions}
+                  modelWindowRows={modelWindowRows}
+                  setModelWindowRows={setModelWindowRows}
+                />
+              )}
+            </div>
+            <footer className="pf-foot relay-edit-modal-foot">
+              <div className="relay-edit-modal-foot-left">
+                {showModelTest ? (
+                  <Button onClick={() => setTestOpen(true)} size="sm" type="button" variant="secondary">
+                    <Zap className="h-3.5 w-3.5" />
+                    {t("测试")}
+                  </Button>
+                ) : null}
+                {showDoctor ? (
+                  <Button disabled={doctorRunning} onClick={() => void runProviderDoctor()} size="sm" type="button" variant="secondary">
+                    <Stethoscope className="h-3.5 w-3.5" />
+                    {doctorRunning ? t("诊断中") : t("诊断供应商")}
+                  </Button>
+                ) : null}
+                {aggregateProfile ? (
+                  <UiBadge variant="secondary">{aggregateModeRequired ? t("聚合")
+                    : draft.aggregate?.modelAggregationEnabled === true ? t("模型聚合") : t("故障转移")}</UiBadge>
+                ) : isNew || form.activeRelayId === CODEX_GATEWAY_RELAY_ID ? null : (
+                  // 网关接管期间（从多开页进来编辑）不给「设为当前」：切走会绕过「断开并还原」（#2801）。
+                  <Button
+                    disabled={actions.relaySwitching}
+                    onClick={switchDraft}
+                    size="sm"
+                    title={!form.relayProfilesEnabled ? t("供应商配置总开关已关闭，点击后按提示开启") : actions.relaySwitching ? t("供应商切换中") : undefined}
+                    type="button"
+                    variant="secondary"
+                  >
+                    {actions.relaySwitching ? t("切换中") : draft.id === form.activeRelayId ? t("使用中") : t("设为当前")}
+                  </Button>
+                )}
+              </div>
+              <span className="pf-error" role={blockingIssue ? "alert" : undefined}>
+                {blockingIssue || ""}
+              </span>
+              <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">
+                {t("取消")}
+              </Button>
+              <Button
+                // 配置有误时也让人点：点一下把原因弹出来，比一个点不动的按钮清楚。
+                disabled={savingDraft}
+                onClick={() => void saveDraft()}
+                size="sm"
+                title={aggregateModeRequired ? t("先选择类型") : blockingIssue || t("保存")}
+                type="button"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {savingDraft ? t("保存中") : t("保存供应商")}
+              </Button>
+            </footer>
+          </div>
+        </div>,
+        document.body,
+      )}
+      {testOpen && poolEntry ? (
+        <ProviderTestDialog
+          entry={{ ...poolEntry, models: gatewayModels.length ? gatewayModels : poolEntry.models }}
+          keyId={null}
+          onClose={() => setTestOpen(false)}
         />
-        )}
-      </div>
+      ) : null}
       {doctorOpen ? (
         <ProviderDoctorModal
           result={doctorResult}
@@ -724,7 +989,7 @@ export function RelayProfileDetail({
           }}
         />
       ) : null}
-    </div>
+    </>
   );
 }
 
@@ -751,26 +1016,32 @@ function SortableModelWindowEntry({ id, children }: SortableModelWindowEntryProp
   );
 }
 
-/// 编辑页分区导航的条目。id 与 RelayFold 的 sectionId 一致；`basic` 是不可折叠的基础设置。
-function relaySectionLinks() {
-  return [
-    { id: "basic", label: t("基础") },
-    { id: "models", label: t("模型") },
-    { id: "requests", label: t("请求") },
+type RelayEditorTabId = "basic" | "models" | "requests" | "price" | "limits" | "advanced" | "config-preview";
+
+/// 编辑弹窗顶部分区标签页。
+function relaySectionLinks(
+  showApiFields: boolean,
+  hasGatewayExtras: boolean,
+  issues?: { models?: boolean; requests?: boolean; limits?: boolean },
+): Array<{ id: RelayEditorTabId; label: string; issue?: boolean }> {
+  const tabs: Array<{ id: RelayEditorTabId; label: string; issue?: boolean }> = [
+    { id: "basic", label: t("常规") },
+    { id: "models", label: t("模型"), issue: issues?.models },
+  ];
+  if (showApiFields) {
+    tabs.push({ id: "requests", label: t("请求"), issue: issues?.requests });
+  }
+  if (hasGatewayExtras) {
+    tabs.push(
+      { id: "price", label: t("价格") },
+      { id: "limits", label: t("限速"), issue: issues?.limits },
+    );
+  }
+  tabs.push(
     { id: "advanced", label: t("更多选项") },
     { id: "config-preview", label: t("配置预览") },
-  ];
-}
-
-/// 跳到编辑页某个分区：折叠着就先展开（会触发 RelayFold 记住展开状态），再滚到分区顶部。
-function jumpToRelaySection(root: HTMLElement | null, id: string) {
-  if (!root) return;
-  const target = id === "basic"
-    ? root.querySelector<HTMLElement>(".relay-basic-section")
-    : root.querySelector<HTMLElement>(`details[data-section="${id}"]`);
-  if (!target) return;
-  if (target instanceof HTMLDetailsElement && !target.open) target.open = true;
-  requestAnimationFrame(() => target.scrollIntoView({ behavior: "smooth", block: "start" }));
+  );
+  return tabs;
 }
 
 function RelayFold({ title, children, className = "", bodyClassName = "", issue, sectionId, defaultOpen = false }: {
@@ -827,6 +1098,8 @@ type BuiltinMetadataIndexEntry = {
 };
 
 function RelayProfileEditor({
+  activeTab,
+  gatewayProxy,
   profile,
   form,
   isNew = false,
@@ -837,6 +1110,15 @@ function RelayProfileEditor({
   modelWindowRows,
   setModelWindowRows,
 }: {
+  activeTab: "basic" | "models" | "requests" | "advanced";
+  /** 聚合模式下本地服务转发给这家供应商的代理。 */
+  gatewayProxy?: {
+    mode: GatewayProxyMode;
+    value: string;
+    error: string;
+    onChangeMode: (mode: GatewayProxyMode) => void;
+    onChangeValue: (value: string) => void;
+  };
   profile: RelayProfile;
   form: BackendSettings;
   isNew?: boolean;
@@ -850,6 +1132,7 @@ function RelayProfileEditor({
   setModelWindowRows: (value: SortableModelWindowRow[]) => void;
 }) {
   const [vlmTestOpen, setVlmTestOpen] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
   // 「高级兼容选项」分组：null = 用户没手动开合过，按是否有开启项决定。
   const [compatOpen, setCompatOpen] = useState<boolean | null>(null);
   const compatEnabledCount = [
@@ -1006,17 +1289,6 @@ function RelayProfileEditor({
   const updateApiKeys = (apiKeys: RelayApiKey[], activeApiKeyId = normalizedApiKeys.activeApiKeyId) => {
     const selected = apiKeys.find((entry) => entry.id === activeApiKeyId) || apiKeys[0];
     updateDraft({ apiKeys, activeApiKeyId: selected?.id || "", apiKey: selected?.apiKey || "" });
-  };
-  const selectEditorMode = (mode: RelayEditorMode) => {
-    if (mode === "official") {
-      updateDraft({ relayMode: "official", officialMixApiKey: false });
-      return;
-    }
-    if (mode === "mixedApi") {
-      updateDraft({ relayMode: "official", officialMixApiKey: true });
-      return;
-    }
-    updateDraft({ relayMode: "pureApi", officialMixApiKey: false });
   };
   const modelRoutes = normalizeRelayModelRoutes(profile.modelRoutes);
   const modelRouteTargets = form.relayProfiles.filter(
@@ -1371,382 +1643,359 @@ function RelayProfileEditor({
         : t("已导入自定义元数据，生成时以该配置为准"),
     };
   };
+  const customHeaderCount = (profile.customHeaders || []).filter((row) => row.key.trim()).length;
+  const protocolOptions: Array<{ id: RelayProfile["protocol"]; label: string }> = [
+    { id: "responses", label: "Responses" },
+    { id: "chatCompletions", label: "Chat" },
+    { id: "anthropicMessages", label: "Anthropic" },
+    { id: "gemini", label: "Gemini" },
+  ];
   return (
-    <div className="relay-profile-editor">
-      <div className="relay-fields">
-        <section className="relay-config-section relay-basic-section">
-          <div className="relay-config-section-head">
-            <div>
-              <strong>{t("基础设置")}</strong>
-              <span>{t("先选择接入方式，相关字段会立即显示在这里。")}</span>
-            </div>
-          </div>
-          <div className="relay-basic-fields">
-            <Field className="relay-field-name" label={t("名称")}>
-              <Input
-                value={profile.name}
-                onChange={(event) => updateDraft({ name: event.currentTarget.value })}
-              />
-            </Field>
-          </div>
-          <div className="relay-mode-block">
-            <div className="relay-mode-block-head">
-              <div>
-                <strong>{t("接入方式")}</strong>
-                <span>{t("官方登录 + API 会保留官方账号，同时使用下方 API 连接；不需要再到其他面板勾选。")}</span>
-              </div>
-            </div>
-            <div className="relay-mode-options" role="radiogroup" aria-label={t("接入方式")}>
-              {([
-                {
-                  mode: "official" as const,
-                  icon: ShieldCheck,
-                  title: t("官方登录"),
-                  description: t("使用 ChatGPT 官方账号，不写入 API 凭据。"),
-                },
-                {
-                  mode: "mixedApi" as const,
-                  icon: Cable,
-                  title: t("官方登录 + API"),
-                  description: t("保留官方登录，同时使用 API Base URL 与 Key。"),
-                },
-                {
-                  mode: "pureApi" as const,
-                  icon: KeyRound,
-                  title: t("纯 API"),
-                  description: t("使用 API 凭据，原生登录账号独立选择。"),
-                },
-              ]).map(({ mode, icon: Icon, title, description }) => (
-                <button
-                  aria-checked={editorMode === mode}
-                  className={`relay-mode-option ${editorMode === mode ? "active" : ""}`}
-                  key={mode}
-                  onClick={() => selectEditorMode(mode)}
-                  role="radio"
-                  type="button"
-                >
-                  <span className="relay-mode-option-icon"><Icon className="h-4 w-4" /></span>
-                  <span className="relay-mode-option-copy">
-                    <strong>{title}</strong>
-                    <small>{description}</small>
-                  </span>
-                  <span className="relay-mode-option-indicator" aria-hidden="true" />
-                </button>
-              ))}
-            </div>
-            {editorMode !== "pureApi" ? (
-              <SavedAuthAccountField onChange={(officialAccountRef) => updateDraft({ officialAccountRef })} value={profile.officialAccountRef ?? ""} />
-            ) : null}
-            {showApiFields ? (
-              <div className="relay-inline-connection">
-                <div className="relay-inline-connection-head">
-                  <div>
-                    <strong>{t("API 连接")}</strong>
-                    <span>
-                      {editorMode === "mixedApi"
-                        ? t("官方账号负责登录与会话，API 连接负责实际请求。")
-                        : t("保存后会把这组凭据用于当前供应商的请求。")}
-                    </span>
-                  </div>
-                  <UiBadge variant={profile.baseUrl.trim() && profile.apiKey.trim() ? "secondary" : "outline"}>
-                    {profile.baseUrl.trim() && profile.apiKey.trim() ? t("已填写") : t("待填写")}
-                  </UiBadge>
+    <div className="relay-profile-editor relay-modal-sections">
+      {activeTab === "basic" ? (
+        <>
+          <section className="pf-section relay-basic-section">
+            {editorMode === "mixedApi" ? (
+              <div className="relay-legacy-mode-banner">
+                <div className="relay-legacy-mode-banner-copy">
+                  <strong>{t("旧版「官方登录 + API」配置")}</strong>
+                  <span>{t("登录身份现已统一由页面下方的「Codex 登录身份」管理；保留此配置照常可用，也可直接转为标准 API。")}</span>
                 </div>
-                <div className="relay-api-fields">
-                  <div className="relay-api-connection-fields">
-                    <Field className="relay-field-base-url" label="Base URL">
-                      <Input
-                        value={profile.baseUrl}
-                        onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
-                        placeholder={t("填写供应商的 Base URL")}
-                      />
-                    </Field>
-                    <Field className="relay-field-protocol" label={t("上游协议")}>
-                      <AppSelect
-                        ariaLabel={t("上游协议")}
-                        value={profile.protocol}
-                        onChange={(protocol) => updateDraft({ protocol })}
-                        options={[
-                          { value: "responses", label: "Responses API" },
-                          { value: "chatCompletions", label: "Chat Completions" },
-                          { value: "anthropicMessages", label: "Anthropic Messages" },
-                        ]}
-                      />
-                    </Field>
+                <Button
+                  onClick={() => updateDraft({ relayMode: "pureApi", officialMixApiKey: false, officialAccountRef: "" })}
+                  size="sm"
+                  type="button"
+                  variant="secondary"
+                >
+                  {t("转为标准 API")}
+                </Button>
+              </div>
+            ) : null}
+            <h4>{t("连接")}</h4>
+            <div className={showApiFields ? "pf-grid" : "relay-single-col"}>
+              <label className="pf-field">
+                <span>{t("名称")}</span>
+                <Input
+                  onChange={(event) => updateDraft({ name: event.currentTarget.value })}
+                  value={profile.name}
+                />
+              </label>
+              {showApiFields ? (
+                <div className="pf-field">
+                  <span>{t("协议")}</span>
+                  <div aria-label={t("协议")} className="pf-seg" role="radiogroup">
+                    {protocolOptions.map((item) => (
+                      <button
+                        aria-checked={profile.protocol === item.id}
+                        data-active={profile.protocol === item.id}
+                        key={item.id}
+                        onClick={() => updateDraft({ protocol: item.id })}
+                        role="radio"
+                        type="button"
+                      >
+                        {item.label}
+                      </button>
+                    ))}
                   </div>
-                  <Field className="relay-field-key" label="API Keys">
-                    <div className="relay-api-key-list">
-                      {normalizedApiKeys.apiKeys.map((entry) => {
-                        const active = entry.id === normalizedApiKeys.activeApiKeyId;
-                        return (
-                          <div className={`relay-api-key-row ${active ? "active" : ""}`} key={entry.id}>
-                            <button
-                              aria-label={t("设为当前 Key")}
-                              aria-pressed={active}
-                              className="relay-api-key-select"
-                              onClick={() => updateApiKeys(normalizedApiKeys.apiKeys, entry.id)}
-                              title={t("设为当前 Key")}
-                              type="button"
-                            >
-                              <CheckCircle2 className="h-4 w-4" />
-                            </button>
-                            <Input
-                              aria-label={t("Key 名称")}
-                              value={entry.name}
-                              onChange={(event) => updateApiKeys(normalizedApiKeys.apiKeys.map((key) =>
-                                key.id === entry.id ? { ...key, name: event.currentTarget.value } : key))}
-                            />
-                            <Input
-                              aria-label={tf("{0} 的 API Key", [entry.name])}
-                              type="password"
-                              value={entry.apiKey}
-                              onChange={(event) => updateApiKeys(normalizedApiKeys.apiKeys.map((key) =>
-                                key.id === entry.id ? { ...key, apiKey: event.currentTarget.value } : key))}
-                              placeholder={t("输入供应商的 API Key")}
-                            />
-                            {apiKeyPreview(entry.apiKey) ? (
-                              <span className="relay-api-key-preview" title={t("Key 首尾预览")}>
-                                {apiKeyPreview(entry.apiKey)}
-                              </span>
-                            ) : null}
-                            <Button
-                              aria-label={t("删除 Key")}
-                              disabled={normalizedApiKeys.apiKeys.length === 1}
-                              onClick={() => updateApiKeys(normalizedApiKeys.apiKeys.filter((key) => key.id !== entry.id))}
-                              size="icon"
-                              title={t("删除 Key")}
-                              type="button"
-                              variant="ghost"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        );
-                      })}
-                      <Button onClick={() => {
+                </div>
+              ) : null}
+            </div>
+            {showApiFields ? (
+              <>
+                <label className="pf-field">
+                  <span>{t("地址")}</span>
+                  <Input
+                    className="pf-mono"
+                    onChange={(event) => updateDraft({ baseUrl: event.currentTarget.value })}
+                    placeholder="https://api.example.com/v1"
+                    value={profile.baseUrl}
+                  />
+                </label>
+                <div className="pf-field">
+                  <div className="relay-field-head">
+                    <span>
+                      API Keys <small>{t("多个可切换使用")}</small>
+                    </span>
+                    <button
+                      className="pf-link"
+                      onClick={() => {
                         const key = createRelayApiKey(normalizedApiKeys.apiKeys);
                         updateApiKeys([...normalizedApiKeys.apiKeys, key]);
-                      }} size="sm" type="button" variant="secondary">
-                        <Plus className="h-4 w-4" />
-                        {t("添加 Key")}
-                      </Button>
-                    </div>
-                  </Field>
-                  {profile.protocol === "anthropicMessages" ? (
-                    <>
-                      <Field className="relay-field-anthropic-auth" label={t("认证字段")}>
-                        <AppSelect
-                          ariaLabel={t("认证字段")}
-                          value={profile.anthropicAuthHeader || "x-api-key"}
-                          onChange={(value) => updateDraft({ anthropicAuthHeader: value })}
-                          options={[
-                            { value: "x-api-key", label: t("x-api-key（Anthropic 原生）") },
-                            { value: "authorization", label: t("Authorization: Bearer") },
-                          ]}
-                        />
-                      </Field>
-                      <Field className="relay-field-anthropic-max-tokens" label={t("最大输出 tokens")}>
-                        <Input
-                          inputMode="numeric"
-                          value={profile.anthropicMaxTokens ? String(profile.anthropicMaxTokens) : ""}
-                          placeholder="8192"
-                          onChange={(event) =>
-                            updateDraft({ anthropicMaxTokens: normalizeAnthropicMaxTokens(Number(event.currentTarget.value)) })
-                          }
-                        />
-                      </Field>
-                      <Field className="relay-field-anthropic-thinking" label={t("思考模式")}>
-                        <AppSelect
-                          ariaLabel={t("思考模式")}
-                          value={profile.anthropicThinkingMode || "auto"}
-                          onChange={(value) =>
-                            updateDraft({ anthropicThinkingMode: value === "auto" ? "" : value })
-                          }
-                          options={[
-                            { value: "auto", label: t("自动（新代模型透传等级）") },
-                            { value: "adaptive", label: t("等级透传（adaptive）") },
-                            { value: "budget", label: t("经典预算（budget_tokens）") },
-                            { value: "off", label: t("关闭思考") },
-                          ]}
-                        />
-                      </Field>
-                      <label className="switch-row compact relay-switch-row relay-field-anthropic-cache">
-                        <input
-                          checked={profile.anthropicPromptCache !== false}
-                          onChange={(event) =>
-                            updateDraft({ anthropicPromptCache: event.currentTarget.checked })
-                          }
-                          type="checkbox"
-                        />
-                        <span>
-                          <strong>{t("提示缓存")}</strong>
-                          <small>
-                            {t("给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。")}
-                          </small>
-                        </span>
-                        <ToggleVisual />
-                      </label>
-                      <label className="switch-row compact relay-switch-row relay-field-anthropic-impersonate">
-                        <input
-                          checked={profile.anthropicImpersonateClaudeCode === true}
-                          onChange={(event) =>
-                            updateDraft({ anthropicImpersonateClaudeCode: event.currentTarget.checked })
-                          }
-                          type="checkbox"
-                        />
-                        <span>
-                          <strong>{t("模拟 Claude Code 客户端")}</strong>
-                          <small>
-                            {t("伪装 User-Agent、anthropic-beta、x-app，并在系统提示首行注入 Claude Code 身份。仅在网关限制「只能通过 Claude Code 使用」时开启。")}
-                          </small>
-                        </span>
-                        <ToggleVisual />
-                      </label>
-                      <div className="hint-line relay-protocol-hint">
-                        <MessageCircle className="h-4 w-4" />
-                        <span>
-                          {t("思考档位跟随 Codex 的 reasoning effort：自动模式下新代模型按等级透传（adaptive + effort），旧代模型折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。")}
-                        </span>
-                      </div>
-                    </>
-                  ) : null}
+                      }}
+                      type="button"
+                    >
+                      <Plus />
+                      {t("添加 Key")}
+                    </button>
+                  </div>
+                  <div className="relay-key-list">
+                    {normalizedApiKeys.apiKeys.map((entry) => {
+                      const active = entry.id === normalizedApiKeys.activeApiKeyId;
+                      return (
+                        <div className={`relay-key-line ${active ? "active" : ""}`} key={entry.id}>
+                          <button
+                            aria-label={t("设为当前 Key")}
+                            aria-pressed={active}
+                            className="relay-key-select"
+                            onClick={() => updateApiKeys(normalizedApiKeys.apiKeys, entry.id)}
+                            title={t("设为当前 Key")}
+                            type="button"
+                          >
+                            <CheckCircle2 className="h-4 w-4" />
+                          </button>
+                          <Input
+                            aria-label={t("Key 名称")}
+                            className="relay-key-name"
+                            onChange={(event) => updateApiKeys(normalizedApiKeys.apiKeys.map((key) =>
+                              key.id === entry.id ? { ...key, name: event.currentTarget.value } : key))}
+                            placeholder={t("名称")}
+                            value={entry.name}
+                          />
+                          <Input
+                            aria-label={tf("{0} 的 API Key", [entry.name])}
+                            className="pf-mono relay-key-secret"
+                            onChange={(event) => updateApiKeys(normalizedApiKeys.apiKeys.map((key) =>
+                              key.id === entry.id ? { ...key, apiKey: event.currentTarget.value } : key))}
+                            placeholder="sk-..."
+                            type="password"
+                            value={entry.apiKey}
+                          />
+                          {apiKeyPreview(entry.apiKey) ? (
+                            <span className="relay-key-preview" title={t("Key 首尾预览")}>
+                              {apiKeyPreview(entry.apiKey)}
+                            </span>
+                          ) : null}
+                          <button
+                            aria-label={t("删除 Key")}
+                            className="pf-icon"
+                            disabled={normalizedApiKeys.apiKeys.length === 1}
+                            onClick={() => updateApiKeys(normalizedApiKeys.apiKeys.filter((key) => key.id !== entry.id))}
+                            title={t("删除 Key")}
+                            type="button"
+                          >
+                            <Trash2 />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-              </div>
+              </>
             ) : (
               <div className="relay-mode-note">
                 <ShieldCheck className="h-4 w-4" />
-                <span>{t("当前使用官方账号登录；切换到“官方登录 + API”或“纯 API”后，API 连接字段会在这里展开。")}</span>
+                <span>{t("官方登录账号已整合到供应商列表与页面下方的「Codex 登录身份」，此条目仅保留兼容旧配置。")}</span>
               </div>
             )}
-          </div>
-        </section>
-        <RelayFold
-          className="relay-config-section relay-model-settings"
-          sectionId="models"
-          defaultOpen
-          issue={modelRowsError || relayModelRoutesSettingsValidation(relaySettingsWithDraft(form, profile.id, profile, isNew))}
-          title={t("模型配置")}
-        >
-          <div className="relay-options-grid">
-            <Field className="relay-field-config-model" label={t("配置模型")}>
-              <Input
-                value={profile.model}
-                onChange={(event) => updateDraft({ model: event.currentTarget.value })}
-                placeholder={t("例如 deepseek-v4-pro")}
-              />
-              <p className="field-hint">
-                {t("默认启动 Codex 时使用的模型名，请勿带后缀；上下文窗口请在下方「模型列表」中按模型单独配置。")}
+          </section>
+          {showApiFields && profile.protocol === "anthropicMessages" ? (
+            <section className="pf-section">
+              <h4>Anthropic</h4>
+              <div className="relay-three-col">
+                <label className="pf-field">
+                  <span>{t("认证字段")}</span>
+                  <AppSelect
+                    ariaLabel={t("认证字段")}
+                    onChange={(value) => updateDraft({ anthropicAuthHeader: value })}
+                    options={[
+                      { value: "x-api-key", label: t("x-api-key（Anthropic 原生）") },
+                      { value: "authorization", label: t("Authorization: Bearer") },
+                    ]}
+                    size="sm"
+                    value={profile.anthropicAuthHeader || "x-api-key"}
+                  />
+                </label>
+                <label className="pf-field">
+                  <span>{t("最大输出 tokens")}</span>
+                  <Input
+                    inputMode="numeric"
+                    onChange={(event) =>
+                      updateDraft({ anthropicMaxTokens: normalizeAnthropicMaxTokens(Number(event.currentTarget.value)) })
+                    }
+                    placeholder="8192"
+                    value={profile.anthropicMaxTokens ? String(profile.anthropicMaxTokens) : ""}
+                  />
+                </label>
+                <label className="pf-field">
+                  <span>{t("思考模式")}</span>
+                  <AppSelect
+                    ariaLabel={t("思考模式")}
+                    onChange={(value) =>
+                      updateDraft({ anthropicThinkingMode: value === "auto" ? "" : value })
+                    }
+                    options={[
+                      { value: "auto", label: t("自动（新代模型透传等级）") },
+                      { value: "adaptive", label: t("等级透传（adaptive）") },
+                      { value: "budget", label: t("经典预算（budget_tokens）") },
+                      { value: "off", label: t("关闭思考") },
+                    ]}
+                    size="sm"
+                    value={profile.anthropicThinkingMode || "auto"}
+                  />
+                </label>
+              </div>
+              <label className="switch-row compact relay-switch-row relay-field-anthropic-cache">
+                <input
+                  checked={profile.anthropicPromptCache !== false}
+                  onChange={(event) =>
+                    updateDraft({ anthropicPromptCache: event.currentTarget.checked })
+                  }
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("提示缓存")}</strong>
+                  <small>
+                    {t("给系统提示、工具定义和最新一轮对话打 5 分钟缓存断点（最多 4 个），长对话不会每轮全价重发。")}
+                  </small>
+                </span>
+                <ToggleVisual />
+              </label>
+              <label className="switch-row compact relay-switch-row relay-field-anthropic-impersonate">
+                <input
+                  checked={profile.anthropicImpersonateClaudeCode === true}
+                  onChange={(event) =>
+                    updateDraft({ anthropicImpersonateClaudeCode: event.currentTarget.checked })
+                  }
+                  type="checkbox"
+                />
+                <span>
+                  <strong>{t("模拟 Claude Code 客户端")}</strong>
+                  <small>
+                    {t("伪装 User-Agent、anthropic-beta、x-app，并在系统提示首行注入 Claude Code 身份。仅在网关限制「只能通过 Claude Code 使用」时开启。")}
+                  </small>
+                </span>
+                <ToggleVisual />
+              </label>
+              <p className="pf-hint">
+                {t("思考档位跟随 Codex 的 reasoning effort：自动模式下新代模型按等级透传（adaptive + effort），旧代模型折算成 thinking 预算；模型声明 1M 窗口时会自动附上 1m 上下文 beta 头。")}
               </p>
-            </Field>
-            {/* 官方登录 profile 同样维护模型列表：按模型聚合与官方模型目录拉取都依赖它。 */}
-            <section className="relay-config-section relay-field-model-list">
-                <div className="relay-config-section-head">
-                  <div>
-                    <strong>{t("模型列表")}</strong>
-                    <span>
-                      {t("每行一个模型；上下文窗口可填")} <code>1M</code>{t("、")}<code>200K</code> {t("或")} <code>1000000</code>{t("，留空表示使用 Codex 默认长度。")}
-                    </span>
-                  </div>
-                  <div className="relay-model-list-tools">
-                    <Button
-                      onClick={appendEmptyModelRow}
-                      size="sm"
-                      type="button"
-                      variant="secondary"
-                    >
-                      <Plus className="h-4 w-4" />
-                      {t("添加模型")}
-                    </Button>
-                    <Button
-                      onClick={async () => {
-                        const serializedRows = serializeModelWindowRows(modelWindowRows);
-                        const models = await actions.fetchRelayProfileModels({
-                          ...profile,
-                          modelList: serializedRows.modelList,
-                          modelWindows: serializedRows.modelWindows,
-                          modelAutoCompact: serializedRows.modelAutoCompact,
-                        });
-                        if (models?.length) {
-                          addModelWindowRows(models.map((model) => ({ model, window: "", autoCompact: "", imageHandling: "" })));
-                        }
+            </section>
+          ) : null}
+        </>
+      ) : null}
+      {activeTab === "models" ? (
+        <>
+          <section className="pf-section">
+            <h4>{t("默认模型")}<small>{t("启动 Codex 时默认选中，请勿带窗口后缀")}</small></h4>
+            <Input
+              className="pf-mono"
+              onChange={(event) => updateDraft({ model: event.currentTarget.value })}
+              placeholder={t("例如 deepseek-v4-pro")}
+              value={profile.model}
+            />
+          </section>
+          {/* 官方登录 profile 同样维护模型列表：按模型聚合与官方模型目录拉取都依赖它。 */}
+          <section className="pf-section relay-model-settings relay-field-model-list">
+            <h4>
+              {t("模型列表")}
+              <small>1M / 200K / 1000000</small>
+              <span className="relay-section-actions">
+                <button className="pf-action" onClick={appendEmptyModelRow} type="button">
+                  <Plus />
+                  {t("添加模型")}
+                </button>
+                <button
+                  className="pf-action"
+                  onClick={async () => {
+                    const serializedRows = serializeModelWindowRows(modelWindowRows);
+                    const models = await actions.fetchRelayProfileModels({
+                      ...profile,
+                      modelList: serializedRows.modelList,
+                      modelWindows: serializedRows.modelWindows,
+                      modelAutoCompact: serializedRows.modelAutoCompact,
+                    });
+                    if (models?.length) {
+                      addModelWindowRows(models.map((model) => ({ model, window: "", autoCompact: "", imageHandling: "" })));
+                    }
+                  }}
+                  type="button"
+                >
+                  <Download />
+                  {t("从上游获取")}
+                </button>
+                <button
+                  className="pf-action"
+                  disabled={!modelWindowRows.some((row) => row.model.trim())}
+                  onClick={() => setModelWindowRows([])}
+                  title={t("清空模型")}
+                  type="button"
+                >
+                  <Trash2 />
+                  {t("清空")}
+                </button>
+              </span>
+            </h4>
+            {modelWindowRows.length >= 12 ? (
+              <Input
+                aria-label={t("搜索模型")}
+                className="pf-table-search"
+                onChange={(event) => setModelSearch(event.currentTarget.value)}
+                placeholder={t("搜索模型")}
+                value={modelSearch}
+              />
+            ) : null}
+            {modelWindowRows.length ? (
+              <div className="relay-model-row-editor">
+                <div className="relay-model-row relay-model-row-head">
+                  <span aria-hidden="true" />
+                  <span>{t("模型名称")}</span>
+                  <span>{t("上下文窗口")}</span>
+                  <span className="relay-model-head-bulk">
+                    {t("自动压缩")}
+                    <AppSelect
+                      ariaLabel={t("全部模型的自动压缩")}
+                      className="relay-model-bulk-select"
+                      menuWidth={140}
+                      onChange={(next) => {
+                        if (next) updateAllModelWindowRows({ autoCompact: next });
                       }}
+                      options={autoCompactOptions("").map((value) => ({ value, label: value }))}
+                      placeholder={t("全部设为…")}
                       size="sm"
-                      type="button"
-                      variant="secondary"
-                    >
-                      <Download className="h-4 w-4" />
-                      {t("从上游获取")}
-                    </Button>
-                    <Button
-                      disabled={!modelWindowRows.some((row) => row.model.trim())}
-                      onClick={() => setModelWindowRows([])}
+                      title={t("把所有模型设为同一个自动压缩比例")}
+                      value=""
+                    />
+                  </span>
+                  <span className="relay-model-head-bulk">
+                    {t("图片处理")}
+                    <AppSelect
+                      ariaLabel={t("全部模型的图片处理方式")}
+                      className="relay-model-bulk-select"
+                      disabled={vlmUnsupportedProtocol}
+                      menuWidth={160}
+                      onChange={(next) => {
+                        if (next) updateAllModelWindowRows({ imageHandling: next as ModelWindowRow["imageHandling"] });
+                      }}
+                      options={[
+                        { value: "send-as-is", label: t("原样发送图片") },
+                        { value: "strip", label: t("移除图片") },
+                        { value: "vlm", label: t("视觉辅助分析") },
+                      ]}
+                      placeholder={t("全部设为…")}
                       size="sm"
-                      title={t("清空模型")}
-                      type="button"
-                      variant="outline"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      {t("清空模型")}
-                    </Button>
-                  </div>
+                      title={t("把所有模型设为同一种图片处理方式")}
+                      value=""
+                    />
+                  </span>
+                  <span>{t("思考等级")}</span>
+                  <span>{t("配置")}</span>
+                  <span aria-hidden="true" />
                 </div>
-                <div className="relay-model-row-editor">
-                  {modelWindowRows.length ? <div className="relay-model-row relay-model-row-head">
-                    <span aria-hidden="true" />
-                    <span>{t("模型名称")}</span>
-                    <span>{t("上下文窗口")}</span>
-                    <span className="relay-model-head-bulk">
-                      {t("自动压缩")}
-                      <AppSelect
-                        ariaLabel={t("全部模型的自动压缩")}
-                        className="relay-model-bulk-select"
-                        menuWidth={140}
-                        onChange={(next) => {
-                          if (next) updateAllModelWindowRows({ autoCompact: next });
-                        }}
-                        options={autoCompactOptions("").map((value) => ({ value, label: value }))}
-                        placeholder={t("全部设为…")}
-                        size="sm"
-                        title={t("把所有模型设为同一个自动压缩比例")}
-                        value=""
-                      />
-                    </span>
-                    <span className="relay-model-head-bulk">
-                      {t("图片处理方式")}
-                      <AppSelect
-                        ariaLabel={t("全部模型的图片处理方式")}
-                        className="relay-model-bulk-select"
-                        disabled={vlmUnsupportedProtocol}
-                        menuWidth={160}
-                        onChange={(next) => {
-                          if (next) updateAllModelWindowRows({ imageHandling: next as ModelWindowRow["imageHandling"] });
-                        }}
-                        options={[
-                          { value: "send-as-is", label: t("原样发送图片") },
-                          { value: "strip", label: t("移除图片") },
-                          { value: "vlm", label: t("视觉辅助分析") },
-                        ]}
-                        placeholder={t("全部设为…")}
-                        size="sm"
-                        title={t("把所有模型设为同一种图片处理方式")}
-                        value=""
-                      />
-                    </span>
-                    <span>{t("思考等级")}</span>
-                    <span>{t("模型配置")}</span>
-                    <span aria-hidden="true" />
-                  </div> : null}
-                  <DndContext
-                    sensors={modelSensors}
-                    collisionDetection={closestCenter}
-                    onDragEnd={handleModelRowsDragEnd}
+                <DndContext
+                  sensors={modelSensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleModelRowsDragEnd}
+                >
+                  <SortableContext
+                    items={modelWindowRows.map((row) => row.sortId)}
+                    strategy={verticalListSortingStrategy}
                   >
-                    <SortableContext
-                      items={modelWindowRows.map((row) => row.sortId)}
-                      strategy={verticalListSortingStrategy}
-                    >
-                      {modelWindowRows.map((row, index) => {
-                        const slug = row.model.trim();
+                    {modelWindowRows.map((row, index) => {
+                      const query = modelSearch.trim().toLowerCase();
+                      if (query && !row.model.toLowerCase().includes(query) && metadataImportTarget?.index !== index) {
+                        return null;
+                      }
+                      const slug = row.model.trim();
                         // 面板身份只用 index：slug 双轨（draft 副本 vs 实时输入）曾导致
                         // 改名时面板整体卸载、blur 后重挂抢焦点。
                         const importing = metadataImportTarget?.index === index;
@@ -1832,7 +2081,7 @@ function RelayProfileEditor({
                                 setMetadataImportPreview(synchronized.preview);
                                 setMetadataImportError("");
                               }}
-                              placeholder={t("留空使用默认值")}
+                              placeholder={t("默认")}
                             />
                           </div>
                           <div className="relay-model-cell relay-model-cell-compact">
@@ -2094,108 +2343,115 @@ function RelayProfileEditor({
                     </SortableContext>
                   </DndContext>
                 </div>
+            ) : (
+              <p className="pf-note">{t("还没有配置模型；可点上方「添加模型」或「从上游获取」。")}</p>
+            )}
                 {modelRowsError ? <div className="relay-model-metadata-import-error" role="alert">{modelRowsError}</div> : null}
-                <p className="field-hint">
-                  {t("自动压缩留空时沿用 Codex 默认行为；填写百分比后会按该模型的上下文窗口重新计算阈值。")}
-                  {" "}{t("需要自定义 Fast 白名单时，打开对应模型的配置按钮，设置 Fast（priority）支持并保存此模型与供应商。")}
+                <p className="pf-hint">
+                  {t("自动压缩留空沿用默认；需要自定义 Fast（priority）或元数据，点对应行右侧的配置图标。")}
                 </p>
             </section>
             {showApiFields ? (
-              <section className="relay-config-section relay-field-model-routes">
-                <div className="relay-config-section-head">
-                  <div>
-                    <strong>{t("单模型协议转换")}</strong>
-                    <span>{t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。")}</span>
-                  </div>
-                  <div className="relay-model-list-tools">
-                    <Button
-                      disabled={modelRouteTargets.length === 0}
-                      onClick={() => updateDraft({ modelRoutes: [...modelRoutes, { model: "", targetRelayId: "", targetModel: "" }] })}
-                      size="sm"
-                      title={modelRouteTargets.length === 0 ? t("请先创建一个 Responses API 目标供应商") : t("添加协议转换")}
-                      type="button"
-                      variant="secondary"
-                    >
-                      <Plus className="h-4 w-4" />
-                      {t("添加协议转换")}
-                    </Button>
-                  </div>
-                </div>
-                <div className="relay-model-route-editor">
-                  {modelRoutes.length ? (
+              <section className="pf-section relay-field-model-routes">
+                <h4>
+                  {t("单模型协议转换")}
+                  <small>{t("精确匹配模型并转发到 Responses 供应商")}</small>
+                  <button
+                    className="pf-action"
+                    disabled={modelRouteTargets.length === 0}
+                    onClick={() => updateDraft({ modelRoutes: [...modelRoutes, { model: "", targetRelayId: "", targetModel: "" }] })}
+                    title={modelRouteTargets.length === 0 ? t("请先创建一个 Responses API 目标供应商") : t("添加协议转换")}
+                    type="button"
+                  >
+                    <Plus />
+                    {t("添加协议转换")}
+                  </button>
+                </h4>
+                {modelRoutes.length ? (
+                  <div className="relay-model-route-editor">
                     <div className="relay-model-route-row relay-model-route-head">
                       <span>{t("匹配模型")}</span>
                       <span>{t("目标供应商")}</span>
                       <span>{t("目标模型（可选）")}</span>
                     </div>
-                  ) : null}
-                  {modelRoutes.map((route, index) => (
-                    <div className="relay-model-route-row" key={`model-route-${index}`}>
-                      <Input
-                        value={route.model}
-                        onChange={(event) => updateModelRoute(index, { model: event.currentTarget.value })}
-                        placeholder={t("例：gpt-5.6-luna")}
-                      />
-                      <AppSelect
-                        value={route.targetRelayId}
-                        onChange={(targetRelayId) => updateModelRoute(index, { targetRelayId })}
-                        options={[
-                          { value: "", label: t("选择 Responses 供应商"), disabled: true },
-                          ...modelRouteTargets.map((candidate) => ({ value: candidate.id, label: candidate.name || candidate.id })),
-                        ]}
-                      />
-                      <Input
-                        value={route.targetModel}
-                        onChange={(event) => updateModelRoute(index, { targetModel: event.currentTarget.value })}
-                        placeholder={t("留空保持原模型名")}
-                      />
-                      <Button
-                        aria-label={t("删除协议转换")}
-                        onClick={() => updateDraft({ modelRoutes: modelRoutes.filter((_, routeIndex) => routeIndex !== index) })}
-                        size="icon"
-                        title={t("删除协议转换")}
-                        type="button"
-                        variant="ghost"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
+                    {modelRoutes.map((route, index) => (
+                      <div className="relay-model-route-row" key={`model-route-${index}`}>
+                        <Input
+                          value={route.model}
+                          onChange={(event) => updateModelRoute(index, { model: event.currentTarget.value })}
+                          placeholder={t("例：gpt-5.6-luna")}
+                        />
+                        <AppSelect
+                          value={route.targetRelayId}
+                          onChange={(targetRelayId) => updateModelRoute(index, { targetRelayId })}
+                          options={[
+                            { value: "", label: t("选择 Responses 供应商"), disabled: true },
+                            ...modelRouteTargets.map((candidate) => ({ value: candidate.id, label: candidate.name || candidate.id })),
+                          ]}
+                          size="sm"
+                        />
+                        <Input
+                          value={route.targetModel}
+                          onChange={(event) => updateModelRoute(index, { targetModel: event.currentTarget.value })}
+                          placeholder={t("留空保持原模型名")}
+                        />
+                        <button
+                          aria-label={t("删除协议转换")}
+                          className="pf-icon"
+                          onClick={() => updateDraft({ modelRoutes: modelRoutes.filter((_, routeIndex) => routeIndex !== index) })}
+                          title={t("删除协议转换")}
+                          type="button"
+                        >
+                          <Trash2 />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="pf-hint">
+                    {t("仅在当前供应商启用时生效；精确匹配模型名并使用目标供应商的 URL 与 Key。目标必须是 Responses API，且需要从 Codex++ 启动。")}
+                  </p>
+                )}
               </section>
             ) : null}
             {showApiFields && modelWindowRows.some((row) => row.imageHandling === "vlm") ? (
-              <div className="relay-vlm-section">
-                <div className="relay-vlm-section-header">{t("Vision Analysis Provider")}</div>
-                <Field className="relay-field-vlm-api-key" label={t("VLM API Key")}>
-                  <Input
-                    type="password"
-                    value={profile.vlmApiKey}
-                    onChange={(event) => updateDraft({ vlmApiKey: event.currentTarget.value })}
-                    placeholder="sk-..."
-                  />
-                </Field>
-                <Field className="relay-field-vlm-model" label={t("VLM Model")}>
-                  <Input
-                    value={profile.vlmModel}
-                    onChange={(event) => updateDraft({ vlmModel: event.currentTarget.value })}
-                    placeholder="qwen-vl-plus"
-                  />
-                </Field>
-                <Field className="relay-field-vlm-base-url" label={t("VLM Base URL")}>
-                  <Input
-                    value={profile.vlmBaseUrl}
-                    onChange={(event) => updateDraft({ vlmBaseUrl: event.currentTarget.value })}
-                    placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-                  />
-                </Field>
-                <p className="field-hint">
-                  {t("若开启 VLM analysis，请确认 VLM 配置项完整且服务可用。")}
-                  <br />
-                  {t("仅在 Chat Completion 和聚合模式生效。")}
+              <section className="pf-section relay-vlm-section">
+                <h4>{t("Vision Analysis Provider")}</h4>
+                <div className="relay-three-col">
+                  <label className="pf-field">
+                    <span>{t("VLM API Key")}</span>
+                    <Input
+                      className="pf-mono"
+                      onChange={(event) => updateDraft({ vlmApiKey: event.currentTarget.value })}
+                      placeholder="sk-..."
+                      type="password"
+                      value={profile.vlmApiKey}
+                    />
+                  </label>
+                  <label className="pf-field">
+                    <span>{t("VLM Model")}</span>
+                    <Input
+                      className="pf-mono"
+                      onChange={(event) => updateDraft({ vlmModel: event.currentTarget.value })}
+                      placeholder="qwen-vl-plus"
+                      value={profile.vlmModel}
+                    />
+                  </label>
+                  <label className="pf-field">
+                    <span>{t("VLM Base URL")}</span>
+                    <Input
+                      className="pf-mono"
+                      onChange={(event) => updateDraft({ vlmBaseUrl: event.currentTarget.value })}
+                      placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                      value={profile.vlmBaseUrl}
+                    />
+                  </label>
+                </div>
+                <p className="pf-hint">
+                  {t("若开启 VLM analysis，请确认 VLM 配置项完整且服务可用。")} {t("仅在 Chat Completion 和聚合模式生效。")}
                 </p>
                 {modelWindowRows.some((row) => row.imageHandling === "vlm") && (!profile.vlmApiKey || !profile.vlmModel || !profile.vlmBaseUrl) ? (
-                  <p className="field-hint warn">{t("VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。")}</p>
+                  <p className="pf-note" data-tone="error">{t("VLM 配置不完整：API Key、Model 和 Base URL 为必填项，否则 VLM 不会生效。")}</p>
                 ) : null}
                 <div className="vlm-test-entry">
                   <Button
@@ -2208,23 +2464,18 @@ function RelayProfileEditor({
                   </Button>
                 </div>
                 {vlmTestOpen ? <VlmTestPanel profile={profile} onClose={() => setVlmTestOpen(false)} /> : null}
-              </div>
+              </section>
             ) : null}
-          </div>
-        </RelayFold>
-        {showApiFields ? (
-          <RelayFold
-            className="relay-config-section relay-request-settings"
-            defaultOpen
-            sectionId="requests"
-            issue={customHeadersError || relaySessionProviderValidation(profile)}
-            title={t("请求设置")}
-          >
-          <div className="relay-options-grid">
-            {showApiFields ? (
-              <Field className="relay-field-session-provider" label={t("Codex 会话身份")}>
+        </>
+      ) : null}
+      {activeTab === "requests" && showApiFields ? (
+        <>
+          <section className="pf-section">
+            <h4>{t("请求参数")}</h4>
+            <div className="relay-two-col">
+              <div className="pf-field relay-field-session-provider">
+                <span>{t("Codex 会话身份")}</span>
                 <AppSelect
-                  value={sessionProvider}
                   onChange={(value) => updateDraft({ sessionProvider: value })}
                   options={[
                     { value: "custom", label: t("Custom（默认）") },
@@ -2234,130 +2485,160 @@ function RelayProfileEditor({
                       disabled: !canUseOpenAiSessionProvider || profile.protocol !== "responses",
                     },
                   ]}
+                  size="sm"
+                  value={sessionProvider}
                 />
-                <p className="field-hint">
-                  {profile.protocol !== "responses"
+                <p
+                  className="pf-hint"
+                  title={profile.protocol !== "responses"
                     ? t("OpenAI 会话身份需要 Responses API；Chat Completions 不支持远程压缩。")
                     : canUseOpenAiSessionProvider
                       ? t("选择 OpenAI 后，Codex Remote 会把当前会话识别为 ChatGPT 会话；中转仍使用 custom 表。")
                       : t("官方登录未混入 API 时不写入会话 provider")}
+                >
+                  {profile.protocol !== "responses"
+                    ? t("仅 Responses API 可选 OpenAI 会话身份")
+                    : t("兼容 Codex Remote 会话识别")}
                 </p>
-              </Field>
-            ) : null}
-            {showApiFields ? (
-              <Field className="relay-field-user-agent" label="User-Agent">
-                <Input
-                  value={profile.userAgent}
-                  onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
-                  placeholder={t("留空使用默认值")}
-                />
-              </Field>
-            ) : null}
-            {showApiFields ? (
-              <Field className="relay-field-auto-review-model" label={t("自动审批模型")}>
-                <Input
-                  value={profile.autoReviewModel ?? ""}
-                  onChange={(event) => updateDraft({ autoReviewModel: event.currentTarget.value })}
-                  placeholder={t("留空则原样转发 codex-auto-review")}
-                />
-              </Field>
-            ) : null}
-            {showApiFields ? (
-              <Field className="relay-field-multi-agent" label={t("Multi Agent 协议")}>
+              </div>
+              <div className="pf-field relay-field-multi-agent">
+                <span>{t("Multi Agent 协议")}</span>
                 <AppSelect
-                  value={profile.multiAgent === "v1" || profile.multiAgent === "v2" ? profile.multiAgent : "auto"}
+                  onChange={(value) => updateDraft({ multiAgent: value === "v1" || value === "v2" ? value : "" })}
                   options={[
                     { value: "auto", label: t("自动（推荐）") },
                     { value: "v1", label: t("v1（经典，转 Chat 中转适用）") },
                     { value: "v2", label: t("v2（新版，需上游支持加密载荷）") },
                   ]}
-                  onChange={(value) => updateDraft({ multiAgent: value === "v1" || value === "v2" ? value : "" })}
+                  size="sm"
+                  value={profile.multiAgent === "v1" || profile.multiAgent === "v2" ? profile.multiAgent : "auto"}
                 />
-                <p className="field-hint">
-                  {t("子代理协议的供应商级默认；模型元数据里的 multi_agent_version 声明优先于它。选 v1 会在使用该供应商期间压下 [features] multi_agent_v2，切走时自动还原。仅对直连供应商生效，Codex 经本地服务时由本地服务的接入设置决定。仅新会话生效。")}
+                <p
+                  className="pf-hint"
+                  title={t("子代理协议的供应商级默认；模型元数据里的 multi_agent_version 声明优先于它。选 v1 会在使用该供应商期间压下 [features] multi_agent_v2，切走时自动还原。仅对直连供应商生效，Codex 经本地服务时由本地服务的接入设置决定。仅新会话生效。")}
+                >
+                  {t("直连供应商的子代理协议默认版本（仅新会话生效）")}
                 </p>
-              </Field>
-            ) : null}
-            {showApiFields ? (
-              <Field className="relay-field-proxy" label={t("供应商独立代理")}>
+              </div>
+              <label className="pf-field relay-field-user-agent">
+                <span>User-Agent</span>
                 <Input
-                  aria-invalid={proxy.error ? true : undefined}
-                  value={proxy.value}
-                  onChange={(event) => proxy.onChange(event.currentTarget.value)}
-                  placeholder="http://127.0.0.1:7890"
+                  onChange={(event) => updateDraft({ userAgent: event.currentTarget.value })}
+                  placeholder={t("留空使用默认值")}
+                  value={profile.userAgent}
                 />
-                <span className="hint-line">{t("留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。随「保存供应商」一起保存。")}</span>
-                {proxy.error ? <span className="hint-line relay-custom-headers-error">{proxy.error}</span> : null}
-              </Field>
+              </label>
+              <label className="pf-field relay-field-auto-review-model">
+                <span>{t("自动审批模型")}</span>
+                <Input
+                  className="pf-mono"
+                  onChange={(event) => updateDraft({ autoReviewModel: event.currentTarget.value })}
+                  placeholder={t("留空则原样转发 codex-auto-review")}
+                  value={profile.autoReviewModel ?? ""}
+                />
+              </label>
+            </div>
+          </section>
+          <section className="pf-section">
+            <h4>{t("代理")}<small>{t("留空表示使用系统代理")}</small></h4>
+            <label className="pf-field relay-field-proxy">
+              <span>{t("直连独立代理")}</span>
+              <Input
+                aria-invalid={proxy.error ? true : undefined}
+                className="pf-mono"
+                onChange={(event) => proxy.onChange(event.currentTarget.value)}
+                placeholder="http://127.0.0.1:7890"
+                value={proxy.value}
+              />
+              <p className="pf-hint">{t("留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。随「保存供应商」一起保存。")}</p>
+              {proxy.error ? <p className="pf-note" data-tone="error">{proxy.error}</p> : null}
+            </label>
+            {gatewayProxy ? (
+              <div className="relay-gateway-proxy-inline">
+                <ProviderGatewayProxyFields
+                  autoFocusInput={false}
+                  mode={gatewayProxy.mode}
+                  onChangeMode={gatewayProxy.onChangeMode}
+                  onChangeProxy={gatewayProxy.onChangeValue}
+                  proxy={gatewayProxy.value}
+                  subtitle={t("聚合模式下经本地服务转发给这个供应商的代理")}
+                  title={t("本地服务代理")}
+                />
+                {gatewayProxy.error ? <p className="pf-note" data-tone="error">{gatewayProxy.error}</p> : null}
+              </div>
             ) : null}
-            {showApiFields ? (
-              // 五个兼容性开关默认都关，且只在上游明确需要时才开：收成一组，摘要上写开了几项。
-              <details
-                className="relay-compat-group"
-                open={compatOpen ?? compatEnabledCount > 0}
-                onToggle={(event) => setCompatOpen(event.currentTarget.open)}
-              >
-                <summary>
-                  <ChevronDown aria-hidden="true" className="relay-fold-chevron h-4 w-4" />
-                  <strong>{t("高级兼容选项")}</strong>
-                  <small>{compatEnabledCount ? tf("已开启 {0} 项", [compatEnabledCount]) : t("全部关闭；只在上游明确需要时开启")}</small>
-                </summary>
-                <div className="relay-compat-body">
-                {showApiFields ? (
-                  <label
-                    className={`switch-row compact relay-switch-row relay-field-standard${profile.protocol === "chatCompletions" ? "" : " is-disabled"}`}
-                    title={profile.protocol === "chatCompletions" ? undefined : t("仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。")}
-                  >
-                    <input
-                      checked={profile.standardOpenaiProtocol}
-                      disabled={profile.protocol !== "chatCompletions"}
-                      onChange={(event) =>
-                        updateDraft({ standardOpenaiProtocol: event.currentTarget.checked })
-                      }
-                      type="checkbox"
-                    />
-                    <span>
-                      <strong>{t("纯标准协议")}</strong>
-                      <small>
-                        {t("强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。")}
-                        {" "}
-                        {t("若网关提示 thinking type: adaptive 无效，可启用此项后重试；这会停用厂商私有推理参数。")}
-                      </small>
-                    </span>
-                    <ToggleVisual />
-                  </label>
-                ) : null}
-                {showApiFields ? (
-                  <label className="switch-row compact relay-switch-row">
-                    <input
-                      checked={promptPrefix.value}
-                      onChange={(event) => promptPrefix.onChange(event.currentTarget.checked)}
-                      type="checkbox"
-                    />
-                    <span><strong>{t("前缀稳定层")}</strong><small>{t("按供应商稳定可选历史块的顺序并移除成对 image_resize_notice；默认关闭，适合已确认上游支持的缓存场景。")}</small></span>
-                    <ToggleVisual />
-                  </label>
-                ) : null}
-                {showApiFields ? (
-                  <label
-                    className={`switch-row compact relay-switch-row relay-field-search-history${profile.protocol === "responses" ? "" : " is-disabled"}`}
-                    title={profile.protocol === "responses" ? undefined : t("仅限 Responses API。")}
-                  >
-                    <input
-                      checked={profile.webSearchHistoryCompat}
-                      disabled={profile.protocol !== "responses"}
-                      onChange={(event) =>
-                        updateDraft({ webSearchHistoryCompat: event.currentTarget.checked })
-                      }
-                      type="checkbox"
-                    />
-                    <span>
-                      <strong>{t("搜索历史压缩兼容（实验）")}</strong>
-                      <small>response protection is unavailable</small>
-                    </span>
-                    <ToggleVisual />
-                  </label>
-                ) : null}
+          </section>
+          <section className="pf-section">
+            <h4>{t("自定义请求头")}{customHeaderCount ? <em>{customHeaderCount}</em> : null}</h4>
+            <div className="relay-custom-headers">
+              <RelayHeaderRows onChange={(customHeaders) => updateDraft({ customHeaders })} rows={profile.customHeaders || []} />
+            </div>
+            <p className="pf-hint">
+              {t("自定义请求头会同时用于测试连接、模型列表与实际代理请求。")} {t("Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。")}
+            </p>
+            {customHeadersError ? <p className="pf-note" data-tone="error">{customHeadersError}</p> : null}
+          </section>
+          <section className="pf-section">
+            <details
+              className="relay-compat-group"
+              open={compatOpen ?? compatEnabledCount > 0}
+              onToggle={(event) => setCompatOpen(event.currentTarget.open)}
+            >
+              <summary>
+                <ChevronDown aria-hidden="true" className="relay-fold-chevron h-4 w-4" />
+                <strong>{t("高级兼容选项")}</strong>
+                <small>{compatEnabledCount ? tf("已开启 {0} 项", [compatEnabledCount]) : t("全部关闭；只在上游明确需要时开启")}</small>
+              </summary>
+              <div className="relay-compat-body">
+                <label
+                  className={`switch-row compact relay-switch-row relay-field-standard${profile.protocol === "chatCompletions" ? "" : " is-disabled"}`}
+                  title={profile.protocol === "chatCompletions" ? undefined : t("仅在上游协议为 Chat Completions 时可用。Responses API 会原样转发。")}
+                >
+                  <input
+                    checked={profile.standardOpenaiProtocol}
+                    disabled={profile.protocol !== "chatCompletions"}
+                    onChange={(event) =>
+                      updateDraft({ standardOpenaiProtocol: event.currentTarget.checked })
+                    }
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("纯标准协议")}</strong>
+                    <small>
+                      {t("强制走标准 OpenAI 协议，不注入厂商私有 reasoning 参数。面向只认标准 OpenAI 字段、拒绝厂商私有参数的第三方网关。")}
+                      {" "}
+                      {t("若网关提示 thinking type: adaptive 无效，可启用此项后重试；这会停用厂商私有推理参数。")}
+                    </small>
+                  </span>
+                  <ToggleVisual />
+                </label>
+                <label className="switch-row compact relay-switch-row">
+                  <input
+                    checked={promptPrefix.value}
+                    onChange={(event) => promptPrefix.onChange(event.currentTarget.checked)}
+                    type="checkbox"
+                  />
+                  <span><strong>{t("前缀稳定层")}</strong><small>{t("按供应商稳定可选历史块的顺序并移除成对 image_resize_notice；默认关闭，适合已确认上游支持的缓存场景。")}</small></span>
+                  <ToggleVisual />
+                </label>
+                <label
+                  className={`switch-row compact relay-switch-row relay-field-search-history${profile.protocol === "responses" ? "" : " is-disabled"}`}
+                  title={profile.protocol === "responses" ? undefined : t("仅限 Responses API。")}
+                >
+                  <input
+                    checked={profile.webSearchHistoryCompat}
+                    disabled={profile.protocol !== "responses"}
+                    onChange={(event) =>
+                      updateDraft({ webSearchHistoryCompat: event.currentTarget.checked })
+                    }
+                    type="checkbox"
+                  />
+                  <span>
+                    <strong>{t("搜索历史压缩兼容（实验）")}</strong>
+                    <small>response protection is unavailable</small>
+                  </span>
+                  <ToggleVisual />
+                </label>
                 {showApiFields && profile.relayMode !== "aggregate" && profile.protocol !== "anthropicMessages" ? (
                   <label className="switch-row compact relay-switch-row relay-field-local-compaction">
                     <input
@@ -2372,7 +2653,7 @@ function RelayProfileEditor({
                     <ToggleVisual />
                   </label>
                 ) : null}
-                {showApiFields && profile.protocol === "responses" ? <>
+                {profile.protocol === "responses" ? <>
                   <label className="switch-row compact relay-switch-row">
                     <input type="checkbox" checked={profile.trustUpstreamCatalogLite === true} onChange={(event) => updateDraft({ trustUpstreamCatalogLite: event.currentTarget.checked })} />
                     <span><strong>{t("保留外部目录的 Lite 声明")}</strong><small>{t("仅在已确认上游支持时启用；保留每个模型的显式声明，不会为全部模型开启 Lite。")}</small></span><ToggleVisual />
@@ -2383,74 +2664,53 @@ function RelayProfileEditor({
                   </label>
                   <CompatToggles onChange={(patch) => updateDraft(patch)} values={profile} variant="direct" />
                 </> : null}
-                {showApiFields && profile.relayMode === "pureApi" ? (
+                {profile.relayMode === "pureApi" ? (
                   <label className="switch-row compact relay-switch-row relay-field-pure-api-image-generation">
                     <input type="checkbox" checked={profile.pureApiImageGeneration === true} onChange={(event) => updateDraft({ pureApiImageGeneration: event.currentTarget.checked })} />
                     <span><strong>{t("纯 API 启用 Codex 原生生图（实验）")}</strong><small>{t("Codex 默认只在登录 ChatGPT 时注册 image_gen 工具。开启后 Codex++ 在 config.toml 里写入占位请求头让 Codex 注册该工具，生图请求经本地代理发给本供应商的 /images/generations、/images/edits，占位头不会发往上游。上游需支持 OpenAI 图片接口；依赖 Codex 内部判据，Codex 更新后可能失效。默认关闭。")}</small></span><ToggleVisual />
                   </label>
                 ) : null}
-                </div>
-              </details>
-            ) : null}
-            {showApiFields ? (
-              <Field className="relay-field-custom-headers" label={t("自定义请求头")}>
-                <div className="relay-custom-headers">
-                  <RelayHeaderRows onChange={(customHeaders) => updateDraft({ customHeaders })} rows={profile.customHeaders || []} />
-                  <span className="hint-line">
-                    {t("自定义请求头会同时用于测试连接、模型列表与实际代理请求。")}
-                  </span>
-                  <span className="hint-line">
-                    {t("Host、Content-Length 等传输头由协议层掌控，不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。")}
-                  </span>
-                  {customHeadersError ? (
-                    <span className="hint-line relay-custom-headers-error">{customHeadersError}</span>
-                  ) : null}
-                </div>
-              </Field>
-            ) : null}
-            {showApiFields && profile.protocol !== "responses" ? (
-              <div className="hint-line relay-protocol-hint">
-                <MessageCircle className="h-4 w-4" />
-                <span>
-                  {profile.protocol === "anthropicMessages"
-                    ? t("此上游说 Anthropic Messages（/v1/messages）：本地 127.0.0.1:57321 会把请求转成 Anthropic 协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。")
-                    : t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}
-                </span>
               </div>
+            </details>
+            {profile.protocol !== "responses" ? (
+              <p className="pf-hint">
+                {profile.protocol === "anthropicMessages"
+                  ? t("此上游说 Anthropic Messages（/v1/messages）：本地 127.0.0.1:57321 会把请求转成 Anthropic 协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。")
+                  : profile.protocol === "gemini"
+                    ? t("此上游说 Google Gemini（/v1beta/models/...:streamGenerateContent）：本地 127.0.0.1:57321 会把请求转成 Gemini 原生协议发出，再转回 Responses，需要从 Codex++ 启动 Codex。")
+                    : t("此上游会通过本地 127.0.0.1:57321 转成 Responses API，需要从 Codex++ 启动 Codex。")}
+              </p>
             ) : null}
-            <div className="hint-line relay-protocol-hint">
-              <ShieldCheck className="h-4 w-4" />
-              <span>{relayProfileModeHelp(profile)}</span>
-            </div>
-          </div>
-          </RelayFold>
-        ) : null}
-      </div>
-      <div className="relay-bottom-options">
-        <RelayFold className="relay-advanced-block" defaultOpen sectionId="advanced" title={t("更多选项")}>
-          <p className="relay-fold-description">
-            {t("包含上下文大小与压缩阈值；留空即沿用全局默认值。")}
-          </p>
-          <div className="relay-advanced-fields">
-            <Field className="relay-field-context-window" label={t("上下文大小")}>
+          </section>
+        </>
+      ) : null}
+      {activeTab === "advanced" ? (
+        <section className="pf-section relay-advanced-block">
+          <h4>{t("上下文默认值")}<small>{t("留空即沿用全局默认值")}</small></h4>
+          <div className="relay-two-col">
+            <label className="pf-field relay-field-context-window">
+              <span>{t("上下文大小")}</span>
               <Input
+                className="pf-mono"
                 inputMode="numeric"
-                value={profile.contextWindow}
                 onChange={(event) => updateDraft({ contextWindow: normalizeTokenCountInput(event.currentTarget.value) })}
                 placeholder={t("留空不改写，例如 200000")}
+                value={profile.contextWindow}
               />
-            </Field>
-            <Field className="relay-field-auto-compact" label={t("压缩上下文大小")}>
+            </label>
+            <label className="pf-field relay-field-auto-compact">
+              <span>{t("压缩上下文大小")}</span>
               <Input
+                className="pf-mono"
                 inputMode="numeric"
-                value={profile.autoCompactLimit}
                 onChange={(event) => updateDraft({ autoCompactLimit: normalizeTokenCountInput(event.currentTarget.value) })}
                 placeholder={t("留空不改写，例如 160000")}
+                value={profile.autoCompactLimit}
               />
-            </Field>
+            </label>
           </div>
-        </RelayFold>
-      </div>
+        </section>
+      ) : null}
     </div>
   );
 }
@@ -3165,91 +3425,113 @@ function RelayFileEditors({
   onProfileChange: (value: RelayProfile) => void;
   actions: Actions;
 }) {
+  const [fileTab, setFileTab] = useState<"config-preview" | "common-config" | "auth-preview">("config-preview");
   const configPreview = effectiveRelayConfigPreview(profile, form, contextProfile);
   const entries = contextEntriesForProfile(form, contextProfile);
+  const fileTabs: Array<{ id: "config-preview" | "common-config" | "auth-preview"; label: string }> = [
+    { id: "config-preview", label: t("config.toml 预览") },
+    { id: "common-config", label: t("通用配置文件") },
+    { id: "auth-preview", label: "auth.json" },
+  ];
   return (
-    <div className="relay-file-grid">
-      <RelayFold className="relay-file-panel relay-config-preview" sectionId="config-preview" title={t("config.toml 预览")}>
-        <p className="relay-fold-description">
-          {isActive ? t("当前供应商切换后会写入的预览；上下文开关变化会立即反映") : t("切换到此供应商时会写入的预览；上下文开关变化会立即反映")}
-        </p>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={configPreview}
-          onValueChange={(value) => {
-            const withoutCommon = stripCommonConfigTextFallback(
-              value,
-              relayCombinedCommonConfig(form),
-            );
-            const configContents = stripContextEntriesFromConfig(withoutCommon, entries);
-            onProfileChange(deriveRelayProfileFromFiles({
-              ...profile,
-              configContents,
-            }, "config"));
-          }}
-        />
-      </RelayFold>
-      <RelayFold
-        bodyClassName="relay-common-config-body"
-        className="relay-file-panel relay-common-config-panel"
-        defaultOpen
-        sectionId="common-config"
-        title={t("通用配置文件")}
-      >
-        <p className="relay-fold-description">
-          {t("只保留非 MCP、插件的跨供应商配置；MCP&插件在独立页面管理。点此展开编辑。")}
-        </p>
-            <Button
-              onClick={async () => {
-                const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
-                if (!extracted) return;
-                const split = splitContextConfigText(extracted.commonConfigContents || "");
-                if (!split.common.trim() && !split.context.trim()) {
-                  await actions.showMessage(t("通用配置文件"), t("当前供应商 config.toml 里没有可提取的通用配置。"), "failed");
-                  return;
-                }
-                const promotedProfile = {
-                  ...profile,
-                  configContents: extracted.profileConfigContents,
-                };
-                const next = syncLegacyRelayFields({
-                  ...form,
-                  relayCommonConfigContents: split.common,
-                  relayContextConfigContents: joinTomlSectionsRootFirst([form.relayContextConfigContents || "", split.context]),
-                  relayProfiles: form.relayProfiles.map((item) => (item.id === profileId ? promotedProfile : item)),
-                });
-                onFormChange(next);
-                onProfileChange(promotedProfile);
-                await actions.saveSettingsValue(next, false);
-              }}
-              size="sm"
+    <section className="pf-section relay-file-preview-section">
+      <div className="relay-file-toolbar">
+        <div aria-label={t("配置预览")} className="pf-seg" role="radiogroup">
+          {fileTabs.map((item) => (
+            <button
+              aria-checked={fileTab === item.id}
+              data-active={fileTab === item.id}
+              data-section={item.id}
+              key={item.id}
+              onClick={() => setFileTab(item.id)}
+              role="radio"
               type="button"
-              variant="secondary"
             >
-              <Download className="h-4 w-4" />
-              {t("提取当前供应商配置")}
-            </Button>
+              {item.label}
+            </button>
+          ))}
+        </div>
+        {fileTab === "common-config" ? (
+          <button
+            className="pf-action"
+            onClick={async () => {
+              const extracted = await actions.extractRelayCommonConfig(profile.configContents || "");
+              if (!extracted) return;
+              const split = splitContextConfigText(extracted.commonConfigContents || "");
+              if (!split.common.trim() && !split.context.trim()) {
+                await actions.showMessage(t("通用配置文件"), t("当前供应商 config.toml 里没有可提取的通用配置。"), "failed");
+                return;
+              }
+              const promotedProfile = {
+                ...profile,
+                configContents: extracted.profileConfigContents,
+              };
+              const next = syncLegacyRelayFields({
+                ...form,
+                relayCommonConfigContents: split.common,
+                relayContextConfigContents: joinTomlSectionsRootFirst([form.relayContextConfigContents || "", split.context]),
+                relayProfiles: form.relayProfiles.map((item) => (item.id === profileId ? promotedProfile : item)),
+              });
+              onFormChange(next);
+              onProfileChange(promotedProfile);
+              await actions.saveSettingsValue(next, false);
+            }}
+            type="button"
+          >
+            <Download />
+            {t("提取当前供应商配置")}
+          </button>
+        ) : null}
+      </div>
+      {fileTab === "config-preview" ? (
+        <>
+          <p className="pf-note">
+            {isActive ? t("当前供应商切换后会写入的预览；上下文开关变化会立即反映") : t("切换到此供应商时会写入的预览；上下文开关变化会立即反映")}
+          </p>
           <SyncedTextarea
-            className="relay-file-textarea"
+            className="relay-file-textarea relay-modal-code-editor"
+            value={configPreview}
+            onValueChange={(value) => {
+              const withoutCommon = stripCommonConfigTextFallback(
+                value,
+                relayCombinedCommonConfig(form),
+              );
+              const configContents = stripContextEntriesFromConfig(withoutCommon, entries);
+              onProfileChange(deriveRelayProfileFromFiles({
+                ...profile,
+                configContents,
+              }, "config"));
+            }}
+          />
+        </>
+      ) : fileTab === "common-config" ? (
+        <>
+          <p className="pf-note">
+            {t("只保留非 MCP、插件的跨供应商配置；MCP&插件在独立页面管理。")}
+          </p>
+          <SyncedTextarea
+            className="relay-file-textarea relay-modal-code-editor"
             value={form.relayCommonConfigContents}
             onValueChange={(value) => onFormChange({ ...form, relayCommonConfigContents: value })}
           />
-      </RelayFold>
-      <RelayFold className="relay-file-panel relay-auth-preview" defaultOpen sectionId="auth-preview" title="auth.json">
-        <p className="relay-fold-description">
-          {isActive
-            ? profile.relayMode === "pureApi"
-              ? t("当前使用中：保留此供应商的 auth 存档，避免 Codex 登录密钥覆盖供应商密钥")
-              : t("当前使用中：打开时从 Codex 主目录的 auth.json 回填，保存后会作为此供应商 auth 存档")
-            : t("切换到此供应商时会写入 Codex 主目录的 auth.json")}
-        </p>
-        <SyncedTextarea
-          className="relay-file-textarea"
-          value={profile.authContents}
-          onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }, "auth"))}
-        />
-      </RelayFold>
-    </div>
+        </>
+      ) : (
+        <>
+          <p className="pf-note">
+            {isActive
+              ? profile.relayMode === "pureApi"
+                ? t("当前使用中：保留此供应商的 auth 存档，避免 Codex 登录密钥覆盖供应商密钥")
+                : t("当前使用中：打开时从 Codex 主目录的 auth.json 回填，保存后会作为此供应商 auth 存档")
+              : t("切换到此供应商时会写入 Codex 主目录的 auth.json")}
+          </p>
+          <SyncedTextarea
+            className="relay-file-textarea relay-modal-code-editor"
+            value={profile.authContents}
+            onValueChange={(value) => onProfileChange(deriveRelayProfileFromFiles({ ...profile, authContents: value }, "auth"))}
+          />
+        </>
+      )}
+    </section>
   );
 }
 
@@ -3268,8 +3550,8 @@ function ProviderDoctorModal({
   const titleId = useId();
   // Esc、点遮罩关闭（诊断中 onClose 自己不关）；焦点圈在弹窗里。
   const { backdropProps, dialogProps } = useModalShell<HTMLDivElement>({ onClose, labelledBy: titleId });
-  return (
-    <div className="modal-backdrop" {...backdropProps}>
+  return createPortal(
+    <div className="modal-backdrop provider-doctor-backdrop" {...backdropProps}>
       <div {...dialogProps} className="modal-card provider-doctor-modal">
         <div className="modal-head">
           <div>
@@ -3313,7 +3595,8 @@ function ProviderDoctorModal({
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

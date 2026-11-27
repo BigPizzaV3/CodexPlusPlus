@@ -3516,19 +3516,26 @@ async fn handle_protocol_proxy_connection_inner(
             );
             let is_anthropic_upstream =
                 upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::AnthropicMessages;
+            let is_gemini_upstream =
+                upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::Gemini;
             if upstream.wire_api != crate::protocol_proxy::UpstreamWireApi::Responses {
                 converter = converter.with_chat_upstream();
             }
-            // Anthropic 事件流先落成 chat 事件流，再进既有的 chat 压缩聚合器。
+            // Anthropic / Gemini 事件流先落成 chat 事件流，再进既有的 chat 压缩聚合器。
             let mut anthropic_bridge = is_anthropic_upstream
                 .then(crate::anthropic_bridge::AnthropicSseToChatSse::default);
+            let mut gemini_bridge = is_gemini_upstream
+                .then(crate::gemini_bridge::GeminiSseToChatSse::default);
             let mut bytes_stream = upstream.take_response()?.bytes_stream();
             while let Some(chunk) = bytes_stream.next().await {
                 match chunk {
                     Ok(bytes) => {
-                        let payload = match anthropic_bridge.as_mut() {
-                            Some(bridge) => bridge.push_bytes(&bytes),
-                            None => bytes.to_vec(),
+                        let payload = if let Some(bridge) = anthropic_bridge.as_mut() {
+                            bridge.push_bytes(&bytes)
+                        } else if let Some(bridge) = gemini_bridge.as_mut() {
+                            bridge.push_bytes(&bytes)
+                        } else {
+                            bytes.to_vec()
                         };
                         if !payload.is_empty() {
                             converter.push_upstream_bytes(&payload);
@@ -3545,6 +3552,13 @@ async fn handle_protocol_proxy_connection_inner(
                 converter.push_upstream_bytes(&tail);
                 if !bridge.has_successful_compaction_completion() {
                     converter.fail("Anthropic 压缩流缺少正常 message_stop".to_string(), Some("compaction_incomplete".to_string()));
+                }
+            }
+            if let Some(bridge) = gemini_bridge.as_mut() {
+                let tail = bridge.finish();
+                converter.push_upstream_bytes(&tail);
+                if !bridge.has_successful_compaction_completion() {
+                    converter.fail("Gemini 压缩流缺少正常 STOP 结束标记".to_string(), Some("compaction_incomplete".to_string()));
                 }
             }
             let outcome = converter.finish_with_outcome();
@@ -3683,7 +3697,11 @@ async fn handle_protocol_proxy_connection_inner(
     request_log.record_usage_json(&upstream_body);
     if upstream.compaction {
         // v2 远程压缩非流式路径：同样重组为单个 compaction 输出项。
-        if upstream.wire_api == crate::protocol_proxy::UpstreamWireApi::AnthropicMessages {
+        if matches!(
+            upstream.wire_api,
+            crate::protocol_proxy::UpstreamWireApi::AnthropicMessages
+                | crate::protocol_proxy::UpstreamWireApi::Gemini
+        ) {
             let original: serde_json::Value = serde_json::from_slice(&upstream_body)?;
             if let Err(error) = crate::protocol_proxy::validate_compaction_json_completion(&original, upstream.wire_api) {
                 let mut converter = crate::protocol_proxy::CompactionSseConverter::new("");
@@ -3822,6 +3840,11 @@ pub(crate) fn non_stream_body_to_responses(
             (
                 crate::anthropic_bridge::anthropic_message_to_chat_completion(upstream_json)?,
                 blocks,
+            )
+        } else if wire_api == crate::protocol_proxy::UpstreamWireApi::Gemini {
+            (
+                crate::gemini_bridge::gemini_response_to_chat_completion(upstream_json)?,
+                Vec::new(),
             )
         } else {
             (upstream_json, Vec::new())
@@ -5951,6 +5974,61 @@ async fn forward_protocol_proxy_stream_for_client_with_live_request<S: SseSink>(
         }
         // Anthropic 的 `message_stop` 就是完成事件；缺它说明流被掐断，
         // 已发出的文本和工具增量不能自动重放。
+        if !converter.has_terminal_event() {
+            let failed = converter.fail(
+                "上游在完成事件前结束了响应流".to_string(),
+                Some("stream_incomplete".to_string()),
+            );
+            stream.send(&failed).await?;
+            return Ok((
+                Some("上游缺少完成事件".to_string()),
+                converter.request_usage(),
+                None,
+                first_output_at_ms,
+            ));
+        }
+        stream.send(&converter.finish()).await?;
+        return Ok((None, converter.request_usage(), None, first_output_at_ms));
+    }
+    if wire_api == crate::protocol_proxy::UpstreamWireApi::Gemini {
+        // Gemini SSE → chat SSE → Responses SSE，终端事件语义与 Anthropic / chat 一致。
+        let mut converter = request
+            .map(crate::gemini_bridge::GeminiSseToResponsesConverter::with_request)
+            .unwrap_or_default();
+        while let Some(chunk) = chunks.next().await {
+            match chunk {
+                Ok(bytes) => {
+                    observe_protocol_proxy_output(
+                        &bytes, &mut first_output_at_ms, live_request_id,
+                    );
+                    let converted = converter.push_bytes(&bytes);
+                    if !converted.is_empty() {
+                        stream.send(&converted).await?;
+                    }
+                    if converter.has_failed() {
+                        return Ok((
+                            Some("上游返回了流式错误事件".to_string()),
+                            converter.request_usage(),
+                            None,
+                            first_output_at_ms,
+                        ));
+                    }
+                }
+                Err(error) => {
+                    let failed = converter.fail(
+                        "上游响应流读取失败".to_string(),
+                        Some("stream_error".to_string()),
+                    );
+                    stream.send(&failed).await?;
+                    return Ok((
+                        Some(error.without_url().to_string()),
+                        converter.request_usage(),
+                        None,
+                        first_output_at_ms,
+                    ));
+                }
+            }
+        }
         if !converter.has_terminal_event() {
             let failed = converter.fail(
                 "上游在完成事件前结束了响应流".to_string(),

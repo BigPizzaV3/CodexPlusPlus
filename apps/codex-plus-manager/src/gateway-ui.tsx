@@ -166,7 +166,7 @@ export function Avatar({ name, baseUrl = "", size = "md", plain = false }: { nam
  * `pending`：页面上有保存在进行（#2973）。此时只拦点击、不变灰，避免整页开关一起闪；
  * 被点的那个先乐观显示新状态，保存结束后以最新数据为准（失败即回滚）。
  */
-export function Switch({ on, disabled, pending, label, onToggle }: { on: boolean; disabled?: boolean; pending?: boolean; label: string; onToggle: () => void }) {
+export function Switch({ on, disabled, pending, label, title, onToggle }: { on: boolean; disabled?: boolean; pending?: boolean; label: string; title?: string; onToggle: () => void }) {
   const [optimistic, setOptimistic] = useState<boolean | null>(null);
   useEffect(() => {
     if (!pending) setOptimistic(null);
@@ -186,6 +186,7 @@ export function Switch({ on, disabled, pending, label, onToggle }: { on: boolean
         onToggle();
       }}
       role="switch"
+      title={title}
       type="button"
     >
       <span />

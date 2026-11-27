@@ -47,7 +47,14 @@
 
 /* ── Agent 接入（gateway） ───────────────────────────────────── */
 
+/* 「服务与接入」下 AgentsView 与 GatewayView 同在 flex 列的 .gw-content 里：
+   不设 flex-shrink:0 时带 min-height:0 的 .gw-agents.cx-page 会被压扁，内容溢出叠在下方卡片上。 */
+:root .shell .gateway-page > .gw-content > * {
+  flex-shrink: 0;
+}
+
 :root .shell .gw-agents.cx-page {
+  flex-shrink: 0;
   gap: 16px;
 }
 

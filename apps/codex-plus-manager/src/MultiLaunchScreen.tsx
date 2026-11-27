@@ -2,6 +2,7 @@
 import { Info, Layers3, PowerOff, RefreshCw, RotateCcw, Rocket } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { AgentIcon } from "./gateway-ui";
+import { useGatewayPayload } from "./hub-shared";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { t, tf } from "@/i18n";
 import { isAggregateRelayProfile } from "./relay-profile-editing";
@@ -47,8 +48,12 @@ export function CodexMultiLaunchScreen({
   // #2801：Codex 被网关接管、或「配置切换」关闭时，旧版供应商页的列表整块隐藏，
   // 多开里这些供应商（多是早年从 cc-switch 导入的）就没地方编辑、删除了，这里直接给入口。
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
+  const gatewayPayload = useGatewayPayload(15_000);
   const detailProfile = detailProfileId
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
+    : null;
+  const detailPoolEntry = detailProfile
+    ? (gatewayPayload?.pool ?? []).find((entry) => entry.linkedCodexRelay === detailProfile.id || entry.source === `codex:${detailProfile.id}`) ?? null
     : null;
   useEffect(() => {
     if (detailProfileId && !normalized.relayProfiles.some((profile) => profile.id === detailProfileId)) {
@@ -59,23 +64,22 @@ export function CodexMultiLaunchScreen({
     const next = await confirmRemoveRelayProfile(normalized, profile, actions, "multiLaunch");
     if (next) await actions.saveSettingsValue(next, true);
   };
-  if (detailProfile) {
-    return (
-      <RelayProfileDetail
-        profile={detailProfile}
-        relayFiles={detailProfile.id === normalized.activeRelayId ? relayFiles : null}
-        form={normalized}
-        onBack={() => setDetailProfileId(null)}
-        onFormChange={(next) => actions.saveSettingsValue(next, true)}
-        onSaved={() => setDetailProfileId(null)}
-        actions={actions}
-      />
-    );
-  }
   const { CxAddRow, CxBadge, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon } = AgentCx;
   const instances = actions.multiLaunchInstances;
   return (
     <div className="mg-page relay-management-page cx-page multi-launch-page">
+      {detailProfile ? (
+        <RelayProfileDetail
+          profile={detailProfile}
+          poolEntry={detailPoolEntry}
+          relayFiles={detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+          form={normalized}
+          onBack={() => setDetailProfileId(null)}
+          onFormChange={(next) => actions.saveSettingsValue(next, true)}
+          onSaved={() => setDetailProfileId(null)}
+          actions={actions}
+        />
+      ) : null}
       <PageHeader
         icon={<Layers3 className="h-5 w-5" />}
         title={t("Codex多开")}

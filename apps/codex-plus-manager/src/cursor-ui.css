@@ -1537,6 +1537,12 @@
   color: hsl(var(--status-error));
 }
 
+.shell-portal .mg-menu-floating .mg-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: hsl(var(--border));
+}
+
 .shell-portal .mg-menu-floating button[aria-checked="true"]::after {
   content: "✓";
   float: right;

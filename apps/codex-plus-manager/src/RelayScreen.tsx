@@ -17,9 +17,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ArrowLeft,
   Cable,
-  ChevronRight,
   Download,
   GripVertical,
   KeyRound,
@@ -27,29 +25,24 @@ import {
   PowerOff,
   Plus,
   RefreshCw,
-  Search,
-  Sparkles,
   ShieldCheck,
   ShieldAlert,
   Trash2,
   Waypoints,
 } from "lucide-react";
-import { createPresetPatch } from "@/components/ProviderPresetSelector";
-import { PRESETS, type ProviderPreset } from "./presets";
-import { useSponsorPresets } from "./sponsor-store";
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { createContext, lazy, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+const PoolProviderAdder = lazy(() => import("./GatewayProviders").then((module) => ({ default: module.ProviderAdder })));
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Avatar, Switch, makeRun, type Run } from "./gateway-ui";
 import { useGatewayPayload } from "./hub-shared";
-import { publishGatewayPayload } from "./gateway-store";
-import { importCandidates, type GatewayResult } from "./gateway-model";
+import { publishGatewayPayload, refreshGateway } from "./gateway-store";
+import { importCandidates, type GatewayResult, type ProviderDraft } from "./gateway-model";
 import { entriesForPage } from "./provider-owner";
 import { useShowOtherAgents } from "./ProviderOwner";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
 import { aggregateMemberCandidates } from "./aggregate-members";
 import { NativeAuthControl } from "./NativeAuthControls";
-import { CodexAggregateList, CodexModeControls, type CodexConnectionMode } from "./CodexConnectionMode";
+import { buildCodexUnifiedProviders, CodexModeControls, CodexModelGroupsSection, CodexProviderList, type CodexConnectionMode } from "./CodexConnectionMode";
 import { ThirdPartyImportDialog } from "./ThirdPartyImportDialog";
 import { relayBillingCacheKey, relayBillingProbeEligible, type RelayBillingProbe } from "./relay-billing";
 import { RelayBillingLine, RelayBillingRetry, useRelayBillingProbe } from "./RelayBillingLine";
@@ -87,7 +80,6 @@ import {
   isSuccessStatus,
   multiLaunchSupported,
   normalizeSettings,
-  providerInitial,
   relayProfileConfigBrief,
   relayProfileModeLabel,
   relayProtocolShortLabel,
@@ -379,7 +371,6 @@ export function LegacyRelayGatewayHint({
         {orphan ? <button className="cx-primary" onClick={onDisconnect} type="button">{t("切回直连")}</button> : modeSwitch}
         <Menu>
           {viaGateway ? <MenuItem onClick={onManageAgents}>{t("管理接入")}</MenuItem> : <MenuItem onClick={onManageAgents}>{t("在「Agent 接入」里选默认模型")}</MenuItem>}
-          <MenuItem onClick={onOpenGateway}>{t("打开共享供应商")}</MenuItem>
           {viaGateway ? <MenuItem danger onClick={onDisconnect}>{t("断开并还原")}</MenuItem> : null}
         </Menu>
       </CxRow>
@@ -420,10 +411,9 @@ function useCodexPoolLink(actions: Actions, profileIds: string[]) {
 }
 type CodexPoolLink = ReturnType<typeof useCodexPoolLink>;
 
-/** 行右侧的「已在共享供应商」标记；故障转移给一个「搬成模型组」图标按钮。不能共享的（官方登录等）什么都不显示。 */
+/** 故障转移给一个「搬成模型组」图标按钮；普通直连供应商默认已共享，不再额外挂「已在共享供应商」标签。 */
 function PoolLinkControl({ link, profileId }: { link: CodexPoolLink; profileId: string }) {
   const state = link.stateOf(profileId);
-  if (state === "pooled") return <CxBadge title={t("默认共享给所有接入本地服务的 Agent；在这里改地址、Key、模型，共享供应商跟着变")} tone="ok">{t("已在共享供应商")}</CxBadge>;
   if (state === "grouped") return <CxBadge title={t("本地服务「路由」里已经有同名模型组")} tone="ok">{t("已有模型组")}</CxBadge>;
   if (state !== "aggregate") return null;
   return (
@@ -456,9 +446,14 @@ export function RelayScreen({
   advanced,
   advancedOpen = false,
   onOpenGateway,
+  onManageGroups,
   onConnectGateway,
   sharedConnecting = false,
   onDisconnectGateway,
+  onSwitchDirectFromGateway,
+  onSwitchChatgptDirect,
+  initialEditRelayId = null,
+  onConsumedEditRelay,
 }: {
   addDirectProviderRequested: boolean;
   onRequestedProviderOpened: () => void;
@@ -476,31 +471,52 @@ export function RelayScreen({
   advancedOpen?: boolean;
   /** 打开网关的共享供应商。 */
   onOpenGateway?: () => void;
+  /** 跳到本地服务「路由」页管理模型组。 */
+  onManageGroups?: () => void;
   /** 顶部切到「聚合」：Codex 经本地服务，用打开的全部供应商（其余接入设置沿用上次的）。 */
   onConnectGateway?: () => void;
   sharedConnecting?: boolean;
-  /** Codex 经本地服务时点了某个直连供应商的「使用」：先断开并还原（预览确认），成功后切到 `then`。 */
+  /** 孤立状态或兜底时使用的「断开并还原」预览对话框。 */
   onDisconnectGateway?: (then?: string) => void;
+  /** Codex 经本地服务时在直连列表点了某家供应商的「使用」：直接静默断开并切到该直连供应商。 */
+  onSwitchDirectFromGateway?: (profileId: string) => void;
+  /** 直连模式下点击某个 ChatGPT 账号的「使用」：把该账号写入 Codex 登录态并切到官方直连。 */
+  onSwitchChatgptDirect?: (accountRef: string, accountName: string) => void;
+  /** 从 Claude 等页点「在 Codex 里编辑」跳过来时直接打开对应供应商的编辑页。 */
+  initialEditRelayId?: string | null;
+  onConsumedEditRelay?: () => void;
 }) {
   // normalizeSettings 要解析共享 TOML、规整每个供应商，不随每次渲染重算。
   const normalized = useMemo(() => normalizeSettings(form), [form]);
   const takenOverByGateway = normalized.activeRelayId === CODEX_GATEWAY_RELAY_ID;
+  const actualMode: CodexConnectionMode = takenOverByGateway ? "aggregate" : "direct";
+  // 顶部「聚合 / 直连」先切展示视图（聚合时点直连直接看直连列表，不立刻断开），真正点某家「使用」才切走。
+  const [viewMode, setViewMode] = useState<CodexConnectionMode>(actualMode);
+  useEffect(() => {
+    setViewMode(actualMode);
+  }, [actualMode]);
   // 直连供应商和网关共享供应商打通：能共享的默认就在池里（引用，不复制），每行标出来。
   const poolLink = useCodexPoolLink(actions, normalized.relayProfiles.map((profile) => profile.id));
   // 聚合列表里要不要列 Claude 等其他 Agent 的供应商（默认列，按页记住）。hook 必须在下面编辑页 / 目录页的提前返回之前。
   const [showOtherAgents, setShowOtherAgents] = useShowOtherAgents("codex");
   const [detailProfileId, setDetailProfileId] = useState<string | null>(null);
   const [newProfileDraft, setNewProfileDraft] = useState<RelayProfile | null>(null);
-  const [providerCatalogOpen, setProviderCatalogOpen] = useState(false);
+  // 新版「添加供应商」目录与表单弹窗（和 Claude 页共用 ProviderAdder，支持订阅登录、预设与自定义）。
+  const [poolAdding, setPoolAdding] = useState(false);
   useEffect(() => {
     if (!addDirectProviderRequested) return;
     setNewProfileDraft(null);
     setDetailProfileId(null);
-    setProviderCatalogOpen(true);
+    setPoolAdding(true);
     onRequestedProviderOpened();
   }, [addDirectProviderRequested, onRequestedProviderOpened]);
-  // 目录页的搜索词放在这里：从模板进入编辑页再返回时，目录页会重新挂载，搜索不能丢。
-  const [providerCatalogQuery, setProviderCatalogQuery] = useState("");
+  useEffect(() => {
+    if (!initialEditRelayId) return;
+    setPoolAdding(false);
+    setNewProfileDraft(null);
+    setDetailProfileId(initialEditRelayId);
+    onConsumedEditRelay?.();
+  }, [initialEditRelayId, onConsumedEditRelay]);
   // 聚合列表的开关、默认模型下拉走网关命令：和 Claude 页同一个 run（按 key 标忙）。
   const [poolBusy, setPoolBusy] = useState<string | null>(null);
   const runGateway: Run = makeRun(setPoolBusy, publishGatewayPayload, actions.showMessage);
@@ -512,6 +528,9 @@ export function RelayScreen({
     ? normalized.relayProfiles.find((profile) => profile.id === detailProfileId) || null
     : null);
   const isNewProfile = !!newProfileDraft;
+  const detailPoolEntry = !isNewProfile && detailProfile
+    ? (gatewayPayload?.pool ?? []).find((entry) => entry.linkedCodexRelay === detailProfile.id || entry.source === `codex:${detailProfile.id}`) ?? null
+    : null;
   const saveRelaySettings = async (next: BackendSettings) => {
     return actions.saveSettingsValue(next, true);
   };
@@ -556,10 +575,16 @@ export function RelayScreen({
   const visibleProfiles = normalized.relayProfiles.filter((profile) => profile.id !== CODEX_GATEWAY_RELAY_ID);
   // 卡片的删除、复制和排序必须基于完整配置，避免隐藏的托管条目被 syncLegacyRelayFields 当成不存在。
   const switchRelayProfileFromList = (profileId: string) => {
-    // 经本地服务时，切到直连供应商要先断开并还原（后端也会拦下直接切换），确认后再切到这一家。
-    if (takenOverByGateway && profileId !== CODEX_GATEWAY_RELAY_ID && onDisconnectGateway) {
-      onDisconnectGateway(profileId);
-      return;
+    // 经本地服务时，点某家直连供应商的「使用」直接切过去（内部自动断开本地服务绑定），不再先弹断开确认框。
+    if (takenOverByGateway && profileId !== CODEX_GATEWAY_RELAY_ID) {
+      if (onSwitchDirectFromGateway) {
+        onSwitchDirectFromGateway(profileId);
+        return;
+      }
+      if (onDisconnectGateway) {
+        onDisconnectGateway(profileId);
+        return;
+      }
     }
     const next = syncLegacyRelayFields({ ...normalized, activeRelayId: profileId });
     void actions.switchRelayProfile(next, normalized.activeRelayId);
@@ -588,62 +613,68 @@ export function RelayScreen({
       void actions.refreshRelayFiles();
     }
   }, [detailProfileId, newProfileDraft, normalized.activeRelayId]);
-  if (detailProfile) {
-    return (
-      <RelayProfileDetail
-        profile={detailProfile}
-        relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
-        form={normalized}
-        isNew={isNewProfile}
-        initialAggregateMode={isNewProfile ? newAggregateMode : null}
-        initialSection={isNewProfile ? null : detailSection}
-        // 从目录页选模板进来时目录页状态还开着：返回只清掉草稿，回到目录页继续挑。
-        onBack={() => {
-          setNewProfileDraft(null);
-          setNewAggregateMode(null);
-          setDetailProfileId(null);
-        }}
-        onFormChange={saveRelaySettings}
-        // 保存后回到供应商列表，目录页一并关掉。
-        onSaved={() => {
-          setNewProfileDraft(null);
-          setNewAggregateMode(null);
-          setDetailProfileId(null);
-          setProviderCatalogOpen(false);
-          setProviderCatalogQuery("");
-        }}
-        actions={actions}
-      />
+  const openCatalog = () => { setNewProfileDraft(null); setDetailProfileId(null); setPoolAdding(true); };
+  const mode: CodexConnectionMode = viewMode;
+  /** Codex 原生支持的协议（Responses / Chat）统一写进直连列表（后端会以引用同步给聚合模式，直连和聚合两边都立即可用）；
+   *  Anthropic / Gemini 协议只能经本地服务协议转换，回退到共享池创建。 */
+  const submitCodexFromAdder = async (draft: ProviderDraft): Promise<"done" | "fallback" | "cancel"> => {
+    if (draft.protocol === "anthropicMessages" || draft.protocol === "gemini") return "fallback";
+    const keys = draft.keys.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean);
+    const models = draft.modelList.split(/[\r\n,]+/).map((item) => item.trim()).filter(Boolean);
+    const firstModel = draft.model.trim() || models[0] || "";
+    const created = applyRelayProfilePatchToFiles(
+      createRelayProfile(normalized),
+      {
+        name: draft.name.trim(),
+        baseUrl: draft.baseUrl.trim(),
+        apiKey: keys[0] ?? "",
+        ...(keys.length > 1
+          ? {
+            apiKeys: keys.map((key, index) => ({ id: `key-${index + 1}`, name: `Key ${index + 1}`, apiKey: key })),
+            activeApiKeyId: "key-1",
+          }
+          : {}),
+        protocol: draft.protocol,
+        relayMode: "pureApi",
+        model: firstModel,
+        modelList: draft.modelList.trim() || firstModel,
+        customHeaders: (draft.customHeaders ?? [])
+          .filter((row) => row.key.trim())
+          .map((row) => ({ key: row.key.trim(), value: row.value })),
+        stripImageGenerationTool: draft.stripImageGenerationTool,
+        stripResponsesImageDetail: draft.stripResponsesImageDetail,
+        stripResponsesOutputEncryptedContent: draft.stripResponsesOutputEncryptedContent,
+        disableToolSearch: draft.disableToolSearch,
+      },
+      { allowGenerateFiles: true },
     );
-  }
-
-  if (providerCatalogOpen) {
-    return (
-      <ProviderCatalogScreen
-        form={normalized}
-        query={providerCatalogQuery}
-        onQueryChange={setProviderCatalogQuery}
-        onBack={() => {
-          setProviderCatalogOpen(false);
-          setProviderCatalogQuery("");
-        }}
-        // 不关目录页：编辑页优先渲染，从编辑页返回时回到这里而不是供应商列表。
-        onSelect={(profile) => {
-          setNewProfileDraft(profile);
-          setNewAggregateMode(null);
-        }}
-      />
-    );
-  }
-
-  const openCatalog = () => { setNewProfileDraft(null); setDetailProfileId(null); setProviderCatalogOpen(true); };
-  // 两种连接方式：Codex 指着托管的本地服务条目就是「聚合」，否则是「直连」。
-  const mode: CodexConnectionMode = takenOverByGateway ? "aggregate" : "direct";
+    const next = syncLegacyRelayFields({
+      ...normalized,
+      relayProfiles: [...normalized.relayProfiles, created],
+    });
+    const saved = await saveRelaySettings(next);
+    if (!saved) return "cancel";
+    void refreshGateway().catch(() => undefined);
+    return "done";
+  };
   // 孤立状态（指着托管条目，本地服务里却没有 Codex 的接入记录）由顶部的 connection 卡给「切回直连」，这里不再放切换卡。
   const codexBound = gatewayPayload ? gatewayPayload.gateway?.bindings?.codex?.enabled === true : null;
   const orphan = takenOverByGateway && (codexBound === false || !normalized.relayProfiles.some((profile) => profile.id === CODEX_GATEWAY_RELAY_ID));
-  // 聚合列表：不勾「显示其他 Agent 的供应商」时去掉 Claude 的。
+  // 聚合与直连共用同一份供应商列表，计数在两种模式下保持一致。
   const sharedEntries = entriesForPage(gatewayPayload?.pool ?? [], "codex", showOtherAgents);
+  const activeProfile = normalized.relayProfiles.find((profile) => profile.id === normalized.activeRelayId) ?? null;
+  const activeOfficialDirect = !takenOverByGateway && activeProfile?.relayMode === "official" && !activeProfile.officialMixApiKey;
+  const activeNativeAccountRef = !normalized.chatgptCompatEnabled
+    ? (normalized.nativeAuthSelection?.mode === "account"
+      ? normalized.nativeAuthSelection.accountRef
+      : activeProfile?.officialAccountRef?.trim() || null)
+    : null;
+  const matchesPoolChatgpt = Boolean(
+    activeNativeAccountRef && sharedEntries.some((entry) => entry.account === "chatgpt" && entry.id === activeNativeAccountRef),
+  );
+  // 只有当前正以非池内外部登录直连纯官方项时，才保留 OpenAI Official 空壳行。
+  const activeOfficialExternalId = activeOfficialDirect && activeProfile && !matchesPoolChatgpt ? activeProfile.id : null;
+  const unifiedProviderCount = buildCodexUnifiedProviders(visibleProfiles, sharedEntries, { activeOfficialExternalId }).length;
   // 默认模型的候选跟列表一致：隐藏了的别的 Agent 的供应商，模型也不列。
   const hiddenProviders = (gatewayPayload?.pool ?? []).filter((entry) => !sharedEntries.includes(entry)).map((entry) => entry.id);
   // 「显示其他 Agent 的供应商」只管聚合列表，放在「供应商」标题右侧，和 Claude 页同一个位置。
@@ -681,6 +712,45 @@ export function RelayScreen({
       {thirdPartyImportOpen ? (
         <ThirdPartyImportDialog actions={actions} ccsProviders={ccsProviders} form={normalized} onClose={() => setThirdPartyImportOpen(false)} />
       ) : null}
+      {detailProfile ? (
+        <RelayProfileDetail
+          profile={detailProfile}
+          poolEntry={detailPoolEntry}
+          relayFiles={!isNewProfile && detailProfile.id === normalized.activeRelayId ? relayFiles : null}
+          form={normalized}
+          isNew={isNewProfile}
+          initialAggregateMode={isNewProfile ? newAggregateMode : null}
+          initialSection={isNewProfile ? null : detailSection}
+          onBack={() => {
+            setNewProfileDraft(null);
+            setNewAggregateMode(null);
+            setDetailProfileId(null);
+          }}
+          onFormChange={saveRelaySettings}
+          onSaved={() => {
+            setNewProfileDraft(null);
+            setNewAggregateMode(null);
+            setDetailProfileId(null);
+          }}
+          actions={actions}
+        />
+      ) : null}
+      {poolAdding ? (
+        <Suspense fallback={null}>
+          <PoolProviderAdder
+            busy={poolBusy}
+            directOnly={mode === "direct"}
+            includeAgents={["codex"]}
+            notify={actions.showMessage}
+            onClose={() => setPoolAdding(false)}
+            onSubmitDraft={submitCodexFromAdder}
+            payload={gatewayPayload}
+            run={runGateway}
+            scope="codex"
+            startWith="catalog"
+          />
+        </Suspense>
+      ) : null}
       {connection}
       <EnvConflictNotice envConflicts={envConflicts} actions={actions} />
       <SshRemoteLoopbackNotice notice={envConflicts?.sshRemoteLoopback ?? null} />
@@ -712,69 +782,71 @@ export function RelayScreen({
                   hiddenProviders={hiddenProviders}
                   mode={mode}
                   notify={actions.showMessage}
-                  onAggregate={() => onConnectGateway?.()}
-                  onDirect={() => onDisconnectGateway?.()}
+                  onAggregate={() => {
+                    if (takenOverByGateway) setViewMode("aggregate");
+                    else onConnectGateway?.();
+                  }}
+                  onDirect={() => setViewMode("direct")}
                   payload={gatewayPayload}
                   run={runGateway}
                 />
               ) : null}
               <Menu label={t("更多供应商操作")}>
-                {mode === "aggregate" ? (
-                  <>
-                    {gatewayPayload?.pool.length ? (
-                      <MenuItem
-                        checked={showOtherAgents}
-                        onClick={() => setShowOtherAgents(!showOtherAgents)}
-                        title={t("Claude 页添加或导入的共享供应商；Codex 经本地服务时也能用。不勾时这里不列它们")}
-                      >
-                        {t("显示其他 Agent 的供应商")}
-                      </MenuItem>
-                    ) : null}
-                    {onOpenGateway ? <MenuItem onClick={onOpenGateway}>{t("管理共享供应商")}</MenuItem> : null}
-                  </>
-                ) : (
+                {onManageGroups ? <MenuItem onClick={onManageGroups}>{t("管理模型组")}</MenuItem> : null}
+                {gatewayPayload?.pool.length ? (
+                  <MenuItem
+                    checked={showOtherAgents}
+                    onClick={() => setShowOtherAgents(!showOtherAgents)}
+                    title={t("Claude 页添加或导入的共享供应商；Codex 经本地服务时也能用。不勾时这里不列它们")}
+                  >
+                    {t("显示其他 Agent 的供应商")}
+                  </MenuItem>
+                ) : null}
+                {mode === "direct" ? (
                   <>
                     {/* 直连专用的聚合（模型聚合 / 故障转移）不单独占分页：从这里新建，建好的和别的直连供应商列在一起。 */}
                     <MenuItem onClick={() => createNewAggregateProfile("model")}>{t("新建模型聚合")}</MenuItem>
                     <MenuItem onClick={() => createNewAggregateProfile("provider")}>{t("新建故障转移")}</MenuItem>
                   </>
-                )}
+                ) : null}
               </Menu>
             </>
           )}
-          count={(mode === "aggregate" ? sharedEntries.length : visibleProfiles.length) || undefined}
+          count={unifiedProviderCount || undefined}
           title={t("供应商")}
         >
-          {/* 一份供应商、两种用法：聚合时每家一个开关（打开的合在一起），直连时每家一个「使用」（同一时间一家）。 */}
-          {mode === "aggregate" ? (
-            <CodexAggregateList
-              busy={poolBusy}
-              entries={sharedEntries}
-              notify={actions.showMessage}
-              onAdd={openCatalog}
-              onEditLinked={editLinkedProfile}
-              onManage={onOpenGateway}
-              payload={gatewayPayload}
-              run={runGateway}
-            />
-          ) : !visibleProfiles.length ? (
-            <CxCard>
-              <CxEmpty detail={t("直连时 Codex 直接请求这一家，关掉 Codex++ 也能用；加进来的供应商切到「聚合」后也能合在一起用。")} title={t("还没有供应商")}>
-                <button className="cx-secondary" onClick={openCatalog} type="button">{t("添加供应商")}</button>
-              </CxEmpty>
-            </CxCard>
-          ) : <RelayProfileList
-            form={normalized}
-            visibleProfiles={visibleProfiles}
-            onEdit={(profileId) => void editRelayProfile(profileId)}
-            onFormChange={saveRelaySettings}
-            onReorder={reorderRelaySettings}
-            onSwitchProfile={switchRelayProfileFromList}
-            disabled={actions.relaySwitching}
-            poolLink={poolLink}
+          {/* 同一份供应商列表、两种连接模式：聚合 = 多选开关，直连 = 单选「使用」，当前模式不支持的项折叠收在列表下方。 */}
+          <CodexProviderList
             actions={actions}
-          />}
+            activeNativeAccountRef={activeNativeAccountRef}
+            activeOfficialDirect={activeOfficialDirect}
+            activeOfficialExternalId={activeOfficialExternalId}
+            busy={poolBusy}
+            entries={sharedEntries}
+            form={normalized}
+            mode={mode}
+            notify={actions.showMessage}
+            onAdd={openCatalog}
+            onEditLinked={editLinkedProfile}
+            onFormChange={saveRelaySettings}
+            onSwitchChatgptDirect={onSwitchChatgptDirect}
+            onSwitchProfile={switchRelayProfileFromList}
+            payload={gatewayPayload}
+            profiles={visibleProfiles}
+            run={runGateway}
+            switching={actions.relaySwitching || sharedConnecting}
+            takenOverByGateway={takenOverByGateway}
+          />
         </CxSection>
+      ) : null}
+      {normalized.relayProfilesEnabled && mode === "aggregate" ? (
+        <CodexModelGroupsSection
+          busy={poolBusy}
+          notify={actions.showMessage}
+          onManageGroups={onManageGroups}
+          payload={gatewayPayload}
+          run={runGateway}
+        />
       ) : null}
       {/* Codex 登录身份（ChatGPT 账号 / 本地账号 / 不登录）不常改，放在供应商列表后面。 */}
       <NativeAuthControl form={normalized} onRestart={() => actions.restart()} onSave={(next) => void saveRelaySettings(next)} />
@@ -842,92 +914,6 @@ export function RelayScreen({
           </details>
         </CxCard>
       </CxSection>
-    </div>
-  );
-}
-
-function ProviderCatalogScreen({
-  form,
-  query,
-  onQueryChange: setQuery,
-  onBack,
-  onSelect,
-}: {
-  form: BackendSettings;
-  query: string;
-  onQueryChange: (value: string) => void;
-  onBack: () => void;
-  onSelect: (profile: RelayProfile) => void;
-}) {
-  const categories: Array<{ id: ProviderPreset["category"]; label: string }> = [
-    { id: "official", label: t("账号登录") },
-    { id: "cn_official", label: t("模型厂商") },
-    { id: "aggregator", label: t("聚合/中转") },
-    { id: "third_party", label: t("第三方平台") },
-  ];
-  // 赞助商排在「聚合/中转」最前面。
-  const sponsors = useSponsorPresets();
-  const sponsorIds = new Set(sponsors.map((preset) => preset.id));
-  const filteredPresets = [...sponsors, ...PRESETS.filter((preset) => !sponsorIds.has(preset.id))].filter((preset) => {
-    const haystack = `${preset.name} ${preset.baseUrl} ${preset.model}`.toLowerCase();
-    return !query.trim() || haystack.includes(query.trim().toLowerCase());
-  });
-  const selectPreset = (preset?: ProviderPreset) => {
-    const draft = createRelayProfile(form);
-    const patch = preset ? createPresetPatch(preset) : { name: t("自定义供应商") };
-    onSelect(applyRelayProfilePatchToFiles(draft, patch as unknown as Partial<RelayProfile>, { allowGenerateFiles: true }));
-  };
-  return (
-    <div className="provider-catalog-screen provider-add-simple">
-      <header className="provider-catalog-header" data-tauri-drag-region>
-        <Button onClick={onBack} size="icon" variant="ghost" title={t("返回供应商列表")}>
-          <ArrowLeft className="h-5 w-5" />
-        </Button>
-        <h2>{t("添加新供应商")}</h2>
-        <span>Codex</span>
-      </header>
-      <main className="provider-add-simple-body provider-add-reference-layout">
-        <div className="provider-add-search">
-          <Search className="h-4 w-4" />
-          <Input
-            aria-label={t("搜索供应商")}
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            placeholder={t("搜索名称或网址，例如 kimi、智谱、openrouter")}
-            value={query}
-          />
-        </div>
-        <button className="provider-add-custom" onClick={() => selectPreset()} type="button">
-          <span className="provider-add-icon"><Sparkles className="h-4 w-4" /></span>
-          <span className="provider-add-text">
-            <strong>{t("自定义配置")}</strong>
-            <small>{t("手动填写请求地址和 API Key，适合中转站和自建服务")}</small>
-          </span>
-          <ChevronRight className="provider-add-chevron h-4 w-4" />
-        </button>
-        {categories.map((category) => {
-          const presets = filteredPresets.filter((preset) => preset.category === category.id);
-          if (!presets.length) return null;
-          return (
-            <section className="provider-add-section" key={category.id}>
-              <h3>{category.label}<span>{presets.length}</span></h3>
-              <div className="provider-add-results">
-                {presets.map((preset) => (
-                  <button className="provider-add-result" key={preset.id} onClick={() => selectPreset(preset)} title={preset.baseUrl} type="button">
-                    <span className="provider-add-icon">{providerInitial(preset.name)}</span>
-                    <span className="provider-add-text">
-                      <strong>{preset.name}</strong>
-                      <small>{urlHost(preset.websiteUrl || preset.baseUrl)}</small>
-                    </span>
-                    <span className="provider-add-protocol">{preset.protocol === "chatCompletions" ? "Chat" : "Responses"}</span>
-                  </button>
-                ))}
-              </div>
-            </section>
-          );
-        })}
-        {!filteredPresets.length ? <div className="provider-add-empty">{tf("没有匹配「{0}」的预设，可以用上面的「自定义配置」手动填写。", [query.trim()])}</div> : null}
-        <p className="provider-add-hint">{t("选择供应商后会进入编辑页；API Key 和本地配置只在保存时写入当前 Codex。")}</p>
-      </main>
     </div>
   );
 }
@@ -1264,16 +1250,5 @@ function SortableRelayProfileCard({
       </div>
     </div>
   );
-}
-
-/// 网址只显示主机名；解析不了就原样返回。
-function urlHost(value: string | undefined): string {
-  const text = (value ?? "").trim();
-  if (!text) return "";
-  try {
-    return new URL(text).host;
-  } catch {
-    return text.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-  }
 }
 

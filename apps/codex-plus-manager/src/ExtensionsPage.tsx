@@ -267,7 +267,8 @@ function EnhancementSettingControl({
 }
 
 export function UserScriptsScreen({ host, onHostChange, settings, market, onOpenRescue, onOpenPluginMarket, onOpenClaude, actions, managerPages = [], managerPageConflicts = {} }: {
-  host: ExtensionHost; onHostChange: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions;
+  /** 万物皆拓展按 Agent 拆开后宿主跟着页面走（Codex / Claude Desktop 各一页）；传了 onHostChange 才在页内显示切换。 */
+  host: ExtensionHost; onHostChange?: (host: ExtensionHost) => void; settings: SettingsResult | null; market: ScriptMarketResult | null; onOpenRescue: () => void; onOpenPluginMarket?: () => void; onOpenClaude: () => void; actions: Actions;
   /** 当前可用的拓展管理器页面与顶替冲突：App 算好的那一份（侧栏入口、⌘K、顶替都用它），行菜单「打开面板」和冲突提示与之一致。 */
   managerPages?: ManagerExtensionPage[];
   managerPageConflicts?: Record<string, ManagerPageConflict[]>;
@@ -681,8 +682,8 @@ const extensionCapabilities = [
   "界面与页面", "斜杠命令", "消息与面板", "模型工具", "Codex 钩子", "网关中间件", "常驻后台", "会话历史", "拓展间服务", "多语言",
 ] as const;
 
-function ExtensionsHero({ host, onHostChange, onOpenPluginMarket }: { host: ExtensionHost; onHostChange: (host: ExtensionHost) => void; onOpenPluginMarket?: () => void }) {
-  // 页面标题就是「万物皆拓展」：这里只留一句理念（能改到的地方放在悬停里），宿主切换放在右侧。
+function ExtensionsHero({ host, onHostChange, onOpenPluginMarket }: { host: ExtensionHost; onHostChange?: (host: ExtensionHost) => void; onOpenPluginMarket?: () => void }) {
+  // 页面标题就是「万物皆拓展」：这里只留一句理念（能改到的地方放在悬停里）；传了 onHostChange 时右侧放宿主切换。
   const hosts = ["codex", "claude"] as const;
   return (
     <section className="ext-hero" aria-label={t("万物皆拓展")}>
@@ -698,14 +699,16 @@ function ExtensionsHero({ host, onHostChange, onOpenPluginMarket }: { host: Exte
           </>
         ) : null}
       </p>
-      <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>
-        {hosts.map((target) => (
-          <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
-            <AgentGlyph agent={target} />
-            {target === "codex" ? "Codex" : "Claude"}
-          </button>
-        ))}
-      </div>
+      {onHostChange ? (
+        <div className="tp-tabs cx-pills ext-host-switch" role="group" aria-label={t("拓展宿主")}>
+          {hosts.map((target) => (
+            <button key={target} type="button" aria-pressed={host === target} data-active={host === target} onClick={() => onHostChange(target)}>
+              <AgentGlyph agent={target} />
+              {target === "codex" ? "Codex" : "Claude"}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -46,11 +46,236 @@ type PriceState =
   | { state: "error"; message: string };
 
 /** 「其它模型」那一行的键：没单独填价的模型用它。 */
-const FALLBACK = "";
+export const PRICE_FALLBACK_KEY = "";
+const FALLBACK = PRICE_FALLBACK_KEY;
 
 /** 详情里一行的展示文字：没填价格时为空。 */
 /** 模型多到这个数时，价格表上方给一个搜索框。 */
 const PRICE_SEARCH_THRESHOLD = 12;
+
+export type GatewayProxyMode = "system" | "custom" | "direct";
+
+export function gatewayProxyModeFromValue(proxy?: string | null): GatewayProxyMode {
+  return isDirectProxy(proxy ?? undefined) ? "direct" : (proxy ?? "").trim() ? "custom" : "system";
+}
+
+export function gatewayProxyInputFromValue(proxy?: string | null): string {
+  return isDirectProxy(proxy ?? undefined) ? "" : proxy ?? "";
+}
+
+export function gatewayProxyValueFromState(proxyMode: GatewayProxyMode, proxy: string): string {
+  return proxyMode === "direct" ? DIRECT_PROXY : proxyMode === "custom" ? proxy.trim() : "";
+}
+
+export function gatewayProxyErrorFromState(mode: GatewayProxyMode, proxy: string): string {
+  const problem = mode === "custom" ? proxyAddressError(proxy) : null;
+  if (problem) return t(problem);
+  if (mode === "custom" && !proxy.trim()) return t("请填写代理地址");
+  return "";
+}
+
+export function initialPriceRows(entry: Pick<GatewayPoolEntry, "models" | "price" | "modelPrices">, extraModels: string[] = []): Record<string, PriceRow> {
+  const initial: Record<string, PriceRow> = { [FALLBACK]: priceRowFrom(entry.price) };
+  for (const model of entry.models) initial[model] = priceRowFrom(entry.modelPrices?.[model]);
+  for (const model of extraModels) {
+    if (model && !(model in initial)) initial[model] = priceRowFrom(entry.modelPrices?.[model]);
+  }
+  return initial;
+}
+
+export function initialPriceCurrency(entry: Pick<GatewayPoolEntry, "price" | "modelPrices">): string {
+  return Object.values(entry.modelPrices ?? {})[0]?.currency || entry.price?.currency || "USD";
+}
+
+export function serializePriceRows(rows: Record<string, PriceRow>, currency: string): {
+  price: ProviderPrice | null;
+  modelPrices: Record<string, ProviderPrice>;
+} {
+  const perModel: Record<string, PriceRow> = { ...rows };
+  delete perModel[FALLBACK];
+  return {
+    price: priceFromRow(rows[FALLBACK] ?? EMPTY_PRICE_ROW, currency),
+    modelPrices: modelPricesFromRows(perModel, currency),
+  };
+}
+
+/** 价格编辑表单块：供共享供应商弹窗与直连供应商编辑弹窗共用。 */
+export function ProviderPriceFields({
+  baseUrl,
+  models,
+  rows,
+  currency,
+  onChangeRow,
+  onChangeCurrency,
+  onApplyMatches,
+}: {
+  baseUrl: string;
+  models: string[];
+  rows: Record<string, PriceRow>;
+  currency: string;
+  onChangeRow: (model: string, patch: Partial<PriceRow>) => void;
+  onChangeCurrency: (currency: string) => void;
+  onApplyMatches: (hits: Array<[string, PriceMatch]>) => void;
+}) {
+  const [price, setPrice] = useState<PriceState>({ state: "idle" });
+  const [query, setQuery] = useState("");
+  const shownModels = useMemo(() => filterModels(models, query, (model) => model), [models, query]);
+
+  const fillPublicPrices = async () => {
+    if (!models.length) return;
+    setPrice({ state: "loading" });
+    const found = await lookupPublicPrices(baseUrl, models);
+    const hits = Object.entries(found);
+    if (hits.length) {
+      onChangeCurrency("USD");
+      onApplyMatches(hits);
+    }
+    setPrice({ state: "done", found: hits.length });
+  };
+
+  const row = (model: string, label: ReactNode) => {
+    const value = rows[model] ?? EMPTY_PRICE_ROW;
+    return (
+      <div className="pf-price-row" key={model || "*"}>
+        {label}
+        <Input aria-label={t("输入")} inputMode="decimal" onChange={(event) => onChangeRow(model, { input: event.currentTarget.value })} placeholder="—" value={value.input} />
+        <Input aria-label={t("缓存命中")} inputMode="decimal" onChange={(event) => onChangeRow(model, { cached: event.currentTarget.value })} placeholder="—" value={value.cached} />
+        <Input aria-label={t("输出")} inputMode="decimal" onChange={(event) => onChangeRow(model, { output: event.currentTarget.value })} placeholder="—" value={value.output} />
+      </div>
+    );
+  };
+
+  return (
+    <section className="pf-section">
+      <h4>
+        {t("价格")}<small>{t("每百万 token，按模型计")}</small>
+        <AppSelect
+          className="pf-currency"
+          label={t("币种")}
+          menuWidth={140}
+          onChange={onChangeCurrency}
+          options={[
+            { value: "USD", label: "$ USD" },
+            { value: "CNY", label: "¥ CNY" },
+          ]}
+          size="sm"
+          value={currency === "CNY" ? "CNY" : "USD"}
+        />
+        <button className="pf-action" disabled={!models.length || price.state === "loading"} onClick={() => void fillPublicPrices()} type="button">
+          <RefreshCw className={price.state === "loading" ? "animate-spin" : ""} />{t("按公开价格填写")}
+        </button>
+      </h4>
+      {price.state === "done" ? (
+        <p className="pf-note" data-tone={price.found ? "ok" : undefined}>
+          {price.found ? <Check /> : null}
+          {tf("models.dev 里找到 {0} / {1} 个模型的价格（美元），其余需要的话手动填写。", [price.found, models.length])}
+        </p>
+      ) : price.state === "loading" ? (
+        <p className="pf-note">{t("正在查公开价格…")}</p>
+      ) : (
+        <p className="pf-note">{t("留空的模型用「其它模型」那一行；都不填就不估算费用。")}</p>
+      )}
+      {models.length >= PRICE_SEARCH_THRESHOLD ? (
+        <Input aria-label={t("搜索模型")} className="pf-table-search" onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索模型")} value={query} />
+      ) : null}
+      <div className="pf-price-table">
+        <div className="pf-price-row pf-price-head">
+          <span>{t("模型")}</span>
+          <span>{t("输入")}</span>
+          <span>{t("缓存命中")}</span>
+          <span>{t("输出")}</span>
+        </div>
+        <div className="pf-price-rows">
+          {shownModels.map((model) => row(model, <code title={model}>{model}</code>))}
+          {row(FALLBACK, <span className="pf-price-fallback">{t("其它模型")}</span>)}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** 网关转发代理表单块：沿用系统代理 / 单独代理 / 不使用代理（直连）。 */
+export function ProviderGatewayProxyFields({
+  mode,
+  proxy,
+  onChangeMode,
+  onChangeProxy,
+  title = t("代理"),
+  subtitle = t("这个供应商的请求怎么走代理"),
+  autoFocusInput = true,
+}: {
+  mode: GatewayProxyMode;
+  proxy: string;
+  onChangeMode: (mode: GatewayProxyMode) => void;
+  onChangeProxy: (proxy: string) => void;
+  title?: string;
+  subtitle?: string;
+  autoFocusInput?: boolean;
+}) {
+  return (
+    <section className="pf-section">
+      <h4>{title}<small>{subtitle}</small></h4>
+      <div className="pf-seg" role="radiogroup" aria-label={title}>
+        {([
+          ["system", t("沿用系统代理")],
+          ["custom", t("单独代理")],
+          ["direct", t("不使用代理（直连）")],
+        ] as const).map(([itemMode, label]) => (
+          <button aria-checked={mode === itemMode} data-active={mode === itemMode} key={itemMode} onClick={() => onChangeMode(itemMode)} role="radio" type="button">
+            {label}
+          </button>
+        ))}
+      </div>
+      {mode === "custom" ? (
+        <Input
+          autoFocus={autoFocusInput}
+          className="pf-mono"
+          data-autofocus={autoFocusInput || undefined}
+          onChange={(event) => onChangeProxy(event.currentTarget.value)}
+          placeholder="http://127.0.0.1:7890"
+          spellCheck={false}
+          value={proxy}
+        />
+      ) : (
+        <p className="pf-hint">
+          {mode === "direct"
+            ? t("不走系统代理和代理环境变量，直接连这个供应商；适合国内可直连的中转。")
+            : t("跟随系统代理（以及代理环境变量）；没有设置系统代理时就是直连。")}
+        </p>
+      )}
+    </section>
+  );
+}
+
+/** 限速编辑表单块：供共享供应商弹窗与直连供应商编辑弹窗共用。 */
+export function ProviderLimitsFields({
+  rpm,
+  concurrency,
+  onChangeRpm,
+  onChangeConcurrency,
+}: {
+  rpm: string;
+  concurrency: string;
+  onChangeRpm: (value: string) => void;
+  onChangeConcurrency: (value: string) => void;
+}) {
+  return (
+    <section className="pf-section">
+      <h4>{t("限速")}<small>{t("上游限制了 RPM 或并发时，在这里主动限住，不用等 429 再冷却")}</small></h4>
+      <div className="pf-limits-grid">
+        <label className="pf-field">
+          <span>{t("每分钟最多请求数")} <small>RPM</small></span>
+          <Input inputMode="numeric" onChange={(event) => onChangeRpm(event.currentTarget.value)} placeholder={t("不限")} value={rpm} />
+        </label>
+        <label className="pf-field">
+          <span>{t("同时进行的最多请求数")} <small>{t("并发")}</small></span>
+          <Input inputMode="numeric" onChange={(event) => onChangeConcurrency(event.currentTarget.value)} placeholder={t("不限")} value={concurrency} />
+        </label>
+      </div>
+      <p className="pf-note">{t("按每个 Key 计；达到上限时先换别的 Key 或下一家，都满了就排队等待（最多 2 分钟）。")}</p>
+    </section>
+  );
+}
 
 export function priceSummary(entry: GatewayPoolEntry): string {
   const perModel = Object.keys(entry.modelPrices ?? {}).length;
@@ -74,6 +299,8 @@ export function ProviderExtrasDialog({
   onSave,
   onCancel,
   section,
+  renderTabs,
+  noEnterAnimation,
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
@@ -82,69 +309,31 @@ export function ProviderExtrasDialog({
   /** `modelPrices` 为 null 表示不改按模型的价格。 */
   onSave: (price: ProviderPrice | null, modelPrices: Record<string, ProviderPrice> | null, proxy: string) => void;
   onCancel: () => void;
+  renderTabs?: (runIfClean: (action: () => void) => void) => ReactNode;
+  noEnterAnimation?: boolean;
 }) {
-  // 每个模型一行，最后一行「其它模型」是没单独填价时用的默认价。
-  const [rows, setRows] = useState<Record<string, PriceRow>>(() => {
-    const initial: Record<string, PriceRow> = { [FALLBACK]: priceRowFrom(entry.price) };
-    for (const model of entry.models) initial[model] = priceRowFrom(entry.modelPrices?.[model]);
-    return initial;
-  });
-  const [currency, setCurrency] = useState(() => Object.values(entry.modelPrices ?? {})[0]?.currency || entry.price?.currency || "USD");
+  const [rows, setRows] = useState<Record<string, PriceRow>>(() => initialPriceRows(entry));
+  const [currency, setCurrency] = useState(() => initialPriceCurrency(entry));
   // 代理三种：沿用系统代理（留空）、单独代理（填地址）、不使用代理（直连，#2760）。
-  const [proxyMode, setProxyMode] = useState<"system" | "custom" | "direct">(
-    isDirectProxy(entry.proxy) ? "direct" : (entry.proxy ?? "").trim() ? "custom" : "system",
-  );
-  const [proxy, setProxy] = useState(isDirectProxy(entry.proxy) ? "" : entry.proxy ?? "");
-  const [price, setPrice] = useState<PriceState>({ state: "idle" });
+  const [proxyMode, setProxyMode] = useState<GatewayProxyMode>(() => gatewayProxyModeFromValue(entry.proxy));
+  const [proxy, setProxy] = useState(() => gatewayProxyInputFromValue(entry.proxy));
   const setRow = (model: string, patch: Partial<PriceRow>) => setRows((previous) => ({ ...previous, [model]: { ...(previous[model] ?? EMPTY_PRICE_ROW), ...patch } }));
-  const proxyValue = proxyMode === "direct" ? DIRECT_PROXY : proxyMode === "custom" ? proxy.trim() : "";
-  const proxyAddressProblem = proxyMode === "custom" ? proxyAddressError(proxy) : null;
-  const proxyError = proxyAddressProblem
-    ? t(proxyAddressProblem)
-    : proxyMode === "custom" && !proxy.trim() ? t("请填写代理地址") : "";
+  const proxyValue = gatewayProxyValueFromState(proxyMode, proxy);
+  const proxyError = gatewayProxyErrorFromState(proxyMode, proxy);
 
   // 弹窗外壳：Esc 走全局栈（币种下拉开着时 Esc 只关下拉），改过再关会先确认，不丢填了一半的价格。
   const titleId = useId();
   const [initial] = useState(() => JSON.stringify({ rows, currency, proxyMode, proxy }));
   const dirty = JSON.stringify({ rows, currency, proxyMode, proxy }) !== initial;
-  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
-  // 模型多时价格表上方给搜索框。
-  const [query, setQuery] = useState("");
-  const shownModels = useMemo(() => filterModels(entry.models, query, (model) => model), [entry.models, query]);
-
-  const fillPublicPrices = async () => {
-    if (!entry.models.length) return;
-    setPrice({ state: "loading" });
-    const found = await lookupPublicPrices(entry.baseUrl, entry.models);
-    const hits = Object.entries(found);
-    if (hits.length) {
-      setCurrency("USD");
-      setRows((previous) => {
-        const next = { ...previous };
-        for (const [model, match] of hits) next[model] = priceRowFromMatch(match);
-        return next;
-      });
-    }
-    setPrice({ state: "done", found: hits.length });
-  };
-
-  const row = (model: string, label: ReactNode) => {
-    const value = rows[model] ?? EMPTY_PRICE_ROW;
-    return (
-      <div className="pf-price-row" key={model || "*"}>
-        {label}
-        <Input aria-label={t("输入")} inputMode="decimal" onChange={(event) => setRow(model, { input: event.currentTarget.value })} placeholder="—" value={value.input} />
-        <Input aria-label={t("缓存命中")} inputMode="decimal" onChange={(event) => setRow(model, { cached: event.currentTarget.value })} placeholder="—" value={value.cached} />
-        <Input aria-label={t("输出")} inputMode="decimal" onChange={(event) => setRow(model, { output: event.currentTarget.value })} placeholder="—" value={value.output} />
-      </div>
-    );
-  };
+  const { backdropProps, dialogProps, requestClose, confirmAction } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
 
   return createPortal(
     <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
         {...dialogProps}
         className="pf-modal pf-extras-modal"
+        data-no-enter={noEnterAnimation ? "true" : undefined}
+        data-tabbed={renderTabs ? "true" : undefined}
         onSubmit={(event) => {
           event.preventDefault();
           if (section === "proxy") {
@@ -164,78 +353,30 @@ export function ProviderExtrasDialog({
           </div>
           <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
+        {renderTabs?.((action) => void confirmAction(action))}
 
         <div className="pf-body">
           {section === "price" ? (
-          <section className="pf-section">
-            <h4>
-              {t("价格")}<small>{t("每百万 token，按模型计")}</small>
-              <AppSelect
-                className="pf-currency"
-                label={t("币种")}
-                menuWidth={140}
-                onChange={setCurrency}
-                options={[
-                  { value: "USD", label: "$ USD" },
-                  { value: "CNY", label: "¥ CNY" },
-                ]}
-                size="sm"
-                value={currency === "CNY" ? "CNY" : "USD"}
-              />
-              <button className="pf-action" disabled={!entry.models.length || price.state === "loading"} onClick={() => void fillPublicPrices()} type="button">
-                <RefreshCw className={price.state === "loading" ? "animate-spin" : ""} />{t("按公开价格填写")}
-              </button>
-            </h4>
-            {price.state === "done" ? (
-              <p className="pf-note" data-tone={price.found ? "ok" : undefined}>
-                {price.found ? <Check /> : null}
-                {tf("models.dev 里找到 {0} / {1} 个模型的价格（美元），其余需要的话手动填写。", [price.found, entry.models.length])}
-              </p>
-            ) : price.state === "loading" ? (
-              <p className="pf-note">{t("正在查公开价格…")}</p>
-            ) : (
-              <p className="pf-note">{t("留空的模型用「其它模型」那一行；都不填就不估算费用。")}</p>
-            )}
-            {entry.models.length >= PRICE_SEARCH_THRESHOLD ? (
-              <Input aria-label={t("搜索模型")} className="pf-table-search" onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("搜索模型")} value={query} />
-            ) : null}
-            <div className="pf-price-table">
-              <div className="pf-price-row pf-price-head">
-                <span>{t("模型")}</span>
-                <span>{t("输入")}</span>
-                <span>{t("缓存命中")}</span>
-                <span>{t("输出")}</span>
-              </div>
-              <div className="pf-price-rows">
-                {shownModels.map((model) => row(model, <code title={model}>{model}</code>))}
-                {row(FALLBACK, <span className="pf-price-fallback">{t("其它模型")}</span>)}
-              </div>
-            </div>
-          </section>
+            <ProviderPriceFields
+              baseUrl={entry.baseUrl}
+              currency={currency}
+              models={entry.models}
+              onApplyMatches={(hits) => setRows((previous) => {
+                const next = { ...previous };
+                for (const [model, match] of hits) next[model] = priceRowFromMatch(match);
+                return next;
+              })}
+              onChangeCurrency={setCurrency}
+              onChangeRow={setRow}
+              rows={rows}
+            />
           ) : (
-          <section className="pf-section">
-            <h4>{t("代理")}<small>{t("这个供应商的请求怎么走代理")}</small></h4>
-            <div className="pf-seg" role="radiogroup" aria-label={t("代理")}>
-              {([
-                ["system", t("沿用系统代理")],
-                ["custom", t("单独代理")],
-                ["direct", t("不使用代理（直连）")],
-              ] as const).map(([mode, label]) => (
-                <button aria-checked={proxyMode === mode} data-active={proxyMode === mode} key={mode} onClick={() => setProxyMode(mode)} role="radio" type="button">
-                  {label}
-                </button>
-              ))}
-            </div>
-            {proxyMode === "custom" ? (
-              <Input autoFocus className="pf-mono" data-autofocus onChange={(event) => setProxy(event.currentTarget.value)} placeholder="http://127.0.0.1:7890" spellCheck={false} value={proxy} />
-            ) : (
-              <p className="pf-hint">
-                {proxyMode === "direct"
-                  ? t("不走系统代理和代理环境变量，直接连这个供应商；适合国内可直连的中转。")
-                  : t("跟随系统代理（以及代理环境变量）；没有设置系统代理时就是直连。")}
-              </p>
-            )}
-          </section>
+            <ProviderGatewayProxyFields
+              mode={proxyMode}
+              onChangeMode={setProxyMode}
+              onChangeProxy={setProxy}
+              proxy={proxy}
+            />
           )}
         </div>
 
@@ -264,11 +405,15 @@ export function ProviderLimitsDialog({
   busy,
   onSave,
   onCancel,
+  renderTabs,
+  noEnterAnimation,
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
   onSave: (rpm: number | null, concurrency: number | null) => void;
   onCancel: () => void;
+  renderTabs?: (runIfClean: (action: () => void) => void) => ReactNode;
+  noEnterAnimation?: boolean;
 }) {
   const [rpm, setRpm] = useState(entry.keyRpm ? String(entry.keyRpm) : "");
   const [concurrency, setConcurrency] = useState(entry.keyConcurrency ? String(entry.keyConcurrency) : "");
@@ -277,13 +422,15 @@ export function ProviderLimitsDialog({
   const invalid = Number.isNaN(rpmValue) || Number.isNaN(concurrencyValue);
   const titleId = useId();
   const dirty = rpm !== (entry.keyRpm ? String(entry.keyRpm) : "") || concurrency !== (entry.keyConcurrency ? String(entry.keyConcurrency) : "");
-  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
+  const { backdropProps, dialogProps, requestClose, confirmAction } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
 
   return createPortal(
     <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
         {...dialogProps}
         className="pf-modal pf-extras-modal"
+        data-no-enter={noEnterAnimation ? "true" : undefined}
+        data-tabbed={renderTabs ? "true" : undefined}
         onSubmit={(event) => {
           event.preventDefault();
           if (!invalid) onSave(rpmValue, concurrencyValue);
@@ -297,20 +444,15 @@ export function ProviderLimitsDialog({
           </div>
           <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
+        {renderTabs?.((action) => void confirmAction(action))}
 
         <div className="pf-body">
-          <section className="pf-section">
-            <h4>{t("限速")}<small>{t("上游限制了 RPM 或并发时，在这里主动限住，不用等 429 再冷却")}</small></h4>
-            <label className="pf-field">
-              <span>{t("每分钟最多请求数")} <small>RPM</small></span>
-              <Input inputMode="numeric" onChange={(event) => setRpm(event.currentTarget.value)} placeholder={t("不限")} value={rpm} />
-            </label>
-            <label className="pf-field">
-              <span>{t("同时进行的最多请求数")} <small>{t("并发")}</small></span>
-              <Input inputMode="numeric" onChange={(event) => setConcurrency(event.currentTarget.value)} placeholder={t("不限")} value={concurrency} />
-            </label>
-            <p className="pf-note">{t("按每个 Key 计；达到上限时先换别的 Key 或下一家，都满了就排队等待（最多 2 分钟）。")}</p>
-          </section>
+          <ProviderLimitsFields
+            concurrency={concurrency}
+            onChangeConcurrency={setConcurrency}
+            onChangeRpm={setRpm}
+            rpm={rpm}
+          />
         </div>
 
         <footer className="pf-foot">

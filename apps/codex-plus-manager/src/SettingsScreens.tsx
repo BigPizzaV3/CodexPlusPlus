@@ -51,12 +51,15 @@ export function SharedServiceSettings({
   form,
   onFormChange,
   autoSave,
+  embedded = false,
 }: {
   overview: OverviewResult | null;
   form: BackendSettings;
   onFormChange: (value: BackendSettings) => void;
   /** 自动保存状态，放在第一个分组标题的右侧。 */
   autoSave?: ReactNode;
+  /** 嵌在「本地服务选项」折叠区里时直接输出行，不再套外层分区与卡片。 */
+  embedded?: boolean;
 }) {
   // 本地服务的地址与运行状态在上面「监听地址」已经有了，这里只列协议转换与调试连接。
   const health = healthItems(overview).filter((item) => item.title === t("协议转换") || item.title === t("调试连接状态"));
@@ -75,31 +78,42 @@ export function SharedServiceSettings({
     </label>
   );
   const sharedHint = t("本地服务和旧版本地协议代理共用这些设置");
+  const rows = (
+    <>
+      {health.map((item) => (
+        <CxRow detail={item.detail} key={item.title} title={item.title} tooltip={item.detail}>
+          <CxBadge tone={tone(item) === "ok" ? "ok" : tone(item) === "warning" ? "warn" : "neutral"}>{statusLabel(item.status)}</CxBadge>
+        </CxRow>
+      ))}
+      <CxRow
+        detail={t("长上下文会话超过上限会报 413；调大会增加本地服务的内存占用。")}
+        title={t("请求体上限")}
+        tooltip={t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}
+      >
+        {number(form.helperMaxRequestBodyMib, 32, 512, "MiB", (next) => onFormChange({ ...form, helperMaxRequestBodyMib: next }), 16)}
+      </CxRow>
+      <CxRow
+        detail={t("默认 120 秒；首字经常超过 120s 的上游（长推理模型、慢中转）可调到 300~600，超时仍会先换其他供应商。保存后立即对本地代理生效。")}
+        title={t("上游首字等待上限")}
+        tooltip={t("流式请求等上游返回响应头的上限，超时后网关报 502。下限 120 秒（兜底真正卡死的连接），上限 3600 秒。")}
+      >
+        {number(form.upstreamStreamHeaderTimeoutSecs ?? 120, 120, 3600, t("秒"), (next) => onFormChange({ ...form, upstreamStreamHeaderTimeoutSecs: next }))}
+      </CxRow>
+    </>
+  );
+  if (embedded) {
+    return (
+      <>
+        {autoSave ? <TopbarActions><span className="cx-set-autosave">{autoSave}</span></TopbarActions> : null}
+        {rows}
+      </>
+    );
+  }
   return (
     <div className="gw-shared-settings">
       {autoSave ? <TopbarActions><span className="cx-set-autosave">{autoSave}</span></TopbarActions> : null}
       <CxSection title={<span title={sharedHint}>{t("本地服务")}</span>}>
-        <CxCard>
-          {health.map((item) => (
-            <CxRow detail={item.detail} key={item.title} title={item.title} tooltip={item.detail}>
-              <CxBadge tone={tone(item) === "ok" ? "ok" : tone(item) === "warning" ? "warn" : "neutral"}>{statusLabel(item.status)}</CxBadge>
-            </CxRow>
-          ))}
-          <CxRow
-            detail={t("长上下文会话超过上限会报 413；调大会增加本地服务的内存占用。")}
-            title={t("请求体上限")}
-            tooltip={t("默认 128 MiB，可填 32~512。长上下文会话（1M 窗口 + 截图历史）的请求体会超过旧的 32 MiB 硬上限并触发 413；调大后本地代理处理单次请求的内存占用也会增加。保存后立即对本地代理生效；环境变量 CODEX_PLUS_MAX_HTTP_BODY_BYTES（字节）优先于本设置。")}
-          >
-            {number(form.helperMaxRequestBodyMib, 32, 512, "MiB", (next) => onFormChange({ ...form, helperMaxRequestBodyMib: next }), 16)}
-          </CxRow>
-          <CxRow
-            detail={t("默认 120 秒；首字经常超过 120s 的上游（长推理模型、慢中转）可调到 300~600，超时仍会先换其他供应商。保存后立即对本地代理生效。")}
-            title={t("上游首字等待上限")}
-            tooltip={t("流式请求等上游返回响应头的上限，超时后网关报 502。下限 120 秒（兜底真正卡死的连接），上限 3600 秒。")}
-          >
-            {number(form.upstreamStreamHeaderTimeoutSecs ?? 120, 120, 3600, t("秒"), (next) => onFormChange({ ...form, upstreamStreamHeaderTimeoutSecs: next }))}
-          </CxRow>
-        </CxCard>
+        <CxCard>{rows}</CxCard>
       </CxSection>
     </div>
   );

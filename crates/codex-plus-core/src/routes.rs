@@ -1523,6 +1523,7 @@ fn model_catalog_source_identity(settings: &BackendSettings) -> String {
             crate::settings::RelayProtocol::Responses => "responses",
             crate::settings::RelayProtocol::ChatCompletions => "chatCompletions",
             crate::settings::RelayProtocol::AnthropicMessages => "anthropicMessages",
+            crate::settings::RelayProtocol::Gemini => "gemini",
         },
         match profile.relay_mode {
             crate::settings::RelayMode::Official => "official",

@@ -2,14 +2,15 @@
   font-size: 12px;
   min-width: 0;
 }
-/* 卡片里的一条提示（未应用的选择、错误、需要重启），贴在登录那一行下面。 */
+/* 卡片里的一条提示（未应用的选择、错误、需要重启），与上方标题文字左缘对齐（14px 内边距 + 30px 图标 + 12px 间距）。 */
 .native-auth-control > .native-auth-notice {
-  margin: -4px 0 0;
-  padding: 0 14px 12px;
+  margin: 0;
+  padding: 0 14px 12px 56px;
 }
-/* 展开的「编辑资料」后面，提示不用再往上贴。 */
+/* 展开的「编辑资料」后面，提示与资料区左缘（14px）对齐。 */
 .native-auth-control > .local-account-profile + .native-auth-notice {
   margin-top: 0;
+  padding-left: 14px;
 }
 .native-auth-row {
   display: flex;
@@ -42,19 +43,28 @@
 }
 :root .shell .native-auth-current > .cx-row-main {
   flex: 0 0 auto;
-  padding-left: 0;
 }
 :root .shell .native-auth-current > .cx-row-controls {
-  flex: 0 1 auto;
-  max-width: 430px;
+  flex: 1 1 auto;
+  justify-content: flex-end;
+  max-width: none;
   margin-left: auto;
   min-width: 0;
 }
 :root .shell .native-auth-current .app-select {
   flex: 0 1 auto;
   width: auto;
-  max-width: 350px;
+  max-width: 280px;
   min-width: 0;
+}
+:root .shell .native-auth-current .native-auth-restart,
+:root .shell .native-auth-current .native-auth-apply {
+  flex: none;
+  white-space: nowrap;
+}
+:root .shell .native-auth-current .native-auth-restart > svg,
+:root .shell .native-auth-current .native-auth-apply > svg {
+  flex: none;
 }
 :root .shell .native-auth-current .app-select-trigger {
   height: 30px;

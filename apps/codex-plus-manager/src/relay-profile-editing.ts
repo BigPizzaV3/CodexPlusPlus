@@ -1398,7 +1398,7 @@ export function normalizeRelayMode(mode: RelayMode | undefined): RelayMode {
 
 /** 协议取值归一化：认不出的值一律回退 Responses，避免脏数据把上游写成直连。 */
 export function normalizeRelayProtocol(value: RelayProtocol | undefined): RelayProtocol {
-  if (value === "chatCompletions" || value === "anthropicMessages") return value;
+  if (value === "chatCompletions" || value === "anthropicMessages" || value === "gemini") return value;
   return "responses";
 }
 

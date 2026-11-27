@@ -609,6 +609,7 @@ pub fn pool_relay_profile(
         RelayProtocol::Responses => "responses",
         RelayProtocol::ChatCompletions => "chat",
         RelayProtocol::AnthropicMessages => "anthropic",
+        RelayProtocol::Gemini => "gemini",
     };
     let request = normalize_request(ProviderImportRequest {
         name: name.to_string(),
@@ -664,6 +665,7 @@ fn relay_protocol(value: &str) -> RelayProtocol {
         "anthropic" | "anthropic_messages" | "anthropic-messages" | "messages" => {
             RelayProtocol::AnthropicMessages
         }
+        "gemini" | "google" | "google_gemini" | "google-gemini" => RelayProtocol::Gemini,
         _ => RelayProtocol::Responses,
     }
 }

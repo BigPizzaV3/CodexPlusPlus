@@ -1130,6 +1130,7 @@ impl GatewaySettings {
                 protocol: match provider.protocol.as_str() {
                     "chat" => crate::settings::RelayProtocol::ChatCompletions,
                     "anthropic" => crate::settings::RelayProtocol::AnthropicMessages,
+                    "gemini" => crate::settings::RelayProtocol::Gemini,
                     _ => crate::settings::RelayProtocol::Responses,
                 },
                 model: provider.models.first().cloned().unwrap_or_default(),
@@ -1179,6 +1180,7 @@ fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider
                 protocol: match provider.protocol.as_str() {
                     "chat" => crate::settings::RelayProtocol::ChatCompletions,
                     "anthropic" => crate::settings::RelayProtocol::AnthropicMessages,
+                    "gemini" => crate::settings::RelayProtocol::Gemini,
                     _ => crate::settings::RelayProtocol::Responses,
                 },
                 ..RelayProfile::default()

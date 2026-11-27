@@ -166,27 +166,61 @@
 
 .pf-seg {
   display: inline-flex;
-  height: 26px;
-  padding: 2px;
-  border: 1px solid hsl(var(--input));
-  border-radius: 7px;
-  background: hsl(var(--surface-sunken));
+  align-items: center;
+  height: 34px;
+  padding: 3px;
+  border: 1px solid hsl(var(--input) / 0.85);
+  border-radius: 6px;
+  background: hsl(var(--background) / 0.6);
 }
 
 .pf-seg button {
-  padding: 0 10px;
+  height: 100%;
+  padding: 0 11px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 4px;
   background: transparent;
   color: hsl(var(--muted-foreground));
   font: inherit;
   font-size: 12px;
+  font-weight: 500;
   cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.pf-seg button:hover:not([data-active="true"]) {
+  color: hsl(var(--foreground));
 }
 
 .pf-seg button[data-active="true"] {
   background: hsl(var(--accent));
   color: hsl(var(--foreground));
+  box-shadow: 0 1px 2px hsl(var(--shadow-color) / 0.16);
+}
+
+.gw-portal .pf-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gw-portal .pf-field-head > span {
+  font-size: 12px;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+}
+
+.gw-portal .pf-field-head > span small {
+  margin-left: 4px;
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+}
+
+.gw-portal .pf-field-head .pf-link {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 500;
 }
 
 .pf-key {
@@ -243,19 +277,29 @@
   font-size: 11px;
 }
 
-/* 模型标签 */
-.pf-chips {
+/* 模型标签：外框对齐普通输入框，内嵌 input 压过 cursor-ui.css 的通用 input 规则避免双层框 */
+.gw-portal .pf-chips {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   align-content: flex-start;
   gap: 5px;
   max-height: 132px;
-  min-height: 34px;
+  min-height: 36px;
   overflow-y: auto;
-  padding: 5px;
-  border: 1px solid hsl(var(--input));
-  border-radius: 8px;
-  background: hsl(var(--surface-sunken));
+  padding: 5px 6px;
+  border: 1px solid hsl(var(--input) / 0.85);
+  border-radius: 6px;
+  background: hsl(var(--background) / 0.6);
+  transition: border-color 120ms ease;
+}
+
+.gw-portal .pf-chips:hover {
+  border-color: hsl(var(--input));
+}
+
+.gw-portal .pf-chips:focus-within {
+  border-color: hsl(var(--ring) / 0.7);
 }
 
 .pf-chip {
@@ -314,17 +358,26 @@
   color: hsl(var(--foreground));
 }
 
-.pf-chip-input {
+:root .gw-portal .pf-modal .pf-chip-input {
   flex: 1;
   min-width: 140px;
-  height: 22px;
+  height: 24px;
   padding: 0 4px;
   border: 0;
+  border-radius: 0;
   outline: 0;
   background: transparent;
+  box-shadow: none;
   color: hsl(var(--foreground));
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
+  line-height: 24px;
+}
+
+:root .gw-portal .pf-modal .pf-chip-input:hover,
+:root .gw-portal .pf-modal .pf-chip-input:focus {
+  border: 0;
+  box-shadow: none;
 }
 
 /* 上游模型太多时的勾选列表 */
@@ -353,13 +406,18 @@
   height: 13px;
 }
 
-.pf-picker-head input {
+:root .gw-portal .pf-modal .pf-picker-head input {
   flex: 1;
+  height: 24px;
+  padding: 0;
   border: 0;
+  border-radius: 0;
   outline: 0;
   background: transparent;
+  box-shadow: none;
   color: hsl(var(--foreground));
   font: inherit;
+  font-size: 12.5px;
 }
 
 .pf-picker-list {
@@ -400,6 +458,12 @@
 .pf-error {
   flex: 1;
   color: hsl(var(--status-error));
+  font-size: 12px;
+}
+
+.gw-portal .pf-foot-hint {
+  flex: 1;
+  color: hsl(var(--muted-foreground));
   font-size: 12px;
 }
 
@@ -564,34 +628,171 @@
   opacity: 0.45;
 }
 
-/* 兼容开关（#228）：弹窗挂在 body 上，规则带 .gw-portal 前缀 */
-.gw-portal .pf-switch {
-  display: flex;
-  align-items: flex-start;
+/* 高级折叠区（兼容选项 / 自定义请求头）：默认折叠减少视觉噪音，有配置时自动展开 */
+.gw-portal .pf-advanced-section {
   gap: 8px;
+}
+
+.gw-portal .pf-fold {
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken) / 0.28);
+}
+
+.gw-portal .pf-fold > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
   cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: background-color 120ms ease;
 }
 
-.gw-portal .pf-switch input {
+.gw-portal .pf-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.gw-portal .pf-fold > summary:hover {
+  background: hsl(var(--accent) / 0.35);
+}
+
+.gw-portal .pf-fold-chevron {
+  width: 14px;
+  height: 14px;
   flex: none;
-  margin-top: 2px;
+  color: hsl(var(--muted-foreground));
+  transform: rotate(-90deg);
+  transition: transform 140ms ease;
 }
 
-.gw-portal .pf-switch span {
+.gw-portal .pf-fold[open] > summary .pf-fold-chevron {
+  transform: none;
+}
+
+.gw-portal .pf-fold > summary strong {
+  flex: none;
+  color: hsl(var(--foreground));
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.gw-portal .pf-fold > summary em {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 99px;
+  background: hsl(var(--muted));
+  color: hsl(var(--foreground));
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-style: normal;
+  line-height: 16px;
+}
+
+.gw-portal .pf-fold > summary small {
+  margin-left: auto;
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .pf-fold-body {
   display: grid;
-  gap: 2px;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid hsl(var(--border) / 0.6);
+}
+
+.gw-portal .pf-compat-list {
+  gap: 0;
+  padding: 2px 12px;
+}
+
+/* 兼容开关（#228）：弹窗挂在 body 上，对齐全局绿色滑动开关，且受 switch-only.ts 保护只点开关本身切换 */
+.gw-portal .pf-switch {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 10px 0;
+  cursor: default;
+}
+
+.gw-portal .pf-switch + .pf-switch {
+  border-top: 1px solid hsl(var(--border) / 0.45);
+}
+
+.gw-portal .pf-switch > input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.gw-portal .pf-switch > span:first-of-type {
+  display: grid;
+  gap: 3px;
   min-width: 0;
 }
 
 .gw-portal .pf-switch strong {
+  color: hsl(var(--foreground));
   font-size: 12.5px;
   font-weight: 500;
+  line-height: 1.4;
 }
 
 .gw-portal .pf-switch small {
   color: hsl(var(--muted-foreground));
   font-size: 11px;
   line-height: 1.5;
+}
+
+.gw-portal .pf-switch .toggle-switch-visual {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  margin-top: 1px;
+  padding: 2px;
+  border-radius: 999px;
+  background: hsl(var(--switch-track, var(--muted)));
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.gw-portal .pf-switch .toggle-switch-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.25);
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gw-portal .pf-switch > input:checked ~ .toggle-switch-visual {
+  background: hsl(var(--switch-on, var(--brand-accent)));
+}
+
+.gw-portal .pf-switch > input:checked ~ .toggle-switch-visual .toggle-switch-thumb {
+  transform: translateX(14px);
+}
+
+.gw-portal .pf-switch > input:focus-visible ~ .toggle-switch-visual {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
 }
 
 /* 供应商池的「测试」弹窗：结果卡片（状态、耗时、回复 / 错误原文与排查提示）。
@@ -884,4 +1085,64 @@
 
 .gw-portal .pf-windows-entry .pf-link {
   flex: none;
+}
+
+/* 统一配置弹窗顶部分区标签栏（常规 / 模型 / 窗口 / 思考 / 价格 / 代理 / 限速） */
+.gw-portal .pf-modal[data-tabbed="true"] {
+  width: min(680px, calc(100vw - 32px));
+}
+
+.gw-portal .pf-modal[data-no-enter="true"] {
+  animation: none;
+}
+
+.gw-portal .pf-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+  padding: 0 12px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--surface-sunken) / 0.35);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.gw-portal .pf-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.gw-portal .pf-tabs button {
+  position: relative;
+  flex: none;
+  height: 34px;
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.gw-portal .pf-tabs button:hover {
+  color: hsl(var(--foreground));
+}
+
+.gw-portal .pf-tabs button[data-active="true"] {
+  color: hsl(var(--foreground));
+}
+
+.gw-portal .pf-tabs button[data-active="true"]::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: hsl(var(--foreground));
 }

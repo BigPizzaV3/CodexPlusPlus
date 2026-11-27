@@ -105,3 +105,21 @@ export function modelPricesFromRows(rows: Record<string, PriceRow>, currency: st
   }
   return prices;
 }
+
+/** 新建供应商填完 Key 后自动拉取上游模型的去重签名：
+ * 要求地址是合法 http(s) URL、首个 Key 至少 8 个字符且不是弹窗初始自带的占位 Key（如 ollama）。 */
+export function autoFetchModelsKey(options: {
+  editing: boolean;
+  subscriptionEditing: boolean;
+  baseUrl: string;
+  protocol: string;
+  firstKey: string;
+  initialFirstKey: string;
+}): string | null {
+  if (options.editing || options.subscriptionEditing) return null;
+  const baseUrl = options.baseUrl.trim();
+  const key = options.firstKey.trim();
+  if (!/^https?:\/\/[^/\s]+/i.test(baseUrl)) return null;
+  if (key.length < 8 || key === options.initialFirstKey.trim()) return null;
+  return `${options.protocol}\0${baseUrl}\0${key}`;
+}

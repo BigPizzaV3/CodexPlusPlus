@@ -82,6 +82,9 @@ export function CompatToggles({
           <label className="pf-switch" key={option.key}>
             {input}
             {text}
+            <span aria-hidden="true" className="toggle-switch-visual">
+              <span className="toggle-switch-thumb" />
+            </span>
           </label>
         ) : (
           <label className={`switch-row compact relay-switch-row ${option.fieldClass}`} key={option.key}>

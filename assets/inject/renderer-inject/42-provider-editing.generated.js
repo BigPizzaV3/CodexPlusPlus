@@ -1555,7 +1555,7 @@ ${key} = ${value}`]);
     return "official";
   }
   function normalizeRelayProtocol(value) {
-    if (value === "chatCompletions" || value === "anthropicMessages") return value;
+    if (value === "chatCompletions" || value === "anthropicMessages" || value === "gemini") return value;
     return "responses";
   }
   function normalizeAnthropicAuthHeader(value) {
@@ -2315,6 +2315,8 @@ ${key} = ${value}`]);
         return "Chat";
       case "anthropicMessages":
         return "Anthropic";
+      case "gemini":
+        return "Gemini";
       default:
         return "Responses";
     }
@@ -2761,6 +2763,16 @@ ${key} = ${value}`]);
       modelList: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
       section: "vendor",
       apiKeyUrl: "https://console.anthropic.com/settings/keys"
+    },
+    {
+      key: "google-gemini",
+      name: "Google Gemini",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      protocol: "gemini",
+      model: "gemini-2.5-pro",
+      modelList: ["gemini-2.5-pro", "gemini-2.5-flash"],
+      section: "vendor",
+      apiKeyUrl: "https://aistudio.google.com/apikey"
     },
     {
       key: "xai",

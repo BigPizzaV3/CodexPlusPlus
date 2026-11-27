@@ -617,8 +617,8 @@ describe("供应商页的网关页签（44 分片）", () => {
     page.gw.login = { ...login, localLoginBlockedReason: "当前用的是官方登录" };
     const blocked = page.login();
     assert.match(blocked, /Codex 登录身份/);
-    assert.match(blocked, /本地账号暂不可用：当前用的是官方登录/);
-    assert.match(blocked.replaceAll("&quot;", '"'), /\["local","本地账号",true\]/);
+    assert.match(blocked, /虚拟账号暂不可用：当前用的是官方登录/);
+    assert.match(blocked.replaceAll("&quot;", '"'), /\["local","虚拟账号",true\]/);
     page.gw.login = login;
     await page.loginChoose("local");
     await page.loginChoose("account:chatgpt-1");

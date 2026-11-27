@@ -104,16 +104,16 @@ pub fn fall_back_when_blocked(home: &Path, store: &crate::settings::SettingsStor
     Ok(true)
 }
 
-/// 本地账号退回「不登录」时给用户看的一句话。
-pub const FELL_BACK_NOTICE: &str = "现在的供应商要用真实登录，本地账号用不了，Codex 登录身份已退回「不登录」。";
+/// 虚拟账号退回「不登录」时给用户看的一句话。
+pub const FELL_BACK_NOTICE: &str = "现在的供应商要用真实登录，虚拟账号用不了，Codex 登录身份已退回「不登录」。";
 
-/// 「本地账号」当前能不能用：经本地服务时总能用（不登录时网关供应商自带凭据）；
+/// 「虚拟账号」当前能不能用：经本地服务时总能用（不登录时网关供应商自带凭据）；
 /// 直连时只有自带凭据的自定义供应商能用，内置 OpenAI / 官方登录供应商不行。
 pub fn local_login_blocker(home: &Path, on_gateway: bool) -> anyhow::Result<Option<&'static str>> {
     if on_gateway || uses_custom_provider(home)? {
         return Ok(None);
     }
-    Ok(Some("当前用的是官方登录或内置 OpenAI 供应商，模型请求要用真实登录；切到 API Key 供应商或本地服务后才能用本地账号"))
+    Ok(Some("当前用的是官方登录或内置 OpenAI 供应商，模型请求要用真实登录；切到 API Key 供应商或本地服务后才能用虚拟账号"))
 }
 
 /// 生效的 `model_provider` 是不是自带凭据的自定义供应商（不读 `auth.json` 里的登录发模型请求）。

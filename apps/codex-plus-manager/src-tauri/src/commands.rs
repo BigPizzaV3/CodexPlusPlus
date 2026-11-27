@@ -11335,6 +11335,7 @@ pub async fn diagnose_relay_profile(profile: RelayProfile) -> CommandResult<Prov
                 codex_plus_core::settings::RelayProtocol::AnthropicMessages => {
                     "Anthropic Messages"
                 }
+                codex_plus_core::settings::RelayProtocol::Gemini => "Google Gemini",
             }
         ),
     });

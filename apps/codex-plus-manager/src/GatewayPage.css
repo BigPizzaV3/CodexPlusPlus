@@ -1064,25 +1064,29 @@
   background: hsl(var(--primary));
 }
 
-/* 添加供应商目录：标题 + 灰色说明，四列图标 + 名字 */
+/* 添加供应商目录：紧凑工具栏 + 分类胶囊 + 三列微卡片网格 */
 .gw-catalog {
-  display: grid;
-  gap: 8px;
-  margin-top: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 0;
 }
 
 .gw-catalog-section {
-  padding: 8px 4px 6px;
+  padding: 2px 0 4px;
 }
 
 .gw-catalog-section h4 {
-  margin: 0 0 10px;
-  font-size: 15px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 8px 2px;
+  color: var(--gw-ink);
+  font-size: 12.5px;
   font-weight: 600;
 }
 
 .gw-catalog-section h4 span {
-  margin-left: 10px;
   color: var(--gw-mute);
   font-size: 11.5px;
   font-weight: 400;
@@ -1090,37 +1094,85 @@
 
 .gw-catalog-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 2px 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .gw-catalog-item {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
-  height: 44px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 9px;
-  background: none;
+  min-height: 52px;
+  padding: 8px 11px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--card));
   color: var(--gw-ink);
   font: inherit;
-  font-size: 14.5px;
   text-align: left;
   cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease, transform 120ms ease;
 }
 
-/* 悬停 / 键盘焦点：主题色底 + 描边，深色主题下也一眼能看出指着哪一项。 */
 .gw-portal .gw-catalog-item:hover:not(:disabled),
 .gw-portal .gw-catalog-item:focus-visible {
-  background: hsl(var(--primary) / 0.16);
-  box-shadow: inset 0 0 0 1px hsl(var(--primary) / 0.55);
+  border-color: hsl(var(--primary) / 0.55);
+  background: hsl(var(--primary) / 0.08);
   outline: none;
 }
 
-.gw-catalog-item > span {
+.gw-catalog-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--secondary) / 0.75);
+}
+
+.gw-catalog-copy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.gw-catalog-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gw-catalog-name strong {
   overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-catalog-added {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: hsl(var(--status-success) / 0.14);
+  color: hsl(var(--status-success));
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.gw-catalog-copy small {
+  overflow: hidden;
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  line-height: 1.3;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1449,18 +1501,100 @@ span.gw-avatar[data-size] {
   width: min(820px, 100%);
   height: min(640px, 100%);
 }
-.gw-catalog-modal header .gw-sheet-search {
-  flex: 1;
-  max-width: 320px;
-  margin-left: auto;
+.gw-catalog-modal header.gw-catalog-head {
+  justify-content: space-between;
 }
-.gw-catalog-modal header strong {
+.gw-catalog-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.gw-catalog-scope {
+  padding: 1px 8px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  background: hsl(var(--secondary));
+  color: var(--gw-mute);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+.gw-catalog-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.gw-catalog-toolbar {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px 8px;
+}
+.gw-catalog-toolbar .gw-sheet-search.gw-catalog-search {
+  flex: 1;
+  width: auto;
+  height: 34px;
+  margin: 0;
+}
+.gw-catalog-custom-btn {
+  display: inline-flex;
   flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 13px;
+  border: 1px solid hsl(var(--input));
+  border-radius: 8px;
+  background: hsl(var(--secondary));
+  color: hsl(var(--foreground));
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.gw-catalog-custom-btn:hover:not(:disabled) {
+  border-color: hsl(var(--primary) / 0.55);
+  background: hsl(var(--accent));
+}
+.gw-catalog-tabs {
+  display: flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 18px 10px;
+  border-bottom: 1px solid hsl(var(--border));
+}
+.gw-catalog-tab {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--gw-mute);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.gw-catalog-tab:hover {
+  background: hsl(var(--accent) / 0.65);
+  color: var(--gw-ink);
+}
+.gw-catalog-tab[data-active="true"] {
+  border-color: hsl(var(--border));
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
 }
 .gw-catalog-modal .gw-modal-body.gw-catalog {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   margin: 0;
-  padding: 6px 14px 14px;
+  padding: 12px 18px 18px;
 }
 
 /* 供应商池为空时的引导 */
@@ -3048,7 +3182,8 @@ body:has(.gw-modal-backdrop) .app-select-menu-portal {
   gap: 10px 16px;
 }
 
-.shell .gw-models-toolbar .gw-primary-button {
+.shell .gw-models-toolbar .gw-primary-button,
+.shell .gw-models-toolbar .gw-routing-new-btn {
   margin: 0 0 0 auto;
 }
 

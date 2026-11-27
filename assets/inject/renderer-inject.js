@@ -14323,7 +14323,7 @@ ${key} = ${value}`]);
     return "official";
   }
   function normalizeRelayProtocol(value) {
-    if (value === "chatCompletions" || value === "anthropicMessages") return value;
+    if (value === "chatCompletions" || value === "anthropicMessages" || value === "gemini") return value;
     return "responses";
   }
   function normalizeAnthropicAuthHeader(value) {
@@ -15083,6 +15083,8 @@ ${key} = ${value}`]);
         return "Chat";
       case "anthropicMessages":
         return "Anthropic";
+      case "gemini":
+        return "Gemini";
       default:
         return "Responses";
     }
@@ -15529,6 +15531,16 @@ ${key} = ${value}`]);
       modelList: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
       section: "vendor",
       apiKeyUrl: "https://console.anthropic.com/settings/keys"
+    },
+    {
+      key: "google-gemini",
+      name: "Google Gemini",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      protocol: "gemini",
+      model: "gemini-2.5-pro",
+      modelList: ["gemini-2.5-pro", "gemini-2.5-flash"],
+      section: "vendor",
+      apiKeyUrl: "https://aistudio.google.com/apikey"
     },
     {
       key: "xai",
@@ -18456,13 +18468,13 @@ ${key} = ${value}`]);
       ...(value ? [] : [["", login.actualLabel || "尚未指定"]]),
       ...accounts.map((account) => [`account:${account.id}`, account.name || account.email || account.id]),
       ...(value.startsWith("account:") && !accounts.some((account) => `account:${account.id}` === value) ? [[value, "已选账号不可用"]] : []),
-      // 官方登录供应商下模型请求要用真实登录：本地账号置灰，原因写在下面。
-      ["local", "本地账号", Boolean(blocked) && value !== "local"],
+      // 官方登录供应商下模型请求要用真实登录：虚拟账号置灰，原因写在下面。
+      ["local", "虚拟账号", Boolean(blocked) && value !== "local"],
       ["none", "不登录"],
     ];
     const help = value === "local"
       ? `代码审查、图像、资料库等入口已解锁，模型仍走所选供应商。${login.localLoginLaunchHint ? "直接打开 Codex 前，先在 Codex++ 首页打开「自动接管官方 App」。" : ""}<button type="button" class="codex-plus-provider-link" data-codex-gateway-action="edit-local-profile">编辑资料</button>`
-      : escapeHtml(login.drift || login.restartBlockedReason || (blocked ? `本地账号暂不可用：${blocked}` : "选「本地账号」可以用 API Key 解锁 ChatGPT 专属入口。"));
+      : escapeHtml(login.drift || login.restartBlockedReason || (blocked ? `虚拟账号暂不可用：${blocked}` : "选「虚拟账号」可以用 API Key 解锁 ChatGPT 专属入口。"));
     return `<div class="codex-plus-provider-login">
       <div class="codex-plus-provider-sidebar-header"><span>Codex 登录身份</span></div>
       ${codexPlusProviderMenu("login-identity", value, options, "Codex 登录身份", state.loginBusy ? "disabled" : "")}

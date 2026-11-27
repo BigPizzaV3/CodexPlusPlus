@@ -76,7 +76,7 @@ export type GatewayPoolEntry = {
   id: string;
   name: string;
   baseUrl: string;
-  protocol: "responses" | "chatCompletions" | "anthropicMessages";
+  protocol: "responses" | "chatCompletions" | "anthropicMessages" | "gemini";
   official: boolean;
   models: string[];
   keyCount: number;
@@ -722,6 +722,8 @@ export function protocolLabel(protocol: GatewayPoolEntry["protocol"]): string {
       return "Chat";
     case "anthropicMessages":
       return "Anthropic";
+    case "gemini":
+      return "Gemini";
     default:
       return "Responses";
   }
@@ -1349,6 +1351,16 @@ const GATEWAY_EXTRA_PRESETS: GatewayPreset[] = [
     modelList: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
     section: "vendor",
     apiKeyUrl: "https://console.anthropic.com/settings/keys",
+  },
+  {
+    key: "google-gemini",
+    name: "Google Gemini",
+    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+    protocol: "gemini",
+    model: "gemini-2.5-pro",
+    modelList: ["gemini-2.5-pro", "gemini-2.5-flash"],
+    section: "vendor",
+    apiKeyUrl: "https://aistudio.google.com/apikey",
   },
   {
     key: "xai",

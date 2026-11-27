@@ -196,6 +196,7 @@
 /* Skills 与 MCP 共用 .mg-agent-matrix：名称 | 来源 | 每个 Agent 一列勾选 | 操作；分组标题是表格里的一行 */
 .mg-skills-page { min-width:0; }
 .mg-menu .mg-menu-label { padding:6px 7px 3px; font-size:11px; color:hsl(var(--muted-foreground)); }
+.mg-menu .mg-menu-sep { height:1px; margin:4px 6px; background:hsl(var(--border)); }
 .mg-menu button[aria-checked="true"]::after { content:"✓"; float:right; color:hsl(var(--brand-accent)); }
 /* 多 Agent 表头（MCP / Skills）：Agent 列是图标 + 名字 + 数量三行，比普通表头高，上下留出边距 */
 .mg-skill-file-times { position:relative; margin-top:6px; font-size:12px; }

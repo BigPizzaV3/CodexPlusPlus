@@ -64,7 +64,7 @@ function harness(official = true, configured = true, customHeaders?: Array<{ key
     "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
     "react-dom": { createPortal: (child: unknown) => child },
     "@tauri-apps/api/core": { invoke: () => { assert.fail("editing must not request credentials or perform network calls"); } },
-    "lucide-react": Object.fromEntries(["Pencil", "Plus", "RefreshCw", "Search", "Star", "Trash2", "X"].map(name => [name, name])),
+    "lucide-react": Object.fromEntries(["ChevronDown", "Pencil", "Plus", "RefreshCw", "Search", "Star", "Trash2", "X"].map(name => [name, name])),
     "@/components/ui/button": { Button: "Button" },
     "@/components/ui/input": { Input: "Input" },
     "./i18n": {
@@ -239,4 +239,105 @@ test("普通API供应商可编辑自定义请求头：敏感头不回显、没�
   // 传输头被拒：保存按钮不可用。
   names[2].props.onChange({ currentTarget: { value: "Host" } });
   assert.equal(find(f.render(), element => element.type === "Button" && element.props.type === "submit").props.disabled, true);
+});
+
+test("新建自定义供应商初始不弹红字报错，兼容选项和自定义请求头默认折叠", () => {
+  const hooks: any[] = [];
+  let cursor = 0;
+  const jsx = (type: any, props: Record<string, any>) => typeof type === "function" ? type(props) : { type, props };
+  const modules: Record<string, unknown> = {
+    react: {
+      useState: (initial: unknown) => {
+        const index = cursor++;
+        if (!(index in hooks)) hooks[index] = typeof initial === "function" ? initial() : initial;
+        return [hooks[index], (value: unknown) => {
+          hooks[index] = typeof value === "function" ? value(hooks[index]) : value;
+        }];
+      },
+      useRef: (initial: unknown) => {
+        const index = cursor++;
+        if (!(index in hooks)) hooks[index] = { current: initial };
+        return hooks[index];
+      },
+      useEffect: () => { cursor += 1; },
+      useMemo: (compute: () => unknown) => compute(),
+      useId: () => "custom-provider-form-title",
+    },
+    "react/jsx-runtime": { jsx, jsxs: jsx, Fragment: "Fragment" },
+    "react-dom": { createPortal: (child: unknown) => child },
+    "@tauri-apps/api/core": { invoke: () => { assert.fail("no invoke"); } },
+    "lucide-react": Object.fromEntries(["ChevronDown", "Pencil", "Plus", "RefreshCw", "Search", "Star", "Trash2", "X"].map(name => [name, name])),
+    "@/components/ui/button": { Button: "Button" },
+    "@/components/ui/input": { Input: "Input" },
+    "./i18n": {
+      t: (value: string) => value,
+      tf: (value: string, args: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(args[Number(index)])),
+    },
+    "./gateway-model": gateway,
+    "./gateway-ui": { Avatar: "Avatar", QuotaWindows: "QuotaWindows" },
+    "./use-escape-layer": { useEscapeLayer: () => {} },
+    "./use-modal-shell": { useModalShell: () => ({ backdropProps: {}, dialogProps: {}, requestClose: async () => {} }) },
+    "./CompatToggles": { CompatToggles: "CompatToggles" },
+    "./ProviderExtrasDialog": { lookupPublicPrices: () => { assert.fail("no price fetch"); } },
+    "./provider-form-model": forms,
+    "./ProviderWindowsDialog": { windowSummary: () => "" },
+    "./provider-sync-model": sync,
+    "./subscription-policy": policies,
+    "./AppSelect": { AppSelect: "AppSelect" },
+    "./ProviderFormDialog.css": {},
+    "./NativeAuthControls.css": {},
+    "./relay-headers": headers,
+  };
+  const load = (filename: string) => {
+    const exports: Record<string, any> = {};
+    vm.runInNewContext(ts.transpileModule(readFileSync(new URL(filename, import.meta.url), "utf8"), {
+      compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, target: ts.ScriptTarget.ES2022 },
+    }).outputText, {
+      exports, document: { body: {} },
+      require: (name: string) => {
+        assert.ok(name in modules, `unexpected import ${name}`);
+        return modules[name];
+      },
+    });
+    return exports;
+  };
+  modules["./SubscriptionPolicyFields"] = load("./SubscriptionPolicyFields.tsx");
+  modules["./RelayHeaderRows"] = load("./RelayHeaderRows.tsx");
+  const component = load("./ProviderFormDialog.tsx");
+  const render = () => {
+    cursor = 0;
+    return component.ProviderFormDialog({
+      form: { mode: "custom" }, busy: null, defaultProtocol: "responses",
+      onSubmit: () => {}, onCancel: () => {},
+    }) as Element;
+  };
+  let tree = render();
+  // 空白新建态只显示引导提示，不闪刺眼红字；两个高级区默认折叠。
+  assert.equal(children(tree).some(element => element.props?.className === "pf-error" && text(element).trim() !== ""), false);
+  assert.equal(children(tree).some(element => element.props?.className === "pf-foot-hint"), true);
+  const folds = children(tree).filter(element => element.type === "details" && element.props?.className === "pf-fold");
+  assert.equal(folds.length, 2);
+  assert.deepEqual(folds.map(fold => fold.props.open), [false, false]);
+  // 用户开始编辑后才展示校验错误。
+  field(tree, "名称").props.onChange({ currentTarget: { value: "My Relay" } });
+  tree = render();
+  assert.match(text(find(tree, element => element.props?.className === "pf-error")), /地址/);
+});
+
+test("新建供应商填完 Key 自动触发上游模型拉取的判定规则", () => {
+  const base = {
+    editing: false,
+    subscriptionEditing: false,
+    baseUrl: "https://api.example.com/v1",
+    protocol: "responses",
+    firstKey: "sk-12345678",
+    initialFirstKey: "",
+  };
+  assert.equal(forms.autoFetchModelsKey(base), "responses\0https://api.example.com/v1\0sk-12345678");
+  // 编辑已有供应商、订阅账号、短 Key、无效地址、未改动的初始占位 Key 都不触发。
+  assert.equal(forms.autoFetchModelsKey({ ...base, editing: true }), null);
+  assert.equal(forms.autoFetchModelsKey({ ...base, subscriptionEditing: true }), null);
+  assert.equal(forms.autoFetchModelsKey({ ...base, firstKey: "sk-123" }), null);
+  assert.equal(forms.autoFetchModelsKey({ ...base, baseUrl: "not-a-url" }), null);
+  assert.equal(forms.autoFetchModelsKey({ ...base, firstKey: "ollama-default", initialFirstKey: "ollama-default" }), null);
 });

@@ -90,7 +90,7 @@ export function AgentsView({
   busy: string | null;
   run: Run;
   notify: Notify;
-  onManage: () => void;
+  onManage: (agent?: string) => void;
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：不传（比如总览里的接入弹窗）就不显示那个键。 */
   codexRun?: CodexRunControls;
@@ -189,7 +189,7 @@ export function AgentConnectDialog({
   busy: string | null;
   run: Run;
   notify: Notify;
-  onManage: () => void;
+  onManage: (agent?: string) => void;
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   onClose: () => void;
 }) {
@@ -235,7 +235,7 @@ function AgentRow({
   codexRun?: CodexRunControls;
   expanded: boolean;
   onToggleExpand: () => void;
-  onManage: () => void;
+  onManage: (agent?: string) => void;
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   run: Run;
   notify: Notify;
@@ -531,8 +531,8 @@ function AgentDetail({
   run: Run;
   onSave: (next: BindingDraft) => void;
   onDisconnect: () => void;
-  /** 去共享供应商（弹窗里是关掉弹窗再去）。 */
-  onManage: () => void;
+  /** 去对应 Agent 的供应商页管理（弹窗里是关掉弹窗再去）。 */
+  onManage: (agent?: string) => void;
 }) {
   // 「Agent 接入」页里 Claude Desktop 的绑定 id 是 `claude-desktop`；`claude` 是 Claude Code（命令行），
   // 两行都要能展开档位，但只有前者有本地启动器。
@@ -627,9 +627,9 @@ function AgentDetail({
               );
             })}
             {providers.length === 0 ? <div className="gw-empty">{t("共享供应商是空的")}</div> : null}
-            <button className="gw-text-button gw-select-manage" onClick={() => { setSelecting(false); onManage(); }} type="button">
+            <button className="gw-text-button gw-select-manage" onClick={() => { setSelecting(false); onManage(agent.agent); }} type="button">
               <List className="h-3.5 w-3.5" />
-              {t("管理共享供应商")}
+              {t("管理供应商")}
             </button>
           </div>
         </Floating>

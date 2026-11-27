@@ -157,7 +157,7 @@ fn provider_from_value(value: &Value) -> Option<MagpieProvider> {
     }
     // 先按 baseAPI 指的那个字段取地址；没写或那个字段是空的，就用第一个有地址的。
     let preferred = text("baseAPI");
-    let (protocol, base_url) = [preferred.as_str(), "responses", "chat", "anthropic"]
+    let (protocol, base_url) = [preferred.as_str(), "responses", "chat", "anthropic", "gemini"]
         .into_iter()
         .filter_map(|api| Some((protocol_of(api)?, text(api))))
         .find(|(_, url)| !url.is_empty())?;
@@ -181,6 +181,7 @@ fn protocol_of(api: &str) -> Option<RelayProtocol> {
         "responses" => Some(RelayProtocol::Responses),
         "chat" => Some(RelayProtocol::ChatCompletions),
         "anthropic" => Some(RelayProtocol::AnthropicMessages),
+        "gemini" => Some(RelayProtocol::Gemini),
         _ => None,
     }
 }
@@ -188,9 +189,13 @@ fn protocol_of(api: &str) -> Option<RelayProtocol> {
 /// 把 Magpie 里存的地址整理成直连供应商要的写法，规则同它自己的 `DetectBase`（`internal/provider/detect.go`）：
 /// 先去掉粘上来的接口路径（`/chat/completions`、`/responses`、`/v1/messages`、`/messages`）；
 /// Anthropic 的地址是根（`/v1/messages` 由请求方接），带了 `/v1` 就去掉；
+/// Gemini 保留 `/v1beta`（裸域名补 `/v1beta`）；
 /// OpenAI 两种协议只写到域名时补上 `/v1`（直连供应商的地址原样写进 Codex 配置，Codex 只在后面接 `/responses`），
 /// 已经带路径的（`…/api/v4`）不动。
 fn normalize_base_url(url: &str, protocol: RelayProtocol) -> String {
+    if protocol == RelayProtocol::Gemini {
+        return crate::gemini_bridge::normalize_gemini_base_url(url);
+    }
     let mut base = url.trim().trim_end_matches('/');
     for suffix in ["/chat/completions", "/responses", "/v1/messages", "/messages"] {
         base = base.strip_suffix(suffix).unwrap_or(base);
