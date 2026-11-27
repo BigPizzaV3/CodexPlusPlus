@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3899
+      "lines": 3929
     },
     {
       "name": "20-menu.js",
@@ -68,17 +68,17 @@
     {
       "name": "42-provider-editing.generated.js",
       "description": "生成文件：与管理器共用的供应商编辑纯函数（relay-profile-editing.ts，scripts/assemble-provider-editing.mjs 打包）",
-      "lines": 3316
+      "lines": 3343
     },
     {
       "name": "43-provider-page.js",
       "description": "左侧图标栏「供应商」页：在 Codex 里增删改切供应商，经 /providers/* 走管理器的保存与切换",
-      "lines": 1640
+      "lines": 1673
     },
     {
       "name": "44-provider-gateway.js",
       "description": "「供应商」页的网关页签：在 Codex 里管理网关供应商池、接入 / 断开网关（经 /providers/gateway 走管理器的网关命令）",
-      "lines": 718
+      "lines": 714
     },
     {
       "name": "45-remote-control-page.js",
@@ -128,7 +128,7 @@
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 687
+      "lines": 710
     },
     {
       "name": "81-capacity-auto-retry.js",

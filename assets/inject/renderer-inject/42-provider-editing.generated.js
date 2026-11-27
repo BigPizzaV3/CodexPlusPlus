@@ -72,6 +72,7 @@ var codexPlusProviderEditing = (() => {
     normalizeRelayProtocol: () => normalizeRelayProtocol,
     normalizeRelaySessionProvider: () => normalizeRelaySessionProvider,
     parseModelSuffix: () => parseModelSuffix,
+    providerAvatarText: () => providerAvatarText,
     relayModelRouteIssueMessage: () => relayModelRouteIssueMessage,
     relayModelRoutesSettingsValidation: () => relayModelRoutesSettingsValidation,
     relayModelRoutesValidation: () => relayModelRoutesValidation,
@@ -377,6 +378,32 @@ var codexPlusProviderEditing = (() => {
   function resolveProviderName(contents, provider) {
     const existing = tomlSectionStringValue(contents, `model_providers.${provider}`, "name").trim();
     return existing || provider;
+  }
+  function avatarCharKind(char) {
+    if (/\p{Script=Han}/u.test(char)) return "han";
+    if (/[A-Za-z]/.test(char)) return "latin";
+    if (/[0-9]/.test(char)) return "digit";
+    return null;
+  }
+  function providerAvatarText(name, fallback = "供") {
+    const chars = Array.from(name.trim());
+    const meaningful = chars.map((char, index) => ({ char, index, kind: avatarCharKind(char) })).filter((item) => item.kind !== null);
+    if (!meaningful.length) return fallback;
+    const first = meaningful[0];
+    const upper = (char) => char.toUpperCase();
+    const otherKind = meaningful.find((item) => item.kind !== first.kind);
+    if (otherKind) return upper(first.char) + upper(otherKind.char);
+    const words = name.trim().split(/[\s()（）\[\]【】,，.。·_\-/|]+/u).filter((word) => Array.from(word).some((char) => avatarCharKind(char)));
+    if (words.length >= 2) {
+      const second2 = Array.from(words[1]).find((char) => avatarCharKind(char));
+      if (second2) return upper(first.char) + upper(second2);
+    }
+    if (first.kind === "latin") {
+      const camel = meaningful.slice(1).find((item) => /[A-Z]/.test(item.char));
+      if (camel) return upper(first.char) + camel.char;
+    }
+    const second = meaningful[1];
+    return second ? upper(first.char) + upper(second.char) : upper(first.char);
   }
 
   // apps/codex-plus-manager/src/relay-session.ts

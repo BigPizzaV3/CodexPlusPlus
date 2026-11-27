@@ -1023,26 +1023,43 @@
         z-index: 2147482999;
         box-shadow: 0 8px 24px rgba(0,0,0,.18);
       }
+      /*
+       * 提示照 Codex 原生（sonner 提示）：右上角、标题栏下面，浮层底色 + 自带 0.5px 描边的浮层阴影，最宽 320px。
+       * 类型用前面的小图标区分（成功绿、警告橙、失败红），不再给整条描彩边。纵向位置由 layoutCodexPlusToasts 写 top。
+       */
       .codex-delete-toast {
         position: fixed;
-        right: 18px;
-        bottom: 18px;
+        top: 56px;
+        right: 24px;
         z-index: 2147483000;
-        padding: 10px 12px;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: var(--border-radius-lg, 8px);
-        background: var(--codex-plus-bg-elevated);
-        color: var(--codex-plus-text);
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        max-width: 320px;
+        padding: 10px 14px;
+        border: 0;
+        border-radius: calc(12px * var(--codex-corner-radius-scale, 1));
+        background: var(--color-surface-elevated-secondary, var(--codex-plus-bg-elevated));
+        color: var(--color-text-foreground, var(--codex-plus-text));
         font: inherit;
         font-size: 13px;
-        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
+        line-height: 18px;
+        overflow-wrap: anywhere;
+        box-shadow: var(--shadow-dropdown-overlay, 0 0 0 .5px var(--codex-plus-border), 0 8px 24px rgba(0,0,0,.18));
         pointer-events: none;
+        transition: top .2s ease;
+        animation: codex-plus-toast-in .2s ease;
       }
-      .codex-delete-toast button { margin-left: 10px; pointer-events: auto; }
-      /* 拓展与内置提示共用的类型配色。不传 type 时保持上面的默认外观。 */
-      .codex-delete-toast[data-toast-type="success"] { border-color: var(--codex-plus-success, #2f9e63); }
-      .codex-delete-toast[data-toast-type="warn"] { border-color: var(--codex-plus-warn, #b7791f); }
-      .codex-delete-toast[data-toast-type="error"] { border-color: var(--codex-plus-error, #c53030); }
+      @keyframes codex-plus-toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+      .codex-delete-toast-icon { display: flex; flex: none; width: 16px; height: 16px; }
+      .codex-delete-toast-icon svg { width: 16px; height: 16px; }
+      .codex-delete-toast-text { min-width: 0; }
+      .codex-delete-toast button { flex: none; margin-left: 4px; padding: 2px 8px; border: 0; border-radius: calc(8px * var(--codex-corner-radius-scale, 1)); background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover)); color: inherit; font: inherit; font-size: 12px; cursor: pointer; pointer-events: auto; }
+      .codex-delete-toast[data-toast-type="success"] .codex-delete-toast-icon { color: var(--codex-plus-success, #10a37f); }
+      .codex-delete-toast[data-toast-type="warn"] .codex-delete-toast-icon,
+      .codex-delete-toast[data-toast-type="warning"] .codex-delete-toast-icon { color: var(--codex-plus-warning, #d97706); }
+      .codex-delete-toast[data-toast-type="error"] .codex-delete-toast-icon { color: var(--codex-plus-danger, #dc2626); }
       .codex-delete-confirm-overlay {
         position: fixed;
         inset: 0;
@@ -2533,7 +2550,9 @@
        */
       .codex-plus-provider-detail-header .codex-plus-provider-tabs { padding: 0; border: 0; background: transparent !important; }
       .codex-plus-provider-group > .codex-plus-provider-section-title { justify-content: space-between; gap: 12px; }
-      .codex-plus-provider-list-card { overflow: hidden; }
+      /* 不能 overflow: hidden，否则行尾三点菜单的弹层会被卡片裁掉；悬停底色的圆角只给首尾两行。 */
+      .codex-plus-provider-list-card .codex-plus-provider-list > .codex-plus-provider-item:first-child { border-top-left-radius: calc(var(--codex-plus-card-radius, 12px) - 1px); border-top-right-radius: calc(var(--codex-plus-card-radius, 12px) - 1px); }
+      .codex-plus-provider-list-card .codex-plus-provider-list > .codex-plus-provider-item:last-child { border-bottom-left-radius: calc(var(--codex-plus-card-radius, 12px) - 1px); border-bottom-right-radius: calc(var(--codex-plus-card-radius, 12px) - 1px); }
       .codex-plus-provider-list-card .codex-plus-provider-list { gap: 0; }
       .codex-plus-provider-list-card .codex-plus-provider-item { box-sizing: border-box; min-height: 56px; margin: 0 -16px; padding: 10px 16px; gap: 12px; border-radius: 0; }
       .codex-plus-provider-list-card .codex-plus-provider-item + .codex-plus-provider-item { border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
@@ -2546,6 +2565,17 @@
       .codex-plus-provider-list-card .codex-plus-provider-item > .codex-plus-action-button { flex: none; min-height: 26px; padding: 2px 12px; font-size: 12px; }
       .codex-plus-provider-list-card .codex-plus-provider-in-use { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--codex-plus-success, #10a37f) 14%, transparent); font-size: 12px; line-height: 18px; }
       .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="warn"] { color: var(--codex-plus-warning, #d97706); }
+      /* 行首的字母头像（同管理器 .gw-avatar[data-size="sm"]：中性灰，不按名字配色），行尾的三点菜单。 */
+      .codex-plus-provider-avatar { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: calc(8px * var(--codex-corner-radius-scale, 1)); background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover)); color: var(--codex-plus-text-secondary); font-size: 11px; font-weight: 600; letter-spacing: -.02em; }
+      .codex-plus-provider-list-card .codex-plus-provider-item[data-muted="true"] .codex-plus-provider-avatar { opacity: .55; }
+      .codex-plus-provider-row-menu { flex: none; }
+      .codex-plus-provider-more { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--codex-plus-control-radius, 6px); background: transparent; color: var(--codex-plus-text-secondary); cursor: pointer; }
+      .codex-plus-provider-more svg { width: 16px; height: 16px; }
+      .codex-plus-provider-more:hover:not(:disabled), .codex-plus-provider-more[aria-expanded="true"] { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
+      .codex-plus-provider-more:disabled { opacity: .4; cursor: default; }
+      .codex-plus-provider-row-menu .codex-plus-provider-menu-popover { min-width: 140px; }
+      /* 有三点菜单就不再画进入详情的箭头（同管理器的行：菜单在最右）。 */
+      .codex-plus-provider-list-card .codex-plus-provider-item:has(.codex-plus-provider-row-menu)::after { display: none; }
       /* 列表底下「N 家仅支持聚合模式」：点开才列出来（同管理器 gw-pool-off-toggle）。 */
       .codex-plus-provider-folded-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 10px 0 0 2px; padding: 2px 6px 2px 2px; border: 0; border-radius: var(--codex-plus-control-radius, 6px); background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
       .codex-plus-provider-folded-toggle:hover { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
@@ -12806,6 +12836,7 @@ var codexPlusProviderEditing = (() => {
     normalizeRelayProtocol: () => normalizeRelayProtocol,
     normalizeRelaySessionProvider: () => normalizeRelaySessionProvider,
     parseModelSuffix: () => parseModelSuffix,
+    providerAvatarText: () => providerAvatarText,
     relayModelRouteIssueMessage: () => relayModelRouteIssueMessage,
     relayModelRoutesSettingsValidation: () => relayModelRoutesSettingsValidation,
     relayModelRoutesValidation: () => relayModelRoutesValidation,
@@ -13111,6 +13142,32 @@ var codexPlusProviderEditing = (() => {
   function resolveProviderName(contents, provider) {
     const existing = tomlSectionStringValue(contents, `model_providers.${provider}`, "name").trim();
     return existing || provider;
+  }
+  function avatarCharKind(char) {
+    if (/\p{Script=Han}/u.test(char)) return "han";
+    if (/[A-Za-z]/.test(char)) return "latin";
+    if (/[0-9]/.test(char)) return "digit";
+    return null;
+  }
+  function providerAvatarText(name, fallback = "供") {
+    const chars = Array.from(name.trim());
+    const meaningful = chars.map((char, index) => ({ char, index, kind: avatarCharKind(char) })).filter((item) => item.kind !== null);
+    if (!meaningful.length) return fallback;
+    const first = meaningful[0];
+    const upper = (char) => char.toUpperCase();
+    const otherKind = meaningful.find((item) => item.kind !== first.kind);
+    if (otherKind) return upper(first.char) + upper(otherKind.char);
+    const words = name.trim().split(/[\s()（）\[\]【】,，.。·_\-/|]+/u).filter((word) => Array.from(word).some((char) => avatarCharKind(char)));
+    if (words.length >= 2) {
+      const second2 = Array.from(words[1]).find((char) => avatarCharKind(char));
+      if (second2) return upper(first.char) + upper(second2);
+    }
+    if (first.kind === "latin") {
+      const camel = meaningful.slice(1).find((item) => /[A-Z]/.test(item.char));
+      if (camel) return upper(first.char) + camel.char;
+    }
+    const second = meaningful[1];
+    return second ? upper(first.char) + upper(second.char) : upper(first.char);
   }
 
   // apps/codex-plus-manager/src/relay-session.ts
@@ -16152,18 +16209,13 @@ ${key} = ${value}`]);
     state.draft = codexPlusProviderDraftFrom(codexPlusProviderSelected());
   }
 
+  /**
+   * 结果文字：详情页贴在标题行下面（codex-plus-provider-banner），列表页只显示出错的；成功另有右上角的提示（showToast）。
+   * 不再有底部状态栏：和提示说的是同一句，两处同时冒出来反而乱。
+   */
   function codexPlusProviderSetStatus(message, tone = "") {
     codexPlusProviderPageState.status = String(message || "");
     codexPlusProviderPageState.statusTone = tone;
-    // 同步底部状态栏（如果当前是直连页签）
-    const state = codexPlusProviderPageState;
-    if (state.tab !== "gateway") {
-      const footer = document.querySelector("[data-codex-provider-footer]");
-      if (footer) {
-        footer.textContent = codexPlusProviderPageState.status;
-        footer.dataset.tone = tone;
-      }
-    }
   }
 
   /**
@@ -16711,6 +16763,10 @@ ${key} = ${value}`]);
   }
 
   function codexPlusProviderMenuChanged(kind, value, trigger) {
+    if (kind === "row") {
+      void codexPlusProviderRowAction(trigger.dataset.row, value);
+      return;
+    }
     if (kind === "mode") {
       if (value === "official") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: false });
       else if (value === "mixedApi") codexPlusProviderPatch({ relayMode: "official", officialMixApiKey: true });
@@ -17030,17 +17086,6 @@ ${key} = ${value}`]);
     return text.length <= 8 ? "••••" : `${text.slice(0, 3)}…${text.slice(-4)}`;
   }
 
-  function codexPlusProviderSyncFooter() {
-    const footer = document.querySelector("[data-codex-provider-footer]");
-    if (!footer) return;
-    const state = codexPlusProviderPageState;
-    const isGateway = state.tab === "gateway";
-    const msg = isGateway ? codexPlusGatewayPageState.status : state.status;
-    const tone = isGateway ? codexPlusGatewayPageState.statusTone : state.statusTone;
-    footer.textContent = msg || "";
-    footer.dataset.tone = tone || "";
-  }
-
   function renderCodexPlusProviderPage() {
     const panel = document.querySelector("[data-codex-provider-panel]");
     if (!panel) return;
@@ -17059,12 +17104,10 @@ ${key} = ${value}`]);
     const previous = panel.querySelector(".codex-plus-provider-detail");
     // 同一层重画（轮询、操作之后）保留滚动位置；换了一层从顶上看起。
     const scroll = previous?.dataset.view === view ? previous.scrollTop : 0;
-    const footer = `<div class="codex-plus-provider-footer" data-codex-provider-footer></div>`;
     const body = view === "detail" ? renderCodexPlusProviderDetailView() : renderCodexPlusProviderListView(gatewayMode);
-    panel.innerHTML = `<div class="codex-plus-provider-shell"><section class="codex-plus-provider-detail" data-view="${view}">${body}</section>${footer}</div>${renderCodexPlusGatewayDisconnectDialog()}`;
+    panel.innerHTML = `<div class="codex-plus-provider-shell"><section class="codex-plus-provider-detail" data-view="${view}">${body}</section></div>${renderCodexPlusGatewayDisconnectDialog()}`;
     const detail = panel.querySelector(".codex-plus-provider-detail");
     if (detail) detail.scrollTop = scroll;
-    codexPlusProviderSyncFooter();
   }
 
   /** 列表看的模式：没点过顶上的切换就跟着 Codex 实际的连接方式。 */
@@ -17156,12 +17199,57 @@ ${key} = ${value}`]);
           ? `<button type="button" class="codex-plus-action-button" data-codex-provider-use="${escapeHtml(profile.id)}" ${busy ? "disabled" : ""}>使用</button>`
           : `<button type="button" class="codex-plus-action-button" data-codex-provider-use-account="${escapeHtml(entry.id)}" data-name="${escapeHtml(entry.name || entry.id)}" title="把这个 ChatGPT 账号写入 Codex 登录态并走官方直连，不经本地服务" ${busy ? "disabled" : ""}>使用</button>`;
     }
+    // 三点菜单（同管理器每行的「供应商操作」）：编辑、测试，直连供应商还能复制，共享供应商还能停用 / 启用；最后是删除。
+    const menu = profile
+      ? [["edit", "编辑"], ...(codexPlusProviderIsAggregate(profile) ? [] : [["test", "测试"]]), ["duplicate", "复制"], ["delete", "删除供应商"]]
+      : entry
+        ? [["edit", "编辑"], ["test", "测试", !enabled], ["toggle", enabled ? "停用" : "启用"], ["delete", "删除供应商"]]
+        : [];
     return `<div class="codex-plus-provider-item" role="listitem" data-muted="${muted}" data-codex-provider-open="${escapeHtml(item.key)}">
+        <span class="codex-plus-provider-avatar" aria-hidden="true">${escapeHtml(codexPlusProviderEditingApi.providerAvatarText(item.name, "P"))}</span>
         <div class="codex-plus-provider-item-main">
           <div class="codex-plus-provider-item-name">${escapeHtml(name)}</div>
           <div class="codex-plus-provider-item-meta">${badges}</div>
-        </div>${control}
+        </div>${control}${menu.length ? codexPlusProviderRowMenu(item.key, menu, busy) : ""}
       </div>`;
+  }
+
+  const codexPlusProviderMoreIcon = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3.5" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="12.5" cy="8" r="1.25"/></svg>';
+
+  /** 行尾的三点菜单：和「+ 新建」同一套菜单（codexPlusProviderOpenMenu），按钮只放图标。选了交给 codexPlusProviderRowAction。 */
+  function codexPlusProviderRowMenu(key, options, busy) {
+    return `<div class="codex-plus-provider-menu codex-plus-provider-row-menu"><button type="button" class="codex-plus-provider-more" data-codex-provider-menu-toggle="row" data-row="${escapeHtml(key)}" data-fixed-label="true" data-value="" data-options="${escapeHtml(JSON.stringify(options))}" data-menu-label="供应商操作" aria-haspopup="menu" aria-expanded="false" aria-label="供应商操作" ${busy ? "disabled" : ""}>${codexPlusProviderMoreIcon}</button></div>`;
+  }
+
+  /** 三点菜单里选了一项。编辑、测试都进详情页做（测试结果贴在详情的标题行下面）。 */
+  async function codexPlusProviderRowAction(key, action) {
+    const state = codexPlusProviderPageState;
+    const [kind, ...rest] = String(key || "").split(":");
+    const id = rest.join(":");
+    if (action === "edit" || action === "test") {
+      await codexPlusProviderOpenDetail(key);
+      if (action === "test" && state.view === "detail") await (kind === "relay" ? codexPlusProviderProbe("test") : codexPlusGatewayProbe("test"));
+      return;
+    }
+    if (kind === "relay") {
+      if (action === "duplicate") {
+        if (!(await codexPlusProviderConfirmDiscard())) return;
+        return codexPlusProviderDuplicate(id);
+      }
+      if (action === "delete") return codexPlusProviderDelete(id);
+      return;
+    }
+    const entry = codexPlusGatewayEntries().find((item) => item.id === id);
+    if (!entry) return;
+    if (action === "toggle") {
+      const enabled = entry.enabled === false;
+      await codexPlusGatewayMutate("set_gateway_provider_enabled", { id, enabled }, { busy: `member:${id}`, success: enabled ? `已启用「${entry.name}」。` : `已停用「${entry.name}」。` });
+      return;
+    }
+    if (action === "delete") {
+      await codexPlusGatewayDelete(entry);
+      renderCodexPlusProviderPage();
+    }
   }
 
   /** 统一列表：当前模式能用的一卡，用不了的折叠在底下一行（点开仍能看、能进详情）。 */
@@ -17218,6 +17306,8 @@ ${key} = ${value}`]);
         <div class="codex-plus-provider-actions">${renderCodexPlusProviderModeSwitch(aggregate, gatewayMode)}</div>
       </div>
       ${state.settings.relayProfilesEnabled ? "" : '<div class="codex-plus-provider-banner" data-tone="warn">供应商配置总开关已关闭：可以编辑，但不会写入 Codex。</div>'}
+      ${[state, codexPlusGatewayPageState].filter((source) => source.statusTone === "error" && source.status)
+        .map((source) => `<div class="codex-plus-provider-banner" data-tone="error" role="alert">${escapeHtml(source.status)}</div>`).join("")}
       ${connection ? `<section class="codex-plus-provider-section codex-plus-provider-group"><div class="codex-plus-provider-section-title">连接</div><div class="codex-plus-provider-card codex-plus-provider-connection-card">${connection}</div></section>` : ""}
       <section class="codex-plus-provider-section codex-plus-provider-group">
         <div class="codex-plus-provider-section-title"><span>供应商</span>${codexPlusProviderActionMenu("new", "+ 新建", newOptions, busy ? "disabled" : "")}</div>
@@ -17747,14 +17837,6 @@ ${key} = ${value}`]);
   function codexPlusGatewaySetStatus(message, tone = "") {
     codexPlusGatewayPageState.status = String(message || "");
     codexPlusGatewayPageState.statusTone = tone;
-    // 同步底部状态栏（如果当前是本地服务页签）
-    if (codexPlusProviderPageState.tab === "gateway") {
-      const footer = document.querySelector("[data-codex-provider-footer]");
-      if (footer) {
-        footer.textContent = codexPlusGatewayPageState.status;
-        footer.dataset.tone = tone;
-      }
-    }
   }
 
   function codexPlusGatewaySelect(id) {
@@ -18135,6 +18217,10 @@ ${key} = ${value}`]);
         ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="test" ${busy ? "disabled" : ""}>${state.busy === "test" ? "测试中…" : "测试"}</button>` : ""}
         ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>' : ""}
       </div></div>`;
+    // 结果提示贴在标题行下面（和直连供应商的详情一样），不再只在底部状态栏的小字里。
+    const statusBanner = state.status
+      ? `<div class="codex-plus-provider-banner" data-tone="${escapeHtml(state.statusTone || "info")}" role="${state.statusTone === "error" ? "alert" : "status"}">${escapeHtml(state.status)}</div>`
+      : "";
     // 删除放到页面底部的「危险操作」卡片，与直连页一致。
     const dangerCard = entry ? codexPlusProviderCard("危险操作", codexPlusProviderActionLine("从共享供应商删除", "它的 Key 和模型配置会一起删掉；只想暂时不用可以点右上角「停用」。",
       `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`)) : "";
@@ -18146,7 +18232,7 @@ ${key} = ${value}`]);
     const managerRow = (title, help) => codexPlusProviderCard("更多设置", codexPlusProviderActionLine(title, help,
       '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button>'));
     if (!editable) {
-      return `${header}
+      return `${header}${statusBanner}
         ${codexPlusGatewayCredentialsCard(entry)}
         ${codexPlusProviderCard("模型", [
           codexPlusProviderActionLine("模型列表", (entry.models || []).join("、") || "（无）", ""),
@@ -18165,7 +18251,7 @@ ${key} = ${value}`]);
     const fetched = state.fetchedModels.length
       ? `上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="fill-models">全部填入</button>`
       : "";
-    return `${header}
+    return `${header}${statusBanner}
       ${codexPlusProviderCard("连接", [
         codexPlusProviderLine("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`),
         codexPlusProviderActionLine("协议", "", codexPlusProviderMenu("gw-protocol", draft.protocol, codexPlusProviderProtocolOptions, "协议")),
@@ -29085,19 +29171,30 @@ ${key} = ${value}`]);
    */
   const codexPlusToastLimit = 3;
   const codexPlusToastLifetimeMs = 10000;
-  const codexPlusToastGapPx = 48;
+  // 位置照 Codex 原生提示（sonner，codex-sonner-toaster）：右上角，标题栏下面，距顶 56px，条与条之间空 8px。
+  const codexPlusToastTopPx = 56;
+  const codexPlusToastGapPx = 8;
 
   /**
-   * 按当前 DOM 顺序重排所有提示的纵向位置。
+   * 按当前 DOM 顺序重排所有提示的纵向位置：最新的在最上面，旧的往下排（和原生一样），按各自实际高度错开。
    *
    * 必须在每次「新增」和「移除」之后都调用：位置只在插入那一刻算的话，一旦有
    * 人被挤掉或超时消失，剩下几条会停在自己的旧层号上，出现空档和重叠。
    */
   function layoutCodexPlusToasts() {
-    document.querySelectorAll(".codex-delete-toast").forEach((node, index) => {
-      node.style.bottom = `${18 + index * codexPlusToastGapPx}px`;
+    let top = codexPlusToastTopPx;
+    Array.from(document.querySelectorAll(".codex-delete-toast")).reverse().forEach((node) => {
+      node.style.top = `${top}px`;
+      top += (node.offsetHeight || 40) + codexPlusToastGapPx;
     });
   }
+
+  /** 提示前面的小图标：成功、警告、失败各一个（Lucide 的 circle-check / triangle-alert / circle-x），info 和不传类型时没有。 */
+  const codexPlusToastIcons = {
+    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>',
+    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>',
+  };
 
   /** 移除一条提示并立刻重排剩下的。 */
   function dismissCodexPlusToast(toast) {
@@ -29130,13 +29227,25 @@ ${key} = ${value}`]);
     const toast = document.createElement("div");
     toast.className = "codex-delete-toast";
     if (type) toast.dataset.toastType = type;
-    toast.textContent = message;
+    const icon = codexPlusToastIcons[type === "warning" ? "warn" : type];
+    if (icon) {
+      const mark = document.createElement("span");
+      mark.className = "codex-delete-toast-icon";
+      mark.setAttribute("aria-hidden", "true");
+      mark.innerHTML = icon;
+      toast.appendChild(mark);
+    }
+    const text = document.createElement("span");
+    text.className = "codex-delete-toast-text";
+    text.textContent = message;
+    toast.appendChild(text);
     if (undoToken) {
       const undo = document.createElement("button");
       undo.textContent = "撤销";
       undo.addEventListener("click", async () => {
         const result = await postJson("/undo", { undo_token: undoToken });
-        toast.textContent = result.message || "撤销完成";
+        text.textContent = result.message || "撤销完成";
+        undo.remove();
         if (result.status === "undone") {
           settings.onUndone?.();
           const refreshed = await refreshRecentConversationsForHost();

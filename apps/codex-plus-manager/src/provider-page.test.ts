@@ -600,6 +600,11 @@ describe("供应商页的网关页签（44 分片）", () => {
     assert.match(direct, /data-codex-provider-use="b"/);
     assert.match(direct, /2 家仅支持聚合模式/, "只在共享供应商里的折叠起来");
     assert.doesNotMatch(direct, /data-codex-gateway-member=/, "直连时没有聚合开关");
+    // 每行同管理器：字母头像 + 行尾「供应商操作」三点菜单（直连供应商能复制，共享供应商能停用）。
+    assert.match(direct, /class="codex-plus-provider-avatar" aria-hidden="true">A</);
+    const menuOf = (html: string, key: string) => JSON.parse(html.match(new RegExp(`data-row="${key}" data-fixed-label="true" data-value="" data-options="(.*?)" data-menu-label`))?.[1] || "null");
+    assert.deepEqual(menuOf(direct, "relay:b").map((option: string[]) => option[0]), ["edit", "test", "duplicate", "delete"]);
+    assert.deepEqual(menuOf(aggregate, "pool:gw-b").map((option: string[]) => option[0]), ["edit", "test", "toggle", "delete"]);
     const member = { dataset: { codexGatewayMember: "gw-b" }, disabled: false, getAttribute: () => "false" };
     await page.gwClick({ closest: (selector: string) => (selector === "[data-codex-gateway-member]" ? member : null) });
     const sent = page.calls.find((call: { path: string; payload: any }) => call.payload?.command === "set_gateway_pool_member")!;

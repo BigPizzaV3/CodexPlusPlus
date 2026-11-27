@@ -223,26 +223,43 @@
         z-index: 2147482999;
         box-shadow: 0 8px 24px rgba(0,0,0,.18);
       }
+      /*
+       * 提示照 Codex 原生（sonner 提示）：右上角、标题栏下面，浮层底色 + 自带 0.5px 描边的浮层阴影，最宽 320px。
+       * 类型用前面的小图标区分（成功绿、警告橙、失败红），不再给整条描彩边。纵向位置由 layoutCodexPlusToasts 写 top。
+       */
       .codex-delete-toast {
         position: fixed;
-        right: 18px;
-        bottom: 18px;
+        top: 56px;
+        right: 24px;
         z-index: 2147483000;
-        padding: 10px 12px;
-        border: 1px solid var(--codex-plus-border);
-        border-radius: var(--border-radius-lg, 8px);
-        background: var(--codex-plus-bg-elevated);
-        color: var(--codex-plus-text);
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        max-width: 320px;
+        padding: 10px 14px;
+        border: 0;
+        border-radius: calc(12px * var(--codex-corner-radius-scale, 1));
+        background: var(--color-surface-elevated-secondary, var(--codex-plus-bg-elevated));
+        color: var(--color-text-foreground, var(--codex-plus-text));
         font: inherit;
         font-size: 13px;
-        box-shadow: var(--ui-menu-shadow, var(--shadow-300, 0 8px 24px rgba(0,0,0,.16)));
+        line-height: 18px;
+        overflow-wrap: anywhere;
+        box-shadow: var(--shadow-dropdown-overlay, 0 0 0 .5px var(--codex-plus-border), 0 8px 24px rgba(0,0,0,.18));
         pointer-events: none;
+        transition: top .2s ease;
+        animation: codex-plus-toast-in .2s ease;
       }
-      .codex-delete-toast button { margin-left: 10px; pointer-events: auto; }
-      /* 拓展与内置提示共用的类型配色。不传 type 时保持上面的默认外观。 */
-      .codex-delete-toast[data-toast-type="success"] { border-color: var(--codex-plus-success, #2f9e63); }
-      .codex-delete-toast[data-toast-type="warn"] { border-color: var(--codex-plus-warn, #b7791f); }
-      .codex-delete-toast[data-toast-type="error"] { border-color: var(--codex-plus-error, #c53030); }
+      @keyframes codex-plus-toast-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+      .codex-delete-toast-icon { display: flex; flex: none; width: 16px; height: 16px; }
+      .codex-delete-toast-icon svg { width: 16px; height: 16px; }
+      .codex-delete-toast-text { min-width: 0; }
+      .codex-delete-toast button { flex: none; margin-left: 4px; padding: 2px 8px; border: 0; border-radius: calc(8px * var(--codex-corner-radius-scale, 1)); background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover)); color: inherit; font: inherit; font-size: 12px; cursor: pointer; pointer-events: auto; }
+      .codex-delete-toast[data-toast-type="success"] .codex-delete-toast-icon { color: var(--codex-plus-success, #10a37f); }
+      .codex-delete-toast[data-toast-type="warn"] .codex-delete-toast-icon,
+      .codex-delete-toast[data-toast-type="warning"] .codex-delete-toast-icon { color: var(--codex-plus-warning, #d97706); }
+      .codex-delete-toast[data-toast-type="error"] .codex-delete-toast-icon { color: var(--codex-plus-danger, #dc2626); }
       .codex-delete-confirm-overlay {
         position: fixed;
         inset: 0;
@@ -1733,7 +1750,9 @@
        */
       .codex-plus-provider-detail-header .codex-plus-provider-tabs { padding: 0; border: 0; background: transparent !important; }
       .codex-plus-provider-group > .codex-plus-provider-section-title { justify-content: space-between; gap: 12px; }
-      .codex-plus-provider-list-card { overflow: hidden; }
+      /* 不能 overflow: hidden，否则行尾三点菜单的弹层会被卡片裁掉；悬停底色的圆角只给首尾两行。 */
+      .codex-plus-provider-list-card .codex-plus-provider-list > .codex-plus-provider-item:first-child { border-top-left-radius: calc(var(--codex-plus-card-radius, 12px) - 1px); border-top-right-radius: calc(var(--codex-plus-card-radius, 12px) - 1px); }
+      .codex-plus-provider-list-card .codex-plus-provider-list > .codex-plus-provider-item:last-child { border-bottom-left-radius: calc(var(--codex-plus-card-radius, 12px) - 1px); border-bottom-right-radius: calc(var(--codex-plus-card-radius, 12px) - 1px); }
       .codex-plus-provider-list-card .codex-plus-provider-list { gap: 0; }
       .codex-plus-provider-list-card .codex-plus-provider-item { box-sizing: border-box; min-height: 56px; margin: 0 -16px; padding: 10px 16px; gap: 12px; border-radius: 0; }
       .codex-plus-provider-list-card .codex-plus-provider-item + .codex-plus-provider-item { border-top: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)); }
@@ -1746,6 +1765,17 @@
       .codex-plus-provider-list-card .codex-plus-provider-item > .codex-plus-action-button { flex: none; min-height: 26px; padding: 2px 12px; font-size: 12px; }
       .codex-plus-provider-list-card .codex-plus-provider-in-use { flex: none; padding: 1px 8px; border-radius: 999px; background: color-mix(in srgb, var(--codex-plus-success, #10a37f) 14%, transparent); font-size: 12px; line-height: 18px; }
       .codex-plus-provider-item-meta > .codex-plus-provider-badge[data-tone="warn"] { color: var(--codex-plus-warning, #d97706); }
+      /* 行首的字母头像（同管理器 .gw-avatar[data-size="sm"]：中性灰，不按名字配色），行尾的三点菜单。 */
+      .codex-plus-provider-avatar { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: calc(8px * var(--codex-corner-radius-scale, 1)); background: var(--color-token-list-hover-background, var(--codex-plus-bg-hover)); color: var(--codex-plus-text-secondary); font-size: 11px; font-weight: 600; letter-spacing: -.02em; }
+      .codex-plus-provider-list-card .codex-plus-provider-item[data-muted="true"] .codex-plus-provider-avatar { opacity: .55; }
+      .codex-plus-provider-row-menu { flex: none; }
+      .codex-plus-provider-more { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--codex-plus-control-radius, 6px); background: transparent; color: var(--codex-plus-text-secondary); cursor: pointer; }
+      .codex-plus-provider-more svg { width: 16px; height: 16px; }
+      .codex-plus-provider-more:hover:not(:disabled), .codex-plus-provider-more[aria-expanded="true"] { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }
+      .codex-plus-provider-more:disabled { opacity: .4; cursor: default; }
+      .codex-plus-provider-row-menu .codex-plus-provider-menu-popover { min-width: 140px; }
+      /* 有三点菜单就不再画进入详情的箭头（同管理器的行：菜单在最右）。 */
+      .codex-plus-provider-list-card .codex-plus-provider-item:has(.codex-plus-provider-row-menu)::after { display: none; }
       /* 列表底下「N 家仅支持聚合模式」：点开才列出来（同管理器 gw-pool-off-toggle）。 */
       .codex-plus-provider-folded-toggle { display: inline-flex; align-items: center; gap: 6px; margin: 10px 0 0 2px; padding: 2px 6px 2px 2px; border: 0; border-radius: var(--codex-plus-control-radius, 6px); background: transparent; color: var(--codex-plus-text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
       .codex-plus-provider-folded-toggle:hover { background: var(--codex-plus-bg-hover); color: var(--codex-plus-text); }

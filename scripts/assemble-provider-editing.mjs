@@ -27,6 +27,8 @@ const entryContents = [
   "export * from \"./relay-profile-editing.ts\";",
   "export { aggregateMemberCandidates, isOfficialLoginMemberProfile } from \"./aggregate-members.ts\";",
   "export { clampAggregateRoutePriority } from \"./aggregate-routes.ts\";",
+  // 供应商的字母头像（和管理器列表里的 Avatar 同一套取字规则）。
+  "export { providerAvatarText } from \"./provider-name.ts\";",
   "export * as gateway from \"./gateway-model.ts\";",
   "export * as gatewaySafety from \"./gateway-agent-safety.ts\";",
   // Codex 统一供应商列表（直连 + 共享合成一份）的规则，挂在 `.unified` 下。

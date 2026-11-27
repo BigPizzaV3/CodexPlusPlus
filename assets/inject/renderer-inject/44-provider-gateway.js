@@ -57,14 +57,6 @@
   function codexPlusGatewaySetStatus(message, tone = "") {
     codexPlusGatewayPageState.status = String(message || "");
     codexPlusGatewayPageState.statusTone = tone;
-    // 同步底部状态栏（如果当前是本地服务页签）
-    if (codexPlusProviderPageState.tab === "gateway") {
-      const footer = document.querySelector("[data-codex-provider-footer]");
-      if (footer) {
-        footer.textContent = codexPlusGatewayPageState.status;
-        footer.dataset.tone = tone;
-      }
-    }
   }
 
   function codexPlusGatewaySelect(id) {
@@ -445,6 +437,10 @@
         ${entry ? `<button type="button" class="codex-plus-action-button" data-codex-gateway-action="test" ${busy ? "disabled" : ""}>${state.busy === "test" ? "测试中…" : "测试"}</button>` : ""}
         ${state.isNew ? '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="cancel-new">取消</button>' : ""}
       </div></div>`;
+    // 结果提示贴在标题行下面（和直连供应商的详情一样），不再只在底部状态栏的小字里。
+    const statusBanner = state.status
+      ? `<div class="codex-plus-provider-banner" data-tone="${escapeHtml(state.statusTone || "info")}" role="${state.statusTone === "error" ? "alert" : "status"}">${escapeHtml(state.status)}</div>`
+      : "";
     // 删除放到页面底部的「危险操作」卡片，与直连页一致。
     const dangerCard = entry ? codexPlusProviderCard("危险操作", codexPlusProviderActionLine("从共享供应商删除", "它的 Key 和模型配置会一起删掉；只想暂时不用可以点右上角「停用」。",
       `<button type="button" class="codex-plus-action-button" data-danger="true" data-codex-gateway-action="delete" ${busy ? "disabled" : ""}>删除</button>`)) : "";
@@ -456,7 +452,7 @@
     const managerRow = (title, help) => codexPlusProviderCard("更多设置", codexPlusProviderActionLine(title, help,
       '<button type="button" class="codex-plus-action-button" data-codex-gateway-action="open-manager">在 Codex++ 中打开</button>'));
     if (!editable) {
-      return `${header}
+      return `${header}${statusBanner}
         ${codexPlusGatewayCredentialsCard(entry)}
         ${codexPlusProviderCard("模型", [
           codexPlusProviderActionLine("模型列表", (entry.models || []).join("、") || "（无）", ""),
@@ -475,7 +471,7 @@
     const fetched = state.fetchedModels.length
       ? `上游有 ${state.fetchedModels.length} 个模型：${escapeHtml(state.fetchedModels.slice(0, 12).join("、"))}${state.fetchedModels.length > 12 ? "…" : ""} <button type="button" class="codex-plus-provider-link" data-codex-gateway-action="fill-models">全部填入</button>`
       : "";
-    return `${header}
+    return `${header}${statusBanner}
       ${codexPlusProviderCard("连接", [
         codexPlusProviderLine("名称", `<input type="text" class="codex-plus-provider-input" data-codex-gateway-field="name" value="${escapeHtml(draft.name)}">`),
         codexPlusProviderActionLine("协议", "", codexPlusProviderMenu("gw-protocol", draft.protocol, codexPlusProviderProtocolOptions, "协议")),
