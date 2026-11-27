@@ -16,7 +16,10 @@ fn cold_scan_reads_recently_changed_rollout_before_historical_backlog() {
     fixture.write_segment("rollout-a.jsonl", vec![tool_free_row; 40]);
     fixture.write_segment(
         "rollout-z.jsonl",
-        vec![fixture.context(500, "current-model"), fixture.usage(1_000, 1)],
+        vec![
+            fixture.context(500, "current-model"),
+            fixture.usage(1_000, 1),
+        ],
     );
     File::options()
         .write(true)
@@ -274,9 +277,14 @@ fn unanchored_continuation_only_blocks_nearby_request_log_proof() {
         .unwrap();
         let after = fixture.snapshot();
         assert_eq!(after.events.len(), 2);
+        assert_eq!(after.events[1].provider, "supplier-a");
         assert_eq!(
-            after.events[1].provider == "supplier-a",
-            gap > DELAYED_REQUEST_MATCH_WINDOW_MS,
+            after.events[1].provider_source.as_deref(),
+            Some(if gap > DELAYED_REQUEST_MATCH_WINDOW_MS {
+                "request-log-exact"
+            } else {
+                SESSION_PROVIDER_INFERENCE
+            })
         );
         assert_eq!(before.events[1].delta, after.events[1].delta);
         fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
@@ -3457,8 +3465,16 @@ fn request_log_recovers_after_a_distant_uncertain_counter_reset() {
         }
         let recovered = reset_gap > DELAYED_REQUEST_MATCH_WINDOW_MS;
         assert_eq!(
-            unknown_provider(&after.events[2].provider),
-            !recovered,
+            after.events[2].provider, "supplier-a",
+            "reset_gap={reset_gap}"
+        );
+        assert_eq!(
+            after.events[2].provider_source.as_deref(),
+            Some(if recovered {
+                "request-log-exact"
+            } else {
+                SESSION_PROVIDER_INFERENCE
+            }),
             "reset_gap={reset_gap}"
         );
         if recovered {

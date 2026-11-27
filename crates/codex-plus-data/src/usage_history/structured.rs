@@ -36,6 +36,7 @@ const MAX_ROWS_CAPTURED_PROXY: usize = 20_000;
 const REQUEST_MATCH_WINDOW_MS: i64 = 30_000;
 const DELAYED_REQUEST_MATCH_WINDOW_MS: i64 = 120_000;
 const MAX_NATIVE_RECEIPT_LINE: usize = 8192;
+const SESSION_PROVIDER_INFERENCE: &str = "session-context-inferred";
 
 fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<Option<(u64, u64)>> {
     #[cfg(windows)]
@@ -717,7 +718,6 @@ impl RequestEvidenceCache {
                 && !e.context_conflicts.any()
                 && !e.count_uncertain
                 && !e.count_incomplete
-                && e.delta.cached_known
         }) {
             let Some(session) = aliases.resolve(&event.session) else {
                 continue;
@@ -1322,6 +1322,123 @@ impl RequestEvidenceCache {
             "strictWindowMs":REQUEST_MATCH_WINDOW_MS,"delayedWindowMs":DELAYED_REQUEST_MATCH_WINDOW_MS,
             "retainedEvents":retained,"conflictedEvents":self.verified.values().filter(|saved| saved.rejected).count(),
             "logReads":self.reads,"logBytesRead":self.bytes_read})
+    }
+
+    fn infer_providers(
+        &self,
+        events: &mut [UsageEvent],
+        names: &mut BTreeMap<String, String>,
+        aliases: &BTreeMap<String, String>,
+    ) -> usize {
+        if self.captured_id_check_failed {
+            return 0;
+        }
+        let aliases = RequestSessionAliases::new(aliases);
+        let mut sessions: HashMap<_, Vec<_>> = HashMap::new();
+        let mut seen = HashSet::new();
+        let mut rejected = self.captured_rejected.clone();
+        for request in &self.records {
+            if !seen.insert(&request.id) {
+                rejected.insert(request.id.clone());
+            }
+            if request.valid_capture()
+                && let Some(session) = aliases.resolve(&request.thread_id)
+            {
+                sessions.entry(session).or_default().push(request);
+            }
+        }
+        for requests in sessions.values_mut() {
+            requests.sort_unstable_by_key(|request| request.timestamp_ms);
+        }
+        let mut inferred = 0;
+        for event in events {
+            if !unknown_provider(&event.provider)
+                || event.native_response_id.is_some()
+                || event.context_conflicts.any()
+                || event.count_uncertain
+                || event.count_incomplete
+                || event.count_pending
+                || self.collision_families.contains(&event.original_id)
+                || self
+                    .verified
+                    .get(&event.id)
+                    .is_some_and(|saved| saved.rejected)
+            {
+                continue;
+            }
+            let Some(requests) = aliases
+                .resolve(&event.session)
+                .and_then(|id| sessions.get(&id))
+            else {
+                continue;
+            };
+            let Ok(at) = DateTime::parse_from_rfc3339(&event.timestamp) else {
+                continue;
+            };
+            let at = at.timestamp_millis();
+            let pivot = requests.partition_point(|request| request.timestamp_ms < at);
+            // 优先比较邻近请求。没有邻近证据时仍可参考同一会话最接近的路由。
+            let radius = requests[pivot.saturating_sub(1)..(pivot + 1).min(requests.len())]
+                .iter()
+                .map(|request| request.timestamp_ms.abs_diff(at))
+                .min()
+                .unwrap()
+                .max(DELAYED_REQUEST_MATCH_WINDOW_MS as u64);
+            let lower = requests[..pivot]
+                .partition_point(|request| request.timestamp_ms.abs_diff(at) > radius);
+            let upper = pivot
+                + requests[pivot..]
+                    .partition_point(|request| request.timestamp_ms.abs_diff(at) <= radius);
+            let mut best = None;
+            let mut conflict = false;
+            for &request in &requests[lower..upper] {
+                let distance = request.timestamp_ms.abs_diff(at);
+                let model_matches = (!unknown_model(&event.model)
+                    || event.model.split_once('/').is_some_and(|(scope, name)| {
+                        scope.eq_ignore_ascii_case("group") && !name.is_empty()
+                    }))
+                    && (event.model == request.model || event.model == request.upstream_model);
+                let counts_match = request.usage.is_some_and(|usage| {
+                    usage.input_tokens == Some(event.delta.input_tokens)
+                        && usage.output_tokens == Some(event.delta.output_tokens)
+                        && (!event.delta.cached_known
+                            || request
+                                .known_cached()
+                                .is_none_or(|cached| cached == event.delta.cached_input_tokens))
+                });
+                let rank = (
+                    model_matches && counts_match,
+                    model_matches,
+                    counts_match,
+                    std::cmp::Reverse(distance),
+                );
+                let blocked = rejected.contains(&request.id);
+                match best {
+                    None => {
+                        best = Some((rank, request));
+                        conflict = blocked;
+                    }
+                    Some((previous, _)) if rank > previous => {
+                        best = Some((rank, request));
+                        conflict = blocked;
+                    }
+                    Some((previous, supplier)) if rank == previous => {
+                        conflict |= blocked || supplier.relay_id != request.relay_id;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some((_, request)) = best.filter(|_| !conflict) {
+                event.provider.clone_from(&request.relay_id);
+                event.provider_source = Some(SESSION_PROVIDER_INFERENCE.to_owned());
+                let name = names.entry(event.provider.clone()).or_default();
+                if name.trim().is_empty() {
+                    *name = request.provider_name().to_owned();
+                }
+                inferred += 1;
+            }
+        }
+        inferred
     }
 }
 
@@ -3021,6 +3138,12 @@ impl Index {
             json!(native_writes.as_ref().map_or(0, |(written, _)| *written));
         snapshot.provider_recovery["cacheAvailable"] = json!(cache_available);
         snapshot.provider_recovery["cacheWrittenRecords"] = json!(writes.unwrap_or(0));
+        snapshot.provider_recovery["sessionInferredEvents"] =
+            json!(self.request_evidence.infer_providers(
+                &mut snapshot.events,
+                &mut snapshot.provider_names,
+                &snapshot.aliases,
+            ));
         snapshot.tools.sort_by(|a, b| {
             a.call
                 .timestamp
@@ -4183,13 +4306,14 @@ impl Snapshot {
         let mut days: BTreeMap<NaiveDate, Aggregate> = BTreeMap::new();
         let mut models: BTreeMap<(NaiveDate, String), Aggregate> = BTreeMap::new();
         let mut breakdowns: BTreeMap<
-            (NaiveDate, String, String, String, bool),
+            (NaiveDate, String, String, String, bool, bool),
             (Aggregate, Tokens),
         > = BTreeMap::new();
         let mut day_proofs = BTreeMap::<NaiveDate, Sha256>::new();
-        let mut breakdown_proofs =
-            BTreeMap::<(NaiveDate, String, String, String, bool), (Sha256, bool, bool, bool)>::new(
-            );
+        let mut breakdown_proofs = BTreeMap::<
+            (NaiveDate, String, String, String, bool, bool),
+            (Sha256, bool, bool, bool),
+        >::new();
         let mut ordered_events: Vec<_> = self.events.iter().collect();
         ordered_events.sort_unstable_by_key(|event| event.id);
         for event in ordered_events {
@@ -4230,6 +4354,7 @@ impl Snapshot {
                     event.role.clone()
                 },
                 event.context_conflicts.provider,
+                event.provider_source.as_deref() == Some(SESSION_PROVIDER_INFERENCE),
             );
             let (aggregate, priceable) = breakdowns.entry(key.clone()).or_default();
             aggregate.add(&record);
@@ -4272,10 +4397,17 @@ impl Snapshot {
                 row["breakdowns"] = json!(
                     breakdowns
                         .iter()
-                        .filter(|((day, _, _, _, _), _)| day == &date)
+                        .filter(|((day, _, _, _, _, _), _)| day == &date)
                         .map(
                             |(
-                                key @ (_, model, provider, role, provider_conflict),
+                                key @ (
+                                    _,
+                                    model,
+                                    provider,
+                                    role,
+                                    provider_conflict,
+                                    provider_inferred,
+                                ),
                                 (aggregate, priceable),
                             )| {
                                 let mut row = aggregate.value();
@@ -4292,6 +4424,11 @@ impl Snapshot {
                                 }
                                 if *provider_conflict {
                                     row["providerConflict"] = json!(true);
+                                }
+                                if *provider_inferred {
+                                    row["providerInferred"] = json!(true);
+                                    row["providerInferenceSource"] =
+                                        json!(SESSION_PROVIDER_INFERENCE);
                                 }
                                 if let Some((digest, exact, request_proof, supplier_proof)) =
                                     breakdown_proofs.get(key)

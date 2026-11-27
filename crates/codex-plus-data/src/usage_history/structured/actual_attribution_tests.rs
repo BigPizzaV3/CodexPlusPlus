@@ -35,6 +35,86 @@ mod actual_attribution {
     }
 
     #[test]
+    fn unresolved_usage_uses_same_session_routing_without_claiming_exact_proof() {
+        for case in [
+            "nearest",
+            "model-switch",
+            "route-only",
+            "no-usage",
+            "tie",
+            "other-session",
+            "exact",
+        ] {
+            let mut fixture = Fixture::new();
+            let context = fixture.context(500, "group/pool");
+            let mut count = fixture.usage(1_000, 1);
+            if case != "exact" {
+                let info = &mut count["payload"]["info"];
+                for key in ["last_token_usage", "total_token_usage"] {
+                    info[key]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("cached_input_tokens");
+                }
+            }
+            fixture.write_segment("rollout-context-inference.jsonl", vec![context, count]);
+            let before = fixture.snapshot();
+            let mut record = proof(&before.events[0]);
+            if case == "no-usage" {
+                record.usage = None;
+                record.model = "other-model".into();
+            }
+            if case == "route-only" {
+                record.usage.as_mut().unwrap().input_tokens = Some(101);
+                record.model = "other-model".into();
+            }
+            if case == "other-session" {
+                record.thread_id = "a-different-session".into();
+            }
+            let mut rows = vec![record.clone()];
+            if case == "tie" || case == "model-switch" {
+                record.id = "competing-route".into();
+                record.relay_id = "supplier-c".into();
+                if case == "model-switch" {
+                    record.model = "other-model".into();
+                    record.timestamp_ms += 5;
+                }
+                rows.push(record);
+            }
+            fs::write(
+                &fixture.log,
+                rows.iter()
+                    .map(|row| format!("{}\n", serde_json::to_string(row).unwrap()))
+                    .collect::<String>(),
+            )
+            .unwrap();
+            let after = fixture.snapshot();
+            let inferred = matches!(case, "nearest" | "model-switch" | "route-only");
+            assert_eq!(
+                after.events[0].provider == "supplier-b",
+                inferred || case == "exact",
+                "{case}"
+            );
+            assert_eq!(after.events[0].delta, before.events[0].delta, "{case}");
+            assert_eq!(after.events[0].id, before.events[0].id, "{case}");
+            let original = snapshot_response(&before);
+            let output = snapshot_response(&after);
+            let day = &output["days"][0];
+            let group = &day["breakdowns"][0];
+            assert_eq!(
+                day["accountingFingerprint"], original["days"][0]["accountingFingerprint"],
+                "{case}"
+            );
+            assert_eq!(group["providerInferred"] == true, inferred, "{case}");
+            assert_eq!(
+                group["classificationEvidence"] == "request-log-exact",
+                case == "exact",
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
     fn paired_terminal_receipt_corrects_stale_model_without_changing_accounting() {
         for case in [
             "paired",
@@ -192,12 +272,21 @@ mod actual_attribution {
                 "{case}: {}",
                 after.provider_recovery
             );
-            assert_eq!(result.provider == "supplier-b", case == "paired", "{case}");
             assert_eq!(
-                result.provider_source.as_deref(),
-                (case == "paired").then_some("request-log-exact"),
+                result.provider_source.as_deref() == Some("request-log-exact"),
+                case == "paired",
                 "{case}"
             );
+            if matches!(case, "wrong-id" | "wrong-id-same-model" | "reused-id") {
+                assert!(unknown_provider(&result.provider), "{case}");
+                assert!(result.provider_source.is_none(), "{case}");
+            } else if result.provider == "supplier-b" && case != "paired" {
+                assert_eq!(
+                    result.provider_source.as_deref(),
+                    Some(SESSION_PROVIDER_INFERENCE),
+                    "{case}"
+                );
+            }
             assert_eq!(
                 result.context_conflicts.provider,
                 case == "explicit-provider",
