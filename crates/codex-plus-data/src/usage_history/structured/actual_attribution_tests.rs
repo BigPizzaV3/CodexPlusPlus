@@ -35,6 +35,110 @@ mod actual_attribution {
     }
 
     #[test]
+    fn delivered_supplier_receipt_attributes_without_cache_accounting() {
+        for case in [
+            "paired",
+            "different-id",
+            "different-count",
+            "competing-id",
+            "unmarked",
+        ] {
+            let mut fixture = Fixture::new();
+            let mut context = fixture.context(500, "group/pool");
+            context["payload"]["turn_id"] = json!("turn-a");
+            let mut count = fixture.usage(1_000, 1);
+            let info = &mut count["payload"]["info"];
+            for key in ["last_token_usage", "total_token_usage"] {
+                info[key]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("cached_input_tokens");
+            }
+            let receipt = json!({
+                "type": "token_usage_record", "timestamp": fixture.at(995),
+                "payload": {
+                    "thread_id": SESSION, "turn_id": "turn-a", "response_id": "resp_supplier",
+                    "usage": info["last_token_usage"], "thread_token_usage": info["total_token_usage"]
+                }
+            });
+            fixture.write_segment("rollout-supplier-only.jsonl", vec![context, receipt, count]);
+            let before_snapshot = fixture.snapshot();
+            let before = &before_snapshot.events[0];
+            assert!(!before.delta.cached_known);
+            let mut record = proof(before);
+            record.final_response_id = Some("resp_supplier".into());
+            record.final_response_evidence = Some("final-response-supplier-v1".into());
+            let usage = record.usage.as_mut().unwrap();
+            usage.input_tokens = Some(before.delta.input_tokens);
+            usage.output_tokens = Some(before.delta.output_tokens);
+            usage.cached_tokens = None;
+            usage.cached_tokens_known = Some(false);
+            match case {
+                "different-id" => record.final_response_id = Some("resp_other".into()),
+                "different-count" => {
+                    record.usage.as_mut().unwrap().output_tokens =
+                        Some(before.delta.output_tokens + 1);
+                }
+                "unmarked" => record.final_response_evidence = None,
+                _ => {}
+            }
+            let mut records = vec![record.clone()];
+            if case == "competing-id" {
+                record.id = "competitor".into();
+                record.relay_id = "supplier-c".into();
+                records.push(record.clone());
+            }
+            fixture
+                .index
+                .provider_cache
+                .capture_proxy(&records)
+                .unwrap();
+            let after = fixture.snapshot();
+            assert_eq!(after.events.len(), 1, "{case}");
+            let result = &after.events[0];
+            assert_eq!(
+                result.provider_source.as_deref(),
+                (case == "paired").then_some("request-log-recovered-supplier-only"),
+                "{case}: {}",
+                after.provider_recovery
+            );
+            assert_eq!(result.provider == "supplier-b", case == "paired", "{case}");
+            assert_eq!(result.id, before.id, "{case}");
+            assert_eq!(result.model, before.model, "{case}");
+            assert_eq!(result.total, before.total, "{case}");
+            assert_eq!(result.delta, before.delta, "{case}");
+            let prior = snapshot_response(&before_snapshot);
+            let current = snapshot_response(&after);
+            assert_eq!(
+                current["days"][0]["accountingFingerprint"],
+                prior["days"][0]["accountingFingerprint"],
+            );
+            if case == "paired" {
+                let row = &current["days"][0]["breakdowns"][0];
+                assert_eq!(
+                    row["supplierClassificationEvidence"],
+                    REQUEST_SUPPLIER_PROOF
+                );
+                assert_eq!(row["usage"]["cachedKnown"], false);
+                assert!(row["classificationEvidence"].is_null());
+                reopen_index(&mut fixture);
+                let reopened = fixture.snapshot();
+                assert_eq!(reopened.events[0].provider_source, result.provider_source);
+                record.id = "late-competitor".into();
+                record.relay_id = "supplier-c".into();
+                fixture
+                    .index
+                    .provider_cache
+                    .capture_proxy(&[record])
+                    .unwrap();
+                let revoked = fixture.snapshot();
+                assert!(revoked.events[0].provider_source.is_none());
+                assert_eq!(revoked.events[0].delta, before.delta);
+            }
+        }
+    }
+
+    #[test]
     fn paired_terminal_receipt_corrects_stale_model_without_changing_accounting() {
         for case in [
             "paired",
@@ -118,7 +222,9 @@ mod actual_attribution {
             fixture.write_segment("rollout-paired.jsonl", rows);
             let before = fixture.snapshot().events.remove(0);
             if case == "paired" {
-                assert_eq!(before.native_response_id.as_deref(), Some("resp_paired"));
+                let native = before.native_response_id.as_ref().unwrap();
+                assert_eq!(&*native.id, "resp_paired");
+                assert!(native.full_counts);
                 assert!(
                     before.delta.cached_known
                         && !before.count_incomplete
