@@ -4,6 +4,102 @@ use rusqlite::params;
 use std::fmt::Write;
 
 #[test]
+fn delayed_adjacent_receipts_confirm_suppliers_without_a_time_limit() -> Result<()> {
+    for case in ["ordered", "midnight", "separate", "intervening", "conflicting"] {
+        let root = tempfile::tempdir()?;
+        let home = root.path().join("home");
+        fs::create_dir_all(home.join("sessions"))?;
+        let home = fs::canonicalize(home)?;
+        let settings = root.path().join("settings.json");
+        let log = root.path().join("requests.jsonl");
+        fs::write(&settings, r#"{"usageHistoryEnabled":true}"#)?;
+        let session = "00000000-0000-4000-8000-000000000081";
+        let now = Local::now();
+        let at = if case == "midnight" {
+            now.date_naive().and_time(chrono::NaiveTime::MIN)
+                .and_local_timezone(Local).earliest().unwrap() - TimeDelta::minutes(1)
+        } else {
+            now - TimeDelta::minutes(10)
+        };
+        let usage = |n| json!({"input_tokens":100*n,"cached_input_tokens":20*n,"output_tokens":10*n});
+        let header = format!("{}\n{}\n",
+            json!({"type":"session_meta","timestamp":at.to_rfc3339(),
+                "payload":{"id":session,"model_provider":"custom"}}),
+            json!({"type":"turn_context","timestamp":at.to_rfc3339(),
+                "payload":{"turn_id":"turn","model":"gpt-fixture"}}));
+        let mut rows = header.clone();
+        let mut proofs = String::new();
+        for n in 1..=2 {
+            let receipt_at = at + TimeDelta::seconds((n - 1) * 240);
+            let counter_at = receipt_at + TimeDelta::seconds(180);
+            let receipt = json!({"type":"token_usage_record","timestamp":receipt_at.to_rfc3339(),
+                "payload":{"thread_id":session,"turn_id":"turn","response_id":format!("response-{n}"),
+                    "usage":usage(1),"thread_token_usage":usage(n)}});
+            if n == 1 && case == "separate" {
+                fs::write(home.join("sessions/rollout-peer.jsonl"), format!("{header}{receipt}\n"))?;
+            } else {
+                writeln!(rows, "{receipt}")?;
+            }
+            if n == 1 && case == "intervening" {
+                writeln!(rows, "{}", json!({"type":"event_msg",
+                    "timestamp":(receipt_at + TimeDelta::seconds(1)).to_rfc3339(),
+                    "payload":{"type":"token_count","info":{
+                        "last_token_usage":usage(0),"total_token_usage":usage(0)}}}))?;
+            }
+            if n == 1 && case == "conflicting" {
+                let mut competing = receipt.clone();
+                competing["payload"]["response_id"] = json!("other-response");
+                writeln!(rows, "{competing}")?;
+            }
+            writeln!(rows, "{}", json!({"type":"event_msg","timestamp":counter_at.to_rfc3339(),
+                "payload":{"type":"token_count","info":{
+                    "last_token_usage":usage(1),"total_token_usage":usage(n)}}}))?;
+            writeln!(proofs, "{}", json!({"id":format!("request-{n}"),"threadId":session,
+                "model":"gpt-fixture","upstreamModel":"gpt-fixture","relayId":format!("supplier-{n}"),
+                "success":true,"state":"success","statusCode":200,"timestampMs":receipt_at.timestamp_millis(),
+                "startedAtMs":receipt_at.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+                "finalResponseEvidence":"final-response-v1","finalResponseId":format!("response-{n}"),
+                "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}}))?;
+        }
+        fs::write(home.join("sessions/rollout-main.jsonl"), rows)?;
+        fs::write(&log, &proofs)?;
+        let storage = root.path().join("history");
+        let mut worker = Runtime::new(storage.clone(), settings.clone());
+        let inspect = |worker: &mut Runtime| -> Result<Vec<Value>> {
+            for _ in 0..3 {
+                let state = worker.update_with_request_log(&home, &log);
+                assert!(state.storage_error.is_none(), "{case}: {:?}", state.storage_error);
+                assert!(state.classification_error.is_none(), "{case}: {:?}", state.classification_error);
+            }
+            let db = &worker.store.as_ref().unwrap().db;
+            let mut query = db.prepare("SELECT payload FROM token_resolved ORDER BY timestamp_ms")?;
+            let rows = query.query_map([], |row| row.get::<_, Vec<u8>>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows.iter().map(|row| serde_json::from_slice(row)).collect::<serde_json::Result<_>>()?)
+        };
+        let before = inspect(&mut worker)?;
+        assert_eq!(before.len(), 2, "{case}");
+        for (i, event) in before.iter().enumerate() {
+            assert_eq!(event["delta"]["i"], 100, "{case}");
+            assert_eq!(event["delta"]["c"], 20, "{case}");
+            assert_eq!(event["delta"]["o"], 10, "{case}");
+            let direct = i == 1 || matches!(case, "ordered" | "midnight");
+            assert_eq!(event["provider_source"] == "request-log-recovered-supplier-only", direct, "{case}: {event}");
+            if direct {
+                assert_eq!(event["provider"], format!("supplier-{}", i + 1), "{case}");
+            }
+        }
+        let captured = proofs.lines().map(serde_json::from_str).collect::<serde_json::Result<Vec<_>>>()?;
+        worker.evidence.provider_cache.capture_proxy(&captured)?;
+        drop(worker);
+        fs::write(&log, "")?;
+        let mut worker = Runtime::new(storage, settings);
+        assert_eq!(inspect(&mut worker)?, before, "{case}: persisted proofs changed");
+    }
+    Ok(())
+}
+
+#[test]
 fn archive_backlog_keeps_paired_supplier_proofs_revocable() -> Result<()> {
     let root = tempfile::tempdir()?;
     let home = root.path().join("home");

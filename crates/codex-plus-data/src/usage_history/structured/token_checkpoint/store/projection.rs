@@ -1855,7 +1855,8 @@ impl Store {
                 return Ok(terminal.as_ref() == id);
             }
             let mut claims = read.prepare_cached(
-                "SELECT event_id, payload FROM token_observations INDEXED BY token_terminal_claim
+                "SELECT event_id, payload, source_id, revision, position
+                 FROM token_observations INDEXED BY token_terminal_claim
                  WHERE session_id = (SELECT id FROM token_sessions WHERE session = ?1)
                    AND json_type(CAST(payload AS TEXT), '$.terminal_response') = 'text'
                    AND json_extract(CAST(payload AS TEXT), '$.turn') = ?2
@@ -1881,11 +1882,23 @@ impl Store {
             };
             let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
             let received_at = DateTime::parse_from_rfc3339(&receipt.timestamp)?.timestamp_millis();
+            let nearby = event.date == receipt.date
+                && at.abs_diff(received_at) <= DELAYED_REQUEST_MATCH_WINDOW_MS as u64;
+            // 同源相邻计数可直接绑定回执，不因写入延迟或跨午夜丢失供应商证明。
+            let adjacent = !nearby && received_at <= at && read.prepare_cached(
+                "SELECT 1 FROM token_observations
+                 WHERE source_id = ?1 AND revision = ?2 AND position = ?3
+                   AND event_id = ?4",
+            )?.exists(params![
+                row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)? + 1,
+                event.original_id.as_slice(),
+            ])?;
             // 这里只配对供应商身份；未知缓存不能否定回执，也不能改写原生计数。
             Ok(rows.next()?.is_none()
                 && receipt.terminal_response.as_deref() == Some(id)
-                && event.date == receipt.date
-                && at.abs_diff(received_at) <= DELAYED_REQUEST_MATCH_WINDOW_MS as u64
+                && (nearby || adjacent)
                 && !event.context_conflicts.any()
                 && !event.count_uncertain
                 && !event.count_incomplete
