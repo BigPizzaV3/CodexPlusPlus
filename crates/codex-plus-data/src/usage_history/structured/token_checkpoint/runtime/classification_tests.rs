@@ -312,6 +312,8 @@ fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
     let times = [
         now - TimeDelta::hours(50),
         now - TimeDelta::hours(26),
+        now - TimeDelta::minutes(16),
+        now - TimeDelta::minutes(13),
         now - TimeDelta::minutes(10),
         now - TimeDelta::minutes(7),
         now - TimeDelta::minutes(4),
@@ -356,37 +358,41 @@ fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
     };
     assert!(exact(&worker, 2)?);
     assert!(!exact(&worker, 1)?);
-    let pass = |worker: &mut Runtime| -> Result<()> {
+    let pass = |worker: &mut Runtime, budget| -> Result<()> {
         worker.evidence.request_evidence.refresh(&log);
         let cutoff = now.date_naive() - Days::new(3);
         let mut state = worker.initial_state();
         assert!(worker.refresh(&home, cutoff, 64 << 20, &mut state)?);
         // 单页可用完整竞争窗口，但不能靠第二页超支来维持公平。
-        worker.classify_retained(&home, cutoff, 1, &mut state)?;
+        worker.classify_retained(&home, cutoff, budget, &mut state)?;
         Ok(())
     };
     append(3)?;
-    pass(&mut worker)?;
+    pass(&mut worker, 1)?;
     assert!(exact(&worker, 3)?);
     assert!(!exact(&worker, 1)?);
     assert!(worker.evidence_before[session].tail_preempted);
     assert_eq!(worker.evidence_before[session].before, before);
     append(4)?;
-    pass(&mut worker)?;
+    pass(&mut worker, 1)?;
     assert!(exact(&worker, 1)?);
     assert!(!exact(&worker, 4)?);
     assert!(!worker.evidence_before[session].tail_preempted);
     assert!(worker.evidence_before[session].before < before);
-    pass(&mut worker)?;
+    pass(&mut worker, 1)?;
     assert!(exact(&worker, 4)?);
-    for _ in 0..4 {
-        pass(&mut worker)?;
-    }
+    append(5)?;
+    pass(&mut worker, 1)?;
+    assert!(exact(&worker, 5)?);
+    assert!(!exact(&worker, 0)?);
+    append(6)?;
+    pass(&mut worker, MAX_RETAINED_BYTES)?;
     assert!(exact(&worker, 0)?);
+    assert!(exact(&worker, 6)?, "remaining budget should classify the new tail");
     let totals: (usize, usize) = worker.store.as_ref().unwrap().db.query_row(
         "SELECT count(*),sum(json_extract(CAST(payload AS TEXT),'$.delta.t')) FROM token_resolved",
         [], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    assert_eq!(totals, (5, 550));
+    assert_eq!(totals, (7, 770));
     Ok(())
 }
 

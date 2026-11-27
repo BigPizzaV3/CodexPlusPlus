@@ -372,6 +372,33 @@ impl Runtime {
                 }
             }
         }
+        // 补完该轮让给旧页的新尾部，不占其他会话本轮的份额。
+        for (step, (session, latest)) in sessions
+            .iter()
+            .cycle()
+            .skip(offset)
+            .take(sessions.len())
+            .enumerate()
+        {
+            let Some(cursor) = self
+                .evidence_before
+                .get_mut(session)
+                .filter(|cursor| !cursor.older_next && cursor.latest < *latest)
+            else {
+                continue;
+            };
+            let from = cursor.latest.saturating_sub(classification_lookback_ms());
+            match classify_page(store, session, from, *latest, sessions.len() - step) {
+                Ok(Some(_)) => {
+                    cursor.latest = *latest;
+                    cursor.older_next = true;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    failure.get_or_insert(error);
+                }
+            }
+        }
         index
             .provider_cache
             .save(&index.request_evidence.verified, &BTreeMap::new())?;
