@@ -2518,6 +2518,23 @@
       @container (max-width: 480px) {
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav { width: 168px; flex-basis: 168px; }
       }
+      /*
+       * 收进 Codex++ 的页面（installCodexPlusEmbeddedNav）：最左边是 Codex++ 的分组栏，页面自己的左栏
+       * （供应商列表、远程控制 / 微信连接的分组）成了中间一栏。中间这栏不对齐原生侧栏、也不浮，
+       * 固定宽度、透明底，右边一条分隔线，侧栏展开时落在原生面板上。
+       */
+      .${codexPlusPageClass}[data-codex-plus-embedded="true"] .codex-plus-page-main :is(.codex-plus-page-nav, .codex-plus-provider-sidebar) {
+        box-sizing: border-box;
+        width: 220px !important;
+        flex: 0 0 220px !important;
+        background: transparent !important;
+        border-right: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)) !important;
+      }
+      .${codexPlusPageClass}[data-codex-plus-embedded="true"] .codex-plus-page-main .codex-plus-provider-sidebar {
+        width: 260px !important;
+        flex-basis: 260px !important;
+      }
+      .codex-plus-embedded-nav-title { display: flex; align-items: center; gap: 8px; }
       .codex-plus-settings {
         width: 100%;
         max-width: 728px;
@@ -9021,17 +9038,23 @@
       if (on) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     }
-    // 图标栏只留 Codex++ 一个入口：设置页和收进它里面的页面（供应商、远程控制……）打开时都亮它。
-    const railButton = document.querySelector(`#${codexPlusRailNavId} > button`);
-    if (railButton) {
-      const on = Boolean(active) && (entry === "home" || codexPlusFoldedPages().some((page) => page.entry === entry));
+    // Codex++ 入口在设置页和收进它里面的页面（供应商、远程控制、微信连接）打开时都亮。
+    [
+      [codexPlusRailNavId, ["home", ...codexPlusFoldedPages().map((page) => page.entry)]],
+      [codexPlusRailTasksId, ["tasks"]],
+      [codexPlusRailExtensionsId, ["extensions"]],
+      [codexPlusRailSponsorId, ["sponsor"]],
+    ].forEach(([id, entries]) => {
+      const railButton = document.querySelector(`#${id} > button`);
+      if (!railButton) return;
+      const on = Boolean(active) && entries.includes(entry);
       railButton.dataset.active = String(on);
       if (on) railButton.setAttribute("aria-current", "page");
       else railButton.removeAttribute("aria-current");
       // 原生 rail 按钮的选中色由 data-selected 驱动（且需无 data-suppress-active-style）。
       if (on) railButton.setAttribute("data-selected", "");
       else railButton.removeAttribute("data-selected");
-    }
+    });
     syncCodexPlusRailNativeSelection();
   }
 
@@ -9275,11 +9298,8 @@
       if (!leavingWindow) {
         const railButton = target?.closest("[data-codex-plus-rail] > button");
         if (railButton) {
-          // Codex++ 入口在收进去的页面（供应商等）上也是选中的，但那时浮出的是 Codex++ 卡片（页面 + 设置分组），
-          // 好从这一页直接换到另一页；只有设置页本身开着时才浮页面自己的左栏。
-          const ownPage = railButton.getAttribute("aria-current") === "page"
-            && (railButton.parentElement.id !== codexPlusRailNavId || codexPlusActiveEntry() === "home");
-          if (codexPlusSidebarFloating()) next = page && ownPage ? "page" : railButton.parentElement.id;
+          // 收进 Codex++ 的页面（供应商等）最左边也是 Codex++ 的分组栏，所以和设置页一样浮它自己的左栏。
+          if (codexPlusSidebarFloating()) next = page && railButton.getAttribute("aria-current") === "page" ? "page" : railButton.parentElement.id;
         } else if (page?.card.contains(target)) next = "page";
         else if (peek?.dataset.open === "true" && peek.contains(target)) next = shown;
         else if (page && event.clientX <= 4) next = "page";
@@ -9393,7 +9413,58 @@
     const menu = codexPlusExtensionItems(codexPlusRegistry.menuItems).length ? '<div data-codex-plus-ext-menu="true"></div>' : "";
     const root = document.createElement("div");
     root.innerHTML = `<div data-codex-plus-panel="home">${groups}${renderCodexPlusSettingsSectionGroups()}${renderCodexPlusSettingsGroup("ext-menu", "拓展设置", menu)}${renderCodexPlusSettingsGroup("tools", "工具与关于", "")}</div>`;
-    return renderCodexPlusSettingsNavItems(root);
+    const html = renderCodexPlusSettingsNavItems(root);
+    // 开着的是收进 Codex++ 的页面（供应商等）时，选中的是「页面」里那一项，设置分组一个都不选。
+    const entry = codexPlusActiveEntry();
+    return codexPlusFoldedPages().some((page) => page.entry === entry)
+      ? html.replace(/(data-codex-plus-settings-nav="[^"]*") data-active="true" aria-current="page"/g, '$1 data-active="false"')
+      : html;
+  }
+
+  /**
+   * 收进 Codex++ 的页面（供应商、远程控制、微信连接）打开时，最左边照样是 Codex++ 的分组栏，
+   * 右边才是那一页自己的布局（供应商：列表 | 详情；远程控制、微信连接：分组 | 内容），
+   * 看起来就是在 Codex++ 页面里面换了一页，而不是跳到另一个页面。
+   * 页面挂进 body 之后调用：分组栏的选中项按当前开着的页面算。
+   * 左栏和设置页同一套样式（modal-content 打 data-codex-plus-section-nav）；侧栏收起时它照样浮成卡片
+   * （installCodexPlusNavPeek 认 .codex-plus-modal-content > .codex-plus-page-layout > .codex-plus-page-nav）。
+   */
+  function installCodexPlusEmbeddedNav(overlay) {
+    const content = overlay?.querySelector(".codex-plus-modal-content");
+    if (!content || overlay.dataset.codexPlusEmbedded === "true") return;
+    const layout = document.createElement("div");
+    layout.className = "codex-plus-page-layout";
+    const main = document.createElement("div");
+    main.className = "codex-plus-page-main";
+    main.append(...content.childNodes);
+    const nav = document.createElement("nav");
+    nav.className = "codex-plus-page-nav";
+    nav.setAttribute("aria-label", "Codex++ 设置分组");
+    nav.innerHTML = `<div class="codex-plus-page-nav-header"><div class="codex-plus-page-nav-title codex-plus-embedded-nav-title"><span class="codex-plus-backend-indicator" data-codex-backend-indicator="true" data-status="${escapeHtml(codexPlusBackendStatus.status || "checking")}"></span><span>Codex++ ${escapeHtml(codexPlusVersion)}</span></div></div>
+      <div class="codex-plus-page-nav-body" data-codex-plus-embedded-nav-body="true"></div>`;
+    layout.append(nav, main);
+    content.appendChild(layout);
+    content.dataset.codexPlusSectionNav = "true";
+    overlay.dataset.codexPlusEmbedded = "true";
+    nav.addEventListener("click", (event) => {
+      const button = event.target instanceof Element ? event.target.closest("button") : null;
+      if (!button) return;
+      // 不让页面自己的点击处理（挂在 overlay 上）再处理一遍。
+      event.stopPropagation();
+      const link = button.getAttribute("data-codex-plus-page-link");
+      if (link) return openCodexPlusFoldedPage(link);
+      const group = button.getAttribute("data-codex-plus-settings-nav");
+      if (!group) return;
+      openCodexPlusPage();
+      selectCodexPlusSettingsGroup(group);
+    });
+    const render = () => {
+      const body = nav.isConnected ? nav.querySelector("[data-codex-plus-embedded-nav-body]") : null;
+      if (body) body.innerHTML = codexPlusSettingsPeekNavItems();
+    };
+    render();
+    // 设置分组清单要等后台读完；读完时页面还开着就照新清单重画。
+    if (!codexPlusSettingsCatalog) Promise.resolve(loadCodexPlusSettingsCatalog()).then(render, () => {});
   }
 
   /**
@@ -10989,9 +11060,10 @@
   }
 
   /**
-   * 收进 Codex++ 入口的页面。图标栏上只放 Codex++ 一个入口，不占一排图标；这些页面列在它的左栏
-   * （和侧栏收起时浮出的卡片）最上面的「页面」一节。entry 与 codexPlusActiveEntry 的取值一致。
+   * 收进 Codex++ 入口的页面：不占图标栏的图标，列在 Codex++ 左栏（和侧栏收起时浮出的卡片）最上面的「页面」一节，
+   * 点开后仍在 Codex++ 页面里面显示（installCodexPlusEmbeddedNav）。entry 与 codexPlusActiveEntry 的取值一致。
    * 远程控制与微信连接相邻：两者都是「在手机上用 Codex」，都由管理器托管、Codex 没开也能用。
+   * 任务面板、拓展、推荐内容仍各占一个图标（installCodexPlusRailNavigation）。
    */
   function codexPlusFoldedPages() {
     const icons = codexPlusPageIcons();
@@ -10999,9 +11071,6 @@
       { entry: "provider", label: "供应商", icon: icons.provider, open: () => openCodexPlusProviderPage() },
       { entry: "remote", label: "远程控制", icon: icons.remote, open: () => openCodexPlusRemoteControlPage() },
       { entry: "weixin", label: "微信连接", icon: icons.weixin, open: () => openCodexPlusWeixinConnectPage() },
-      { entry: "tasks", label: "任务面板", icon: icons.tasks, open: () => openCodexPlusTaskBoardPage() },
-      { entry: "extensions", label: "拓展", icon: icons.extensions, open: () => openCodexPlusExtensions() },
-      { entry: "sponsor", label: "推荐内容", icon: icons.sponsor, open: () => openCodexPlusSponsor() },
     ];
   }
 
@@ -11010,7 +11079,7 @@
   }
 
   /**
-   * 把 Codex++ 入口挂到新版图标栏（收进它里面的页面见 codexPlusFoldedPages）。
+   * 把 Codex++、任务面板、拓展、推荐内容四个入口挂到新版图标栏（收进 Codex++ 里面的页面见 codexPlusFoldedPages）。
    *
    * Codex 的 rail 渲染晚于注入，所以这里每次 scan 都会被调用；靠 id 判存避免重复插入。
    */
@@ -11036,11 +11105,15 @@
       }, true);
     }
 
+    const icons = codexPlusPageIcons();
     const specs = [
-      { id: codexPlusRailNavId, label: "Codex++", iconMarkup: codexPlusPageIcons().home, withStatus: true, onActivate: openCodexPlusPage },
+      { id: codexPlusRailNavId, label: "Codex++", iconMarkup: icons.home, withStatus: true, onActivate: openCodexPlusPage },
+      { id: codexPlusRailTasksId, label: "任务面板", iconMarkup: icons.tasks, withStatus: false, onActivate: openCodexPlusTaskBoardPage },
+      { id: codexPlusRailExtensionsId, label: "拓展", iconMarkup: icons.extensions, withStatus: false, onActivate: openCodexPlusExtensions },
+      { id: codexPlusRailSponsorId, label: "推荐内容", iconMarkup: icons.sponsor, withStatus: false, onActivate: openCodexPlusSponsor },
     ];
-    // 以前每个页面一个图标，已经收进 Codex++：旧注入留下的入口摘掉。
-    [codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId, codexPlusRailTasksId, codexPlusRailExtensionsId, codexPlusRailSponsorId]
+    // 供应商、远程控制、微信连接已经收进 Codex++：旧注入留下的入口摘掉。
+    [codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId]
       .forEach((id) => document.getElementById(id)?.remove());
 
     const anchor = codexPlusRailPrimaryAnchor(rail);
@@ -17127,6 +17200,8 @@ ${key} = ${value}`]);
     overlay.addEventListener("change", codexPlusProviderHandleChange);
     overlay.addEventListener("click", (event) => { void codexPlusProviderHandleClick(event); });
     document.body.appendChild(overlay);
+    // 最左边保留 Codex++ 的分组栏：这一页是在 Codex++ 页面里面打开的（40-backend-settings.js）。
+    installCodexPlusEmbeddedNav(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);
     document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {
@@ -18439,6 +18514,8 @@ ${key} = ${value}`]);
     overlay.addEventListener("input", codexPlusRemoteHandleInput);
     installCodexPlusSectionNav(overlay, codexPlusRemoteSectionNav);
     document.body.appendChild(overlay);
+    // 最左边保留 Codex++ 的分组栏：这一页是在 Codex++ 页面里面打开的（40-backend-settings.js）。
+    installCodexPlusEmbeddedNav(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);
     document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {
@@ -19126,6 +19203,8 @@ ${key} = ${value}`]);
     }, 0));
     installCodexPlusSectionNav(overlay, codexPlusWeixinSectionNav);
     document.body.appendChild(overlay);
+    // 最左边保留 Codex++ 的分组栏：这一页是在 Codex++ 页面里面打开的（40-backend-settings.js）。
+    installCodexPlusEmbeddedNav(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);
     document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {

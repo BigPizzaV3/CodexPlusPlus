@@ -1718,6 +1718,23 @@
       @container (max-width: 480px) {
         .${codexPlusPageClass} .codex-plus-modal-content[data-codex-plus-section-nav] .codex-plus-page-nav { width: 168px; flex-basis: 168px; }
       }
+      /*
+       * 收进 Codex++ 的页面（installCodexPlusEmbeddedNav）：最左边是 Codex++ 的分组栏，页面自己的左栏
+       * （供应商列表、远程控制 / 微信连接的分组）成了中间一栏。中间这栏不对齐原生侧栏、也不浮，
+       * 固定宽度、透明底，右边一条分隔线，侧栏展开时落在原生面板上。
+       */
+      .${codexPlusPageClass}[data-codex-plus-embedded="true"] .codex-plus-page-main :is(.codex-plus-page-nav, .codex-plus-provider-sidebar) {
+        box-sizing: border-box;
+        width: 220px !important;
+        flex: 0 0 220px !important;
+        background: transparent !important;
+        border-right: 1px solid var(--codex-plus-border-subtle, var(--codex-plus-border)) !important;
+      }
+      .${codexPlusPageClass}[data-codex-plus-embedded="true"] .codex-plus-page-main .codex-plus-provider-sidebar {
+        width: 260px !important;
+        flex-basis: 260px !important;
+      }
+      .codex-plus-embedded-nav-title { display: flex; align-items: center; gap: 8px; }
       .codex-plus-settings {
         width: 100%;
         max-width: 728px;

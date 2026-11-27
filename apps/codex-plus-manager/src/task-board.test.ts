@@ -128,8 +128,8 @@ test("Codex 左侧图标栏的「任务面板」入口：登记进所有写死�
   assert.ok(manifest.fragments.some((fragment: { name: string }) => fragment.name === "47-task-board-page.js"), "分片登记进清单");
   assert.match(renderer, /codexPlusRailTasksId = "codex-plus-rail-tasks"/);
   assert.match(renderer, /codexPlusTaskBoardTab = "task-board"/);
-  assert.match(renderer, /\{ entry: "tasks", label: "任务面板", icon: icons\.tasks, open: \(\) => openCodexPlusTaskBoardPage\(\) \}/);
-  assert.match(renderer, /codexPlusFoldedPages\(\)\.some\(\(page\) => page\.entry === entry\)/, "收进 Codex++ 的页面打开时亮 Codex++ 入口");
+  assert.match(renderer, /\{ id: codexPlusRailTasksId, label: "任务面板", iconMarkup: icons\.tasks, withStatus: false, onActivate: openCodexPlusTaskBoardPage \}/);
+  assert.match(renderer, /\[codexPlusRailTasksId, \["tasks"\]\],/, "选中态");
   assert.match(renderer, /if \(tab === codexPlusTaskBoardTab\) return "tasks";/);
   // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。
   assert.equal(renderer.split("#${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;").length - 1, 2);

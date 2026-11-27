@@ -1074,12 +1074,16 @@ describe("renderer injection header compatibility", () => {
   it("把三个 rail 入口都接成独立页面，并跟随 Codex 的界面缩放", async () => {
     const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
 
-    // 推荐内容是独立页面，入口收进图标栏 Codex++ 左栏的「页面」一节（图标栏只留 Codex++ 一个）。
+    // 推荐内容从弹窗二级 tab 提成图标栏上的一级入口。
     assert.match(renderer, /const codexPlusRailSponsorId = "codex-plus-rail-sponsor"/);
     assert.match(renderer, /const codexPlusSponsorTab = "sponsor"/);
     assert.match(renderer, /function openCodexPlusSponsor\(\)/);
-    assert.match(renderer, /\{ entry: "sponsor", label: "推荐内容", icon: icons\.sponsor, open: \(\) => openCodexPlusSponsor\(\) \}/);
-    assert.match(renderer, /const specs = \[\n\s*\{ id: codexPlusRailNavId, label: "Codex\+\+"[^\n]*\n\s*\];/, "图标栏只放 Codex++ 一个入口");
+    assert.match(renderer, /id: codexPlusRailSponsorId, label: "推荐内容"/);
+    assert.match(renderer, /\[codexPlusRailSponsorId, \["sponsor"\]\],/, "选中态");
+    // 图标栏放 Codex++、任务面板、拓展、推荐内容四个；供应商、远程控制、微信连接收进 Codex++ 里面打开。
+    assert.match(renderer, /const specs = \[\n(?:\s*\{ id: codexPlusRail(?:Nav|Tasks|Extensions|Sponsor)Id,[^\n]*\n){4}\s*\];/);
+    assert.match(renderer, /\[codexPlusRailProviderId, codexPlusRailRemoteId, codexPlusRailWeixinId\]\n\s*\.forEach\(\(id\) => document\.getElementById\(id\)\?\.remove\(\)\);/, "旧注入留下的入口摘掉");
+    assert.match(renderer, /\[codexPlusRailNavId, \["home", \.\.\.codexPlusFoldedPages\(\)\.map\(\(page\) => page\.entry\)\]\],/, "收进去的页面打开时亮 Codex++");
     assert.match(renderer, /return codexPlusFoldedPagesNavHtml\(\) \+ groups\.map/, "左栏最上面列出收进去的页面");
     assert.match(renderer, /const pageLink = target\?\.closest\("\[data-codex-plus-page-link\]"\);/, "设置页左栏点页面打开那一页");
     assert.match(renderer, /if \(link\) return openCodexPlusFoldedPage\(link\);/, "悬浮卡片里点页面打开那一页");

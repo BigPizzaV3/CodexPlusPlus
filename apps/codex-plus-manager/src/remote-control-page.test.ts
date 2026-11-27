@@ -81,7 +81,8 @@ test("Codex 左侧图标栏的「远程控制」入口：登记进所有写死�
   const commands = await read("../src-tauri/src/remote_control_commands.rs");
   assert.match(renderer, /codexPlusRailRemoteId = "codex-plus-rail-remote"/);
   assert.match(renderer, /\{ entry: "remote", label: "远程控制", icon: icons\.remote, open: \(\) => openCodexPlusRemoteControlPage\(\) \}/);
-  assert.match(renderer, /codexPlusFoldedPages\(\)\.some\(\(page\) => page\.entry === entry\)/, "收进 Codex++ 的页面打开时亮 Codex++ 入口");
+  assert.match(renderer, /\[codexPlusRailNavId, \["home", \.\.\.codexPlusFoldedPages\(\)\.map\(\(page\) => page\.entry\)\]\],/, "打开时亮 Codex++ 入口");
+  assert.match(pageSource, /document\.body\.appendChild\(overlay\);\n(?:\s*\/\/[^\n]*\n)*\s*installCodexPlusEmbeddedNav\(overlay\);/, "在 Codex++ 页面里面打开：最左边保留 Codex++ 分组栏");
   assert.match(renderer, /if \(tab === codexPlusRemoteControlTab\) return "remote";/);
   // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。
   assert.equal(renderer.split("#${codexPlusRailSponsorId}, #${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;").length - 1, 2);

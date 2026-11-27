@@ -1314,6 +1314,8 @@
     overlay.addEventListener("change", codexPlusProviderHandleChange);
     overlay.addEventListener("click", (event) => { void codexPlusProviderHandleClick(event); });
     document.body.appendChild(overlay);
+    // 最左边保留 Codex++ 的分组栏：这一页是在 Codex++ 页面里面打开的（40-backend-settings.js）。
+    installCodexPlusEmbeddedNav(overlay);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);
     document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {
