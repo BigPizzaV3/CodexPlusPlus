@@ -1277,6 +1277,11 @@ async fn gateway_end_to_end() {
         .collect::<Vec<_>>();
     assert_eq!(codex_entries.len(), 1, "{codex_entries:?}");
     assert_eq!(codex_entries[0].agent.as_deref(), Some("codex"));
+    // #3318：Codex（Responses）经网关的请求也记下上游真正发出的时刻，详情里才有「转发前耗时」。
+    let upstream_started = codex_entries[0]
+        .upstream_started_at_ms
+        .expect("Codex 经网关的请求要记上游发出时刻");
+    assert!(upstream_started >= codex_entries[0].started_at_ms, "{codex_entries:?}");
 
     // —— 8d2. #2783：Codex 的客户端标识（UA、originator、x-codex-*）经网关原样带给 Responses 上游，
     //         直接访问网关、以 ChatGPT 身份经本地代理转进网关两条路都一样 ——

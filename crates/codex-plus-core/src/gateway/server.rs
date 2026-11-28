@@ -570,6 +570,11 @@ pub(crate) async fn open_responses_for_agent(
             let mut merged = response.request_trace.take().unwrap_or_default();
             merged.model = trace.model;
             merged.attempts = trace.attempts.max(merged.attempts);
+            // 上游真正发出的时刻在网关这层记的，内层协议代理的痕迹里没有时，带过去：
+            // 否则 Codex（Responses）请求的日志详情里没有「转发前耗时」（#3318）。
+            if merged.attempt_started_at_ms.is_none() {
+                merged.attempt_started_at_ms = trace.attempt_started_at_ms;
+            }
             if merged.relay_id.is_empty() {
                 merged.relay_id = trace.relay_id;
                 merged.relay_name = trace.relay_name;

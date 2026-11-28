@@ -3825,6 +3825,8 @@ async fn open_responses_proxy_request_once(
             crate::request_log::update_running_phase(id, "requesting");
         }
         let has_more_candidates = attempt + 1 < relay_count;
+        // 直连经本地代理时也记下这次尝试开始的时刻，请求日志据此分出「转发前耗时」（#3318）。
+        request_trace.attempt_started_at_ms = Some(crate::launcher::current_time_ms());
         validate_upstream(&relay)?;
         if crate::responses_websocket::active() && relay.protocol != crate::settings::RelayProtocol::Responses {
             return Err(crate::responses_websocket::RequiresHttp("此 WS 路径只支持原生 Responses 上游；HTTP/SSE 兼容路由请继续使用 HTTP").into());
