@@ -1,6 +1,7 @@
 use super::{
     CacheAccounting, ContextConflicts, FileState, InheritedUsageContext, LegacyIdentity,
-    SessionModelObservation, Tokens, UsageEvent, segments::HistoryBase,
+    NativeResponseIdentity, PendingUsageReceipt, SessionModelObservation, Tokens, UsageEvent,
+    segments::HistoryBase,
 };
 use crate::usage_history::UsageHistoryBoundary;
 use chrono::NaiveDate;
@@ -33,6 +34,7 @@ struct Counter(#[serde(with = "StoredTokens")] Tokens);
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Observation {
+    native_response: Option<(Box<str>, bool)>,
     original_id: [u8; 32],
     turn: String,
     model: String,
@@ -57,6 +59,10 @@ struct Observation {
 impl Observation {
     fn capture(event: &UsageEvent) -> Self {
         Self {
+            native_response: event
+                .native_response_id
+                .as_ref()
+                .map(|receipt| (receipt.id.clone(), receipt.full_counts)),
             original_id: event.original_id,
             turn: event.turn.clone(),
             model: event.model.clone(),
@@ -81,6 +87,9 @@ impl Observation {
 
     fn into_event(self, id: [u8; 32], session: String) -> anyhow::Result<UsageEvent> {
         Ok(UsageEvent {
+            native_response_id: self
+                .native_response
+                .map(|(id, full_counts)| NativeResponseIdentity { id, full_counts }),
             id,
             original_id: self.original_id,
             session,
@@ -109,8 +118,15 @@ impl Observation {
 type SourceStamp = (u64, Option<SystemTime>, Option<(u64, u64)>);
 
 #[derive(Serialize, Deserialize)]
+enum StoredPendingReceipt {
+    Unusable,
+    One(Box<str>, i64, Counter, Counter),
+}
+
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Checkpoint {
+    pending_response: Option<StoredPendingReceipt>,
     stamp: Option<SourceStamp>,
     resume_pending: bool,
     session: String,
@@ -144,6 +160,12 @@ impl Checkpoint {
         (
             offset,
             Self {
+                pending_response: state.pending_response.as_ref().map(|receipt| match receipt {
+                    PendingUsageReceipt::Unusable => StoredPendingReceipt::Unusable,
+                    PendingUsageReceipt::One { id, at, usage, total } => {
+                        StoredPendingReceipt::One(id.clone(), *at, Counter(*usage), Counter(*total))
+                    }
+                }),
                 stamp: state.stamp,
                 resume_pending: state.resume_pending
                     || state.reader.is_some()
@@ -181,6 +203,12 @@ impl Checkpoint {
 
     fn restore(self, offset: u64) -> FileState {
         FileState {
+            pending_response: self.pending_response.map(|receipt| match receipt {
+                StoredPendingReceipt::Unusable => PendingUsageReceipt::Unusable,
+                StoredPendingReceipt::One(id, at, usage, total) => {
+                    PendingUsageReceipt::One { id, at, usage: usage.0, total: total.0 }
+                }
+            }),
             stamp: self.stamp,
             offset,
             resume_pending: self.resume_pending,
