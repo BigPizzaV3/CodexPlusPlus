@@ -829,6 +829,9 @@ fn codex_model_metadata(
         }
         metadata.insert(model, Value::Object(fields));
     }
+    if let Some(fields) = metadata.get_mut(&binding_default_model(gateway, binding)) {
+        fields["codex_plus_agent_default"] = json!(true);
+    }
     if metadata.is_empty() {
         return String::new();
     }

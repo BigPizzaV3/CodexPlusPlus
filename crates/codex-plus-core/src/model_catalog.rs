@@ -127,6 +127,10 @@ fn live_gateway_model_catalog(home: &Path, profile: &RelayProfile) -> Option<Val
     let (models, metadata, source) = models_from_config_model_catalog_json(home, &effective);
     let source = source.expect("managed gateway catalog pointer is present");
     let model = models.iter().find(|model| **model == config.effective_model).or_else(|| models.first());
+    let profile_default = crate::relay_config::relay_profile_model(profile);
+    let agent_default = models.iter().find(|slug| {
+        metadata.get(*slug).is_some_and(|row| row["codex_plus_agent_default"] == true)
+    }).or_else(|| models.iter().find(|slug| **slug == profile_default));
     Some(json!({
         "status": source["status"],
         "message": source["message"],
@@ -137,7 +141,7 @@ fn live_gateway_model_catalog(home: &Path, profile: &RelayProfile) -> Option<Val
         "model_provider": profile.id,
         "codex_model_provider": effective.get("model_provider"),
         "provider_name": profile.name,
-        "default_model": model.map(String::as_str).unwrap_or_default(),
+        "default_model": agent_default.map(String::as_str).unwrap_or_default(),
         "models": models,
         "modelMetadata": metadata,
         "sources": [source],
@@ -245,6 +249,16 @@ mod runtime_context_tests {
         let catalog = live_gateway_model_catalog(home.path(), &profile).unwrap();
         assert_eq!(catalog["models"], json!(["added"]));
         assert_eq!(catalog["model"], "added");
+        assert_eq!(catalog["default_model"], "");
+        let next_profile = RelayProfile { model: "added".into(), ..profile.clone() };
+        std::fs::write(&path, r#"{"models":[{"slug":"old"},{"slug":"added"}]}"#).unwrap();
+        let selected = live_gateway_model_catalog(home.path(), &next_profile).unwrap();
+        assert_eq!(selected["model"], "old");
+        assert_eq!(selected["default_model"], "added");
+        std::fs::write(&path, r#"{"models":[{"slug":"old"},{"slug":"added","codex_plus_agent_default":true}]}"#).unwrap();
+        let refreshed = live_gateway_model_catalog(home.path(), &profile).unwrap();
+        assert_eq!(refreshed["model"], "old");
+        assert_eq!(refreshed["default_model"], "added");
         assert_eq!(catalog["model_provider"], profile.id);
         assert_eq!(catalog["modelMetadata"]["added"]["codex_plus_group_id"], "new-provider");
         assert_ne!(gateway_catalog_revision(home.path()).unwrap(), revision);
@@ -475,6 +489,8 @@ fn relay_profile_model_catalog_value(home: &Path, profile: &RelayProfile) -> Val
     let configured_model = crate::relay_config::relay_profile_model(profile);
     let default_model = if models.iter().any(|item| item == &configured_model) {
         configured_model
+    } else if profile.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID {
+        String::new()
     } else {
         models.first().cloned().unwrap_or_default()
     };
@@ -1822,6 +1838,24 @@ mod model_fetch_tests {
         let catalog = relay_profile_model_catalog_value(home.path(), &profile);
 
         assert_eq!(catalog["default_model"], "qwen3-coder");
+    }
+
+    #[test]
+    fn gateway_catalog_keeps_bound_default_separate_from_current_model() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("config.toml"), "model = 'current'\n").unwrap();
+        let mut profile = RelayProfile {
+            id: crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into(),
+            model: "current".into(),
+            model_list: "current\nbound".into(),
+            config_contents: "model = 'bound'\n".into(),
+            ..RelayProfile::default()
+        };
+        let catalog = relay_profile_model_catalog_value(home.path(), &profile);
+        assert_eq!(catalog["effective_config_model"], "current");
+        assert_eq!(catalog["default_model"], "bound");
+        profile.model_list = "current".into();
+        assert_eq!(relay_profile_model_catalog_value(home.path(), &profile)["default_model"], "");
     }
 
     #[test]

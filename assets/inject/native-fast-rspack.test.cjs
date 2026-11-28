@@ -112,6 +112,14 @@ test("Rspack factory discovery keeps originals on re-prepare without executing m
   assert.deepEqual(found, [{ key: "UI", source: 'UI(e,t){throw Error("readServiceTier must not execute")}' }]);
 });
 
+test("Rspack picker discovery abandons an absent picker immediately", async () => {
+  const source = 'export const __webpack_require__={m:{UI:()=>null}};';
+  const started = performance.now();
+  const found = await rspack.readFactories('data:text/javascript,' + encodeURIComponent(source), 50, { fast: false, picker: true });
+  assert.deepEqual(found, []);
+  assert.ok(performance.now() - started < 100);
+});
+
 test("Rspack cold-start discovery waits for lazy factories without invoking them", async () => {
   const source = `export const __webpack_require__={m:{}};setTimeout(()=>Object.assign(__webpack_require__.m,{${fixtures().map(f=>f.source).join(",")}}),20);`;
   const found = await rspack.readFactories('data:text/javascript,' + encodeURIComponent(source), 5);
@@ -198,6 +206,67 @@ const reorderedRuntimeSource = runtimeSource
   .replace("var key,unused,ids=chunk.__rspack_esm_ids,modules=chunk.__webpack_modules__,run=chunk.__rspack_esm_runtime,i=0;", "var key,modules=chunk.__webpack_modules__,run=chunk.__rspack_esm_runtime;")
   .replace("for(run&&run(require);i<ids.length;i++)", "run&&run(require);for(var ids=chunk.__rspack_esm_ids,i=0;i<ids.length;i++)");
 const chunkSource = 'export const __rspack_esm_id=782259;export const __rspack_esm_ids=[782259];export const __webpack_modules__={};';
+
+test("desktop reset uses the bound provider and native model/effort setter with Fast off", async () => {
+  const target = "gpt-5.6-sol";
+  const managed = ["first/astra", "second/astra"];
+  const rows = [...managed, target].map(model => ({ model, displayName: model, defaultReasoningEffort: "high",
+    supportedReasoningEfforts: [{ reasoningEffort: "high" }], isDefault: model === target }));
+  const factories = [{ key: "Picker", source: "Picker(module,exports,require){module.exports=function(input){const {context,host,query,eligible,original,choose,setMode,setModel,guard}=input;let modelHost=context?.modelHostId??host;let{data:catalog,status:status,isEnabled:enabled,isFetching:fetching,refetch:refetch}=query(),ready=true;let recommended=eligible?.find(original),options=(0,choose.Qv)(eligible,{sliderModelsConfig:ready,stripGptPrefix:true});let reset=0===options.length?void 0:()=>{let choice=(0,choose.Pd)(options,null==recommended?void 0:`${recommended.model}:${recommended.defaultReasoningEffort}`);(null==choice||guard(choice.model))&&(setMode(\"default\"),null!=choice&&setModel(choice.model,choice.reasoningEffort))};return {isTeamCatalog:catalog?.isTeamCatalog,onSelectDefault:reset}}}" }];
+  const window = context(false);
+  window.__codexPlusGatewayPickerPatchRequested = true;
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "native-fast-rspack.js"), "utf8"), { window, Error, URL });
+  const bundle = fs.readFileSync(path.join(__dirname, "renderer-inject.js"), "utf8");
+  const resolver = bundle.match(/^  window\.__codexPlusGatewayPickerDefault = [^]*?^  };$/m);
+  assert.ok(resolver);
+  const profile = { id: "codex-plus-gateway", model: managed[0] };
+  const state = { window, codexPlusBackendSettingsLoaded: true, codexPlusBackendSettings: {}, codexModelCatalogActiveProfile: () => profile };
+  vm.runInNewContext(resolver[0], state);
+  const prepared = await window.__codexPlusNativeFastUnlock.prepareDocumentModules({
+    location: new URL("app://-/index.html"), document: { scripts: [{ src: "app://-/assets/348410.abcdef.js" }] },
+    fetchText: async url => url.includes("348410") ? runtimeSource : chunkSource, readRspackFactories: async () => factories,
+  });
+  assert.equal(prepared.diagnostics.rewriters.gatewayPicker, "patched");
+  assert.equal(prepared.diagnostics.rewriters.fast, undefined);
+  const sandbox = { window };
+  vm.runInNewContext(prepared.modules[0].patchedSource.replaceAll("export const ", "const ") + ";globalThis.install=__rspack_esm_runtime", sandbox);
+  const runtime = { m: {} };
+  sandbox.install(runtime);
+  runtime.m.Picker = () => assert.fail("original factory");
+  const module = {};
+  runtime.m.Picker(module, {}, null);
+  const writes = [];
+  const input = { context: {}, host: "local", query: () => ({ data: { isTeamCatalog: false } }), eligible: rows,
+    original: row => row.isDefault, guard: () => true, setMode: mode => writes.push(mode),
+    setModel: (model, effort) => writes.push([model, effort]), choose: {
+      Qv: () => [{ id: target + ":high", model: target, reasoningEffort: "high" }],
+      Pd: (options, id) => options.find(option => option.id === id) ?? options[0],
+    } };
+  const reset = () => { writes.length = 0; module.exports(input).onSelectDefault?.(); return writes.slice(); };
+  assert.deepEqual(reset(), ["default", [managed[0], "high"]]);
+  profile.model = managed[1];
+  assert.deepEqual(reset(), ["default", [managed[1], "high"]]);
+  state.codexPlusBackendSettings.codexMultiInstance = true;
+  state.codexModelCatalog = { model_provider: profile.id, default_model: managed[0] };
+  assert.deepEqual(reset(), ["default", [managed[0], "high"]]);
+  state.codexPlusBackendSettings.codexMultiInstance = false;
+  input.guard = () => false;
+  assert.deepEqual(reset(), []);
+  input.guard = () => true;
+  input.host = "remote";
+  assert.deepEqual(reset(), ["default", [target, "high"]]);
+  input.host = "local";
+  input.context.modelHostId = "remote";
+  assert.deepEqual(reset(), ["default", [target, "high"]]);
+  input.context.modelHostId = "local";
+  input.query = () => ({ data: { isTeamCatalog: true } });
+  assert.deepEqual(reset(), ["default", [target, "high"]]);
+  input.query = () => ({ data: {} });
+  input.choose.Qv = () => [];
+  assert.deepEqual(reset(), ["default", [managed[1], "high"]]);
+  profile.model = "absent/astra";
+  assert.deepEqual(reset(), []);
+});
 
 test("Rspack registration replaces duplicate chunk factories without touching other modules", () => {
   const prepared = rspack.prepare(chunkSource, "app://-/assets/782259.abcdef.js", fixtures(), source => ({ source }), source => source);

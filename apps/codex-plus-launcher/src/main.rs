@@ -1082,8 +1082,7 @@ async fn activate_existing_codex_app(options: &LaunchOptions) -> anyhow::Result<
             "Codex 已打开，原后台增强服务不可用，请重启 Codex++ 后重试。");
         wait_for_existing_bridge(launch.debug_port().unwrap_or(options.debug_port)).await?;
     }
-    if settings.enhancements_enabled
-        && (settings.codex_app_native_fast_unlock || settings.codex_app_native_predictions)
+    if settings.native_model_modules_requested()
         && let Ok(launch) = &launch_result
         && let Err(error) = hooks
             .apply_native_module_patches_on_launch(launch.debug_port().unwrap_or(options.debug_port))
@@ -3139,9 +3138,7 @@ mod tests {
             "Fast must be applied after Codex activation"
         );
         let guard = &body[launch..patch];
-        assert!(guard.contains("settings.enhancements_enabled"));
-        assert!(guard.contains("settings.codex_app_native_fast_unlock"));
-        assert!(guard.contains("settings.codex_app_native_predictions"));
+        assert!(guard.contains("settings.native_model_modules_requested()"));
         assert!(guard.contains("let Ok(launch) = &launch_result"));
         assert!(body[patch..].contains("launch.debug_port().unwrap_or(options.debug_port)"));
         assert!(body[patch..].contains("launcher.native_module_patch_failed"));
