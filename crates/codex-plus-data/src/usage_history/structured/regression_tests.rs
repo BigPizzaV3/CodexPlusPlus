@@ -170,7 +170,7 @@ fn nonempty_scoped_response_matches_previous_aggregation_for_custom_range() {
         let mut day = Aggregate::default();
         let mut day_digest = Sha256::new();
         let mut models = BTreeMap::<String, Aggregate>::new();
-        let mut groups = BTreeMap::<(String, String, String, bool), Vec<usize>>::new();
+        let mut groups = BTreeMap::<(String, String, String, bool, bool), Vec<usize>>::new();
         for &i in indices {
             let event = &events[i];
             let record = Record {
@@ -183,8 +183,10 @@ fn nonempty_scoped_response_matches_previous_aggregation_for_custom_range() {
             day.add(&record);
             models.entry(event.model.clone()).or_default().add(&record);
             event.update_membership_digest(&mut day_digest);
+            // 同会话推断出的供应商单独成组并标注（与精确证据分开），和读端的分组键一致。
             groups.entry((event.model.clone(), event.provider.clone(), event.role.clone(),
-                event.context_conflicts.provider)).or_default().push(i);
+                event.context_conflicts.provider,
+                event.provider_source.as_deref() == Some(SESSION_PROVIDER_INFERENCE))).or_default().push(i);
         }
         let mut result = day.value();
         result["date"] = json!(original.date.to_string());
@@ -194,7 +196,7 @@ fn nonempty_scoped_response_matches_previous_aggregation_for_custom_range() {
             row["model"] = json!(model);
             row
         }).collect::<Vec<_>>());
-        result["breakdowns"] = json!(groups.into_iter().map(|((model, provider, role, conflict), members)| {
+        result["breakdowns"] = json!(groups.into_iter().map(|((model, provider, role, conflict, inferred), members)| {
             let mut aggregate = Aggregate::default();
             let mut priceable = Tokens::default();
             let mut digest = Sha256::new();
@@ -227,6 +229,10 @@ fn nonempty_scoped_response_matches_previous_aggregation_for_custom_range() {
             }
             if conflict {
                 row["providerConflict"] = json!(true);
+            }
+            if inferred {
+                row["providerInferred"] = json!(true);
+                row["providerInferenceSource"] = json!(SESSION_PROVIDER_INFERENCE);
             }
             if exact {
                 row["classificationEvidence"] = json!(if request_proof {
@@ -264,9 +270,13 @@ fn nonempty_scoped_response_matches_previous_aggregation_for_custom_range() {
     assert_eq!(mixed["priceableUsage"], json!({"inputTokens":100,"cachedInputTokens":20,"outputTokens":10}));
     let supplier = breakdowns.iter().find(|row| row["model"] == "model-b").unwrap();
     assert_eq!(supplier["supplierClassificationEvidence"], "upstream-counter-bidirectional-supplier-only");
-    let mixed = breakdowns.iter().find(|row| row["model"] == "model-c").unwrap();
-    assert!(mixed["classificationEvidence"].is_null());
-    assert!(mixed["supplierClassificationEvidence"].is_null());
+    // 同会话推断的那一条单独成组，不和精确证据混在一起，也不带分类证据。
+    let exact = breakdowns.iter().find(|row| row["model"] == "model-c" && row["providerInferred"].is_null()).unwrap();
+    assert_eq!(exact["classificationEvidence"], "upstream-exact-bidirectional");
+    let inferred = breakdowns.iter().find(|row| row["model"] == "model-c" && row["providerInferred"] == true).unwrap();
+    assert_eq!(inferred["providerInferenceSource"], SESSION_PROVIDER_INFERENCE);
+    assert!(inferred["classificationEvidence"].is_null());
+    assert!(inferred["supplierClassificationEvidence"].is_null());
     let conflict = breakdowns.iter().find(|row| row["model"] == "model-d").unwrap();
     assert_eq!(conflict["providerConflict"], true);
     assert!(conflict["classificationEvidence"].is_null());
@@ -288,7 +298,10 @@ fn cold_scan_reads_recently_changed_rollout_before_historical_backlog() {
     fixture.write_segment("rollout-a.jsonl", vec![tool_free_row; 40]);
     fixture.write_segment(
         "rollout-z.jsonl",
-        vec![fixture.context(500, "current-model"), fixture.usage(1_000, 1)],
+        vec![
+            fixture.context(500, "current-model"),
+            fixture.usage(1_000, 1),
+        ],
     );
     File::options()
         .write(true)
@@ -546,9 +559,14 @@ fn unanchored_continuation_only_blocks_nearby_request_log_proof() {
         .unwrap();
         let after = fixture.snapshot();
         assert_eq!(after.events.len(), 2);
+        assert_eq!(after.events[1].provider, "supplier-a");
         assert_eq!(
-            after.events[1].provider == "supplier-a",
-            gap > DELAYED_REQUEST_MATCH_WINDOW_MS,
+            after.events[1].provider_source.as_deref(),
+            Some(if gap > DELAYED_REQUEST_MATCH_WINDOW_MS {
+                "request-log-exact"
+            } else {
+                SESSION_PROVIDER_INFERENCE
+            })
         );
         assert_eq!(before.events[1].delta, after.events[1].delta);
         fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
@@ -3729,8 +3747,16 @@ fn request_log_recovers_after_a_distant_uncertain_counter_reset() {
         }
         let recovered = reset_gap > DELAYED_REQUEST_MATCH_WINDOW_MS;
         assert_eq!(
-            unknown_provider(&after.events[2].provider),
-            !recovered,
+            after.events[2].provider, "supplier-a",
+            "reset_gap={reset_gap}"
+        );
+        assert_eq!(
+            after.events[2].provider_source.as_deref(),
+            Some(if recovered {
+                "request-log-exact"
+            } else {
+                SESSION_PROVIDER_INFERENCE
+            }),
             "reset_gap={reset_gap}"
         );
         if recovered {
