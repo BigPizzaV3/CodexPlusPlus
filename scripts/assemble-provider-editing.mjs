@@ -21,13 +21,18 @@ const require = createRequire(path.join(managerDir, "package.json"));
 // 锁定版本的 esbuild（见 apps/codex-plus-manager/package.json），产物可复现。
 const { build } = require("esbuild");
 
-// 直连 / 聚合供应商的编辑函数挂在顶层；网关供应商池的纯函数（gateway-model.ts）挂在 `.gateway` 下。
+// 直连 / 聚合供应商的编辑函数挂在顶层；网关供应商池的纯函数（gateway-model.ts）挂在 `.gateway` 下，
+// Codex 统一供应商列表的规则（codex-unified-providers.ts）挂在 `.unified` 下。
 const entryContents = [
   "export * from \"./relay-profile-editing.ts\";",
   "export { aggregateMemberCandidates, isOfficialLoginMemberProfile } from \"./aggregate-members.ts\";",
   "export { clampAggregateRoutePriority } from \"./aggregate-routes.ts\";",
+  // 供应商的字母头像（和管理器列表里的 Avatar 同一套取字规则）。
+  "export { providerAvatarText } from \"./provider-name.ts\";",
   "export * as gateway from \"./gateway-model.ts\";",
   "export * as gatewaySafety from \"./gateway-agent-safety.ts\";",
+  // Codex 统一供应商列表（直连 + 共享合成一份）的规则，挂在 `.unified` 下。
+  "export * as unified from \"./codex-unified-providers.ts\";",
 ].join("\n");
 const shim = path.join(root, "scripts/provider-editing-i18n-shim.mjs");
 const output = path.join(root, "assets/inject/renderer-inject/42-provider-editing.generated.js");

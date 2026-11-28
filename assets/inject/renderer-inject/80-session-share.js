@@ -53,19 +53,30 @@
    */
   const codexPlusToastLimit = 3;
   const codexPlusToastLifetimeMs = 10000;
-  const codexPlusToastGapPx = 48;
+  // 位置照 Codex 原生提示（sonner，codex-sonner-toaster）：右上角，标题栏下面，距顶 56px，条与条之间空 8px。
+  const codexPlusToastTopPx = 56;
+  const codexPlusToastGapPx = 8;
 
   /**
-   * 按当前 DOM 顺序重排所有提示的纵向位置。
+   * 按当前 DOM 顺序重排所有提示的纵向位置：最新的在最上面，旧的往下排（和原生一样），按各自实际高度错开。
    *
    * 必须在每次「新增」和「移除」之后都调用：位置只在插入那一刻算的话，一旦有
    * 人被挤掉或超时消失，剩下几条会停在自己的旧层号上，出现空档和重叠。
    */
   function layoutCodexPlusToasts() {
-    document.querySelectorAll(".codex-delete-toast").forEach((node, index) => {
-      node.style.bottom = `${18 + index * codexPlusToastGapPx}px`;
+    let top = codexPlusToastTopPx;
+    Array.from(document.querySelectorAll(".codex-delete-toast")).reverse().forEach((node) => {
+      node.style.top = `${top}px`;
+      top += (node.offsetHeight || 40) + codexPlusToastGapPx;
     });
   }
+
+  /** 提示前面的小图标：成功、警告、失败各一个（Lucide 的 circle-check / triangle-alert / circle-x），info 和不传类型时没有。 */
+  const codexPlusToastIcons = {
+    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>',
+    warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>',
+  };
 
   /** 移除一条提示并立刻重排剩下的。 */
   function dismissCodexPlusToast(toast) {
@@ -98,13 +109,25 @@
     const toast = document.createElement("div");
     toast.className = "codex-delete-toast";
     if (type) toast.dataset.toastType = type;
-    toast.textContent = message;
+    const icon = codexPlusToastIcons[type === "warning" ? "warn" : type];
+    if (icon) {
+      const mark = document.createElement("span");
+      mark.className = "codex-delete-toast-icon";
+      mark.setAttribute("aria-hidden", "true");
+      mark.innerHTML = icon;
+      toast.appendChild(mark);
+    }
+    const text = document.createElement("span");
+    text.className = "codex-delete-toast-text";
+    text.textContent = message;
+    toast.appendChild(text);
     if (undoToken) {
       const undo = document.createElement("button");
       undo.textContent = "撤销";
       undo.addEventListener("click", async () => {
         const result = await postJson("/undo", { undo_token: undoToken });
-        toast.textContent = result.message || "撤销完成";
+        text.textContent = result.message || "撤销完成";
+        undo.remove();
         if (result.status === "undone") {
           settings.onUndone?.();
           const refreshed = await refreshRecentConversationsForHost();

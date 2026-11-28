@@ -23,7 +23,6 @@ import {
   ChevronRight,
   ExternalLink,
   House,
-  Layers,
   MessagesSquare,
   Play,
   Plug,
@@ -468,7 +467,6 @@ const QUICK_LINKS: Array<{ route: TrayRoute; label: string; icon: LucideIcon }> 
   { route: "sessions", label: "会话", icon: MessagesSquare },
   { route: "requestLog", label: "请求日志", icon: ScrollText },
   { route: "gateway", label: "Agent 接入", icon: Waypoints },
-  { route: "gatewayProviders", label: "共享供应商", icon: Layers },
   { route: "gatewayRouting", label: "路由", icon: Split },
   { route: "gatewayUsage", label: "用量统计", icon: Activity },
 ];
@@ -740,7 +738,7 @@ function GatewayTab({
         <strong>{t("还没用上本地服务")}</strong>
         <p>{t("本地服务把 Codex、Claude Code、Grok 接到同一个共享供应商：一处管理 Key 和模型，在这里就能随时给每个 Agent 换模型。")}</p>
         <div className="tp-intro-actions">
-          <button className="tp-button" data-variant="primary" onClick={() => void onOpenRoute("gatewayProviders")} type="button">{t("添加供应商")}</button>
+          <button className="tp-button" data-variant="primary" onClick={() => void onOpenRoute("addDirectProvider")} type="button">{t("添加供应商")}</button>
           <button className="tp-button" onClick={() => void onOpenRoute("gateway")} type="button">{t("了解本地服务")}</button>
         </div>
       </div>

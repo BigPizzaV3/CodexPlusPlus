@@ -103,11 +103,10 @@ test("auto-takeover status fields stay aligned with the Rust payload", () => {
   }
 });
 
-test("auto-takeover switch is on the home screen, right under the Codex row", () => {
+test("auto-takeover switch is on the home screen, integrated into the Codex card footer", () => {
   // 只放在设置页太深，用户找不到，还以为必须从 Codex++ 启动 Codex。
   const home = appDeclarationSource("HomeScreen");
-  assert.match(home, /const takeoverRow = [\s\S]*?actions\.setAutoTakeover\(/, "首页必须有自动接管开关");
-  assert.match(home, /<\/CxRow>,\s*takeoverRow,\s*\]/, "开关行必须紧跟在 Codex 那一行后面");
+  assert.match(home, /if \(tool\.id === "codex"\)[\s\S]*?className="home-takeover-foot"[\s\S]*?actions\.setAutoTakeover\(/, "首页 Codex 卡片底部必须有自动接管开关");
   assert.match(home, /actions\.setWatcherEnabled\(true\)/, "没开登录自启时首页要能直接打开");
 });
 

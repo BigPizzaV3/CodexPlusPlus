@@ -445,7 +445,7 @@ fn install_reply(catalog: &Catalog, id: &str, store: &InstalledStore) -> PluginR
     if hosted_only(plugin) {
         return json_reply(
             403,
-            json!({ "detail": "这个插件只有 ChatGPT 托管的连接器，本地账号连不上" }),
+            json!({ "detail": "这个插件只有 ChatGPT 托管的连接器，虚拟账号连不上" }),
         );
     }
     store.update(|plugins| {

@@ -407,6 +407,8 @@ pub fn run() {
             commands::list_codex_multi_instances,
             commands::stop_codex_multi_instance,
             commands::restart_codex_multi_instance,
+            commands::list_codex_multi_instance_options,
+            commands::set_codex_multi_instance_windows_sandbox,
             commands::restart_codex_plus,
             commands::stop_codex_plus,
             commands::load_settings,

@@ -8,7 +8,9 @@
     let isEnabled = () => false;
 
     function inputText(turn) {
-      return (turn?.params?.input || []).filter(x => x.type === 'text').map(x => x.text || '').join('\n');
+      const input = turn?.params?.input?.length ? turn.params.input
+        : (turn?.items || []).filter(item => item?.type === 'userMessage').flatMap(item => item.content || []);
+      return input.filter(x => x?.type === 'text').map(x => x.text || '').join('\n');
     }
     function assistantText(turn) {
       return (turn?.items || []).filter(x => ['assistant', 'agentMessage'].includes(x.type))
@@ -105,7 +107,7 @@
         update(message, done = false, success = false) {
           body.textContent = message;
           title.textContent = done ? success ? '回退完成' : '回退未完成' : '正在回退';
-          stop.hidden = done;
+          stop.hidden = done || record.historyTruncated === true;
           close.hidden = !done;
         }
       };
@@ -131,6 +133,7 @@
       let disposeStarted = () => {};
       const persist = dependencies.saveRun || saveRun;
       const panel = dependencies.panel || statusPanel(record, async () => {
+        if (record.historyTruncated) return;
         cancelled = true;
         if (rollbackTurnId) await m.interruptConversation(threadId, 'user-stop', rollbackTurnId).catch(() => {});
         cancelWait(Error('回退已停止。已经撤销的操作不会自动重做，原对话保留。'));
@@ -139,10 +142,10 @@
       active.set(threadId, record);
       try {
         if (!isEnabled()) throw Error('请先开启实验性轮次回退，原对话保留。');
-        const state = m.getConversation(threadId);
+        const state = await m.getConversation(threadId);
         if (state?.resumeState !== 'resumed' || state.threadRuntimeStatus?.type === 'active') throw Error('请等待本地聊天加载完成且任务结束后再回退。');
         if (state?.historyMode !== 'paginated') throw Error('此会话格式不支持可靠截断，未执行回滚。');
-        if (m.getStreamRole?.(threadId)?.role === 'follower') throw Error('请在拥有此聊天执行权的窗口操作。');
+        if ((await m.getStreamRole?.(threadId))?.role === 'follower') throw Error('请在拥有此聊天执行权的窗口操作。');
         let turns = await m.getCompleteConversationTurns(threadId);
         if (turns.some(t => t.status === 'inProgress')) throw Error('请等待此聊天当前任务结束，再点击回退。');
         let index = turns.findIndex(t => t.turnId === turnId);
@@ -169,6 +172,7 @@
         const originalIds = turns.map(t => t.turnId);
         let completionResolve, completionReject;
         const completed = new Promise((resolve, reject) => { completionResolve = resolve; completionReject = reject; });
+        completed.catch(() => {});
         cancelWait = completionReject;
         // Register before submission: a short turn may complete before sendFollowUpMessage returns.
         disposeStarted = m.addConversationStateCallback?.((id, nextState) => {
@@ -176,7 +180,7 @@
           const latest = m.getLoadedConversationHistoryTurns?.(threadId) || nextState.turns || [];
           for (const t of latest) if (inputText(t).includes(`【Codex 回退执行请求 ${token}】`)) rollbackTurnId = t.turnId;
         }) || (() => {});
-        disposeCompleted = m.addTurnCompletedListener(async event => {
+        disposeCompleted = await m.addTurnCompletedListener(async event => {
           if (event.conversationId !== threadId) return;
           try {
             const current = await m.getCompleteConversationTurns(threadId);
@@ -184,7 +188,7 @@
             if (own && event.turnId === own.turnId) { rollbackTurnId = own.turnId; completionResolve(own); }
           } catch (error) { completionReject(error); }
         });
-        completed.catch(() => {});
+        if (m.validateHistory) await m.validateHistory(threadId, originalIds);
         if (cancelled || !isEnabled()) throw Error('回退已停止，原对话保留。');
         await m.sendFollowUpMessage(threadId, { prompt: record.prompt, turnTrigger: 'user' });
         const ownAfterSend = (await m.getCompleteConversationTurns(threadId)).find(t => inputText(t).includes(`【Codex 回退执行请求 ${token}】`));
@@ -212,11 +216,15 @@
         }
         record.status = 'reverting';
         await persist(record);
+        if (m.validateHistory) await m.validateHistory(threadId, expected);
+        if ((await m.getStreamRole?.(threadId))?.role === 'follower') throw Error('聊天执行权已转移，原对话保留。');
         if (cancelled || !isEnabled()) throw Error('回退已停止，原对话保留。');
-        if (m.getStreamRole?.(threadId)?.role === 'follower') throw Error('聊天执行权已转移，原对话保留。');
         const response = await m.sendRequest('thread/revert', { threadId, beforeTurnId: turnId });
         record.historyTruncated = true;
-        m.applyRevertResponseToConversation({ conversationId: threadId, response, revertedTurns: now.slice(index) });
+        panel.update('后台已截断会话，正在刷新当前窗口。');
+        await persist(record).catch(() => {});
+        await m.applyRevertResponseToConversation({ conversationId: threadId, response,
+          revertedTurns: now.slice(index), retainedTurnId: now[index - 1]?.turnId ?? null });
         record.status = 'complete';
         record.finishedAt = new Date().toISOString();
         // Once the server confirmed the truncation, a report-storage error must not claim it did not happen.
@@ -224,7 +232,7 @@
         panel.update('AI 已报告操作回滚完成，会话已回退到选中轮之前。\n选中轮、后续轮次和回滚请求已移出原会话。恢复记录保存在本机，可导出查看。', true, true);
         return record;
       } catch (error) {
-        if ((cancelled || timedOut) && rollbackTurnId) {
+        if (!record.historyTruncated && (cancelled || timedOut) && rollbackTurnId) {
           await m.interruptConversation(threadId, 'user-stop', rollbackTurnId).catch(() => {});
         }
         record.status = record.historyTruncated ? 'ui-refresh-required' : 'incomplete';
@@ -232,7 +240,7 @@
           ? '后台已截断会话，但界面同步失败。请重新打开此聊天；恢复记录仍保留。'
           : String(error?.message || error);
         await persist(record).catch(() => {});
-        panel.update(record.error, true, false);
+        panel.update(record.error, true, record.historyTruncated === true);
         return record;
       } finally {
         disposeCompleted();
@@ -241,6 +249,7 @@
       }
     }
     const api = {
+      supportsDesktopManager: true,
       setEnabledCheck(check) { isEnabled = check; },
       setSaveCopy(saveCopy) { nativeSaveCopy = typeof saveCopy === 'function' ? saveCopy : null; },
       exportRecord,

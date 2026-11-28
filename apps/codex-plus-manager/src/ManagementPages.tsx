@@ -95,6 +95,10 @@ export function Menu({ label = t("更多操作"), children }: { label?: string; 
 export function MenuItem({ children, onClick, disabled, danger, checked, title }: { children: ReactNode; onClick: () => void; disabled?: boolean; danger?: boolean; checked?: boolean; title?: string }) {
   return <button type="button" role={checked === undefined ? "menuitem" : "menuitemradio"} aria-checked={checked} className={danger ? "mg-danger" : ""} disabled={disabled} onClick={onClick} title={title}>{children}</button>;
 }
+/** 菜单里的分组分隔线。 */
+export function MenuSeparator() {
+  return <div className="mg-menu-sep" role="separator" />;
+}
 /** 默认从右侧滑出；`modal` 改成居中弹窗：`confirm` 是确认框宽度，`form` 是表单宽度，`workspace` 是带侧栏的大弹窗。 */
 export function ManagementDrawer({ title, onClose, children, footer, modal, dismissOnBackdrop = true }: { title: string; onClose: () => void; children: ReactNode; footer?: ReactNode; modal?: "confirm" | "form" | "workspace"; dismissOnBackdrop?: boolean }) {
   const ref = useRef<HTMLElement>(null);

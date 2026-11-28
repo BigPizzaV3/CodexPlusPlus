@@ -318,6 +318,129 @@ pub fn project_native_auth(home: &Path, proposed: &str) -> anyhow::Result<String
     )
 }
 
+/// 当前 live `config.toml` 生效的供应商是否认可 `auth.json` 里的 ChatGPT 登录态：
+/// 内置 `openai` 供应商始终认可；自定义供应商在声明 `requires_openai_auth = true` 时认可。
+pub fn config_accepts_openai_login(config_contents: &str) -> bool {
+    let Ok(doc) = config_contents.parse::<toml_edit::DocumentMut>() else {
+        return false;
+    };
+    let Some(provider) = doc
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return true;
+    };
+    if provider == "openai" {
+        return true;
+    }
+    doc.get("model_providers")
+        .and_then(|providers| providers.get(provider))
+        .and_then(|table| table.get("requires_openai_auth"))
+        .and_then(toml_edit::Item::as_bool)
+        == Some(true)
+}
+
+fn project_native_auth_config_with(
+    config_contents: &str,
+    selection: Option<&NativeAuthSelection>,
+    wsl_codex: bool,
+    chatgpt_compat_enabled: bool,
+) -> anyhow::Result<String> {
+    let Some(selection) = selection else {
+        return Ok(config_contents.to_string());
+    };
+    if chatgpt_compat_enabled || config_contents.trim().is_empty() {
+        return Ok(config_contents.to_string());
+    }
+    let Ok(mut doc) = config_contents.parse::<toml_edit::DocumentMut>() else {
+        return Ok(config_contents.to_string());
+    };
+    let Some(provider) = doc
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "openai")
+        .map(str::to_string)
+    else {
+        return Ok(config_contents.to_string());
+    };
+    let Some(table) = doc
+        .get("model_providers")
+        .and_then(|providers| providers.get(&provider))
+    else {
+        return Ok(config_contents.to_string());
+    };
+    // 只有自带凭据（experimental_bearer_token / env_key）的自定义供应商才按外层登录身份调整
+    // `requires_openai_auth`：模型请求仍带它自己的凭据，Codex 仅据此决定是否读取 auth.json 的登录态。
+    let has_own_key = ["experimental_bearer_token", "env_key"].iter().any(|key| {
+        table
+            .get(*key)
+            .and_then(toml_edit::Item::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    });
+    if !has_own_key {
+        return Ok(config_contents.to_string());
+    }
+    let current = table
+        .get("requires_openai_auth")
+        .and_then(toml_edit::Item::as_bool);
+    let desired = match selection {
+        NativeAuthSelection::Account { .. } if !wsl_codex => Some(true),
+        NativeAuthSelection::None if current == Some(true) => Some(false),
+        _ => None,
+    };
+    let Some(desired) = desired else {
+        return Ok(config_contents.to_string());
+    };
+    if current == Some(desired) {
+        return Ok(config_contents.to_string());
+    }
+    doc["model_providers"][provider.as_str()]["requires_openai_auth"] = toml_edit::value(desired);
+    let mut rendered = doc.to_string();
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+    Ok(rendered)
+}
+
+/// 按外层「Codex 登录身份」把默认主目录下直连自定义供应商的 `requires_openai_auth` 对齐：
+/// 选真实 ChatGPT 账号时设为 true，选「不登录」时收回 false，不再依赖每个供应商内部切换接入方式。
+pub fn project_native_auth_config(home: &Path, config_contents: &str) -> anyhow::Result<String> {
+    if !is_default_home(home) {
+        return Ok(config_contents.to_string());
+    }
+    let settings = SettingsStore::default().load()?;
+    project_native_auth_config_with(
+        config_contents,
+        settings.native_auth_selection.as_ref(),
+        crate::wsl_network::codex_runs_in_wsl(home),
+        settings.chatgpt_compat_enabled,
+    )
+}
+
+/// 在外层切换「Codex 登录身份」后，同步直连模式下 live `config.toml` 的 `requires_openai_auth`。
+pub fn sync_direct_provider_login_declaration(home: &Path) -> anyhow::Result<bool> {
+    if !is_default_home(home) {
+        return Ok(false);
+    }
+    let _guard = crate::official_login::native_auth_write_guard(home)?;
+    let path = home.join("config.toml");
+    let live = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).with_context(|| format!("无法读取 {}", path.display())),
+    };
+    let next = project_native_auth_config(home, &live)?;
+    if next == live {
+        return Ok(false);
+    }
+    crate::settings::atomic_write(&path, next.as_bytes())
+        .with_context(|| format!("写入 {} 失败", path.display()))?;
+    Ok(true)
+}
+
 fn remember_projection(store: &GatewayStore, account_ref: &str, auth: &str) -> anyhow::Result<()> {
     let generation = credential_generation(auth)?;
     store.update(|gateway| {
@@ -746,6 +869,69 @@ mod tests {
         assert_eq!(
             project_native_auth(temp.path(), "unchanged").unwrap(),
             "unchanged"
+        );
+    }
+
+    #[test]
+    fn direct_provider_config_follows_native_auth_selection() {
+        let pure_api = concat!(
+            "model_provider = \"custom\"\n",
+            "model = \"gpt-5.4\"\n\n",
+            "[model_providers.custom]\n",
+            "name = \"Magpie\"\n",
+            "wire_api = \"responses\"\n",
+            "base_url = \"http://127.0.0.1:3425/v1\"\n",
+            "experimental_bearer_token = \"sk-demo\"\n",
+        );
+        assert!(!config_accepts_openai_login(pure_api));
+        assert!(config_accepts_openai_login("model = \"gpt-5.4\"\n"));
+        assert!(config_accepts_openai_login("model_provider = \"openai\"\n"));
+
+        let account = NativeAuthSelection::Account {
+            account_ref: "chatgpt-1".to_string(),
+        };
+        let with_account =
+            project_native_auth_config_with(pure_api, Some(&account), false, false).unwrap();
+        assert!(config_accepts_openai_login(&with_account));
+        assert!(with_account.contains("requires_openai_auth = true"));
+        assert!(with_account.contains("experimental_bearer_token = \"sk-demo\""));
+
+        // 切回「不登录」时把 requires_openai_auth 收回 false。
+        let with_none = project_native_auth_config_with(
+            &with_account,
+            Some(&NativeAuthSelection::None),
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(!config_accepts_openai_login(&with_none));
+        assert!(with_none.contains("requires_openai_auth = false"));
+
+        // WSL、本地账号（chatgpt_compat_enabled）或未显式选择时不动。
+        assert_eq!(
+            project_native_auth_config_with(pure_api, Some(&account), true, false).unwrap(),
+            pure_api
+        );
+        assert_eq!(
+            project_native_auth_config_with(&with_account, Some(&NativeAuthSelection::None), false, true)
+                .unwrap(),
+            with_account
+        );
+        assert_eq!(
+            project_native_auth_config_with(pure_api, None, false, false).unwrap(),
+            pure_api
+        );
+
+        // 不带自带凭据的自定义供应商不改成 requires_openai_auth = true。
+        let no_key = concat!(
+            "model_provider = \"custom\"\n\n",
+            "[model_providers.custom]\n",
+            "name = \"NoKey\"\n",
+            "base_url = \"https://example.test/v1\"\n",
+        );
+        assert_eq!(
+            project_native_auth_config_with(no_key, Some(&account), false, false).unwrap(),
+            no_key
         );
     }
 }

@@ -53,7 +53,7 @@ test("自带同名模型不遮住按共享供应商路由的当前选择", () =>
     pickerSections, ownPickerSection, withOwnSection, isFavoriteModel, modelDisplay, qualifiedProvider, servingProviders, modelSlugFromRowName,
     avatarOf: (name: string) => name, loadFavorites: () => [], persistFavorites: () => {},
     t: (value: string) => value, tf: (value: string) => value,
-    Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints",
+    Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints", LayoutGrid: "LayoutGrid",
     Shuffle: "Shuffle", ChevronRight: "ChevronRight", Check: "Check", GROUP_MODEL_PREFIX: "group/",
   });
   const tree = exports.ModelList({
@@ -94,7 +94,7 @@ test("默认模型带窗口后缀时仍勾选对应供应商，而非同名供�
     pickerSections, ownPickerSection, withOwnSection, isFavoriteModel, modelDisplay, qualifiedProvider, servingProviders, modelSlugFromRowName,
     avatarOf: (name: string) => name, loadFavorites: () => [], persistFavorites: () => {},
     t: (value: string) => value, tf: (value: string) => value,
-    Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints",
+    Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints", LayoutGrid: "LayoutGrid",
     Shuffle: "Shuffle", ChevronRight: "ChevronRight", Check: "Check", GROUP_MODEL_PREFIX: "group/",
   });
   const render = (model: string, upstreamModel?: string, providerRemoved = false, data = payload, ownModels?: OwnModels) => {

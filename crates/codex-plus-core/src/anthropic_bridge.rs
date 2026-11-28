@@ -1748,12 +1748,19 @@ pub fn normalize_non_stream_body_for_compaction(
     wire_api: crate::protocol_proxy::UpstreamWireApi,
     body: &[u8],
 ) -> anyhow::Result<Vec<u8>> {
-    if wire_api != crate::protocol_proxy::UpstreamWireApi::AnthropicMessages {
-        return Ok(body.to_vec());
+    match wire_api {
+        crate::protocol_proxy::UpstreamWireApi::AnthropicMessages => {
+            let message: Value = serde_json::from_slice(body)?;
+            let chat = anthropic_message_to_chat_completion(message)?;
+            Ok(serde_json::to_vec(&chat)?)
+        }
+        crate::protocol_proxy::UpstreamWireApi::Gemini => {
+            let response: Value = serde_json::from_slice(body)?;
+            let chat = crate::gemini_bridge::gemini_response_to_chat_completion(response)?;
+            Ok(serde_json::to_vec(&chat)?)
+        }
+        _ => Ok(body.to_vec()),
     }
-    let message: Value = serde_json::from_slice(body)?;
-    let chat = anthropic_message_to_chat_completion(message)?;
-    Ok(serde_json::to_vec(&chat)?)
 }
 
 /// 一次性把整段 Anthropic SSE 转成 Responses SSE（非 launcher 路径使用）。

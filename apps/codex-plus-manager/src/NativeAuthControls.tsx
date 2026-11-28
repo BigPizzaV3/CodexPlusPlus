@@ -132,8 +132,8 @@ export function NativeAuthControl({ onRestart, form, onSave }: {
             ...(!current ? [{ value: "", label: state?.actualLabel || t("尚未指定") }] : []),
             {
               value: "local",
-              label: t("本地账号"),
-              // 官方登录供应商下模型请求要用真实登录，换成本地账号就连不上：置灰并说明原因。
+              label: t("虚拟账号"),
+              // 官方登录供应商下模型请求要用真实登录，换成虚拟账号就连不上：置灰并说明原因。
               hint: state?.localLoginBlockedReason ? t(state.localLoginBlockedReason) : t("用 API Key 解锁代码审查、图像、资料库等入口，模型仍走所选供应商"),
               disabled: Boolean(state?.localLoginBlockedReason) && current !== "local",
             },

@@ -72,6 +72,8 @@ export function ProviderWindowsDialog({
   syncOnOpen = false,
   onSave,
   onCancel,
+  renderTabs,
+  noEnterAnimation,
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
@@ -81,6 +83,8 @@ export function ProviderWindowsDialog({
   syncOnOpen?: boolean;
   onSave: (windows: Record<string, number>, fallback: number | null, autoCompact: { models: Record<string, number>; fallback: number | null }, synced: WindowSyncPick[]) => void;
   onCancel: () => void;
+  renderTabs?: (runIfClean: (action: () => void) => void) => ReactNode;
+  noEnterAnimation?: boolean;
 }) {
   const titleId = useId();
   const [initialRows] = useState<Record<string, string>>(() => {
@@ -103,7 +107,7 @@ export function ProviderWindowsDialog({
   const [query, setQuery] = useState("");
   const shownModels = useMemo(() => filterModels(entry.models, query, (model) => model), [entry.models, query]);
   const dirty = JSON.stringify(rows) !== JSON.stringify(initialRows) || JSON.stringify(percents) !== JSON.stringify(initialPercents);
-  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
+  const { backdropProps, dialogProps, requestClose, confirmAction } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
 
   // 写错的（不是 128k / 1M / 纯数字，或小于 1000）在保存前标出来。
   const invalid = Object.entries(rows).filter(([, text]) => {
@@ -167,6 +171,8 @@ export function ProviderWindowsDialog({
       <form
         {...dialogProps}
         className="pf-modal pf-extras-modal"
+        data-no-enter={noEnterAnimation ? "true" : undefined}
+        data-tabbed={renderTabs ? "true" : undefined}
         onSubmit={(event) => {
           event.preventDefault();
           if (invalid.length) return;
@@ -197,6 +203,7 @@ export function ProviderWindowsDialog({
           </div>
           <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
+        {renderTabs?.((action) => void confirmAction(action))}
 
         <div className="pf-body">
           <section className="pf-section">

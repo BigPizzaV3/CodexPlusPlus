@@ -36,6 +36,7 @@ const MAX_ROWS_CAPTURED_PROXY: usize = 20_000;
 const REQUEST_MATCH_WINDOW_MS: i64 = 30_000;
 const DELAYED_REQUEST_MATCH_WINDOW_MS: i64 = 120_000;
 const MAX_NATIVE_RECEIPT_LINE: usize = 8192;
+const REQUEST_SUPPLIER_PROOF: &str = "request-log-recovered-supplier-only";
 const SESSION_PROVIDER_INFERENCE: &str = "session-context-inferred";
 
 fn observed_file_identity(path: &Path, metadata: &fs::Metadata) -> io::Result<Option<(u64, u64)>> {
@@ -714,10 +715,16 @@ impl RequestEvidenceCache {
         for event in events.iter().filter(|e| {
             (unknown_provider(&e.provider)
                 || unknown_model(&e.model)
+                || e.native_response_id
+                    .as_ref()
+                    .is_some_and(|proof| !proof.full_counts)
                 || codex_plus_core::aggregate_catalog::is_aggregate_model(&e.model))
                 && !e.context_conflicts.any()
                 && !e.count_uncertain
                 && !e.count_incomplete
+                && (e.delta.cached_known
+                    || e.native_response_id.is_some()
+                    || unknown_provider(&e.provider))
         }) {
             let Some(session) = aliases.resolve(&event.session) else {
                 continue;
@@ -996,6 +1003,7 @@ impl RequestEvidenceCache {
         let delayed_reverse = reverse_counts(DELAYED_REQUEST_MATCH_WINDOW_MS);
         // 终态 ID 只能绑定一条原生用量与一条网关请求；拒绝的候选也参与查重。
         let mut repeated_response_ids = HashSet::new();
+        let mut supplier_requests = HashMap::new();
         if events
             .iter()
             .any(|event| event.native_response_id.is_some())
@@ -1003,7 +1011,7 @@ impl RequestEvidenceCache {
             let mut seen = HashSet::new();
             for id in events
                 .iter()
-                .filter_map(|event| event.native_response_id.as_deref())
+                .filter_map(|event| event.native_response_id.as_ref().map(|proof| &*proof.id))
             {
                 if !seen.insert(id) {
                     repeated_response_ids.insert(id.to_owned());
@@ -1023,6 +1031,17 @@ impl RequestEvidenceCache {
                         .is_some_and(|old| old != request.id)
                 {
                     repeated_response_ids.insert(id.to_owned());
+                }
+            }
+            for request in &requests {
+                if request.final_response_evidence.as_deref()
+                    == Some(codex_plus_core::request_log::FINAL_RESPONSE_SUPPLIER_EVIDENCE_V1)
+                    && request.known_cached().is_none()
+                    && let Some(id) = request.final_response_id.as_deref()
+                    && seen.contains(id)
+                    && !repeated_response_ids.contains(id)
+                {
+                    supplier_requests.insert(id, request);
                 }
             }
         }
@@ -1053,6 +1072,7 @@ impl RequestEvidenceCache {
         let (mut recovered, mut tokens, mut retained) = (0usize, 0u64, 0usize);
         let (mut delayed_events, mut delayed_tokens) = (0usize, 0u64);
         let (mut model_events, mut direct_conflicts) = (0usize, 0usize);
+        let mut supplier_only = 0usize;
         let mut missing_names = HashSet::new();
         for (event, evidence) in events.iter_mut().zip(&event_keys) {
             // 请求日志没有轮次身份，不能把旧证明复用于拆分后的碰撞事件。
@@ -1067,6 +1087,44 @@ impl RequestEvidenceCache {
                 if !unknown_provider(&event.provider) && event.provider != saved.request.relay_id {
                     saved.rejected = true;
                 }
+            }
+            if !self.captured_id_check_failed
+                && !event.count_uncertain
+                && !event.count_incomplete
+                && !self
+                    .verified
+                    .get(&event.id)
+                    .is_some_and(|saved| saved.rejected)
+                && self
+                    .captured_complete
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&event.id))
+                && let Some(native) = event.native_response_id.as_ref()
+                && let Some(request) = supplier_requests.get(&*native.id)
+                && request.thread_id == event.session
+                && request.usage.is_some_and(|usage| {
+                    usage.input_tokens == Some(event.delta.input_tokens)
+                        && usage.output_tokens == Some(event.delta.output_tokens)
+                })
+                && DateTime::parse_from_rfc3339(&event.timestamp)
+                    .is_ok_and(|at| request.started_at_ms <= at.timestamp_millis())
+            {
+                // 双端终态身份只确认实际供应商，不补造缓存计数或改写原生模型。
+                if !unknown_provider(&event.provider) && event.provider != request.relay_id {
+                    event.provider.clear();
+                    event.context_conflicts.provider = true;
+                    self.reject_conflicting_event(event);
+                    direct_conflicts += 1;
+                } else {
+                    event.provider.clone_from(&request.relay_id);
+                    event.provider_source = Some(REQUEST_SUPPLIER_PROOF.to_owned());
+                    let name = names.entry(event.provider.clone()).or_default();
+                    if name.trim().is_empty() {
+                        *name = request.provider_name().to_owned();
+                    }
+                    supplier_only += 1;
+                }
+                continue;
             }
             if self.captured_id_check_failed
                 || event.count_uncertain
@@ -1093,7 +1151,11 @@ impl RequestEvidenceCache {
                 }
                 let i = entries[start].1;
                 let request = &requests[i];
-                let native_id = event.native_response_id.as_deref();
+                let native_id = event
+                    .native_response_id
+                    .as_ref()
+                    .filter(|proof| proof.full_counts)
+                    .map(|proof| &*proof.id);
                 let final_id = request.final_response_id.as_deref();
                 let terminal =
                     request.final_response_evidence.as_deref() == Some("final-response-v1");
@@ -1318,6 +1380,7 @@ impl RequestEvidenceCache {
         }
         json!({"source":"request-log-exact","scope":"index","recoveredEvents":recovered,"recoveredTokens":tokens,
             "recoveredModelEvents":model_events,"directProviderConflicts":direct_conflicts,
+            "supplierOnlyEvents":supplier_only,
             "delayedEvents":delayed_events,"delayedTokens":delayed_tokens,
             "strictWindowMs":REQUEST_MATCH_WINDOW_MS,"delayedWindowMs":DELAYED_REQUEST_MATCH_WINDOW_MS,
             "retainedEvents":retained,"conflictedEvents":self.verified.values().filter(|saved| saved.rejected).count(),
@@ -1347,7 +1410,7 @@ impl RequestEvidenceCache {
             let mut seen = HashSet::new();
             events
                 .iter()
-                .filter_map(|event| event.native_response_id.as_deref())
+                .filter_map(|event| event.native_response_id.as_ref().map(|proof| &*proof.id))
                 .filter(|id| !seen.insert(*id))
                 .map(str::to_owned)
                 .collect::<HashSet<_>>()
@@ -1367,7 +1430,7 @@ impl RequestEvidenceCache {
         }
         let mut inferred = 0;
         for event in events {
-            let terminal = event.native_response_id.as_deref();
+            let terminal = event.native_response_id.as_ref().map(|proof| &*proof.id);
             if !unknown_provider(&event.provider)
                 || terminal.is_some_and(|id| {
                     gateway_response_ids.contains(id) || repeated_native_ids.contains(id)
@@ -1491,8 +1554,14 @@ struct LegacyIdentity {
 }
 
 #[derive(Clone, PartialEq, Eq)]
+struct NativeResponseIdentity {
+    id: Box<str>,
+    full_counts: bool,
+}
+
+#[derive(Clone, PartialEq, Eq)]
 struct UsageEvent {
-    native_response_id: Option<Box<str>>,
+    native_response_id: Option<NativeResponseIdentity>,
     id: [u8; 32],
     original_id: [u8; 32],
     session: String,
@@ -3541,9 +3610,13 @@ impl FileState {
                 let at = DateTime::parse_from_rfc3339(envelope.timestamp?)
                     .ok()?
                     .timestamp_millis();
-                let usage = Tokens::parse(&receipt.usage).filter(|tokens| tokens.cached_known)?;
-                let total = Tokens::parse(&receipt.thread_token_usage)
-                    .filter(|tokens| tokens.cached_known)?;
+                let usage = Tokens::parse(&receipt.usage)?;
+                let usage = usage.normalize_cache_input(
+                    CacheAccounting::parse(&receipt.usage, usage),
+                    None,
+                    None,
+                );
+                let total = Tokens::parse(&receipt.thread_token_usage)?;
                 Some(PendingUsageReceipt::One {
                     id: receipt.response_id.into(),
                     at,
@@ -3960,16 +4033,31 @@ impl FileState {
                 else {
                     return None;
                 };
+                let compatible = |a: Tokens, b: Tokens| {
+                    a.input_tokens == b.input_tokens
+                        && a.output_tokens == b.output_tokens
+                        && (!a.cached_known
+                            || !b.cached_known
+                            || a.cached_input_tokens == b.cached_input_tokens)
+                        && a.reasoning_output_tokens
+                            .zip(b.reasoning_output_tokens)
+                            .is_none_or(|(a, b)| a == b)
+                };
+                let full_counts = total.cached_known
+                    && receipt_total.cached_known
+                    && total.same_counts(receipt_total)
+                    && delta.cached_known
+                    && usage.cached_known
+                    && delta.same_counts(usage)
+                    && last.is_some_and(|tokens| tokens.cached_known && tokens.same_counts(usage));
                 (!inherited
                     && !count_uncertain
                     && time.timestamp_millis() >= at
                     && time.timestamp_millis().saturating_sub(at) <= REQUEST_MATCH_WINDOW_MS
-                    && total.cached_known
-                    && total.same_counts(receipt_total)
-                    && delta.cached_known
-                    && delta.same_counts(usage)
-                    && last.is_some_and(|tokens| tokens.cached_known && tokens.same_counts(usage)))
-                .then_some(id)
+                    && compatible(total, receipt_total)
+                    && compatible(delta, usage)
+                    && last.is_some_and(|tokens| compatible(tokens, usage)))
+                .then_some(NativeResponseIdentity { id, full_counts })
             }),
             id,
             original_id: id,
@@ -4333,12 +4421,12 @@ impl Snapshot {
         let mut days: BTreeMap<NaiveDate, Aggregate> = BTreeMap::new();
         let mut models: BTreeMap<(NaiveDate, String), Aggregate> = BTreeMap::new();
         let mut breakdowns: BTreeMap<
-            (NaiveDate, String, String, String, bool, bool),
+            (NaiveDate, String, String, String, bool, bool, bool),
             (Aggregate, Tokens),
         > = BTreeMap::new();
         let mut day_proofs = BTreeMap::<NaiveDate, Sha256>::new();
         let mut breakdown_proofs = BTreeMap::<
-            (NaiveDate, String, String, String, bool, bool),
+            (NaiveDate, String, String, String, bool, bool, bool),
             (Sha256, bool, bool, bool),
         >::new();
         let mut ordered_events: Vec<_> = self.events.iter().collect();
@@ -4381,6 +4469,7 @@ impl Snapshot {
                     event.role.clone()
                 },
                 event.context_conflicts.provider,
+                event.provider_source.as_deref() == Some(REQUEST_SUPPLIER_PROOF),
                 event.provider_source.as_deref() == Some(SESSION_PROVIDER_INFERENCE),
             );
             let (aggregate, priceable) = breakdowns.entry(key.clone()).or_default();
@@ -4424,7 +4513,7 @@ impl Snapshot {
                 row["breakdowns"] = json!(
                     breakdowns
                         .iter()
-                        .filter(|((day, _, _, _, _, _), _)| day == &date)
+                        .filter(|((day, _, _, _, _, _, _), _)| day == &date)
                         .map(
                             |(
                                 key @ (
@@ -4433,6 +4522,7 @@ impl Snapshot {
                                     provider,
                                     role,
                                     provider_conflict,
+                                    supplier_only,
                                     provider_inferred,
                                 ),
                                 (aggregate, priceable),
@@ -4469,7 +4559,10 @@ impl Snapshot {
                                             "upstream-exact-bidirectional"
                                         });
                                     }
-                                    if *supplier_proof {
+                                    if *supplier_only {
+                                        row["supplierClassificationEvidence"] =
+                                            json!(REQUEST_SUPPLIER_PROOF);
+                                    } else if *supplier_proof {
                                         row["supplierClassificationEvidence"] =
                                             json!("upstream-counter-bidirectional-supplier-only");
                                     }

@@ -158,6 +158,11 @@ pub struct GatewayProvider {
     /// 现值和这里一样说明是同步来的，下次同步默认可覆盖；不一样就是用户手动改过的，默认不覆盖。
     #[serde(default, skip_serializing_if = "UpstreamMetaRecord::is_empty")]
     pub upstream_meta: UpstreamMetaRecord,
+    /// 上游 `/models` 声明的思考档位（键是小写、去掉 `[1M]` 后缀的模型名），后台检查上游模型时更新。
+    /// 只是缓存，不是用户设置：生成 Codex 模型目录时，这家模型资料里没写档位的模型优先用它，
+    /// 再没有才借内置模板。None 表示还没拉过（启动后的检查会补拉）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_reasoning: Option<BTreeMap<String, SyncedReasoning>>,
     /// 引用的 Codex 直连供应商 id：有值时这一项不是复制品，地址、协议、Key、模型列表、模型资料、窗口
     /// 每次读取时从 settings.json 现取、不写进 gateway.json，见 [`crate::gateway::codex_link`]。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -368,6 +373,7 @@ impl GatewayProvider {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: UpstreamMetaRecord::default(),
+            upstream_reasoning: None,
             linked_codex_relay: None,
             owner: String::new(),
             credentials: ProviderCredentials::default(),
@@ -1124,6 +1130,7 @@ impl GatewaySettings {
                 protocol: match provider.protocol.as_str() {
                     "chat" => crate::settings::RelayProtocol::ChatCompletions,
                     "anthropic" => crate::settings::RelayProtocol::AnthropicMessages,
+                    "gemini" => crate::settings::RelayProtocol::Gemini,
                     _ => crate::settings::RelayProtocol::Responses,
                 },
                 model: provider.models.first().cloned().unwrap_or_default(),
@@ -1173,6 +1180,7 @@ fn discovered_extension_models(provider: &crate::user_scripts::ExtensionProvider
                 protocol: match provider.protocol.as_str() {
                     "chat" => crate::settings::RelayProtocol::ChatCompletions,
                     "anthropic" => crate::settings::RelayProtocol::AnthropicMessages,
+                    "gemini" => crate::settings::RelayProtocol::Gemini,
                     _ => crate::settings::RelayProtocol::Responses,
                 },
                 ..RelayProfile::default()
@@ -1702,6 +1710,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            upstream_reasoning: None,
             auto_compact: Default::default(),
             relay: RelayProfile {
                 id: "deepseek".to_string(),

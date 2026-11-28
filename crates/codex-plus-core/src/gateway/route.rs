@@ -805,7 +805,40 @@ pub fn binding_exposed_models(gateway: &GatewaySettings, binding: &AgentBinding)
             models.push(model);
         }
     }
+    drop_bare_duplicates_of_pinned(gateway, binding, models)
+}
+
+/// 默认模型或挑选的模型是 `<供应商 id>/<模型>`、这个模型又只有那一家提供时，裸名和带前缀的
+/// 是同一个模型，两份都列出来 Claude Desktop 等客户端的选择器里就重复了（#3296）。
+/// 去掉裸名、留用户选的带前缀那份（裸名照样路由到那一家）；绑定里自己声明过的裸名保留。
+fn drop_bare_duplicates_of_pinned(
+    gateway: &GatewaySettings,
+    binding: &AgentBinding,
+    models: Vec<String>,
+) -> Vec<String> {
+    let relays = binding_pool_relays(gateway, binding);
+    let declared = binding.declared_models();
+    let default = binding_default_model(gateway, binding);
+    let redundant: Vec<String> = models
+        .iter()
+        .filter_map(|model| {
+            let (relay, upstream) = qualified_in(&relays, model)?;
+            let bare = chat_models(relay)
+                .into_iter()
+                .find(|known| known.eq_ignore_ascii_case(&upstream))?;
+            (serving_count(&relays, &bare) == 1
+                && !bare.eq_ignore_ascii_case(&default)
+                && !declared.iter().any(|known| known.eq_ignore_ascii_case(&bare)))
+            .then(|| bare.to_ascii_lowercase())
+        })
+        .collect();
+    if redundant.is_empty() {
+        return models;
+    }
     models
+        .into_iter()
+        .filter(|model| !redundant.contains(&model.to_ascii_lowercase()))
+        .collect()
 }
 
 fn unavailable_registered_model(
@@ -2053,6 +2086,7 @@ mod tests {
             models_checked_at_ms: 0,
             newapi_access: None,
             upstream_meta: Default::default(),
+            upstream_reasoning: None,
             auto_compact: Default::default(),
             subscription_policy: None,
             relay: RelayProfile {
@@ -4025,6 +4059,36 @@ mod tests {
             routed(&gateway, "native/ds/deepseek-v4-pro"),
             vec![pair("native", "ds/deepseek-v4-pro")]
         );
+    }
+
+    #[test]
+    fn pinned_default_and_selections_hide_their_bare_duplicates() {
+        use crate::gateway::store::DefaultModelSelection;
+
+        // #3296：Claude Desktop 只挑了一家，默认模型和挑选都是 `ds/<模型>`，
+        // 列表里不应再出现同一模型的裸名。
+        let mut gateway = gateway("ds/deepseek-v4-flash");
+        gateway.providers[1].enabled = false;
+        gateway.providers[2].enabled = false;
+        gateway.groups.clear();
+        gateway.bindings.get_mut("claude").unwrap().model_selections.push(DefaultModelSelection {
+            provider_id: "ds".into(),
+            upstream_model: "deepseek-v4-pro".into(),
+            provider_source: String::new(),
+            provider_removed: false,
+        });
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        let models = binding_exposed_models(&gateway, binding);
+        assert_eq!(models, vec!["ds/deepseek-v4-flash".to_string(), "ds/deepseek-v4-pro".to_string()]);
+        // 裸名照样能用，只是不重复列出。
+        assert_eq!(routed(&gateway, "deepseek-v4-pro"), vec![pair("ds", "deepseek-v4-pro")]);
+
+        // 另一家也提供同名模型时，裸名是「多家自动切换」，和带前缀的不是一回事，照常列出。
+        gateway.providers[2].enabled = true;
+        let binding = gateway.binding(&ToolId::Claude).unwrap();
+        let models = binding_exposed_models(&gateway, binding);
+        assert!(models.iter().any(|model| model == "deepseek-v4-pro"), "{models:?}");
+        assert!(models.iter().any(|model| model == "ds/deepseek-v4-pro"), "{models:?}");
     }
 
     #[test]

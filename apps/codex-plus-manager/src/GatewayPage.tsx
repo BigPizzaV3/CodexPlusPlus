@@ -44,7 +44,6 @@ import {
 } from "./gateway-model";
 import { AgentsView, Floating, ModelList, type CodexRunControls } from "./GatewayAgents";
 import { AppSelect } from "./AppSelect";
-import { ProvidersView } from "./GatewayProviders";
 import { UsageView } from "./GatewayUsage";
 import { Avatar, GatewayLoadError, MemberStatusLabel, QuotaBadge, SectionLabel, Switch, makeRun, moveOptionFocus, type Notify, type Run } from "./gateway-ui";
 import { TopbarActions } from "./TopbarActions";
@@ -74,6 +73,7 @@ export function GatewayPage({
   onTabChange,
   extraSettings,
   onOpenCodexProviderSettings,
+  onManageProviders,
   codexRun,
 }: {
   notify: Notify;
@@ -82,6 +82,8 @@ export function GatewayPage({
   /** 「网关设置」末尾附加的内容：主窗口传进来的新旧共用本地服务设置。 */
   extraSettings?: ReactNode;
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
+  /** 从「Agent 接入」挑供应商的弹窗跳去对应 Agent 的供应商页。 */
+  onManageProviders?: (agent?: string) => void;
   /** Codex 行的启动 / 停止：主窗口传进来才显示，不传就只留模型选择与接入开关。 */
   codexRun?: CodexRunControls;
 }) {
@@ -91,6 +93,8 @@ export function GatewayPage({
   // 切换页签时已有数据，不锁按钮：只有命令执行时才占 busy。
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  // 路由页的视图切换收进顶栏操作区，不再在主页签下面再套第二排页签。
+  const [routingView, setRoutingView] = useState<"settings" | "requests">("settings");
 
   // 命令的结果当作保存推给所有在用的组件（侧栏状态卡、总览），不等下次轮询。
   const run: Run = makeRun(setBusy, publishGatewayPayload, notify);
@@ -127,9 +131,16 @@ export function GatewayPage({
     </button>
   );
 
+  const routingModeSwitch = tab === "routing" ? (
+    <div aria-label={t("路由")} className="mg-segmented gw-routing-view-switch" role="group">
+      <button aria-pressed={routingView === "settings"} data-active={routingView === "settings"} onClick={() => setRoutingView("settings")} type="button">{t("模型组")}</button>
+      <button aria-pressed={routingView === "requests"} data-active={routingView === "requests"} onClick={() => setRoutingView("requests")} type="button">{t("请求路由")}</button>
+    </div>
+  ) : null;
+
   return (
     <div className="mg-page gateway-page">
-      <TopbarActions>{tab === "usage" ? null : refreshButton}</TopbarActions>
+      <TopbarActions>{tab === "usage" ? null : <>{routingModeSwitch}{refreshButton}</>}</TopbarActions>
       <GatewayNavContext.Provider value={nav}>
       <div className="mg-content gw-content">
         {payload && !payload.helperRunning && payload.agents.some((agent) => agent.enabled) ? (
@@ -139,12 +150,15 @@ export function GatewayPage({
           </p>
         ) : null}
         {loadFailed && error ? <GatewayLoadError error={error} /> : null}
-        {tab === "agents" && !loadFailed ? <AgentsView busy={busy} codexRun={codexRun} notify={notify} onManage={() => onTabChange("providers")} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} /> : null}
-        {tab === "providers" && !loadFailed ? <ProvidersView busy={busy} notify={notify} payload={payload} run={run} /> : null}
-        {tab === "routing" && !loadFailed ? <RoutingView busy={busy} payload={payload} run={run} /> : null}
+        {tab === "agents" && !loadFailed ? (
+          <>
+            <AgentsView busy={busy} codexRun={codexRun} notify={notify} onManage={(agent) => (onManageProviders ? onManageProviders(agent) : onTabChange("agents"))} onOpenCodexProviderSettings={onOpenCodexProviderSettings} payload={payload} run={run} />
+            <GatewayView busy={busy} extraSettings={extraSettings} notify={notify} payload={payload} run={run} />
+          </>
+        ) : null}
+        {tab === "routing" && !loadFailed ? <RoutingView busy={busy} payload={payload} run={run} view={routingView} /> : null}
         {tab === "usage" ? <UsageView busy={busy} notify={notify} payload={payload} run={run} /> : null}
-        {tab === "gateway" && !loadFailed ? <GatewayView busy={busy} notify={notify} payload={payload} run={run} /> : null}
-        {tab === "gateway" && extraSettings ? extraSettings : null}
+        {tab === "gateway" && !loadFailed ? <GatewayView busy={busy} defaultAdvancedOpen extraSettings={extraSettings} notify={notify} payload={payload} run={run} /> : null}
       </div>
       </GatewayNavContext.Provider>
     </div>
@@ -158,15 +172,8 @@ const MODE_OPTIONS: GroupMode[] = ["inOrder", "rotate", "weighted", "usage", "fa
 const STICKY_OPTIONS: GroupSticky[] = ["cache", "session", "off"];
 
 /** 路由页：你建的组和自动组，每张卡片上直接改路由方式、会话固定、隐藏成员，手动模式下点成员锁定。 */
-function RoutingView({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
-  const [view, setView] = useState<"settings" | "requests">("settings");
-  return <>
-    <nav className="tp-tabs cx-pills" aria-label={t("路由")} role="group">
-      <button aria-pressed={view === "settings"} data-active={view === "settings"} onClick={() => setView("settings")} type="button">{t("调度设置")}</button>
-      <button aria-pressed={view === "requests"} data-active={view === "requests"} onClick={() => setView("requests")} type="button">{t("请求路由")}</button>
-    </nav>
-    {view === "settings" ? <RoutingSettings payload={payload} busy={busy} run={run} /> : <RecentRouteFeed payload={payload} />}
-  </>;
+function RoutingView({ payload, busy, run, view }: { payload: GatewayPayload | null; busy: string | null; run: Run; view: "settings" | "requests" }) {
+  return view === "settings" ? <RoutingSettings payload={payload} busy={busy} run={run} /> : <RecentRouteFeed payload={payload} />;
 }
 
 function RoutingSettings({ payload, busy, run }: { payload: GatewayPayload | null; busy: string | null; run: Run }) {
@@ -179,9 +186,10 @@ function RoutingSettings({ payload, busy, run }: { payload: GatewayPayload | nul
     !needle || group.name.toLowerCase().includes(needle) || group.members.some((member) => member.model.toLowerCase().includes(needle));
   const mine = (payload?.groups ?? []).filter(hit);
   const autos = (payload?.autoGroups ?? []).filter(hit);
-  // 自动组默认折叠（多家都有的模型一多就是一长串）；自己还没建组、或正在搜索时直接展开。
+  const hasAnyGroups = (payload?.groups?.length ?? 0) + (payload?.autoGroups?.length ?? 0) > 0;
+  // 自动组默认折叠，避免未自建组时铺满整屏；用户手动展开或搜索时再显示。
   const [autosOpen, setAutosOpen] = useGatewayViewState<boolean | null>("routing.autosOpen", null);
-  const autosShown = autosOpen ?? ((payload?.groups ?? []).length === 0 || Boolean(needle));
+  const autosShown = autosOpen ?? Boolean(needle);
   // 「某 Agent 刚用过」过一阵要消失：数据没变时每分钟也重算一次成员状态。
   const [minute, setMinute] = useState(() => Math.floor(Date.now() / 60_000));
   useEffect(() => {
@@ -216,22 +224,15 @@ function RoutingSettings({ payload, busy, run }: { payload: GatewayPayload | nul
 
   return (
     <>
-      {/* 一行工具条：搜索 + 自动建组 + 新建组。组是什么放在「我的组」标题的悬停说明里，不再单独占一行。 */}
+      {/* 一行紧凑工具条：有组或正在搜索时显示搜索框；自动建组开关归位到「自动组」标题行右侧。 */}
       <div className="gw-models-toolbar cx-routing-toolbar">
-        <label className="cx-search gw-models-search">
-          <Search aria-hidden="true" />
-          <input aria-label={t("搜索组或模型")} onChange={(event) => setQuery(event.target.value)} placeholder={t("搜索组或模型")} value={query} />
-        </label>
-        <div className="gw-models-auto" title={t("多家都有的模型自动成一个组：Agent 选不带供应商的模型名时走它。关掉后只列出你建的组，不带供应商的模型名按共享供应商的顺序依次尝试。")}>
-          <span>{t("自动建组")}</span>
-          <Switch
-            disabled={busy !== null || !payload}
-            label={t("自动建组")}
-            on={autoOn}
-            onToggle={() => void run("auto-models", "save_gateway_auto_models", { enabled: !autoOn }, t("自动建组"), true)}
-          />
-        </div>
-        <button className="cx-primary" disabled={busy !== null || !payload} onClick={() => setEditing("new")} type="button">
+        {hasAnyGroups || query ? (
+          <label className="cx-search gw-models-search">
+            <Search aria-hidden="true" />
+            <input aria-label={t("搜索组或模型")} onChange={(event) => setQuery(event.target.value)} placeholder={t("搜索组或模型")} value={query} />
+          </label>
+        ) : null}
+        <button className="cx-primary gw-routing-new-btn" disabled={busy !== null || !payload} onClick={() => setEditing("new")} type="button">
           <Plus />
           {t("新建组")}
         </button>
@@ -264,7 +265,19 @@ function RoutingSettings({ payload, busy, run }: { payload: GatewayPayload | nul
       ))}
 
       {payload ? (
-        <SectionLabel>
+        <SectionLabel
+          aside={(
+            <div className="gw-models-auto" title={t("多家都有的模型自动成一个组：Agent 选不带供应商的模型名时走它。关掉后只列出你建的组，不带供应商的模型名按共享供应商的顺序依次尝试。")}>
+              <span>{t("自动建组")}</span>
+              <Switch
+                disabled={busy !== null || !payload}
+                label={t("自动建组")}
+                on={autoOn}
+                onToggle={() => void run("auto-models", "save_gateway_auto_models", { enabled: !autoOn }, t("自动建组"), true)}
+              />
+            </div>
+          )}
+        >
           <button aria-expanded={autosShown} className="cx-section-toggle" onClick={() => setAutosOpen(!autosShown)} title={t("多家都有的模型自动成组，Agent 选不带供应商的模型名时走它")} type="button">
             <ChevronRight aria-hidden="true" className="h-3.5 w-3.5" />
             {t("自动组")}
@@ -1000,7 +1013,21 @@ function GatewayPortRow({ notify }: { notify: Notify }) {
   );
 }
 
-function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload | null; busy: string | null; run: Run; notify: Notify }) {
+function GatewayView({
+  payload,
+  busy,
+  run,
+  notify,
+  extraSettings,
+  defaultAdvancedOpen = false,
+}: {
+  payload: GatewayPayload | null;
+  busy: string | null;
+  run: Run;
+  notify: Notify;
+  extraSettings?: ReactNode;
+  defaultAdvancedOpen?: boolean;
+}) {
   // 刚复制的那一行，图标短暂换成对勾。
   const [copied, setCopied] = useState<string | null>(null);
   // 刚换过 token 的 Agent：那一行给个「复制新 token」，方便贴到手动填过 token 的地方。
@@ -1045,73 +1072,42 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
   const discoveryHint = localDiscovery
     ? t("读取 Kiro、Cursor、Gemini CLI、Devin、Droid、Command Code 本机的登录文件，供应商页提示可以导入；不读钥匙串，导入前不会加进共享供应商。")
     : t("关着时不读其它客户端的登录文件。打开后，本机已登录的 Kiro、Cursor 等账号会在供应商页提示导入。");
-  // 参照 Cursor 设置页：地址一节、选项一节；每行标题 + 一行说明，右侧控件。地址可复制，token 更换收进三点菜单。
+  // 合并为单张「本地服务选项」卡片：监听地址、端口、轮换和退出恢复放前面；其余高级开关、新旧共用参数与各 Agent 接入地址收进折叠区。
   return (
-    <>
-      <CxSection title={t("接入地址")}>
-        <CxCard>
-          <CxRow
-            badges={<CxBadge tone={payload.helperRunning ? "ok" : "warn"}>{payload.helperRunning ? t("运行中") : t("未运行")}</CxBadge>}
-            detail={<code className="cx-set-path">{listen}</code>}
-            icon={<Waypoints />}
-            title={t("监听地址")}
-            tooltip={t("只监听本机；各 Agent 用自己的路径和 token 接入。")}
-          >
-            {copyButton("listen", listen)}
-            {/* 下面各 Agent 的行尾有三点菜单：这里留出同宽的空位，复制按钮上下对齐。 */}
-            <span className="cx-set-menu-spacer" />
-          </CxRow>
-          {glanceAgents(payload.agents).map((agent) => {
-            const binding = payload.gateway.bindings[agent.agent];
-            return (
-              <CxRow
-                badges={agent.enabled ? null : <CxBadge>{t("未接入")}</CxBadge>}
-                detail={<code className="cx-set-path" title={agent.baseUrl}>{agent.baseUrl}</code>}
-                icon={<AgentGlyph agent={agent.agent} />}
-                key={agent.agent}
-                title={agent.name}
-                tooltip={agent.enabled ? t("已写入该 Agent 的配置") : t("开启后写入该 Agent 的配置")}
-              >
-                {rotated === agent.agent && binding?.token ? (
-                  <button className="cx-secondary" onClick={() => copy(`token:${agent.agent}`, binding.token)} type="button">
-                    {copied === `token:${agent.agent}` ? <Check /> : <Copy />}
-                    {t("复制新 token")}
-                  </button>
-                ) : null}
-                {copyButton(agent.agent, agent.baseUrl)}
-                {binding?.token ? (
-                  <Menu>
-                    <MenuItem disabled={busy !== null} onClick={() => void rotate(agent.agent, agent.name)}>
-                      {t("更换 token")}
-                    </MenuItem>
-                  </Menu>
-                ) : <span className="cx-set-menu-spacer" />}
-              </CxRow>
-            );
-          })}
-        </CxCard>
-      </CxSection>
-
-      <CxSection title={t("本地服务选项")}>
-        <CxCard>
-          <GatewayPortRow notify={notify} />
-          <CxRow detail={keyRotationHint} title={t("多 Key 轮换")}>
-            <AppSelect
-              className="cx-set-select"
-              disabled={busy !== null}
-              label={t("多 Key 轮换")}
-              onChange={(next) => saveOptions(next, restoreOnExit)}
-              options={[
-                { value: "sticky", label: t("会话粘性（推荐）"), hint: t("同一会话固定一个 Key，出错才换") },
-                { value: "roundRobin", label: t("逐请求轮换"), hint: t("每个请求换下一个 Key") },
-              ]}
-              size="sm"
-              value={mode}
-            />
-          </CxRow>
-          <CxRow detail={restoreHint} title={t("退出 Codex++ 时恢复直连")}>
-            <Switch pending={busy !== null} label={t("退出 Codex++ 时恢复直连")} on={restoreOnExit} onToggle={() => saveOptions(mode, !restoreOnExit)} />
-          </CxRow>
+    <CxSection title={t("本地服务选项")}>
+      <CxCard>
+        <CxRow
+          badges={<CxBadge tone={payload.helperRunning ? "ok" : "warn"}>{payload.helperRunning ? t("运行中") : t("未运行")}</CxBadge>}
+          detail={<code className="cx-set-path">{listen}</code>}
+          icon={<Waypoints />}
+          title={t("监听地址")}
+          tooltip={t("只监听本机；各 Agent 用自己的路径和 token 接入。")}
+        >
+          {copyButton("listen", listen)}
+        </CxRow>
+        <GatewayPortRow notify={notify} />
+        <CxRow detail={keyRotationHint} title={t("多 Key 轮换")}>
+          <AppSelect
+            className="cx-set-select"
+            disabled={busy !== null}
+            label={t("多 Key 轮换")}
+            onChange={(next) => saveOptions(next, restoreOnExit)}
+            options={[
+              { value: "sticky", label: t("会话粘性（推荐）"), hint: t("同一会话固定一个 Key，出错才换") },
+              { value: "roundRobin", label: t("逐请求轮换"), hint: t("每个请求换下一个 Key") },
+            ]}
+            size="sm"
+            value={mode}
+          />
+        </CxRow>
+        <CxRow detail={restoreHint} title={t("退出 Codex++ 时恢复直连")}>
+          <Switch pending={busy !== null} label={t("退出 Codex++ 时恢复直连")} on={restoreOnExit} onToggle={() => saveOptions(mode, !restoreOnExit)} />
+        </CxRow>
+        <details className="cx-set-disclosure" open={defaultAdvancedOpen || undefined}>
+          <summary>
+            {t("更多设置与接入地址")}
+            <span className="cx-set-summary-hint">{t("模型后缀 · WebSocket · 超时 · 各 Agent 地址")}</span>
+          </summary>
           <CxRow detail={suffixHint} title={t("模型名后带供应商")}>
             <Switch
               pending={busy !== null}
@@ -1147,8 +1143,37 @@ function GatewayView({ payload, busy, run, notify }: { payload: GatewayPayload |
               onToggle={() => void run("subagentModel", "save_gateway_subagent_model_policy", { followRequest: !subagentFollow }, t("保存子智能体模型策略"), true)}
             />
           </CxRow>
-        </CxCard>
-      </CxSection>
-    </>
+          {extraSettings}
+          {glanceAgents(payload.agents).map((agent) => {
+            const binding = payload.gateway.bindings[agent.agent];
+            return (
+              <CxRow
+                badges={agent.enabled ? null : <CxBadge>{t("未接入")}</CxBadge>}
+                detail={<code className="cx-set-path" title={agent.baseUrl}>{agent.baseUrl}</code>}
+                icon={<AgentGlyph agent={agent.agent} />}
+                key={agent.agent}
+                title={agent.name}
+                tooltip={agent.enabled ? t("已写入该 Agent 的配置") : t("开启后写入该 Agent 的配置")}
+              >
+                {rotated === agent.agent && binding?.token ? (
+                  <button className="cx-secondary" onClick={() => copy(`token:${agent.agent}`, binding.token)} type="button">
+                    {copied === `token:${agent.agent}` ? <Check /> : <Copy />}
+                    {t("复制新 token")}
+                  </button>
+                ) : null}
+                {copyButton(agent.agent, agent.baseUrl)}
+                {binding?.token ? (
+                  <Menu>
+                    <MenuItem disabled={busy !== null} onClick={() => void rotate(agent.agent, agent.name)}>
+                      {t("更换 token")}
+                    </MenuItem>
+                  </Menu>
+                ) : <span className="cx-set-menu-spacer" />}
+              </CxRow>
+            );
+          })}
+        </details>
+      </CxCard>
+    </CxSection>
   );
 }

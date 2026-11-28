@@ -281,6 +281,15 @@ pub trait BridgeDataService: Send + Sync {
     async fn delete(&self, session: SessionRef) -> anyhow::Result<DeleteResult>;
     async fn undo(&self, undo_token: String) -> anyhow::Result<DeleteResult>;
     async fn export_markdown(&self, session: SessionRef) -> anyhow::Result<ExportResult>;
+    /// Codex 设置页「会话维护」：立即检查一次会话索引，补回可从 rollout 确认的缺失消息。
+    /// 和管理器「会话 → 修复会话索引」同一套实现；修复本身带文件锁，和启动时 / 定时的自动检查不会撞上。
+    async fn repair_session_index(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "message": "会话索引修复暂不可用"}))
+    }
+    /// 最近一次会话索引修复报告（含历史轮次补载状态），没修过时 `report` 为 null。
+    async fn session_index_repair_report(&self) -> anyhow::Result<Value> {
+        Ok(json!({"status": "unavailable", "message": "会话索引修复报告暂不可用"}))
+    }
     async fn thread_usage_history(&self, session: SessionRef) -> anyhow::Result<Value>;
     /// Codex 输入框下方状态栏的轻量用量快照：只给最近的 token 事件，不返回全量历史。
     /// 内置状态栏和拓展（路由白名单里的只读项）共用。
@@ -736,6 +745,9 @@ pub async fn handle_bridge_request(
                 .to_string();
             result_value(ctx.data.undo(undo_token).await)
         }
+        // 会话维护（Codex 设置页「会话」分组）：会改会话库，只给内置页面用，不在拓展白名单里。
+        "/session-index/repair" => ctx.data.repair_session_index().await,
+        "/session-index/report" => ctx.data.session_index_repair_report().await,
         "/export-markdown" => result_value(
             ctx.data
                 .export_markdown(session_from_payload(&payload))
@@ -1511,6 +1523,7 @@ fn model_catalog_source_identity(settings: &BackendSettings) -> String {
             crate::settings::RelayProtocol::Responses => "responses",
             crate::settings::RelayProtocol::ChatCompletions => "chatCompletions",
             crate::settings::RelayProtocol::AnthropicMessages => "anthropicMessages",
+            crate::settings::RelayProtocol::Gemini => "gemini",
         },
         match profile.relay_mode {
             crate::settings::RelayMode::Official => "official",

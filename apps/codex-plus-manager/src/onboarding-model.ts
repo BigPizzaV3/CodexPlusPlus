@@ -12,7 +12,7 @@ export type TourStep = {
 export const TOUR_VERSION = 1;
 export const TOUR_STORAGE_KEY = "codex-plus-plus.onboarding";
 
-// 顺序跟着侧栏从上往下走：万物皆拓展 → Agent → 搜索 → 设置。
+// 顺序跟着侧栏从上往下走：MCP 与 Skills（全局管理）→ Agent → 搜索 → 设置。
 // 本地服务（共享供应商、路由、Agent 接入）是侧栏第一组里的一个入口，在 Agent 一步里顺带提一句，不单独讲。
 export const TOUR_STEPS: TourStep[] = [
   {
@@ -23,14 +23,14 @@ export const TOUR_STEPS: TourStep[] = [
   {
     id: "management",
     target: "management",
-    title: "万物皆拓展",
-    body: "Codex++ 的增强能力都以拓展开放：在这里启用内置拓展、安装社区拓展，或在 Codex 对话里说一句就造一个自己的。下面是 MCP、Skills 和会话。",
+    title: "MCP、Skills 与会话",
+    body: "同时管理各个 Agent 的 MCP 服务器和 Skills；本地会话、用量也在这一组。",
   },
   {
     id: "agents",
     target: "agents",
     title: "Agent",
-    body: "每个 Agent 一行，点开后它的页面列在下面：连接与供应商、内置拓展、皮肤……想让几个 Agent 共用一份供应商，到侧栏的「本地服务」里配置。",
+    body: "每个 Agent 一行，点开后它的页面列在下面：连接与供应商、万物皆拓展（启用内置拓展、安装社区拓展，或在 Codex 对话里说一句就造一个）……想让几个 Agent 共用一份供应商，到侧栏的「本地服务」里配置。",
   },
   {
     id: "palette",

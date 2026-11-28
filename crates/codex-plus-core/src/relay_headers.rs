@@ -139,6 +139,22 @@ pub fn apply_with_api_key(
     relay: &RelayProfile,
     api_key: &str,
 ) -> RequestBuilder {
+    if relay.protocol == crate::settings::RelayProtocol::Gemini {
+        let api_key = api_key.trim();
+        let has_custom_goog_key = relay.custom_headers.iter().any(|header| {
+            header.key.trim().eq_ignore_ascii_case(crate::gemini_bridge::GEMINI_API_KEY_HEADER)
+                && !header.value.trim().is_empty()
+        });
+        let mut builder = builder;
+        if !relay.uses_no_auth()
+            && !api_key.is_empty()
+            && !has_custom_goog_key
+            && !has_authorization(&relay.custom_headers)
+        {
+            builder = builder.header(crate::gemini_bridge::GEMINI_API_KEY_HEADER, api_key);
+        }
+        return apply_headers(builder, &relay.custom_headers);
+    }
     if relay.protocol != crate::settings::RelayProtocol::AnthropicMessages {
         let builder = if relay.uses_no_auth() || has_authorization(&relay.custom_headers) {
             builder

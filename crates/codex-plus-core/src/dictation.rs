@@ -247,9 +247,10 @@ fn recording<'a>(body: &'a [u8], content_type: &str) -> Result<Recording<'a>, Di
         .filter(|boundary| {
             !boundary.is_empty()
                 && boundary.len() <= 70
-                && boundary
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+                && boundary.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric()
+                        || matches!(byte, b'-' | b'_' | b'.' | b'=' | b'+' | b'/')
+                })
         })
         .ok_or_else(malformed)?;
     let delimiter = format!("--{boundary}");
@@ -264,13 +265,13 @@ fn recording<'a>(body: &'a [u8], content_type: &str) -> Result<Recording<'a>, Di
     let mut parts = 0;
     loop {
         if let Some(tail) = remaining.strip_prefix(b"--") {
-            if !tail.is_empty() && tail != b"\r\n" {
+            if !tail.trim_ascii().is_empty() {
                 return Err(malformed());
             }
             break;
         }
         parts += 1;
-        if parts > 8 {
+        if parts > 16 {
             return Err(malformed());
         }
         remaining = remaining.strip_prefix(b"\r\n").ok_or_else(malformed)?;
@@ -731,6 +732,231 @@ fn recognize_local(
         .to_string())
 }
 
+/// 本地解码后允许的最大单声道源样本数（约 30 分钟 @ 48 kHz），防止恶意压缩音频撑爆内存。
+const MAX_LOCAL_DECODED_SAMPLES: usize = 30 * 60 * 48_000;
+
+/// 将本地 SenseVoice 支持的音频（16kHz PCM WAV 快路径，或 WebM/Opus、OGG/Opus、WAV、MP4/AAC、MP3、FLAC）
+/// 统一解码并重采样为 16 kHz 单声道 `f32` 波形。
+fn decode_local_audio_to_16k_mono(
+    audio: &[u8],
+    filename: &str,
+    mime_type: &str,
+) -> Result<Vec<f32>, DictationError> {
+    if audio.is_empty() {
+        return Err(DictationError::new(
+            400,
+            "本地 SenseVoice 无法解码空音频（支持 WAV / WebM / OGG / MP3 / M4A / FLAC）",
+        ));
+    }
+    if validate_local_wav(audio).is_ok() {
+        let samples = local_wav_samples(audio);
+        if samples.is_empty() {
+            return Err(DictationError::new(
+                400,
+                "本地 SenseVoice 需要非空 WAV 音频",
+            ));
+        }
+        return Ok(samples);
+    }
+
+    use std::io::Cursor;
+    use symphonia::core::codecs::audio::AudioDecoderOptions;
+    use symphonia::core::codecs::registry::CodecRegistry;
+    use symphonia::core::common::Tier;
+    use symphonia::core::errors::Error as SymphoniaError;
+    use symphonia::core::formats::probe::Hint;
+    use symphonia::core::formats::{FormatOptions, TrackType};
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::meta::MetadataOptions;
+
+    let decode_err = || {
+        DictationError::new(
+            400,
+            "本地 SenseVoice 无法解码该音频（支持 WAV / WebM / OGG / MP3 / M4A / FLAC）",
+        )
+    };
+
+    let mut codecs = CodecRegistry::new();
+    symphonia::default::register_enabled_codecs(&mut codecs);
+    codecs.register_audio_decoder_at_tier::<symphonia_opus::OpusDecoder>(Tier::Fallback);
+
+    let mut hint = Hint::new();
+    if let Some(ext) = filename.rsplit('.').next().filter(|ext| !ext.is_empty() && *ext != filename)
+    {
+        hint.with_extension(&ext.to_ascii_lowercase());
+    }
+    let base_mime = mime_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if !base_mime.is_empty() {
+        hint.mime_type(&base_mime);
+    }
+
+    let mss = MediaSourceStream::new(Box::new(Cursor::new(audio.to_vec())), Default::default());
+    let mut format = symphonia::default::get_probe()
+        .probe(
+            &hint,
+            mss,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .map_err(|_| decode_err())?;
+
+    let track = format
+        .default_track(TrackType::Audio)
+        .ok_or_else(decode_err)?;
+    let track_id = track.id;
+    let codec_params = track
+        .codec_params
+        .as_ref()
+        .and_then(|params| params.audio())
+        .ok_or_else(decode_err)?
+        .clone();
+    let mut src_rate = codec_params.sample_rate.unwrap_or(0);
+    let mut decoder = codecs
+        .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
+        .map_err(|_| decode_err())?;
+
+    let mut mono = Vec::new();
+    let mut interleaved = Vec::new();
+    loop {
+        let packet = match format.next_packet() {
+            Ok(Some(packet)) => packet,
+            Ok(None) => break,
+            Err(SymphoniaError::IoError(err))
+                if err.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(_) => {
+                if !mono.is_empty() {
+                    break;
+                }
+                return Err(decode_err());
+            }
+        };
+        if packet.track_id != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(buf) => buf,
+            Err(SymphoniaError::DecodeError(_)) => continue,
+            Err(_) => {
+                if !mono.is_empty() {
+                    break;
+                }
+                return Err(decode_err());
+            }
+        };
+        let frames = decoded.frames();
+        if frames == 0 {
+            continue;
+        }
+        let spec = decoded.spec();
+        if src_rate == 0 {
+            src_rate = spec.rate();
+        }
+        let channels = spec.channels().count().max(1);
+        let needed = decoded.samples_interleaved();
+        if interleaved.len() < needed {
+            interleaved.resize(needed, 0.0f32);
+        }
+        decoded.copy_to_slice_interleaved(&mut interleaved[..needed]);
+        if mono.len().saturating_add(frames) > MAX_LOCAL_DECODED_SAMPLES {
+            return Err(DictationError::new(413, "语音时长超过 30 分钟限制"));
+        }
+        if channels == 1 {
+            mono.extend_from_slice(&interleaved[..frames]);
+        } else {
+            let inv = 1.0 / channels as f32;
+            for frame in interleaved[..frames * channels].chunks_exact(channels) {
+                let sum: f32 = frame.iter().copied().sum();
+                mono.push(sum * inv);
+            }
+        }
+    }
+
+    if mono.is_empty() || src_rate == 0 {
+        return Err(decode_err());
+    }
+    Ok(resample_to_16khz(&mono, src_rate))
+}
+
+/// Hann 窗 sinc 抗混叠重采样到 16 kHz（给 SenseVoice 使用）。
+fn resample_to_16khz(samples: &[f32], src_rate: u32) -> Vec<f32> {
+    const TARGET_RATE: u32 = LOCAL_SAMPLE_RATE as u32;
+    if samples.is_empty() || src_rate == 0 || src_rate == TARGET_RATE {
+        return samples.to_vec();
+    }
+    let ratio = src_rate as f64 / TARGET_RATE as f64;
+    let out_len = ((samples.len() as f64) / ratio).round().max(1.0) as usize;
+    let cutoff = (TARGET_RATE as f64 / src_rate as f64).min(1.0);
+    // 半窗半径：下采样时按比例拉宽以抑制混叠。
+    let half_taps = ((8.0 / cutoff).ceil() as isize).clamp(8, 32);
+    let mut output = Vec::with_capacity(out_len);
+    let n = samples.len() as isize;
+    for i in 0..out_len {
+        let center = i as f64 * ratio;
+        let center_idx = center.floor() as isize;
+        let start = (center_idx - half_taps + 1).max(0);
+        let end = (center_idx + half_taps).min(n - 1);
+        let mut acc = 0.0f64;
+        let mut weight_sum = 0.0f64;
+        for idx in start..=end {
+            let dist = idx as f64 - center;
+            let x = dist * cutoff;
+            let sinc = if x.abs() < 1e-9 {
+                1.0
+            } else {
+                let px = std::f64::consts::PI * x;
+                px.sin() / px
+            };
+            let window = 0.5
+                * (1.0
+                    + (std::f64::consts::PI * dist / half_taps as f64)
+                        .clamp(-std::f64::consts::PI, std::f64::consts::PI)
+                        .cos());
+            let w = sinc * window;
+            acc += samples[idx as usize] as f64 * w;
+            weight_sum += w;
+        }
+        output.push(if weight_sum.abs() > 1e-12 {
+            (acc / weight_sum) as f32
+        } else {
+            0.0
+        });
+    }
+    output
+}
+
+fn normalize_sensevoice_language(
+    configured: &str,
+    from_request: &str,
+) -> Result<String, DictationError> {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        return match configured {
+            value @ ("auto" | "zh" | "en" | "yue" | "ja" | "ko") => Ok(value.to_string()),
+            _ => Err(DictationError::new(400, "SenseVoice 不支持该语音语言")),
+        };
+    }
+    // 请求侧（例如 Codex 原生听写）可能带 `zh-CN` / `en-US` 等区域标签，归并到 SenseVoice 支持的语言码。
+    let req = from_request.trim().to_ascii_lowercase();
+    let primary = req.split(['-', '_']).next().unwrap_or_default();
+    let mapped = match primary {
+        "zh" => "zh",
+        "en" => "en",
+        "yue" => "yue",
+        "ja" => "ja",
+        "ko" => "ko",
+        _ => "auto",
+    };
+    Ok(mapped.to_string())
+}
+
 async fn transcribe_local_recording(
     settings: &DictationSettings,
     recording: Recording<'_>,
@@ -743,13 +969,19 @@ async fn transcribe_local_recording_with_guard(
     recording: Recording<'_>,
     stream_guard: Option<Arc<OwnedSemaphorePermit>>,
 ) -> Result<Value, DictationError> {
-    validate_local_wav(recording.audio)?;
-    let language = match settings.language.trim() {
-        "" => "auto",
-        value @ ("auto" | "zh" | "en" | "yue" | "ja" | "ko") => value,
-        _ => return Err(DictationError::new(400, "SenseVoice 不支持该语音语言")),
-    }
-    .to_string();
+    let language = normalize_sensevoice_language(&settings.language, &recording.language)?;
+    let samples = if validate_local_wav(recording.audio).is_ok() {
+        local_wav_samples(recording.audio)
+    } else {
+        let audio = recording.audio.to_vec();
+        let filename = recording.filename.clone();
+        let mime_type = recording.mime_type.clone();
+        tokio::task::spawn_blocking(move || {
+            decode_local_audio_to_16k_mono(&audio, &filename, &mime_type)
+        })
+        .await
+        .map_err(|_| DictationError::new(500, "本地语音解码任务失败"))??
+    };
     let recognizer_guard = LOCAL_RECOGNIZER_SLOTS
         .clone()
         .try_acquire_owned()
@@ -760,7 +992,7 @@ async fn transcribe_local_recording_with_guard(
     let (reply, answer) = std::sync::mpsc::channel();
     sender
         .send(LocalRecognizerRequest::Transcribe {
-            samples: local_wav_samples(recording.audio),
+            samples,
             language,
             reply,
         })
@@ -887,7 +1119,14 @@ async fn transcribe_recording(
     if !language.is_empty() {
         add_field(&mut multipart, &boundary, "language", language);
     }
-    multipart.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n", recording.filename, recording.mime_type).as_bytes());
+    let upload_mime = recording
+        .mime_type
+        .split(';')
+        .next()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("audio/webm");
+    multipart.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{}\"\r\nContent-Type: {}\r\n\r\n", recording.filename, upload_mime).as_bytes());
     multipart.extend_from_slice(recording.audio);
     multipart.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
     let client = reqwest::Client::builder()
@@ -1958,6 +2197,109 @@ mod tests {
             400
         );
         assert_eq!(cancel_bridge(&invalid).unwrap_err().status, 400);
+    }
+
+    #[test]
+    fn decode_local_audio_resamples_48khz_stereo_wav_to_16khz_mono() {
+        // 构造 0.1 秒（4800 帧）48kHz 立体声 16-bit PCM WAV（1 kHz 正弦波），验证解封装 + 混音 + 重采样。
+        let frames = 4800usize;
+        let data_bytes = (frames * 2 * 2) as u32;
+        let mut wav = Vec::with_capacity(44 + data_bytes as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36u32 + data_bytes).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&2u16.to_le_bytes()); // stereo
+        wav.extend_from_slice(&48_000u32.to_le_bytes());
+        wav.extend_from_slice(&(48_000u32 * 4).to_le_bytes());
+        wav.extend_from_slice(&4u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_bytes.to_le_bytes());
+        for i in 0..frames {
+            let s = ((2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48_000.0).sin() * 16_000.0)
+                as i16;
+            wav.extend_from_slice(&s.to_le_bytes());
+            wav.extend_from_slice(&s.to_le_bytes());
+        }
+        let mono16k = decode_local_audio_to_16k_mono(&wav, "clip.wav", "audio/wav").unwrap();
+        // 0.1 秒 @ 16 kHz = 1600 样本（允许 ±4 样本边界误差）。
+        assert!((1596..=1604).contains(&mono16k.len()), "len={}", mono16k.len());
+        let peak = mono16k.iter().copied().map(f32::abs).fold(0.0f32, f32::max);
+        assert!(peak > 0.35 && peak < 0.65, "peak={peak}");
+    }
+
+    #[test]
+    fn decode_local_audio_decodes_ogg_opus_and_resamples_to_16khz() {
+        // 构造最小合规 Ogg Opus 字节流（OpusHead + OpusTags + 3 帧 20 ms 48 kHz 立体声 Opus 静音帧），
+        // 验证 symphonia + symphonia-opus 纯 Rust 解码链路无外部依赖即可工作。
+        fn ogg_crc(data: &[u8]) -> u32 {
+            let mut crc = 0u32;
+            for &byte in data {
+                crc ^= (byte as u32) << 24;
+                for _ in 0..8 {
+                    crc = if crc & 0x8000_0000 != 0 {
+                        (crc << 1) ^ 0x04c1_1db7
+                    } else {
+                        crc << 1
+                    };
+                }
+            }
+            crc
+        }
+        fn ogg_page(header_type: u8, granule: u64, seq: u32, packets: &[&[u8]]) -> Vec<u8> {
+            let mut segs = Vec::new();
+            let mut payload = Vec::new();
+            for pkt in packets {
+                assert!(pkt.len() < 255);
+                segs.push(pkt.len() as u8);
+                payload.extend_from_slice(pkt);
+            }
+            let mut page = Vec::with_capacity(27 + segs.len() + payload.len());
+            page.extend_from_slice(b"OggS");
+            page.push(0); // version
+            page.push(header_type);
+            page.extend_from_slice(&granule.to_le_bytes());
+            page.extend_from_slice(&1u32.to_le_bytes()); // serial
+            page.extend_from_slice(&seq.to_le_bytes());
+            page.extend_from_slice(&0u32.to_le_bytes()); // crc placeholder
+            page.push(segs.len() as u8);
+            page.extend_from_slice(&segs);
+            page.extend_from_slice(&payload);
+            let crc = ogg_crc(&page);
+            page[22..26].copy_from_slice(&crc.to_le_bytes());
+            page
+        }
+        let opus_head: [u8; 19] = [
+            b'O', b'p', b'u', b's', b'H', b'e', b'a', b'd', 1, 2, 0x00, 0x00, 0x80, 0xBB, 0x00,
+            0x00, 0x00, 0x00, 0,
+        ];
+        let mut opus_tags = Vec::from(&b"OpusTags"[..]);
+        opus_tags.extend_from_slice(&4u32.to_le_bytes());
+        opus_tags.extend_from_slice(b"test");
+        opus_tags.extend_from_slice(&0u32.to_le_bytes());
+        // RFC 6716: TOC=0xFC (CELT FB stereo 20 ms), 静音帧
+        let frame: [u8; 3] = [0xFC, 0xFF, 0xFE];
+
+        let mut ogg = Vec::new();
+        ogg.extend_from_slice(&ogg_page(0x02, 0, 0, &[&opus_head]));
+        ogg.extend_from_slice(&ogg_page(0x00, 0, 1, &[&opus_tags]));
+        ogg.extend_from_slice(&ogg_page(0x04, 960 * 3, 2, &[&frame, &frame, &frame]));
+
+        let mono16k =
+            decode_local_audio_to_16k_mono(&ogg, "codex.ogg", "audio/ogg;codecs=opus").unwrap();
+        // 3 帧 × 20 ms = 60 ms @ 16 kHz = 960 样本
+        assert!((940..=980).contains(&mono16k.len()), "len={}", mono16k.len());
+    }
+
+    #[test]
+    fn sensevoice_language_maps_locale_tags() {
+        assert_eq!(normalize_sensevoice_language("", "zh-CN").unwrap(), "zh");
+        assert_eq!(normalize_sensevoice_language("", "en_US").unwrap(), "en");
+        assert_eq!(normalize_sensevoice_language("", "fr-FR").unwrap(), "auto");
+        assert_eq!(normalize_sensevoice_language("ja", "zh-CN").unwrap(), "ja");
+        assert!(normalize_sensevoice_language("fr", "").is_err());
     }
 }
 
