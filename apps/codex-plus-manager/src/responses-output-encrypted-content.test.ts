@@ -14,6 +14,7 @@ import {
   stripImageGenerationToolEnabled,
   stripResponsesImageDetailEnabled,
   stripResponsesOutputEncryptedContentEnabled,
+  imageCompressEnabled,
   webSearchHistoryCompatEnabled,
 } from "./model-routes.ts";
 import { readAppSource } from "./app-source.test-helper.ts";
@@ -66,6 +67,7 @@ test("checkbox edits route config to the proxy and restore the real upstream on 
     stripImageGenerationToolEnabled,
     stripResponsesImageDetailEnabled,
     stripResponsesOutputEncryptedContentEnabled,
+    imageCompressEnabled,
     pureApiImageGenerationEnabled,
     independentProxyEnabled,
     PROTOCOL_PROXY_BASE_URL,

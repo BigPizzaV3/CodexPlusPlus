@@ -109,6 +109,8 @@ export type GatewayPoolEntry = {
   stripResponsesImageDetail?: boolean;
   /** 转发前移除 Responses `include` 里的 `output.encrypted_content`。旧版后端没有。 */
   stripResponsesOutputEncryptedContent?: boolean;
+  /** 大图压缩：超过阈值的 base64 图片缩放转 JPEG。旧版后端没有。 */
+  imageCompress?: boolean;
   /** 不向该上游发送 `tool_search`（#2868）。旧版后端没有。 */
   disableToolSearch?: boolean;
   /** 归哪个 Agent 的页面：codex（引用 Codex 直连供应商的）、claude（Claude 页添加或导入的）；本地服务页加的为空。旧版后端没有。 */
@@ -1491,6 +1493,8 @@ export type ProviderDraft = {
   stripResponsesImageDetail?: boolean;
   /** 转发前移除 Responses `include` 里的 `output.encrypted_content`。 */
   stripResponsesOutputEncryptedContent?: boolean;
+  /** 大图压缩：超过阈值的 base64 图片缩放转 JPEG。 */
+  imageCompress?: boolean;
   /** 不向上游发送 `tool_search`：上游 400 时开启（#2868）。 */
   disableToolSearch?: boolean;
   /** 自定义请求头（#3075）：测试、拉模型、实际请求都带上；不带表示不改。 */
@@ -1530,6 +1534,7 @@ export function providerDraftFromEntry(entry: GatewayPoolEntry): ProviderDraft {
     subscriptionPolicy: entry.subscriptionPolicy == null ? entry.subscriptionPolicy : normalizeSubscriptionPolicy(entry.subscriptionPolicy),
     stripResponsesImageDetail: entry.stripResponsesImageDetail === true,
     stripResponsesOutputEncryptedContent: entry.stripResponsesOutputEncryptedContent === true,
+    imageCompress: entry.imageCompress === true,
     disableToolSearch: entry.disableToolSearch === true,
     customHeaders: providerHeaderRows(entry.customHeaders),
   };
@@ -1551,6 +1556,7 @@ export function providerInput(draft: ProviderDraft) {
     ...(draft.subscriptionPolicy !== undefined ? { subscriptionPolicy: draft.subscriptionPolicy } : {}),
     stripResponsesImageDetail: draft.stripResponsesImageDetail === true,
     stripResponsesOutputEncryptedContent: draft.stripResponsesOutputEncryptedContent === true,
+    imageCompress: draft.imageCompress === true,
     disableToolSearch: draft.disableToolSearch === true,
     ...(draft.customHeaders !== undefined ? { customHeaders: providerHeaderInputs(draft.customHeaders) } : {}),
   };

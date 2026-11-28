@@ -509,6 +509,7 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
     stripImageGenerationTool: false,
     stripResponsesImageDetail: false,
     stripResponsesOutputEncryptedContent: false,
+    imageCompress: false,
     disableToolSearch: false,
     customHeaders: [],
   });
@@ -521,6 +522,10 @@ test("供应商表单：多 Key 每行一个；本机服务预填 Key；编辑�
   assert.equal(providerDraftFromEntry({ ...payload().pool[0], stripResponsesOutputEncryptedContent: true }).stripResponsesOutputEncryptedContent, true);
   assert.equal(providerInput({ ...editing, stripResponsesOutputEncryptedContent: true }).stripResponsesOutputEncryptedContent, true);
   assert.equal(providerInput({ ...editing, stripResponsesOutputEncryptedContent: false }).stripResponsesOutputEncryptedContent, false);
+  // 大图压缩开关也能从池条目读回、原样提交。
+  assert.equal(providerDraftFromEntry({ ...payload().pool[0], imageCompress: true }).imageCompress, true);
+  assert.equal(providerInput({ ...editing, imageCompress: true }).imageCompress, true);
+  assert.equal(providerInput({ ...editing, imageCompress: false }).imageCompress, false);
   // #2868：「不发送 tool_search」从池条目读回、原样提交。
   assert.equal(providerDraftFromEntry({ ...payload().pool[0], disableToolSearch: true }).disableToolSearch, true);
   assert.equal(providerInput({ ...editing, disableToolSearch: true }).disableToolSearch, true);
