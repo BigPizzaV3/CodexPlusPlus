@@ -324,7 +324,7 @@ fn may_record_event(line: &[u8]) -> bool {
         return false;
     };
     if envelope.kind == "token_usage_record" {
-        return line.len() <= super::terminal_receipts::MAX_LINE;
+        return line.len() <= super::MAX_NATIVE_RECEIPT_LINE;
     }
     if !matches!(envelope.kind, "event_msg" | "turn_context") {
         return false;
