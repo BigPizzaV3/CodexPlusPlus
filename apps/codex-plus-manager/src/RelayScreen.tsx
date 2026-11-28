@@ -36,7 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Avatar, Switch, makeRun, type Run } from "./gateway-ui";
 import { useGatewayPayload } from "./hub-shared";
 import { publishGatewayPayload, refreshGateway } from "./gateway-store";
-import { importCandidates, type GatewayResult, type ProviderDraft } from "./gateway-model";
+import { importCandidates, isDirectProxy, type GatewayResult, type ProviderDraft } from "./gateway-model";
 import { entriesForPage } from "./provider-owner";
 import { useShowOtherAgents } from "./ProviderOwner";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
@@ -167,7 +167,7 @@ export function ProxySettingsScreen({
         const url = (proxy?.proxyUrl ?? "").trim();
         return (
           <CxRow
-            detail={url || (proxy?.configured ? t("已配置独立代理（来自环境变量）") : t("未配置独立代理，沿用系统代理"))}
+            detail={isDirectProxy(url) ? t("不使用代理（直连）") : url || (proxy?.configured ? t("已配置独立代理（来自环境变量）") : t("未配置独立代理，沿用系统代理"))}
             key={profile.id}
             title={profile.name || t("未命名供应商")}
           >

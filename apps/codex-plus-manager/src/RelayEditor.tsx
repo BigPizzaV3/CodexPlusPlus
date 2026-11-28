@@ -44,7 +44,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { selectedContextConfigToml, splitContextConfigText, stripContextEntriesFromConfig, type CodexContextEntries } from "./context-config-text";
 import { AppSelect } from "./AppSelect";
 import { appConfirm } from "./app-dialog";
-import { parseKeyLimit, proxyAddressError, type GatewayPoolEntry, type GatewayResult } from "./gateway-model";
+import { DIRECT_PROXY, isDirectProxy, parseKeyLimit, proxyAddressError, type GatewayPoolEntry, type GatewayResult } from "./gateway-model";
 import { publishGatewayPayload } from "./gateway-store";
 import { EMPTY_PRICE_ROW, priceRowFromMatch, type PriceRow } from "./provider-form-model";
 import {
@@ -523,7 +523,7 @@ export function RelayProfileDetail({
   }, [initialSection, profile.id]);
   useEffect(() => {
     if (initialSection !== "proxy" || activeTab !== "requests") return;
-    const frame = requestAnimationFrame(() => detailBodyRef.current?.querySelector<HTMLInputElement>(".relay-field-proxy input")?.focus());
+    const frame = requestAnimationFrame(() => detailBodyRef.current?.querySelector<HTMLElement>(".relay-field-proxy input, .relay-field-proxy [role=radio][aria-checked=true]")?.focus());
     return () => cancelAnimationFrame(frame);
   }, [activeTab, initialSection, profile.id]);
   const [doctorResult, setDoctorResult] = useState<ProviderDoctorResult | null>(null);
@@ -2540,19 +2540,8 @@ function RelayProfileEditor({
             </div>
           </section>
           <section className="pf-section">
-            <h4>{t("代理")}<small>{t("留空表示使用系统代理")}</small></h4>
-            <label className="pf-field relay-field-proxy">
-              <span>{t("直连独立代理")}</span>
-              <Input
-                aria-invalid={proxy.error ? true : undefined}
-                className="pf-mono"
-                onChange={(event) => proxy.onChange(event.currentTarget.value)}
-                placeholder="http://127.0.0.1:7890"
-                value={proxy.value}
-              />
-              <p className="pf-hint">{t("留空表示使用系统代理；仅影响当前供应商的模型拉取、测试和请求。随「保存供应商」一起保存。")}</p>
-              {proxy.error ? <p className="pf-note" data-tone="error">{proxy.error}</p> : null}
-            </label>
+            <h4>{t("代理")}<small>{t("直连时这个供应商的请求怎么走代理")}</small></h4>
+            <DirectProxyField key={profile.id} proxy={proxy} />
             {gatewayProxy ? (
               <div className="relay-gateway-proxy-inline">
                 <ProviderGatewayProxyFields
@@ -3732,6 +3721,53 @@ function tomlAssignmentKeys(contents: string): string[] {
 
 function relayCombinedCommonConfig(settings: BackendSettings): string {
   return joinTomlSectionsRootFirst([settings.relayCommonConfigContents || "", settings.relayContextConfigContents || ""]);
+}
+
+/** 直连供应商的独立代理：沿用系统代理（存空）/ 单独代理（存地址）/ 不使用代理（存 `direct`，#3297）。 */
+function DirectProxyField({ proxy }: { proxy: { value: string; error: string | null; onChange: (value: string) => void } }) {
+  // 选了「单独代理」但还没填地址时值仍为空，单独记住这个选择，不然会跳回「沿用系统代理」。
+  const [pickedCustom, setPickedCustom] = useState(false);
+  const mode: GatewayProxyMode = isDirectProxy(proxy.value) ? "direct" : proxy.value.trim() || pickedCustom ? "custom" : "system";
+  const pick = (next: GatewayProxyMode) => {
+    setPickedCustom(next === "custom");
+    if (next === "direct") proxy.onChange(DIRECT_PROXY);
+    else if (next === "system") proxy.onChange("");
+    else if (mode !== "custom") proxy.onChange("");
+  };
+  return (
+    <div className="pf-field relay-field-proxy">
+      <span>{t("直连独立代理")}</span>
+      <div aria-label={t("直连独立代理")} className="pf-seg" role="radiogroup">
+        {([
+          ["system", t("沿用系统代理")],
+          ["custom", t("单独代理")],
+          ["direct", t("不使用代理（直连）")],
+        ] as const).map(([itemMode, label]) => (
+          <button aria-checked={mode === itemMode} data-active={mode === itemMode} key={itemMode} onClick={() => pick(itemMode)} role="radio" type="button">
+            {label}
+          </button>
+        ))}
+      </div>
+      {mode === "custom" ? (
+        <Input
+          aria-invalid={proxy.error ? true : undefined}
+          className="pf-mono"
+          onChange={(event) => proxy.onChange(event.currentTarget.value)}
+          placeholder="http://127.0.0.1:7890"
+          spellCheck={false}
+          value={proxy.value}
+        />
+      ) : null}
+      <p className="pf-hint">
+        {mode === "direct"
+          ? t("不走系统代理和代理环境变量，直接连这个供应商；请求经本地服务转发，需要从 Codex++ 启动 Codex。随「保存供应商」一起保存。")
+          : mode === "custom"
+            ? t("只影响当前供应商的模型拉取、测试和请求；请求经本地服务转发。随「保存供应商」一起保存。")
+            : t("跟随系统代理（以及代理环境变量）；没有设置系统代理时就是直连。")}
+      </p>
+      {proxy.error ? <p className="pf-note" data-tone="error">{proxy.error}</p> : null}
+    </div>
+  );
 }
 
 function stripCommonConfigTextFallback(configContents: string, commonConfig: string): string {
