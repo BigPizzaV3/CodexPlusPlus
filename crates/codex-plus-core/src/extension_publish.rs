@@ -727,7 +727,7 @@ impl Publisher {
         steps.run("添加 topic", || self.gh(&["repo", "edit", &repo, "--add-topic", crate::extension_discovery::TOPIC]))?;
 
         let mut state = load_publish_state(&self.config_dir);
-        state.insert(id.to_string(), json!({ "repo": repo, "version": version, "publishedAt": now_secs() }));
+        state.insert(id.to_string(), json!({ "repo": repo, "name": report.name, "version": version, "publishedAt": now_secs() }));
         crate::settings::atomic_write(&self.config_dir.join(PUBLISH_STATE), serde_json::to_string_pretty(&state)?.as_bytes())?;
         Ok((repo, version))
     }
@@ -744,7 +744,7 @@ fn now_secs() -> u64 {
 impl Publisher {
     /// 当前 gh 账号名下的拓展仓库：带 `codexpp-extension` topic 的（社区栏里能看到），
     /// 加上本机发布记录里有、但已经下架的（仓库还在，可以重新上架或删除）。
-    pub fn list_published(&self) -> anyhow::Result<Value> {
+    pub fn list_published(&self, manager: &UserScriptManager) -> anyhow::Result<Value> {
         let account = self.account()?;
         let raw = self.gh(&[
             "repo", "list", &account, "--limit", "1000", "--json",
@@ -753,36 +753,45 @@ impl Publisher {
         let repos: Vec<Value> = serde_json::from_str(&raw).context("gh repo list 返回的不是 JSON")?;
         let state = load_publish_state(&self.config_dir);
         let topic = crate::extension_discovery::TOPIC;
-        let mut entries = repos
-            .iter()
-            .filter_map(|item| {
-                let repo = item.get("nameWithOwner")?.as_str()?.to_string();
-                let listed = item
-                    .get("repositoryTopics")
-                    .and_then(Value::as_array)
-                    .is_some_and(|topics| topics.iter().any(|t| t.get("name").and_then(Value::as_str) == Some(topic)));
-                let record = state.iter().find(|(_, record)| {
-                    record.get("repo").and_then(Value::as_str).is_some_and(|r| r.eq_ignore_ascii_case(&repo))
-                });
-                if !listed && record.is_none() {
-                    return None;
-                }
-                let text = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or("").to_string();
-                Some(json!({
-                    "repo": repo,
-                    "url": text("url"),
-                    "description": text("description"),
-                    "stars": item.get("stargazerCount").and_then(Value::as_u64).unwrap_or(0),
-                    "pushedAt": text("pushedAt"),
-                    "visibility": text("visibility"),
-                    "archived": item.get("isArchived").and_then(Value::as_bool).unwrap_or(false),
-                    "listed": listed,
-                    "id": record.map(|(id, _)| id.clone()),
-                    "version": record.and_then(|(_, r)| r.get("version").cloned()),
-                    "publishedAt": record.and_then(|(_, r)| r.get("publishedAt").cloned()),
-                }))
-            })
-            .collect::<Vec<_>>();
+        let mut entries = Vec::new();
+        for item in &repos {
+            let Some(repo) = item["nameWithOwner"].as_str() else {
+                continue;
+            };
+            let listed = item["repositoryTopics"]
+                .as_array()
+                .is_some_and(|topics| topics.iter().any(|t| t["name"].as_str() == Some(topic)));
+            let record = state.iter().find(|(_, record)| {
+                record["repo"].as_str().is_some_and(|r| r.eq_ignore_ascii_case(repo))
+            });
+            if !listed && record.is_none() {
+                continue;
+            }
+            // 旧发布记录没有名称；只读本机清单，不为列表逐个请求 GitHub。
+            let mut name = record.and_then(|(_, record)| record["name"].as_str().map(str::to_owned));
+            if let Some((id, _)) = record
+                && name.is_none()
+                && manager.has_extension_package(id)
+            {
+                let (_, manifest) = package_dir(manager, id)?;
+                name = manifest["name"].as_str().map(str::to_owned);
+            }
+            let text = |key: &str| item[key].as_str().unwrap_or("");
+            entries.push(json!({
+                "repo": repo,
+                "name": name,
+                "url": text("url"),
+                "description": text("description"),
+                "stars": item["stargazerCount"].as_u64().unwrap_or(0),
+                "pushedAt": text("pushedAt"),
+                "visibility": text("visibility"),
+                "archived": item["isArchived"].as_bool().unwrap_or(false),
+                "listed": listed,
+                "id": record.map(|(id, _)| id),
+                "version": record.and_then(|(_, r)| r.get("version")),
+                "publishedAt": record.and_then(|(_, r)| r.get("publishedAt")),
+            }));
+        }
         entries.sort_by(|a, b| b["pushedAt"].as_str().cmp(&a["pushedAt"].as_str()));
         Ok(json!({ "account": account, "entries": entries }))
     }

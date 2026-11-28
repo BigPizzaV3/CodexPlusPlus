@@ -37,7 +37,9 @@ pub(crate) async fn bridge_request(request: Value) -> anyhow::Result<Value> {
 fn published(action: &str, payload: &Value) -> anyhow::Result<Option<Value>> {
     let config_dir = default_user_scripts_config_dir();
     match action {
-        "mine" => Publisher::new(&config_dir)?.list_published().map(Some),
+        "mine" => Publisher::new(&config_dir)?
+            .list_published(&crate::commands::default_user_script_manager())
+            .map(Some),
         "unlist" | "relist" | "deleteRepo" => {
             let repo = payload.get("repo").and_then(Value::as_str).filter(|repo| !repo.is_empty()).context("缺少仓库")?;
             let publisher = Publisher::new(&config_dir)?;

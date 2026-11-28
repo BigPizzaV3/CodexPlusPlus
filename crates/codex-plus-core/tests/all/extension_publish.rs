@@ -249,10 +249,12 @@ fn lists_unlists_relists_and_deletes_own_published_repos() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     let log = root.join("gh.log");
+    let manager = manager(root);
+    write_package(root, "listed", good_manifest(), &[("main.js", "x")]);
     fs::write(
         root.join("extension_publish.json"),
         serde_json::to_string(&json!({
-            "unlisted": { "repo": "tester/codexpp-unlisted", "version": "0.2.0", "publishedAt": 1 },
+            "unlisted": { "repo": "tester/codexpp-unlisted", "name": "已发布名称", "version": "0.2.0", "publishedAt": 1 },
             "listed": { "repo": "tester/codexpp-listed", "version": "1.0.0", "publishedAt": 2 },
         }))
         .unwrap(),
@@ -266,7 +268,7 @@ fn lists_unlists_relists_and_deletes_own_published_repos() {
         git_env: Vec::new(),
     };
 
-    let listing = publisher.list_published().unwrap();
+    let listing = publisher.list_published(&manager).unwrap();
     assert_eq!(listing["account"], "tester");
     let entries = listing["entries"].as_array().unwrap();
     let repos = entries.iter().map(|entry| entry["repo"].as_str().unwrap()).collect::<Vec<_>>();
@@ -274,8 +276,10 @@ fn lists_unlists_relists_and_deletes_own_published_repos() {
     assert_eq!(repos, ["tester/codexpp-unlisted", "tester/codexpp-listed"]);
     assert_eq!(entries[0]["listed"], false);
     assert_eq!(entries[0]["id"], "unlisted");
+    assert_eq!(entries[0]["name"], "已发布名称");
     assert_eq!(entries[0]["version"], "0.2.0");
     assert_eq!(entries[1]["listed"], true);
+    assert_eq!(entries[1]["name"], "字数统计");
     assert_eq!(entries[1]["stars"], 3);
 
     publisher.unlist("tester/codexpp-listed").unwrap();

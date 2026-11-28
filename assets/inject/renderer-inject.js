@@ -12311,7 +12311,7 @@
   function renderCodexPlusPublishedPane() {
     const state = codexPlusExtensionSources.mine;
     const listing = state.listing;
-    const entries = (listing?.entries || []).filter((entry) => codexPlusExtensionSourceMatches([entry.repo, entry.id, entry.description]));
+    const entries = (listing?.entries || []).filter((entry) => codexPlusExtensionSourceMatches([entry.name, entry.repo, entry.id, entry.description]));
     const cards = entries.map((entry) => {
       const pending = state.busy === entry.repo;
       const facts = [
@@ -12333,7 +12333,7 @@
       return codexPlusExtensionLinkCard({
         url: entry.url,
         icon: codexPlusGithubAvatar(entry.repo),
-        name: entry.id || String(entry.repo || "").split("/")[1] || entry.repo,
+        name: entry.name || entry.id || String(entry.repo || "").split("/")[1] || entry.repo,
         badges,
         description: entry.description || facts,
         title: facts,
