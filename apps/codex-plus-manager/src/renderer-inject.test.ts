@@ -1860,7 +1860,7 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
   it("renders 我发布的 and only deletes a repo after its name is typed back", async () => {
     const runtime = extensionRuntime(await readFile(rendererPath, "utf8"), { sources: true });
     runtime.responses["/extension-market/published:mine"] = { account: "me", entries: [
-      { repo: "me/codexpp-a", url: "https://github.com/me/codexpp-a", description: "A", stars: 2, pushedAt: "2026-10-01T00:00:00Z", visibility: "PUBLIC", archived: false, listed: true, id: "a", version: "1.0.0" },
+      { repo: "me/codexpp-a", url: "https://github.com/me/codexpp-a", name: "用量簿 <Usage Ledger>", description: "A", stars: 2, pushedAt: "2026-10-01T00:00:00Z", visibility: "PUBLIC", archived: false, listed: true, id: "a", version: "1.0.0" },
       { repo: "me/codexpp-b", url: "https://github.com/me/codexpp-b", description: "B", stars: 0, pushedAt: "", visibility: "PRIVATE", archived: true, listed: false, id: null, version: null },
     ] };
     runtime.load("mine");
@@ -1874,7 +1874,12 @@ return codexPlusNavEntryReusable(node);`)({ __codexPlusBackendGeneration: latest
     assert.match(html, />已归档</);
     assert.match(html, /data-codex-published-action="unlist" data-codex-published-repo="me\/codexpp-a"/);
     assert.match(html, /data-codex-published-action="relist" data-codex-published-repo="me\/codexpp-b"/);
+    assert.match(html, /codex-plus-extension-card-title">用量簿 &lt;Usage Ledger&gt;</);
     assert.match(html, /codex-plus-extension-card-title">codexpp-b</, "falls back to the repo name without a local id");
+    runtime.configure([], [], { filter: "mine", query: "用量簿" });
+    assert.match(runtime.overview(), /codex-plus-extension-card-title">用量簿/);
+    assert.doesNotMatch(runtime.overview(), /codex-plus-extension-card-title">codexpp-b</);
+    runtime.configure([], [], { filter: "mine" });
 
     runtime.answer({ value: "delete", text: "me/codexpp-x" });
     runtime.click(fakeTarget({ "data-codex-published-action": "deleteRepo", "data-codex-published-repo": "me/codexpp-a" }));

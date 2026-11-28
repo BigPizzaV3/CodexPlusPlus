@@ -13,6 +13,7 @@ import "./CommunityExtensionsPanel.css";
 // 与 crates/codex-plus-core/src/extension_publish.rs 的 list_published 对应。
 type PublishedEntry = {
   repo: string;
+  name: string | null;
   url: string;
   description: string;
   stars: number;
@@ -76,7 +77,7 @@ export function MyPublishedPanel({ onOpenUrl, search = "" }: { onOpenUrl: (url: 
   const [deleting, setDeleting] = useState<PublishedEntry | null>(null);
 
   const query = search.trim().toLocaleLowerCase();
-  const entries = (listing?.entries ?? []).filter((entry) => !query || [entry.repo, entry.id ?? "", entry.description].join(" ").toLocaleLowerCase().includes(query));
+  const entries = (listing?.entries ?? []).filter((entry) => !query || [entry.name, entry.repo, entry.id, entry.description].join(" ").toLocaleLowerCase().includes(query));
   const row = (entry: PublishedEntry) => {
     const pending = busy === entry.repo;
     const facts = [
@@ -105,7 +106,7 @@ export function MyPublishedPanel({ onOpenUrl, search = "" }: { onOpenUrl: (url: 
           </MenuItem>
         }
         meta={facts}
-        name={entry.id || entry.repo.split("/")[1]}
+        name={entry.name || entry.id || entry.repo.split("/")[1]}
         onOpenUrl={onOpenUrl}
         primary={
           entry.listed ? (
