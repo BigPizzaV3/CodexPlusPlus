@@ -84,6 +84,7 @@ class Element {
   vm.createContext(context);
   vm.runInContext(shard('85-turn-rewind-controller.js') + shard('86-turn-rewind-menu.js'), context);
   const api = context.__codexPlusTurnRewind;
+  const runRewind = api.run;
   context.syncCodexPlusTurnRewind();
   assert.equal(observes, 0); assert.equal(menu.children.length, 2); assert.equal(moduleLoads, 0);
   settings.turnRewind = true; context.syncCodexPlusTurnRewind(); assert.equal(observes, 0);
@@ -231,11 +232,175 @@ class Element {
   const exported = await api.exportRecord({ id: 'fixture', text: '中文恢复记录' });
   assert.equal(exported.path, '/fixture/receipt.json'); assert.equal(disposed, 1);
   assert.equal(JSON.parse(Buffer.from(saveRequests[0].bytes).toString('utf8')).text, '中文恢复记录');
+
+  // 新版宿主仅暴露异步 RPC facade。React 树里只有目标身份，没有旧版 manager。
+  identity.turnId = 'desktop-selected';
+  const original = ['desktop-baseline', identity.turnId].map(turnId => ({ turnId, status: 'completed', items: [] }));
+  let serverTurns, loadedTurns, mode, notification, openCount = 0, managerDisposals = 0, subscriptionDisposals = 0;
+  let report, panelResult, changeTargetOnOpen = false;
+  let resumeState, historyTruncated, hasUnreadTurn, historyComplete, activeDeferrals = 0;
+  context.dispatchEvent = () => assert.fail('refresh the open chat without navigating');
+  const desktopWrites = [];
+  const rpc = {
+    async getHostId() { return 'local'; },
+    async getConversation(id) {
+      return { ...state, id, resumeState, hasUnreadTurn,
+        unconfirmedTurnSubmissions: historyTruncated && mode === 'pending-local-turn' ? [{ terminal: false }] : [] };
+    },
+    async hasLocalHistorySubscription() { return mode !== 'follower'; },
+    async ensureConversationHistoryLoaded(id, parents, options) { assert.equal(options.force, true); },
+    async getLoadedConversationHistory() { return { isComplete: historyComplete, turns: loadedTurns }; },
+    subscribe(options) {
+      assert.equal(options.key.threadId, identity.threadId);
+      notification = options.listener;
+      return Promise.resolve({ [Symbol.dispose]() { subscriptionDisposals++; notification = null; } });
+    },
+    async sendFollowUpMessage(threadId, { prompt }) {
+      desktopWrites.push('prompt');
+      const turnId = 'desktop-rewind';
+      const item = { type: 'userMessage', content: [{ type: 'text', text: prompt }] };
+      const assistant = { type: 'agentMessage', text: 'CODEX_REWIND_RESULT_desktop={"status":"complete","undone":[],"unresolved":[],"verification":[]}' };
+      loadedTurns = loadedTurns.concat({ turnId, status: 'completed', items: [item, assistant] });
+      serverTurns = loadedTurns;
+      if (mode === 'concurrent') serverTurns = serverTurns.concat({ turnId: 'new-independent-turn', status: 'completed' });
+      notification({ method: 'item/started', params: { threadId, turnId, item } });
+      notification({ method: 'turn/completed', params: { threadId, turn: { id: turnId } } });
+    },
+    async sendRequest(method, params) {
+      if (method === 'thread/turns/list') {
+        assert.equal(params.itemsView, 'notLoaded');
+        if (params.sortDirection === 'desc') {
+          assert.equal(params.limit, 1);
+          const turn = serverTurns.at(-1);
+          return { data: turn ? [{ id: turn.turnId, status: turn.status }] : [] };
+        }
+        const index = Number(params.cursor ?? 0);
+        return { data: serverTurns.slice(index, index + 1).map(turn => ({ id: turn.turnId, status: turn.status })),
+          nextCursor: index + 1 < serverTurns.length ? String(index + 1) : null };
+      }
+      if (method === 'thread/read') {
+        assert.equal(historyTruncated, true);
+        assert.equal(params.includeTurns, false);
+        return { thread: { id: params.threadId, status: { type: mode === 'active-after-revert' ? 'active' : 'idle' } } };
+      }
+      assert.equal(method, 'thread/revert');
+      assert.equal(params.beforeTurnId, mode === 'rewind-first' ? 'desktop-baseline' : 'desktop-selected');
+      desktopWrites.push('revert');
+      historyTruncated = true;
+      serverTurns = serverTurns.slice(0, mode === 'rewind-first' ? 0 : 1);
+      if (mode === 'ready') loadedTurns = serverTurns;
+      if (mode === 'new-turn-after-revert') serverTurns = serverTurns.concat({ turnId: 'new-turn', status: 'completed' });
+      return { thread: { id: params.threadId } };
+    },
+    async getTurnCoordinator() {
+      return {
+        async deferAutomaticTurns(id) {
+          assert.equal(id, identity.threadId);
+          activeDeferrals++;
+          return { [Symbol.dispose]() { activeDeferrals--; } };
+        },
+      };
+    },
+    async discardConversationFromCache(id) {
+      assert.equal(id, identity.threadId);
+      assert.equal(historyTruncated, true);
+      assert.equal(activeDeferrals, 1);
+      desktopWrites.push('discard-cache');
+      resumeState = 'needs_resume';
+      loadedTurns = null;
+      hasUnreadTurn = false;
+    },
+    async hydrateBackgroundThreads(ids, options) {
+      assert.deepEqual(Array.from(ids), [identity.threadId]);
+      assert.equal(options.includeTurns, true); assert.equal(options.refreshExisting, true);
+      assert.equal(activeDeferrals, 1);
+      assert.equal(loadedTurns, null);
+      desktopWrites.push('reload-history');
+      if (mode === 'hydrate-failed') throw Error('fixture hydration failed');
+      loadedTurns = serverTurns;
+      if (mode === 'rewind-first') {
+        historyComplete = false;
+        setTimeout(() => { historyComplete = true; }, 25);
+      }
+    },
+    async markConversationAsUnread(id) {
+      assert.equal(id, identity.threadId);
+      desktopWrites.push('restore-unread');
+      hasUnreadTurn = true;
+    },
+    [Symbol.dispose]() { managerDisposals++; },
+  };
+  context.codexHostServices = async () => ({
+    appServerManagers: { async open(host) {
+      assert.equal(host, 'local'); openCount++;
+      if (changeTargetOnOpen) identity.turnId = 'reused-menu-target';
+      return { status: 'ready', manager: rpc };
+    } },
+    workspaceFiles: { async saveCopy() { return { path: '/desktop/receipt.json' }; } },
+  });
+  let deepChatTree = null;
+  for (let depth = 0; depth < 370; depth++) deepChatTree = { return: deepChatTree };
+  const plainActionBar = { memoizedProps: identity, return: deepChatTree };
+  trigger.__reactFiber$fixture = { memoizedProps: {}, return: plainActionBar };
+  branch.__reactFiber$fixture = detachedMenuTree;
+  body.appendChild(trigger);
+  api.run = async (threadId, turnId, { manager }) => {
+    report = await runRewind(threadId, turnId, { manager, token: 'desktop', timeoutMs: 100,
+      saveRun: async () => {}, panel: { update: (...args) => { panelResult = args; } } });
+  };
+  await context.loadTurnRewindDesktopServices();
+  context.refreshTurnRewindMenus();
+  assert.equal(button.getAttribute('aria-disabled'), 'false');
+  for (mode of ['ready', 'stale-ui', 'rewind-first', 'active-after-revert', 'new-turn-after-revert', 'pending-local-turn', 'hydrate-failed',
+    'stale-history', 'concurrent', 'follower', 'partial-history']) {
+    identity.turnId = mode === 'rewind-first' ? 'desktop-baseline' : 'desktop-selected';
+    loadedTurns = original;
+    serverTurns = mode === 'stale-history' ? original.slice(0, 1) : original;
+    resumeState = 'resumed';
+    historyTruncated = false;
+    historyComplete = mode !== 'partial-history';
+    hasUnreadTurn = ['stale-ui', 'hydrate-failed'].includes(mode);
+    desktopWrites.length = 0;
+    await button.click();
+    assert.equal(activeDeferrals, 0, 'release the target conversation queue deferral');
+    if (['ready', 'stale-ui', 'rewind-first'].includes(mode)) {
+      const expected = ['prompt', 'revert'];
+      if (mode !== 'ready') expected.push('discard-cache', 'reload-history');
+      if (mode === 'stale-ui') expected.push('restore-unread');
+      assert.deepEqual(desktopWrites, expected);
+      assert.equal(report.status, 'complete');
+      assert.equal(report.historyTruncated, true);
+      assert.deepEqual(loadedTurns.map(turn => turn.turnId), mode === 'rewind-first' ? [] : ['desktop-baseline']);
+      assert.equal(historyComplete, true, 'a transient empty cache does not prove that first-turn rewind finished');
+      assert.equal(hasUnreadTurn, mode === 'stale-ui');
+      assert.equal(panelResult[2], true);
+    } else if (['active-after-revert', 'new-turn-after-revert', 'pending-local-turn', 'hydrate-failed'].includes(mode)) {
+      assert.deepEqual(desktopWrites, mode === 'hydrate-failed'
+        ? ['prompt', 'revert', 'discard-cache', 'reload-history', 'restore-unread'] : ['prompt', 'revert']);
+      if (mode === 'hydrate-failed') assert.equal(hasUnreadTurn, true);
+      assert.equal(report.status, 'ui-refresh-required');
+      assert.equal(report.historyTruncated, true);
+      assert.equal(panelResult[2], true);
+    } else {
+      assert.equal(report.status, 'incomplete', mode);
+      assert.deepEqual(desktopWrites, mode === 'concurrent' ? ['prompt'] : [], mode);
+    }
+  }
+  const writesBeforeReusedMenu = desktopWrites.length;
+  changeTargetOnOpen = true;
+  await button.click();
+  assert.equal(desktopWrites.length, writesBeforeReusedMenu, 'menu changed while opening the RPC');
+  assert.match(toasts.at(-1), /菜单已变化/);
+  assert.equal(managerDisposals, openCount, 'release every opened manager, including a reused menu');
+  assert.equal(subscriptionDisposals, 9, 'release the notification subscription on completion and errors');
+  assert.equal(notification, null);
+
   // 重注入保留控制器对象，不丢在途任务；旧观察器和菜单项被回收。
   vm.runInContext(`(() => {${shard('85-turn-rewind-controller.js') + shard('86-turn-rewind-menu.js')}
     window.fixtureSync = syncCodexPlusTurnRewind;
   })()`, context);
   assert.equal(context.__codexPlusTurnRewind, api); assert.equal(disconnects, 1);
+  assert.equal((await api.exportRecord({ id: 'desktop' })).path, '/desktop/receipt.json');
   context.fixtureSync();
   settings.turnRewind = false; context.fixtureSync();
   assert.equal(menu.children.length, 2); assert.equal(disconnects, 2);
