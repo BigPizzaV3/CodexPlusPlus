@@ -271,6 +271,18 @@ pub fn same_chatgpt_login(left: &str, right: &str) -> bool {
     crate::native_auth::same_account(left, right)
 }
 
+/// 登录 ChatGPT 订阅时，这个共享供应商算不算「同一个账号已经登录过」（是就只换 token、不新建）。
+///
+/// 只认本地服务里自己登录的账号：引用 Codex 直连供应商的那条（2.9.0 起直连供应商自动出现在共享列表里）
+/// 每次读取都会从直连供应商重新拷一份凭据，「官方登录 + API」的直连供应商里正好带着同一个 ChatGPT 登录。
+/// 把它当成已登录，新账号就不会加进来、换的 token 也会被拷回去（#3323）。
+pub fn refreshes_chatgpt_login(provider: &crate::gateway::store::GatewayProvider, auth_contents: &str) -> bool {
+    provider.source != "native:external"
+        && provider.linked_codex_relay.is_none()
+        && !crate::official_login::is_native_owned_login(&provider.relay)
+        && same_chatgpt_login(&provider.relay.auth_contents, auth_contents)
+}
+
 /// 跑一次 ChatGPT 浏览器登录：在 1455 端口等回调，换 token。`open_browser` 负责打开登录页。
 pub async fn chatgpt_login(open_browser: impl FnOnce(&str)) -> anyhow::Result<ChatGptAccount> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", CALLBACK_PORT))
@@ -2861,6 +2873,27 @@ mod tests {
             &login("", "a@team.com", "ws-1"),
             &login("", "b@team.com", "ws-1")
         ));
+    }
+
+    #[test]
+    fn chatgpt_login_does_not_refresh_a_linked_direct_provider() {
+        let auth = account_from_tokens(&json!({
+            "access_token": "at",
+            "refresh_token": "rt",
+            "id_token": jwt(json!({ "sub": "user-a", "email": "a@x.com", "https://api.openai.com/auth": { "chatgpt_account_id": "acct-1" } })),
+        }))
+        .unwrap()
+        .auth_contents;
+        let own = crate::gateway::store::GatewayProvider::new(
+            RelayProfile { id: "chatgpt".into(), auth_contents: auth.clone(), ..RelayProfile::default() },
+            "login:chatgpt",
+        );
+        assert!(refreshes_chatgpt_login(&own, &auth), "本地服务里登录过的同一账号：只换 token");
+
+        // 引用「官方登录 + API」直连供应商的那条带着同一份登录，但不是订阅账号（#3323）。
+        let mut linked = crate::gateway::store::GatewayProvider::linked("mixed", "direct-mixed");
+        linked.relay.auth_contents = auth.clone();
+        assert!(!refreshes_chatgpt_login(&linked, &auth));
     }
 
     #[tokio::test]

@@ -3470,14 +3470,7 @@ pub async fn login_gateway_chatgpt(
             Ok(gateway
                 .providers
                 .iter_mut()
-                .find(|provider| {
-                    provider.source != "native:external"
-                    && !codex_plus_core::official_login::is_native_owned_login(&provider.relay)
-                    && accounts::same_chatgpt_login(
-                        &provider.relay.auth_contents,
-                        &account.auth_contents,
-                    )
-                })
+                .find(|provider| accounts::refreshes_chatgpt_login(provider, &account.auth_contents))
                 .map(|provider| {
                     provider.relay.auth_contents = account.auth_contents.clone();
                     provider.relay.name.clone()
