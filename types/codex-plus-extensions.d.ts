@@ -17,6 +17,8 @@ type CodexPlusExtensionRoute =
   | "/diagnostics/log"
   | "/thread-usage-history"
   | "/usage/history"
+  | "/usage/executions"
+  | "/usage/execution-detail"
   | "/usage/archive"
   | "/archived-thread"
   | "/export-markdown"

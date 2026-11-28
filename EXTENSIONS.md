@@ -1460,6 +1460,8 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 | `/diagnostics/log` | 写一条诊断日志 |
 | `/thread-usage-history` | 读会话用量历史 |
 | `/usage/history` | 读本机用量历史（要先在设置里开启用量历史，没开时返回 `{ status: "unavailable" }`） |
+| `/usage/executions` | 分页读取本机工具调用及分类计数，不返回输入输出。需要开启本机用量历史。 |
+| `/usage/execution-detail` | 按会话 ID、调用 ID 和分页版本读取最近 24 小时的原会话片段。需要开启本机用量历史。 |
 | `/usage/archive` | 用量历史的封存接口，给按日固定 schema 的消费者用；写入只影响它自己的独立数据库（同样要求开启用量历史） |
 | `/archived-thread` | 读归档会话 |
 | `/export-markdown` | 导出 Markdown |
@@ -1481,6 +1483,14 @@ window.codexPlus.call("/thread-usage-history", { session_id })
 **写能力没有开放**：`/settings/set`、`/delete`、`/undo` 等都不在名单内。如果你确实需要某个路由，去 Codex++ 仓库提 issue 说明用途，不要在脚本里绕过白名单直接调底层桥接（见下方「限制」第 1 条）。
 
 `/usage/history` 的 `days[].breakdowns[]` 中，`usage` 与 `recordCount` 仍统计整组。当 `usage.cachedKnown` 为 `false` 且组内有缓存已知的记录时，`priceableUsage` 单列这些记录的 `inputTokens`、`cachedInputTokens` 和 `outputTokens`，供估算部分费用。明确的零缓存属于已知；字段缺失则不计价。不要将子集加到 `usage`，也不要把部分费用当作完整费用。整组缓存均已知或均未知时，不返回该字段。
+
+`/usage/executions` 接收毫秒时间范围 `[startAt, endAt)`。可传 `scopeSessionId`（含该会话的子会话）、`limit`（1 至 200，默认 50）、`kind`（`tool`、`skill`、`mcp`）、`search` 和 `includeActivitySummary`。结果按时间、会话 ID、调用 ID 倒序，包含 `items`、`summary`、`coverage`、`revision` 和 `nextCursor`。搜索只影响分页和 `summary.matched`，不改变分类总数。翻页时传回同一查询的 `revision` 和 `cursor: nextCursor`；遇到 `status: "stale"` 从第一页重新读取。未覆盖的范围不可当作零次调用。
+
+普通工具只有最近 7 天的调用进入分页和名称搜索；较早的调用仍按时间计数。技能和 MCP 的名称、时间轴保留到逐笔明细边界。日汇总不计入 `summary.matched`。
+
+逐次记录到期后只返回 `dailySummaries` 日计数，不再返回该日的名称、时间轴或输入输出。查询只覆盖某日的一部分时，`dailySummaries` 中的该行仍是整日计数，不计入 `summary` 的范围总数。
+
+`/usage/execution-detail` 接收列表项的 `sessionId`、`id` 和对应 `revision`，不接收本机路径。成功返回 `detail.input` 和分段的 `detail.output`，只在有完成证据时返回 `durationMs`。`partial` 表示原始片段不完整，`not_found` 表示定位不存在或已过 24 小时。
 
 `/provider-prices/public` 返回的是 Codex++ 配置价，不是上游实时报价或实际账单，也不会请求上游。`price` 是供应商默认价，未设置时为 `null`；`modelPrices` 按原始上游模型名保存逐模型价，缺项时为空对象。价格包含 `currency`、`input`、`cachedInput`、`output`，单位是每百万 Token。宿主现有配置不能区分价格字段中的未填写和明确免费，两者都可能为 `0`；通过管理器保存的全零价格会被视为未填写，不能据此断言免费或价格完整。
 

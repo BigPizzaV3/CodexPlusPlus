@@ -288,7 +288,7 @@ fn local_segments_irrelevant_huge_body_does_not_damage_usage() {
 }
 
 #[test]
-fn local_segments_relevant_huge_line_reports_partial_and_resumes_usage() {
+fn local_segments_count_large_meter_and_resume_subsequent_usage() {
     let mut fixture = SegmentFixture::new();
     let body = format!(
         r#"{{"type":"event_msg","timestamp":"{}","payload":{{"type":"token_count","info":{},"padding":"{}"}}}}"#,
@@ -298,16 +298,13 @@ fn local_segments_relevant_huge_line_reports_partial_and_resumes_usage() {
     );
     assert!(body.len() > MAX_LINE);
     let (file, state) = fixture.read_large_line(&body);
-    assert!(state.issues > 0);
-    assert_eq!(state.events.len(), 1);
-    assert_eq!(state.events[0].total.input_tokens, 100);
+    assert_eq!(state.issues, 0);
+    assert_eq!(state.events.len(), 2);
+    assert_eq!(state.events[0].total.input_tokens, 50);
+    assert_eq!(state.events[1].total.input_tokens, 100);
     fixture.index.files.insert(file, state);
     let snapshot = fixture.snapshot();
-    let response = segment_response(&snapshot);
-    assert_eq!(snapshot.errors, 0);
-    assert!(snapshot.issues > 0);
-    assert_eq!(response["complete"], false);
-    assert_eq!(response["status"], "partial");
+    assert_segment_totals(&snapshot, 2, 100);
 }
 
 #[test]

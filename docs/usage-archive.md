@@ -50,7 +50,7 @@ SessionInfo 和 BreakdownRow 的 role 只允许 `main`、`subagent`、`unknown`�
 
 sessionId、sessionInfo 的键、父会话及 aliases 两端必须是小写规范 UUID，不接受 `local:`、路径或非规范拼写。sessions 不得重复且必须有 sessionInfo；父子关系不得自指或成环。aliases 指向最终规范 ID，不接受多级别名链或环。允许父会话不在当天有消费，且不根据角色自动推断父会话。
 
-所有短字符串最多 256 个 Unicode 字符。sessions、sessionInfo 和 aliases 各最多 4096 项。core 紧凑 JSON 最多 512 KiB。detail 是 UTF-8 最多 8 MiB 的 opaque 字符串，服务端只处理自己的存储压缩层，不解压消费者内层格式、不解析、执行或记录其内容。它不能用作计量或来源证明。pendingLiveEvents 大于零时必须 protectedDetail=true；其他未决情况由消费者主动置保护标记。
+模型名、供应商名、会话列表和别名表共用 core 紧凑 JSON 的 512 KiB 预算。detail 是 UTF-8 最多 8 MiB 的 opaque 字符串，服务端只处理自己的存储压缩层，不解压消费者内层格式、不解析、执行或记录其内容。它不能用作计量或来源证明。pendingLiveEvents 大于零时必须 protectedDetail=true；其他未决情况由消费者主动置保护标记。
 
 ## 存储与保留
 

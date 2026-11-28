@@ -5501,9 +5501,7 @@ pub fn save_settings(
             if shared(&previous) != shared(&settings) {
                 crate::gateway_commands::refresh_after_codex_profiles_changed();
             }
-            if !settings.usage_history_enabled {
-                codex_plus_launcher::clear_usage_history();
-            }
+            codex_plus_launcher::sync_usage_history_capture();
             if let Ok(runtime) = weixin_runtime().lock()
                 && let Some(runtime) = runtime.as_ref()
             {
@@ -10217,6 +10215,7 @@ pub fn set_settings_path(path: String) -> CommandResult<SettingsPayload> {
             fallback_settings_payload(),
         );
     }
+    codex_plus_launcher::sync_usage_history_capture();
     settings_payload(
         "配置文件路径已更新；重新打开管理器后所有组件都会使用新路径。",
         "路径更新后重新读取失败",
@@ -10273,6 +10272,7 @@ pub fn reset_settings_path() -> CommandResult<SettingsPayload> {
             fallback_settings_payload(),
         );
     }
+    codex_plus_launcher::sync_usage_history_capture();
     settings_payload("已恢复默认配置文件路径。", "恢复默认路径后重新读取失败")
 }
 
@@ -10280,7 +10280,10 @@ pub fn reset_settings_path() -> CommandResult<SettingsPayload> {
 pub fn reset_settings() -> CommandResult<SettingsPayload> {
     let settings = BackendSettings::default();
     match SettingsStore::default().save(&settings) {
-        Ok(()) => settings_payload("设置已重置为默认值。", "设置重置后重新读取失败"),
+        Ok(()) => {
+            codex_plus_launcher::sync_usage_history_capture();
+            settings_payload("设置已重置为默认值。", "设置重置后重新读取失败")
+        }
         Err(error) => failed(
             &format!("重置设置失败：{error}"),
             SettingsPayload {

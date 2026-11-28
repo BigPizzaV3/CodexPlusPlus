@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3933
+      "lines": 3937
     },
     {
       "name": "20-menu.js",
@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 3552
+      "lines": 3635
     },
     {
       "name": "41-extension-detail.js",
@@ -173,7 +173,7 @@
     {
       "name": "91-extension-api.js",
       "description": "对外接口层 window.codexPlus：路由白名单、UI 注册、toast",
-      "lines": 594
+      "lines": 596
     },
     {
       "name": "91-extension-runtime.js",

@@ -1,7 +1,7 @@
 # 独立的离线供应商补证
 
-设置目录可另放 `usage-supplier-evidence-v2.json`，与版本 1 文件独立，
-最多 32 MiB / 100,000 条。所有嵌套对象拒绝未知或缺失字段。
+设置目录可另放 `usage-supplier-evidence-v2.json`，与版本 1 文件独立。
+导入会读取完整文档。所有嵌套对象拒绝未知或缺失字段。
 外部核验工具负责原始账单真实性、时间覆盖及所有相关供应商和本地竞争项；
 运行时不重新读取全量账单，因此返回
 `trustBoundary=external-offline-record-bound`、`runtimeCompetitionRecomputed=false`。
