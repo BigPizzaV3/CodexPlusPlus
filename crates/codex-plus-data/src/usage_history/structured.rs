@@ -1213,7 +1213,9 @@ impl RequestEvidenceCache {
                         .iter()
                         .filter(|r| r.could_fit_counts(key.input, key.output, key.cached))
                     {
-                        if paired
+                        // 持久索引有独立的终态核验，仍按网关时序处理缺计量的竞争记录。
+                        if scope.is_none()
+                            && paired
                             && !blocked.contains(&other.id)
                             && other.usage.is_none()
                             && other.final_response_id.is_none()
