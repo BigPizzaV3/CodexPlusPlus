@@ -952,6 +952,13 @@
   gap: 10px;
 }
 
+/* 供应商一多整张卡片就高出窗口：列表在卡片内部滚动（#3324），下面的折叠区不受影响。 */
+:root .shell .gw-pool-scroll {
+  max-height: min(60vh, 620px);
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
 :root .shell .gw-pool-off-toggle {
   align-self: flex-start;
   margin: 6px 4px 0;

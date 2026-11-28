@@ -304,6 +304,9 @@ test("「Codex 连接」页顶部是连接方式（经网关 / 直连）：没�
   // ChatGPT 账号同时支持直连和聚合，已有 ChatGPT 账号时隐藏多余的空壳 OpenAI Official。
   const unifiedList = functionSource("CodexProviderList");
   assert.match(unifiedList, /"set_gateway_pool_member", \{ agents: \["codex"\], id: entry\.id, used: !aggOn \}/);
+  // 供应商一多列表在卡片内部滚动（#3324）。
+  assert.match(unifiedList, /<div className="gw-pool-scroll">/);
+  assert.match(readSource("./cx-pages-gateway.css"), /\.gw-pool-scroll \{[\s\S]*?overflow-y: auto;/);
   assert.match(unifiedList, /\{0\} 家仅支持聚合模式/);
   assert.match(unifiedList, /\{0\} 家仅支持直连模式/);
   // 合并规则在共用模块里（Codex 里的供应商页经 42 分片用同一份），管理器从那里引入。
