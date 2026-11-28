@@ -72,6 +72,7 @@ var codexPlusProviderEditing = (() => {
     normalizeRelayProtocol: () => normalizeRelayProtocol,
     normalizeRelaySessionProvider: () => normalizeRelaySessionProvider,
     parseModelSuffix: () => parseModelSuffix,
+    providerAvatarText: () => providerAvatarText,
     relayModelRouteIssueMessage: () => relayModelRouteIssueMessage,
     relayModelRoutesSettingsValidation: () => relayModelRoutesSettingsValidation,
     relayModelRoutesValidation: () => relayModelRoutesValidation,
@@ -113,6 +114,7 @@ var codexPlusProviderEditing = (() => {
     tomlString: () => tomlString,
     tomlStringAssignmentValue: () => tomlStringAssignmentValue,
     tomlStructureMask: () => tomlStructureMask,
+    unified: () => codex_unified_providers_exports,
     updateRelayProfile: () => updateRelayProfile,
     withGeneratedRelayFiles: () => withGeneratedRelayFiles
   });
@@ -376,6 +378,32 @@ var codexPlusProviderEditing = (() => {
   function resolveProviderName(contents, provider) {
     const existing = tomlSectionStringValue(contents, `model_providers.${provider}`, "name").trim();
     return existing || provider;
+  }
+  function avatarCharKind(char) {
+    if (/\p{Script=Han}/u.test(char)) return "han";
+    if (/[A-Za-z]/.test(char)) return "latin";
+    if (/[0-9]/.test(char)) return "digit";
+    return null;
+  }
+  function providerAvatarText(name, fallback = "供") {
+    const chars = Array.from(name.trim());
+    const meaningful = chars.map((char, index) => ({ char, index, kind: avatarCharKind(char) })).filter((item) => item.kind !== null);
+    if (!meaningful.length) return fallback;
+    const first = meaningful[0];
+    const upper = (char) => char.toUpperCase();
+    const otherKind = meaningful.find((item) => item.kind !== first.kind);
+    if (otherKind) return upper(first.char) + upper(otherKind.char);
+    const words = name.trim().split(/[\s()（）\[\]【】,，.。·_\-/|]+/u).filter((word) => Array.from(word).some((char) => avatarCharKind(char)));
+    if (words.length >= 2) {
+      const second2 = Array.from(words[1]).find((char) => avatarCharKind(char));
+      if (second2) return upper(first.char) + upper(second2);
+    }
+    if (first.kind === "latin") {
+      const camel = meaningful.slice(1).find((item) => /[A-Z]/.test(item.char));
+      if (camel) return upper(first.char) + camel.char;
+    }
+    const second = meaningful[1];
+    return second ? upper(first.char) + upper(second.char) : upper(first.char);
   }
 
   // apps/codex-plus-manager/src/relay-session.ts
@@ -1527,7 +1555,7 @@ ${key} = ${value}`]);
     return "official";
   }
   function normalizeRelayProtocol(value) {
-    if (value === "chatCompletions" || value === "anthropicMessages") return value;
+    if (value === "chatCompletions" || value === "anthropicMessages" || value === "gemini") return value;
     return "responses";
   }
   function normalizeAnthropicAuthHeader(value) {
@@ -2287,6 +2315,8 @@ ${key} = ${value}`]);
         return "Chat";
       case "anthropicMessages":
         return "Anthropic";
+      case "gemini":
+        return "Gemini";
       default:
         return "Responses";
     }
@@ -2337,7 +2367,7 @@ ${key} = ${value}`]);
     if (!query) return true;
     return values.some((value) => value.toLowerCase().includes(query));
   }
-  function pickerSections(payload, rawQuery, avatar, exclude = [], skipGroup, sectionOnly = null, hasOwnMatch = false) {
+  function pickerSections(payload, rawQuery, avatar, exclude = [], skipGroup, sectionOnly = null, _hasOwnMatch = false) {
     if (!payload) return [];
     const query = rawQuery.trim().toLowerCase();
     const sections = [];
@@ -2372,27 +2402,7 @@ ${key} = ${value}`]);
     if (autoItems.length) sections.push({ key: "auto", title: "自动组", avatar: "", items: autoItems });
     const groups = payload.groups.filter((group) => !group.disabled && group.id !== skipGroup && group.members.length && matches(query, group.name, groupModelId(group.id))).map((group) => ({ model: groupModelId(group.id), label: group.name, sub: `${GROUP_MODEL_PREFIX}${group.name}`, avatar: avatar(group.name) }));
     if (groups.length) sections.push({ key: "group", title: "我的组", avatar: "", items: groups });
-    const typed = rawQuery.trim();
-    const visible = sectionOnly ? sections.filter((section) => section.key === sectionOnly) : sections;
-    const qualified = qualifiedProvider(payload, typed, exclude);
-    const canOfferCustom = !sectionOnly || sectionOnly.startsWith("provider:");
-    if (typed && !/\s/.test(typed) && canOfferCustom && !disabledGroup(payload, typed) && !visible.length && !hasOwnMatch && (!modelRoutable(payload, typed, exclude) || qualified)) {
-      const targets = providers.filter((entry) => (!sectionOnly || sectionOnly === `provider:${entry.id}`) && (!qualified || entry.id === qualified.entry.id)).slice(0, 6);
-      if (!targets.length) return sections;
-      sections.push({
-        key: "custom",
-        title: "自定义模型",
-        avatar: "",
-        items: targets.map((entry) => ({
-          model: qualified ? typed : `${entry.id}/${typed}`,
-          defaultModelSelection: { providerId: entry.id, upstreamModel: modelSlugFromRowName(qualified ? qualified.model : typed), providerSource: entry.source ?? "" },
-          label: typed,
-          sub: maskAccountName(entry.name),
-          avatar: avatar(entry.name),
-          custom: true
-        }))
-      });
-    }
+    void sectionOnly;
     return sections;
   }
   function visibleOwnModels(agent, payload) {
@@ -2753,6 +2763,16 @@ ${key} = ${value}`]);
       modelList: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"],
       section: "vendor",
       apiKeyUrl: "https://console.anthropic.com/settings/keys"
+    },
+    {
+      key: "google-gemini",
+      name: "Google Gemini",
+      baseUrl: "https://generativelanguage.googleapis.com/v1beta",
+      protocol: "gemini",
+      model: "gemini-2.5-pro",
+      modelList: ["gemini-2.5-pro", "gemini-2.5-flash"],
+      section: "vendor",
+      apiKeyUrl: "https://aistudio.google.com/apikey"
     },
     {
       key: "xai",
@@ -3276,6 +3296,60 @@ ${key} = ${value}`]);
       upstream_error: "上游请求失败"
     };
     return labels[kind] ?? "错误原因待确认";
+  }
+
+  // apps/codex-plus-manager/src/codex-unified-providers.ts
+  var codex_unified_providers_exports = {};
+  __export(codex_unified_providers_exports, {
+    buildCodexUnifiedProviders: () => buildCodexUnifiedProviders,
+    codexItemSupportsAggregate: () => codexItemSupportsAggregate,
+    codexItemSupportsDirect: () => codexItemSupportsDirect
+  });
+  function buildCodexUnifiedProviders(profiles, entries, options) {
+    const byRelayId = /* @__PURE__ */ new Map();
+    const hasChatgptAccount = entries.some((entry) => entry.account === "chatgpt");
+    for (const entry of entries) {
+      const relayId = entry.linkedCodexRelay ?? (entry.source?.startsWith("codex:") ? entry.source.slice(6) : null);
+      if (relayId && !byRelayId.has(relayId)) byRelayId.set(relayId, entry);
+    }
+    const matchedPoolIds = /* @__PURE__ */ new Set();
+    const result = [];
+    for (const profile of profiles) {
+      const isPureOfficial = profile.relayMode === "official" && !profile.officialMixApiKey;
+      if (isPureOfficial && hasChatgptAccount && options?.activeOfficialExternalId !== profile.id) {
+        continue;
+      }
+      const poolEntry = byRelayId.get(profile.id) ?? null;
+      if (poolEntry) matchedPoolIds.add(poolEntry.id);
+      result.push({
+        key: `relay:${profile.id}`,
+        name: profile.name || poolEntry?.name || profile.id,
+        baseUrl: profile.baseUrl || poolEntry?.baseUrl || "",
+        profile,
+        poolEntry
+      });
+    }
+    for (const entry of entries) {
+      if (matchedPoolIds.has(entry.id)) continue;
+      result.push({
+        key: `pool:${entry.id}`,
+        name: entry.name,
+        baseUrl: entry.baseUrl,
+        profile: null,
+        poolEntry: entry
+      });
+    }
+    return result;
+  }
+  function codexItemSupportsAggregate(item) {
+    const entry = item.poolEntry;
+    if (!entry) return false;
+    if (entry.account) return true;
+    if (entry.linkedCodexRelay && !entry.baseUrl.trim()) return false;
+    return true;
+  }
+  function codexItemSupportsDirect(item) {
+    return item.profile !== null || item.poolEntry?.account === "chatgpt";
   }
   return __toCommonJS(provider_editing_entry_exports);
 })(); // 结束 codexPlusProviderEditing

@@ -1,5 +1,287 @@
 use super::*;
 
+#[test]
+fn classification_evidence_matches_previous_boolean_aggregation() {
+    let mut fixture = Fixture::new();
+    fixture.write_segment(
+        "rollout-evidence.jsonl",
+        vec![fixture.context(500, "model-a"), fixture.usage(1_000, 1)],
+    );
+    let original = fixture.snapshot().events.remove(0);
+    let mut variants = Vec::new();
+    for source in [
+        None,
+        Some("upstream-exact-bidirectional"),
+        Some("request-log-exact"),
+        Some("upstream-counter-bidirectional-supplier-only"),
+        Some("session-context-inferred"),
+    ] {
+        for conflict in 0..5 {
+            let mut event = original.clone();
+            event.provider_source = source.map(str::to_owned);
+            event.context_conflicts = ContextConflicts {
+                model: conflict == 1,
+                provider: conflict == 2,
+                role: conflict == 3,
+                turn: conflict == 4,
+            };
+            variants.push(event);
+        }
+    }
+    for first in &variants {
+        for second in &variants {
+            for third in &variants {
+                let events = [first, second, third];
+                let (mut exact, mut request_proof, mut supplier_proof) = (true, false, true);
+                for event in events {
+                    exact &= !event.context_conflicts.any()
+                        && matches!(
+                            event.provider_source.as_deref(),
+                            Some("upstream-exact-bidirectional" | "request-log-exact")
+                        );
+                    request_proof |= event.provider_source.as_deref() == Some("request-log-exact");
+                    supplier_proof &= !event.context_conflicts.any()
+                        && event.provider_source.as_deref()
+                            == Some("upstream-counter-bidirectional-supplier-only");
+                }
+                let mut expected = json!({});
+                if exact {
+                    expected["classificationEvidence"] = json!(if request_proof {
+                        "request-log-exact"
+                    } else {
+                        "upstream-exact-bidirectional"
+                    });
+                }
+                if supplier_proof {
+                    expected["supplierClassificationEvidence"] =
+                        json!("upstream-counter-bidirectional-supplier-only");
+                }
+                let mut actual = json!({});
+                ClassificationEvidence::of(first)
+                    .intersect(ClassificationEvidence::of(second))
+                    .intersect(ClassificationEvidence::of(third))
+                    .write_to(&mut actual);
+                assert_eq!(actual, expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn scope_members_preserve_alias_descendants_and_root_first_order() {
+    let mut snapshot = Snapshot::default();
+    snapshot.sessions = ["root", "a-child", "z-child", "grandchild", "other"]
+        .map(str::to_owned)
+        .into();
+    snapshot.aliases.insert("alias".into(), "root".into());
+    snapshot.scope_parents = [
+        ("a-child".into(), "root".into()),
+        ("z-child".into(), "root".into()),
+        ("grandchild".into(), "a-child".into()),
+    ]
+    .into();
+    let (session, members) = snapshot.scope_members("alias");
+    assert_eq!(session, "root");
+    assert_eq!(
+        ordered_scope_ids(session, &members),
+        ["root", "a-child", "grandchild", "z-child"]
+    );
+    let query = Query::parse(&json!({}), Local::now().date_naive()).unwrap();
+    let response = snapshot.scoped_usage("alias", &query, None);
+    assert_eq!(response["sessionId"], "root");
+    assert_eq!(
+        response["sessionIds"],
+        json!(["root", "a-child", "grandchild", "z-child"])
+    );
+    let (session, members) = snapshot.scope_members("a-child");
+    assert_eq!(ordered_scope_ids(session, &members), ["a-child", "grandchild"]);
+    let (session, members) = snapshot.scope_members("missing");
+    assert_eq!(session, "missing");
+    assert!(members.is_empty());
+    assert_eq!(
+        snapshot.scoped_usage("missing", &query, None)["sessionIds"],
+        json!([])
+    );
+}
+
+#[test]
+fn nonempty_scoped_response_matches_previous_aggregation_for_custom_range() {
+    let mut fixture = Fixture::new();
+    fixture.start = Local::now()
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_local_timezone(Local)
+        .single()
+        .unwrap()
+        .timestamp_millis();
+    fixture.write_segment(
+        "rollout-response.jsonl",
+        vec![fixture.context(500, "model-a"), fixture.usage(1_000, 1)],
+    );
+    let original = fixture.snapshot().events.remove(0);
+    let exact = Some("upstream-exact-bidirectional");
+    let request = Some("request-log-exact");
+    let supplier = Some("upstream-counter-bidirectional-supplier-only");
+    let cases = [
+        ("root", 1_000, "model-a", "main", exact, true),
+        ("a-child", 2_000, "model-a", "main", request, false),
+        ("grandchild", 3_000, "model-b", "subagent", supplier, true),
+        ("z-child", 4_000, "model-b", "subagent", supplier, true),
+        ("root", 5_000, "model-c", "main", exact, true),
+        ("a-child", 6_000, "model-c", "main", Some("session-context-inferred"), true),
+        ("z-child", 7_000, "model-d", "subagent", request, true),
+        ("other", 8_000, "unrelated", "main", exact, true),
+        ("root", 999, "outside", "main", request, true),
+        ("a-child", 9_000, "outside", "main", request, true),
+    ];
+    let events: Vec<_> = cases.into_iter().enumerate().map(|(i, (session, at, model, role, source, known))| {
+        let mut event = original.clone();
+        event.id = [i as u8 + 1; 32];
+        event.session = session.into();
+        event.timestamp = fixture.at(at);
+        event.model = model.into();
+        event.provider = "supplier-a".into();
+        event.role = role.into();
+        event.provider_source = source.map(str::to_owned);
+        event.delta.cached_known = known;
+        event.context_conflicts.provider = i == 6;
+        event
+    }).collect();
+    let snapshot = Snapshot {
+        // 输出指纹仍按事件身份排序，不依赖输入顺序。
+        events: events.iter().rev().cloned().collect(),
+        sessions: ["root", "a-child", "z-child", "grandchild", "other"].map(str::to_owned).into(),
+        aliases: [("alias".into(), "root".into())].into(),
+        scope_parents: [
+            ("a-child".into(), "root".into()),
+            ("z-child".into(), "root".into()),
+            ("grandchild".into(), "a-child".into()),
+        ].into(),
+        provider_names: [("supplier-a".into(), "Supplier A".into())].into(),
+        count_cache_available: true,
+        ..Snapshot::default()
+    };
+    // 独立保留提取前的布尔汇总规则，并显式给出应选中的事件。
+    let previous_days = |indices: &[usize]| {
+        if indices.is_empty() {
+            return json!([]);
+        }
+        let mut day = Aggregate::default();
+        let mut day_digest = Sha256::new();
+        let mut models = BTreeMap::<String, Aggregate>::new();
+        let mut groups = BTreeMap::<(String, String, String, bool, bool), Vec<usize>>::new();
+        for &i in indices {
+            let event = &events[i];
+            let record = Record {
+                session_id: event.session.clone(),
+                turn_id: event.turn.clone(),
+                model: Some(event.model.clone()),
+                date: Some(event.date),
+                usage: Some(event.delta),
+            };
+            day.add(&record);
+            models.entry(event.model.clone()).or_default().add(&record);
+            event.update_membership_digest(&mut day_digest);
+            // 同会话推断出的供应商单独成组并标注（与精确证据分开），和读端的分组键一致。
+            groups.entry((event.model.clone(), event.provider.clone(), event.role.clone(),
+                event.context_conflicts.provider,
+                event.provider_source.as_deref() == Some(SESSION_PROVIDER_INFERENCE))).or_default().push(i);
+        }
+        let mut result = day.value();
+        result["date"] = json!(original.date.to_string());
+        result["accountingFingerprint"] = json!(format!("{:x}", day_digest.finalize()));
+        result["models"] = json!(models.into_iter().map(|(model, aggregate)| {
+            let mut row = aggregate.value();
+            row["model"] = json!(model);
+            row
+        }).collect::<Vec<_>>());
+        result["breakdowns"] = json!(groups.into_iter().map(|((model, provider, role, conflict, inferred), members)| {
+            let mut aggregate = Aggregate::default();
+            let mut priceable = Tokens::default();
+            let mut digest = Sha256::new();
+            let (mut exact, mut request_proof, mut supplier_proof) = (true, false, true);
+            for i in members {
+                let event = &events[i];
+                aggregate.add(&Record {
+                    session_id: event.session.clone(), turn_id: event.turn.clone(),
+                    model: Some(model.clone()), date: Some(event.date), usage: Some(event.delta),
+                });
+                if event.delta.cached_known {
+                    priceable.add(event.delta);
+                }
+                event.update_membership_digest(&mut digest);
+                exact &= !event.context_conflicts.any() && matches!(event.provider_source.as_deref(),
+                    Some("upstream-exact-bidirectional" | "request-log-exact"));
+                request_proof |= event.provider_source.as_deref() == Some("request-log-exact");
+                supplier_proof &= !event.context_conflicts.any()
+                    && event.provider_source.as_deref() == Some("upstream-counter-bidirectional-supplier-only");
+            }
+            let mut row = aggregate.value();
+            row["model"] = json!(model);
+            row["provider"] = json!(provider);
+            row["providerName"] = json!("Supplier A");
+            row["role"] = json!(role);
+            row["membershipFingerprint"] = json!(format!("{:x}", digest.finalize()));
+            if !aggregate.usage.cached_known && priceable.total_tokens != 0 {
+                row["priceableUsage"] = json!({"inputTokens":priceable.input_tokens,
+                    "cachedInputTokens":priceable.cached_input_tokens,"outputTokens":priceable.output_tokens});
+            }
+            if conflict {
+                row["providerConflict"] = json!(true);
+            }
+            if inferred {
+                row["providerInferred"] = json!(true);
+                row["providerInferenceSource"] = json!(SESSION_PROVIDER_INFERENCE);
+            }
+            if exact {
+                row["classificationEvidence"] = json!(if request_proof {
+                    "request-log-exact"
+                } else {
+                    "upstream-exact-bidirectional"
+                });
+            }
+            if supplier_proof {
+                row["supplierClassificationEvidence"] = json!("upstream-counter-bidirectional-supplier-only");
+            }
+            row
+        }).collect::<Vec<_>>());
+        json!([result])
+    };
+    let bounds = Some((fixture.start + 1_000, fixture.start + 9_000));
+    let query = Query::parse(&json!({}), original.date).unwrap();
+    for (selected, root, members, indices) in [
+        ("alias", "root", vec!["root", "a-child", "grandchild", "z-child"], vec![0, 1, 2, 3, 4, 5, 6]),
+        ("a-child", "a-child", vec!["a-child", "grandchild"], vec![1, 2, 5]),
+        ("z-child", "z-child", vec!["z-child"], vec![3, 6]),
+        ("missing", "missing", vec![], vec![]),
+    ] {
+        assert_eq!(snapshot.scoped_usage(selected, &query, bounds), json!({
+            "sessionId":root,"sessionIds":members,"days":previous_days(&indices)
+        }), "{selected}");
+    }
+    let page = snapshot.response_page(&query, false, 1, None, bounds);
+    assert_eq!(page["days"], previous_days(&[0, 1, 2, 3, 4, 5, 6, 7]));
+    assert_eq!(page["rangeApplied"], true);
+    assert_eq!(page["days"][0]["recordCount"], 8);
+    let breakdowns = page["days"][0]["breakdowns"].as_array().unwrap();
+    let mixed = breakdowns.iter().find(|row| row["model"] == "model-a").unwrap();
+    assert_eq!(mixed["classificationEvidence"], "request-log-exact");
+    assert_eq!(mixed["priceableUsage"], json!({"inputTokens":100,"cachedInputTokens":20,"outputTokens":10}));
+    let supplier = breakdowns.iter().find(|row| row["model"] == "model-b").unwrap();
+    assert_eq!(supplier["supplierClassificationEvidence"], "upstream-counter-bidirectional-supplier-only");
+    // 同会话推断的那一条单独成组，不和精确证据混在一起，也不带分类证据。
+    let exact = breakdowns.iter().find(|row| row["model"] == "model-c" && row["providerInferred"].is_null()).unwrap();
+    assert_eq!(exact["classificationEvidence"], "upstream-exact-bidirectional");
+    let inferred = breakdowns.iter().find(|row| row["model"] == "model-c" && row["providerInferred"] == true).unwrap();
+    assert_eq!(inferred["providerInferenceSource"], SESSION_PROVIDER_INFERENCE);
+    assert!(inferred["classificationEvidence"].is_null());
+    assert!(inferred["supplierClassificationEvidence"].is_null());
+    let conflict = breakdowns.iter().find(|row| row["model"] == "model-d").unwrap();
+    assert_eq!(conflict["providerConflict"], true);
+    assert!(conflict["classificationEvidence"].is_null());
+}
+
 const BASE_ROLLOUT: &str = "00000000-0000-4000-8000-000000000081";
 const NEXT_ROLLOUT: &str = "00000000-0000-4000-8000-000000000082";
 
@@ -16,7 +298,10 @@ fn cold_scan_reads_recently_changed_rollout_before_historical_backlog() {
     fixture.write_segment("rollout-a.jsonl", vec![tool_free_row; 40]);
     fixture.write_segment(
         "rollout-z.jsonl",
-        vec![fixture.context(500, "current-model"), fixture.usage(1_000, 1)],
+        vec![
+            fixture.context(500, "current-model"),
+            fixture.usage(1_000, 1),
+        ],
     );
     File::options()
         .write(true)
@@ -274,9 +559,14 @@ fn unanchored_continuation_only_blocks_nearby_request_log_proof() {
         .unwrap();
         let after = fixture.snapshot();
         assert_eq!(after.events.len(), 2);
+        assert_eq!(after.events[1].provider, "supplier-a");
         assert_eq!(
-            after.events[1].provider == "supplier-a",
-            gap > DELAYED_REQUEST_MATCH_WINDOW_MS,
+            after.events[1].provider_source.as_deref(),
+            Some(if gap > DELAYED_REQUEST_MATCH_WINDOW_MS {
+                "request-log-exact"
+            } else {
+                SESSION_PROVIDER_INFERENCE
+            })
         );
         assert_eq!(before.events[1].delta, after.events[1].delta);
         fixture.write_paged_segment(BASE_ROLLOUT, &prefix);
@@ -3457,8 +3747,16 @@ fn request_log_recovers_after_a_distant_uncertain_counter_reset() {
         }
         let recovered = reset_gap > DELAYED_REQUEST_MATCH_WINDOW_MS;
         assert_eq!(
-            unknown_provider(&after.events[2].provider),
-            !recovered,
+            after.events[2].provider, "supplier-a",
+            "reset_gap={reset_gap}"
+        );
+        assert_eq!(
+            after.events[2].provider_source.as_deref(),
+            Some(if recovered {
+                "request-log-exact"
+            } else {
+                SESSION_PROVIDER_INFERENCE
+            }),
             "reset_gap={reset_gap}"
         );
         if recovered {

@@ -404,6 +404,56 @@ fn concurrent_updates_from_separate_managers_do_not_overwrite_each_other() {
 }
 
 #[test]
+fn config_update_waits_while_another_writer_holds_the_lock() {
+    use std::sync::mpsc::{self, RecvTimeoutError};
+    use std::time::Duration;
+
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("config.json");
+    let lock = fs::File::create_new(temp.path().join("config.json.lock")).unwrap();
+    fs2::FileExt::lock_exclusive(&lock).unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        &config_path,
+    );
+    let (started, starting) = mpsc::channel();
+    let (done, completion) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        done.send(manager.set_global_enabled(false)).unwrap();
+    });
+    starting.recv().unwrap();
+    // 超过旧版两秒的等待期，更新也不能在锁释放前写入。
+    let early = completion.recv_timeout(Duration::from_millis(2500));
+    let wrote_without_lock = config_path.exists();
+    drop(lock);
+    writer.join().unwrap();
+
+    assert!(matches!(early, Err(RecvTimeoutError::Timeout)));
+    assert!(!wrote_without_lock);
+    assert!(!completion.recv().unwrap().unwrap().enabled);
+}
+
+#[test]
+fn config_writes_fail_without_an_openable_file_lock() {
+    let temp = tempfile::tempdir().unwrap();
+    let config_path = temp.path().join("config.json");
+    let original = r#"{"enabled":false}"#;
+    fs::write(&config_path, original).unwrap();
+    fs::create_dir(temp.path().join("config.json.lock")).unwrap();
+    let manager = UserScriptManager::new(
+        temp.path().join("builtin"),
+        temp.path().join("user"),
+        &config_path,
+    );
+
+    assert!(manager.set_global_enabled(true).is_err());
+    assert!(manager.save_config(&Default::default()).is_err());
+    assert_eq!(fs::read_to_string(config_path).unwrap(), original);
+}
+
+#[test]
 fn global_switch_preserves_individual_script_choices_after_reload() {
     let temp = tempfile::tempdir().unwrap();
     let user = temp.path().join("user");

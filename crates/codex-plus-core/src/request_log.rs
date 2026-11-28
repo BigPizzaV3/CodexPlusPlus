@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const REQUEST_LOG_FILE: &str = "request-log.jsonl";
 pub const FINAL_RESPONSE_EVIDENCE_V1: &str = "final-response-v1";
+pub const FINAL_RESPONSE_SUPPLIER_EVIDENCE_V1: &str = "final-response-supplier-v1";
 /// 日志文件达到该大小后裁剪到约一半，避免无限增长。
 const MAX_LOG_BYTES: u64 = 2 * 1024 * 1024;
 const KEEP_LOG_BYTES: u64 = 1024 * 1024;
@@ -158,9 +159,10 @@ pub struct RequestLogEntry {
     pub route: Option<crate::gateway::activity::RouteRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_hit_ratio: Option<f64>,
-    /// `final-response-v1`：内置原生 Responses 链路已写出完整成功响应，
+    /// `final-response-v1`：内置 Responses 或 Chat 转换链路已写出完整成功响应，
     /// input/output/cached 均显式存在，路由与模型绑定最后一次 middleware 后发送。
-    /// 未验证的响应改写、转换/压缩链路不发此标记；不证明失败尝试的计费。
+    /// `final-response-supplier-v1`：同样已送达且响应 ID、路由与模型明确，但缓存计数未知。
+    /// 未验证的响应改写、压缩链路不发此标记；不证明失败尝试的计费。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_response_evidence: Option<String>,
     /// 已校验并送达客户端的最终响应 ID，不是本地请求日志的 id。
@@ -767,15 +769,40 @@ pub(crate) fn final_response_usage(value: &Value) -> Option<FinalResponseUsage> 
         return None;
     }
     let usage = response.get("usage")?;
-    let cached = usage.pointer("/input_tokens_details/cached_tokens")?.as_u64()?;
     let parsed = usage_from_responses_usage(usage)?;
-    (cached <= parsed.input_tokens && parsed.reasoning_tokens <= parsed.output_tokens)
-        .then(|| FinalResponseUsage {
-            usage: parsed,
-            response_id: response.get("id").and_then(Value::as_str)
-                .filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_graphic()))
-                .map(str::to_owned),
-        })
+    let response_id = response.get("id").and_then(Value::as_str)
+        .filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_graphic()))
+        .map(str::to_owned);
+    (parsed.cached_tokens <= parsed.input_tokens
+        && parsed.reasoning_tokens <= parsed.output_tokens
+        && (parsed.cached_tokens_known || response_id.is_some()))
+        .then_some(FinalResponseUsage { usage: parsed, response_id })
+}
+
+/// Chat 转换的输入不含缓存；先对齐实际送达用量，日志仍保留上游含缓存口径。
+pub(crate) fn converted_final_response_usage(
+    response: &Value,
+    usage: Option<RequestUsage>,
+) -> Option<FinalResponseUsage> {
+    let usage = usage?;
+    if response["status"] != "completed"
+        || response.get("error").is_some_and(|value| !value.is_null())
+        || response.get("incomplete_details").is_some_and(|value| !value.is_null())
+    {
+        return None;
+    }
+    let delivered = usage_from_response_json(response)?;
+    if delivered.input_tokens.checked_add(usage.cached_tokens) != Some(usage.input_tokens)
+        || delivered.cached_tokens != usage.cached_tokens
+        || delivered.output_tokens != usage.output_tokens
+        || delivered.reasoning_tokens != usage.reasoning_tokens
+        || usage.reasoning_tokens > usage.output_tokens
+    {
+        return None;
+    }
+    let response_id = response["id"].as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_graphic()))?;
+    Some(FinalResponseUsage { usage, response_id: Some(response_id.to_owned()) })
 }
 
 /// 从非流式 Responses JSON（或 `response.completed` 的 data）里提取 usage。
@@ -921,14 +948,16 @@ mod tests {
         let mut row: RequestLogEntry = serde_json::from_value(legacy).unwrap();
         assert!(row.final_response_evidence.is_none());
         assert!(row.final_response_id.is_none());
-        row.final_response_evidence = Some(FINAL_RESPONSE_EVIDENCE_V1.to_string());
-        row.final_response_id = Some("resp_delivered".to_string());
-        let raw = serde_json::to_value(row).unwrap();
-        assert_eq!(raw["finalResponseEvidence"], "final-response-v1");
-        assert_eq!(raw["finalResponseId"], "resp_delivered");
-        let parsed: RequestLogEntry = serde_json::from_value(raw).unwrap();
-        assert_eq!(parsed.final_response_id.as_deref(), Some("resp_delivered"));
-        assert_eq!(parsed.final_response_evidence.as_deref(), Some("final-response-v1"));
+        for marker in [FINAL_RESPONSE_EVIDENCE_V1, FINAL_RESPONSE_SUPPLIER_EVIDENCE_V1] {
+            row.final_response_evidence = Some(marker.to_string());
+            row.final_response_id = Some("resp_delivered".to_string());
+            let raw = serde_json::to_value(&row).unwrap();
+            assert_eq!(raw["finalResponseEvidence"], marker);
+            assert_eq!(raw["finalResponseId"], "resp_delivered");
+            let parsed: RequestLogEntry = serde_json::from_value(raw).unwrap();
+            assert_eq!(parsed.final_response_id.as_deref(), Some("resp_delivered"));
+            assert_eq!(parsed.final_response_evidence.as_deref(), Some(marker));
+        }
     }
 
     #[test]
@@ -967,6 +996,25 @@ mod tests {
         let mut failed = complete;
         failed["error"] = json!({"code":"server_error"});
         assert!(final_response_usage(&failed).is_none());
+    }
+
+    #[test]
+    fn final_response_supplier_receipt_preserves_unknown_cache() {
+        let mut response = json!({"id":"resp_supplier","status":"completed",
+            "usage":{"input_tokens":12,"output_tokens":3}});
+        let terminal = final_response_usage(&response).unwrap();
+        assert_eq!(terminal.response_id.as_deref(), Some("resp_supplier"));
+        assert!(!terminal.usage.cached_tokens_known);
+        assert_eq!(terminal.usage.cache_hit_ratio(), None);
+        for id in ["", "two words"] {
+            response["id"] = json!(id);
+            assert!(final_response_usage(&response).is_none());
+        }
+        response["id"] = json!("resp_supplier");
+        for status in ["in_progress", "incomplete", "failed"] {
+            response["status"] = json!(status);
+            assert!(final_response_usage(&response).is_none());
+        }
     }
 
     #[test]

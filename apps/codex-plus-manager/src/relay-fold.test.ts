@@ -38,10 +38,12 @@ function fixture(stored = new Map<string, string>(), storageFails = false) {
   return { render, stored };
 }
 
-test("model configuration is open by default while vendor folds use stable identifiers", () => {
-  assert.ok(/className="relay-config-section relay-model-settings"[^>]*defaultOpen/.test(source));
-  for (const section of ["models", "requests", "advanced", "config-preview", "common-config", "auth-preview"]) {
-    assert.ok(source.includes(`sectionId="${section}"`), section);
+test("config preview tabs use stable identifiers while main sections live in modal tabs", () => {
+  for (const tab of ["basic", "models", "requests", "advanced", "config-preview"]) {
+    assert.ok(source.includes(`id: "${tab}"`), tab);
+  }
+  for (const section of ["config-preview", "common-config", "auth-preview"]) {
+    assert.ok(source.includes(`id: "${section}"`), section);
   }
 });
 

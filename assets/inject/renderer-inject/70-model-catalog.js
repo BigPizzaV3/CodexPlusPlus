@@ -40,6 +40,7 @@
     patchStatsig: patchStatsigModelDynamicConfig,
     recordRequest: recordModelListRequest,
     patchMcp: patchMcpModelResponseData,
+    refresh: () => loadCodexModelCatalog(true),
   };
   window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
   let codexModelWhitelistRefreshTimer = 0;
@@ -229,6 +230,9 @@
     const revision = ++codexModelCatalogRevision;
     const current = () => revision === codexModelCatalogRevision
       && window.__codexPlusModelCatalogRuntime === codexModelCatalogRuntime;
+    const latest = () => window.__codexPlusModelCatalogRuntime === codexModelCatalogRuntime
+      ? codexModelCatalogPromise || codexModelCatalogRuntime.failure || codexModelCatalog
+      : codexModelCatalog;
     let identity = "";
     if (codexPlusBackendSettingsLoaded) {
       codexModelCatalogRuntime.source = codexModelSettingsSource(codexPlusBackendSettings);
@@ -238,7 +242,7 @@
     let failedCatalog = null;
     const request = readCodexAppServerPreparation("/codex-model-catalog", {}, timeoutMs)
       .then(async (result) => {
-        if (!current()) return codexModelCatalog;
+        if (!current()) return latest();
         const nextCatalog = result && typeof result === "object" ? result : { status: "failed", models: [] };
         if (!["ok", "not_applied", "not_configured"].includes(nextCatalog.status) || !Array.isArray(nextCatalog.models)) {
           failedCatalog = nextCatalog;
@@ -263,7 +267,7 @@
             sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
           }
         }
-        if (!current()) return codexModelCatalog;
+        if (!current()) return latest();
         const previousCatalog = codexModelCatalog;
         const changed = JSON.stringify(previousCatalog) !== JSON.stringify(nextCatalog);
         const previousMetadata = previousCatalog.modelMetadata || previousCatalog.model_metadata || {};
@@ -278,7 +282,7 @@
         codexModelCatalogRuntime.failure = null;
         if (changed) {
           refreshCodexNativeModelQueries();
-          codexPlusEmitExtensionEvent("session-context/changed");
+          codexPlusEmitExtensionEvent("sessionContext/changed");
         }
         renderCodexPlusMenu();
         syncCodexPlusGroupModelQueries();
@@ -298,7 +302,7 @@
         return codexModelCatalog;
       })
       .catch((error) => {
-        if (!current()) return codexModelCatalog;
+        if (!current()) return latest();
         const failure = { status: "failed", message: String(error?.message || error),
           model: typeof failedCatalog?.model === "string" ? failedCatalog.model : "",
           default_model: typeof failedCatalog?.default_model === "string" ? failedCatalog.default_model : "",
@@ -957,6 +961,15 @@
     }, true);
   }
 
+  if (!window.__codexPlusModelSelectionRefreshInstalled) {
+    window.__codexPlusModelSelectionRefreshInstalled = true;
+    window.addEventListener("click", (event) => {
+      if (event.target?.closest?.('[data-model-picker-view] [role="menuitemradio"]')) {
+        void window.__codexPlusModelCatalogRuntime.refresh();
+      }
+    }, true);
+  }
+
   function modelResponseHasPagination(value) {
     return !!value && typeof value === "object"
       && ("nextCursor" in value || "next_cursor" in value);
@@ -1056,19 +1069,25 @@
   const codexThreadContextOverridePrefix = "codex-plus:thread-context:";
   const codexThreadContextOverrideLifetime = 90 * 24 * 60 * 60 * 1000;
   const codexThreadContextOverrideLimit = 256;
+  // 固定上限目录已由 runtimeContext 拒绝；无固定上限也不接受任意大小的会话覆盖。
+  const codexThreadContextMin = 8_000;
+  const codexThreadContextMax = 2_000_000;
 
   function codexThreadContextOverrideKey(threadId, model) {
     return codexThreadContextOverridePrefix + JSON.stringify([threadId, model]);
   }
 
+  function codexThreadContextOverrideInRange(tokens) {
+    return Number.isInteger(tokens) && tokens >= codexThreadContextMin && tokens <= codexThreadContextMax;
+  }
+
   function codexThreadContextOverrideRecord(raw, now) {
     if (raw === null) return null;
-    const [value, savedAt = "0"] = raw.split(":");
-    const tokens = Number(value);
-    const time = Number(savedAt);
-    // 旧版本只存 token 数；保留原设置，容量清理时优先淘汰。
-    if (!Number.isSafeInteger(tokens) || tokens < 1 || !Number.isSafeInteger(time) || time < 0
-        || (time !== 0 && now - time >= codexThreadContextOverrideLifetime)) return null;
+    const parts = raw.split(":");
+    if (parts.length !== 2) return null;
+    const [tokens, time] = parts.map(Number);
+    if (!codexThreadContextOverrideInRange(tokens) || !Number.isSafeInteger(time) || time < 1
+        || now - time >= codexThreadContextOverrideLifetime) return null;
     return { tokens, time };
   }
 
@@ -1099,8 +1118,8 @@
         Math.floor(override * (defaults.model_auto_compact_token_limit / defaultWindow)))),
     };
     const percent = runtime.effectiveWindowPercents?.[model];
-    const effectiveWindow = percent === undefined ? config.model_context_window
-      : Math.floor(config.model_context_window * (percent / 100));
+    const effectiveWindow = override === null ? runtime.effectiveWindows?.[model]
+      : percent === undefined ? undefined : Math.floor(override * percent / 100);
     return { model, config, defaultWindow, override, effectiveWindow, signature: codexThreadContextSignature(config) };
   }
 
@@ -1124,7 +1143,7 @@
     if (host && host !== "local") return null;
     const threadId = composer.getAttribute("data-composer-placement") === "home" ? "" : codexPlusCurrentSessionId();
     const { signature, ...context } = codexThreadContextFromCatalog(runtime, threadId, matches[0]);
-    return { ...context, threadId, label };
+    return { ...context, effectiveWindow: context.effectiveWindow ?? context.config.model_context_window, threadId, label };
   }
 
   function codexSessionContextService() {
@@ -1144,10 +1163,11 @@
         if (!threadId || codexSessionContextSelection()?.threadId !== threadId) {
           throw new Error("会话已切换，请重新打开上下文设置");
         }
-        if (value !== null && (!Number.isSafeInteger(value) || value < 1)) {
-          throw new Error("上下文窗口必须是正整数");
+        if (value !== null && !codexThreadContextOverrideInRange(value)) {
+          throw new Error("上下文窗口必须为 8K 至 2M 之间的整数 token 数");
         }
         return codexPlusRpcSerializeTurn(threadId, async () => {
+          if (!codexPerModelContextEnabled()) throw new Error("当前宿主未启用会话上下文设置");
           const client = await codexPlusAppServerClient("local");
           const selected = await refresh();
           if (selected?.threadId !== threadId || selected.model !== model) {
@@ -1171,8 +1191,8 @@
             throw error;
           }
           pruneCodexThreadContextOverrides(storage, value === null ? null : key, now);
-          codexPlusEmitExtensionEvent("session-context/changed");
-          return result;
+          codexPlusEmitExtensionEvent("sessionContext/changed");
+          return { status: result === true ? "applied" : result ?? "unchanged" };
         });
       },
     });
@@ -1284,7 +1304,17 @@
     const context = options?.sessionContext ?? await codexThreadRuntimeContext(params, true);
     if (!context) return null;
     const contexts = window.__codexPlusThreadContexts ||= new Map();
-    if (codexThreadContextMatches(contexts.get(threadId), context)) return null;
+    const observed = window.__codexPlusObservedContextWindows;
+    const observedWindow = observed?.get(threadId);
+    const attempts = window.__codexPlusContextRefreshAttempts ||= new Map();
+    const mismatch = observedWindow !== undefined && context.effectiveWindow !== undefined
+      && observedWindow !== context.effectiveWindow;
+    const target = mismatch ? JSON.stringify([context.signature, context.effectiveWindow]) : null;
+    if (observedWindow === context.effectiveWindow && observedWindow !== undefined) attempts.delete(threadId);
+    // 原生进程可能缓存了旧模型比例。相同目标只为实际差异额外恢复一次。
+    const needsRefresh = !codexThreadContextMatches(contexts.get(threadId), context)
+      || (mismatch && attempts.get(threadId) !== target);
+    if (!needsRefresh && !options?.sessionContext) return null;
     if (window.__codexPlusConnectionRecoveryPending?.has(threadId)
         || window.__codexPlusContextRefreshPending?.has(threadId)) {
       throw new Error("此会话正在检查连接，请稍后重新发送");
@@ -1298,10 +1328,12 @@
       if (read.thread?.ephemeral === true) {
         if (options?.sessionContext) throw new Error("临时会话不能修改上下文窗口");
         contexts.set(threadId, context.signature);
+        if (mismatch) attempts.set(threadId, target);
         return null;
       }
+      if (!needsRefresh) return null;
       if (!["idle", "notLoaded", "systemError"].includes(read.thread.status.type)) {
-        if (options?.sessionContext) return null;
+        if (options?.sessionContext) return "deferred";
         throw new Error("请先等待当前回复结束，再应用上下文配置");
       }
       // 新建线程的 rollout 要到首轮才写入；仅路径存在不代表可以卸载恢复。
@@ -1311,11 +1343,11 @@
       // 拦下发送会让侧聊完全不可用：放行原生首轮，不记签名，等有了历史后的下一次发送再应用上下文配置。
       if (turns.data.length === 0) {
         sendCodexPlusDiagnostic("thread_model_context_refresh_deferred", { threadId, reason: "no_history" });
-        return null;
+        return options?.sessionContext ? "deferred" : null;
       }
       const current = await originalSendRequest("thread/resume", { threadId, excludeTurns: true }, recoveryOptions);
       if (!["idle", "systemError"].includes(current.thread.status.type)) {
-        if (options?.sessionContext) return null;
+        if (options?.sessionContext) return "deferred";
         throw new Error("请先等待当前回复结束，再应用上下文配置");
       }
       let resumeParams = codexThreadReloadParams(threadId, current, { ...params, model: context.model });
@@ -1328,6 +1360,9 @@
       if (!["idle", "systemError"].includes(resumed.thread.status.type)) throw new Error("会话已开始其他回复，请等待结束后重新发送");
       contexts.set(threadId, context.signature);
       if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
+      if (mismatch) attempts.set(threadId, target);
+      else attempts.delete(threadId);
+      if (observedWindow !== undefined && observed.get(threadId) === observedWindow) observed.delete(threadId);
       sendCodexPlusDiagnostic("thread_model_context_refreshed", { threadId, model: context.model });
       return true;
     } catch (error) {
@@ -1339,6 +1374,7 @@
       throw error;
     } finally {
       pending.delete(threadId);
+      if (attempts.size > 256) attempts.delete(attempts.keys().next().value);
     }
   }
 

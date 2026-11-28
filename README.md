@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>给你的 AI 编程 Agent 加一点「++」。</strong><br>
-  万物皆拓展：在 Codex 对话里说一句，就能造一个拓展。内置本地网关，让 50 多个 Agent 共用一份供应商池。
+  万物皆拓展：在 Codex 对话里说一句，就能造一个拓展。内置本地服务，让 50 多个 Agent 共用一份供应商列表。
 </p>
 
 <p align="center">
@@ -24,15 +24,15 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/readme-preview/ext-featured.webp" alt="拓展页：万物皆拓展的能力标签、对话造拓展入口，以及经审核的官方与精选拓展包" width="100%">
-  <br><sub>精选、社区、本地拓展和 dsh 插件都在一页：装别人的，也管自己做的。</sub>
+  <img src="docs/images/readme-preview/home.webp" alt="首页：Codex 与 Claude 的运行状态、连接方式和自动接管，下面是今日用量、本地服务、万物皆拓展与会话的入口" width="100%">
+  <br><sub>首页：Codex、Claude 现在怎么连、跑没跑，今日用量和常用入口一屏看全。</sub>
 </p>
 
-Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。不想写代码？在 Codex 对话里说一句「把发送按钮改成狗头」，agent 就会写出拓展、热重载并截图确认。
+Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的架构之上：界面、命令、模型能用的工具、agent 循环的钩子、发往模型的请求与回复，都能由拓展接管。不想写代码？在 Codex 对话里说一句「把发送按钮改成狗头」，agent 就会写出拓展、热重载并截图确认。Claude Desktop 也能装拓展。
 
-它还内置一个本地网关：Codex、Claude Code、Gemini CLI、OpenCode、Zed 等 50 多个 Agent 共用一份供应商池，按模型名选供应商，Key 冷却或供应商熔断时自动换上游，ChatGPT、GitHub Copilot、Cursor 等订阅也能登录进池。原来的直连模式（官方登录、官方 + API、纯 API、聚合供应商）完整保留，Codex 在「经网关」和「直连」之间一键切换。
+它还内置一个本地服务（本地网关）：Codex、Claude Code、Claude Desktop、Gemini CLI、OpenCode、Zed 等 50 多个 Agent 共用一份供应商列表，按模型名选供应商，Key 冷却或供应商熔断时自动换上游；ChatGPT、GitHub Copilot、Cursor 等订阅也能登录进来，一家供应商里可以放多个账号或多个 Key。每个 Agent 的供应商页顶部选「聚合」或「直连」：聚合时经本地服务、多家合在一起用；直连时照旧点「使用」，官方登录、官方 + API、纯 API 都还在。
 
-此外还有会话管理、Codex 界面增强、Claude Desktop 增强版、跨 Agent 的 Computer Use 与子 Agent 协作。管理器是一个桌面程序的样子：侧栏切 Agent 和页面，顶部页签切分页，齿轮进设置目录。双击打开管理界面，再从界面启动各个应用；它不修改任何官方应用的安装文件。
+此外还有会话管理、Codex 界面增强、Claude Desktop 增强、跨 Agent 的 Computer Use 与子 Agent 协作。管理器的侧栏上半是首页、MCP 与 Skills、会话、用量、本地服务，下半是 Codex、Claude Code、Claude Desktop 三个 Agent，各自的页面列在 Agent 下面；齿轮进设置。双击打开管理界面，再从界面启动各个应用；它不修改任何官方应用的安装文件。
 
 ## 交流与支持
 
@@ -152,49 +152,49 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 | Agent | Codex++ 能做什么 |
 | --- | --- |
-| **Codex 桌面版** | 经网关或直连接入供应商、协议转换、会话管理、界面增强、多开、拓展与桌宠 |
-| **Claude Code** | 经网关接入任意协议的供应商（Anthropic 请求在网关里转成 Chat / Responses）、接入 Computer Use |
-| **Claude Desktop** | 增强版（中文界面、语音输入、Computer Use）、接入 Computer Use |
-| **Grok CLI** | 经网关接入供应商池，可用 SuperGrok 订阅 |
-| **Gemini CLI、OpenCode、Zed、VS Code 等 50+ Agent** | 经网关接入供应商池，Anthropic / Chat / Responses / Gemini 协议互转 |
+| **Codex 桌面版** | 聚合（经本地服务）或直连接入供应商、协议转换、会话管理、界面增强、Codex 插件、多开、拓展与桌宠 |
+| **Claude Code** | 聚合时经本地服务接入任意协议的供应商（Anthropic 请求转成 Chat / Responses / Gemini），直连时把 Anthropic 协议的供应商直接写进它自己的配置；接入 Computer Use |
+| **Claude Desktop** | 始终经本地服务接入供应商；完整功能模式（中文界面、听写、Cowork）、补丁副本、万物皆拓展、接入 Computer Use |
+| **Grok CLI** | 在「本地服务 → 服务与接入」接入，可用 SuperGrok 订阅 |
+| **Gemini CLI、OpenCode、Zed、VS Code 等 50+ Agent** | 经本地服务接入，Anthropic / Chat / Responses / Gemini 协议互转 |
 | **DeepSeek Harness 等** | 接入 Computer Use、在 Codex 对话中作为子 Agent 调用；dsh 插件可导入 Codex |
 
 <table>
   <tr>
-    <td width="50%" valign="top"><strong>🧩 万物皆拓展 · 新</strong><br>界面、命令、模型工具、钩子、网关请求都能由拓展接管。</td>
-    <td width="50%" valign="top"><strong>💬 对话造拓展 · 新</strong><br>在 Codex 对话里说需求，agent 写出拓展并热重载。</td>
+    <td width="50%" valign="top"><strong>🧩 万物皆拓展</strong><br>界面、命令、模型工具、钩子、模型请求都能由拓展接管；Claude Desktop 也能用。</td>
+    <td width="50%" valign="top"><strong>💬 对话造拓展</strong><br>在 Codex 对话里说需求，agent 写出拓展并热重载。</td>
   </tr>
   <tr>
-    <td valign="top"><strong>🛍️ 精选、社区与一键发布 · 新</strong><br>审核过的精选拓展、GitHub 社区拓展，自己的一键发布。</td>
-    <td valign="top"><strong>🔁 导入 dsh 插件 · 新</strong><br>工具插件经托管 MCP 在 Codex 里运行。</td>
+    <td valign="top"><strong>🛍️ 精选、社区与一键发布</strong><br>审核过的精选拓展、GitHub 社区拓展，自己的一键发布。</td>
+    <td valign="top"><strong>🔁 导入 dsh 插件</strong><br>工具插件经托管 MCP 在 Codex 里运行。</td>
   </tr>
   <tr>
-    <td width="50%" valign="top"><strong>🌐 本地网关</strong><br>50 多个 Agent 共用一份供应商池，按模型名路由，出错自动换下一家。</td>
-    <td width="50%" valign="top"><strong>🔀 路由与模型组 · 新</strong><br>依次、轮换、按权重、额度优先、速度优先，可按会话固定。</td>
+    <td width="50%" valign="top"><strong>🔀 聚合 / 直连 · 新</strong><br>每个 Agent 一份供应商列表，顶部选连接方式；聚合时每家一个开关。</td>
+    <td width="50%" valign="top"><strong>🌐 本地服务</strong><br>50 多个 Agent 共用一份供应商列表，按模型名路由，出错自动换下一家。</td>
   </tr>
   <tr>
-    <td valign="top"><strong>🔑 多 Key 与订阅登录 · 新</strong><br>多 Key 轮换与冷却；ChatGPT、Copilot、SuperGrok 登录进池并显示额度。</td>
-    <td valign="top"><strong>📊 用量与请求日志 · 新</strong><br>费用、token、缓存命中，按 Agent、供应商、模型拆开看。</td>
+    <td valign="top"><strong>🔑 一家多个账号 / Key · 新</strong><br>ChatGPT、Copilot、SuperGrok 等账号放进同一家，按家设分配方式，显示额度。</td>
+    <td valign="top"><strong>🧭 路由与模型组</strong><br>依次、轮换、按权重、额度优先、速度优先，可按会话固定；每个请求怎么路由都看得到。</td>
   </tr>
   <tr>
-    <td valign="top"><strong>🔌 直连模式照旧</strong><br>官方登录、官方 + API、纯 API、故障转移与模型聚合。</td>
-    <td valign="top"><strong>🧠 每个模型，各有空间</strong><br>按模型设置上下文窗口、价格与思考等级。</td>
+    <td valign="top"><strong>📊 用量与请求日志</strong><br>费用、token、缓存命中，按 Agent、供应商、模型拆开看；订阅额度趋势与日历。</td>
+    <td valign="top"><strong>🧠 每个模型，各有空间</strong><br>按模型设置上下文窗口、价格与思考等级；Gemini 上游也能接。</td>
   </tr>
   <tr>
     <td valign="top"><strong>🖱️ Computer Use 共享</strong><br>把 Codex 的桌面与浏览器控制接给其他 Agent。</td>
     <td valign="top"><strong>🤝 子 Agent 协作</strong><br>在 Codex 对话里委派 DeepSeek、Claude Code、Google Antigravity，可排队并发。</td>
   </tr>
   <tr>
-    <td valign="top"><strong>💬 会话管理</strong><br>Codex、Claude Code、Claude Desktop、Grok 的会话放在一起；删除撤销、导出、<a href="docs/turn-rewind.md">轮次回退</a>。</td>
+    <td valign="top"><strong>💬 会话管理</strong><br>Codex、Claude Code、Grok 的会话放在一起；删除撤销、导出、批量移动、<a href="docs/turn-rewind.md">轮次回退</a>。</td>
     <td valign="top"><strong>🧵 Codex 多开</strong><br>每个供应商一个隔离实例。</td>
   </tr>
   <tr>
-    <td valign="top"><strong>✨ 输入与阅读</strong><br>语音输入、输入预测、粘贴修复、下一步建议、打字特效。</td>
+    <td valign="top"><strong>✨ 输入与阅读</strong><br>语音输入、输入预测、粘贴修复、下一步建议、打字特效、消息书签。</td>
     <td valign="top"><strong>📈 用量状态栏</strong><br>输出吞吐、缓存命中与上下文占用。</td>
   </tr>
   <tr>
     <td valign="top"><strong>⚡ API Key 原生 Fast</strong><br>纯 API Key 也能用 Standard / Fast 控件。</td>
-    <td valign="top"><strong>🧰 MCP、Skills 与插件市场</strong><br>MCP、Skills 按 Agent 启用；Codex 插件市场可装可卸。</td>
+    <td valign="top"><strong>🧰 MCP、Skills 与 Codex 插件</strong><br>MCP、Skills 按 Agent 启用，Skills 可打包迁移；Codex 插件不登录 ChatGPT 也能装。</td>
   </tr>
   <tr>
     <td valign="top"><strong>🖥️ 托盘快捷面板</strong><br>点托盘图标就能换模型、看用量和最近请求。</td>
@@ -202,21 +202,21 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   </tr>
   <tr>
     <td valign="top"><strong>🐳 Agent 桌宠</strong><br>点一下会压扁、带音效，图片随心换。</td>
-    <td valign="top"><strong>🧹 缓存清理与皮肤</strong><br>清理 Codex、Claude 缓存；社区主题与自定义图片。</td>
+    <td valign="top"><strong>🧹 缓存清理与皮肤</strong><br>清理 Codex、Claude 缓存；社区主题、自定义图片与视频。</td>
   </tr>
   <tr>
-    <td valign="top"><strong>🔁 网关 / 直连一键切换 · 新</strong><br>Codex 的「连接方式」二选一，切换后从 Codex++ 重启生效。</td>
-    <td valign="top"><strong>⬇️ 后台更新 · 新</strong><br>发现新版本先在后台下好安装包，侧栏提示，点「安装」才安装。</td>
+    <td valign="top"><strong>🪪 Codex 登录身份 · 新</strong><br>ChatGPT 账号、虚拟账号或不登录；虚拟账号用 API Key 也能进 ChatGPT 专属入口。</td>
+    <td valign="top"><strong>⬇️ 后台更新</strong><br>发现新版本先在后台下好安装包，侧栏提示，点「安装」才安装。</td>
   </tr>
 </table>
 
-所有增强都能单独开关；关闭增强总开关后，供应商与启动管理照常可用。
+所有增强都能单独开关；关闭「启用内置拓展」总开关后，供应商与启动管理照常可用。
 
 ## 看看它能做什么
 
 ### 万物皆拓展：说一句话，拓展就写好了
 
-在管理器「拓展」页点「接入 Codex」，新开一个 Codex 对话直接说需求。agent 能查看 Codex 自己的页面结构，写出拓展包、热重载，再截图确认效果；拓展只写在你自己的拓展目录里，写入走 Codex 的工具审批。
+在管理器「Codex → 万物皆拓展」点「对话造拓展」，新开一个 Codex 对话直接说需求。agent 能查看 Codex 自己的页面结构，写出拓展包、热重载，再截图确认效果；拓展只写在你自己的拓展目录里，写入走 Codex 的工具审批。
 
 <p align="center">
   <img src="docs/images/readme-preview/extension-chat.png" alt="实测：在 Codex 对话里让 agent 把发送按钮换成狗头、把上下文圆环换成彩虹渐变进度条，两处都已生效" width="720">
@@ -236,7 +236,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 | 常驻后台与服务 | 后台进程；拓展间按名字提供和调用服务，可跨进程 |
 | 会话、配置与多语言 | 只读查询与订阅会话；配置项自动生成设置表单 |
 
-完整接口见 [拓展开发指南](EXTENSIONS.md)。
+完整接口见 [拓展开发指南](EXTENSIONS.md)。Claude Desktop 也有自己的「万物皆拓展」页：拓展包在清单里声明 `claudeDesktop`，脚本和样式就注入 Claude 的页面，用的是同名的 `codexPlus` 接口，写法见 [Claude 适配指南](docs/claude-desktop-extensions.md)。
 
 <table>
   <tr>
@@ -244,44 +244,48 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
     <td width="50%" valign="top"><strong>社区拓展</strong><br>GitHub 上打了 <code>codexpp-extension</code> 标签的仓库；装前列出全部能力，装完默认不启用。<br><img src="docs/images/readme-preview/ext-community.webp" alt="社区拓展分栏：未审核提示与按星标排序的拓展列表" width="100%"></td>
   </tr>
   <tr>
-    <td valign="top"><strong>导入 dsh 插件</strong><br>工具插件经托管 MCP 在 Codex 里运行，提示词与事件转成网关 instructions 与 Codex 钩子。<br><img src="docs/images/readme-preview/ext-dsh.webp" alt="dsh 插件分栏：导入的工具包逐项显示兼容情况" width="100%"></td>
-    <td valign="top"><strong>一键发布</strong><br>在本地拓展那一行点「发布」：检查清单、密钥与体积后建仓库、打 tag、传 release、加 topic，每一步都显示进度。不读、不存你的 GitHub token。</td>
+    <td valign="top"><strong>导入 dsh 插件</strong><br>工具插件经托管 MCP 在 Codex 里运行，提示词与事件转成本地服务的 instructions 与 Codex 钩子。<br><img src="docs/images/readme-preview/ext-dsh.webp" alt="dsh 插件分栏：导入的工具包逐项显示兼容情况" width="100%"></td>
+    <td valign="top"><strong>本地拓展与一键发布</strong><br>自己写的、从文件夹装的拓展都在「本地」里启停；Codex++ 自带的功能也是内置拓展，可以被别的拓展顶替。在本地拓展那一行点「发布」：检查清单、密钥与体积后建仓库、打 tag、传 release、加 topic，每一步都显示进度，不读、不存你的 GitHub token。<br><img src="docs/images/readme-preview/ext-local.webp" alt="本地分栏：已启用、未启用的本地拓展，以及内置拓展的启用数" width="100%"></td>
   </tr>
 </table>
 
-### 网关总览：50 多个 Agent，一份供应商池
+### 供应商：一份列表，聚合或直连
+
+Codex 的「连接与供应商」、Claude Code 的「供应商」都是同一份供应商列表，顶部选连接方式：
+
+- **聚合**：经本地服务，每家一个开关，打开的几家合在一起用；默认模型可以选某个模型，也可以选模型组。
+- **直连**：照旧点某家「使用」，配置直接写进 Agent 自己的文件；只能经本地服务的几家折叠在下面。
+
+添加供应商时自动拉模型列表、按公开价格表填价格；中转站（sub2api / new-api）自动识别倍率与余额，订阅账号显示剩余额度。一家里可以放多个账号或多个 Key，按家设依次、轮换、按权重、额度优先等分配方式。每家可以按模型设置价格、上下文窗口、思考等级和独立代理。也可以「从第三方导入」一次加好几家。
 
 <p align="center">
-  <img src="docs/images/readme-preview/gateway-hub.webp" alt="网关总览：Codex 与 Claude Code 经 Codex++ 接入供应商池，右边是各家供应商的今日调用、Key 冷却与限流状态" width="100%">
+  <img src="docs/images/readme-preview/gateway-providers.webp" alt="Codex 的连接与供应商：聚合模式下 ChatGPT 订阅、DeepSeek、Kimi、智谱 GLM 与两个中转站各一个开关，下面是模型组和 Codex 登录身份" width="100%">
 </p>
 
-### 供应商池：加一次，所有 Agent 都能用
+<p align="center">
+  <img src="docs/images/readme-preview/claude-providers.webp" alt="Claude Code 的供应商页：同一份供应商列表与模型组，底部选 Claude Code 的默认模型" width="100%">
+  <br><sub>Claude Code 用同一份供应商；Claude Desktop 始终经本地服务，也在自己的「供应商」页选默认模型。</sub>
+</p>
 
-添加供应商时自动拉模型列表、按公开价格表填价格；中转站（sub2api / new-api）自动识别倍率与余额，订阅账号显示剩余额度。每家可以按模型设置价格、上下文窗口、思考等级和独立代理。
+### 本地服务：谁接进来了，一页看清
+
+「服务与接入」列出已经接入的 Agent，给每个选默认模型、编辑它自己的配置文件；Claude Code 还能分别指定 opus / sonnet / haiku 用哪个模型，Grok 等其他 Agent 也在这里接入。下面是监听地址、多 Key 轮换方式和「退出 Codex++ 时恢复直连」。接入前会存档 Agent 的配置文件，断开时只还原改过的那几项。
 
 <p align="center">
-  <img src="docs/images/readme-preview/gateway-providers.webp" alt="供应商池：ChatGPT 订阅、DeepSeek、Kimi、智谱 GLM 与两个中转站，显示剩余额度、倍率、余额与限流恢复时间" width="100%">
+  <img src="docs/images/readme-preview/gateway-agents.webp" alt="本地服务的服务与接入：Codex 与 Claude Code 已接入并各自选了默认模型，下面是监听地址、多 Key 轮换与退出时恢复直连" width="100%">
 </p>
 
 ### 路由：多家都有的模型，怎么分由你定
 
-裸模型名发给池里提供它的供应商，`<供应商>/<模型>` 只发给那一家，`group/<组>` 走自建的组。多家都有的模型自动成组；组可选依次、轮换、按权重、额度优先、速度优先或手动，出错按顺序换下一家。
+裸模型名发给提供它的供应商，`<供应商>/<模型>` 只发给那一家，`group/<组>` 走自建的组。多家都有的模型自动成组；组可选依次、轮换、按权重、额度优先、速度优先或手动，出错按顺序换下一家。「请求路由」里能看到每个请求是怎么选到这一家的。
 
 <p align="center">
   <img src="docs/images/readme-preview/gateway-routing.webp" alt="路由页：自建的「主力编程」依次组与「便宜轮换」轮换组，成员显示额度、最近使用与首字耗时；下方是自动组" width="100%">
 </p>
 
-### Agent 接入：开关一拨就接上
-
-给 Agent 打开开关就经网关接入，选它默认用哪个模型；Claude Code 还能分别指定 opus / sonnet / haiku 用哪个模型。接入前会存档 Agent 的配置文件，断开时只还原网关改过的那几项。
-
-<p align="center">
-  <img src="docs/images/readme-preview/gateway-agents.webp" alt="Agent 接入：Codex 与 Claude Code 已接入网关，Grok 未接入" width="100%">
-</p>
-
 ### 用量与请求日志
 
-「统计」按天看费用、token、缓存与调用，按 Agent、供应商或模型拆开；「请求」列出每条请求的状态、自动重试、首字耗时、token、缓存与估算费用，失败的直接显示原因。
+侧栏「用量」：「统计」按天看费用、token、缓存与调用，按 Agent、供应商或模型拆开，还有按小时的用量、热力图和订阅额度趋势；「请求」列出每条请求的状态、自动重试、首字耗时、token、缓存与估算费用，失败的直接显示原因。
 
 <p align="center">
   <img src="docs/images/readme-preview/usage-stats.webp" alt="用量统计：估算费用、token、缓存命中、调用次数，按天的分色柱状图与按供应商的明细" width="100%">
@@ -293,22 +297,28 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 ### Computer Use：把 Codex 的桌面控制借给其他 Agent
 
-给客户端点「接入」，重启后就能在 Claude Code、Claude Desktop、DeepSeek Harness 等里操作桌面和浏览器。目前仅支持 macOS。
+在「设置 → Computer Use」给客户端点「接入」，重启后就能在 Claude Code、Claude Desktop、DeepSeek Harness 等里操作桌面和浏览器。目前仅支持 macOS。
 
 <p align="center">
   <img src="docs/images/readme-preview/computer-use.webp" alt="Computer Use 工作原理：Claude Code 与 DeepSeek Harness 已接入，经 Codex++ MCP 服务调用 ChatGPT.app 的原生 Computer Use 与 Chrome 扩展" width="100%">
 </p>
 
-### Codex 增强、Claude 增强版、会话与缓存清理
+### Codex 插件、Claude Desktop 增强、会话与缓存清理
+
+Codex++ 自带的 Codex 增强（插件市场解锁、模型白名单、原生 Fast、输入预测、会话删除等）都是内置拓展，在 Codex 里的「Codex++」设置页按分组开关。
+
+<p align="center">
+  <img src="docs/images/readme-preview/codex-builtins.webp" alt="Codex 里的 Codex++ 设置页，「模型与插件」分组：插件市场解锁、模型白名单解锁、原生 Fast 强制解锁等开关" width="100%">
+</p>
 
 <table>
   <tr>
-    <td width="50%" valign="top"><strong>Codex 增强</strong><br><img src="docs/images/readme-preview/codex-enhance.webp" alt="Codex 增强：插件市场解锁、模型白名单、原生 Fast、输入预测、会话删除等开关" width="100%"></td>
-    <td width="50%" valign="top"><strong>Claude 增强版</strong><br><img src="docs/images/readme-preview/claude-enhance.webp" alt="Claude 增强版：受管增强版已准备，可开关界面汉化、语音输入与 Computer Use" width="100%"></td>
+    <td width="50%" valign="top"><strong>Codex 插件</strong><br>官方插件目录的快照，不登录 ChatGPT 也能装；带连接器的插件装完就能登录。<br><img src="docs/images/readme-preview/codex-plugins.webp" alt="Codex 插件页：按热门、效率、创意、开发者工具分组的官方插件，可安装与查看已安装" width="100%"></td>
+    <td width="50%" valign="top"><strong>Claude Desktop 增强</strong><br>完整功能模式经本地服务启动官方 Claude，汉化、听写、页面拓展都在；也可以改用补丁副本。<br><img src="docs/images/readme-preview/claude-local-settings.webp" alt="Desktop 增强页：Claude Desktop 本地模式已连接，启动模式为完整功能模式，下面是模型、账号与会话、功能、证书与环境的设置" width="100%"></td>
   </tr>
   <tr>
-    <td valign="top"><strong>会话</strong><br><img src="docs/images/readme-preview/sessions.webp" alt="会话页：Codex、Claude Code、Grok 等 Agent 的本地会话放在一起，可复制与删除" width="100%"></td>
-    <td valign="top"><strong>AI Agent 缓存清理</strong><br><img src="docs/images/readme-preview/agent-cache.webp" alt="AI Agent 缓存清理：按 Codex、Claude、Codex++ 列出可清理的缓存" width="100%"></td>
+    <td valign="top"><strong>会话</strong><br><img src="docs/images/readme-preview/sessions.webp" alt="会话页：Codex、Claude Code、Grok 等 Agent 的本地会话按项目分组，可复制与删除" width="100%"></td>
+    <td valign="top"><strong>缓存清理</strong>（设置里）<br><img src="docs/images/readme-preview/agent-cache.webp" alt="缓存清理：按 Codex、Claude、Codex++ 列出可清理的缓存" width="100%"></td>
   </tr>
 </table>
 
@@ -334,10 +344,10 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
   <img src="docs/images/agent-collaboration.png" alt="实测：问问 DeepSeek 1+1 是多少，通过 Codex Plus Collaboration 协作集成返回 2" width="100%">
 </p>
 
-### 模型选择器按供应商分组
+### 模型选择器：供应商、模型、推理强度三栏
 
 <p align="center">
-  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器按供应商分组：先列出各家供应商和各自的模型数，当前用的那家带标记，点进去再选模型" width="420">
+  <img src="docs/images/readme-preview/model-picker-groups.png" alt="模型选择器三栏：左栏是收藏和各家供应商，中间是这一家的模型，右栏选推理强度" width="560">
 </p>
 
 ### Codex 里的拓展页
@@ -345,7 +355,7 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 不离开 Codex 也能浏览、安装和启停拓展。
 
 <p align="center">
-  <img src="docs/images/readme-preview/extension-market.png" alt="Codex 里的拓展页：浏览和安装拓展" width="100%">
+  <img src="docs/images/readme-preview/codex-extensions.webp" alt="Codex 里的拓展页：左栏是已安装的拓展，右边是精选、社区、本地、我发布的、dsh 插件几个分栏" width="100%">
 </p>
 
 ### 认真工作，也可以有点趣味
@@ -362,8 +372,8 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 <details>
   <summary><strong>纯 API Key 如何开启原生 Fast</strong></summary>
 
-1. 打开「Codex → 内置拓展」，开启顶部的「启用内置拓展」总开关与「原生 Fast 强制解锁」（默认关闭）。
-2. 直连模式在「Codex → 连接与供应商」中为该模型设置「Fast（priority）支持」并保存；网关模式下模型组里每个成员都支持 Fast 时，选这个组也能开 Fast。
+1. 在 Codex 里打开「Codex++」设置页，确认「常规」里的「启用内置拓展」开着，再到「模型与插件」打开「原生 Fast 强制解锁」（默认关闭）。
+2. 直连时在「Codex → 连接与供应商」的供应商详情里为该模型设置「Fast（priority）支持」并保存；聚合时模型组里每个成员都支持 Fast，选这个组也能开 Fast。
 3. 从 Codex++ 重启 Codex，在模型菜单中选择 **⚡ Fast**。
 
 实际可用性与计费由供应商决定。
@@ -377,15 +387,18 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 | 你的设备 | 安装包 |
 | --- | --- |
 | Windows · x64 | `CodexPlusPlus-*-windows-x64-setup.exe` |
+| Windows · ARM64（2.9.1 起） | `CodexPlusPlus-*-windows-arm64-setup.exe` |
 | macOS · Apple Silicon / Intel | `CodexPlusPlus-*-macos-universal.dmg` |
 
-**2. 添加供应商**：打开「网关 → 供应商池」，点「添加供应商」：填 API Key、登录 ChatGPT / GitHub Copilot / SuperGrok 订阅，或从直连模式、OpenCode 一次导入多家。添加时自动拉模型列表并填好价格。
+首次打开会有两步的启动引导：连接模型、启动 Codex。也可以跳过，按下面自己来。
 
-**3. 接入 Agent**：打开「网关 → Agent 接入」，给要用的 Agent 打开开关并选默认模型。Claude Code、Grok 接入后照常在终端里用。
+**2. 添加供应商**：打开「Codex → 连接与供应商」，点右上角「添加供应商」：填 API Key、登录 ChatGPT / GitHub Copilot / SuperGrok 订阅；或点「从第三方导入」一次导入多家。添加时自动拉模型列表并填好价格。
+
+**3. 选连接方式**：页面顶部选「聚合」或「直连」。聚合时打开要用的几家、在顶部选默认模型（可以选模型组）；直连时在要用的那家点「使用」。Claude Code 在它自己的「供应商」页同样操作；Grok 等其他 Agent 在「本地服务 → 服务与接入」接入，接入后照常在终端里用。
 
 **4. 启动 Codex**：点 Codex 页右上角的「启动 Codex」或侧栏 Codex 行的启动按钮。依赖注入的设置（大部分增强、Fast 解锁等）改完后需从 Codex++ 重启 Codex 才生效。
 
-不想用网关？直连模式照旧：在「Codex → 连接与供应商」顶部把「连接方式」切到「直连」，选供应商后启动即可。完整步骤见官网 [使用教程](https://codexpp.cc/guide.html)。
+完整步骤见官网 [使用教程](https://codexpp.cc/guide.html)。
 
 <details>
   <summary><strong>从旧版 macOS 升级</strong></summary>
@@ -394,29 +407,29 @@ Codex++ 是 AI 编程 Agent 的统一管理应用，构建于万物皆拓展的�
 
 </details>
 
-## 网关与直连
+## 聚合与直连
 
-| 模式 | 适用场景 |
+| 连接方式 | 适用场景 |
 | --- | --- |
-| **网关（推荐）** | Codex、Claude Code、Grok 共用一份供应商池；按模型名路由、多 Key 轮换、出错换下一家。只在 Codex++ 运行时可用。 |
+| **聚合（推荐）** | 经本地服务：Codex、Claude Code、Claude Desktop、Grok 等共用一份供应商列表；按模型名路由、多账号 / 多 Key 轮换、出错换下一家。只在 Codex++ 运行时可用。 |
 | **直连 · 官方登录** | 使用 ChatGPT / Codex 官方账号。 |
 | **直连 · 官方登录 + API** | 保留官方登录与插件入口，模型请求走兼容 API（不消耗官方额度）。 |
 | **直连 · 纯 API** | 自定义 Base URL / Key，无需官方账号。 |
-| **直连 · 聚合供应商** | **故障转移**：多个供应商之间失败切换与轮转。**模型聚合**：带 `cpx-供应商ID/模型名` 前缀的模型固定发往对应成员。 |
+| **直连 · 故障转移 / 模型聚合** | **故障转移**：多个供应商之间失败切换与轮转。**模型聚合**：带 `cpx-供应商ID/模型名` 前缀的模型固定发往对应成员。 |
 
-Codex 用哪种，在「Codex → 连接与供应商」顶部的「连接方式」里一键切换；直连供应商也能一键加进网关的供应商池。
+Codex 用哪种，在「Codex → 连接与供应商」顶部一键切换；聚合时点某家「使用」会先断开本地服务再切过去。Claude Code 同样分聚合 / 直连，Claude Desktop 始终经本地服务。「Codex 登录身份」单独选：ChatGPT 账号、虚拟账号或不登录。
 
-原生 Responses 上游可经普通代理或网关使用 WebSocket `response.create`，支持多轮、工具续接和命名流。客户端需启用 `supports_websockets`，上游也需支持 WS；HTTP-only 兼容路由继续使用 HTTP。[配置、能力边界与恢复方式](docs/specs/2026-11-14-responses-websocket.md)。
+原生 Responses 上游可经普通代理或本地服务使用 WebSocket `response.create`，支持多轮、工具续接和命名流。客户端需启用 `supports_websockets`，上游也需支持 WS；HTTP-only 兼容路由继续使用 HTTP。[配置、能力边界与恢复方式](docs/specs/2026-11-14-responses-websocket.md)。
 
-网关里的模型名有三种写法：
+本地服务里的模型名有三种写法：
 
 | 写法 | 发往 |
 | --- | --- |
-| `deepseek-v4-pro` | 池里提供这个模型的供应商；多家都有时自动成组，出错按顺序换下一家 |
+| `deepseek-v4-pro` | 打开的供应商里提供这个模型的那几家；多家都有时自动成组，出错按顺序换下一家 |
 | `deepseek/deepseek-v4-pro` | 只发给这一家 |
 | `group/coding` | 自建的模型组，按组的路由方式选成员 |
 
-上下文窗口按模型设置：网关在供应商详情里按模型填（可按公开资料一键填），路由时请求比某家窗口还长，这家排到最后再试；直连模式在模型列表里加窗口后缀：
+上下文窗口按模型设置：聚合时在供应商详情里按模型填（可按公开资料一键填），路由时请求比某家窗口还长，这家排到最后再试；直连时在模型列表里加窗口后缀：
 
 ```text
 deepseek-v4-pro[1M]
@@ -438,35 +451,35 @@ API Key 只保存在本机，界面里只显示打码后的样子；提交反馈
 <details>
   <summary><strong>启动后，为什么没有 Codex++ 菜单？</strong></summary>
 
-增强脚本只挂载到从 **Codex++** 启动的官方应用上。自己从程序坞或开始菜单打开的 Codex，侧栏 Codex 行会提示「未挂载」，这时它的按钮变成「重启并挂载」，点一下即可。仍然没有时，到「设置 → Codex」（含安装维护）和「设置 → 日志与诊断」检查应用路径、启动状态和诊断日志。macOS 上也可以在「设置 → Codex」里打开「自动接管官方 App」，自己双击启动官方 App 时由 Codex++ 接管。
+增强脚本只挂载到从 **Codex++** 启动的官方应用上。自己从程序坞或开始菜单打开的 Codex，侧栏 Codex 行会提示「未挂载」，这时它的按钮变成「重启并挂载」，点一下即可。仍然没有时，到「设置 → Codex」（含安装维护）和「设置 → 日志与诊断」检查应用路径、启动状态和诊断日志。也可以在首页打开「自动接管 Codex」，自己双击启动官方 App 时由 Codex++ 接管。
 
 </details>
 
 <details>
   <summary><strong>切换供应商后，请求为什么失败？</strong></summary>
 
-网关模式先在供应商池详情里点「测试」：选模型（和 Key）发一条短请求，会显示状态码、首字耗时和上游错误原文；「用量 → 请求」里失败的请求也会直接显示原因。直连模式在供应商详情中运行模型测试或 Provider Doctor，确认协议、Base URL、Key 与模型匹配；纯 API 和官方登录 + API 使用不同的认证位置，不要手工复制两种模式的 `auth.json`。
+聚合时在供应商那一行的「⋯」菜单里点「测试」：选模型（和 Key）发一条短请求，会显示状态码、首字耗时和上游错误原文；「用量 → 请求」里失败的请求也会直接显示原因。直连时在供应商详情中运行模型测试或 Provider Doctor，确认协议、Base URL、Key 与模型匹配；纯 API 和官方登录 + API 使用不同的认证位置，不要手工复制两种模式的 `auth.json`。
 
 </details>
 
 <details>
   <summary><strong>退出 Codex++ 后，Agent 为什么连不上？</strong></summary>
 
-接入网关的 Agent 一直指着本机网关，网关只在 Codex++ 运行时可用，再打开 Codex++ 就恢复。想在退出后用回直连，可在「设置 → 网关」里打开「退出 Codex++ 时恢复直连」（默认关闭）；安装更新前总会先切回直连。
+聚合时 Agent 一直指着本机的本地服务，它只在 Codex++ 运行时可用，再打开 Codex++ 就恢复。想在退出后用回直连，可在「本地服务 → 服务与接入」里打开「退出 Codex++ 时恢复直连」；安装更新前总会先切回直连。
 
 </details>
 
 <details>
   <summary><strong>Computer Use 接入后，客户端里为什么没有工具？</strong></summary>
 
-接入后需要重启对应客户端才会加载工具；Claude Desktop 退出时会重写自己的配置，建议先完全退出再接入。仍然没有时，在「Computer Use」页的「高级」卡里核对客户端实际读取的配置目录，必要时登记自定义路径；并确认已在系统设置里给 ChatGPT 授予辅助功能与屏幕录制权限。
+接入后需要重启对应客户端才会加载工具；Claude Desktop 退出时会重写自己的配置，建议先完全退出再接入。仍然没有时，在「设置 → Computer Use」图下方的「配置路径与自定义目录」里核对客户端实际读取的配置目录，必要时登记自定义路径；并确认已在系统设置里给 ChatGPT 授予辅助功能与屏幕录制权限。
 
 </details>
 
 <details>
   <summary><strong>增强功能可以关闭吗？官方应用更新后还能用吗？</strong></summary>
 
-可以分别关闭，也可以关闭增强总开关。Codex++ 依赖官方桌面应用的页面结构、CDP 和本地数据格式；官方应用更新后，部分功能可能需要跟随适配。修改供应商配置或会话数据前，请保留备份。
+可以分别关闭，也可以关闭「启用内置拓展」总开关。Codex++ 依赖官方桌面应用的页面结构、CDP 和本地数据格式；官方应用更新后，部分功能可能需要跟随适配。修改供应商配置或会话数据前，请保留备份。
 
 </details>
 

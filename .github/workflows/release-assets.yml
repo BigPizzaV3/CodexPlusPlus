@@ -99,9 +99,22 @@ jobs:
           esac
 
   windows-installer:
+    name: Windows installer (${{ matrix.windows_arch }})
     needs: prepare
     if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
+    # arm64 不参与发布门槛（同 Linux .deb）：失败只少 arm64 附件，x64 / macOS 照常发布，事后补跑。
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            windows_arch: x64
+            optional: false
+          - runner: windows-11-arm
+            windows_arch: arm64
+            optional: true
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -157,6 +170,14 @@ jobs:
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
 
+      # 和 pr-build.yml 一样：缓存恢复出的 sherpa-onnx 预编译目录可能缺静态库（11-22 起链接时报找不到
+      # sherpa-onnx-c-api），缺了就挪走让构建脚本重新下载，并清掉这个包的 build-script 输出。
+      - name: Check sherpa-onnx prebuilt cache
+        shell: bash
+        run: |
+          node scripts/prepare-sherpa-cache.mjs
+          cargo clean --release --package sherpa-onnx-sys
+
       - name: Build application
         run: cargo build --release
 
@@ -172,7 +193,7 @@ jobs:
         run: |
           $version = ($env:RELEASE_TAG).TrimStart("v", "V")
           New-Item -ItemType Directory -Force dist/windows | Out-Null
-          Compress-Archive -Path dist/windows/app/* -DestinationPath "dist/windows/CodexPlusPlus-$version-windows-x64.zip" -Force
+          Compress-Archive -Path dist/windows/app/* -DestinationPath "dist/windows/CodexPlusPlus-$version-windows-${{ matrix.windows_arch }}.zip" -Force
 
       - name: Build Windows installer
         shell: pwsh
@@ -195,7 +216,7 @@ jobs:
           try {
             # 版本资源只收 X.X.X.X：去掉预发布后缀；手动在分支上跑（版本是分支名）时用 0.0.0.0。
             $viVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { "0.0.0.0" }
-            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" CodexPlusPlus.nsi
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" "/DARCH=${{ matrix.windows_arch }}" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
           } finally {
             Pop-Location
@@ -252,6 +273,14 @@ jobs:
       - name: Build frontend
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
+
+      # 和 pr-build.yml 一样：缓存恢复出的 sherpa-onnx 预编译目录可能缺静态库（11-22 起链接时报找不到
+      # sherpa-onnx-c-api），缺了就挪走让构建脚本重新下载，并清掉这个包的 build-script 输出。
+      - name: Check sherpa-onnx prebuilt cache
+        shell: bash
+        run: |
+          node scripts/prepare-sherpa-cache.mjs
+          cargo clean --release --package sherpa-onnx-sys --target ${{ matrix.target }}
 
       - name: Build ${{ matrix.target }}
         run: cargo build --release --target ${{ matrix.target }}
@@ -597,9 +626,13 @@ jobs:
             }
           }
           const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
+          // arm64 附件排在最后：2.9.0 之前的客户端不分架构，取第一个 setup.exe；
+          // 按字母序 arm64 会排在 x64 前面，x64 机器会拿到 arm64 安装包（安装包的架构检查会直接中止），自动更新就失败了。
+          const isArm64 = (name) => /-arm64[-.]/i.test(name);
           const assets = (release.assets || [])
             .map((asset) => asset.name)
             .filter((name) => name !== "latest.json")
+            .sort((a, b) => Number(isArm64(a)) - Number(isArm64(b)))
             .map((name) => ({ name, url: `${baseUrl}/${encodeURIComponent(name)}` }));
           const payload = {
             version: `v${version}`,

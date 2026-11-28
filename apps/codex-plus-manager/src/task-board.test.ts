@@ -129,7 +129,7 @@ test("Codex 左侧图标栏的「任务面板」入口：登记进所有写死�
   assert.match(renderer, /codexPlusRailTasksId = "codex-plus-rail-tasks"/);
   assert.match(renderer, /codexPlusTaskBoardTab = "task-board"/);
   assert.match(renderer, /\{ id: codexPlusRailTasksId, label: "任务面板", iconMarkup: icons\.tasks, withStatus: false, onActivate: openCodexPlusTaskBoardPage \}/);
-  assert.match(renderer, /\[codexPlusRailTasksId, "tasks"\],/, "选中态");
+  assert.match(renderer, /\[codexPlusRailTasksId, \["tasks"\]\],/, "选中态");
   assert.match(renderer, /if \(tab === codexPlusTaskBoardTab\) return "tasks";/);
   // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。
   assert.equal(renderer.split("#${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;").length - 1, 2);

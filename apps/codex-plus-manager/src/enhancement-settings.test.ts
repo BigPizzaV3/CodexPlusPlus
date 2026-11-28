@@ -107,7 +107,7 @@ test("retired enhancements have no settings, navigation or command references in
 
 const ENHANCEMENT_COMPONENTS = ["EnhanceScreen", "EnhancementSettingControl"];
 // 管理器里只留增强总开关、独立模式补丁（应急）和会话维护页的两个开关；其余都在 Codex 的 Codex++ 设置页里。
-const MANAGER_KEYS = ["enhancementsEnabled", "sessionIndexRepairEnabled", "providerSyncEnabled", "codexAppStandaloneQuotaUnlock"];
+const MANAGER_KEYS = ["enhancementsEnabled", "sessionIndexRepairEnabled", "providerSyncEnabled", "threadModelFollowSwitchEnabled", "keepProjectsWithoutAccount", "codexAppStandaloneQuotaUnlock"];
 
 const servicePage = await readFile(new URL("../../../assets/inject/renderer-inject/46-service-settings.js", import.meta.url), "utf8");
 const catalogPage = await readFile(new URL("../../../assets/inject/renderer-inject/40-backend-settings.js", import.meta.url), "utf8");
@@ -138,7 +138,7 @@ test("unified enhancements use the master switch and Chinese suggestion labels",
   for (const item of enhancementCatalog.items) {
     const standalone = enhancementGroup(item.group).standalone === true;
     // 启动前的会话维护与拓展权限不是内置拓展，总开关管不着。
-    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled", "usageHistoryEnabled"].includes(item.key);
+    const unmanaged = ["enhancementsEnabled", "providerSyncEnabled", "sessionIndexRepairEnabled", "threadModelFollowSwitchEnabled", "keepProjectsWithoutAccount", "usageHistoryEnabled"].includes(item.key);
     assert.equal(item.masterGated !== false, !standalone && !unmanaged, `${item.key} master gating`);
   }
 
@@ -214,6 +214,8 @@ test("the manager keeps only the master switch, standalone patches and session m
       "enhancementsEnabled",
       "providerSyncEnabled",
       "sessionIndexRepairEnabled",
+      "threadModelFollowSwitchEnabled",
+      "keepProjectsWithoutAccount",
     ];
     const expected = enhancementCatalog.items
       .filter((item) => isEnhancementItemVisible(item, "manager", platform))

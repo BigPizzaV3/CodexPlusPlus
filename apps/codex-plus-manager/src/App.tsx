@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
-import { ArrowRight, Languages, Moon, Rocket, Sparkles, Sun, AppWindow, X } from "lucide-react";
+import { Languages, Moon, Rocket, Sun, AppWindow } from "lucide-react";
 import { setSponsorAds } from "./sponsor-store";
 import { keepUserScriptRuntime, managerExtensionPages, managerPageOverrideConflicts, managerPageOverrides, type ManagerExtensionPage } from "./extension-manager-pages";
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type SetStateAction } from "react";
@@ -11,10 +11,11 @@ import { mergeRotatedAuthContents, rebaseSettingsEdits } from "./settings-rebase
 import { contextEntriesByKind, dedupeContextEntryList, type CodexContextEntries, type CodexContextEntry, type ContextKind } from "./context-config-text";
 import { MAIN_WINDOW_READY_EVENT, parseTrayRequest, TRAY_REQUEST_EVENT, TRAY_RESULT_EVENT, type TrayRequest, type TrayResult } from "./tray-panel-model";
 import { AppDialogHost, appConfirm } from "./app-dialog";
-import { publishGatewayPayload } from "./gateway-store";
+import { GatewayNavContext, publishGatewayPayload } from "./gateway-store";
 import { CommandPalette, type PaletteCommand } from "./CommandPalette";
 import { SessionsView, sessionDeleteSucceeded } from "./AgentSessions";
-import { draftFromBinding, bindingFromDraft, validateDraft, type GatewayPayload, type GatewayResult } from "./gateway-model";
+import { draftFromBinding, bindingFromDraft, maskAccountName, validateDraft, type GatewayPayload, type GatewayResult } from "./gateway-model";
+import type { NativeAuthResult } from "./native-auth-model";
 import { SessionAgentTabs, type SessionTab } from "./SessionAgentTabs";
 import { UsageTabs, onOpenRequestLog, type RequestLogFocus } from "./UsageTabs";
 import { LocalServiceTabs } from "./LocalServiceTabs";
@@ -47,7 +48,7 @@ import { preferredProviderSyncTarget } from "./provider-sync-target";
 import { resolveLaunchStatus, launchCompletionNotice } from "./launch-status";
 import type { DreamSkinCommunityResult, DreamSkinRuntimeResult } from "./dream-skin";
 import { subscribeLanguage, getLanguage, t, tf, toggleLanguage } from "@/i18n";
-import { relayProfileSwitchValidation, isAggregateRelayProfile, activeRelayProfile, configureRelayProfileEditing, syncLegacyRelayFields } from "./relay-profile-editing";
+import { relayProfileSwitchValidation, isAggregateRelayProfile, activeRelayProfile, configureRelayProfileEditing, createRelayProfile, syncLegacyRelayFields } from "./relay-profile-editing";
 import {
   applyResolvedTheme,
   loadThemePreference,
@@ -114,6 +115,7 @@ import type {
   WeixinQrResult,
 } from "./app-types";
 import {
+  CODEX_GATEWAY_RELAY_ID,
   claudeLocalizationMemo,
   claudeLocalMemo,
   contextEntriesFromSettings,
@@ -131,6 +133,7 @@ import {
   agentHomeRoute,
   agentRoutes,
   customizeRoutes,
+  expandSidebarTools,
   gatewayNavigationRoutes,
   gatewayRouteByTab,
   gatewayTabByRoute,
@@ -470,6 +473,8 @@ export function App() {
   /** 断开本地服务成功后要切到的直连供应商：经本地服务时在列表里点了某个直连供应商的「使用」。 */
   const legacyDisconnectThen = useRef<string | null>(null);
   const [addDirectProviderRequested, setAddDirectProviderRequested] = useState(false);
+  /** 从 Claude「供应商」点「在 Codex 里编辑」跳过来时，打开对应的直连供应商编辑页。 */
+  const [editCodexRelayId, setEditCodexRelayId] = useState<string | null>(null);
   // 外部改设置时要拿「上次读到的设置」与当前编辑比对，监听回调里读这个 ref 拿最新值。
   const settingsRef = useRef<SettingsResult | null>(null);
   settingsRef.current = settings;
@@ -559,8 +564,6 @@ export function App() {
     message: t("尚未运行安装包更新。"),
   });
   const [ads, setAds] = useState<AdsResult | null>(null);
-  // 共享供应商右下角「正在找合适的供应商？」的悬浮提示：点 × 关掉，本次运行内不再出现。
-  const [sponsorHintClosed, setSponsorHintClosed] = useState(false);
   const [scriptMarket, setScriptMarket] = useState<ScriptMarketResult | null>(null);
   const [launchForm, setLaunchForm] = useState({
     appPath: "",
@@ -584,8 +587,6 @@ export function App() {
   // 同时开着时才不会各说各话。
   const [toolEntries, setToolEntries] = useState<ToolEntry[]>([]);
   const [activeTool, setActiveTool] = useState<ToolId>("codex");
-  /** 万物皆拓展页里选的宿主（Codex / Claude）。和侧栏当前的 Agent 互不联动：切宿主不换侧栏的 Agent，点侧栏的 Agent 也不改这里。 */
-  const [extensionHost, setExtensionHost] = useState<ExtensionHost>("codex");
   useEffect(() => {
     if (!globalNavigationRoutes.includes(route)) lastAgentRoute.set(activeTool, route);
   }, [route, activeTool]);
@@ -678,7 +679,7 @@ export function App() {
   const refreshTools = async (silent = true) => {
     const result = await run(() => call<ToolsResult>("list_tools"));
     if (result) {
-      setToolEntries((result.tools ?? []).filter((tool) => !hiddenSidebarTools.has(tool.id)));
+      setToolEntries(expandSidebarTools((result.tools ?? []).filter((tool) => !hiddenSidebarTools.has(tool.id))));
       setActiveTool(visibleActiveTool(result.activeTool));
       if (!silent) showResultNotice(t("工具列表"), result, { silentSuccess: true });
     }
@@ -690,9 +691,9 @@ export function App() {
   /// 传了 `destination` 就在切换成功后直接落到那一页（侧栏点 Agent 或它的子页面时用）。
   const switchTool = async (toolId: ToolId, destination?: Route) => {
     if (toolId === activeTool) {
-      if (destination) await navigate(destination);
+      if (destination) await navigate(destination, { fromSwitch: true });
       // 通用页面占据整个右侧，点击当前 Agent 也要能回到它的工作区。
-      else if (globalNavigationRoutes.includes(route)) await navigate(agentEntryRoute(toolId));
+      else if (globalNavigationRoutes.includes(route)) await navigate(agentEntryRoute(toolId), { fromSwitch: true });
       return;
     }
     const target = toolEntries.find((tool) => tool.id === toolId);
@@ -714,8 +715,8 @@ export function App() {
       setSettings(result);
       setSettingsForm(normalizeSettings(result.settings));
       // 先保存 Agent 选择，再离开通用页；失败时保留原页面与布局。
-      if (destination) await navigate(destination);
-      else if (globalNavigationRoutes.includes(route)) await navigate(agentEntryRoute(toolId));
+      if (destination) await navigate(destination, { fromSwitch: true });
+      else if (globalNavigationRoutes.includes(route)) await navigate(agentEntryRoute(toolId), { fromSwitch: true });
     } else {
       // 写盘失败就回滚 UI，别让侧栏显示一个没保存的状态。
       setActiveTool(activeTool);
@@ -1299,12 +1300,32 @@ export function App() {
     return () => { cancelled = true; };
   }, [autoTakeoverOn, route]);
 
-  const navigate = async (target: RouteTarget) => {
+  /** `fromSwitch`：switchTool 切完 Agent 后落页时传；那时闭包里的 activeTool 还是旧的，不能再按它判断归属。 */
+  const navigate = async (target: RouteTarget, { fromSwitch = false }: { fromSwitch?: boolean } = {}) => {
     // 旧 id 在这里换成现在的页面：关于 → 设置并滚到版本与更新；旧版代理设置 → 「连接与供应商」并展开「高级」。
     if (target === "about") setSettingsFocus("app-settings-update");
     setRelayAdvancedOpen(target === "relayEnvironment");
     // 旧的「概览」（托盘、拓展深链还可能传进来）去掉了：回到当前 Agent 上次停的页面或落脚页。
+    // 旧的「共享供应商」页也去掉了：供应商统一在各 Agent 自己的供应商页管理，旧深链按当前 Agent 导向对应页。
+    if (target === "gatewayProviders") {
+      if (activeTool === "claude-desktop") {
+        setRoute("claudeDesktopProviders");
+        await loadRouteData("claudeDesktopProviders");
+      } else if (activeTool === "claude") {
+        setRoute("claudeProviders");
+        await loadRouteData("claudeProviders");
+      } else {
+        await switchTool("codex", "relay");
+      }
+      return;
+    }
     const next = target === "overview" ? agentEntryRoute(activeTool) : resolveRouteAlias<Route>(target);
+    // 万物皆拓展按 Agent 拆开了：从首页、引导、Codex 插件页跳过去时切到它所属的 Agent，侧栏和页签才对得上。
+    const extensionsOwner = next === "userScripts" ? "codex" : next === "claudeExtensions" ? "claude-desktop" : null;
+    if (extensionsOwner && !fromSwitch && activeTool !== extensionsOwner) {
+      await switchTool(extensionsOwner, next);
+      return;
+    }
     setRoute(next);
     await loadRouteData(next);
   };
@@ -1312,11 +1333,12 @@ export function App() {
   /** 进页面时读它要的数据：互不依赖的一起发出，页面用不到的不读。 */
   const loadRouteData = async (next: Route) => {
     const loads: Promise<unknown>[] = [];
-    const needsSettings: Route[] = ["relay", "multiLaunch", "sessions", "context", "weixin", "settings", "agentSettings", "enhance", "userScripts", "pluginMarket"];
+    const needsSettings: Route[] = ["relay", "multiLaunch", "sessions", "context", "weixin", "settings", "agentSettings", "enhance", "userScripts", "claudeExtensions", "pluginMarket", "gateway", "gatewaySettings"];
     if (needsSettings.includes(next)) loads.push(refreshSettings(true));
     // 回到会话页时停在原来那一页。
     const sessionsOffset = localSessionsRef.current?.offset ?? 0;
     switch (next) {
+      case "gateway":
       case "gatewaySettings":
       case "settings":
         loads.push(refreshOverview(true));
@@ -1343,6 +1365,7 @@ export function App() {
         loads.push(refreshWeixinStatus(true), refreshLocalSessions(true));
         break;
       case "userScripts":
+      case "claudeExtensions":
         loads.push((async () => {
           // 市场和本地清单一起读；清单是最新的本地状态，两个都回来后以它为准。
           const [, inventory] = await Promise.all([refreshScriptMarket(true), refreshUserScriptInventory()]);
@@ -3207,7 +3230,7 @@ export function App() {
       const issue = validateDraft(draft, payload);
       if (issue) {
         await showNotice(t("切换到本地服务"), t(issue), "failed");
-        void navigate(issue.includes("共享供应商是空的") ? "gatewayProviders" : "gateway");
+        void navigate(issue.includes("共享供应商是空的") ? "relay" : "gateway");
         return;
       }
       const result = await invoke<GatewayResult>("save_gateway_binding", { agent: "codex", binding: { ...bindingFromDraft(draft, previous), enabled: true }, reconnect: true });
@@ -3233,6 +3256,120 @@ export function App() {
       await switchRelayProfile(syncLegacyRelayFields({ ...current, activeRelayId: target }), current.activeRelayId);
     } catch (error) {
       await showNotice(t("切换供应商"), stringifyError(error), "failed");
+    }
+  };
+  /** 聚合模式下点了直连列表里某家的「使用」：自动完成安全断开并切换到所选直连供应商，不弹断开确认框。 */
+  const switchDirectFromGateway = async (target: string) => {
+    if (codexConnecting || relaySwitching) return;
+    setCodexConnecting(true);
+    try {
+      const previewRes = await invoke<{ status: string; message: string; preview?: { previewToken?: string; canDisconnect?: boolean; fullSwitch?: { relayId: string } | null } }>(
+        "preview_gateway_disconnect",
+        { agent: "codex" },
+      );
+      const preview = previewRes.preview;
+      const token = preview?.previewToken?.trim() ?? "";
+      if (!isSuccessStatus(previewRes.status as Status) || !preview || !token || (!preview.canDisconnect && !preview.fullSwitch)) {
+        // 极端情况无法自动断开时，退回预览对话框展示原因。
+        legacyDisconnectThen.current = target;
+        setLegacyDisconnectOpen(true);
+        return;
+      }
+      const command = preview.canDisconnect ? "disable_gateway_binding" : "disable_gateway_binding_full_switch";
+      const disconnectRes = await invoke<GatewayResult>(command, { agent: "codex", previewToken: token });
+      publishGatewayPayload(disconnectRes);
+      if (!isSuccessStatus(disconnectRes.status as Status)) {
+        await showNotice(t("切换供应商"), disconnectRes.message, "failed");
+        return;
+      }
+      await refreshSettings(true);
+      const fresh = await invoke<SettingsResult>("load_settings");
+      if (!isSuccessStatus(fresh.status)) {
+        await showNotice(t("切换供应商"), disconnectRes.message, "ok");
+        return;
+      }
+      const current = normalizeSettings(fresh.settings);
+      if (current.activeRelayId === target) {
+        const chosen = current.relayProfiles.find((profile) => profile.id === target);
+        await showNotice(t("切换供应商"), chosen?.name ? tf("已切换到「{0}」", [chosen.name]) : disconnectRes.message, "ok");
+        return;
+      }
+      if (current.relayProfiles.some((profile) => profile.id === target)) {
+        await switchRelayProfile(syncLegacyRelayFields({ ...current, activeRelayId: target }), current.activeRelayId);
+      }
+    } catch (error) {
+      await showNotice(t("切换供应商"), stringifyError(error), "failed");
+    } finally {
+      setCodexConnecting(false);
+    }
+  };
+  /** 直连模式下点击某个 ChatGPT 账号的「使用」：必要时先自动断开本地服务，再切到官方直连并写入该账号登录态。 */
+  const switchChatgptDirect = async (accountRef: string, accountName: string) => {
+    if (codexConnecting || relaySwitching) return;
+    setCodexConnecting(true);
+    try {
+      const normalizedBefore = normalizeSettings(settingsForm);
+      if (normalizedBefore.activeRelayId === CODEX_GATEWAY_RELAY_ID) {
+        const previewRes = await invoke<{ status: string; message: string; preview?: { previewToken?: string; canDisconnect?: boolean; fullSwitch?: { relayId: string } | null } }>(
+          "preview_gateway_disconnect",
+          { agent: "codex" },
+        );
+        const preview = previewRes.preview;
+        const token = preview?.previewToken?.trim() ?? "";
+        if (!isSuccessStatus(previewRes.status as Status) || !preview || !token || (!preview.canDisconnect && !preview.fullSwitch)) {
+          setLegacyDisconnectOpen(true);
+          return;
+        }
+        const command = preview.canDisconnect ? "disable_gateway_binding" : "disable_gateway_binding_full_switch";
+        const disconnectRes = await invoke<GatewayResult>(command, { agent: "codex", previewToken: token });
+        publishGatewayPayload(disconnectRes);
+        if (!isSuccessStatus(disconnectRes.status as Status)) {
+          await showNotice(t("切换供应商"), disconnectRes.message, "failed");
+          return;
+        }
+      }
+      const fresh = await invoke<SettingsResult>("load_settings");
+      if (!isSuccessStatus(fresh.status)) {
+        await showNotice(t("切换供应商"), fresh.message, "failed");
+        return;
+      }
+      const current = normalizeSettings(fresh.settings);
+      let official = current.relayProfiles.find((profile) => profile.relayMode === "official" && !profile.officialMixApiKey) ?? null;
+      let nextProfiles = current.relayProfiles;
+      let createdOfficial = false;
+      if (!official) {
+        official = {
+          ...createRelayProfile(current),
+          name: "OpenAI Official",
+          relayMode: "official",
+          officialMixApiKey: false,
+          protocol: "responses",
+          baseUrl: "",
+          upstreamBaseUrl: "",
+          apiKey: "",
+          configContents: "",
+          authContents: "",
+        };
+        nextProfiles = [...current.relayProfiles, official];
+        createdOfficial = true;
+      }
+      if (createdOfficial || current.activeRelayId !== official.id) {
+        await switchRelayProfile(
+          syncLegacyRelayFields({ ...current, relayProfiles: nextProfiles, activeRelayId: official.id }),
+          current.activeRelayId,
+        );
+      }
+      const identityRes = await invoke<NativeAuthResult>("set_codex_login_identity", { kind: "account", accountRef });
+      if (identityRes.status !== "ok") {
+        await showNotice(t("切换供应商"), identityRes.message, "failed");
+        return;
+      }
+      await refreshSettings(true);
+      await showNotice(t("切换供应商"), tf("已切换到「{0}」（官方直连），重启 Codex 后生效。", [maskAccountName(accountName)]), "ok");
+    } catch (error) {
+      await showNotice(t("切换供应商"), stringifyError(error), "failed");
+    } finally {
+      setCodexConnecting(false);
     }
   };
   // 「启动 / 重启 Codex」：Codex 页面的顶栏按钮和侧栏播放键共用一份状态，都走 actions.launch / actions.restart。
@@ -3313,8 +3450,8 @@ export function App() {
     onStart: () => void claudeLocalRunAction("launch"),
     onStop: () => void claudeLocalRunAction("stop"),
   };
-  // Codex 专属页面提供启动入口；共享的拓展管理页只在当前 Agent 为 Codex 时提供。
-  const onCodexPage = routeTool(route) === "codex" && (route !== "userScripts" || extensionHost === "codex");
+  // Codex 专属页面提供启动入口。
+  const onCodexPage = routeTool(route) === "codex";
   const activeToolName = toolEntries.find((entry) => entry.id === activeTool)?.name ?? t("当前 Agent");
   // MCP 页的条目：设置里的条目叠上 live config.toml 的启停状态。只在两者变化时重算，免得每次渲染都给 McpPage 一个新数组。
   const mcpPageEntries = useMemo(() => {
@@ -3329,7 +3466,7 @@ export function App() {
   // 停在不属于当前 Agent 的页面上：回到当前 Agent 的落脚页。
   useEffect(() => {
     const currentRoute = routes.find((candidate) => candidate.id === route);
-    if (currentRoute?.tools && currentRoute.id !== "userScripts" && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "relay");
+    if (currentRoute?.tools && !pageVisibleForTool(currentRoute, activeTool)) void navigate(agentHomeRoute[activeTool] ?? "relay");
     // navigate 每次渲染都是新函数，只在页面或 Agent 变化时检查。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route, activeTool]);
@@ -3339,15 +3476,16 @@ export function App() {
   const routeCommand = (routeId: Route, group: string, run: () => void, keywords = ""): PaletteCommand | null => {
     const item = routes.find((candidate) => candidate.id === routeId);
     if (!item) return null;
-    if (item.tools && routeId !== "userScripts" && !pageVisibleForTool(item, activeTool)) return null;
+    if (item.tools && !pageVisibleForTool(item, activeTool)) return null;
     const Icon = item.icon;
     return { id: `${group}:${routeId}`, group, label: item.label, keywords: `${routeId} ${keywords}`, icon: <Icon className="h-4 w-4" />, run };
   };
   const pushCommand = (command: PaletteCommand | null) => { if (command) paletteCommands.push(command); };
+  // 分组按顺序出标题：「全局管理」几项连在一起（首页打头），「本地服务」排在它后面，和侧栏顺序一致。
   pushCommand(routeCommand("home", t("全局管理"), () => void navigate("home"), "home ads 推荐 赞助"));
-  gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("本地服务"), () => void navigate(routeId), "gateway 网关 本地服务")));
   managementNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("全局管理"), () => void navigate(routeId))));
   pushCommand(routeCommand("requestLog", t("全局管理"), () => void navigate("requestLog"), "usage requests"));
+  gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("本地服务"), () => void navigate(routeId), "gateway 网关 本地服务")));
   for (const tool of toolEntries.filter((entry) => entry.switchable)) {
     agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
   }
@@ -3428,6 +3566,7 @@ export function App() {
         ) : null;
 
   return (
+    <GatewayNavContext.Provider value={{ openModelGroups: () => void navigate("gatewayRouting") }}>
     <OpenAgentConfig.Provider value={target => {
       if (target.agent === "codex") setRelayCommonOpen(true);
       else setConfigTarget(target);
@@ -3555,19 +3694,24 @@ export function App() {
             <RelayScreen
               addDirectProviderRequested={addDirectProviderRequested}
               onRequestedProviderOpened={() => setAddDirectProviderRequested(false)}
+              initialEditRelayId={editCodexRelayId}
+              onConsumedEditRelay={() => setEditCodexRelayId(null)}
               settings={settings}
               relayFiles={relayFiles}
               envConflicts={envConflicts}
               ccsProviders={ccsProviders}
               form={settingsForm}
               actions={actions}
-              onOpenGateway={() => void navigate("gatewayProviders")}
+              onOpenGateway={() => void navigate("gateway")}
+              onManageGroups={() => void navigate("gatewayRouting")}
               onConnectGateway={() => void connectCodexGateway()}
               sharedConnecting={codexConnecting}
               onDisconnectGateway={(then) => {
                 legacyDisconnectThen.current = then ?? null;
                 setLegacyDisconnectOpen(true);
               }}
+              onSwitchDirectFromGateway={(profileId) => void switchDirectFromGateway(profileId)}
+              onSwitchChatgptDirect={(accountRef, accountName) => void switchChatgptDirect(accountRef, accountName)}
               advancedOpen={relayAdvancedOpen}
               connection={(
                 <LegacyRelayGatewayHint
@@ -3576,7 +3720,7 @@ export function App() {
                   onConnect={() => void connectCodexGateway()}
                   onDisconnect={() => setLegacyDisconnectOpen(true)}
                   onManageAgents={() => void navigate("gateway")}
-                  onOpenGateway={() => void navigate("gatewayProviders")}
+                  onOpenGateway={() => void navigate("gateway")}
                 />
               )}
               advanced={(
@@ -3617,10 +3761,18 @@ export function App() {
             />
           ) : null}
           {route === "claudePatch" ? <ClaudeLocalizationScreen mode="patch" onNavigate={(next) => void navigate(next)} /> : null}
-          {/* Claude 的供应商：从「Desktop 增强」的页签里移出来，和 Codex 的「连接与供应商」一样单独一页。 */}
-          {route === "claudeProviders" ? (
+          {/* Claude Code 与 Claude Desktop 的独立供应商页：各自管自己的开关、模型组与默认模型。 */}
+          {route === "claudeProviders" || route === "claudeDesktopProviders" ? (
             <div className="claude-localization-page cx-page">
-              <ClaudeProviders notify={actions.showMessage} onManage={() => void navigate("gatewayProviders")} onManageGroups={() => void navigate("gatewayRouting")} />
+              <ClaudeProviders
+                agent={route === "claudeDesktopProviders" ? "claude-desktop" : "claude"}
+                notify={actions.showMessage}
+                onEditCodexProvider={(relayId) => {
+                  setEditCodexRelayId(relayId);
+                  void switchTool("codex", "relay");
+                }}
+                onManageGroups={() => void navigate("gatewayRouting")}
+              />
             </div>
           ) : null}
           {/* Codex 页签是完整的会话管理，其余页签是各 Agent 的会话列表。 */}
@@ -3705,7 +3857,8 @@ export function App() {
               actions={actions}
             />
           ) : null}
-          {route === "userScripts" ? <UserScriptsScreen host={extensionHost} onHostChange={setExtensionHost} settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude", "claude")} actions={actions} managerPages={extensionPages} managerPageConflicts={pageOverrideConflicts} /> : null}
+          {route === "userScripts" ? <UserScriptsScreen host="codex" settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude-desktop", "claude")} actions={actions} managerPages={extensionPages} managerPageConflicts={pageOverrideConflicts} /> : null}
+          {route === "claudeExtensions" ? <UserScriptsScreen host="claude" settings={settings} market={scriptMarket} onOpenRescue={() => void navigate("enhance")} onOpenPluginMarket={() => void switchTool("codex", "pluginMarket")} onOpenClaude={() => void switchTool("claude-desktop", "claude")} actions={actions} managerPages={extensionPages} managerPageConflicts={pageOverrideConflicts} /> : null}
           {route === "pluginMarket" ? (
             <PluginMarketScreen
               configEntries={pluginConfigEntries}
@@ -3748,6 +3901,7 @@ export function App() {
                 <Suspense fallback={null}>
                   <SharedServiceSettings
                     autoSave={<SettingsAutoSave dirty={settingsDirty} form={settingsForm} actions={actions} />}
+                    embedded
                     form={settingsForm}
                     onFormChange={setSettingsForm}
                     overview={overview}
@@ -3760,25 +3914,14 @@ export function App() {
                 if (addDirectProvider) setAddDirectProviderRequested(true);
                 void switchTool("codex", "relay");
               }}
+              onManageProviders={(agent) => {
+                if (agent === "claude-desktop") void switchTool("claude-desktop", "claudeDesktopProviders");
+                else if (agent === "claude") void switchTool("claude", "claudeProviders");
+                else void switchTool("codex", "relay");
+              }}
               onTabChange={(tab) => void navigate(gatewayRouteByTab[tab])}
               tab={gatewayTabByRoute[route]}
             />
-          ) : null}
-          {/* 共享供应商右下角的悬浮提示：在找供应商时顺手带去首页的赞助商推荐；首页没有赞助商时不显示。 */}
-          {route === "gatewayProviders" && !sponsorHintClosed && (ads?.ads?.length ?? 0) + (ads?.topAds?.length ?? 0) > 0 ? (
-            <div className="cx-float-hint">
-              <button className="cx-float-hint-main" onClick={() => void navigate("home")} type="button">
-                <Sparkles aria-hidden="true" />
-                <span className="cx-float-hint-copy">
-                  <strong>{t("正在找合适的供应商？")}</strong>
-                  <small>{t("去首页看看赞助商推荐")}</small>
-                </span>
-                <ArrowRight aria-hidden="true" />
-              </button>
-              <button aria-label={t("关闭")} className="cx-float-hint-close" onClick={() => setSponsorHintClosed(true)} title={t("关闭")} type="button">
-                <X aria-hidden="true" />
-              </button>
-            </div>
           ) : null}
           {route === "agentSettings" ? (
             // 设置与安装维护合在一页：左侧分类目录，右侧限宽列表。
@@ -3922,6 +4065,7 @@ export function App() {
       ) : null}
     </div>
     </OpenAgentConfig.Provider>
+    </GatewayNavContext.Provider>
   );
 }
 

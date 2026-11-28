@@ -183,6 +183,24 @@ test("heartbeat reports changed keys and relay events for settings changed outsi
   assert.deepEqual(events.map(([event]) => event), ["settings/loaded", "modelCatalog/changed"]);
 });
 
+test("backend heartbeat checks immediately, then at five-second intervals", () => {
+  const source = fragment("40-backend-settings.js");
+  const window = { __codexPlusBackendGeneration: 2 };
+  const intervals: Array<{ tick: () => void; delay: number }> = [];
+  let checks = 0;
+  const context = vm.createContext({ window, codexPlusBackendGeneration: 2,
+    setInterval: (tick: () => void, delay: number) => intervals.push({ tick, delay }),
+    checkBackendStatus: () => { checks++; },
+  });
+  vm.runInContext(source.slice(source.indexOf("  function scheduleBackendHeartbeat("),
+    source.indexOf("  function userScriptStatusLabel(")) + "\nscheduleBackendHeartbeat(); scheduleBackendHeartbeat();", context);
+  assert.equal(checks, 1);
+  assert.equal(intervals.length, 1);
+  assert.equal(intervals[0].delay, 5000);
+  intervals[0].tick();
+  assert.equal(checks, 2);
+});
+
 test("heartbeat forces a native model catalog refresh only when its fingerprint changes", async () => {
   const source = fragment("40-backend-settings.js");
   const refreshes: boolean[] = [];

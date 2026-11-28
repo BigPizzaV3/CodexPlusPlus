@@ -260,6 +260,43 @@ it("floats each rail entry's own sidebar card like the native sidebar peek while
   assert.equal(shown.length, 3, "with the sidebar open, hovering the rail floats nothing, like native");
 });
 
+it("re-measures an open page on scan once Codex has rebuilt the shell it was measured against", () => {
+  // 实测：外壳重建中途量到的全是 0，页面从窗口左上角铺满，盖住图标栏和标题栏，之后再没人重量。
+  const overlay = { id: "page" };
+  const shell = { rail: { id: "rail-1" }, backing: { id: "backing-1" }, main: { id: "main-1" } };
+  let open = true;
+  const document = {
+    querySelector: (selector: string) => {
+      if (selector === ".codex-plus-page-overlay") return open ? overlay : null;
+      if (selector === "nav[data-app-navigation-rail]") return shell.rail;
+      if (selector === "[data-app-shell-surface-backing]") return shell.backing;
+      if (selector === "main") return shell.main;
+      return null;
+    },
+  };
+  const window: Record<string, any> = { __codexPlusPageLayoutTargets: { ...shell } };
+  const positioned: unknown[] = [];
+  const refresh = new Function("document", "window", "positionCodexPlusPage", `
+    const codexPlusPageClass = "codex-plus-page-overlay";
+    const codexPlusRailSelector = "nav[data-app-navigation-rail]";
+    ${functionSource("refreshCodexPlusPagePosition")}
+    return refreshCodexPlusPagePosition;
+  `)(document, window, (node: unknown) => positioned.push(node));
+  refresh();
+  assert.deepEqual(positioned, [], "still measured against the live shell: nothing to do");
+  shell.rail = { id: "rail-2" };
+  refresh();
+  assert.deepEqual(positioned, [overlay], "the rail was replaced: measure again");
+  window.__codexPlusPageLayoutTargets = { ...shell };
+  shell.backing = { id: "backing-2" };
+  refresh();
+  assert.equal(positioned.length, 2, "the native panel was replaced: measure again");
+  open = false;
+  shell.main = { id: "main-2" };
+  refresh();
+  assert.equal(positioned.length, 2, "no page open: nothing to measure");
+});
+
 it("retargets the layout observer when the host replaces its main or rail", () => {
   const h = layoutHarness();
   h.attach(h.overlay);
@@ -339,8 +376,8 @@ it("cleans up the previous extension before opening another extension page", () 
   assert.equal(h.listeners.size, 0);
 });
 
-it("keeps only the current rail entry selected and removes inactive aria-current attributes", () => {
-  const buttons = Array.from({ length: 8 }, () => ({
+it("lights the Codex++ rail entry for its own page and the pages folded into it, the other entries for their own page", () => {
+  const buttons = Array.from({ length: 5 }, () => ({
     dataset: {} as Record<string, string>,
     attributes: new Map<string, string>(),
     setAttribute(name: string, value: string) { this.attributes.set(name, value); },
@@ -352,7 +389,8 @@ it("keeps only the current rail entry selected and removes inactive aria-current
       assert.equal(id, "sidebar", "retired plugin navigation must not be queried");
       return { querySelector: () => buttons[0] };
     },
-    querySelector: (selector: string) => buttons[ids.findIndex(id => selector === `#${id} > button`) + 1],
+    // 图标栏上的四个入口：buttons[1..4]。
+    querySelector: (selector: string) => buttons[["home", "tasks", "extensions", "sponsor"].findIndex(id => selector === `#${id} > button`) + 1],
   };
   const active = new Function("document", `
     const codexPlusSidebarNavId = "sidebar";
@@ -364,16 +402,20 @@ it("keeps only the current rail entry selected and removes inactive aria-current
     const codexPlusRailWeixinId = "weixin";
     const codexPlusRailTasksId = "tasks";
     function syncCodexPlusRailNativeSelection() {}
+    function codexPlusFoldedPages() { return ["provider", "remote", "weixin"].map((entry) => ({ entry })); }
     ${functionSource("setCodexPlusSidebarNavActive")}
     return setCodexPlusSidebarNavActive;
   `)(document);
-  for (const entry of ids) {
+  for (const entry of [...ids, "ext:third-party"]) {
     active(true, entry);
-    for (const [index, button] of buttons.entries()) {
-      const selected = (index === 0 ? "home" : ids[index - 1]) === entry;
-      assert.equal(button.attributes.get("aria-current"), selected ? "page" : undefined);
-      assert.equal(button.dataset.active, String(selected));
-    }
+    // buttons[0] 是旧外壳的侧栏入口（只认设置页）。
+    assert.equal(buttons[0].attributes.get("aria-current"), entry === "home" ? "page" : undefined);
+    const owner = ["home", "provider", "remote", "weixin"].includes(entry) ? "home" : entry;
+    ["home", "tasks", "extensions", "sponsor"].forEach((id, index) => {
+      const lit = id === owner && ids.includes(entry);
+      assert.equal(buttons[index + 1].attributes.get("aria-current"), lit ? "page" : undefined, `${entry} → ${id}`);
+      assert.equal(buttons[index + 1].dataset.active, String(lit));
+    });
   }
   active(false);
   for (const button of buttons) assert.equal(button.attributes.has("aria-current"), false);

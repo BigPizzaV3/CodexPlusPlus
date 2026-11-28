@@ -125,9 +125,9 @@ test("payload fields stay aligned with the Rust struct", () => {
   }
 });
 
-test("the row sits under the Claude row on home and in the full-mode launch settings", () => {
+test("the row sits in the Claude card footer on home and in the full-mode launch settings", () => {
   const home = appDeclarationSource("HomeScreen");
-  assert.match(home, /tool\.id === "claude"\s*\? \[row, <ClaudeAutoTakeoverRow key="claude-auto-takeover" loginReminder [\s\S]*?showIcon \/>\]/, "首页 Claude 行后面要紧跟自动接管行");
+  assert.match(home, /if \(tool\.id === "claude"\)[\s\S]*?<ClaudeAutoTakeoverRow[\s\S]*?key="claude-auto-takeover"[\s\S]*?loginReminder[\s\S]*?variant="card-footer"/, "首页 Claude 卡片底栏要内嵌自动接管开关");
   assert.match(home, /onEnableLogin=\{\(\) => actions\.setWatcherEnabled\(true\)\}/, "没开登录自启时首页要能直接打开");
   const screen = appDeclarationSource("ClaudeLocalizationScreen");
   // 自动接管行在「账号与会话」页签里，跟着启动模式走。

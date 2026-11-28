@@ -25,8 +25,12 @@ concurrency:
 
 jobs:
   windows:
-    name: Windows release deps
-    runs-on: windows-latest
+    name: Windows release deps (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -53,6 +57,14 @@ jobs:
       - name: Build frontend
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
+
+      # 和 pr-build.yml 一样：缓存恢复出的 sherpa-onnx 预编译目录可能缺静态库（11-22 起链接时报找不到
+      # sherpa-onnx-c-api），缺了就挪走让构建脚本重新下载，并清掉这个包的 build-script 输出。
+      - name: Check sherpa-onnx prebuilt cache
+        shell: bash
+        run: |
+          node scripts/prepare-sherpa-cache.mjs
+          cargo clean --release --package sherpa-onnx-sys
 
       - name: Build release
         run: cargo build --release
@@ -93,6 +105,14 @@ jobs:
       - name: Build frontend
         working-directory: apps/codex-plus-manager
         run: npm run vite:build
+
+      # 和 pr-build.yml 一样：缓存恢复出的 sherpa-onnx 预编译目录可能缺静态库（11-22 起链接时报找不到
+      # sherpa-onnx-c-api），缺了就挪走让构建脚本重新下载，并清掉这个包的 build-script 输出。
+      - name: Check sherpa-onnx prebuilt cache
+        shell: bash
+        run: |
+          node scripts/prepare-sherpa-cache.mjs
+          cargo clean --release --package sherpa-onnx-sys --target ${{ matrix.target }}
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}

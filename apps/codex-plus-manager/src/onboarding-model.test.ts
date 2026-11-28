@@ -28,11 +28,12 @@ test("说明卡优先放目标右侧，放不下换左侧，再不行放下方�
 });
 
 test("导览只有一套文案：顺序跟着侧栏走，欢迎卡不提网关，Agent 一步指到侧栏的「本地服务」", () => {
-  // 顺序跟着侧栏：万物皆拓展 → Agent → 搜索 → 设置。
+  // 顺序跟着侧栏：MCP 与 Skills → Agent → 搜索 → 设置；万物皆拓展在各 Agent 的页签里，Agent 一步提到它。
   assert.deepEqual(TOUR_STEPS.map((step) => step.id), ["welcome", "management", "agents", "palette", "settings"]);
   assert.doesNotMatch(TOUR_STEPS[0].body, /网关/);
   // 本地服务是侧栏第一组里的一个入口，不在设置里。
   assert.match(TOUR_STEPS.find((step) => step.id === "agents")!.body, /到侧栏的「本地服务」里配置/);
+  assert.match(TOUR_STEPS.find((step) => step.id === "agents")!.body, /万物皆拓展/);
   // 使用模式已经取消，文案里不再有按 Agent 名字填的占位符。
   for (const step of TOUR_STEPS) assert.doesNotMatch(step.title + step.body, /\{\d+\}/);
 });

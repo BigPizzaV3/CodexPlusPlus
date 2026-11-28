@@ -89,6 +89,8 @@ async fn bridge_routes_cover_all_current_paths() {
             json!({"session_id": "s1", "title": "First", "host_id": "local"}),
         ),
         ("/undo", json!({"undo_token": "undo-1"})),
+        ("/session-index/repair", json!({})),
+        ("/session-index/report", json!({})),
         (
             "/export-markdown",
             json!({"session_id": "s1", "title": "First"}),

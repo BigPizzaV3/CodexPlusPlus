@@ -223,6 +223,8 @@ function runtime(initial = catalog({ "group/stable": "Before rename" }), include
 test("installed picker and native model/list use the renamed group after a settings heartbeat", async () => {
   const app = runtime();
   assert.ok(app.window.__codexPlusModelPickerGroupsRuntime, "71 must install from the generated artifact");
+  // 「最近使用」区块只在列表模式出现（图标模式三栏左侧是收藏）。
+  app.store.set("codexPlus.modelPicker.viewMode.v1", "list");
   const list = new Element();
   const native = row("Before rename");
   list.appendChild(native);

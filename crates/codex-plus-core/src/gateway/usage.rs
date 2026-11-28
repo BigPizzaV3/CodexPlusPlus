@@ -651,6 +651,7 @@ mod tests {
             newapi_access: None,
             subscription_policy: None,
             upstream_meta: Default::default(),
+            upstream_reasoning: None,
             auto_compact: Default::default(),
             relay: RelayProfile {
                 id: "ds".to_string(),

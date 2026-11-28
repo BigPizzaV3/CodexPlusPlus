@@ -85,6 +85,8 @@ function fixture(layout = "sidebar") {
     attachCodexPlusRailTooltip() {},
     // 侧栏收起时的悬浮卡片随入口一起装（document 级 pointermove），这里不测。
     installCodexPlusNavPeek() {},
+    // 每轮扫描顺带重量开着的页面，这里没有页面。
+    refreshCodexPlusPagePosition() {},
     markCodexPlusExtensionNode: (node, owner) => node.setAttribute("data-codex-plus-ext", owner),
     isExtensionUiNode: extension,
     visibleElement: node => node.isConnected && node.visible,
@@ -95,7 +97,7 @@ function fixture(layout = "sidebar") {
   });
   const functions = [
     extract(adapter, "codexPlusNativePluginNavigationEntry"), extract(adapter, "openCodexPlusNativePluginMarket"),
-    ...["codexPlusRailTemplateButton", "codexPlusRailPrimaryAnchor", "createCodexPlusRailButton", "installCodexPlusRailNavigation", "installCodexPlusSidebarNavigation", "detachCodexPlusSidebarNavigation", "removeCodexPlusRailNavigation", "codexPlusNavEntryReusable"].map(name => extract(navigation, name)),
+    ...["codexPlusRailTemplateButton", "codexPlusRailPrimaryAnchor", "createCodexPlusRailButton", "installCodexPlusRailNavigation", "installCodexPlusSidebarNavigation", "detachCodexPlusSidebarNavigation", "removeCodexPlusRailNavigation", "codexPlusNavEntryReusable", "codexPlusPageIcons"].map(name => extract(navigation, name)),
     extract(entryNavigation, "installCodexPlusNavigationEntries"),
     ...["scanRelevantSelector", "nodeSelfOrAncestorMatchesScanRelevance", "isScanRelevantNode", "isChatContentMutation", "isVirtualizedTurnMutation", "shouldScheduleScan"].map(name => extract(scheduler, name)),
   ].join("\n");

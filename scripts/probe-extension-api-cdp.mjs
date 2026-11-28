@@ -229,14 +229,14 @@ const toasts = await evaluate(`(async () => {
     count: live.length,
     texts: live.map((n) => n.textContent),
     types: live.map((n) => n.dataset.toastType || ""),
-    bottoms: live.map((n) => n.style.bottom),
+    tops: live.map((n) => n.style.top),
     firstBorderColor: live[0] ? getComputedStyle(live[0]).borderColor : null,
   };
 })()`);
 check("toast 上限为 3（挤掉最旧）", toasts.count === 3, toasts.count);
 check("最旧的一条被挤掉", !toasts.texts.includes("第一条"), toasts.texts);
 check("类型标记生效", toasts.types.includes("error"), toasts.types);
-check("多条 toast 错开纵向位置", new Set(toasts.bottoms).size === toasts.count, toasts.bottoms);
+check("多条 toast 错开纵向位置", new Set(toasts.tops).size === toasts.count, toasts.tops);
 
 // ── 8. 配额与失败隔离 ──────────────────────────────────────────────
 const limits = await evaluate(`(() => {

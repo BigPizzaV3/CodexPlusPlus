@@ -85,8 +85,10 @@ describe("runtime context refresh", () => {
     const env = runtime();
     const session = env.api.session;
     env.state.runtime.effectiveWindowPercents = { selected: 95 };
+    env.state.runtime.effectiveWindows = { selected: 124518 };
     assert.equal(session.read().defaultWindow, 131072);
-    assert.equal(await session.set("thread", "selected", 200000), true);
+    assert.equal(session.read().effectiveWindow, 124518);
+    assert.equal((await session.set("thread", "selected", 200000)).status, "applied");
     assert.equal(session.read().effectiveWindow, 190000);
     assert.equal(env.calls.at(-1)!.params.config.model_context_window, 200000);
     assert.equal(env.calls.at(-1)!.params.config.model_auto_compact_token_limit, 179998);
@@ -106,18 +108,44 @@ describe("runtime context refresh", () => {
     assert.equal(session.read().threadId, "");
     await assert.rejects(session.set("", "selected", 250000), /已切换/);
     env.view.placement = "thread";
-    env.state.runtime.models.selected.model_context_window = 150000;
+    env.state.runtime.models.selected = { model_context_window: 262144, model_auto_compact_token_limit: 235928 };
+    env.state.runtime.effectiveWindows.selected = 249036;
+    env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 190000]]);
+    env.calls.length = 0;
+    assert.equal(session.read().defaultWindow, 262144);
+    assert.equal(session.read().override, 200000);
+    assert.equal(await env.refresh(), null, "a matching native override must not reload on provider changes");
+    assert.equal(env.calls.length, 0);
     await session.set("thread", "selected", null);
     assert.equal(env.storage.size, 0);
-    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 150000);
-    assert.deepEqual(env.events, ["session-context/changed", "session-context/changed"]);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 262144);
+    assert.equal(session.read().effectiveWindow, 249036);
+    assert.deepEqual(env.events, ["sessionContext/changed", "sessionContext/changed"]);
+  });
+
+  it("keeps display fallback separate from native stale-window detection", async () => {
+    const env = runtime();
+    const session = env.api.session;
+    await env.refresh();
+    env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 124518]]);
+    env.calls.length = 0;
+    assert.equal(session.read().effectiveWindow, 131072);
+    assert.equal(await env.refresh(), null);
+    assert.equal(env.calls.length, 0, "an unspecified percentage cannot trigger a mismatch");
+    assert.equal((await session.set("thread", "selected", 200000)).status, "applied");
+    env.context.window.__codexPlusObservedContextWindows.set("thread", 190000);
+    env.calls.length = 0;
+    assert.equal((await session.set("thread", "selected", 200000)).status, "unchanged");
+    assert.deepEqual(env.calls.map((call) => call.method), ["thread/read"]);
+    env.state.ephemeral = true;
+    await assert.rejects(session.set("thread", "selected", 200000), /临时会话/);
   });
 
   it("does not interrupt a running turn and rolls back a failed edit", async () => {
     const env = runtime();
     const session = env.api.session;
     env.state.status = "active";
-    assert.equal(await session.set("thread", "selected", 250000), null);
+    assert.equal((await session.set("thread", "selected", 250000)).status, "deferred");
     assert.deepEqual(env.calls.map((call) => call.method), ["thread/read"]);
     env.state.status = "idle";
     assert.equal(await env.refresh(), true);
@@ -125,31 +153,59 @@ describe("runtime context refresh", () => {
     env.state.fail = "thread/read";
     await assert.rejects(session.set("thread", "selected", null), /fixture failure/);
     assert.equal(session.read().override, 250000);
-    await assert.rejects(session.set("thread", "selected", 0), /正整数/);
     env.state.fail = "";
     env.state.runtime = { status: "failed", message: "fixture catalog unavailable" };
     await assert.rejects(session.refresh(), /fixture catalog unavailable/);
     assert.equal(session.read(), null);
   });
 
-  it("retains legacy overrides until pruning, expires dated overrides and bounds storage", async () => {
+  it("validates the editable range and reports unsupported writes instead of success", async () => {
+    const env = runtime();
+    const session = env.api.session;
+    for (const value of [1, 7999, 2000000.1, 2000001, Number.MAX_SAFE_INTEGER]) {
+      await assert.rejects(session.set("thread", "selected", value), /8K 至 2M/);
+    }
+    assert.equal(env.storage.size, 0);
+    assert.equal(env.calls.length, 0);
+    assert.equal((await session.set("thread", "selected", 8000)).status, "applied");
+    assert.equal((await session.set("thread", "selected", 2000000)).status, "applied");
+    env.context.window.__codexSessionDeleteBridge = undefined;
+    await assert.rejects(session.set("thread", "selected", 8000), /未启用/);
+    env.context.window.__codexSessionDeleteBridge = {};
+    env.state.runtime = { status: "unsupported", message: "fixed catalog ceiling" };
+    await assert.rejects(session.set("thread", "selected", 2000000), /已切换/);
+    await assert.rejects(session.refresh(), /fixed catalog ceiling/);
+    assert.equal(env.storage.size, 1);
+  });
+
+  it("defers an edit on a thread with no persisted history", async () => {
+    const env = runtime();
+    env.state.turns = 0;
+    assert.equal((await env.api.session.set("thread", "selected", 250000)).status, "deferred");
+    assert.deepEqual(env.calls.map((call) => call.method), ["thread/read", "thread/turns/list"]);
+    assert.equal(env.api.session.read().override, 250000);
+  });
+
+  it("ignores undated and expired overrides and bounds storage", async () => {
     const env = runtime();
     const session = env.api.session;
     const key = 'codex-plus:thread-context:["thread","selected"]';
     const now = Date.now();
     env.storage.set(key, "400000");
-    assert.equal(session.read().override, 400000);
-    env.storage.set(key, `400000:${now - 91 * 86400000}`);
+    assert.equal(session.read().override, null);
+    env.storage.set(key, `400000:${now - 90 * 86400000}`);
     assert.equal(session.read().override, null);
     env.storage.set("unrelated", "keep");
     for (let index = 0; index < 256; index++) {
       env.storage.set(`codex-plus:thread-context:["other-${index}","selected"]`, `400000:${now - index - 1}`);
     }
     env.storage.set('codex-plus:thread-context:["expired","selected"]', `400000:${now - 91 * 86400000}`);
+    env.storage.set('codex-plus:thread-context:["undated","selected"]', "400000");
     await session.set("thread", "selected", 200000);
     assert.equal(env.storage.size, 257);
     assert.equal(env.storage.get("unrelated"), "keep");
     assert.equal(env.storage.has('codex-plus:thread-context:["expired","selected"]'), false);
+    assert.equal(env.storage.has('codex-plus:thread-context:["undated","selected"]'), false);
     assert.equal(env.storage.has('codex-plus:thread-context:["other-255","selected"]'), false);
     assert.equal(session.read().override, 200000);
   });
@@ -206,6 +262,40 @@ describe("runtime context refresh", () => {
     env.state.status = "active";
     assert.equal(await env.refresh(), null);
     assert.equal(env.calls.length, 0);
+  });
+
+  it("repairs a stale native window even when the saved context signature matches", async () => {
+    const env = runtime();
+    env.state.runtime.models.selected = { model_context_window: 500000, model_auto_compact_token_limit: 450000 };
+    env.state.runtime.effectiveWindows = { selected: 475000 };
+    const params = await env.api.prepare("thread/start", { model: "selected" }, "local");
+    env.api.note("thread/start", params, { thread: { id: "thread" } }, "local");
+    const observed = env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 258400]]);
+
+    assert.equal(await env.refresh(), true);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 500000);
+    assert.equal(env.calls.at(-1)!.params.config.model_auto_compact_token_limit, 450000);
+    assert.equal(observed.has("thread"), false, "do not treat a pre-resume notification as new evidence");
+
+    env.calls.length = 0;
+    observed.set("thread", 258400);
+    assert.equal(await env.refresh(), null, "a persistent native mismatch must not reload on every send");
+    observed.set("thread", 475000);
+    assert.equal(await env.refresh(), null, "compare the effective window, not the configured size");
+    assert.deepEqual(env.calls, []);
+    observed.set("thread", 258400);
+    assert.equal(await env.refresh(), true, "a new mismatch after convergence is eligible for repair");
+  });
+
+  it("retries a native mismatch when the cold resume fails", async () => {
+    const env = runtime();
+    env.state.runtime.effectiveWindows = { selected: 131072 };
+    assert.equal(await env.refresh(), true);
+    env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 65536]]);
+    env.state.fail = "thread/resume";
+    await assert.rejects(env.refresh(), /fixture failure/);
+    env.state.fail = "";
+    assert.equal(await env.refresh(), true);
   });
 
   it("still checks thread safety when an account alias changes the actual context limits", async () => {

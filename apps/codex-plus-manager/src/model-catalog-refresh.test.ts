@@ -83,6 +83,25 @@ const catalog = (models: string[], metadata = {}) => ({
   sources: [{ id: "relay-profile:gateway", type: "relay_profile_model_list" }],
 });
 const settle = async () => { for (let index = 0; index < 15; index++) await Promise.resolve(); };
+
+it("refreshes on native model selection and uses the current runtime after reinjection", async () => {
+  const previous = runtime();
+  const current = runtime(previous.window);
+  await load(current, ["a/sol"]);
+  current.emit("click", { target: { closest: () => null } });
+  assert.equal(current.pending.length, 0);
+  current.emit("click", { target: { closest: (selector: string) => {
+    assert.equal(selector, '[data-model-picker-view] [role="menuitemradio"]');
+    return {};
+  } } });
+  assert.equal(previous.pending.length, 0);
+  assert.equal(current.pending.length, 1);
+  current.pending.shift()!.resolve(catalog(["b/terra"]));
+  await settle();
+  assert.deepEqual(Array.from(current.api.catalog().models), ["b/terra"]);
+  assert.equal(current.invalidated.length, 2);
+});
+
 async function load(r: ReturnType<typeof runtime>, models: string[], metadata = {}) {
   const request = r.api.load(true);
   r.pending.shift()!.resolve(catalog(models, metadata));
@@ -187,7 +206,7 @@ it("catalog fingerprint changes bypass cache and invalidate only local model que
   assert.deepEqual(value.models.map(entry => entry.model), ["a/sol", "group/coding"]);
   assert.equal(value.defaultModel, "a/sol");
   assert.deepEqual(JSON.parse(JSON.stringify(r.invalidated)), [["models", "local"], ["models", "local"]]);
-  assert.deepEqual(r.events, ["session-context/changed", "session-context/changed"]);
+  assert.deepEqual(r.events, ["sessionContext/changed", "sessionContext/changed"]);
   r.update({ ...r.settings(), codexAppTypingEffects: true });
   assert.equal(r.pending.length, 0);
 });
@@ -290,6 +309,24 @@ it("late responses and reinjection cannot overwrite the current configuration", 
   previous.resolve(catalog(["a/obsolete"]));
   await inFlight;
   assert.equal(next.api.catalog().model, "a/current");
+});
+
+it("a send preparation joins a newer settings refresh instead of using the old snapshot", async () => {
+  const r = runtime();
+  const initial = r.api.load();
+  r.pending.shift()!.resolve(catalog(["a/original"]));
+  await initial;
+
+  let finished = false;
+  const preparation = r.api.load(true).then((value: any) => { finished = true; return value; });
+  const obsolete = r.pending.shift()!;
+  r.update({ ...r.settings(), modelCatalogFingerprint: "catalog-2" });
+  const newest = r.pending.shift()!;
+  obsolete.resolve(catalog(["a/original"]));
+  await settle();
+  assert.equal(finished, false);
+  newest.resolve(catalog(["a/new"]));
+  assert.equal((await preparation).model, "a/new");
 });
 
 it("failed and missing catalogs retain a successful snapshot with ten-second backoff", async () => {

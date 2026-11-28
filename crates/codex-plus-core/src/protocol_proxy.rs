@@ -629,6 +629,46 @@ fn normalized_overload_failure_event(data_json: &Value) -> Option<String> {
     ))
 }
 
+/// 把不可重试的策略拒绝（裸 `error` 事件 + cyber_policy 等 code）规范成
+/// Codex 认作终态的 `response.failed` 事件（issue #3298）。
+///
+/// Codex 只把 `response.failed` / `response.incomplete` 当终态；裸 `error`
+/// 事件会被当成网络断流（stream closed before response.completed）自动重试，
+/// 而策略拒绝重试也不会成功，只会反复触发。只认明确的策略/审核类 code，
+/// 其它 `error` 事件保持原样转发，不改变既有行为。
+fn normalized_policy_failure_event(data_json: &Value) -> Option<String> {
+    let error = data_json.get("error")?;
+    let code = error.get("code").and_then(Value::as_str).unwrap_or_default();
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let lowered = format!("{code} {message}").to_ascii_lowercase();
+    let is_policy_rejection = lowered.contains("cyber_policy")
+        || lowered.contains("cyber policy")
+        || lowered.contains("content_policy")
+        || lowered.contains("moderation");
+    if !is_policy_rejection {
+        return None;
+    }
+    let response_id = data_json
+        .pointer("/response/id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let payload = json!({
+        "type": "response.failed",
+        "response": {
+            "id": response_id,
+            "status": "failed",
+            "error": error.clone(),
+        }
+    });
+    Some(format!(
+        "event: response.failed\ndata: {}\n\n",
+        serde_json::to_string(&payload).ok()?
+    ))
+}
+
 /// 找到 `from` 之后第一个完整 SSE 事件边界（返回边界之后的字节下标）。
 fn next_sse_boundary(bytes: &[u8], from: usize) -> Option<usize> {
     let mut index = from;
@@ -781,6 +821,7 @@ fn upstream_wire_api_label(api: UpstreamWireApi) -> &'static str {
         UpstreamWireApi::Responses => "responses",
         UpstreamWireApi::ChatCompletions => "chatCompletions",
         UpstreamWireApi::AnthropicMessages => "anthropicMessages",
+        UpstreamWireApi::Gemini => "gemini",
         UpstreamWireApi::AudioTranscriptions => "audioTranscriptions",
         UpstreamWireApi::ImageGenerations => "imageGenerations",
         UpstreamWireApi::ImageEdits => "imageEdits",
@@ -1166,6 +1207,9 @@ fn responses_to_chat_completions_with_context(
     // #3106：剩下的是原生上游签发的加密压缩项，Chat 协议无法表达，换成占位说明，其余历史照常转换。
     // 代理入口已按候选决定过是切换还是降级（见 open_responses_proxy_request_once），这里兜底。
     degrade_native_compaction_history(&mut body);
+    // #3288：上一家 Responses 上游签发的加密 agent 消息，Chat 协议同样无法表达，
+    // 与加密压缩项一致换成占位说明继续对话；已确认明文形态的片段仍按文本透传。
+    degrade_unreadable_encrypted_agent_history(&mut body);
     // agent_message 的 encrypted_content 片段在 multi_agent v2 里实际承载明文任务；
     // 转换时按文本透传，opaque 内容则明确失败，避免静默发空任务。
     let mut result = json!({});
@@ -1682,6 +1726,15 @@ fn chat_completion_to_response_with_context(
     if choice.get("finish_reason").and_then(Value::as_str) == Some("length") {
         response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
     }
+    // issue #3301：非流式路径同样不能把 content_filter 当 completed；用
+    // invalid_prompt + 上游 refusal 文本（没有就给固定说明），Codex 原样展示不重试。
+    if choice.get("finish_reason").and_then(Value::as_str) == Some("content_filter") {
+        let refusal = message.get("refusal").and_then(Value::as_str);
+        response["error"] = json!({
+            "code": "invalid_prompt",
+            "message": content_filter_message(refusal),
+        });
+    }
     copy_response_request_fields(&mut response, original_request);
 
     Ok(response)
@@ -1797,6 +1850,8 @@ pub enum UpstreamWireApi {
     ChatCompletions,
     /// Anthropic Messages（`/v1/messages`），经 `anthropic_bridge` 转换。
     AnthropicMessages,
+    /// Google Gemini（`/v1beta/models/{model}:streamGenerateContent`），经 `gemini_bridge` 转换。
+    Gemini,
     AudioTranscriptions,
     ImageGenerations,
     ImageEdits,
@@ -2545,6 +2600,12 @@ pub(crate) fn validate_compaction_json_completion(
             body.get("stop_reason").and_then(Value::as_str),
             Some("end_turn" | "stop_sequence")
         ),
+        UpstreamWireApi::Gemini => matches!(
+            body.pointer("/candidates/0/finishReason")
+                .or_else(|| body.pointer("/response/candidates/0/finishReason"))
+                .and_then(Value::as_str),
+            Some("STOP")
+        ),
         _ => false,
     };
     anyhow::ensure!(complete, "压缩上游没有正常完成状态");
@@ -3008,6 +3069,97 @@ fn degrade_native_compaction_history(body: &mut Value) -> usize {
     degraded
 }
 
+/// 加密 agent 消息（#3288）降级成的占位说明，措辞对齐 [`NATIVE_COMPACTION_PLACEHOLDER`]。
+const ENCRYPTED_AGENT_PLACEHOLDER: &str = "[Context note] An earlier agent message in this conversation was encrypted by a different provider and cannot be read under the current protocol, so its content has been omitted. Continue from the remaining conversation, and ask the user if essential earlier details are missing.";
+
+/// 判断一条消息的 content 是否携带当前协议读不了的加密 agent 内容。
+/// 与 `responses_content_to_chat_content` 的 fail-closed 判定保持一致：
+/// 只有已确认明文形态且每个片段都非 opaque 的 agent_message 才能透传，其余一律不可读。
+fn message_content_has_unreadable_encrypted_content(content: &Value) -> bool {
+    // 对象形态的 content 无法透传 encrypted_content（fail closed）。
+    if content.get("type").and_then(Value::as_str) == Some("encrypted_content") {
+        return true;
+    }
+    let Some(parts) = content.as_array() else {
+        return false;
+    };
+    let mut fragments: Vec<&str> = Vec::new();
+    for part in parts
+        .iter()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("encrypted_content"))
+    {
+        match part
+            .get("encrypted_content")
+            .or_else(|| part.get("text"))
+            .and_then(Value::as_str)
+        {
+            Some(value) => fragments.push(value),
+            // 缺失或非字符串的加密片段同样读不了（转换层会 fail closed）。
+            None => return true,
+        }
+    }
+    if fragments.is_empty() {
+        return false;
+    }
+    !agent_message_has_confirmed_plaintext_shape(content)
+        || fragments
+            .iter()
+            .any(|value| value.is_empty() || encrypted_content_value_is_opaque(value))
+}
+
+fn unreadable_agent_message_placeholder() -> Value {
+    json!({
+        "type": "message",
+        "role": "user",
+        "content": [{ "type": "input_text", "text": ENCRYPTED_AGENT_PLACEHOLDER }]
+    })
+}
+
+/// 把上一家 Responses 上游签发、当前协议读不了的加密 agent 消息（#3288：切换供应商后
+/// 残留在历史里）换成一条 user 占位说明，返回替换了几项。占位说明留在原处，
+/// 前后消息顺序与工具调用配对不受影响。已确认明文形态的 multi_agent v2 消息不受影响。
+fn degrade_unreadable_encrypted_agent_history(body: &mut Value) -> usize {
+    fn unreadable(item: &Value) -> bool {
+            let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+            if item_type == "encrypted_content" {
+                return true;
+            }
+            // 只有 agent_message 的已确认明文形态才允许透传加密片段（见转换层）；
+            // 其余 item 类型一律读不了。
+            if item_type != "agent_message" {
+                return item
+                    .get("content")
+                    .is_some_and(|content| {
+                        content.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                            || content.as_array().is_some_and(|parts| {
+                                parts.iter().any(|part| {
+                                    part.get("type").and_then(Value::as_str) == Some("encrypted_content")
+                                })
+                            })
+                    });
+            }
+            item.get("content")
+                .is_some_and(message_content_has_unreadable_encrypted_content)
+        };
+    let mut degraded = 0;
+    match body.get_mut("input") {
+        Some(Value::Array(items)) => {
+            for item in items.iter_mut() {
+                if unreadable(item) {
+                    *item = unreadable_agent_message_placeholder();
+                    degraded += 1;
+                }
+            }
+        }
+        Some(input @ Value::Object(_)) if unreadable(input) => {
+            *input = json!([unreadable_agent_message_placeholder()]);
+            degraded = 1;
+        }
+        _ => {}
+    }
+    degraded
+}
+
 fn expand_local_compaction_history(body: &mut Value) {
     match body.get_mut("input") {
         Some(Value::Array(items)) => {
@@ -3068,6 +3220,10 @@ impl ChatSseToResponsesConverter {
             .upstream_usage
             .as_ref()
             .and_then(crate::request_log::usage_from_usage_value)
+    }
+
+    pub(crate) fn final_response_usage(&self) -> Option<crate::request_log::FinalResponseUsage> {
+        if self.failed { None } else { self.state.final_response_usage.clone() }
     }
 
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<u8> {
@@ -5837,7 +5993,16 @@ async fn upstream_request_parts(
             json!({ "relayId": relay.id }),
         );
     }
-    let model = request_json.get("model").and_then(Value::as_str).unwrap_or("");
+    let request_model = request_json
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let request_is_stream = request_json
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let model = request_model.as_str();
     let compatibility_enabled = relay.request_compatibility_enabled();
     let reasoning_mode = if compatibility_enabled { relay.model_reasoning_parameters(model) } else { "auto" }.to_string();
     let requested_effort = request_json.pointer("/reasoning/effort").cloned();
@@ -5870,6 +6035,8 @@ async fn upstream_request_parts(
                 &crate::anthropic_bridge::request_options(relay),
             )?
         }
+        // Responses → Gemini generateContent：模型与流式标志体现在 URL 中。
+        RelayProtocol::Gemini => crate::gemini_bridge::responses_to_gemini_request(request_json)?,
     };
     if request_conversion
         && relay.protocol == RelayProtocol::ChatCompletions
@@ -5910,6 +6077,17 @@ async fn upstream_request_parts(
                     "action": "declare_web_search",
                     "source": if official_auto_repair { "official_login" } else { "provider_opt_in" },
                     "inputContainsWebSearchCall": true
+                }),
+            );
+        }
+        let orphan_calls = downgrade_orphan_function_calls(&mut body);
+        if orphan_calls > 0 {
+            // 只记录条数，不记录 call_id / 工具名之外的请求内容。
+            let _ = crate::diagnostic_log::append_diagnostic_log(
+                "protocol_proxy.orphan_function_call_downgraded",
+                json!({
+                    "relayId": relay.id,
+                    "count": orphan_calls,
                 }),
             );
         }
@@ -5988,6 +6166,7 @@ async fn upstream_request_parts(
         RelayProtocol::Responses => UpstreamWireApi::Responses,
         RelayProtocol::ChatCompletions => UpstreamWireApi::ChatCompletions,
         RelayProtocol::AnthropicMessages => UpstreamWireApi::AnthropicMessages,
+        RelayProtocol::Gemini => UpstreamWireApi::Gemini,
     };
     // 官方登录成员没有用户填写的 base_url，固定发往 chatgpt.com 后端。
     let endpoint_base = official_base
@@ -6006,6 +6185,11 @@ async fn upstream_request_parts(
             RelayProtocol::AnthropicMessages => {
                 crate::anthropic_bridge::anthropic_messages_url(endpoint_base)
             }
+            RelayProtocol::Gemini => crate::gemini_bridge::gemini_generate_url(
+                endpoint_base,
+                &request_model,
+                request_is_stream,
+            ),
         },
         body,
         wire_api,
@@ -6334,6 +6518,13 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
                 ));
             converter = converter.with_chat_upstream();
             converter.push_upstream_bytes(chat_sse.as_bytes());
+        } else if wire_api == UpstreamWireApi::Gemini {
+            let chat_sse =
+                crate::gemini_bridge::gemini_sse_to_chat_sse(&String::from_utf8_lossy(
+                    &upstream_body,
+                ));
+            converter = converter.with_chat_upstream();
+            converter.push_upstream_bytes(chat_sse.as_bytes());
         } else {
             if wire_api != UpstreamWireApi::Responses {
                 converter = converter.with_chat_upstream();
@@ -6409,6 +6600,26 @@ pub async fn handle_responses_proxy_request(body: &str) -> anyhow::Result<ProxyH
                 &thinking_blocks,
             );
         }
+        return Ok(ProxyHttpResponse {
+            status: "200 OK".to_string(),
+            content_type: "application/json; charset=utf-8".to_string(),
+            body: serde_json::to_vec(&response_json)?,
+        });
+    }
+
+    if wire_api == UpstreamWireApi::Gemini {
+        // Gemini → Chat → Responses：与 Anthropic 同样复用 Chat → Responses 映射。
+        if is_stream {
+            let text = String::from_utf8_lossy(&upstream_body);
+            return Ok(ProxyHttpResponse {
+                status: "200 OK".to_string(),
+                content_type: "text/event-stream; charset=utf-8".to_string(),
+                body: crate::gemini_bridge::gemini_sse_to_responses_sse(&text, &request_json),
+            });
+        }
+        let message: Value = serde_json::from_slice(&upstream_body)?;
+        let chat_json = crate::gemini_bridge::gemini_response_to_chat_completion(message)?;
+        let response_json = chat_completion_to_response_with_request(chat_json, &request_json)?;
         return Ok(ProxyHttpResponse {
             status: "200 OK".to_string(),
             content_type: "application/json; charset=utf-8".to_string(),
@@ -6725,7 +6936,10 @@ struct ChatSseState {
     latest_usage: Option<Value>,
     /// 上游原始 usage，逐块合并：Anthropic 的输入在 message_start、输出在 message_delta 里分开到。
     upstream_usage: Option<Value>,
+    final_response_usage: Option<crate::request_log::FinalResponseUsage>,
     finish_reason: Option<String>,
+    /// 上游拒绝说明（delta.refusal），issue #3301：结束时透给用户。
+    refusal: Option<String>,
     tool_context: CodexToolContext,
     original_request: Option<Value>,
 }
@@ -6746,7 +6960,9 @@ impl Default for ChatSseState {
             output_items: Vec::new(),
             latest_usage: None,
             upstream_usage: None,
+            final_response_usage: None,
             finish_reason: None,
+            refusal: None,
             tool_context: CodexToolContext::default(),
             original_request: None,
         }
@@ -6803,6 +7019,12 @@ impl ChatSseState {
             if let Some(content) = delta.get("content").and_then(Value::as_str) {
                 if !content.is_empty() {
                     self.push_content_delta_into(content, output);
+                }
+            }
+
+            if let Some(refusal) = delta.get("refusal").and_then(Value::as_str) {
+                if !refusal.is_empty() {
+                    self.refusal = Some(refusal.to_string());
                 }
             }
 
@@ -7169,17 +7391,47 @@ impl ChatSseState {
             return;
         }
 
-        let status = response_status(self.finish_reason.as_deref());
-        let mut response = self.base_response(status, self.completed_output_items());
+        let finish_reason = self.finish_reason.as_deref();
+        let output_items = self.completed_output_items();
+        // issue #3301：上游拒绝、或只输出了思考就用满输出上限时，发 completed 会被 Codex
+        // 当正常结束，这一轮静默无输出。改发 response.failed + invalid_prompt：Codex 原样显示
+        // message 且不重试。不用 response.incomplete：Codex 把它当可重试的流错误，会重放这一轮。
+        // 截断但已有正文或工具调用时照旧 completed（status incomplete），已产出的内容照常显示。
+        let produced_answer = output_items
+            .iter()
+            .any(|item| item.get("type").and_then(Value::as_str) != Some("reasoning"));
+        let failure_message = match finish_reason {
+            Some("content_filter") => Some(content_filter_message(self.refusal.as_deref())),
+            Some("length") if !produced_answer => Some(LENGTH_WITHOUT_ANSWER_MESSAGE.to_string()),
+            _ => None,
+        };
+        let status = if failure_message.is_some() {
+            "failed"
+        } else {
+            response_status(finish_reason)
+        };
+        let mut response = self.base_response(status, output_items);
         if status == "incomplete" {
             response["incomplete_details"] = json!({ "reason": "max_output_tokens" });
         }
+        if let Some(message) = failure_message {
+            response["error"] = json!({ "code": "invalid_prompt", "message": message });
+        }
         copy_response_request_fields(&mut response, self.original_request.as_ref());
+        self.final_response_usage = crate::request_log::converted_final_response_usage(
+            &response,
+            self.upstream_usage.as_ref().and_then(crate::request_log::usage_from_usage_value),
+        );
+        let event_name = if status == "failed" {
+            "response.failed"
+        } else {
+            "response.completed"
+        };
         push_sse(
             output,
-            "response.completed",
+            event_name,
             json!({
-                "type": "response.completed",
+                "type": event_name,
                 "response": response
             }),
         );
@@ -7667,6 +7919,70 @@ fn normalize_responses_item_ids(body: &mut Value) {
         Value::Object(_) => normalize_responses_item_id(input),
         _ => {}
     }
+}
+
+/// Responses 上游（包括内部再把 Responses 转成 Chat Completions 的中转站）要求
+/// 每个 `function_call` 都有对应 `function_call_output`，否则按
+/// 「an assistant message with 'tool_calls' must be followed by tool messages」
+/// 拒绝整轮请求。中断/回滚过的会话在历史**中段**留下没有 output 的
+/// `function_call`（后面还有新一轮的 user 消息等条目），转发后就是 issue #3289。
+/// Chat 转换路径已有 `enforce_tool_call_pairing` 兜底；Responses 直通路径此前没有。
+///
+/// input 末尾的未应答 `function_call` 是「刚发起、结果还没回来」的正常在途形态，
+/// 必须保留；只降级中段的孤立 call —— 原位换成一条 user 消息，保留「模型曾试图
+/// 调用某工具」的信息，与 Chat 路径的处理语义一致。
+/// 返回降级条数。
+fn downgrade_orphan_function_calls(body: &mut Value) -> usize {
+    let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) else {
+        return 0;
+    };
+    if items.len() < 2 {
+        return 0;
+    }
+    let answered: std::collections::BTreeSet<String> = items
+        .iter()
+        .filter_map(|item| {
+            if item.get("type").and_then(Value::as_str) != Some("function_call_output") {
+                return None;
+            }
+            item.get("call_id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+        })
+        .collect();
+    // 末尾连续的 function_call（并行调用时可能不止一个）都是在途形态，整段保留。
+    let in_flight_start = items
+        .iter()
+        .rposition(|item| item.get("type").and_then(Value::as_str) != Some("function_call"))
+        .map_or(0, |index| index + 1);
+    let mut downgraded = 0;
+    for index in 0..in_flight_start {
+        let item = &items[index];
+        if item.get("type").and_then(Value::as_str) != Some("function_call") {
+            continue;
+        }
+        let call_id = item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if answered.contains(call_id) {
+            continue;
+        }
+        let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+        let note = if call_id.is_empty() {
+            format!("Abandoned function call: {name}")
+        } else {
+            format!("Abandoned function call ({call_id}): {name}")
+        };
+        items[index] = json!({
+            "type": "message",
+            "role": "user",
+            "content": [{ "type": "input_text", "text": note }]
+        });
+        downgraded += 1;
+    }
+    downgraded
 }
 
 /// Codex Desktop 在跨任务委派（`create_thread` / `send_message_to_thread`）和定时任务
@@ -10726,7 +11042,23 @@ fn effective_cache_creation_tokens(
 fn response_status(finish_reason: Option<&str>) -> &'static str {
     match finish_reason {
         Some("length") => "incomplete",
+        // issue #3301：content_filter 不能映射成 completed，Codex 只认
+        // response.incomplete / response.failed 事件，completed 会被当正常结束静默吞掉。
+        Some("content_filter") => "failed",
         _ => "completed",
+    }
+}
+
+/// issue #3301：上游拒绝（finish_reason=content_filter）时，优先透出上游的
+/// refusal 文本；没有就用一条明确的中文说明，Codex 对 invalid_prompt 会
+/// 原样展示 message 且不重试。
+/// issue #3301：Chat 上游只输出了思考就以 finish_reason=length 结束时给用户的说明。
+const LENGTH_WITHOUT_ANSWER_MESSAGE: &str = "模型只输出了思考就用满了输出上限（finish_reason=length），这一轮没有回答。可以调高这个模型的输出上限或调低推理强度后再试。";
+
+fn content_filter_message(refusal: Option<&str>) -> String {
+    match refusal {
+        Some(text) if !text.trim().is_empty() => text.trim().to_string(),
+        _ => "上游拒绝了这次请求（finish_reason=content_filter）".to_string(),
     }
 }
 
@@ -12351,7 +12683,30 @@ mod stream_start_peek_tests {
         ));
     }
 
+    /// issue #3298：裸 `error` 事件里的策略拒绝要改写成 Codex 认作终态的
+    /// response.failed，否则 Codex 把它当网络断流自动重试。
+    #[test]
+    fn policy_error_event_is_rewritten_to_response_failed() {
+        let mut t = ResponsesSseTransformer::default();
+        let out = t.push_bytes(
+            b"event: error\ndata:{\"type\":\"error\",\"error\":{\"type\":\"invalid_request\",\"code\":\"cyber_policy\",\"message\":\"This content was flagged for possible cybersecurity risk.\"}}\n\n",
+        );
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("event: response.failed"), "{text}");
+        assert!(text.contains("\"code\":\"cyber_policy\""), "{text}");
+        assert!(text.contains("cybersecurity risk"), "{text}");
+        assert!(!text.contains("event: error"), "{text}");
+        assert!(t.finish().is_some(), "策略拒绝是终态失败");
+    }
 
+    /// 非 policy 的裸 `error` 事件保持原样转发，不改变既有行为。
+    #[test]
+    fn non_policy_error_event_is_forwarded_verbatim() {
+        let mut t = ResponsesSseTransformer::default();
+        let body = b"event: error\ndata:{\"type\":\"error\",\"error\":{\"code\":\"server_error\",\"message\":\"upstream exploded\"}}\n\n";
+        let out = t.push_bytes(body);
+        assert_eq!(out, body.to_vec());
+    }
 }
 
 #[cfg(test)]
@@ -12842,6 +13197,14 @@ impl ResponsesSseTransformer {
             }
             if stream_failure_is_retryable(code.as_deref(), message.as_deref())
                 && let Some(normalized) = normalized_overload_failure_event(data_json)
+            {
+                return normalized.into_bytes();
+            }
+            // 裸 `error` 事件 Codex 不认作终态：会把这一轮当成「stream closed
+            // before response.completed」的网络断流自动重试。不可重试的策略拒绝
+            // （cyber_policy 等）必须改写成 response.failed 让 Codex 明确终止。
+            if event_type == "error"
+                && let Some(normalized) = normalized_policy_failure_event(data_json)
             {
                 return normalized.into_bytes();
             }
@@ -14095,5 +14458,59 @@ mod callless_function_output_tests {
         );
         assert_eq!(input[1]["type"], "message");
         assert_eq!(input[1]["content"][0]["text"], "delegate");
+    }
+
+    /// issue #3289：历史中段孤立（无 output）的 function_call 会被 Responses 上游
+    /// （含内部转 Chat 的中转）以 tool_call_id 校验拒绝整轮请求。出站前应降级成
+    /// user 消息；末尾的未应答 call 是在途形态，必须保留。
+    #[test]
+    fn responses_upstream_never_sees_a_mid_history_orphan_function_call() {
+        let mut body = json!({"model": "kimi", "input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call","id":"fc_a","call_id":"exec_command:51","name":"exec_command","arguments":"{}"},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"continue"}]}
+        ]});
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 1);
+        let input = body["input"].as_array().unwrap();
+        assert_eq!(input.len(), 3);
+        assert_eq!(input[1]["type"], "message");
+        assert_eq!(input[1]["role"], "user");
+        assert_eq!(
+            input[1]["content"][0]["text"],
+            "Abandoned function call (exec_command:51): exec_command"
+        );
+
+        // 已配对的 call 不动。
+        let mut body = json!({"input": [
+            {"type":"function_call","call_id":"call_1","name":"exec","arguments":"{}"},
+            {"type":"function_call_output","call_id":"call_1","output":"ok"},
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"next"}]}
+        ]});
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
+        assert_eq!(body["input"][0]["type"], "function_call");
+
+        // 末尾未应答的 call 是在途形态，保留。
+        let mut body = json!({"input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call","call_id":"call_2","name":"exec","arguments":"{}"}
+        ]});
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
+        assert_eq!(body["input"][1]["type"], "function_call");
+
+        // 末尾连续的并行调用整段都是在途形态，都保留。
+        let mut body = json!({"input": [
+            {"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},
+            {"type":"function_call","call_id":"call_3","name":"exec","arguments":"{}"},
+            {"type":"function_call","call_id":"call_4","name":"exec","arguments":"{}"}
+        ]});
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
+        assert_eq!(body["input"][1]["type"], "function_call");
+        assert_eq!(body["input"][2]["type"], "function_call");
+
+        // input 非数组 / 单条时不改任何东西。
+        let mut body = json!({"input": "text"});
+        let before = body.clone();
+        assert_eq!(downgrade_orphan_function_calls(&mut body), 0);
+        assert_eq!(body, before);
     }
 }

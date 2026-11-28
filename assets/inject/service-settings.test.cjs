@@ -193,6 +193,69 @@ async function runServiceSettingsTests() {
     assert.equal(issue({ ...local, enabled: false, baseUrl: "" }), "");
     assert.equal(issue({ enabled: true, provider: "sensevoice", baseUrl: "local://sensevoice", model: "SenseVoiceSmall (INT8)" }), "");
   }
+
+  // 11. 会话维护：接在「会话」分组后面；没读到报告前显示读取中，从没修过显示没有记录。
+  {
+    const { context } = harness();
+    const html = context.renderCodexPlusServiceSettingsAfterGroup("chat");
+    assert.match(html, /data-codex-plus-service-section="session-maintenance"/);
+    assert.match(html, /data-codex-plus-session-repair="true">修复会话索引</);
+    assert.match(html, /data-codex-plus-session-open-manager="true"/);
+    assert.match(html, /正在读取…/);
+    vm.runInContext("codexPlusServiceSettingsState", context).sessionIndexReport = null;
+    assert.match(context.renderCodexPlusSessionMaintenanceSection(), /还没有检查记录。/);
+  }
+
+  // 12. 读报告只读一次；报告里的中止原因和警告各成一行提示。
+  {
+    const report = { checkedAtMs: 0, repairedItems: 3, alreadyPresent: 9, deferredItems: 1, skippedItems: 2, abortedReason: "数据库被占用", warnings: ["备份目录不可写"] };
+    const h = harness({ respond: (path) => (path === "/session-index/report" ? { status: "ok", report } : { status: "ok" }) });
+    h.context.codexPlusEnsureSessionIndexReportLoaded();
+    h.context.codexPlusEnsureSessionIndexReportLoaded();
+    await flush();
+    await flush();
+    assert.deepEqual(h.posts, [["/session-index/report", {}]]);
+    const html = h.context.renderCodexPlusSessionMaintenanceSection();
+    assert.match(html, /恢复消息 3 · 已存在 9 · 短暂等待 1 · 需核查 2/);
+    assert.match(html, /旧版报告未记录时间/);
+    assert.match(html, /修复已中止.*数据库被占用/s);
+    assert.match(html, /修复警告.*备份目录不可写/s);
+  }
+
+  // 13. 修复：进行中按钮置灰，完成后用返回的报告替换；失败显示原因，旧报告保留。
+  {
+    let finish;
+    const h = harness({ respond: (path) => (path === "/session-index/repair"
+      ? new Promise((resolve) => { finish = resolve; })
+      : { status: "ok" }) });
+    const button = { closest: (selector) => (selector === "[data-codex-plus-session-repair]" ? button : null) };
+    assert.equal(h.context.handleCodexPlusServiceSettingsClick(button), true);
+    assert.match(h.context.renderCodexPlusSessionMaintenanceSection(), /data-codex-plus-session-repair="true" disabled>正在检查…/);
+    assert.equal(h.context.handleCodexPlusServiceSettingsClick(button), true);
+    finish({ status: "ok", message: "会话索引检查完成，恢复 4 条消息。", report: { checkedAtMs: 0, repairedItems: 4 } });
+    await flush();
+    assert.deepEqual(h.posts, [["/session-index/repair", {}]], "进行中再点不重复发");
+    let html = h.context.renderCodexPlusSessionMaintenanceSection();
+    assert.match(html, /会话索引检查完成，恢复 4 条消息。/);
+    assert.match(html, /恢复消息 4/);
+
+    const failed = harness({ respond: () => ({ status: "failed", message: "锁被占用" }) });
+    vm.runInContext("codexPlusServiceSettingsState", failed.context).sessionIndexReport = { checkedAtMs: 0, repairedItems: 7 };
+    await failed.context.repairCodexPlusSessionIndex();
+    html = failed.context.renderCodexPlusSessionMaintenanceSection();
+    assert.match(html, /role="alert" data-tone="error">锁被占用/);
+    assert.match(html, /恢复消息 7/);
+  }
+
+  // 14. 修复历史会话 / 移动目录去管理器的「会话」页；打不开时就地提示。
+  {
+    const h = harness({ respond: () => ({ status: "failed", message: "找不到管理工具" }) });
+    const button = { closest: (selector) => (selector === "[data-codex-plus-session-open-manager]" ? button : null) };
+    assert.equal(h.context.handleCodexPlusServiceSettingsClick(button), true);
+    await flush();
+    assert.deepEqual(h.posts, [["/manager/open", { page: "sessions" }]]);
+    assert.match(h.context.renderCodexPlusSessionMaintenanceSection(), /找不到管理工具/);
+  }
 }
 
 module.exports = runServiceSettingsTests;

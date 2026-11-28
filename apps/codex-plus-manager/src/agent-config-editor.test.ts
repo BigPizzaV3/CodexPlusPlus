@@ -75,6 +75,7 @@ test("Pi 配置弹窗读取原文，保存失败保留草稿，成功才关闭",
     },
     "@/components/ui/button": { Button: "button" },
     "@tauri-apps/api/core": { invoke },
+    "lucide-react": { X: "x" },
   };
   const context = vm.createContext({ exports: {}, document: { body: {} }, require: (name: string) => modules[name] });
   vm.runInContext(dialogCode, context);

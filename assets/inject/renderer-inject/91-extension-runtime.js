@@ -465,8 +465,8 @@
     if (!codexPlusServices.has("themes") && typeof codexPlusThemesService === "function") codexPlusProvideService("themes", codexPlusThemesService(), "builtin");
     if (!codexPlusServices.has("sessions")) codexPlusProvideService("sessions", codexPlusSessionsService(), "builtin");
     if (!codexPlusServices.has("sessionQuery")) codexPlusProvideService("sessionQuery", codexPlusSessionQueryService(), "builtin");
-    if (!codexPlusServices.has("codexpp.sessionContext")) {
-      codexPlusProvideService("codexpp.sessionContext", codexSessionContextService(), "builtin");
+    if (!codexPlusServices.has("sessionContext")) {
+      codexPlusProvideService("sessionContext", codexSessionContextService(), "builtin");
     }
     // 全局的多语言服务：写成 inject: ["locale"] 的拓展也能用（ctx.locale 是按实例自动撤销的同一套接口）。
     if (!codexPlusServices.has("locale")) {

@@ -1565,12 +1565,17 @@ details.relay-fold[open] > .relay-fold-body {
   min-width: 180px;
   max-height: 260px;
   overflow: auto;
+  scrollbar-width: none;
   border: 1px solid hsl(var(--border) / 0.8);
   border-radius: 12px;
   background: hsl(var(--popover));
   color: hsl(var(--popover-foreground));
   padding: 4px;
   box-shadow: 0 18px 48px hsl(var(--shadow-color) / 0.22);
+}
+
+.app-select-menu::-webkit-scrollbar {
+  display: none;
 }
 
 /* 选项：文字在左，选中项文字变主色、右边一个小勾；没有前置图标列。 */
@@ -4600,34 +4605,6 @@ select {
   width: 100%;
 }
 
-/* Codex provider catalog: a distinct add-flow with a searchable category rail. */
-.provider-catalog-screen{display:flex;min-height:0;flex:1;flex-direction:column;background:radial-gradient(900px 420px at 90% -10%,hsl(var(--brand-accent)/.11),transparent 62%),hsl(var(--background))}.provider-catalog-header{display:flex;height:58px;min-height:58px;align-items:center;gap:12px;padding:0 26px;border-bottom:1px solid hsl(var(--border))}.provider-catalog-header h2{margin:0;font-size:20px}.provider-catalog-header>span{color:hsl(var(--muted-foreground));font-size:16px}
-
-/* 旧版紧凑添加流程：快速模板按钮 → 编辑表单，不再先进入新版分类目录。 */
-.provider-add-simple-body{width:min(900px,100%);margin:0 auto;padding:30px 36px 42px;overflow:auto}.provider-add-search{display:flex;align-items:center;gap:8px;height:42px;border:1px solid hsl(var(--input));border-radius:8px;padding:0 12px;color:hsl(var(--muted-foreground));background:hsl(var(--surface-sunken)/.3)}.provider-add-search input{height:100%;flex:1;border:0;outline:0;background:transparent;color:hsl(var(--foreground));font:inherit}.provider-add-results{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin-top:14px}.provider-add-result{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:54px;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--card)/.7);padding:9px 13px;color:hsl(var(--foreground));text-align:left;cursor:pointer}.provider-add-result:hover{border-color:hsl(var(--brand-accent)/.55);background:hsl(var(--brand-accent)/.07)}.provider-add-result strong{font-size:13px}.provider-add-result small{max-width:48%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:hsl(var(--muted-foreground))}.provider-add-hint{margin:24px 0 0;color:hsl(var(--muted-foreground));font-size:12px}@media(max-width:700px){.provider-add-simple-body{padding-inline:20px}.provider-add-results{grid-template-columns:1fr}}
-
-.provider-add-reference-layout{max-width:1040px}.provider-add-section h3{margin:24px 0 10px;color:hsl(var(--muted-foreground));font-size:14px}.provider-add-result{justify-content:flex-start;min-height:78px}.provider-add-result>span:last-child{min-width:0}.provider-add-icon{display:flex;align-items:center;justify-content:center;flex:none;width:38px;height:38px;border:1px solid hsl(var(--brand-accent)/.35);border-radius:10px;background:hsl(var(--brand-accent)/.08);color:hsl(var(--brand-accent));font-size:17px;font-weight:700}.provider-add-result small{margin-top:4px;max-width:100%}
-
-/* ── 添加供应商目录页 ───────────────────────────────────────── */
-/* 名称与网址上下两行；卡片压矮，宽屏三列；「自定义配置」独占一行。 */
-.provider-add-reference-layout .provider-add-results{grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:8px;margin-top:0}
-.provider-add-reference-layout .provider-add-result{min-height:0;padding:10px 12px;gap:10px;align-items:center;transition:border-color var(--motion-fast) var(--motion-ease),background var(--motion-fast) var(--motion-ease),transform var(--motion-fast) var(--motion-ease)}
-.provider-add-reference-layout .provider-add-result:hover{transform:translateY(-1px)}
-.provider-add-reference-layout .provider-add-icon{width:32px;height:32px;border-radius:8px;font-size:13px}
-.provider-add-text{display:grid;gap:2px;min-width:0;flex:1}
-.provider-add-text strong,.provider-add-text small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.provider-add-reference-layout .provider-add-text small{margin:0;max-width:none;font-size:11.5px}
-.provider-add-protocol{flex:none;padding:1px 6px;border:1px solid hsl(var(--border));border-radius:5px;color:hsl(var(--muted-foreground));font-size:10.5px}
-.provider-add-section h3{display:flex;align-items:center;gap:6px;margin:22px 0 8px;font-size:12.5px;font-weight:600}
-.provider-add-section h3 span{padding:0 6px;border-radius:999px;background:hsl(var(--secondary));color:hsl(var(--muted-foreground));font-size:11px;font-weight:500}
-.provider-add-custom{display:flex;align-items:center;gap:12px;width:100%;margin-top:14px;padding:12px 14px;border:1px dashed hsl(var(--brand-accent)/.55);border-radius:10px;background:hsl(var(--brand-accent)/.06);color:hsl(var(--foreground));font:inherit;text-align:left;cursor:pointer;transition:background var(--motion-fast) var(--motion-ease),border-color var(--motion-fast) var(--motion-ease)}
-.provider-add-custom:hover{border-style:solid;background:hsl(var(--brand-accent)/.1)}
-.provider-add-custom .provider-add-text small{color:hsl(var(--muted-foreground));font-size:12px}
-.provider-add-chevron{flex:none;color:hsl(var(--muted-foreground))}
-.provider-add-empty{margin-top:24px;padding:28px 16px;border:1px dashed hsl(var(--border));border-radius:10px;color:hsl(var(--muted-foreground));font-size:12.5px;text-align:center}
-/* 外框与供应商列表（.mg-page）一致：同宽、14px 圆角、边框，内容裁在圆角里。 */
-.screen.management-screen>.provider-catalog-screen{flex:1 1 auto;width:min(100%,1240px);min-height:0;margin:0 auto 22px;border:1px solid hsl(var(--border));border-radius:14px;overflow:hidden}
-
 /* 四个管理页统一内容容器：外层边框承载页面内容，内部列表保持独立分组。 */
 .mg-page>.mg-content{margin:18px 22px 22px;padding:20px;border:1px solid hsl(var(--border));border-radius:14px;background:hsl(var(--surface-sunken)/.32);box-shadow:var(--shadow-sm)}.mg-page>.mg-content>.mg-notice{margin-top:12px}@media(max-width:760px){.mg-page>.mg-content{margin:14px 14px 18px;padding:14px}}
 
@@ -4778,7 +4755,7 @@ select {
   overflow: hidden;
 }
 .update-dialog[open] { display: flex; flex-direction: column; }
-.update-dialog::backdrop { background: hsl(var(--shadow-color) / 0.6); backdrop-filter: blur(6px); }
+.update-dialog::backdrop { background: hsl(var(--shadow-color) / 0.55); -webkit-backdrop-filter: blur(4px) saturate(130%); backdrop-filter: blur(4px) saturate(130%); }
 .update-dialog .modal-head { flex-shrink: 0; }
 .update-dialog-body { min-height: 0; overflow-y: auto; }
 .update-dialog-body .release-notes { max-height: none; }
@@ -5157,6 +5134,388 @@ select {
   scroll-margin-top: 12px;
 }
 
+/* ── 供应商编辑弹窗（对齐登录账号 / 共享供应商的 .pf-modal 规范） ── */
+.gw-portal .pf-modal.relay-edit-modal {
+  width: min(740px, calc(100vw - 32px));
+  max-height: min(86vh, 780px);
+  transition: width 160ms var(--motion-ease);
+}
+
+.gw-portal .pf-modal.relay-edit-modal[data-tab="models"] {
+  width: min(860px, calc(100vw - 32px));
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-edit-modal-body {
+  display: block;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-profile-editor {
+  --relay-control-height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  animation: none;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-profile-editor:focus-within {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .pf-section {
+  padding: 14px 18px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-section-actions .pf-action {
+  margin-left: 0;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-single-col {
+  display: grid;
+  gap: 10px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-two-col {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px 14px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-three-col {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: start;
+  gap: 10px 12px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-field-head small {
+  margin-left: 4px;
+  color: hsl(var(--muted-foreground));
+  font-weight: 400;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-key-list {
+  display: grid;
+  gap: 6px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-key-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-key-select {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground) / 0.55);
+  cursor: pointer;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-key-select:hover {
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-key-line.active .relay-key-select {
+  color: hsl(var(--brand-accent));
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-key-name {
+  width: 112px;
+  flex: none;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-key-secret {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-key-preview {
+  flex: none;
+  padding: 0 6px;
+  color: hsl(var(--muted-foreground));
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-gateway-proxy-inline > .pf-section {
+  padding: 10px 0 0;
+  border-top: 1px dashed hsl(var(--border) / 0.7);
+}
+
+/* 模型表格：对齐价格表（.pf-price-table）的精致圆角边框数据表，在 860px 弹窗里不触发横向滚动。 */
+.gw-portal .pf-modal.relay-edit-modal .relay-model-row-editor {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-row {
+  grid-template-columns: 20px minmax(168px, 1.8fr) 76px 88px 116px 124px 26px 26px;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 8px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-row.relay-model-row-head {
+  align-items: start;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--surface-sunken) / 0.55);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-head-bulk {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+  min-width: 0;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-bulk-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-bulk-select .app-select-trigger {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  min-height: 22px;
+  padding: 0 5px;
+  border: 1px dashed hsl(var(--border));
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font-size: 10.5px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-bulk-select .app-select-trigger:hover {
+  border-style: solid;
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-entry + .relay-model-entry {
+  border-top: 1px solid hsl(var(--border) / 0.5);
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-row input,
+.gw-portal .pf-modal.relay-edit-modal .relay-model-row .app-select-trigger {
+  height: 28px;
+  min-height: 28px;
+  font-size: 12px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-row .relay-model-drag,
+.gw-portal .pf-modal.relay-edit-modal .relay-model-row .relay-model-import-button,
+.gw-portal .pf-modal.relay-edit-modal .relay-model-row .relay-model-delete {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-import-workbench {
+  margin: 0 8px 8px;
+  padding: 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken) / 0.45);
+}
+
+/* 单模型协议转换表格对齐边框表样式。 */
+.gw-portal .pf-modal.relay-edit-modal .relay-model-route-editor {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-route-row {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.1fr) minmax(0, 1fr) 26px;
+  gap: 6px;
+  padding: 5px 8px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-route-row.relay-model-route-head {
+  padding: 5px 8px;
+  border-bottom: 1px solid hsl(var(--border));
+  background: hsl(var(--surface-sunken) / 0.55);
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-model-route-row + .relay-model-route-row:not(.relay-model-route-head) {
+  border-top: 1px solid hsl(var(--border) / 0.5);
+}
+
+/* 请求页的高级兼容选项：单列细分割线清单，告别厚重双列卡片。 */
+.gw-portal .pf-modal.relay-edit-modal .relay-compat-group {
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--surface-sunken) / 0.28);
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-compat-group > summary {
+  padding: 8px 12px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-compat-body {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0;
+  padding: 0 12px 4px;
+  border-top: 1px solid hsl(var(--border) / 0.6);
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-compat-body .switch-row.relay-switch-row {
+  margin: 0;
+  padding: 9px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-compat-body .switch-row.relay-switch-row + .switch-row.relay-switch-row {
+  border-top: 1px solid hsl(var(--border) / 0.45);
+}
+
+/* 价格表在较大弹窗里展示更多行。 */
+.gw-portal .pf-modal.relay-edit-modal .pf-price-rows {
+  max-height: 360px;
+}
+
+/* 限速两列并排（共享与直连弹窗共用）。 */
+.gw-portal .pf-limits-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+/* 配置预览：顶部分段切换 + 单一清爽代码区。 */
+.gw-portal .pf-modal.relay-edit-modal .relay-file-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-modal-code-editor {
+  min-height: 320px;
+  max-height: 460px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-file-grid {
+  margin: 0;
+  padding: 14px 18px 18px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .aggregate-editor,
+.gw-portal .pf-modal.relay-edit-modal .aggregate-mode-chooser {
+  padding: 16px 18px;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-edit-modal-foot {
+  justify-content: flex-end;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .relay-edit-modal-foot-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.gw-portal .pf-modal.relay-edit-modal .pf-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gw-portal .pf-tabs .relay-tab-issue-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  border-radius: 99px;
+  background: hsl(var(--status-error));
+  vertical-align: middle;
+}
+
+.relay-legacy-mode-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--surface-sunken) / 0.55);
+}
+
+.relay-legacy-mode-banner-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.relay-legacy-mode-banner-copy strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.relay-legacy-mode-banner-copy span {
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.modal-backdrop.provider-doctor-backdrop {
+  z-index: 1200;
+}
+
 /* 高级兼容选项：一组默认收起的开关，横跨两列。 */
 .relay-compat-group {
   grid-column: 1 / -1;
@@ -5306,11 +5665,21 @@ select {
 .relay-billing-refresh:disabled { cursor: default; }
 /* 没识别出中转站时的刷新入口：不占眼，悬停卡片 / 键盘聚焦 / 正在刷新时才显示。 */
 .relay-billing-refresh.relay-billing-retry { flex-shrink: 0; color: hsl(var(--muted-foreground)); opacity: 0; }
+/* 共享供应商行的状态列贴右排布：隐形的重试按钮不占布局宽度，避免有/无重试按钮的行「● 可用」左右错位；
+   悬停或刷新时浮在状态文字左侧。 */
+.gw-pool-status { position: relative; }
+.gw-pool-status > .relay-billing-retry {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + 4px);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
 .cx-relay-row:hover .relay-billing-retry,
 .cx-relay-row:focus-within .relay-billing-retry,
 .gw-pool-row:hover .relay-billing-retry,
 .gw-pool-row:focus-within .relay-billing-retry,
-.relay-billing-refresh.relay-billing-retry:disabled { opacity: 0.7; }
+.relay-billing-refresh.relay-billing-retry:disabled { opacity: 0.7; pointer-events: auto; }
 .relay-billing-refresh.relay-billing-retry:hover:not(:disabled) { opacity: 1; }
 .gw-billing-stale { margin-right: 4px; color: hsl(var(--status-warning)); font-size: 11px; font-style: normal; white-space: nowrap; }
 /* 网关供应商池右侧：中转站倍率 + 余额徽章，复用订阅额度徽章（.gw-quota-badge）的样式。 */
@@ -5476,16 +5845,19 @@ select {
   justify-content: center;
   padding-top: 14vh;
   background: hsl(var(--shadow-color) / 0.55);
+  -webkit-backdrop-filter: blur(4px) saturate(130%);
+  backdrop-filter: blur(4px) saturate(130%);
 }
 
 .palette {
   width: min(560px, calc(100vw - 32px));
   overflow: hidden;
   border: 1px solid hsl(var(--input));
-  border-radius: 12px;
-  background: hsl(var(--popover));
+  border-radius: 14px;
+  background: hsl(var(--surface-raised));
   box-shadow: var(--shadow-xl);
-  color: hsl(var(--popover-foreground));
+  color: hsl(var(--foreground));
+  animation: modal-rise 180ms var(--motion-ease);
 }
 
 .palette-input {

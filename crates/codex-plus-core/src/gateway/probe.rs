@@ -370,6 +370,7 @@ fn protocol_label(relay: &RelayProfile) -> &'static str {
         RelayProtocol::Responses => "responses",
         RelayProtocol::ChatCompletions => "chat",
         RelayProtocol::AnthropicMessages => "anthropic",
+        RelayProtocol::Gemini => "gemini",
     }
 }
 
@@ -377,6 +378,7 @@ fn wire_label(wire: UpstreamWireApi) -> &'static str {
     match wire {
         UpstreamWireApi::ChatCompletions => "chat",
         UpstreamWireApi::AnthropicMessages => "anthropic",
+        UpstreamWireApi::Gemini => "gemini",
         _ => "responses",
     }
 }

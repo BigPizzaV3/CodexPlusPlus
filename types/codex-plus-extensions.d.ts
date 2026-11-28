@@ -685,8 +685,8 @@ interface CodexPlusSessionContextSelection {
 interface CodexPlusSessionContext {
   read(): CodexPlusSessionContextSelection | null;
   refresh(): Promise<CodexPlusSessionContextSelection | null>;
-  /** null 清除覆盖。立即恢复会话时返回 true，无需恢复或延后时返回 null。 */
-  set(threadId: string, model: string, value: number | null): Promise<true | null>;
+  /** null 清除覆盖；applied 已恢复，unchanged 无需恢复，deferred 下次发送前应用。 */
+  set(threadId: string, model: string, value: number | null): Promise<{ status: "applied" | "unchanged" | "deferred" }>;
 }
 
 interface CodexPlusExtensionContext {
@@ -720,7 +720,7 @@ interface CodexPlusExtensionContext {
   /** inject 了 sessions 时可用：新建、分叉、改名、追加条目、发起 / 插话 / 中断一轮、压缩。 */
   readonly sessions?: CodexPlusSessions;
   /** 仅管理当前本机会话及其所选模型的上下文窗口。 */
-  readonly "codexpp.sessionContext"?: CodexPlusSessionContext;
+  readonly sessionContext?: CodexPlusSessionContext;
   /** 调模型。 */
   readonly llm: CodexPlusLlm;
   /** 主题。 */
@@ -731,7 +731,7 @@ interface CodexPlusExtensionContext {
   /** 提供服务：服务名全局唯一，重名抛错；随实例卸载撤销，依赖它的拓展随之卸载。 */
   provide(name: string, value: unknown): CodexPlusDispose;
   /** 取服务，不存在时为 undefined（可选依赖）。 */
-  get(name: "codexpp.sessionContext"): CodexPlusSessionContext | undefined;
+  get(name: "sessionContext"): CodexPlusSessionContext | undefined;
   get<T = unknown>(name: string): T | undefined;
   /** 子作用域：deps 齐全时以子 ctx 调用 apply；服务消失时卸载、回来时重新应用。 */
   inject(deps: CodexPlusInject, apply: (ctx: CodexPlusExtensionContext) => void | Promise<void>): CodexPlusExtensionFiber;

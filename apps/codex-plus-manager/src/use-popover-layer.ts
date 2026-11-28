@@ -59,11 +59,13 @@ export function usePopoverLayer({
     const trigger = rootRef.current?.getBoundingClientRect();
     const menu = menuRef.current;
     if (!trigger || !menu) return;
+    // scrollHeight 不含上下边框，border-box 下直接当 maxHeight 会少 2px 边框高度而触发多余滚动条。
+    const borderY = Math.max(0, menu.offsetHeight - menu.clientHeight);
     const next = resolvePopoverLayout({
       trigger,
       viewport: { width: window.innerWidth, height: window.innerHeight },
       rootZoom: Number(document.documentElement.style.zoom) || 1,
-      menuHeight: menu.scrollHeight,
+      menuHeight: menu.scrollHeight + borderY,
       align,
       minWidth,
       menuWidth,

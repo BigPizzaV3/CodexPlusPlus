@@ -1,6 +1,6 @@
 /** 供应商按模型的思考等级：在共享供应商的详情里编辑，存进这家的模型资料（格式同直连模式的「模型配置」）。
  * 写进 Agent 的模型目录（Codex 选择器里的档位），转发时按「思考参数」决定怎么发给上游。 */
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { RefreshCw, X } from "lucide-react";
@@ -55,6 +55,8 @@ export function ProviderReasoningDialog({
   syncOnOpen = false,
   onSave,
   onCancel,
+  renderTabs,
+  noEnterAnimation,
 }: {
   entry: GatewayPoolEntry;
   busy: boolean;
@@ -64,6 +66,8 @@ export function ProviderReasoningDialog({
   syncOnOpen?: boolean;
   onSave: (modelMetadata: string, synced: ReasoningSyncPick[]) => void;
   onCancel: () => void;
+  renderTabs?: (runIfClean: (action: () => void) => void) => ReactNode;
+  noEnterAnimation?: boolean;
 }) {
   const titleId = useId();
   const [metadata, setMetadata] = useState(entry.modelMetadata ?? "");
@@ -73,7 +77,7 @@ export function ProviderReasoningDialog({
   const [filled, setFilled] = useState<ReasoningSyncPick[]>([]);
   const [query, setQuery] = useState("");
   const shownModels = useMemo(() => filterModels(entry.models, query, (model) => model), [entry.models, query]);
-  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({
+  const { backdropProps, dialogProps, requestClose, confirmAction } = useModalShell<HTMLFormElement>({
     onClose: onCancel,
     dirty: metadata !== (entry.modelMetadata ?? ""),
     labelledBy: titleId,
@@ -177,6 +181,8 @@ export function ProviderReasoningDialog({
       <form
         {...dialogProps}
         className="pf-modal pf-extras-modal pf-reasoning-modal"
+        data-no-enter={noEnterAnimation ? "true" : undefined}
+        data-tabbed={renderTabs ? "true" : undefined}
         onSubmit={(event) => {
           event.preventDefault();
           onSave(metadata, filled.filter(stillUpstream));
@@ -190,6 +196,7 @@ export function ProviderReasoningDialog({
           </div>
           <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
+        {renderTabs?.((action) => void confirmAction(action))}
 
         <div className="pf-body">
           <section className="pf-section">

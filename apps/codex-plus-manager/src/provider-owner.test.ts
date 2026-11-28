@@ -46,8 +46,8 @@ test("Claude 页：按归属筛、数目跟着列出的、行上带来源标记�
   const source = readFileSync(path.join(import.meta.dirname, "ClaudeProviders.tsx"), "utf8");
   assert.match(source, /const \[showOtherAgents, setShowOtherAgents\] = useShowOtherAgents\("claude"\);/);
   assert.match(source, /const pool = entriesForPage\(allPool, "claude", showOtherAgents\);/);
-  // 分页数目、列表、「供应商 N」都从筛过的 pool 算。
-  assert.match(source, /pool\.filter\(\(entry\) => viewOf\(entry\.protocol\) === view\)\.length/);
+  // 列表主区与底部折叠区、「供应商 N」都从筛过的 pool 算。
+  assert.match(source, /const primaryPool = mode === "direct" \? pool\.filter\(directCapable\) : pool;/);
   assert.match(source, /count=\{pool\.length \|\| undefined\}/);
   assert.match(source, /<MenuItem checked=\{showOtherAgents\} onClick=\{\(\) => setShowOtherAgents\(!showOtherAgents\)\}/);
   assert.match(source, /<OwnerBadge entry=\{entry\} page="claude" \/>/);

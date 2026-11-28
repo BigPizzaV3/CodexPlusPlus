@@ -24,9 +24,9 @@ vm.runInContext(code,ctx);
 const fixture=():any=>({activeRelayId:"agg",relayProfiles:[{id:"default",relayMode:"pureApi"},{id:"member",relayMode:"pureApi"},{id:"unused",relayMode:"pureApi"},{id:"agg",relayMode:"aggregate",aggregate:{members:[{profileId:"member",weight:1},{profileId:"unused",weight:1}],routes:[]}}]});
 test("provider page passes complete settings to mutations and filters only visible cards",()=>{
   const parent=appDeclarationSource("RelayScreen");
-  const list=parent.slice(parent.indexOf("<RelayProfileList"),parent.indexOf("/>",parent.indexOf("<RelayProfileList")));
-  assert.match(list,/form=\{normalized\}/);assert.match(list,/visibleProfiles=\{visibleProfiles\}/);
-  assert.match(list,/onFormChange=\{saveRelaySettings\}/);assert.match(list,/onReorder=\{reorderRelaySettings\}/);
+  const list=parent.slice(parent.indexOf("<CodexProviderList"),parent.indexOf("/>",parent.indexOf("<CodexProviderList")));
+  assert.match(list,/form=\{normalized\}/);assert.match(list,/profiles=\{visibleProfiles\}/);
+  assert.match(list,/onFormChange=\{saveRelaySettings\}/);
   const form=fixture(),visible=form.relayProfiles.slice(0,3);let saved:any;let savedViaFormChange=false;
   const tree=ctx.RelayProfileList({form,visibleProfiles:visible,onFormChange:()=>{savedViaFormChange=true},onReorder:(v:any)=>{saved=v}});
   const sortable=tree.children[0],cards=sortable.children[0].children[0];

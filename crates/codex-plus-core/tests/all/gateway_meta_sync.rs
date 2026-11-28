@@ -42,6 +42,7 @@ fn provider(id: &str, models: &str) -> GatewayProvider {
         newapi_access: None,
             subscription_policy: None,
         upstream_meta: Default::default(),
+        upstream_reasoning: None,
         auto_compact: Default::default(),
         relay: RelayProfile {
             id: id.to_string(),
@@ -713,4 +714,118 @@ async fn reads_metadata_through_the_models_endpoint() {
     relay.base_url = format!("{}/v1", failing.uri());
     let error = upstream_model_metas(&relay).await.unwrap_err();
     assert!(format!("{error:#}").contains("bad key"), "{error:#}");
+}
+
+/// 目录里某个模型的思考档位：（档位，默认档）。
+fn catalog_reasoning(gateway: &GatewaySettings, model: &str) -> (Vec<String>, String) {
+    let binding = gateway.bindings["codex"].clone();
+    let profile = codex_gateway_profile(gateway, &binding, 57391, false).unwrap();
+    let metadata: Value = serde_json::from_str(&profile.model_metadata).unwrap();
+    let entry = metadata
+        .get(model)
+        .unwrap_or_else(|| panic!("目录里没有 {model}：{metadata}"));
+    // 没有任何来源给档位的模型（借不到模板）条目里没有这一项。
+    let efforts = entry["supported_reasoning_levels"]
+        .as_array()
+        .map(|levels| {
+            levels
+                .iter()
+                .map(|level| level.as_str().or_else(|| level["effort"].as_str()).unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    (efforts, entry["default_reasoning_level"].as_str().unwrap_or_default().to_string())
+}
+
+fn gateway_with(provider: GatewayProvider) -> GatewaySettings {
+    let mut gateway = GatewaySettings {
+        providers: vec![provider],
+        auto_models: false,
+        ..GatewaySettings::default()
+    };
+    gateway.bindings.insert(
+        "codex".to_string(),
+        AgentBinding {
+            enabled: true,
+            model: "gpt-x".to_string(),
+            token: new_client_token(&ToolId::Codex),
+            ..AgentBinding::default()
+        },
+    );
+    gateway
+}
+
+/// 思考档位优先用上游 `/models` 声明的：没声明时才是借来的内置模板；
+/// 这家模型资料里写明了档位的照旧按写明的。
+#[test]
+fn catalog_prefers_upstream_declared_reasoning_over_the_borrowed_template() {
+    let mut source = provider("up", "gpt-x\nother");
+    source.upstream_reasoning = Some(BTreeMap::from([(
+        "gpt-x".to_string(),
+        codex_plus_core::gateway::store::SyncedReasoning {
+            levels: vec!["low".into(), "high".into(), "max".into()],
+            default_level: Some("high".into()),
+        },
+    )]));
+    let gateway = gateway_with(source.clone());
+    assert_eq!(
+        catalog_reasoning(&gateway, "gpt-x"),
+        (vec!["low".into(), "high".into(), "max".into()], "high".into())
+    );
+    // 上游没声明的模型：仍是原来的来源，不受影响。
+    let template = catalog_reasoning(&gateway_with(provider("up", "gpt-x\nother")), "other");
+    assert_eq!(catalog_reasoning(&gateway, "other"), template);
+
+    // 上游没给默认档：沿用原来的默认（还在档位里时），否则 medium，再否则最低一档。
+    let mut no_default = source.clone();
+    no_default.upstream_reasoning.as_mut().unwrap().get_mut("gpt-x").unwrap().default_level = None;
+    let (levels, default) = catalog_reasoning(&gateway_with(no_default), "gpt-x");
+    assert_eq!(levels, vec!["low", "high", "max"]);
+    assert!(levels.contains(&default), "默认档要在档位里：{default}");
+
+    // 模型资料里写明了档位：照写明的，不拿上游的盖。
+    let mut manual = source;
+    manual.relay.model_metadata = json!({
+        "gpt-x": { "supported_reasoning_levels": ["medium"], "default_reasoning_level": "medium" }
+    })
+    .to_string();
+    assert_eq!(
+        catalog_reasoning(&gateway_with(manual), "gpt-x"),
+        (vec!["medium".into()], "medium".into())
+    );
+}
+
+/// 后台检查上游模型时顺带记下上游声明的思考档位；没声明档位的模型不记。
+#[tokio::test]
+async fn checking_upstream_models_records_the_declared_reasoning() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [
+                { "id": "gpt-x", "object": "model", "supported_reasoning_levels": [{ "effort": "low" }, { "effort": "xhigh" }] },
+                { "id": "plain", "object": "model" }
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let temp = tempfile::tempdir().unwrap();
+    let store = GatewayStore::at(temp.path().join("gateway.json"));
+    let input = codex_plus_core::gateway::apply::ProviderInput {
+        name: "chk".into(),
+        base_url: format!("{}/v1", server.uri()),
+        protocol: RelayProtocol::Responses,
+        keys: vec!["sk-check-0123456789abcdefghij-CHECK".into()],
+        model: "gpt-x".into(),
+        model_list: "gpt-x\nplain".into(),
+        ..Default::default()
+    };
+    let (_, id) = codex_plus_core::gateway::apply::create_provider(&store, &input, "custom", None).unwrap();
+    assert!(store.load().unwrap().providers[0].upstream_reasoning.is_none(), "新建的还没读过");
+
+    codex_plus_core::gateway::model_sync::check_provider(&store, &id).await.unwrap();
+    let declared = store.load().unwrap().providers[0].upstream_reasoning.clone().unwrap();
+    assert_eq!(declared["gpt-x"].levels, vec!["low", "xhigh"]);
+    assert!(!declared.contains_key("plain"), "{declared:?}");
 }

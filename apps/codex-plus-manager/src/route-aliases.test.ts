@@ -25,7 +25,7 @@ it("别名目标都是现有路由，旧 id 不再是路由表里的页面（dre
 });
 
 it("所有入口都经别名表：navigate、拓展 navigate、?previewRoute；会话深链走 navigate 读列表", () => {
-  assert.match(app, /const navigate = async \(target: RouteTarget\) => \{/);
+  assert.match(app, /const navigate = async \(target: RouteTarget, \{ fromSwitch = false \}: \{ fromSwitch\?: boolean \} = \{\}\) => \{/);
   assert.match(app, /const next = isRouteAlias\(target\) \? target : isKnownRoute\(target\) \? target : null;/);
   assert.match(app, /const previewTarget = previewRoute \? resolveRouteAlias<string>\(previewRoute\) : null;/);
   // 进页面的数据并行读；会话页回来时停在原来那一页；「连接与供应商」不再读微信状态。

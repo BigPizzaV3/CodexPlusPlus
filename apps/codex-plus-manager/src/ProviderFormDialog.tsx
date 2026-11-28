@@ -3,7 +3,7 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { Pencil, Plus, RefreshCw, Search, Star, X } from "lucide-react";
+import { ChevronDown, Pencil, Plus, RefreshCw, Search, Star, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { t, tf } from "./i18n";
@@ -26,6 +26,7 @@ import { CompatToggles } from "./CompatToggles";
 import { lookupPublicPrices } from "./ProviderExtrasDialog";
 import {
   addModel,
+  autoFetchModelsKey,
   defaultModel,
   draftKeys,
   draftModels,
@@ -53,6 +54,7 @@ const PROTOCOLS: Array<{ id: GatewayProtocol; label: string }> = [
   { id: "chatCompletions", label: "Chat" },
   { id: "responses", label: "Responses" },
   { id: "anthropicMessages", label: "Anthropic" },
+  { id: "gemini", label: "Gemini" },
 ];
 
 export function ProviderFormDialog({
@@ -63,6 +65,11 @@ export function ProviderFormDialog({
   agentPicks,
   windowsEntry,
   onEditWindows,
+  keyList,
+  submitLabel,
+  defaultProtocol,
+  renderTabs,
+  noEnterAnimation,
 }: {
   form: ProviderFormState;
   busy: string | null;
@@ -74,19 +81,35 @@ export function ProviderFormDialog({
   windowsEntry?: GatewayPoolEntry;
   /** 编辑时打开上下文窗口弹窗，按弹窗里正在编辑的模型列表列出。 */
   onEditWindows?: (models: string[]) => void;
+  /** 编辑时直接内嵌交互式 Key 列表（可添加、替换、删除、测试单个 Key）。 */
+  keyList?: ReactNode;
+  /** 自定义提交按钮文案（新建默认按调用方语境显示「添加供应商」或「添加到共享供应商」）。 */
+  submitLabel?: string;
+  /** 自定义新建时的默认协议（如 Codex 传 responses，Claude 传 anthropicMessages）。 */
+  defaultProtocol?: GatewayProtocol;
+  /** 统一配置弹窗的顶部标签栏（切换前经 confirmAction 检查未保存修改）。 */
+  renderTabs?: (runIfClean: (action: () => void) => void) => ReactNode;
+  /** 在标签之间切换时不重播入场动画。 */
+  noEnterAnimation?: boolean;
 }) {
   const editing = form.mode === "edit";
   const subscriptionEditing = form.mode === "edit" && form.entry.account === "chatgpt";
   const preset = form.mode === "preset" ? form.preset : null;
   const [draft, setDraft] = useState<ProviderDraft>(() => {
-    return form.mode === "edit" ? providerDraftFromEntry(form.entry) : providerDraftFromPreset(preset);
+    if (form.mode === "edit") return providerDraftFromEntry(form.entry);
+    const initial = providerDraftFromPreset(preset);
+    return !preset && defaultProtocol ? { ...initial, protocol: defaultProtocol } : initial;
   });
   // 价格在共享供应商的详情里按模型编辑；新添加时按公开价格表给每个模型悄悄填上（查不到的不填）。
   const autoPrice = useRef(!editing && !hasPrice(draft));
   const [fetching, setFetching] = useState(false);
-  const [fetchNote, setFetchNote] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [fetchNote, setFetchNote] = useState<{ tone: "ok" | "error" | "muted"; text: string } | null>(null);
   const [picker, setPicker] = useState<PickerState | null>(null);
+  const [pickerAutoFocus, setPickerAutoFocus] = useState(true);
   const [modelInput, setModelInput] = useState("");
+  const [attempted, setAttempted] = useState(false);
+  const [compatOpen, setCompatOpen] = useState<boolean | null>(null);
+  const [headersOpen, setHeadersOpen] = useState<boolean | null>(null);
   const update = (patch: Partial<ProviderDraft>) => setDraft((previous) => ({ ...previous, ...patch }));
   const validation = subscriptionEditing
     ? (!draft.name.trim() ? "名称不能为空" : proxyAddressError(draft.proxy))
@@ -96,22 +119,43 @@ export function ProviderFormDialog({
   const chosenModel = defaultModel(draft);
   const firstKey = keys.map((key) => key.trim()).find(Boolean) ?? "";
   const headerCount = (draft.customHeaders ?? []).filter((row) => row.key.trim()).length;
+  const compatEnabledCount =
+    Number(draft.stripImageGenerationTool === true)
+    + Number(draft.stripResponsesImageDetail === true)
+    + Number(draft.stripResponsesOutputEncryptedContent === true)
+    + Number(draft.disableToolSearch === true);
   const canFetch = (subscriptionEditing || (Boolean(draft.baseUrl.trim()) && (Boolean(firstKey) || editing))) && !fetching;
 
   // 弹窗外壳：Esc 走全局栈（「从上游获取」的勾选列表开着时 Esc 先收起列表）；改过再关先确认，
   // 不丢粘贴好的 Key 和挑好的模型。自动查到的价格不算改动。
   const titleId = useId();
   const [initialDraft] = useState(() => JSON.stringify({ ...draft, modelPrices: undefined }));
+  const [initialFirstKey] = useState(() => firstKey);
   const dirty = JSON.stringify({ ...draft, modelPrices: undefined }) !== initialDraft || picker !== null || modelInput.trim() !== "";
-  const { backdropProps, dialogProps, requestClose } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
-  // 从详情「请求头」一行进来：直接滚到请求头一节并聚焦第一个输入框。
-  const headersRef = useRef<HTMLElement>(null);
+  const { backdropProps, dialogProps, requestClose, confirmAction } = useModalShell<HTMLFormElement>({ onClose: onCancel, dirty, labelledBy: titleId });
+  // 自动拉取与竞态保护：记录挂载状态、最新草稿、请求序号、是否已手动点过及上次自动触发签名。
+  const mountedRef = useRef(true);
+  const fetchSeqRef = useRef(0);
+  const manualFetchedRef = useRef(false);
+  const lastAutoFetchRef = useRef<string | null>(null);
+  const latestRef = useRef({ draft, models, firstKey, picker });
+  latestRef.current = { draft, models, firstKey, picker };
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  // 从详情「请求头」一行进来：先展开再滚到请求头一节并聚焦第一个输入框。
+  const headersRef = useRef<HTMLDetailsElement>(null);
   const focusHeaders = form.mode === "edit" && form.focus === "headers";
   useEffect(() => {
     if (!focusHeaders) return;
     const section = headersRef.current;
-    section?.scrollIntoView({ block: "start" });
-    section?.querySelector<HTMLInputElement>("input")?.focus();
+    if (!section) return;
+    section.open = true;
+    section.scrollIntoView({ block: "start" });
+    section.querySelector<HTMLInputElement>("input")?.focus();
   }, [focusHeaders]);
 
   const lookupPrices = async (list: string[], baseUrl: string) => {
@@ -130,46 +174,95 @@ export function ProviderFormDialog({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.baseUrl, modelKey]);
 
-  const fetchModels = async () => {
+  const fetchModels = async (source: "manual" | "auto" = "manual") => {
+    if (source === "manual") manualFetchedRef.current = true;
+    const seq = ++fetchSeqRef.current;
+    const current = latestRef.current;
+    const startedSignature = `${current.draft.protocol}\0${current.draft.baseUrl.trim()}\0${current.firstKey}`;
     setFetching(true);
-    setFetchNote(null);
+    if (source === "manual") setFetchNote(null);
     try {
       const result = await invoke<Result & { models?: string[] }>("fetch_provider_models", {
-        baseUrl: draft.baseUrl.trim(),
-        protocol: draft.protocol,
-        apiKey: firstKey,
+        baseUrl: current.draft.baseUrl.trim(),
+        protocol: current.draft.protocol,
+        apiKey: current.firstKey,
         providerId: form.mode === "edit" ? form.entry.id : null,
         // 弹窗里正在编辑的请求头（#3075）：有的中转不带指定头连模型列表都不给。
-        customHeaders: subscriptionEditing ? null : providerHeaderInputs(draft.customHeaders ?? []),
+        customHeaders: subscriptionEditing ? null : providerHeaderInputs(current.draft.customHeaders ?? []),
       });
+      if (!mountedRef.current || seq !== fetchSeqRef.current) return;
+      const latest = latestRef.current;
+      const latestSignature = `${latest.draft.protocol}\0${latest.draft.baseUrl.trim()}\0${latest.firstKey}`;
+      if (source === "auto" && (latestSignature !== startedSignature || latest.picker !== null)) return;
       const fetched = result.models ?? [];
       if (result.status !== "ok" || !fetched.length) {
-        setFetchNote({ tone: "error", text: result.message });
+        setFetchNote(
+          source === "auto"
+            ? { tone: "muted", text: tf("未自动获取到模型：{0}（可手动添加或点右上角重试）", [result.message]) }
+            : { tone: "error", text: result.message },
+        );
       } else {
+        const models = latest.models;
+        setPickerAutoFocus(source === "manual");
         // 不论多少都让用户挑（#2785）：已在列表里的默认勾上（取消勾选表示移除），上游新增的默认不勾。
         setPicker({ rows: pickerRows(models, fetched), selected: new Set(models), query: "", fetched: fetched.length });
+        if (source === "auto") setFetchNote(null);
       }
     } catch (error) {
-      setFetchNote({ tone: "error", text: String(error) });
+      if (!mountedRef.current || seq !== fetchSeqRef.current) return;
+      if (source === "auto") {
+        const latest = latestRef.current;
+        const latestSignature = `${latest.draft.protocol}\0${latest.draft.baseUrl.trim()}\0${latest.firstKey}`;
+        if (latestSignature !== startedSignature) return;
+      }
+      setFetchNote(
+        source === "auto"
+          ? { tone: "muted", text: tf("未自动获取到模型：{0}（可手动添加或点右上角重试）", [String(error)]) }
+          : { tone: "error", text: String(error) },
+      );
     } finally {
-      setFetching(false);
+      if (mountedRef.current && seq === fetchSeqRef.current) setFetching(false);
     }
   };
 
+  // 新建供应商填好地址和 Key 后停顿 700ms 自动获取一次模型，同组配置只触发一次且不抢输入焦点。
+  const autoFetchSignature = autoFetchModelsKey({
+    editing,
+    subscriptionEditing,
+    baseUrl: draft.baseUrl,
+    protocol: draft.protocol,
+    firstKey,
+    initialFirstKey,
+  });
+  useEffect(() => {
+    if (!autoFetchSignature || manualFetchedRef.current || picker !== null) return;
+    if (lastAutoFetchRef.current === autoFetchSignature) return;
+    const timer = window.setTimeout(() => {
+      if (manualFetchedRef.current || latestRef.current.picker !== null) return;
+      lastAutoFetchRef.current = autoFetchSignature;
+      void fetchModels("auto");
+    }, 700);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFetchSignature, picker]);
+
   const title = form.mode === "edit" ? tf("编辑 {0}", [maskAccountName(form.entry.name)]) : preset ? tf("添加 {0}", [preset.name]) : t("添加自定义供应商");
-  const subtitle = subscriptionEditing ? t("ChatGPT 订阅账号") : preset?.apiKeyUrl ? tf("在 {0} 获取 Key", [presetHost(preset.apiKeyUrl)]) : editing ? tf("现有 {0} 个 Key", [form.entry.keyCount]) : t("任意 OpenAI / Anthropic 兼容接口");
+  const subtitle = subscriptionEditing ? t("ChatGPT 订阅账号") : preset?.apiKeyUrl ? tf("在 {0} 获取 Key", [presetHost(preset.apiKeyUrl)]) : editing ? tf("现有 {0} 个 Key", [form.entry.keyCount]) : t("任意 OpenAI / Anthropic / Gemini 兼容接口");
   // 编辑时已保存的 Key 只列打码后的样子，增删、替换在共享供应商详情的「Key」一行里单独做（#2782）；
   // 旧版后端没给 Key 列表时仍是「留空表示不改」的输入框。
   const savedKeys = form.mode === "edit" ? form.entry.keys ?? [] : [];
-  const keyHint = editing ? (savedKeys.length ? t("在供应商详情的「Key」一行里单独替换、删除或添加") : t("留空表示不改")) : preset?.defaultKey ? t("本机服务不校验 Key，保留默认值即可") : t("多个自动轮换");
+  const keyHint = editing ? (savedKeys.length ? (keyList ? t("可单独添加、替换、测试或删除 Key") : t("在供应商详情的「Key」一行里单独替换、删除或添加")) : t("留空表示不改")) : preset?.defaultKey ? t("本机服务不校验 Key，保留默认值即可") : t("多个自动轮换");
 
   return createPortal(
     <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <form
         {...dialogProps}
         className="pf-modal"
+        data-no-enter={noEnterAnimation ? "true" : undefined}
+        data-tabbed={renderTabs ? "true" : undefined}
         onSubmit={(event) => {
           event.preventDefault();
+          setAttempted(true);
           if (!validation) onSubmit({ ...draft, model: chosenModel });
         }}
       >
@@ -181,6 +274,7 @@ export function ProviderFormDialog({
           </div>
           <button aria-label={t("关闭")} className="pf-icon" onClick={() => void requestClose()} type="button"><X /></button>
         </header>
+        {renderTabs?.((action) => void confirmAction(action))}
 
         <div className="pf-body">
           <section className="pf-section">
@@ -188,7 +282,7 @@ export function ProviderFormDialog({
             <div className="pf-grid">
               <label className="pf-field">
                 <span>{t("名称")}</span>
-                <Input onChange={(event) => update({ name: event.currentTarget.value })} value={draft.name} />
+                <Input onChange={(event) => update({ name: event.currentTarget.value })} placeholder={t("例如 DeepSeek / 自建中转")} value={draft.name} />
               </label>
               {!subscriptionEditing ? <div className="pf-field">
                 <span>{t("协议")}</span>
@@ -204,14 +298,28 @@ export function ProviderFormDialog({
             {!subscriptionEditing ? <>
             <label className="pf-field">
               <span>{t("地址")}</span>
-              <Input className="pf-mono" onChange={(event) => update({ baseUrl: event.currentTarget.value })} placeholder="https://api.example.com/v1" value={draft.baseUrl} />
+              <Input
+                className="pf-mono"
+                onChange={(event) => update({ baseUrl: event.currentTarget.value })}
+                placeholder={draft.protocol === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.example.com/v1"}
+                value={draft.baseUrl}
+              />
             </label>
             <div className="pf-field">
-              <span>{t("API Key")} <small>{keyHint}</small></span>
+              <div className="pf-field-head">
+                <span>{t("API Key")} <small>{keyHint}</small></span>
+                {savedKeys.length ? null : (
+                  <button className="pf-link" onClick={() => setDraft((previous) => withKeys(previous, [...draftKeys(previous), ""]))} type="button">
+                    <Plus />{t("再加一个 Key")}
+                  </button>
+                )}
+              </div>
               {savedKeys.length ? (
-                <div className="pf-chips">
-                  {savedKeys.map((key) => <span className="pf-chip" key={key.id}><span className="pf-mono">{key.masked}</span></span>)}
-                </div>
+                keyList ?? (
+                  <div className="pf-chips">
+                    {savedKeys.map((key) => <span className="pf-chip" key={key.id}><span className="pf-mono">{key.masked}</span></span>)}
+                  </div>
+                )
               ) : null}
               {savedKeys.length ? null : keys.map((key, index) => (
                 <div className="pf-key" key={index}>
@@ -235,11 +343,6 @@ export function ProviderFormDialog({
                   ) : null}
                 </div>
               ))}
-              {savedKeys.length ? null : (
-                <button className="pf-link" onClick={() => setDraft((previous) => withKeys(previous, [...draftKeys(previous), ""]))} type="button">
-                  <Plus />{t("再加一个 Key")}
-                </button>
-              )}
             </div>
             </> : (
               <label className="pf-field">
@@ -252,13 +355,14 @@ export function ProviderFormDialog({
           <section className="pf-section">
             <h4>
               {t("模型")}<em>{models.length}</em>
-              <button className="pf-action" disabled={!canFetch} onClick={() => void fetchModels()} title={canFetch ? t("请求供应商的 /v1/models") : t("先填地址和 API Key")} type="button">
+              <button className="pf-action" disabled={!canFetch} onClick={() => void fetchModels("manual")} title={canFetch ? t("请求供应商的 /v1/models") : t("先填地址和 API Key")} type="button">
                 <RefreshCw className={fetching ? "animate-spin" : ""} />{fetching ? t("获取中…") : t("从上游获取")}
               </button>
             </h4>
             {fetchNote ? <p className="pf-note" data-tone={fetchNote.tone}>{fetchNote.text}</p> : null}
             {picker ? (
               <ModelPicker
+                autoFocusSearch={pickerAutoFocus}
                 onApply={(chosen, added, removed) => {
                   setDraft((previous) => withModels(previous, chosen));
                   setPicker(null);
@@ -307,20 +411,47 @@ export function ProviderFormDialog({
             ) : null}
           </section>
 
-          {draft.protocol === "responses" ? (
-            <section className="pf-section">
-              <h4>{t("兼容")}</h4>
-              <CompatToggles onChange={(patch) => update(patch)} values={draft} variant="gateway" />
-            </section>
-          ) : null}
-          {/* 自定义请求头（#3075）：和直连模式「高级兼容选项」里的同一套编辑行与规则；订阅账号的请求头由 Codex++ 自己定，不开放。 */}
-          {!subscriptionEditing ? (
-            <section className="pf-section" ref={headersRef}>
-              <h4>{t("自定义请求头")}{headerCount ? <em>{headerCount}</em> : null}</h4>
-              <div className="relay-custom-headers">
-                <RelayHeaderRows onChange={(customHeaders) => update({ customHeaders })} rows={draft.customHeaders ?? []} />
-              </div>
-              <p className="pf-hint">{t("测试连接、获取模型和实际请求都会带上。Host、Content-Length 等传输头不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。")}</p>
+          {(draft.protocol === "responses" || !subscriptionEditing) ? (
+            <section className="pf-section pf-advanced-section">
+              {draft.protocol === "responses" ? (
+                <details
+                  className="pf-fold"
+                  onToggle={(event) => setCompatOpen(event.currentTarget.open)}
+                  open={compatOpen ?? compatEnabledCount > 0}
+                >
+                  <summary>
+                    <ChevronDown aria-hidden="true" className="pf-fold-chevron" />
+                    <strong>{t("兼容选项")}</strong>
+                    {compatEnabledCount ? <em>{compatEnabledCount}</em> : null}
+                    <small>{compatEnabledCount ? tf("已开启 {0} 项", [compatEnabledCount]) : t("默认全部关闭，上游报错时按需开启")}</small>
+                  </summary>
+                  <div className="pf-fold-body pf-compat-list">
+                    <CompatToggles onChange={(patch) => update(patch)} values={draft} variant="gateway" />
+                  </div>
+                </details>
+              ) : null}
+              {/* 自定义请求头（#3075）：和直连模式「高级兼容选项」里的同一套编辑行与规则；订阅账号的请求头由 Codex++ 自己定，不开放。 */}
+              {!subscriptionEditing ? (
+                <details
+                  className="pf-fold"
+                  onToggle={(event) => setHeadersOpen(event.currentTarget.open)}
+                  open={headersOpen ?? (headerCount > 0 || focusHeaders)}
+                  ref={headersRef}
+                >
+                  <summary>
+                    <ChevronDown aria-hidden="true" className="pf-fold-chevron" />
+                    <strong>{t("自定义请求头")}</strong>
+                    {headerCount ? <em>{headerCount}</em> : null}
+                    <small>{headerCount ? tf("已配置 {0} 项", [headerCount]) : t("按需附加鉴权或租户请求头")}</small>
+                  </summary>
+                  <div className="pf-fold-body">
+                    <div className="relay-custom-headers">
+                      <RelayHeaderRows onChange={(customHeaders) => update({ customHeaders })} rows={draft.customHeaders ?? []} />
+                    </div>
+                    <p className="pf-hint">{t("测试连接、获取模型和实际请求都会带上。Host、Content-Length 等传输头不能覆盖；配置 Authorization 时以它为准，不再注入 API Key。")}</p>
+                  </div>
+                </details>
+              ) : null}
             </section>
           ) : null}
           {subscriptionEditing ? (
@@ -330,9 +461,15 @@ export function ProviderFormDialog({
 
         {agentPicks ? <div className="pf-agents">{agentPicks}</div> : null}
         <footer className="pf-foot">
-          <span className="pf-error">{validation ? t(validation) : ""}</span>
+          {validation && (editing || dirty || attempted) ? (
+            <span className="pf-error">{t(validation)}</span>
+          ) : validation && !editing ? (
+            <span className="pf-foot-hint">{t("填写名称、地址与 API Key 后即可添加")}</span>
+          ) : (
+            <span className="pf-error" />
+          )}
           <Button onClick={() => void requestClose()} size="sm" type="button" variant="ghost">{t("取消")}</Button>
-          <Button disabled={busy !== null || Boolean(validation)} size="sm" type="submit">{busy ? t("保存中") : editing ? t("保存") : t("添加到共享供应商")}</Button>
+          <Button disabled={busy !== null || Boolean(validation)} size="sm" type="submit">{busy ? t("保存中") : editing ? t("保存") : (submitLabel ?? t("添加供应商"))}</Button>
         </footer>
       </form>
     </div>,
@@ -351,10 +488,12 @@ function ModelPicker({
   picker,
   setPicker,
   onApply,
+  autoFocusSearch = true,
 }: {
   picker: PickerState;
   setPicker: (next: PickerState | null) => void;
   onApply: (models: string[], added: number, removed: number) => void;
+  autoFocusSearch?: boolean;
 }) {
   const visible = useMemo(() => filterModels(picker.rows, picker.query, (row) => row.model), [picker.rows, picker.query]);
   const visibleNew = visible.filter((row) => !row.inList).map((row) => row.model);
@@ -378,7 +517,7 @@ function ModelPicker({
       <div className="pf-picker-head">
         <Search />
         <input
-          autoFocus
+          autoFocus={autoFocusSearch}
           onChange={(event) => setPicker({ ...picker, query: event.currentTarget.value })}
           onKeyDown={(event) => {
             // 这个搜索框在表单里：回车只是搜索，不能提交整个表单。

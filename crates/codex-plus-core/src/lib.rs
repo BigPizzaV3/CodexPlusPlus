@@ -60,6 +60,7 @@ pub mod dream_skin_runtime;
 pub mod env_conflicts;
 pub mod foreign_reasoning;
 pub mod gateway;
+pub mod gemini_bridge;
 pub mod chatgpt_compat;
 pub mod chatgpt_compat_apply;
 pub mod grok_config;

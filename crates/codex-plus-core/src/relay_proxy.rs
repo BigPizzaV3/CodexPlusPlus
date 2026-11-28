@@ -98,6 +98,9 @@ pub fn set_proxy_for_profile(profile_id: &str, proxy: &str) -> anyhow::Result<()
     let proxy = proxy.trim();
     if proxy.is_empty() {
         items.remove(profile_id);
+    } else if is_direct_proxy(proxy) {
+        // 「不使用代理」不是地址，不按 URL 校验（#3297）。
+        items.insert(profile_id.to_string(), DIRECT_PROXY.to_string());
     } else {
         reqwest::Proxy::all(proxy).context("供应商代理地址无效")?;
         items.insert(profile_id.to_string(), proxy.to_string());
@@ -116,4 +119,23 @@ pub fn set_proxy_for_profile(profile_id: &str, proxy: &str) -> anyhow::Result<()
         crate::settings::atomic_write(&path, serde_json::to_string_pretty(&items)?.as_bytes())?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::RelayProfile;
+
+    #[test]
+    fn direct_profile_can_be_set_to_no_proxy() {
+        let state = tempfile::tempdir().unwrap();
+        let _scope = ProxyPathTestScope::new(state.path());
+        let relay = RelayProfile { id: "direct-no-proxy".to_string(), ..RelayProfile::default() };
+        // 「不使用代理」不是地址，按原值存成 direct，建 client 时关掉所有代理（#3297）。
+        set_proxy_for_profile(&relay.id, " Direct ").unwrap();
+        assert_eq!(proxy_for_profile(&relay.id).as_deref(), Some(DIRECT_PROXY));
+        assert_eq!(proxy_for_relay(&relay).as_deref(), Some(DIRECT_PROXY));
+        set_proxy_for_profile(&relay.id, "").unwrap();
+        assert_eq!(proxy_for_profile(&relay.id), None);
+    }
 }

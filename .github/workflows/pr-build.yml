@@ -28,8 +28,21 @@ concurrency:
 
 jobs:
   windows-artifacts:
-    name: Windows artifacts
-    runs-on: windows-latest
+    name: Windows artifacts (${{ matrix.windows_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            windows_arch: x64
+            artifact_suffix: ""
+            run_tests: true
+          # arm64 只验证能编译；测试与架构无关，x64 跑一遍即可，免得 Windows CI 时间翻倍。
+          - runner: windows-11-arm
+            windows_arch: arm64
+            artifact_suffix: "-arm64"
+            run_tests: false
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -91,10 +104,12 @@ jobs:
         run: npm ci
 
       - name: Frontend tests
+        if: matrix.run_tests
         working-directory: apps/codex-plus-manager
         run: npm test
 
       - name: Native Fast regression tests
+        if: matrix.run_tests
         run: >-
           node --test
           assets/inject/native-fast-unlock.test.cjs
@@ -105,9 +120,11 @@ jobs:
           scripts/tests/check-native-fast.test.cjs
 
       - name: Check native browser inspector bundle
+        if: matrix.run_tests
         run: node scripts/assemble-native-browser-inspector.mjs --check
 
       - name: TypeScript check
+        if: matrix.run_tests
         working-directory: apps/codex-plus-manager
         run: npm run check
 
@@ -116,6 +133,7 @@ jobs:
         run: npm run vite:build
 
       - name: Rust tests
+        if: matrix.run_tests
         # 有用例卡死时到点失败，不要一直占着 runner 到作业 6 小时上限（编译加测试平时 20 分钟左右）。
         timeout-minutes: 60
         env:
@@ -128,10 +146,15 @@ jobs:
           }
 
       - name: Data tests (shared memory budget)
-        if: ${{ !inputs.rust_test_filter }}
+        if: ${{ matrix.run_tests && !inputs.rust_test_filter }}
         timeout-minutes: 60
         # 大行索引用例共享进程级缓冲预算，避免不同夹具并发耗尽预算而提前返回 partial。
         run: cargo test -p codex-plus-data -- --test-threads=1
+
+      - name: Build application (no tests)
+        # 不跑测试的架构（arm64）只做编译链接检查；手动触发时下面会编 release，这里跳过。
+        if: ${{ !matrix.run_tests && github.event_name != 'workflow_dispatch' }}
+        run: cargo build --workspace
 
       - name: Build release application
         # PR 和推送 main 只跑测试：release 是第二套完整编译，Windows 上要多 10 分钟左右。
@@ -174,7 +197,7 @@ jobs:
           try {
             # 版本资源只收 X.X.X.X：去掉预发布后缀；手动在分支上跑（版本是分支名）时用 0.0.0.0。
             $viVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { "0.0.0.0" }
-            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" CodexPlusPlus.nsi
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" "/DARCH=${{ matrix.windows_arch }}" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
           } finally {
             Pop-Location
@@ -184,7 +207,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: codex-plus-plus-windows-binaries
+          name: codex-plus-plus-windows-binaries${{ matrix.artifact_suffix }}
           path: dist/windows/app/*
           if-no-files-found: error
 
@@ -192,7 +215,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: codex-plus-plus-windows-installer
+          name: codex-plus-plus-windows-installer${{ matrix.artifact_suffix }}
           path: dist/windows/*.exe
           if-no-files-found: error
 
