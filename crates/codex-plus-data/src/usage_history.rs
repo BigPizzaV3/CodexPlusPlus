@@ -105,7 +105,7 @@ pub(crate) struct Tokens {
     cached_known: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, serde::Deserialize)]
 struct CacheAccounting {
     input: u64,
     read: u64,
@@ -330,7 +330,7 @@ impl Tokens {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, serde::Deserialize)]
 pub(crate) struct UsageHistoryBoundary {
     pub(crate) parent: Option<String>,
     start: Option<u64>,
