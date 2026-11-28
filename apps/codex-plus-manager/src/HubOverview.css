@@ -534,7 +534,20 @@
   font-size: 10.5px;
 }
 
+/* 供应商行的副信息是状态（正在回答… / 冷却中 / Key 数），和名字同排时两边都被挤成几个字（#3300）：
+   改成名字一行、状态一行。 */
+.hub-topology-compact [data-node^="provider:"] .hub-node-text {
+  display: grid;
+  gap: 1px;
+}
+
+.hub-topology-compact [data-node^="provider:"] .hub-node-text small {
+  min-width: 0;
+  line-height: 1.25;
+}
+
 .hub-topology-compact .hub-node-num {
+  flex: none;
   font-size: 11.5px;
 }
 
