@@ -438,7 +438,10 @@ export function CodexProviderList({
       ) : null}
       <CxCard>
         {primaryItems.length ? (
-          primaryItems.map((item) => renderRow(item, false))
+          /* 供应商一多整张卡片就高出窗口：列表在卡片内部滚动（#3324），列表下面还有折叠区时也够得着。 */
+          <div className="gw-pool-scroll">
+            {primaryItems.map((item) => renderRow(item, false))}
+          </div>
         ) : (
           <CxEmpty
             detail={mode === "direct"
@@ -463,7 +466,9 @@ export function CodexProviderList({
           </button>
           {foldedOpen ? (
             <CxCard>
-              {foldedItems.map((item) => renderRow(item, true))}
+              <div className="gw-pool-scroll">
+                {foldedItems.map((item) => renderRow(item, true))}
+              </div>
             </CxCard>
           ) : null}
         </>
