@@ -18,7 +18,8 @@ pub const IMAGE_OFF: &str = "off";
 
 /// 生图模型的名字特征。只用来把它们挑出来：不进聊天模型列表、列在生图模型的选项里。
 /// 名字里带 `image` / `imagine` 的（gpt-image-2、grok-imagine-image、qwen-image）都算。
-/// `banana` 覆盖 `gemini-nano-banana-2.1` 这类名字里没有 `image` 的生图模型。
+/// 名字里没有这些特征的生图模型（如 `gemini-nano-banana-2.1`）先只从聊天列表拿掉，
+/// 等确认走 `/v1/images/generations` 后再放进这张表。
 const IMAGE_MODEL_MARKS: &[&str] = &[
     "image",
     "imagine",
@@ -32,26 +33,42 @@ const IMAGE_MODEL_MARKS: &[&str] = &[
     "stable-diffusion",
     "sdxl",
     "midjourney",
-    "banana",
 ];
 
-/// 其他非对话模型的名字特征：视频、转写、语音、嵌入、决策。生图仍由 [`is_image_model`] 判断。
-const NON_CHAT_MODEL_MARKS: &[&str] = &[
-    "wan-",
+/// 非对话模型的家族名（视频、名字里没有 `image` 的生图、决策）。
+/// 按 `-`、`_`、`.` 切段后，某一段正好等于家族名、或者正好是「家族名 + 版本号」（`veo3`、`sora2`）才算。
+const NON_CHAT_STEM_FAMILIES: &[&str] = &[
+    // 视频
+    "wan",
     "happyhorse",
     "seedance",
     "hailuo",
     "veo",
     "kling",
     "sora",
+    "pixverse",
+    "runway",
+    "pika",
+    // 名字里没有 `image` 的生图模型
+    "banana",
+    // 决策
+    "jev",
+];
+
+/// 非对话模型的前缀家族：段以它开头就算（`embedding`、`embed`、`eleven_multilingual_v2`）。
+const NON_CHAT_PREFIX_FAMILIES: &[&str] = &[
+    // 转写 / 语音合成
     "transcribe",
     "scribe",
+    "whisper",
+    "asr",
     "tts",
-    "speech",
-    "eleven_v",
-    "embedding",
+    "eleven",
+    // 嵌入 / 重排 / 审核 / 决策
+    "embed",
+    "rerank",
+    "moderation",
     "decisions",
-    "jev-",
 ];
 
 fn model_base_name(model: &str) -> String {
@@ -59,17 +76,13 @@ fn model_base_name(model: &str) -> String {
     model.rsplit('/').next().unwrap_or(&model).to_string()
 }
 
-/// 带 `-` / `_` 的特征按子串匹配（如 `wan-`、`eleven_v`）。
-/// 纯字母特征按段匹配，避免 `kling` 误伤 `inkling` 这类聊天模型。
-fn mark_matches(name: &str, mark: &str) -> bool {
-    if mark.contains('-') || mark.contains('_') {
-        return name.contains(mark);
+/// 段首匹配：`wan` 命中 `wan-3.0` / `wan3`，不命中 `swan-2` / `baiwan-3` / `wan2chat`。
+fn stem_matches(segment: &str, family: &str) -> bool {
+    match segment.strip_prefix(family) {
+        // 版本号可以粘在家族名后面（`veo3`、`sora2`），但不能再接别的词（`wan2chat`）。
+        Some(rest) => rest.is_empty() || rest.bytes().all(|byte| byte.is_ascii_digit()),
+        None => false,
     }
-    name == mark
-        || name.contains(&format!("-{mark}"))
-        || name.contains(&format!("_{mark}"))
-        || name.contains(&format!("{mark}-"))
-        || name.contains(&format!("{mark}_"))
 }
 
 /// 按名字判断是不是生图模型（不分大小写，忽略供应商前缀）。
@@ -78,15 +91,22 @@ pub fn is_image_model(model: &str) -> bool {
     IMAGE_MODEL_MARKS.iter().any(|mark| name.contains(mark))
 }
 
-/// 按名字判断是不是不该进聊天模型列表的模型：生图，以及视频 / 音频 / 嵌入 / 决策等。
+/// 按名字判断是不是不该进聊天模型列表的模型：生图，以及视频 / 转写 / 语音 / 嵌入 / 决策等。
 pub fn is_non_chat_model(model: &str) -> bool {
     if is_image_model(model) {
         return true;
     }
     let name = model_base_name(model);
-    NON_CHAT_MODEL_MARKS
-        .iter()
-        .any(|mark| mark_matches(&name, mark))
+    name.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| {
+            NON_CHAT_STEM_FAMILIES
+                .iter()
+                .any(|family| stem_matches(segment, family))
+                || NON_CHAT_PREFIX_FAMILIES
+                    .iter()
+                    .any(|family| segment.starts_with(family))
+        })
 }
 
 /// ChatGPT 订阅账号：走 ChatGPT 后端的生图接口，模型由后端自己选。
@@ -416,7 +436,6 @@ mod tests {
             "imagen-4.0",
             "FLUX.1-dev",
             "doubao-seedream-4-0",
-            "google/gemini-nano-banana-2.1",
         ] {
             assert!(is_image_model(model), "{model}");
         }
@@ -427,6 +446,7 @@ mod tests {
             "claude-opus-5-5",
             "alibaba/wan-3.0",
             "thinkingmachines/inkling",
+            "google/gemini-nano-banana-2.1",
         ] {
             assert!(!is_image_model(model), "{model}");
         }
@@ -445,16 +465,25 @@ mod tests {
             "minimax/hailuo-3",
             "minimax/hailuo-3-max",
             "google/veo-3",
+            "google/veo3",
             "kling-v1",
             "openai/sora-2",
+            "openai/sora2",
             "openai/gpt-transcribe",
             "openai/gpt-4o-mini-transcribe",
             "openai/gpt-4o-transcribe-diarize",
+            "openai/whisper-1",
             "elevenlabs/scribe_v2",
             "elevenlabs/eleven_v4",
+            "elevenlabs/eleven_multilingual_v2",
+            "elevenlabs/eleven_turbo_v2_5",
+            "elevenlabs/eleven_flash_v2_5",
+            "assemblyai/best-asr",
             "openai/text-embedding-3-small",
             "openai/text-embedding-3-large",
             "qwen/text-embedding-v4",
+            "baai/bge-m3-embed",
+            "cohere/rerank-4",
             "typesafe/jev-latest",
             "google/gemini-nano-banana-2.1",
             "openai/dall-e-3",
@@ -467,8 +496,41 @@ mod tests {
             "kimi-k3",
             "claude-opus-5-5",
             "thinkingmachines/inkling",
+            "thinkingmachines/inkling-1",
             "openai/gpt-5.3-codex",
             "openai/gpt-5.4-pro",
+            "acme/swan-2",
+            "acme/baiwan-3",
+        ] {
+            assert!(!is_non_chat_model(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn non_chat_families_match_whole_segments_only() {
+        for model in [
+            "alibaba/wan-3.0",
+            "alibaba/wan3",
+            "google/veo3",
+            "openai/sora2",
+            "openai/whisper-1",
+            "elevenlabs/eleven_multilingual_v2",
+            "assemblyai/best-asr",
+            "baai/bge-m3-embed",
+            "cohere/rerank-4",
+            "google/gemini-nano-banana-2.1",
+        ] {
+            assert!(is_non_chat_model(model), "{model}");
+        }
+        for model in [
+            "thinkingmachines/inkling",
+            "thinkingmachines/inkling-1",
+            "acme/swan-2",
+            "acme/baiwan-3",
+            "acme/wan2chat",
+            "acme/klingon",
+            "acme/speechless-7b",
+            "openai/gpt-4o-audio-preview",
         ] {
             assert!(!is_non_chat_model(model), "{model}");
         }
@@ -478,7 +540,7 @@ mod tests {
     fn chat_models_drop_non_chat_names() {
         let relay = provider(
             "ofox",
-            "gpt-5.5\nalibaba/wan-3.0\nbytedance/seedance-2.5\nopenai/text-embedding-3-small\ntypesafe/jev-latest\ngoogle/gemini-nano-banana-2.1\nelevenlabs/eleven_v4\nthinkingmachines/inkling\nopenai/gpt-5.3-codex",
+            "gpt-5.5\nalibaba/wan-3.0\nbytedance/seedance-2.5\nopenai/text-embedding-3-small\ntypesafe/jev-latest\ngoogle/gemini-nano-banana-2.1\nelevenlabs/eleven_v4\nelevenlabs/eleven_multilingual_v2\nopenai/whisper-1\nassemblyai/best-asr\nbaai/bge-m3-embed\ncohere/rerank-4\ngoogle/veo3\nopenai/sora2\nthinkingmachines/inkling\nthinkingmachines/inkling-1\nacme/swan-2\nacme/baiwan-3\nopenai/gpt-5.3-codex",
         )
         .relay;
         let models = crate::gateway::route::chat_models(&relay);
@@ -487,6 +549,9 @@ mod tests {
             vec![
                 "gpt-5.5".to_string(),
                 "thinkingmachines/inkling".to_string(),
+                "thinkingmachines/inkling-1".to_string(),
+                "acme/swan-2".to_string(),
+                "acme/baiwan-3".to_string(),
                 "openai/gpt-5.3-codex".to_string(),
             ]
         );

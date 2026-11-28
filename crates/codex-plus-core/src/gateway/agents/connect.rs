@@ -390,4 +390,91 @@ mod tests {
         assert!(!mentions_gateway("http://127.0.0.1:1/gw/qoder-cn/v1", "qoder"));
         assert!(!mentions_gateway("http://127.0.0.1:1/gw/other", "qoder"));
     }
+
+    #[test]
+    fn dsh_connect_keeps_only_chat_models_in_home_patch() {
+        use crate::gateway::store::GatewayProvider;
+        use crate::settings::RelayProfile;
+
+        let temp = tempfile::tempdir().unwrap();
+        let env =
+            crate::gateway::agents::AgentEnv::at(&temp.path().join("home")).with_os(Os::Linux);
+        let spec = spec("dsh").unwrap();
+        let gateway = GatewaySettings {
+            providers: vec![GatewayProvider {
+                linked_codex_relay: None,
+                owner: String::new(),
+                enabled: true,
+                source: String::new(),
+                price: None,
+                model_prices: Default::default(),
+                proxy: String::new(),
+                key_rpm: None,
+                key_concurrency: None,
+                upstream_new: Vec::new(),
+                upstream_gone: Vec::new(),
+                models_checked_at_ms: 0,
+                newapi_access: None,
+                subscription_policy: None,
+                upstream_meta: Default::default(),
+                upstream_reasoning: None,
+                auto_compact: Default::default(),
+                model_windows: Default::default(),
+                context_window: None,
+                relay: RelayProfile {
+                    id: "ofox".to_string(),
+                    name: "ofox".to_string(),
+                    base_url: "https://ofox.test/v1".to_string(),
+                    api_key: "sk-ofox".to_string(),
+                    model: "gpt-5.5".to_string(),
+                    model_list: "gpt-5.5\nalibaba/wan-3.0\nopenai/text-embedding-3-small"
+                        .to_string(),
+                    ..RelayProfile::default()
+                },
+                extra: Default::default(),
+                credentials: Default::default(),
+            }],
+            ..GatewaySettings::default()
+        };
+        let wiring = wiring(&gateway, &AgentBinding::default(), spec.id, 57321);
+        let mut set = FileSet::new();
+        (spec.write)(&env, &wiring, &mut set).unwrap();
+        let layer = set
+            .changes()
+            .unwrap()
+            .into_iter()
+            .find_map(|change| {
+                let relative = change.path.to_string_lossy().replace('\\', "/");
+                (relative.ends_with(".dsh/cordis.patch.yml")
+                    || change
+                        .path
+                        .file_name()
+                        .is_some_and(|name| name == "cordis.patch.yml"))
+                .then_some(change.after.unwrap_or_default())
+            })
+            .unwrap();
+        assert!(
+            layer.contains("id: \"gpt-5.5\"") || layer.contains("id: gpt-5.5"),
+            "{layer}"
+        );
+        assert!(!layer.contains("wan-3.0"), "{layer}");
+        assert!(!layer.contains("text-embedding-3-small"), "{layer}");
+        let model_ids: Vec<&str> = layer
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| {
+                line.trim_start_matches("- ")
+                    .strip_prefix("id: ")
+                    .map(|value| value.trim().trim_matches('"'))
+            })
+            .filter(|id| *id != "llm-pi-ai" && *id != "agent-default-model")
+            .collect();
+        assert!(
+            model_ids
+                .iter()
+                .all(|id| *id == "gpt-5.5" || id.starts_with("group/")),
+            "{model_ids:?}\n{layer}"
+        );
+        assert!(model_ids.contains(&"gpt-5.5"), "{model_ids:?}\n{layer}");
+    }
 }
