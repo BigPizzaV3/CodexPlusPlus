@@ -9,6 +9,9 @@ use std::path::Path;
 
 mod structured;
 
+const MAX_QUERY_FILTER_BYTES: usize = 4 * 1024;
+const MAX_QUERY_SEARCH_BYTES: usize = 1024;
+
 pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathBuf {
     let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
     let id = format!("{:x}", Sha256::digest(home.as_os_str().as_encoded_bytes()));
@@ -397,22 +400,24 @@ impl Query {
         if from.zip(to).is_some_and(|(f, t)| f > t) {
             return None;
         }
-        let text = |name: &str, limit: usize| -> Option<Option<String>> {
+        let text = |name: &str| -> Option<Option<String>> {
             if value[name].is_null() {
                 return Some(None);
             }
             let text = value[name].as_str()?;
-            (text.len() <= limit).then(|| Some(text.to_owned()).filter(|s| !s.is_empty()))
+            (text.len() <= MAX_QUERY_FILTER_BYTES)
+                .then(|| (!text.is_empty()).then(|| text.to_owned()))
         };
         let session_id = if value["sessionId"].is_null() {
             None
         } else {
             Some(normalize_session_id(value["sessionId"].as_str()?)?)
         };
-        let search = value["search"].as_str().unwrap_or("").trim().to_lowercase();
-        if search.len() > 200 {
+        let search = value["search"].as_str().unwrap_or("");
+        if search.len() > MAX_QUERY_SEARCH_BYTES {
             return None;
         }
+        let search = search.trim().to_lowercase();
         let include_session_cursors = match value.get("includeSessionCursors") {
             None => false,
             Some(value) => value.as_bool()?,
@@ -420,9 +425,9 @@ impl Query {
         Some(Self {
             from,
             to,
-            model: text("model", 256)?,
+            model: text("model")?,
             session_id,
-            turn_id: text("turnId", 200)?,
+            turn_id: text("turnId")?,
             search,
             include_session_cursors,
             include_activity: value["includeActivity"] == true,
@@ -456,6 +461,29 @@ impl Query {
                 || record
                     .date
                     .is_some_and(|d| d.to_string().contains(&self.search)))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn query_accepts_long_utf8_filters_up_to_the_request_limit() {
+    let today = NaiveDate::from_ymd_opt(2026, 11, 29).unwrap();
+    let identity = "\u{00e9}".repeat(MAX_QUERY_FILTER_BYTES / 2);
+    let search = "\u{00c9}".repeat(MAX_QUERY_SEARCH_BYTES / 2);
+    let query = Query::parse(
+        &json!({"model":identity,"turnId":identity,"search":search}),
+        today,
+    )
+    .unwrap();
+    assert_eq!(query.model.as_deref(), Some(identity.as_str()));
+    assert_eq!(query.turn_id.as_deref(), Some(identity.as_str()));
+    assert_eq!(query.search, search.to_lowercase());
+    for (key, too_long) in [
+        ("model", format!("{identity}x")),
+        ("turnId", format!("{identity}x")),
+        ("search", format!("{search}x")),
+    ] {
+        assert!(Query::parse(&json!({(key):too_long}), today).is_none(), "{key}");
     }
 }
 
