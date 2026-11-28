@@ -181,6 +181,12 @@ fn windows_installer_is_named_by_arch_and_refuses_the_wrong_arch() {
             std::fs::read_to_string(format!("../../.github/workflows/{workflow}")).unwrap();
         assert!(text.contains("\"/DARCH=${{ matrix.windows_arch }}\""), "{workflow} 要传架构");
     }
+    // 2.9.0 之前的客户端取 latest.json 里第一个 setup.exe：arm64 附件必须排在最后，
+    // 否则 x64 机器会拿到 arm64 安装包，被上面的架构检查中止，自动更新失败。
+    let release = std::fs::read_to_string("../../.github/workflows/release-assets.yml").unwrap();
+    let latest = release.split_once("name: Generate latest.json").unwrap().1;
+    assert!(latest.contains("const isArm64 = (name) => /-arm64[-.]/i.test(name);"));
+    assert!(latest.contains(".sort((a, b) => Number(isArm64(a)) - Number(isArm64(b)))"));
 }
 
 #[test]

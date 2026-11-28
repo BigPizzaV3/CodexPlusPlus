@@ -32,6 +32,7 @@ There is also session management, Codex UI enhancements, Claude Desktop enhancem
 Download the latest installer from [GitHub Releases](https://github.com/BigPizzaV3/CodexPlusPlus/releases):
 
 - Windows: `CodexPlusPlus-*-windows-x64-setup.exe`
+- Windows on ARM (from 2.9.1): `CodexPlusPlus-*-windows-arm64-setup.exe`
 - macOS Intel and Apple Silicon: `CodexPlusPlus-*-macos-universal.dmg`
 
 After installation, one `Codex++` entry is available. Double-click it to open the window, then:

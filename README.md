@@ -387,6 +387,7 @@ Codex++ 自带的 Codex 增强（插件市场解锁、模型白名单、原生 F
 | 你的设备 | 安装包 |
 | --- | --- |
 | Windows · x64 | `CodexPlusPlus-*-windows-x64-setup.exe` |
+| Windows · ARM64（2.9.1 起） | `CodexPlusPlus-*-windows-arm64-setup.exe` |
 | macOS · Apple Silicon / Intel | `CodexPlusPlus-*-macos-universal.dmg` |
 
 首次打开会有两步的启动引导：连接模型、启动 Codex。也可以跳过，按下面自己来。

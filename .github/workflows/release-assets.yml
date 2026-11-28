@@ -626,9 +626,13 @@ jobs:
             }
           }
           const baseUrl = `https://github.com/${repo}/releases/download/${tag}`;
+          // arm64 附件排在最后：2.9.0 之前的客户端不分架构，取第一个 setup.exe；
+          // 按字母序 arm64 会排在 x64 前面，x64 机器会拿到 arm64 安装包（安装包的架构检查会直接中止），自动更新就失败了。
+          const isArm64 = (name) => /-arm64[-.]/i.test(name);
           const assets = (release.assets || [])
             .map((asset) => asset.name)
             .filter((name) => name !== "latest.json")
+            .sort((a, b) => Number(isArm64(a)) - Number(isArm64(b)))
             .map((name) => ({ name, url: `${baseUrl}/${encodeURIComponent(name)}` }));
           const payload = {
             version: `v${version}`,
