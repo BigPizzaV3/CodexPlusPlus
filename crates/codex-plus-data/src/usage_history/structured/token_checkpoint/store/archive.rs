@@ -1,5 +1,5 @@
 use super::{
-    super::{Checkpoint, SourceStamp, historical::EvidenceOverlay},
+    super::{Checkpoint, Observation, SourceStamp, historical::EvidenceOverlay},
     decode_path,
 };
 use crate::usage_history::structured::{
@@ -8,8 +8,14 @@ use crate::usage_history::structured::{
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone};
 use rusqlite::{Connection, params};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
+use std::fs::File;
+use std::io::{self, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
+
+const ARCHIVE_CACHE: &str = "usage-token-archive-v1.json";
+const ARCHIVE_CACHE_DIR: &str = "usage-token-archives-v1";
 
 #[derive(Clone, PartialEq, Eq)]
 pub(in crate::usage_history::structured) struct ArchiveKey {
@@ -19,8 +25,17 @@ pub(in crate::usage_history::structured) struct ArchiveKey {
 }
 
 impl ArchiveKey {
+    pub(in crate::usage_history::structured) fn contains(&self, other: &Self) -> bool {
+        self.session == other.session && self.first <= other.first && self.end >= other.end
+    }
+
     fn scope(&self) -> Option<HashSet<String>> {
         self.session.as_ref().map(|id| [id.clone()].into())
+    }
+
+    fn committed_sources(&self, read: &Connection) -> Result<Vec<Source>> {
+        let last = self.end.pred_opt().context("invalid archive date window")?;
+        sources(read, (self.first, last), self.scope().as_ref())
     }
 
     pub(in crate::usage_history::structured::token_checkpoint) fn replay(
@@ -54,23 +69,137 @@ pub(in crate::usage_history::structured) struct Recovered {
 }
 
 impl Recovered {
+    pub(in crate::usage_history::structured::token_checkpoint) fn save(
+        &self,
+        key: &ArchiveKey,
+        storage: &Path,
+    ) -> Result<()> {
+        let cached = CachedArchive {
+            first: key.first.to_string(),
+            end: key.end.to_string(),
+            session: key.session.clone(),
+            sources: self.sources.clone(),
+            events: self
+                .events
+                .iter()
+                .map(|event| (event.id, event.session.clone(), Observation::capture(event)))
+                .collect(),
+        };
+        let directory = storage.join(ARCHIVE_CACHE_DIR);
+        std::fs::create_dir_all(&directory)?;
+        let path = directory.join(format!(
+            "{}-{}-{}.json",
+            key.first,
+            key.end,
+            key.session.as_deref().unwrap_or("all")
+        ));
+        codex_plus_core::settings::atomic_write_with(&path, |file| {
+            let mut output = BufWriter::new(file);
+            serde_json::to_writer(&mut output, &cached)?;
+            output.flush()
+        })
+    }
+
+    pub(in crate::usage_history::structured::token_checkpoint) fn load_for(
+        db: &Connection,
+        storage: &Path,
+        requested: &ArchiveKey,
+    ) -> Result<Option<(ArchiveKey, Self)>> {
+        let suffix = format!("-{}.json", requested.session.as_deref().unwrap_or("all"));
+        let mut paths = Vec::new();
+        match std::fs::read_dir(storage.join(ARCHIVE_CACHE_DIR)) {
+            Ok(directory) => {
+                for entry in directory {
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    if let Some(dates) = name.to_str().and_then(|name| name.strip_suffix(&suffix))
+                        && let Some((start, end)) = dates.split_at_checked(10)
+                        && let (Ok(first), Some(Ok(end))) =
+                            (start.parse::<NaiveDate>(), end.strip_prefix('-').map(str::parse::<NaiveDate>))
+                        && first <= requested.first && end >= requested.end
+                    {
+                        paths.push(((end - first).num_days(), entry.path()));
+                    }
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        // 只读覆盖本次查询的缓存，优先命中最小区间；旧版单文件仍可迁移。
+        paths.sort_unstable();
+        let legacy = storage.join(ARCHIVE_CACHE);
+        for path in paths.into_iter().map(|(_, path)| path).chain([legacy]) {
+            match Self::load_file(db, &path) {
+                Ok(Some((key, answer))) if key.contains(requested) => return Ok(Some((key, answer))),
+                Ok(_) => {}
+                Err(error) => eprintln!("Usage archive cache restore failed: {error:#}"),
+            }
+        }
+        Ok(None)
+    }
+
+    fn load_file(db: &Connection, path: &Path) -> Result<Option<(ArchiveKey, Self)>> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let cached: CachedArchive = serde_json::from_reader(BufReader::new(file))?;
+        let key = ArchiveKey {
+            first: cached.first.parse()?,
+            end: cached.end.parse()?,
+            session: cached.session,
+        };
+        let read = db.unchecked_transaction()?;
+        let revision = read.query_row("SELECT revision FROM token_revision", [], |row| row.get(0))?;
+        // 数据库重建后版本号可能相同，冷加载总是重新核对已提交游标。
+        if cached.sources != key.committed_sources(&read)? {
+            return Ok(None);
+        }
+        let mut recovered = Self {
+            revision,
+            sources: cached.sources,
+            events: Vec::new(),
+            evidence: None,
+        };
+        if !recovered.is_current(&read, revision, &key)? {
+            return Ok(None);
+        }
+        read.commit()?;
+        recovered.events = cached
+            .events
+            .into_iter()
+            .map(|(id, session, observation)| observation.into_event(id, session))
+            .collect::<Result<_>>()?;
+        Ok(Some((key, recovered)))
+    }
+
+    pub(in crate::usage_history::structured::token_checkpoint) fn reuse(
+        &self,
+        db: &Connection,
+        key: &ArchiveKey,
+    ) -> Result<Option<Self>> {
+        let read = db.unchecked_transaction()?;
+        let revision = read.query_row("SELECT revision FROM token_revision", [], |row| row.get(0))?;
+        if !self.is_current(&read, revision, key)? {
+            return Ok(None);
+        }
+        read.commit()?;
+        Ok(Some(Self {
+            revision,
+            sources: self.sources.clone(),
+            events: self.events.clone(),
+            evidence: None,
+        }))
+    }
+
     pub(super) fn is_current(
         &self,
         read: &Connection,
         revision: i64,
         key: &ArchiveKey,
     ) -> Result<bool> {
-        if self.revision != revision
-            && self.sources
-                != sources(
-                    read,
-                    (
-                        key.first,
-                        key.end.pred_opt().expect("nonempty archive window"),
-                    ),
-                    key.scope().as_ref(),
-                )?
-        {
+        if self.revision != revision && self.sources != key.committed_sources(read)? {
             return Ok(false);
         }
         for source in &self.sources {
@@ -85,13 +214,22 @@ impl Recovered {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Source {
     path: PathBuf,
     revision: i64,
     offset: u64,
     stamp: SourceStamp,
     session: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CachedArchive {
+    first: String,
+    end: String,
+    session: Option<String>,
+    sources: Vec<Source>,
+    events: Vec<([u8; 32], String, Observation)>,
 }
 
 pub(in crate::usage_history::structured::token_checkpoint) struct Replay {
@@ -312,11 +450,8 @@ impl Replay {
             {
                 continue;
             }
-            ensure!(
-                !event.count_uncertain && !event.count_incomplete,
-                "archive replay cannot resolve a Token count"
-            );
-            if event.delta.total_tokens > 0 {
+            // 未核准的增量仍参与覆盖检查，但不会计入已确认 Token。
+            if event.delta.total_tokens > 0 || event.count_uncertain || event.count_incomplete {
                 events.push(event);
             }
         }
@@ -369,6 +504,46 @@ mod tests {
             count(&first, 1),
             count(&second, 2)
         )
+    }
+
+    #[test]
+    fn archive_replays_settled_events_alongside_unresolved_counts() -> Result<()> {
+        use crate::usage_history::Query;
+
+        let root = tempfile::tempdir()?;
+        let home = root.path().canonicalize()?;
+        let archived = home.join("archived_sessions");
+        fs::create_dir(&archived)?;
+        let day = NaiveDate::from_ymd_opt(2026, 1, 10).unwrap();
+        let cutoff = NaiveDate::from_ymd_opt(2026, 3, 15).unwrap();
+        fs::write(archived.join("rollout-settled.jsonl"), session_log(SESSION, day, ""))?;
+        let missing = json!({"type":"event_msg","timestamp":stamp(day, 12).to_rfc3339(),
+            "payload":{"type":"token_count","info":{
+                "total_token_usage":{"input_tokens":500,"cached_input_tokens":100,"output_tokens":50}
+            }}});
+        fs::write(archived.join("rollout-unresolved.jsonl"), format!("{}\n{missing}\n",
+            json!({"type":"session_meta","timestamp":stamp(day, 12).to_rfc3339(),
+                "payload":{"id":OTHER,"model_provider":"custom"}})))?;
+        let mut store = Store::open(Connection::open_in_memory()?)?;
+        let names = BTreeMap::new();
+        let mut scan = Scan::default();
+        scan.round(&mut store, &home, cutoff, &names, 1 << 20);
+        let key = ArchiveKey { first: day, end: day.succ_opt().unwrap(), session: None };
+        let mut replay = key.replay(&store.db, &home, names.clone())?;
+        while !replay.step()? {}
+        let recovered = replay.finish(&store.db)?;
+        assert_eq!(recovered.events.iter().filter(|e| e.count_uncertain).count(), 1);
+        let request = json!({"startAt":stamp(day, 0).timestamp_millis(),
+            "endAt":stamp(day.succ_opt().unwrap(), 0).timestamp_millis(),"includeTrend":true});
+        let q = Query::parse(&request, cutoff).unwrap();
+        let answer = (key, Ok(recovered));
+        let (published, _) = Store::read_response_with_archive(
+            &mut store.db, &q, &request, None, &names, Some(&answer), None)?;
+        assert_eq!(published["days"][0]["usage"]["totalTokens"], 220);
+        assert_eq!(published["days"][0]["recordCount"], 2);
+        assert_eq!(published["countStatus"]["uncertainEvents"], 1);
+        assert_eq!(published["countStatus"]["complete"], false);
+        Ok(())
     }
 
     #[test]
@@ -523,6 +698,14 @@ mod tests {
             "endAt":stamp(day.succ_opt().unwrap(), 0).timestamp_millis(),
             "includeTrend":true, "includeActivity":true});
         let q = Query::parse(&request, cutoff).unwrap();
+        store
+            .record_coverage(
+                crate::usage_history::structured::token_checkpoint::store::Coverage {
+                    pending_sources: 1, issues: 0, maintenance_blocked: false,
+                },
+                false,
+            )
+            .unwrap();
         let (first, schedule) = Store::read_response_with_archive(
             &mut store.db,
             &q,
@@ -533,7 +716,13 @@ mod tests {
             None,
         )
         .unwrap();
-        let key = schedule.unwrap();
+        assert_eq!(first["complete"], false);
+        let key = schedule.expect("unrelated scan backlog must not block committed archive replay");
+        // Daily preloads the containing month while the selected day is open.
+        let key = ArchiveKey {
+            first: key.first.pred_opt().unwrap(),
+            ..key
+        };
         let mut replay = key.replay(&store.db, &home, names.clone()).unwrap();
         assert!(replay.step().unwrap());
         let mut result = replay.finish(&store.db).unwrap();
@@ -573,7 +762,8 @@ mod tests {
         };
         let (complete, next) = read(&mut store, &answer);
         assert!(next.is_none());
-        assert_eq!(complete["archiveRecovery"]["status"], "complete");
+        assert_eq!(complete["archiveRecovery"]["status"], "partial");
+        assert_eq!(complete["complete"], false);
         assert_eq!(complete["activityComplete"], false);
         assert_eq!(complete["revision"], first["revision"]);
         assert_eq!(complete["days"][0]["usage"], first["days"][0]["usage"]);
@@ -595,8 +785,17 @@ mod tests {
 
         let saved = file.with_extension("removed");
         fs::rename(&file, &saved).unwrap();
-        let (withdrawn, reschedule) = read(&mut store, &answer);
-        assert!(reschedule.is_some());
+        let (pending, reschedule) = read(&mut store, &answer);
+        assert!(reschedule.as_ref() == Some(&answer.0));
+        assert_eq!(pending["archiveRecovery"]["status"], "pending");
+        assert_eq!(pending["classificationStatus"]["complete"], false);
+        assert_eq!(pending["days"], complete["days"]);
+        let recovered = answer.1.as_mut().unwrap();
+        recovered.evidence = Some(Ok(EvidenceOverlay::for_archive(
+            &verifier, &settings, &recovered.events, false,
+        ).unwrap()));
+        let (withdrawn, next) = read(&mut store, &answer);
+        assert!(next.is_none());
         assert_eq!(first["days"][0]["fingerprintCoverage"], "unavailable");
         assert_eq!(withdrawn["days"][0]["fingerprintCoverage"], "events");
         assert_eq!(withdrawn["days"][0]["usage"], first["days"][0]["usage"]);

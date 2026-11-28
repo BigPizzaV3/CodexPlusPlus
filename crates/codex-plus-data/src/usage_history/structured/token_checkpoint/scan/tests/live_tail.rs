@@ -703,6 +703,68 @@ fn incomplete_live_line_waits_for_one_newline_without_accumulating_issues() -> a
 }
 
 #[test]
+fn pending_newline_on_known_append_keeps_published_supplier_proofs() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = fs::canonicalize(dir.path())?;
+    let sessions = root.join("sessions");
+    fs::create_dir(&sessions)?;
+    let source = sessions.join(format!("rollout-{FIRST}.jsonl"));
+    fs::write(&source, rollout(FIRST))?;
+    fs::write(sessions.join(format!("rollout-{SECOND}.jsonl")), rollout(SECOND))?;
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    assert!(Scan::default().round(&mut store, &root, cutoff, &names, LIMIT).complete);
+    for session in [FIRST, SECOND] {
+        assert!(store.reclassify_session(session, LIMIT, &BTreeSet::new(), |events, _| {
+            for event in events {
+                event.provider = "direct-supplier".into();
+                event.provider_source = Some("request-log-exact".into());
+            }
+            Ok(())
+        })?.is_some());
+    }
+    let mut file = fs::OpenOptions::new().append(true).open(&source)?;
+    write!(file, "{}", next_count())?;
+    let mut scan = Scan::default();
+    for _ in 0..2 {
+        let report = scan.round(&mut store, &root, cutoff, &names, LIMIT);
+        assert!(!report.complete && report.pending_sources > 0);
+        assert_eq!(report.issues, 0, "{:?}", report.errors);
+        let mut actual = BTreeMap::new();
+        Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+            actual.insert(event.session, (event.provider, event.delta.input_tokens));
+            Ok(())
+        })?;
+        assert_eq!(actual, BTreeMap::from([
+            (FIRST.to_owned(), ("direct-supplier".to_owned(), 100)),
+            (SECOND.to_owned(), ("direct-supplier".to_owned(), 100)),
+        ]));
+        assert!(report.can_classify);
+        let mut blocked = store.db.prepare(
+            "SELECT s.session FROM token_attribution_coverage a
+             JOIN json_each(a.blocked_sessions) b JOIN token_sessions s ON s.id = b.value",
+        )?;
+        let blocked = blocked.query_map(
+            [],
+            |r| r.get::<_, String>(0),
+        )?.collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(blocked, [FIRST]);
+    }
+    writeln!(file)?;
+    assert!(scan.round(&mut store, &root, cutoff, &names, LIMIT).complete);
+    let mut deltas = Vec::new();
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+        if event.session == FIRST {
+            deltas.push(event.delta.input_tokens);
+        }
+        Ok(())
+    })?;
+    assert_eq!(deltas, [100, 102]);
+    Ok(())
+}
+
+#[test]
 fn unchanged_live_tail_preserves_its_malformed_count_diagnostic() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let root = fs::canonicalize(dir.path())?;

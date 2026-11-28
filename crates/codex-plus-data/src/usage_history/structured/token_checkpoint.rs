@@ -11,6 +11,12 @@ use std::time::SystemTime;
 
 const RECENT_CLASSIFICATION_MS: i64 = 86_400_000;
 
+fn disk_full(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<rusqlite::Error>()
+        .is_some_and(|error| error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull))
+}
+
 // Tokens 的公开序列化不包含 cached_known，不能作为持久格式使用。
 #[derive(Serialize, Deserialize)]
 #[serde(remote = "Tokens")]
@@ -202,6 +208,9 @@ struct Checkpoint {
     skipping: bool,
     #[serde(default)]
     large_meter_checked: bool,
+    // 兼容曾按解析器版本触发全量回读的检查点；沿用当前按实际缺口回读的规则。
+    #[serde(default, rename = "receipt_parser_version", skip_serializing)]
+    _receipt_parser_version: Option<u32>,
     #[serde(default)]
     legacy_identity_prefix: Option<u64>,
     #[serde(default)]
@@ -273,6 +282,7 @@ impl Checkpoint {
                 issues: state.issues,
                 skipping: state.skipping,
                 large_meter_checked: !state.recheck_large_meter,
+                _receipt_parser_version: None,
                 legacy_identity_prefix: Some(if state.legacy_tools_only { 0 } else { state.legacy_identity_prefix }),
                 large_tools_checked: !state.legacy_tools_only,
             },
@@ -343,7 +353,7 @@ mod store;
 mod tests;
 
 mod runtime;
-pub(super) use runtime::{HistoryReader, ReadState, Runtime, read_execution_detail, recover_archive};
+pub(super) use runtime::{ReadState, RefreshReaders, Runtime, read_execution_detail, recover_archive};
 pub(super) use store::{
     archive::ArchiveKey,
     executions::{DetailQuery, ExecutionQuery},

@@ -1,4 +1,5 @@
 use super::{
+    disk_full,
     historical::{EvidenceOverlay, EvidenceVerifier, Historical},
     scan::{RECLAIM_BATCH, Scan},
     store::{
@@ -49,7 +50,10 @@ pub(in super::super) struct Runtime {
     historical_cursor: Option<(i64, i64)>,
     historical: Option<Arc<Historical>>,
     historical_verifier: Arc<Mutex<EvidenceVerifier>>,
+    published_days: Option<(published_days::Publication, Option<Arc<Historical>>)>,
 }
+
+mod published_days;
 
 #[derive(Default)]
 pub(in super::super) struct ReadState {
@@ -65,6 +69,22 @@ pub(in super::super) struct ReadState {
 }
 
 pub(in super::super) type HistoryReader = Arc<Mutex<Connection>>;
+
+pub(in super::super) struct RefreshReaders {
+    summary: HistoryReader,
+    detail: HistoryReader,
+}
+
+impl RefreshReaders {
+    pub(in super::super) fn reader(&self, detailed: bool) -> HistoryReader {
+        Arc::clone(if detailed { &self.detail } else { &self.summary })
+    }
+}
+
+fn pin_reader(db: &Connection) -> Result<i64> {
+    db.execute_batch("BEGIN")?;
+    Ok(db.query_row("SELECT revision FROM token_revision", [], |row| row.get(0))?)
+}
 
 fn open_database(storage: &Path, write: bool) -> Result<Connection> {
     if write {
@@ -114,6 +134,7 @@ impl Runtime {
             historical_cursor: Some((0, i64::MAX)),
             historical: None,
             historical_verifier: Arc::default(),
+            published_days: None,
         }
     }
 
@@ -128,24 +149,29 @@ impl Runtime {
         }
     }
 
-    pub(in super::super) fn pin_refresh_reader(&self) -> Result<Option<HistoryReader>> {
+    pub(in super::super) fn pin_refresh_readers(&self) -> Result<Option<RefreshReaders>> {
+        // 旧进程可能在入库与分类之间退出，冷启动先完成本轮刷新。
+        if self.store.is_none() {
+            return Ok(None);
+        }
         let budget = u64::from(read_history_settings(&self.settings)?.storage_mib) * 1024 * 1024;
         let used = working_index_bytes(&self.storage)?;
         if used == 0 || used >= budget {
             return Ok(None);
         }
-        let db = open_database(&self.storage, false)?;
+        let summary = open_database(&self.storage, false)?;
         // A read transaction must not block the first transition to WAL.
-        if db.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))? != "wal" {
+        if summary.pragma_query_value(None, "journal_mode", |row| row.get::<_, String>(0))? != "wal" {
             return Ok(None);
         }
-        db.execute_batch("BEGIN")?;
-        let initialized = db.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='token_revision' AND type='table')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )?;
-        Ok(initialized.then(|| Arc::new(Mutex::new(db))))
+        // 在写者启动前固定同一版本，趋势读取不会让前台摘要排队。
+        let revision = pin_reader(&summary)?;
+        let detail = open_database(&self.storage, false)?;
+        ensure!(pin_reader(&detail)? == revision, "usage snapshot changed while opening refresh readers");
+        Ok(Some(RefreshReaders {
+            summary: Arc::new(Mutex::new(summary)),
+            detail: Arc::new(Mutex::new(detail)),
+        }))
     }
 
     fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> ReadState {
@@ -175,6 +201,7 @@ impl Runtime {
         state
             .provider_names
             .clone_from(&self.evidence.provider_names);
+        let mut attribution_checked = false;
         match self.refresh(
             home,
             cutoff,
@@ -183,9 +210,11 @@ impl Runtime {
         ) {
             Ok(true) if evidence_available => {
                 if let Err(error) =
-                    self.classify_retained(home, proof_cutoff, MAX_RETAINED_BYTES, &mut state)
+                    self.classify_retained(home, proof_cutoff, MAX_RETAINED_BYTES, request_log, &mut state)
                 {
                     state.classification_error = Some(format!("{error:#}"));
+                } else {
+                    attribution_checked = true;
                 }
             }
             Ok(_) if !evidence_available => {
@@ -220,6 +249,15 @@ impl Runtime {
                 request.success = false;
             }
         }
+        if attribution_checked
+            && state.historical_error.is_none()
+            && let Some(store) = &self.store
+            && let Err(error) = published_days::save(
+                store, &self.storage, &self.settings, &state, &mut self.published_days,
+            )
+        {
+            eprintln!("saving published usage days: {error:#}");
+        }
         state
     }
 
@@ -228,8 +266,11 @@ impl Runtime {
         home: &Path,
         cutoff: NaiveDate,
         byte_budget: usize,
+        request_log: &Path,
         state: &mut ReadState,
     ) -> Result<()> {
+        // 扫描期间完成的网关请求也应参与本轮归属，避免已到达的回执要等下一轮。
+        self.evidence.request_evidence.refresh(request_log);
         let store = self
             .store
             .as_mut()
@@ -506,12 +547,6 @@ impl Runtime {
     }
 }
 
-fn disk_full(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<rusqlite::Error>()
-        .is_some_and(|error| error.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull))
-}
-
 fn allocated_pages(db: &Connection) -> Result<(u64, u64)> {
     Ok((
         db.pragma_query_value(None, "page_count", |row| row.get(0))?,
@@ -550,8 +585,7 @@ fn checkpoint_if_over_budget(db: &Connection, storage: &Path, budget: u64) -> Re
 impl ReadState {
     pub(in super::super) fn open_reader(storage: &Path) -> Result<HistoryReader> {
         let db = open_database(storage, false)?;
-        db.execute_batch("BEGIN")?;
-        db.query_row("SELECT revision FROM token_revision", [], |row| row.get::<_, i64>(0))?;
+        pin_reader(&db)?;
         Ok(Arc::new(Mutex::new(db)))
     }
 
@@ -590,7 +624,7 @@ impl ReadState {
         processing: bool,
     ) -> Value {
         self.read_with_archive(
-            storage, Self::open_reader(storage), options, request, scope_session, processing, None,
+            storage, Self::open_reader(storage), options, request, scope_session, processing, &[],
         ).0
     }
 
@@ -602,7 +636,7 @@ impl ReadState {
         request: &Value,
         scope_session: Option<&str>,
         processing: bool,
-        archive: Option<&ArchiveAnswer>,
+        archive: &[&ArchiveAnswer],
     ) -> (Value, Option<ArchiveKey>) {
         let (mut response, schedule) = match reader.and_then(|reader| {
             let db = reader.lock().map_err(|_| anyhow::anyhow!("usage snapshot reader panicked"))?;
@@ -696,33 +730,57 @@ pub(in super::super) fn recover_archive(
     settings: &Path,
     snapshot: &ReadState,
     cancelled: &AtomicBool,
+    previous: Option<&ArchiveAnswer>,
 ) -> ArchiveAnswer {
-    let answer = (|| -> Result<Recovered> {
+    let answer = (|| -> Result<(ArchiveKey, Recovered)> {
         let db = open_database(storage, false)?;
-        let mut replay = key.replay(&db, home, snapshot.provider_names.clone())?;
-        loop {
-            ensure!(
-                !cancelled.load(Ordering::Relaxed),
-                "archive replay cancelled"
-            );
-            if replay.step()? {
-                let mut recovered = replay.finish(&db)?;
-                recovered.evidence = Some(
-                    EvidenceOverlay::for_archive(
-                        &snapshot.historical_verifier,
-                        settings,
-                        &recovered.events,
-                        key.session.is_some(),
-                    )
-                    .map_err(|error| format!("{error:#}")),
+        let reused = match previous {
+            Some((cached, Ok(recovered))) if cached == &key => recovered.reuse(&db, &key)?,
+            _ => None,
+        };
+        let reused = match reused {
+            Some(recovered) => Some((key.clone(), recovered)),
+            None => Recovered::load_for(&db, storage, &key)?,
+        };
+        let needs_save = reused.is_none();
+        let (covered, mut recovered) = if let Some(recovered) = reused {
+            recovered
+        } else {
+            let mut replay = key.replay(&db, home, snapshot.provider_names.clone())?;
+            loop {
+                ensure!(
+                    !cancelled.load(Ordering::Relaxed),
+                    "archive replay cancelled"
                 );
-                return Ok(recovered);
+                if replay.step()? {
+                    break (key.clone(), replay.finish(&db)?);
+                }
+                std::thread::sleep(Duration::from_millis(10));
             }
-            std::thread::sleep(Duration::from_millis(10));
+        };
+        ensure!(
+            !cancelled.load(Ordering::Relaxed),
+            "archive recovery cancelled"
+        );
+        recovered.evidence = Some(
+            EvidenceOverlay::for_archive(
+                &snapshot.historical_verifier,
+                settings,
+                &recovered.events,
+                covered.session.is_some(),
+            )
+            .map_err(|error| format!("{error:#}")),
+        );
+        if needs_save && let Err(error) = recovered.save(&key, storage) {
+            eprintln!("Usage archive cache write failed: {error:#}");
         }
+        Ok((covered, recovered))
     })()
     .map_err(|error| format!("{error:#}"));
-    (key, answer)
+    match answer {
+        Ok((covered, recovered)) => (covered, Ok(recovered)),
+        Err(error) => (key, Err(error)),
+    }
 }
 
 #[cfg(test)]
@@ -746,7 +804,7 @@ mod tests {
         let storage = root.path().to_owned();
         let settings = root.path().join("settings.json");
         fs::write(&settings, r#"{"usageHistoryEnabled":true}"#).unwrap();
-        assert!(Runtime::new(storage.clone(), settings).pin_refresh_reader().unwrap().is_none());
+        assert!(Runtime::new(storage.clone(), settings).pin_refresh_readers().unwrap().is_none());
         let (pinned, ready) = std::sync::mpsc::channel();
         let reader = std::thread::spawn(move || {
             let mut db = open_database(&storage, false).unwrap();
@@ -1281,9 +1339,10 @@ mod tests {
         active.write_all(b"{").unwrap();
         let mut worker = Runtime::new(storage.clone(), settings.clone());
         let partial = pass(&mut worker);
+        assert!(partial["scan"]["pendingFiles"].as_u64().unwrap() > 0);
         assert!(
-            !exact(&partial),
-            "an unfinished same-session tail retained evidence"
+            exact(&partial),
+            "an unpublished same-session tail must not withdraw an existing proof"
         );
         assert_eq!(partial["days"][0]["usage"], native["days"][0]["usage"]);
         active

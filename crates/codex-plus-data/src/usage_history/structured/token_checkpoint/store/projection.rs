@@ -5,10 +5,10 @@ use crate::usage_history::structured::token_checkpoint::{
     historical::{EvidenceOverlay, Historical},
 };
 use crate::usage_history::structured::{
-    AttributionScope, ClassificationEvidence, DELAYED_REQUEST_MATCH_WINDOW_MS, FileState, Index,
-    MAX_ACTIVITY, Query, RequestSessionAliases, SessionModelObservation, Snapshot, UsageEvent, native_endpoints,
-    ordered_scope_ids, segments, terminal_receipts, unknown_model, unknown_provider,
-    usage_provider,
+    AttributionScope, ClassificationEvidence, ContextConflicts, DELAYED_REQUEST_MATCH_WINDOW_MS,
+    FileState, Index, MAX_ACTIVITY, Query, RequestSessionAliases, SessionModelObservation,
+    Snapshot, UsageEvent, native_endpoints, ordered_scope_ids, segments, terminal_receipts,
+    unknown_model, unknown_provider, usage_provider,
 };
 use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeZone};
@@ -21,7 +21,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+pub(super) mod compact_range;
 mod prefix;
+pub(in super::super) mod published_minutes;
+pub(in super::super) mod published_scope;
 mod request_proofs;
 
 const CLASSIFICATION_RIGHT_MS: i64 = 2 * DELAYED_REQUEST_MATCH_WINDOW_MS;
@@ -102,16 +105,24 @@ fn classification_unproven(evidence: &ClassificationEvidence) -> bool {
 
 impl DayTotals {
     fn from_event(event: &UsageEvent) -> Self {
-        if event.count_uncertain || event.count_incomplete {
+        Self::from_count(
+            Counter(event.delta),
+            event.count_uncertain || event.count_incomplete,
+            ClassificationEvidence::of(event),
+        )
+    }
+
+    fn from_count(counts: Counter, unresolved: bool, evidence: ClassificationEvidence) -> Self {
+        if unresolved {
             Self {
                 unresolved: 1,
                 ..Self::default()
             }
-        } else if event.delta.total_tokens != 0 {
+        } else if counts.0.total_tokens != 0 {
             Self {
-                counts: Counter(event.delta),
+                counts,
                 records: 1,
-                evidence: ClassificationEvidence::of(event),
+                evidence,
                 ..Self::default()
             }
         } else {
@@ -283,23 +294,28 @@ const PROVIDER_INFERRED: u8 = 1 << 4;
 const RECOVERED_REQUEST_SUPPLIER: u8 = 1 << 5;
 
 fn group_key(event: &UsageEvent) -> (String, String, String, u8) {
-    let conflict = event.context_conflicts;
-    let flags = u8::from(conflict.model)
-        | u8::from(conflict.provider) << 1
-        | u8::from(conflict.role) << 2
-        | u8::from(conflict.turn) << 3
-        | match ClassificationEvidence::of(event) {
-            ClassificationEvidence::NamespaceInferred
-            | ClassificationEvidence::SessionContextInferred => PROVIDER_INFERRED,
-            ClassificationEvidence::RecoveredRequestSupplier => RECOVERED_REQUEST_SUPPLIER,
-            _ => 0,
-        };
     (
         event.model.clone(),
         event.provider.clone(),
         event.role.clone(),
-        flags,
+        conflict_flags(event.context_conflicts) | evidence_flags(ClassificationEvidence::of(event)),
     )
+}
+
+fn conflict_flags(conflict: ContextConflicts) -> u8 {
+    u8::from(conflict.model)
+        | u8::from(conflict.provider) << 1
+        | u8::from(conflict.role) << 2
+        | u8::from(conflict.turn) << 3
+}
+
+fn evidence_flags(evidence: ClassificationEvidence) -> u8 {
+    match evidence {
+        ClassificationEvidence::NamespaceInferred
+        | ClassificationEvidence::SessionContextInferred => PROVIDER_INFERRED,
+        ClassificationEvidence::RecoveredRequestSupplier => RECOVERED_REQUEST_SUPPLIER,
+        _ => 0,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -437,21 +453,22 @@ fn retract_append_proofs(
                 let at: i64 = row.get(2)?;
                 let latest = at.saturating_add(CLASSIFICATION_RIGHT_MS);
                 let delta = stored.delta.0;
-                let competes = appended
-                    .iter()
-                    .take_while(|(at, _)| *at <= latest)
-                    .any(|(_, event)| {
-                        let next = event.delta;
-                        event.count_uncertain
-                            || event.count_pending
-                            || event.count_incomplete
-                            || event.context_conflicts.any()
-                            || !next.cached_known
-                            || (next.input_tokens == delta.input_tokens
-                                && next.output_tokens == delta.output_tokens
-                                && (source == "request-log-recovered-supplier-only"
-                                    || next.cached_input_tokens == delta.cached_input_tokens))
-                    });
+                let competes =
+                    appended
+                        .iter()
+                        .take_while(|(at, _)| *at <= latest)
+                        .any(|(_, event)| {
+                            let next = event.delta;
+                            event.count_uncertain
+                                || event.count_pending
+                                || event.count_incomplete
+                                || event.context_conflicts.any()
+                                || !next.cached_known
+                                || (next.input_tokens == delta.input_tokens
+                                    && next.output_tokens == delta.output_tokens
+                                    && (source == "request-log-recovered-supplier-only"
+                                        || next.cached_input_tokens == delta.cached_input_tokens))
+                        });
                 if !competes {
                     continue;
                 }
@@ -1135,10 +1152,7 @@ impl Store {
                     let mut incoming = Vec::new();
                     for raw in &state.events {
                         bytes += serde_json::to_vec(&Observation::capture(raw))?.len();
-                        ensure!(
-                            bytes <= input_limit,
-                            ComponentInputLimit
-                        );
+                        ensure!(bytes <= input_limit, ComponentInputLimit);
                         if raw.terminal_response.is_some() {
                             incoming.push(raw);
                             continue;
@@ -1345,9 +1359,9 @@ impl Store {
             let mut incoming = checkpoint.restore(offset);
             if let Some(old) = index.files.remove(source) {
                 let base = |file: &FileState| {
-                    file.history_base.as_ref().map(|base| {
-                        (base.rollout, base.end_ordinal, base.end_offset)
-                    })
+                    file.history_base
+                        .as_ref()
+                        .map(|base| (base.rollout, base.end_ordinal, base.end_offset))
                 };
                 same_scope = !replace
                     && cutoff_key == precise_from
@@ -1489,7 +1503,13 @@ impl Store {
             }
             appended.sort_unstable_by_key(|(at, _)| *at);
             if let Some(&(at, first)) = appended.first() {
-                rebuilt.extend(retract_append_proofs(&tx, &first.session, at, false, &appended)?);
+                rebuilt.extend(retract_append_proofs(
+                    &tx,
+                    &first.session,
+                    at,
+                    false,
+                    &appended,
+                )?);
             }
         }
         let mut days = BTreeMap::new();
@@ -1795,7 +1815,7 @@ impl Store {
                 }
             }
         }
-        let scope = Self::scope(&read, &BTreeMap::new())?;
+        let scope = Self::scope(&read, &BTreeMap::new(), true)?;
         let canonical = RequestSessionAliases::new(&scope.aliases);
         if !scope.sessions.contains(session)
             || canonical.resolve(session).as_deref() != Some(session)
@@ -1912,16 +1932,20 @@ impl Store {
             let nearby = event.date == receipt.date
                 && at.abs_diff(received_at) <= DELAYED_REQUEST_MATCH_WINDOW_MS as u64;
             // 同源相邻计数可直接绑定回执，不因写入延迟或跨午夜丢失供应商证明。
-            let adjacent = !nearby && received_at <= at && read.prepare_cached(
-                "SELECT 1 FROM token_observations
+            let adjacent = !nearby
+                && received_at <= at
+                && read
+                    .prepare_cached(
+                        "SELECT 1 FROM token_observations
                  WHERE source_id = ?1 AND revision = ?2 AND position = ?3
                    AND event_id = ?4",
-            )?.exists(params![
-                row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)? + 1,
-                event.original_id.as_slice(),
-            ])?;
+                    )?
+                    .exists(params![
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)? + 1,
+                        event.original_id.as_slice(),
+                    ])?;
             // 这里只配对供应商身份；未知缓存不能否定回执，也不能改写原生计数。
             let paired = rows.next()?.is_none()
                 && (nearby || adjacent)
@@ -1929,16 +1953,28 @@ impl Store {
                 && !event.count_uncertain
                 && !event.count_incomplete
                 && !event.count_pending
-                && [(event.total, receipt.total), (event.delta, receipt.delta), (last, received_last)]
-                    .into_iter().all(|(counter, terminal)| {
-                        counter.input_tokens == terminal.input_tokens
-                            && counter.output_tokens == terminal.output_tokens
-                            && (!counter.cached_known || !terminal.cached_known
-                                || counter.cached_input_tokens == terminal.cached_input_tokens)
-                            && counter.reasoning_output_tokens.zip(terminal.reasoning_output_tokens)
-                                .is_none_or(|(a, b)| a == b)
-                    });
-            Ok(if paired { receipt.terminal_response } else { None })
+                && [
+                    (event.total, receipt.total),
+                    (event.delta, receipt.delta),
+                    (last, received_last),
+                ]
+                .into_iter()
+                .all(|(counter, terminal)| {
+                    counter.input_tokens == terminal.input_tokens
+                        && counter.output_tokens == terminal.output_tokens
+                        && (!counter.cached_known
+                            || !terminal.cached_known
+                            || counter.cached_input_tokens == terminal.cached_input_tokens)
+                        && counter
+                            .reasoning_output_tokens
+                            .zip(terminal.reasoning_output_tokens)
+                            .is_none_or(|(a, b)| a == b)
+                });
+            Ok(if paired {
+                receipt.terminal_response
+            } else {
+                None
+            })
         };
         let attribution = AttributionScope {
             targets: target_rows.clone(),
@@ -2262,18 +2298,33 @@ impl Store {
         mut visit: impl FnMut([u8; 32], Option<[u8; 32]>),
     ) -> Result<()> {
         // 身份竞争预扫不需要解码完整 Token 记录，也不改变后续证据应用顺序。
+        let mut visit_rows = |mut rows: rusqlite::Rows<'_>| -> Result<()> {
+            while let Some(row) = rows.next()? {
+                let alias: Option<String> = row.get(1)?;
+                let alias = alias.as_deref().map(serde_json::from_str).transpose()?;
+                visit(row.get_ref(0)?.as_blob()?.try_into()?, alias);
+            }
+            Ok(())
+        };
+        let count: usize = read.query_row("SELECT count(*) FROM token_resolved", [], |r| r.get(0))?;
+        if timestamps.len() >= count {
+            // 一元 + 阻止 SQLite 将密集核验重新规划成时间索引逐点回表。
+            let times = serde_json::to_string(timestamps)?;
+            let mut statement = read.prepare_cached(
+                "SELECT event_id, json_extract(CAST(payload AS TEXT), '$.legacy_identity.id')
+                 FROM token_resolved
+                 WHERE day >= (SELECT precise_from FROM token_revision)
+                 AND +timestamp_ms IN (SELECT value FROM json_each(?1))",
+            )?;
+            return visit_rows(statement.query([times])?);
+        }
         let mut statement = read.prepare_cached(
             "SELECT event_id, json_extract(CAST(payload AS TEXT), '$.legacy_identity.id')
              FROM token_resolved
              WHERE timestamp_ms = ?1 AND day >= (SELECT precise_from FROM token_revision)",
         )?;
         for timestamp in timestamps {
-            let mut rows = statement.query([timestamp])?;
-            while let Some(row) = rows.next()? {
-                let alias: Option<String> = row.get(1)?;
-                let alias = alias.as_deref().map(serde_json::from_str).transpose()?;
-                visit(row.get_ref(0)?.as_blob()?.try_into()?, alias);
-            }
+            visit_rows(statement.query([timestamp])?)?;
         }
         Ok(())
     }
@@ -2300,17 +2351,11 @@ impl Store {
 
     pub(in super::super) fn historical_days(
         read: &Connection,
-        affected: &BTreeSet<(NaiveDate, String)>,
-        changes: &HashMap<[u8; 32], EventClassification>,
+        affected: BTreeMap<NaiveDate, HashSet<String>>,
+        overlay: &EvidenceOverlay,
     ) -> Result<BTreeMap<NaiveDate, HashMap<String, Vec<DayGroup>>>> {
-        let mut days = BTreeMap::<_, HashMap<_, _>>::new();
-        let mut statement = read.prepare_cached(
-            "SELECT r.event_id, r.payload FROM token_resolved r
-             WHERE r.session_id = (SELECT id FROM token_sessions WHERE session = ?1)
-             AND r.timestamp_ms >= ?2 AND r.timestamp_ms < ?3 AND r.day = ?4
-             ORDER BY r.timestamp_ms, r.event_id",
-        )?;
-        for (day, session) in affected {
+        let mut days = BTreeMap::new();
+        for (day, sessions) in affected {
             let midnight = |day: NaiveDate| {
                 Local
                     .from_local_datetime(&day.and_time(NaiveTime::MIN))
@@ -2319,28 +2364,34 @@ impl Store {
                     .context("historical date has no local midnight")
             };
             let end = day.succ_opt().context("historical date overflow")?;
-            let mut rows = statement.query(params![
-                session,
-                midnight(*day)?,
+            let query = Query::parse(&json!({"from":day.to_string(),"to":day.to_string()}), day)
+                .expect("historical day query");
+            let mut groups = HashMap::<String, Groups>::new();
+            compact_range::visit(
+                read,
+                midnight(day)?,
                 midnight(end)?,
-                day.to_string()
-            ])?;
-            let mut groups = Groups::new();
-            while let Some(row) = rows.next()? {
-                let raw: Observation = serde_json::from_slice(row.get_ref(1)?.as_blob()?)?;
-                let mut event =
-                    raw.into_event(row.get_ref(0)?.as_blob()?.try_into()?, session.clone())?;
-                if let Some(classification) = changes.get(&event.id) {
-                    classification.apply(&mut event);
-                }
-                groups
-                    .entry(group_key(&event))
-                    .or_default()
-                    .merge(DayTotals::from_event(&event));
-            }
-            days.entry(*day)
-                .or_default()
-                .insert(session.clone(), day_groups(groups));
+                &query,
+                Some(overlay),
+                None,
+                compact_range::Sessions::Members(&sessions),
+                |session, _, key, totals, _| {
+                    groups
+                        .entry(session.to_owned())
+                        .or_default()
+                        .entry(key.clone())
+                        .or_default()
+                        .merge(totals);
+                },
+            )?;
+            let grouped = sessions
+                .into_iter()
+                .map(|session| {
+                    let values = groups.remove(&session).map(day_groups).unwrap_or_default();
+                    (session, values)
+                })
+                .collect();
+            days.insert(day, grouped);
         }
         Ok(days)
     }
@@ -2349,16 +2400,19 @@ impl Store {
         read: &Connection,
         start: NaiveDate,
         end: NaiveDate,
-        visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+        mut visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
     ) -> Result<()> {
-        Self::visit_summary(read, Some(start), Some(end), visit)
+        Self::visit_summary(read, Some(start), Some(end), None, |session, day, groups| {
+            visit(session.to_owned(), day, serde_json::from_slice(groups)?)
+        })
     }
 
     fn visit_summary(
         read: &Connection,
         start: Option<NaiveDate>,
         end: Option<NaiveDate>,
-        mut visit: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+        members: Option<&HashSet<String>>,
+        mut visit: impl FnMut(&str, NaiveDate, &[u8]) -> Result<()>,
     ) -> Result<()> {
         let select = "SELECT s.session, d.day, d.groups FROM token_days d
                       JOIN token_sessions s ON s.id = d.session_id WHERE d.day >= ?1";
@@ -2378,10 +2432,14 @@ impl Store {
         let mut query = read.prepare_cached(&sql)?;
         let mut rows = query.query(rusqlite::params_from_iter(values))?;
         while let Some(row) = rows.next()? {
+            let session = row.get_ref(0)?.as_str()?;
+            if members.is_some_and(|ids| !ids.contains(session)) {
+                continue;
+            }
             visit(
-                row.get(0)?,
+                session,
                 NaiveDate::parse_from_str(row.get_ref(1)?.as_str()?, "%Y-%m-%d")?,
-                serde_json::from_slice(row.get_ref(2)?.as_blob()?)?,
+                row.get_ref(2)?.as_blob()?,
             )?;
         }
         Ok(())
@@ -2393,7 +2451,7 @@ impl Store {
         start_ms: i64,
         end_ms: i64,
         visit_detail: impl FnMut(UsageEvent) -> Result<()>,
-        visit_archived_day: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
+        mut visit_archived_day: impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>,
     ) -> Result<(i64, bool)> {
         let read = db.transaction()?;
         let current = revision(&read)?;
@@ -2403,7 +2461,9 @@ impl Store {
             None,
             false,
             visit_detail,
-            Some(visit_archived_day),
+            Some(|session: &str, day, groups: &[u8]| {
+                visit_archived_day(session.to_owned(), day, serde_json::from_slice(groups)?)
+            }),
         )?;
         read.commit()?;
         Ok((current, needs_source_recovery))
@@ -2415,7 +2475,7 @@ impl Store {
         query: Option<&Query>,
         event_id_order: bool,
         visit_detail: impl FnMut(UsageEvent) -> Result<()>,
-        visit_archived_day: Option<impl FnMut(String, NaiveDate, Vec<DayGroup>) -> Result<()>>,
+        visit_archived_day: Option<impl FnMut(&str, NaiveDate, &[u8]) -> Result<()>>,
     ) -> Result<bool> {
         ensure!(start_ms < end_ms, "invalid Token range");
         let start = local_time(start_ms)?;
@@ -2438,7 +2498,9 @@ impl Store {
             if whole_start < whole_end
                 && let Some(visit_archived_day) = visit_archived_day
             {
-                Self::visit_days(read, whole_start, whole_end, visit_archived_day)?;
+                Self::visit_summary(
+                    read, Some(whole_start), Some(whole_end), None, visit_archived_day,
+                )?;
             }
             needs_source_recovery = start_day < cutoff;
         }
@@ -2466,7 +2528,7 @@ impl Store {
         requested: &str,
     ) -> Result<(Selection, ScopedSelection)> {
         let read = db.transaction()?;
-        let scope = Self::scope(&read, &BTreeMap::new())?;
+        let scope = Self::scope(&read, &BTreeMap::new(), true)?;
         let (session, sessions) = scope.scope_members(requested);
         let [all, usage] = Self::select(
             &read,
@@ -2514,8 +2576,15 @@ impl Store {
         historical: Option<&Historical>,
     ) -> Result<(Value, Option<ArchiveKey>)> {
         let read = db.transaction()?;
+        let archives: Vec<_> = archived.into_iter().collect();
         let answer = Self::read_snapshot(
-            &read, query, request, requested, provider_names, archived, historical,
+            &read,
+            query,
+            request,
+            requested,
+            provider_names,
+            &archives,
+            historical,
         )?;
         read.commit()?;
         Ok(answer)
@@ -2527,7 +2596,7 @@ impl Store {
         request: &Value,
         requested: Option<&str>,
         provider_names: &BTreeMap<String, String>,
-        archived: Option<&ArchiveAnswer>,
+        archived: &[&ArchiveAnswer],
         historical: Option<&Historical>,
     ) -> Result<(Value, Option<ArchiveKey>)> {
         let bounds = request["startAt"].as_i64().zip(request["endAt"].as_i64());
@@ -2573,19 +2642,25 @@ impl Store {
         };
         let mut archive_status = None;
         let mut recovered = None;
-        let mut refresh_archive = false;
-        if let (Some(key), Some((cached, answer))) = (&archive_key, archived)
-            && cached == key
+        let mut refresh_archive = None;
+        if let Some(key) = &archive_key
+            && let Some((cached, answer)) = archived
+                .iter()
+                .copied()
+                .find(|(cached, answer)| answer.is_ok() && cached.contains(key))
+                .or_else(|| archived.iter().copied().find(|(cached, _)| cached == key))
         {
             match answer {
-                Ok(answer) => match answer.is_current(&read, current_revision, key) {
+                // 校验整份缓存的来源，按请求区间返回结果。
+                Ok(answer) => match answer.is_current(&read, current_revision, cached) {
                     Ok(true) => {
                         let evidence = match answer.evidence.as_ref() {
                             Some(Ok(evidence)) => match evidence.is_current() {
                                 Ok(true) => Some(evidence),
                                 Ok(false) => {
-                                    refresh_archive = true;
-                                    None
+                                    refresh_archive = Some(cached.clone());
+                                    // 保留上一份已发布分类，直到新证据校验完成。
+                                    Some(evidence)
                                 }
                                 Err(error) => {
                                     historical_error = Some(format!("{error:#}"));
@@ -2611,9 +2686,40 @@ impl Store {
                 }
             }
         }
-        let scope = Self::scope(&read, provider_names)?;
-        let scoped = requested.map(|session| scope.scope_members(session));
-        let (mut all, mut scoped_usage) = if let Some((_, sessions)) = &scoped {
+        let scoped_only = request["scopeOnly"] == true
+            && requested.is_some()
+            && !request["liveReceipts"].is_array()
+            && !query.include_activity
+            && !query.include_session_cursors;
+        let scope = (request["includeSessionMetadata"] != false
+            || requested.is_some()
+            || request["liveReceipts"].is_array())
+        .then(|| {
+            if scoped_only
+                && let Some(scope) = published_scope::membership(read, Some(current_revision))?
+            {
+                return Ok(scope);
+            }
+            Self::scope(read, provider_names, !scoped_only)
+        })
+        .transpose()?;
+        let scoped = scope
+            .as_ref()
+            .zip(requested)
+            .map(|(scope, session)| scope.scope_members(session));
+        let (mut all, mut scoped_usage) = if scoped_only {
+            let (_, sessions) = scoped.as_ref().expect("scoped request has membership");
+            let [usage] = Self::select(
+                read,
+                query,
+                bounds,
+                [Some(sessions)],
+                (include_trend, include_fingerprints),
+                recovered,
+                historical,
+            )?;
+            (usage, None)
+        } else if let Some((_, sessions)) = &scoped {
             let [all, usage] = Self::select(
                 &read,
                 query,
@@ -2677,10 +2783,7 @@ impl Store {
             "coverage":coverage,
             "countStatus":{"complete":complete,"uncertainEvents":all.unresolved},
             "classificationStatus":{"complete":complete && all.unclassified == 0 && !all.archive_classification_gap,"uncertainEvents":all.unclassified},
-            "days":all.days,
-            "sessionIds":scope.sessions,
-            "sessionAliases":scope.aliases,
-            "sessionInfo":scope.session_info,
+            "days":if scoped_only { vec![] } else { std::mem::take(&mut all.days) },
             "providerNames":names,
             "scan":{
                 "ready":all.coverage.is_some(),
@@ -2692,7 +2795,16 @@ impl Store {
                 "preciseFrom":(!cutoff.is_empty()).then_some(&cutoff),
             }
         });
-        if include_trend {
+        if scoped_only {
+            let requested = requested.unwrap();
+            let (canonical, _) = scoped.as_ref().unwrap();
+            result["sessionAliases"] = json!({requested:canonical});
+        } else if let Some(scope) = &scope {
+            result["sessionIds"] = json!(scope.sessions);
+            result["sessionAliases"] = json!(scope.aliases);
+            result["sessionInfo"] = json!(scope.session_info);
+        }
+        if include_trend && !scoped_only {
             result["trend"] = json!(all.trend);
         }
         if retained_evidence.is_some() || archive_evidence.is_some() {
@@ -2709,9 +2821,13 @@ impl Store {
             result["historicalClassificationError"] = json!(error);
         }
         let has_recovery = recovered.is_some();
+        let refreshing_archive = refresh_archive.is_some();
+        if refreshing_archive {
+            result["classificationStatus"]["complete"] = json!(false);
+        }
         let old_activity = archive_key.is_some();
         let schedule = if let Some(key) = archive_key {
-            if has_recovery && !refresh_archive {
+            if has_recovery && refresh_archive.is_none() {
                 result["archiveRecovery"] =
                     json!({"status":if complete {"complete"} else {"partial"}});
                 None
@@ -2720,9 +2836,8 @@ impl Store {
                 None
             } else {
                 result["archiveRecovery"] = json!({"status":"pending"});
-                all.coverage
-                    .is_some_and(|coverage| coverage.pending_sources == 0)
-                    .then_some(key)
+                // 回读校验所选范围的已提交来源，不等无关来源完成扫描。
+                all.coverage.map(|_| refresh_archive.unwrap_or(key))
             }
         } else {
             if all.needs_source_recovery && include_trend {
@@ -2730,9 +2845,10 @@ impl Store {
             }
             None
         };
-        if let Some(cursors) = all.session_cursors {
+        if let Some(cursors) = &all.session_cursors {
             result["sessionCursors"] = json!(cursors);
         }
+        let scoped_usage = scoped_usage.as_ref().or(scoped_only.then_some(&all));
         if let (Some((session, sessions)), Some(usage)) = (scoped, scoped_usage) {
             let count_complete =
                 scan_complete && usage.unresolved == 0 && !usage.needs_source_recovery;
@@ -2744,7 +2860,7 @@ impl Store {
                 "coverage":coverage,
                 "complete":count_complete,
                 "countStatus":{"complete":count_complete,"uncertainEvents":usage.unresolved},
-                "classificationStatus":{"complete":count_complete && usage.unclassified == 0 && !usage.archive_classification_gap,"uncertainEvents":usage.unclassified},
+                "classificationStatus":{"complete":count_complete && usage.unclassified == 0 && !usage.archive_classification_gap && !refreshing_archive,"uncertainEvents":usage.unclassified},
             });
             if include_trend {
                 result["scopedUsage"]["trend"] = json!(usage.trend);
@@ -2828,6 +2944,7 @@ impl Store {
     pub(super) fn scope(
         read: &Connection,
         provider_names: &BTreeMap<String, String>,
+        include_metadata: bool,
     ) -> Result<Snapshot> {
         #[derive(Deserialize)]
         struct ScopeCheckpoint {
@@ -2866,28 +2983,32 @@ impl Store {
             if let Some(parents) = saved.scope_parent_candidates.remove(&saved.session) {
                 candidates.push((saved.session.clone(), parents));
             }
-            observations.extend(saved.model_observations);
-            let info = scope
-                .session_info
-                .entry(saved.session.clone())
-                .or_insert(Value::Null);
-            if !saved.model.is_empty() || info["model"].as_str().is_none_or(str::is_empty) {
-                *info = json!({
-                    "model":saved.model,
-                    "provider":usage_provider(&saved.model, &saved.provider, provider_names),
-                    "role":saved.role,
-                });
+            if include_metadata {
+                observations.extend(saved.model_observations);
+                let info = scope
+                    .session_info
+                    .entry(saved.session.clone())
+                    .or_insert(Value::Null);
+                if !saved.model.is_empty() || info["model"].as_str().is_none_or(str::is_empty) {
+                    *info = json!({
+                        "model":saved.model,
+                        "provider":usage_provider(&saved.model, &saved.provider, provider_names),
+                        "role":saved.role,
+                    });
+                }
             }
             scope.sessions.insert(saved.session);
         }
         for session in &scope.sessions {
             scope.aliases.insert(session.clone(), session.clone());
         }
-        scope.apply_session_models(
-            &RequestSessionAliases::new(&scope.aliases),
-            observations.iter().map(|(session, model)| (session, model)),
-            provider_names,
-        );
+        if include_metadata {
+            scope.apply_session_models(
+                &RequestSessionAliases::new(&scope.aliases),
+                observations.iter().map(|(session, model)| (session, model)),
+                provider_names,
+            );
+        }
         scope.collect_scope_candidates(
             candidates
                 .iter()
@@ -3017,22 +3138,39 @@ impl Store {
                 }
             }
         };
-        let read_summary = |session: String, day: NaiveDate, groups: Vec<DayGroup>| {
+        let read_summary = |session: &str, day: NaiveDate, groups: &[u8]| {
             if recovered.is_some_and(|(key, _, _)| {
                 day >= key.first
                     && day < key.end
-                    && key.session.as_ref().is_none_or(|id| id == &session)
+                    && key.session.as_deref().is_none_or(|id| id == session)
             }) {
                 // 先比较回读与原汇总，再决定是否需要重新分组。
                 return Ok(());
             }
-            let groups = historical
-                .and_then(|evidence| evidence.days.get(&day)?.get(&session))
-                .unwrap_or(&groups);
-            if accumulate_summary(&session, day, groups) {
-                mark_summary(&session, day);
+            // 已重投影的日期无需再解码旧汇总。
+            let stored;
+            let groups = if let Some(groups) =
+                historical.and_then(|evidence| evidence.days.get(&day)?.get(session))
+            {
+                groups
+            } else {
+                stored = serde_json::from_slice(groups)?;
+                &stored
+            };
+            if accumulate_summary(session, day, groups) {
+                mark_summary(session, day);
             }
             Ok(())
+        };
+        let accumulate_trend = |session: &str, bucket: usize, key: &GroupKey, totals: DayTotals| {
+            for (buckets, scope) in trend.borrow_mut().iter_mut().zip(scopes) {
+                if scope.is_none_or(|scope| scope.contains(session)) {
+                    buckets[bucket]
+                        .entry(key.clone())
+                        .or_default()
+                        .merge(totals);
+                }
+            }
         };
         let read_event = |event: &UsageEvent, include_totals: bool, classification_agrees: bool| {
             let model = Some(event.model.as_str()).filter(|model| !model.is_empty());
@@ -3048,14 +3186,7 @@ impl Store {
                 if let Some((start, _, interval, _)) = trend_bounds {
                     let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
                     let bucket = ((at - start) / interval) as usize;
-                    for (buckets, scope) in trend.borrow_mut().iter_mut().zip(scopes) {
-                        if scope.is_none_or(|scope| scope.contains(&event.session)) {
-                            buckets[bucket]
-                                .entry(key.clone())
-                                .or_default()
-                                .merge(totals);
-                        }
-                    }
+                    accumulate_trend(&event.session, bucket, &key, totals);
                 }
                 if include_totals {
                     accumulate(&event.session, event.date, &key, totals);
@@ -3082,30 +3213,162 @@ impl Store {
             }
             read_event(&event, true, true)
         };
-        let whole_days = if !include_trend
+        let only_members = match scopes.as_slice() {
+            [Some(members)] => Some(*members),
+            _ => None,
+        };
+        let read_compact = |start, end, interval: Option<i64>| {
+            let sessions = if let Some(members) = only_members {
+                compact_range::Sessions::Members(members)
+            } else if scopes.iter().any(Option::is_some) {
+                compact_range::Sessions::All
+            } else {
+                compact_range::Sessions::Omit
+            };
+            compact_range::visit(
+                read,
+                start,
+                end,
+                query,
+                historical.map(|history| &history.overlay),
+                interval,
+                sessions,
+                |session, day, key, totals, bucket| {
+                    accumulate(session, day, key, totals);
+                    if let Some(bucket) = bucket {
+                        accumulate_trend(session, bucket, key, totals);
+                    }
+                },
+            )
+        };
+        let summary_days = if !include_trend
             && !include_fingerprints
             && query.turn_id.is_none()
-            && let Some((start, end)) = bounds
+            && let Some((start_ms, end_ms)) = bounds
         {
-            ensure!(start < end, "invalid Token range");
-            let start = local_time(start)?;
-            let end = local_time(end)?;
-            (local_midnight(start) && local_midnight(end)).then_some((
-                start.date_naive().max(query.from.unwrap_or(NaiveDate::MIN)),
-                end.date_naive().min(
-                    query
-                        .to
-                        .and_then(|day| day.succ_opt())
-                        .unwrap_or(NaiveDate::MAX),
-                ),
-            ))
+            ensure!(start_ms < end_ms, "invalid Token range");
+            let start = local_time(start_ms)?;
+            let end = local_time(end_ms)?;
+            let first = if local_midnight(start) {
+                start.date_naive()
+            } else {
+                start
+                    .date_naive()
+                    .succ_opt()
+                    .context("Token start date overflow")?
+            };
+            let last = end.date_naive();
+            let whole = if first < last {
+                Local
+                    .from_local_datetime(&first.and_time(NaiveTime::MIN))
+                    .single()
+                    .zip(
+                        Local
+                            .from_local_datetime(&last.and_time(NaiveTime::MIN))
+                            .single(),
+                    )
+                    .map(|(left, right)| {
+                        Some((
+                            first,
+                            last,
+                            left.timestamp_millis(),
+                            right.timestamp_millis(),
+                        ))
+                    })
+            } else {
+                Some(None)
+            };
+            whole.map(|whole| (start_ms, end_ms, start.date_naive(), whole))
         } else {
             None
         };
-        let needs_source_recovery = if let Some((start, end)) = whole_days {
-            // 周/月视图按完整本地日取汇总，无需反序列化这些日期的逐笔明细。
-            Self::visit_days(read, start, end, read_summary)?;
-            start < end && start.to_string().as_str() < precise_from.as_str()
+        let needs_source_recovery = if let Some((start_ms, end_ms, start, whole)) = summary_days {
+            // 整日走日汇总，两端优先使用同版的分钟汇总。
+            let has_edges =
+                whole.is_none_or(|(_, _, left, right)| start_ms < left || right < end_ms);
+            let use_minutes = has_edges
+                && (only_members.is_some() || scopes.iter().all(Option::is_none))
+                && query.session_id.is_none()
+                && query.model.is_none()
+                && query.search.is_empty()
+                && [start_ms, end_ms]
+                    .iter()
+                    .all(|at| at.rem_euclid(published_minutes::MINUTE_MS) == 0)
+                && published_minutes::matches(
+                    read,
+                    revision,
+                    historical,
+                    local_time(end_ms - 1)?.date_naive(),
+                    only_members.is_some(),
+                )?;
+            let scoped_minutes = if use_minutes {
+                only_members.map(serde_json::to_string).transpose()?
+            } else {
+                None
+            };
+            let read_edge = |left, right| -> Result<()> {
+                if !use_minutes {
+                    return read_compact(left, right, None);
+                }
+                let first = local_time(left)?
+                    .date_naive()
+                    .max(query.from.unwrap_or(NaiveDate::MIN));
+                let last = local_time(right - 1)?
+                    .date_naive()
+                    .min(query.to.unwrap_or(NaiveDate::MAX));
+                for day in first.iter_days().take_while(|day| *day <= last) {
+                    let merge = |session: &str, group: DayGroup| {
+                        let key = (group.model, group.provider, group.role, group.conflicts);
+                        accumulate(session, day, &key, group.totals);
+                    };
+                    if let Some(members) = &scoped_minutes {
+                        published_minutes::visit_scoped_day(
+                            read, day, left, right, members, merge,
+                        )?;
+                    } else {
+                        published_minutes::visit_day(read, day, left, right, |group| {
+                            merge("", group)
+                        })?;
+                    }
+                }
+                Ok(())
+            };
+            if let Some((first, last, left, right)) = whole {
+                Self::visit_summary(
+                    read,
+                    Some(first.max(query.from.unwrap_or(NaiveDate::MIN))),
+                    Some(
+                        last.min(
+                            query
+                                .to
+                                .and_then(|day| day.succ_opt())
+                                .unwrap_or(NaiveDate::MAX),
+                        ),
+                    ),
+                    only_members,
+                    read_summary,
+                )?;
+                if start_ms < left {
+                    read_edge(start_ms, left)?;
+                }
+                if right < end_ms {
+                    read_edge(right, end_ms)?;
+                }
+            } else {
+                read_edge(start_ms, end_ms)?;
+            }
+            let from = start.max(query.from.unwrap_or(NaiveDate::MIN));
+            let to = local_time(end_ms - 1)?
+                .date_naive()
+                .min(query.to.unwrap_or(NaiveDate::MAX));
+            from <= to && from.to_string().as_str() < precise_from.as_str()
+        } else if let Some((start, end, interval, _)) = trend_bounds
+            && !include_fingerprints
+            && query.turn_id.is_none()
+            && local_time(start)?.date_naive().to_string() >= precise_from
+        {
+            read_compact(start, end, Some(interval))?;
+            false
         } else if let Some((start, end)) = bounds {
             Self::visit_range(
                 read,
@@ -3134,7 +3397,7 @@ impl Store {
                         .to
                         .and_then(|day| day.succ_opt())
                         .map_or(cutoff, |end| end.min(cutoff));
-                    Self::visit_summary(read, query.from, Some(end), read_summary)?;
+                    Self::visit_summary(read, query.from, Some(end), only_members, read_summary)?;
                     query
                         .from
                         .zip(query.to)
@@ -3148,6 +3411,7 @@ impl Store {
                 read,
                 query.from,
                 query.to.and_then(|day| day.succ_opt()),
+                only_members,
                 read_summary,
             )?;
             query

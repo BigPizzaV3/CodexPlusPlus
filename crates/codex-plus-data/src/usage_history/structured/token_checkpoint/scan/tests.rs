@@ -21,6 +21,74 @@ fn rollout(session: &str) -> String {
 }
 
 #[test]
+fn cold_scan_resumes_mixed_receipt_parser_checkpoints() -> anyhow::Result<()> {
+    use std::io::Write;
+    let dir = tempfile::tempdir()?;
+    let home = dir.path().canonicalize()?;
+    let sessions = home.join("sessions");
+    fs::create_dir(&sessions)?;
+    let live = sessions.join("rollout-live.jsonl");
+    let older = sessions.join("rollout-older.jsonl");
+    fs::write(&live, rollout(FIRST))?;
+    fs::write(&older, rollout(SECOND))?;
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    let mut store = Store::open(Connection::open_in_memory()?)?;
+    assert!(Scan::default().round(&mut store, &home, cutoff, &names, 1 << 20).complete);
+    for session in [FIRST, SECOND] {
+        assert!(store.reclassify_session(session, 1 << 20, &BTreeSet::new(), |events, _| {
+            for event in events {
+                event.provider = "fixture-relay".into();
+                event.provider_source = Some("request-log-exact".into());
+            }
+            Ok(())
+        })?.is_some());
+    }
+    assert_eq!(store.db.execute(
+        "UPDATE token_sources
+         SET checkpoint=CAST(json_set(CAST(checkpoint AS TEXT),'$.receipt_parser_version',1) AS BLOB)
+         WHERE json_extract(CAST(checkpoint AS TEXT),'$.session')=?",
+        [FIRST],
+    )?, 1);
+    let next = json!({"type":"event_msg","timestamp":"2026-01-02T18:01:00Z",
+        "payload":{"type":"token_count","info":{
+            "total_token_usage":{"input_tokens":202,"cached_input_tokens":20,"output_tokens":10},
+            "last_token_usage":{"input_tokens":102,"cached_input_tokens":0,"output_tokens":0}
+    }}});
+    writeln!(fs::OpenOptions::new().append(true).open(&live)?, "{next}")?;
+
+    let mut reopened = Scan::default();
+    let mut complete = false;
+    for _ in 0..4 {
+        let report = reopened.round(&mut store, &home, cutoff, &names, 1 << 20);
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        if report.complete {
+            assert!(report.can_classify);
+            complete = true;
+            break;
+        }
+    }
+    assert!(complete);
+    assert_eq!(store.checkpoint(&live)?.unwrap().1.offset, live.metadata()?.len());
+    let mut actual = BTreeMap::new();
+    let mut appended = Vec::new();
+    Store::read_committed(&mut store.db, i64::MIN, i64::MAX, |event| {
+        if event.timestamp.contains("T18:01:00") {
+            appended.push(event.delta.total_tokens);
+        } else {
+            actual.insert(event.session, (event.provider, event.delta.total_tokens));
+        }
+        Ok(())
+    })?;
+    assert_eq!(appended, [102]);
+    assert_eq!(actual, BTreeMap::from([
+        (FIRST.to_owned(), ("fixture-relay".to_owned(), 110)),
+        (SECOND.to_owned(), ("fixture-relay".to_owned(), 110)),
+    ]));
+    Ok(())
+}
+
+#[test]
 fn oversized_component_yields_then_publishes_atomically_after_reopen() -> anyhow::Result<()> {
     let dir = tempfile::tempdir()?;
     let root = dir.path().canonicalize()?;
@@ -747,6 +815,64 @@ fn physical_archive_move_keeps_a_long_sources_committed_index_and_append_baselin
     assert_eq!(after.len(), 81);
     assert_eq!(after[..80], before.1);
     assert_eq!(after[80].1, 110);
+}
+
+#[test]
+fn sqlite_full_registering_a_copy_does_not_retract_committed_supplier_proofs() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    let sessions = root.join("sessions");
+    let archives = root.join("archived_sessions");
+    fs::create_dir(&sessions)?;
+    fs::create_dir(&archives)?;
+    let source = sessions.join(format!("rollout-{FIRST}.jsonl"));
+    let copy = archives.join(source.file_name().unwrap());
+    fs::write(&source, rollout(FIRST))?;
+    fs::write(sessions.join("rollout-other.jsonl"), rollout(SECOND))?;
+    let mut store = Store::open(Connection::open(root.join("usage.sqlite"))?)?;
+    let mut scan = Scan::default();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let names = BTreeMap::new();
+    assert!(scan.round(&mut store, &root, cutoff, &names, 1 << 20).complete);
+    assert!(store.reclassify_session(SECOND, 1 << 20, &BTreeSet::new(), |events, _| {
+        for event in events {
+            event.provider = "verified-relay".into();
+            event.provider_source = Some("request-log-exact".into());
+        }
+        Ok(())
+    })?.is_some());
+    let snapshot = |store: &Store| -> rusqlite::Result<(i64, Vec<(Vec<u8>, Vec<u8>)>)> {
+        let revision = store.db.query_row("SELECT revision FROM token_revision", [], |r| r.get(0))?;
+        let rows = store.db.prepare("SELECT event_id,payload FROM token_resolved ORDER BY event_id")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+        Ok((revision, rows))
+    };
+    let before = snapshot(&store)?;
+    fs::copy(&source, &copy)?;
+    store.db.execute_batch(
+        "CREATE TABLE test_pressure(data BLOB);
+         CREATE TRIGGER fill_copy_write BEFORE INSERT ON token_source_copies
+         BEGIN INSERT INTO test_pressure VALUES (zeroblob(1048576)); END;",
+    )?;
+    let pages: i64 = store.db.pragma_query_value(None, "page_count", |r| r.get(0))?;
+    store.db.pragma_update(None, "max_page_count", pages)?;
+    let failed = scan.round(&mut store, &root, cutoff, &names, 1 << 20);
+    assert!(!failed.can_classify);
+    assert!(failed.errors.iter().any(|(path, error)| {
+        path == &copy && error.downcast_ref::<rusqlite::Error>()
+            .is_some_and(|e| e.sqlite_error_code() == Some(rusqlite::ErrorCode::DiskFull))
+    }), "{:?}", failed.errors);
+    let under_pressure = snapshot(&store)?;
+    assert_eq!(under_pressure.0, before.0);
+    assert!(under_pressure.1 == before.1, "committed event payload or supplier changed");
+
+    store.db.execute_batch("DROP TRIGGER fill_copy_write")?;
+    store.db.pragma_update(None, "max_page_count", pages + 128)?;
+    let recovered = scan.round(&mut store, &root, cutoff, &names, 1 << 20);
+    assert!(recovered.complete && recovered.can_classify, "{:?}", recovered.errors);
+    assert_eq!(store.db.query_row("SELECT count(*) FROM token_source_copies", [], |r| r.get::<_, u64>(0))?, 1);
+    assert!(snapshot(&store)?.1 == before.1, "recovery changed a committed event");
+    Ok(())
 }
 
 #[test]
@@ -2354,8 +2480,12 @@ fn rescan_consumes_registered_appends_before_sealed_files_and_retracts_only_comp
     assert_eq!(store.db.query_row("SELECT count(*) FROM token_resolved", [], |r| r.get::<_, i64>(0))?, 3);
     assert!(round(&mut scan, &mut store).complete);
 
-    // 半行仍可能补出别的会话或竞争计数。
+    // 已登记来源的半行尚未提交，不撤回不相关的归属。
     fs::OpenOptions::new().append(true).open(&later)?.write_all(b"{")?;
+    assert!(!round(&mut scan, &mut store).complete);
+    assert_eq!(exact_sessions(&store)?, [FIRST]);
+    // 新来源无法映射到已提交的关联会话，仍须撤回原结论。
+    fs::write(sessions.join("rollout-unknown.jsonl"), b"{")?;
     assert!(!round(&mut scan, &mut store).complete);
     assert!(exact_sessions(&store)?.is_empty());
     Ok(())

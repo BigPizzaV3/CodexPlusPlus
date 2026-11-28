@@ -368,6 +368,60 @@ fn distinct_terminal_ids_keep_equal_count_supplier_proofs() -> Result<()> {
 }
 
 #[test]
+fn completion_during_ingest_is_direct_on_first_classification() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let home = root.path().join("home");
+    fs::create_dir_all(home.join("sessions"))?;
+    let home = fs::canonicalize(home)?;
+    let settings = root.path().join("settings.json");
+    fs::write(&settings, r#"{"usageHistoryEnabled":true}"#)?;
+    let log = root.path().join("requests.jsonl");
+    let source = home.join("sessions/rollout-completion-during-ingest.jsonl");
+    let session = "00000000-0000-4000-8000-000000000097";
+    let at = Local::now() - TimeDelta::minutes(1);
+    let usage = json!({"input_tokens":100,"cached_input_tokens":20,"output_tokens":10});
+    let rows = [
+        json!({"type":"session_meta","timestamp":at.to_rfc3339(),
+            "payload":{"id":session,"model_provider":"custom"}}),
+        json!({"type":"turn_context","timestamp":at.to_rfc3339(),
+            "payload":{"turn_id":"turn","model":"gpt-fixture"}}),
+        json!({"type":"token_usage_record","timestamp":at.to_rfc3339(),
+            "payload":{"thread_id":session,"turn_id":"turn","response_id":"resp_new",
+                "usage":usage,"thread_token_usage":usage}}),
+        json!({"type":"event_msg","timestamp":at.to_rfc3339(),
+            "payload":{"type":"token_count","info":{
+                "last_token_usage":usage,"total_token_usage":usage}}}),
+    ];
+    let request = json!({"id":"new-completion","threadId":session,"model":"gpt-fixture",
+        "upstreamModel":"gpt-fixture","relayId":"supplier-new","success":true,
+        "state":"success","statusCode":200,"timestampMs":at.timestamp_millis(),
+        "startedAtMs":at.timestamp_millis()-100,"attempts":1,"autoRetries":0,
+        "finalResponseEvidence":"final-response-v1","finalResponseId":"resp_new",
+        "usage":{"inputTokens":100,"cachedTokens":20,"outputTokens":10}});
+    fs::write(&log, "")?;
+    let mut worker = Runtime::new(root.path().join("history"), settings);
+    let cutoff = at.date_naive() - Days::new(3);
+    let (_, available) = worker.evidence.load_evidence(&home, cutoff, &log);
+    assert!(available);
+    worker.evidence.request_evidence.refresh(&log);
+    fs::write(&source, rows.iter().map(|row| format!("{row}\n")).collect::<String>())?;
+    let mut state = worker.initial_state();
+    assert!(worker.refresh(&home, cutoff, 64 << 20, &mut state)?);
+    // Native usage arrived during ingestion; gateway completion is durable before classification.
+    fs::write(&log, format!("{request}\n"))?;
+    worker.classify_retained(&home, cutoff, MAX_RETAINED_BYTES, &log, &mut state)?;
+    let (supplier, evidence, total): (String, Option<String>, u64) = worker.store.as_ref().unwrap().db
+        .query_row("SELECT json_extract(CAST(payload AS TEXT),'$.provider'),
+            json_extract(CAST(payload AS TEXT),'$.provider_source'),
+            json_extract(CAST(payload AS TEXT),'$.delta.t') FROM token_resolved", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    assert_eq!(supplier, "supplier-new");
+    assert!(matches!(evidence.as_deref(), Some("request-log-exact" | "request-log-recovered-supplier-only")));
+    assert_eq!(total, 110);
+    Ok(())
+}
+
+#[test]
 fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
     use std::io::Write as _;
     let root = tempfile::tempdir()?;
@@ -442,7 +496,7 @@ fn new_tail_preempts_one_old_page_without_starving_history() -> Result<()> {
         let mut state = worker.initial_state();
         assert!(worker.refresh(&home, cutoff, 64 << 20, &mut state)?);
         // 活跃尾部和历史各自推进，不减少完整竞争窗口。
-        worker.classify_retained(&home, cutoff, budget, &mut state)?;
+        worker.classify_retained(&home, cutoff, budget, &log, &mut state)?;
         Ok(())
     };
     append(3)?;
@@ -598,7 +652,7 @@ fn recent_sessions_cover_the_day_then_their_own_history_and_revisit_late_proofs(
     // 即使预算放不下一条记录，每轮仍核对一个完整窗口，再轮到下一会话。
     for expected in 1..=14 {
         worker
-            .classify_retained(&home, cutoff, 1, &mut state)
+            .classify_retained(&home, cutoff, 1, &log, &mut state)
             .unwrap();
         assert_eq!(worker.evidence_before.len(), expected);
         assert_eq!(exact(&worker, now.timestamp_millis()), 13);

@@ -71,6 +71,13 @@ impl SourceReader {
                 .is_some_and(|(size, _, _)| size == self.state.offset)
     }
 
+    pub(super) fn waiting_line_has_committed_scope(&self) -> bool {
+        self.revision.is_some()
+            && !self.state.session.is_empty()
+            && !self.replacing
+            && !self.has_count_gap()
+    }
+
     pub(super) fn can_yield_plain_batch(&self) -> bool {
         self.source.extension().is_some_and(|ext| ext == "jsonl")
             && self.revision.is_some()

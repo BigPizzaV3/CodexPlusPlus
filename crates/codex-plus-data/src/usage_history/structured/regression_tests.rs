@@ -1649,6 +1649,65 @@ impl Fixture {
     }
 }
 
+#[test]
+fn indexed_context_inference_retains_rank_and_all_tied_suppliers() -> anyhow::Result<()> {
+    let mut fixture = Fixture::new();
+    fixture.write_segment(
+        "rollout-inference.jsonl",
+        vec![fixture.context(500, "gpt-target"), fixture.usage(1_000, 1)],
+    );
+    let event = fixture.snapshot().events.pop().unwrap();
+    let at = DateTime::parse_from_rfc3339(&event.timestamp)?.timestamp_millis();
+    let request = |id: &str, model: &str, offset, input, response: Option<&str>| {
+        serde_json::from_value::<RequestEvidence>(json!({
+            "id":id,"threadId":event.session,"relayId":id,"model":model,"upstreamModel":model,
+            "success":true,"state":"success","statusCode":200,"attempts":1,"autoRetries":0,
+            "timestampMs":at+offset,"startedAtMs":at+offset-1,
+            "finalResponseId":response,
+            "usage":{"inputTokens":input,"outputTokens":10,"cachedTokens":20},
+        })).unwrap()
+    };
+    let resolve = |event: &UsageEvent| Ok(event.terminal_response.clone());
+    let scope = AttributionScope {
+        targets: 0..1, gateway_blocked: false, native_blocked: false,
+        paired_only: false, resolve_terminal: Some(&resolve),
+    };
+    let far = DELAYED_REQUEST_MATCH_WINDOW_MS + 10_000;
+    let cases = [
+        (vec![request("close", "gpt-target", 0, 105, None),
+            request("match", "gpt-target", 1000, 100, None)], None, "match"),
+        (vec![request("other", "gpt-other", 0, 100, None),
+            request("same-model", "gpt-target", -far, 100, None)], None, "same-model"),
+        (vec![request("before", "gpt-other", -1000, 100, None),
+            request("after", "gpt-other", 1000, 100, None)], None, "custom"),
+        (vec![request("before", "gpt-target", -1000, 100, None),
+            request("after", "gpt-target", 1000, 100, None)], None, "custom"),
+        (vec![request("near", "gpt-target", 0, 100, None),
+            request("receipt", "gpt-other", -far, 200, Some("r"))], Some("r"), "receipt"),
+        (vec![request("near", "gpt-target", 0, 100, None),
+            request("receipt-a", "gpt-other", -far, 200, Some("r")),
+            request("receipt-b", "gpt-other", -2 * far, 200, Some("r"))], Some("r"), "custom"),
+    ];
+    for (records, terminal, expected) in cases {
+        let mut observed = event.clone();
+        observed.terminal_response = terminal.map(Into::into);
+        RequestEvidenceCache { records, ..RequestEvidenceCache::default() }.infer_scoped(
+            std::slice::from_mut(&mut observed),
+            &mut BTreeMap::new(),
+            &BTreeMap::new(),
+            &scope,
+        )?;
+        assert_eq!(observed.provider, expected);
+        assert_eq!(observed.delta, event.delta);
+        assert_eq!(observed.provider_source.as_deref(), match expected {
+            "custom" => None,
+            "receipt" => Some("request-log-recovered-supplier-only"),
+            _ => Some("session-context-inferred"),
+        });
+    }
+    Ok(())
+}
+
 fn evidence(event: &UsageEvent, model: &str) -> Value {
     json!({
         "eventId": event.id.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
@@ -4414,6 +4473,38 @@ fn legacy_child_evidence_migration_is_exact_unique_and_does_not_change_usage() {
     )
     .unwrap();
     assert!(unknown_provider(&fixture.snapshot().events[0].provider));
+}
+
+#[test]
+fn legacy_provider_inference_allows_a_missing_role_only_in_old_history() {
+    let mut fixture = Fixture::new();
+    legacy_child_segment(&fixture, LEGACY_CHILD, true);
+    let base = fixture.snapshot().events.remove(0);
+    for (age, source, role, accepted) in [
+        (90, "session-context-inferred", "", true),
+        (0, "session-context-inferred", "", false),
+        (90, "upstream-exact-bidirectional", "", false),
+        (90, "session-context-inferred", "main", false),
+    ] {
+        let mut event = base.clone();
+        let at = Local::now() - chrono::Duration::days(age);
+        event.timestamp = at.to_rfc3339();
+        event.date = at.date_naive();
+        event.role = role.into();
+        event.legacy_identity = None;
+        let mut record = evidence(&event, &event.model);
+        record["role"] = json!("");
+        record["source"] = json!(source);
+        let mut snapshot = Snapshot { events: vec![event], ..Snapshot::default() };
+        LegacyEvidenceCache::default().apply(
+            Ok(Some(serde_json::from_value(json!({"version":1,"records":[record]})).unwrap())),
+            &mut snapshot,
+        );
+        let result = &snapshot.events[0];
+        assert_eq!(result.provider_source.as_deref(), accepted.then_some(source));
+        assert_eq!(result.id, base.id);
+        assert_eq!(result.delta, base.delta);
+    }
 }
 
 #[test]

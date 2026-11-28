@@ -9,7 +9,7 @@ use crate::usage_history::structured::{
 use anyhow::{Result, ensure};
 use chrono::{Local, NaiveDate};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -19,9 +19,9 @@ const EVIDENCE_FILES: [&str; 2] = [
     "usage-supplier-evidence-v2.json",
 ];
 
-type Stamps = [Option<SourceStamp>; EVIDENCE_FILES.len()];
+pub(super) type Stamps = [Option<SourceStamp>; EVIDENCE_FILES.len()];
 
-fn stamps(settings: &Path) -> Result<Stamps> {
+pub(super) fn stamps(settings: &Path) -> Result<Stamps> {
     let mut values = [None; EVIDENCE_FILES.len()];
     for (slot, name) in values.iter_mut().zip(EVIDENCE_FILES) {
         match FileState::source_stamp(&settings.with_file_name(name)) {
@@ -37,6 +37,7 @@ pub(super) struct Historical {
     pub(super) overlay: EvidenceOverlay,
     revision: i64,
     pub(super) days: BTreeMap<NaiveDate, HashMap<String, Vec<DayGroup>>>,
+    change_dates: HashMap<[u8; 32], NaiveDate>,
 }
 
 pub(super) struct EvidenceOverlay {
@@ -52,40 +53,49 @@ pub(super) struct EvidenceOverlay {
 #[derive(Default)]
 pub(super) struct EvidenceVerifier {
     legacy: LegacyEvidenceCache,
+    legacy_document: Option<PreparedLegacy>,
     supplier: supplier_evidence::Cache,
 }
 
-struct EvidenceFiles {
-    legacy: Result<Option<LegacyEvidenceDocument>>,
-    supplier: Result<Option<supplier_evidence::Document>>,
+#[derive(Clone)]
+struct PreparedLegacy {
+    stamp: Option<SourceStamp>,
+    matches: Option<LegacyMatches>,
+    timestamps: Arc<BTreeSet<i64>>,
 }
 
-impl EvidenceFiles {
-    fn read(settings: &Path) -> Self {
-        Self {
-            legacy: LegacyEvidenceDocument::read(settings),
-            supplier: supplier_evidence::read_document(settings),
+impl EvidenceVerifier {
+    fn prepare_legacy(&mut self, settings: &Path, before: Stamps) -> Result<PreparedLegacy> {
+        if let Some(saved) = &self.legacy_document
+            && saved.stamp == before[0]
+        {
+            return Ok(saved.clone());
         }
-    }
+        let document = LegacyEvidenceDocument::read(settings)?;
+        ensure!(stamps(settings)? == before, "historical evidence changed during read");
 
-    fn timestamps(&self) -> BTreeSet<i64> {
-        let mut times = BTreeSet::new();
-        if let Ok(Some(document)) = &self.legacy {
-            document.timestamps(&mut times);
+        let mut timestamps = BTreeSet::new();
+        if let Some(document) = &document {
+            document.timestamps(&mut timestamps);
         }
-        if let Ok(Some(document)) = &self.supplier {
-            document.timestamps(&mut times);
-        }
-        times
+        let matches = self.legacy.prepare(Ok(document))?;
+        let prepared = PreparedLegacy {
+            stamp: before[0], matches, timestamps: Arc::new(timestamps),
+        };
+        self.legacy_document = Some(prepared.clone());
+        Ok(prepared)
     }
+}
 
-    fn apply(
-        self,
+impl EvidenceOverlay {
+    fn from_archived_events(
         verifier: &Mutex<EvidenceVerifier>,
         settings: &Path,
         stamps_before: Stamps,
         events: Vec<UsageEvent>,
-    ) -> Result<(EvidenceOverlay, BTreeSet<(NaiveDate, String)>)> {
+        legacy: Result<Option<LegacyMatches>>,
+        supplier: Result<Option<supplier_evidence::Document>>,
+    ) -> Result<Self> {
         let before: Vec<_> = events.iter().map(EventClassification::of).collect();
         let mut verifier = verifier
             .lock()
@@ -98,32 +108,27 @@ impl EvidenceFiles {
             events,
             ..Snapshot::default()
         };
-        verifier.legacy.apply(self.legacy, &mut snapshot);
+        LegacyMatches::apply_to_snapshot(legacy, &mut snapshot);
         verifier
             .supplier
-            .apply_document(self.supplier, &mut snapshot);
+            .apply_document(supplier, &mut snapshot);
         drop(verifier);
         let mut changes = HashMap::new();
-        let mut affected = BTreeSet::new();
         for (event, old) in snapshot.events.into_iter().zip(before) {
             let next = EventClassification::of(&event);
             if next != old {
                 changes.insert(event.id, next);
-                affected.insert((event.date, event.session));
             }
         }
-        Ok((
-            EvidenceOverlay {
-                settings: settings.to_owned(),
-                stamps: stamps_before,
-                updated_at: Local::now().timestamp_millis(),
-                changes,
-                provider_names: snapshot.provider_names,
-                legacy_status: snapshot.provider_evidence,
-                supplier_status: snapshot.supplier_evidence,
-            },
-            affected,
-        ))
+        Ok(Self {
+            settings: settings.to_owned(),
+            stamps: stamps_before,
+            updated_at: Local::now().timestamp_millis(),
+            changes,
+            provider_names: snapshot.provider_names,
+            legacy_status: snapshot.provider_evidence,
+            supplier_status: snapshot.supplier_evidence,
+        })
     }
 }
 
@@ -147,37 +152,26 @@ impl Historical {
             return Ok(Some(Arc::clone(prior)));
         }
 
-        let files = EvidenceFiles::read(settings);
-        let times = files.timestamps();
-        // Only legacy document IDs can be the target of an alias. The document bounds this set.
-        let legacy_ids: std::collections::HashSet<[u8; 32]> = files
-            .legacy
-            .as_ref()
-            .ok()
-            .and_then(Option::as_ref)
-            .into_iter()
-            .flat_map(|doc| &doc.records)
-            .filter_map(|record| {
-                if record.event_id.len() != 64 || !record.event_id.is_ascii() {
-                    return None;
-                }
-                let mut id = [0; 32];
-                for (i, byte) in id.iter_mut().enumerate() {
-                    *byte = u8::from_str_radix(&record.event_id[i * 2..i * 2 + 2], 16).ok()?;
-                }
-                Some(id)
-            })
-            .collect();
+        let saved = verifier.lock().map_err(|_| anyhow::anyhow!("historical verifier panicked"))?
+            .prepare_legacy(settings, stamps_before);
+        let supplier = supplier_evidence::read_document(settings);
+        let mut times = saved.as_ref().map(|saved| Arc::clone(&saved.timestamps)).unwrap_or_default();
+        if let Ok(Some(supplier)) = &supplier {
+            supplier.timestamps(Arc::make_mut(&mut times));
+        }
         let mut identities = EvidenceIdentities::default();
-        Store::historical_identities(&read, &times, |id, alias| {
-            if legacy_ids.contains(&id) {
-                identities.seen.insert(id);
-            }
-            if let Some(alias) = alias.filter(|id| legacy_ids.contains(id)) {
-                *identities.aliases.entry(alias).or_default() += 1;
-            }
-        })?;
-        drop(legacy_ids);
+        if let Some(matches) = saved.as_ref().ok().and_then(|saved| saved.matches.as_ref())
+            && !matches.records.is_empty()
+        {
+            Store::historical_identities(&read, &times, |id, alias| {
+                if matches.records.contains_key(&id) {
+                    identities.seen.insert(id);
+                }
+                if let Some(alias) = alias.filter(|id| matches.records.contains_key(id)) {
+                    *identities.aliases.entry(alias).or_default() += 1;
+                }
+            })?;
+        }
         let mut guard = verifier
             .lock()
             .map_err(|_| anyhow::anyhow!("historical verifier panicked"))?;
@@ -185,10 +179,11 @@ impl Historical {
             stamps(settings)? == stamps_before,
             "historical evidence changed during read"
         );
-        let mut legacy = guard.legacy.prepare(files.legacy);
-        let mut supplier = guard.supplier.prepare(files.supplier);
+        let mut legacy = saved.map(|saved| saved.matches);
+        let mut supplier = guard.supplier.prepare(supplier);
         let mut changes = HashMap::new();
-        let mut affected = BTreeSet::new();
+        let mut affected = BTreeMap::<NaiveDate, HashSet<String>>::new();
+        let mut change_dates = HashMap::new();
         let mut legacy_names = BTreeMap::new();
         let mut supplier_names = BTreeMap::new();
         Store::historical_candidates(&read, &times, |mut event| {
@@ -207,7 +202,8 @@ impl Historical {
             let next = EventClassification::of(&event);
             if next != prior {
                 changes.insert(event.id, next);
-                affected.insert((event.date, event.session));
+                change_dates.insert(event.id, event.date);
+                affected.entry(event.date).or_default().insert(event.session);
             }
         })?;
         drop(guard);
@@ -229,13 +225,30 @@ impl Historical {
         {
             overlay.updated_at = prior.overlay.updated_at;
         }
-        let days = Store::historical_days(&read, &affected, &overlay.changes)?;
+        let days = Store::historical_days(&read, affected, &overlay)?;
         read.commit()?;
         Ok(Some(Arc::new(Self {
             revision,
             overlay,
             days,
+            change_dates,
         })))
+    }
+
+    pub(super) fn minute_changes(&self, other: Option<&Self>, days: &mut BTreeSet<NaiveDate>) {
+        if let Some(other) = other
+            && std::ptr::eq(self, other)
+        {
+            return;
+        }
+        for (id, date) in &self.change_dates {
+            if other.is_none_or(|other| {
+                other.overlay.changes.get(id) != Some(&self.overlay.changes[id])
+                    || other.change_dates.get(id) != Some(date)
+            }) {
+                days.insert(*date);
+            }
+        }
     }
 
     pub(super) fn is_current(&self, revision: i64) -> Result<bool> {
@@ -251,8 +264,13 @@ impl EvidenceOverlay {
         explicit_session: bool,
     ) -> Result<Self> {
         let before = stamps(settings)?;
-        let files = EvidenceFiles::read(settings);
-        let times = files.timestamps();
+        let saved = verifier.lock().map_err(|_| anyhow::anyhow!("historical verifier panicked"))?
+            .prepare_legacy(settings, before);
+        let supplier = supplier_evidence::read_document(settings);
+        let mut times = saved.as_ref().map(|saved| Arc::clone(&saved.timestamps)).unwrap_or_default();
+        if let Ok(Some(supplier)) = &supplier {
+            supplier.timestamps(Arc::make_mut(&mut times));
+        }
         let mut selected = Vec::new();
         for event in events
             .iter()
@@ -268,9 +286,8 @@ impl EvidenceOverlay {
                 selected.push(event);
             }
         }
-        files
-            .apply(verifier, settings, before, selected)
-            .map(|(overlay, _)| overlay)
+        Self::from_archived_events(verifier, settings, before, selected,
+            saved.map(|saved| saved.matches), supplier)
     }
 
     pub(super) fn is_current(&self) -> Result<bool> {
@@ -278,10 +295,14 @@ impl EvidenceOverlay {
     }
 
     pub(super) fn apply(&self, event: &mut UsageEvent) -> bool {
-        self.changes.get(&event.id).is_some_and(|classification| {
+        self.classification(&event.id).is_some_and(|classification| {
             classification.apply(event);
             true
         })
+    }
+
+    pub(super) fn classification(&self, id: &[u8; 32]) -> Option<&EventClassification> {
+        self.changes.get(id)
     }
 
     pub(super) fn contains(&self, event: &UsageEvent) -> bool {
@@ -296,6 +317,30 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn unchanged_legacy_document_reuses_prepared_index_until_file_is_removed() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let settings = root.path().join("settings.json");
+        let file = settings.with_file_name(EVIDENCE_FILES[0]);
+        std::fs::write(&file, json!({"version":1,"records":[{
+            "eventId":"A2".repeat(32),"session":"fixture","timestamp":"2026-05-17T14:00:00Z",
+            "model":"fixture","role":"main","input":7,"output":1,"cached":0,
+            "provider":"fixture-supplier","providerName":"Fixture","source":"session-context-inferred",
+        }]}).to_string())?;
+        let mut verifier = EvidenceVerifier::default();
+        let before = stamps(&settings)?;
+        let first = verifier.prepare_legacy(&settings, before)?;
+        let second = verifier.prepare_legacy(&settings, before)?;
+        let first = first.matches.unwrap();
+        let second = second.matches.unwrap();
+        assert!(Arc::ptr_eq(&first.records, &second.records));
+        assert!(second.records.contains_key(&[0xa2; 32]));
+        std::fs::remove_file(&file)?;
+        let removed = verifier.prepare_legacy(&settings, stamps(&settings)?)?;
+        assert!(removed.matches.is_none() && removed.timestamps.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn ambiguous_old_identity_is_checked_across_evidence_dates() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;
         let settings = dir.path().join("settings.json");
@@ -303,8 +348,18 @@ mod tests {
         store
             .db
             .execute("INSERT INTO token_sessions VALUES(1,'fixture')", [])?;
-        let first = "2026-10-30T14:00:00Z";
-        let second = "2026-10-31T14:00:00Z";
+        let local_noon = |day| {
+            NaiveDate::from_ymd_opt(2026, 10, day)
+                .unwrap()
+                .and_hms_opt(12, 0, 0)
+                .unwrap()
+                .and_local_timezone(Local)
+                .single()
+                .unwrap()
+                .to_rfc3339()
+        };
+        let first = local_noon(30);
+        let second = local_noon(31);
         let old = [9u8; 32];
         let legacy = |id: u8, time: &str| {
             json!({"eventId":format!("{id:02x}").repeat(32),
@@ -312,11 +367,11 @@ mod tests {
             "input":7,"output":1,"cached":0,"provider":"fixture-supplier",
             "providerName":"Fixture","source":"upstream-exact-bidirectional"})
         };
-        let mut later = legacy(8, second);
+        let mut later = legacy(8, &second);
         later["providerName"] = json!("Later name");
         std::fs::write(
             dir.path().join("usage-provider-evidence.json"),
-            serde_json::to_vec(&json!({"version":1,"records":[legacy(9,first),later]}))?,
+            serde_json::to_vec(&json!({"version":1,"records":[legacy(9,&first),later]}))?,
         )?;
         let insert = |store: &Store,
                       id: u8,
@@ -340,20 +395,52 @@ mod tests {
             Ok(())
         };
         let verifier = Mutex::new(EvidenceVerifier::default());
-        insert(&store, 1, first, Some(old))?;
-        insert(&store, 8, second, None)?;
+        insert(&store, 1, &first, Some(old))?;
+        insert(&store, 8, &second, None)?;
         let migrated = Historical::refresh(None, &mut store, &verifier, &settings)?.unwrap();
         assert_eq!(migrated.overlay.legacy_status["migratedEvents"], 1);
         assert_eq!(migrated.overlay.legacy_status["appliedEvents"], 2);
         assert_eq!(migrated.overlay.provider_names["fixture-supplier"], "Fixture");
+        for day in [&first, &second] {
+            let groups = &migrated.days[&day[..10].parse::<NaiveDate>()?]["fixture"];
+            assert_eq!(groups.len(), 1);
+            assert_eq!(groups[0].provider, "fixture-supplier");
+            assert_eq!(groups[0].totals.records, 1);
+            assert_eq!(groups[0].totals.counts.0.total_tokens, 8);
+        }
+        let at = chrono::DateTime::parse_from_rfc3339(&first)?.timestamp_millis();
+        let request = json!({"startAt":at-1,"endAt":at+1,"includeFingerprints":false});
+        let query = crate::usage_history::Query::parse(&request, Local::now().date_naive()).unwrap();
+        let check_range = |store: &mut Store, history: &Historical, provider: &str| -> Result<()> {
+            let fast = Store::read_response_with_archive(
+                &mut store.db, &query, &request, None, &BTreeMap::new(), None, Some(history),
+            )?.0;
+            let mut exact = request.clone();
+            exact["includeTrend"] = json!(true);
+            let slow = Store::read_response_with_archive(
+                &mut store.db, &query, &exact, None, &BTreeMap::new(), None, Some(history),
+            )?.0;
+            assert_eq!(fast["days"], slow["days"]);
+            assert_eq!(fast["days"][0]["breakdowns"][0]["provider"], provider);
+            Ok(())
+        };
+        check_range(&mut store, &migrated, "fixture-supplier")?;
         for (id, alias) in [(2, Some(old)), (9, None)] {
-            insert(&store, id, second, alias)?;
+            insert(&store, id, &second, alias)?;
             let ambiguous = Historical::refresh(None, &mut store, &verifier, &settings)?.unwrap();
             assert_eq!(ambiguous.overlay.legacy_status["migratedEvents"], 0);
             assert_eq!(ambiguous.overlay.legacy_status["appliedEvents"], 1);
             assert_eq!(ambiguous.overlay.changes.len(), 1);
             assert!(ambiguous.overlay.changes.contains_key(&[8; 32]));
             assert_eq!(ambiguous.overlay.provider_names["fixture-supplier"], "Later name");
+            assert_eq!(ambiguous.days.len(), 1);
+            let groups = &ambiguous.days[&second[..10].parse::<NaiveDate>()?]["fixture"];
+            assert_eq!(groups.len(), 2);
+            assert_eq!(groups.iter().map(|g| g.totals.records).sum::<u64>(), 2);
+            let mut dirty = BTreeSet::new();
+            ambiguous.minute_changes(Some(&migrated), &mut dirty);
+            migrated.minute_changes(Some(&ambiguous), &mut dirty);
+            assert_eq!(dirty, BTreeSet::from([first[..10].parse()?]));
             store.db.execute(
                 "DELETE FROM token_resolved WHERE event_id=?1",
                 [[id; 32].as_slice()],
@@ -367,6 +454,7 @@ mod tests {
             Historical::refresh(Some(&migrated), &mut store, &verifier, &settings)?.unwrap();
         assert!(revoked.overlay.changes.is_empty());
         assert!(revoked.days.is_empty());
+        check_range(&mut store, &revoked, "inferred-supplier")?;
         Ok(())
     }
 }

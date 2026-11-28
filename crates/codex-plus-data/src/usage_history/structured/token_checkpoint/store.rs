@@ -60,13 +60,13 @@ pub(in super::super) struct Coverage {
 }
 
 impl Store {
-    pub(super) fn open(db: Connection) -> Result<Self> {
+    pub(super) fn open(mut db: Connection) -> Result<Self> {
         db.pragma_update(None, "foreign_keys", true)?;
         db.pragma_update(None, "journal_mode", "WAL")?;
         let compactable_metadata = executions::COMPACTABLE_METADATA;
-        db.execute_batch(&format!(
-            "BEGIN IMMEDIATE;
-             CREATE TABLE IF NOT EXISTS token_revision (
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        tx.execute_batch(&format!(
+            "CREATE TABLE IF NOT EXISTS token_revision (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 revision INTEGER NOT NULL,
                 precise_from TEXT NOT NULL,
@@ -226,9 +226,10 @@ impl Store {
              ) STRICT;
              INSERT OR IGNORE INTO execution_coverage_start
                 SELECT 1, CASE WHEN EXISTS (SELECT 1 FROM token_sources)
-                    THEN CAST(unixepoch('subsec') * 1000 AS INTEGER) END;
-             COMMIT;",
+                    THEN CAST(unixepoch('subsec') * 1000 AS INTEGER) END;",
         ))?;
+        projection::compact_range::initialize(&tx)?;
+        tx.commit()?;
         Ok(Self { db })
     }
 

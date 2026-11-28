@@ -349,7 +349,7 @@ impl Store {
             return Ok(json!({"status":"stale","complete":false}));
         }
         let scope = if let Some(requested) = &query.scope_session_id {
-            let tree = Self::scope(&tx, &BTreeMap::new())?;
+            let tree = Self::scope(&tx, &BTreeMap::new(), true)?;
             let (_, members) = tree.scope_members(requested);
             Some(serde_json::to_string(&members)?)
         } else {

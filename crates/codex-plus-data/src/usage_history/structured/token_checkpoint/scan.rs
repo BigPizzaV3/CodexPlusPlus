@@ -1,5 +1,6 @@
 use super::{
     SourceStamp,
+    disk_full,
     ingest::SourceReader,
     store::{
         Coverage, Store,
@@ -15,6 +16,13 @@ use std::path::{Path, PathBuf};
 const SOURCES_PER_ROUND: usize = 64;
 pub(super) const RECLAIM_BATCH: u32 = 256;
 
+#[derive(Clone, Copy)]
+struct WaitingLine {
+    stamp: SourceStamp,
+    count_gap: bool,
+    scoped: bool,
+}
+
 #[derive(Default)]
 pub(super) struct Scan {
     remaining: VecDeque<PathBuf>,
@@ -27,7 +35,7 @@ pub(super) struct Scan {
     rescan: bool,
     discovered: HashSet<PathBuf>,
     live: BTreeMap<PathBuf, SourceStamp>,
-    waiting_for_newline: BTreeMap<PathBuf, (SourceStamp, bool)>,
+    waiting_for_newline: BTreeMap<PathBuf, WaitingLine>,
     last_revisited: Option<PathBuf>,
     waiting_prefixes: HashSet<PathBuf>,
     issues: usize,
@@ -66,7 +74,7 @@ impl Scan {
             || self.issues != self.scoped_count_gaps.len()
             || self.deferred.is_some()
             || self.revisiting.is_some()
-            || !self.waiting_for_newline.is_empty()
+            || self.waiting_for_newline.values().any(|line| !line.scoped)
     }
 
     pub(super) fn maintain(&mut self, store: &mut Store, cutoff: NaiveDate) -> anyhow::Result<()> {
@@ -150,10 +158,11 @@ impl Scan {
                 .into_iter()
                 .filter(|path| {
                     // 有计数缺口的前缀需从持久检查点恢复诊断，只有干净的半行可以跳过。
-                    if let Some(&(stamp, false)) = waiting.get(path)
-                        && FileState::source_stamp(path).is_ok_and(|current| current == stamp)
+                    if let Some(&line) = waiting.get(path)
+                        && !line.count_gap
+                        && FileState::source_stamp(path).is_ok_and(|current| current == line.stamp)
                     {
-                        self.waiting_for_newline.insert(path.clone(), (stamp, false));
+                        self.waiting_for_newline.insert(path.clone(), line);
                         false
                     } else {
                         true
@@ -252,7 +261,7 @@ impl Scan {
                 {
                     return true;
                 }
-                let stamp = self.waiting_for_newline.get(path).map_or(*stamp, |tail| tail.0);
+                let stamp = self.waiting_for_newline.get(path).map_or(*stamp, |line| line.stamp);
                 match FileState::source_stamp(path) {
                     Ok(current) if current != stamp => {
                         changed.push_back(path.clone());
@@ -289,7 +298,7 @@ impl Scan {
             let growing: HashSet<_> = changed.iter().collect();
             self.remaining.retain(|path| !growing.contains(path));
             for path in &changed {
-                let was_waiting = self.waiting_for_newline.remove(path).is_some_and(|(_, gap)| gap);
+                let was_waiting = self.waiting_for_newline.remove(path).is_some_and(|line| line.count_gap);
                 let was_sealed = self.sealed_queue.remove(path);
                 let was_prefix = self.legacy_prefixes.remove(path).is_some();
                 let removed_gap = (was_waiting || was_sealed || was_prefix) && self.scoped_count_gaps.remove(path);
@@ -529,7 +538,11 @@ impl Scan {
                     if !complete {
                         self.waiting_for_newline.insert(
                             reader.source.clone(),
-                            (reader.state.stamp.unwrap(), reader.has_count_gap()),
+                            WaitingLine {
+                                stamp: reader.state.stamp.unwrap(),
+                                count_gap: reader.has_count_gap(),
+                                scoped: reader.waiting_line_has_committed_scope(),
+                            },
                         );
                     }
                     if reader.has_only_malformed_token_counts() {
@@ -663,8 +676,17 @@ impl Scan {
                 }
             }
         }
-        let unknown = self.unknown_count_scope || unscoped_missing
-            || !self.waiting_for_newline.is_empty()
+        // 普通追加的半行还不是冲突，只暂停该来源关联会话的重新归属。
+        let mut unscoped_line = false;
+        for (path, line) in &self.waiting_for_newline {
+            if line.scoped {
+                covered += 1;
+                rechecking.insert(path.clone());
+            } else {
+                unscoped_line = true;
+            }
+        }
+        let unknown = self.unknown_count_scope || unscoped_missing || unscoped_line
             || self.active.iter().chain(&self.revisiting).chain(&self.deferred)
                 .any(|reader| reader.replacing || reader.state.issues != 0
                     || reader.state.invalid_counts || reader.state.identity_conflict);
@@ -674,25 +696,27 @@ impl Scan {
         self.paired_only = pending_sources > covered + unpublished_append;
         let can_classify = can_publish_scope && unpublished_append == 0;
         let coverage = Coverage { pending_sources, issues, maintenance_blocked: maintenance_error.is_some() };
-        let recorded = if can_publish_scope {
+        let write_blocked = maintenance_error.as_ref().is_some_and(disk_full)
+            || errors.iter().any(|(_, error)| disk_full(error));
+        let recorded = if write_blocked {
+            // 写入失败不是来源冲突，不发布据此推导的撤回。
+            Ok(())
+        } else if can_publish_scope {
             store.record_scoped_coverage(coverage, &affected, &rechecking)
         } else {
             store.record_coverage(coverage, unknown)
         };
-        if let Err(error) = recorded {
-            issues += 1;
-            return Report {
-                complete: false,
-                can_classify: false,
-                pending_sources,
-                issues,
-                errors,
-                maintenance_error: Some(error),
-            };
+        let coverage_error = recorded.err();
+        issues += usize::from(coverage_error.is_some());
+        let maintenance_error = coverage_error.or(maintenance_error);
+        let write_blocked = write_blocked || maintenance_error.as_ref().is_some_and(disk_full);
+        if write_blocked {
+            // 下轮从已提交游标重新盘点，不能让临时错误滞留到旧队列耗尽。
+            *self = Self::default();
         }
         Report {
-            complete: pending_sources == 0 && issues == 0 && maintenance_error.is_none(),
-            can_classify: can_classify && maintenance_error.is_none(),
+            complete: !write_blocked && pending_sources == 0 && issues == 0 && maintenance_error.is_none(),
+            can_classify: !write_blocked && can_classify && maintenance_error.is_none(),
             pending_sources,
             issues,
             errors,
