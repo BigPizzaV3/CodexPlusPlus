@@ -134,10 +134,11 @@ export function HomeScreen({
                 <ChevronRight aria-hidden="true" />
               </span>
             </button>
+            {/* enhance 页现在是「启动急救」：只放让 Codex 恢复启动的开关，内置拓展开关在 Codex 里的 Codex++ 设置页。 */}
             <button className="home-agent-link" onClick={() => onOpenAgent("codex", "enhance")} type="button">
-              <span className="home-agent-link-k">{t("拓展与增强")}</span>
+              <span className="home-agent-link-k">{t("启动急救")}</span>
               <span className="home-agent-link-v">
-                <span>{t("桌面增强 · 拓展注入")}</span>
+                <span>{t("打不开或显示异常时")}</span>
                 <ChevronRight aria-hidden="true" />
               </span>
             </button>
@@ -187,7 +188,8 @@ export function HomeScreen({
         : claudeDirectName
           ? tf("直连 · {0}", [claudeDirectName])
           : t("直连");
-      const desktopStatus = claudeDesktopConnected ? t("经本地服务") : t("桌面增强");
+      // Claude Desktop 只能经本地服务，没有直连一说：没接入就直说「未接入」，和侧栏一致。
+      const desktopStatus = claudeDesktopConnected ? t("经本地服务") : t("未接入");
 
       return (
         <div className="home-agent-card" key={tool.id}>

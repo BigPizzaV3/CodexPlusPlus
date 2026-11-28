@@ -3481,10 +3481,11 @@ export function App() {
     return { id: `${group}:${routeId}`, group, label: item.label, keywords: `${routeId} ${keywords}`, icon: <Icon className="h-4 w-4" />, run };
   };
   const pushCommand = (command: PaletteCommand | null) => { if (command) paletteCommands.push(command); };
+  // 分组按顺序出标题：「全局管理」几项连在一起（首页打头），「本地服务」排在它后面，和侧栏顺序一致。
   pushCommand(routeCommand("home", t("全局管理"), () => void navigate("home"), "home ads 推荐 赞助"));
-  gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("本地服务"), () => void navigate(routeId), "gateway 网关 本地服务")));
   managementNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("全局管理"), () => void navigate(routeId))));
   pushCommand(routeCommand("requestLog", t("全局管理"), () => void navigate("requestLog"), "usage requests"));
+  gatewayNavigationRoutes.forEach((routeId) => pushCommand(routeCommand(routeId, t("本地服务"), () => void navigate(routeId), "gateway 网关 本地服务")));
   for (const tool of toolEntries.filter((entry) => entry.switchable)) {
     agentRoutes(tool.id).forEach((routeId) => pushCommand(routeCommand(routeId, tool.name, () => void switchTool(tool.id, routeId), tool.id)));
   }

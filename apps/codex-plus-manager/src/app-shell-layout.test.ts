@@ -971,3 +971,17 @@ test("程序内全部弹框统一到管理页居中弹窗风格：毛玻璃遮�
   // AgentConfigEditor 补齐右上角关闭按钮。
   assert.match(readSource("./AgentConfigEditor.tsx"), /<button aria-label=\{t\("关闭"\)\} className="gw-icon-button"/);
 });
+
+test("⌘K 的「全局管理」连成一组：首页、管理页、请求日志在「本地服务」之前，标题不会出现两次", () => {
+  const order = ["routeCommand(\"home\", t(\"全局管理\")", "managementNavigationRoutes.forEach", "routeCommand(\"requestLog\", t(\"全局管理\")", "gatewayNavigationRoutes.forEach"]
+    .map((needle) => text.indexOf(needle));
+  assert.ok(order.every((index) => index > 0), "四段命令登记都要在");
+  assert.deepEqual([...order].sort((a, b) => a - b), order);
+});
+
+test("首页卡片的文字和落点一致：Codex 的 enhance 页叫「启动急救」，Claude Desktop 没接入时写「未接入」", () => {
+  const home = readSource("./HomeScreen.tsx");
+  assert.match(home, /onOpenAgent\("codex", "enhance"\)[\s\S]{0,400}?t\("启动急救"\)/);
+  assert.doesNotMatch(home, /拓展与增强|桌面增强/);
+  assert.match(home, /const desktopStatus = claudeDesktopConnected \? t\("经本地服务"\) : t\("未接入"\);/);
+});
