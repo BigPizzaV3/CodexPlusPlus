@@ -477,7 +477,19 @@
       "group": "ext-permissions",
       "control": "bool",
       "title": "本机用量历史",
-      "description": "允许拓展按需读取本机用量元数据。关闭时会清空已记录的用量历史。",
+      "description": "开启后，拓展可按需读取本机用量。关闭后停止索引更新，不会删除原会话或已保存的索引。",
+      "codexInputs": [
+        {
+          "id": "usageHistoryStorageMiB",
+          "label": "用量索引存储上限",
+          "hint": "额外用量索引的存储上限，默认 2 G。"
+        },
+        {
+          "id": "usageHistoryPreciseDays",
+          "label": "逐笔记录保留期（天）",
+          "hint": "保留 1 至 365 个本地日期，默认 60 天。"
+        }
+      ],
       "masterGated": false,
       "surfaces": [
         "codex"

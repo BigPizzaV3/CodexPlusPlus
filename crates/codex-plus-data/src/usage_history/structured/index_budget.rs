@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
+pub(super) const MAX_RETAINED_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ROUND_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_PENDING_BYTES: usize = 4 * 1024 * 1024;
 static PENDING_BYTES: AtomicUsize = AtomicUsize::new(0);
@@ -60,15 +60,6 @@ impl PendingLine {
 
     pub(super) fn clear(&mut self) {
         *self = Self::default();
-    }
-
-    pub(super) fn shrink_to_fit(&mut self) {
-        self.bytes.shrink_to_fit();
-        let capacity = self.bytes.capacity();
-        if capacity < self.reserved {
-            PENDING_BYTES.fetch_sub(self.reserved - capacity, Ordering::AcqRel);
-            self.reserved = capacity;
-        }
     }
 
     fn reserve(bytes: usize) -> bool {
@@ -125,9 +116,10 @@ pub(super) struct Budget {
     used: Usage,
     pub(super) read_left: u64,
     pub(super) source_left: u64,
+    reader_limit: usize,
     memory_limit: usize,
     event_limit: usize,
-    activity_limit: usize,
+    pub(super) activity_limit: usize,
 }
 
 impl Budget {
@@ -136,6 +128,7 @@ impl Budget {
             used: Usage::default(),
             read_left: MAX_ROUND_BYTES,
             source_left: MAX_ROUND_BYTES,
+            reader_limit: 1,
             memory_limit: MAX_RETAINED_BYTES,
             event_limit: MAX_EVENTS,
             activity_limit: MAX_ACTIVITY,
@@ -144,6 +137,18 @@ impl Budget {
             budget.replace(Usage::default(), Usage::of(state));
         }
         budget
+    }
+
+    pub(super) fn checkpoint_slot<'a>(
+        &self,
+        parked: impl Iterator<Item = &'a FileState>,
+    ) -> Self {
+        let mut slot = Self::new(parked);
+        // 暂停的解码器继续计入内存，第二个名额用于交替读取普通日志。
+        slot.reader_limit = 2;
+        slot.read_left = self.read_left;
+        slot.source_left = self.source_left;
+        slot
     }
 
     pub(super) fn replace(&mut self, before: Usage, after: Usage) {
@@ -176,7 +181,7 @@ impl Budget {
     }
 
     pub(super) fn can_open(&self, state: &FileState) -> bool {
-        self.used.readers == 0
+        self.used.readers < self.reader_limit
             && self.can_read(state)
             && self.source_left > 0
             && self.memory_left(state) > CURSOR_BYTES + LINE_OVERHEAD
@@ -187,12 +192,23 @@ impl Budget {
     }
 
     pub(super) fn accept_line(&self, state: &FileState) -> bool {
-        if self.event_limit_reached(state) && may_record_event(&state.pending) {
+        if self.event_blocked(state, &state.pending) {
             return false;
         }
         let reserve = self.line_reserve(state);
+        // 普通调用也会留下一条定位；为有界元数据和向量扩容预留空间。
+        let execution_growth = state.executions.as_ref().map_or(0, |batch| {
+            let rows = &batch.rows;
+            let growth = if rows.len() == rows.capacity() {
+                rows.capacity().max(4)
+                    * std::mem::size_of::<super::execution_observations::Observation>()
+            } else {
+                0
+            };
+            12288 + growth
+        });
         if reserve == LINE_OVERHEAD {
-            return self.memory_left(state) >= reserve;
+            return self.memory_left(state) >= reserve + execution_growth;
         }
         let vector_growth = |len: usize, capacity: usize, element: usize| {
             if len == capacity {
@@ -242,7 +258,11 @@ impl Budget {
                     .sum::<usize>()
                 })
                 .sum::<usize>();
-        if self.memory_left(state) < reserve.saturating_add(growth) {
+        if self.memory_left(state)
+            < reserve
+                .saturating_add(growth)
+                .saturating_add(execution_growth)
+        {
             return false;
         }
         true
@@ -252,7 +272,7 @@ impl Budget {
         if skips_tool_before_parsing(&state.pending) {
             return false;
         }
-        if self.event_limit_reached(state) && may_record_event(&state.pending) {
+        if self.event_blocked(state, &state.pending) {
             return false;
         }
         self.line_reserve(state)
@@ -261,8 +281,9 @@ impl Budget {
             > self.memory_limit
     }
 
-    fn event_limit_reached(&self, state: &FileState) -> bool {
+    pub(super) fn event_blocked(&self, state: &FileState, line: &[u8]) -> bool {
         self.used.events.saturating_add(state.events.len()) >= self.event_limit
+            && may_record_event(line)
     }
 
     fn line_reserve(&self, state: &FileState) -> usize {
@@ -323,6 +344,9 @@ fn may_record_event(line: &[u8]) -> bool {
     let Ok(envelope) = serde_json::from_slice::<AcceptEnvelope<'_>>(line) else {
         return false;
     };
+    if envelope.kind == "token_usage_record" {
+        return true;
+    }
     if !matches!(envelope.kind, "event_msg" | "turn_context") {
         return false;
     }
@@ -352,24 +376,28 @@ fn parse_reserve(line: &[u8], skip_activity: bool) -> usize {
         if !matches!(
             envelope.kind,
             "session_meta" | "turn_context" | "event_msg" | "response_item" | "token_usage_record"
-        ) || envelope.kind == "token_usage_record" && line.len() > super::MAX_NATIVE_RECEIPT_LINE
-        {
+        ) {
             return LINE_OVERHEAD;
         }
-        if matches!(envelope.kind, "session_meta" | "turn_context") {
-            if let Ok(fields) = super::context_fields(envelope.payload.get()) {
-                let selected = fields
-                    .iter()
-                    .filter_map(|(_, value)| *value)
-                    .map(|value| value.get().len().saturating_add(128))
-                    .sum::<usize>();
-                return selected
-                    .saturating_mul(64)
-                    .saturating_add(line.len().saturating_mul(2))
-                    .saturating_add(LINE_OVERHEAD);
-            } else {
-                return LINE_OVERHEAD;
+        let selected_reserve = |fields: &[(&str, Option<&serde_json::value::RawValue>)]| {
+            fields
+                .iter()
+                .filter_map(|(_, value)| *value)
+                .map(|value| value_parse_reserve(value.get().as_bytes()).saturating_add(128))
+                .sum::<usize>()
+                .saturating_add(line.len().saturating_mul(2))
+                .saturating_add(LINE_OVERHEAD)
+        };
+        match envelope.kind {
+            "session_meta" | "turn_context" => {
+                return super::context_fields(envelope.payload.get())
+                    .map_or(LINE_OVERHEAD, |fields| selected_reserve(&fields));
             }
+            "token_usage_record" => {
+                return super::terminal_receipts::fields(envelope.payload.get())
+                    .map_or(LINE_OVERHEAD, |fields| selected_reserve(&fields));
+            }
+            _ => {}
         }
         if envelope.kind == "event_msg" {
             if let Ok(item) = serde_json::from_str::<Item<'_>>(envelope.payload.get()) {
@@ -410,13 +438,16 @@ fn parse_reserve(line: &[u8], skip_activity: bool) -> usize {
     } else {
         return LINE_OVERHEAD;
     }
-    // 字符串正文只需要解码/复制空间；对象、数组仍按容器最坏开销预留。
-    // 全行乘 64 会让不到 1 MiB 的普通工具输出永久等不到解析配额。
+    LINE_OVERHEAD.saturating_add(nested_reserve)
+        .saturating_add(line.len().saturating_mul(2))
+        .saturating_add(value_parse_reserve(line))
+}
+
+// 字符串只需解码和复制空间，对象和数组另计容器开销。
+fn value_parse_reserve(line: &[u8]) -> usize {
     let mut quoted = false;
     let mut escaped = false;
-    let mut reserve = LINE_OVERHEAD
-        .saturating_add(nested_reserve)
-        .saturating_add(line.len().saturating_mul(2));
+    let mut reserve = 0usize;
     for &byte in line {
         reserve = reserve.saturating_add(if quoted { 4 } else { 64 });
         if escaped {
@@ -469,6 +500,7 @@ fn event_heap(event: &super::UsageEvent) -> usize {
             .native_response_id
             .as_ref()
             .map_or(0, |proof| proof.id.len())
+        + event.terminal_response.as_ref().map_or(0, |response| response.len())
         + event.legacy_identity.as_ref().map_or(0, |id| {
             std::mem::size_of::<super::LegacyIdentity>()
                 + id.session.capacity()
@@ -485,22 +517,40 @@ fn tool_heap(tool: &super::ToolRecord) -> usize {
 pub(super) struct Meter {
     events: usize,
     tools: usize,
+    executions: usize,
     event_heap: usize,
     tool_heap: usize,
+    execution_heap: usize,
 }
 
 impl Meter {
     pub(super) fn new(state: &FileState) -> Self {
+        let executions = state
+            .executions
+            .as_ref()
+            .map_or(&[][..], |batch| batch.rows.as_slice());
         Self {
             events: state.events.len(),
             tools: state.tools.len(),
+            executions: executions.len(),
             event_heap: state.events.iter().map(event_heap).sum(),
             tool_heap: state.tools.iter().map(tool_heap).sum(),
+            execution_heap: executions
+                .iter()
+                .map(super::execution_observations::Observation::heap_bytes)
+                .sum(),
         }
     }
 
     pub(super) fn refresh(&mut self, state: &mut FileState, cursor_bytes: usize) {
-        if state.events.len() < self.events || state.tools.len() < self.tools {
+        let executions = state
+            .executions
+            .as_ref()
+            .map_or(&[][..], |batch| batch.rows.as_slice());
+        if state.events.len() < self.events
+            || state.tools.len() < self.tools
+            || executions.len() < self.executions
+        {
             *self = Self::new(state);
         } else {
             self.event_heap += state.events[self.events..]
@@ -513,6 +563,11 @@ impl Meter {
                 .sum::<usize>();
             self.events = state.events.len();
             self.tools = state.tools.len();
+            self.execution_heap += executions[self.executions..]
+                .iter()
+                .map(super::execution_observations::Observation::heap_bytes)
+                .sum::<usize>();
+            self.executions = executions.len();
         }
         let strings = [
             &state.session,
@@ -537,6 +592,11 @@ impl Meter {
             + self.event_heap
             + state.tools.capacity() * std::mem::size_of::<super::ToolRecord>()
             + self.tool_heap
+            + state.executions.as_ref().map_or(0, |batch| {
+                batch.rows.capacity()
+                    * std::mem::size_of::<super::execution_observations::Observation>()
+            })
+            + self.execution_heap
             + state.calls.capacity() * (std::mem::size_of::<(String, super::Call)>() + 32)
             + state
                 .calls
@@ -777,12 +837,19 @@ mod tests {
     }
 
     #[test]
-    fn native_receipt_reserves_parse_memory_only_within_its_read_limit() {
-        let row = br#"{"type":"token_usage_record","payload":{"usage":{}}}"#;
-        assert!(parse_reserve(row, true) > LINE_OVERHEAD);
-        let mut oversized = row.to_vec();
-        oversized.resize(super::super::MAX_NATIVE_RECEIPT_LINE + 1, b' ');
-        assert_eq!(parse_reserve(&oversized, true), LINE_OVERHEAD);
+    fn long_terminal_receipt_keeps_event_quota_and_skips_extra_payload() {
+        let counts = json!({"input_tokens":10,"cached_input_tokens":0,"output_tokens":2});
+        let mut record = json!({"type":"token_usage_record","timestamp":"2026-01-02T12:02:00Z",
+            "payload":{"thread_id":SESSION,"turn_id":"turn-a","response_id":"response-a",
+            "usage":counts,"thread_token_usage":counts}});
+        let small = record.to_string();
+        record["payload"]["extra"] = json!(vec![0u8; 128 * 1024]);
+        let large = record.to_string();
+        assert!(may_record_event(large.as_bytes()));
+        assert_eq!(
+            parse_reserve(large.as_bytes(), false) - parse_reserve(small.as_bytes(), false),
+            2 * (large.len() - small.len())
+        );
     }
 
     #[test]

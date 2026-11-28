@@ -7,7 +7,10 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, Metadata};
 use std::path::Path;
 
+mod legacy_summary;
 mod structured;
+
+const TOKEN_INDEX_DB: &str = "usage-token-index.sqlite";
 
 pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathBuf {
     let home = fs::canonicalize(home).unwrap_or_else(|_| home.to_path_buf());
@@ -23,18 +26,28 @@ pub(crate) fn storage_dir(home: &Path, settings_path: &Path) -> std::path::PathB
 pub fn storage_info(home: &Path, settings_path: &Path) -> anyhow::Result<Value> {
     let directory = storage_dir(home, settings_path);
     let mut bytes = 0;
-    for database in ["usage-provider-cache.sqlite", "usage-summary.sqlite"] {
+    let mut index_bytes = 0;
+    for database in [
+        "usage-provider-cache.sqlite",
+        "usage-summary.sqlite",
+        TOKEN_INDEX_DB,
+    ] {
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let path = directory.join(format!("{database}{suffix}"));
             match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.is_file() => bytes += metadata.len(),
+                Ok(metadata) if metadata.is_file() => {
+                    bytes += metadata.len();
+                    if database == TOKEN_INDEX_DB {
+                        index_bytes += metadata.len();
+                    }
+                }
                 Ok(_) => anyhow::bail!("用量库路径不是普通文件：{}", path.display()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => return Err(error.into()),
             }
         }
     }
-    Ok(json!({"status": "ok", "directory": directory, "bytes": bytes}))
+    Ok(json!({"status": "ok", "directory": directory, "bytes": bytes, "indexBytes": index_bytes}))
 }
 
 #[cfg(test)]
@@ -47,7 +60,7 @@ fn storage_info_reports_only_current_usage_database_files() {
     let directory = storage_dir(&home, &settings);
     assert_eq!(
         storage_info(&home, &settings).unwrap(),
-        json!({"status": "ok", "directory": directory, "bytes": 0})
+        json!({"status": "ok", "directory": directory, "bytes": 0, "indexBytes": 0})
     );
     assert!(!directory.exists());
     fs::create_dir_all(&directory).unwrap();
@@ -57,11 +70,16 @@ fn storage_info_reports_only_current_usage_database_files() {
         ("usage-provider-cache.sqlite", 2048),
         ("usage-provider-cache.sqlite-shm", 64),
         ("usage-provider-cache.sqlite-journal", 16),
+        (TOKEN_INDEX_DB, 8192),
+        ("usage-token-index.sqlite-wal", 1024),
+        ("usage-index.sqlite", 8192),
         ("unrelated.sqlite", 1000),
     ] {
         fs::write(directory.join(name), vec![0; size]).unwrap();
     }
-    assert_eq!(storage_info(&home, &settings).unwrap()["bytes"], 6256);
+    let reported = storage_info(&home, &settings).unwrap();
+    assert_eq!(reported["bytes"], 15472);
+    assert_eq!(reported["indexBytes"], 9216);
     assert_eq!(
         storage_info(&temp.path().join("other-home"), &settings).unwrap()["bytes"],
         0
@@ -85,11 +103,30 @@ pub fn query_history(codex_home: &Path, query: &Value) -> Value {
     structured::query(&home, &options, query)
 }
 
+pub fn query_executions(codex_home: &Path, query: &Value) -> Value {
+    match fs::canonicalize(codex_home) {
+        Ok(home) => structured::query_executions(&home, query),
+        Err(error) => json!({"status":"unavailable","complete":false,"message":error.to_string()}),
+    }
+}
+
+pub fn query_execution_detail(codex_home: &Path, query: &Value) -> Value {
+    match fs::canonicalize(codex_home) {
+        Ok(home) => structured::query_execution_detail(&home, query),
+        Err(error) => json!({"status":"unavailable","message":error.to_string()}),
+    }
+}
+
 /// 关闭功能或更换实例时释放本进程的索引和采集器。
 pub fn clear_history(codex_home: &Path) {
     if let Ok(home) = fs::canonicalize(codex_home) {
         structured::clear(&home);
     }
+}
+
+/// 宿主启动和设置变更时同步证据采集，不依赖用量页面是否打开。
+pub fn sync_provider_capture(codex_home: &Path, settings_path: &Path) -> anyhow::Result<()> {
+    structured::sync_provider_capture(&fs::canonicalize(codex_home)?, settings_path)
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -105,7 +142,7 @@ pub(crate) struct Tokens {
     cached_known: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, serde::Deserialize)]
 struct CacheAccounting {
     input: u64,
     read: u64,
@@ -330,7 +367,7 @@ impl Tokens {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, serde::Deserialize)]
 pub(crate) struct UsageHistoryBoundary {
     pub(crate) parent: Option<String>,
     start: Option<u64>,
@@ -397,12 +434,12 @@ impl Query {
         if from.zip(to).is_some_and(|(f, t)| f > t) {
             return None;
         }
-        let text = |name: &str, limit: usize| -> Option<Option<String>> {
+        let text = |name: &str| -> Option<Option<String>> {
             if value[name].is_null() {
                 return Some(None);
             }
             let text = value[name].as_str()?;
-            (text.len() <= limit).then(|| Some(text.to_owned()).filter(|s| !s.is_empty()))
+            Some((!text.is_empty()).then(|| text.to_owned()))
         };
         let session_id = if value["sessionId"].is_null() {
             None
@@ -410,9 +447,6 @@ impl Query {
             Some(normalize_session_id(value["sessionId"].as_str()?)?)
         };
         let search = value["search"].as_str().unwrap_or("").trim().to_lowercase();
-        if search.len() > 200 {
-            return None;
-        }
         let include_session_cursors = match value.get("includeSessionCursors") {
             None => false,
             Some(value) => value.as_bool()?,
@@ -420,9 +454,9 @@ impl Query {
         Some(Self {
             from,
             to,
-            model: text("model", 256)?,
+            model: text("model")?,
             session_id,
-            turn_id: text("turnId", 200)?,
+            turn_id: text("turnId")?,
             search,
             include_session_cursors,
             include_activity: value["includeActivity"] == true,
@@ -430,32 +464,35 @@ impl Query {
     }
 
     fn accepts(&self, record: &Record) -> bool {
+        self.accepts_fields(
+            &record.session_id,
+            &record.turn_id,
+            record.model.as_deref(),
+            record.date,
+        )
+    }
+
+    fn accepts_fields(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        model: Option<&str>,
+        date: Option<NaiveDate>,
+    ) -> bool {
         !self
             .session_id
             .as_ref()
-            .is_some_and(|id| id != &record.session_id)
-            && !self
-                .turn_id
-                .as_ref()
-                .is_some_and(|id| id != &record.turn_id)
-            && !self
-                .from
-                .is_some_and(|from| record.date.is_none_or(|d| d < from))
-            && !self.to.is_some_and(|to| record.date.is_none_or(|d| d > to))
-            && !self
-                .model
-                .as_ref()
-                .is_some_and(|m| record.model.as_ref() != Some(m))
+            .is_some_and(|id| id != session_id)
+            && !self.turn_id.as_ref().is_some_and(|id| id != turn_id)
+            && !self.from.is_some_and(|from| date.is_none_or(|d| d < from))
+            && !self.to.is_some_and(|to| date.is_none_or(|d| d > to))
+            && !self.model.as_deref().is_some_and(|name| model != Some(name))
             && (self.search.is_empty()
-                || record
-                    .model
-                    .as_deref()
+                || model
                     .unwrap_or("")
                     .to_lowercase()
                     .contains(&self.search)
-                || record
-                    .date
-                    .is_some_and(|d| d.to_string().contains(&self.search)))
+                || date.is_some_and(|d| d.to_string().contains(&self.search)))
     }
 }
 

@@ -1,4 +1,4 @@
-//! 供应商证据按查询生命周期采集，缓存与采集锁保存在管理器状态目录。
+//! 供应商证据随记录功能持续采集，缓存与采集锁保存在管理器状态目录。
 use super::native_endpoints::timestamp_ms;
 use super::*;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -66,14 +66,16 @@ fn start_provider_collector_with_log(
             if owner.is_some() {
                 match collector.tick(&home, &sqlite_home, &settings_path, &request_log) {
                     Ok(backlog) => { pending = backlog; failed = false; },
-                    Err(_) => {
+                    Err(error) => {
                         // 短暂锁库或半写配置下次重试；不影响请求转发或页面。
                         collector.settings_stamp = None;
                         if !failed {
-                            let _ = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                            if let Err(log_error) = codex_plus_core::diagnostic_log::append_diagnostic_log(
                                 "usage.provider_capture.retry",
-                                json!({"reason":"local evidence temporarily unavailable"}),
-                            );
+                                json!({"reason":"local evidence temporarily unavailable","message":format!("{error:#}")}),
+                            ) {
+                                eprintln!("supplier evidence capture failed: {error:#}; diagnostic log failed: {log_error}");
+                            }
                         }
                         failed = true;
                     }
@@ -82,7 +84,16 @@ fn start_provider_collector_with_log(
             let delay = if pending { Duration::from_millis(250) } else { INTERVAL };
             if receiver.recv_timeout(delay) != Err(mpsc::RecvTimeoutError::Timeout) {
                 // 只做最后一个有界批次，避免退出后还留有后台写入。
-                if owner.is_some() { let _ = collector.tick(&home, &sqlite_home, &settings_path, &request_log); }
+                if owner.is_some()
+                    && let Err(error) = collector.tick(&home, &sqlite_home, &settings_path, &request_log)
+                {
+                    if let Err(log_error) = codex_plus_core::diagnostic_log::append_diagnostic_log(
+                        "usage.provider_capture.stop_failed",
+                        json!({"message":format!("{error:#}")}),
+                    ) {
+                        eprintln!("supplier evidence final capture failed: {error:#}; diagnostic log failed: {log_error}");
+                    }
+                }
                 return;
             }
         }
@@ -234,7 +245,10 @@ impl Collector {
         let before = self.requests.reads;
         self.requests.refresh(request_log);
         if self.requests.reads != before && self.requests.stamp.is_some() {
-            if let Err(error) = self.cache.capture_proxy(&self.requests.records) {
+            if let Err(error) = self
+                .cache
+                .capture_proxy_log(&self.requests.records, self.requests.replay_window)
+            {
                 self.requests.stamp = None;
                 return Err(error);
             }
@@ -320,15 +334,17 @@ impl Collector {
             snapshot.query_row("SELECT coalesce(max(id),0) FROM logs", [], |row| row.get(0))?;
         verify_source(path, &opened, &source_id)?;
         let mut discontinuity = false;
+        let mut legacy_at = None;
         if source.identity != source_id {
             // 完整来源轮转不构成已知缺口；未读尾部丢失才抬高覆盖边界。
             discontinuity = !source.identity.is_empty() && source.pending;
             source.seal(&mut self.cache, observed_at)?;
             source.identity = source_id;
-            let (position, anchor, floor) = self
+            let (position, anchor, floor, legacy) = self
                 .cache
                 .capture_cursor(&source.identity)?
-                .unwrap_or((0, "start".into(), 0));
+                .unwrap_or((0, "start".into(), 0, None));
+            legacy_at = legacy;
             source.position = position;
             source.anchor = anchor;
             source.floor = floor;
@@ -344,9 +360,13 @@ impl Collector {
             // 原文件 DELETE/重建后 high 可能更大；冲突必须重读旧 cursor 前的全部 ID。
             source.position = 0;
             source.anchor = "start".into();
-            source.floor = source.floor.max(0);
+            source.floor = source.floor.max(legacy_at.unwrap_or(0));
             source.stamp.clear();
             discontinuity = true;
+        } else if legacy_at.is_some() {
+            // 旧锚点仍对应同一来源；从实际第一行重读旧版可能截断的完成正文。
+            source.position = 0;
+            source.anchor = "start".into();
         }
         if source.stamp == current && !source.pending && source.position == high {
             return Ok(false);
@@ -369,7 +389,7 @@ impl Collector {
             let mut last_target = position;
             let mut statement = snapshot.prepare(
                 "SELECT id,ts,ts_nanos,
-                substr(feedback_log_body,1,16385),thread_id
+                feedback_log_body,thread_id
                 FROM logs WHERE id>?1 AND id<=?2 AND target='codex_http_client::client'
                 ORDER BY id LIMIT ?3",
             )?;
@@ -457,6 +477,128 @@ impl Collector {
 #[cfg(test)]
 mod backend_recovery_tests {
     use super::*;
+
+    #[test]
+    fn history_and_supplier_readers_accept_large_valid_configs() {
+        let root = tempfile::tempdir().unwrap();
+        let settings = root.path().join("settings.json");
+        let padding = "p".repeat(8 * 1024 * 1024);
+        let relay = json!({"id":"relay-a","name":"Relay A","baseUrl":"https://a.example/v1"});
+        let gateway = json!({"id":"gateway-b","name":"Gateway B","baseUrl":"https://b.example/v1"});
+        fs::write(
+            &settings,
+            json!({"padding":padding,"usageHistoryEnabled":true,"relayProfiles":[relay]}).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("gateway.json"),
+            json!({"padding":padding,"providers":[{"relay":gateway}]}).to_string(),
+        )
+        .unwrap();
+
+        require_history_enabled(&settings).unwrap();
+        let profiles = native_endpoints::profiles(&settings).unwrap();
+        let endpoints = native_endpoints::endpoints(&profiles);
+        assert_eq!(endpoints["https://a.example/v1/responses"].as_deref(), Some("relay-a"));
+        assert_eq!(endpoints["https://b.example/v1/responses"].as_deref(), Some("gateway-b"));
+
+        fs::write(&settings, "{").unwrap();
+        let error = require_history_enabled(&settings).unwrap_err();
+        assert_eq!(error["status"], "unavailable");
+        assert!(error["message"].as_str().is_some_and(|message| !message.is_empty()));
+        assert!(error.get("enabled").is_none());
+    }
+
+    #[test]
+    fn collector_captures_completion_from_fifth_native_log_database() {
+        let root = tempfile::tempdir().unwrap();
+        let home = root.path().join("home");
+        let sqlite = root.path().join("sqlite");
+        fs::create_dir(&home).unwrap();
+        fs::create_dir(&sqlite).unwrap();
+        let settings = root.path().join("settings.json");
+        let request_log = root.path().join("requests.jsonl");
+        fs::write(&settings, json!({"relayProfiles":[{
+            "id":"supplier-b","name":"Supplier B","baseUrl":"https://b.example/v1"
+        }]}).to_string()).unwrap();
+        let mut collector = Collector::default();
+        collector.tick(&home, &sqlite, &settings, &request_log).unwrap();
+        let at = Local::now().timestamp_millis();
+        let session = "fifth-log-session";
+        for number in 1..=5 {
+            let db = Connection::open(sqlite.join(format!("logs_{number}.sqlite"))).unwrap();
+            db.execute_batch("CREATE TABLE logs(id INTEGER PRIMARY KEY, ts, ts_nanos, feedback_log_body, thread_id, target)").unwrap();
+            if number == 5 {
+                let body = format!("{{thread.id={session} turn.id=turn model=model}}: Request completed method=POST url=https://b.example/v1/responses status=200 headers={{}}");
+                db.execute(
+                    "INSERT INTO logs VALUES(1,?1,?2,?3,?4,'codex_http_client::client')",
+                    params![at / 1000, at % 1000 * 1_000_000, body, session],
+                ).unwrap();
+            }
+        }
+        collector.tick(&home, &sqlite, &settings, &request_log).unwrap();
+        let captured = collector.cache.captured_native(session, at - 1, at).unwrap();
+        assert!(captured.complete);
+        assert_eq!(captured.rows.len(), 1);
+        assert_eq!(serde_json::to_value(&captured.rows[0]).unwrap()["provider"], "supplier-b");
+    }
+
+    #[test]
+    fn collector_persists_long_completion_before_marking_its_window_complete() {
+        let root = tempfile::tempdir().unwrap();
+        let log_path = root.path().join("logs_1.sqlite");
+        let db = Connection::open(&log_path).unwrap();
+        db.execute_batch("CREATE TABLE logs(id INTEGER PRIMARY KEY, ts, ts_nanos, feedback_log_body, thread_id, target)").unwrap();
+        let at = Local::now().timestamp_millis();
+        let session = "long-log-session";
+        let url = format!("https://relay.example/{}/responses", "p".repeat(2_100));
+        let turn = "t".repeat(300);
+        let body = format!(
+            "{} {{thread.id={session} turn.id={turn} model=model}}: Request completed method=POST url={url} status=200 headers={{}}",
+            "x".repeat(17_000)
+        );
+        db.execute(
+            "INSERT INTO logs VALUES(1,?1,?2,?3,?4,'codex_http_client::client')",
+            params![at / 1000, at % 1000 * 1_000_000, body, session],
+        )
+        .unwrap();
+        let old_anchor = cursor_anchor(&db, 1).unwrap();
+        drop(db);
+        let mut collector = Collector {
+            endpoints: BTreeMap::from([(url, Some("supplier-b".into()))]),
+            since: at - 1,
+            ..Default::default()
+        };
+        let storage = root.path().join("cache");
+        let today = Local::now().date_naive();
+        collector.cache.open(&storage, today).unwrap();
+        let source = native_endpoints::source_identity(&log_path).unwrap();
+        let old = Connection::open(provider_cache::database_path(&storage).unwrap()).unwrap();
+        old.execute(
+            "INSERT INTO native_capture_cursors VALUES(?1,1,?2,1,0,?3)",
+            params![source, at, old_anchor],
+        )
+        .unwrap();
+        drop(old);
+        let before = collector
+            .cache
+            .captured_native(session, at - 1, at)
+            .unwrap();
+        assert_eq!(before.floor, at);
+        assert!(before.rows.is_empty());
+        assert!(!collector.read_source(&log_path).unwrap());
+        drop(collector);
+        let mut cache = provider_cache::ProviderCache::default();
+        cache.open(&storage, today).unwrap();
+        let captured = cache.captured_native(session, at - 1, at).unwrap();
+        assert!(captured.complete);
+        assert_eq!(captured.floor, provider_cache::ProviderCache::since(today));
+        assert_eq!(cache.native_legacy_until().unwrap(), at);
+        assert_eq!(captured.rows.len(), 1);
+        let saved = serde_json::to_value(&captured.rows[0]).unwrap();
+        assert_eq!(saved["turn"], turn);
+        assert_eq!(saved["provider"], "supplier-b");
+    }
 
     #[test]
     fn gateway_only_changes_refresh_collector_and_invalid_config_clears_binding() {

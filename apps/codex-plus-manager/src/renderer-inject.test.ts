@@ -3818,7 +3818,7 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     const page = await settingsCatalogRuntime(async (path) => {
       if (path === "/settings/catalog") return catalog;
       requests.push(path);
-      if (requests.length === 1) return { status: "ok", bytes: 1572864, directory: "example/usage-history" };
+      if (requests.length === 1) return { status: "ok", bytes: 2097152, indexBytes: 1572864, directory: "example/usage-history" };
       throw new Error("storage unavailable");
     });
     await page.load();
@@ -3837,6 +3837,8 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     assert.equal(directory.textContent, "storage unavailable");
     assert.deepEqual(details.dataset, {});
     assert.deepEqual(requests, ["/settings/usage-history-storage", "/settings/usage-history-storage"]);
+    const api = await readFile(new URL("91-extension-api.js", fragmentDir), "utf8");
+    assert.doesNotMatch(api, /\/settings\/usage-history-storage/);
   });
 
   it("每个在 Codex 显示的设置项生成一行，文案与绑定都取自清单", async () => {
@@ -3893,7 +3895,8 @@ describe("Codex++ 设置页按设置项清单生成", () => {
         assert.match(row.control, /data-codex-plus-setting="[^"]+"|data-codex-backend-setting="[^"]+"/);
       }
       for (const input of item.codexInputs ?? []) {
-        assert.ok(row.control.includes(`aria-label="${input.label}"`), `${item.key} 缺少行内输入框 ${input.id}`);
+        const area = item.key === "usageHistoryEnabled" ? html : row.control;
+        assert.ok(area.includes(`aria-label="${input.label}"`), `${item.key} 缺少输入框 ${input.id}`);
       }
     }
     // 第一组最前面固定是后端连接状态，它不是设置项。
@@ -3908,6 +3911,51 @@ describe("Codex++ 设置页按设置项清单生成", () => {
     for (const item of catalog.items.filter((candidate) => !candidate.surfaces.includes("codex"))) {
       assert.ok(!html.includes(item.title), `${item.key} 只在管理器显示`);
     }
+  });
+
+  it("切换 M/G 不提交，容量和保留期按确认后的精确值保存", async () => {
+    const catalog = await readCatalog();
+    const settings = { usageHistoryEnabled: false, usageHistoryStorageMiB: 3073, usageHistoryPreciseDays: 45 };
+    const page = await settingsCatalogRuntime(async () => catalog, undefined, settings);
+    await page.load();
+    assert.match(page.sections(), /data-codex-plus-usage-history-budget="true"[^>]*value="3\.0009765625"[^>]* disabled>/);
+    assert.match(page.sections(), /data-codex-plus-usage-unit[^>]* disabled>/);
+    assert.match(page.sections(), /data-codex-plus-usage-history-days="true"[^>]*value="45"[^>]* disabled>/);
+    settings.usageHistoryEnabled = true;
+    assert.doesNotMatch(page.sections(), /data-codex-plus-usage-(?:history-(?:budget|days)="true"|unit)[^>]* disabled/);
+
+    const renderer = await readFile(new URL("../../../assets/inject/renderer-inject.js", import.meta.url), "utf8");
+    const start = renderer.indexOf('const usageUnit = target?.closest("[data-codex-plus-usage-unit]");');
+    const end = renderer.indexOf('if (typeof handleCodexPlusExtensionConfigChange', start);
+    assert.ok(start >= 0 && end > start);
+    const handle = new Function("target", "codexPlusBackendSettings", "postJson", "emitCodexPlusSettingsChanged", "showToast", `let codexPlusUsageStorageScale;\n${renderer.slice(start, end)}`);
+    const requests: unknown[] = [], errors: string[] = [];
+    const field = { value: "", min: "", max: "", step: "" };
+    const unit = { value: "1", disabled: false, previousElementSibling: field };
+    for (const [scale, expected] of [["1", "3073"], ["1024", "3.0009765625"]]) {
+      unit.value = scale;
+      handle({ closest: () => unit }, settings, (...args: unknown[]) => requests.push(args));
+      assert.equal(field.value, expected);
+    }
+    assert.equal(requests.length, 0);
+    for (const [key, value, scale, response, expected] of [
+      ["usageHistoryStorageMiB", 1.0001, "1024", null, 3.0009765625],
+      ["usageHistoryStorageMiB", 1.5, "1024", { usageHistoryStorageMiB: 1536 }, 1.5],
+      ["usageHistoryStorageMiB", 512, "1", { message: "disk full" }, 3073],
+      ["usageHistoryPreciseDays", 30, "1", { usageHistoryPreciseDays: 30 }, 30],
+    ] as const) {
+      const input = { value: String(value), valueAsNumber: value, nextElementSibling: { value: scale, disabled: false }, disabled: false, dataset: { codexPlusUsagePolicy: key }, validity: { valid: true }, reportValidity() {} };
+      handle({ closest: (selector: string) => selector === "[data-codex-plus-usage-policy]" ? input : null }, settings, async (route: string, payload: unknown) => {
+        requests.push([route, payload]);
+        return response;
+      }, () => {}, (text: string) => errors.push(text));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(input.value, String(expected));
+      assert.equal(input.disabled, false);
+      assert.equal(input.nextElementSibling.disabled, false);
+    }
+    assert.deepEqual(requests, [["/settings/set", { usageHistoryStorageMiB: 1536 }], ["/settings/set", { usageHistoryStorageMiB: 512 }], ["/settings/set", { usageHistoryPreciseDays: 30 }]]);
+    assert.match(errors.join(""), /disk full/);
   });
 
   it("独立模式补丁的说明随增强总开关切换，与管理器一致", async () => {

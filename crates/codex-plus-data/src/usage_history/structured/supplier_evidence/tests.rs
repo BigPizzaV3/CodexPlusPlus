@@ -8,6 +8,7 @@ fn event(number: u8) -> UsageEvent {
     let counts = Tokens::new(100, 80, 7);
     UsageEvent {
         native_response_id: None,
+        terminal_response: None,
         id: [number; 32],
         original_id: [number; 32],
         session: "00000000-0000-4000-8000-000000000001".into(),
@@ -323,32 +324,79 @@ fn known_supplier_keeps_original_source_and_other_supplier_rejects() {
 }
 
 #[test]
-fn file_bounds_and_signature_cache_capacity_fail_closed() {
+fn both_evidence_imports_match_after_the_old_file_record_and_cache_limits() -> anyhow::Result<()> {
+    use std::io::{BufWriter, Write};
+
     let directory = sandbox();
     let path = directory.path().join("settings.json");
-    let large = File::create(directory.path().join("usage-supplier-evidence-v2.json")).unwrap();
-    large.set_len(LIMIT + 1).unwrap();
-    drop(large);
-    assert_eq!(
-        apply(&mut Cache::default(), &path, vec![event(1)]).supplier_evidence["status"],
-        "rejected"
-    );
     let original = event(1);
-    settings(directory.path(), vec![row(&original, 1)]);
-    let mut cache = Cache::default();
-    for number in 0..MAX_EVENTS {
-        cache.signatures.insert(format!("{number:064x}"), None);
+    let legacy = json!({"eventId":"01".repeat(32),"session":original.session,
+        "timestamp":original.timestamp,"model":original.model,"role":"main","input":100,
+        "output":7,"cached":80,"provider":"supplier-test","providerName":"Test supplier",
+        "source":"upstream-exact-bidirectional"});
+    for (version, file, record, id_path) in [
+        (1, "usage-provider-evidence.json", legacy, "/eventId"),
+        (
+            2,
+            "usage-supplier-evidence-v2.json",
+            row(&original, 1),
+            "/event/eventId",
+        ),
+    ] {
+        let evidence = directory.path().join(file);
+        let mut output = BufWriter::new(File::create(&evidence)?);
+        write!(output, "{{\"version\":{version},\"records\":[")?;
+        let mut unrelated = record.clone();
+        *unrelated.pointer_mut(id_path).unwrap() = json!("x".repeat(64));
+        let mut line = serde_json::to_vec(&unrelated)?;
+        line.extend_from_slice(b",\n");
+        for _ in 0..MAX_EVENTS {
+            output.write_all(&line)?;
+        }
+        serde_json::to_writer(&mut output, &record)?;
+        output.write_all(b"]}")?;
+        output.flush()?;
+        drop(output);
+        assert!(fs::metadata(&evidence)?.len() > 32 << 20);
+
+        let mut snapshot = Snapshot {
+            events: vec![original.clone()],
+            ..Snapshot::default()
+        };
+        let report = if version == 1 {
+            let mut cache = LegacyEvidenceCache {
+                signatures: (0..MAX_EVENTS)
+                    .map(|n| {
+                        let mut id = [0; 32];
+                        id[24..].copy_from_slice(&(n as u64).to_be_bytes());
+                        (id, None)
+                    })
+                    .collect(),
+            };
+            cache.apply(LegacyEvidenceDocument::read(&path), &mut snapshot);
+            assert_eq!(cache.signatures.len(), MAX_EVENTS + 1);
+            snapshot.provider_evidence
+        } else {
+            let stale_owners: HashMap<_, _> =
+                (0..MAX_EVENTS).map(|n| (n.to_string(), None)).collect();
+            let mut cache = Cache {
+                signatures: (0..MAX_EVENTS).map(|n| (format!("{n:064x}"), None)).collect(),
+                upstream_owners: stale_owners.clone(),
+                request_owners: stale_owners,
+            };
+            cache.supplement(&path, &mut snapshot);
+            assert_eq!(cache.signatures.len(), MAX_EVENTS + 1);
+            assert_eq!(cache.upstream_owners.len(), MAX_EVENTS + 1);
+            assert_eq!(cache.request_owners.len(), MAX_EVENTS + 1);
+            snapshot.supplier_evidence
+        };
+        assert_eq!(report["status"], "ok");
+        assert_eq!(report["invalid"], MAX_EVENTS);
+        assert_eq!(report["appliedEvents"], 1);
+        assert_eq!(snapshot.events[0].provider, "supplier-test");
+        assert_only_supplier(&original, &snapshot.events[0]);
     }
-    assert_eq!(
-        apply(&mut cache, &path, vec![original]).supplier_evidence["invalid"],
-        1
-    );
-    assert_eq!(cache.signatures.len(), MAX_EVENTS);
-    let mut owners = (0..MAX_EVENTS)
-        .map(|number| (number.to_string(), None))
-        .collect();
-    assert!(!claim(&mut owners, "new", "owner"));
-    assert_eq!(owners.len(), MAX_EVENTS);
+    Ok(())
 }
 
 #[test]
@@ -423,7 +471,7 @@ fn different_suppliers_can_share_the_same_opaque_request_id() {
 }
 
 #[test]
-fn missing_fields_and_invalid_document_count_reject_before_mutation() {
+fn missing_fields_trailing_json_and_empty_supplier_document_reject_before_mutation() {
     let original = event(1);
     let directory = sandbox();
     let mut missing = row(&original, 1);
@@ -436,12 +484,19 @@ fn missing_fields_and_invalid_document_count_reject_before_mutation() {
         apply(&mut Cache::default(), &path, vec![original.clone()]).supplier_evidence["status"],
         "rejected"
     );
-    let large = vec![row(&original, 1); MAX_EVENTS + 1];
-    settings(directory.path(), large);
-    assert_eq!(
-        apply(&mut Cache::default(), &path, vec![original.clone()]).supplier_evidence["status"],
-        "rejected"
-    );
+    let mut with_trailing_json =
+        serde_json::to_vec(&json!({"version":2,"records":[row(&original, 1)]})).unwrap();
+    with_trailing_json.extend_from_slice(b"{}");
+    fs::write(
+        directory.path().join("usage-supplier-evidence-v2.json"),
+        with_trailing_json,
+    )
+    .unwrap();
+    let mut cache = Cache::default();
+    let rejected = apply(&mut cache, &path, vec![original.clone()]);
+    assert_eq!(rejected.supplier_evidence["status"], "rejected");
+    assert!(rejected.events[0] == original && cache.signatures.is_empty());
+    assert!(cache.upstream_owners.is_empty() && cache.request_owners.is_empty());
     settings(directory.path(), vec![]);
     assert_eq!(
         apply(&mut Cache::default(), &path, vec![original]).supplier_evidence["status"],
@@ -514,6 +569,47 @@ fn synthetic_reader_replay_preserves_v1_proofs_counts_and_revokes_v2() {
     settings(directory.path(), vec![row(&original, 1)]);
     let supplied = index.update_with_request_log(&home, &request_log);
     assert_eq!(supplied.supplier_evidence["appliedEvents"], 1);
+    let storage = directory.path().join("persistent");
+    let mut worker = token_checkpoint::Runtime::new(storage.clone(), path.clone());
+    let state = worker.update(&home);
+    let at = DateTime::parse_from_rfc3339(&timestamp)
+        .unwrap()
+        .timestamp_millis();
+    let request =
+        json!({"startAt":at-1, "endAt":at+1,"includeTrend":true,"includeSessionCursors":true});
+    let bounded = Query::parse(&request, Local::now().date_naive()).unwrap();
+    let detailed = state.read(&storage, &bounded, &request, Some(&original.session), false);
+    let calendar = state.read(&storage, &bounded, &json!({}), None, false);
+    assert_eq!(detailed["providerEvidence"]["appliedEvents"], 1);
+    assert_eq!(detailed["supplierEvidence"]["appliedEvents"], 1);
+    assert_eq!(calendar["days"], detailed["days"]);
+    assert_eq!(detailed["days"][0]["usage"]["totalTokens"], 214);
+    let scoped = &detailed["scopedUsage"]["days"][0]["breakdowns"][0];
+    assert_eq!(scoped["model"], "recorded-model");
+    assert_eq!(scoped["provider"], "supplier-test");
+    assert_eq!(scoped["supplierClassificationEvidence"], SOURCE);
+    assert!(scoped.get("classificationEvidence").is_none());
+    assert_eq!(detailed["trend"]["buckets"][0]["usage"]["totalTokens"], 214);
+    assert!(detailed["liveAttributions"].as_array().unwrap().is_empty());
+
+    let supplier_path = path.with_file_name("usage-supplier-evidence-v2.json");
+    let saved = supplier_path.with_extension("saved");
+    fs::rename(&supplier_path, &saved).unwrap();
+    let withdrawn = state.read(&storage, &bounded, &request, Some(&original.session), false);
+    assert_eq!(withdrawn["revision"], detailed["revision"]);
+    assert_eq!(withdrawn["countStatus"], detailed["countStatus"]);
+    assert_eq!(withdrawn["sessionCursors"], detailed["sessionCursors"]);
+    assert_eq!(withdrawn["days"][0]["usage"], detailed["days"][0]["usage"]);
+    assert_ne!(
+        withdrawn["scopedUsage"]["days"][0]["breakdowns"][0]["provider"],
+        "supplier-test"
+    );
+    let refreshed = worker
+        .update(&home)
+        .read(&storage, &bounded, &request, None, false);
+    assert_eq!(refreshed["providerEvidence"]["appliedEvents"], 1);
+    assert_eq!(refreshed["supplierEvidence"]["status"], "absent");
+    fs::rename(saved, supplier_path).unwrap();
     for (before, after) in baseline.events.iter().zip(&supplied.events) {
         assert_only_supplier(before, after);
     }

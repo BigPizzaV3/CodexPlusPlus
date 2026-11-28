@@ -5,7 +5,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, bail};
 use base64::Engine;
@@ -51,6 +51,7 @@ const CDP_MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
 /// generation 检查；bridge 失效场景下旧 socket 不会再有任何消息，没有这个轮询，
 /// 被顶替的会话会带着 Runtime.enable 订阅和脚本注册无限期滞留。
 pub const BRIDGE_GENERATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const BRIDGE_SLOW_DISPATCH_MS: u64 = 100;
 
 pub type BridgeHandler = Arc<
     dyn Fn(String, Value) -> Pin<Box<dyn Future<Output = anyhow::Result<Value>> + Send>>
@@ -156,7 +157,7 @@ pub fn build_bridge_script(binding_name: &str) -> String {
   window.__codexSessionDeleteBridge = (path, payload) => new Promise((resolve) => {{
     const id = String(++window.__codexSessionDeleteSeq);
     window.__codexSessionDeleteCallbacks.set(id, {{ resolve }});
-    window.{binding_name}(JSON.stringify({{ id, path, payload }}));
+    window.{binding_name}(JSON.stringify({{ id, path, payload, sentAtMs: Date.now() }}));
   }});
 }})();
 "#
@@ -672,7 +673,7 @@ where
 {
     loop {
         // send_command 等待响应时收到的 binding 事件也必须处理。
-        while let Some(event) = session.binding_calls.pop_front() {
+        while let Some((event, _, _)) = session.binding_calls.pop_front() {
             if event.pointer("/params/name").and_then(Value::as_str)
                 != Some(NATIVE_QUOTA_SETTINGS_BINDING)
             {
@@ -1504,7 +1505,7 @@ pub(crate) async fn connect_cdp_websocket(
 struct CdpSession<S> {
     socket: S,
     responses: HashMap<u64, Value>,
-    binding_calls: VecDeque<Value>,
+    binding_calls: VecDeque<(Value, SystemTime, Instant)>,
     fetch_requests: VecDeque<Value>,
     paused_events: VecDeque<(Value, usize, u64)>,
     paused_event_bytes: usize,
@@ -1717,7 +1718,7 @@ where
         }
 
         if value.get("method").and_then(Value::as_str) == Some("Runtime.bindingCalled") {
-            self.binding_calls.push_back(value.clone());
+            self.binding_calls.push_back((value.clone(), SystemTime::now(), Instant::now()));
         }
         if value.get("method").and_then(Value::as_str) == Some("Fetch.requestPaused") {
             anyhow::ensure!(
@@ -1731,14 +1732,15 @@ where
     }
 
     fn enqueue_binding_calls(&mut self, pending_calls: &mut FuturesUnordered<PendingBridgeCall>) {
-        while let Some(message) = self.binding_calls.pop_front() {
-            self.enqueue_binding_call(message, pending_calls);
+        while let Some((message, received_wall, received_at)) = self.binding_calls.pop_front() {
+            self.enqueue_binding_call(message, (received_wall, received_at), pending_calls);
         }
     }
 
     fn enqueue_binding_call(
         &mut self,
         message: Value,
+        received: (SystemTime, Instant),
         pending_calls: &mut FuturesUnordered<PendingBridgeCall>,
     ) {
         let Some(handler) = self.handler.clone() else {
@@ -1785,10 +1787,28 @@ where
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
+        let send_to_receive = parsed["sentAtMs"].as_u64().and_then(|sent| {
+            let received_ms = received.0.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64;
+            received_ms.checked_sub(sent)
+        });
         let payload = parsed.get("payload").cloned().unwrap_or_else(|| json!({}));
         let generation = self.generation.clone();
 
         pending_calls.push(Box::pin(async move {
+            let receive_to_handler = received.1.elapsed().as_millis() as u64;
+            if send_to_receive.unwrap_or_default().saturating_add(receive_to_handler)
+                >= BRIDGE_SLOW_DISPATCH_MS
+            {
+                let _ = crate::diagnostic_log::append_diagnostic_log(
+                    "bridge.slow_dispatch",
+                    json!({
+                        "request_id": request_id,
+                        "path": path,
+                        "send_to_receive_ms": send_to_receive,
+                        "receive_to_handler_ms": receive_to_handler
+                    }),
+                );
+            }
             CompletedBridgeCall {
                 request_id,
                 generation,

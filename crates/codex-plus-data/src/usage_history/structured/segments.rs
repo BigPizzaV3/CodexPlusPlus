@@ -11,9 +11,9 @@ pub(super) fn rollout_id(path: &Path) -> Option<uuid::Uuid> {
 }
 
 pub(super) struct HistoryBase {
-    rollout: uuid::Uuid,
-    end_ordinal: u64,
-    end_offset: u64,
+    pub(super) rollout: uuid::Uuid,
+    pub(super) end_ordinal: u64,
+    pub(super) end_offset: u64,
 }
 
 impl HistoryBase {
@@ -43,12 +43,42 @@ pub(super) fn referenced_prefixes(
         return BTreeMap::new();
     }
     // thread_id 指物理 rollout ID。只使用已扫描的本机会话，不从记录中读取任何路径。
-    let mut rollouts = HashMap::new();
+    let mut rollouts: HashMap<_, Option<&super::FileState>> = HashMap::new();
     for (path, state) in files {
+        // 退役投影以空状态替换旧路径，它不是仍存在的 rollout 副本。
+        if state.stamp.is_none() && state.session.is_empty() && state.events.is_empty() {
+            continue;
+        }
         if let Some(rollout) = rollout_id(path) {
             rollouts
                 .entry(rollout)
-                .and_modify(|entry| *entry = None)
+                .and_modify(|entry| {
+                    let base = |file: &super::FileState| {
+                        file.history_base.as_ref().map(|base| {
+                            (base.rollout, base.end_ordinal, base.end_offset)
+                        })
+                    };
+                    // 普通/压缩路径可同时登记；只合并完整观测和边界完全相同的计数来源。
+                    if entry.is_some_and(|previous| {
+                        !previous.identity_conflict
+                            && !state.identity_conflict
+                            && !previous.invalid_counts
+                            && !state.invalid_counts
+                            && !previous.rollout_out_of_order
+                            && !state.rollout_out_of_order
+                            && previous.issues == 0
+                            && state.issues == 0
+                            && previous.session == state.session
+                            && previous.continuation == state.continuation
+                            && base(previous) == base(state)
+                            && previous.rollout_extent == state.rollout_extent
+                            && previous.expired_count == state.expired_count
+                            && previous.events == state.events
+                    }) {
+                        return;
+                    }
+                    *entry = None;
+                })
                 .or_insert(Some(state));
         }
     }
@@ -79,7 +109,10 @@ pub(super) fn referenced_prefixes(
                     .rollout_position
                     .is_some_and(|(ordinal, _, _)| ordinal < base.end_ordinal)
             });
-            let previous = split.checked_sub(1).map(|i| &source.events[i]);
+            let previous = source.events[..split]
+                .iter()
+                .rev()
+                .find(|event| event.terminal_response.is_none());
             let older = source.expired_count;
             if previous.is_some_and(|event| {
                 event
@@ -121,7 +154,8 @@ pub(super) fn referenced_prefixes(
                 || state.rollout_out_of_order
                 || !state
                     .events
-                    .first()
+                    .iter()
+                    .find(|event| event.terminal_response.is_none())
                     .is_some_and(|event| !event.has_file_baseline)
             {
                 return None;

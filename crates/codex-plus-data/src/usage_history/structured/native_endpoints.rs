@@ -3,9 +3,7 @@ use super::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::collections::BTreeSet;
 
-const WINDOW_MS: i64 = 600_000;
-const MAX_ROWS: usize = 20_000;
-const MAX_SESSION_ROWS: usize = 2_000;
+pub(super) const WINDOW_MS: i64 = 600_000;
 
 pub(super) fn timestamp_ms(seconds: i64, nanos: i64) -> Option<i64> {
     if !(0..1_000_000_000).contains(&nanos) {
@@ -56,13 +54,8 @@ pub(super) fn profiles(
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
         };
-        let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.len() > 8 * 1024 * 1024 {
-            anyhow::bail!("supplier settings exceed read budget");
-        }
-        Ok(Some(serde_json::from_reader(
-            file.take(8 * 1024 * 1024 + 1),
-        )?))
+        anyhow::ensure!(file.metadata()?.is_file(), "supplier settings path is not a file");
+        Ok(Some(serde_json::from_reader(BufReader::new(file))?))
     }
     let before = config_stamp(path);
     let mut profiles = read::<Profiles>(path)?.map_or_else(Vec::new, |value| value.profiles);
@@ -87,28 +80,26 @@ pub(super) fn profiles(
 }
 
 pub(super) fn log_paths(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut paths: Vec<_> = fs::read_dir(root)?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|s| s.to_str())
-                .and_then(|name| name.strip_prefix("logs_")?.strip_suffix(".sqlite"))
-                .is_some_and(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()))
-        })
-        .collect();
-    paths.sort();
-    if paths.len() > 4 {
-        anyhow::bail!("too many native log databases");
+    let mut paths = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let entry = entry?;
+        let is_log = entry.file_name().to_str()
+            .and_then(|name| name.strip_prefix("logs_")?.strip_suffix(".sqlite"))
+            .is_some_and(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()));
+        if is_log && entry.file_type()?.is_file() {
+            paths.push(entry.path());
+        }
     }
+    paths.sort();
     Ok(paths)
 }
 
-fn log_paths_for_home(home: &Path, explicit: Option<&Path>) -> anyhow::Result<Vec<PathBuf>> {
+pub(super) fn log_paths_for_home(home: &Path) -> anyhow::Result<Vec<PathBuf>> {
     // 显式目录尚未创建也不能回退，避免读取另一实例的日志。
+    let explicit = std::env::var_os("CODEX_SQLITE_HOME").map(PathBuf::from);
     log_paths(
         explicit
+            .as_deref()
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or(home),
     )
@@ -139,22 +130,14 @@ fn open_count_cache(storage: &Path) -> anyhow::Result<Connection> {
     Ok(db)
 }
 
-pub(super) fn cache_below_limit(storage: &Path, cutoff: NaiveDate) -> anyhow::Result<bool> {
+pub(super) fn count_evidence_available(storage: &Path, cutoff: NaiveDate) -> anyhow::Result<bool> {
     let db = open_count_cache(storage)?;
-    let full: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM native_attributions WHERE at>=?1 LIMIT 1 OFFSET ?2)",
-        params![
-            provider_cache::ProviderCache::since(cutoff),
-            (MAX_EVENTS - 1) as i64
-        ],
-        |row| row.get(0),
-    )?;
     let guarded: bool = db.query_row(
         "SELECT EXISTS(SELECT 1 FROM structured_count_guard WHERE singleton=1 AND at>=?1)",
         [provider_cache::ProviderCache::since(cutoff)],
         |row| row.get(0),
     )?;
-    Ok(!full && !guarded)
+    Ok(!guarded)
 }
 
 pub(super) fn source_identity(path: &Path) -> anyhow::Result<String> {
@@ -271,7 +254,6 @@ impl Attribution {
                 self.original_model.is_empty()
             } else {
                 !self.original_model.is_empty()
-                    && self.original_model.len() <= 256
                     && request_base_model(&self.original_model)
                         .eq_ignore_ascii_case(&self.key.model)
             }
@@ -287,7 +269,7 @@ impl Attribution {
                 &self.provider,
             ]
             .iter()
-            .all(|s| !s.is_empty() && s.len() <= 256)
+            .all(|s| !s.is_empty())
             && self.key.cached <= self.key.input
             && self
                 .key
@@ -301,10 +283,8 @@ impl Attribution {
 pub(super) struct Cache {
     pub(super) verified: HashMap<[u8; 32], Attribution>,
     persisted: HashMap<[u8; 32], [u8; 32]>,
-    pending_overflow_at: Option<i64>,
     negative: HashMap<[u8; 32], Instant>,
     binding_since: i64,
-    cursor: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -330,15 +310,14 @@ impl Request {
             && self.binding_since > 0
             && [&self.session, &self.turn, &self.model]
                 .iter()
-                .all(|s| !s.is_empty() && s.len() <= 256)
+                .all(|s| !s.is_empty())
             && self.original_model.as_ref().is_none_or(|model| {
-                !model.is_empty()
-                    && model.len() <= 256
-                    && request_base_model(model).eq_ignore_ascii_case(&self.model)
+                !model.is_empty() && request_base_model(model).eq_ignore_ascii_case(&self.model)
             })
-            && self.provider.as_ref().is_none_or(|p| {
-                !unknown_provider(p) && p.len() <= 256 && self.at >= self.binding_since
-            })
+            && self
+                .provider
+                .as_ref()
+                .is_none_or(|p| !unknown_provider(p) && self.at >= self.binding_since)
     }
 }
 
@@ -371,7 +350,7 @@ fn field(text: &str, name: &str) -> Option<String> {
                 .next()?
                 .to_owned()
         };
-        if value.is_empty() || value.len() > 2048 {
+        if value.is_empty() {
             return None;
         }
         if found.as_ref().is_some_and(|previous| previous != &value) {
@@ -536,19 +515,11 @@ impl Cache {
                 if stronger {
                     continue;
                 }
-                if self.verified.contains_key(&id) || self.verified.len() < MAX_EVENTS {
-                    self.verified.insert(id, saved);
-                } else {
-                    self.pending_overflow_at =
-                        Some(self.pending_overflow_at.unwrap_or(saved.at).max(saved.at));
-                }
+                self.verified.insert(id, saved);
             } else if let Some(restored) = self.verified.get_mut(&id) {
                 restored.rejected = true;
-            } else if self.verified.len() < MAX_EVENTS {
-                self.verified.insert(id, saved);
             } else {
-                self.pending_overflow_at =
-                    Some(self.pending_overflow_at.unwrap_or(saved.at).max(saved.at));
+                self.verified.insert(id, saved);
             }
         }
     }
@@ -568,7 +539,7 @@ impl Cache {
                 changed.push((*id, proof.clone()));
             }
         }
-        let mut overflow_at = events
+        let unrecorded_conflict_at = events
             .iter()
             .filter(|event| {
                 event.count_uncertain
@@ -581,19 +552,11 @@ impl Cache {
             .filter_map(|event| DateTime::parse_from_rfc3339(&event.timestamp).ok())
             .map(|at| at.timestamp_millis())
             .max();
-        if let Some(at) = self.pending_overflow_at {
-            overflow_at = Some(overflow_at.unwrap_or(at).max(at));
-        }
-        if changed.is_empty() && overflow_at.is_none() {
-            return Ok((0, cache_below_limit(storage, cutoff)?));
+        if changed.is_empty() && unrecorded_conflict_at.is_none() {
+            return Ok((0, count_evidence_available(storage, cutoff)?));
         }
         let mut db = open_count_cache(storage)?;
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut rows: usize = tx.query_row(
-            "SELECT count(*) FROM (SELECT 1 FROM native_attributions LIMIT ?1)",
-            [(MAX_EVENTS + 1) as i64],
-            |row| row.get(0),
-        )?;
         let mut resolved = Vec::new();
         let mut written = 0;
         for (id, incoming) in changed {
@@ -604,12 +567,6 @@ impl Cache {
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            if current.is_none() && rows >= MAX_EVENTS {
-                if incoming.rejected {
-                    overflow_at = Some(overflow_at.unwrap_or(incoming.at).max(incoming.at));
-                }
-                continue;
-            }
             let merged = if let Some((at, data)) = &current {
                 let proof: Attribution = serde_json::from_str(data)?;
                 anyhow::ensure!(proof.valid() && proof.at == *at, "invalid native evidence");
@@ -630,10 +587,9 @@ impl Cache {
                 )?;
                 written += 1;
             }
-            rows += usize::from(current.is_none());
             resolved.push((id, fingerprint(&merged), merged));
         }
-        if let Some(at) = overflow_at {
+        if let Some(at) = unrecorded_conflict_at {
             // 缺失屏障不能只留在内存；单条全局屏障至少保留到受影响事件过期。
             let at = at.max(Local::now().timestamp_millis());
             tx.execute(
@@ -648,12 +604,11 @@ impl Cache {
             |row| row.get(0),
         )?;
         tx.commit()?;
-        self.pending_overflow_at = None;
         for (id, digest, proof) in resolved {
             self.persisted.insert(id, digest);
             self.verified.insert(id, proof);
         }
-        Ok((written, rows < MAX_EVENTS && !guarded))
+        Ok((written, !guarded))
     }
 
     pub(super) fn observe_count_conflicts(
@@ -692,10 +647,6 @@ impl Cache {
             if conflict == previous && !revalidate_legacy {
                 continue;
             }
-            if !self.verified.contains_key(&event.id) && self.verified.len() >= MAX_EVENTS {
-                available = false;
-                continue;
-            }
             let Ok(at) = DateTime::parse_from_rfc3339(&event.timestamp) else {
                 available = false;
                 continue;
@@ -722,8 +673,7 @@ impl Cache {
                 },
             );
         }
-        // 加载上限达到时，无法证明是否还有未加载的冲突屏障。
-        available && self.verified.len() < MAX_EVENTS
+        available
     }
 
     pub(super) fn unobserved_count_conflicts(&self, seen: &HashMap<[u8; 32], usize>) -> usize {
@@ -744,13 +694,14 @@ impl Cache {
 
     pub(super) fn attribute(
         &mut self,
-        home: &Path,
+        read_log_paths: impl FnOnce() -> anyhow::Result<Vec<PathBuf>>,
         events: &mut [UsageEvent],
         endpoints: &BTreeMap<String, Option<String>>,
         binding_since: i64,
         session_aliases: &BTreeMap<String, String>,
         captured: &provider_cache::ProviderCache,
         scan_complete: bool,
+        scope: Option<&AttributionScope>,
     ) -> Value {
         let aliases = RequestSessionAliases::new(session_aliases);
         let blocked_sessions: HashSet<_> = events
@@ -775,11 +726,16 @@ impl Cache {
             .retain(|_, at| at.elapsed() < Duration::from_secs(300));
         let mut targets: BTreeMap<String, (i64, i64)> = BTreeMap::new();
         let mut live_targets = HashSet::new();
-        for (event, key) in events.iter().zip(&keys) {
+        let legacy_until = captured.native_legacy_until();
+        let mut unavailable = legacy_until.is_err();
+        let legacy_until = legacy_until.unwrap_or(i64::MAX);
+        let range = scope.map_or(0..events.len(), |scope| scope.targets.clone());
+        for (event, key) in events[range.clone()].iter().zip(&keys[range.clone()]) {
             let Some((key, at)) = key else {
                 continue;
             };
             if !scan_complete
+                || scope.is_some_and(|scope| scope.native_blocked)
                 || event.count_uncertain
                 || event.context_conflicts.any()
                 || blocked_sessions.contains(&key.session)
@@ -799,7 +755,7 @@ impl Cache {
                     && s.turn == event.turn
                     && (s.version != 4 || s.original_model.eq_ignore_ascii_case(&event.model))
             }) && now.saturating_sub(*at) > WINDOW_MS;
-            if !retained {
+            if !retained || legacy_until > 0 && at.saturating_sub(WINDOW_MS) <= legacy_until {
                 live_targets.insert(key.session.clone());
             }
             targets
@@ -812,19 +768,13 @@ impl Cache {
         }
         let mut records = Vec::new();
         let mut reads = 0usize;
-        let mut limited = false;
-        let mut unavailable = false;
         let mut coverage = BTreeMap::new();
         let mut checked = HashSet::new();
         let mut captured_reads = 0usize;
-        let ordered: Vec<_> = targets.iter().collect();
-        let selected: Vec<_> = (0..ordered.len().min(256))
-            .map(|offset| ordered[(self.cursor + offset) % ordered.len()])
-            .collect();
         // 反向展开已解析的别名；查询原始日志 ID，匹配时统一使用规范 ID。
-        let mut query_sessions: BTreeMap<String, BTreeSet<String>> = selected
-            .iter()
-            .map(|(session, _)| ((*session).clone(), BTreeSet::from([(*session).clone()])))
+        let mut query_sessions: BTreeMap<String, BTreeSet<String>> = targets
+            .keys()
+            .map(|session| (session.clone(), BTreeSet::from([session.clone()])))
             .collect();
         for (raw, canonical) in &aliases.canonical {
             if let Some(sessions) = canonical.as_ref().and_then(|id| query_sessions.get_mut(id)) {
@@ -844,35 +794,28 @@ impl Cache {
             }
         }
         // 已采集的请求可早于当前配置的观测 epoch；每条证据保留自己的原始映射。
-        for (session, (since, until)) in &selected {
+        for (session, (since, until)) in &targets {
             let mut floor = i64::MIN;
             let mut complete = true;
             let mut available = false;
-            for raw in &query_sessions[*session] {
+            for raw in &query_sessions[session] {
                 match captured.captured_native(raw, since.saturating_sub(WINDOW_MS), *until) {
-                    Ok(batch) if records.len() + batch.rows.len() <= MAX_ROWS => {
+                    Ok(batch) => {
                         available = true;
                         floor = floor.max(batch.floor);
                         complete &= batch.complete;
                         captured_reads += batch.rows.len();
                         records.extend(batch.rows);
                     }
-                    Ok(_) => {
-                        available = true;
-                        limited = true;
-                        floor = i64::MAX;
-                        complete = false;
-                    }
                     Err(_) => complete = false,
                 }
             }
             if available {
-                coverage.insert((*session).clone(), (floor, complete));
+                coverage.insert(session.clone(), (floor, complete));
             }
         }
         if !targets.is_empty() {
-            let explicit = std::env::var_os("CODEX_SQLITE_HOME").map(PathBuf::from);
-            let paths = match log_paths_for_home(home, explicit.as_deref()) {
+            let paths = match read_log_paths() {
                 Ok(paths) => paths,
                 Err(_) => {
                     unavailable = true;
@@ -886,27 +829,20 @@ impl Cache {
                     let db = open_log(&path)?;
                     let snapshot = db.unchecked_transaction()?;
                     let mut statement = db.prepare(
-                        "SELECT ts,ts_nanos,substr(feedback_log_body,1,16385),thread_id,id
+                        "SELECT ts,ts_nanos,feedback_log_body,thread_id,id
                          FROM logs WHERE thread_id=?1 AND ts>=?2 AND ts<=?3
-                         AND target='codex_http_client::client' ORDER BY ts,id LIMIT ?4",
+                         AND target='codex_http_client::client'",
                     )?;
-                    for (session, (since, until)) in &selected {
-                        if !live_targets.contains(*session) {
+                    for (session, (since, until)) in &targets {
+                        if !live_targets.contains(session) {
                             continue;
                         }
-                        if reads >= MAX_ROWS {
-                            limited = true;
-                            coverage.insert((*session).clone(), (i64::MAX, false));
-                            continue;
-                        }
-                        let mut session_reads = 0;
-                        for raw in &query_sessions[*session] {
+                        for raw in &query_sessions[session] {
                             let rows = statement.query_map(
                                 params![
                                     raw,
                                     since.saturating_sub(WINDOW_MS) / 1000,
-                                    until / 1000 + 1,
-                                    (MAX_SESSION_ROWS + 1) as i64
+                                    until / 1000 + 1
                                 ],
                                 |row| {
                                     Ok((
@@ -921,15 +857,6 @@ impl Cache {
                             for row in rows {
                                 let (seconds, nanos, body, raw_session, id) = row?;
                                 reads += 1;
-                                session_reads += 1;
-                                if session_reads > MAX_SESSION_ROWS
-                                    || reads > MAX_ROWS
-                                    || body.len() > 16384
-                                {
-                                    limited = true;
-                                    coverage.insert((*session).clone(), (i64::MAX, false));
-                                    break;
-                                }
                                 records.extend(request(
                                     &body,
                                     &raw_session,
@@ -940,11 +867,8 @@ impl Cache {
                                     id,
                                 ));
                             }
-                            if session_reads > MAX_SESSION_ROWS || reads > MAX_ROWS {
-                                break;
-                            }
                         }
-                        checked.insert((*session).clone());
+                        checked.insert(session.clone());
                     }
                     drop(statement);
                     snapshot.commit()?;
@@ -958,16 +882,10 @@ impl Cache {
                 live_complete &= result.is_ok();
             }
             if live_complete {
-                for (session, _) in &selected {
-                    if live_targets.contains(*session) {
-                        coverage
-                            .entry((*session).clone())
-                            .or_insert((i64::MIN, true));
-                    }
+                for session in &checked {
+                    coverage.entry(session.clone()).or_insert((i64::MIN, true));
                 }
             }
-            limited |= targets.len() > 256;
-            self.cursor = self.cursor.wrapping_add(targets.len().min(256));
         }
         // 部分读取不能建立唯一性；旧的独立证据仍可保留。
         if unavailable {
@@ -994,7 +912,7 @@ impl Cache {
                 .or_insert(row);
         }
         let records: Vec<_> = unique.into_values().collect();
-        let stats = self.apply(
+        let stats = self.apply_scoped(
             events,
             &keys,
             &records,
@@ -1002,8 +920,10 @@ impl Cache {
             &coverage,
             scan_complete,
             &blocked_sessions,
+            legacy_until,
+            scope,
         );
-        for (event, key) in events.iter().zip(&keys) {
+        for (event, key) in events[range.clone()].iter().zip(&keys[range]) {
             if key.as_ref().is_some_and(|(key, at)| {
                 checked.contains(&key.session)
                     && coverage.get(&key.session).is_some_and(|(floor, complete)| {
@@ -1017,10 +937,11 @@ impl Cache {
             }
         }
         json!({"source":"native-http-endpoint","recoveredEvents":stats.0,"recoveredTokens":stats.1,
-            "logRowsRead":reads,"capturedRequestsRead":captured_reads,"limited":limited,"unavailable":unavailable,
+            "logRowsRead":reads,"capturedRequestsRead":captured_reads,"limited":false,"unavailable":unavailable,
             "cachedEvents":self.verified.len()})
     }
 
+    #[cfg(test)]
     fn apply(
         &mut self,
         events: &mut [UsageEvent],
@@ -1030,6 +951,31 @@ impl Cache {
         coverage: &BTreeMap<String, (i64, bool)>,
         scan_complete: bool,
         blocked_sessions: &HashSet<String>,
+    ) -> (usize, u64) {
+        self.apply_scoped(
+            events,
+            keys,
+            records,
+            binding_since,
+            coverage,
+            scan_complete,
+            blocked_sessions,
+            0,
+            None,
+        )
+    }
+
+    fn apply_scoped(
+        &mut self,
+        events: &mut [UsageEvent],
+        keys: &[Option<(RequestMatchKey, i64)>],
+        records: &[Request],
+        binding_since: i64,
+        coverage: &BTreeMap<String, (i64, bool)>,
+        scan_complete: bool,
+        blocked_sessions: &HashSet<String>,
+        legacy_until: i64,
+        scope: Option<&AttributionScope>,
     ) -> (usize, u64) {
         type Group = (String, String, String);
         let mut requests: BTreeMap<Group, Vec<&Request>> = BTreeMap::new();
@@ -1055,7 +1001,8 @@ impl Cache {
             rows.sort_unstable();
         }
         let (mut recovered, mut tokens) = (0, 0u64);
-        for (event, key) in events.iter_mut().zip(keys) {
+        let targets = scope.map_or(0..events.len(), |scope| scope.targets.clone());
+        for (event, key) in events[targets.clone()].iter_mut().zip(&keys[targets]) {
             if event.context_conflicts.any() || event.count_uncertain && !event.count_pending {
                 if let Some(saved) = self.verified.get_mut(&event.id) {
                     saved.rejected = true;
@@ -1065,7 +1012,11 @@ impl Cache {
             if event.count_pending {
                 continue;
             }
-            if !scan_complete || !unknown_provider(&event.provider) || event.turn.is_empty() {
+            if !scan_complete
+                || scope.is_some_and(|scope| scope.native_blocked)
+                || !unknown_provider(&event.provider)
+                || event.turn.is_empty()
+            {
                 continue;
             }
             let Some((key, at)) = key else {
@@ -1140,9 +1091,7 @@ impl Cache {
             let complete = coverage
                 .get(&key.session)
                 .is_some_and(|(since, complete)| *complete && floor >= *since);
-            if let Some(provider) =
-                candidate.filter(|_| complete && self.verified.len() < MAX_EVENTS)
-            {
+            if let Some(provider) = candidate.filter(|_| complete) {
                 let since = rows
                     .iter()
                     .map(|row| {
@@ -1175,7 +1124,12 @@ impl Cache {
                     })
                     .or_insert_with(make_proof);
             }
-            if let Some(saved) = self.verified.get(&event.id).filter(|s| !s.rejected) {
+            if let Some(saved) = self.verified.get(&event.id).filter(|s| {
+                !s.rejected
+                    && (legacy_until == 0
+                        || floor > legacy_until
+                        || complete && candidate == Some(&s.provider))
+            }) {
                 event.provider.clone_from(&saved.provider);
                 recovered += 1;
                 tokens = tokens.saturating_add(event.delta.total_tokens);
@@ -1189,11 +1143,238 @@ impl Cache {
 mod tests {
     use super::*;
 
+    fn metered_event(id: [u8; 32], session: &str, turn: &str, now: DateTime<Local>) -> UsageEvent {
+        UsageEvent {
+            native_response_id: None,
+            terminal_response: None,
+            id,
+            original_id: id,
+            session: session.into(),
+            turn: turn.into(),
+            model: "model".into(),
+            timestamp: now.to_rfc3339(),
+            date: now.date_naive(),
+            total: Tokens::new(100, 20, 10),
+            delta: Tokens::new(100, 20, 10),
+            has_file_baseline: false,
+            rollout_position: None,
+            count_pending: false,
+            last: None,
+            count_uncertain: false,
+            count_incomplete: false,
+            provider: String::new(),
+            provider_source: None,
+            role: "main".into(),
+            inherited: false,
+            legacy_identity: None,
+            context_conflicts: ContextConflicts::default(),
+        }
+    }
+
+    #[test]
+    fn dense_captured_native_window_keeps_unique_and_competing_suppliers() {
+        let root = tempfile::tempdir().unwrap();
+        let now = Local::now();
+        let at = now.timestamp_millis();
+        let floor = at - WINDOW_MS - 5;
+        let mut storage = provider_cache::ProviderCache::default();
+        storage.open(root.path(), now.date_naive()).unwrap();
+        let mut rows = Vec::new();
+        for i in 0..20_004_i64 {
+            let mut id = [0; 32];
+            id[..8].copy_from_slice(&i.to_be_bytes());
+            let (session, turn, completed, supplier) = match i {
+                0 => ("session", "exact", at, "supplier-a"),
+                1 => ("session", "competing", at, "supplier-a"),
+                20_000 => ("session", "competing", at, "supplier-b"),
+                20_001 => ("other-session", "exact", at, "supplier-b"),
+                20_002 => ("session", "exact", at + 1, "supplier-b"),
+                20_003 => ("session", "exact", floor, "supplier-b"),
+                _ => ("session", "other-turn", at, "supplier-b"),
+            };
+            rows.push((
+                id,
+                Request {
+                    session: session.into(),
+                    turn: turn.into(),
+                    model: "model".into(),
+                    original_model: Some("model".into()),
+                    at: completed,
+                    provider: Some(supplier.into()),
+                    binding_since: floor - 1,
+                    identity: id,
+                    source: "source".into(),
+                    row_id: i + 1,
+                },
+            ));
+        }
+        storage
+            .capture_native("source", 20_004, &rows, true, floor, "anchor")
+            .unwrap();
+        let batch = storage.captured_native("session", floor - 1, at).unwrap();
+        assert!(batch.complete);
+        assert_eq!(batch.floor, floor);
+        assert_eq!(batch.rows.len(), 20_001);
+        assert!(
+            batch
+                .rows
+                .iter()
+                .all(|row| row.at == at && row.session == "session")
+        );
+        drop(batch);
+
+        let mut events = [
+            metered_event([11; 32], "session", "exact", now),
+            metered_event([12; 32], "session", "competing", now),
+        ];
+        let stats = Cache::default().attribute(
+            || log_paths(root.path()),
+            &mut events,
+            &BTreeMap::new(),
+            floor - 1,
+            &BTreeMap::new(),
+            &storage,
+            true,
+            None,
+        );
+        assert_eq!(stats["capturedRequestsRead"], 20_001);
+        assert_eq!(stats["logRowsRead"], 0);
+        assert_eq!(stats["limited"], false);
+        assert_eq!(stats["recoveredEvents"], 1);
+        assert_eq!(events[0].provider, "supplier-a");
+        assert!(unknown_provider(&events[1].provider));
+        assert!(
+            events
+                .iter()
+                .all(|event| event.delta == Tokens::new(100, 20, 10))
+        );
+    }
+
+    #[test]
+    fn dense_live_native_logs_and_captures_cover_every_target_session() {
+        let root = tempfile::tempdir().unwrap();
+        let now = Local::now();
+        let at = now.timestamp_millis();
+        let since = at - WINDOW_MS - 1;
+        let mut storage = provider_cache::ProviderCache::default();
+        storage.open(root.path(), now.date_naive()).unwrap();
+        let mut original = Vec::new();
+        let mut rows = Vec::new();
+        for i in 0..259_i64 {
+            let mut id = [0; 32];
+            id[..8].copy_from_slice(&i.to_be_bytes());
+            let session = format!("session-{i:03}");
+            original.push(metered_event(id, &session, "turn", now));
+            rows.push((
+                id,
+                Request {
+                    session,
+                    turn: "turn".into(),
+                    model: "model".into(),
+                    original_model: Some("model".into()),
+                    at,
+                    binding_since: since,
+                    provider: Some("supplier-a".into()),
+                    identity: id,
+                    source: "source".into(),
+                    row_id: i + 1,
+                },
+            ));
+        }
+        storage
+            .capture_native("source", 259, &rows, true, since, "anchor")
+            .unwrap();
+        let endpoint = format!("https://other.example/{}/responses", "a".repeat(2100));
+        let endpoints = BTreeMap::from([(endpoint.clone(), Some("supplier-b".into()))]);
+        let attribute = |cache: &mut Cache,
+                         events: &mut [UsageEvent],
+                         storage: &provider_cache::ProviderCache| {
+            cache.attribute(
+                || log_paths(root.path()),
+                events,
+                &endpoints,
+                since,
+                &BTreeMap::new(),
+                storage,
+                true,
+                None,
+            )
+        };
+
+        let mut cache = Cache::default();
+        let mut events = original.clone();
+        let stats = attribute(&mut cache, &mut events, &storage);
+        assert_eq!(stats["recoveredEvents"], 259);
+        assert_eq!(stats["limited"], false);
+        assert!(events.iter().all(|event| event.provider == "supplier-a"));
+
+        cache.verified.retain(|id, _| id == &original[257].id);
+        let mut competitor = rows[257].1.clone();
+        competitor.provider = Some("supplier-b".into());
+        competitor.identity = [5; 32];
+        competitor.row_id = 260;
+        storage
+            .capture_native(
+                "source",
+                260,
+                &[(competitor.identity, competitor)],
+                true,
+                since,
+                "next",
+            )
+            .unwrap();
+        let log = Connection::open(root.path().join("logs_1.sqlite")).unwrap();
+        log.execute_batch("CREATE TABLE logs(id INTEGER PRIMARY KEY, ts, ts_nanos, feedback_log_body, thread_id, target);
+            CREATE INDEX logs_session_time ON logs(thread_id,ts)").unwrap();
+        log.execute("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<20001)
+            INSERT INTO logs SELECT i,?1,?2,'unrelated trace','session-256','codex_http_client::client' FROM n",
+            params![at / 1000, at % 1000 * 1_000_000]).unwrap();
+        log.execute("INSERT INTO logs VALUES(20002,?1,?2,?3,?4,'codex_http_client::client')", params![
+            at / 1000, at % 1000 * 1_000_000,
+            format!("{} {{thread.id=session-256 turn.id=turn model=model}}: Request completed method=POST url={endpoint} status=200 headers={{}}", "x".repeat(17_000)),
+            "session-256"
+        ]).unwrap();
+        drop(log);
+        let mut events = original;
+        let stats = attribute(&mut cache, &mut events, &storage);
+        assert_eq!(stats["capturedRequestsRead"], 260);
+        assert_eq!(stats["limited"], false);
+        assert_eq!(stats["logRowsRead"], 20_002);
+        assert_eq!(stats["recoveredEvents"], 257);
+        assert!(cache.verified[&events[257].id].rejected);
+        assert!(unknown_provider(&events[256].provider));
+        assert!(unknown_provider(&events[257].provider));
+        assert_eq!(events[258].provider, "supplier-a");
+
+        // 原始日志已轮转的旧游标不能为旧窗口担保；已保存的归属记录留存待复证。
+        let db = Connection::open(provider_cache::database_path(root.path()).unwrap()).unwrap();
+        db.execute(
+            "INSERT INTO native_capture_cursors VALUES('rotated',1,?1,1,0,'old-anchor')",
+            [at],
+        )
+        .unwrap();
+        drop(db);
+        let mut previous = events[258].clone();
+        previous.provider.clear();
+        let mut independent = previous.clone();
+        independent.id = [99; 32];
+        independent.original_id = independent.id;
+        independent.session = "gateway-only".into();
+        independent.provider = "gateway-confirmed".into();
+        let mut window = [previous, independent];
+        let stats = attribute(&mut cache, &mut window, &storage);
+        assert_eq!(stats["recoveredEvents"], 0);
+        assert!(unknown_provider(&window[0].provider));
+        assert_eq!(window[1].provider, "gateway-confirmed");
+        assert!(!cache.verified[&window[0].id].rejected);
+    }
+
     #[test]
     fn original_model_is_required_for_new_proofs_and_legacy_proofs_are_retained() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [71; 32],
             original_id: [71; 32],
             session: "session".into(),
@@ -1248,6 +1429,39 @@ mod tests {
         assert_eq!(fresh[0].model, "cpx-a/model");
         assert_eq!(cache.verified[&event.id].version, 4);
         assert_eq!(cache.verified[&event.id].original_model, event.model);
+
+        // The previous count bounds the native request, but is not itself a target.
+        let mut preceding = event.clone();
+        preceding.id = [72; 32];
+        preceding.timestamp = DateTime::from_timestamp_millis(at - 50)
+            .unwrap()
+            .to_rfc3339();
+        let previous = event_key(&preceding, &aliases).unwrap();
+        let mut earlier_request = row("cpx-a/model", "supplier-b");
+        earlier_request.at = at - 60;
+        let mut scoped_events = vec![preceding, event.clone()];
+        let mut scoped_cache = Cache::default();
+        let scope = AttributionScope {
+            targets: 1..2,
+            gateway_blocked: false,
+            paired_only: false,
+            native_blocked: false,
+            resolve_terminal: None,
+        };
+        scoped_cache.apply_scoped(
+            &mut scoped_events,
+            &[Some(previous), Some(key.clone())],
+            &[earlier_request, exact.clone()],
+            at - 100,
+            &coverage,
+            true,
+            &HashSet::new(),
+            0,
+            Some(&scope),
+        );
+        assert!(unknown_provider(&scoped_events[0].provider));
+        assert!(!scoped_cache.verified.contains_key(&[72; 32]));
+        assert_eq!(scoped_events[1].provider, "supplier-a");
 
         let root = tempfile::tempdir().unwrap();
         let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
@@ -1473,6 +1687,7 @@ mod tests {
         };
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [7; 32],
             original_id: [7; 32],
             session: key.session.clone(),
@@ -1542,6 +1757,7 @@ mod tests {
         };
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [8; 32],
             original_id: [8; 32],
             session: key.session.clone(),
@@ -1645,6 +1861,7 @@ mod tests {
         };
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [9; 32],
             original_id: [9; 32],
             session: key.session.clone(),
@@ -1713,6 +1930,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let mut event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [254; 32],
             original_id: [254; 32],
             session: "session".into(),
@@ -1758,6 +1976,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let mut event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [253; 32],
             original_id: [253; 32],
             session: "session".into(),
@@ -1798,6 +2017,7 @@ mod tests {
         let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [98; 32],
             original_id: [98; 32],
             session: "session".into(),
@@ -1875,10 +2095,11 @@ mod tests {
     }
 
     #[test]
-    fn count_conflict_markers_expire_and_saturation_fails_closed() {
+    fn count_conflict_markers_expire_and_survive_the_old_row_limit() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [255; 32],
             original_id: [255; 32],
             session: "session".into(),
@@ -1926,10 +2147,10 @@ mod tests {
             cache.verified.insert(id, marker.clone());
         }
         let mut disputed = event;
-        assert!(!cache.observe_count_conflicts(std::slice::from_mut(&mut disputed), true));
+        assert!(cache.observe_count_conflicts(std::slice::from_mut(&mut disputed), true));
         assert!(disputed.count_uncertain);
-        assert_eq!(cache.verified.len(), MAX_EVENTS);
-        assert!(!cache.verified.contains_key(&disputed.id));
+        assert_eq!(cache.verified.len(), MAX_EVENTS + 1);
+        assert_eq!(cache.verified[&disputed.id].count_conflict, 2);
     }
 
     #[test]
@@ -1937,6 +2158,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [10; 32],
             original_id: [10; 32],
             session: "session".into(),
@@ -2015,6 +2237,7 @@ mod tests {
         };
         let event = UsageEvent {
             native_response_id: None,
+            terminal_response: None,
             id: [7; 32],
             original_id: [7; 32],
             session: key.session.clone(),

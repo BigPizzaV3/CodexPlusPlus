@@ -3275,10 +3275,12 @@ async fn handle_protocol_proxy_connection_inner(
             name.eq_ignore_ascii_case("originator")
                 && matches!(value.as_str(), "Codex Desktop" | "codex_cli_rs" | "codex_exec")
         })
-        && crate::builtin_takeover::load_effective_settings().is_ok_and(|settings| {
-            settings.enhancements_enabled && settings.codex_app_reported_usage_compaction
+        && tokio::task::spawn_blocking(|| {
+            crate::builtin_takeover::load_effective_settings().is_ok_and(|settings| {
+                settings.enhancements_enabled && settings.codex_app_reported_usage_compaction
+            }) && !crate::extension_gateway::builtin_replaced("builtin:reported-usage-compaction")
         })
-        && !crate::extension_gateway::builtin_replaced("builtin:reported-usage-compaction");
+        .await?;
     // 直连代理只在「本地代理 → 网关」这一跳带 Codex 的身份头，让网关再转给上游（#2783）；
     // 直连普通供应商的代理路径保持原样，不额外透传。
     if matches!(opener, ProxyOpener::Legacy) && !hops_through_gateway {

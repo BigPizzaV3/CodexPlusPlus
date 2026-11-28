@@ -306,6 +306,7 @@ pub fn run() {
         }
     });
     if let Ok(settings) = codex_plus_core::settings::SettingsStore::default().load() {
+        codex_plus_launcher::sync_usage_history_capture();
         // 请求体上限是运行期策略：管理器启动即按设置应用，之后启动的 helper 直接继承，
         // 不必等完整启动流程。环境变量仍由 launcher 侧统一优先。
         codex_plus_core::launcher::set_http_body_limit_bytes(
@@ -346,7 +347,10 @@ pub fn run() {
                 codex_plus_core::extension_hooks::sync_default(&commands::default_user_script_manager());
             });
             codex_plus_core::settings::set_external_settings_change_listener(
-                gateway_commands::notify_settings_changed,
+                || {
+                    codex_plus_launcher::sync_usage_history_capture();
+                    gateway_commands::notify_settings_changed();
+                },
             );
             // Codex 页面里的「供应商」页经 bridge 调这里的保存 / 切换（core `provider_page`）。
             codex_plus_core::provider_page::set_provider_page_host(commands::provider_page_host());
