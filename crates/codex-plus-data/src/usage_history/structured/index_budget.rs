@@ -127,7 +127,7 @@ pub(super) struct Budget {
     pub(super) source_left: u64,
     memory_limit: usize,
     event_limit: usize,
-    activity_limit: usize,
+    pub(super) activity_limit: usize,
 }
 
 impl Budget {

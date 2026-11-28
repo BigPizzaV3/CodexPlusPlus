@@ -105,7 +105,7 @@ pub(crate) struct Tokens {
     cached_known: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, serde::Deserialize)]
 struct CacheAccounting {
     input: u64,
     read: u64,
@@ -330,7 +330,7 @@ impl Tokens {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Serialize, serde::Deserialize)]
 pub(crate) struct UsageHistoryBoundary {
     pub(crate) parent: Option<String>,
     start: Option<u64>,
@@ -430,32 +430,35 @@ impl Query {
     }
 
     fn accepts(&self, record: &Record) -> bool {
+        self.accepts_fields(
+            &record.session_id,
+            &record.turn_id,
+            record.model.as_deref(),
+            record.date,
+        )
+    }
+
+    fn accepts_fields(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        model: Option<&str>,
+        date: Option<NaiveDate>,
+    ) -> bool {
         !self
             .session_id
             .as_ref()
-            .is_some_and(|id| id != &record.session_id)
-            && !self
-                .turn_id
-                .as_ref()
-                .is_some_and(|id| id != &record.turn_id)
-            && !self
-                .from
-                .is_some_and(|from| record.date.is_none_or(|d| d < from))
-            && !self.to.is_some_and(|to| record.date.is_none_or(|d| d > to))
-            && !self
-                .model
-                .as_ref()
-                .is_some_and(|m| record.model.as_ref() != Some(m))
+            .is_some_and(|id| id != session_id)
+            && !self.turn_id.as_ref().is_some_and(|id| id != turn_id)
+            && !self.from.is_some_and(|from| date.is_none_or(|d| d < from))
+            && !self.to.is_some_and(|to| date.is_none_or(|d| d > to))
+            && !self.model.as_deref().is_some_and(|name| model != Some(name))
             && (self.search.is_empty()
-                || record
-                    .model
-                    .as_deref()
+                || model
                     .unwrap_or("")
                     .to_lowercase()
                     .contains(&self.search)
-                || record
-                    .date
-                    .is_some_and(|d| d.to_string().contains(&self.search)))
+                || date.is_some_and(|d| d.to_string().contains(&self.search)))
     }
 }
 

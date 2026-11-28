@@ -19,6 +19,8 @@ mod provider_cache;
 mod provider_capture;
 mod segments;
 mod supplier_evidence;
+#[cfg(test)]
+mod token_checkpoint;
 mod tool_receipts;
 
 const RETENTION_DAYS: i64 = 365;
@@ -1385,7 +1387,7 @@ impl RequestEvidenceCache {
     }
 }
 
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
 struct ContextConflicts {
     model: bool,
     provider: bool,
@@ -1399,14 +1401,14 @@ impl ContextConflicts {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
 struct LegacyIdentity {
     id: [u8; 32],
     session: String,
     role: String,
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct NativeResponseIdentity {
     id: Box<str>,
     full_counts: bool,
@@ -1597,6 +1599,60 @@ impl UsageEvent {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ClassificationEvidence {
+    #[default]
+    None,
+    UpstreamExact,
+    RequestExact,
+    SupplierOnly,
+    RecoveredRequestSupplier,
+}
+
+impl ClassificationEvidence {
+    fn of(event: &UsageEvent) -> Self {
+        if event.context_conflicts.any() {
+            return Self::None;
+        }
+        match event.provider_source.as_deref() {
+            Some("upstream-exact-bidirectional") => Self::UpstreamExact,
+            Some("request-log-exact") => Self::RequestExact,
+            Some("upstream-counter-bidirectional-supplier-only") => Self::SupplierOnly,
+            Some(REQUEST_SUPPLIER_PROOF) => Self::RecoveredRequestSupplier,
+            _ => Self::None,
+        }
+    }
+
+    fn intersect(self, next: Self) -> Self {
+        match (self, next) {
+            (Self::UpstreamExact, Self::RequestExact)
+            | (Self::RequestExact, Self::UpstreamExact) => Self::RequestExact,
+            (left, right) if left == right => left,
+            _ => Self::None,
+        }
+    }
+
+    fn write_to(self, row: &mut Value) {
+        match self {
+            Self::None => {}
+            Self::UpstreamExact => {
+                row["classificationEvidence"] = json!("upstream-exact-bidirectional");
+            }
+            Self::RequestExact => {
+                row["classificationEvidence"] = json!("request-log-exact");
+            }
+            Self::SupplierOnly => {
+                row["supplierClassificationEvidence"] =
+                    json!("upstream-counter-bidirectional-supplier-only");
+            }
+            Self::RecoveredRequestSupplier => {
+                row["supplierClassificationEvidence"] = json!(REQUEST_SUPPLIER_PROOF);
+            }
+        }
+    }
+}
+
 #[derive(serde::Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LegacyProviderEvidence {
@@ -1627,7 +1683,7 @@ impl LegacyProviderEvidence {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, Deserialize)]
 struct Call {
     timestamp: String,
     session: String,
@@ -1642,11 +1698,13 @@ struct ToolRecord {
     date: NaiveDate,
 }
 
+#[derive(Clone, serde::Serialize, Deserialize)]
 struct ExecSkill {
     call: Call,
     evidence: String,
 }
 
+#[derive(Clone, serde::Serialize, Deserialize)]
 struct SessionModelObservation {
     at: i64,
     model: String,
@@ -1657,7 +1715,7 @@ struct SessionModelObservation {
     unordered: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default, serde::Serialize, Deserialize)]
 struct InheritedUsageContext {
     session: String,
     model: String,
@@ -1685,6 +1743,8 @@ struct FileState {
     pending_response: Option<PendingUsageReceipt>,
     stamp: Option<(u64, Option<SystemTime>, Option<(u64, u64)>)>,
     offset: u64,
+    resume_pending: bool,
+    replay_remaining: u64,
     reader: Option<index_budget::ReadCursor>,
     retained_charge: usize,
     pending: index_budget::PendingLine,
@@ -2339,106 +2399,7 @@ impl Index {
         Ok(available && self.native_cache_version == Some(self.provider_cache.data_version()?))
     }
 
-    fn update(&mut self, home: &Path) -> Snapshot {
-        let request_log = codex_plus_core::request_log::request_log_path();
-        self.update_with_request_log(home, &request_log)
-    }
-
-    fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> Snapshot {
-        let started = Instant::now();
-        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
-        let mut snapshot = Snapshot::default();
-        let mut cache_available = true;
-        let mut cache_opened = false;
-        match self
-            .provider_cache
-            .open(self.storage_dir.as_deref().unwrap_or(home), cutoff)
-        {
-            Ok(true) => {
-                cache_opened = true;
-                self.native_cache_loaded = false;
-                self.native_cache_version = None;
-                // refresh 会在路径变化时清空请求缓存，必须先建立路径再恢复落盘证据。
-                self.request_evidence.refresh(request_log);
-                match self.provider_cache.load_verified(cutoff) {
-                    Ok(records) => self.request_evidence.restore_verified(records),
-                    Err(_) => cache_available = false,
-                }
-            }
-            Ok(false) => cache_opened = true,
-            Err(_) => cache_available = false,
-        }
-        if cache_opened && self.sync_native_evidence(cutoff).is_err() {
-            self.native_cache_loaded = false;
-            self.native_cache_version = None;
-            cache_available = false;
-        }
-        // 加载器会跳过无效条目；仅比较加载后的数量无法证明 LIMIT 未截断。
-        if cache_available {
-            cache_available = native_endpoints::cache_below_limit(
-                self.storage_dir.as_deref().unwrap_or(home),
-                cutoff,
-            )
-            .unwrap_or(false);
-        }
-        snapshot.aliases = self.provider_cache.aliases.clone();
-        let mut current_aliases = BTreeMap::new();
-        let settings = self
-            .settings_path
-            .clone()
-            .unwrap_or_else(codex_plus_core::paths::default_settings_path);
-        let stamp = native_endpoints::config_stamp(&settings);
-        if self.provider_stamp.as_ref() != Some(&stamp) {
-            self.provider_endpoints.clear();
-            self.provider_names.clear();
-            self.provider_endpoint_since = 0;
-            self.provider_stamp = None;
-            if let Ok(profiles) = native_endpoints::profiles(&settings)
-                && native_endpoints::config_stamp(&settings) == stamp
-            {
-                self.provider_endpoints = native_endpoints::endpoints(&profiles);
-                self.provider_endpoint_since = self
-                    .provider_cache
-                    .endpoint_binding_since(&self.provider_endpoints)
-                    .unwrap_or_else(|_| Local::now().timestamp_millis());
-                self.provider_names = profiles
-                    .into_iter()
-                    .map(|name| (name.id, name.name))
-                    .collect();
-                self.provider_stamp = Some(stamp);
-            }
-        }
-        snapshot.provider_names = self.provider_names.clone();
-        let paths = discover(home, self.files.is_empty(), &mut snapshot.errors);
-        let existing: HashSet<_> = paths.iter().cloned().collect();
-        self.files.retain(|path, _| existing.contains(path));
-        let mut budget = index_budget::Budget::new(self.files.values());
-        let mut seen = HashMap::new();
-        let mut tools = BTreeMap::new();
-        for path in paths {
-            snapshot.files += 1;
-            snapshot.compressed += usize::from(path.extension().is_some_and(|ext| ext == "zst"));
-            let state = self.files.entry(path.clone()).or_default();
-            state.bytes_read = 0;
-            let previous_usage = index_budget::Usage::of(state);
-            budget.replace(previous_usage, index_budget::Usage::default());
-            match state.read_with_budget(&path, cutoff, &mut budget) {
-                Err(_) => {
-                    snapshot.errors += 1;
-                    // 下次从有效文件头重试，不能让失败的解压流留下错误累计基线。
-                    *state = FileState::default();
-                }
-                Ok(true) => snapshot.indexed += 1,
-                Ok(false) => snapshot.errors += 1,
-            }
-            budget.replace(
-                index_budget::Usage::default(),
-                index_budget::Usage::of(state),
-            );
-            snapshot.issues += state.issues;
-            snapshot.activity_truncated |= state.activity_truncated;
-            snapshot.bytes_read += state.bytes_read;
-        }
+    fn observed_collisions(&self) -> HashMap<[u8; 32], i64> {
         // 原有事件 ID 保持不变；仅给有明确不同轮次的碰撞分配独立身份。
         let mut turns = HashMap::<[u8; 32], (bool, HashSet<String>, i64)>::new();
         for event in self
@@ -2465,25 +2426,13 @@ impl Index {
                     .map_or(0, |time| time.timestamp_millis()),
             );
         }
-        let observed_collisions: HashMap<_, _> = turns
+        turns
             .into_iter()
             .filter_map(|(id, (_, turns, at))| (turns.len() > 1).then_some((id, at)))
-            .collect();
-        let collision_identity_available = match self
-            .provider_cache
-            .event_collisions(&observed_collisions, cutoff)
-        {
-            Ok(collisions) => {
-                self.collision_families = collisions;
-                true
-            }
-            Err(_) => {
-                cache_available = false;
-                self.collision_families
-                    .extend(observed_collisions.keys().copied());
-                false
-            }
-        };
+            .collect()
+    }
+
+    fn apply_collision_ids(&mut self) {
         for event in self.files.values_mut().flat_map(|state| &mut state.events) {
             let original = event.original_id;
             event.id = if self.collision_families.contains(&original) && !event.turn.is_empty() {
@@ -2500,6 +2449,17 @@ impl Index {
                 original
             };
         }
+    }
+
+    fn select_observations(
+        &self,
+        cutoff: NaiveDate,
+        snapshot: &mut Snapshot,
+        current_aliases: &mut BTreeMap<String, String>,
+        event_limit: usize,
+    ) {
+        let mut seen = HashMap::new();
+        let mut tools = BTreeMap::new();
         for (path, state) in &self.files {
             if state.identity_conflict || state.session.is_empty() && state.stamp.is_some() {
                 snapshot.ignored += 1;
@@ -2554,7 +2514,7 @@ impl Index {
                     }
                     continue;
                 }
-                if snapshot.events.len() == MAX_EVENTS {
+                if snapshot.events.len() == event_limit {
                     snapshot.issues += 1;
                     break;
                 }
@@ -2589,6 +2549,9 @@ impl Index {
         snapshot
             .collect_scope_parents(self.files.values().filter(|state| !state.identity_conflict));
         snapshot.tools = tools.into_values().collect();
+    }
+
+    fn resolve_counts(&self, snapshot: &mut Snapshot) -> HashMap<[u8; 32], usize> {
         // 无法读取累计输入或输出时，整个会话的增量边界暂时不可核验。
         let incomplete_sessions: HashSet<_> = self
             .files
@@ -2616,14 +2579,12 @@ impl Index {
         let unresolved =
             segments::prune_transitive_predecessors(&mut predecessors, &components, 1_000_000);
         let ordered_totals: Vec<_> = snapshot.events.iter().map(|event| event.total).collect();
-        seen.clear();
-        seen.extend(
-            snapshot
-                .events
-                .iter()
-                .enumerate()
-                .map(|(position, event)| (event.id, position)),
-        );
+        let mut seen: HashMap<_, _> = snapshot
+            .events
+            .iter()
+            .enumerate()
+            .map(|(position, event)| (event.id, position))
+            .collect();
         let mut continuation_starts = vec![false; snapshot.events.len()];
         let mut independent_starts = vec![false; snapshot.events.len()];
         let mut external_baselines = HashMap::new();
@@ -2875,6 +2836,126 @@ impl Index {
                 }
             }
         }
+        seen
+    }
+
+    fn update(&mut self, home: &Path) -> Snapshot {
+        let request_log = codex_plus_core::request_log::request_log_path();
+        self.update_with_request_log(home, &request_log)
+    }
+
+    fn update_with_request_log(&mut self, home: &Path, request_log: &Path) -> Snapshot {
+        let started = Instant::now();
+        let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
+        let mut snapshot = Snapshot::default();
+        let mut cache_available = true;
+        let mut cache_opened = false;
+        match self
+            .provider_cache
+            .open(self.storage_dir.as_deref().unwrap_or(home), cutoff)
+        {
+            Ok(true) => {
+                cache_opened = true;
+                self.native_cache_loaded = false;
+                self.native_cache_version = None;
+                // refresh 会在路径变化时清空请求缓存，必须先建立路径再恢复落盘证据。
+                self.request_evidence.refresh(request_log);
+                match self.provider_cache.load_verified(cutoff) {
+                    Ok(records) => self.request_evidence.restore_verified(records),
+                    Err(_) => cache_available = false,
+                }
+            }
+            Ok(false) => cache_opened = true,
+            Err(_) => cache_available = false,
+        }
+        if cache_opened && self.sync_native_evidence(cutoff).is_err() {
+            self.native_cache_loaded = false;
+            self.native_cache_version = None;
+            cache_available = false;
+        }
+        // 加载器会跳过无效条目；仅比较加载后的数量无法证明 LIMIT 未截断。
+        if cache_available {
+            cache_available = native_endpoints::cache_below_limit(
+                self.storage_dir.as_deref().unwrap_or(home),
+                cutoff,
+            )
+            .unwrap_or(false);
+        }
+        snapshot.aliases = self.provider_cache.aliases.clone();
+        let mut current_aliases = BTreeMap::new();
+        let settings = self
+            .settings_path
+            .clone()
+            .unwrap_or_else(codex_plus_core::paths::default_settings_path);
+        let stamp = native_endpoints::config_stamp(&settings);
+        if self.provider_stamp.as_ref() != Some(&stamp) {
+            self.provider_endpoints.clear();
+            self.provider_names.clear();
+            self.provider_endpoint_since = 0;
+            self.provider_stamp = None;
+            if let Ok(profiles) = native_endpoints::profiles(&settings)
+                && native_endpoints::config_stamp(&settings) == stamp
+            {
+                self.provider_endpoints = native_endpoints::endpoints(&profiles);
+                self.provider_endpoint_since = self
+                    .provider_cache
+                    .endpoint_binding_since(&self.provider_endpoints)
+                    .unwrap_or_else(|_| Local::now().timestamp_millis());
+                self.provider_names = profiles
+                    .into_iter()
+                    .map(|name| (name.id, name.name))
+                    .collect();
+                self.provider_stamp = Some(stamp);
+            }
+        }
+        snapshot.provider_names = self.provider_names.clone();
+        let paths = discover(home, self.files.is_empty(), &mut snapshot.errors);
+        let existing: HashSet<_> = paths.iter().cloned().collect();
+        self.files.retain(|path, _| existing.contains(path));
+        let mut budget = index_budget::Budget::new(self.files.values());
+        for path in paths {
+            snapshot.files += 1;
+            snapshot.compressed += usize::from(path.extension().is_some_and(|ext| ext == "zst"));
+            let state = self.files.entry(path.clone()).or_default();
+            state.bytes_read = 0;
+            let previous_usage = index_budget::Usage::of(state);
+            budget.replace(previous_usage, index_budget::Usage::default());
+            match state.read_with_budget(&path, cutoff, &mut budget) {
+                Err(_) => {
+                    snapshot.errors += 1;
+                    // 下次从有效文件头重试，不能让失败的解压流留下错误累计基线。
+                    *state = FileState::default();
+                }
+                Ok(true) => snapshot.indexed += 1,
+                Ok(false) => snapshot.errors += 1,
+            }
+            budget.replace(
+                index_budget::Usage::default(),
+                index_budget::Usage::of(state),
+            );
+            snapshot.issues += state.issues;
+            snapshot.activity_truncated |= state.activity_truncated;
+            snapshot.bytes_read += state.bytes_read;
+        }
+        let observed_collisions = self.observed_collisions();
+        let collision_identity_available = match self
+            .provider_cache
+            .event_collisions(&observed_collisions, cutoff)
+        {
+            Ok(collisions) => {
+                self.collision_families = collisions;
+                true
+            }
+            Err(_) => {
+                cache_available = false;
+                self.collision_families
+                    .extend(observed_collisions.keys().copied());
+                false
+            }
+        };
+        self.apply_collision_ids();
+        self.select_observations(cutoff, &mut snapshot, &mut current_aliases, MAX_EVENTS);
+        let seen = self.resolve_counts(&mut snapshot);
         let scan_complete = snapshot.errors == 0 && snapshot.issues == 0;
         let count_cache_has_room = self.native_evidence.observe_count_conflicts(
             &mut snapshot.events,
@@ -3105,6 +3186,28 @@ impl Index {
 }
 
 impl FileState {
+    fn expire_observations(&mut self, cutoff: NaiveDate) {
+        let events_before = self.events.len();
+        self.events.retain(|event| {
+            if event.date >= cutoff {
+                return true;
+            }
+            if let Some(position) = event.rollout_position
+                && self
+                    .expired_count
+                    .is_none_or(|(previous, _)| position > previous)
+            {
+                self.expired_count = Some((position, event.total));
+            }
+            false
+        });
+        if self.events.len() < events_before
+            && self.events.capacity() > self.events.len().saturating_mul(2).max(16)
+        {
+            self.events.shrink_to_fit();
+        }
+    }
+
     fn inherited_context(&mut self, ordinal: u64) -> &mut InheritedUsageContext {
         if self.inherited_contexts.is_empty() {
             self.inherited_contexts.push(InheritedUsageContext {
@@ -3151,19 +3254,19 @@ impl FileState {
         cutoff: NaiveDate,
         budget: &mut index_budget::Budget,
     ) -> io::Result<bool> {
-        let before = fs::symlink_metadata(path)?;
-        if !before.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "rollout path changed",
-            ));
-        }
-        let observed = (
-            before.len(),
-            before.modified().ok(),
-            observed_file_identity(path, &before)?,
-        );
-        let unchanged = self.stamp == Some(observed) && self.reader.is_none();
+        self.read_source_batch(path, cutoff, budget)
+            .map(|(complete, _)| complete)
+    }
+
+    fn read_source_batch(
+        &mut self,
+        path: &Path,
+        cutoff: NaiveDate,
+        budget: &mut index_budget::Budget,
+    ) -> io::Result<(bool, bool)> {
+        let observed = Self::source_stamp(path)?;
+        let unchanged =
+            self.stamp == Some(observed) && self.reader.is_none() && !self.resume_pending;
         let mut file = if unchanged {
             None
         } else {
@@ -3189,25 +3292,7 @@ impl FileState {
             observed
         };
         let compressed = path.extension().is_some_and(|ext| ext == "zst");
-        let events_before = self.events.len();
-        self.events.retain(|event| {
-            if event.date >= cutoff {
-                return true;
-            }
-            if let Some(position) = event.rollout_position
-                && self
-                    .expired_count
-                    .is_none_or(|(previous, _)| position > previous)
-            {
-                self.expired_count = Some((position, event.total));
-            }
-            false
-        });
-        if self.events.len() < events_before
-            && self.events.capacity() > self.events.len().saturating_mul(2).max(16)
-        {
-            self.events.shrink_to_fit();
-        }
+        self.expire_observations(cutoff);
         let tools_before = self.tools.len();
         self.tools.retain(|tool| tool.date >= cutoff);
         if self.tools.len() < tools_before
@@ -3241,32 +3326,30 @@ impl FileState {
             0
         };
         meter.refresh(self, cursor_bytes);
-        if self.stamp == Some(stamp) && self.reader.is_none() {
-            return Ok(self.pending.is_empty() && !self.skipping);
+        if self.stamp == Some(stamp) && self.reader.is_none() && !self.resume_pending {
+            return Ok((self.pending.is_empty() && !self.skipping, false));
         }
-        if self.stamp.is_some_and(|old| {
-            old != stamp
-                && (compressed
-                    || self.invalid_counts
-                    || old.0 > stamp.0
-                    || old.2 != stamp.2
-                    || old.0 == stamp.0 && old.1 != stamp.1)
-        }) {
+        let replaced = self.source_replaced(stamp, compressed);
+        if replaced {
             *self = Self::default();
             meter = index_budget::Meter::new(self);
             meter.refresh(self, 0);
         }
         if self.reader.is_none() {
             if !budget.can_open(self) {
-                return Ok(false);
+                return Ok((false, replaced));
             }
             let mut file = file
                 .take()
                 .ok_or_else(|| io::Error::other("missing rollout reader"))?;
             if !compressed {
                 file.seek(SeekFrom::Start(self.offset))?;
+            } else if self.resume_pending {
+                // 重开压缩流须跳过已提交的解压字节，但不重放计数。
+                self.replay_remaining = self.offset;
             }
             self.reader = Some(index_budget::ReadCursor::new(file, compressed)?);
+            self.resume_pending = false;
             self.retained_charge += index_budget::CURSOR_BYTES;
         }
         self.stamp = Some(stamp);
@@ -3276,6 +3359,25 @@ impl FileState {
         let result = (|| -> io::Result<bool> {
             let input = &mut cursor.input;
             loop {
+                if self.replay_remaining != 0 {
+                    let limit = budget.read_limit(self);
+                    if limit == 0 {
+                        return Ok(false);
+                    }
+                    let bytes = input.fill_buf()?;
+                    if bytes.is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "compressed rollout ended before its committed cursor",
+                        ));
+                    }
+                    let length = self.replay_remaining.min(bytes.len().min(limit) as u64);
+                    input.consume(length as usize);
+                    self.replay_remaining -= length;
+                    self.bytes_read += length;
+                    budget.charge_read(length as usize);
+                    continue;
+                }
                 if self.pending.last() == Some(&b'\n') {
                     if !self.accept_pending_line(cutoff, budget, &mut meter) {
                         return Ok(false);
@@ -3335,7 +3437,7 @@ impl FileState {
             // WouldBlock 是输入预算耗尽，不是损坏流；保留解压器内部状态供下轮续读。
             Err(ref error) if error.kind() == io::ErrorKind::WouldBlock => {
                 self.reader = Some(cursor);
-                Ok(false)
+                Ok((false, replaced))
             }
             Ok(false) => {
                 if waiting_for_append {
@@ -3343,7 +3445,7 @@ impl FileState {
                 } else {
                     self.reader = Some(cursor);
                 }
-                Ok(false)
+                Ok((false, replaced))
             }
             other => {
                 if self.pending.is_empty() {
@@ -3359,9 +3461,39 @@ impl FileState {
                     self.inherited_contexts.shrink_to_fit();
                 }
                 meter.refresh(self, 0);
-                other
+                other.map(|complete| (complete, replaced))
             }
         }
+    }
+
+    fn source_stamp(path: &Path) -> io::Result<(u64, Option<SystemTime>, Option<(u64, u64)>)> {
+        let metadata = fs::symlink_metadata(path)?;
+        if !metadata.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "rollout path changed",
+            ));
+        }
+        Ok((
+            metadata.len(),
+            metadata.modified().ok(),
+            observed_file_identity(path, &metadata)?,
+        ))
+    }
+
+    fn source_replaced(
+        &self,
+        stamp: (u64, Option<SystemTime>, Option<(u64, u64)>),
+        compressed: bool,
+    ) -> bool {
+        self.stamp.is_some_and(|old| {
+            old != stamp
+                && (compressed
+                    || self.invalid_counts
+                    || old.0 > stamp.0
+                    || old.2 != stamp.2
+                    || old.0 == stamp.0 && old.1 != stamp.1)
+        })
     }
 
     fn accept_pending_line(
@@ -4173,17 +4305,26 @@ fn usage_provider<'a>(
 
 impl Snapshot {
     fn collect_scope_parents<'a>(&mut self, files: impl Iterator<Item = &'a FileState>) {
+        self.collect_scope_candidates(files.filter_map(|file| {
+            file.scope_parent_candidates
+                .get(&file.session)
+                .map(|parents| (file.session.as_str(), parents))
+        }));
+    }
+
+    fn collect_scope_candidates<'a>(
+        &mut self,
+        candidates_by_source: impl Iterator<Item = (&'a str, &'a HashSet<Option<String>>)>,
+    ) {
         let mut candidates: BTreeMap<String, HashSet<Option<String>>> = BTreeMap::new();
-        for file in files {
-            if let Some(parents) = file.scope_parent_candidates.get(&file.session) {
-                let entries = candidates.entry(file.session.clone()).or_default();
-                for parent in parents {
-                    entries.insert(
-                        parent
-                            .as_ref()
-                            .map(|id| self.aliases.get(id).unwrap_or(id).clone()),
-                    );
-                }
+        for (session, parents) in candidates_by_source {
+            let entries = candidates.entry(session.to_owned()).or_default();
+            for parent in parents {
+                entries.insert(
+                    parent
+                        .as_ref()
+                        .map(|id| self.aliases.get(id).unwrap_or(id).clone()),
+                );
             }
         }
         let parents: BTreeMap<String, String> = candidates
@@ -4222,12 +4363,8 @@ impl Snapshot {
         }
     }
 
-    fn scoped_usage(&self, session: &str, query: &Query, bounds: Option<(i64, i64)>) -> Value {
-        let session = self
-            .aliases
-            .get(session)
-            .map(String::as_str)
-            .unwrap_or(session);
+    fn scope_members<'a>(&'a self, requested: &'a str) -> (&'a str, HashSet<String>) {
+        let session = self.aliases.get(requested).map_or(requested, String::as_str);
         let mut sessions = HashSet::new();
         if self.sessions.contains(session) {
             sessions.insert(session.to_owned());
@@ -4244,15 +4381,12 @@ impl Snapshot {
                 }
             }
         }
-        let mut ids: Vec<_> = sessions
-            .iter()
-            .filter(|id| id.as_str() != session)
-            .cloned()
-            .collect();
-        ids.sort();
-        if sessions.contains(session) {
-            ids.insert(0, session.to_owned());
-        }
+        (session, sessions)
+    }
+
+    fn scoped_usage(&self, requested: &str, query: &Query, bounds: Option<(i64, i64)>) -> Value {
+        let (session, sessions) = self.scope_members(requested);
+        let ids = ordered_scope_ids(session, &sessions);
         json!({"sessionId":session,"sessionIds":ids,"days":self.usage_days(query, bounds, Some(&sessions))})
     }
 
@@ -4274,7 +4408,7 @@ impl Snapshot {
         let mut day_proofs = BTreeMap::<NaiveDate, Sha256>::new();
         let mut breakdown_proofs = BTreeMap::<
             (NaiveDate, String, String, String, bool, bool),
-            (Sha256, bool, bool, bool),
+            (Sha256, ClassificationEvidence),
         >::new();
         let mut ordered_events: Vec<_> = self.events.iter().collect();
         ordered_events.sort_unstable_by_key(|event| event.id);
@@ -4324,19 +4458,12 @@ impl Snapshot {
                 priceable.add(event.delta);
             }
             event.update_membership_digest(day_proofs.entry(event.date).or_default());
-            let (digest, exact, request_proof, supplier_proof) = breakdown_proofs
+            let evidence = ClassificationEvidence::of(event);
+            let (digest, _) = breakdown_proofs
                 .entry(key)
-                .or_insert_with(|| (Sha256::new(), true, false, true));
+                .and_modify(|(_, shared)| *shared = shared.intersect(evidence))
+                .or_insert_with(|| (Sha256::new(), evidence));
             event.update_membership_digest(digest);
-            *exact &= !event.context_conflicts.any()
-                && matches!(
-                    event.provider_source.as_deref(),
-                    Some("upstream-exact-bidirectional" | "request-log-exact")
-                );
-            *request_proof |= event.provider_source.as_deref() == Some("request-log-exact");
-            *supplier_proof &= !event.context_conflicts.any()
-                && event.provider_source.as_deref()
-                    == Some("upstream-counter-bidirectional-supplier-only");
         }
         days.into_iter()
             .map(|(date, aggregate)| {
@@ -4380,25 +4507,10 @@ impl Snapshot {
                                 if *provider_conflict {
                                     row["providerConflict"] = json!(true);
                                 }
-                                if let Some((digest, exact, request_proof, supplier_proof)) =
-                                    breakdown_proofs.get(key)
-                                {
+                                if let Some((digest, evidence)) = breakdown_proofs.get(key) {
                                     row["membershipFingerprint"] =
                                         json!(format!("{:x}", digest.clone().finalize()));
-                                    if *exact {
-                                        row["classificationEvidence"] = json!(if *request_proof {
-                                            "request-log-exact"
-                                        } else {
-                                            "upstream-exact-bidirectional"
-                                        });
-                                    }
-                                    if *supplier_only {
-                                        row["supplierClassificationEvidence"] =
-                                            json!(REQUEST_SUPPLIER_PROOF);
-                                    } else if *supplier_proof {
-                                        row["supplierClassificationEvidence"] =
-                                            json!("upstream-counter-bidirectional-supplier-only");
-                                    }
+                                    evidence.write_to(&mut row);
                                 }
                                 row
                             }
@@ -4497,6 +4609,12 @@ impl Snapshot {
         }
         response
     }
+}
+
+fn ordered_scope_ids<'a>(session: &str, sessions: &'a HashSet<String>) -> Vec<&'a str> {
+    let mut ids: Vec<_> = sessions.iter().map(String::as_str).collect();
+    ids.sort_unstable_by(|a, b| (a != &session, a).cmp(&(b != &session, b)));
+    ids
 }
 
 #[cfg(test)]
