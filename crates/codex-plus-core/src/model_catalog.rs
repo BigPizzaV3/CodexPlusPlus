@@ -197,6 +197,7 @@ fn runtime_context_value(home: &Path) -> anyhow::Result<Value> {
         .transpose()?;
     let mut contexts = Map::new();
     let mut effective_windows = Map::new();
+    let mut effective_window_percents = Map::new();
     for model in models {
         let slug = model.get("slug").and_then(Value::as_str)
             .ok_or_else(|| anyhow::anyhow!("受管运行时模型目录缺少模型 slug"))?;
@@ -214,9 +215,15 @@ fn runtime_context_value(home: &Path) -> anyhow::Result<Value> {
             .filter(|percent| (1..=100).contains(percent))
         {
             effective_windows.insert(slug.to_string(), json!(((window as i128 * percent as i128) / 100) as i64));
+            effective_window_percents.insert(slug.to_string(), json!(percent));
         }
     }
-    Ok(json!({ "status": "ok", "models": contexts, "effectiveWindows": effective_windows }))
+    Ok(json!({
+        "status": "ok",
+        "models": contexts,
+        "effectiveWindows": effective_windows,
+        "effectiveWindowPercents": effective_window_percents,
+    }))
 }
 
 #[cfg(test)]
@@ -318,6 +325,7 @@ mod runtime_context_tests {
             // 原生 auto compact 基于原始窗口；95% 只影响可用上下文，不重复打折。
             assert_eq!(context["models"]["model-a"]["model_auto_compact_token_limit"], 117964);
             assert_eq!(context["models"]["model-b"]["model_auto_compact_token_limit"], 100000);
+            assert_eq!(context["effectiveWindowPercents"], json!({ "model-a": 95 }));
             assert_eq!(context["effectiveWindows"], json!({ "model-a": 124518 }));
         }
     }

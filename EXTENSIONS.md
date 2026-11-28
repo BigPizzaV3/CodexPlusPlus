@@ -962,6 +962,27 @@ codexPlus.extension({ inject: ["metrics"], apply(ctx) { ctx.metrics.record("open
   `codexpp.proxyStatus`（请求状态条提供，`requests()` 最近的代理请求、`fetch()` 立即问一次）。这两个服务随提供它的拓展包启停，
   要自己画界面又不想依赖它们，可以直接调白名单路由 `/thread-usage-live`、`/proxy-status`。`codexPlus.services()` 列出当前已提供的服务与提供方。
 
+#### 会话上下文窗口
+
+页面拓展可通过 `inject: { sessionContext: { required: false } }` 和
+`ctx.get("sessionContext")` 使用此内置服务。旧版宿主不提供它。
+
+- `read()` 同步读当前所选的本地模型和窗口；`refresh()` 先刷新受管模型目录，读取失败时抛错。当前通过原生模型选择器的
+  显示标签匹配模型；Codex 界面改版后可能暂时无法识别。远端会话、目录外模型或无法唯一识别的选项返回 `null`。
+  快照中的 `model` 是完整的模型 ID，不是显示标签 `label`；新会话尚无 `threadId` 时只能读。
+- `defaultWindow` 是目录配置的窗口，`override` 是本会话和模型的覆盖值（默认 `null`），`config` 是实际用于启动会话的窗口与压缩阈值，
+  `effectiveWindow` 是按模型可用比例计算的 token 数，可用于用量展示；目录未给比例时显示配置窗口。
+- `set(threadId, model, tokens)` 只允许写当前本机会话所选模型。无固定上限的受管目录接受 8,000 至 2,000,000 的整数
+  token 数，传 `null` 恢复默认。仍声明 `max_context_window` 固定上限的旧目录不支持写入，不尝试绕过原生上限。
+  不更改供应商配置或其它会话。返回 `{ status: "applied" }` 表示已恢复会话，`"unchanged"` 表示无需恢复，
+  `"deferred"` 表示正在回复或尚无历史，将在后续发送前应用。不可用或恢复失败时拒绝 Promise，并撤回本次覆盖变更。
+  临时会话不支持写入。
+- `ctx.on("sessionContext/changed", handler)` 在目录变化、保存或重置时通知拓展重读。切换模型后应重新读取所选模型。
+- 覆盖保存在当前 Codex 页面配置的 `localStorage` 中，按会话 ID 和完整模型 ID 隔离，随该页面配置保留，不同步到其他设备。
+  恢复默认时删除对应项；从最后一次保存起保留 90 天，使用会话不会自动续期。到期后回到供应商默认窗口，再次保存可续期。
+  保存或重置时清理过期和无效项，最多保留最近保存的 256 项。
+  停用拓展不会清除已有覆盖；需要恢复默认时先重置，或清除对应页面配置的本地存储。
+
 #### 后台提供的服务（跨进程）
 
 常驻后台也能提供服务，页面、其它后台、模型工具、钩子都按名字调用，调用都落到同一个后台进程：

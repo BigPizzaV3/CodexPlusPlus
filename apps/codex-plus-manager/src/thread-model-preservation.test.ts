@@ -604,6 +604,7 @@ describe("settings-driven catalog refresh ownership", () => {
       }),
       codexPlusModelPickerCatalogChanged() {}, renderCodexPlusMenu() {}, scheduleCodexModelWhitelistRefresh() {},
       syncCodexPlusGroupModelQueries() {},
+      codexPlusEmitExtensionEvent() {},
       sendCodexPlusDiagnostic() {},
     });
     context.window.__codexPlusModelCatalogRuntime = runtime;

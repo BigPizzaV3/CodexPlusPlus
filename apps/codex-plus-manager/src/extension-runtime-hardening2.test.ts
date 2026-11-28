@@ -98,6 +98,7 @@ function harness(options: { manifest?: unknown; bridge?: (path: string, payload:
     installCodexPlusCommandHandlers: () => {},
     markCodexPlusExtensionNode: () => {},
     codexPlusCurrentSessionId: () => "",
+    codexSessionContextService: () => ({}),
     codexPlusRegisterExtensionSidePanel: () => () => {},
     codexPlusRegisterExtensionSlot: () => () => {},
   };

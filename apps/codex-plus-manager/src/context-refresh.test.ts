@@ -26,6 +26,19 @@ function runtime() {
     sandbox: { type: "workspaceWrite", writableRoots: ["C:/data"], networkAccess: true,
       excludeTmpdirEnvVar: true, excludeSlashTmp: false },
   };
+  const storage = new Map<string, string>();
+  const storageApi = {
+    get length() { return storage.size; },
+    key: (index: number) => [...storage.keys()][index],
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+    removeItem: (key: string) => storage.delete(key),
+  };
+  const view = { id: "thread", label: "Selected", host: "local", placement: "thread" };
+  const trigger = { getBoundingClientRect: () => ({ width: 80 }), querySelector: () => ({ textContent: view.label }) };
+  const composer = { getBoundingClientRect: () => ({ width: 300 }), querySelectorAll: () => [trigger],
+    getAttribute: () => view.placement };
+  const events: string[] = [];
   const send = async (method: string, params: any, options: any) => {
     calls.push({ method, params, options });
     if (state.fail === method && (method !== "thread/resume" || params.config)) throw new Error("fixture failure");
@@ -36,7 +49,18 @@ function runtime() {
     return {};
   };
   const context = vm.createContext({
-    window: { __codexSessionDeleteBridge: {} }, Map, Set,
+    window: { __codexSessionDeleteBridge: {}, localStorage: storageApi }, Map, Set,
+    document: {
+      querySelectorAll: () => [composer],
+      querySelector: () => ({ getAttribute: () => view.host }),
+    },
+    codexPlusCurrentSessionId: () => view.id,
+    codexPlusModelMetadata: () => null,
+    codexPlusModelPickerNativeLabelKey: (label: string) => label.toLowerCase(),
+    codexPlusEmitExtensionEvent: (event: string) => events.push(event),
+    codexPlusRpcSerializeTurn: (_thread: string, run: () => any) => run(),
+    codexPlusAppServerClient: () => ({ hostId: "local" }),
+    codexPlusRpcContextSendRequest: () => send,
     codexRemoteSessionActiveProfile: () => state.profileEnabled ? { relayMode: state.relayMode } : null,
     codexModelCatalog: { get runtimeContext() { return state.runtime; } },
     loadCodexModelCatalog: async () => ({ model: "selected", runtimeContext: state.runtime }),
@@ -48,15 +72,144 @@ function runtime() {
     sendCodexPlusDiagnostic() {},
   });
   vm.runInContext(reload + helpers
-    + "\nglobalThis.api = { prepare: prepareCodexThreadContextStart, note: noteCodexThreadRuntimeContext, refresh: refreshCodexThreadModelBeforeTurn };", context);
+    + "\nglobalThis.api = { prepare: prepareCodexThreadContextStart, note: noteCodexThreadRuntimeContext, refresh: refreshCodexThreadModelBeforeTurn, session: codexSessionContextService() };", context);
   const api = context.api;
   const client = { hostId: "local" };
   const turn = { threadId: "thread", collaborationMode: { settings: { model: "selected", reasoning_effort: "max" } } };
   const refresh = () => api.refresh(client, send, "turn/start", turn, { clientUserMessageId: "user-message" });
-  return { api, context, calls, state, snapshot, send, client, turn, refresh };
+  return { api, context, calls, state, snapshot, send, client, turn, refresh, view, events, storage };
 }
 
 describe("runtime context refresh", () => {
+  it("sets and resets only the selected local thread and model, without inheriting on fork", async () => {
+    const env = runtime();
+    const session = env.api.session;
+    env.state.runtime.effectiveWindowPercents = { selected: 95 };
+    env.state.runtime.effectiveWindows = { selected: 124518 };
+    assert.equal(session.read().defaultWindow, 131072);
+    assert.equal(session.read().effectiveWindow, 124518);
+    assert.equal((await session.set("thread", "selected", 200000)).status, "applied");
+    assert.equal(session.read().effectiveWindow, 190000);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 200000);
+    assert.equal(env.calls.at(-1)!.params.config.model_auto_compact_token_limit, 179998);
+    const fork = await env.api.prepare("thread/fork", { threadId: "thread", model: "selected" }, "local");
+    assert.equal(fork.config.model_context_window, 131072);
+    env.view.label = "Other";
+    assert.equal(session.read().config.model_context_window, 65536);
+    await assert.rejects(session.set("thread", "selected", 250000), /已切换/);
+    env.view.label = "Selected";
+    env.view.id = "other-thread";
+    assert.equal(session.read().override, null);
+    env.view.id = "thread";
+    env.view.host = "remote";
+    assert.equal(session.read(), null);
+    env.view.host = "local";
+    env.view.placement = "home";
+    assert.equal(session.read().threadId, "");
+    await assert.rejects(session.set("", "selected", 250000), /已切换/);
+    env.view.placement = "thread";
+    env.state.runtime.models.selected = { model_context_window: 262144, model_auto_compact_token_limit: 235928 };
+    env.state.runtime.effectiveWindows.selected = 249036;
+    env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 190000]]);
+    env.calls.length = 0;
+    assert.equal(session.read().defaultWindow, 262144);
+    assert.equal(session.read().override, 200000);
+    assert.equal(await env.refresh(), null, "a matching native override must not reload on provider changes");
+    assert.equal(env.calls.length, 0);
+    await session.set("thread", "selected", null);
+    assert.equal(env.storage.size, 0);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 262144);
+    assert.equal(session.read().effectiveWindow, 249036);
+    assert.deepEqual(env.events, ["sessionContext/changed", "sessionContext/changed"]);
+  });
+
+  it("keeps display fallback separate from native stale-window detection", async () => {
+    const env = runtime();
+    const session = env.api.session;
+    await env.refresh();
+    env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 124518]]);
+    env.calls.length = 0;
+    assert.equal(session.read().effectiveWindow, 131072);
+    assert.equal(await env.refresh(), null);
+    assert.equal(env.calls.length, 0, "an unspecified percentage cannot trigger a mismatch");
+    assert.equal((await session.set("thread", "selected", 200000)).status, "applied");
+    env.context.window.__codexPlusObservedContextWindows.set("thread", 190000);
+    env.calls.length = 0;
+    assert.equal((await session.set("thread", "selected", 200000)).status, "unchanged");
+    assert.deepEqual(env.calls.map((call) => call.method), ["thread/read"]);
+    env.state.ephemeral = true;
+    await assert.rejects(session.set("thread", "selected", 200000), /临时会话/);
+  });
+
+  it("does not interrupt a running turn and rolls back a failed edit", async () => {
+    const env = runtime();
+    const session = env.api.session;
+    env.state.status = "active";
+    assert.equal((await session.set("thread", "selected", 250000)).status, "deferred");
+    assert.deepEqual(env.calls.map((call) => call.method), ["thread/read"]);
+    env.state.status = "idle";
+    assert.equal(await env.refresh(), true);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 250000);
+    env.state.fail = "thread/read";
+    await assert.rejects(session.set("thread", "selected", null), /fixture failure/);
+    assert.equal(session.read().override, 250000);
+    env.state.fail = "";
+    env.state.runtime = { status: "failed", message: "fixture catalog unavailable" };
+    await assert.rejects(session.refresh(), /fixture catalog unavailable/);
+    assert.equal(session.read(), null);
+  });
+
+  it("validates the editable range and reports unsupported writes instead of success", async () => {
+    const env = runtime();
+    const session = env.api.session;
+    for (const value of [1, 7999, 2000000.1, 2000001, Number.MAX_SAFE_INTEGER]) {
+      await assert.rejects(session.set("thread", "selected", value), /8K 至 2M/);
+    }
+    assert.equal(env.storage.size, 0);
+    assert.equal(env.calls.length, 0);
+    assert.equal((await session.set("thread", "selected", 8000)).status, "applied");
+    assert.equal((await session.set("thread", "selected", 2000000)).status, "applied");
+    env.context.window.__codexSessionDeleteBridge = undefined;
+    await assert.rejects(session.set("thread", "selected", 8000), /未启用/);
+    env.context.window.__codexSessionDeleteBridge = {};
+    env.state.runtime = { status: "unsupported", message: "fixed catalog ceiling" };
+    await assert.rejects(session.set("thread", "selected", 2000000), /已切换/);
+    await assert.rejects(session.refresh(), /fixed catalog ceiling/);
+    assert.equal(env.storage.size, 1);
+  });
+
+  it("defers an edit on a thread with no persisted history", async () => {
+    const env = runtime();
+    env.state.turns = 0;
+    assert.equal((await env.api.session.set("thread", "selected", 250000)).status, "deferred");
+    assert.deepEqual(env.calls.map((call) => call.method), ["thread/read", "thread/turns/list"]);
+    assert.equal(env.api.session.read().override, 250000);
+  });
+
+  it("ignores undated and expired overrides and bounds storage", async () => {
+    const env = runtime();
+    const session = env.api.session;
+    const key = 'codex-plus:thread-context:["thread","selected"]';
+    const now = Date.now();
+    env.storage.set(key, "400000");
+    assert.equal(session.read().override, null);
+    env.storage.set(key, `400000:${now - 90 * 86400000}`);
+    assert.equal(session.read().override, null);
+    env.storage.set("unrelated", "keep");
+    for (let index = 0; index < 256; index++) {
+      env.storage.set(`codex-plus:thread-context:["other-${index}","selected"]`, `400000:${now - index - 1}`);
+    }
+    env.storage.set('codex-plus:thread-context:["expired","selected"]', `400000:${now - 91 * 86400000}`);
+    env.storage.set('codex-plus:thread-context:["undated","selected"]', "400000");
+    await session.set("thread", "selected", 200000);
+    assert.equal(env.storage.size, 257);
+    assert.equal(env.storage.get("unrelated"), "keep");
+    assert.equal(env.storage.has('codex-plus:thread-context:["expired","selected"]'), false);
+    assert.equal(env.storage.has('codex-plus:thread-context:["undated","selected"]'), false);
+    assert.equal(env.storage.has('codex-plus:thread-context:["other-255","selected"]'), false);
+    assert.equal(session.read().override, 200000);
+  });
+
   it("configures a fresh thread before its first turn without unloading it", async () => {
     const env = runtime();
     const params = await env.api.prepare("thread/start", { model: "selected", config: { unrelated: true } }, "local");

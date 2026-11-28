@@ -118,7 +118,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1821
+      "lines": 1961
     },
     {
       "name": "71-model-picker-groups.js",
@@ -178,12 +178,12 @@
     {
       "name": "91-extension-runtime.js",
       "description": "拓展运行时内核 codexPlus.extension：实例寿命、自动撤销、事件总线与 waterfall 中间件",
-      "lines": 1613
+      "lines": 1616
     },
     {
       "name": "91-extension-rpc.js",
       "description": "拓展 RPC 层拦截：按 capnweb 帧接 agent/pre-step、agent/request 与 codex/request",
-      "lines": 1134
+      "lines": 1137
     },
     {
       "name": "92-extension-host.js",
