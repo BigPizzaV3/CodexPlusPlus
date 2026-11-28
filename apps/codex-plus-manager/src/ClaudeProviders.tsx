@@ -2,12 +2,11 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ChevronRight, Download, Layers3, Plus } from "lucide-react";
 import { appConfirm } from "./app-dialog";
-import { CxBadge, CxCard, CxEmpty, CxLoading, CxRow, CxSection } from "./cx-layout";
+import { CxBadge, CxBanner, CxCard, CxEmpty, CxLoading, CxRow, CxSection } from "./cx-layout";
 import { AgentDisconnectDialog } from "./AgentDisconnectDialog";
 import { ConnectionModeSwitch, type CodexConnectionMode } from "./CodexConnectionMode";
 import type { PoolProviderDialogState } from "./CodexPoolEditHost";
 import { AgentModelPicker } from "./GatewayAgents";
-import { AgentGlyph } from "./hub-shared";
 import { Menu, MenuItem, MenuSeparator } from "./ManagementPages";
 import { TopbarActions } from "./TopbarActions";
 import { ProviderAdder } from "./GatewayProviders";
@@ -129,23 +128,25 @@ export function ClaudeProviders({
   const mode: CodexConnectionMode = isCode && claudeCode ? viewMode : "aggregate";
 
   const directPoolId = isCode && codeMode === "direct" ? claudeCode?.directPoolProvider ?? null : null;
-  const directEntry = directPoolId ? allPool.find((entry) => entry.id === directPoolId) : undefined;
-  // 直连时点「聚合」且当前没有任何可用模型时，先把模型下拉亮出来。
-  const [pickingAggregate, setPickingAggregate] = useState(false);
   // 极端情况无法自动断开时兜底弹出的断开预览对话框。
   const [directTarget, setDirectTarget] = useState<"restore" | { id: string; name: string } | null>(null);
 
-  const claudeCodeDetail = !claudeCode
-    ? t("正在读取…")
-    : claudeCode.drift
-      ? claudeCode.drift.by ? tf("配置被 {0} 改掉了，没有经过本地服务", [claudeCode.drift.by]) : t("配置被别的工具改掉了，没有经过本地服务")
-      : claudeCode.enabled && mode === "direct"
-        ? t("当前仍经本地服务运行；在上方任选一家点「使用」即可切到直连")
-        : claudeCode.enabled
-          ? t("聚合：经本地服务用上面打开的供应商，OpenAI 协议的自动转换；需要 Codex++ 在后台运行")
-          : directEntry
-            ? tf("直连 {0}：不经 Codex++，关掉 Codex++ 也能用；换一家在上面点「使用」", [directEntry.name])
-            : t("直连：用它自己的 ~/.claude/settings.json，不经 Codex++；上方切到「直连」后可任选一家点「使用」");
+  // 默认模型和 Codex 页一样放在「供应商」标题行右侧，跟在「聚合 / 直连」后面；直连视图不显示（直连用的是那一家自己的模型）。
+  const showModelPicker = isCode ? Boolean(claudeCode) && mode === "aggregate" : true;
+  // 页面上没列出来的供应商（别的 Agent 的）：默认模型的候选也不列，和 Codex 页一致。
+  const hiddenProviders = allPool.filter((entry) => !pool.includes(entry)).map((entry) => entry.id);
+  // 只在有话要说时在列表上方给一条提示：没装 Claude Code、配置被别的工具改掉。
+  const claudeCodeNotice = !isCode || !payload
+    ? null
+    : !claudeCode
+      ? { tone: "info" as const, title: t("未检测到本机 Claude Code"), detail: t("安装后即可在这里选择默认模型或切换直连 / 聚合。") }
+      : claudeCode.drift
+        ? {
+          tone: "warn" as const,
+          title: claudeCode.drift.by ? tf("配置被 {0} 改掉了，没有经过本地服务", [claudeCode.drift.by]) : t("配置被别的工具改掉了，没有经过本地服务"),
+          detail: claudeCode.drift.endpoint ? tf("现在连的是 {0}", [claudeCode.drift.endpoint]) : undefined,
+        }
+        : null;
 
   /** Claude Code 改为聚合：沿用上次默认模型；没选过或已失效时自动挑第一个可用模型，一步切过去。 */
   const connectCodeAggregate = async () => {
@@ -157,14 +158,12 @@ export function ClaudeProviders({
     }
     const error = draft.model.trim() ? validateDraft(draft, payload, undefined, null) : null;
     if (!draft.model.trim() || error) {
-      setPickingAggregate(true);
+      // 切到聚合视图：标题行的默认模型下拉随之出现，先在那里挑一个。
       setViewMode("aggregate");
       void notify(t("还不能切到聚合"), error ? t(error) : t("先打开至少一家带模型的供应商，再切到聚合。"), "warning");
       return;
     }
-    if (await run("code:aggregate", "save_gateway_binding", { agent: CODE, binding: bindingFromDraft(draft, binding) }, t("保存本地服务绑定"))) {
-      setPickingAggregate(false);
-    }
+    await run("code:aggregate", "save_gateway_binding", { agent: CODE, binding: bindingFromDraft(draft, binding) }, t("保存本地服务绑定"));
   };
 
   /** Claude Code 直连某一家供应商：聚合状态下自动完成安全断开并直连，极端情况才退回断开预览框。 */
@@ -372,6 +371,7 @@ export function ClaudeProviders({
           <Plus />{t("添加供应商")}
         </button>
       </TopbarActions>
+      {claudeCodeNotice ? <CxBanner detail={claudeCodeNotice.detail} title={claudeCodeNotice.title} tone={claudeCodeNotice.tone} /> : null}
       <CxSection
         aside={(
           <>
@@ -390,6 +390,9 @@ export function ClaudeProviders({
                 }}
                 onDirect={() => setViewMode("direct")}
               />
+            ) : null}
+            {showModelPicker ? (
+              <AgentModelPicker agentId={agentId} busy={busy} hiddenProviders={hiddenProviders} notify={notify} payload={payload} run={run} />
             ) : null}
             {allPool.length || onManageGroups ? (
               <Menu label={t("更多供应商操作")}>
@@ -462,39 +465,6 @@ export function ClaudeProviders({
           <CxCard>{groups.map(renderGroupRow)}</CxCard>
         </CxSection>
       ) : null}
-      {/* 列表下面一张卡：只显示当前 Agent 自己的默认模型与连接状态。 */}
-      <CxSection className="claude-providers-agents" title={t("默认模型")}>
-        <CxCard>
-          {isCode ? (
-            payload && !claudeCode ? (
-              <CxRow
-                detail={t("未检测到本机 Claude Code；安装后即可在这里选择默认模型或切换直连 / 聚合。")}
-                icon={<AgentGlyph agent="claude" />}
-                title={t("Claude Code（命令行）")}
-              />
-            ) : (
-              <CxRow
-                badges={claudeCode?.version ? <CxBadge>{claudeCode.version}</CxBadge> : null}
-                detail={claudeCodeDetail}
-                icon={<AgentGlyph agent="claude" />}
-                title={t("Claude Code（命令行）")}
-              >
-                {codeMode === "aggregate" || pickingAggregate || !claudeCode ? (
-                  <AgentModelPicker agentId="claude" busy={busy} notify={notify} payload={payload} run={run} />
-                ) : null}
-              </CxRow>
-            )
-          ) : (
-            <CxRow
-              detail={t("始终经 Codex++ 本地服务：上面打开的供应商，聊天模型都会列进 Claude Desktop 的模型选择器；启动后默认用这个模型。")}
-              icon={<AgentGlyph agent={AGENT} />}
-              title="Claude Desktop"
-            >
-              <AgentModelPicker agentId={AGENT} busy={busy} notify={notify} payload={payload} run={run} />
-            </CxRow>
-          )}
-        </CxCard>
-      </CxSection>
       {credentialsUsed ? (
         <ProviderCredentialsHost notify={notify} onClose={() => setCredentialsId(null)} openId={credentialsId} payload={payload} run={run} />
       ) : null}

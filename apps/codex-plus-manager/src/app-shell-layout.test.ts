@@ -891,20 +891,23 @@ test("标题行右侧的按钮同一种外形：30px 高、8px 圆角、12.5px �
   assert.match(readSource("./CodexLaunchButton.tsx"), /className="codex-launch-button"[\s\S]*?variant="default"/);
 });
 
-test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副骨架：标题行右侧导入 / 添加，供应商列表在前，接入卡在列表后面", () => {
+test("Claude 的「供应商」页和 Codex 的「连接与供应商」同一副骨架：标题行右侧导入 / 添加，默认模型跟在「聚合 / 直连」后面", () => {
   const claude = readSource("./ClaudeProviders.tsx");
   // 导入、添加在标题行右侧，添加是主按钮（Codex 页也是 cx-secondary 导入 + cx-primary 添加）。
   assert.match(claude, /<TopbarActions>\s*<button className="cx-secondary"[^>]*onClick=\{\(\) => setAdding\("import"\)\}[\s\S]*?<button className="cx-primary"[^>]*onClick=\{\(\) => setAdding\("catalog"\)\}[\s\S]*?<\/TopbarActions>/);
   assert.match(readSource("./RelayScreen.tsx"), /<button className="cx-secondary" onClick=\{\(\) => setThirdPartyImportOpen\(true\)\}[\s\S]*?<button className="cx-primary" onClick=\{openCatalog\}/);
-  // 底部一张卡：只显示当前 Agent（Claude Code 或 Claude Desktop）自己的默认模型；不再混在供应商列表里。
-  // 供应商列表是主体、放最前面；这张卡在列表后面。
-  assert.ok(claude.indexOf('className="claude-providers"') < claude.indexOf('className="claude-providers-agents"'));
-  const agents = claude.match(/<CxSection className="claude-providers-agents" title=\{t\("默认模型"\)\}>([\s\S]*?)<\/CxSection>/);
-  assert.ok(agents, "agents card should exist");
-  assert.match(agents[1], /title="Claude Desktop"[\s\S]*?<AgentModelPicker agentId=\{AGENT\}/);
-  assert.match(agents[1], /title=\{t\("Claude Code（命令行）"\)\}[\s\S]*?<AgentModelPicker agentId="claude"/);
+  // 默认模型和 Codex 页一样放在「供应商」标题行右侧（aside），跟在「聚合 / 直连」后面；底部不再单独一张「默认模型」卡。
+  assert.doesNotMatch(claude, /claude-providers-agents/);
+  const aside = claude.slice(claude.indexOf("<CxSection\n        aside={("), claude.indexOf('className="claude-providers"'));
+  assert.ok(aside.indexOf("<ConnectionModeSwitch") < aside.indexOf("<AgentModelPicker"), "默认模型跟在连接方式后面");
+  assert.match(aside, /\{showModelPicker \? \(\s*<AgentModelPicker agentId=\{agentId\}[^>]*hiddenProviders=\{hiddenProviders\}/);
+  // 直连视图不显示（和 Codex 一样）；Claude Desktop 始终显示。
+  assert.match(claude, /const showModelPicker = isCode \? Boolean\(claudeCode\) && mode === "aggregate" : true;/);
+  assert.match(readSource("./CodexConnectionMode.tsx"), /\{mode === "aggregate" \? \(\s*<Suspense fallback=\{null\}>\s*<AgentModelPicker agentId="codex"/);
+  // 没装 Claude Code、配置被别的工具改掉时，列表上方给一条提示。
+  assert.match(claude, /\{claudeCodeNotice \? <CxBanner/);
   // 「供应商 N」是总数（和 Codex 页一样），分区里只有供应商行；不再跳去单独的「共享供应商」页，全部就地编辑管理。
-  const list = claude.slice(claude.indexOf('className="claude-providers"'), claude.indexOf('className="claude-providers-agents"'));
+  const list = claude.slice(claude.indexOf('className="claude-providers"'), claude.indexOf("{credentialsUsed ?"));
   assert.match(list, /count=\{pool\.length \|\| undefined\}/);
   assert.doesNotMatch(claude, /管理共享供应商/);
   assert.match(claude, /<PoolProviderEditHost/);
