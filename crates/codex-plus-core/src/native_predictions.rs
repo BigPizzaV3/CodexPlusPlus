@@ -34,8 +34,7 @@ pub(crate) fn runtime_settings_with_local_api(
 
 /// 任一原生模块补丁开启时才需要模块补丁通道。
 pub(crate) fn native_modules_requested(settings: &BackendSettings) -> bool {
-    settings.enhancements_enabled
-        && (settings.codex_app_native_fast_unlock || settings.codex_app_native_predictions)
+    settings.native_model_modules_requested()
 }
 
 #[cfg(test)]

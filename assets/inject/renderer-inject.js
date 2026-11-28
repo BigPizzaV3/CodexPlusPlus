@@ -24987,6 +24987,19 @@ ${key} = ${value}`]);
         changed = true;
       }
     });
+    if (hostId === "local" && codexModelCatalog?.model_provider === "codex-plus-gateway") {
+      const defaultModel = typeof codexModelCatalog.default_model === "string"
+        ? codexModelCatalog.default_model.trim() : "";
+      if (defaultModel) {
+        models.forEach((item) => {
+          const nextDefault = item.model === defaultModel;
+          if (item.isDefault !== nextDefault) {
+            item.isDefault = nextDefault;
+            changed = true;
+          }
+        });
+      }
+    }
     finishModelCollection(models);
     return changed;
   }
@@ -25001,6 +25014,17 @@ ${key} = ${value}`]);
     const matches = profiles.filter((profile) => id && String(profile?.id || "") === id);
     return matches.length === 1 && matches[0]?.relayMode === "pureApi" ? matches[0] : null;
   }
+
+  window.__codexPlusGatewayPickerDefault = (conversationHost, modelHost, teamCatalog) => {
+    if (conversationHost !== "local" || modelHost !== "local" || teamCatalog) return undefined;
+    if (!codexPlusBackendSettingsLoaded) return "";
+    const profile = codexModelCatalogActiveProfile();
+    if (profile?.id !== "codex-plus-gateway") return undefined;
+    if (codexPlusBackendSettings.codexMultiInstance && codexModelCatalog.model_provider === profile.id) {
+      return codexModelCatalog.default_model;
+    }
+    return codexPlusBackendSettings.activeRelayProfilePublic?.model ?? profile.model;
+  };
 
   function codexModelCatalogBelongsToProfile(profile) {
     const profileId = String(profile?.id || "").trim();
@@ -26574,8 +26598,9 @@ ${key} = ${value}`]);
 
   /** 完整默认身份只读有效配置字段；缺失时不按供应商或目录顺序猜测。 */
   function codexPlusModelPickerDefaultModelName() {
-    const model = typeof codexModelCatalog?.effective_config_model === "string"
-      ? codexModelCatalog.effective_config_model.trim() : "";
+    const configured = codexModelCatalog?.model_provider === "codex-plus-gateway"
+      ? codexModelCatalog.default_model : codexModelCatalog?.effective_config_model;
+    const model = typeof configured === "string" ? configured.trim() : "";
     if (!model) return codexPlusModelPickerText().defaultUnavailable;
     const metadata = codexModelCatalog?.modelMetadata || codexModelCatalog?.model_metadata;
     const entry = metadata?.[model];

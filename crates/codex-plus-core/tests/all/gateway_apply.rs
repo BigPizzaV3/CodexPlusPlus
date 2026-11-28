@@ -4302,6 +4302,14 @@ fn codex_gateway_directory_snapshot_matches_published_catalog_without_connection
         serde_json::from_str::<Value>(&profile.model_windows).unwrap()
     );
     assert_eq!(snapshot.model_metadata, profile.model_metadata);
+    let published: Value = serde_json::from_str(&snapshot.model_metadata).unwrap();
+    assert_eq!(published[&profile.model]["codex_plus_agent_default"], true);
+    let mut switched = binding.clone();
+    switched.model = format!("group/{group_id}");
+    let next = codex_gateway_model_catalog(&gateway, &switched);
+    let updated_metadata: Value = serde_json::from_str(&next.model_metadata).unwrap();
+    assert_eq!(updated_metadata[&switched.model]["codex_plus_agent_default"], true);
+    assert!(updated_metadata[&profile.model].get("codex_plus_agent_default").is_none());
     assert!(snapshot.model_list.contains("new-model"));
     assert!(snapshot.model_list.contains(&format!("group/{group_id}")));
     assert!(!snapshot.model_list.contains(&binding.token));
