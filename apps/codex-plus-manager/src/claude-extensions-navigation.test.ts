@@ -87,6 +87,8 @@ function harness() {
     paletteShortcut: "Ctrl+K",
     APP_LOGO_URL: "logo.png",
     managerNavPages: () => [],
+    // 侧栏模块级的平台判断（Computer Use 只在 macOS 进侧栏）。
+    computerUseSupported: true,
   });
   vm.runInContext(transpile(`const Fragment = "Fragment";\nconst navigationSections = [];\nconst agentTabGroups = () => [];\n${navigationSource}\n${functionSource("AppSidebar")}
     globalThis.sidebar = AppSidebar;

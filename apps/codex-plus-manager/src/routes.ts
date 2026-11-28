@@ -126,14 +126,14 @@ export const lastAgentRoute = new Map<string, Route>();
 /**
  * 与具体 Agent 无关的应用级页面：网关、工具、关于、整体设置。打开它们时侧栏里没有 Agent 处于选中态。
  * Computer Use 同时接入 Claude Code / Claude Desktop / DSH 等多个客户端，不属于任何一个 Agent，
- * 所以和 Agent 协作一样放在「工具」里，而不是重复出现在每个 Agent 的「扩展」分组里。
+ * 所以和「MCP 与 Skills」一样是侧栏第一组里的一项，而不是重复出现在每个 Agent 的页面里。
  */
 export const globalNavigationRoutes: Route[] = ["home", "extension", "hub", "gatewayProviders", "gateway", "gatewayRouting", "gatewayUsage", "gatewaySettings", "requestLog", "sessions", "context", "skills", "computerUse", "agentCollaboration", "agentCache", "settings"];
 /** 本地服务的几页：⌘K 里的顺序（供应商在各 Agent 页管理，服务设置已并入「服务与接入」）。 */
 // 「用量」并进全局管理：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
 export const gatewayNavigationRoutes: Route[] = ["gateway", "gatewayRouting"];
-/** ⌘K「全局管理」分组：用量、会话、MCP、Skills。万物皆拓展按 Agent 拆开，在各 Agent 的页面里。 */
-export const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "context", "skills"];
+/** ⌘K「全局管理」分组：用量、会话、MCP、Skills、Computer Use。万物皆拓展按 Agent 拆开，在各 Agent 的页面里。 */
+export const managementNavigationRoutes: Route[] = ["gatewayUsage", "sessions", "context", "skills", "computerUse"];
 /** 侧栏里同一个入口的别名路由：请求日志是「用量」页的第二个页签。 */
 export const navAliasRoute: Partial<Record<Route, Route>> = { requestLog: "gatewayUsage" };
 /** 网关的各个页签由侧栏直接选中，页内不再显示标签条。 */
@@ -187,7 +187,7 @@ export const visibleActiveTool = (toolId: string | null | undefined) =>
 export const agentEntryRoute = (toolId: ToolId) => agentTarget(agentRoutes(toolId), lastAgentRoute.get(toolId), agentHomeRoute[toolId] ?? "relay");
 
 /** 进入设置模式的路由：侧栏切成设置目录。 */
-export const settingsModeRoutes = new Set<Route>(["settings", "agentSettings", "agentCache", "computerUse", "agentCollaboration"]);
+export const settingsModeRoutes = new Set<Route>(["settings", "agentSettings", "agentCache", "agentCollaboration"]);
 /** 「本地服务」一页的两个页签（服务与接入、路由），侧栏里只有一个「本地服务」入口；旧的总览与设置路由也算这一页。 */
 export const localServiceRoutes: Route[] = ["gateway", "gatewayRouting"];
 export const isLocalServiceRoute = (route: Route) => route === "hub" || route === "gatewaySettings" || localServiceRoutes.includes(route);

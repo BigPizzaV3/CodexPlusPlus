@@ -77,11 +77,6 @@
   .cu-preview-picker { flex-direction:column; align-items:stretch; }
 }
 
-/* 工作原理示意图 ─────────────────────────────────────────────
-   7 列：客户端 | 连线 | MCP 服务 | 连线 | 运行时 | 连线 | 操作对象；
-   第 2、3 行是两条泳道（桌面操控 / 浏览器），客户端列跨两行。
-   窄窗口下图本身横向滚动，不把整页撑出横向滚动条。 */
-.cu-flow-card { --cu-flow-line: hsl(var(--muted-foreground) / .55); }
 
 /* 分页：下划线页签，与外壳一致 */
 
@@ -90,7 +85,6 @@
 }
 .cu-content > .cu-runtime-missing { margin-top:0; }
 
-/* 交互式工作原理图 ─────────────────────────────────────────── */
 
 .cu-flow-icon-button {
   display:inline-flex; flex-shrink:0; align-items:center; justify-content:center; gap:4px;
@@ -101,122 +95,12 @@
 .cu-flow-icon-button:hover:not(:disabled) { color:hsl(var(--foreground)); background:hsl(var(--muted)); }
 .cu-flow-recommend { margin-left:4px; padding:0 4px; border-radius:4px; background:hsl(var(--brand-accent)/.15); color:hsl(var(--brand-accent)); font-size:9.5px; font-weight:600; }
 
-/* 图下方的折叠区：细节默认收起 */
-.cu-more { border:1px solid hsl(var(--border)); border-radius:10px; background:hsl(var(--card)); }
-.cu-more > summary {
-  display:flex; align-items:baseline; gap:10px; padding:10px 16px; cursor:pointer; list-style:none;
-}
-.cu-more > summary::-webkit-details-marker { display:none; }
-.cu-more > summary::before { content:"›"; display:inline-block; width:10px; color:hsl(var(--muted-foreground)); transition:transform 120ms; }
-.cu-more[open] > summary::before { transform:rotate(90deg); }
-.cu-more > summary strong { font-size:12.5px; font-weight:600; }
-.cu-more > summary small { color:hsl(var(--muted-foreground)); font-size:11.5px; }
-.cu-more > .cu-card { margin:0 12px 12px; }
 
 /* 客户端类型下拉（AppSelect）：与同一行的输入框同高 */
 .app-select.cu-custom-kind-select { flex: 0 0 160px; width: 160px; }
 .cu-custom-kind-select .app-select-trigger { min-height: 30px; border-radius: 6px; font-size: 12px; font-weight: 500; }
 .cu-preview-select .app-select-trigger { min-height: 34px; font-size: 12.5px; font-weight: 500; }
-
-/* ── 工作原理图：与网关总览同一套三列拓扑（HubTopology），这里只补 Computer Use 自己的部分 ── */
-.shell .cu-flow-card .hub-topology {
-  padding: 16px 4px 4px;
-}
-.shell .cu-hub-client,
-.shell .cu-hub-target {
-  cursor: default;
-}
-.shell .cu-hub-client .hub-node-text strong em {
-  margin-left: 6px;
-  padding: 0 5px;
-  border: 1px solid hsl(var(--brand-accent) / 0.4);
-  border-radius: 4px;
-  color: hsl(var(--brand-accent));
-  font-size: 10.5px;
-  font-style: normal;
-  font-weight: 500;
-}
-.shell .cu-hub-action {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 24px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 6px;
-  background: hsl(var(--primary));
-  color: hsl(var(--primary-foreground));
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.shell .cu-hub-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.5;
-}
-.shell .cu-hub-icon-button {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: hsl(var(--muted-foreground));
-  cursor: pointer;
-}
-.shell .cu-hub-icon-button:hover:not(:disabled) {
-  background: hsl(var(--accent));
-  color: hsl(var(--foreground));
-}
-.shell .cu-hub-target[data-warn="true"] .hub-node-text small {
-  color: hsl(var(--status-warning));
-}
-.shell .cu-hub-core .cu-hub-services {
-  display: grid;
-  gap: 6px;
-  width: 100%;
-  margin: 4px 0 2px;
-}
-.shell .cu-hub-core .cu-hub-services > div {
-  display: grid;
-  grid-template-columns: 16px auto minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border: 1px solid hsl(var(--border));
-  border-radius: 8px;
-  background: hsl(var(--surface-raised));
-  text-align: left;
-}
-.shell .cu-hub-core .cu-hub-services svg {
-  color: hsl(var(--brand-accent));
-}
-.shell .cu-hub-core .cu-hub-services b {
-  font-family: var(--font-mono, monospace);
-  font-size: 12px;
-  font-weight: 600;
-}
-.shell .cu-hub-core .cu-hub-services small {
-  overflow: hidden;
-  color: hsl(var(--muted-foreground));
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.shell .cu-hub-core .hub-caps span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-.shell .cu-hub-core .hub-caps span[data-accent="true"] {
-  border-color: hsl(var(--brand-accent) / 0.5);
-  color: hsl(var(--brand-accent));
-}
-.shell .cu-hub-target .hub-node-text small {
-  white-space: normal;
-  line-height: 1.45;
-}
+/* 「未接入」末尾的添加行点开后：和列表行同样的左右内边距 */
+.cu-clients-others .cu-custom-add { margin:0; padding:10px 14px; border-top:1px solid hsl(var(--border)); }
+/* 行内接入 / 移除时开关左边的转圈 */
+.cu-row-spin { flex:none; color:hsl(var(--muted-foreground)); }

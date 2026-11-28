@@ -53,19 +53,26 @@ test("设置菜单只属于 Codex，Claude / Grok 不再显示只有跳转按钮
   assert.doesNotMatch(agent, /没有独立设置项|前往 Grok 配置|前往 Claude 增强/);
 });
 
-test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Agent 的菜单里", () => {
+test("Computer Use 在主侧栏第一组（跟在 MCP 与 Skills 后面，仅 macOS），不在设置模式，也不出现在每个 Agent 的菜单里", () => {
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"computerUse"/);
 
   const globalNavigation = routesSource.slice(routesSource.indexOf("const globalNavigationRoutes"), routesSource.indexOf("const settingsModeRoutes"));
   assert.match(globalNavigation, /"computerUse"/);
-  // Computer Use、Agent 协作、缓存清理都在设置模式里，⌘K 经设置分类搜到；本地服务的几页在 ⌘K 里自己一组。
   assert.doesNotMatch(text, /toolNavigationRoutes/);
   assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["gateway", "gatewayRouting"\];/);
+  // ⌘K 里归「全局管理」；设置模式和设置分类里都没有它。
+  assert.match(globalNavigation, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills", "computerUse"\];/);
+  assert.doesNotMatch(routesSource.slice(routesSource.indexOf("const settingsModeRoutes")), /^export const settingsModeRoutes[^\n]*"computerUse"/m);
   const entries = appDeclarationSource("settingsNavEntries");
-  assert.match(entries, /\{ key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta"/);
+  assert.doesNotMatch(entries, /key: "computerUse"/);
   // 设置分类只有 Codex 一项看 Codex 可不可用，其余始终显示。
   assert.match(entries, /return entries\.filter\(\(entry\) => entry\.key !== "codex" \|\| codexAvailable\);/);
+  const sidebar = appDeclarationSource("AppSidebar");
+  const customize = sidebar.indexOf('key: "customize"');
+  const computerUse = sidebar.indexOf('key: "computerUse"');
+  assert.ok(customize > 0 && computerUse > customize && computerUse < sidebar.indexOf('key: "sessions"'), "Computer Use 紧跟在 MCP 与 Skills 后面");
+  assert.match(sidebar, /\.\.\.\(computerUseSupported \? \[\{ key: "computerUse"/);
 });
 
 test("标题：设置模式用分类名，Agent 自己的页面和其余页面都用页面名", () => {

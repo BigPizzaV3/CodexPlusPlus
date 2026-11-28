@@ -49,6 +49,7 @@ import type { Theme, ToolEntry } from "./app-types";
 import { APP_LOGO_URL } from "./app-shared";
 import { useClaudeEnhance } from "./claude-enhance";
 import { useSideIndicator } from "./side-indicator";
+import { enhancementPlatformFromUserAgent } from "./enhancement-catalog";
 import {
   customizeRoutes,
   globalNavigationRoutes,
@@ -76,6 +77,9 @@ type SettingsNavEntry = {
   keywords?: string;
 };
 
+/** Computer Use 依赖 macOS 版 ChatGPT.app 自带的运行时，其他平台侧栏里不放这一项。 */
+const computerUseSupported = enhancementPlatformFromUserAgent(navigator.userAgent) === "macos";
+
 export function settingsNavEntries(codexAvailable: boolean): SettingsNavEntry[] {
   const entries: SettingsNavEntry[] = [
     { key: "general", label: t("通用"), icon: Settings, route: "settings", sections: ["app-settings-general"], group: "app", keywords: "theme mode tour 主题 模式 引导 托盘" },
@@ -86,7 +90,6 @@ export function settingsNavEntries(codexAvailable: boolean): SettingsNavEntry[] 
     { key: "about", label: t("关于"), icon: Info, route: "settings", sections: ["app-settings-about"], group: "app", keywords: "about github 关于" },
     { key: "codex", label: "Codex", icon: AppWindow, route: "agentSettings", group: "agent", keywords: "codex launch args takeover 启动参数 接管 维护 修复" },
     { key: "cache", label: t("缓存清理"), icon: Trash2, route: "agentCache", group: "tools", keywords: "cache clean 缓存 清理" },
-    { key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta", keywords: "computer use mcp" },
     { key: "agentCollaboration", label: t("Agent 协作"), icon: GitBranch, route: "agentCollaboration", group: "beta", keywords: "collaboration 协作" },
   ];
   return entries.filter((entry) => entry.key !== "codex" || codexAvailable);
@@ -280,12 +283,14 @@ export function AppSidebar({
   }
 
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
-  // 第一组是首页（赞助商推荐）、MCP 与 Skills、会话、用量、本地服务。万物皆拓展按 Agent 拆开，在 Codex / Claude Desktop 各自的页签里。
+  // 第一组是首页（赞助商推荐）、MCP 与 Skills、Computer Use（仅 macOS）、会话、用量、本地服务。万物皆拓展按 Agent 拆开，在 Codex / Claude Desktop 各自的页签里。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
   // 用量也记直连代理的请求，不算网关专属。
   const general: SideEntry[] = [
     { key: "home", route: "home", label: t("首页"), icon: House, match: ["home"] },
     { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes, tour: "management" },
+    // 给任意 Agent 接入 Computer Use：和 MCP 一样跨 Agent，放在主侧栏；它依赖 macOS 版 ChatGPT.app，其他平台不占侧栏位置（⌘K 仍能搜到说明）。
+    ...(computerUseSupported ? [{ key: "computerUse", route: "computerUse" as Route, label: "Computer Use", icon: MousePointerClick, match: ["computerUse" as Route] }] : []),
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
     { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
     // 本地服务（原「聚合网关」一整组）只占一个入口，页内两个页签（服务与接入、路由）。

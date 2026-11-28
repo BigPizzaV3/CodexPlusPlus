@@ -98,7 +98,7 @@ test("Agent 一行一个始终可见（与设计图一致）；点开 Agent 后�
   assert.doesNotMatch(text, /id: "overview"/);
   for (const id of ["providers", "enhance"]) assert.match(sections, new RegExp(`id: "${id}"`));
   assert.doesNotMatch(sections, /"agentSettings"|"relayEnvironment"/);
-  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "agentCache", "computerUse", "agentCollaboration"\]\);/);
+  assert.match(text, /const settingsModeRoutes = new Set<Route>\(\["settings", "agentSettings", "agentCache", "agentCollaboration"\]\);/);
   assert.doesNotMatch(text, /key: "codexConnection"|key: "legacyProxy"|key: "legacyRelay"/);
   assert.match(text, /id: "relay", get label\(\) \{ return t\("连接与供应商"\); \}/);
   // 内容区顶部不再画 Agent 页签。
@@ -204,7 +204,7 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   // 万物皆拓展按 Agent 拆开（Codex 的 userScripts、Claude Desktop 的 claudeExtensions），不在全局管理里。
   assert.match(text, /id: "userScripts", get label\(\) \{ return t\("万物皆拓展"\); \}/);
   // 「用量」入口在全局管理里：统计（gatewayUsage）与请求日志（requestLog）是同一页的两个页签。
-  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills"\]/);
+  assert.match(text, /const managementNavigationRoutes: Route\[\] = \["gatewayUsage", "sessions", "context", "skills", "computerUse"\]/);
   assert.match(text, /const navAliasRoute: Partial<Record<Route, Route>> = \{ requestLog: "gatewayUsage" \};/);
   for (const id of ["requestLog", "sessions", "context", "skills"]) {
     const line = text.split("\n").find((row) => row.includes(`{ id: "${id}",`));
@@ -213,7 +213,7 @@ test("请求日志、会话、MCP、Skills 拎成「全局管理」，管理所�
   }
   const sections = text.slice(text.indexOf("const navigationSections"), text.indexOf("const globalNavigationRoutes"));
   assert.doesNotMatch(sections, /"requestLog"|"sessions"|"context"|"skills"/);
-  // 侧栏第一组：首页、MCP 与 Skills（两个胶囊）、会话、用量、本地服务；万物皆拓展不在侧栏，在各 Agent 的页签里。
+  // 侧栏第一组：首页、MCP 与 Skills（两个胶囊）、Computer Use（仅 macOS）、会话、用量、本地服务；万物皆拓展不在侧栏，在各 Agent 的页签里。
   const sidebar = functionSource("AppSidebar");
   assert.doesNotMatch(sidebar, /key: "extensions"|route: "userScripts"/);
   assert.match(sidebar, /\{ key: "customize", route: "context", label: t\("MCP 与 Skills"\), icon: Network, match: customizeRoutes, tour: "management" \}/, "导览的「全局管理」一步指到 MCP 与 Skills");
@@ -639,13 +639,19 @@ test("「关于」并进「设置」：侧栏底部只留齿轮，设置模式�
   for (const id of ids) assert.match(sections, new RegExp(`id="${id}"`));
 });
 
-test("Computer Use 工作原理图与网关总览同一套三列拓扑", () => {
+test("Computer Use 的客户端列表同「本地服务」的 Agent 列表：已接入 / 未接入两节，每行图标 + 开关，不再画三列拓扑", () => {
   const page = readSource("./ComputerUsePage.tsx");
-  assert.match(page, /<HubTopology links=\{links\}>/);
-  assert.match(page, /data-node="cu-core"/);
-  assert.match(page, /data-node=\{`cu-client:\$\{id\}`\}/);
-  const hub = readSource("./HubOverview.tsx");
-  assert.match(hub, /export function HubTopology\(/);
+  assert.doesNotMatch(page, /HubTopology|data-node="cu-core"/);
+  assert.match(page, /count=\{connectedClients\.length\} title=\{t\("已接入"\)\}/);
+  assert.match(page, /className="cx-section-toggle" onClick=\{\(\) => setOthersOpen\(!othersShown\)\}/);
+  // 一个都没接入时「未接入」直接展开。
+  assert.match(page, /const othersShown = othersOpen \?\? connectedClients\.length === 0;/);
+  // 每行：客户端图标、配置路径，右侧开关接入 / 移除；自定义目录的添加行在「未接入」末尾。
+  assert.match(page, /icon=\{<AgentGlyph agent=\{cuAgentIcon\[kind\]\} \/>\}/);
+  assert.match(page, /onToggle=\{\(\) => void mutateTarget\(id, registered \? "uninstall" : "install"\)\}/);
+  assert.match(page, /\{othersShown \? <CxCard>\{otherClients\.map\(renderClient\)\}\{renderCustomAdd\(\)\}<\/CxCard> : null\}/);
+  // 配置路径不再在「高级」里把客户端再列一遍。
+  assert.doesNotMatch(page, /配置路径与自定义目录/);
 });
 
 test("启动引导是挂在应用顶层的两步向导，进度卡投到侧栏；导览单独打开，旧用户可从设置重开", () => {
