@@ -2094,10 +2094,12 @@ impl LaunchHooks for DefaultLaunchHooks {
         // 未知」表示为 None，语义是回落到 cdp_available。
         let mut exit_grace = PackagedExitGrace::default();
         loop {
-            let target_alive = owned_launcher_target_alive(
-                launcher_owned_process_alive(launch, debug_port),
-                crate::cdp::endpoint_available(debug_port),
-            );
+            let owned_process_alive = launcher_owned_process_alive(launch, debug_port);
+            // 已附加会话与桥接共用运行时；CDP 可能发完响应后仍不关闭连接。
+            let debug_port_open =
+                tokio::task::spawn_blocking(move || crate::cdp::endpoint_available(debug_port))
+                    .await?;
+            let target_alive = owned_launcher_target_alive(owned_process_alive, debug_port_open);
             if !exit_grace.keep_waiting(Some(target_alive), false, std::time::Instant::now()) {
                 break;
             }
@@ -8533,6 +8535,39 @@ mod tests {
 
     use super::*;
     use std::sync::atomic::AtomicUsize;
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn attached_exit_probe_leaves_session_runtime_responsive() {
+        use std::io::Read;
+        use std::net::TcpListener;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (arrived, observed) = tokio::sync::oneshot::channel();
+        let (release, wait) = mpsc::channel();
+        let peer = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            assert_ne!(socket.read(&mut [0; 512]).unwrap(), 0);
+            arrived.send(()).unwrap();
+            wait.recv_timeout(Duration::from_millis(220)).is_ok()
+        });
+        let hooks = DefaultLaunchHooks::default();
+        let attached = CodexLaunch::Process {
+            command: Vec::new(),
+            wait_strategy: ProcessWaitStrategy::ExternalWaitCommand,
+            macos_cleanup_policy: None,
+        };
+        tokio::select! {
+            biased;
+            result = hooks.wait_for_codex_exit(&attached, port) => panic!("monitor exited: {result:?}"),
+            result = observed => result.unwrap(),
+        }
+        let released = release.send(()).is_ok();
+        assert!(peer.join().unwrap() && released, "CDP probe stalled the session runtime");
+    }
 
     #[test]
     fn final_response_evidence_binds_returned_trace_and_rejects_unverified_paths() {
