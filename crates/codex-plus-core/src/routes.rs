@@ -702,6 +702,7 @@ pub async fn handle_bridge_request(
             ctx.runtime.backend_status().await,
             ctx.settings.get_settings().await,
             &ctx.settings.codex_home_dir(),
+            std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").as_deref() == Some(std::ffi::OsStr::new("1")),
         ),
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         // 开放给拓展的模型目录：只给模型列表与每模型元数据（含上下文窗口），去掉来源地址、config 路径。
@@ -1484,7 +1485,9 @@ fn model_catalog_fingerprint(settings: &BackendSettings) -> String {
     };
     settings.relay_profiles_enabled.hash(&mut hasher);
     hash_profile(&profile, &mut hasher);
-    if profile.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID {
+    if profile.id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+        || std::env::var_os("CODEX_PLUS_MULTI_INSTANCE").as_deref() == Some(std::ffi::OsStr::new("1"))
+    {
         crate::model_catalog::gateway_catalog_revision(&crate::codex_home::default_codex_home_dir())
             .hash(&mut hasher);
     }
@@ -1718,20 +1721,25 @@ mod dictation_privacy_tests {
         std::fs::write(home.path().join("config.toml"),
             "model_catalog_json = 'model-catalogs/codex-plus-gateway.json'\n").unwrap();
         let mut settings = BackendSettings::default();
-        settings.active_relay_id = crate::gateway::apply::CODEX_GATEWAY_RELAY_ID.into();
+        settings.active_relay_id = "previous-direct-provider".into();
+        settings.relay_profiles_enabled = false;
         settings.settings_revision = "worker-snapshot".into();
-        let status = || backend_status_value(Ok(json!({"status":"ok"})), Ok(settings.clone()), home.path()).unwrap();
+        let status = |is_multi_instance| {
+            backend_status_value(Ok(json!({"status":"ok"})), Ok(settings.clone()), home.path(), is_multi_instance).unwrap()
+        };
         std::fs::write(&path, r#"{"models":[{"slug":"old"}]}"#).unwrap();
-        let before = status();
+        let before = status(true);
+        assert_eq!(status(false)["settingsRevision"], "worker-snapshot");
         let metadata = std::fs::metadata(&path).unwrap();
         let modified = metadata.modified().unwrap();
-        assert_eq!(status(), before);
+        assert_eq!(status(true), before);
         std::fs::write(&path, r#"{"models":[{"slug":"new"}]}"#).unwrap();
         std::fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(modified).unwrap();
         let updated = std::fs::metadata(&path).unwrap();
         assert_eq!(updated.modified().unwrap(), modified);
         assert_eq!(updated.len(), metadata.len());
-        assert_ne!(status()["settingsRevision"], before["settingsRevision"]);
+        assert_ne!(status(true)["settingsRevision"], before["settingsRevision"]);
+        assert_eq!(status(false)["settingsRevision"], "worker-snapshot");
     }
 
     #[test]
@@ -1765,6 +1773,7 @@ fn backend_status_value(
     status: anyhow::Result<Value>,
     settings: anyhow::Result<BackendSettings>,
     home: &std::path::Path,
+    is_multi_instance: bool,
 ) -> anyhow::Result<Value> {
     let mut status = status?;
     if let Some(object) = status.as_object_mut() {
@@ -1780,7 +1789,7 @@ fn backend_status_value(
             .as_ref()
             .map(|settings| {
                 // 多开实例的设置独立保存，但 Agent 发布的网关目录仍可更新。
-                if settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID
+                if (settings.active_relay_id == crate::gateway::apply::CODEX_GATEWAY_RELAY_ID || is_multi_instance)
                     && let Some(catalog_revision) = crate::model_catalog::gateway_catalog_revision(home)
                 {
                     return format!("{}:{catalog_revision:016x}", settings.settings_revision);

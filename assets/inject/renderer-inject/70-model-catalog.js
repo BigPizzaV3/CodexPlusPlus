@@ -40,6 +40,7 @@
     patchStatsig: patchStatsigModelDynamicConfig,
     recordRequest: recordModelListRequest,
     patchMcp: patchMcpModelResponseData,
+    refresh: () => loadCodexModelCatalog(true),
   };
   window.__codexPlusModelCatalogRuntime = codexModelCatalogRuntime;
   let codexModelWhitelistRefreshTimer = 0;
@@ -229,6 +230,9 @@
     const revision = ++codexModelCatalogRevision;
     const current = () => revision === codexModelCatalogRevision
       && window.__codexPlusModelCatalogRuntime === codexModelCatalogRuntime;
+    const latest = () => window.__codexPlusModelCatalogRuntime === codexModelCatalogRuntime
+      ? codexModelCatalogPromise || codexModelCatalogRuntime.failure || codexModelCatalog
+      : codexModelCatalog;
     let identity = "";
     if (codexPlusBackendSettingsLoaded) {
       codexModelCatalogRuntime.source = codexModelSettingsSource(codexPlusBackendSettings);
@@ -238,7 +242,7 @@
     let failedCatalog = null;
     const request = readCodexAppServerPreparation("/codex-model-catalog", {}, timeoutMs)
       .then(async (result) => {
-        if (!current()) return codexModelCatalog;
+        if (!current()) return latest();
         const nextCatalog = result && typeof result === "object" ? result : { status: "failed", models: [] };
         if (!["ok", "not_applied", "not_configured"].includes(nextCatalog.status) || !Array.isArray(nextCatalog.models)) {
           failedCatalog = nextCatalog;
@@ -263,7 +267,7 @@
             sendCodexPlusDiagnostic("model_catalog_fallback_error", { error: String(fallbackError?.message || fallbackError) });
           }
         }
-        if (!current()) return codexModelCatalog;
+        if (!current()) return latest();
         const previousCatalog = codexModelCatalog;
         const changed = JSON.stringify(previousCatalog) !== JSON.stringify(nextCatalog);
         const previousMetadata = previousCatalog.modelMetadata || previousCatalog.model_metadata || {};
@@ -295,7 +299,7 @@
         return codexModelCatalog;
       })
       .catch((error) => {
-        if (!current()) return codexModelCatalog;
+        if (!current()) return latest();
         const failure = { status: "failed", message: String(error?.message || error),
           model: typeof failedCatalog?.model === "string" ? failedCatalog.model : "",
           default_model: typeof failedCatalog?.default_model === "string" ? failedCatalog.default_model : "",
@@ -954,6 +958,15 @@
     }, true);
   }
 
+  if (!window.__codexPlusModelSelectionRefreshInstalled) {
+    window.__codexPlusModelSelectionRefreshInstalled = true;
+    window.addEventListener("click", (event) => {
+      if (event.target?.closest?.('[data-model-picker-view] [role="menuitemradio"]')) {
+        void window.__codexPlusModelCatalogRuntime.refresh();
+      }
+    }, true);
+  }
+
   function modelResponseHasPagination(value) {
     return !!value && typeof value === "object"
       && ("nextCursor" in value || "next_cursor" in value);
@@ -1108,8 +1121,9 @@
     if (!runtime) return null;
     if (runtime.status !== "ok") throw new Error(runtime.message || "读取上下文配置失败，请稍后重新发送");
     const model = codexThreadModelRequestState("", params).model || catalog.model;
+    if (!Object.hasOwn(runtime.models, model)) return null;
     const config = runtime.models[model];
-    return config ? { model, config, signature: codexThreadContextSignature(config) } : null;
+    return { model, config, effectiveWindow: runtime.effectiveWindows?.[model], signature: codexThreadContextSignature(config) };
   }
 
   async function prepareCodexThreadContextStart(method, params, hostId) {
@@ -1157,7 +1171,16 @@
     const context = await codexThreadRuntimeContext(params);
     if (!context) return null;
     const contexts = window.__codexPlusThreadContexts ||= new Map();
-    if (codexThreadContextMatches(contexts.get(threadId), context)) return null;
+    const observed = window.__codexPlusObservedContextWindows;
+    const observedWindow = observed?.get(threadId);
+    const attempts = window.__codexPlusContextRefreshAttempts ||= new Map();
+    const mismatch = observedWindow !== undefined && context.effectiveWindow !== undefined
+      && observedWindow !== context.effectiveWindow;
+    const target = mismatch ? JSON.stringify([context.signature, context.effectiveWindow]) : null;
+    if (observedWindow === context.effectiveWindow && observedWindow !== undefined) attempts.delete(threadId);
+    // 原生进程可能缓存了旧模型比例。相同目标只为实际差异额外恢复一次。
+    if (codexThreadContextMatches(contexts.get(threadId), context)
+        && (!mismatch || attempts.get(threadId) === target)) return null;
     if (window.__codexPlusConnectionRecoveryPending?.has(threadId)
         || window.__codexPlusContextRefreshPending?.has(threadId)) {
       throw new Error("此会话正在检查连接，请稍后重新发送");
@@ -1170,6 +1193,7 @@
       // 侧边聊天是 ephemeral 分叉：没有 rollout、不能卸载恢复，上下文已在分叉时写入（#3041）。
       if (read.thread?.ephemeral === true) {
         contexts.set(threadId, context.signature);
+        if (mismatch) attempts.set(threadId, target);
         return null;
       }
       if (!["idle", "notLoaded", "systemError"].includes(read.thread.status.type)) {
@@ -1196,6 +1220,9 @@
       if (!["idle", "systemError"].includes(resumed.thread.status.type)) throw new Error("会话已开始其他回复，请等待结束后重新发送");
       contexts.set(threadId, context.signature);
       if (contexts.size > 256) contexts.delete(contexts.keys().next().value);
+      if (mismatch) attempts.set(threadId, target);
+      else attempts.delete(threadId);
+      if (observedWindow !== undefined && observed.get(threadId) === observedWindow) observed.delete(threadId);
       sendCodexPlusDiagnostic("thread_model_context_refreshed", { threadId, model: context.model });
       return true;
     } catch (error) {
@@ -1207,6 +1234,7 @@
       throw error;
     } finally {
       pending.delete(threadId);
+      if (attempts.size > 256) attempts.delete(attempts.keys().next().value);
     }
   }
 

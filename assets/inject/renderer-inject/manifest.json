@@ -78,7 +78,7 @@
     {
       "name": "44-provider-gateway.js",
       "description": "「供应商」页的网关页签：在 Codex 里管理网关供应商池、接入 / 断开网关（经 /providers/gateway 走管理器的网关命令）",
-      "lines": 714
+      "lines": 747
     },
     {
       "name": "45-remote-control-page.js",
@@ -118,7 +118,7 @@
     {
       "name": "70-model-catalog.js",
       "description": "全局状态、模型目录、模型白名单与解锁",
-      "lines": 1769
+      "lines": 1797
     },
     {
       "name": "71-model-picker-groups.js",

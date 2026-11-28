@@ -111,6 +111,40 @@ describe("runtime context refresh", () => {
     assert.equal(env.calls.length, 0);
   });
 
+  it("repairs a stale native window even when the saved context signature matches", async () => {
+    const env = runtime();
+    env.state.runtime.models.selected = { model_context_window: 500000, model_auto_compact_token_limit: 450000 };
+    env.state.runtime.effectiveWindows = { selected: 475000 };
+    const params = await env.api.prepare("thread/start", { model: "selected" }, "local");
+    env.api.note("thread/start", params, { thread: { id: "thread" } }, "local");
+    const observed = env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 258400]]);
+
+    assert.equal(await env.refresh(), true);
+    assert.equal(env.calls.at(-1)!.params.config.model_context_window, 500000);
+    assert.equal(env.calls.at(-1)!.params.config.model_auto_compact_token_limit, 450000);
+    assert.equal(observed.has("thread"), false, "do not treat a pre-resume notification as new evidence");
+
+    env.calls.length = 0;
+    observed.set("thread", 258400);
+    assert.equal(await env.refresh(), null, "a persistent native mismatch must not reload on every send");
+    observed.set("thread", 475000);
+    assert.equal(await env.refresh(), null, "compare the effective window, not the configured size");
+    assert.deepEqual(env.calls, []);
+    observed.set("thread", 258400);
+    assert.equal(await env.refresh(), true, "a new mismatch after convergence is eligible for repair");
+  });
+
+  it("retries a native mismatch when the cold resume fails", async () => {
+    const env = runtime();
+    env.state.runtime.effectiveWindows = { selected: 131072 };
+    assert.equal(await env.refresh(), true);
+    env.context.window.__codexPlusObservedContextWindows = new Map([["thread", 65536]]);
+    env.state.fail = "thread/resume";
+    await assert.rejects(env.refresh(), /fixture failure/);
+    env.state.fail = "";
+    assert.equal(await env.refresh(), true);
+  });
+
   it("still checks thread safety when an account alias changes the actual context limits", async () => {
     const env = runtime();
     const params = await env.api.prepare("thread/start", { model: "selected" }, "local");
