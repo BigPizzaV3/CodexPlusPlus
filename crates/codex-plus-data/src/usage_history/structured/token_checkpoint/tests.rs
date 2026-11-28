@@ -1,7 +1,7 @@
 use super::*;
 use crate::usage_history::structured::{Index, Query, RETENTION_DAYS, index_budget::Budget};
 use chrono::{DateTime, Local};
-use rusqlite::{Connection, ErrorCode};
+use rusqlite::{Connection, ErrorCode, config::DbConfig};
 use serde_json::json;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -54,7 +54,7 @@ fn round_trip(state: &FileState) -> FileState {
     let bytes = serde_json::to_vec(&checkpoint).unwrap();
     serde_json::from_slice::<Checkpoint>(&bytes)
         .unwrap()
-        .restore(offset)
+        .restore(offset, state.source_generation)
 }
 
 #[test]
@@ -63,15 +63,101 @@ fn unknown_snapshot_version_is_not_modified() {
     let path = directory.path().join("token.sqlite");
     let db = Connection::open(&path).unwrap();
     db.pragma_update(None, "user_version", 2).unwrap();
+    drop(db);
     let before = fs::read(&path).unwrap();
-    assert!(store::Store::open(db).is_err());
+    let error = store::Store::open(&path).err().unwrap();
+    assert_eq!(error.to_string(), "unsupported Token snapshot version 2");
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn unknown_wal_version_does_not_checkpoint_unmerged_data_on_open() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("token.sqlite");
+    let wal = directory.path().join("token.sqlite-wal");
+    let db = Connection::open(&path).unwrap();
+    db.pragma_update(None, "journal_mode", "WAL").unwrap();
+    db.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+        .unwrap();
+    db.execute_batch(
+        "CREATE TABLE future (entry TEXT);
+         INSERT INTO future VALUES ('uncheckpointed');
+         PRAGMA user_version = 2;",
+    )
+    .unwrap();
+    drop(db);
+
+    let main_before = fs::read(&path).unwrap();
+    let wal_before = fs::read(&wal).unwrap();
+    assert!(wal_before.len() > 32);
+    let error = store::Store::open(&path).err().unwrap();
+    assert_eq!(error.to_string(), "unsupported Token snapshot version 2");
+    assert_eq!(fs::read(&path).unwrap(), main_before);
+    assert_eq!(fs::read(&wal).unwrap(), wal_before);
+}
+
+#[test]
+fn unversioned_database_with_existing_schema_is_not_modified() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("token.sqlite");
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch("CREATE TABLE unrelated (entry TEXT);")
+        .unwrap();
+    drop(db);
+    let before = fs::read(&path).unwrap();
+    let error = store::Store::open(&path).err().unwrap();
+    assert_eq!(error.to_string(), "unversioned Token snapshot is not empty");
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+#[test]
+fn additive_payload_fields_do_not_change_counts_or_pending_evidence() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = fs::canonicalize(dir.path()).unwrap().join("rollout.jsonl");
+    fs::write(&path, source_rows()[..3].concat()).unwrap();
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut state = FileState::default();
+    assert!(
+        state
+            .read_with_budget(&path, cutoff, &mut Budget::new(std::iter::empty()))
+            .unwrap()
+    );
+    let event = &mut state.events[0];
+    event.native_response_id = Some(NativeResponseIdentity {
+        id: "fixture-response".into(),
+        full_counts: false,
+    });
+    let mut observation = serde_json::to_value(Observation::capture(event)).unwrap();
+    observation["future_metadata"] = json!({"present":true});
+    let decoded: Observation = serde_json::from_value(observation).unwrap();
+    let restored = decoded
+        .into_event(
+            event.id,
+            event.original_id,
+            event.session.clone(),
+            event.source_end,
+        )
+        .unwrap();
+    assert!(restored == *event);
+
+    let (offset, checkpoint) = Checkpoint::capture(&state);
+    let mut data = serde_json::to_value(checkpoint).unwrap();
+    data.as_object_mut()
+        .unwrap()
+        .remove("scope_parent_candidates");
+    data["future_metadata"] = json!(true);
+    let decoded: Checkpoint = serde_json::from_value(data).unwrap();
+    let restored = decoded.restore(offset, state.source_generation);
+    assert!(restored.scope_parent_candidates.is_empty());
+    assert_eq!(restored.offset, offset);
+    assert_eq!(restored.previous, state.previous);
 }
 
 #[test]
 #[ignore = "requires a generated synthetic session directory"]
 fn synthetic_token_snapshot_baseline() {
-    let source = std::env::var_os("CODEX_USAGE_TOKEN_FIXTURE").expect("synthetic fixture directory");
+    let source =
+        std::env::var_os("CODEX_USAGE_TOKEN_FIXTURE").expect("synthetic fixture directory");
     let mut paths = fs::read_dir(fs::canonicalize(source).unwrap())
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -82,18 +168,23 @@ fn synthetic_token_snapshot_baseline() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("token.sqlite");
     let scan_started = std::time::Instant::now();
-    let mut store = store::Store::open(Connection::open(&path).unwrap()).unwrap();
+    let mut store = store::Store::open(&path).unwrap();
     for source in &paths {
         let mut state = FileState::default();
         let mut budget = Budget::new(std::iter::empty());
         assert!(state.read_with_budget(source, cutoff, &mut budget).unwrap());
         assert_eq!(state.events.len(), 1);
-        store.save(source.file_name().unwrap().as_encoded_bytes(), None, &state, false).unwrap();
+        store
+            .save(source.file_name().unwrap().as_encoded_bytes(), None, &state)
+            .unwrap();
     }
+    let wal_bytes = fs::metadata(directory.path().join("token.sqlite-wal"))
+        .unwrap()
+        .len();
     drop(store);
     let scan = scan_started.elapsed();
     let read_started = std::time::Instant::now();
-    let store = store::Store::open(Connection::open(&path).unwrap()).unwrap();
+    let store = store::Store::open(&path).unwrap();
     let mut totals = [0_u64; 4];
     for source in &paths {
         let key = source.file_name().unwrap().as_encoded_bytes();
@@ -103,15 +194,21 @@ fn synthetic_token_snapshot_baseline() {
         assert_eq!(rows.len(), 1);
         let usage = rows[0].delta;
         for (total, value) in totals.iter_mut().zip([
-            usage.input_tokens, usage.cached_input_tokens, usage.output_tokens, usage.total_tokens,
+            usage.input_tokens,
+            usage.cached_input_tokens,
+            usage.output_tokens,
+            usage.total_tokens,
         ]) {
             *total += value;
         }
     }
     let sessions = paths.len() as u64;
-    assert_eq!(totals, [10 * sessions, 4 * sessions, 2 * sessions, 12 * sessions]);
+    assert_eq!(
+        totals,
+        [10 * sessions, 4 * sessions, 2 * sessions, 12 * sessions]
+    );
     println!(
-        "{sessions} sessions: totals={totals:?}, scan/save={scan:?}, reopen/read={:?}, sqlite_bytes={}",
+        "{sessions} sessions: totals={totals:?}, scan/save={scan:?}, reopen/read={:?}, sqlite_bytes={}, wal_bytes={wal_bytes}",
         read_started.elapsed(),
         fs::metadata(path).unwrap().len(),
     );
@@ -180,7 +277,7 @@ fn each_complete_line_checkpoint_resumes_with_identical_events() {
                 let bytes = serde_json::to_vec(&Observation::capture(&event)).unwrap();
                 serde_json::from_slice::<Observation>(&bytes)
                     .unwrap()
-                    .into_event(event.id, event.session)
+                    .into_event(event.id, event.original_id, event.session, event.source_end)
                     .unwrap()
             })
             .collect();
@@ -314,8 +411,8 @@ fn sqlite_full_rolls_back_cursor_observations_and_revision_then_reopens() {
     let mut budget = Budget::new(std::iter::empty());
     budget.read_left = rows[..3].iter().map(Vec::len).sum::<usize>() as u64;
     assert!(!state.read_with_budget(&path, cutoff, &mut budget).unwrap());
-    let mut store = store::Store::open(Connection::open(&db).unwrap()).unwrap();
-    let first = store.save(key, None, &state, false).unwrap();
+    let mut store = store::Store::open(&db).unwrap();
+    let first = store.save(key, None, &state).unwrap();
     let reader = store::Store {
         db: Connection::open(&db).unwrap(),
     };
@@ -335,7 +432,7 @@ fn sqlite_full_rolls_back_cursor_observations_and_revision_then_reopens() {
         .pragma_update(None, "max_page_count", page_count)
         .unwrap();
     let saved_model = std::mem::replace(&mut tail.events[0].model, "x".repeat(65536));
-    let failure = store.save(key, Some(first), &tail, false).unwrap_err();
+    let failure = store.save(key, Some(first), &tail).unwrap_err();
     assert_eq!(
         failure
             .downcast_ref::<rusqlite::Error>()
@@ -348,15 +445,12 @@ fn sqlite_full_rolls_back_cursor_observations_and_revision_then_reopens() {
     drop(store);
 
     tail.events[0].model = saved_model;
-    let mut store = store::Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut store = store::Store::open(&db).unwrap();
     store
         .db
         .pragma_update(None, "max_page_count", page_count + 100)
         .unwrap();
-    assert_eq!(
-        store.save(key, Some(first), &tail, false).unwrap(),
-        first + 1
-    );
+    assert_eq!(store.save(key, Some(first), &tail).unwrap(), first + 1);
     assert_eq!(
         reader.checkpoint(key).unwrap().unwrap().1.offset,
         old.offset
@@ -382,8 +476,7 @@ fn abrupt_process_exit_keeps_only_committed_batches() {
     let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     if let Some(home) = std::env::var_os(TEST_HOME) {
         let home = std::path::PathBuf::from(home);
-        let mut store =
-            store::Store::open(Connection::open(home.join("tokens.sqlite3")).unwrap()).unwrap();
+        let mut store = store::Store::open(&home.join("tokens.sqlite3")).unwrap();
         let (revision, mut state) = store.checkpoint(key).unwrap().unwrap();
         assert!(
             state
@@ -398,7 +491,7 @@ fn abrupt_process_exit_keeps_only_committed_batches() {
             .db
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
-        store::Store::stage(&tx, key, Some(revision), &state, false).unwrap();
+        store::Store::stage(&tx, key, Some(revision), &state).unwrap();
         tx.cache_flush().unwrap();
         if std::env::var_os(TEST_COMMIT).is_some() {
             tx.commit().unwrap();
@@ -418,8 +511,8 @@ fn abrupt_process_exit_keeps_only_committed_batches() {
     let mut budget = Budget::new(std::iter::empty());
     budget.read_left = rows[..3].iter().map(Vec::len).sum::<usize>() as u64;
     assert!(!prefix.read_with_budget(&path, cutoff, &mut budget).unwrap());
-    let mut store = store::Store::open(Connection::open(&db).unwrap()).unwrap();
-    let first = store.save(key, None, &prefix, false).unwrap();
+    let mut store = store::Store::open(&db).unwrap();
+    let first = store.save(key, None, &prefix).unwrap();
     drop(store);
 
     for committed in [false, true] {
@@ -436,7 +529,7 @@ fn abrupt_process_exit_keeps_only_committed_batches() {
             child.env(TEST_COMMIT, "1");
         }
         assert_eq!(child.status().unwrap().code(), Some(37));
-        let store = store::Store::open(Connection::open(&db).unwrap()).unwrap();
+        let store = store::Store::open(&db).unwrap();
         let (revision, state) = store.checkpoint(key).unwrap().unwrap();
         assert_eq!(revision, first + i64::from(committed));
         assert_eq!(
@@ -455,7 +548,51 @@ fn abrupt_process_exit_keeps_only_committed_batches() {
 }
 
 #[test]
-fn replacing_a_source_replaces_only_its_observations_and_rejects_a_stale_batch() {
+fn appending_to_the_same_state_writes_only_new_source_positions() {
+    let rows = source_rows();
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let path = root.join("rollout.jsonl");
+    let db = root.join("tokens.sqlite3");
+    let cutoff = NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    let mut legacy: serde_json::Value = serde_json::from_slice(&rows[2]).unwrap();
+    legacy.as_object_mut().unwrap().remove("ordinal");
+    let legacy = format!("{legacy}\n");
+    fs::write(
+        &path,
+        [rows[..2].concat(), legacy.as_bytes().to_vec()].concat(),
+    )
+    .unwrap();
+    let mut state = FileState::default();
+    assert!(
+        state
+            .read_with_budget(&path, cutoff, &mut Budget::new(std::iter::empty()))
+            .unwrap()
+    );
+    let mut store = store::Store::open(&db).unwrap();
+    let first = store.save(b"source", None, &state).unwrap();
+    let second = store.save(b"source", Some(first), &state).unwrap();
+    assert_eq!(store.observations(b"source").unwrap().len(), 1);
+
+    let mut file = OpenOptions::new().append(true).open(&path).unwrap();
+    file.write_all(legacy.as_bytes()).unwrap();
+    drop(file);
+    assert!(
+        state
+            .read_with_budget(&path, cutoff, &mut Budget::new(std::iter::empty()))
+            .unwrap()
+    );
+    assert_eq!(state.events.len(), 2);
+    assert_eq!(state.events[0].id, state.events[1].id);
+    assert!(state.events[0].source_end < state.events[1].source_end);
+    store.save(b"source", Some(second), &state).unwrap();
+    drop(store);
+    let store = store::Store::open(&db).unwrap();
+    assert!(store.observations(b"source").unwrap() == state.events);
+}
+
+#[test]
+fn replacing_a_source_auto_resets_observations_and_removes_only_orphan_sessions() {
     let rows = source_rows();
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
@@ -468,28 +605,43 @@ fn replacing_a_source_replaces_only_its_observations_and_rejects_a_stale_batch()
             .read_with_budget(&path, cutoff, &mut Budget::new(std::iter::empty()))
             .unwrap()
     );
-    let mut store =
-        store::Store::open(Connection::open(root.join("tokens.sqlite3")).unwrap()).unwrap();
-    let original = store.save(b"source-a", None, &state, false).unwrap();
-    store.save(b"source-b", None, &state, false).unwrap();
+    let mut store = store::Store::open(&root.join("tokens.sqlite3")).unwrap();
+    let original = store.save(b"source-a", None, &state).unwrap();
+    store.save(b"source-b", None, &state).unwrap();
 
-    fs::write(&path, rows[..3].concat()).unwrap();
-    let mut replacement = FileState::default();
+    const NEW_SESSION: &str = "00000000-0000-4000-8000-000000000011";
+    fs::rename(&path, root.join("previous-rollout.jsonl")).unwrap();
+    let text = String::from_utf8(rows.concat())
+        .unwrap()
+        .replace(SESSION, NEW_SESSION);
+    fs::write(&path, format!("{text}\n")).unwrap();
+    let (_, mut replacement) = store.checkpoint(b"source-a").unwrap().unwrap();
     assert!(
         replacement
             .read_with_budget(&path, cutoff, &mut Budget::new(std::iter::empty()))
             .unwrap()
     );
+    assert!(replacement.offset > state.offset);
     store
-        .save(b"source-a", Some(original), &replacement, true)
+        .save(b"source-a", Some(original), &replacement)
         .unwrap();
-    assert!(
-        store
-            .save(b"source-a", Some(original), &state, false)
-            .is_err()
-    );
+    assert!(store.save(b"source-a", Some(original), &state).is_err());
     assert!(store.observations(b"source-a").unwrap() == replacement.events);
     assert!(store.observations(b"source-b").unwrap() == state.events);
+    store
+        .db
+        .execute(
+            "DELETE FROM token_sources WHERE source = ?1",
+            [b"source-b".as_slice()],
+        )
+        .unwrap();
+    let retained_session: String = store
+        .db
+        .query_row("SELECT session FROM token_sessions", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(retained_session, NEW_SESSION);
+    assert!(store.observations(b"source-b").unwrap().is_empty());
+    assert!(store.observations(b"source-a").unwrap() == replacement.events);
 }
 
 #[test]
@@ -535,27 +687,25 @@ fn reopened_duplicate_rollouts_match_the_live_resolver_and_daily_totals() {
 
     let db = root.join("tokens.sqlite3");
     let cutoff = today - chrono::Days::new((RETENTION_DAYS - 1) as u64);
-    let mut store = store::Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut store = store::Store::open(&db).unwrap();
     for name in sources {
         let path = sessions.join(name);
         let mut state = FileState::default();
         let mut budget = Budget::new(std::iter::empty());
         budget.read_left = rows[..5].iter().map(Vec::len).sum::<usize>() as u64;
         assert!(!state.read_with_budget(&path, cutoff, &mut budget).unwrap());
-        let revision = store.save(name.as_bytes(), None, &state, false).unwrap();
+        let revision = store.save(name.as_bytes(), None, &state).unwrap();
         let (_, mut state) = store.checkpoint(name.as_bytes()).unwrap().unwrap();
         assert!(
             state
                 .read_with_budget(&path, cutoff, &mut Budget::new(std::iter::empty()))
                 .unwrap()
         );
-        store
-            .save(name.as_bytes(), Some(revision), &state, false)
-            .unwrap();
+        store.save(name.as_bytes(), Some(revision), &state).unwrap();
     }
     drop(store);
 
-    let store = store::Store::open(Connection::open(&db).unwrap()).unwrap();
+    let store = store::Store::open(&db).unwrap();
     let mut index = make_index("restored-evidence");
     for name in sources {
         let (_, mut state) = store.checkpoint(name.as_bytes()).unwrap().unwrap();
@@ -597,7 +747,7 @@ fn bounded_batches_commit_beyond_the_in_memory_observation_limit() {
     file.flush().unwrap();
     drop(file);
 
-    let mut store = store::Store::open(Connection::open(&db).unwrap()).unwrap();
+    let mut store = store::Store::open(&db).unwrap();
     let mut previous = None;
     let size = fs::metadata(&path).unwrap().len();
     loop {
@@ -616,7 +766,7 @@ fn bounded_batches_commit_beyond_the_in_memory_observation_limit() {
         assert!(state.events.len() <= 1024);
         let (next, _) = Checkpoint::capture(&state);
         assert!(next > old_offset);
-        previous = Some(store.save(key, revision, &state, false).unwrap());
+        previous = Some(store.save(key, revision, &state).unwrap());
         if complete {
             assert_eq!(next, size);
             break;

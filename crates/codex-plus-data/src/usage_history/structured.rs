@@ -1563,6 +1563,8 @@ struct NativeResponseIdentity {
 
 #[derive(Clone, PartialEq, Eq)]
 struct UsageEvent {
+    #[cfg(test)]
+    source_end: u64,
     native_response_id: Option<NativeResponseIdentity>,
     id: [u8; 32],
     original_id: [u8; 32],
@@ -1879,6 +1881,8 @@ enum PendingUsageReceipt {
 
 #[derive(Default)]
 struct FileState {
+    #[cfg(test)]
+    source_generation: u64,
     pending_response: Option<PendingUsageReceipt>,
     stamp: Option<(u64, Option<SystemTime>, Option<(u64, u64)>)>,
     offset: u64,
@@ -3458,7 +3462,11 @@ impl FileState {
                     || old.2 != stamp.2
                     || old.0 == stamp.0 && old.1 != stamp.1)
         }) {
-            *self = Self::default();
+            *self = Self {
+                #[cfg(test)]
+                source_generation: self.source_generation + 1,
+                ..Self::default()
+            };
             meter = index_budget::Meter::new(self);
             meter.refresh(self, 0);
         }
@@ -4099,6 +4107,8 @@ impl FileState {
                     })
                 });
         self.events.push(UsageEvent {
+            #[cfg(test)]
+            source_end: self.offset,
             native_response_id: receipt.and_then(|receipt| {
                 let PendingUsageReceipt::One {
                     id,

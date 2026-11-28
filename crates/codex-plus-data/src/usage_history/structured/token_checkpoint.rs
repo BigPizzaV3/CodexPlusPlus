@@ -32,10 +32,8 @@ struct StoredTokens {
 struct Counter(#[serde(with = "StoredTokens")] Tokens);
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Observation {
     native_response: Option<(Box<str>, bool)>,
-    original_id: [u8; 32],
     turn: String,
     model: String,
     timestamp: String,
@@ -63,7 +61,6 @@ impl Observation {
                 .native_response_id
                 .as_ref()
                 .map(|receipt| (receipt.id.clone(), receipt.full_counts)),
-            original_id: event.original_id,
             turn: event.turn.clone(),
             model: event.model.clone(),
             timestamp: event.timestamp.clone(),
@@ -85,13 +82,20 @@ impl Observation {
         }
     }
 
-    fn into_event(self, id: [u8; 32], session: String) -> anyhow::Result<UsageEvent> {
+    fn into_event(
+        self,
+        id: [u8; 32],
+        original_id: [u8; 32],
+        session: String,
+        source_end: u64,
+    ) -> anyhow::Result<UsageEvent> {
         Ok(UsageEvent {
+            source_end,
             native_response_id: self
                 .native_response
                 .map(|(id, full_counts)| NativeResponseIdentity { id, full_counts }),
             id,
-            original_id: self.original_id,
+            original_id,
             session,
             turn: self.turn,
             model: self.model,
@@ -124,7 +128,6 @@ enum StoredPendingReceipt {
 }
 
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Checkpoint {
     pending_response: Option<StoredPendingReceipt>,
     stamp: Option<SourceStamp>,
@@ -145,9 +148,12 @@ struct Checkpoint {
     provider: String,
     role: String,
     history_boundary: UsageHistoryBoundary,
+    #[serde(default)]
     inherited_contexts: Vec<InheritedUsageContext>,
+    #[serde(default)]
     model_observations: HashMap<String, SessionModelObservation>,
     legacy_header: Option<(String, String)>,
+    #[serde(default)]
     scope_parent_candidates: BTreeMap<String, HashSet<Option<String>>>,
     issues: usize,
     skipping: bool,
@@ -160,12 +166,23 @@ impl Checkpoint {
         (
             offset,
             Self {
-                pending_response: state.pending_response.as_ref().map(|receipt| match receipt {
-                    PendingUsageReceipt::Unusable => StoredPendingReceipt::Unusable,
-                    PendingUsageReceipt::One { id, at, usage, total } => {
-                        StoredPendingReceipt::One(id.clone(), *at, Counter(*usage), Counter(*total))
-                    }
-                }),
+                pending_response: state
+                    .pending_response
+                    .as_ref()
+                    .map(|receipt| match receipt {
+                        PendingUsageReceipt::Unusable => StoredPendingReceipt::Unusable,
+                        PendingUsageReceipt::One {
+                            id,
+                            at,
+                            usage,
+                            total,
+                        } => StoredPendingReceipt::One(
+                            id.clone(),
+                            *at,
+                            Counter(*usage),
+                            Counter(*total),
+                        ),
+                    }),
                 stamp: state.stamp,
                 resume_pending: state.resume_pending
                     || state.reader.is_some()
@@ -201,13 +218,17 @@ impl Checkpoint {
         )
     }
 
-    fn restore(self, offset: u64) -> FileState {
+    fn restore(self, offset: u64, source_generation: u64) -> FileState {
         FileState {
+            source_generation,
             pending_response: self.pending_response.map(|receipt| match receipt {
                 StoredPendingReceipt::Unusable => PendingUsageReceipt::Unusable,
-                StoredPendingReceipt::One(id, at, usage, total) => {
-                    PendingUsageReceipt::One { id, at, usage: usage.0, total: total.0 }
-                }
+                StoredPendingReceipt::One(id, at, usage, total) => PendingUsageReceipt::One {
+                    id,
+                    at,
+                    usage: usage.0,
+                    total: total.0,
+                },
             }),
             stamp: self.stamp,
             offset,
