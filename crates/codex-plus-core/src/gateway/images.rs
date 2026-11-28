@@ -18,6 +18,7 @@ pub const IMAGE_OFF: &str = "off";
 
 /// 生图模型的名字特征。只用来把它们挑出来：不进聊天模型列表、列在生图模型的选项里。
 /// 名字里带 `image` / `imagine` 的（gpt-image-2、grok-imagine-image、qwen-image）都算。
+/// `banana` 覆盖 `gemini-nano-banana-2.1` 这类名字里没有 `image` 的生图模型。
 const IMAGE_MODEL_MARKS: &[&str] = &[
     "image",
     "imagine",
@@ -31,13 +32,61 @@ const IMAGE_MODEL_MARKS: &[&str] = &[
     "stable-diffusion",
     "sdxl",
     "midjourney",
+    "banana",
 ];
+
+/// 其他非对话模型的名字特征：视频、转写、语音、嵌入、决策。生图仍由 [`is_image_model`] 判断。
+const NON_CHAT_MODEL_MARKS: &[&str] = &[
+    "wan-",
+    "happyhorse",
+    "seedance",
+    "hailuo",
+    "veo",
+    "kling",
+    "sora",
+    "transcribe",
+    "scribe",
+    "tts",
+    "speech",
+    "eleven_v",
+    "embedding",
+    "decisions",
+    "jev-",
+];
+
+fn model_base_name(model: &str) -> String {
+    let model = model.trim().to_ascii_lowercase();
+    model.rsplit('/').next().unwrap_or(&model).to_string()
+}
+
+/// 带 `-` / `_` 的特征按子串匹配（如 `wan-`、`eleven_v`）。
+/// 纯字母特征按段匹配，避免 `kling` 误伤 `inkling` 这类聊天模型。
+fn mark_matches(name: &str, mark: &str) -> bool {
+    if mark.contains('-') || mark.contains('_') {
+        return name.contains(mark);
+    }
+    name == mark
+        || name.contains(&format!("-{mark}"))
+        || name.contains(&format!("_{mark}"))
+        || name.contains(&format!("{mark}-"))
+        || name.contains(&format!("{mark}_"))
+}
 
 /// 按名字判断是不是生图模型（不分大小写，忽略供应商前缀）。
 pub fn is_image_model(model: &str) -> bool {
-    let model = model.trim().to_ascii_lowercase();
-    let name = model.rsplit('/').next().unwrap_or(&model);
+    let name = model_base_name(model);
     IMAGE_MODEL_MARKS.iter().any(|mark| name.contains(mark))
+}
+
+/// 按名字判断是不是不该进聊天模型列表的模型：生图，以及视频 / 音频 / 嵌入 / 决策等。
+pub fn is_non_chat_model(model: &str) -> bool {
+    if is_image_model(model) {
+        return true;
+    }
+    let name = model_base_name(model);
+    NON_CHAT_MODEL_MARKS
+        .iter()
+        .any(|mark| mark_matches(&name, mark))
 }
 
 /// ChatGPT 订阅账号：走 ChatGPT 后端的生图接口，模型由后端自己选。
@@ -120,7 +169,8 @@ pub fn targets(
     let wanted = gateway.image_model_for(agent).trim();
     if wanted.eq_ignore_ascii_case(IMAGE_OFF) {
         return Err(
-            "Codex++ 本地服务里这个 Agent 的生图已关闭：在「Agent 接入」里选一个生图模型".to_string(),
+            "Codex++ 本地服务里这个 Agent 的生图已关闭：在「Agent 接入」里选一个生图模型"
+                .to_string(),
         );
     }
     let target = |option: &ImageOption| {
@@ -366,12 +416,80 @@ mod tests {
             "imagen-4.0",
             "FLUX.1-dev",
             "doubao-seedream-4-0",
+            "google/gemini-nano-banana-2.1",
         ] {
             assert!(is_image_model(model), "{model}");
         }
-        for model in ["gpt-5.5", "deepseek-v4-pro", "kimi-k3", "claude-opus-5-5"] {
+        for model in [
+            "gpt-5.5",
+            "deepseek-v4-pro",
+            "kimi-k3",
+            "claude-opus-5-5",
+            "alibaba/wan-3.0",
+            "thinkingmachines/inkling",
+        ] {
             assert!(!is_image_model(model), "{model}");
         }
+    }
+
+    #[test]
+    fn non_chat_models_are_told_apart_by_name() {
+        for model in [
+            "alibaba/wan-2.6",
+            "alibaba/wan-3.0",
+            "alibaba/wan-3.0-prime",
+            "alibaba/happyhorse-1.0",
+            "alibaba/happyhorse-1.1",
+            "bytedance/seedance-2.5",
+            "bytedance/seedance-2.0-fast",
+            "minimax/hailuo-3",
+            "minimax/hailuo-3-max",
+            "google/veo-3",
+            "kling-v1",
+            "openai/sora-2",
+            "openai/gpt-transcribe",
+            "openai/gpt-4o-mini-transcribe",
+            "openai/gpt-4o-transcribe-diarize",
+            "elevenlabs/scribe_v2",
+            "elevenlabs/eleven_v4",
+            "openai/text-embedding-3-small",
+            "openai/text-embedding-3-large",
+            "qwen/text-embedding-v4",
+            "typesafe/jev-latest",
+            "google/gemini-nano-banana-2.1",
+            "openai/dall-e-3",
+        ] {
+            assert!(is_non_chat_model(model), "{model}");
+        }
+        for model in [
+            "gpt-5.5",
+            "deepseek-v4-pro",
+            "kimi-k3",
+            "claude-opus-5-5",
+            "thinkingmachines/inkling",
+            "openai/gpt-5.3-codex",
+            "openai/gpt-5.4-pro",
+        ] {
+            assert!(!is_non_chat_model(model), "{model}");
+        }
+    }
+
+    #[test]
+    fn chat_models_drop_non_chat_names() {
+        let relay = provider(
+            "ofox",
+            "gpt-5.5\nalibaba/wan-3.0\nbytedance/seedance-2.5\nopenai/text-embedding-3-small\ntypesafe/jev-latest\ngoogle/gemini-nano-banana-2.1\nelevenlabs/eleven_v4\nthinkingmachines/inkling\nopenai/gpt-5.3-codex",
+        )
+        .relay;
+        let models = crate::gateway::route::chat_models(&relay);
+        assert_eq!(
+            models,
+            vec![
+                "gpt-5.5".to_string(),
+                "thinkingmachines/inkling".to_string(),
+                "openai/gpt-5.3-codex".to_string(),
+            ]
+        );
     }
 
     #[test]

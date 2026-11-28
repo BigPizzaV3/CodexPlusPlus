@@ -94,11 +94,11 @@ pub fn relay_models(relay: &RelayProfile) -> Vec<String> {
     models
 }
 
-/// 能聊天的模型：去掉生图模型（见 [`crate::gateway::images::is_image_model`]）。
+/// 能聊天的模型：去掉生图和其他非对话模型（见 [`crate::gateway::images::is_non_chat_model`]）。
 pub fn chat_models(relay: &RelayProfile) -> Vec<String> {
     relay_models(relay)
         .into_iter()
-        .filter(|model| !crate::gateway::images::is_image_model(model))
+        .filter(|model| !crate::gateway::images::is_non_chat_model(model))
         .collect()
 }
 
