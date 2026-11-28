@@ -1193,6 +1193,7 @@ mod tests {
     fn original_model_is_required_for_new_proofs_and_legacy_proofs_are_retained() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [71; 32],
             original_id: [71; 32],
@@ -1472,6 +1473,7 @@ mod tests {
             cached: 20,
         };
         let event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [7; 32],
             original_id: [7; 32],
@@ -1541,6 +1543,7 @@ mod tests {
             cached: 20,
         };
         let event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [8; 32],
             original_id: [8; 32],
@@ -1644,6 +1647,7 @@ mod tests {
             cached: 20,
         };
         let event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [9; 32],
             original_id: [9; 32],
@@ -1712,6 +1716,7 @@ mod tests {
     fn incomplete_original_does_not_clear_an_inherited_count_conflict() {
         let at = Local::now().timestamp_millis();
         let mut event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [254; 32],
             original_id: [254; 32],
@@ -1757,6 +1762,7 @@ mod tests {
     fn incomplete_observation_does_not_persist_a_new_count_conflict() {
         let at = Local::now().timestamp_millis();
         let mut event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [253; 32],
             original_id: [253; 32],
@@ -1797,6 +1803,7 @@ mod tests {
         let at = Local::now().timestamp_millis();
         let cutoff = Local::now().date_naive() - Days::days(RETENTION_DAYS - 1);
         let event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [98; 32],
             original_id: [98; 32],
@@ -1878,6 +1885,7 @@ mod tests {
     fn count_conflict_markers_expire_and_saturation_fails_closed() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [255; 32],
             original_id: [255; 32],
@@ -1936,6 +1944,7 @@ mod tests {
     fn failed_load_retry_preserves_pending_conflicts_and_rejections() {
         let at = Local::now().timestamp_millis();
         let event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [10; 32],
             original_id: [10; 32],
@@ -2014,6 +2023,7 @@ mod tests {
             cached: 20,
         };
         let event = UsageEvent {
+            source_end: 0,
             native_response_id: None,
             id: [7; 32],
             original_id: [7; 32],
