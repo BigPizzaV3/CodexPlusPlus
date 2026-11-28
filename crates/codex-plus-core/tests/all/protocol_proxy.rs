@@ -415,32 +415,39 @@ fn chat_conversion_forwards_plaintext_encrypted_agent_content_in_order() {
 }
 
 #[test]
-fn chat_conversion_rejects_plaintext_encrypted_content_outside_agent_message() {
-    let error = responses_to_chat_completions(json!({
+fn chat_conversion_degrades_encrypted_content_outside_agent_message_to_placeholder() {
+    // #3288：读不了的加密 agent 内容不再让整个请求失败，而是换成占位说明继续对话
+    //（与原生压缩项的处理方式一致）。
+    let converted = responses_to_chat_completions(json!({
         "model": "custom-model",
         "input": [{"type": "message", "role": "user", "content": [
             {"type": "input_text", "text": "Payload:"},
             {"type": "encrypted_content", "text": "private-agent-payload"}
         ]}]
     }))
-    .expect_err("普通 message 里的 encrypted_content 必须 fail closed");
-    let diagnostic = format!("{error:#}");
-    assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
-    assert!(!diagnostic.contains("private-agent-payload"));
+    .expect("读不了的加密内容应降级为占位说明而不是拒绝整个请求");
+    let messages = converted["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"].as_str().unwrap();
+    assert!(content.contains("[Context note]"));
+    assert!(!content.contains("private-agent-payload"), "不可读载荷不得透传");
 }
 
 #[test]
-fn chat_conversion_rejects_agent_message_without_confirmed_payload_header() {
-    let error = responses_to_chat_completions(json!({
+fn chat_conversion_degrades_agent_message_without_confirmed_payload_header() {
+    let converted = responses_to_chat_completions(json!({
         "model": "custom-model",
         "input": [{"type": "agent_message", "content": [
             {"type": "encrypted_content", "encrypted_content": "private-agent-payload"}
         ]}]
     }))
-    .expect_err("缺少 Payload: 头部的 agent_message 不得透传 encrypted_content");
-    let diagnostic = format!("{error:#}");
-    assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
-    assert!(!diagnostic.contains("private-agent-payload"));
+    .expect("缺少 Payload: 头部的 agent_message 应降级为占位说明");
+    let messages = converted["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"].as_str().unwrap().contains("[Context note]"));
+    assert!(!messages[0]["content"].as_str().unwrap().contains("private-agent-payload"));
 }
 
 #[test]
@@ -448,31 +455,36 @@ fn chat_conversion_rejects_url_safe_base64_agent_payload_as_opaque() {
     // 合法的 base64url 密文：含 `_`，解码后可打印 ASCII 占比明显低于阈值。
     // 字母表归一化写错时这里会退化成「解码失败 → 当明文转发」，上游收到无意义载荷。
     let opaque = "BU6X4ClyuwRNlt8ocboDTJXeJ3C5AkuU3SZvuAFKk9wlbrcASZLbJG22_0iR2iNs";
-    let error = responses_to_chat_completions(json!({
+    let converted = responses_to_chat_completions(json!({
         "model": "custom-model",
         "input": [{"type": "agent_message", "content": [
             {"type": "input_text", "text": "Message Type: NEW_TASK Payload:"},
             {"type": "encrypted_content", "encrypted_content": opaque}
         ]}]
     }))
-    .expect_err("base64url 密文不得按明文转发给 Chat 上游");
-    let diagnostic = format!("{error:#}");
-    assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
-    assert!(!diagnostic.contains(opaque));
+    .expect("base64url 密文应降级为占位说明而不是按明文转发给 Chat 上游");
+    let messages = converted["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    let content = messages[0]["content"].as_str().unwrap();
+    assert!(content.contains("[Context note]"));
+    assert!(!content.contains(opaque), "opaque 密文不得透传");
 }
 
 #[test]
-fn chat_conversion_rejects_object_shaped_encrypted_content() {
-    let error = responses_to_chat_completions(json!({
+fn chat_conversion_degrades_object_shaped_encrypted_content() {
+    let converted = responses_to_chat_completions(json!({
         "model": "x",
         "input": [{"type": "message", "role": "user", "content": {
             "type": "encrypted_content", "encrypted_content": "private-agent-payload"
         }}]
     }))
-    .expect_err("content 为对象形态时同样必须拒绝 encrypted_content");
-    let diagnostic = format!("{error:#}");
-    assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
-    assert!(!diagnostic.contains("private-agent-payload"));
+    .expect("content 为对象形态时应降级为占位说明");
+    let messages = converted["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["role"], "user");
+    assert!(messages[0]["content"].as_str().unwrap().contains("[Context note]"));
+    assert!(!messages[0]["content"].as_str().unwrap().contains("private-agent-payload"));
 }
 
 #[test]
@@ -495,14 +507,19 @@ fn chat_conversion_rejects_opaque_encrypted_agent_content_without_echoing_payloa
         json!([{"type":"message","role":"user","content":[{"type":"encrypted_content"}]}]),
     ] {
         for standard in [false, true] {
-            let error = responses_to_chat_completions_with_options(
+            let converted = responses_to_chat_completions_with_options(
                 json!({"model":"custom-model","input":input}),
                 standard,
             )
-            .expect_err("opaque encrypted agent 内容必须明确拒绝，不能静默丢弃或当作文本转发");
-            let diagnostic = format!("{error:#}");
-            assert!(diagnostic.contains("unsupported_encrypted_agent_content"));
-            assert!(!diagnostic.contains(opaque));
+            .expect("opaque encrypted agent 内容应降级为占位说明继续对话");
+            let messages = converted["messages"].as_array().unwrap();
+            let content = messages
+                .iter()
+                .find(|message| message["role"] == "user")
+                .map(|message| message["content"].to_string())
+                .unwrap_or_default();
+            assert!(content.contains("[Context note]"));
+            assert!(!content.contains(opaque));
         }
     }
 }
@@ -533,7 +550,7 @@ fn chat_conversion_keeps_plaintext_and_existing_reasoning_compaction_contracts()
 }
 
 #[tokio::test]
-async fn encrypted_agent_content_is_rejected_before_contacting_chat_upstream() {
+async fn encrypted_agent_content_degrades_to_placeholder_before_chat_upstream() {
     for body in [
         json!({"model":"custom-model","stream":false,"input":[
             {"type":"encrypted_content","encrypted_content":"mMn9x0Kc2QvZ7LtR4bYwJpE1sH6dGfUgA0TiOeNkVXqBcD9ylZsKmWrT3uPh"}
@@ -561,8 +578,12 @@ async fn encrypted_agent_content_is_rejected_before_contacting_chat_upstream() {
         let result = open_responses_proxy_request_with_settings(&body.to_string(), settings).await;
         let _ = stop.send(());
         let request = upstream.await.unwrap();
-        assert!(result.is_err(), "必须在发送上游请求前拒绝不支持的加密内容");
-        assert!(request.is_none(), "不得向 Chat 上游发送删掉 payload 的请求");
+        let result = result.expect("不可读加密内容应降级为占位说明而不是拒绝请求");
+        let request = request.expect("降级后的请求应照常发给 Chat 上游");
+        let sent = request.1.to_string();
+        assert!(sent.contains("[Context note]"), "上游应收到占位说明");
+        assert!(!sent.contains("opaque-agent-payload"));
+        assert!(!sent.contains("private-agent-payload"));
     }
 }
 
@@ -8596,4 +8617,60 @@ fn responses_item_id_normalization_keeps_opaque_compaction_and_long_ids() {
     assert_eq!(body["input"][0]["id"].as_str().unwrap().len(), 389, "不透明压缩 id 原样保留");
     assert_eq!(body["input"][1]["id"], json!(long_message), "改写后超过 64 字符时不改写");
     assert_eq!(body["input"][2]["id"], "cmp_resp_compact_1", "旧 cp_ 前缀仍然修复");
+}
+
+#[test]
+fn chat_sse_length_with_only_reasoning_fails_without_retry() {
+    // issue #3301：只输出思考就用满输出上限，不能当正常结束静默吞掉；
+    // 也不发 response.incomplete（Codex 会当流错误重放这一轮）。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_len","created":1,"model":"m","choices":[{"delta":{"reasoning_content":"thinking"}}]}
+
+data: {"id":"chatcmpl_len","created":1,"model":"m","choices":[{"delta":{},"finish_reason":"length"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.failed"), "{sse}");
+    assert!(!sse.contains("event: response.incomplete"));
+    assert!(!sse.contains("event: response.completed"));
+    assert!(sse.contains("\"code\":\"invalid_prompt\""));
+    assert!(sse.contains("finish_reason=length"));
+}
+
+#[test]
+fn chat_sse_length_with_partial_answer_stays_completed() {
+    // 已有正文的截断照旧 completed（status incomplete），已产出的内容照常显示。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_len2","created":1,"model":"m","choices":[{"delta":{"content":"partial"}}]}
+
+data: {"id":"chatcmpl_len2","created":1,"model":"m","choices":[{"delta":{},"finish_reason":"length"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.completed"), "{sse}");
+    assert!(sse.contains("\"status\":\"incomplete\""));
+    assert!(sse.contains("max_output_tokens"));
+    assert!(!sse.contains("event: response.failed"));
+}
+
+#[test]
+fn chat_sse_content_filter_fails_with_upstream_refusal() {
+    // issue #3301：上游拒绝时发 response.failed，优先透出上游的 refusal 文本。
+    let sse = chat_sse_to_responses_sse(
+        r#"data: {"id":"chatcmpl_cf","created":1,"model":"m","choices":[{"delta":{"refusal":"I can't help with that."}}]}
+
+data: {"id":"chatcmpl_cf","created":1,"model":"m","choices":[{"delta":{},"finish_reason":"content_filter"}]}
+
+data: [DONE]
+
+"#,
+    );
+    assert!(sse.contains("event: response.failed"), "{sse}");
+    assert!(sse.contains("\"code\":\"invalid_prompt\""));
+    assert!(sse.contains("I can't help with that."));
+    assert!(!sse.contains("event: response.completed"));
 }

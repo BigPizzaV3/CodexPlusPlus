@@ -576,7 +576,7 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
     let mut actual_label = if has_native_login {
         "ChatGPT".to_string()
     } else if live_local {
-        "本地账号".to_string()
+        "虚拟账号".to_string()
     } else {
         String::new()
     };
@@ -622,9 +622,15 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
     };
     let managed = settings.active_relay_id == apply::CODEX_GATEWAY_RELAY_ID;
     let config = std::fs::read_to_string(home.join("config.toml")).unwrap_or_default();
-    let live_official = codex_plus_core::relay_config::relay_session_provider_from_config(&config)
-        == codex_plus_core::settings::RelaySessionProvider::Openai;
-    let blocked_reason = if let Some(selection) = settings.native_auth_selection.as_ref() {
+    let live_official = if managed {
+        codex_plus_core::relay_config::relay_session_provider_from_config(&config)
+            == codex_plus_core::settings::RelaySessionProvider::Openai
+    } else {
+        codex_plus_core::native_auth::config_accepts_openai_login(&config)
+    };
+    let blocked_reason = if settings.chatgpt_compat_enabled {
+        None
+    } else if let Some(selection) = settings.native_auth_selection.as_ref() {
         let binding_enabled = gateway.binding(&ToolId::Codex).is_some_and(|binding| binding.enabled);
         let taken_over = codex_plus_core::gateway::drift::check(&context(), &ToolId::Codex).is_some();
         let wants_account = matches!(selection, codex_plus_core::settings::NativeAuthSelection::Account { .. });
@@ -668,7 +674,7 @@ fn native_auth_state() -> anyhow::Result<NativeAuthState> {
 }
 
 const LOCAL_LOGIN_LAUNCH_HINT: &str =
-    "本地账号要从 Codex++ 启动 Codex 才生效；想直接打开 Codex 也生效，请先在首页打开「自动接管官方 App」";
+    "虚拟账号要从 Codex++ 启动 Codex 才生效；想直接打开 Codex 也生效，请先在首页打开「自动接管官方 App」";
 
 fn codex_on_gateway(
     settings: &codex_plus_core::settings::BackendSettings,
@@ -2108,9 +2114,15 @@ pub async fn refresh_gateway_quota(id: String) -> CommandResult<Option<GatewayPa
 }
 
 /// 后台任务：启动时补一次价格，之后每小时看一眼，超过一天没检查的供应商重新拉上游模型；
-/// 另外每 10 分钟查一遍订阅账号的额度。
+/// 上游声明的思考档位变了就重写开着的 Agent 的模型目录。另外每 10 分钟查一遍订阅账号的额度。
 pub fn start_model_watch() {
-    tauri::async_runtime::spawn(model_sync::watch(GatewayStore::default()));
+    tauri::async_runtime::spawn(model_sync::watch(GatewayStore::default(), || {
+        std::thread::spawn(|| {
+            if GatewayStore::default().load().is_ok_and(|gateway| gateway.any_enabled()) {
+                let _ = refresh_agents(Ok(()));
+            }
+        });
+    }));
     tauri::async_runtime::spawn(codex_plus_core::gateway::quota::watch(
         GatewayStore::default(),
     ));

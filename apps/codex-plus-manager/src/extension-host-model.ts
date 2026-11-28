@@ -27,7 +27,7 @@ export function claudeParts(script: Pick<HostExtension, "package">): { page: boo
 }
 
 export function extensionHostForTool(tool: string): ExtensionHost {
-  return tool === "claude" ? "claude" : "codex";
+  return tool === "claude" || tool === "claude-desktop" ? "claude" : "codex";
 }
 
 export function extensionsForHost<T extends HostExtension>(scripts: readonly T[], host: ExtensionHost): T[] {

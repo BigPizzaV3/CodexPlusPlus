@@ -86,6 +86,7 @@ export function ClaudeAutoTakeoverRow({
   loginReminder = false,
   onEnableLogin,
   title,
+  variant = "row",
 }: {
   showIcon?: boolean;
   /** 行标题；首页和 Codex 那行并排，写成「自动接管 Claude」。默认「自动接管官方 App」。 */
@@ -93,6 +94,8 @@ export function ClaudeAutoTakeoverRow({
   /** 首页：没开登录自启时提醒并给开关。 */
   loginReminder?: boolean;
   onEnableLogin?: () => Promise<unknown> | void;
+  /** 渲染形态：默认整行；首页双卡底栏用 `card-footer`。 */
+  variant?: "row" | "card-footer";
 }) {
   const [state, setState] = useState<ClaudeAutoTakeoverResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -166,13 +169,63 @@ export function ClaudeAutoTakeoverRow({
     ? [detailText(state, summary), needsLogin ? t("Codex++ 没有设为登录时打开，退出 Codex++ 后不会接管。") : ""].filter(Boolean).join(" ")
     : offDetail);
 
+  const tooltip = t("只在完整功能模式下生效：官方 Claude 不是经本地服务启动的，会先退出再重开（可能中断正在进行的对话）。3p 模式和补丁副本不接管。");
+
+  if (variant === "card-footer") {
+    const note = (notice && t(notice)) || (enabled && state && (summary.tone !== "ok" || needsLogin)
+      ? [detailText(state, summary), needsLogin ? t("Codex++ 没有设为登录时打开，退出 Codex++ 后不会接管。") : ""].filter(Boolean).join(" ")
+      : "");
+    return (
+      <div className="home-takeover-foot">
+        <div className="home-takeover-main">
+          <div className="home-takeover-title">
+            <span>{title ?? t("自动接管官方 App")}</span>
+            {enabled ? <CxBadge tone={toneOf[summary.tone]}>{labelText(summary)}</CxBadge> : null}
+            <span className="home-help-tip" title={`${offDetail}\n${tooltip}`}>?</span>
+          </div>
+          <div className="home-takeover-controls">
+            {enabled ? (
+              <Menu>
+                <MenuItem disabled={busy || !state?.appRunning || state.attached} onClick={() => void run(CLAUDE_AUTO_TAKEOVER_COMMANDS.pause)}>{t("本次不接管")}</MenuItem>
+                <MenuItem disabled={busy} onClick={() => void run(CLAUDE_AUTO_TAKEOVER_COMMANDS.load)}>{t("刷新状态")}</MenuItem>
+              </Menu>
+            ) : null}
+            <label className="switch-row compact relay-master-switch relay-master-switch-compact home-takeover-switch">
+              <input
+                aria-label={t("开启 Claude 自动接管")}
+                checked={enabled}
+                disabled={!state || busy}
+                onChange={(event) => void toggle(event.currentTarget.checked)}
+                type="checkbox"
+              />
+              <ToggleVisual />
+            </label>
+          </div>
+        </div>
+        {note || needsLogin || (enabled && summary.canTakeOver) ? (
+          <div className="home-takeover-extra">
+            {note ? <p className="home-takeover-note">{note}</p> : null}
+            <div className="home-takeover-actions">
+              {needsLogin ? (
+                <button className="cx-secondary" onClick={() => void enableLogin()} type="button">{t("登录时打开 Codex++")}</button>
+              ) : null}
+              {enabled && summary.canTakeOver ? (
+                <button className="cx-secondary" disabled={busy} onClick={() => void run(CLAUDE_AUTO_TAKEOVER_COMMANDS.takeOverNow)} type="button">{t("立即接管")}</button>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <CxRow
       badges={enabled ? <CxBadge tone={toneOf[summary.tone]}>{labelText(summary)}</CxBadge> : null}
       detail={detail}
       icon={showIcon ? <CxStatusIcon tone={enabled ? iconToneOf[summary.tone] : "off"}><Plug /></CxStatusIcon> : undefined}
       title={title ?? t("自动接管官方 App")}
-      tooltip={t("只在完整功能模式下生效：官方 Claude 不是经本地服务启动的，会先退出再重开（可能中断正在进行的对话）。3p 模式和补丁副本不接管。")}
+      tooltip={tooltip}
     >
       {needsLogin ? (
         <button className="cx-secondary" onClick={() => void enableLogin()} type="button">{t("登录时打开 Codex++")}</button>

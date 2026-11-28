@@ -91,7 +91,7 @@ function harness() {
   vm.runInContext(transpile(`const Fragment = "Fragment";\nconst navigationSections = [];\nconst agentTabGroups = () => [];\n${navigationSource}\n${functionSource("AppSidebar")}
     globalThis.sidebar = AppSidebar;
     globalThis.routes = routes;
-    globalThis.codexLaunchVisible = (route, activeTool, extensionHost = "codex") => ${declaration("onCodexPage").initializer!.getText(app)};`), context);
+    globalThis.codexLaunchVisible = (route, activeTool) => ${declaration("onCodexPage").initializer!.getText(app)};`), context);
   return {
     context,
     routes: context.routes as Array<{ id: string; tool?: string; tools?: string[] }>,
@@ -106,28 +106,30 @@ function harness() {
   };
 }
 
-test("拓展管理只向 Codex 和 Claude 开放，保留原本 Codex 主归属", () => {
+test("万物皆拓展按 Agent 拆成两页：Codex 的 userScripts、Claude Desktop 的 claudeExtensions", () => {
   const h = harness();
-  const page = h.routes.find((route) => route.id === "userScripts");
-  assert.ok(page);
-  assert.equal(page.tool, "codex");
-  assert.deepEqual(Array.from(page.tools!), ["codex", "claude"]);
-  assert.deepEqual(Array.from(h.routes).filter((route) => route.tools).map((route) => route.id), ["userScripts"]);
-  for (const tool of ["codex", "claude"]) assert.equal(pageVisibleForTool(page, tool), true);
-  for (const tool of ["grok", "opencode", "unknown"]) assert.equal(pageVisibleForTool(page, tool), false);
-  assert.equal(pageVisibleForTool(h.routes.find((route) => route.id === "enhance"), "claude"), false);
+  const codex = h.routes.find((route) => route.id === "userScripts");
+  const claude = h.routes.find((route) => route.id === "claudeExtensions");
+  assert.ok(codex && claude);
+  assert.equal(codex.tool, "codex");
+  assert.equal(claude.tool, "claude-desktop");
+  assert.equal(codex.tools, undefined, "不再是几个 Agent 共用的一页");
+  assert.deepEqual(Array.from(h.routes).filter((route) => route.tools).map((route) => route.id), []);
+  assert.equal(pageVisibleForTool(codex, "codex"), true);
+  assert.equal(pageVisibleForTool(codex, "claude-desktop"), false);
+  assert.equal(pageVisibleForTool(claude, "claude-desktop"), true);
+  for (const tool of ["codex", "claude", "grok"]) assert.equal(pageVisibleForTool(claude, tool), false, `${tool} 下没有 Claude Desktop 的拓展页`);
 });
 
-test("万物皆拓展是独立入口，不随侧栏当前 Agent 显隐；宿主在页内切换，和侧栏不联动", () => {
-  // 「万物皆拓展」是侧栏第一个入口，无论侧栏选的是哪个 Agent 都在，点了都去同一页。
-  const extensions = (sidebar: Element) => elements(sidebar).find((node) => node.props["data-nav"] === "extensions");
-  for (const activeTool of ["codex", "claude", "grok", "opencode"]) {
+test("侧栏没有单独的万物皆拓展入口，各 Agent 在自己的页签里", () => {
+  for (const activeTool of ["codex", "claude", "claude-desktop"]) {
     const h = harness();
-    const entry = extensions(h.sidebar(activeTool));
-    assert.ok(entry, activeTool);
-    entry.props.onClick();
-    assert.deepEqual(h.navigations, ["userScripts"]);
+    assert.equal(elements(h.sidebar(activeTool)).some((node) => node.props["data-nav"] === "extensions"), false, activeTool);
   }
+  // 从首页、引导、Codex 插件页跳过去时切到它所属的 Agent；switchTool 落页时不再按旧 Agent 判断，免得来回切。
+  const navigate = declaration("navigate").getText(app);
+  assert.match(navigate, /const extensionsOwner = next === "userScripts" \? "codex" : next === "claudeExtensions" \? "claude-desktop" : null;/);
+  assert.match(navigate, /if \(extensionsOwner && !fromSwitch && activeTool !== extensionsOwner\) \{\s*await switchTool\(extensionsOwner, next\);/);
 });
 
 test("只有显式 tools 限定的入口按宿主过滤，其余全局管理保持原行为", () => {
@@ -142,24 +144,22 @@ test("只有显式 tools 限定的入口按宿主过滤，其余全局管理保�
   }
 });
 
-test("Codex 的共享拓展页仍有重启按钮，Claude 下不显示 Codex 重启", () => {
+test("Codex 的拓展页有重启按钮，Claude Desktop 的拓展页没有", () => {
   const { context } = harness();
-  // 拓展页的重启按钮看页内选的宿主，不看侧栏当前的 Agent。
-  assert.equal(context.codexLaunchVisible("userScripts", "codex", "codex"), true);
-  assert.equal(context.codexLaunchVisible("userScripts", "codex", "claude"), false);
-  assert.equal(context.codexLaunchVisible("userScripts", "claude", "codex"), true);
+  assert.equal(context.codexLaunchVisible("userScripts", "codex"), true);
+  assert.equal(context.codexLaunchVisible("claudeExtensions", "claude-desktop"), false);
   assert.equal(context.codexLaunchVisible("enhance", "codex"), true);
   assert.equal(context.codexLaunchVisible("relay", "codex"), true);
   assert.equal(context.codexLaunchVisible("claude", "claude"), false);
   assert.match(text, /onRestart: \(\) => void actions\.restart\(\)/);
 });
 
-test("tools 限定的页面随侧栏 Agent 过滤，万物皆拓展除外", () => {
+test("tools 限定的页面随侧栏 Agent 过滤", () => {
   const switchTool = declaration("switchTool").getText(app);
   assert.match(switchTool, /if \(!pageVisibleForTool\(currentRoute, toolId\)\)/);
-  assert.match(switchTool, /if \(destination\) await navigate\(destination\);\s*else if \(globalNavigationRoutes\.includes\(route\)\) await navigate\(agentEntryRoute\(toolId\)\)/);
-  assert.match(text, /if \(currentRoute\?\.tools && currentRoute\.id !== "userScripts" && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "relay"\)/);
-  assert.match(declaration("routeCommand").getText(app), /if \(item\.tools && routeId !== "userScripts" && !pageVisibleForTool\(item, activeTool\)\) return null/);
+  assert.match(switchTool, /if \(destination\) await navigate\(destination, \{ fromSwitch: true \}\);\s*else if \(globalNavigationRoutes\.includes\(route\)\) await navigate\(agentEntryRoute\(toolId\), \{ fromSwitch: true \}\)/);
+  assert.match(text, /if \(currentRoute\?\.tools && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "relay"\)/);
+  assert.match(declaration("routeCommand").getText(app), /if \(item\.tools && !pageVisibleForTool\(item, activeTool\)\) return null/);
 });
 
 test("只有明确声明 Claude 适配的拓展才显示 Claude Code 宿主标签", () => {
@@ -256,28 +256,27 @@ function extensionScreenProps(h: ReturnType<typeof extensionHarness>, host: Exte
   };
 }
 
-test("页内宿主切换绑定共享路由并传递当前宿主", () => {
-  // 宿主是页面自己的状态：切宿主不调 switchTool，不改侧栏当前的 Agent。
-  assert.match(text, /<UserScriptsScreen host=\{extensionHost\} onHostChange=\{setExtensionHost\}/);
-  assert.doesNotMatch(text, /switchTool\(host, "userScripts"\)/);
+test("两页各固定一个宿主，页内不再显示宿主切换", () => {
+  assert.match(text, /\{route === "userScripts" \? <UserScriptsScreen host="codex" /);
+  assert.match(text, /\{route === "claudeExtensions" \? <UserScriptsScreen host="claude" /);
+  assert.doesNotMatch(text, /onHostChange=\{setExtensionHost\}|extensionHost/);
   for (const host of ["codex", "claude"] as const) {
     const h = extensionHarness();
-    const props = extensionScreenProps(h, host);
+    const { onHostChange: _unused, ...props } = extensionScreenProps(h, host);
     const hero = elements(h.render("UserScriptsScreen", props)).find((node) => node.type === h.context.ExtensionsHero);
     assert.ok(hero);
     assert.equal(hero.props.host, host);
-    assert.equal(hero.props.onHostChange, props.onHostChange);
-    const controls = elements(h.render("ExtensionsHero", hero.props)).filter((node) => node.type === "button");
-    const codex = controls.find((node) => elementText(node).trim() === "Codex");
-    const claude = controls.find((node) => elementText(node).trim() === "Claude");
-    assert.ok(codex);
-    assert.ok(claude);
-    const selected = (node: Element) => node.props["aria-pressed"] ?? node.props["aria-selected"];
-    assert.equal(selected(codex), host === "codex");
-    assert.equal(selected(claude), host === "claude");
-    (host === "codex" ? claude : codex).props.onClick();
-    assert.deepEqual(h.calls, [["host", host === "codex" ? "claude" : "codex"]]);
+    const controls = elements(h.render("ExtensionsHero", hero.props)).filter((node) => node.type === "button" && /^(Codex|Claude)$/.test(elementText(node).trim()));
+    assert.deepEqual(controls, [], "没有 Codex / Claude 切换");
   }
+  // 还传 onHostChange 的话照旧显示切换（拓展页面自己用得到时）。
+  const h = extensionHarness();
+  const props = extensionScreenProps(h, "codex");
+  const hero = elements(h.render("UserScriptsScreen", props)).find((node) => node.type === h.context.ExtensionsHero)!;
+  const claude = elements(h.render("ExtensionsHero", hero.props)).find((node) => node.type === "button" && elementText(node).trim() === "Claude");
+  assert.ok(claude);
+  claude.props.onClick();
+  assert.deepEqual(h.calls, [["host", "claude"]]);
 });
 
 test("Claude 页只显示已声明适配的本地包，并按 Claude 开关排序", () => {

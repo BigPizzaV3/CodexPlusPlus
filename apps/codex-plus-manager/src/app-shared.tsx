@@ -766,6 +766,7 @@ function normalizeStepwiseGenerationMode(value: StepwiseGenerationMode | undefin
 export function relayProtocolShortLabel(protocol: RelayProtocol): string {
   if (protocol === "chatCompletions") return "Chat Completions";
   if (protocol === "anthropicMessages") return "Anthropic";
+  if (protocol === "gemini") return "Gemini";
   return "Responses";
 }
 
@@ -779,6 +780,7 @@ export function relayProfileTagTone(profile: RelayProfile): string {
 export function relayProtocolLabel(protocol: RelayProtocol): string {
   if (protocol === "chatCompletions") return t("Chat Completions 转 Responses");
   if (protocol === "anthropicMessages") return t("Anthropic Messages 转 Responses");
+  if (protocol === "gemini") return t("Gemini 转 Responses");
   return "Responses API";
 }
 

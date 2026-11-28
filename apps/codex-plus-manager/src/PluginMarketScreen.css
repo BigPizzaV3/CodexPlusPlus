@@ -215,14 +215,17 @@
   margin: auto;
   padding: 22px;
   overflow: auto;
-  border: 1px solid hsl(var(--border));
+  border: 1px solid hsl(var(--input));
   border-radius: 14px;
-  background: hsl(var(--card));
+  background: hsl(var(--surface-raised));
   color: hsl(var(--foreground));
   box-shadow: var(--shadow-xl);
+  animation: modal-rise 180ms var(--motion-ease);
 }
 .shell .plugin-market-detail-dialog::backdrop {
-  background: hsl(var(--shadow-color) / 0.68);
+  background: hsl(var(--shadow-color) / 0.55);
+  -webkit-backdrop-filter: blur(4px) saturate(130%);
+  backdrop-filter: blur(4px) saturate(130%);
 }
 .shell .plugin-market-detail-heading {
   display: flex;
@@ -231,7 +234,7 @@
   position: sticky;
   top: 0;
   padding-bottom: 16px;
-  background: hsl(var(--card));
+  background: hsl(var(--surface-raised));
 }
 .shell .plugin-market-detail-title {
   display: flex;

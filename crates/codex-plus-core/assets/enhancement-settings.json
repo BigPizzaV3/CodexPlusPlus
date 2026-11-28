@@ -4,7 +4,7 @@
     {
       "id": "core",
       "title": "常规",
-      "description": "内置拓展总开关与启动前的会话维护。"
+      "description": "内置拓展总开关。"
     },
     {
       "id": "plugins",
@@ -62,30 +62,6 @@
       "control": "bool",
       "title": "启用内置拓展",
       "description": "关闭后暂停全部内置拓展（独立模式里的补丁除外），服务配置会保留。",
-      "masterGated": false,
-      "surfaces": [
-        "manager",
-        "codex"
-      ]
-    },
-    {
-      "key": "sessionIndexRepairEnabled",
-      "group": "core",
-      "control": "bool",
-      "title": "启动前修复会话索引",
-      "description": "启动前检查会话数据库中缺失的消息投影并补齐；只增不改，不会改写会话归属。运行期间每 30 分钟复查索引。保存设置后生效。",
-      "masterGated": false,
-      "surfaces": [
-        "manager",
-        "codex"
-      ]
-    },
-    {
-      "key": "providerSyncEnabled",
-      "group": "core",
-      "control": "bool",
-      "title": "切换供应商时同步会话归属",
-      "description": "启动前把历史会话的供应商归属批量改写到当前供应商，让不同供应商名下的会话归入当前列表。只改写归属，不删除会话。保存设置后生效。",
       "masterGated": false,
       "surfaces": [
         "manager",
@@ -370,6 +346,54 @@
       "title": "历史轮次补载（实验）",
       "description": "索引检查后补齐当前会话的历史消息和用时，默认关闭。",
       "surfaces": [
+        "codex"
+      ]
+    },
+    {
+      "key": "sessionIndexRepairEnabled",
+      "group": "chat",
+      "control": "bool",
+      "title": "启动前修复会话索引",
+      "description": "启动前检查会话数据库中缺失的消息投影并补齐；只增不改，不会改写会话归属。运行期间每 30 分钟复查索引。保存设置后生效。",
+      "masterGated": false,
+      "surfaces": [
+        "manager",
+        "codex"
+      ]
+    },
+    {
+      "key": "providerSyncEnabled",
+      "group": "chat",
+      "control": "bool",
+      "title": "切换供应商时同步会话归属",
+      "description": "启动前把历史会话的供应商归属批量改写到当前供应商，让不同供应商名下的会话归入当前列表。只改写归属，不删除会话。保存设置后生效。",
+      "masterGated": false,
+      "surfaces": [
+        "manager",
+        "codex"
+      ]
+    },
+    {
+      "key": "threadModelFollowSwitchEnabled",
+      "group": "chat",
+      "control": "bool",
+      "title": "切换模型后旧会话跟随新默认",
+      "description": "切换供应商或默认模型后，下次启动前把仍停在旧默认模型的会话改为新默认；手动选过模型的会话不变。保存设置后生效。",
+      "masterGated": false,
+      "surfaces": [
+        "manager",
+        "codex"
+      ]
+    },
+    {
+      "key": "keepProjectsWithoutAccount",
+      "group": "chat",
+      "control": "bool",
+      "title": "非官方登录时保留本地项目",
+      "description": "登录过 ChatGPT 后改用 API Key、本地服务或聚合供应商，Codex 每次启动都会清空项目列表。开启后由 Codex++ 启动前把最近使用账号的项目带到当前模式，切回官方登录时归还该账号；写入前自动备份。重新启动 Codex 后生效。",
+      "masterGated": false,
+      "surfaces": [
+        "manager",
         "codex"
       ]
     },

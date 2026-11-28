@@ -372,7 +372,7 @@
   function codexPlusWeixinPageHtml(state) {
     const data = state.data;
     const busy = Boolean(state.busy);
-    // 页面名在左栏顶上（installCodexPlusSectionNav），右边每组第一节的标题就是大标题。
+    // 页面名在 Codex++ 左栏里，分组挂在它下面（installCodexPlusEmbeddedNav），右边每组第一节的标题就是大标题。
     const bannerText = state.error || (data?.connection?.state === "error" ? data.connection.message : "");
     const banner = [
       bannerText ? `<div class="codex-plus-remote-banner" data-tone="warn" role="alert">${escapeHtml(bannerText)}</div>` : "",
@@ -649,8 +649,10 @@
       const panel = document.querySelector("[data-codex-weixin-panel]");
       if (panel && codexPlusWeixinPageState.renderPending && !codexPlusWeixinEditing(panel)) renderCodexPlusWeixinPage();
     }, 0));
-    installCodexPlusSectionNav(overlay, codexPlusWeixinSectionNav);
     document.body.appendChild(overlay);
+    // 最左边保留 Codex++ 的分组栏：这一页是在 Codex++ 页面里面打开的（40-backend-settings.js）。
+    // 这一页的分组挂在 Codex++ 左栏「微信连接」下面，右边只显示选中的一组。
+    installCodexPlusEmbeddedNav(overlay, codexPlusWeixinSectionNav);
     positionCodexPlusPage(overlay);
     observeCodexPlusPageLayout(overlay);
     document.querySelectorAll('[data-codex-plus-ext-rail-active="true"]').forEach((node) => {

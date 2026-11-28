@@ -1,8 +1,9 @@
 //! 把 ChatGPT 桌面版接到本地兼容服务上，以及还原。
 //!
 //! 打开时改两处，都先存档：
-//! - `config.toml`：只加 `chatgpt_base_url`，让桌面的 ChatGPT 后端请求打到兼容服务。
-//!   模型供应商（`model_provider`、`model_providers`）一律不动，模型请求仍走用户原来的供应商。
+//! - `config.toml`：加 `chatgpt_base_url`，让桌面的 ChatGPT 后端请求打到兼容服务；
+//!   生效的供应商自带凭据时再把它的 `requires_openai_auth` 声明成 true（Codex 只在这时认登录）。
+//!   模型请求仍走用户原来的供应商、带它自己的凭据，地址和 token 一律不动。
 //! - `auth.json`：写入假的 ChatGPT 登录，保留已有的 API Key。
 //!
 //! 关掉时按存档还原，只改回动过的键，期间的其它改动保留。
@@ -42,6 +43,7 @@ pub fn enable(home: &Path) -> anyhow::Result<()> {
 /// 关掉：按存档还原配置和登录。
 pub fn disable(home: &Path) -> anyhow::Result<()> {
     let _guard = crate::official_login::native_auth_write_guard(home)?;
+    restore_provider_declaration(home)?;
     restore_file(home, "config.toml", CONFIG_STASH, true)?;
     restore_file(home, "auth.json", AUTH_STASH, false)?;
     let _ = crate::diagnostic_log::append_diagnostic_log("chatgpt_compat.disabled", json!({}));
@@ -102,16 +104,16 @@ pub fn fall_back_when_blocked(home: &Path, store: &crate::settings::SettingsStor
     Ok(true)
 }
 
-/// 本地账号退回「不登录」时给用户看的一句话。
-pub const FELL_BACK_NOTICE: &str = "现在的供应商要用真实登录，本地账号用不了，Codex 登录身份已退回「不登录」。";
+/// 虚拟账号退回「不登录」时给用户看的一句话。
+pub const FELL_BACK_NOTICE: &str = "现在的供应商要用真实登录，虚拟账号用不了，Codex 登录身份已退回「不登录」。";
 
-/// 「本地账号」当前能不能用：经本地服务时总能用（不登录时网关供应商自带凭据）；
+/// 「虚拟账号」当前能不能用：经本地服务时总能用（不登录时网关供应商自带凭据）；
 /// 直连时只有自带凭据的自定义供应商能用，内置 OpenAI / 官方登录供应商不行。
 pub fn local_login_blocker(home: &Path, on_gateway: bool) -> anyhow::Result<Option<&'static str>> {
     if on_gateway || uses_custom_provider(home)? {
         return Ok(None);
     }
-    Ok(Some("当前用的是官方登录或内置 OpenAI 供应商，模型请求要用真实登录；切到 API Key 供应商或本地服务后才能用本地账号"))
+    Ok(Some("当前用的是官方登录或内置 OpenAI 供应商，模型请求要用真实登录；切到 API Key 供应商或本地服务后才能用虚拟账号"))
 }
 
 /// 生效的 `model_provider` 是不是自带凭据的自定义供应商（不读 `auth.json` 里的登录发模型请求）。
@@ -156,23 +158,123 @@ fn write_config(home: &Path) -> anyhow::Result<()> {
         .unwrap_or("")
         .parse::<DocumentMut>()
         .unwrap_or_else(|_| DocumentMut::new());
-    if doc.get("chatgpt_base_url").and_then(|item| item.as_str()) == Some(backend_url().as_str()) {
+    let base_url_written =
+        doc.get("chatgpt_base_url").and_then(|item| item.as_str()) == Some(backend_url().as_str());
+    let declare = provider_needing_login_declaration(&doc);
+    if base_url_written && declare.is_none() {
         return Ok(());
     }
-    // 只改后端地址。模型走哪家供应商是用户的选择，这里不碰。
-    doc["chatgpt_base_url"] = toml_edit::value(backend_url());
+    if !base_url_written {
+        // 后端地址走两层存档，关掉时按存档还原。
+        doc["chatgpt_base_url"] = toml_edit::value(backend_url());
+        let after = doc.to_string();
+        let stash_file = stash_path(CONFIG_STASH);
+        let mut stash = restore::load_stash::<FileStash>(&stash_file)
+            .unwrap_or_else(|| FileStash::new(live.clone()));
+        stash.record_write(
+            &restore::toml_value(live.as_deref())?,
+            &restore::toml_value(Some(&after))?,
+        );
+        // 先存档再写文件：写到一半退出时，还原仍知道接入前的原文。
+        restore::save_stash(&stash_file, &stash)?;
+    }
+    if let Some((provider, original)) = declare {
+        // 供应商声明要 OpenAI 登录：不另外存进两层存档（那会按 `model_providers.<id>` 整张表还原，
+        // 把这期间网关改过的地址、token 一起退回去），原值单独记，关掉时只还原这一个键。
+        save_provider_declaration(&ProviderDeclaration {
+            provider: provider.clone(),
+            original,
+        })?;
+        doc["model_providers"][provider.as_str()]["requires_openai_auth"] = toml_edit::value(true);
+    }
     let after = doc.to_string();
-    let stash_file = stash_path(CONFIG_STASH);
-    let mut stash = restore::load_stash::<FileStash>(&stash_file)
-        .unwrap_or_else(|| FileStash::new(live.clone()));
-    stash.record_write(
-        &restore::toml_value(live.as_deref())?,
-        &restore::toml_value(Some(&after))?,
-    );
-    // 先存档再写文件：写到一半退出时，还原仍知道接入前的原文。
-    restore::save_stash(&stash_file, &stash)?;
     crate::settings::atomic_write(&path, after.as_bytes())
         .with_context(|| format!("写 {} 失败", path.display()))?;
+    Ok(())
+}
+
+/// 生效的供应商没有声明要 OpenAI 登录、但自带凭据时，返回它的 id 和这一项原来的值。
+///
+/// Codex 只在供应商声明 `requires_openai_auth = true` 时才认 `auth.json` 里的登录
+/// （`account/read` 才去问后端）；声明成 false 时一律当没登录，ChatGPT 专属入口不出来。
+/// 自带 `experimental_bearer_token` / `env_key` 的供应商声明成 true 后，模型请求仍带它自己的凭据
+/// （实测：Authorization 还是供应商的 token），所以只改这一项。没有自带凭据的不改：
+/// 那样模型请求会改拿假登录发出去。
+fn provider_needing_login_declaration(doc: &DocumentMut) -> Option<(String, Option<bool>)> {
+    let provider = doc
+        .get("model_provider")
+        .and_then(toml_edit::Item::as_str)
+        .filter(|provider| !provider.trim().is_empty() && *provider != "openai")?
+        .to_string();
+    let table = doc
+        .get("model_providers")
+        .and_then(|providers| providers.get(&provider))?;
+    let has_own_key = ["experimental_bearer_token", "env_key"].iter().any(|key| {
+        table
+            .get(*key)
+            .and_then(toml_edit::Item::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    });
+    let current = table
+        .get("requires_openai_auth")
+        .and_then(toml_edit::Item::as_bool);
+    (has_own_key && current != Some(true)).then_some((provider, current))
+}
+
+const PROVIDER_STASH: &str = "chatgpt-compat-provider.json";
+
+/// 打开本地账号时改过的供应商声明：哪家供应商、`requires_openai_auth` 原来的值（没写过为 None）。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ProviderDeclaration {
+    provider: String,
+    original: Option<bool>,
+}
+
+fn save_provider_declaration(declaration: &ProviderDeclaration) -> anyhow::Result<()> {
+    let path = stash_path(PROVIDER_STASH);
+    // 同一家供应商已经记过原值：保留最早那份（中途被网关改回 false 再补写时，原值仍是接入前的）。
+    if let Some(known) = restore::load_stash::<ProviderDeclaration>(&path)
+        && known.provider == declaration.provider
+    {
+        return Ok(());
+    }
+    restore::save_stash(&path, declaration)
+}
+
+/// 关掉本地账号时还原供应商声明：还是那家供应商、值还是我们写的 true 时才改回原值；
+/// 这期间换了供应商或被别处改过就不动。
+fn restore_provider_declaration(home: &Path) -> anyhow::Result<()> {
+    let stash_file = stash_path(PROVIDER_STASH);
+    let Some(declaration) = restore::load_stash::<ProviderDeclaration>(&stash_file) else {
+        return Ok(());
+    };
+    let path = home.join("config.toml");
+    if let Some(live) = restore::read_optional(&path)?
+        && let Ok(mut doc) = live.parse::<DocumentMut>()
+    {
+        let still_ours = doc.get("model_provider").and_then(toml_edit::Item::as_str)
+            == Some(declaration.provider.as_str())
+            && doc
+                .get("model_providers")
+                .and_then(|providers| providers.get(&declaration.provider))
+                .and_then(|table| table.get("requires_openai_auth"))
+                .and_then(toml_edit::Item::as_bool)
+                == Some(true);
+        if still_ours {
+            let table = &mut doc["model_providers"][declaration.provider.as_str()];
+            match declaration.original {
+                Some(original) => table["requires_openai_auth"] = toml_edit::value(original),
+                None => {
+                    if let Some(table) = table.as_table_like_mut() {
+                        table.remove("requires_openai_auth");
+                    }
+                }
+            }
+            crate::settings::atomic_write(&path, doc.to_string().as_bytes())
+                .with_context(|| format!("写 {} 失败", path.display()))?;
+        }
+    }
+    restore::remove_stash(&stash_file);
     Ok(())
 }
 
@@ -365,6 +467,59 @@ mod tests {
         assert_eq!(auth["OPENAI_API_KEY"], "sk-real");
         assert_eq!(auth["auth_mode"], "chatgpt");
         assert!(enabled());
+    }
+
+    /// 网关这类自带 token 的供应商声明的是 `requires_openai_auth = false`：Codex 这时把登录当没有，
+    /// 打开本地账号要把它改成 true；关掉时只还原这一个键，期间网关换过的地址、token 保留。
+    #[test]
+    fn enable_declares_login_on_a_provider_with_its_own_key_and_disable_restores_only_that() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        std::fs::write(
+            home.join("config.toml"),
+            "model_provider = \"custom\"\n\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:1/gw/codex/v1\"\nexperimental_bearer_token = \"gw-1\"\nrequires_openai_auth = false\n",
+        )
+        .unwrap();
+        std::fs::write(home.join("auth.json"), "{}").unwrap();
+
+        enable(home).unwrap();
+        let config: toml::Value = std::fs::read_to_string(home.join("config.toml")).unwrap().parse().unwrap();
+        assert_eq!(config["model_providers"]["custom"]["requires_openai_auth"].as_bool(), Some(true));
+        assert_eq!(config["model_providers"]["custom"]["experimental_bearer_token"].as_str(), Some("gw-1"));
+
+        // 开着期间网关重写了供应商（新 token、声明改回 false）：再对齐一次又补成 true。
+        std::fs::write(
+            home.join("config.toml"),
+            "model_provider = \"custom\"\nchatgpt_base_url = \"https://localhost:8000/backend-api/\"\n\n[model_providers.custom]\nbase_url = \"http://127.0.0.1:2/gw/codex/v1\"\nexperimental_bearer_token = \"gw-2\"\nrequires_openai_auth = false\n",
+        )
+        .unwrap();
+        enable(home).unwrap();
+        let config: toml::Value = std::fs::read_to_string(home.join("config.toml")).unwrap().parse().unwrap();
+        assert_eq!(config["model_providers"]["custom"]["requires_openai_auth"].as_bool(), Some(true));
+
+        disable(home).unwrap();
+        let config: toml::Value = std::fs::read_to_string(home.join("config.toml")).unwrap().parse().unwrap();
+        assert!(config.get("chatgpt_base_url").is_none());
+        let provider = &config["model_providers"]["custom"];
+        assert_eq!(provider["requires_openai_auth"].as_bool(), Some(false));
+        assert_eq!(provider["experimental_bearer_token"].as_str(), Some("gw-2"), "网关期间写的 token 要保留");
+        assert_eq!(provider["base_url"].as_str(), Some("http://127.0.0.1:2/gw/codex/v1"));
+    }
+
+    /// 没有自带凭据的供应商不改声明：改成 true 后模型请求会拿假登录发出去。
+    #[test]
+    fn enable_leaves_providers_without_their_own_key_alone() {
+        let _state = StateGuard::new();
+        let dir = home();
+        let home = dir.path();
+        let original = "model_provider = \"p\"\n\n[model_providers.p]\nbase_url = \"http://x/v1\"\n";
+        std::fs::write(home.join("config.toml"), original).unwrap();
+        enable(home).unwrap();
+        let config: toml::Value = std::fs::read_to_string(home.join("config.toml")).unwrap().parse().unwrap();
+        assert!(config["model_providers"]["p"].get("requires_openai_auth").is_none());
+        disable(home).unwrap();
+        assert_eq!(std::fs::read_to_string(home.join("config.toml")).unwrap().trim(), original.trim());
     }
 
     #[test]

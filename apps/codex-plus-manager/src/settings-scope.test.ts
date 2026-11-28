@@ -61,7 +61,7 @@ test("Computer Use 放在设置模式的 Beta 分组，不再出现在每个 Age
   assert.match(globalNavigation, /"computerUse"/);
   // Computer Use、Agent 协作、缓存清理都在设置模式里，⌘K 经设置分类搜到；本地服务的几页在 ⌘K 里自己一组。
   assert.doesNotMatch(text, /toolNavigationRoutes/);
-  assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["gatewayProviders", "gateway", "gatewayRouting",/);
+  assert.match(globalNavigation, /const gatewayNavigationRoutes: Route\[\] = \["gateway", "gatewayRouting"\];/);
   const entries = appDeclarationSource("settingsNavEntries");
   assert.match(entries, /\{ key: "computerUse", label: "Computer Use", icon: MousePointerClick, route: "computerUse", group: "beta"/);
   // 设置分类只有 Codex 一项看 Codex 可不可用，其余始终显示。
@@ -81,8 +81,8 @@ test("使用模式已经取消：页面不再按模式隐藏，也没有顺带�
   // 侧栏、页签、命令面板都不再过滤路由；停在不属于当前 Agent 的页面上时才回落脚页。
   assert.doesNotMatch(text, /routeVisible|visibleRoutes|providerRoutes|multiAgentRoutes|providersHidden|singleAgent/);
   assert.match(functionSource("AppSidebar"), /\.flatMap\(\(entry\) => entry\.routes\)/);
-  assert.match(text, /if \(!item\) return null;\n\s*if \(item\.tools && routeId !== "userScripts" && !pageVisibleForTool\(item, activeTool\)\) return null;/);
-  assert.match(text, /if \(currentRoute\?\.tools && currentRoute\.id !== "userScripts" && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "relay"\);/);
+  assert.match(text, /if \(!item\) return null;\n\s*if \(item\.tools && !pageVisibleForTool\(item, activeTool\)\) return null;/);
+  assert.match(text, /if \(currentRoute\?\.tools && !pageVisibleForTool\(currentRoute, activeTool\)\) void navigate\(agentHomeRoute\[activeTool\] \?\? "relay"\);/);
   // 「只用增强功能」会在提交前关闭 relayProfilesEnabled；模式没了，这条写设置的路径也没了。
   assert.doesNotMatch(text, /commitAgentFocusSelection|relayProfilesEnabled: false \}\)/);
   assert.doesNotMatch(text, /relayOffRequested/);

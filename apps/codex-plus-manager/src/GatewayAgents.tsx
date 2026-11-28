@@ -2,7 +2,7 @@
 import { useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, List, Loader2, Play, RotateCcw, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronRight, Copy, FolderOpen, LayoutGrid, List, Loader2, Play, RotateCcw, Search, Shuffle, Square, Star, Waypoints, X } from "lucide-react";
 import { t, tf } from "./i18n";
 import { appConfirm } from "./app-dialog";
 import { modelSlugFromRowName } from "./model-metadata";
@@ -90,7 +90,7 @@ export function AgentsView({
   busy: string | null;
   run: Run;
   notify: Notify;
-  onManage: () => void;
+  onManage: (agent?: string) => void;
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   /** Codex 行的启动 / 停止：不传（比如总览里的接入弹窗）就不显示那个键。 */
   codexRun?: CodexRunControls;
@@ -189,7 +189,7 @@ export function AgentConnectDialog({
   busy: string | null;
   run: Run;
   notify: Notify;
-  onManage: () => void;
+  onManage: (agent?: string) => void;
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   onClose: () => void;
 }) {
@@ -235,7 +235,7 @@ function AgentRow({
   codexRun?: CodexRunControls;
   expanded: boolean;
   onToggleExpand: () => void;
-  onManage: () => void;
+  onManage: (agent?: string) => void;
   onOpenCodexProviderSettings?: (addDirectProvider?: boolean) => void;
   run: Run;
   notify: Notify;
@@ -531,8 +531,8 @@ function AgentDetail({
   run: Run;
   onSave: (next: BindingDraft) => void;
   onDisconnect: () => void;
-  /** 去共享供应商（弹窗里是关掉弹窗再去）。 */
-  onManage: () => void;
+  /** 去对应 Agent 的供应商页管理（弹窗里是关掉弹窗再去）。 */
+  onManage: (agent?: string) => void;
 }) {
   // 「Agent 接入」页里 Claude Desktop 的绑定 id 是 `claude-desktop`；`claude` 是 Claude Code（命令行），
   // 两行都要能展开档位，但只有前者有本地启动器。
@@ -627,9 +627,9 @@ function AgentDetail({
               );
             })}
             {providers.length === 0 ? <div className="gw-empty">{t("共享供应商是空的")}</div> : null}
-            <button className="gw-text-button gw-select-manage" onClick={() => { setSelecting(false); onManage(); }} type="button">
+            <button className="gw-text-button gw-select-manage" onClick={() => { setSelecting(false); onManage(agent.agent); }} type="button">
               <List className="h-3.5 w-3.5" />
-              {t("管理共享供应商")}
+              {t("管理供应商")}
             </button>
           </div>
         </Floating>
@@ -985,8 +985,7 @@ export function ModelList({
   const sections = useMemo(() => {
     const ownSection = ownPickerSection(ownList, query, avatarOf);
     const all = withOwnSection(pickerSections(payload, query, avatarOf, exclude, skipGroup, sectionOnly, Boolean(ownSection && (!sectionOnly || sectionOnly === "own"))), ownSection);
-    // custom 已在生成时限定目标供应商。
-    if (sectionOnly) return all.filter((section) => section.key === sectionOnly || section.key === "custom");
+    if (sectionOnly) return all.filter((section) => section.key === sectionOnly);
     if (!favoritesOnly) return all;
     // 收藏的是池里的模型；Agent 自带的同名模型不算。
     return all
@@ -1049,119 +1048,167 @@ export function ModelList({
     [payload, exclude, skipGroup, ownList],
   );
   const total = displaySections.reduce((sum, section) => sum + section.items.length, 0);
-  const customCount = displaySections.find((section) => section.key === "custom")?.items.length ?? 0;
 
-  // 排版：搜索 + 一排横向筛选在上；列表每个模型两行（模型名 / 供应商）；「默认」「断开」这类操作在底部。
+  // 排版：左侧竖排图标栏（收藏 / 全部 / 各供应商，右侧蓝条标出当前项）；
+  // 右侧上方搜索框（聚焦底线高亮）+ 模型列表；「用默认」这类操作仍在底部。
   return (
-    <div className="gw-mp">
-      <div className="gw-mp-top">
-        <label className="gw-mp-search">
-          <Search className="h-4 w-4" />
-          <input
-            autoFocus
-            onChange={(event) => setQuery(event.currentTarget.value)}
-            onKeyDown={(event) => {
-              // ↓ 从搜索框进到列表的第一个模型。
-              if (event.key === "ArrowDown" && listRef.current && moveOptionFocus(listRef.current, "Home")) event.preventDefault();
-            }}
-            placeholder={t("筛选，或输入任意模型 ID…")}
-            value={query}
-          />
-          <em>{customCount ? tf("{0} 个自定义候选", [customCount]) : tf("{0} 个", [total])}</em>
-        </label>
-        <div className="gw-mp-filters" onFocus={(event) => event.target.scrollIntoView({ block: "nearest", inline: "nearest" })}>
-          <button aria-pressed={scope === "all"} data-active={scope === "all"} onClick={() => { setScope("all"); setQuery(""); if (listRef.current) listRef.current.scrollTop = 0; }} type="button">{t("全部")}</button>
-          <button aria-pressed={favoritesOnly} data-active={favoritesOnly} onClick={() => pickScope("favorites")} type="button"><Star className="h-3 w-3" />{t("收藏")}</button>
-          {filters.map((section) => (
-            <button aria-pressed={sectionOnly === section.key} data-active={sectionOnly === section.key} key={section.key} onClick={() => pickScope({ section: section.key })} title={section.key === "group" || section.key === "auto" ? t(section.title) : section.title} type="button">
-              {section.key === "group" ? <Waypoints className="h-3 w-3" /> : section.key === "auto" ? <Shuffle className="h-3 w-3" /> : <Avatar baseUrl={providersBySection.get(section.key)?.baseUrl} name={providersBySection.get(section.key)?.name ?? section.title} size="sm" />}
-              <span>{section.key === "group" || section.key === "auto" ? t(section.title) : section.title.split(" · ")[0]}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="gw-mp-list" onKeyDown={(event) => { if (moveOptionFocus(event.currentTarget, event.key)) event.preventDefault(); }} ref={listRef}>
-        {displaySections.length === 0 ? (
-          <div className="gw-empty">
-            {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("没有匹配的模型") : t("共享供应商是空的，先在「共享供应商」里添加供应商。")}
-          </div>
-        ) : null}
-        {displaySections.map((section) => {
-          const provider = providersBySection.get(section.key);
-          const expanded = searching ? !closedSearchSections.includes(section.key) : openSections[section.key] ?? expandedByDefault(section.key);
+    <div className="gw-mp" data-scoped={sectionOnly ? "true" : undefined}>
+      <nav aria-label={t("供应商")} className="gw-mp-rail">
+        <button
+          aria-label={t("收藏")}
+          aria-pressed={favoritesOnly}
+          className="gw-mp-rail-btn gw-mp-rail-star"
+          data-active={favoritesOnly}
+          onClick={() => pickScope("favorites")}
+          title={t("收藏")}
+          type="button"
+        >
+          <Star className="h-4 w-4" />
+        </button>
+        <button
+          aria-label={t("全部")}
+          aria-pressed={scope === "all"}
+          className="gw-mp-rail-btn"
+          data-active={scope === "all"}
+          onClick={() => { setScope("all"); setQuery(""); if (listRef.current) listRef.current.scrollTop = 0; }}
+          title={t("全部")}
+          type="button"
+        >
+          <LayoutGrid className="h-4 w-4" />
+        </button>
+        {filters.length ? <span aria-hidden="true" className="gw-mp-rail-sep" /> : null}
+        {filters.map((section) => {
+          const label = section.key === "group" || section.key === "auto" ? t(section.title) : section.title;
+          const active = sectionOnly === section.key;
           return (
-          <section className="gw-mp-section" data-section={section.key} key={section.key}>
-            <div className="gw-mp-heading">
-              <button
-                aria-expanded={expanded}
-                className="gw-mp-heading-toggle"
-                onClick={() => {
-                  if (searching) {
-                    setClosedSearchSections((current) => expanded ? [...current, section.key] : current.filter((key) => key !== section.key));
-                  } else {
-                    setOpenSections((current) => ({ ...current, [section.key]: !expanded }));
-                  }
-                }}
-                type="button"
-              >
-                <ChevronRight aria-hidden="true" className="gw-mp-heading-arrow h-3.5 w-3.5" data-open={expanded} />
-                {section.key === "group" ? <Waypoints className="h-3.5 w-3.5" /> : section.key === "auto" || section.key === "current" ? <Shuffle className="h-3.5 w-3.5" /> : section.key === "custom" ? null : <Avatar baseUrl={provider?.baseUrl} name={provider?.name ?? section.title} size="sm" />}
-                <span className="gw-mp-heading-name">{section.key === "group" || section.key === "custom" || section.key === "auto" || section.key === "current" ? t(section.title) : section.title}</span>
-                <em>{section.items.length}</em>
-              </button>
-              {section.key === "group" && nav.openModelGroups ? (
-                <button className="gw-mp-manage" onClick={nav.openModelGroups} type="button">{t("管理")}</button>
-              ) : null}
-            </div>
-            {expanded ? <div aria-label={section.key === "group" || section.key === "custom" || section.key === "auto" || section.key === "current" ? t(section.title) : section.title} role="listbox">{section.items.map((item) => {
-              const selected = isSelected(item);
-              const favorite = isFavoriteModel(favorites, item.model, payload);
-              const candidate = item.providerModel ?? (item.custom ? item.model : "");
-              const ambiguous = Boolean(pinProvider && candidate && (
-                candidate.toLowerCase().startsWith(GROUP_MODEL_PREFIX) ||
-                candidate.includes("*") ||
-                servingProviders(payload, candidate, exclude).length
-              ));
-              return (
-                <div
-                  aria-selected={selected}
-                  aria-disabled={ambiguous || undefined}
-                  className="gw-mp-item"
-                  data-direct={item.direct ? true : undefined}
-                  data-selected={selected}
-                  key={item.model}
-                  onClick={() => { if (!ambiguous) choose(item); }}
-                  onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget && !ambiguous) choose(item); }}
-                  role="option"
-                  tabIndex={0}
-                >
-                  <span className="gw-mp-text">
-                    <strong title={item.model.startsWith(GROUP_MODEL_PREFIX) ? item.sub : item.model}>{item.label}</strong>
-                    {ambiguous ? <small>{t("模型 ID 与已有模型名冲突，无法固定到此供应商")}</small> : item.custom ? <small>{item.sub} · {t("自定义模型 ID")}</small> : item.sub && item.sub !== section.title ? <small>{section.key === "current" ? t(item.sub) : item.sub}</small> : null}
-                  </span>
-                  {item.direct ? (
-                    <em className="gw-mp-direct" title={tf("{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。", [ownAgent ?? "Agent", item.direct])}>
-                      {t("直连，不经 Codex++")}
-                    </em>
-                  ) : null}
-                  {item.direct ? null : <button
-                    aria-label={favorite ? t("取消收藏") : t("收藏")}
-                    className="gw-mp-star"
-                    data-on={favorite}
-                    onClick={(event) => { event.stopPropagation(); toggleFavorite(item.model); }}
-                    type="button"
-                  >
-                    <Star className="h-3.5 w-3.5" />
-                  </button>}
-                  {selected ? <Check className="gw-mp-check h-4 w-4" /> : null}
-                </div>
-              );
-            })}</div> : null}
-          </section>
+            <button
+              aria-label={label}
+              aria-pressed={active}
+              className="gw-mp-rail-btn"
+              data-active={active}
+              key={section.key}
+              onClick={() => pickScope({ section: section.key })}
+              title={label}
+              type="button"
+            >
+              {section.key === "group"
+                ? <Waypoints className="h-4 w-4" />
+                : section.key === "auto"
+                  ? <Shuffle className="h-4 w-4" />
+                  : <Avatar baseUrl={providersBySection.get(section.key)?.baseUrl} name={providersBySection.get(section.key)?.name ?? section.title} size="sm" />}
+            </button>
           );
         })}
+      </nav>
+      <div className="gw-mp-main">
+        <div className="gw-mp-top">
+          <label className="gw-mp-search">
+            <Search className="h-4 w-4" />
+            <input
+              autoFocus
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              onKeyDown={(event) => {
+                // ↓ 从搜索框进到列表的第一个模型。
+                if (event.key === "ArrowDown" && listRef.current && moveOptionFocus(listRef.current, "Home")) event.preventDefault();
+              }}
+              placeholder={t("搜索模型")}
+              value={query}
+            />
+            <em>{tf("{0} 个", [total])}</em>
+          </label>
+        </div>
+        <div className="gw-mp-list" onKeyDown={(event) => { if (moveOptionFocus(event.currentTarget, event.key)) event.preventDefault(); }} ref={listRef}>
+          {displaySections.length === 0 ? (
+            <div className="gw-empty">
+              {favoritesOnly ? t("还没有收藏的模型，点模型右侧的星标收藏。") : payload?.pool.length ? t("未找到模型") : t("共享供应商是空的，先在「共享供应商」里添加供应商。")}
+            </div>
+          ) : null}
+          {displaySections.map((section) => {
+            const provider = providersBySection.get(section.key);
+            const singleScope = sectionOnly === section.key;
+            const expanded = singleScope || (searching ? !closedSearchSections.includes(section.key) : openSections[section.key] ?? expandedByDefault(section.key));
+            const titleText = section.key === "group" || section.key === "custom" || section.key === "auto" || section.key === "current" ? t(section.title) : section.title;
+            return (
+            <section className="gw-mp-section" data-section={section.key} key={section.key}>
+              <div className="gw-mp-heading">
+                {singleScope ? (
+                  <div className="gw-mp-heading-static">
+                    <span className="gw-mp-heading-name">{titleText}</span>
+                    <em>{section.items.length}</em>
+                  </div>
+                ) : (
+                  <button
+                    aria-expanded={expanded}
+                    className="gw-mp-heading-toggle"
+                    onClick={() => {
+                      if (searching) {
+                        setClosedSearchSections((current) => expanded ? [...current, section.key] : current.filter((key) => key !== section.key));
+                      } else {
+                        setOpenSections((current) => ({ ...current, [section.key]: !expanded }));
+                      }
+                    }}
+                    type="button"
+                  >
+                    <ChevronRight aria-hidden="true" className="gw-mp-heading-arrow h-3.5 w-3.5" data-open={expanded} />
+                    {section.key === "group" ? <Waypoints className="h-3.5 w-3.5" /> : section.key === "auto" || section.key === "current" ? <Shuffle className="h-3.5 w-3.5" /> : section.key === "custom" ? null : <Avatar baseUrl={provider?.baseUrl} name={provider?.name ?? section.title} size="sm" />}
+                    <span className="gw-mp-heading-name">{titleText}</span>
+                    <em>{section.items.length}</em>
+                  </button>
+                )}
+                {section.key === "group" && nav.openModelGroups ? (
+                  <button className="gw-mp-manage" onClick={nav.openModelGroups} type="button">{t("管理")}</button>
+                ) : null}
+              </div>
+              {expanded ? <div aria-label={titleText} role="listbox">{section.items.map((item) => {
+                const selected = isSelected(item);
+                const favorite = isFavoriteModel(favorites, item.model, payload);
+                const candidate = item.providerModel ?? (item.custom ? item.model : "");
+                const ambiguous = Boolean(pinProvider && candidate && (
+                  candidate.toLowerCase().startsWith(GROUP_MODEL_PREFIX) ||
+                  candidate.includes("*") ||
+                  servingProviders(payload, candidate, exclude).length
+                ));
+                return (
+                  <div
+                    aria-selected={selected}
+                    aria-disabled={ambiguous || undefined}
+                    className="gw-mp-item"
+                    data-direct={item.direct ? true : undefined}
+                    data-selected={selected}
+                    key={item.model}
+                    onClick={() => { if (!ambiguous) choose(item); }}
+                    onKeyDown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget && !ambiguous) choose(item); }}
+                    role="option"
+                    tabIndex={0}
+                  >
+                    <span className="gw-mp-text">
+                      <strong title={item.model.startsWith(GROUP_MODEL_PREFIX) ? item.sub : item.model}>{item.label}</strong>
+                      {ambiguous ? <small>{t("模型 ID 与已有模型名冲突，无法固定到此供应商")}</small> : item.sub && item.sub !== section.title ? <small>{section.key === "current" ? t(item.sub) : item.sub}</small> : null}
+                    </span>
+                    {item.direct ? (
+                      <em className="gw-mp-direct" title={tf("{0} 用自己的登录或 Key 直接向 {1} 要这个模型，不经 Codex++。选它会断开 Codex++ 并还原接入前的设置。", [ownAgent ?? "Agent", item.direct])}>
+                        {t("直连，不经 Codex++")}
+                      </em>
+                    ) : null}
+                    {item.direct ? null : <button
+                      aria-label={favorite ? t("取消收藏") : t("收藏")}
+                      className="gw-mp-star"
+                      data-on={favorite}
+                      onClick={(event) => { event.stopPropagation(); toggleFavorite(item.model); }}
+                      type="button"
+                    >
+                      <Star className="h-3.5 w-3.5" />
+                    </button>}
+                    {selected ? <Check className="gw-mp-check h-4 w-4" /> : null}
+                  </div>
+                );
+              })}</div> : null}
+            </section>
+            );
+          })}
+        </div>
+        {head ? <div className="gw-mp-foot">{head}</div> : null}
       </div>
-      {head ? <div className="gw-mp-foot">{head}</div> : null}
     </div>
   );
 }
@@ -1303,10 +1350,8 @@ export function AgentModelPicker({ agentId, payload, hiddenProviders, busy, run,
       connected={connected}
       draft={draft}
       hiddenProviders={hiddenProviders}
-      onDisconnect={() => setOpen(false)}
       onOpenChange={(next) => { if (busy === null || !next) setOpen(next); }}
       onPick={(item) => void pick(item)}
-      onPickOwn={() => setOpen(false)}
       open={open}
       payload={payload}
     />
@@ -1333,8 +1378,8 @@ function ModelPicker({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onPick: (item: PickerItem) => void;
-  onPickOwn: (item: PickerItem) => void;
-  onDisconnect: () => void;
+  onPickOwn?: (item: PickerItem) => void;
+  onDisconnect?: () => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement>(null);
   // 候选只列页面上看得见的供应商；判断已选模型能不能用仍按真实的排除名单。
@@ -1370,7 +1415,7 @@ function ModelPicker({
   const selectedModel = connected && agent.defaultModelDiffers && !effectiveModel.startsWith("group/")
     ? ""
     : connected || draft.model ? effectiveModel.trim() || (connected ? "" : agentModels(payload, draft.poolExclude)[0] || "") : "";
-  const head = (
+  const head = onDisconnect ? (
     <>
       {/* 用默认 = 断开网关并还原接入前的配置，只放这一个入口。 */}
       <button
@@ -1385,7 +1430,7 @@ function ModelPicker({
         {!connected && !own ? <Check className="h-3.5 w-3.5" /> : null}
       </button>
     </>
-  );
+  ) : undefined;
   return (
     <div className="gw-picker">
       <button aria-expanded={open} aria-haspopup="listbox" className="gw-picker-button" onClick={() => onOpenChange(!open)} ref={buttonRef} title={inactiveHint} type="button">
@@ -1398,13 +1443,13 @@ function ModelPicker({
         {inactiveHint ? <AlertTriangle aria-label={inactiveHint} className="h-3.5 w-3.5" role="img" /> : null}
         <ChevronDown className="h-3.5 w-3.5" />
       </button>
-      <Floating anchorRef={buttonRef} className="gw-model-popover" minHeight={180} onClose={() => onOpenChange(false)} open={open} width={560}>
+      <Floating anchorRef={buttonRef} className="gw-model-popover" minHeight={180} onClose={() => onOpenChange(false)} open={open} width={440}>
         <ModelList
           exclude={listExclude}
           head={head}
           onPick={onPick}
           onPickOwn={onPickOwn}
-          own={visibleOwnModels(agent, payload)}
+          own={onPickOwn ? visibleOwnModels(agent, payload) : null}
           ownAgent={agent.name}
           payload={payload}
           pinProvider

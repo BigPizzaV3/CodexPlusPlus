@@ -15,6 +15,9 @@ async function start() {
     createRoot(app).render(<FlowDemo />);
     return;
   }
+  // 和正式版 main.tsx 一样，渲染前先加载英文词典（只有英文才加载）；不等它，?lang=en 首屏全是中文。
+  const { loadLanguagePack } = await import("../src/i18n");
+  await loadLanguagePack();
   if (new URLSearchParams(window.location.search).has("flowPreview")) {
     window.localStorage.setItem("codex-plus-tray-tab", "flow");
   }

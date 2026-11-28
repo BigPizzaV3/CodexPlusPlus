@@ -13,7 +13,7 @@
     {
       "name": "10-style.js",
       "description": "样式注入、默认设置、后端设置映射、梦皮主题变量与持久化",
-      "lines": 3783
+      "lines": 3933
     },
     {
       "name": "20-menu.js",
@@ -53,7 +53,7 @@
     {
       "name": "40-backend-settings.js",
       "description": "后端设置读写、心跳同步、按清单生成的设置页、用户脚本与市场状态、拓展 UI",
-      "lines": 3422
+      "lines": 3552
     },
     {
       "name": "41-extension-detail.js",
@@ -68,32 +68,32 @@
     {
       "name": "42-provider-editing.generated.js",
       "description": "生成文件：与管理器共用的供应商编辑纯函数（relay-profile-editing.ts，scripts/assemble-provider-editing.mjs 打包）",
-      "lines": 3281
+      "lines": 3355
     },
     {
       "name": "43-provider-page.js",
       "description": "左侧图标栏「供应商」页：在 Codex 里增删改切供应商，经 /providers/* 走管理器的保存与切换",
-      "lines": 1346
+      "lines": 1673
     },
     {
       "name": "44-provider-gateway.js",
       "description": "「供应商」页的网关页签：在 Codex 里管理网关供应商池、接入 / 断开网关（经 /providers/gateway 走管理器的网关命令）",
-      "lines": 783
+      "lines": 714
     },
     {
       "name": "45-remote-control-page.js",
       "description": "左侧图标栏「远程控制」页：在 Codex 里开关远程控制与局域网访问、给手机配对、管理设备（经 /remote-control 走管理器托管的服务）",
-      "lines": 533
+      "lines": 535
     },
     {
       "name": "45-weixin-connect-page.js",
       "description": "左侧图标栏「微信连接」页：在 Codex 里扫码登录、启停微信连接、改常用设置（经 /weixin-connect 走管理器登记的宿主路由，与管理器微信页共用命令）",
-      "lines": 690
+      "lines": 692
     },
     {
       "name": "46-service-settings.js",
       "description": "Codex++ 设置页的语音输入与下一步建议服务配置（地址、模型、Key、本地模型下载、全局热键、测试连接）与原生浏览器状态",
-      "lines": 628
+      "lines": 769
     },
     {
       "name": "47-task-board-page.js",
@@ -123,12 +123,12 @@
     {
       "name": "71-model-picker-groups.js",
       "description": "原生模型选择器供应商图标与折叠列表双视图、有效默认身份展示",
-      "lines": 2377
+      "lines": 2936
     },
     {
       "name": "80-session-share.js",
       "description": "会话运行时工具：提示条、会话删除与撤销、Markdown 导出",
-      "lines": 687
+      "lines": 710
     },
     {
       "name": "81-capacity-auto-retry.js",
@@ -148,12 +148,12 @@
     {
       "name": "85-turn-rewind-controller.js",
       "description": "本地轮次回退执行、恢复记录与失败保护",
-      "lines": 260
+      "lines": 269
     },
     {
       "name": "86-turn-rewind-menu.js",
       "description": "默认关闭的回答菜单回退入口与原生导出适配",
-      "lines": 318
+      "lines": 509
     },
     {
       "name": "85-side-chat-save.js",
@@ -208,7 +208,7 @@
     {
       "name": "93-dictation.js",
       "description": "独立 ASR 听写入口、录音、取消重试与原生输入框回填",
-      "lines": 605
+      "lines": 629
     },
     {
       "name": "95-conversation-view.js",

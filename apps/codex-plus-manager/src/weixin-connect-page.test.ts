@@ -138,8 +138,9 @@ test("Codex 左侧图标栏的「微信连接」入口：紧跟远程控制，�
   const source = await read(shardPath);
   assert.match(renderer, /codexPlusRailWeixinId = "codex-plus-rail-weixin"/);
   assert.match(renderer, /codexPlusWeixinConnectTab = "weixin-connect"/);
-  assert.match(renderer, /onActivate: openCodexPlusRemoteControlPage \},\n(?:\s*\/\/[^\n]*\n)*\s*\{ id: codexPlusRailWeixinId, label: "微信连接", iconMarkup: icons\.weixin, withStatus: false, onActivate: openCodexPlusWeixinConnectPage \}/);
-  assert.match(renderer, /\[codexPlusRailWeixinId, "weixin"\],/, "选中态");
+  assert.match(renderer, /openCodexPlusRemoteControlPage\(\) \},\n\s*\{ entry: "weixin", label: "微信连接", icon: icons\.weixin, open: \(\) => openCodexPlusWeixinConnectPage\(\) \}/);
+  assert.match(renderer, /\[codexPlusRailNavId, \["home", \.\.\.codexPlusFoldedPages\(\)\.map\(\(page\) => page\.entry\)\]\],/, "打开时亮 Codex++ 入口");
+  assert.match(source, /document\.body\.appendChild\(overlay\);\n(?:\s*\/\/[^\n]*\n)*\s*installCodexPlusEmbeddedNav\(overlay(?:, codexPlus\w+SectionNav)?\);/, "在 Codex++ 页面里面打开：最左边保留 Codex++ 分组栏");
   assert.match(renderer, /if \(tab === codexPlusWeixinConnectTab\) return "weixin";/);
   // 两处图标栏点击监听都要排除新入口，否则点它会把刚打开的页面关掉。
   assert.equal(renderer.split("#${codexPlusRailRemoteId}, #${codexPlusRailWeixinId}, #${codexPlusRailTasksId}`)) return;").length - 1, 2);

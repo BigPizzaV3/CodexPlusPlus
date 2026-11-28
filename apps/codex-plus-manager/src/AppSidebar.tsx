@@ -1,7 +1,6 @@
 // 主界面侧栏与设置模式目录、Agent 页签。
 import {
   ArrowLeft,
-  Blocks,
   BookOpen,
   Download,
   Info,
@@ -281,18 +280,16 @@ export function AppSidebar({
   }
 
   // 主模式的入口：每项对应一条路由，match 里的路由都算选中（用量的两个页签、MCP 与 Skills 的两个胶囊）。
-  // 第一组是首页（赞助商推荐）、万物皆拓展（Codex / Claude 下）、MCP 与 Skills、会话、用量；本地服务排在 Agent 一组后面，只在有 Agent 接入网关时出现。
+  // 第一组是首页（赞助商推荐）、MCP 与 Skills、会话、用量、本地服务。万物皆拓展按 Agent 拆开，在 Codex / Claude Desktop 各自的页签里。
   type SideEntry = { key: string; route: Route; label: string; icon: LucideIcon; match: Route[]; tour?: string };
   // 用量也记直连代理的请求，不算网关专属。
   const general: SideEntry[] = [
     { key: "home", route: "home", label: t("首页"), icon: House, match: ["home"] },
-    // 万物皆拓展是独立入口，不随侧栏当前选的 Agent 显隐；宿主在页内切换。
-    { key: "extensions", route: "userScripts", label: t("万物皆拓展"), icon: Blocks, match: ["userScripts"], tour: "management" },
-    { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes },
+    { key: "customize", route: "context", label: t("MCP 与 Skills"), icon: Network, match: customizeRoutes, tour: "management" },
     { key: "sessions", route: "sessions", label: t("会话"), icon: MessagesSquare, match: ["sessions"] },
     { key: "usage", route: "gatewayUsage", label: t("用量"), icon: BarChart3, match: ["gatewayUsage", "requestLog"] },
-    // 本地服务（原「聚合网关」一整组）只占一个入口，页内四个页签。
-    { key: "localService", route: "gatewayProviders", label: t("本地服务"), icon: Waypoints, match: ["hub", ...localServiceRoutes] },
+    // 本地服务（原「聚合网关」一整组）只占一个入口，页内两个页签（服务与接入、路由）。
+    { key: "localService", route: "gateway", label: t("本地服务"), icon: Waypoints, match: ["hub", "gatewaySettings", ...localServiceRoutes] },
   ];
   // 本地服务只占第一组里一个入口；声明在 gateway 分组的拓展页面并进其余拓展页面那一节。
   // `gateway` 是已发布的清单分组名，照旧认。
@@ -356,11 +353,11 @@ export function AppSidebar({
           {tools.map((tool) => {
             const current = tool.id === activeTool && !onGlobalPage;
             const expanded = current && collapsedAgent !== tool.id;
-            // 这一行同时管 Claude Code（命令行配置概览）和 Claude Desktop（增强），侧栏只写 Claude，免得误以为增强针对的是命令行（#2913）。
-            const displayName = tool.id === "claude" ? "Claude" : tool.name;
+            // Claude Code（命令行）与 Claude Desktop 各自独立为一行 Agent。
+            const displayName = tool.id === "claude" ? "Claude Code" : tool.id === "claude-desktop" ? "Claude Desktop" : tool.name;
             const title = tool.switchable
-              ? tf("{0}｜{1}｜{2} 个供应商", [tool.name, tool.homeDir || t("未配置目录"), tool.relayCount])
-              : tf("{0}｜{1}｜供应商配置尚未接入", [tool.name, tool.homeDir || t("未配置目录")]);
+              ? tf("{0}｜{1}｜{2} 个供应商", [displayName, tool.homeDir || t("未配置目录"), tool.relayCount])
+              : tf("{0}｜{1}｜供应商配置尚未接入", [displayName, tool.homeDir || t("未配置目录")]);
             // 状态点表示接入方式：接入网关为绿色；Codex 没接入网关时是直连，由 Codex++ 直接管理供应商配置。
             const access = connectedAgents.has(tool.id)
               ? { tone: "ok", label: t("已经通过 Codex++ 本地服务接入") }
@@ -369,7 +366,7 @@ export function AppSidebar({
                 : { tone: "off", label: t("未接入本地服务") };
             return (
               <Fragment key={tool.id}>
-              <div className={`cx-side-agent ${tool.id === "codex" && tool.switchable ? "has-run" : ""}`.trim()}>
+              <div className={`cx-side-agent ${(tool.id === "codex" && tool.switchable) || tool.id === "claude-desktop" ? "has-run" : ""}`.trim()}>
                 <button
                   aria-current={current ? "true" : undefined}
                   aria-expanded={current ? expanded : undefined}
@@ -412,20 +409,20 @@ export function AppSidebar({
                     </button>
                   );
                 })() : null}
-                {tool.id === "claude" && claudeDelivery === "copy" && !claudeRun.running ? (
+                {tool.id === "claude-desktop" && claudeDelivery === "copy" && !claudeRun.running ? (
                   // 启动模式是补丁副本：播放键去 Desktop 增强页启动补丁版（要先检测、可能要制作副本），不再启动原版。
                   <button
                     aria-label={t("启动补丁版")}
                     className="cx-side-run"
-                    onClick={() => onNavigate("claude")}
+                    onClick={() => onOpenAgent("claude-desktop", "claude")}
                     title={t("到 Desktop 增强页启动补丁版")}
                     type="button"
                   >
                     <Play aria-hidden="true" />
                   </button>
-                ) : tool.id === "claude" ? (() => {
+                ) : tool.id === "claude-desktop" ? (() => {
                   // Claude Desktop 本地模式：和 Codex 行同一套播放键，启动 / 停止本地服务。
-                  const label = claudeRun.running ? t("停止本地服务") : t("启动 Claude");
+                  const label = claudeRun.running ? t("停止本地服务") : t("启动 Claude Desktop");
                   return (
                     <button
                       aria-label={label}
@@ -434,7 +431,7 @@ export function AppSidebar({
                       data-unavailable={!claudeRun.running && Boolean(claudeRun.unavailableReason)}
                       disabled={claudeRun.busy || (!claudeRun.running && Boolean(claudeRun.unavailableReason))}
                       onClick={claudeRun.running ? claudeRun.onStop : claudeRun.onStart}
-                      title={claudeRun.busy ? t("处理中…") : claudeRun.running ? t("停止本地服务") : claudeRun.unavailableReason ?? t("启动 Claude")}
+                      title={claudeRun.busy ? t("处理中…") : claudeRun.running ? t("停止本地服务") : claudeRun.unavailableReason ?? t("启动 Claude Desktop")}
                       type="button"
                     >
                       {claudeRun.busy ? <Loader2 aria-hidden="true" className="animate-spin" /> : claudeRun.running ? <Square aria-hidden="true" /> : <Play aria-hidden="true" />}

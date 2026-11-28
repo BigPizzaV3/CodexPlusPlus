@@ -32,6 +32,8 @@ struct ModelSource {
     headers: Vec<crate::settings::RelayHeaderKeyValue>,
     /// Anthropic Messages 协议：模型列表要 `x-api-key` + `anthropic-version`，且默认只返回 20 条。
     anthropic: bool,
+    /// Google Gemini 协议：模型列表走 `/v1beta/models?pageSize=1000` 并用 `x-goog-api-key` 认证。
+    gemini: bool,
 }
 
 #[derive(Debug, Default)]
@@ -990,6 +992,7 @@ fn model_sources_from_environment(
         },
         headers: Vec::new(),
         anthropic: false,
+        gemini: false,
     }]
 }
 
@@ -1028,6 +1031,7 @@ fn model_source_from_config(
         api_key,
         headers: Vec::new(),
         anthropic: false,
+        gemini: false,
     })
 }
 
@@ -1099,7 +1103,11 @@ async fn fetch_models_payload_from_source(
     source: &ModelSource,
     timeout: std::time::Duration,
 ) -> (Vec<String>, Value, Option<Value>) {
-    let mut endpoint = models_endpoint(&source.base_url);
+    let mut endpoint = if source.gemini {
+        crate::gemini_bridge::gemini_models_url(&safe_url_for_status(&source.base_url))
+    } else {
+        models_endpoint(&source.base_url)
+    };
     if source.anthropic && !endpoint.is_empty() {
         // Anthropic 的 /v1/models 默认一页 20 条，一次取满（上限 1000）。
         endpoint.push(if endpoint.contains('?') { '&' } else { '?' });
@@ -1126,8 +1134,20 @@ async fn fetch_models_payload_from_source(
     // 与协议代理、供应商测试共用 relay_headers：显式 Authorization 优先于 API Key。
     let has_header = |name: &str| source.headers.iter().any(|header| header.key.trim().eq_ignore_ascii_case(name));
     let official_anthropic = source.anthropic && endpoint.contains("anthropic.com");
-    if !source.api_key.is_empty() && !crate::relay_headers::has_authorization(&source.headers) && !official_anthropic {
+    if !source.api_key.is_empty()
+        && !crate::relay_headers::has_authorization(&source.headers)
+        && !official_anthropic
+        && !source.gemini
+    {
         request = request.bearer_auth(&source.api_key);
+    }
+    if source.gemini {
+        if !source.api_key.is_empty()
+            && !has_header(crate::gemini_bridge::GEMINI_API_KEY_HEADER)
+            && !crate::relay_headers::has_authorization(&source.headers)
+        {
+            request = request.header(crate::gemini_bridge::GEMINI_API_KEY_HEADER, &source.api_key);
+        }
     }
     if source.anthropic {
         // 官方只认 x-api-key；第三方中转常常两种都收，Bearer 已在上面带上。
@@ -1382,6 +1402,7 @@ fn relay_profile_model_source(profile: &RelayProfile) -> anyhow::Result<ModelSou
         api_key: crate::relay_config::relay_profile_api_key(profile),
         headers: profile.custom_headers.clone(),
         anthropic: profile.protocol == crate::settings::RelayProtocol::AnthropicMessages,
+        gemini: profile.protocol == crate::settings::RelayProtocol::Gemini,
     };
     if source.base_url.is_empty() {
         anyhow::bail!("Base URL 不能为空");
@@ -1514,6 +1535,20 @@ fn parse_model_payload(payload: &Value) -> Vec<String> {
             .filter_map(|item| {
                 item.as_str().map(str::to_string).or_else(|| {
                     item.as_object().and_then(|object| {
+                        // Gemini 模型列表会混入仅支持 embedContent / predict 的非聊天模型；
+                        // 显式给了 supportedGenerationMethods 时只留支持 generateContent 的。
+                        if let Some(methods) = object
+                            .get("supportedGenerationMethods")
+                            .and_then(Value::as_array)
+                        {
+                            if !methods.is_empty()
+                                && !methods
+                                    .iter()
+                                    .any(|m| m.as_str() == Some("generateContent"))
+                            {
+                                return None;
+                            }
+                        }
                         ["id", "model", "name"]
                             .iter()
                             .filter_map(|key| {
@@ -2019,6 +2054,7 @@ mod model_fetch_tests {
             api_key: "key".to_string(),
             headers: Vec::new(),
             anthropic: false,
+            gemini: false,
         };
         let (_, status) = fetch_models_from_source_with_timeout(
             &client,

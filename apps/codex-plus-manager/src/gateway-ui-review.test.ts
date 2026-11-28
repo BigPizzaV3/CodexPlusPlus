@@ -287,7 +287,7 @@ test("模型选择器顶部的供应商按钮是筛选，不是滚动到那一�
   const source = read("GatewayAgents.tsx");
   assert.match(source, /onClick=\{\(\) => pickScope\(\{ section: section\.key \}\)\}/);
   assert.match(source, /pickerSections\(payload, query, avatarOf, exclude, skipGroup, sectionOnly,/);
-  assert.match(source, /if \(sectionOnly\) return all\.filter\(\(section\) => section\.key === sectionOnly \|\| section\.key === "custom"\)/, "自定义组由 pickerSections 按供应商限定");
+  assert.match(source, /if \(sectionOnly\) return all\.filter\(\(section\) => section\.key === sectionOnly\)/);
   assert.doesNotMatch(source, /scrollTop = node\.offsetTop/);
 });
 
@@ -324,7 +324,7 @@ test("用量与请求日志并成一页：两个页签各是一条路由，统�
   assert.match(app, /const args = silent && cursorRef\.current \? \{ \.\.\.filterRef\.current, cursor: cursorRef\.current \} : filterRef\.current;/, "时间段、供应商、模型在后端筛，先截 300 条再筛会漏；自动刷新带游标只读新增");
   assert.match(app, /invoke<RequestLogsResult>\("load_request_logs", args\)/);
   assert.match(app, /entry\.statusCode \|\| \(entry\.success \? "OK" : "ERR"\)/);
-  assert.match(read("GatewayPage.tsx"), /<TopbarActions>\{tab === "usage" \? null : refreshButton\}<\/TopbarActions>/, "用量页签只留一个刷新");
+  assert.match(read("GatewayPage.tsx"), /<TopbarActions>\{tab === "usage" \? null : <>\{routingModeSwitch\}\{refreshButton\}<\/>\}<\/TopbarActions>/, "用量页签只留一个刷新");
 });
 
 test("统计里点「未知」供应商：请求页按「无供应商」筛，不退化成不筛（null）", () => {

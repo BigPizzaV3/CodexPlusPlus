@@ -87,6 +87,9 @@ function harness({ stored = "", extMenu = false, sections = [] } = {}) {
       try { return { ok: true, value: fn() }; } catch (error) { return { ok: false, error: String(error?.message || error) }; }
     },
     closeCodexPlusPage: () => {},
+    // 左栏最上面「页面」一节（收进 Codex++ 入口的页面）：这段代码之外定义，这里给一项。
+    codexPlusActiveEntry: () => "home",
+    codexPlusFoldedPages: () => [{ entry: "provider", label: "供应商", icon: "<svg></svg>" }],
   });
   vm.runInContext(source, context);
   /** 把渲染出来的左栏按钮放进 nav，好让 sync 能找到它们。 */
@@ -189,5 +192,5 @@ test("左栏按区插小标题（照原生的「个人 / 集成 / 编码」）�
   const html = h.renderNav();
   const sequence = [...html.matchAll(/codex-plus-page-nav-section-title" role="presentation">([^<]+)<|data-codex-plus-settings-nav="([^"]+)"/g)]
     .map((m) => m[1] ? `#${m[1]}` : m[2]);
-  assert.deepEqual(sequence, ["#通用", "core", "plugins", "#拓展", `ext-section:${section.id}`, "ext-menu", "#其他", "tools"]);
+  assert.deepEqual(sequence, ["#页面", "#通用", "core", "plugins", "#拓展", `ext-section:${section.id}`, "ext-menu", "#其他", "tools"]);
 });

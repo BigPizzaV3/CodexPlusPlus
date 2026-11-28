@@ -517,6 +517,23 @@
     return node && node.closest(".composer-footer, [data-composer-footer-responsive]") === footer ? node : null;
   }
 
+  /**
+   * 虚拟账号模式下，Codex 原生听写按钮的 `/backend-api/transcribe` 已由本地兼容服务直接接管
+   * （同时支持云端语音 API 与本地 SenseVoice）。检测到同一输入框已有原生麦克风按钮时，
+   * 不再额外注入第二个麦克风按钮，保持与原生一致。
+   */
+  function codexPlusNativeDictationButton(scope) {
+    if (!scope || codexPlusBackendSettings.chatgptCompatEnabled !== true) return null;
+    const buttons = [...scope.querySelectorAll("button")];
+    return buttons.find((node) => {
+      if (isExtensionUiNode(node) || !visibleElement(node)) return false;
+      if (node.querySelector('canvas[data-mode]')) return true;
+      const label = `${node.getAttribute("aria-label") || ""} ${node.getAttribute("title") || ""}`.trim();
+      if (!label) return false;
+      return /^(?:dictate|start dictation|stop dictation|retry dictation|preparing dictation|transcribe and send|听写|口述|开始听写|停止听写|重试听写|语音听写|语音输入|正在准备听写|正在转写)(?:\s|[;；(（.…]|$)/i.test(label);
+    }) || null;
+  }
+
   function installCodexPlusDictation() {
     if (!codexPlusDictationEnabled()) {
       if (codexPlusDictation.phase !== "idle" || codexPlusDictation.pendingSend) cancelCodexPlusDictation();
@@ -548,10 +565,11 @@
       const scope = codexPlusDictationScope(footer);
       const editor = scope && codexPlusDictationEditor(scope);
       if (!editor) return;
-      candidates.push({ footer, editor, score: codexPlusDictationFooterScore(footer, editor) });
+      candidates.push({ footer, scope, editor, score: codexPlusDictationFooterScore(footer, editor) });
     });
     const hosts = new Map();
     for (const item of candidates) {
+      if (codexPlusDictation.phase === "idle" && codexPlusNativeDictationButton(item.scope)) continue;
       const current = hosts.get(item.editor);
       if (!current || item.score >= current.score) hosts.set(item.editor, item);
     }
@@ -585,6 +603,12 @@
     }
   };
   window.__codexPlusDictationGlobalToggle = () => {
+    if (codexPlusDictation.phase === "idle" && codexPlusBackendSettings.chatgptCompatEnabled === true) {
+      const editor = codexPlusDictationGlobalEditor();
+      const scope = editor?.closest?.('[data-codex-composer-root], [data-composer-surface-variant], form');
+      const nativeButton = codexPlusNativeDictationButton(scope);
+      if (nativeButton && !nativeButton.disabled) { nativeButton.click(); return; }
+    }
     if (codexPlusDictation.phase === "recording") stopCodexPlusDictation("insert");
     else if (codexPlusDictation.phase === "idle") void startCodexPlusDictation(null);
     else if (["error", "result"].includes(codexPlusDictation.phase)) {

@@ -28,16 +28,21 @@ export function useModalShell<T extends HTMLElement = HTMLElement>({ onClose, di
   dirtyRef.current = dirty;
   useModalFocus(ref, active);
 
-  const requestClose = useCallback(async () => {
+  const confirmAction = useCallback(async (action: () => void, message?: string) => {
     if (dirtyRef.current) {
-      const discard = await appConfirm(t("有未保存的修改，关闭后会丢失。"), { title: t("放弃修改？"), confirmText: t("放弃修改"), danger: true });
+      const discard = await appConfirm(message ?? t("有未保存的修改，切换后会丢失。"), { title: t("放弃修改？"), confirmText: t("放弃修改"), danger: true });
       if (!discard) return;
     }
-    closeRef.current();
+    action();
   }, []);
+
+  const requestClose = useCallback(async () => {
+    await confirmAction(() => closeRef.current(), t("有未保存的修改，关闭后会丢失。"));
+  }, [confirmAction]);
   useEscapeLayer(active, () => void requestClose());
 
   return {
+    confirmAction,
     requestClose,
     backdropProps: {
       onMouseDown: (event: MouseEvent<HTMLElement>) => {

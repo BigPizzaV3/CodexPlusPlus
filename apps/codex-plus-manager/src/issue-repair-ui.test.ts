@@ -57,6 +57,8 @@ test("active ProjectSessionPage owns repair panel and enabled actions call exist
     RefreshCw: "RefreshCw", Wrench: "Wrench", Save: "Save", SettingsAutoSave: "SettingsAutoSave", Info: "Info", ChevronDown: "ChevronDown", isProviderSyncTargetSelectable, providerSyncTargetLabel: () => "人工目标",
     providerSyncItem: enhancementItem("providerSyncEnabled"),
     sessionIndexRepairItem: enhancementItem("sessionIndexRepairEnabled"),
+    threadModelFollowItem: enhancementItem("threadModelFollowSwitchEnabled"),
+    keepProjectsItem: enhancementItem("keepProjectsWithoutAccount"),
   });
   vm.runInContext(ts.transpileModule(fn.getText(app).replace(/^export /, ""), { compilerOptions: { jsx: ts.JsxEmit.React, jsxFactory: "jsx", jsxFragmentFactory: "fragment", target: ts.ScriptTarget.ES2022 } }).outputText, context);
   let synced = 0; let repaired = 0; let saved = 0; let recovered = 0;

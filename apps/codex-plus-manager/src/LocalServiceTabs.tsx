@@ -1,4 +1,4 @@
-/** 「本地服务」页顶部的四个页签：共享供应商、路由、Agent 接入、设置。
+/** 「本地服务」页顶部的两个页签：服务与接入、路由（供应商在各 Agent 自己的页面管理，服务设置已并入「服务与接入」）。
  * 每个页签是一条路由（见 routes.ts 的 localServiceRoutes），侧栏里只有一个「本地服务」入口，和「用量」的做法一样。 */
 import { t } from "./i18n";
 import { localServiceRoutes, routeTitle, type Route } from "./routes";

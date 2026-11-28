@@ -46,6 +46,10 @@ fn api_backend_for(profile: &RelayProfile) -> anyhow::Result<&'static str> {
             "Grok 不支持 Anthropic Messages 上游「{}」；请为 Grok 选择 Responses 或 Chat Completions 协议的供应商",
             profile.name
         ),
+        RelayProtocol::Gemini => bail!(
+            "Grok 不支持 Gemini 上游「{}」；请为 Grok 选择 Responses 或 Chat Completions 协议的供应商",
+            profile.name
+        ),
     })
 }
 

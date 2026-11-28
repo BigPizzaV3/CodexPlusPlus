@@ -208,6 +208,13 @@ const demoSettings = {
   },
 };
 
+// `?codexMode=aggregate`：Codex 已经经本地服务（聚合），「连接与供应商」落在聚合视图；截 README 配图用。
+// 和正式版一样，接入时直连列表里多一个本地服务托管的供应商，activeRelayId 指着它。
+if (new URLSearchParams(window.location.search).get("codexMode") === "aggregate") {
+  demoSettings.relayProfiles.push({ ...demoSettings.relayProfiles[0], id: "codex-plus-gateway", name: "Codex++", baseUrl: "http://127.0.0.1:63130/v1", upstreamBaseUrl: "http://127.0.0.1:63130/v1" });
+  demoSettings.activeRelayId = "codex-plus-gateway";
+}
+
 // 网页预览不走后端缓存，直接引用 jsDelivr 上的同一份图片。
 const agentPetCatalog: Array<[string, string, string]> = [
   ["whale", "鲸鱼", "Spouting whale/3D/spouting_whale_3d.png"],
@@ -558,13 +565,13 @@ const demoBanner = (label: string, hue: number) =>
   `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="640"><defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="hsl(${hue} 60% 18%)"/><stop offset="1" stop-color="hsl(${hue + 40} 60% 30%)"/></linearGradient></defs><rect width="1600" height="640" fill="url(#g)"/><text x="400" y="360" font-family="Helvetica" font-size="120" font-weight="700" fill="white">${label}</text></svg>`)}`;
 const demoAds = [
   // preset：「添加供应商」目录里的赞助商预设，和线上清单一样只来自赞助位。
-  { id: "demo-a", type: "sponsor", title: "示例中转站 A", description: "稳定的 API 中转服务，支持主流模型与图像能力，适合日常开发和团队协作。", url: "https://example.com/a", image: demoBanner("Relay A", 220), highlights: ["价格划算", "稳定接入", "高缓存命中"], preset: { id: "demo-relay-a", name: "示例中转站 A", baseUrl: "https://a.example.com/v1", protocol: "responses", model: "gpt-5.5" } },
-  { id: "demo-b", type: "sponsor", title: "示例聚合平台 B", description: "一个 Key 访问多家模型，兼容 Claude Code 等工具。", url: "https://example.com/b", image: demoBanner("Hub B", 280), highlights: ["多模型", "兼容 Claude Code"], preset: { id: "demo-hub-b", name: "示例聚合平台 B", baseUrl: "https://b.example.com/v1", protocol: "chatCompletions", model: "" } },
-  { id: "demo-c", type: "sponsor", title: "示例服务 C", description: "开放、稳定、高性价比的模型中转。", url: "https://example.com/c", image: demoBanner("Service C", 20), highlights: ["按量计费"] },
-  { id: "demo-e", type: "sponsor", title: "示例云 E", description: "150+ 主流模型，企业级 MaaS，按需选用，适合团队统一采购和管理。这一句故意写得很长，用来检查一行说明超出宽度时会不会把页面撑宽。", url: "https://example.com/e", image: demoBanner("Cloud E", 200), highlights: ["150+ 模型", "企业级"] },
-  { id: "demo-f", type: "sponsor", title: "示例站 F", description: "兼容 OpenAI / Anthropic 协议。", url: "https://example.com/f", highlights: ["支持开票"] },
-  { id: "demo-g", type: "sponsor", title: "示例平台 G", description: "国内直连，低延迟。", url: "https://example.com/g", image: demoBanner("G", 120), highlights: [] },
-  { id: "demo-d", type: "normal", title: "示例教程", description: "如何把多个 Agent 接到同一个供应商池。", url: "https://example.com/d", highlights: [] },
+  { id: "demo-a", type: "sponsor", title: L("示例中转站 A", "Example Relay A"), description: L("稳定的 API 中转服务，支持主流模型与图像能力，适合日常开发和团队协作。", "A stable API relay for mainstream models and image generation, for daily development and team work."), url: "https://example.com/a", image: demoBanner("Relay A", 220), highlights: [L("价格划算", "Good value"), L("稳定接入", "Stable"), L("高缓存命中", "High cache hits")], preset: { id: "demo-relay-a", name: L("示例中转站 A", "Example Relay A"), baseUrl: "https://a.example.com/v1", protocol: "responses", model: "gpt-5.5" } },
+  { id: "demo-b", type: "sponsor", title: L("示例聚合平台 B", "Example Hub B"), description: L("一个 Key 访问多家模型，兼容 Claude Code 等工具。", "One key for many model vendors, works with Claude Code and more."), url: "https://example.com/b", image: demoBanner("Hub B", 280), highlights: [L("多模型", "Many models"), L("兼容 Claude Code", "Claude Code ready")], preset: { id: "demo-hub-b", name: L("示例聚合平台 B", "Example Hub B"), baseUrl: "https://b.example.com/v1", protocol: "chatCompletions", model: "" } },
+  { id: "demo-c", type: "sponsor", title: L("示例服务 C", "Example Service C"), description: L("开放、稳定、高性价比的模型中转。", "An open, stable and affordable model relay."), url: "https://example.com/c", image: demoBanner("Service C", 20), highlights: [L("按量计费", "Pay as you go")] },
+  { id: "demo-e", type: "sponsor", title: L("示例云 E", "Example Cloud E"), description: L("150+ 主流模型，企业级 MaaS，按需选用，适合团队统一采购和管理。这一句故意写得很长，用来检查一行说明超出宽度时会不会把页面撑宽。", "150+ mainstream models, enterprise MaaS, pick what you need; built for teams that buy and manage centrally. This line is deliberately long to check it never widens the page."), url: "https://example.com/e", image: demoBanner("Cloud E", 200), highlights: [L("150+ 模型", "150+ models"), L("企业级", "Enterprise")] },
+  { id: "demo-f", type: "sponsor", title: L("示例站 F", "Example Site F"), description: L("兼容 OpenAI / Anthropic 协议。", "OpenAI / Anthropic compatible."), url: "https://example.com/f", highlights: [L("支持开票", "Invoices available")] },
+  { id: "demo-g", type: "sponsor", title: L("示例平台 G", "Example Platform G"), description: L("国内直连，低延迟。", "Direct, low-latency access."), url: "https://example.com/g", image: demoBanner("G", 120), highlights: [] },
+  { id: "demo-d", type: "normal", title: L("示例教程", "Example guide"), description: L("如何把多个 Agent 接到同一个供应商池。", "How to connect several agents to one provider pool."), url: "https://example.com/d", highlights: [] },
 ];
 
 // MCP 演示数据：Claude Code 与 Grok 各自已有的服务器（Codex 一列来自设置里的公共配置）。

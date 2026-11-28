@@ -77,10 +77,12 @@ it("隐藏原生标签时同步退出无障碍树，避免读屏念两遍", asyn
   assert.match(source, /native\.removeAttribute\("aria-hidden"\)/);
 });
 
-it("只有一个供应商时图标模式保留原生列表，仍提供视图切换", async () => {
+it("只有一个供应商时图标模式也用三栏，不退回原生平铺列表，仍提供视图切换", async () => {
   const source = await readShard();
-  assert.match(source, /const grouped = mode === "list" \|\| groups\.length >= 2/);
-  assert.match(source, /if \(!grouped\)/);
+  assert.doesNotMatch(source, /groups\.length >= 2|groups\.length < 2/);
+  assert.doesNotMatch(source, /if \(!grouped\)/);
+  // 三栏时左栏有收藏，最近使用只在列表模式或没认出分组时出现。
+  assert.match(source, /if \(state\.viewMode !== "list" && groups\.length\) \{\n\s+block\?\.remove\(\);/);
   assert.match(source, /codexPlusModelPickerViewControls\(list\)/);
   assert.match(source, /codexPlusModelPickerClear\(list\)/);
   assert.match(source, /list\.removeAttribute\("data-codex-plus-model-groups"\)/);
@@ -110,7 +112,7 @@ it("菜单关闭或组件重建后能自愈，不留下清不掉的残留", asyn
   const source = await readShard();
   // React 回收注入节点后入口会消失，指纹没变也必须重建。
   assert.match(source, /codexPlusModelPickerHeadersIntact/);
-  assert.match(functionSource(source, "codexPlusModelPickerHeadersIntact"), /codex-plus-model-provider-grid/);
+  assert.match(functionSource(source, "codexPlusModelPickerHeadersIntact"), /codex-plus-model-rail/);
   // 恢复时要摘干净自己加的类名与属性。
   assert.match(source, /row\.removeAttribute\(codexPlusModelPickerGroupAttr\)/);
   assert.match(source, /native\.removeAttribute\("data-codex-plus-ext"\)/);
@@ -145,7 +147,9 @@ it("内置拓展停用时清理重注入前遗留的分组列表", async () => {
 
 it("入口使用独立供应商图标，并通过导航显示模型列表", async () => {
   const source = await readShard();
-  assert.match(source, /codex-plus-model-provider-grid/);
+  assert.match(source, /codex-plus-model-rail/);
+  assert.match(source, /codex-plus-model-search/);
+  assert.match(source, /codex-plus-model-reasoning/);
   assert.match(source, /codex-plus-model-provider-icon/);
   assert.match(source, /function codexPlusModelPickerNavigate\(list, groupId\)/);
   assert.match(source, /function codexPlusModelPickerSyncNavigation\(list, groups\)/);
@@ -254,12 +258,15 @@ async function navigationRuntime() {
     const fields: Record<string, unknown> = {};
     return {
       id, attributes, classes, fields,
-      textContent: "", title: "", hidden: false,
+      textContent: "", title: "", hidden: false, value: "",
       parentElement: null as unknown,
       setAttribute: (name: string, value: string) => attributes.set(name, value),
       querySelector: (selector: string) => fields[selector] ?? null,
       matches: () => selected,
-      classList: { toggle: (name: string, enabled: boolean) => enabled ? classes.add(name) : classes.delete(name) },
+      classList: {
+        contains: (name: string) => classes.has(name),
+        toggle: (name: string, enabled: boolean) => enabled ? classes.add(name) : classes.delete(name),
+      },
       focus: () => { focused = id; },
     };
   };
@@ -269,37 +276,39 @@ async function navigationRuntime() {
     header.fields[".codex-plus-model-group-count"] = element(`count-${id}`);
     return [id, header];
   }));
-  const grid = element("grid");
-  grid.fields.button = headers.get("a");
-  const toolbar = element("toolbar");
-  const toolbarLabel = element("toolbar-label");
-  toolbar.fields[".codex-plus-model-group-toolbar-label"] = toolbarLabel;
-  toolbar.fields[".codex-plus-model-group-count"] = element("toolbar-count");
+  const favBtn = element("rail-fav");
+  const searchInput = element("search-input");
+  const empty = element("empty");
   const list = Object.assign(element("list"), {
     isConnected: true,
     scrollTop: 80,
     querySelector: (selector: string) => {
-      if (selector === ".codex-plus-model-provider-grid") return grid;
-      if (selector === ".codex-plus-model-group-toolbar") return toolbar;
+      if (selector === ".codex-plus-model-rail-fav") return favBtn;
+      if (selector === ".codex-plus-model-search-input") return searchInput;
+      if (selector === ".codex-plus-model-empty") return empty;
       if (selector === ".codex-plus-model-group-header") return headers.get("a");
       const id = selector.match(/^\[data-codex-plus-model-group-id="([^"]*)"\]$/)?.[1];
       return id ? headers.get(id) ?? null : null;
     },
   });
-  const entry = (groupId: string, id: string, selected = false) => {
+  const entry = (groupId: string, id: string, selected = false, favorite = false) => {
     const row = element(id, selected);
     row.parentElement = list;
-    return { groupId, provider: `供应商 ${groupId.toUpperCase()}`, row, name: id };
+    return { groupId, provider: `供应商 ${groupId.toUpperCase()}`, row, name: id, label: id, slug: id, favorite };
   };
-  let rows = [entry("a", "a-1"), entry("b", "b-1", true), entry("a", "a-2")];
+  let rows = [entry("a", "a-1", false, true), entry("b", "b-1", true, false), entry("a", "a-2", false, false)];
   let reads = 0;
-  const state = { activeGroupId: "" };
+  const state = { activeGroupId: "", viewMode: "icons", searchQuery: "", previewModelSlug: "", reasoningSignature: "" };
   const functions = [
     "codexPlusModelPickerText",
     "codexPlusModelPickerGroups",
     "codexPlusModelPickerUniqueGroupIds",
     "codexPlusModelPickerSelectedRow",
     "codexPlusModelPickerMemberGroup",
+    "codexPlusModelPickerShell",
+    "codexPlusModelPickerContainer",
+    "codexPlusModelPickerDefaultGroup",
+    "codexPlusModelPickerMatchesSearch",
     "codexPlusModelPickerSyncGroup",
     "codexPlusModelPickerNavigate",
     "codexPlusModelPickerSyncNavigation",
@@ -309,6 +318,7 @@ async function navigationRuntime() {
     "document", "navigator", "codexPlusModelPickerGroupsState", "codexPlusModelPickerRows",
     "codexPlusModelPickerDefaultProviderName", "codexPlusModelPickerDefaultGroupId",
     "codexPlusModelPickerSyncDefaultBadge", "codexPlusModelPickerGroupAttr", "codexPlusModelPickerGroupIdAttr",
+    "codexPlusModelPickerFavScope", "codexPlusModelPickerSyncReasoning",
     `${functions}
       return {
         navigate: codexPlusModelPickerNavigate,
@@ -316,12 +326,13 @@ async function navigationRuntime() {
         groups: () => codexPlusModelPickerUniqueGroupIds(codexPlusModelPickerGroups(codexPlusModelPickerRows())),
       };`,
   )(
-    { documentElement: { lang: "zh-CN" } }, { language: "zh-CN" }, state,
+    { documentElement: { lang: "zh-CN" }, body: null }, { language: "zh-CN" }, state,
     () => { reads++; return rows; }, () => "供应商 A", () => "a", () => {},
     "data-codex-plus-model-group", "data-codex-plus-model-group-id",
+    "__favorites__", () => {},
   );
   return {
-    api, state, list, grid, toolbar, toolbarLabel, headers, entry,
+    api, state, list, favBtn, searchInput, empty, headers, entry,
     get rows() { return rows; },
     set rows(value) { rows = value; },
     get focused() { return focused; },
@@ -329,40 +340,50 @@ async function navigationRuntime() {
   };
 }
 
-it("从图标进入该供应商的原生模型列表，返回后恢复入口焦点", async () => {
+it("左侧栏默认定位到当前选中模型所在供应商，支持切供应商、切收藏与按关键字过滤", async () => {
   const runtime = await navigationRuntime();
-  const { api, state, list, grid, toolbar, toolbarLabel, headers } = runtime;
+  const { api, state, list, favBtn, empty, headers } = runtime;
   const order = runtime.rows.map((entry) => entry.row);
   const hidden = () => runtime.rows.map((entry) => entry.row.classes.has("codex-plus-model-group-collapsed"));
   api.sync(list, api.groups());
-  assert.equal(grid.hidden, false);
-  assert.equal(toolbar.hidden, true);
-  assert.deepEqual(hidden(), [true, true, true], "供应商首页不混入模型行");
-  assert.equal(headers.get("b")?.attributes.get("data-current"), "true", "当前供应商仍有选中标志");
+  assert.equal(state.activeGroupId, "b", "打开时自动选中当前模型所在供应商");
+  assert.equal(list.attributes.get("data-codex-plus-model-provider-view"), "rail");
+  assert.equal(headers.get("b")?.attributes.get("data-active"), "true");
+  assert.equal(headers.get("b")?.attributes.get("data-current"), "true");
+  assert.deepEqual(hidden(), [true, false, true], "只显示当前供应商下的模型行");
+  assert.equal(empty.hidden, true);
 
-  api.navigate(list, "b");
-  assert.equal(state.activeGroupId, "b");
-  assert.equal(list.attributes.get("data-codex-plus-model-provider-view"), "models");
-  assert.equal(grid.hidden, true);
-  assert.equal(toolbar.hidden, false);
-  assert.equal(toolbarLabel.textContent, "供应商 B");
-  assert.deepEqual(hidden(), [true, false, true]);
-  assert.equal(runtime.focused, "b-1", "进入后聚焦选中模型");
+  api.navigate(list, "a");
+  assert.equal(state.activeGroupId, "a");
+  assert.equal(headers.get("a")?.attributes.get("data-active"), "true");
+  assert.equal(headers.get("b")?.attributes.get("data-active"), "false");
+  assert.deepEqual(hidden(), [false, true, false]);
+  assert.equal(runtime.focused, "a-1", "切换供应商后聚焦第一个模型");
   assert.equal(list.scrollTop, 0);
 
-  api.navigate(list, "");
-  assert.equal(state.activeGroupId, "");
-  assert.equal(grid.hidden, false);
-  assert.equal(toolbar.hidden, true);
-  assert.equal(runtime.focused, "header-b", "返回原供应商入口");
+  api.navigate(list, "__favorites__");
+  assert.equal(state.activeGroupId, "__favorites__");
+  assert.equal(favBtn.attributes.get("data-active"), "true");
+  assert.deepEqual(hidden(), [false, true, true], "收藏视图只显示已收藏模型");
+  assert.equal(runtime.focused, "a-1");
+
+  state.searchQuery = "b-1";
+  api.sync(list, api.groups());
+  assert.deepEqual(hidden(), [true, false, true], "搜索跨所有供应商匹配");
+  assert.equal(empty.hidden, true);
+
+  state.searchQuery = "not-exist";
+  api.sync(list, api.groups());
   assert.deepEqual(hidden(), [true, true, true]);
+  assert.equal(empty.hidden, false, "无匹配时显示空状态");
+
   assert.deepEqual(runtime.rows.map((entry) => entry.row), order, "原生行保持顺序和身份");
   assert.ok(runtime.rows.every((entry) => entry.row.parentElement === list), "原生行不搬动");
 });
 
-it("导航使用当前行快照，当前供应商被移除时退回入口", async () => {
+it("导航使用当前行快照，当前供应商被移除时回落到剩余供应商", async () => {
   const runtime = await navigationRuntime();
-  const { api, state, list, grid, toolbar } = runtime;
+  const { api, state, list } = runtime;
   api.navigate(list, "b");
   runtime.rows = [runtime.entry("a", "new-a"), runtime.entry("b", "new-b", true)];
   api.navigate(list, "b");
@@ -371,16 +392,12 @@ it("导航使用当前行快照，当前供应商被移除时退回入口", asyn
 
   runtime.rows = [runtime.rows[0]];
   api.sync(list, api.groups());
-  assert.equal(state.activeGroupId, "");
-  assert.equal(grid.hidden, false);
-  assert.equal(toolbar.hidden, true);
-  assert.equal(runtime.focused, "header-a");
-  assert.equal(runtime.rows[0].row.classes.has("codex-plus-model-group-collapsed"), true);
+  assert.equal(state.activeGroupId, "a", "原供应商消失时自动切到剩余供应商");
+  assert.equal(runtime.rows[0].row.classes.has("codex-plus-model-group-collapsed"), false);
 
   const reads = runtime.reads;
   list.isConnected = false;
   api.navigate(list, "a");
-  assert.equal(state.activeGroupId, "");
   assert.equal(runtime.reads, reads, "已关闭的菜单不能再被旧事件操作");
 });
 
@@ -508,7 +525,7 @@ it("观察器忽略自身属性但响应原生选中与结构变化", async () =
   assert.equal(scheduled, 4);
 });
 
-it("供应商网格支持方向键，模型列表中的 Escape 返回供应商入口", async () => {
+it("左侧图标栏支持上下方向键与 Home/End，保留 Enter 激活", async () => {
   const source = await readShard();
   let focused = -1;
   const buttons = Array.from({ length: 5 }, (_, index) => ({
@@ -516,47 +533,47 @@ it("供应商网格支持方向键，模型列表中的 Escape 返回供应商�
     focus: () => { focused = index; },
   }));
   const list = { querySelectorAll: () => buttons };
-  const state = { activeGroupId: "" };
-  const navigated: unknown[] = [];
+  const state = { activeGroupId: "a", viewMode: "icons" };
   const keydown = new Function(
-    "codexPlusModelPickerGroupsState", "codexPlusModelPickerNavigate", "getComputedStyle",
+    "codexPlusModelPickerGroupsState", "codexPlusModelPickerContainer",
     `${functionSource(source, "codexPlusModelPickerNavigationKeydown")}\nreturn codexPlusModelPickerNavigationKeydown;`,
-  )(state, (container: unknown, id: string) => navigated.push([container, id]), () => ({ gridTemplateColumns: "80px 80px 80px" }));
+  )(state, (node: unknown) => node);
   const press = (key: string, index: number) => {
     let prevented = false;
     let stopped = false;
     keydown({
-      key, currentTarget: list, target: { closest: () => buttons[index] },
+      key, currentTarget: list, target: { closest: (sel: string) => sel.includes("group-header") ? buttons[index] : null },
       preventDefault: () => { prevented = true; }, stopPropagation: () => { stopped = true; },
     });
     return { prevented, stopped };
   };
   assert.deepEqual(press("ArrowDown", 0), { prevented: true, stopped: true });
-  assert.equal(focused, 3);
+  assert.equal(focused, 1);
   press("End", 0);
   assert.equal(focused, 4);
   press("Home", 4);
   assert.equal(focused, 0);
   assert.deepEqual(press("Enter", 0), { prevented: false, stopped: true }, "保留按钮原生激活");
-  state.activeGroupId = "b";
-  assert.deepEqual(press("Escape", 0), { prevented: true, stopped: true });
-  assert.deepEqual(navigated, [[list, ""]]);
 });
 
-it("提前捕获 Escape 只返回当前供应商子页，首页及菜单外按键继续交给原生", async () => {
+it("提前捕获 Escape 先清空搜索词，空搜索或菜单外按键继续交给原生", async () => {
   const source = await readShard();
   const child = {};
   const outside = {};
+  const input = { value: "claude", classList: { contains: (name: string) => name === "codex-plus-model-search-input" } };
   const list = {
     isConnected: true,
-    contains: (target: unknown) => target === child || target === list,
+    contains: (target: unknown) => target === child || target === input || target === list,
+    querySelector: (selector: string) => selector === ".codex-plus-model-search-input" ? input : null,
   };
-  const state = { activeGroupId: "b", activeList: list as typeof list | null };
-  const navigated: unknown[] = [];
+  const state = { activeGroupId: "b", activeList: list as typeof list | null, searchQuery: "claude" };
+  let synced = 0;
   const keydown = new Function(
-    "codexPlusModelPickerGroupsState", "codexPlusModelPickerNavigate",
+    "codexPlusModelPickerGroupsState", "codexPlusModelPickerContainer",
+    "codexPlusModelPickerUniqueGroupIds", "codexPlusModelPickerGroups", "codexPlusModelPickerRows",
+    "codexPlusModelPickerSyncNavigation",
     `${functionSource(source, "codexPlusModelPickerEscapeKeydown")}\nreturn codexPlusModelPickerEscapeKeydown;`,
-  )(state, (container: unknown, id: string) => navigated.push([container, id]));
+  )(state, (node: unknown) => node, (g: unknown) => g, () => [], () => [], () => { synced += 1; });
   const press = (overrides: Record<string, unknown> = {}) => {
     let prevented = false;
     let stopped = false;
@@ -569,18 +586,23 @@ it("提前捕获 Escape 只返回当前供应商子页，首页及菜单外按�
     return { prevented, stopped };
   };
   assert.deepEqual(press(), { prevented: true, stopped: true });
-  assert.deepEqual(navigated, [[list, ""]], "先返回供应商入口，阻止原生关闭弹层");
-  navigated.length = 0;
+  assert.equal(state.searchQuery, "", "先清空搜索词，阻止原生关闭弹层");
+  assert.equal(input.value, "");
+  assert.equal(synced, 1);
+
+  // 搜索框内键入字母时阻断冒泡，防止落进聊天输入框。
+  assert.deepEqual(press({ key: "a", target: input }), { prevented: false, stopped: true });
+
+  synced = 0;
   const passthrough = (overrides: Record<string, unknown>, message: string) => {
     assert.deepEqual(press(overrides), { prevented: false, stopped: false }, message);
-    assert.deepEqual(navigated, [], message);
+    assert.equal(synced, 0, message);
   };
-  passthrough({ key: "Enter" }, "其它按键不由全局 Escape 监听处理");
+  passthrough({}, "空搜索词时保留原生 Escape 关闭行为");
+  state.searchQuery = "gpt";
+  passthrough({ key: "Enter" }, "列表里其它按键不由全局 Escape 监听处理");
   passthrough({ isComposing: true }, "输入法组合期间不接管 Escape");
   passthrough({ target: outside }, "菜单外的 Escape 不受影响");
-  state.activeGroupId = "";
-  passthrough({}, "供应商首页保留原生关闭行为");
-  state.activeGroupId = "b";
   list.isConnected = false;
   passthrough({}, "已断开的菜单不能响应旧事件");
   list.isConnected = true;
@@ -609,7 +631,22 @@ it("Escape 在 window 捕获阶段注册，菜单清理和重注入时移除同�
   );
 });
 
-it("重注入复用并更新已有样式，不让新版入口继续使用旧折叠样式", async () => {
+it("右侧推理强度与原生滑杆同源：档位、当前档、中文文案都照原生", async () => {
+  const source = await readShard();
+  // 档位取原生 powerSelections（按 powerSettingIndex 排序），拿不到才回落模型目录。
+  assert.match(source, /function codexPlusModelPickerNativeEfforts\(fiber\)/);
+  assert.match(source, /\(Number\(a\?\.powerSettingIndex\) \|\| 0\) - \(Number\(b\?\.powerSettingIndex\) \|\| 0\)/);
+  assert.match(source, /const efforts = native \? native\.efforts : codexPlusModelPickerEffortsFor\(target\)/);
+  // 刚点过的覆盖值只短暂有效，之后以原生当前档为准。
+  assert.match(source, /Date\.now\(\) - \(state\.selectedEffortOverrideAt \|\| 0\) < 1500/);
+  // 中文与 Codex 原生一致。
+  assert.match(source, /reasoningTitle: "推理强度"/);
+  for (const label of ['low: "轻度"', 'medium: "中"', 'high: "高"', 'xhigh: "极高"', 'max: "Max"', 'ultra: "Ultra"']) {
+    assert.ok(source.includes(label), label);
+  }
+});
+
+it("重注入复用并更新已有样式，包含三栏壳、左侧图标栏、搜索框与右侧推理面板样式", async () => {
   const source = await readShard();
   const attributes = new Map<string, string>();
   const style = {
@@ -626,8 +663,11 @@ it("重注入复用并更新已有样式，不让新版入口继续使用旧折�
     head: { appendChild: () => { throw new Error("不应重复挂载已有样式"); } },
   }, "picker-style", "builtin-model-picker-groups", "native-label", "own-label", "favorite");
   install();
-  assert.match(style.textContent, /\.codex-plus-model-provider-grid\{display:grid/);
-  assert.match(style.textContent, /\.codex-plus-model-provider-grid\[hidden\]/);
+  assert.match(style.textContent, /--model-picker-content-width:min\(540px,calc\(100vw - 24px\)\)!important/);
+  assert.match(style.textContent, /\[data-codex-plus-model-shell="true"\]\{display:grid!important/);
+  assert.match(style.textContent, /\.codex-plus-model-rail\{display:flex/);
+  assert.match(style.textContent, /\.codex-plus-model-search:focus-within\{border-bottom-color:#3b82f6\}/);
+  assert.match(style.textContent, /\.codex-plus-model-reasoning\{display:flex/);
   assert.equal(attributes.get("data-codex-plus-ext"), "builtin-model-picker-groups");
   const current = style.textContent;
   install();

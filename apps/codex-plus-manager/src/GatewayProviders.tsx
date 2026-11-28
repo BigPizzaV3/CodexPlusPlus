@@ -683,6 +683,9 @@ export function ProviderAdder({
   startWith = "catalog",
   includeAgents = [],
   owner,
+  scope,
+  directOnly = false,
+  onSubmitDraft,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -695,18 +698,40 @@ export function ProviderAdder({
   includeAgents?: GatewayAgentId[];
   /** 从哪个 Agent 的页面加的：Claude 页传 `claude`，记进供应商，两边的「显示其他 Agent 的供应商」按它筛。 */
   owner?: "claude";
+  /** 当前所在 Agent 视角（codex / claude / claude-desktop）：独立模式下去掉底部全局 Agent 勾选，按当前 Agent 默认归属与协议。 */
+  scope?: "codex" | "claude" | "claude-desktop";
+  /** 直连模式下打开目录时，不列出只能经本地服务代登录的订阅账号。 */
+  directOnly?: boolean;
+  /** 可选的自定义提交（例如 Codex 原生协议写进直连列表）：返回 "done" 关闭，"cancel" 保持打开，"fallback" 继续走共享池创建。 */
+  onSubmitDraft?: (draft: ProviderDraft) => Promise<"done" | "fallback" | "cancel">;
 }) {
-  // 这次添加给哪些 Agent 用：按各 Agent 的「添加供应商时自动加入」预选，再加上调用方指定的。
-  const [picked, setPicked] = useState<GatewayAgentId[]>(() => [...new Set([...defaultProviderAgents(payload), ...includeAgents])]);
+  const effectiveScope = scope ?? owner;
+  // 独立模式下按所在页只给当前 Agent 打开（其它 Agent 记入 skipAgents，需要时随时在它自己的页面拨开）；
+  // 非独立入口（例如旧总览）仍按各 Agent 的「添加供应商时自动加入」预选并允许勾选。
+  const [picked, setPicked] = useState<GatewayAgentId[]>(() => {
+    if (effectiveScope === "codex") return ["codex"];
+    if (effectiveScope === "claude") return includeAgents.length ? [...new Set<GatewayAgentId>(includeAgents)] : ["claude"];
+    if (effectiveScope === "claude-desktop") return includeAgents.length ? [...new Set<GatewayAgentId>(includeAgents)] : ["claude-desktop"];
+    return [...new Set([...defaultProviderAgents(payload), ...includeAgents])];
+  });
   const skipAgents = skippedAgents(payload, picked);
   const [catalogOpen, setCatalogOpen] = useState(startWith === "catalog");
   const [importOnly, setImportOnly] = useState(startWith === "import");
   const [form, setForm] = useState<FormState | null>(null);
   const [loggingIn, setLoggingIn] = useState(false);
   const { login, dialog } = useAccountLogin(payload, run, notify);
-  const agentPicks = <AgentPicks onChange={setPicked} payload={payload} picked={picked} />;
+  const agentPicks = effectiveScope ? null : <AgentPicks onChange={setPicked} payload={payload} picked={picked} />;
+  const defaultProtocol = effectiveScope === "claude" || effectiveScope === "claude-desktop" ? "anthropicMessages" : effectiveScope === "codex" ? "responses" : undefined;
   const submit = async (draft: ProviderDraft) => {
     if (!form || form.mode === "edit") return;
+    if (onSubmitDraft) {
+      const outcome = await onSubmitDraft(draft);
+      if (outcome === "done") {
+        onClose();
+        return;
+      }
+      if (outcome === "cancel") return;
+    }
     const input = providerInput(draft);
     if (await run("add:create", "create_gateway_provider", { input, source: form.mode === "preset" ? `preset:${form.preset.key}` : "custom", skipAgents, ...(owner ? { owner } : {}) }, t("添加供应商"))) onClose();
   };
@@ -716,6 +741,7 @@ export function ProviderAdder({
         <ProviderCatalog
           agentPicks={agentPicks}
           busy={busy}
+          directOnly={directOnly}
           notify={notify}
           onClose={onClose}
           onCustom={() => { setCatalogOpen(false); setForm({ mode: "custom" }); }}
@@ -728,6 +754,7 @@ export function ProviderAdder({
           owner={owner}
           payload={payload}
           run={run}
+          scope={effectiveScope}
           skipAgents={skipAgents}
         />
       ) : null}
@@ -748,7 +775,21 @@ export function ProviderAdder({
         />
       ) : null}
       {loggingIn ? dialog : null}
-      {form ? <ProviderFormDialog agentPicks={agentPicks} busy={busy} form={form} onCancel={onClose} onSubmit={(draft) => void submit(draft)} /> : null}
+      {form ? (
+        <ProviderFormDialog
+          agentPicks={agentPicks}
+          busy={busy}
+          defaultProtocol={defaultProtocol}
+          form={form}
+          onCancel={() => {
+            setForm(null);
+            if (startWith === "catalog") setCatalogOpen(true);
+            else onClose();
+          }}
+          onSubmit={(draft) => void submit(draft)}
+          submitLabel={effectiveScope ? t("添加供应商") : t("添加到共享供应商")}
+        />
+      ) : null}
     </>
   );
 }
@@ -1270,7 +1311,7 @@ function AgentPicks({ payload, picked, onChange }: { payload: GatewayPayload | n
   );
 }
 
-type CatalogItem = { key: string; name: string; added?: boolean; icon?: ReactNode; onClick: () => void };
+type CatalogItem = { key: string; name: string; sub?: string; added?: boolean; icon?: ReactNode; onClick: () => void };
 
 /** 编辑时给哪些 Agent 用（#3030）：每个已接入 Agent 一个开关，改的是各自的「挑选」排除列表。 */
 function EditAgentPicks({ payload, busy, run, entry }: { payload: GatewayPayload | null; busy: string | null; run: Run; entry: GatewayPoolEntry }) {
@@ -1307,12 +1348,12 @@ function EditAgentPicks({ payload, busy, run, entry }: { payload: GatewayPayload
   );
 }
 
-/** 「添加供应商」目录：订阅、供应商（厂商 API）、中转、本机；「导入…」从直连模式复制。 */
+/** 「添加供应商」目录：三列微卡片网格、分类胶囊筛选、顶部一键自定义配置；按所在 Agent 页独立归属。 */
 function ProviderCatalog({
   payload,
   busy,
   run,
-  notify,
+  notify: _notify,
   onClose,
   onPreset,
   onCustom,
@@ -1320,6 +1361,8 @@ function ProviderCatalog({
   agentPicks,
   skipAgents,
   owner,
+  scope,
+  directOnly = false,
 }: {
   payload: GatewayPayload | null;
   busy: string | null;
@@ -1333,8 +1376,13 @@ function ProviderCatalog({
   skipAgents: GatewayAgentId[];
   /** 同 ProviderAdder 的 `owner`。 */
   owner?: "claude";
+  /** 所在 Agent 页：独立模式下隐藏顶部重复的「导入…」与底部全局 Agent 勾选。 */
+  scope?: "codex" | "claude" | "claude-desktop";
+  /** 直连模式下不显示只能经本地服务代登录的订阅账号。 */
+  directOnly?: boolean;
 }) {
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<string>("all");
   const [importing, setImporting] = useState(false);
   const sponsors = useSponsorPresets();
   const presets = useMemo(() => gatewayPresets(sponsors), [sponsors]);
@@ -1342,45 +1390,54 @@ function ProviderCatalog({
   const hit = (...values: string[]) => !needle || values.some((value) => value.toLowerCase().includes(needle));
   const presetItems = (section: PresetSection): CatalogItem[] => presets
     .filter((preset) => preset.section === section && hit(preset.name, preset.baseUrl))
-    .map((preset) => ({ key: preset.key, name: preset.name, added: presetAdded(payload, preset), onClick: () => onPreset(preset) }));
+    .map((preset) => ({
+      key: preset.key,
+      name: preset.name,
+      sub: presetHost(preset.baseUrl),
+      added: presetAdded(payload, preset),
+      onClick: () => onPreset(preset),
+    }));
   const loggedIn = (kind: AccountKind) => Boolean(payload?.pool.some((entry) => entry.account === kind));
-  const subscriptions: CatalogItem[] = (
+  const subscriptions: CatalogItem[] = directOnly ? [] : (
     [
-      { kind: "chatgpt", name: "ChatGPT", icon: "openai" },
-      { kind: "chatgpt-api", name: "ChatGPT API", icon: "openai" },
-      { kind: "copilot", name: "GitHub Copilot", icon: "githubcopilot" },
-      { kind: "grok", name: "SuperGrok", icon: "grok" },
-    ] as Array<{ kind: AccountKind; name: string; icon: string }>
+      { kind: "chatgpt", name: "ChatGPT", sub: t("官方订阅") },
+      { kind: "chatgpt-api", name: "ChatGPT API", sub: t("官方账号") },
+      { kind: "copilot", name: "GitHub Copilot", sub: t("官方订阅") },
+      { kind: "grok", name: "SuperGrok", sub: t("官方订阅") },
+    ] as Array<{ kind: AccountKind; name: string; sub: string }>
   )
     .filter((item) => hit(item.name, t("订阅")))
     .map((item) => ({
       key: `login:${item.kind}`,
       name: item.name,
+      sub: item.sub,
       added: loggedIn(item.kind),
       onClick: () => onLogin(item.kind),
     }));
   // 私有接口订阅（Cursor、Kiro、Zed 等）单独一节标成实验：冒用官方客户端身份，随时可能失效，不再新增。
-  const experimentalSubscriptions: CatalogItem[] = (payload?.subscriptions ?? [])
+  const experimentalSubscriptions: CatalogItem[] = directOnly ? [] : (payload?.subscriptions ?? [])
     .map((item) => ({ kind: `sub:${item.id}` as AccountKind, name: item.name }))
     .filter((item) => hit(item.name, t("订阅"), t("实验")))
     .map((item) => ({
       key: `login:${item.kind}`,
       name: item.name,
+      sub: t("实验订阅"),
       added: loggedIn(item.kind),
       onClick: () => onLogin(item.kind),
     }));
-  const local: CatalogItem[] = [
-    ...presetItems("local"),
-    ...(hit(t("自定义")) ? [{ key: "custom", name: t("自定义"), icon: <span className="gw-avatar gw-avatar-plus" data-size="sm"><Plus className="h-3.5 w-3.5" /></span>, onClick: onCustom }] : []),
-  ];
-  const sections: Array<{ key: string; title: string; hint: string; items: CatalogItem[] }> = [
-    { key: "sponsor", title: t("赞助商"), hint: t("支持 Codex++ 的服务商"), items: presetItems("sponsor") },
-    { key: "subscription", title: t("订阅"), hint: t("登录即可，无需密钥；与 Codex 自己的登录互不影响"), items: subscriptions },
-    { key: "vendor", title: t("供应商"), hint: t("模型厂商的 API"), items: presetItems("vendor") },
-    { key: "relay", title: t("中转"), hint: t("一个密钥用多家模型"), items: presetItems("relay") },
-    { key: "local", title: t("本机"), hint: t("本机运行的模型服务，或任意兼容地址"), items: local },
-    { key: "experimental", title: t("实验订阅"), hint: t("冒用官方客户端身份调用未公开的接口，可能随时失效，也有账号被限制的风险；不再新增"), items: experimentalSubscriptions },
+  const allSections: Array<{ key: string; tabLabel: string; title: string; hint: string; items: CatalogItem[] }> = [
+    { key: "sponsor", tabLabel: t("赞助商"), title: t("赞助商"), hint: t("支持 Codex++ 的服务商"), items: presetItems("sponsor") },
+    { key: "subscription", tabLabel: t("订阅登录"), title: t("订阅"), hint: t("登录即可，无需密钥；与 Codex 自己的登录互不影响"), items: subscriptions },
+    { key: "vendor", tabLabel: t("模型厂商"), title: t("模型厂商"), hint: t("模型厂商的 API"), items: presetItems("vendor") },
+    { key: "relay", tabLabel: t("中转"), title: t("中转"), hint: t("一个密钥用多家模型"), items: presetItems("relay") },
+    { key: "local", tabLabel: t("本机"), title: t("本机"), hint: t("本机运行的模型服务"), items: presetItems("local") },
+    { key: "experimental", tabLabel: t("实验订阅"), title: t("实验订阅"), hint: t("冒用官方客户端身份调用未公开的接口，可能随时失效，也有账号被限制的风险；不再新增"), items: experimentalSubscriptions },
   ].filter((section) => section.items.length);
+
+  // 有搜索词时跨全部分类匹配，不锁死在某个分页里。
+  const activeCategory = needle || !allSections.some((section) => section.key === category) ? "all" : category;
+  const visibleSections = activeCategory === "all" ? allSections : allSections.filter((section) => section.key === activeCategory);
+  const scopeLabel = scope === "codex" ? "Codex" : scope === "claude" ? "Claude Code" : scope === "claude-desktop" ? "Claude Desktop" : null;
 
   // Esc 栈：从这里打开的「导入…」在上面一层，Esc 先关导入，不会把整个添加流程关掉。
   const titleId = useId();
@@ -1389,33 +1446,84 @@ function ProviderCatalog({
   return createPortal(
     <div className="gw-modal-backdrop gw-portal" {...backdropProps}>
       <div {...dialogProps} className="gw-modal gw-catalog-modal">
-        <header>
-          <strong id={titleId}>{t("添加供应商")}</strong>
-          <label className="gw-sheet-search">
+        <header className="gw-catalog-head">
+          <div className="gw-catalog-title-row">
+            <strong id={titleId}>{t("添加供应商")}</strong>
+            {scopeLabel ? <span className="gw-catalog-scope">{scopeLabel}</span> : null}
+          </div>
+          <div className="gw-catalog-head-actions">
+            {!scope ? <button className="gw-text-button" onClick={() => setImporting(true)} type="button">{t("导入…")}</button> : null}
+            <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
+          </div>
+        </header>
+        <div className="gw-catalog-toolbar">
+          <label className="gw-sheet-search gw-catalog-search">
             <Search className="h-4 w-4" />
             <input autoFocus data-autofocus onChange={(event) => setQuery(event.currentTarget.value)} placeholder={t("查找供应商…")} value={query} />
           </label>
-          <button className="gw-text-button" onClick={() => setImporting(true)} type="button">{t("导入…")}</button>
-          <button aria-label={t("关闭")} className="gw-icon-button" onClick={onClose} type="button"><X className="h-4 w-4" /></button>
-        </header>
+          <button className="gw-catalog-custom-btn" disabled={busy !== null} onClick={onCustom} type="button">
+            <Plus className="h-3.5 w-3.5" />
+            <span>{t("自定义配置")}</span>
+          </button>
+        </div>
+        {allSections.length > 1 ? (
+          <div className="gw-catalog-tabs" role="tablist" aria-label={t("供应商分类")}>
+            <button
+              aria-selected={activeCategory === "all"}
+              className="gw-catalog-tab"
+              data-active={activeCategory === "all"}
+              onClick={() => setCategory("all")}
+              role="tab"
+              type="button"
+            >
+              {t("全部")}
+            </button>
+            {allSections.map((section) => (
+              <button
+                aria-selected={activeCategory === section.key}
+                className="gw-catalog-tab"
+                data-active={activeCategory === section.key}
+                key={section.key}
+                onClick={() => { setQuery(""); setCategory(section.key); }}
+                role="tab"
+                type="button"
+              >
+                {section.tabLabel}
+              </button>
+            ))}
+          </div>
+        ) : null}
         <div className="gw-modal-body gw-catalog">
-          {sections.map((section) => (
+          {visibleSections.map((section) => (
             <section className="gw-catalog-section" key={section.key}>
               <h4>{section.title} <span>{section.hint}</span></h4>
               <div className="gw-catalog-grid">
                 {section.items.map((item) => (
                   <button className="gw-catalog-item" disabled={busy !== null} key={item.key} onClick={item.onClick} type="button">
-                    {item.icon ?? <Avatar name={item.name} size="sm" />}
-                    <span>{item.name}</span>
-                    {item.added ? <i className="gw-dot" data-tone="added" title={t("已在共享供应商里")} /> : null}
+                    <span className="gw-catalog-icon">{item.icon ?? <Avatar name={item.name} size="sm" />}</span>
+                    <span className="gw-catalog-copy">
+                      <span className="gw-catalog-name">
+                        <strong>{maskAccountName(item.name)}</strong>
+                        {item.added ? <span className="gw-catalog-added">{t("已添加")}</span> : null}
+                      </span>
+                      {item.sub ? <small>{item.sub}</small> : null}
+                    </span>
                   </button>
                 ))}
               </div>
             </section>
           ))}
-          {sections.length === 0 ? <div className="gw-empty">{t("没有匹配的供应商")}</div> : null}
+          {visibleSections.length === 0 ? (
+            <div className="gw-empty">
+              <p>{t("没有匹配的供应商")}</p>
+              <button className="gw-catalog-custom-btn" disabled={busy !== null} onClick={onCustom} type="button">
+                <Plus className="h-3.5 w-3.5" />
+                <span>{t("自定义配置")}</span>
+              </button>
+            </div>
+          ) : null}
         </div>
-        <footer className="gw-catalog-foot">{agentPicks}</footer>
+        {agentPicks ? <footer className="gw-catalog-foot">{agentPicks}</footer> : null}
       </div>
       {importing ? (
         <ImportDialog

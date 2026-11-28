@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useId, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CxLoading } from "./cx-layout";
 import { t, tf } from "./i18n";
@@ -58,7 +59,10 @@ export function AgentConfigDialog({ agent, name, onClose }: ConfigTarget & {
   const title = tf("编辑 {0} 配置", [name]);
   return createPortal(<div className="gw-modal-backdrop gw-portal" {...backdropProps}>
     <div className="gw-modal" {...dialogProps}>
-      <header><strong id={titleId}>{title}</strong></header>
+      <header>
+        <strong id={titleId}>{title}</strong>
+        <button aria-label={t("关闭")} className="gw-icon-button" disabled={saving} onClick={() => void requestClose()} type="button"><X className="h-4 w-4" /></button>
+      </header>
       <div className="gw-modal-body">
         {!view && !error ? <CxLoading /> : null}
         {view ? <>

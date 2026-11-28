@@ -2,7 +2,7 @@
  *
  * Key 原文从不发到界面：后端只给标识和打码后的样子，替换 / 删除 / 测试按标识操作；新填的 Key 只在提交时发给后端。
  */
-import { useState, type FormEvent } from "react";
+import { useState } from "react";
 import { Pencil, Plus, Trash2, Zap } from "lucide-react";
 import { appConfirm } from "./app-dialog";
 import { t, tf } from "./i18n";
@@ -24,8 +24,7 @@ export function ProviderKeyList({ entry, busy, run, onTest }: { entry: GatewayPo
     setValue("");
     setEditing(null);
   };
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = async () => {
     const key = value.trim();
     if (!editing || !key) return;
     const ok = editing.mode === "add"
@@ -77,7 +76,7 @@ export function ProviderKeyList({ entry, busy, run, onTest }: { entry: GatewayPo
         </span>
       ))}
       {editing ? (
-        <form className="gw-key-editor" onSubmit={(event) => void submit(event)}>
+        <div className="gw-key-editor">
           <input
             aria-label={editing.mode === "add" ? t("新的 API Key") : tf("替换 Key {0}", [editing.masked])}
             autoComplete="off"
@@ -85,7 +84,11 @@ export function ProviderKeyList({ entry, busy, run, onTest }: { entry: GatewayPo
             className="gw-inline-input gw-key-input"
             onChange={(event) => setValue(event.currentTarget.value)}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                void submit();
+              } else if (event.key === "Escape") {
                 event.stopPropagation();
                 close();
               }
@@ -95,9 +98,9 @@ export function ProviderKeyList({ entry, busy, run, onTest }: { entry: GatewayPo
             type="password"
             value={value}
           />
-          <button className="gw-text-button strong" disabled={busy !== null || !value.trim()} type="submit">{t("保存")}</button>
+          <button className="gw-text-button strong" disabled={busy !== null || !value.trim()} onClick={() => void submit()} type="button">{t("保存")}</button>
           <button className="gw-text-button" onClick={close} type="button">{t("取消")}</button>
-        </form>
+        </div>
       ) : (
         <button className="gw-text-button" disabled={busy !== null} onClick={() => open({ mode: "add" })} type="button">
           <Plus className="h-3.5 w-3.5" />

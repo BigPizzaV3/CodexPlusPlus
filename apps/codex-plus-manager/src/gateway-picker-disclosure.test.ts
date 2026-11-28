@@ -77,7 +77,7 @@ function picker(
     t: (value: string) => value,
     tf: (value: string, values: unknown[]) => value.replace(/\{(\d+)\}/g, (_, index) => String(values[Number(index)])),
     Avatar: "Avatar", Search: "Search", Star: "Star", Waypoints: "Waypoints",
-    Shuffle: "Shuffle", ChevronRight: "ChevronRight", Check: "Check",
+    Shuffle: "Shuffle", ChevronRight: "ChevronRight", Check: "Check", LayoutGrid: "LayoutGrid",
     GROUP_MODEL_PREFIX: "group/",
   });
   return {
@@ -141,8 +141,8 @@ test("供应商筛选展开目标；搜索展开匹配项，清空后恢复手�
   assert.ok(filter);
   filter.props.onClick();
   tree = view.render();
-  assert.equal(heading(tree, "provider:b").props["aria-expanded"], true);
-  const all = elements(tree).find((element) => element.type === "button" && element.props.children === "全部");
+  assert.ok(elements(section(tree, "provider:b")).some((element) => element.props.role === "option"));
+  const all = elements(tree).find((element) => element.type === "button" && element.props.title === "全部");
   assert.ok(all);
   all.props.onClick();
   tree = view.render();
@@ -166,24 +166,24 @@ test("供应商筛选展开目标；搜索展开匹配项，清空后恢复手�
 test("筛选按钮向辅助技术暴露当前选择", () => {
   const view = picker();
   const buttons = () => {
-    const filters = elements(view.render()).find((element) => element.props.className === "gw-mp-filters");
-    assert.ok(filters);
-    return elements(filters).filter((element) => element.type === "button");
+    const rail = elements(view.render()).find((element) => element.props.className === "gw-mp-rail");
+    assert.ok(rail);
+    return elements(rail).filter((element) => element.type === "button");
   };
 
-  let [all, favorites, provider] = buttons();
+  let [favorites, all, provider] = buttons();
   assert.equal(all.props["aria-pressed"], true);
   assert.equal(favorites.props["aria-pressed"], false);
   assert.equal(provider.props["aria-pressed"], false);
 
   favorites.props.onClick();
-  [all, favorites, provider] = buttons();
+  [favorites, all, provider] = buttons();
   assert.equal(all.props["aria-pressed"], false);
   assert.equal(favorites.props["aria-pressed"], true);
   assert.equal(provider.props["aria-pressed"], false);
 
   provider.props.onClick();
-  [all, favorites, provider] = buttons();
+  [favorites, all, provider] = buttons();
   assert.equal(all.props["aria-pressed"], false);
   assert.equal(favorites.props["aria-pressed"], false);
   assert.equal(provider.props["aria-pressed"], true);

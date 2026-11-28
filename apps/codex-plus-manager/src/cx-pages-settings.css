@@ -340,9 +340,360 @@
   margin: 4px 0 0;
 }
 
-/* ── 首页：状态、精选推荐、常用入口、更多推荐 ───────────────────── */
+/* ── 首页：Agent 双卡启动台、薄型概览条、精选推荐、更多赞助商 ───────── */
+
+:root .shell .home-agent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+
+:root .shell .home-agent-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  transition: border-color 140ms ease;
+}
+
+:root .shell .home-agent-card:hover {
+  border-color: hsl(var(--input));
+}
+
+:root .shell .home-agent-top {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 13px 15px 10px;
+}
+
+:root .shell .home-agent-identity {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 11px;
+  cursor: pointer;
+}
+
+:root .shell .home-agent-identity:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+:root .shell .home-agent-title-wrap {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+:root .shell .home-agent-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+:root .shell .home-agent-title-row strong {
+  overflow: hidden;
+  font-size: 14.5px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .home-agent-sub {
+  overflow: hidden;
+  color: hsl(var(--muted-foreground));
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .home-status-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: hsl(var(--accent));
+  color: hsl(var(--muted-foreground));
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+:root .shell .home-status-pill.is-ok {
+  background: hsl(var(--status-success) / 0.14);
+  color: hsl(var(--status-success));
+}
+
+:root .shell .home-status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  flex: none;
+  border-radius: 999px;
+  background: hsl(var(--muted-foreground) / 0.55);
+}
+
+:root .shell .home-status-pill.is-ok .home-status-dot,
+:root .shell .home-status-dot.is-ok {
+  background: hsl(var(--status-success));
+  box-shadow: 0 0 0 3px hsl(var(--status-success) / 0.16);
+}
+
+:root .shell .home-agent-links {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 15px 12px;
+}
+
+:root .shell .home-agent-link {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid hsl(var(--border) / 0.75);
+  border-radius: 8px;
+  background: hsl(var(--background) / 0.5);
+  color: hsl(var(--foreground) / 0.88);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+:root .shell .home-agent-link:hover,
+:root .shell .home-agent-link:focus-visible {
+  border-color: hsl(var(--input));
+  background: hsl(var(--accent) / 0.6);
+  outline: none;
+}
+
+:root .shell .home-agent-link-k {
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .home-agent-link-v {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+
+:root .shell .home-agent-link-v > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .home-agent-link-v svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+  color: hsl(var(--muted-foreground));
+}
+
+:root .shell .home-takeover-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 15px;
+  border-top: 1px solid hsl(var(--border) / 0.75);
+  background: hsl(var(--secondary) / 0.35);
+}
+
+:root .shell .home-takeover-main {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+:root .shell .home-takeover-title {
+  display: inline-flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: hsl(var(--foreground) / 0.84);
+  font-size: 12px;
+}
+
+:root .shell .home-help-tip {
+  display: inline-grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  flex: none;
+  border: 1px solid hsl(var(--border));
+  border-radius: 999px;
+  color: hsl(var(--muted-foreground));
+  font-size: 10px;
+  line-height: 1;
+  cursor: help;
+}
+
+:root .shell .home-takeover-controls {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+
+:root .shell .home-takeover-switch {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+:root .shell .home-takeover-extra {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+:root .shell .home-takeover-note {
+  margin: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+:root .shell .home-takeover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 薄型工作台概览条：1 行 4 格，替代底部重复的常用入口。 */
+:root .shell .home-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+:root .shell .home-metric {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px 13px;
+  border: 1px solid hsl(var(--border));
+  border-radius: var(--cx-radius);
+  background: hsl(var(--card));
+  color: hsl(var(--foreground) / 0.92);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+:root .shell .home-metric:hover,
+:root .shell .home-metric:focus-visible {
+  border-color: hsl(var(--input));
+  background: hsl(var(--accent) / 0.45);
+  outline: none;
+}
+
+:root .shell .home-metric-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+}
+
+:root .shell .home-metric-head svg {
+  width: 13px;
+  height: 13px;
+  opacity: 0.7;
+}
+
+:root .shell .home-metric-val {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+}
+
+:root .shell .home-metric-val strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .home-metric-val small {
+  overflow: hidden;
+  min-width: 0;
+  color: hsl(var(--muted-foreground));
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .shell .home-section-aside {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+:root .shell .home-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+:root .shell .home-refresh-btn:hover,
+:root .shell .home-refresh-btn:focus-visible {
+  border-color: hsl(var(--border));
+  background: hsl(var(--accent));
+  color: hsl(var(--foreground));
+  outline: none;
+}
+
+:root .shell .home-refresh-btn svg {
+  width: 12px;
+  height: 12px;
+}
 
 /* 精选推荐：置顶位有几个就排几列，一行均分宽度（列数由页面按数量写在 style 上）。
+   单条置顶时走左图右文横排，保首屏曝光同时压低纵向高度；多条时保持竖排多列。
    卡片是 div 不是 button：旧版 WebKit 里 button 做网格项会按图片原始宽度撑开，
    把第二张挤出屏幕、整页变宽；图片也用固定高度，不依赖 aspect-ratio。 */
 :root .shell .home-heroes {
@@ -365,6 +716,11 @@
   transition: border-color 120ms ease, transform 120ms ease, box-shadow 120ms ease;
 }
 
+:root .shell .home-heroes[data-single] .home-hero {
+  display: grid;
+  grid-template-columns: minmax(220px, 38%) minmax(0, 1fr);
+}
+
 :root .shell .home-hero:hover,
 :root .shell .home-hero:focus-visible {
   border-color: hsl(var(--input));
@@ -381,6 +737,14 @@
   flex: none;
   object-fit: cover;
   border-bottom: 1px solid hsl(var(--border));
+}
+
+:root .shell .home-heroes[data-single] .home-hero-image {
+  height: 100%;
+  min-height: 152px;
+  max-height: 184px;
+  border-right: 1px solid hsl(var(--border));
+  border-bottom: 0;
 }
 
 :root .shell .home-hero-placeholder {
@@ -401,7 +765,7 @@
   flex: 1;
   flex-direction: column;
   gap: 7px;
-  padding: 12px 14px;
+  padding: 13px 16px;
 }
 
 :root .shell .home-hero-head {
@@ -409,7 +773,7 @@
   min-width: 0;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: 14.5px;
 }
 
 :root .shell .home-hero-head strong {
@@ -500,7 +864,7 @@
   transform: translateX(2px);
 }
 
-/* 其他赞助商：两列小卡片，全部列出。缩略图固定尺寸，标题旁最多两个亮点，说明两行截断。 */
+/* 其他赞助商：紧凑两列小卡片，全部列出。 */
 :root .shell .home-sponsors {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -512,7 +876,7 @@
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 12px;
+  gap: 11px;
   padding: 10px 12px;
   border: 1px solid hsl(var(--border));
   border-radius: var(--cx-radius);
@@ -531,13 +895,15 @@
 
 :root .shell .home-sponsor-thumb {
   display: grid;
-  width: 72px;
+  width: 40px;
   height: 40px;
   flex: none;
   overflow: hidden;
-  border-radius: 6px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: hsl(var(--secondary));
   object-fit: cover;
-  object-position: left center;
+  object-position: center;
 }
 
 :root .shell .home-sponsor-thumb svg {
@@ -581,14 +947,13 @@
 }
 
 :root .shell .home-sponsor-text {
-  display: -webkit-box;
   overflow: hidden;
   margin: 0;
   color: hsl(var(--muted-foreground));
   font-size: 12px;
-  line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 :root .shell .home-sponsor-go {
@@ -596,65 +961,27 @@
   height: 14px;
   flex: none;
   color: hsl(var(--muted-foreground));
-}
-
-/* 常用入口：三列小卡片，图标 + 名称 + 一行说明。 */
-:root .shell .home-shortcuts {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-:root .shell .home-shortcut {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
-  border: 1px solid hsl(var(--border));
-  border-radius: var(--cx-radius);
-  background: hsl(var(--card));
-  color: hsl(var(--foreground) / 0.9);
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-
-:root .shell .home-shortcut:hover {
-  border-color: hsl(var(--input));
-  background: hsl(var(--accent) / 0.5);
-}
-
-:root .shell .home-shortcut > svg {
-  width: 16px;
-  height: 16px;
-  flex: none;
-  color: hsl(var(--muted-foreground));
-}
-
-:root .shell .home-shortcut > span {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-:root .shell .home-shortcut strong {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-:root .shell .home-shortcut small {
-  overflow: hidden;
-  color: hsl(var(--muted-foreground));
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  opacity: 0.7;
 }
 
 @media (max-width: 860px) {
-  :root .shell .home-shortcuts {
+  :root .shell .home-agent-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root .shell .home-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :root .shell .home-heroes[data-single] .home-hero {
+    display: flex;
+  }
+
+  :root .shell .home-heroes[data-single] .home-hero-image {
+    height: 128px;
+    min-height: 0;
+    border-right: 0;
+    border-bottom: 1px solid hsl(var(--border));
   }
 
   :root .shell .home-sponsors {

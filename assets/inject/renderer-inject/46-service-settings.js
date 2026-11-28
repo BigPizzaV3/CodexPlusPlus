@@ -10,6 +10,11 @@
    *     下一步建议的「测试连接」走 /stepwise/test。这些路由都不在拓展白名单里。
    *   - 两节由 renderCodexPlusSettingsCatalogSections 跟着清单分组一起生成（带 data-codex-plus-settings-catalog），
    *     清单刷新时一起重建；下载进度、热键、测试结果这些页面状态放在 codexPlusServiceSettingsState。
+   *
+   * 「会话」分组后面接「会话维护」：从管理器「会话 → 修复与维护」复制过来的手动操作（自动修复的开关在清单里，两边共用）。
+   *   - 修复会话索引走 /session-index/repair，最近一次报告读 /session-index/report；两条都不在拓展白名单里。
+   *   - 修复历史会话（按供应商改写归属）和移动会话目录仍只在管理器：后者要 Codex 完全退出才能执行，
+   *     在 Codex 里做不了，这里只给一个打开管理器「会话」页的入口。
    */
   const codexPlusServiceSettingsState = {
     localModel: null,
@@ -25,6 +30,14 @@
     stepwiseTestFailed: false,
     nativeBrowser: null,
     nativeBrowserBusy: false,
+    // 会话维护：report 为 undefined 表示还没读，null 表示读过但从没修过。
+    sessionIndexReport: undefined,
+    sessionIndexReportLoading: false,
+    sessionIndexReportError: "",
+    sessionIndexRepairBusy: false,
+    sessionIndexRepairMessage: "",
+    sessionIndexRepairFailed: false,
+    sessionManagerMessage: "",
   };
 
   // 语音服务预设：只改端点、模型与 provider（默认端点与管理器 dictation-settings.ts 的默认值一致）。
@@ -297,6 +310,120 @@
     }
   }
 
+  function codexPlusFormatSessionReportTime(ms) {
+    const value = Number(ms);
+    if (!Number.isFinite(value) || value <= 0) return "旧版报告未记录时间";
+    return new Date(value).toLocaleString("zh-CN", { hour12: false });
+  }
+
+  /** 最近一次修复报告的一行摘要（和管理器报告卡片的数字一致）。 */
+  function codexPlusSessionIndexReportText(state) {
+    if (state.sessionIndexReportError) return state.sessionIndexReportError;
+    const report = state.sessionIndexReport;
+    if (report === undefined) return "正在读取…";
+    if (!report) return "还没有检查记录。";
+    const count = (value) => Number(value) || 0;
+    return `最后检查：${codexPlusFormatSessionReportTime(report.checkedAtMs)} · 恢复消息 ${count(report.repairedItems)} · 已存在 ${count(report.alreadyPresent)}`
+      + ` · 短暂等待 ${count(report.deferredItems)} · 需核查 ${count(report.skippedItems)}`;
+  }
+
+  function renderCodexPlusSessionMaintenanceSection() {
+    const state = codexPlusServiceSettingsState;
+    const busy = state.sessionIndexRepairBusy;
+    const report = state.sessionIndexReport;
+    const rows = [
+      renderCodexPlusServiceRow(
+        "修复会话索引",
+        "立即检查一次：只恢复有本地原文且能确认位置的消息，不改写会话归属；已打开的会话可能要重新打开才显示。",
+        renderCodexPlusServiceStatus(busy ? "正在检查索引…" : state.sessionIndexRepairMessage, !busy && state.sessionIndexRepairFailed, 'data-codex-plus-session-repair-status="true"')
+          + `<button type="button" class="codex-plus-action-button" data-codex-plus-session-repair="true"${busy ? " disabled" : ""}>${busy ? "正在检查…" : "修复会话索引"}</button>`,
+      ),
+      renderCodexPlusServiceRow("最近一次检查", codexPlusSessionIndexReportText(state), "",
+        ` data-codex-plus-session-report="true" role="${state.sessionIndexReportError ? "alert" : "status"}"`),
+    ];
+    // 中止原因和警告单独成行，和管理器一样按需要处理的问题显示。
+    if (report?.abortedReason) {
+      rows.push(renderCodexPlusServiceRow("修复已中止", String(report.abortedReason), "", ' role="alert"'));
+    }
+    for (const warning of Array.isArray(report?.warnings) ? report.warnings : []) {
+      rows.push(renderCodexPlusServiceRow("修复警告", String(warning), "", ' role="alert"'));
+    }
+    rows.push(renderCodexPlusServiceRow(
+      "修复历史会话与移动会话目录",
+      "按供应商改写会话归属、把会话移到新的项目目录，在管理工具的「会话」页里操作；移动目录前要先完全退出 Codex。",
+      renderCodexPlusServiceStatus(state.sessionManagerMessage, true, 'data-codex-plus-session-manager-status="true"')
+        + `<button type="button" class="codex-plus-action-button" data-codex-plus-session-open-manager="true">在管理工具中打开</button>`,
+    ));
+    return `
+            <section class="codex-plus-settings-section" aria-label="会话维护" data-codex-plus-settings-catalog="section" data-codex-plus-service-section="session-maintenance">
+              <h2 class="codex-plus-settings-section-title">会话维护</h2>
+              <div class="codex-plus-settings-card">${rows.join("")}</div>
+            </section>`;
+  }
+
+  /** 设置页第一次画到「会话维护」时读一次最近的报告；之后靠修复结果更新，不轮询。 */
+  function codexPlusEnsureSessionIndexReportLoaded() {
+    const state = codexPlusServiceSettingsState;
+    if (state.sessionIndexReport !== undefined || state.sessionIndexReportLoading) return;
+    state.sessionIndexReportLoading = true;
+    void Promise.resolve()
+      .then(() => postJson("/session-index/report", {}))
+      .then((result) => {
+        if (result?.status === "ok") {
+          state.sessionIndexReport = result.report && typeof result.report === "object" ? result.report : null;
+          state.sessionIndexReportError = "";
+        } else {
+          state.sessionIndexReportError = result?.message || "读取会话索引修复报告失败";
+        }
+      }, (error) => {
+        state.sessionIndexReportError = error?.message || "读取会话索引修复报告失败";
+      })
+      .then(() => {
+        state.sessionIndexReportLoading = false;
+        refreshCodexPlusServiceSection("session-maintenance");
+      });
+  }
+
+  async function repairCodexPlusSessionIndex() {
+    const state = codexPlusServiceSettingsState;
+    if (state.sessionIndexRepairBusy) return;
+    state.sessionIndexRepairBusy = true;
+    state.sessionIndexRepairMessage = "";
+    refreshCodexPlusServiceSection("session-maintenance");
+    try {
+      const result = await postJson("/session-index/repair", {});
+      if (result?.status === "ok") {
+        if (result.report && typeof result.report === "object") {
+          state.sessionIndexReport = result.report;
+          state.sessionIndexReportError = "";
+        }
+        state.sessionIndexRepairMessage = result.message || "检查完成";
+        state.sessionIndexRepairFailed = false;
+      } else {
+        state.sessionIndexRepairMessage = result?.message || "修复会话索引失败";
+        state.sessionIndexRepairFailed = true;
+      }
+    } catch (error) {
+      state.sessionIndexRepairMessage = error?.message || "修复会话索引失败";
+      state.sessionIndexRepairFailed = true;
+    } finally {
+      state.sessionIndexRepairBusy = false;
+      refreshCodexPlusServiceSection("session-maintenance");
+    }
+  }
+
+  async function openCodexPlusSessionsInManager() {
+    const state = codexPlusServiceSettingsState;
+    let result;
+    try {
+      result = await postJson("/manager/open", { page: "sessions" });
+    } catch (error) {
+      result = { status: "failed", message: error?.message || String(error) };
+    }
+    state.sessionManagerMessage = result?.status === "ok" ? "" : (result?.message || "打开管理工具失败");
+    refreshCodexPlusServiceSection("session-maintenance");
+  }
+
   /** 清单分组后面要接的服务配置节；renderCodexPlusSettingsCatalogSections 按分组 id 调用。 */
   function renderCodexPlusServiceSettingsAfterGroup(groupId) {
     if (groupId === "input") {
@@ -304,6 +431,11 @@
       return renderCodexPlusDictationServiceSection();
     }
     if (groupId === "stepwise") return renderCodexPlusStepwiseServiceSection();
+    if (groupId === "chat") {
+      // 渲染完再读报告：读完要按 data-codex-plus-service-section 找到这一节重画。
+      setTimeout(codexPlusEnsureSessionIndexReportLoaded, 0);
+      return renderCodexPlusSessionMaintenanceSection();
+    }
     if (groupId === "plugins" && codexPlusIsWindowsPlatform) {
       // 第一次渲染时检测一次；之后靠「刷新」按钮，不常驻轮询。
       if (!codexPlusServiceSettingsState.nativeBrowser && !codexPlusServiceSettingsState.nativeBrowserBusy) {
@@ -318,7 +450,8 @@
   function refreshCodexPlusServiceSection(section) {
     const render = section === "dictation" ? renderCodexPlusDictationServiceSection
       : section === "native-browser" ? renderCodexPlusNativeBrowserStatusSection
-        : renderCodexPlusStepwiseServiceSection;
+        : section === "session-maintenance" ? renderCodexPlusSessionMaintenanceSection
+          : renderCodexPlusStepwiseServiceSection;
     document.querySelectorAll(`[data-codex-plus-service-section="${section}"]`).forEach((node) => {
       const active = document.activeElement && node.contains(document.activeElement) ? document.activeElement : null;
       const focusAttr = active ? [...active.attributes].find((attr) => attr.name.startsWith("data-codex-plus-")) : null;
@@ -586,6 +719,14 @@
     }
     if (target?.closest?.("[data-codex-plus-stepwise-test]")) {
       void testCodexPlusStepwiseConnection();
+      return true;
+    }
+    if (target?.closest?.("[data-codex-plus-session-repair]")) {
+      void repairCodexPlusSessionIndex();
+      return true;
+    }
+    if (target?.closest?.("[data-codex-plus-session-open-manager]")) {
+      void openCodexPlusSessionsInManager();
       return true;
     }
     const clear = target?.closest?.("[data-codex-plus-dictation-secret-clear], [data-codex-plus-stepwise-secret-clear]");

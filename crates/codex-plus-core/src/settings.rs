@@ -657,7 +657,9 @@ impl RelayProfile {
     pub fn requires_protocol_proxy_conversion(&self) -> bool {
         matches!(
             self.protocol,
-            RelayProtocol::ChatCompletions | RelayProtocol::AnthropicMessages
+            RelayProtocol::ChatCompletions
+                | RelayProtocol::AnthropicMessages
+                | RelayProtocol::Gemini
         )
     }
 
@@ -715,6 +717,8 @@ pub enum RelayProtocol {
     ChatCompletions,
     /// Anthropic Messages（`/v1/messages`）：由本地协议代理转成 Responses 供 Codex 使用。
     AnthropicMessages,
+    /// Google Gemini（`/v1beta/models/{model}:streamGenerateContent`）：由本地协议代理转成 Responses。
+    Gemini,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
