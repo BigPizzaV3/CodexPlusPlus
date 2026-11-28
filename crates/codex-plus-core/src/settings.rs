@@ -2628,6 +2628,22 @@ impl SettingsStore {
         operation()
     }
 
+    fn parse_contents(&self, contents: &str) -> anyhow::Result<BackendSettings> {
+        serde_json::from_str(contents).with_context(|| {
+            format!(
+                "settings {} 解析失败，拒绝退回默认设置以免覆盖用户配置",
+                self.path.display()
+            )
+        })
+    }
+
+    pub(crate) fn usage_history_enabled(&self) -> anyhow::Result<bool> {
+        match self.read_contents()? {
+            Some(contents) => Ok(self.parse_contents(&contents)?.usage_history_enabled),
+            None => Ok(BackendSettings::default().usage_history_enabled),
+        }
+    }
+
     /// 读取设置。**嵌套调用只解析、不再归一化**。
     ///
     /// 归一化会走到 `complete_relay_profile_config`，它对聚合供应商会回头读全量设置
@@ -2646,12 +2662,7 @@ impl SettingsStore {
             }
         };
 
-        let mut parsed: BackendSettings = serde_json::from_str(&contents).with_context(|| {
-            format!(
-                "settings {} 解析失败，拒绝退回默认设置以免覆盖用户配置",
-                self.path.display()
-            )
-        })?;
+        let mut parsed = self.parse_contents(&contents)?;
         parsed.settings_revision = settings_revision(Some(contents.as_bytes()));
         // 旧用量挂件开关迁移：只有文件里确实出现旧键时才多解析一遍。
         if contents.contains(LEGACY_PET_WIDGET_KEY) {
@@ -4166,6 +4177,21 @@ fn temp_path_for(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn usage_history_enabled_reads_current_settings_and_retains_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let store = SettingsStore::new(path.clone());
+        assert!(!store.usage_history_enabled().unwrap());
+        fs::write(&path, br#"{"usageHistoryEnabled":true}"#).unwrap();
+        assert!(store.usage_history_enabled().unwrap());
+        fs::write(&path, br#"{"usageHistoryEnabled":false}"#).unwrap();
+        assert!(!store.usage_history_enabled().unwrap());
+        fs::write(&path, br#"{"usageHistoryEnabled":true,"relayProfiles":42}"#).unwrap();
+        assert!(store.usage_history_enabled().is_err());
+        assert!(store.load().is_err());
+    }
 
     #[test]
     fn usage_storage_budget_defaults_and_updates_preserve_other_settings() {

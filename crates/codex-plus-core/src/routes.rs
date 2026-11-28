@@ -73,6 +73,10 @@ pub trait BridgeSettingsService: Send + Sync {
     async fn get_settings(&self) -> anyhow::Result<BackendSettings>;
     async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings>;
 
+    async fn usage_history_enabled(&self) -> anyhow::Result<bool> {
+        Ok(self.get_settings().await?.usage_history_enabled)
+    }
+
     fn codex_home_dir(&self) -> PathBuf {
         crate::relay_config::default_codex_home_dir()
     }
@@ -704,11 +708,15 @@ pub async fn handle_bridge_request(
         "/devtools/open" => ctx.runtime.open_devtools().await,
         "/manager/open" => ctx.runtime.open_manager(payload.clone()).await,
         "/manager/open-transient" => ctx.runtime.open_transient_manager(payload.clone()).await,
-        "/backend/status" => backend_status_value(
-            ctx.runtime.backend_status().await,
-            ctx.settings.get_settings().await,
-            &ctx.settings.codex_home_dir(),
-        ),
+        "/backend/status" => {
+            let status = ctx.runtime.backend_status().await;
+            let settings = ctx.settings.get_settings().await;
+            let home = ctx.settings.codex_home_dir();
+            tokio::task::spawn_blocking(move || backend_status_value(status, settings, &home))
+                .await
+                .map_err(anyhow::Error::from)
+                .and_then(|result| result)
+        }
         "/codex-model-catalog" | "/codex-config-model" => ctx.runtime.codex_model_catalog().await,
         // 开放给拓展的模型目录：只给模型列表与每模型元数据（含上下文窗口），去掉来源地址、config 路径。
         "/model-catalog/public" => ctx.runtime.codex_model_catalog().await.map(public_model_catalog_value),
@@ -775,8 +783,8 @@ pub async fn handle_bridge_request(
             }
             _ => Ok(json!({"status":"unavailable","enabled":false})),
         },
-        "/usage/history" => match ctx.settings.get_settings().await {
-            Ok(settings) if settings.usage_history_enabled => {
+        "/usage/history" => match ctx.settings.usage_history_enabled().await {
+            Ok(true) => {
                 ctx.data.usage_history(payload.clone()).await
             }
             _ => {
@@ -1037,7 +1045,13 @@ impl CoreSettingsService {
 #[async_trait]
 impl BridgeSettingsService for CoreSettingsService {
     async fn get_settings(&self) -> anyhow::Result<BackendSettings> {
-        self.store.load()
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || store.load()).await?
+    }
+
+    async fn usage_history_enabled(&self) -> anyhow::Result<bool> {
+        let store = self.store.clone();
+        tokio::task::spawn_blocking(move || store.usage_history_enabled()).await?
     }
 
     async fn set_settings(&self, payload: Value) -> anyhow::Result<BackendSettings> {
