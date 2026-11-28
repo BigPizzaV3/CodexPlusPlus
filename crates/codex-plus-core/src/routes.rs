@@ -1958,8 +1958,8 @@ async fn llm_proxy_value(payload: Value) -> anyhow::Result<Value> {
 
 fn validate_llm_proxy_url(raw: &str) -> anyhow::Result<reqwest::Url> {
     let url = reqwest::Url::parse(raw.trim()).map_err(|_| anyhow::anyhow!("Base URL 格式无效"))?;
-    if url.scheme() != "https" {
-        anyhow::bail!("Base URL 必须使用 HTTPS");
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!("Base URL 必须使用 HTTP(S)");
     }
     if !url.username().is_empty() || url.password().is_some() {
         anyhow::bail!("Base URL 不得包含用户名或密码");
