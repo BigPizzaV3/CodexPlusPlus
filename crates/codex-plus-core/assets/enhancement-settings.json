@@ -477,7 +477,7 @@
       "group": "ext-permissions",
       "control": "bool",
       "title": "本机用量历史",
-      "description": "允许拓展按需读取本机用量元数据。关闭时会清空已记录的用量历史。",
+      "description": "允许拓展按需读取本机用量元数据。关闭后停止索引更新，不会删除原会话或已保存的归档。",
       "masterGated": false,
       "surfaces": [
         "codex"

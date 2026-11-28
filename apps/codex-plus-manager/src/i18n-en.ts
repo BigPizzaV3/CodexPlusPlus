@@ -390,7 +390,7 @@ export const EN_PLAIN: Record<string, string> = {
   "本机用量历史": "Local usage history",
   "拓展权限": "Extension permissions",
   "允许拓展读取的本机数据。默认都关闭，按需打开。": "Local data extensions may read. All off by default; turn on only what you need.",
-  "允许拓展按需读取本机用量元数据。关闭时会清空已记录的用量历史。": "Allow extensions to read local usage metadata on demand. Turning it off clears the recorded usage history.",
+  "允许拓展按需读取本机用量元数据。关闭后停止索引更新，不会删除原会话或已保存的归档。": "Allow extensions to read local usage metadata on demand. Turning it off stops index updates without deleting the original sessions or saved archives.",
   // cx-pages:gateway —— gateway 组新增词条写在这一行下面
   "每 2 秒读取一次新请求": "Reads new requests every 2 seconds",
   "还没有请求日志": "No request logs yet",
