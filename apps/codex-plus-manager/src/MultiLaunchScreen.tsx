@@ -1,6 +1,7 @@
 // Codex 多开页。
 import { Info, Layers3, PowerOff, RefreshCw, RotateCcw, Rocket } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { AgentIcon } from "./gateway-ui";
 import { useGatewayPayload } from "./hub-shared";
 import { Menu, MenuItem, PageHeader } from "./ManagementPages";
@@ -21,6 +22,7 @@ import type { Actions, BackendSettings, RelayFilesResult, RelayProfile } from ".
 import {
   CODEX_GATEWAY_RELAY_ID,
   confirmRemoveRelayProfile,
+  enhancementPlatform,
   multiLaunchSupported,
   normalizeSettings,
   providerInitial,
@@ -63,6 +65,31 @@ export function CodexMultiLaunchScreen({
   const deleteProfile = async (profile: RelayProfile) => {
     const next = await confirmRemoveRelayProfile(normalized, profile, actions, "multiLaunch");
     if (next) await actions.saveSettingsValue(next, true);
+  };
+  // 每个实例的「关闭 Windows 沙箱」（#3259）。按供应商启动的实例 id 就是供应商 id。
+  const windows = enhancementPlatform === "windows";
+  const [sandboxOff, setSandboxOff] = useState<Set<string>>(() => new Set());
+  const loadInstanceOptions = useCallback(async () => {
+    try {
+      const result = await invoke<{ status: string; options?: Array<{ instanceId: string; disableWindowsSandbox?: boolean }> }>("list_codex_multi_instance_options");
+      if (result.status !== "ok") return;
+      setSandboxOff(new Set((result.options ?? []).filter((item) => item.disableWindowsSandbox).map((item) => item.instanceId)));
+    } catch {
+      // 读不到就当都没关，不挡页面。
+    }
+  }, []);
+  useEffect(() => {
+    if (windows) void loadInstanceOptions();
+  }, [windows, loadInstanceOptions]);
+  const toggleWindowsSandbox = async (instanceId: string) => {
+    const disabled = !sandboxOff.has(instanceId);
+    try {
+      const result = await invoke<{ status: string; message: string }>("set_codex_multi_instance_windows_sandbox", { request: { instanceId, disabled } });
+      await actions.showMessage(t("Windows 沙箱"), t(result.message), result.status === "ok" ? "ok" : "failed");
+    } catch (error) {
+      await actions.showMessage(t("Windows 沙箱"), String(error), "failed");
+    }
+    await loadInstanceOptions();
   };
   const { CxAddRow, CxBadge, CxCard, CxEmpty, CxRow, CxSection, CxStatusIcon } = AgentCx;
   const instances = actions.multiLaunchInstances;
@@ -195,6 +222,7 @@ export function CodexMultiLaunchScreen({
                     <>
                       {active ? <CxBadge>{t("使用中")}</CxBadge> : null}
                       {runningCount ? <CxBadge tone="ok">{tf("{0} 个实例运行中", [runningCount])}</CxBadge> : null}
+                      {windows && sandboxOff.has(profile.id) ? <CxBadge tone="warn">{t("沙箱已关")}</CxBadge> : null}
                     </>
                   )}
                   detail={`${relayProfileModeLabel(profile)} · ${relayProtocolLabel(profile.protocol)} · ${relayProfileConfigBrief(profile)}`}
@@ -219,6 +247,16 @@ export function CodexMultiLaunchScreen({
                   </button>
                   {gatewayManaged ? null : (
                     <Menu label={tf("供应商「{0}」的操作", [name])}>
+                      {windows ? (
+                        <MenuItem
+                          checked={sandboxOff.has(profile.id)}
+                          disabled={unsupported}
+                          onClick={() => void toggleWindowsSandbox(profile.id)}
+                          title={t("在这个实例的 config.toml 里关掉 Codex 的 Windows 沙箱（experimental_windows_sandbox、windows_sandbox_service 设为 false）。选「完全访问权限」后仍被限制在工作区里时打开；重启该实例后生效。")}
+                        >
+                          {t("关闭 Windows 沙箱")}
+                        </MenuItem>
+                      ) : null}
                       <MenuItem onClick={() => setDetailProfileId(profile.id)}>{t("编辑")}</MenuItem>
                       <MenuItem danger disabled={normalized.relayProfiles.length <= 1} onClick={() => void deleteProfile(profile)}>{t("删除供应商")}</MenuItem>
                     </Menu>

@@ -1639,9 +1639,20 @@ fn launch_codex_multi_instance_blocking(request: CodexMultiLaunchRequest) -> Com
             json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
         );
     }
-    if let Err(error) = seed_multi_instance_onboarding_state(&codex_home) {
+    if let Err(error) = seed_multi_instance_onboarding_state(&codex_home)
+        .and_then(|_| seed_multi_instance_permission_selection(&codex_home, &default_home))
+    {
         return failed(
             &format!("写入多开实例首次启动状态失败：{error}"),
+            json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
+        );
+    }
+    // 生成配置会重写 config.toml，按实例选项把「关闭 Windows 沙箱」再写回去（#3259）。
+    if load_multi_instance_options(&root).disable_windows_sandbox
+        && let Err(error) = write_multi_instance_sandbox_features(&codex_home, true)
+    {
+        return failed(
+            &format!("写入多开实例的沙箱设置失败：{error}"),
             json!({ "profileId": profile_id, "codexHome": codex_home.to_string_lossy() }),
         );
     }
@@ -3364,6 +3375,206 @@ fn seed_multi_instance_onboarding_state(home: &Path) -> anyhow::Result<()> {
     let bytes = serde_json::to_vec_pretty(&state)?;
     codex_plus_core::settings::atomic_write(&path, &bytes)?;
     Ok(())
+}
+
+/// 输入框权限控件记住的选择（「完全访问权限」「帮我批准」等）存在
+/// `.codex-global-state.json` 的 `electron-owner-atoms:<登录身份>` 里。新建的多开实例没有这份记录，
+/// Codex 就退回自己的默认值，和主窗口不一致（#3259）。实例还没有自己的选择时，沿用主实例的。
+const MULTI_INSTANCE_PERMISSION_ATOMS: [&str; 2] = [
+    "permission-selection-by-host-id:",
+    "preferred-non-full-access-agent-mode-by-host-id",
+];
+
+fn is_permission_selection_atom(key: &str) -> bool {
+    MULTI_INSTANCE_PERMISSION_ATOMS
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+}
+
+fn seed_multi_instance_permission_selection(home: &Path, default_home: &Path) -> anyhow::Result<()> {
+    let Ok(main_bytes) = std::fs::read(default_home.join(".codex-global-state.json")) else {
+        return Ok(());
+    };
+    let Ok(Value::Object(main)) = serde_json::from_slice::<Value>(&main_bytes) else {
+        return Ok(());
+    };
+    // 主实例每个登录身份下的权限选择。
+    let mut by_owner: Vec<(String, serde_json::Map<String, Value>)> = main
+        .iter()
+        .filter(|(key, _)| key.starts_with("electron-owner-atoms:"))
+        .filter_map(|(key, atoms)| {
+            let picked: serde_json::Map<String, Value> = atoms
+                .as_object()?
+                .iter()
+                .filter(|(atom, _)| is_permission_selection_atom(atom))
+                .map(|(atom, value)| (atom.clone(), value.clone()))
+                .collect();
+            (!picked.is_empty()).then(|| (key.clone(), picked))
+        })
+        .collect();
+    if by_owner.is_empty() {
+        return Ok(());
+    }
+    // 纯 API 实例是未登录身份：主实例只在登录账号下选过时，也拿那份给未登录身份用。
+    let signed_out = "electron-owner-atoms:signed-out".to_string();
+    if !by_owner.iter().any(|(owner, _)| *owner == signed_out) {
+        let fallback = by_owner[0].1.clone();
+        by_owner.push((signed_out, fallback));
+    }
+
+    let path = home.join(".codex-global-state.json");
+    let mut state = match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes).unwrap_or_else(|_| json!({})),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(error) => return Err(error.into()),
+    };
+    let root = state
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!(".codex-global-state.json 不是 JSON 对象"))?;
+    let mut changed = false;
+    for (owner, picked) in by_owner {
+        let atoms = root.entry(owner).or_insert_with(|| json!({}));
+        let Some(atoms) = atoms.as_object_mut() else {
+            continue;
+        };
+        // 实例里已经选过（哪怕只选过其中一项）就以实例自己的为准。
+        if atoms.keys().any(|atom| is_permission_selection_atom(atom)) {
+            continue;
+        }
+        atoms.extend(picked);
+        changed = true;
+    }
+    if changed {
+        codex_plus_core::settings::atomic_write(&path, &serde_json::to_vec_pretty(&state)?)?;
+    }
+    Ok(())
+}
+
+/// 多开实例自己的选项，存在实例目录里，跨重启保留。
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiInstanceOptions {
+    #[serde(default)]
+    pub instance_id: String,
+    /// 关掉 Codex 的 Windows 沙箱（#3259）：`[windows] sandbox` 只能选实现、没有「关闭」，
+    /// 实测有效的是这两个 feature 开关，重启实例后生效（#3144）。
+    #[serde(default)]
+    pub disable_windows_sandbox: bool,
+}
+
+const WINDOWS_SANDBOX_FEATURES: [&str; 2] = ["experimental_windows_sandbox", "windows_sandbox_service"];
+
+fn multi_instance_options_path(root: &Path) -> PathBuf {
+    root.join("options.json")
+}
+
+fn load_multi_instance_options(root: &Path) -> CodexMultiInstanceOptions {
+    std::fs::read(multi_instance_options_path(root))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+/// 关：`[features]` 里两项写成 false。开：只去掉值为 false 的这两项（交还给 Codex 默认）。
+fn write_multi_instance_sandbox_features(codex_home: &Path, disable: bool) -> anyhow::Result<()> {
+    let config_path = codex_home.join("config.toml");
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !disable => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let mut doc = contents.parse::<toml_edit::DocumentMut>()?;
+    let mut changed = false;
+    if disable {
+        if !doc.contains_key("features") {
+            doc["features"] = toml_edit::table();
+        }
+        let features = doc["features"]
+            .as_table_like_mut()
+            .ok_or_else(|| anyhow::anyhow!("config.toml 里的 features 不是表"))?;
+        for key in WINDOWS_SANDBOX_FEATURES {
+            if features.get(key).and_then(toml_edit::Item::as_bool) != Some(false) {
+                features.insert(key, toml_edit::value(false));
+                changed = true;
+            }
+        }
+    } else if let Some(features) = doc.get_mut("features").and_then(toml_edit::Item::as_table_like_mut) {
+        for key in WINDOWS_SANDBOX_FEATURES {
+            if features.get(key).and_then(toml_edit::Item::as_bool) == Some(false) {
+                features.remove(key);
+                changed = true;
+            }
+        }
+        if changed && features.is_empty() {
+            doc.remove("features");
+        }
+    }
+    if changed {
+        codex_plus_core::settings::atomic_write(&config_path, doc.to_string().as_bytes())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_codex_multi_instance_options() -> CommandResult<Value> {
+    let base = codex_plus_core::paths::default_app_state_dir().join("codex-multi");
+    let options: Vec<CodexMultiInstanceOptions> = std::fs::read_dir(&base)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| load_multi_instance_options(&entry.path()))
+        .filter(|options| !options.instance_id.is_empty())
+        .collect();
+    ok("已读取多开实例选项。", json!({ "options": options }))
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexMultiInstanceSandboxRequest {
+    pub instance_id: String,
+    pub disabled: bool,
+}
+
+#[tauri::command]
+pub fn set_codex_multi_instance_windows_sandbox(
+    request: CodexMultiInstanceSandboxRequest,
+) -> CommandResult<Value> {
+    let instance_id = request.instance_id.trim().to_string();
+    if instance_id.is_empty() || instance_id == "main" {
+        return failed("只能给多开实例设置。", json!({ "instanceId": instance_id }));
+    }
+    let _operation = multi_instance_mutation_lock()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let root = multi_instance_root(&multi_instance_slug(&instance_id));
+    let options = CodexMultiInstanceOptions {
+        instance_id: instance_id.clone(),
+        disable_windows_sandbox: request.disabled,
+    };
+    let result = std::fs::create_dir_all(&root)
+        .map_err(anyhow::Error::from)
+        .and_then(|_| {
+            codex_plus_core::settings::atomic_write(
+                &multi_instance_options_path(&root),
+                &serde_json::to_vec_pretty(&options)?,
+            )
+        })
+        // 实例已经建过就立刻改它的 config.toml；没建过的等第一次启动时写。
+        .and_then(|_| write_multi_instance_sandbox_features(&root.join("codex-home"), request.disabled));
+    if let Err(error) = result {
+        return failed(&format!("保存多开实例的沙箱设置失败：{error}"), json!({ "instanceId": instance_id }));
+    }
+    let running = load_multi_instance_manifest(&root)
+        .ok()
+        .is_some_and(|instance| multi_instance_is_running(&instance));
+    let message = match (request.disabled, running) {
+        (true, true) => "已关闭这个实例的 Windows 沙箱，重启该实例后生效。",
+        (true, false) => "已关闭这个实例的 Windows 沙箱，下次启动时生效。",
+        (false, true) => "已恢复这个实例的 Windows 沙箱，重启该实例后生效。",
+        (false, false) => "已恢复这个实例的 Windows 沙箱，下次启动时生效。",
+    };
+    ok(message, json!({ "options": options, "running": running }))
 }
 
 fn remove_invalid_multi_instance_mcp_servers(home: &Path) -> anyhow::Result<()> {
@@ -17038,6 +17249,70 @@ model_reasoning_effort = "high"
         assert_eq!(atoms["electron:onboarding-projectless-completed"], true);
         assert!(atoms["last_completed_onboarding"].is_number());
         assert!(state.get("auth").is_none());
+    }
+
+    #[test]
+    fn multi_instance_inherits_main_permission_selection_once() {
+        let main = tempfile::tempdir().unwrap();
+        let instance = tempfile::tempdir().unwrap();
+        std::fs::write(
+            main.path().join(".codex-global-state.json"),
+            serde_json::to_vec(&json!({
+                "electron-owner-atoms:acct": {
+                    "permission-selection-by-host-id:local": { "kind": "full-access" },
+                    "preferred-non-full-access-agent-mode-by-host-id": { "local": "guardian-approvals" },
+                    "unrelated": 1
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        seed_multi_instance_permission_selection(instance.path(), main.path()).unwrap();
+        let read = || -> Value {
+            serde_json::from_slice(&std::fs::read(instance.path().join(".codex-global-state.json")).unwrap()).unwrap()
+        };
+        let state = read();
+        // 同一身份照搬；纯 API 实例的未登录身份也拿到主实例的选择（#3259）。
+        for owner in ["electron-owner-atoms:acct", "electron-owner-atoms:signed-out"] {
+            assert_eq!(state[owner]["permission-selection-by-host-id:local"]["kind"], "full-access", "{owner}");
+            assert!(state[owner].get("unrelated").is_none());
+        }
+
+        // 实例里改过以后不再被主实例覆盖。
+        let mut changed = state.clone();
+        changed["electron-owner-atoms:signed-out"]["permission-selection-by-host-id:local"] =
+            json!({ "kind": "agent-mode", "agentMode": "guardian-approvals" });
+        std::fs::write(instance.path().join(".codex-global-state.json"), serde_json::to_vec(&changed).unwrap()).unwrap();
+        seed_multi_instance_permission_selection(instance.path(), main.path()).unwrap();
+        assert_eq!(
+            read()["electron-owner-atoms:signed-out"]["permission-selection-by-host-id:local"]["kind"],
+            "agent-mode"
+        );
+    }
+
+    #[test]
+    fn multi_instance_windows_sandbox_toggle_writes_and_clears_feature_flags() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("config.toml");
+        std::fs::write(&config, "model = \"gpt-5.5\"\n\n[features]\nmemories = true\n").unwrap();
+
+        write_multi_instance_sandbox_features(home.path(), true).unwrap();
+        let doc = std::fs::read_to_string(&config).unwrap().parse::<toml_edit::DocumentMut>().unwrap();
+        assert_eq!(doc["features"]["experimental_windows_sandbox"].as_bool(), Some(false));
+        assert_eq!(doc["features"]["windows_sandbox_service"].as_bool(), Some(false));
+        assert_eq!(doc["features"]["memories"].as_bool(), Some(true));
+        assert_eq!(doc["model"].as_str(), Some("gpt-5.5"));
+
+        write_multi_instance_sandbox_features(home.path(), false).unwrap();
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert!(!text.contains("windows_sandbox"), "{text}");
+        assert!(text.contains("memories = true"), "{text}");
+
+        // 实例还没建过：恢复时不凭空创建 config.toml。
+        let fresh = tempfile::tempdir().unwrap();
+        write_multi_instance_sandbox_features(fresh.path(), false).unwrap();
+        assert!(!fresh.path().join("config.toml").exists());
     }
 
     #[test]
