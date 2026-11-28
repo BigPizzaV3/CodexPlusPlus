@@ -163,6 +163,27 @@ fn windows_installer_carries_product_version_resource() {
 }
 
 #[test]
+fn windows_installer_is_named_by_arch_and_refuses_the_wrong_arch() {
+    // arm64 安装包装在 x64 上启动不了：装前按架构拦下，文件名带架构避免上传时互相覆盖。
+    let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi").unwrap();
+    assert!(nsi.contains("!define ARCH \"x64\""), "没传时默认 x64");
+    assert!(nsi.contains("CodexPlusPlus-${VERSION}-windows-${ARCH}-setup.exe"));
+    assert!(nsi.contains("!include \"x64.nsh\""));
+    let on_init = nsi.split_once("Function .onInit").unwrap().1.split("FunctionEnd").next().unwrap();
+    let (arm64, x64) = on_init.split_once("!else").unwrap();
+    assert!(arm64.contains("!if \"${ARCH}\" == \"arm64\""));
+    assert!(arm64.contains("${IfNot} ${IsNativeARM64}") && arm64.contains("Abort"));
+    // x64 包在 ARM64 上可经模拟运行，不能拦。
+    assert!(x64.contains("${AndIfNot} ${IsNativeARM64}") && x64.contains("Abort"));
+    assert_eq!(on_init.matches("/SD IDOK").count(), 2, "静默安装不能卡在消息框");
+    for workflow in ["pr-build.yml", "release-assets.yml"] {
+        let text =
+            std::fs::read_to_string(format!("../../.github/workflows/{workflow}")).unwrap();
+        assert!(text.contains("\"/DARCH=${{ matrix.windows_arch }}\""), "{workflow} 要传架构");
+    }
+}
+
+#[test]
 fn windows_installer_writes_the_same_uninstall_key_as_the_runtime() {
     let nsi = std::fs::read_to_string("../../scripts/installer/windows/CodexPlusPlus.nsi").unwrap();
     assert!(nsi.contains(r"Uninstall\CodexPlusPlus"));

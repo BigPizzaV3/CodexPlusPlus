@@ -1,16 +1,21 @@
 Unicode true
 !include "MUI2.nsh"
 !include "StrFunc.nsh"
+!include "LogicLib.nsh"
+!include "x64.nsh"
 ${Using:StrFunc} StrStr
 ${Using:StrFunc} UnStrStr
 
 !ifndef VERSION
   !define VERSION "0.0.0"
 !endif
+!ifndef ARCH
+  !define ARCH "x64"
+!endif
 !define ROOT "..\..\.."
 
 Name "Codex++"
-OutFile "${ROOT}\dist\windows\CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
+OutFile "${ROOT}\dist\windows\CodexPlusPlus-${VERSION}-windows-${ARCH}-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\Codex++"
 ; 沿用旧安装目录登记，覆盖升级继续安装到原目录。
 InstallDirRegKey HKCU "Software\Codex++" "InstallDir"
@@ -49,10 +54,28 @@ VIFileVersion "${VI_VERSION}"
   VIAddVersionKey /LANG=${LANG} "LegalCopyright" "Copyright (c) BigPizzaV3"
   VIAddVersionKey /LANG=${LANG} "ProductVersion" "${VERSION}"
   VIAddVersionKey /LANG=${LANG} "FileVersion" "${VERSION}"
-  VIAddVersionKey /LANG=${LANG} "OriginalFilename" "CodexPlusPlus-${VERSION}-windows-x64-setup.exe"
+  VIAddVersionKey /LANG=${LANG} "OriginalFilename" "CodexPlusPlus-${VERSION}-windows-${ARCH}-setup.exe"
 !macroend
 !insertmacro CODEX_PLUS_VERSION_KEYS ${LANG_SIMPCHINESE}
 !insertmacro CODEX_PLUS_VERSION_KEYS ${LANG_ENGLISH}
+
+; 架构检查：装错包时直接提示并退出，不装上一个启动不了的程序。
+; arm64 包只能装在 ARM64 设备上；x64 包在 Windows 11 ARM64 上可经模拟运行（已有 ARM64 用户这样用），只拦 32 位系统。
+; 静默安装（/S，更新器）时消息框按 /SD 自动确认，直接中止。
+Function .onInit
+!if "${ARCH}" == "arm64"
+  ${IfNot} ${IsNativeARM64}
+    MessageBox MB_OK|MB_ICONSTOP "此安装包仅适用于 Windows ARM64 设备，请下载 x64 版本（windows-x64-setup.exe）。" /SD IDOK
+    Abort
+  ${EndIf}
+!else
+  ${IfNot} ${IsNativeAMD64}
+  ${AndIfNot} ${IsNativeARM64}
+    MessageBox MB_OK|MB_ICONSTOP "此安装包需要 64 位 Windows（x64 或 ARM64）。" /SD IDOK
+    Abort
+  ${EndIf}
+!endif
+FunctionEnd
 
 ; 主程序退出时负责恢复系统浏览器及清理后台服务，安装器不能强制结束进程。
 ; 每 500ms 检查一次；10 秒仍未退出时提示从托盘退出，再重试或取消安装/卸载。

@@ -99,9 +99,22 @@ jobs:
           esac
 
   windows-installer:
+    name: Windows installer (${{ matrix.windows_arch }})
     needs: prepare
     if: github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows'
-    runs-on: windows-latest
+    runs-on: ${{ matrix.runner }}
+    # arm64 不参与发布门槛（同 Linux .deb）：失败只少 arm64 附件，x64 / macOS 照常发布，事后补跑。
+    continue-on-error: ${{ matrix.optional }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            windows_arch: x64
+            optional: false
+          - runner: windows-11-arm
+            windows_arch: arm64
+            optional: true
     steps:
       - name: Checkout release tag
         uses: actions/checkout@v4
@@ -180,7 +193,7 @@ jobs:
         run: |
           $version = ($env:RELEASE_TAG).TrimStart("v", "V")
           New-Item -ItemType Directory -Force dist/windows | Out-Null
-          Compress-Archive -Path dist/windows/app/* -DestinationPath "dist/windows/CodexPlusPlus-$version-windows-x64.zip" -Force
+          Compress-Archive -Path dist/windows/app/* -DestinationPath "dist/windows/CodexPlusPlus-$version-windows-${{ matrix.windows_arch }}.zip" -Force
 
       - name: Build Windows installer
         shell: pwsh
@@ -203,7 +216,7 @@ jobs:
           try {
             # 版本资源只收 X.X.X.X：去掉预发布后缀；手动在分支上跑（版本是分支名）时用 0.0.0.0。
             $viVersion = if ($version -match '^(\d+)\.(\d+)\.(\d+)') { "$($Matches[1]).$($Matches[2]).$($Matches[3]).0" } else { "0.0.0.0" }
-            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" CodexPlusPlus.nsi
+            & $makensis "/INPUTCHARSET" "UTF8" "/DVERSION=$version" "/DVI_VERSION=$viVersion" "/DARCH=${{ matrix.windows_arch }}" CodexPlusPlus.nsi
             if ($LASTEXITCODE -ne 0) { throw "NSIS 打包失败，退出码 $LASTEXITCODE" }
           } finally {
             Pop-Location
