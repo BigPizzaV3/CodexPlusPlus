@@ -768,12 +768,13 @@ impl Publisher {
                 continue;
             }
             // 旧发布记录没有名称；只读本机清单，不为列表逐个请求 GitHub。
+            // 本机清单读不出来（写坏了、是 dsh 配套包等）时退回显示 ID，不让整个列表报错。
             let mut name = record.and_then(|(_, record)| record["name"].as_str().map(str::to_owned));
             if let Some((id, _)) = record
                 && name.is_none()
                 && manager.has_extension_package(id)
+                && let Ok((_, manifest)) = package_dir(manager, id)
             {
-                let (_, manifest) = package_dir(manager, id)?;
                 name = manifest["name"].as_str().map(str::to_owned);
             }
             let text = |key: &str| item[key].as_str().unwrap_or("");

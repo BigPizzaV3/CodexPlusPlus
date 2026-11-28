@@ -281,6 +281,11 @@ fn lists_unlists_relists_and_deletes_own_published_repos() {
     assert_eq!(entries[1]["listed"], true);
     assert_eq!(entries[1]["name"], "字数统计");
     assert_eq!(entries[1]["stars"], 3);
+    // 本机清单写坏了：退回显示 ID，整个列表照常出来。
+    fs::write(root.join("user_scripts").join("listed").join("codexpp.json"), "{ broken").unwrap();
+    let listing = publisher.list_published(&manager).unwrap();
+    assert_eq!(listing["entries"][1]["id"], "listed");
+    assert!(listing["entries"][1]["name"].is_null());
 
     publisher.unlist("tester/codexpp-listed").unwrap();
     publisher.relist("tester/codexpp-unlisted").unwrap();
