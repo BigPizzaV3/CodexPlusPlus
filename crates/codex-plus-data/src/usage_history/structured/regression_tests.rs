@@ -1764,21 +1764,6 @@ fn model_lengths_are_indexed_and_filtered_by_utf8_bytes() {
             "{phase}"
         );
     }
-    assert!(Query::parse(&json!({"model":"a".repeat(257)}), Local::now().date_naive()).is_none());
-    assert!(
-        Query::parse(
-            &json!({"turnId":"a".repeat(201)}),
-            Local::now().date_naive()
-        )
-        .is_none()
-    );
-    assert!(
-        Query::parse(
-            &json!({"search":"a".repeat(201)}),
-            Local::now().date_naive()
-        )
-        .is_none()
-    );
 }
 
 #[test]

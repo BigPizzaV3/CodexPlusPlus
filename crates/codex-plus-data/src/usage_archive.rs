@@ -18,7 +18,8 @@ const MAX_CORE_BYTES: usize = 512 * 1024;
 const MAX_DETAIL_BYTES: usize = 8 * 1024 * 1024;
 const MAX_COMPRESSED_DETAIL_BYTES: usize = MAX_DETAIL_BYTES + 64 * 1024;
 const MAX_TOTAL_DETAIL_BYTES: usize = 128 * 1024 * 1024;
-const MAX_SESSIONS: usize = 4096;
+const MAX_SESSIONS: usize = 16_384;
+const MAX_TEXT_BYTES: usize = 4 * 1024;
 
 type Result<T> = std::result::Result<T, ArchiveError>;
 
@@ -184,7 +185,7 @@ usage_record!(BreakdownRow {
 });
 
 fn text(value: &str) -> Result<()> {
-    require(value.chars().count() <= 256, "string-limit")
+    require(value.len() <= MAX_TEXT_BYTES, "string-limit")
 }
 
 fn role(value: &str) -> Result<()> {

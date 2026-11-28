@@ -7,6 +7,7 @@
 ## 查询与响应
 
 支持 `period`、`from`、`to`、`model`、`sessionId`、`turnId`、`search`。
+请求里的 `model`、`turnId` 最多各 4 KiB，`search` 最多 1 KiB（均按 UTF-8 字节）。这些是查询输入边界，不截断原会话记录。
 `startAt` / `endAt` 为成对的毫秒时间戳，使用 `[startAt,endAt)` 半开区间。
 `scopeSessionId` 仅统计明确的子智能体后代，普通 fork 不算子智能体。
 `includeSessionCursors` 和 `includeActivity` 必须显式开启；

@@ -41,6 +41,29 @@ fn request(entry: Value, expected: Option<&str>) -> Value {
     json!({"operation":"put","expectedRevision":expected,"entry":entry})
 }
 
+#[test]
+fn dense_archive_round_trips_aliases_and_long_supplier_labels() {
+    let fixture = Fixture::new();
+    let mut value = entry(TODAY, "dense fixture");
+    let label = "\u{4f9b}".repeat(MAX_TEXT_BYTES / 3);
+    value["core"]["all"]["breakdowns"][0]["providerName"] = json!(label);
+    value["core"]["sessions"][0]["summary"]["breakdowns"][0]["providerName"] = json!(label);
+    let aliases = value["core"]["aliases"].as_object_mut().unwrap();
+    for number in 2..=4097 {
+        aliases.insert(format!("00000000-0000-4000-8000-{number:012x}"), json!(SESSION));
+    }
+    let written = fixture.call(&request(value.clone(), None));
+    assert_eq!(written["status"], "ok");
+    let read = fixture.read(TODAY);
+    assert_eq!(read["entry"]["core"], value["core"]);
+    let revision = written["entry"]["revision"].as_str().unwrap();
+
+    value["core"]["all"]["breakdowns"][0]["providerName"] = json!("x".repeat(MAX_TEXT_BYTES + 1));
+    let rejected = fixture.call(&request(value, Some(revision)));
+    assert_eq!(rejected, json!({"status":"failed","code":"string-limit"}));
+    assert_eq!(fixture.read(TODAY), read);
+}
+
 fn response(result: Result<Value>) -> Value {
     match result {
         Ok(value) => value,
@@ -605,7 +628,7 @@ fn fixed_schema_rejects_unknown_fields_counts_non_uuid_ids_and_oversized_payload
         ("/entry/core/sessions/0/summary/calls", json!(2)),
         ("/entry/core/sessions/0/sessionId", json!("../home")),
         ("/entry/core/pendingLiveEvents", json!(1)),
-        ("/entry/core/all/models/0/model", json!("x".repeat(257))),
+        ("/entry/core/all/models/0/model", json!("x".repeat(MAX_TEXT_BYTES + 1))),
         ("/entry/date", json!("2026-02-30")),
     ] {
         let mut value = base.clone();
@@ -616,10 +639,11 @@ fn fixed_schema_rejects_unknown_fields_counts_non_uuid_ids_and_oversized_payload
     mismatched["date"] = json!("2026-11-03");
     bad.push(mismatched);
     let mut too_many = base.clone();
-    too_many["entry"]["core"]["sessions"] = json!(vec![
-        base["entry"]["core"]["sessions"][0].clone();
-        MAX_SESSIONS + 1
-    ]);
+    too_many["entry"]["core"]["aliases"] = Value::Object(
+        (1..=MAX_SESSIONS + 1)
+            .map(|number| (format!("00000000-0000-4000-8000-{number:012x}"), json!(SESSION)))
+            .collect(),
+    );
     bad.push(too_many);
     let mut too_large = base.clone();
     too_large["entry"]["detail"] = json!("x".repeat(MAX_DETAIL_BYTES + 1));
