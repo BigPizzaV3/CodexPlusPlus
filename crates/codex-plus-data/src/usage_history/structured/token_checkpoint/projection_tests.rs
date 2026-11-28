@@ -1413,7 +1413,11 @@ fn archived_classification_matches_live_rollups_without_promoting_mixed_evidence
         count_cache_available: true,
         ..Default::default()
     };
-    let recovered = snapshot.events.iter().find(|event| event.session == RECOVERED).unwrap();
+    let recovered = snapshot
+        .events
+        .iter()
+        .find(|event| event.session == RECOVERED)
+        .unwrap();
     let proof = recovered.native_response_id.as_ref().unwrap();
     assert_eq!(&*proof.id, "resp_recovered_supplier");
     assert!(!proof.full_counts);

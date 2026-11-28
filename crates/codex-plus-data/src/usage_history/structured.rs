@@ -4489,7 +4489,7 @@ impl Snapshot {
                         .filter(|((day, _, _, _, _, _), _)| day == &date)
                         .map(
                             |(
-                                key @ (_, model, provider, role, provider_conflict, supplier_only),
+                                key @ (_, model, provider, role, provider_conflict, _),
                                 (aggregate, priceable),
                             )| {
                                 let mut row = aggregate.value();
